@@ -1,4 +1,63 @@
 # Changelog
+### March 17th 2026: WanGP v10.9875, Prompt Enhancer has just Been Abliterated
+
+- **Qwen3.5 VL Abliterated Prompt Enhancer**: new choice of Prompt Enhancer
+   * Based on widely acclaimed *Qwen3.5 model* that has just been released
+   * *Uncensored* thanks to the *Abliterating* process that nullifies any *LLM will* to decline any of your request
+   * 4 choices of models: depending on how much VRAM you have *4B & 9B models*, and *GGUF Q4* or *Int8*
+   * *vllm accelerated* x5 faster, if Flash Attention 2 & Triton are installed (please check docs/INSTALLATION.md) 
+   * *Think Mode*: for complex prompt queries
+   
+   Also you can now expand or override a *System Prompt prompt Enhancer* with add @ or @@ (check new doc *PROMPTS.md*)
+
+- **GGUF CUDA Kernels**: 15% speed gain when using GGUF on Diffusion Video Models & x3 speed with GGUF LLM (*Qwen 3.5 VL GGUF* for instance). GGUF Kernels are for the moment only available for Windows (please check docs/INSTALLATION.md).
+
+- **LTX2.3 Improvements**
+   * *End Frame without Start Frame*: you know how your story ends but want to see how it started, just give an End Frame (no start Frame) 
+   * New GGUF Checkpoints
+   * VAE Decoding hopefully should expose less banding
+   * *Multiple Frames Injections*: inject at different positions the reference frames of your choice (works for LTX-2.0 too)
+   * *Image Strength* can be applied now too *End Frames* & *Injected Frames*
+   * New Spatial Upsampler 1.1, hotfix supposed to improved quality with long video
+   * *More VRAM optimisations*: Oops I dit it again ! not that is was needed since WanGP is by far the LTX2 implementation that needs the least VRAM. But now we can in theory (output wont look nice due to LTX2 limitations) generate 15s at full 4K with 24GB of VRAM. So it means that with lower config you should be able to generate longer videos at 720p/1080p. As a bonus you get a 8% speedup.
+   * *NVFP4 Dev checkpoint*: if you have a RTX 50xx, help yourself 
+
+- **WanGP API**: rejoice developers (or agents) among you ! WanGP offers now an internal API that allows you to use WanGP as a backend for your apps. It is subject to compliance to the terms & conditions of WanGP license and more specifically to inform the users of your app that WanGP is working behind the scene.
+
+- **LTX Desktop WanGP**: as a sample app (made just for fun) that uses WanGP API, you may try LTX Desktop. This app offers Video / Audio nice editing capabilities but will require 32+ VRAM to run. As now it uses WanGP as its core engine, VRAM requirements are much smaller. It will use LTX 2.3 for Video Gen & Z Image turbo fo Image gen. You can reuse (in theory) your current WanGP install with *LTX Destop WanGP*. https://github.com/deepbeepmeep/LTX-Desktop-WanGP
+
+- **New Audio Ouput formats in mp4**: audio stored in video file can now be of higher quality (*AAC192 - AAC320*) or *ALAC* (lossless). Please note that you wont be able listen to ALAC audio track directly in the webapp.
+
+Also note as people preferred mataynone v1 over v2 I have added an option to select matanyone version in the Config / Extension tab
+
+*update 10.9871*: Improved Qwen3.5 GGUF Prompt Enhancer Output Quality & added Think mode\
+*update 10.9872*: Added LTX 2.0/2.3 frames injection\
+*update 10.9873*: Fixed low fidelity LTX2 injected frames + added Image Strength slider for end & injected frames\
+*update 10.9874*: Replaced LTX-2.3 spatial upsampler by hotfix v1.1\
+*update 10.9875*: LTX-2 more VRAM optimisations + NVFP4 checkpoint
+
+### March 7th 2026: WanGP v10.981, Expecting an Update ? 
+
+- **LTX-2 2.3**: 0 day delivery of LTX 2 latest version with better *audio*, *image 2 video* and *greater details*. This model is bigger (22B versus 19B), but with WanGP VRAM usage will be still ridiculously low. Try it at 720p or 1080p, this is where it will shine the most !
+
+*Control Video Support* (*Ic lora Union Control*) will let you transfer *Human Motion*, *Edges*, ... in your new video.
+
+For expert users, *Dev* finetune offers extra new configurable settings (*modality guidance*, *audio guidance*, *STG pertubation/skip self attention *, *guidance rescaling*). LTX team suggests: Cfg=3, Audio cfg=7, Modality Cfg=3, Rescale=0.7, STG Perturbation Skip Attention on all steps.
+
+I recommend to stick to the *Distilled* finetune for higher resolutions (see sample video below) as it seems to have been distilled from a higher quality model (pro model?).
+
+- **Kiwi Edit**: a great model that lets you edit video and / or inject objects in a video. It exists in 3 flavours depending on what you want to do
+
+- **SVI PRO2 End Frames**: this should allow in theory to generate very long shots by splitting one shot into sub shots (sliding windows) by inserting key frames (the *End Frames*). This is an alternative to the *Infinitalk* references frames method (see my old release notes). I am waiting for your feedback to know which method is the best one.
+
+- **Upgraded Models Selector** with *already Downloaded indicator*: Next to each model or finetune, you will find a colored square: *Blue* = fully downloaded & available, *Yellow* = partially downloaded & *Black* = not downloaded at all. Please note that the square color will depend on your current choices of requested model quantization.
+
+- **Upgraded Models Manager**: colors squares have also been added so that you can see in glance what has already been downloaded. New filter for a quick model lookout. List of missing files per finetune.
+
+- **Matanyone 2**: everyone favorite Mask extractor has been been updated and is now more precise
+
+*update 10.981*: LTX2.3 Ic Lora Support & expert settings, Matanyone 2, SVI Pro end frames
+
 ### February 19th 2026: WanGP v10.951, Breaking the Sound Barrier, Mach 2
 Here comes the (last ?) missing bit in WanGP of the *Text To Speech* offering: **emotions**
 

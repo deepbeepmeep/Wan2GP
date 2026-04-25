@@ -42,11 +42,12 @@ from shared.utils.loras_mutipliers import preparse_loras_multipliers, parse_lora
 from shared.utils.utils import convert_tensor_to_image, save_image, get_video_info, get_file_creation_date, convert_image_to_video, calculate_new_dimensions, convert_image_to_tensor, calculate_dimensions_and_resize_image, rescale_and_crop, get_video_frame, resize_and_remove_background, rgb_bw_to_rgba_mask, to_rgb_tensor, get_resampled_video_transparent, get_video_summary_extras
 from shared.utils.utils import calculate_new_dimensions, get_outpainting_dims, get_outpainting_frame_location, get_outpainting_full_area_dimensions, resolve_outpainting_dims
 from shared.utils.utils import has_video_file_extension, has_image_file_extension, has_audio_file_extension
-from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files, normalize_audio_pair_volumes_to_temp_files, save_video, save_image
+from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files, normalize_audio_pair_volumes_to_temp_files, save_video, save_hdr_video, save_image
 from shared.utils.audio_video import append_sliding_window_audio, read_image_metadata, extract_audio_track_to_wav, write_wav_file, save_audio_file, get_audio_codec_extension, create_silent_wav_file
 from shared.utils.audio_metadata import read_audio_metadata, extract_creation_datetime_from_metadata, resolve_audio_creation_datetime
 from shared.utils.media_recording import record_file_metadata as shared_record_file_metadata
-from shared.utils.virtual_media import get_virtual_image, get_virtual_media_vsource, parse_virtual_media_path, replace_virtual_media_source, strip_virtual_media_suffix
+from shared.utils.video_decode import decode_video_frames_ffmpeg, probe_video_stream_metadata
+from shared.utils.virtual_media import get_virtual_image, get_virtual_media_entry, get_virtual_media_vsource, parse_virtual_media_path, replace_virtual_media_source, strip_virtual_media_suffix
 from shared.match_archi import match_nvidia_architecture
 from shared.attention import get_attention_modes, get_supported_attention_modes
 from shared.utils.utils import truncate_for_filesystem, sanitize_file_name, process_images_multithread, get_default_workers
@@ -119,7 +120,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.353"
+WanGP_version = "11.40"
 settings_version = 2.58
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -2786,6 +2787,7 @@ save_path = server_config.get("save_path", os.path.join(os.getcwd(), "outputs"))
 image_save_path = server_config.get("image_save_path", os.path.join(os.getcwd(), "outputs"))
 audio_save_path = server_config.get("audio_save_path", save_path)
 if not "video_output_codec" in server_config: server_config["video_output_codec"]= "libx264_8"
+if not "hdr_video_crf" in server_config: server_config["hdr_video_crf"] = 8
 if not "video_container" in server_config: server_config["video_container"]= "mp4"
 if not "embed_source_images" in server_config: server_config["embed_source_images"]= False
 if not "enable_4k_resolutions" in server_config: server_config["enable_4k_resolutions"]= 0
@@ -4171,7 +4173,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             video_model_type =  configs.get("model_type", "t2v")
             model_family = get_model_family(video_model_type)
             model_def = get_model_def(video_model_type)
-            map_video_prompt  = {"V" : "Control Image" if image_outputs else "Control Video", ("VA", "U") : "Mask Image" if image_outputs else "Mask Video", "I" : "Reference Images"}
+            map_video_prompt  = {"V" : "Control Image" if image_outputs else "Control Video", ("VA", "U") : "Mask Image" if image_outputs else "Mask Video", "I" : "Reference Images", "&": "HDR Output"}
             map_image_prompt  = {"V" : "Source Video", "L" : "Last Video", "S" : "Start Image", "E" : "End Image"}
             map_audio_prompt  = {"A" : "Audio Source", "O": "Force Output Audio", "B" : "Audio Source #2", "K": "Control Video Audio Track", "N": "Normalized Audio Volumes"}
             audio_prompt_type_sources_def = model_def.get("audio_prompt_type_sources", None)
@@ -4354,6 +4356,10 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                 labels += ["Sampler Solver"]                                        
             values += [video_resolution, video_length_summary, video_seed, video_phases_value, video_guidance_scale, video_audio_guidance_scale]
             labels += ["Resolution", video_length_label, "Seed", video_phases_label,  video_guidance_label, "Audio Guidance Scale"]
+            if is_video:
+                extra_values, extra_labels = get_video_summary_extras(file_name)
+                values += extra_values
+                labels += extra_labels
             video_custom_settings = configs.get("custom_settings", None)
             if isinstance(video_custom_settings, dict):
                 custom_settings = get_model_custom_settings(model_def)
@@ -4489,8 +4495,26 @@ def convert_image(image):
     image = image.convert('RGB')
     return cast(Image, ImageOps.exif_transpose(image))
 
-def get_resampled_video(video_in, start_frame, max_frames, target_fps, bridge='torch'):
+def get_resampled_video(video_in, start_frame, max_frames, target_fps, bridge='torch', hdr_linear=False):
+    if hdr_linear:
+        return decode_video_frames_ffmpeg(video_in, start_frame, max_frames, target_fps=target_fps, bridge=bridge, hdr_linear=True)
     return get_resampled_video_transparent(video_in, start_frame, max_frames, target_fps, bridge)
+
+def _virtual_media_has_hdr_flag(value):
+    spec = parse_virtual_media_path(value) if isinstance(value, str) else None
+    extras = {str(k).strip().lower(): str(v).strip().lower() for k, v in (spec.extras if spec is not None else ())}
+    if extras.get("hdr") in {"1", "true", "yes"}:
+        return True
+    entry = get_virtual_media_entry(value) if isinstance(value, str) else None
+    return bool(isinstance(entry, dict) and entry.get("hdr"))
+
+def _video_input_is_hdr(value):
+    if _virtual_media_has_hdr_flag(value):
+        return True
+    if not isinstance(value, str):
+        return False
+    metadata = probe_video_stream_metadata(value)
+    return bool(metadata and (metadata.get("hdr") or metadata.get("needs_tonemap")))
 
 # def get_resampled_video(video_in, start_frame, max_frames, target_fps):
 #     from torchvision.io import VideoReader
@@ -4862,9 +4886,10 @@ def preprocess_video_with_mask(pre_video_guide, input_video_path, input_mask_pat
 
     return masked_frames, masks
 
-def preprocess_video(height, width, video_in, max_frames, start_frame=0, fit_canvas = None, fit_crop = False, target_fps = 16, block_size = 16):
+def preprocess_video(height, width, video_in, max_frames, start_frame=0, fit_canvas = None, fit_crop = False, target_fps = 16, block_size = 16, preserve_hdr = False):
 
-    frames_list = get_resampled_video(video_in, start_frame, max_frames, target_fps)
+    hdr_input = bool(preserve_hdr and _video_input_is_hdr(video_in))
+    frames_list = get_resampled_video(video_in, start_frame, max_frames, target_fps, hdr_linear=hdr_input)
 
     if len(frames_list) == 0:
         return None
@@ -4885,7 +4910,27 @@ def preprocess_video(height, width, video_in, max_frames, start_frame=0, fit_can
         new_height = round(frame_height * scale / block_size) * block_size
         new_width = round(frame_width * scale / block_size) * block_size
 
+    def resize_hdr_frame(frame):
+        frame_t = frame.detach().cpu().to(dtype=torch.float32) if torch.is_tensor(frame) else torch.from_numpy(np.asarray(frame, dtype=np.float32))
+        if frame_t.ndim == 3 and frame_t.shape[0] in (1, 3, 4) and frame_t.shape[-1] not in (1, 3, 4):
+            frame_t = frame_t.permute(1, 2, 0)
+        frame_t = frame_t[..., :3].permute(2, 0, 1).unsqueeze(0)
+        if fit_crop:
+            src_h, src_w = int(frame_t.shape[2]), int(frame_t.shape[3])
+            scale = max(new_height / max(1, src_h), new_width / max(1, src_w))
+            resize_h = max(1, int(round(src_h * scale)))
+            resize_w = max(1, int(round(src_w * scale)))
+            frame_t = torch.nn.functional.interpolate(frame_t, size=(resize_h, resize_w), mode="bilinear", align_corners=False)
+            top = max(0, (resize_h - new_height) // 2)
+            left = max(0, (resize_w - new_width) // 2)
+            frame_t = frame_t[:, :, top:top + new_height, left:left + new_width]
+        else:
+            frame_t = torch.nn.functional.interpolate(frame_t, size=(new_height, new_width), mode="bilinear", align_corners=False)
+        return frame_t[0].permute(1, 2, 0).contiguous()
+
     def resize_frame(frame):
+        if hdr_input:
+            return resize_hdr_frame(frame)
         if torch.is_tensor(frame):
             arr = frame.cpu().numpy()
         else:
@@ -6141,6 +6186,7 @@ def generate_video(
         frames_already_processed = []
         frames_already_processed_count = 0
         overlapped_latents = None
+        pre_video_guide_is_hdr = False
         context_scale = None
         window_no = 0
         extra_windows = 0
@@ -6214,13 +6260,18 @@ def generate_video(
                     image_start_tensor = convert_image_to_tensor(image_start_tensor)
                     pre_video_guide =  prefix_video = image_start_tensor.unsqueeze(1)
                 else:
-                    prefix_video  = preprocess_video(width=width, height=height,video_in=video_source, max_frames= parsed_keep_frames_video_source , start_frame = 0, fit_canvas= sample_fit_canvas, fit_crop = fit_crop, target_fps = fps, block_size = block_size )
+                    prefix_video_is_hdr = "&" in video_prompt_type and _video_input_is_hdr(video_source)
+                    prefix_video  = preprocess_video(width=width, height=height,video_in=video_source, max_frames= parsed_keep_frames_video_source , start_frame = 0, fit_canvas= sample_fit_canvas, fit_crop = fit_crop, target_fps = fps, block_size = block_size, preserve_hdr=prefix_video_is_hdr )
                     prefix_video  = prefix_video.permute(3, 0, 1, 2)
 
                     if fit_crop or "L" in image_prompt_type: refresh_preview["video_source"] = convert_tensor_to_image(prefix_video, 0) 
 
                     new_height, new_width = prefix_video.shape[-2:]                    
-                    pre_video_guide =  prefix_video[:, -reuse_frames:].float().div_(127.5).sub_(1.) # c, f, h, w                    
+                    pre_video_guide = prefix_video[:, -reuse_frames:].float()
+                    if prefix_video_is_hdr:
+                        pre_video_guide_is_hdr = True
+                    else:
+                        pre_video_guide = pre_video_guide.div_(127.5).sub_(1.) # c, f, h, w
                 pre_video_frame = convert_tensor_to_image(prefix_video[:, -1])
                 source_video_overlap_frames_count = pre_video_guide.shape[1]
                 source_video_frames_count = prefix_video.shape[1]
@@ -6525,10 +6576,13 @@ def generate_video(
 
             try:
                 input_video_for_model = pre_video_guide
+                input_video_is_hdr = pre_video_guide_is_hdr
                 prefix_frames_count = source_video_overlap_frames_count if window_no <= 1 else reuse_frames
                 prefix_video_for_model = prefix_video
                 if prefix_video is not None and prefix_video.dtype == torch.uint8:
                     prefix_video_for_model = prefix_video.float().div_(127.5).sub_(1.0)
+                if window_no <= 1 and video_source is not None and "&" in video_prompt_type and _video_input_is_hdr(video_source):
+                    input_video_is_hdr = True
                 custom_settings_for_model = custom_settings if isinstance(custom_settings, dict) else {}
                 model_outpainting_dims = outpainting_dims
                 if outpainting_dims is not None and len((video_guide_outpainting_ratio or "").strip()) > 0:
@@ -6611,6 +6665,8 @@ def generate_video(
                     overlap_size = sliding_window_overlap,
                     color_correction_strength = sliding_window_color_correction_strength,
                     conditioning_latents_size = conditioning_latents_size,
+                    input_video_is_hdr=input_video_is_hdr,
+                    lora_dir=lora_dir,
                     keep_frames_parsed = keep_frames_parsed,
                     model_filename = model_filename,
                     model_type = base_model_type,
@@ -6696,8 +6752,10 @@ def generate_video(
             BGRA_frames = None
             post_decode_pre_trim = 0
             output_audio_sampling_rate= audio_sampling_rate
+            sample_is_hdr = False
             if samples != None:
                 if isinstance(samples, dict):
+                    sample_is_hdr = samples.get("hdr", False)
                     overlapped_latents = samples.get("latent_slice", None)
                     BGRA_frames = samples.get("BGRA_frames", None)
                     generated_audio = samples.get("audio", generated_audio)
@@ -6752,13 +6810,23 @@ def generate_video(
                         pre_video_guide =  sample[:,max_source_video_frames :].clone()
                     else:
                         pre_video_guide =  sample[:, -reuse_frames:].clone()
+                    pre_video_guide_is_hdr = sample_is_hdr
                     if pre_video_guide.dtype == torch.uint8:
                         pre_video_guide =  pre_video_guide.float().div_(127.5).sub_(1.0)
                 if not (audio_only or is_image):                    
-                    sample = _video_tensor_to_uint8_chunk_inplace(sample)
+                    if not sample_is_hdr:
+                        sample = _video_tensor_to_uint8_chunk_inplace(sample)
 
                 if prefix_video != None and window_no == 1 :
-                    if prefix_video.dtype != sample.dtype:
+                    if sample_is_hdr:
+                        prefix_was_uint8 = prefix_video.dtype == torch.uint8
+                        prefix_video = prefix_video.float()
+                        if prefix_was_uint8:
+                            prefix_video = prefix_video.div_(255.0)
+                        elif not input_video_is_hdr and torch.is_floating_point(prefix_video):
+                            prefix_video = prefix_video.add_(1.0).mul_(0.5).clamp_(0.0, 1.0)
+                        prefix_video = prefix_video.to(dtype=sample.dtype)
+                    elif prefix_video.dtype != sample.dtype:
                         if sample.dtype == torch.uint8:
                             prefix_video = _video_tensor_to_uint8_chunk_inplace(prefix_video)
                         elif prefix_video.dtype == torch.uint8:
@@ -6859,7 +6927,10 @@ def generate_video(
                 elif len(control_audio_tracks) > 0 or len(source_audio_tracks) > 0 or output_new_audio_filepath is not None or any_mmaudio or output_new_audio_data is not None or audio_source is not None:
                     video_path = os.path.join(save_path, file_name)
                     save_path_tmp = video_path.rsplit('.', 1)[0] + f"_tmp.{container}"
-                    save_video( tensor=output_video_frames, save_file=save_path_tmp, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type = server_config.get("video_output_codec", None), container=container)
+                    if sample_is_hdr:
+                        save_hdr_video(tensor=output_video_frames, save_file=save_path_tmp, fps=output_fps, codec_type=server_config.get("hdr_video_crf", 8), container=container)
+                    else:
+                        save_video( tensor=output_video_frames, save_file=save_path_tmp, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type = server_config.get("video_output_codec", None), container=container)
                     output_new_audio_temp_filepath = None
                     new_audio_added_from_audio_start =  reset_control_aligment or full_generated_audio is not None # if not beginning of audio will be skipped
                     source_audio_duration = 0 if video_source is None else source_video_frames_count / fps
@@ -6898,7 +6969,10 @@ def generate_video(
                     if output_new_audio_temp_filepath is not None: os.remove(output_new_audio_temp_filepath)
 
                 else:
-                    save_video( tensor=output_video_frames, save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1),  codec_type= server_config.get("video_output_codec", None), container= container)
+                    if sample_is_hdr:
+                        video_path = save_hdr_video(tensor=output_video_frames, save_file=video_path, fps=output_fps, codec_type=server_config.get("hdr_video_crf", 8), container=container)
+                    else:
+                        save_video( tensor=output_video_frames, save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1),  codec_type= server_config.get("video_output_codec", None), container= container)
 
                 end_time = time.time()
 
@@ -6911,6 +6985,10 @@ def generate_video(
                     inputs["image_quality"] = server_config.get("image_output_codec", None)
                 else:
                     inputs["video_quality"] = server_config.get("video_output_codec", None)
+                if sample_is_hdr:
+                    inputs["hdr"] = True
+                    inputs["hdr_video_crf"] = server_config.get("hdr_video_crf", 8)
+                    inputs["video_quality"] = f"x265_crf_{inputs['hdr_video_crf']}"
 
                 modules = get_model_recursive_prop(model_type, "modules", return_list= True)
                 if len(modules) > 0 : inputs["modules"] = modules
@@ -6936,7 +7014,7 @@ def generate_video(
                     if artifact_audio is None and api_return_audio and audio_only and sample is not None:
                         artifact_audio = sample.squeeze(0).detach().cpu().float().numpy()
                     artifact_video = output_video_frames if api_return_video_uint8 else None
-                    store_api_output_artifact(gen, client_id, video_path, media_type, artifact_video, artifact_audio, output_audio_sampling_rate, output_fps if not audio_only else None)
+                    store_api_output_artifact(gen, client_id, video_path, media_type, artifact_video, artifact_audio, output_audio_sampling_rate, output_fps if not audio_only else None, hdr=bool(sample_is_hdr))
 
                 embedded_images = None
                 # Play notification sound for single video

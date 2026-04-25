@@ -132,6 +132,7 @@ def video_conditionings_by_keyframe(
     dtype: torch.dtype,
     device: torch.device,
     tiling_config: TilingConfig | None = None,
+    continuous_conditioning_and_guide: bool = False,
 ) -> list[ConditioningItem]:
     conditionings = []
     for entry in video_conditioning:
@@ -162,6 +163,23 @@ def video_conditionings_by_keyframe(
         #     encoded_video = vae_encode_video(video, video_encoder, tiling_config)
 
         encoded_video = vae_encode_video(video, video_encoder, tiling_config)
+        if continuous_conditioning_and_guide and frame_idx < 0:
+            split_frame = -int(frame_idx)
+            latent_stride = int(getattr(getattr(video_encoder, "video_downscale_factors", None), "time", 8))
+            split_latent = _pixel_to_latent_index(split_frame, latent_stride)
+            if split_latent > 0:
+                conditionings += latent_conditionings_by_latent_sequence(
+                    encoded_video[:, :, :split_latent], strength=strength, start_index=0
+                )
+            if split_latent < encoded_video.shape[2]:
+                conditionings.append(
+                    VideoConditionByKeyframeIndex(
+                        keyframes=encoded_video[:, :, split_latent:],
+                        frame_idx=split_frame,
+                        strength=strength,
+                    )
+                )
+            continue
         cond = VideoConditionByKeyframeIndex(
             keyframes=encoded_video,
             frame_idx=frame_idx,
@@ -216,6 +234,43 @@ def video_conditionings_by_reference_latent(
             )
         )
     return conditionings
+
+
+def video_conditionings_by_control_video(
+    video_conditioning: list[tuple],
+    height: int,
+    width: int,
+    num_frames: int,
+    video_encoder: VideoEncoder,
+    dtype: torch.dtype,
+    device: torch.device,
+    downscale_factor: int = 1,
+    tiling_config: TilingConfig | None = None,
+    continuous_conditioning_and_guide: bool = False,
+) -> list[ConditioningItem]:
+    if int(downscale_factor or 1) > 1:
+        return video_conditionings_by_reference_latent(
+            video_conditioning=video_conditioning,
+            height=height,
+            width=width,
+            num_frames=num_frames,
+            video_encoder=video_encoder,
+            dtype=dtype,
+            device=device,
+            downscale_factor=downscale_factor,
+            tiling_config=tiling_config,
+        )
+    return video_conditionings_by_keyframe(
+        video_conditioning=video_conditioning,
+        height=height,
+        width=width,
+        num_frames=num_frames,
+        video_encoder=video_encoder,
+        dtype=dtype,
+        device=device,
+        tiling_config=tiling_config,
+        continuous_conditioning_and_guide=continuous_conditioning_and_guide,
+    )
 
 
 def latent_conditionings_by_latent_sequence(
@@ -504,11 +559,12 @@ def euler_denoising_loop(
             offload.set_step_no_for_lora(transformer, step_idx)
             denoised_video = denoised_audio = None
             denoised_video, denoised_audio = denoise_fn(video_state, audio_state, sigmas, step_idx)
-            if denoised_video is None or denoised_audio is None:
+            if denoised_video is None or (audio_state is not None and denoised_audio is None):
                 return None, None
 
             denoised_video = post_process_latent(denoised_video, video_state.denoise_mask, video_state.clean_latent)
-            denoised_audio = post_process_latent(denoised_audio, audio_state.denoise_mask, audio_state.clean_latent)
+            if audio_state is not None:
+                denoised_audio = post_process_latent(denoised_audio, audio_state.denoise_mask, audio_state.clean_latent)
 
             refiner_steps = 0
             if self_refiner_handler is not None:
@@ -523,6 +579,7 @@ def euler_denoising_loop(
                 self_refiner_handler is not None
                 and self_refiner_handler_audio is not None
                 and denoised_audio is not None
+                and audio_state is not None
             )
 
             if use_audio_refiner and refiner_steps > 1:
@@ -616,10 +673,12 @@ def euler_denoising_loop(
                 if refine_failed or latents_refined is None:
                     return None, None
                 video_state = replace(video_state, latent=latents_refined)
-                audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio_final, sigmas, step_idx))
+                if audio_state is not None:
+                    audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio_final, sigmas, step_idx))
             else:
                 video_state = replace(video_state, latent=stepper.step(video_state.latent, denoised_video, sigmas, step_idx))
-                audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio, sigmas, step_idx))
+                if audio_state is not None:
+                    audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio, sigmas, step_idx))
 
             if mask_context is not None:
                 _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
@@ -1087,7 +1146,7 @@ def _slice_audio_target_state(audio_state: LatentState, ref_audio_tokens: int) -
 
 def simple_denoising_func(
     video_context: torch.Tensor,
-    audio_context: torch.Tensor,
+    audio_context: torch.Tensor | None,
     transformer: X0Model,
     video_nag: dict | None = None,
     audio_nag: dict | None = None,
@@ -1106,7 +1165,7 @@ def simple_denoising_func(
             prepared_video_context = _prepare_conditioning_context(
                 transformer, video_state, video_context, sigmas, is_audio=False
             )
-        if prepared_audio_context is None:
+        if audio_state is not None and audio_context is not None and prepared_audio_context is None:
             prepared_audio_context = _prepare_conditioning_context(
                 transformer, audio_state, audio_context, sigmas, is_audio=True
             )
@@ -1128,15 +1187,21 @@ def simple_denoising_func(
         pos_video = modality_from_latent_state(
             video_state, prepared_video_context, sigma, nag=video_nag, step_index=step_index, sigma_schedule=sigmas
         )
-        pos_audio = modality_from_latent_state(
-            audio_state, prepared_audio_context, sigma, nag=audio_nag, step_index=step_index, sigma_schedule=sigmas
-        )
+        pos_audio = None
+        if audio_state is not None and prepared_audio_context is not None:
+            pos_audio = modality_from_latent_state(
+                audio_state, prepared_audio_context, sigma, nag=audio_nag, step_index=step_index, sigma_schedule=sigmas
+            )
 
         if transformer is not None and manage_lora_step:
             offload.set_step_no_for_lora(transformer, step_index)
         use_alt = not math.isclose(alt_guidance_scale, 1.0)
-        use_audio_cfg = audio_context_n is not None and not math.isclose(audio_guidance_scale, 1.0)
-        ref_audio_tokens = _get_audio_reference_token_count(audio_state) if audio_identity_guidance_scale > 0 else 0
+        use_audio_cfg = (
+            audio_state is not None
+            and audio_context_n is not None
+            and not math.isclose(audio_guidance_scale, 1.0)
+        )
+        ref_audio_tokens = _get_audio_reference_token_count(audio_state) if audio_state is not None and audio_identity_guidance_scale > 0 else 0
         id_audio_state = _slice_audio_target_state(audio_state, ref_audio_tokens) if ref_audio_tokens > 0 else None
         use_id = id_audio_state is not None
         if use_audio_cfg and prepared_audio_context_n is None:
@@ -1929,6 +1994,7 @@ def denoise_audio_video(  # noqa: PLR0913
     initial_audio_latent: torch.Tensor | None = None,
     mask_context: MaskInjection | None = None,
     freeze_audio: bool = False,
+    skip_audio: bool = False,
 ) -> tuple[LatentState | None, LatentState | None]:
     video_state, video_tools = noise_video_state(
         output_shape=output_shape,
@@ -1940,17 +2006,19 @@ def denoise_audio_video(  # noqa: PLR0913
         noise_scale=noise_scale,
         initial_latent=initial_video_latent,
     )
-    audio_state, audio_tools = noise_audio_state(
-        output_shape=output_shape,
-        noiser=noiser,
-        conditionings=audio_conditionings or [],
-        components=components,
-        dtype=dtype,
-        device=device,
-        noise_scale=noise_scale if audio_noise_scale is None else audio_noise_scale,
-        initial_latent=initial_audio_latent,
-    )
-    if freeze_audio:
+    audio_state = audio_tools = None
+    if not skip_audio:
+        audio_state, audio_tools = noise_audio_state(
+            output_shape=output_shape,
+            noiser=noiser,
+            conditionings=audio_conditionings or [],
+            components=components,
+            dtype=dtype,
+            device=device,
+            noise_scale=noise_scale if audio_noise_scale is None else audio_noise_scale,
+            initial_latent=initial_audio_latent,
+        )
+    if freeze_audio and audio_state is not None:
         audio_state = replace(audio_state, denoise_mask=torch.zeros_like(audio_state.denoise_mask))
 
     loop_kwargs = {}
@@ -1966,13 +2034,14 @@ def denoise_audio_video(  # noqa: PLR0913
         **loop_kwargs,
     )
 
-    if video_state is None or audio_state is None:
+    if video_state is None or (not skip_audio and audio_state is None):
         return None, None
 
     video_state = video_tools.clear_conditioning(video_state)
     video_state = video_tools.unpatchify(video_state)
-    audio_state = audio_tools.clear_conditioning(audio_state)
-    audio_state = audio_tools.unpatchify(audio_state)
+    if audio_state is not None and audio_tools is not None:
+        audio_state = audio_tools.clear_conditioning(audio_state)
+        audio_state = audio_tools.unpatchify(audio_state)
 
     return video_state, audio_state
 

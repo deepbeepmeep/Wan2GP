@@ -25,6 +25,7 @@ from .tiling import (
     create_tiles,
 )
 from ...types import SpatioTemporalScaleFactors, VideoLatentShape, VideoPixelShape, VIDEO_SCALE_FACTORS
+from shared.utils.hdr import vae_range_to_hdr_linear
 
 
 def _make_encoder_block(
@@ -1053,6 +1054,8 @@ def decode_video_to_tensor(
     expected_height: int | None = None,
     expected_width: int | None = None,
     interrupt_check: Callable[[], bool] | None = None,
+    hdr_transform: str | None = None,
+    output_dtype: torch.dtype | None = None,
 ) -> torch.Tensor | None:
     full_video_shape = VideoLatentShape.from_torch_shape(latent.shape).upscale(video_decoder.video_downscale_factors)
     frame_capacity = int(expected_frames) if expected_frames is not None else int(full_video_shape.frames)
@@ -1061,7 +1064,9 @@ def decode_video_to_tensor(
     if frame_capacity <= 0 or target_height <= 0 or target_width <= 0:
         return None
 
-    video_tensor = torch.empty((frame_capacity, target_height, target_width, 3), dtype=torch.uint8, device="cpu")
+    is_hdr = hdr_transform is not None
+    tensor_dtype = output_dtype or (torch.float16 if is_hdr else torch.uint8)
+    video_tensor = torch.empty((frame_capacity, target_height, target_width, 3), dtype=tensor_dtype, device="cpu")
     tiled_iterator = None
     decoded_video = None
     write_pos = 0
@@ -1082,7 +1087,10 @@ def decode_video_to_tensor(
                 if frame_count <= 0:
                     break
                 frames = frames[:, :, :frame_count, :target_height, :target_width]
-                frames = frames.add_(1.0).mul_(127.5).clamp_(0.0, 255.0)
+                if is_hdr:
+                    frames = vae_range_to_hdr_linear(frames, transform=hdr_transform).to(dtype=tensor_dtype)
+                else:
+                    frames = frames.add_(1.0).mul_(127.5).clamp_(0.0, 255.0)
                 video_tensor[write_pos : write_pos + frame_count].copy_(frames[0].permute(1, 2, 3, 0))
                 write_pos += frame_count
         else:
@@ -1095,7 +1103,10 @@ def decode_video_to_tensor(
             if frame_count <= 0:
                 return None
             decoded_video = decoded_video[:, :, :frame_count, :target_height, :target_width]
-            decoded_video = decoded_video.add_(1.0).mul_(127.5).clamp_(0.0, 255.0)
+            if is_hdr:
+                decoded_video = vae_range_to_hdr_linear(decoded_video, transform=hdr_transform).to(dtype=tensor_dtype)
+            else:
+                decoded_video = decoded_video.add_(1.0).mul_(127.5).clamp_(0.0, 255.0)
             video_tensor[:frame_count].copy_(decoded_video[0].permute(1, 2, 3, 0))
             write_pos = frame_count
         return video_tensor[:write_pos]

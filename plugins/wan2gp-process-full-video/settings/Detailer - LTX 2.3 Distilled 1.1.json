@@ -1,6 +1,6 @@
 {
   "settings_version": 2.58,
-  "model_type": "ltx2_distilled",
+  "model_type": "ltx2_22B_distilled_1_1",
   "prompt": "enhance details in video",
   "num_inference_steps": 8,
   "sliding_window_size": 481,

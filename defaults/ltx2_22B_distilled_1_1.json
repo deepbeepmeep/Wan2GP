@@ -2,15 +2,19 @@
     "model": {
         "name": "LTX-2 2.3 Distilled 1.1 22B",
         "architecture": "ltx2_22B",
-        "description": "LTX-2.3 distilled 1.1 checkpoint (22B) with faster generation. Please note Ic Loras Union (for Pose/Depth/Edges) and Outpainting are automatically added when needed.",
+        "description": "LTX-2.3 distilled 1.1 checkpoint (22B) with faster generation. Please note Ic Loras Union (for Pose/Depth/Edges), HDR and Outpainting are automatically added when needed. You can override their lora multipliers per phase by adding manually the corresponding lora.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-distilled-1.1_diffusion_model_bf16.safetensors",
             "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-distilled-1.1_diffusion_model_quanto_bf16_int8.safetensors"
         ],
         "preload_URLs": [
             "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors|%lora_dir",
-            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-ic-lora-outpaint.safetensors|%lora_dir"
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-ic-lora-outpaint.safetensors|%lora_dir",
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-ic-lora-hdr-0.9.safetensors|%lora_dir",
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-ic-lora-hdr-scene-emb.safetensors"
         ],
+        "ltx2_hdr_lora_file": "ltx-2.3-22b-ic-lora-hdr-0.9.safetensors",
+        "ltx2_hdr_scene_embeddings_file": "ltx-2.3-22b-ic-lora-hdr-scene-emb.safetensors",
         "ltx2_pipeline": "distilled"
     },
     "prompt": "A warm sunny backyard. The camera starts in a tight cinematic close-up of a woman and a man in their 30s, facing each other with serious expressions. The woman, emotional and dramatic, says softly, \"That's it... Dad's lost it. And we've lost Dad.\" The man exhales, slightly annoyed: \"Stop being so dramatic, Jess.\" A beat. He glances aside, then mutters defensively, \"He's just having fun.\" The camera slowly pans right, revealing the grandfather in the garden wearing enormous butterfly wings, waving his arms in the air like he's trying to take off. He shouts, \"Wheeeew!\" as he flaps his wings with full commitment. The woman covers her face, on the verge of tears. The tone is deadpan, absurd, and quietly tragic.",

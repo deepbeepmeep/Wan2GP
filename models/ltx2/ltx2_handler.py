@@ -12,7 +12,7 @@ _GEMMA_FOLDER = "gemma-3-12b-it-qat-q4_0-unquantized"
 _GEMMA_FILENAME = f"{_GEMMA_FOLDER}.safetensors"
 _GEMMA_QUANTO_FILENAME = f"{_GEMMA_FOLDER}_quanto_bf16_int8.safetensors"
 _LORAS_MIGRATED = False
-_LORA_SPEC_KEYS = ("distilled_lora", "distilled_1_1_lora", "union_control_lora", "id_lora", "outpaint_lora")
+_LORA_SPEC_KEYS = ("distilled_lora", "distilled_1_1_lora", "union_control_lora", "id_lora", "outpaint_lora", "hdr_lora")
 
 _ARCH_SPECS = {
     "ltx2_19B": {
@@ -44,6 +44,8 @@ _ARCH_SPECS = {
         "union_control_lora": "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",
         "id_lora": "id-lora-celebvhq-ltx2.3.safetensors",
         "outpaint_lora": "ltx-2.3-22b-ic-lora-outpaint.safetensors",
+        "hdr_lora": "ltx-2.3-22b-ic-lora-hdr-0.9.safetensors",
+        "hdr_scene_embeddings": "ltx-2.3-22b-ic-lora-hdr-scene-emb.safetensors",
         "video_vae": "ltx-2.3-22b_vae.safetensors",
         "audio_vae": "ltx-2.3-22b_audio_vae.safetensors",
         "vocoder": "ltx-2.3-22b_vocoder.safetensors",
@@ -235,6 +237,8 @@ class family_handler:
             "custom_denoising_strength": distilled,
             "profiles_dir": [spec["profiles_dir"]],
             "ltx2_spatial_upscaler_file": spec["spatial_upscaler"],
+            "ltx2_hdr_lora_file": spec.get("hdr_lora", ""),
+            "ltx2_hdr_scene_embeddings_file": spec.get("hdr_scene_embeddings", ""),
             "self_refiner": True,
             "self_refiner_max_plans": 2,
             "no_background_removal": True,
@@ -265,10 +269,12 @@ class family_handler:
         
         control_choices = [("No Video Process", "")]
         control_choices += [ ("Transfer Human Motion", "PVG"), ("Transfer Human Motion With Pose Alignment", "OVG")  , ("Transfer Depth", "DVG") , ("Transfer Canny Edges", "EVG"), ("LTX2 Raw Format / Control Video for Ic Lora", "VG")] if distilled else []
+        if distilled and base_model_type == "ltx2_22B":
+            control_choices += [("Convert SDR to HDR (IC-LoRA)", f"V&G")]
         control_choices +=   [("Inject Frames", "KFI")]
         extra_model_def["guide_custom_choices"] = {
             "choices": control_choices,
-            "letters_filter": "OPDEVGKFI",
+            "letters_filter": f"OPDEVG&KFI",
             "default": "",
             "label": "Control Video / Frames Injection"
         }
@@ -433,6 +439,13 @@ class family_handler:
         audio_prompt_type = inputs.get("audio_prompt_type", "")
         from shared.utils.utils import get_outpainting_dims 
         any_outpainting = get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio) is not None        
+        if "&" in video_prompt_type:
+            if pipeline_kind != "distilled" or base_model_type != "ltx2_22B":
+                return "LTX2 HDR IC-LoRA is supported only with LTX-2.3 22B distilled."
+            if any(letter in video_prompt_type for letter in "OPDE") or any_outpainting:
+                return "LTX2 HDR IC-LoRA is not compatible with Pose/Depth/Canny/Outpaint control modes."
+            if "F" in video_prompt_type:
+                return "LTX2 HDR IC-LoRA is not yet compatible with Inject Frames."
         if pipeline_kind == "distilled" and any_outpainting:
             if "V" in video_prompt_type :
                 if any(letter in video_prompt_type for letter in "OPDE"):
@@ -445,9 +458,9 @@ class family_handler:
                     return "LTX2 outpainting doesnt support Video Mask."
 
         guide_phases = inputs.get("guidance_phases", 1)
-        if guide_phases !=1 and "V" in video_prompt_type and (any(letter in video_prompt_type for letter in "OPDE") or any_outpainting):
+        if guide_phases !=1 and "V" in video_prompt_type and any_outpainting:
             inputs["guidance_phases"]=  1            
-            gr.Info("Number of Phases has been set to 1 as Outpainting is enabled" if any_outpainting else "Number of Phases is set to 1 for Pose/Edge/Depth")
+            gr.Info("Number of Phases has been set to 1 as Outpainting is enabled")
         if "A" in audio_prompt_type and inputs.get("audio_guide") is None:
             audio_source = inputs.get("audio_source")
             if audio_source is not None:

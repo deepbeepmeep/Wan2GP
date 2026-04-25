@@ -38,8 +38,7 @@ from .utils.helpers import (
     multi_modal_guider_denoising_func,
     res2s_audio_video_denoising_loop,
     simple_denoising_func,
-    video_conditionings_by_keyframe,
-    video_conditionings_by_reference_latent,
+    video_conditionings_by_control_video,
 )
 from .utils.media_io import encode_video
 from .utils.types import PipelineComponents
@@ -147,6 +146,7 @@ class TI2VidTwoStagesPipeline:
         images_stage2: list[tuple[str, int, float]] | None = None,
         video_conditioning: list[tuple[str, float]] | None = None,
         video_conditioning_downscale_factor: int = 1,
+        video_conditioning_stage2: list[tuple[str, float]] | None = None,
         latent_conditioning_stage2: torch.Tensor | None = None,
         tiling_config: TilingConfig | None = None,
         enhance_prompt: bool = False,
@@ -161,6 +161,7 @@ class TI2VidTwoStagesPipeline:
         masking_source: dict | None = None,
         masking_strength: float | None = None,
         return_latent_slice: slice | None = None,
+        continuous_conditioning_and_guide: bool = False,
         skip_stage_2: bool = False,
         self_refiner_setting: int = 0,
         self_refiner_plan: str = "",
@@ -395,29 +396,18 @@ class TI2VidTwoStagesPipeline:
                 tiling_config=tiling_config,
             )
         if video_conditioning:
-            if int(video_conditioning_downscale_factor or 1) > 1:
-                stage_1_conditionings += video_conditionings_by_reference_latent(
-                    video_conditioning=video_conditioning,
-                    height=stage_1_output_shape.height,
-                    width=stage_1_output_shape.width,
-                    num_frames=num_frames,
-                    video_encoder=video_encoder,
-                    dtype=dtype,
-                    device=self.device,
-                    downscale_factor=video_conditioning_downscale_factor,
-                    tiling_config=tiling_config,
-                )
-            else:
-                stage_1_conditionings += video_conditionings_by_keyframe(
-                    video_conditioning=video_conditioning,
-                    height=stage_1_output_shape.height,
-                    width=stage_1_output_shape.width,
-                    num_frames=num_frames,
-                    video_encoder=video_encoder,
-                    dtype=dtype,
-                    device=self.device,
-                    tiling_config=tiling_config,
-                )
+            stage_1_conditionings += video_conditionings_by_control_video(
+                video_conditioning=video_conditioning,
+                height=stage_1_output_shape.height,
+                width=stage_1_output_shape.width,
+                num_frames=num_frames,
+                video_encoder=video_encoder,
+                dtype=dtype,
+                device=self.device,
+                downscale_factor=video_conditioning_downscale_factor,
+                tiling_config=tiling_config,
+                continuous_conditioning_and_guide=continuous_conditioning_and_guide,
+            )
         mask_context = prepare_mask_injection(
             masking_source=masking_source,
             masking_strength=masking_strength,
@@ -577,6 +567,19 @@ class TI2VidTwoStagesPipeline:
                 latent_conditioning_stage2,
                 strength=1.0,
                 start_index=0,
+            )
+        if video_conditioning_stage2:
+            stage_2_conditionings += video_conditionings_by_control_video(
+                video_conditioning=video_conditioning_stage2,
+                height=stage_2_output_shape.height,
+                width=stage_2_output_shape.width,
+                num_frames=num_frames,
+                video_encoder=video_encoder,
+                dtype=dtype,
+                device=self.device,
+                downscale_factor=video_conditioning_downscale_factor,
+                tiling_config=tiling_config,
+                continuous_conditioning_and_guide=continuous_conditioning_and_guide,
             )
         mask_context = prepare_mask_injection(
             masking_source=masking_source,

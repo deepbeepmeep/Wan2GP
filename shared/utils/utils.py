@@ -279,7 +279,10 @@ def get_video_frame(file_name: str, frame_no: int, return_last_if_missing: bool 
             raise ValueError(f"Failed to read frame {frame_no}")
         frame = frames[0]
         if return_PIL:
-            return Image.fromarray(frame.numpy())
+            if torch.is_tensor(frame) and frame.dtype != torch.uint8:
+                from .hdr import linear_to_srgb
+                frame = linear_to_srgb(frame.to(dtype=torch.float32)).mul(255.0).round_().clamp_(0.0, 255.0).to(torch.uint8)
+            return Image.fromarray(frame.cpu().numpy() if torch.is_tensor(frame) else frame)
         return frame.permute(2, 0, 1).float().div_(127.5).sub_(1.0)
     virtual_spec = parse_virtual_media_path(file_name)
     base_file_name = strip_virtual_media_suffix(file_name)

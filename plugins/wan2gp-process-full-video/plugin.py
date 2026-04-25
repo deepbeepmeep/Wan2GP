@@ -20,7 +20,8 @@ import torch
 from PIL import Image
 
 from shared.api import extract_status_phase_label
-from shared.utils.audio_video import extract_audio_tracks, get_video_encode_args
+from shared.utils.audio_video import extract_audio_tracks, get_hdr_video_encode_args, get_video_encode_args
+from shared.utils.hdr import VIDEO_PROMPT_HDR_OUTPUT_FLAG, iter_hdr_gbrpf32_frames, tonemap_hdr_tensor_to_uint8
 from shared.utils.plugins import WAN2GPPlugin
 from shared.utils.utils import get_video_info_details
 from shared.utils.video_decode import decode_video_frames_ffmpeg, resolve_media_binary
@@ -576,15 +577,18 @@ def _frame_to_image(frame_tensor: torch.Tensor) -> Image.Image:
     return Image.fromarray(frame_tensor.permute(1, 2, 0).cpu().numpy())
 
 
-def _build_process_full_video_source_path() -> str:
-    return build_virtual_media_path(PROCESS_FULL_VIDEO_VFILE, extras={"vsource": PROCESS_FULL_VIDEO_VSOURCE})
+def _build_process_full_video_source_path(*, hdr: bool = False) -> str:
+    extras = {"vsource": PROCESS_FULL_VIDEO_VSOURCE}
+    if hdr:
+        extras["hdr"] = "1"
+    return build_virtual_media_path(PROCESS_FULL_VIDEO_VFILE, extras=extras)
 
 
-def _set_process_full_video_overlap_buffer(overlap_tensor: torch.Tensor | None, fps_float: float) -> None:
+def _set_process_full_video_overlap_buffer(overlap_tensor: torch.Tensor | None, fps_float: float, *, hdr: bool = False) -> None:
     if overlap_tensor is None or not torch.is_tensor(overlap_tensor) or int(overlap_tensor.shape[1]) <= 0:
         clear_virtual_media_source(PROCESS_FULL_VIDEO_VSOURCE)
         return
-    store_virtual_video(PROCESS_FULL_VIDEO_VSOURCE, PROCESS_FULL_VIDEO_VFILE, overlap_tensor.contiguous(), fps_float)
+    store_virtual_video(PROCESS_FULL_VIDEO_VSOURCE, PROCESS_FULL_VIDEO_VFILE, overlap_tensor.contiguous(), fps_float, hdr=hdr)
 
 
 def _load_process_full_video_overlap_buffer(video_path: str, overlap_frames: int, actual_frame_count: int) -> torch.Tensor | None:
@@ -597,18 +601,28 @@ def _load_process_full_video_overlap_buffer(video_path: str, overlap_frames: int
     return None if not torch.is_tensor(frames) or int(frames.shape[0]) <= 0 else frames.permute(3, 0, 1, 2).float().div_(127.5).sub_(1.0).contiguous()
 
 
-def _update_process_full_video_overlap_buffer(committed_tensor_uint8: torch.Tensor, overlap_frames: int, fps_float: float) -> torch.Tensor | None:
+def _update_process_full_video_overlap_buffer(committed_tensor: torch.Tensor, overlap_frames: int, fps_float: float, *, hdr: bool = False) -> torch.Tensor | None:
     overlap_frames = max(0, int(overlap_frames))
-    if overlap_frames <= 0 or not torch.is_tensor(committed_tensor_uint8) or int(committed_tensor_uint8.shape[1]) <= 0:
+    if overlap_frames <= 0 or not torch.is_tensor(committed_tensor) or int(committed_tensor.shape[1]) <= 0:
         clear_virtual_media_source(PROCESS_FULL_VIDEO_VSOURCE)
         return None
-    overlap_tensor = committed_tensor_uint8.detach().cpu().to(torch.float32).div_(127.5).sub_(1.0).contiguous()
+    overlap_tensor = committed_tensor.detach().cpu().to(torch.float32).contiguous()
+    if not hdr:
+        overlap_tensor = overlap_tensor.div_(127.5).sub_(1.0)
     previous_overlap = get_virtual_video(PROCESS_FULL_VIDEO_VSOURCE, PROCESS_FULL_VIDEO_VFILE)
     if previous_overlap is not None and int(previous_overlap.shape[1]) > 0:
         overlap_tensor = torch.cat([previous_overlap, overlap_tensor], dim=1)
     overlap_tensor = overlap_tensor[:, -min(overlap_frames, int(overlap_tensor.shape[1])):].contiguous()
-    _set_process_full_video_overlap_buffer(overlap_tensor, fps_float)
+    _set_process_full_video_overlap_buffer(overlap_tensor, fps_float, hdr=hdr)
     return overlap_tensor
+
+
+def _load_process_full_video_hdr_overlap_buffer(output_path: str, overlap_frames: int, actual_frame_count: int) -> torch.Tensor | None:
+    overlap_frames = max(0, min(int(overlap_frames), int(actual_frame_count)))
+    if overlap_frames <= 0:
+        return None
+    frames = decode_video_frames_ffmpeg(build_virtual_media_path(output_path, start_frame=-overlap_frames, end_frame=-1, extras={"frame_count": actual_frame_count}), 0, overlap_frames, target_fps=None, bridge="torch", hdr_linear=True)
+    return None if not torch.is_tensor(frames) or int(frames.shape[0]) <= 0 else frames.permute(3, 0, 1, 2).contiguous()
 
 
 def _extract_exact_frame_image(video_path: str, frame_no: int) -> Image.Image:
@@ -687,6 +701,23 @@ def _write_video_chunk(process, video_tensor_uint8: torch.Tensor, *, start_frame
             stderr = process.stderr.read().decode("utf-8", errors="ignore").strip() if process.stderr is not None else ""
             raise RuntimeError(stderr or "ffmpeg exited while streaming a chunk")
     return video_tensor_uint8[:, start_frame + frame_count - 1]
+
+
+def _write_hdr_video_chunk(process, video_tensor_hdr: torch.Tensor, *, start_frame: int, frame_count: int) -> torch.Tensor:
+    if frame_count <= 0:
+        raise RuntimeError("No HDR frames available to write.")
+    chunk = video_tensor_hdr[:, start_frame:start_frame + frame_count].detach().cpu()
+    try:
+        for frame_bytes in iter_hdr_gbrpf32_frames(chunk):
+            process.stdin.write(frame_bytes)
+        process.stdin.flush()
+    except BrokenPipeError as exc:
+        stderr = process.stderr.read().decode("utf-8", errors="ignore").strip() if process.stderr is not None and process.poll() is not None else ""
+        raise RuntimeError(stderr or "ffmpeg stopped receiving HDR video frames while streaming a chunk") from exc
+    if process.poll() not in (None, 0):
+        stderr = process.stderr.read().decode("utf-8", errors="ignore").strip() if process.stderr is not None else ""
+        raise RuntimeError(stderr or "ffmpeg exited while streaming HDR video")
+    return tonemap_hdr_tensor_to_uint8(video_tensor_hdr[:, start_frame + frame_count - 1:start_frame + frame_count])[:, 0]
 
 
 def _compute_selected_frame_range(metadata: dict, start_seconds: float | None, end_seconds: float | None) -> tuple[int, int, float, int]:
@@ -1038,6 +1069,72 @@ def _start_av_mux_process(ffmpeg_path: str, output_path: str, width: int, height
     else:
         command += ["-map", f"1:a:{max(0, int(audio_track_no) - 1)}?"]
     command += get_video_encode_args(video_codec, video_container) + ["-c:a", "copy", "-shortest"]
+    command += _get_live_mux_output_args(video_container)
+    command += [output_path]
+    return subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, bufsize=0)
+
+
+def _start_hdr_video_mux_process(ffmpeg_path: str, output_path: str, width: int, height: int, fps_float: float, video_codec: str, video_container: str, reserved_metadata_path: str | None = None) -> subprocess.Popen:
+    command = [
+        ffmpeg_path,
+        "-y",
+        "-v",
+        "error",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "gbrpf32le",
+        "-video_size",
+        f"{width}x{height}",
+        "-framerate",
+        f"{float(fps_float):.12g}",
+        "-i",
+        "pipe:0",
+    ]
+    metadata_input_index = None
+    if reserved_metadata_path and os.path.isfile(reserved_metadata_path):
+        command += ["-f", "ffmetadata", "-i", reserved_metadata_path]
+        metadata_input_index = 1
+    if metadata_input_index is not None:
+        command += ["-map_metadata", str(metadata_input_index)]
+    command += ["-map", "0:v:0"]
+    command += get_hdr_video_encode_args(video_codec, video_container)
+    command += _get_live_mux_output_args(video_container)
+    command += [output_path]
+    return subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, bufsize=0)
+
+
+def _start_hdr_av_mux_process(ffmpeg_path: str, output_path: str, width: int, height: int, fps_float: float, video_codec: str, video_container: str, source_path: str, start_seconds: float, audio_track_no: int | None, reserved_metadata_path: str | None = None) -> subprocess.Popen:
+    command = [
+        ffmpeg_path,
+        "-y",
+        "-v",
+        "error",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "gbrpf32le",
+        "-video_size",
+        f"{width}x{height}",
+        "-framerate",
+        f"{float(fps_float):.12g}",
+        "-i",
+        "pipe:0",
+        "-ss",
+        f"{max(0.0, float(start_seconds)):.12g}",
+        "-i",
+        source_path,
+    ]
+    if reserved_metadata_path and os.path.isfile(reserved_metadata_path):
+        command += ["-f", "ffmetadata", "-i", reserved_metadata_path, "-map_metadata", "2"]
+    else:
+        command += ["-map_metadata", "1"]
+    command += ["-map", "0:v:0"]
+    if audio_track_no is None:
+        command += ["-map", "1:a?"]
+    else:
+        command += ["-map", f"1:a:{max(0, int(audio_track_no) - 1)}?"]
+    command += get_hdr_video_encode_args(video_codec, video_container) + ["-c:a", "copy", "-shortest"]
     command += _get_live_mux_output_args(video_container)
     command += [output_path]
     return subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, bufsize=0)
@@ -1974,6 +2071,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 return
             process_settings = process_definition["settings"]
             model_type = str(process_settings.get("model_type") or "")
+            process_is_hdr = VIDEO_PROMPT_HDR_OUTPUT_FLAG in str(process_settings.get("video_prompt_type") or "")
             has_outpaint = "video_guide_outpainting" in process_settings
             source_path = str(source_path or "").strip()
             output_path = str(output_path or "").strip()
@@ -2221,7 +2319,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                                 completed_chunks, _ = _count_completed_chunks(full_plans, resumed_unique_frames)
                                 exact_start_seconds = (start_frame + resumed_unique_frames) / fps_float
                                 resume_overlap_frames = min(overlap_frames, resumed_unique_frames)
-                                overlap_tensor = _load_process_full_video_overlap_buffer(output_path, resume_overlap_frames, resumed_unique_frames)
+                                overlap_tensor = _load_process_full_video_hdr_overlap_buffer(output_path, resume_overlap_frames, resumed_unique_frames) if process_is_hdr else _load_process_full_video_overlap_buffer(output_path, resume_overlap_frames, resumed_unique_frames)
                                 if overlap_tensor is None:
                                     _plugin_info(f"Unable to continue from existing output: {output_path}. Failed to load the overlap frames from the recorded output.")
                                     output_path = _make_output_variant(Path(output_path))
@@ -2235,7 +2333,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                                     resume_existing_output = False
                                 else:
                                     resume_overlap_frames = int(overlap_tensor.shape[1])
-                                    _set_process_full_video_overlap_buffer(overlap_tensor, processing_fps)
+                                    _set_process_full_video_overlap_buffer(overlap_tensor, processing_fps, hdr=process_is_hdr)
                                     print(f"[Process Full Video] Loaded overlap buffer from existing output: {_describe_frame_range(int(start_frame) + int(resumed_unique_frames) - int(resume_overlap_frames), resume_overlap_frames)}")
                         if resume_existing_output and resumed_unique_frames < requested_unique_frames:
                             if not USE_SOURCE_AUDIO_FOR_CONTINUATION_MERGE:
@@ -2362,7 +2460,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     settings["_api"] = dict(api_settings) if isinstance(api_settings, dict) else {}
                     settings["_api"]["return_media"] = True
                     if needs_video_source:
-                        settings["video_source"] = _build_process_full_video_source_path()
+                        settings["video_source"] = _build_process_full_video_source_path(hdr=process_is_hdr)
                     else:
                         settings.pop("video_source", None)
                     _reset_live_chunk_status(state)
@@ -2395,13 +2493,15 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         if isinstance(path, str) and len(path.strip()) > 0 and str(Path(path).resolve()) not in chunk_output_paths
                     )
                     last_segment_path = _get_last_generated_video_path(list(result.generated_files)) or last_segment_path
-                    returned_video_item = next((item for item in result.artifacts if item.video_tensor_uint8 is not None), None)
-                    if returned_video_item is None or not torch.is_tensor(returned_video_item.video_tensor_uint8):
+                    returned_video_item = next((item for item in result.artifacts if item.video_tensor_hdr is not None), None) if process_is_hdr else next((item for item in result.artifacts if item.video_tensor_uint8 is not None), None)
+                    returned_tensor = None if returned_video_item is None else (returned_video_item.video_tensor_hdr if process_is_hdr else returned_video_item.video_tensor_uint8)
+                    if returned_video_item is None or not torch.is_tensor(returned_tensor):
                         raise gr.Error(f"Chunk {chunk_index} completed without returned video tensor data.")
-                    video_tensor_uint8 = returned_video_item.video_tensor_uint8.detach().cpu()
+                    video_tensor_hdr = returned_tensor.detach().cpu() if process_is_hdr else None
+                    video_tensor_uint8 = tonemap_hdr_tensor_to_uint8(video_tensor_hdr) if process_is_hdr else returned_tensor.detach().cpu()
                     returned_frame_count = int(video_tensor_uint8.shape[1])
                     expected_frame_count = int(plan.requested_frames)
-                    if returned_frame_count < max(1, expected_frame_count - 1):
+                    if not process_is_hdr and returned_frame_count < max(1, expected_frame_count - 1):
                         video_candidates = [path for path in result.generated_files if isinstance(path, str) and os.path.isfile(path) and str(Path(path).suffix).lower() in {".mp4", ".mkv", ".mov", ".avi"}]
                         if video_candidates:
                             decoded_tensor = _load_video_tensor_from_file(video_candidates[0])
@@ -2427,12 +2527,17 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         continue
                     if mux_process is None:
                         reserved_metadata_path = _create_reserved_metadata_file(output_path_for_write)
-                        mux_process = _start_av_mux_process(ffmpeg_path, output_path_for_write, resolved_width, resolved_height, fps_float, self.server_config.get("video_output_codec", "libx264_8"), output_container, source_path, exact_start_seconds, selected_audio_track, reserved_metadata_path) if use_live_av_mux else _start_video_mux_process(ffmpeg_path, video_only_output_path, resolved_width, resolved_height, fps_float, self.server_config.get("video_output_codec", "libx264_8"), output_container, reserved_metadata_path)
-                    last_frame_tensor = _write_video_chunk(mux_process, video_tensor_uint8, start_frame=skip_frames, frame_count=frames_to_write)
+                        if process_is_hdr:
+                            hdr_video_crf = self.server_config.get("hdr_video_crf", 8)
+                            mux_process = _start_hdr_av_mux_process(ffmpeg_path, output_path_for_write, resolved_width, resolved_height, fps_float, hdr_video_crf, output_container, source_path, exact_start_seconds, selected_audio_track, reserved_metadata_path) if use_live_av_mux else _start_hdr_video_mux_process(ffmpeg_path, video_only_output_path, resolved_width, resolved_height, fps_float, hdr_video_crf, output_container, reserved_metadata_path)
+                        else:
+                            mux_process = _start_av_mux_process(ffmpeg_path, output_path_for_write, resolved_width, resolved_height, fps_float, self.server_config.get("video_output_codec", "libx264_8"), output_container, source_path, exact_start_seconds, selected_audio_track, reserved_metadata_path) if use_live_av_mux else _start_video_mux_process(ffmpeg_path, video_only_output_path, resolved_width, resolved_height, fps_float, self.server_config.get("video_output_codec", "libx264_8"), output_container, reserved_metadata_path)
+                    last_frame_tensor = _write_hdr_video_chunk(mux_process, video_tensor_hdr, start_frame=skip_frames, frame_count=frames_to_write) if process_is_hdr and video_tensor_hdr is not None else _write_video_chunk(mux_process, video_tensor_uint8, start_frame=skip_frames, frame_count=frames_to_write)
                     written_unique_frames += frames_to_write
                     last_frame_image = _frame_to_image(last_frame_tensor)
                     preview_state["image"] = last_frame_image
-                    next_overlap_tensor = _update_process_full_video_overlap_buffer(video_tensor_uint8[:, skip_frames:skip_frames + frames_to_write], overlap_frames, processing_fps)
+                    overlap_source_tensor = video_tensor_hdr if process_is_hdr and video_tensor_hdr is not None else video_tensor_uint8
+                    next_overlap_tensor = _update_process_full_video_overlap_buffer(overlap_source_tensor[:, skip_frames:skip_frames + frames_to_write], overlap_frames, processing_fps, hdr=process_is_hdr)
                     if next_overlap_tensor is not None and int(next_overlap_tensor.shape[1]) > 0:
                         next_overlap_count = int(next_overlap_tensor.shape[1])
                         next_overlap_start_frame = int(start_frame) + int(resumed_unique_frames) + int(written_unique_frames) - next_overlap_count
@@ -2535,6 +2640,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     "source_segment": requested_source_segment,
                     "merged_continuations": _normalize_merged_continuation_signatures(merged_continuation_signatures),
                 }
+                if process_is_hdr:
+                    process_metadata["hdr"] = True
                 _store_output_metadata(metadata_target_path, metadata_source_path, source_path=source_path, process_name=process_name, source_start_seconds=start_seconds, start_frame=start_frame, fps_float=fps_float, selected_audio_track=selected_audio_track, total_generation_time=total_generation_time, actual_frame_count=actual_output_frames, process_metadata=process_metadata, verbose_level=verbose_level)
                 chunk_output_paths = _delete_released_chunk_outputs(state, chunk_output_paths)
                 if stopped:

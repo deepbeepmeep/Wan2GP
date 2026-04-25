@@ -33,7 +33,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### 25th of April 2026: WanGP v11.35, LTX-2 Mega Mix Part 2
+### 25th of April 2026: WanGP v11.40, LTX-2 Mega Mix Part 2
 More nice goodies for **LTX-2**:
 - **HDR Control Video support**: you can now provide an HDR Control Video it will be automatically converted to SDR if model doesnt support HDR
 

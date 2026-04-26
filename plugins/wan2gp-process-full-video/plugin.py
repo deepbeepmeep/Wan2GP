@@ -12,7 +12,6 @@ import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from fractions import Fraction
 from pathlib import Path
 
 import gradio as gr
@@ -22,6 +21,7 @@ from PIL import Image
 from shared.api import extract_status_phase_label
 from shared.utils.audio_video import extract_audio_tracks, get_hdr_video_encode_args, get_video_encode_args
 from shared.utils.hdr import VIDEO_PROMPT_HDR_OUTPUT_FLAG, iter_hdr_gbrpf32_frames, tonemap_hdr_tensor_to_uint8
+from shared.utils.loras_mutipliers import parse_loras_multipliers, preparse_loras_multipliers
 from shared.utils.plugins import WAN2GPPlugin
 from shared.utils.utils import get_video_info_details
 from shared.utils.video_decode import decode_video_frames_ffmpeg, resolve_media_binary
@@ -82,7 +82,6 @@ def _load_process_definitions() -> tuple[dict[str, dict], str | None]:
 
 
 PROCESS_DEFINITIONS, PROCESS_DEFINITIONS_ERROR = _load_process_definitions()
-PROCESS_CHOICES = [(process_name, process_name) for process_name in PROCESS_DEFINITIONS]
 DEFAULT_PROCESS_NAME = LAUNCH_DEFAULT_PROCESS_NAME if LAUNCH_DEFAULT_PROCESS_NAME in PROCESS_DEFINITIONS else next(iter(PROCESS_DEFINITIONS), "")
 DEFAULT_MODEL_TYPE = str(PROCESS_DEFINITIONS.get(DEFAULT_PROCESS_NAME, {}).get("settings", {}).get("model_type") or "")
 
@@ -210,7 +209,32 @@ def _get_error_message(exc: BaseException) -> str:
     return str(message or "").strip()
 
 
+def _get_single_lora_simple_multiplier(settings: dict) -> float | None:
+    if not isinstance(settings, dict):
+        return None
+    activated_loras = settings.get("activated_loras") or []
+    if not isinstance(activated_loras, list) or len([lora for lora in activated_loras if len(str(lora).strip()) > 0]) != 1:
+        return None
+    raw_multiplier = settings.get("loras_multipliers", "")
+    if isinstance(raw_multiplier, bool) or raw_multiplier is None or not isinstance(raw_multiplier, (int, float, str)):
+        return None
+    multiplier_text = str(raw_multiplier).strip()
+    if len(multiplier_text) == 0:
+        return 1.0
+    tokens = preparse_loras_multipliers(multiplier_text)
+    if len(tokens) != 1 or str(tokens[0]).strip() != multiplier_text:
+        return None
+    values, slists, error = parse_loras_multipliers(multiplier_text, 1, 1, nb_phases=_coerce_int(settings.get("guidance_phases"), 1, minimum=1))
+    if len(error) > 0 or len(values) != 1 or not slists.get("shared", [False])[0] or not isinstance(slists.get("phase1", [None])[0], float):
+        return None
+    multiplier = float(values[0])
+    return multiplier if math.isfinite(multiplier) else None
+
+
 def _get_default_process_strength(process_settings: dict) -> float:
+    simple_lora_multiplier = _get_single_lora_simple_multiplier(process_settings)
+    if simple_lora_multiplier is not None:
+        return simple_lora_multiplier
     process_strength = process_settings.get("process_strength")
     if process_strength is None:
         process_strength = process_settings.get("loras_multipliers", 1.0)
@@ -223,23 +247,11 @@ class ChunkPlan:
     requested_frames: int
     overlap_frames: int
 
-    @property
-    def control_end_frame(self) -> int:
-        return self.control_start_frame + self.requested_frames - 1
-
 
 @dataclass(frozen=True)
 class FramePlanRules:
     frame_step: int
     minimum_requested_frames: int
-
-
-def _require_process_definition(process_name: str) -> dict:
-    process_definition = PROCESS_DEFINITIONS.get(str(process_name))
-    if not isinstance(process_definition, dict):
-        available = ", ".join(PROCESS_DEFINITIONS.keys()) or "none"
-        raise gr.Error(f"Unsupported process: {process_name}. Available process settings: {available}.")
-    return process_definition
 
 
 def _require_model_def(model_type: str, get_model_def) -> dict:
@@ -418,13 +430,7 @@ def _get_process_filename_token(process_name: str) -> str:
     return token or "process"
 
 
-def _process_has_outpaint(process_name: str) -> bool:
-    process_definition = PROCESS_DEFINITIONS.get(str(process_name))
-    settings = process_definition.get("settings") if isinstance(process_definition, dict) else None
-    return isinstance(settings, dict) and "video_guide_outpainting" in settings
-
-
-def _build_auto_output_path(source_path: str, process_name: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None, output_dir: str | None = None, *, has_outpaint: bool | None = None) -> str:
+def _build_auto_output_path(source_path: str, process_name: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None, output_dir: str | None = None, *, has_outpaint: bool = False) -> str:
     source = Path(source_path)
     process_token = _get_process_filename_token(process_name)
     resolution_suffix = str(output_resolution or "").strip() or "res"
@@ -432,7 +438,7 @@ def _build_auto_output_path(source_path: str, process_name: str, ratio_text: str
     end_suffix = _format_time_token(end_seconds)
     target_dir = source.parent if not output_dir else Path(output_dir)
     name_parts = [source.stem, process_token]
-    if _process_has_outpaint(process_name) if has_outpaint is None else bool(has_outpaint):
+    if has_outpaint:
         name_parts.append(str(ratio_text or "").replace(":", "x") or "ratio")
     name_parts.extend([resolution_suffix, start_suffix, end_suffix])
     return str(target_dir / f"{'_'.join(name_parts)}{source.suffix}")
@@ -572,7 +578,7 @@ def _read_recorded_written_unique_frames(output_path: str) -> int:
         return 0
 
 
-def _build_requested_output_path(source_path: str, output_path: str, process_name: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None, *, has_outpaint: bool | None = None) -> Path:
+def _build_requested_output_path(source_path: str, output_path: str, process_name: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None, *, has_outpaint: bool = False) -> Path:
     output_text = str(output_path or "").strip()
     if len(output_text) == 0:
         output = Path(_build_auto_output_path(source_path, process_name, ratio_text, output_resolution, start_seconds, end_seconds, has_outpaint=has_outpaint))
@@ -586,7 +592,7 @@ def _build_requested_output_path(source_path: str, output_path: str, process_nam
     return output
 
 
-def _resolve_output_path(source_path: str, output_path: str, process_name: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None, continue_enabled: bool, *, has_outpaint: bool | None = None) -> tuple[str, bool]:
+def _resolve_output_path(source_path: str, output_path: str, process_name: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None, continue_enabled: bool, *, has_outpaint: bool = False) -> tuple[str, bool]:
     output = _build_requested_output_path(source_path, output_path, process_name, ratio_text, output_resolution, start_seconds, end_seconds, has_outpaint=has_outpaint)
     if continue_enabled:
         return str(output), output.exists()
@@ -1385,27 +1391,6 @@ def _probe_primary_video_codec(ffprobe_path: str, media_path: str) -> str:
     return codec_name
 
 
-def _probe_primary_video_rate(ffprobe_path: str, media_path: str) -> Fraction | None:
-    result = subprocess.run([ffprobe_path, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate,avg_frame_rate", "-of", "json", media_path], capture_output=True, text=True, encoding="utf-8", errors="ignore", check=False)
-    if result.returncode != 0:
-        raise gr.Error((result.stderr or result.stdout or f"ffprobe failed for {media_path}").strip())
-    try:
-        stream = (((json.loads(result.stdout) or {}).get("streams") or [{}])[0])
-    except (TypeError, ValueError, json.JSONDecodeError, IndexError):
-        return None
-    for key in ("r_frame_rate", "avg_frame_rate"):
-        rate_text = str(stream.get(key) or "").strip()
-        if len(rate_text) == 0 or rate_text in ("0/0", "N/A"):
-            continue
-        try:
-            rate = Fraction(rate_text)
-        except (TypeError, ValueError, ZeroDivisionError):
-            continue
-        if rate > 0:
-            return rate
-    return None
-
-
 def _probe_primary_video_start_time(ffprobe_path: str, media_path: str) -> float:
     result = subprocess.run([ffprobe_path, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=start_time", "-of", "json", media_path], capture_output=True, text=True, encoding="utf-8", errors="ignore", check=False)
     if result.returncode == 0:
@@ -1479,65 +1464,6 @@ def _write_concat_list(list_path: str, media_paths: list[str]) -> None:
         for media_path in media_paths:
             escaped_path = str(media_path).replace("'", "'\\''")
             handle.write(f"file '{escaped_path}'\n")
-
-
-def _build_mp4_video_reconstruct_bsf(frame_rate: Fraction | None, fps_float: float) -> str:
-    if frame_rate is not None and frame_rate.numerator > 0 and frame_rate.denominator > 0:
-        frame_duration_expr = f"{int(frame_rate.denominator)}/({int(frame_rate.numerator)}*TB)"
-    else:
-        fps_value = max(float(fps_float or 0.0), 1.0)
-        frame_duration_expr = f"1/({fps_value:.15g}*TB)"
-    return (
-        "setts="
-        f"pts='if(eq(N,0),PTS,PREV_OUTPTS+(PTS-PREV_INPTS)-(PREV_INDURATION-DURATION))':"
-        f"dts='if(eq(N,0),DTS,PREV_OUTDTS+(DTS-PREV_INDTS)-(PREV_INDURATION-DURATION))':"
-        f"duration='if(eq(N,0),{frame_duration_expr},DURATION)'"
-    )
-
-
-def _build_mp4_video_zero_base_bsf() -> str:
-    return "setts=pts=PTS-STARTPTS:dts=DTS:duration=DURATION"
-
-
-def _get_mp4_video_track_timescale(frame_rate: Fraction | None, fps_float: float) -> int:
-    if frame_rate is not None and frame_rate.numerator > 0:
-        return int(frame_rate.numerator)
-    return max(1, int(round(max(float(fps_float or 0.0), 1.0) * 1000.0)))
-
-
-def _concat_video_streams_for_mp4(ffmpeg_path: str, segment_paths: list[str], output_path: str, work_dir: str, *, fps_float: float, frame_rate: Fraction | None = None) -> int:
-    temp_paths: list[str] = []
-    prepared_paths: list[str] = []
-    list_path = os.path.join(work_dir, "video_mp4.txt")
-    reconstruct_bsf = _build_mp4_video_reconstruct_bsf(frame_rate, fps_float)
-    zero_base_bsf = _build_mp4_video_zero_base_bsf()
-    track_timescale = _get_mp4_video_track_timescale(frame_rate, fps_float)
-    try:
-        for segment_no, segment_path in enumerate(segment_paths, start=1):
-            reconstructed_path = os.path.join(work_dir, f"segment_{segment_no}_video_step1.mp4")
-            prepared_path = os.path.join(work_dir, f"segment_{segment_no}_video.mp4")
-            result = subprocess.run([ffmpeg_path, "-y", "-v", "error", "-i", segment_path, "-map", "0:v:0", "-c", "copy", "-bsf:v", reconstruct_bsf, "-video_track_timescale", str(track_timescale), reconstructed_path], capture_output=True, text=True)
-            if result.returncode != 0 or not os.path.isfile(reconstructed_path):
-                raise gr.Error((result.stderr or result.stdout or f"ffmpeg failed to prepare {segment_path} for MP4 concat").strip())
-            temp_paths.append(reconstructed_path)
-            result = subprocess.run([ffmpeg_path, "-y", "-v", "error", "-i", reconstructed_path, "-map", "0:v:0", "-c", "copy", "-bsf:v", zero_base_bsf, "-video_track_timescale", str(track_timescale), prepared_path], capture_output=True, text=True)
-            if result.returncode != 0 or not os.path.isfile(prepared_path):
-                raise gr.Error((result.stderr or result.stdout or f"ffmpeg failed to zero-base {segment_path} for MP4 concat").strip())
-            prepared_paths.append(prepared_path)
-        _write_concat_list(list_path, prepared_paths)
-        result = subprocess.run([ffmpeg_path, "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", list_path, "-map", "0:v:0", "-c", "copy", "-video_track_timescale", str(track_timescale), output_path], capture_output=True, text=True)
-        if result.returncode != 0 or not os.path.isfile(output_path):
-            raise gr.Error((result.stderr or result.stdout or "ffmpeg failed to concatenate MP4 continuation video").strip())
-        return track_timescale
-    finally:
-        for temp_path in temp_paths:
-            if os.path.isfile(temp_path):
-                os.remove(temp_path)
-        for prepared_path in prepared_paths:
-            if os.path.isfile(prepared_path):
-                os.remove(prepared_path)
-        if os.path.isfile(list_path):
-            os.remove(list_path)
 
 
 def _concat_audio_segments(ffmpeg_path: str, segment_paths: list[str], output_path: str, work_dir: str, *, segment_trim_seconds: list[float] | None = None, segment_duration_seconds: list[float | None] | None = None, audio_stream_indices: list[int] | None = None) -> None:
@@ -1918,7 +1844,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("get_model_def")
         self.request_global("get_lora_dir")
         self.request_global("get_base_model_type")
-        self.request_global("get_current_model_settings")
         self.request_global("server_config")
         self.request_component("state")
         self.request_component("lset_name")
@@ -1936,7 +1861,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
         get_model_def = getattr(self, "get_model_def", None)
         get_lora_dir = getattr(self, "get_lora_dir", None)
         get_base_model_type = getattr(self, "get_base_model_type", None)
-        get_current_model_settings = getattr(self, "get_current_model_settings", None)
         output_resolution_choices = [("1080p", "1080p"), ("900p", "900p"), ("720p", "720p"), ("540p", "540p"), ("480p", "480p"), ("360p", "360p"), ("256p", "256p")]
         output_resolution_values = {value for _, value in output_resolution_choices}
         source_audio_track_choices = [("Auto", "")] + [(f"Audio Track {track_no}", str(track_no)) for track_no in range(1, 10)]
@@ -2039,19 +1963,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 model_type = str(main_state.get(key) or main_state.get("model_type") or "").strip()
                 if len(model_type) > 0:
                     return model_type
-            return ""
-
-        def _get_main_lset_name(main_state: dict | None, main_lset_name: str | None = None) -> str:
-            lset_name = str(main_lset_name or "").strip()
-            if len(lset_name) > 0:
-                return lset_name
-            if callable(get_current_model_settings) and isinstance(main_state, dict):
-                try:
-                    settings = get_current_model_settings(main_state)
-                    if isinstance(settings, dict):
-                        return str(settings.get("lset_name") or "").strip()
-                except Exception:
-                    pass
             return ""
 
         def _get_current_user_settings_filenames(main_state: dict | None) -> list[str]:
@@ -2286,17 +2197,45 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         def _has_process_outpaint(process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:
             process_definition = _get_process_definition(process_name, main_state, user_refs)
+            return _uses_builtin_outpaint_ui(process_definition)
+
+        def _uses_builtin_outpaint_ui(process_definition: dict | None) -> bool:
             settings = process_definition.get("settings") if isinstance(process_definition, dict) else None
-            return isinstance(settings, dict) and "video_guide_outpainting" in settings
+            return isinstance(process_definition, dict) and process_definition.get("source") != "user" and isinstance(settings, dict) and "video_guide_outpainting" in settings
+
+        def _get_user_lora_strength_override_default(process_definition: dict | None) -> float | None:
+            if not isinstance(process_definition, dict) or process_definition.get("source") != "user":
+                return None
+            settings = process_definition.get("settings")
+            if not isinstance(settings, dict):
+                return None
+            return _get_single_lora_simple_multiplier(settings)
+
+        def _is_process_strength_visible(process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:
+            process_definition = _get_process_definition(process_name, main_state, user_refs)
+            settings = process_definition.get("settings") if isinstance(process_definition, dict) else None
+            if not isinstance(settings, dict) or _uses_builtin_outpaint_ui(process_definition):
+                return False
+            if process_definition.get("source") == "user":
+                return _get_user_lora_strength_override_default(process_definition) is not None
+            return True
 
         def _get_target_ratio_update(process_name: str, main_state: dict | None, user_refs: list[str] | None, target_ratio: str | None = None):
             visible = _has_process_outpaint(process_name, main_state, user_refs)
             return gr.update(value=target_ratio if visible else "", visible=visible, choices=RATIO_CHOICES if visible else RATIO_CHOICES_WITH_EMPTY)
 
         def _get_process_strength_update(process_name: str, main_state: dict | None, user_refs: list[str] | None, process_strength: float | None = None):
-            visible = not _has_process_outpaint(process_name, main_state, user_refs)
-            value = 1.0 if not visible else _coerce_float(process_strength, 1.0)
-            return gr.update(value=value, visible=visible)
+            process_definition = _get_process_definition(process_name, main_state, user_refs)
+            visible = _is_process_strength_visible(process_name, main_state, user_refs)
+            default_value = _get_default_process_strength((process_definition or {}).get("settings", {}))
+            if isinstance(process_definition, dict) and process_definition.get("source") == "user":
+                user_default = _get_user_lora_strength_override_default(process_definition)
+                if user_default is not None:
+                    default_value = user_default
+            value = _coerce_float(process_strength, default_value) if visible else default_value
+            minimum = min(0.0, value)
+            maximum = max(3.0, value)
+            return gr.update(value=value, visible=visible, minimum=minimum, maximum=maximum)
 
         def _get_overlap_control_updates(process_name: str, main_state: dict | None, user_refs: list[str] | None):
             process_definition = _get_process_definition_or_default(process_name, main_state, user_refs)
@@ -2306,10 +2245,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
             maximum = _get_overlap_slider_max(model_type, get_model_def)
             value = _coerce_int(settings.get("sliding_window_overlap"), 1, minimum=1)
             return gr.update(minimum=1, maximum=maximum, step=step, value=min(max(1, _normalize_overlap_frames(value, frame_step=step)), maximum))
-
-        def _get_process_dropdown_update(model_type: str, main_state: dict | None, main_lset_name: str | None, user_refs: list[str]):
-            process_choices, process_value = _get_process_choices(model_type, main_state, main_lset_name, user_refs)
-            return gr.update(choices=process_choices, value=process_value)
 
         def _build_process_form_state(process_name: str, raw_state: dict | None = None, main_state: dict | None = None, user_refs: list[str] | None = None) -> dict:
             process_definition = _get_process_definition_or_default(process_name, main_state, user_refs)
@@ -2606,8 +2541,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 return
             process_display_name = str(process_definition.get("name") or process_name or "").strip()
             process_is_hdr = VIDEO_PROMPT_HDR_OUTPUT_FLAG in str(process_settings.get("video_prompt_type") or "")
-            has_outpaint = "video_guide_outpainting" in process_settings
             is_user_process = process_definition.get("source") == "user"
+            has_outpaint_setting = "video_guide_outpainting" in process_settings
+            uses_builtin_outpaint_ui = _uses_builtin_outpaint_ui(process_definition)
+            user_lora_strength_override_default = _get_user_lora_strength_override_default(process_definition)
+            use_lora_strength_override = not uses_builtin_outpaint_ui and (not is_user_process or user_lora_strength_override_default is not None)
             source_path = str(source_path or "").strip()
             output_path = str(output_path or "").strip()
             source_audio_track = str(source_audio_track or "").strip()
@@ -2616,7 +2554,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             prompt_text = str(prompt_text or "")
             start_seconds = "" if start_seconds in (None, "") else str(start_seconds)
             end_seconds = "" if end_seconds in (None, "") else str(end_seconds)
-            active_process_strength = 1.0 if has_outpaint else _coerce_float(process_strength, 1.0)
+            process_strength_default = user_lora_strength_override_default if user_lora_strength_override_default is not None else _get_default_process_strength(process_settings)
+            active_process_strength = 1.0 if uses_builtin_outpaint_ui else (_coerce_float(process_strength, process_strength_default) if use_lora_strength_override else process_strength_default)
             try:
                 _save_process_full_video_ui_settings({
                     "process_model_type": model_type,
@@ -2637,7 +2576,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             except OSError as exc:
                 yield _info_exit(f"Unable to save plugin settings to {PROCESS_FULL_VIDEO_SETTINGS_FILE}: {exc}")
                 return
-            active_target_ratio = target_ratio if has_outpaint else ""
+            active_target_ratio = target_ratio if uses_builtin_outpaint_ui else ""
             default_prompt_text = str(process_settings.get("prompt") or "")
             if len(prompt_text.strip()) == 0:
                 prompt_text = default_prompt_text
@@ -2711,12 +2650,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     )
                     requested_unique_frames = _count_planned_unique_frames(full_plans)
                     requested_source_segment = build_virtual_media_path(source_path, start_frame=start_frame, end_frame=max(int(start_frame), int(start_frame) + max(0, int(requested_unique_frames)) - 1), audio_track_no=selected_audio_track)
-                    requested_output_path = str(_build_requested_output_path(source_path, output_path, process_display_name, active_target_ratio, str(output_resolution), start_seconds, end_seconds, has_outpaint=has_outpaint))
+                    requested_output_path = str(_build_requested_output_path(source_path, output_path, process_display_name, active_target_ratio, str(output_resolution), start_seconds, end_seconds, has_outpaint=uses_builtin_outpaint_ui))
                     identity_mismatch_message = _get_output_identity_mismatch_message(requested_output_path, process_name=process_display_name, source_path=source_path, source_segment=requested_source_segment)
                     if identity_mismatch_message is not None:
                         yield _info_exit(identity_mismatch_message, output=requested_output_path)
                         return
-                    output_path, resume_existing_output = _resolve_output_path(source_path, output_path, process_display_name, active_target_ratio, str(output_resolution), start_seconds, end_seconds, bool(continue_enabled), has_outpaint=has_outpaint)
+                    output_path, resume_existing_output = _resolve_output_path(source_path, output_path, process_display_name, active_target_ratio, str(output_resolution), start_seconds, end_seconds, bool(continue_enabled), has_outpaint=uses_builtin_outpaint_ui)
                     try:
                         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
                     except OSError as exc:
@@ -2988,12 +2927,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     # WGP applies any extra_control_frames model behavior internally, so this
                     # stays correct for models that use it and for models where it is 0.
                     settings["video_guide"] = build_virtual_media_path(source_path, start_frame=actual_control_start_frame, end_frame=actual_control_end_frame, audio_track_no=selected_audio_track)
-                    if has_outpaint:
+                    if uses_builtin_outpaint_ui:
                         settings["video_guide_outpainting_ratio"] = active_target_ratio
-                    else:
+                    elif not has_outpaint_setting:
                         settings.pop("video_guide_outpainting_ratio", None)
-                        if not is_user_process:
-                            settings["loras_multipliers"] = str(active_process_strength)
+                    if use_lora_strength_override:
+                        settings["loras_multipliers"] = str(active_process_strength)
                     api_settings = settings.get("_api")
                     settings["_api"] = dict(api_settings) if isinstance(api_settings, dict) else {}
                     settings["_api"]["return_media"] = True
@@ -3360,7 +3299,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             with gr.Row():
                 output_resolution = gr.Dropdown(output_resolution_choices, value=default_output_resolution, label="Output Resolution")
                 target_ratio = gr.Dropdown(RATIO_CHOICES if _has_process_outpaint(default_process_name) else RATIO_CHOICES_WITH_EMPTY, value=default_target_ratio if _has_process_outpaint(default_process_name) else "", label="Target Ratio", visible=_has_process_outpaint(default_process_name))
-                process_strength = gr.Slider(label="Process Strength (LoRA Multiplier)", minimum=0.0, maximum=3.0, step=0.01, value=1.0 if _has_process_outpaint(default_process_name) else default_process_strength, visible=not _has_process_outpaint(default_process_name))
+                process_strength_visible = _is_process_strength_visible(default_process_name, getattr(self.state, "value", None), initial_user_refs)
+                process_strength = gr.Slider(label="Process Strength (LoRA Multiplier)", minimum=min(0.0, default_process_strength), maximum=max(3.0, default_process_strength), step=0.01, value=1.0 if _has_process_outpaint(default_process_name) else default_process_strength, visible=process_strength_visible)
             with gr.Row():
                 chunk_size_seconds = gr.Number(label="Chunk Size (seconds)", value=default_chunk_size_seconds, precision=2)
                 sliding_window_overlap = gr.Slider(label="Sliding Window Overlap", minimum=1, maximum=overlap_max, step=overlap_step, value=default_overlap_value)

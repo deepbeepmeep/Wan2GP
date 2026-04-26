@@ -4,6 +4,11 @@ cd /d "%~dp0.."
 setlocal enabledelayedexpansion
 title WanGP Installer
 
+where git >nul 2>nul
+if !errorlevel! neq 0 (
+    call :INSTALL_GIT
+)
+
 python -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" >nul 2>&1
 if !errorlevel! equ 0 goto :MENU
 
@@ -46,8 +51,8 @@ echo ======================================================
 echo                SELECT ENVIRONMENT TYPE
 echo ======================================================
 echo 1. Use 'venv' (Easiest - Comes prepackaged with python)
-echo 2. Use 'uv' (Recommended - Handles Python 3.11 better)
-echo 3. Use 'Conda'
+echo 2. Use 'uv' (Recommended - Faster but requires installing uv)
+echo 3. Use 'conda'
 echo 4. No Environment (Not Recommended)
 echo 5. Exit
 echo ------------------------------------------------------
@@ -111,6 +116,25 @@ python setup.py install --env !ENV_TYPE! !AUTO_FLAG!
 
 pause
 goto MENU
+
+:INSTALL_GIT
+echo [-] 'git' not found.
+set "GIT_URL=https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/Git-2.54.0-64-bit.exe"
+
+echo [*] Downloading Git...
+call :DOWNLOAD "%GIT_URL%" || (
+    echo [-] Download failed. Please install Git manually.
+    exit /b 1
+)
+
+for %%F in ("%GIT_URL%") do set "GIT_FILE=%%~nxF"
+
+echo [*] Installing Git silently ^(this may take a minute^)...
+start /wait "" "%GIT_FILE%" /VERYSILENT /NORESTART /NOCANCEL /SP- /SUPPRESSMSGBOXES
+del "%GIT_FILE%"
+
+set "PATH=%PATH%;C:\Program Files\Git\cmd"
+exit /b 0
 
 :INSTALL_PYTHON
 if exist "C:\Program Files\PyManager\pymanager.exe" goto :INSTALL_PY311

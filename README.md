@@ -202,24 +202,28 @@ If you selected Manual Install, you will be guided through:
 #### 2️⃣ Starting the App (`scripts\run.bat` | `scripts/run.sh`)
 Once installed, use this script to launch the application. It runs WAN2GP using your active environment.
 
-##### ⚙️ Customizing Launch Arguments (`args.txt`)
-If you want to pass extra command-line flags to the WAN2GP launcher (like enabling advanced UI features or automatically opening your browser), create an `args.txt` file in your `scripts` folder.
-
-**Example `args.txt`:**
-```text
---advanced  --open-browser
-```
+*   **⚙️ Customizing Launch Arguments (`args.txt`)**
+    *   If you want to pass extra command-line flags to the launcher (like enabling advanced UI features or automatically opening your browser), create an `args.txt` file in your `scripts` folder.
+    *   **Example `args.txt`:**
+        ```text
+        --advanced --open-browser
+        ```
 
 #### 3️⃣ Updating & Upgrading (`scripts\update.bat` | `scripts/update.sh`)
 Use this script to get the latest updates for WAN2GP and upgrade dependencies.
-* **1. Update:** Fetches the latest code from GitHub (`git pull`) and updates requirements (`pip install -r requirements.txt`).
-* **2. Upgrade:** Allows you to manually individually upgrade heavy backend components (like PyTorch, Triton, Sage Attention) based on your hardware profile.
+* **1. Update:** Fetches the latest code from GitHub and updates requirements.
+* **2. Upgrade:** Allows you to manually individually upgrade heavy backend components (like PyTorch, Triton, Sage Attention).
 
 #### 4️⃣ Managing Environments (`scripts\manage.bat` | `/manage.sh`)
 Use this script to manage and switch between your sandboxed environments safely.
 
-* **Example Scenario:** Let's say you have an environment named `env_stable` that works perfectly, but you want to try the new "Use Latest" combo. Instead of risking your working setup, you can run `install.bat`, create a *new* environment called `env_testing`, and select "Use Latest".
-* If the testing environment breaks or gives you errors, you can simply open `manage.bat`, select **Set Active Environment**, and switch back to `env_stable`. You are back up and running instantly.
+* **Example Scenario 1: Migrating an Existing Setup**
+    * If you have a folder named `venv` that works perfectly and want to use it with the new one-click scripts, run `manage.bat` and select **Add Existing Environment**.
+    * Copy-paste the folder path (e.g., `C:\WAN2GP\venv`), select type `venv`, then use **Set Active Environment** to make it the default. Now `run.bat` and `update.bat` will target your existing setup.
+
+* **Example Scenario 2: Testing New Configurations**
+    * Let's say you have an environment named `env_stable` that works perfectly, but you want to try the new "Use Latest" combo. Instead of risking your working setup, run `install.bat`, create a *new* environment called `env_testing`, and select **Use Latest**.
+    * If the testing environment breaks, simply open `manage.bat`, select **Set Active Environment**, and switch back to `env_stable`. You are back up and running instantly.
 
 ---
 

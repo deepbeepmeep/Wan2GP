@@ -10,8 +10,12 @@ import imageio.v3 as iio
 import numpy as np
 
 import torch
-import decord
-from decord import VideoReader
+try:
+    import decord
+    from decord import VideoReader
+except ImportError:
+    decord = None
+    VideoReader = None
 from PIL import Image, ImageDraw
 from torchvision import transforms
 

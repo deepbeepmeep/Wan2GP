@@ -16,6 +16,41 @@ limitations under the License.
 
 import sys
 import torch
+
+# MPS compatibility: SageAttention is CUDA-only, provide stub on Apple Silicon
+_is_mps = sys.platform == 'darwin' and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+
+if _is_mps:
+    print("[Sage2] Disabled on Apple Silicon MPS - falling back to SDPA")
+    
+    def _sage2_not_impl():
+        raise NotImplementedError("SageAttention is not available on Apple Silicon MPS. Use SDPA instead.")
+    
+    # Inject stub module into sys.modules so imports succeed
+    import types
+    _stub = types.ModuleType(__name__)
+    _stub.sage2_supported_flag = False
+    _stub.is_sage2_supported = lambda: False
+    _stub.sageattn = _sage2_not_impl
+    _stub.sageattn2 = _sage2_not_impl
+    _stub.per_block_int8_triton = None
+    _stub.per_block_int8_varlen_triton = None
+    _stub.per_block_int8_cuda = None
+    _stub.per_warp_int8_cuda = None
+    _stub.sub_mean = None
+    _stub.per_channel_fp8 = None
+    _stub.sageattn_qk_int8_pv_fp16_cuda = None
+    _stub.sageattn_qk_int8_pv_fp16_triton = None
+    _stub.sageattn_varlen = None
+    _stub.sageattn_qk_int8_pv_fp8_cuda = None
+    _stub.sageattn_qk_int8_pv_fp8_cuda_sm90 = None
+    _stub.block_sparse_sage2_attn_cuda = None
+    _stub.sageattn_qk_int8_pv_fp8_window_cuda = _sage2_not_impl
+    sys.modules[__name__] = _stub
+    
+    # Raise ImportError to prevent execution of CUDA code below
+    raise ImportError("Sage2 disabled on MPS - stub module injected")
+
 import torch.nn.functional as F
 
 from sageattention.triton.quant_per_block import per_block_int8 as per_block_int8_triton

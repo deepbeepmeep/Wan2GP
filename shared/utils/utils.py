@@ -7,7 +7,10 @@ import cv2
 import tempfile
 import imageio
 import torch
-import decord
+try:
+    import decord
+except ImportError:
+    decord = None  # Not available on macOS arm64
 from PIL import Image
 import numpy as np
 from rembg import remove, new_session
@@ -172,7 +175,7 @@ def get_resampled_video_transparent(video_in, start_frame, max_frames, target_fp
     if isinstance(video_in, Image.Image):
         frame = torch.from_numpy(np.array(video_in).astype(np.uint8)).unsqueeze(0)
         return frame if bridge == "torch" else frame.numpy()
-    if virtual_spec is None and isinstance(video_in, str) and not video_needs_corrected_decode(video_in):
+    if virtual_spec is None and decord is not None and isinstance(video_in, str) and not video_needs_corrected_decode(video_in):
         decord.bridge.set_bridge(bridge)
         reader = decord.VideoReader(video_in)
         fps = round(reader.get_avg_fps())

@@ -7,6 +7,9 @@ import torch
 import torch.amp as amp
 import torch.nn as nn
 import torch.nn.functional as F
+import sys
+
+_device_type = "mps" if (sys.platform == "darwin" and torch.backends.mps.is_available()) else "cuda"
 
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
@@ -32,7 +35,7 @@ def restore_latent_shape(latent):
     return latent.reshape(latent.shape[0], -1, latent.shape[-1] )
 
 
-@amp.autocast('cuda', enabled=False)
+@amp.autocast(_device_type, enabled=False)
 def rope_params(max_seq_len, dim, theta=10000, freqs_scaling=1.0):
     assert dim % 2 == 0
     pos =  torch.arange(max_seq_len)
@@ -43,7 +46,7 @@ def rope_params(max_seq_len, dim, theta=10000, freqs_scaling=1.0):
     return freqs
 
 
-@amp.autocast('cuda', enabled=False)
+@amp.autocast(_device_type, enabled=False)
 def rope_params_audio_real(max_seq_len, head_dim, rotary_dim, theta=10000, freqs_scaling=1.0):
     assert rotary_dim % 2 == 0
     assert rotary_dim <= head_dim
@@ -60,7 +63,7 @@ def rope_params_audio_real(max_seq_len, head_dim, rotary_dim, theta=10000, freqs
     return cos, sin
 
     
-@amp.autocast('cuda', enabled=False)
+@amp.autocast(_device_type, enabled=False)
 def rope_apply_1d(x, grid_sizes, freqs):
     output = []
     for i, (l,) in enumerate(grid_sizes.tolist()):
@@ -94,7 +97,7 @@ def rope_apply_1d(x, grid_sizes, freqs):
         output.append(x_i_full.to(x.dtype))
     return torch.stack(output)
 
-@amp.autocast('cuda', enabled=False)
+@amp.autocast(_device_type, enabled=False)
 def rope_apply_3d(x, grid_sizes, freqs):
     n, c = x.size(2), x.size(3) // 2
 
@@ -124,7 +127,7 @@ def rope_apply_3d(x, grid_sizes, freqs):
         output.append(x_i)
     return torch.stack(output).bfloat16()
 
-@amp.autocast('cuda', enabled=False)
+@amp.autocast(_device_type, enabled=False)
 def rope_apply(x, grid_sizes, freqs):
     x_ndim = grid_sizes.shape[-1]
     if isinstance(freqs, tuple):

@@ -7,6 +7,9 @@ import torch.nn.functional as F
 from einops import rearrange
 from open_clip import create_model_from_pretrained
 from torchvision.transforms import Normalize
+import sys
+
+_device_type = "mps" if (sys.platform == "darwin" and torch.backends.mps.is_available()) else "cuda"
 
 from .ext.autoencoder import AutoEncoderModule
 from .ext.autoencoder.distributions import DiagonalGaussianDistribution
@@ -85,7 +88,7 @@ class FeaturesUtils(nn.Module):
 
     @torch.no_grad()
     def wrapped_decode(self, z):
-        with torch.amp.autocast('cuda', dtype=self.dtype):
+        with torch.amp.autocast(_device_type, dtype=self.dtype):
             mel_decoded = self.decode(z)
             audio = self.vocode(mel_decoded)
 
@@ -93,7 +96,7 @@ class FeaturesUtils(nn.Module):
 
     @torch.no_grad()
     def wrapped_encode(self, audio):
-        with torch.amp.autocast('cuda', dtype=self.dtype):
+        with torch.amp.autocast(_device_type, dtype=self.dtype):
             dist = self.encode_audio(audio)
 
             return dist.mean

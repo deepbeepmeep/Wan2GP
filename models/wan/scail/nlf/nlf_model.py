@@ -7,6 +7,9 @@ from typing import Dict, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import sys
+
+_device_type = "mps" if (sys.platform == "darwin" and torch.backends.mps.is_available()) else "cuda"
 
 from . import ptu, ptu3d
 from . import util as model_util
@@ -103,7 +106,7 @@ class NLFModel(nn.Module):
             features_processed, weights, flip_canonicals_per_image
         )
 
-        with torch.amp.autocast('cuda', enabled=False):
+        with torch.amp.autocast(_device_type, enabled=False):
             return self.heatmap_head.reconstruct_absolute(
                 coords2d.float(), coords3d.float(), uncertainties.float(), intrinsic_matrix.float()
             )

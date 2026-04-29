@@ -20,7 +20,7 @@ def gen_erosion(alpha, min_kernel_size, max_kernel_size):
     return erode.astype(np.float32)
 
 @torch.inference_mode()
-@torch.amp.autocast('cuda')
+@torch.amp.autocast('mps' if torch.backends.mps.is_available() else 'cuda')
 def matanyone(processor, frames_np, mask, r_erode=0, r_dilate=0, n_warmup=10):
     """
     Args:

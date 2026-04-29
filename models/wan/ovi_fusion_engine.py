@@ -2,6 +2,9 @@ import os
 
 import torch
 import logging
+import sys
+
+_device_type = "mps" if (sys.platform == "darwin" and torch.backends.mps.is_available()) else "cuda"
 from textwrap import indent
 import torch.nn as nn
 from tqdm import tqdm
@@ -248,7 +251,7 @@ class OviFusionEngine:
         }
 
         # Sampling loop
-        with torch.amp.autocast('cuda', enabled=self.target_dtype != torch.float32, dtype=self.target_dtype):
+        with torch.amp.autocast(_device_type, enabled=self.target_dtype != torch.float32, dtype=self.target_dtype):
             for i, (t_v, t_a) in tqdm(enumerate(zip(timesteps_video, timesteps_audio)), total=min(len(timesteps_video), len(timesteps_audio))):
                 timestep_input = torch.full((1,), t_v, device=self.device)
                 kwargs.update({

@@ -19,6 +19,14 @@ if sys.platform.startswith("linux") and "NUMBA_THREADING_LAYER" not in os.enviro
     os.environ["NUMBA_THREADING_LAYER"] = "workqueue"
 from shared.asyncio_utils import silence_proactor_connection_reset
 silence_proactor_connection_reset()
+
+# ── Apple Silicon MPS patch: MUST come before mmgp import ──
+try:
+    from shared.device_patch import apply_mps_patch
+    _mps_active = apply_mps_patch()
+except Exception:
+    _mps_active = False
+
 import time
 import threading
 import warnings
@@ -72,6 +80,12 @@ from shared.deepy import cli as deepy_cli
 from shared.deepy import gradio_ui as deepy_gradio_ui
 from shared import extra_settings
 import torch
+# Apple Silicon MPS compatibility patch - must be imported immediately after torch
+try:
+    from shared.device_patch import apply_mps_patch
+    apply_mps_patch()
+except Exception:
+    pass
 import gc
 import traceback
 import math 
@@ -2040,7 +2054,10 @@ else:
 args.flow_reverse = True
 processing_device = args.gpu
 if len(processing_device) == 0:
-    processing_device ="cuda"
+    if sys.platform == 'darwin' and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        processing_device = "mps"
+    else:
+        processing_device = "cuda"
 # torch.backends.cuda.matmul.allow_fp16_accumulation = True
 lock_ui_attention = False
 lock_ui_transformer = False
@@ -2775,6 +2792,9 @@ default_profile_audio = force_profile_no if force_profile_no >= 0 else server_co
 default_profile = default_profile_video
 loaded_profile = force_profile_no = -1
 compile = server_config.get("compile", "")
+# Disable torch.compile on MPS — inductor backend requires CUDA (USE_CUDA=OFF build)
+if sys.platform == 'darwin' and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+    compile = False  # Must be False, not "" — mmgp treats "" as [""] which is truthy!
 boost = server_config.get("boost", 1)
 enable_int8_kernels = server_config.get("enable_int8_kernels", 1)
 apply_int8_kernel_setting(enable_int8_kernels)
@@ -3481,9 +3501,9 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
         loras_transformer += ["transformer"]        
     if "transformer2" in pipe:
         loras_transformer += ["transformer2"]
-    if len(compile) > 0 and hasattr(wan_model, "custom_compile"):
+    if compile and hasattr(wan_model, "custom_compile"):
         wan_model.custom_compile(backend= "inductor", mode ="default")
-    compile_modules = model_def.get("compile", compile) if len(compile) > 0 else ""
+    compile_modules = model_def.get("compile", compile) if compile else ""
     if compile_modules == False:
         _load_models_info("Pytorch compilation is not supported for this Model")
     # kwargs["pinnedMemory"] = "text_encoder"

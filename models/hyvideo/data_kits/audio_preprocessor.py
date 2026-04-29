@@ -3,7 +3,12 @@ import os
 import cv2
 import json
 import time
-import decord
+try:
+    import decord
+    from decord import VideoReader
+except ImportError:
+    decord = None
+    VideoReader = None
 import einops
 import librosa
 import torch

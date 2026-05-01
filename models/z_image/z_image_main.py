@@ -189,6 +189,7 @@ class model_factory:
         NAG_tau: float = 3.5,
         NAG_alpha: float = 0.5,
         loras_slists=None,
+        model_mode=None,
         **kwargs,
     ):
         generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu")
@@ -217,6 +218,14 @@ class model_factory:
         if self.model_def.get("guidance_max_phases", 0) < 1:
             guide_scale = 0
 
+        model_mode_int = None
+        if model_mode is not None:
+            try:
+                model_mode_int = int(model_mode)
+            except (TypeError, ValueError):
+                model_mode_int = None
+        lanpaint_enabled = model_mode_int in (2, 3, 4, 5)
+
         images = self.pipeline(
             prompt=input_prompt,
             negative_prompt=n_prompt,
@@ -243,6 +252,8 @@ class model_factory:
             NAG_tau=NAG_tau,
             NAG_alpha=NAG_alpha,
             loras_slists=loras_slists,
+            model_mode_int=model_mode_int,
+            lanpaint_enabled=lanpaint_enabled,
         )
 
         if images is None:

@@ -409,6 +409,8 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         NAG_tau: float = 3.5,
         NAG_alpha: float = 0.5,
         loras_slists = None,
+        model_mode_int: int = 0,
+        lanpaint_enabled: bool = False,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -672,6 +674,66 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                 # v1 control: just use the control latent directly (16 channels)
                 control_latent_input = control_latent.unsqueeze(2)
 
+        # LanPaint preparation
+        lanpaint_proc = None
+        lanpaint_mask = None
+        original_image_latents = None
+        randn = None
+
+        if lanpaint_enabled and control_image is not None and inpaint_mask is not None and not use_unified:
+            # Convert control image to tensor [B, C, H, W]
+            lp_image = control_image
+            if lp_image.dim() == 4 and lp_image.shape[1] == 1:
+                lp_image = lp_image.squeeze(1).unsqueeze(0)
+            elif lp_image.dim() == 3:
+                lp_image = lp_image.unsqueeze(0)
+            lp_image = lp_image.to(device=device, dtype=self.vae.dtype)
+
+            # Encode original image to latents
+            original_image_latents = self.vae.encode(lp_image).latent_dist.mode()
+            original_image_latents = (original_image_latents - self.vae.config.shift_factor) * self.vae.config.scaling_factor
+
+            # Store initial noise
+            randn = latents.clone()
+
+            # Build mask in packed latent space
+            lp_mask = inpaint_mask.to(device=device, dtype=torch.float32)
+            if lp_mask.dim() == 3:
+                lp_mask = lp_mask.unsqueeze(0)
+            if lp_mask.dim() == 4 and lp_mask.shape[1] > 1:
+                lp_mask = lp_mask[:, :1]
+
+            # Downsample to latent resolution
+            latent_h, latent_w = latents.shape[-2], latents.shape[-1]
+            if lp_mask.shape[-2:] != (latent_h, latent_w):
+                lp_mask = torch.nn.functional.interpolate(lp_mask, size=(latent_h, latent_w), mode='nearest')
+            lp_mask = (lp_mask > 0.5).float()
+
+            # Ensure batch size matches latents
+            if lp_mask.shape[0] == 1 and latents.shape[0] > 1:
+                lp_mask = lp_mask.expand(latents.shape[0], -1, -1, -1)
+
+            # Pack: [B, 1, H_latent, W_latent] -> [B, 1, 1, H_latent, W_latent] -> pack -> [B, seq, 4]
+            lp_mask = lp_mask.unsqueeze(2)
+            from shared.inpainting.lanpaint import _pack_latents
+            lanpaint_mask = _pack_latents(lp_mask)
+
+            # Pack original latents and noise
+            original_image_latents = _pack_latents(original_image_latents.unsqueeze(2))
+            randn = _pack_latents(randn.unsqueeze(2))
+            if original_image_latents.shape[0] == 1 and latents.shape[0] > 1:
+                original_image_latents = original_image_latents.expand(latents.shape[0], -1, -1)
+                randn = randn.expand(latents.shape[0], -1, -1)
+
+            # Instantiate LanPaint
+            from shared.inpainting.lanpaint import LanPaint
+            lanpaint_steps = {2: 2, 3: 5, 4: 10, 5: 15}.get(model_mode_int, 5)
+            lanpaint_proc = LanPaint(
+                NSteps=lanpaint_steps,
+                IS_FLUX=False,
+                IS_FLOW=True,
+            )
+
         if use_unified:
             unified_cfg = _resolve_unified_sampler_config(sample_solver, num_inference_steps, unified_sampler_config)
             sampler = UnifiedSampler()
@@ -873,6 +935,7 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                             latents_preview = latents_preview.transpose(0, 2)
                         callback(i, latents_preview[0], False)
                         latents_preview = None
+                    progress_bar.update(1)
 
             if self._interrupt or final_x_hat is None:
                 return None
@@ -883,6 +946,61 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
 
             if hasattr(self.transformer, 'loras_slists') and self.transformer.loras_slists is not None:
                 update_loras_slists(self.transformer, self.transformer.loras_slists, len(timesteps))
+
+            # LanPaint helper functions for default scheduler path
+            if lanpaint_proc is not None:
+                from shared.inpainting.lanpaint import _pack_latents, _unpack_latents
+                lp_state = {"t": None}
+
+                def zimage_denoise(lp_latents_packed, lp_cfg_scale):
+                    lp_latents = _unpack_latents(lp_latents_packed, height=height, width=width, vae_scale_factor=self.vae_scale_factor)
+                    lp_t = lp_state["t"]
+                    lp_timestep = lp_t.expand(lp_latents.shape[0])
+                    lp_timestep = (1000 - lp_timestep) / 1000
+                    lp_apply_cfg = self.do_classifier_free_guidance and lp_cfg_scale > 0
+                    if lp_apply_cfg:
+                        lp_out = self.transformer(
+                            [lp_latents, lp_latents],
+                            lp_timestep,
+                            [prompt_embeds[0], negative_prompt_embeds[0]],
+                            control_context_list=[control_latent_input, control_latent_input] if control_latent_input is not None else None,
+                            control_context_scale=control_context_scale,
+                            callback=None,
+                            pipeline=self,
+                            **kwargs,
+                        )
+                        if lp_out is None:
+                            return None, None
+                        lp_pos, lp_neg = lp_out
+                    else:
+                        lp_out = self.transformer(
+                            [lp_latents],
+                            lp_timestep,
+                            [prompt_embeds[0]],
+                            control_context_list=[control_latent_input] if control_latent_input is not None else None,
+                            control_context_scale=control_context_scale,
+                            callback=None,
+                            pipeline=self,
+                            **kwargs,
+                        )
+                        if lp_out is None:
+                            return None, None
+                        lp_pos = lp_out[0]
+                        lp_neg = None
+                    # Z-Image transformer outputs negative velocity; negate to match LanPaint's flow expectation
+                    lp_pos = -lp_pos
+                    if lp_neg is not None:
+                        lp_neg = -lp_neg
+                    lp_pos = _pack_latents(lp_pos)
+                    if lp_neg is not None:
+                        lp_neg = _pack_latents(lp_neg)
+                    return lp_pos, lp_neg
+
+                def zimage_cfg_predictions(lp_pos, lp_neg, lp_scale, lp_t):
+                    if lp_neg is None or lp_scale <= 1:
+                        return lp_pos
+                    lp_pred = lp_pos + lp_scale * (lp_pos - lp_neg)
+                    return lp_pred
 
             with self.progress_bar(total=num_inference_steps) as progress_bar:
                 for i, t in enumerate(timesteps):
@@ -904,6 +1022,31 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                             current_guidance_scale = 0.0
 
                     apply_cfg = self.do_classifier_free_guidance and current_guidance_scale > 0
+
+                    # ===== LANPAINT HOOK =====
+                    if lanpaint_proc is not None and i < len(timesteps) - 1:
+                        lp_state["t"] = t
+                        latents_packed = _pack_latents(latents.unsqueeze(2))
+                        # Normalize raw scheduler timestep to [0,1] flow time for LanPaint
+                        flow_t = t / self.scheduler.config.num_train_timesteps
+                        latents_packed = lanpaint_proc(
+                            denoise=zimage_denoise,
+                            cfg_predictions=zimage_cfg_predictions,
+                            true_cfg_scale=self.guidance_scale,
+                            cfg_BIG=1.0,
+                            x=latents_packed,
+                            latent_image=original_image_latents,
+                            noise=randn,
+                            sigma=flow_t,
+                            latent_mask=lanpaint_mask,
+                            height=height,
+                            width=width,
+                            vae_scale_factor=self.vae_scale_factor,
+                        )
+                        if latents_packed is None:
+                            return None
+                        latents = _unpack_latents(latents_packed, height=height, width=width, vae_scale_factor=self.vae_scale_factor).squeeze(2)
+                    # ===== END LANPAINT HOOK =====
 
                     latent_model_input = latents if latents.dtype == dtype else latents.to(dtype)
                     latent_model_input = latent_model_input.unsqueeze(2)
@@ -967,7 +1110,7 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                             latents_preview = latents_preview.transpose(0, 2)
                         callback(i, latents_preview[0], False)
                         latents_preview = None
-
+                    progress_bar.update(1)
 
         if self._interrupt:
             return None

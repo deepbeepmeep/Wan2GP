@@ -32,6 +32,12 @@ class family_handler:
             extra_model_def["inpaint_support"] = True
             extra_model_def["inpaint_video_prompt_type"] = "VA"
             extra_model_def["image_video_prompt_type"] = ""
+            extra_model_def["mask_strength_always_enabled"] = True
+            extra_model_def["video_guide_outpainting"] = [1, 2]
+            extra_model_def["mask_preprocessing"] = {
+                "selection": ["", "A", "NA"],
+                "visible": True,
+            }
             extra_model_def["model_modes"] = {
                 "choices": lanpaint_choices,
                 "default": 2,
@@ -41,8 +47,8 @@ class family_handler:
 
         if base_model_type in ["z_image_control", "z_image_control2", "z_image_control2_1"]:
             extra_model_def["mask_preprocessing"] = {
-                "selection":[ ""],
-                "visible": False
+                "selection": ["", "A", "NA"],
+                "visible": True,
             }
 
             extra_model_def["control_net_weight_name"] = "Control"
@@ -54,10 +60,6 @@ class family_handler:
             }
 
         if base_model_type in ["z_image_control2", "z_image_control2_1"]:
-            extra_model_def["mask_preprocessing"] = {
-                "selection":[ "", "A", "NA"],
-                "visible": False, 
-            }
             extra_model_def["parent_model_type"] = "z_image_control"
 
             # extra_model_def["image_ref_choices"] = {
@@ -191,6 +193,8 @@ class family_handler:
                     "NAG_scale": 1.0,
                     "NAG_tau": 3.5,
                     "NAG_alpha": 0.5,
+                    "denoising_strength": 1.0,
+                    "masking_strength": 0.25,
                 }
             )
 

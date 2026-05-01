@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import inspect
+import math
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import torch
@@ -411,6 +412,8 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         loras_slists = None,
         model_mode_int: int = 0,
         lanpaint_enabled: bool = False,
+        denoising_strength: float = 1.0,
+        masking_strength: float = 1.0,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -674,51 +677,47 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                 # v1 control: just use the control latent directly (16 channels)
                 control_latent_input = control_latent.unsqueeze(2)
 
-        # LanPaint preparation
+        # Shared inpainting resources (used by LanPaint and/or latent-level masking)
         lanpaint_proc = None
         lanpaint_mask = None
         original_image_latents = None
         randn = None
+        inpaint_mask_latents = None
 
-        if lanpaint_enabled and control_image is not None and inpaint_mask is not None and not use_unified:
+        if control_image is not None and inpaint_mask is not None:
             # Convert control image to tensor [B, C, H, W]
-            lp_image = control_image
-            if lp_image.dim() == 4 and lp_image.shape[1] == 1:
-                lp_image = lp_image.squeeze(1).unsqueeze(0)
-            elif lp_image.dim() == 3:
-                lp_image = lp_image.unsqueeze(0)
-            lp_image = lp_image.to(device=device, dtype=self.vae.dtype)
+            orig_image = control_image
+            if orig_image.dim() == 4 and orig_image.shape[1] == 1:
+                orig_image = orig_image.squeeze(1).unsqueeze(0)
+            elif orig_image.dim() == 3:
+                orig_image = orig_image.unsqueeze(0)
+            orig_image = orig_image.to(device=device, dtype=self.vae.dtype)
 
             # Encode original image to latents
-            original_image_latents = self.vae.encode(lp_image).latent_dist.mode()
+            original_image_latents = self.vae.encode(orig_image).latent_dist.mode()
             original_image_latents = (original_image_latents - self.vae.config.shift_factor) * self.vae.config.scaling_factor
 
             # Store initial noise
             randn = latents.clone()
 
-            # Build mask in packed latent space
-            lp_mask = inpaint_mask.to(device=device, dtype=torch.float32)
-            if lp_mask.dim() == 3:
-                lp_mask = lp_mask.unsqueeze(0)
-            if lp_mask.dim() == 4 and lp_mask.shape[1] > 1:
-                lp_mask = lp_mask[:, :1]
+            # Build latent-resolution mask for latent-level masking
+            m = inpaint_mask.to(device=device, dtype=torch.float32)
+            if m.dim() == 3:
+                m = m.unsqueeze(0)
+            if m.dim() == 4 and m.shape[1] > 1:
+                m = m[:, :1]
+            if m.shape[-2:] != latents.shape[-2:]:
+                m = torch.nn.functional.interpolate(m, size=latents.shape[-2:], mode='nearest')
+            m = (m > 0.5).float()
+            if m.shape[0] == 1 and latents.shape[0] > 1:
+                m = m.expand(latents.shape[0], -1, -1, -1)
+            inpaint_mask_latents = m.to(latents.dtype)
 
-            # Downsample to latent resolution
-            latent_h, latent_w = latents.shape[-2], latents.shape[-1]
-            if lp_mask.shape[-2:] != (latent_h, latent_w):
-                lp_mask = torch.nn.functional.interpolate(lp_mask, size=(latent_h, latent_w), mode='nearest')
-            lp_mask = (lp_mask > 0.5).float()
-
-            # Ensure batch size matches latents
-            if lp_mask.shape[0] == 1 and latents.shape[0] > 1:
-                lp_mask = lp_mask.expand(latents.shape[0], -1, -1, -1)
-
-            # Pack: [B, 1, H_latent, W_latent] -> [B, 1, 1, H_latent, W_latent] -> pack -> [B, seq, 4]
-            lp_mask = lp_mask.unsqueeze(2)
+        if lanpaint_enabled and control_image is not None and inpaint_mask is not None and not use_unified:
+            # Reuse already-built original_image_latents, randn, and inpaint_mask_latents
             from shared.inpainting.lanpaint import _pack_latents
-            lanpaint_mask = _pack_latents(lp_mask)
+            lanpaint_mask = _pack_latents(inpaint_mask_latents.unsqueeze(2))
 
-            # Pack original latents and noise
             original_image_latents = _pack_latents(original_image_latents.unsqueeze(2))
             randn = _pack_latents(randn.unsqueeze(2))
             if original_image_latents.shape[0] == 1 and latents.shape[0] > 1:
@@ -766,6 +765,8 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
             callback(-1, None, True, total_steps)
             if hasattr(self.transformer, 'loras_slists') and self.transformer.loras_slists is not None:
                 update_loras_slists(self.transformer, self.transformer.loras_slists, total_steps)
+
+            masked_steps = math.ceil(total_steps * masking_strength) if inpaint_mask_latents is not None else 0
 
             def model_fn(x_t, t, tt=None):
                 if self._interrupt:
@@ -927,6 +928,12 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
 
                     x_cur = x_next
 
+                    # Apply masking_strength constraint (latent-level masked denoising)
+                    if inpaint_mask_latents is not None and i < masked_steps:
+                        noise_level = t_cur.abs()
+                        noisy_original = original_image_latents * (1.0 - noise_level) + randn * noise_level
+                        x_cur = noisy_original * (1.0 - inpaint_mask_latents) + inpaint_mask_latents * x_cur
+
                     if self._interrupt:
                         break
                     if callback is not None and final_x_hat is not None:
@@ -946,6 +953,18 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
 
             if hasattr(self.transformer, 'loras_slists') and self.transformer.loras_slists is not None:
                 update_loras_slists(self.transformer, self.transformer.loras_slists, len(timesteps))
+
+            # Apply denoising_strength (img2img-style partial denoising)
+            # Note: LanPaint handles its own masking/denoising logic; skip these when LanPaint is active
+            if denoising_strength < 1.0 and original_image_latents is not None and not lanpaint_enabled:
+                first_step = int(len(timesteps[:-1]) * (1.0 - denoising_strength))
+                if first_step > 0:
+                    noise_level = timesteps[first_step] / self.scheduler.config.num_train_timesteps
+                    latents = original_image_latents * (1.0 - noise_level) + randn * noise_level
+                    timesteps = timesteps[first_step:]
+                    num_inference_steps = len(timesteps)
+
+            masked_steps = math.ceil(len(timesteps[:-1]) * masking_strength) if inpaint_mask_latents is not None and not lanpaint_enabled else 0
 
             # LanPaint helper functions for default scheduler path
             if lanpaint_proc is not None:
@@ -1101,6 +1120,12 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
 
                     latents = self.scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
                     assert latents.dtype == torch.float32
+
+                    # Apply masking_strength constraint (latent-level masked denoising)
+                    if inpaint_mask_latents is not None and i < masked_steps and not lanpaint_enabled:
+                        noise_level = t / self.scheduler.config.num_train_timesteps
+                        noisy_original = original_image_latents * (1.0 - noise_level) + randn * noise_level
+                        latents = noisy_original * (1.0 - inpaint_mask_latents) + inpaint_mask_latents * latents
 
                     if self._interrupt:
                         break

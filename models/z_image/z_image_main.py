@@ -190,6 +190,8 @@ class model_factory:
         NAG_alpha: float = 0.5,
         loras_slists=None,
         model_mode=None,
+        denoising_strength=1.0,
+        masking_strength=1.0,
         **kwargs,
     ):
         generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu")
@@ -254,6 +256,8 @@ class model_factory:
             loras_slists=loras_slists,
             model_mode_int=model_mode_int,
             lanpaint_enabled=lanpaint_enabled,
+            denoising_strength=denoising_strength,
+            masking_strength=masking_strength,
         )
 
         if images is None:

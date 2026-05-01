@@ -194,7 +194,7 @@ class family_handler:
                     "NAG_tau": 3.5,
                     "NAG_alpha": 0.5,
                     "denoising_strength": 1.0,
-                    "masking_strength": 0.25,
+                    "masking_strength": 1.0,
                 }
             )
 

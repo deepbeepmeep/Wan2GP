@@ -11,7 +11,7 @@
             },
             "cu130": { 
                 "label": "Torch 2.10.0 + CUDA 13.0", 
-                "cmd": "torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130" 
+                "cmd": "torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130 --extra-index-url https://pypi.org/simple" 
             },
             "rocm65": { 
                 "label": "ROCm 6.5 (TheRock)", 

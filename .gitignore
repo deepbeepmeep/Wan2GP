@@ -132,3 +132,4 @@ supabase/
 
 # live_test run artifacts
 scripts/live_test/runs/
+this.env

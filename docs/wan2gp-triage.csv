@@ -1,0 +1,270 @@
+path,hunk,bucket,carry_location,owner,verification
+Wan2GP/.gitignore,project metadata drift vs upstream,upstreamable,,tooling,manual diff review before resync
+Wan2GP/LICENSE.txt,project metadata drift vs upstream,upstreamable,,tooling,manual diff review before resync
+Wan2GP/README.md,project metadata drift vs upstream,upstreamable,,tooling,manual diff review before resync
+Wan2GP/defaults/ace_step_v1_5_xl.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/defaults/ace_step_v1_5_xl_turbo_lm_0_6b.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/defaults/ace_step_v1_5_xl_turbo_lm_1_7b.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/defaults/ace_step_v1_5_xl_turbo_lm_4b.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/defaults/i2v_2_2_Enhanced_Lightning_v2.json,preset/config drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/defaults/index_tts2.json,preset/config drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/defaults/kugelaudio_0_open.json,preset/config drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/defaults/ltx2_19B.json,preset/config drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/defaults/ltx2_19B_nvfp4.json,preset/config drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/defaults/ltx2_22B.json,preset/config drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/defaults/ltx2_22B_1_1.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/defaults/ltx2_22B_distilled.json,preset/config drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/defaults/ltx2_22B_distilled_1_1.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/defaults/ltx2_22B_distilled_gguf_q4_k_m.json,preset/config drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/defaults/ltx2_22B_distilled_gguf_q6_k.json,preset/config drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/defaults/ltx2_22B_distilled_gguf_q8_0.json,preset/config drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/defaults/ltx2_22B_nvfp4.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/defaults/ltx2_distilled.json,preset/config drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/defaults/ltx2_distilled_gguf_q4_k_m.json,preset/config drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/defaults/ltx2_distilled_gguf_q6_k.json,preset/config drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/defaults/ltx2_distilled_gguf_q8_0.json,preset/config drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/defaults/magi_human.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/defaults/magi_human_distill.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/defaults/magi_human_distill_sr1080.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/defaults/magi_human_sr1080.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/defaults/qwen3_tts_base.json,preset/config drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/defaults/wan_2_2_i2v_lightning_baseline_2_2_2.json,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/defaults/wan_2_2_i2v_lightning_baseline_3_3.json,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/defaults/wan_2_2_i2v_lightning_svi_3_3.json,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/defaults/wan_2_2_i2v_lightning_svi_endframe.json,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/defaults/wan_2_2_vace_lightning_baseline_2_2_2.json,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/defaults/wan_2_2_vace_lightning_baseline_3_3.json,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/defaults/z_image_img2img.json,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/docs/API.md,documentation drift vs upstream,upstreamable,,tooling,manual diff review before resync
+Wan2GP/docs/CHANGELOG.md,documentation drift vs upstream,upstreamable,,tooling,manual diff review before resync
+Wan2GP/docs/DEEPY.md,upstream-only addition,accept-upstream,,tooling,post-resync 6-file travel suite green
+Wan2GP/docs/INSTALLATION.md,documentation drift vs upstream,upstreamable,,tooling,manual diff review before resync
+Wan2GP/docs/OVERVIEW.md,documentation drift vs upstream,upstreamable,,tooling,manual diff review before resync
+Wan2GP/docs/PLUGINS.md,documentation drift vs upstream,upstreamable,,tooling,manual diff review before resync
+Wan2GP/docs/third_party_licenses/Apache-2.0.txt,upstream-only addition,accept-upstream,,tooling,post-resync 6-file travel suite green
+Wan2GP/docs/third_party_licenses/BSD-3-Clause.txt,upstream-only addition,accept-upstream,,tooling,post-resync 6-file travel suite green
+Wan2GP/docs/third_party_licenses/MIT.txt,upstream-only addition,accept-upstream,,tooling,post-resync 6-file travel suite green
+Wan2GP/docs/third_party_licenses/README.md,upstream-only addition,accept-upstream,,tooling,post-resync 6-file travel suite green
+Wan2GP/icons/soundwave.jpg,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/loras_qwen/Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/loras_qwen/Qwen-Image-Edit-Lightning-8steps-V1.0-bf16.safetensors,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/loras_qwen/Qwen-Image-Lightning-4steps-V2.0-bf16.safetensors,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/loras_qwen/in_subject_qwen_edit_2_000006750.safetensors,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/loras_qwen/style_transfer_qwen_edit_2_000011250.safetensors,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/TTS/ace_step15/configs/ace_step_v1_5_xl_transformer_config_turbo.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/TTS/ace_step15/models/ace_step15_xl_hf.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/TTS/ace_step15/models/modeling_acestep_v15_turbo.py,TTS implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/TTS/ace_step15/models/modeling_acestep_v15_xl_turbo.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/TTS/ace_step15/pipeline_ace_step15.py,TTS implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/TTS/ace_step_handler.py,TTS implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/TTS/chatterbox_handler.py,TTS implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/TTS/heartmula_handler.py,TTS implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/TTS/index_tts2/accel/accel_engine.py,TTS implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/TTS/index_tts2/pipeline.py,TTS implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/TTS/index_tts2_handler.py,TTS implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/TTS/kugelaudio_handler.py,TTS implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/TTS/qwen3_handler.py,TTS implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/TTS/yue_handler.py,TTS implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/_settings.json,model implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/chatterbox/__init__.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/chatterbox/models/__init__.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/chatterbox/models/s3gen/__init__.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/chatterbox/models/s3gen/decoder.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/chatterbox/models/s3gen/flow.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/chatterbox/models/s3gen/flow_matching.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/chatterbox/models/s3gen/hifigan.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/chatterbox/models/s3gen/matcha/__init__.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/chatterbox/models/s3gen/matcha/decoder.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/chatterbox/models/s3gen/transformer/__init__.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/chatterbox/models/s3gen/transformer/attention.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/chatterbox/models/s3gen/transformer/encoder_layer.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/chatterbox/models/s3gen/transformer/subsampling.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/chatterbox/models/s3gen/transformer/upsample_encoder.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/chatterbox/models/s3gen/utils/__init__.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/chatterbox/models/s3gen/utils/mask.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/flux/flux_handler.py,model implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/longcat/longcat_main.py,model implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/longcat/modules/attention.py,model implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/longcat/modules/avatar/attention.py,model implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx2.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx2_handler.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_core/components/diffusion_steps.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_core/components/guiders.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_core/conditioning/__init__.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_core/conditioning/types/__init__.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_core/conditioning/types/keyframe_cond.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_core/conditioning/types/latent_cond.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_core/conditioning/types/reference_video_cond.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_core/model/transformer/attention.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_core/model/transformer/modality.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_core/model/transformer/rope.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_core/model/transformer/transformer.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_core/model/transformer/transformer_args.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_core/tools.py,clear_conditioning() strips appended keyframe tokens before VAE decode (lines 66-79),banodoco-fork-or-banodoco-patch,banodoco/Wan2GP or source/models/wgp/wgp_patches.py,worker-runtime,byte-compare saved latent fixture
+Wan2GP/models/ltx2/ltx_core/types.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_core/utils.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_pipelines/distilled.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_pipelines/ti2vid_one_stage.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_pipelines/ti2vid_two_stages.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_pipelines/utils/helpers.py,ltx2 hot-zone implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/ltx2/ltx_pipelines/utils/res2s.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/ltx2/prompt_enhancer.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/ltx_video/ltxv_handler.py,model implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/magi_human/__init__.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/checkpoint_schema.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/configs/magi_human.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/configs/magi_human_distill.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/convert_checkpoint_schema.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/magi_human_handler.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/magi_human_model.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/prompt_enhancers.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/__init__.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/common/__init__.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/common/arch.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/common/config.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/common/cpu_offload_wrapper.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/common/sequence_schema.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/infra/__init__.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/infra/distributed/__init__.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/infra/distributed/init_dist_env.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/infra/distributed/parallel_state.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/infra/distributed/utils.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/infra/parallelism/__init__.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/infra/parallelism/all_to_all_primitive.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/infra/parallelism/gather_scatter_primitive.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/infra/parallelism/ulysses_scheduler.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/model/__init__.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/model/dit/__init__.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/model/dit/dit_module.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/model/sa_audio/__init__.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/model/sa_audio/sa_audio_model.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/model/sa_audio/sa_audio_module.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/model/turbo_vaed/__init__.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/model/turbo_vaed/turbo_vaed_model.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/model/turbo_vaed/turbo_vaed_module.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/pipeline/__init__.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/pipeline/data_proxy.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/pipeline/scheduler_unipc.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/pipeline/video_process.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/utils/__init__.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/utils/env.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/utils/logger.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/utils/math.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/utils/seed.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/inference/utils/timer.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/magi_compiler/__init__.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/magi_compiler/api.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/magi_compiler/config.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/magi_human/upstream/unfoldNd.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/qwen/qwen_handler.py,model implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/wan/__init__.py,Wan runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/wan/animate/face_blocks.py,Wan runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/wan/any2video.py,Wan runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/wan/configs/fun_inp.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/wan/configs/fun_inp_1.3B.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/models/wan/diffusion_forcing.py,Wan runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/wan/distributed/__init__.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/wan/distributed/fsdp.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/wan/distributed/xdit_context_parallel.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/wan/modules/model.py,Wan runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/wan/modules/t5.py,Wan runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/wan/multitalk/attention.py,Wan runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/wan/multitalk/multitalk.py,Wan runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/wan/multitalk/multitalk_utils.py,Wan runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/wan/ovi_fusion_engine.py,Wan runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/wan/ovi_handler.py,Wan runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/wan/scail/model_scail.py,Wan runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/wan/uni3c/__init__.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/wan/uni3c/controlnet.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/wan/uni3c/load.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/models/wan/wan_handler.py,Wan runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/z_image/pipeline_z_image.py,model implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/models/z_image/z_image_main.py,model implementation drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/plugins.json,plugin integration drift vs upstream,upstreamable,,tooling,manual diff review before resync
+Wan2GP/plugins/wan2gp-configuration/plugin.py,plugin integration drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/plugins/wan2gp-guides/plugin.py,plugin integration drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/plugins/wan2gp-models-manager/plugin.py,plugin integration drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/plugins/wan2gp-motion-designer/assets/app.js,plugin integration drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/plugins/wan2gp-motion-designer/plugin_info.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/plugins/wan2gp-process-full-video/__init__.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/plugins/wan2gp-process-full-video/plugin.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/plugins/wan2gp-process-full-video/plugin_info.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/plugins/wan2gp-sample/plugin.py,plugin integration drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/preprocessing/matanyone/utils/model_assets.py,content drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/profiles/ltx2_distilled_presets/VBVR LoRA - Video Reasoning.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/profiles/ltx2_presets/HQ (Res2s).json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/profiles/ltx2_presets/Standard Dev (Euler).json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/profiles/ltx2_presets/VBVR LoRA - Video Reasoning.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/requirements.txt,project metadata drift vs upstream,upstreamable,,tooling,manual diff review before resync
+Wan2GP/scripts/install.bat,installer/update script drift vs upstream,upstreamable,,tooling,manual diff review before resync
+Wan2GP/scripts/install.sh,installer/update script drift vs upstream,upstreamable,,tooling,manual diff review before resync
+Wan2GP/scripts/update.bat,installer/update script drift vs upstream,upstreamable,,tooling,manual diff review before resync
+Wan2GP/setup.py,project metadata drift vs upstream,upstreamable,,tooling,manual diff review before resync
+Wan2GP/setup_config.json,project metadata drift vs upstream,upstreamable,,tooling,manual diff review before resync
+Wan2GP/shared/api.py,shared runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/api_cli.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/api_webui.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/attention.py,shared runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/cli_args.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/__init__.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/cli.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/config.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/controller.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/debug_bootstrap.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/default_system_prompt.txt,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/engine.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/gradio_ui.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/media_registry.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/settings/edit_image/Flux Klein 9B.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/settings/edit_image/Qwen Edit 2511 lighx2v 4 steps.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/settings/gen_image/Z Image Turbo.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/settings/gen_speech_from_description/Qwen3 1.7B.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/settings/gen_speech_from_sample/Index TTS 2.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/settings/gen_video/Enhanced Lightning v2.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/settings/gen_video/LTX-2 2.3 Distilled.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/settings/gen_video_with_speech/Infinitalk.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/settings/gen_video_with_speech/LTX-2.3 Distilled With Sound.json,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/tool_settings.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/transcription.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/ui_settings.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/video_tools.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/deepy/vision.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/extra_settings.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/gradio/assistant_chat.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/gradio/gallery.py,Gradio UI drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/gradio/gradio_queue_focus_patch.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/gradio/ui_scripts.js,Gradio UI drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/gradio/ui_styles.css,Gradio UI drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/kernels/quanto_int8_inject.py,shared runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/llm_engines/cudagraph_kit.py,LLM engine drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/llm_engines/nanovllm/engine/block_manager.py,LLM engine drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/llm_engines/nanovllm/engine/llm_engine.py,LLM engine drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/llm_engines/nanovllm/engine/model_runner.py,LLM engine drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/llm_engines/nanovllm/layers/attention.py,LLM engine drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/llm_engines/nanovllm/models/qwen3_5.py,LLM engine drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/llm_engines/nanovllm/utils/context.py,LLM engine drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/llm_engines/nanovllm/vllm_support.py,LLM engine drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/model_dropdowns.py,shared runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/prompt_enhancer/qwen35_assistant_runtime.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/prompt_enhancer/qwen35_text.py,shared runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/prompt_enhancer/qwen35_vl.py,shared runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/prompt_enhancer/streaming.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/qtypes/gguf.py,shared runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/qtypes/nvfp4.py,shared runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/sage2_core.py,shared runtime drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/utils/audio_video.py,shared utility drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/utils/crash_diagnostics.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/utils/drive_detector.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/shared/utils/files_locator.py,shared utility drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/utils/media_recording.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/utils/plugins.py,shared utility drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/utils/process_locks.py,shared utility drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/utils/prompt_parser.py,shared utility drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/utils/storage_selector.py,vendored-only addition,banodoco-fork-or-banodoco-patch,banodoco/Wan2GP,worker-runtime,manual carry review before resync
+Wan2GP/shared/utils/thread_utils.py,shared utility drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/utils/utils.py,shared utility drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/utils/video_decode.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/utils/video_metadata.py,shared utility drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync
+Wan2GP/shared/utils/virtual_media.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/shared/utils/xthread_utils.py,upstream-only addition,accept-upstream,,worker-runtime,post-resync 6-file travel suite green
+Wan2GP/wgp.py,content drift vs upstream,upstreamable,,worker-runtime,manual diff review before resync

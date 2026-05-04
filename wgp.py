@@ -12182,7 +12182,8 @@ if __name__ == "__main__":
             quit_application()
         
         chrome_exe=args.run_as_chrome_app
-        run_chrome([chrome_exe, "--app="+url], finish)
+        profile=os.path.join( Path.cwd(), "appModeProfile")        
+        run_chrome([chrome_exe,"--user-data-dir="+profile, "--app="+url], finish)
     if args.open_browser:
         import webbrowser       
         webbrowser.open(url, new = 0, autoraise = True)

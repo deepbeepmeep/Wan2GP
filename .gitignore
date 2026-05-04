@@ -33,10 +33,7 @@ samples/
 .DS_Store
 *DS_Store
 google/
-Wan2.1-T2V-14B/
-Wan2.1-T2V-1.3B/
-Wan2.1-I2V-14B-480P/
-Wan2.1-I2V-14B-720P/
+finetunes/
 outputs/
 outputs2/
 gradio_outputs/

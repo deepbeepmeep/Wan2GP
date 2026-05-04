@@ -93,6 +93,8 @@ class GeneratedArtifact:
     media_type: str
     client_id: str = ""
     video_tensor_uint8: Any = None
+    video_tensor_hdr: Any = None
+    hdr: bool = False
     audio_tensor: Any = None
     audio_sampling_rate: int | None = None
     fps: float | None = None
@@ -106,6 +108,8 @@ class GeneratedArtifact:
             media_type=str(payload.get("media_type") or "video"),
             client_id=str(payload.get("client_id") or default_client_id or "").strip(),
             video_tensor_uint8=payload.get("video_tensor_uint8"),
+            video_tensor_hdr=payload.get("video_tensor_hdr"),
+            hdr=bool(payload.get("hdr", False)),
             audio_tensor=payload.get("audio_tensor"),
             audio_sampling_rate=payload.get("audio_sampling_rate"),
             fps=payload.get("fps"),
@@ -158,9 +162,29 @@ def _coerce_api_video_tensor_uint8(output_video_frames: Any) -> Any:
     except Exception:
         torch = None
     if torch is not None and torch.is_tensor(output_video_frames):
-        return output_video_frames
+        return output_video_frames if output_video_frames.dtype == torch.uint8 else None
     if isinstance(output_video_frames, list) and len(output_video_frames) == 1 and torch is not None and torch.is_tensor(output_video_frames[0]):
-        return output_video_frames[0]
+        return output_video_frames[0] if output_video_frames[0].dtype == torch.uint8 else None
+    if isinstance(output_video_frames, list) and torch is not None:
+        tensors = [item for item in output_video_frames if torch.is_tensor(item)]
+        if len(tensors) == len(output_video_frames) and tensors and all(item.dtype == torch.uint8 and item.ndim == 4 for item in tensors):
+            return torch.cat(tensors, dim=1)
+    return None
+
+
+def _coerce_api_video_tensor_hdr(output_video_frames: Any) -> Any:
+    try:
+        import torch
+    except Exception:
+        torch = None
+    if torch is not None and torch.is_tensor(output_video_frames):
+        return output_video_frames if output_video_frames.dtype != torch.uint8 else None
+    if isinstance(output_video_frames, list) and len(output_video_frames) == 1 and torch is not None and torch.is_tensor(output_video_frames[0]):
+        return output_video_frames[0] if output_video_frames[0].dtype != torch.uint8 else None
+    if isinstance(output_video_frames, list) and torch is not None:
+        tensors = [item for item in output_video_frames if torch.is_tensor(item)]
+        if len(tensors) == len(output_video_frames) and tensors and all(item.dtype != torch.uint8 and item.ndim == 4 for item in tensors):
+            return torch.cat(tensors, dim=1)
     return None
 
 
@@ -168,7 +192,7 @@ def _coerce_api_audio_tensor(output_audio_data: Any) -> Any:
     return None if output_audio_data is None else np.asarray(output_audio_data, dtype=np.float32)
 
 
-def build_api_output_artifact_payload(client_id: str, video_path: Any, media_type: str, output_video_frames: Any, output_audio_data: Any, output_audio_sampling_rate: Any, output_fps: Any) -> dict[str, Any] | None:
+def build_api_output_artifact_payload(client_id: str, video_path: Any, media_type: str, output_video_frames: Any, output_audio_data: Any, output_audio_sampling_rate: Any, output_fps: Any, *, hdr: bool = False) -> dict[str, Any] | None:
     client_id = str(client_id or "").strip()
     if len(client_id) == 0:
         return None
@@ -177,15 +201,17 @@ def build_api_output_artifact_payload(client_id: str, video_path: Any, media_typ
         "client_id": client_id,
         "path": output_path,
         "media_type": str(media_type or "video"),
-        "video_tensor_uint8": _coerce_api_video_tensor_uint8(output_video_frames),
+        "video_tensor_uint8": None if hdr else _coerce_api_video_tensor_uint8(output_video_frames),
+        "video_tensor_hdr": _coerce_api_video_tensor_hdr(output_video_frames) if hdr else None,
+        "hdr": bool(hdr),
         "audio_tensor": _coerce_api_audio_tensor(output_audio_data),
         "audio_sampling_rate": int(output_audio_sampling_rate) if output_audio_sampling_rate else None,
         "fps": float(output_fps) if output_fps else None,
     }
 
 
-def store_api_output_artifact(gen: dict[str, Any], client_id: str, video_path: Any, media_type: str, output_video_frames: Any, output_audio_data: Any, output_audio_sampling_rate: Any, output_fps: Any) -> bool:
-    payload = build_api_output_artifact_payload(client_id, video_path, media_type, output_video_frames, output_audio_data, output_audio_sampling_rate, output_fps)
+def store_api_output_artifact(gen: dict[str, Any], client_id: str, video_path: Any, media_type: str, output_video_frames: Any, output_audio_data: Any, output_audio_sampling_rate: Any, output_fps: Any, *, hdr: bool = False) -> bool:
+    payload = build_api_output_artifact_payload(client_id, video_path, media_type, output_video_frames, output_audio_data, output_audio_sampling_rate, output_fps, hdr=hdr)
     if payload is None:
         return False
     gen.setdefault("api_output_artifacts", {})[payload["client_id"]] = payload

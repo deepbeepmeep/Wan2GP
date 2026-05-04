@@ -17,9 +17,19 @@ import json
 import numpy as np
 import soundfile as sf
 import zlib
+import re
+from .hdr import hdr10_x265_params, hdr10_zscale_filter, iter_hdr_gbrpf32_frames, iter_video_chunks
 
-from .video_decode import probe_video_stream_metadata
+from .video_decode import probe_video_stream_metadata, resolve_media_binary
 from .virtual_media import get_virtual_media_entry, parse_virtual_media_path, strip_virtual_media_suffix
+
+def _ffmpeg_binary():
+    return resolve_media_binary("ffmpeg") or "ffmpeg"
+
+
+def _ffprobe_binary():
+    return resolve_media_binary("ffprobe") or "ffprobe"
+
 
 def rand_name(length=8, suffix=''):
     name = binascii.b2a_hex(os.urandom(length)).decode('utf-8')
@@ -184,12 +194,36 @@ def get_video_encode_args(codec_key: str | None, container: str | None) -> list[
     return ["-c:v", "libx264", "-crf", "23", "-pix_fmt", "yuv420p"]
 
 
+def _crf_from_video_codec(codec_key: str | None, default: str = "18") -> str:
+    codec_key = str(codec_key or "").strip().lower()
+    if re.fullmatch(r"\d+", codec_key):
+        return codec_key
+    match = re.search(r"_(\d+)$", codec_key)
+    return match.group(1) if match is not None else str(default)
+
+
+def get_hdr_video_encode_args(codec_key: str | None, container: str | None) -> list[str]:
+    crf = _crf_from_video_codec(codec_key, default="18")
+    return [
+        "-vf", hdr10_zscale_filter(),
+        "-c:v", "libx265",
+        "-preset", "medium",
+        "-crf", crf,
+        "-pix_fmt", "yuv420p10le",
+        "-tag:v", "hvc1",
+        "-color_primaries", "bt2020",
+        "-color_trc", "smpte2084",
+        "-colorspace", "bt2020nc",
+        "-x265-params", hdr10_x265_params(),
+    ]
+
+
 def get_audio_codec_extension(codec_key):
     return _get_audio_codec_settings(codec_key)["ext"]
 
 
 def _run_ffmpeg_encode(input_path, output_path, codec, bitrate=None, sample_rate=None, drop_video=False):
-    cmd = ["ffmpeg", "-y", "-v", "error", "-i", input_path]
+    cmd = [_ffmpeg_binary(), "-y", "-v", "error", "-i", input_path]
     if drop_video:
         cmd.append("-vn")
     cmd += ["-c:a", codec]
@@ -255,7 +289,7 @@ def extract_audio_track_to_wav(video_path, output_path):
     import ffmpeg
     try:
         output_kwargs = {"map": f"0:a:{audio_track_index}", "acodec": "pcm_s16le"}
-        ffmpeg.input(source_path, **time_args).output(output_path, **output_kwargs).overwrite_output().run(quiet=True)
+        ffmpeg.input(source_path, **time_args).output(output_path, **output_kwargs).overwrite_output().run(cmd=_ffmpeg_binary(), quiet=True)
     except ffmpeg.Error as err:
         stderr = getattr(err, "stderr", b"")
         if isinstance(stderr, (bytes, bytearray)):
@@ -289,7 +323,7 @@ def extract_audio_tracks(source_video, verbose=False, query_only=False, codec_ke
         raise FileNotFoundError(msg)
 
     try:
-        probe = ffmpeg.probe(source_path)
+        probe = ffmpeg.probe(source_path, cmd=_ffprobe_binary())
     except ffmpeg.Error as err:
         stderr = getattr(err, 'stderr', b'')
         if isinstance(stderr, (bytes, bytearray)):
@@ -339,7 +373,7 @@ def extract_audio_tracks(source_video, verbose=False, query_only=False, codec_ke
         output_kwargs = {f'map': f'0:a:{stream_index}', 'acodec': audio_settings["codec"]}
         if audio_settings["bitrate"]:
             output_kwargs['b:a'] = audio_settings["bitrate"]
-        ffmpeg.input(source_path, **time_args).output(temp_path, **output_kwargs).overwrite_output().run(quiet=not verbose)
+        ffmpeg.input(source_path, **time_args).output(temp_path, **output_kwargs).overwrite_output().run(cmd=_ffmpeg_binary(), quiet=not verbose)
 
     return file_paths, metadata
 
@@ -414,7 +448,7 @@ def combine_and_concatenate_video_with_audio_tracks(
 
         maps += ['-map', f'[aout{i}]']
 
-    cmd = ['ffmpeg', '-y', *inputs,
+    cmd = [_ffmpeg_binary(), '-y', *inputs,
            '-filter_complex', ';'.join(filters),  # ✅ Only change made
            *maps, *metadata_args,
            '-c:v', 'copy',
@@ -438,11 +472,11 @@ def combine_video_with_audio_tracks(target_video, audio_tracks, output_video,
     if not audio_tracks:
         if verbose: print("No audio tracks to combine."); return False
 
-    dur = float(next(s for s in ffmpeg.probe(target_video)['streams']
+    dur = float(next(s for s in ffmpeg.probe(target_video, cmd=_ffprobe_binary())['streams']
                      if s['codec_type'] == 'video')['duration'])
     if verbose: print(f"Video duration: {dur:.3f}s")
 
-    cmd = ['ffmpeg', '-y', '-i', target_video]
+    cmd = [_ffmpeg_binary(), '-y', '-i', target_video]
     for path in audio_tracks:
         cmd += ['-i', path]
 
@@ -564,6 +598,74 @@ def save_video(tensor,
         except Exception as e:
             error = e
             print(f"error saving {save_file}: {e}")
+
+
+def save_hdr_video(
+                tensor,
+                save_file=None,
+                fps=30,
+                codec_type='libx264_8',
+                container='mp4',
+                preview_exposure=0.0,
+                retry=5):
+    """Save linear HDR video as a tagged 10-bit HEVC HDR file."""
+    suffix = f'.{container}'
+    output_file = osp.join('/tmp', rand_name(suffix=suffix)) if save_file is None else save_file
+    if not output_file.endswith(suffix):
+        output_file = osp.splitext(output_file)[0] + suffix
+    ffmpeg_path = resolve_media_binary("ffmpeg")
+    if ffmpeg_path is None:
+        raise RuntimeError("ffmpeg binary not found")
+
+    width = height = None
+    for chunk in iter_video_chunks(tensor):
+        if chunk is None:
+            continue
+        cur = chunk[0] if chunk.ndim == 5 and chunk.shape[0] == 1 else chunk
+        if cur.ndim == 4:
+            height, width = int(cur.shape[2]), int(cur.shape[3])
+            break
+    if width is None or height is None:
+        raise RuntimeError("Unable to determine HDR video dimensions.")
+
+    error = None
+    for _ in range(retry):
+        cmd = [
+            ffmpeg_path, "-y", "-v", "error",
+            "-f", "rawvideo",
+            "-pix_fmt", "gbrpf32le",
+            "-video_size", f"{width}x{height}",
+            "-framerate", f"{float(fps):.12g}",
+            "-i", "pipe:0",
+            *get_hdr_video_encode_args(codec_type, container),
+            "-an",
+            output_file,
+        ]
+        process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        try:
+            assert process.stdin is not None
+            wrote_frame = False
+            for frame_bytes in iter_hdr_gbrpf32_frames(tensor):
+                process.stdin.write(frame_bytes)
+                wrote_frame = True
+            if not wrote_frame:
+                raise RuntimeError("No HDR frames available to save.")
+            process.stdin.close()
+            stderr = process.stderr.read().decode("utf-8", errors="ignore").strip() if process.stderr is not None else ""
+            ret = process.wait()
+            if ret != 0:
+                raise RuntimeError(stderr or "ffmpeg HDR encode failed")
+            return output_file
+        except Exception as e:
+            error = e
+            try:
+                if process.stdin is not None and not process.stdin.closed:
+                    process.stdin.close()
+            except Exception:
+                pass
+            process.kill()
+            print(f"error saving HDR {save_file}: {e}")
+    raise error or RuntimeError(f"Failed to save HDR video: {save_file}")
 
 
 def _get_codec_params(codec_type, container):

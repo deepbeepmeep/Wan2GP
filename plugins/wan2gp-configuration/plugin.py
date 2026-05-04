@@ -27,7 +27,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = "Configuration Tab"
-        self.version = "1.1.1"
+        self.version = "1.1.2"
         self.description = "Lets you adjust all your performance and UI options for WAN2GP"
 
     def setup_ui(self):
@@ -198,7 +198,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     )
                     self.VAE_precision_choice = gr.Dropdown(choices=[("16-bit (faster, less VRAM)", "16"), ("32-bit (slower, better for sliding window)", "32")], value=self.server_config.get("vae_precision", "16"), label="VAE Encoding/Decoding Precision")
                     self.compile_choice = gr.Dropdown(choices=[("On (up to 20% faster, requires Triton)", "transformer"), ("Off", "")], value=self.compile, label="Compile Transformer Model (slight speed again, but first generation is slower and potential compatibility issues with some GPUs/Models)", interactive=not self.args.lock_config)
-                    self.depth_anything_v2_variant_choice = gr.Dropdown(choices=[("Large (more precise, slower)", "vitl"), ("Big (less precise, faster)", "vitb")], value=self.server_config.get("depth_anything_v2_variant", "vitl"), label="Depth Anything v2 VACE Preprocessor")
                     vae_config_value = self.vae_config if self.vae_config in [0, 1, 2, 3] else 0
                     self.vae_config_choice = gr.Dropdown(
                         choices=[
@@ -264,11 +263,14 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         interactive=not self.args.lock_config
                     )
                     self.matanyone_version_choice = gr.Dropdown(
-                        choices=[("MatAnyone v1 (original, default)", "v1"), ("MatAnyone v2", "v2")],
+                        choices=[("MatAnyone v1 (original, default)", "v1"), ("MatAnyone v2", "v2"), ("SAM3 (no Alpha / Grey level support but better Temporal Stability & Auto Mask Selection by Keyword)", "sam3")],
                         value=self.server_config.get("matanyone_version", "v1"),
-                        label="MatAnyone Video Mask Model",
+                        label="Video Mask Model",
                         interactive=not self.args.lock_config
                     )
+
+                    self.depth_anything_v2_variant_choice = gr.Dropdown(choices=[("Depth Anything 2 Large (more precise, slower)", "vitl"), ("Depth Anything 2 Big (less precise, faster)", "vitb"), ("Depth Anything 3 Metric Large (better temporal stability ?)", "da3_metric_large")], value=self.server_config.get("depth_anything_v2_variant", "vitl"), label="Depth Anything Preprocessor")
+
 
                 with gr.Tab("Prompt Enhancer / Deepy"):
                     with gr.Group():
@@ -332,7 +334,16 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.deepy_requirement_md = gr.Markdown(value=deepy_requirement_message(self.server_config))
 
                 with gr.Tab("Outputs"):
-                    self.video_output_codec_choice = gr.Dropdown(choices=[("x265 CRF 28 (Balanced)", 'libx265_28'), ("x264 Level 8 (Balanced)", 'libx264_8'), ("x265 CRF 8 (High Quality)", 'libx265_8'), ("x264 Level 10 (High Quality)", 'libx264_10'), ("x264 Lossless", 'libx264_lossless')], value=self.server_config.get("video_output_codec", "libx264_8"), label="Video Codec")
+                    self.video_output_codec_choice = gr.Dropdown(choices=[("x265 CRF 28 (Balanced)", 'libx265_28'), ("x264 Level 8 (Balanced)", 'libx264_8'), ("x265 CRF 8 (High Quality)", 'libx265_8'), ("x264 Level 10 (High Quality)", 'libx264_10'), ("x264 Lossless", 'libx264_lossless')], value=self.server_config.get("video_output_codec", "libx264_8"), label="SDR Video Codec")
+                    self.hdr_video_crf_choice = gr.Dropdown(
+                        choices=[
+                            ("Low (x265 CRF 14)", 14),
+                            ("Medium (x265 CRF 8)", 8),
+                            ("High (x265 CRF 4)", 4),
+                        ],
+                        value=self.server_config.get("hdr_video_crf", 8),
+                        label="HDR Video Codec",
+                    )
                     self.image_output_codec_choice = gr.Dropdown(choices=[("JPEG Q85", 'jpeg_85'), ("WEBP Q85", 'webp_85'), ("JPEG Q95", 'jpeg_95'), ("WEBP Q95", 'webp_95'), ("WEBP Lossless", 'webp_lossless'), ("PNG Lossless", 'png')], value=self.server_config.get("image_output_codec", "jpeg_95"), label="Image Codec")
                     self.audio_output_codec_choice = gr.Dropdown(
                         choices=[
@@ -420,7 +431,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.UI_theme_choice, self.queue_color_scheme_choice, self.process_queues_when_browser_unfocused_choice,
             self.quantization_choice, self.transformer_dtype_policy_choice, self.mixed_precision_choice,
             self.text_encoder_quantization_choice, self.lm_decoder_engine_choice, self.VAE_precision_choice, self.compile_choice,
-            self.depth_anything_v2_variant_choice, self.vae_config_choice, self.boost_choice, self.enable_int8_kernels_choice,
+            self.depth_anything_v2_variant_choice,
+            self.vae_config_choice, self.boost_choice, self.enable_int8_kernels_choice,
             self.video_profile_choice, self.image_profile_choice, self.audio_profile_choice,
             self.preload_in_VRAM_choice, self.max_reserved_loras_choice,
             self.enhancer_enabled_choice, self.enhancer_quantization_choice, self.enhancer_mode_choice,
@@ -428,7 +440,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.mmaudio_mode_choice, self.mmaudio_persistence_choice, self.rife_version_choice, self.matanyone_version_choice,
             self.deepy_enabled_choice, self.deepy_vram_mode_choice,
             self.deepy_context_tokens_choice, self.deepy_custom_system_prompt_choice,
-            self.video_output_codec_choice, self.image_output_codec_choice, self.audio_output_codec_choice, self.audio_stand_alone_output_codec_choice,
+            self.video_output_codec_choice, self.hdr_video_crf_choice, self.image_output_codec_choice, self.audio_output_codec_choice, self.audio_stand_alone_output_codec_choice,
             self.metadata_choice, self.embed_source_images_choice,
             self.video_save_path_choice, self.image_save_path_choice, self.audio_save_path_choice,
             self.notification_sound_enabled_choice, self.notification_sound_volume_choice,
@@ -497,7 +509,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             UI_theme_choice, queue_color_scheme_choice, process_queues_when_browser_unfocused_choice,
             quantization_choice, transformer_dtype_policy_choice, mixed_precision_choice,
             text_encoder_quantization_choice, lm_decoder_engine_choice, VAE_precision_choice, compile_choice,
-            depth_anything_v2_variant_choice, vae_config_choice, boost_choice, enable_int8_kernels_choice,
+            depth_anything_v2_variant_choice,
+            vae_config_choice, boost_choice, enable_int8_kernels_choice,
             video_profile_choice, image_profile_choice, audio_profile_choice,
             preload_in_VRAM_choice, max_reserved_loras_choice,
             enhancer_enabled_choice, enhancer_quantization_choice, enhancer_mode_choice,
@@ -505,7 +518,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             mmaudio_mode_choice, mmaudio_persistence_choice, rife_version_choice, matanyone_version_choice,
             deepy_enabled_choice, deepy_vram_mode_choice,
             deepy_context_tokens_choice, deepy_custom_system_prompt_choice,
-            video_output_codec_choice, image_output_codec_choice, audio_output_codec_choice, audio_stand_alone_output_codec_choice,
+            video_output_codec_choice, hdr_video_crf_choice, image_output_codec_choice, audio_output_codec_choice, audio_stand_alone_output_codec_choice,
             metadata_choice, embed_source_images_choice,
             save_path_choice, image_save_path_choice, audio_save_path_choice,
             notification_sound_enabled_choice, notification_sound_volume_choice,
@@ -553,7 +566,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "max_frames_multiplier": max_frames_multiplier_choice, "display_stats": display_stats_choice,
             "enable_4k_resolutions": enable_4k_resolutions_choice,
             "max_reserved_loras": max_reserved_loras_choice,
-            "video_output_codec": video_output_codec_choice, "image_output_codec": image_output_codec_choice,
+            "video_output_codec": video_output_codec_choice, "hdr_video_crf": hdr_video_crf_choice,
+            "image_output_codec": image_output_codec_choice,
             "audio_output_codec": audio_output_codec_choice,
             "audio_stand_alone_output_codec": audio_stand_alone_output_codec_choice,
             "model_hierarchy_type": model_hierarchy_type_choice,
@@ -575,6 +589,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
             if "attention_mode" in old_server_config: new_server_config["attention_mode"] = old_server_config["attention_mode"]
             if "compile" in old_server_config: new_server_config["compile"] = old_server_config["compile"]
 
+        for key in ("depth_anything_v3_process_res", "depth_anything_v3_chunk_size", "depth_anything_v3_chunk_overlap"):
+            new_server_config.pop(key, None)
+
         with open(self.server_config_filename, "w", encoding="utf-8") as writer:
             writer.write(json.dumps(new_server_config, indent=4))
         
@@ -587,7 +604,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "mmaudio_persistence", "mmaudio_enabled", "rife_version", "matanyone_version",
             "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed", "prompt_enhancer_quantization",
             DEEPY_ENABLED_KEY, DEEPY_VRAM_MODE_KEY, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CUSTOM_SYSTEM_PROMPT_KEY,
-            "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "video_container",
+            "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "hdr_video_crf", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "audio_stand_alone_output_codec", "checkpoints_paths", "loras_root", "save_queue_if_crash",
             "model_hierarchy_type", "UI_theme", "queue_color_scheme", gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY
         ]

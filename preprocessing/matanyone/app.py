@@ -2,8 +2,11 @@ import sys
 
 import os
 import json
+import re
+import gc
 import time
 import psutil
+from contextlib import nullcontext
 # import ffmpeg
 import imageio
 from PIL import Image
@@ -13,11 +16,11 @@ import torch.nn.functional as F
 import numpy as np
 import gradio as gr
 from datetime import datetime
-from .tools.painter import mask_painter
+from .tools.painter import mask_painter, point_painter
 from .tools.interact_tools import SamControler
 from .tools.misc import get_device
 from .tools.base_segmenter import set_image_encoder_patch
-from .utils.model_assets import ensure_selected_matanyone_assets, get_matanyone_title_html, get_selected_matanyone_version, load_selected_matanyone_model
+from .utils.model_assets import MATANYONE_SAM3, ensure_selected_matanyone_assets, get_matanyone_title_html, get_selected_matanyone_version, load_selected_matanyone_model
 from .matanyone.inference.inference_core import InferenceCore
 from .matanyone_wrapper import matanyone
 from shared.utils.audio_video import save_video, save_image
@@ -25,6 +28,9 @@ from mmgp import offload
 from shared.utils import files_locator as fl 
 from shared.utils.utils import truncate_for_filesystem, sanitize_file_name, process_images_multithread, calculate_new_dimensions, get_default_workers
 from shared.utils.process_locks import acquire_GPU_ressources, release_GPU_ressources, any_GPU_process_running
+from preprocessing.sam3.logger import get_logger
+
+logger = get_logger(__name__)
 
 arg_device = "cuda"
 arg_sam_model_type="vit_h"
@@ -38,6 +44,18 @@ bfloat16_supported = False
 PlugIn = None
 server_config_ref = None
 loaded_matanyone_version = None
+sam3_predictor = None
+sam3_click_session = None
+SAM3_MATANYONE_FILL_HOLE_AREA = 2
+MATANYONE_MASK_TYPE_CHOICES = [
+    ("Grey with Alpha (used by WanGP)", "wangp"),
+    ("Green Screen", "greenscreen"),
+    ("RGB With Alpha Channel (local Zip file)", "alpha"),
+]
+SAM3_MASK_TYPE_CHOICES = [
+    ("B & W (used by WanGP)", "wangp"),
+    ("Green Screen", "greenscreen"),
+]
 
 # SAM generator
 import copy
@@ -110,6 +128,338 @@ def get_prompt(click_state, click_input):
     }
     return prompt
 
+
+def is_sam3_selected():
+    return get_selected_matanyone_version(server_config_ref) == MATANYONE_SAM3
+
+
+def _matanyone_morphology_visibility():
+    return gr.update(visible=not is_sam3_selected())
+
+
+def _matanyone_mask_type_choices():
+    return SAM3_MASK_TYPE_CHOICES if is_sam3_selected() else MATANYONE_MASK_TYPE_CHOICES
+
+
+def _matanyone_mask_type_update(mask_type):
+    choices = _matanyone_mask_type_choices()
+    values = [value for _, value in choices]
+    return gr.update(choices=choices, value=mask_type if mask_type in values else "wangp")
+
+
+def _matanyone_mask_output_button_label():
+    return "B & W Mask Output" if is_sam3_selected() else "Alpha Mask Output"
+
+
+def _matanyone_mask_output_button_update():
+    return gr.update(value=_matanyone_mask_output_button_label())
+
+
+def _ensure_sam3_predictor():
+    global sam3_predictor, loaded_matanyone_version, model_loaded
+    if sam3_predictor is None:
+        ensure_selected_matanyone_assets(server_config_ref)
+        from preprocessing.sam3.preprocessor import load_sam3_mask_predictor
+
+        sam3_predictor = load_sam3_mask_predictor(include_text_encoder=False, postprocess_batch_size=1, use_batched_grounding=True, manual_model_loading=True)
+        sam3_predictor.load_model_to_gpu()
+        loaded_matanyone_version = MATANYONE_SAM3
+        model_loaded = True
+    return sam3_predictor
+
+
+def _sam3_load_model_to_gpu():
+    if sam3_predictor is not None and hasattr(sam3_predictor, "load_model_to_gpu"):
+        sam3_predictor.load_model_to_gpu()
+
+
+def _sam3_start_session(video_state, start_frame=0, end_frame=None, cache_frame_outputs=True):
+    predictor = _ensure_sam3_predictor()
+    _sam3_load_model_to_gpu()
+    frames = [Image.fromarray(frame) for frame in video_state["origin_images"][start_frame:end_frame]]
+    response = predictor.handle_request({"type": "start_session", "resource_path": frames, "offload_video_to_cpu": False, "cache_frame_outputs": cache_frame_outputs})
+    return response["session_id"]
+
+
+def _sam3_start_frame_session(frame):
+    predictor = _ensure_sam3_predictor()
+    _sam3_load_model_to_gpu()
+    response = predictor.handle_request({"type": "start_session", "resource_path": [Image.fromarray(frame)], "offload_video_to_cpu": False})
+    return response["session_id"]
+
+
+def _sam3_close_session(session_id):
+    if sam3_predictor is not None and session_id is not None:
+        sam3_predictor.handle_request({"type": "close_session", "session_id": session_id})
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+
+def _sam3_close_click_session():
+    global sam3_click_session
+    if sam3_click_session is not None:
+        _sam3_close_session(sam3_click_session["session_id"])
+        sam3_click_session = None
+
+
+def _sam3_get_click_session(video_state, frame_idx):
+    global sam3_click_session
+    frame = video_state["origin_images"][frame_idx]
+    frame_identity = id(frame)
+    if sam3_click_session is None or sam3_click_session["frame_idx"] != frame_idx or sam3_click_session["frame_identity"] != frame_identity:
+        _sam3_close_click_session()
+        sam3_click_session = {
+            "frame_idx": frame_idx,
+            "frame_identity": frame_identity,
+            "session_id": _sam3_start_frame_session(frame),
+        }
+    return sam3_click_session["session_id"]
+
+
+def _to_numpy(value):
+    if torch.is_tensor(value):
+        return value.detach().cpu().numpy()
+    return np.asarray(value)
+
+
+def _sam3_autocast_context():
+    if torch.cuda.is_available():
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    return nullcontext()
+
+
+def _sam3_bf16_prompt_payload(value):
+    if torch.is_tensor(value):
+        return value.to(dtype=torch.bfloat16) if value.is_floating_point() else value
+    if isinstance(value, dict):
+        return {key: _sam3_bf16_prompt_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_sam3_bf16_prompt_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sam3_bf16_prompt_payload(item) for item in value)
+    return value
+
+
+def _sam3_points_payload(points):
+    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    return torch.as_tensor(points, dtype=dtype)
+
+
+def _sam3_labels_payload(labels):
+    return torch.as_tensor(labels, dtype=torch.int32)
+
+
+def _sam3_outputs_to_mask(outputs, height, width, obj_ids=None, fill_hole_area=0):
+    if outputs is None or "out_binary_masks" not in outputs:
+        return np.zeros((height, width), dtype=np.uint8)
+    masks = _to_numpy(outputs["out_binary_masks"])
+    if masks.size == 0:
+        return np.zeros((height, width), dtype=np.uint8)
+    if masks.ndim == 2:
+        masks = masks[None, :, :]
+    elif masks.ndim == 4 and masks.shape[1] == 1:
+        masks = masks[:, 0]
+    elif masks.ndim > 3:
+        masks = masks.reshape((-1, *masks.shape[-2:]))
+    if obj_ids is not None:
+        out_obj_ids = _to_numpy(outputs.get("out_obj_ids", np.arange(masks.shape[0])))
+        keep = np.isin(out_obj_ids, np.asarray(list(obj_ids)))
+        masks = masks[keep]
+        if masks.size == 0:
+            return np.zeros((height, width), dtype=np.uint8)
+    if masks.shape[-2:] != (height, width):
+        masks = np.stack([cv2.resize(mask.astype(np.uint8), (width, height), interpolation=cv2.INTER_NEAREST) for mask in masks], axis=0)
+    mask = masks.astype(bool).any(axis=0)
+    if fill_hole_area > 0:
+        from preprocessing.sam3.preprocessor import fill_sam3_binary_mask_holes
+
+        mask = fill_sam3_binary_mask_holes(mask, fill_hole_area)
+    return mask.astype(np.uint8)
+
+
+def _paint_sam3_mask(image, mask, points=None, labels=None, mask_color=3):
+    painted = mask_painter(image, mask.astype("uint8"), mask_color=mask_color) if np.any(mask) else image.copy()
+    if points is not None and labels is not None:
+        height, width = image.shape[:2]
+        points = np.asarray(points, dtype=np.int32)
+        if points.size > 0:
+            points[:, 0] = np.clip(points[:, 0], 0, width - 1)
+            points[:, 1] = np.clip(points[:, 1], 0, height - 1)
+        labels = np.asarray(labels)
+        if np.any(labels > 0):
+            painted = point_painter(painted, points[labels > 0], 8, 0.9, 15, 2, 5)
+        if np.any(labels < 1):
+            painted = point_painter(painted, points[labels < 1], 50, 0.9, 15, 2, 5)
+    return Image.fromarray(painted)
+
+
+def _parse_sam3_keywords(keyword_text):
+    return [keyword.strip() for keyword in re.split(r"[\n,;]+", keyword_text or "") if keyword.strip()]
+
+
+def _sam3_relative_points(points, width, height):
+    points = np.asarray(points, dtype=np.float32).copy()
+    if points.size == 0:
+        return points.reshape(0, 2).tolist()
+    points[:, 0] = np.clip(points[:, 0], 0, width - 1) / max(width - 1, 1)
+    points[:, 1] = np.clip(points[:, 1], 0, height - 1) / max(height - 1, 1)
+    return points.tolist()
+
+
+def _sam3_preview_point_mask(video_state, frame_idx, points, labels):
+    frame = video_state["origin_images"][frame_idx]
+    height, width = frame.shape[:2]
+    session_id = _sam3_get_click_session(video_state, frame_idx)
+    from preprocessing.sam3.preprocessor import encode_sam3_keyword_prompts
+
+    preencoded = _sam3_bf16_prompt_payload(encode_sam3_keyword_prompts(["<text placeholder>"], keep_text_encoder_loaded=True)["<text placeholder>"])
+    with _sam3_autocast_context():
+        result = sam3_predictor.handle_request({
+            "type": "add_prompt",
+            "session_id": session_id,
+            # This preview session contains only the selected source frame, so its local index is 0.
+            "frame_index": 0,
+            "points": _sam3_points_payload(_sam3_relative_points(points, width, height)),
+            "point_labels": _sam3_labels_payload(labels),
+            "obj_id": 1,
+            "rel_coordinates": True,
+            "clear_old_points": True,
+            "preencoded_text_outputs": preencoded,
+        })
+    return _sam3_outputs_to_mask(result["outputs"], height, width, fill_hole_area=SAM3_MATANYONE_FILL_HOLE_AREA)
+
+
+def _sam3_preview_keyword_mask(video_state, frame_idx, keyword):
+    frame = video_state["origin_images"][frame_idx]
+    height, width = frame.shape[:2]
+    session_id = _sam3_start_frame_session(frame)
+    try:
+        from preprocessing.sam3.preprocessor import encode_sam3_keyword_prompts
+
+        preencoded = _sam3_bf16_prompt_payload(encode_sam3_keyword_prompts([keyword], keep_text_encoder_loaded=True)[keyword])
+        # This preview session contains only the selected source frame, so its local index is 0.
+        with _sam3_autocast_context():
+            result = sam3_predictor.handle_request({"type": "add_prompt", "session_id": session_id, "frame_index": 0, "text": keyword, "preencoded_text_outputs": preencoded})
+        return _sam3_outputs_to_mask(result["outputs"], height, width, fill_hole_area=SAM3_MATANYONE_FILL_HOLE_AREA)
+    finally:
+        _sam3_close_session(session_id)
+
+
+def _selected_sam3_prompts(interactive_state, mask_dropdown):
+    multi_mask = interactive_state.get("multi_mask", {})
+    prompts = multi_mask.get("sam3_prompts", [])
+    if len(prompts) == 0:
+        current_prompt = interactive_state.get("sam3_current_prompt")
+        return [current_prompt] if current_prompt is not None else []
+    if len(mask_dropdown) == 0:
+        mask_dropdown = ["mask_001"]
+    selected = []
+    for mask_name in sorted(mask_dropdown):
+        try:
+            mask_number = int(mask_name.split("_")[1]) - 1
+        except (IndexError, ValueError):
+            continue
+        if 0 <= mask_number < len(prompts) and prompts[mask_number] is not None:
+            selected.append(prompts[mask_number])
+    return selected
+
+
+def _sam3_propagate_keywords(video_state, keyword_prompts, start_frame, end_frame):
+    frames = video_state["origin_images"][start_frame:end_frame]
+    if len(keyword_prompts) == 0 or len(frames) == 0:
+        return []
+
+    _sam3_close_click_session()
+    from preprocessing.sam3.preprocessor import encode_sam3_keyword_prompts
+
+    alpha = [np.zeros((*frames[0].shape[:2], 1), dtype=np.uint8) for _ in frames]
+    video_pil = [Image.fromarray(frame) for frame in frames]
+    keywords = sorted({prompt["keyword"] for prompt in keyword_prompts})
+    logger.info("SAM3 encoding keywords before propagation: %s", ", ".join(f"'{keyword}'" for keyword in keywords))
+    preencoded_prompts = encode_sam3_keyword_prompts(keywords, keep_text_encoder_loaded=True)
+    for prompt in keyword_prompts:
+        local_frame_idx = prompt["frame_idx"] - start_frame
+        if local_frame_idx < 0 or local_frame_idx >= len(frames):
+            continue
+        session_id = None
+        try:
+            logger.info("SAM3 keyword currently being processed: '%s'", prompt["keyword"])
+            preencoded = _sam3_bf16_prompt_payload(preencoded_prompts[prompt["keyword"]])
+            _sam3_load_model_to_gpu()
+            response = _ensure_sam3_predictor().handle_request({"type": "start_session", "resource_path": video_pil, "offload_video_to_cpu": False, "cache_frame_outputs": False})
+            session_id = response["session_id"]
+            with _sam3_autocast_context():
+                sam3_predictor.handle_request({"type": "add_prompt", "session_id": session_id, "frame_index": local_frame_idx, "text": prompt["keyword"], "preencoded_text_outputs": preencoded})
+                for result in sam3_predictor.handle_stream_request({
+                    "type": "propagate_in_video",
+                    "session_id": session_id,
+                    "propagation_direction": "forward",
+                    "start_frame_index": local_frame_idx,
+                    "max_frame_num_to_track": len(frames) - local_frame_idx,
+                }):
+                    frame_idx = result["frame_index"]
+                    if local_frame_idx <= frame_idx < len(frames):
+                        alpha[frame_idx][:, :, 0] |= _sam3_outputs_to_mask(result["outputs"], *frames[frame_idx].shape[:2], fill_hole_area=SAM3_MATANYONE_FILL_HOLE_AREA) * 255
+        finally:
+            _sam3_close_session(session_id)
+    return alpha
+
+
+def _sam3_propagate_prompts(video_state, prompts, start_frame, end_frame):
+    frames = video_state["origin_images"][start_frame:end_frame]
+    height, width = frames[0].shape[:2]
+    alpha = [np.zeros((height, width, 1), dtype=np.uint8) for _ in range(end_frame - start_frame)]
+    point_prompts = [prompt for prompt in prompts if prompt.get("type") == "points"]
+    keyword_prompts = [prompt for prompt in prompts if prompt.get("type") == "keyword"]
+
+    _sam3_close_click_session()
+    if point_prompts:
+        session_id = _sam3_start_session(video_state, start_frame, end_frame, cache_frame_outputs=False)
+        try:
+            from preprocessing.sam3.preprocessor import encode_sam3_keyword_prompts
+
+            point_preencoded = _sam3_bf16_prompt_payload(encode_sam3_keyword_prompts(["<text placeholder>"], keep_text_encoder_loaded=True)["<text placeholder>"])
+            has_point_prompt = False
+            for obj_id, prompt in enumerate(point_prompts, start=1):
+                prompt_frame = video_state["origin_images"][prompt["frame_idx"]]
+                prompt_height, prompt_width = prompt_frame.shape[:2]
+                local_frame_idx = prompt["frame_idx"] - start_frame
+                if local_frame_idx < 0 or local_frame_idx >= len(frames):
+                    continue
+                has_point_prompt = True
+                with _sam3_autocast_context():
+                    sam3_predictor.handle_request({
+                        "type": "add_prompt",
+                        "session_id": session_id,
+                        "frame_index": local_frame_idx,
+                        "points": _sam3_points_payload(prompt.get("relative_points", _sam3_relative_points(prompt["points"], prompt_width, prompt_height))),
+                        "point_labels": _sam3_labels_payload(prompt["labels"]),
+                        "obj_id": obj_id,
+                        "rel_coordinates": True,
+                        "clear_old_points": True,
+                        "preencoded_text_outputs": point_preencoded,
+                    })
+            if has_point_prompt:
+                with _sam3_autocast_context():
+                    for result in sam3_predictor.handle_stream_request({
+                        "type": "propagate_in_video",
+                        "session_id": session_id,
+                        "propagation_direction": "forward",
+                        "start_frame_index": 0,
+                        "max_frame_num_to_track": end_frame - start_frame,
+                    }):
+                        frame_idx = result["frame_index"]
+                        if 0 <= frame_idx < len(frames):
+                            alpha[frame_idx][:, :, 0] |= _sam3_outputs_to_mask(result["outputs"], height, width, fill_hole_area=SAM3_MATANYONE_FILL_HOLE_AREA) * 255
+        finally:
+            _sam3_close_session(session_id)
+
+    for index, mask in enumerate(_sam3_propagate_keywords(video_state, keyword_prompts, start_frame, end_frame)):
+        alpha[index] |= mask
+    return alpha
+
+
 def get_frames_from_image(state, image_input, image_state, new_dim):
     """
     Args:
@@ -146,10 +496,14 @@ def get_frames_from_image(state, image_input, image_state, new_dim):
         
     image_info = "Image Name: N/A,\nFPS: N/A,\nTotal Frames: {},\nImage Size:{}".format(len(frames), image_size)
     acquire_GPU(state)
-    set_image_encoder_patch()
-    select_SAM(state)
-    model.samcontroler.sam_controler.reset_image() 
-    model.samcontroler.sam_controler.set_image(image_state["origin_images"][0])
+    if is_sam3_selected():
+        _sam3_close_click_session()
+        _ensure_sam3_predictor()
+    else:
+        set_image_encoder_patch()
+        select_SAM(state)
+        model.samcontroler.sam_controler.reset_image()
+        model.samcontroler.sam_controler.set_image(image_state["origin_images"][0])
     torch.cuda.empty_cache()
     release_GPU(state)
 
@@ -213,7 +567,7 @@ def get_frames_from_video(state, video_input, video_state, new_dim):
         image_size = (frames[0].shape[0],frames[0].shape[1]) 
 
     # resize if resolution too big
-    if image_size[0]>=1280 and image_size[0]>=1280:
+    if image_size[0] >= 1280 and image_size[1] >= 1280:
         scale = 1080 / min(image_size)
         new_w = int(image_size[1] * scale)
         new_h = int(image_size[0] * scale)
@@ -238,10 +592,14 @@ def get_frames_from_video(state, video_input, video_state, new_dim):
         }
     video_info = "Video Name: {},\nFPS: {},\nTotal Frames: {},\nImage Size:{}".format(video_state["video_name"], round(video_state["fps"], 0), len(frames), image_size)
     acquire_GPU(state)
-    set_image_encoder_patch()
-    select_SAM(state)
-    model.samcontroler.sam_controler.reset_image() 
-    model.samcontroler.sam_controler.set_image(video_state["origin_images"][0])
+    if is_sam3_selected():
+        _sam3_close_click_session()
+        _ensure_sam3_predictor()
+    else:
+        set_image_encoder_patch()
+        select_SAM(state)
+        model.samcontroler.sam_controler.reset_image()
+        model.samcontroler.sam_controler.set_image(video_state["origin_images"][0])
     torch.cuda.empty_cache()    
     release_GPU(state)
     return video_state, gr.update(interactive=False), video_info, video_state["origin_images"][0], \
@@ -260,8 +618,11 @@ def select_video_template(image_selection_slider,  video_state, interactive_stat
     video_state["select_frame_number"] = image_selection_slider
 
     # once select a new template frame, set the image in sam
-    model.samcontroler.sam_controler.reset_image()
-    model.samcontroler.sam_controler.set_image(video_state["origin_images"][image_selection_slider])
+    if not is_sam3_selected():
+        model.samcontroler.sam_controler.reset_image()
+        model.samcontroler.sam_controler.set_image(video_state["origin_images"][image_selection_slider])
+    else:
+        _sam3_close_click_session()
 
     return video_state["painted_images"][image_selection_slider], video_state, interactive_state
 
@@ -271,8 +632,11 @@ def select_image_template(image_selection_slider, video_state, interactive_state
     video_state["select_frame_number"] = image_selection_slider
 
     # once select a new template frame, set the image in sam
-    model.samcontroler.sam_controler.reset_image()
-    model.samcontroler.sam_controler.set_image(video_state["origin_images"][image_selection_slider])
+    if not is_sam3_selected():
+        model.samcontroler.sam_controler.reset_image()
+        model.samcontroler.sam_controler.set_image(video_state["origin_images"][image_selection_slider])
+    else:
+        _sam3_close_click_session()
 
     return video_state["painted_images"][image_selection_slider], video_state, interactive_state
 
@@ -298,6 +662,28 @@ def sam_refine(state, video_state, point_prompt, click_state, interactive_state,
         coordinate = "[[{},{},0]]".format(evt.index[0], evt.index[1])
         interactive_state["negative_click_times"] += 1
 
+    prompt = get_prompt(click_state=click_state, click_input=coordinate)
+    if is_sam3_selected():
+        frame_idx = video_state["select_frame_number"]
+        image = video_state["origin_images"][frame_idx]
+        acquire_GPU(state)
+        try:
+            mask = _sam3_preview_point_mask(video_state, frame_idx, prompt["input_point"], prompt["input_label"])
+        finally:
+            release_GPU(state)
+        painted_image = _paint_sam3_mask(image, mask, prompt["input_point"], prompt["input_label"])
+        video_state["masks"][frame_idx] = mask
+        video_state["logits"][frame_idx] = None
+        video_state["painted_images"][frame_idx] = painted_image
+        interactive_state["sam3_current_prompt"] = {
+            "type": "points",
+            "frame_idx": frame_idx,
+            "points": copy.deepcopy(prompt["input_point"]),
+            "relative_points": _sam3_relative_points(prompt["input_point"], image.shape[1], image.shape[0]),
+            "labels": copy.deepcopy(prompt["input_label"]),
+        }
+        return painted_image, video_state, interactive_state
+
     acquire_GPU(state)
     select_SAM(state)
     # prompt for sam model
@@ -305,8 +691,6 @@ def sam_refine(state, video_state, point_prompt, click_state, interactive_state,
     model.samcontroler.sam_controler.reset_image()
     model.samcontroler.sam_controler.set_image(video_state["origin_images"][video_state["select_frame_number"]])
     torch.cuda.empty_cache()
-    prompt = get_prompt(click_state=click_state, click_input=coordinate)
-
     mask, logit, painted_image = model.first_frame_click( 
                                                       image=video_state["origin_images"][video_state["select_frame_number"]], 
                                                       points=np.array(prompt["input_point"]),
@@ -326,9 +710,16 @@ def add_multi_mask(video_state, interactive_state, mask_dropdown):
     if video_state["masks"] is None:
         gr.Info("Matanyone Session Lost. Please reload a Video")
         return [gr.update()]*4
+    if is_sam3_selected() and interactive_state.get("sam3_current_prompt") is None:
+        gr.Info("Please click the reference frame or add keywords before adding a SAM3 mask.")
+        return interactive_state, gr.update(choices=interactive_state["multi_mask"]["mask_names"], value=mask_dropdown), video_state["origin_images"][video_state["select_frame_number"]], [[],[]]
     mask = masks[video_state["select_frame_number"]]
     interactive_state["multi_mask"]["masks"].append(mask)
     interactive_state["multi_mask"]["mask_names"].append("mask_{:03d}".format(len(interactive_state["multi_mask"]["masks"])))
+    if is_sam3_selected():
+        interactive_state["multi_mask"].setdefault("sam3_prompts", []).append(copy.deepcopy(interactive_state["sam3_current_prompt"]))
+        interactive_state["sam3_current_prompt"] = None
+        _sam3_close_click_session()
     mask_dropdown.append("mask_{:03d}".format(len(interactive_state["multi_mask"]["masks"])))
     select_frame = show_mask(video_state, interactive_state, mask_dropdown)
 
@@ -340,15 +731,50 @@ def clear_click(video_state, click_state):
         gr.Info("Matanyone Session Lost. Please reload a Video")
         return [gr.update()]*2
 
+    if is_sam3_selected():
+        _sam3_close_click_session()
     click_state = [[],[]]
     template_frame = video_state["origin_images"][video_state["select_frame_number"]]
     return template_frame, click_state
 
 def remove_multi_mask(interactive_state, mask_dropdown):
+    if is_sam3_selected():
+        _sam3_close_click_session()
     interactive_state["multi_mask"]["mask_names"]= []
     interactive_state["multi_mask"]["masks"] = []
+    interactive_state["multi_mask"]["sam3_prompts"] = []
+    interactive_state["sam3_current_prompt"] = None
 
     return interactive_state, gr.update(choices=[],value=[])
+
+
+def add_sam3_keyword_masks(state, video_state, interactive_state, keyword_text, mask_dropdown):
+    if video_state["masks"] is None:
+        gr.Info("SAM3 session lost. Please reload the media")
+        return [gr.update()] * 3
+    if not is_sam3_selected():
+        return interactive_state, gr.update(choices=interactive_state["multi_mask"]["mask_names"], value=mask_dropdown), show_mask(video_state, interactive_state, mask_dropdown)
+
+    keywords = _parse_sam3_keywords(keyword_text)
+    if len(keywords) == 0:
+        gr.Info("Please enter at least one keyword.")
+        return interactive_state, gr.update(choices=interactive_state["multi_mask"]["mask_names"], value=mask_dropdown), show_mask(video_state, interactive_state, mask_dropdown)
+
+    frame_idx = video_state["select_frame_number"]
+    acquire_GPU(state)
+    try:
+        for keyword in keywords:
+            mask = _sam3_preview_keyword_mask(video_state, frame_idx, keyword)
+            interactive_state["multi_mask"]["masks"].append(mask)
+            interactive_state["multi_mask"]["mask_names"].append("mask_{:03d}".format(len(interactive_state["multi_mask"]["masks"])))
+            interactive_state["multi_mask"].setdefault("sam3_prompts", []).append({"type": "keyword", "frame_idx": frame_idx, "keyword": keyword})
+            mask_dropdown.append("mask_{:03d}".format(len(interactive_state["multi_mask"]["masks"])))
+    finally:
+        release_GPU(state)
+
+    select_frame = show_mask(video_state, interactive_state, mask_dropdown)
+    return interactive_state, gr.update(choices=interactive_state["multi_mask"]["mask_names"], value=mask_dropdown), select_frame
+
 
 def show_mask(video_state, interactive_state, mask_dropdown):
     mask_dropdown.sort()
@@ -357,7 +783,8 @@ def show_mask(video_state, interactive_state, mask_dropdown):
         for i in range(len(mask_dropdown)):
             mask_number = int(mask_dropdown[i].split("_")[1]) - 1
             mask = interactive_state["multi_mask"]["masks"][mask_number]
-            select_frame = mask_painter(select_frame, mask.astype('uint8'), mask_color=mask_number+2)
+            if np.any(mask):
+                select_frame = mask_painter(select_frame, mask.astype('uint8'), mask_color=mask_number+2)
         
         return select_frame
 
@@ -396,12 +823,13 @@ def image_matting(state, video_state, interactive_state, mask_type, matting_type
     if video_state["masks"] is None:
         gr.Info("Matanyone Session Lost. Please reload an Image")
         return [gr.update(visible=False)]*12
+    if is_sam3_selected() and mask_type == "alpha":
+        mask_type = "wangp"
 
     new_dim = video_state.get("new_dim", "")
     if new_new_dim != new_dim:
         gr.Info(f"You have changed the Input / Output Dimensions after loading the Video into Matanyone. The output dimension will be the ones when loading the image ({'original' if len(new_dim) == 0 else new_dim})")
 
-    matanyone_processor = InferenceCore(matanyone_model, cfg=matanyone_model.cfg)
     if interactive_state["track_end_number"]:
         following_frames = video_state["origin_images"][video_state["select_frame_number"]:interactive_state["track_end_number"]]
     else:
@@ -419,20 +847,24 @@ def image_matting(state, video_state, interactive_state, mask_type, matting_type
     else:      
         template_mask = video_state["masks"][video_state["select_frame_number"]]
 
-    # operation error
-    if len(np.unique(template_mask))==1:
-        template_mask[0][0]=1
-    acquire_GPU(state)
-    select_matanyone(state)
-    foreground, alpha = matanyone(matanyone_processor, following_frames, template_mask*255, r_erode=erode_kernel_size, r_dilate=dilate_kernel_size, n_warmup=refine_iter)
-    torch.cuda.empty_cache()    
-    release_GPU(state)
+    if is_sam3_selected():
+        alpha = [((template_mask > 0).astype(np.uint8) * 255)[:, :, None] for _ in following_frames]
+    else:
+        # operation error
+        if len(np.unique(template_mask))==1:
+            template_mask[0][0]=1
+        acquire_GPU(state)
+        select_matanyone(state)
+        matanyone_processor = InferenceCore(matanyone_model, cfg=matanyone_model.cfg)
+        foreground, alpha = matanyone(matanyone_processor, following_frames, template_mask*255, r_erode=erode_kernel_size, r_dilate=dilate_kernel_size, n_warmup=refine_iter)
+        torch.cuda.empty_cache()
+        release_GPU(state)
 
     foreground_mat = matting_type == "Foreground"
     
     foreground_output = None
     foreground_title = "Image with Background"
-    alpha_title = "Alpha Mask Image Output"
+    alpha_title = "B & W Mask Image Output" if is_sam3_selected() else "Alpha Mask Image Output"
 
     if mask_type == "wangp":
         white_image = np.full_like(following_frames[-1], 255, dtype=np.uint8)
@@ -495,6 +927,8 @@ def video_matting(state, video_state, mask_type, video_input, end_slider, mattin
     if video_state["masks"] is None:
         gr.Info("Matanyone Session Lost. Please reload a Video")
         return [gr.update(visible=False)]*6
+    if is_sam3_selected() and mask_type == "alpha":
+        mask_type = "wangp"
 
     # if interactive_state["track_end_number"]:
     #     following_frames = video_state["origin_images"][video_state["select_frame_number"]:interactive_state["track_end_number"]]
@@ -519,18 +953,29 @@ def video_matting(state, video_state, mask_type, video_input, end_slider, mattin
         gr.Info(f"You have changed the Input / Output Dimensions after loading the Video into Matanyone. The output dimension will be the ones when loading the video ({'original' if len(new_dim) == 0 else new_dim})")
     audio_path = video_state["audio"]
 
-    # operation error
-    if len(np.unique(template_mask))==1:
-        template_mask[0][0]=1
-    acquire_GPU(state)
-    select_matanyone(state)
-    matanyone_processor = InferenceCore(matanyone_model, cfg=matanyone_model.cfg)
-    foreground, alpha = matanyone(matanyone_processor, following_frames, template_mask*255, r_erode=erode_kernel_size, r_dilate=dilate_kernel_size)
-    torch.cuda.empty_cache()    
-    release_GPU(state)
+    if is_sam3_selected():
+        prompts = _selected_sam3_prompts(interactive_state, mask_dropdown)
+        if len(prompts) == 0:
+            gr.Info("Please add at least one SAM3 mask before generating video matting.")
+            return [gr.update(visible=False)]*6
+        acquire_GPU(state)
+        try:
+            alpha = _sam3_propagate_prompts(video_state, prompts, video_state["select_frame_number"], end_slider)
+        finally:
+            release_GPU(state)
+    else:
+        # operation error
+        if len(np.unique(template_mask))==1:
+            template_mask[0][0]=1
+        acquire_GPU(state)
+        select_matanyone(state)
+        matanyone_processor = InferenceCore(matanyone_model, cfg=matanyone_model.cfg)
+        foreground, alpha = matanyone(matanyone_processor, following_frames, template_mask*255, r_erode=erode_kernel_size, r_dilate=dilate_kernel_size)
+        torch.cuda.empty_cache()
+        release_GPU(state)
     foreground_mat = matting_type == "Foreground"
-    alpha_title = "Alpha Mask Video Output"
-    alpha_suffix = "_alpha"
+    alpha_title = "B & W Mask Video Output" if is_sam3_selected() else "Alpha Mask Video Output"
+    alpha_suffix = "_bw_mask" if is_sam3_selected() else "_alpha"
     output_frames = []
     new_alpha = []
     BGRA_frames = None
@@ -666,8 +1111,10 @@ def get_default_states():
             "mask_save": False,
             "multi_mask": {
                 "mask_names": [],
-                "masks": []
+                "masks": [],
+                "sam3_prompts": [],
             },
+            "sam3_current_prompt": None,
             "track_end_number": None,
         }, [[],[]]
 
@@ -689,6 +1136,9 @@ def restart():
 
 def select_matanyone(state):
     global matanyone_in_GPU, model_in_GPU 
+    if is_sam3_selected():
+        _ensure_sam3_predictor()
+        return
     if matanyone_model is None or loaded_matanyone_version != get_selected_matanyone_version(server_config_ref):
         load_unload_models(state, True, True)
     if matanyone_in_GPU: return
@@ -700,6 +1150,9 @@ def select_matanyone(state):
 
 def select_SAM(state):
     global matanyone_in_GPU, model_in_GPU 
+    if is_sam3_selected():
+        _ensure_sam3_predictor()
+        return
     if matanyone_model is None or loaded_matanyone_version != get_selected_matanyone_version(server_config_ref):
         load_unload_models(state, True, True)
     if model_in_GPU: return
@@ -714,7 +1167,7 @@ load_in_progress = False
 def load_unload_models(state = None, selected = True, force = False):
     global model_loaded, load_in_progress
     global model
-    global matanyone_model, matanyone_processor, matanyone_in_GPU , model_in_GPU, bfloat16_supported, loaded_matanyone_version
+    global matanyone_model, matanyone_processor, matanyone_in_GPU , model_in_GPU, bfloat16_supported, loaded_matanyone_version, sam3_predictor, sam3_click_session
 
     if selected:
         selected_version = get_selected_matanyone_version(server_config_ref)
@@ -725,7 +1178,7 @@ def load_unload_models(state = None, selected = True, force = False):
             return
 
         if load_in_progress:
-            while model == None:
+            while load_in_progress:
                 time.sleep(1)
             return
         # print("Matanyone Tab Selected")
@@ -733,6 +1186,14 @@ def load_unload_models(state = None, selected = True, force = False):
             return
         else:
             load_in_progress = True
+            if selected_version == MATANYONE_SAM3:
+                ensure_selected_matanyone_assets(server_config_ref)
+                _ensure_sam3_predictor()
+                model_loaded = True
+                loaded_matanyone_version = selected_version
+                matanyone_in_GPU = model_in_GPU = False
+                load_in_progress = False
+                return
             # args, defined in track_anything.py
             sam_checkpoint_url_dict = {
                 'vit_h': "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth",
@@ -773,6 +1234,14 @@ def load_unload_models(state = None, selected = True, force = False):
         # model.samcontroler.sam_controler.model.to("cpu")
         # matanyone_model.to("cpu")
         model = matanyone_model = matanyone_processor = None
+        _sam3_close_click_session()
+        if sam3_predictor is not None:
+            sam3_predictor.shutdown()
+            sam3_predictor = None
+        from preprocessing.sam3.preprocessor import clear_sam3_text_encoder_cache
+
+        clear_sam3_text_encoder_cache()
+        sam3_click_session = None
         loaded_matanyone_version = None
         matanyone_in_GPU = model_in_GPU = False
         gc.collect()
@@ -883,12 +1352,9 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
             ) 
 
             mask_type= gr.Dropdown(
-                choices=[
-                    ("Grey with Alpha (used by WanGP)", "wangp"),
-                    ("Green Screen", "greenscreen"),
-                    ("RGB With Alpha Channel (local Zip file)", "alpha")
-                ],   label = "Mask Type", value = "wangp"
+                choices=_matanyone_mask_type_choices(), label = "Mask Type", value = "wangp"
             ) 
+            refresh_form_trigger.change(fn=_matanyone_mask_type_update, inputs=[mask_type], outputs=[mask_type], show_progress="hidden")
 
             matting_type = gr.Radio(
                 choices=["Foreground", "Background"],
@@ -912,8 +1378,10 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                     "mask_save": arg_mask_save,
                     "multi_mask": {
                         "mask_names": [],
-                        "masks": []
+                        "masks": [],
+                        "sam3_prompts": [],
                     },
+                    "sam3_current_prompt": None,
                     "track_end_number": None,
                     }
                 )
@@ -936,7 +1404,7 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                 with gr.Column( visible=True):
                     with gr.Row():
                         with gr.Accordion('MatAnyone Settings (click to expand)', open=False):
-                            with gr.Row():
+                            with gr.Row(visible=not is_sam3_selected()) as video_morphology_row:
                                 erode_kernel_size = gr.Slider(label='Erode Kernel Size',
                                                         minimum=0,
                                                         maximum=30,
@@ -968,7 +1436,6 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                                     min_width=100,
                                     scale=1)
                                 mask_dropdown = gr.Dropdown(multiselect=True, value=[], label="Mask Selection", info="Choose 1~all mask(s) added in Step 2", visible=False, scale=2, allow_custom_value=True)
-
                     # input video
                     with gr.Row(equal_height=True):
                         with gr.Column(scale=2): 
@@ -987,6 +1454,9 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                                 add_mask_button = gr.Button(value="Add Mask", interactive=True, visible=False, min_width=100)
                                 remove_mask_button = gr.Button(value="Remove Mask", interactive=True, visible=False,  min_width=100) # no use
                                 matting_button = gr.Button(value="Generate Video Matting", interactive=True, visible=False,  min_width=100)
+                            with gr.Row(visible=False, equal_height=True, elem_classes="sam3-keyword-row") as sam3_keyword_row:
+                                sam3_keyword_text = gr.Textbox(label="Keyword", show_label=False, placeholder="keyword", lines=1, min_width=120, scale=1)
+                                sam3_keyword_button = gr.Button(value="Add Mask based on Keyword", interactive=True, min_width=260, scale=1, elem_classes="sam3-keyword-button")
                             with gr.Row():
                                 gr.Markdown("")            
 
@@ -998,7 +1468,7 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                                 foreground_output_button = gr.Button(value="Black & White Video Output", visible=False, elem_classes="new_button")
                             with gr.Column(scale=2):
                                 alpha_video_output = gr.Video(label="Mask Video Output", visible=False, elem_classes="video")
-                                export_image_mask_btn = gr.Button(value="Alpha Mask Output", visible=False, elem_classes="new_button")
+                                export_image_mask_btn = gr.Button(value=_matanyone_mask_output_button_label(), visible=False, elem_classes="new_button")
                         with gr.Row():
                             with gr.Row(visible= False):
                                 export_to_vace_video_14B_btn = gr.Button("Export to current Video Input Video For Inpainting", visible= False)
@@ -1007,6 +1477,7 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                                     
                 export_to_current_video_engine_btn.click(  fn=export_to_current_video_engine, inputs= [state, foreground_video_output, alpha_video_output], outputs= [refresh_form_trigger]).then( #video_prompt_video_guide_trigger, 
                     fn=teleport_to_video_tab, inputs= [tab_state, state], outputs= [tabs])
+                refresh_form_trigger.change(fn=_matanyone_mask_output_button_update, inputs=[], outputs=[export_image_mask_btn], show_progress="hidden")
 
 
                 # first step: get the video information     
@@ -1018,7 +1489,7 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                     outputs=[video_state, extract_frames_button, video_info, template_frame,
                             image_selection_slider, end_selection_slider,  track_pause_number_slider, point_prompt, dummy, clear_button_click, add_mask_button, matting_button, template_frame,
                             foreground_video_output, alpha_video_output, foreground_output_button, export_image_mask_btn, mask_dropdown, step2_title]
-                )   
+                ).then(fn=lambda: gr.update(visible=is_sam3_selected()), inputs=[], outputs=[sam3_keyword_row], show_progress="hidden")
 
                 # second step: select images from slider
                 image_selection_slider.release(fn=select_video_template, 
@@ -1064,6 +1535,14 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                     inputs=[video_state, interactive_state, mask_dropdown],
                     outputs=[template_frame]
                 )
+
+                refresh_form_trigger.change(fn=lambda video_state: gr.update(visible=is_sam3_selected() and video_state.get("origin_images") is not None), inputs=[video_state], outputs=[sam3_keyword_row], show_progress="hidden")
+
+                sam3_keyword_button.click(
+                    fn=add_sam3_keyword_masks,
+                    inputs=[state, video_state, interactive_state, sam3_keyword_text, mask_dropdown],
+                    outputs=[interactive_state, mask_dropdown, template_frame]
+                )
                 
                 # clear input
                 video_input.change(
@@ -1080,7 +1559,7 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                         add_mask_button, matting_button, template_frame, foreground_video_output, alpha_video_output, remove_mask_button, foreground_output_button, export_image_mask_btn, mask_dropdown, video_info, step2_title
                     ],
                     queue=False,
-                    show_progress=False)
+                    show_progress=False).then(fn=lambda: gr.update(visible=False), inputs=[], outputs=[sam3_keyword_row], show_progress="hidden")
                 
                 video_input.clear(
                     fn=restart,
@@ -1096,7 +1575,7 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                         add_mask_button, matting_button, template_frame, foreground_video_output, alpha_video_output, remove_mask_button, foreground_output_button, export_image_mask_btn, mask_dropdown, video_info, step2_title
                     ],
                     queue=False,
-                    show_progress=False)
+                    show_progress=False).then(fn=lambda: gr.update(visible=False), inputs=[], outputs=[sam3_keyword_row], show_progress="hidden")
                 
                 # points clear
                 clear_button_click.click(
@@ -1117,8 +1596,10 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                     "mask_save": False,
                     "multi_mask": {
                         "mask_names": [],
-                        "masks": []
+                        "masks": [],
+                        "sam3_prompts": [],
                     },
+                    "sam3_current_prompt": None,
                     "track_end_number": None,
                     }
                 )
@@ -1140,7 +1621,7 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                 with gr.Group(elem_classes="gr-monochrome-group", visible=True):
                     with gr.Row():
                         with gr.Accordion('MatAnyone Settings (click to expand)', open=False):
-                            with gr.Row():
+                            with gr.Row(visible=not is_sam3_selected()) as image_morphology_row:
                                 erode_kernel_size = gr.Slider(label='Erode Kernel Size',
                                                         minimum=0,
                                                         maximum=30,
@@ -1191,6 +1672,9 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                                 add_mask_button = gr.Button(value="Add Mask", interactive=True, visible=False, elem_classes="new_button", min_width=100)
                                 remove_mask_button = gr.Button(value="Remove Mask", interactive=True, visible=False, elem_classes="new_button", min_width=100)
                                 matting_button = gr.Button(value="Image Matting", interactive=True, visible=False, elem_classes="green_button", min_width=100)
+                            with gr.Row(visible=False, equal_height=True, elem_classes="sam3-keyword-row") as image_sam3_keyword_row:
+                                image_sam3_keyword_text = gr.Textbox(label="Keyword", show_label=False, placeholder="keyword", lines=1, min_width=120, scale=1)
+                                image_sam3_keyword_button = gr.Button(value="Add Mask based on Keyword", interactive=True, min_width=260, scale=1, elem_classes="sam3-keyword-button")
 
                     # output image
                     with gr.Tabs(visible = False) as image_tabs:
@@ -1223,7 +1707,7 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                     outputs=[image_state, extract_frames_button, image_info, template_frame,
                             image_selection_slider, track_pause_number_slider,point_prompt, clear_button_click, add_mask_button, matting_button, template_frame,
                             foreground_image_output, alpha_image_output, control_image_output, image_tabs, bbox_info, export_image_btn, export_image_mask_btn, mask_dropdown, step2_title]
-                )   
+                ).then(fn=lambda: gr.update(visible=is_sam3_selected()), inputs=[], outputs=[image_sam3_keyword_row], show_progress="hidden")
 
                 # points clear
                 clear_button_click.click(
@@ -1261,6 +1745,12 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                     outputs=[interactive_state, mask_dropdown]
                 )
 
+                image_sam3_keyword_button.click(
+                    fn=add_sam3_keyword_masks,
+                    inputs=[state, image_state, interactive_state, image_sam3_keyword_text, mask_dropdown],
+                    outputs=[interactive_state, mask_dropdown, template_frame]
+                )
+
                 # image matting
                 matting_button.click(
                     fn=image_matting,
@@ -1285,5 +1775,19 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                         add_mask_button, matting_button, template_frame, foreground_image_output, alpha_image_output, remove_mask_button, export_image_btn, export_image_mask_btn, mask_dropdown, nada, step2_title
                     ],
                     queue=False,
-                    show_progress=False)
+                    show_progress=False).then(fn=lambda: gr.update(visible=False), inputs=[], outputs=[image_sam3_keyword_row], show_progress="hidden")
+
+                refresh_form_trigger.change(
+                    fn=lambda image_state: gr.update(visible=is_sam3_selected() and image_state.get("origin_images") is not None),
+                    inputs=[image_state],
+                    outputs=[image_sam3_keyword_row],
+                    show_progress="hidden",
+                )
+
+                refresh_form_trigger.change(
+                    fn=lambda: [_matanyone_morphology_visibility(), _matanyone_morphology_visibility()],
+                    inputs=[],
+                    outputs=[video_morphology_row, image_morphology_row],
+                    show_progress="hidden",
+                )
                 

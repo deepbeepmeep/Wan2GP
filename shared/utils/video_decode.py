@@ -142,6 +142,7 @@ def _build_vsource_metadata(video_path, entry):
         "color_range": "",
         "needs_sar_fix": False,
         "needs_tonemap": False,
+        "hdr": bool(entry.get("hdr")),
     })
 
 
@@ -242,7 +243,10 @@ def _decode_virtual_media_frames(video_path, metadata, entry, start_frame, max_f
             source_fps = metadata["fps"] if metadata["fps"] > 0 else max(1, int(round(metadata["fps_float"] or 0)))
             frame_nos = _resample_frame_indices(source_fps, frame_count, int(max_frames), float(target_fps), int(start_frame))
             frames = tensor[:, frame_nos].permute(1, 2, 3, 0) if len(frame_nos) > 0 else tensor[:, :0].permute(1, 2, 3, 0)
-        frames = frames.add(1.0).mul(127.5).clamp_(0, 255).to(torch.uint8).contiguous()
+        if entry.get("hdr"):
+            frames = frames.to(torch.float32).contiguous()
+        else:
+            frames = frames.add(1.0).mul(127.5).clamp_(0, 255).to(torch.uint8).contiguous()
     return frames if bridge == "torch" else frames.numpy()
 
 
@@ -264,7 +268,20 @@ def _build_hdr_tonemap_filter(metadata):
     return ["zscale=" + ":".join(zscale_parts), "format=gbrpf32le", "tonemap=reinhard", "zscale=t=bt709:p=bt709:m=bt709:r=limited"]
 
 
-def _build_corrected_video_filter(metadata, target_fps=None, start_frame=0, end_frame=None):
+def _build_hdr_linear_filter(metadata):
+    zscale_parts = [f"npl={_HDR_REFERENCE_WHITE_NITS}", "t=linear", "p=709", "m=gbr", "r=full"]
+    if transfer := _ZSCALE_TRANSFER_MAP.get(metadata["color_transfer"]):
+        zscale_parts.append(f"tin={transfer}")
+    if primaries := _ZSCALE_PRIMARIES_MAP.get(metadata["color_primaries"]):
+        zscale_parts.append(f"pin={primaries}")
+    if matrix := _ZSCALE_MATRIX_MAP.get(metadata["color_space"]):
+        zscale_parts.append(f"min={matrix}")
+    if color_range := _ZSCALE_RANGE_MAP.get(metadata.get("color_range")):
+        zscale_parts.append(f"rin={color_range}")
+    return ["zscale=" + ":".join(zscale_parts), "format=gbrpf32le"]
+
+
+def _build_corrected_video_filter(metadata, target_fps=None, start_frame=0, end_frame=None, hdr_linear=False):
     filters = []
     if target_fps is not None and float(target_fps) > 0:
         filters.append(f"fps={float(target_fps):.12g}")
@@ -276,6 +293,9 @@ def _build_corrected_video_filter(metadata, target_fps=None, start_frame=0, end_
         filters.append("setpts=PTS-STARTPTS")
     if metadata["needs_sar_fix"]:
         filters += [f"scale={int(metadata['display_width'])}:{int(metadata['display_height'])}:flags=lanczos", "setsar=1"]
+    if hdr_linear:
+        filters += _build_hdr_linear_filter(metadata)
+        return ",".join(filters)
     if metadata["needs_tonemap"]:
         filters += _build_hdr_tonemap_filter(metadata)
     return ",".join(filters)
@@ -316,7 +336,7 @@ def _parse_first_showinfo_pts_time(stderr_text):
     return None
 
 
-def _decode_contiguous_video_frames_ffmpeg(video_path, start_frame, max_frames, bridge="torch"):
+def _decode_contiguous_video_frames_ffmpeg(video_path, start_frame, max_frames, bridge="torch", hdr_linear=False):
     metadata = probe_video_stream_metadata(video_path)
     if metadata is None:
         raise RuntimeError(f"Unable to probe video metadata for {video_path}")
@@ -331,7 +351,8 @@ def _decode_contiguous_video_frames_ffmpeg(video_path, start_frame, max_frames, 
         available_frames = max(0, int(metadata["frame_count"]) - max(0, start_frame))
         max_frames = min(max_frames, available_frames)
     if max_frames <= 0:
-        empty = np.empty((0, metadata["display_height"], metadata["display_width"], 3), dtype=np.uint8)
+        empty_dtype = np.float32 if hdr_linear else np.uint8
+        empty = np.empty((0, metadata["display_height"], metadata["display_width"], 3), dtype=empty_dtype)
         return torch.from_numpy(empty) if bridge == "torch" else empty
     actual_start = start_frame + int(metadata.get("virtual_start_frame") or 0)
     fps_float = float(metadata.get("fps_float") or metadata.get("fps") or 0.0)
@@ -353,7 +374,7 @@ def _decode_contiguous_video_frames_ffmpeg(video_path, start_frame, max_frames, 
         else:
             filter_start_frame = actual_start
             filter_end_frame = actual_end_exclusive
-    video_filter = _build_corrected_video_filter(metadata, start_frame=filter_start_frame if virtual_spec is not None and not local_search_enabled else 0, end_frame=filter_end_frame if virtual_spec is not None and not local_search_enabled else None)
+    video_filter = _build_corrected_video_filter(metadata, start_frame=filter_start_frame if virtual_spec is not None and not local_search_enabled else 0, end_frame=filter_end_frame if virtual_spec is not None and not local_search_enabled else None, hdr_linear=hdr_linear)
     if local_search_enabled:
         video_filter = "showinfo" if len(video_filter) == 0 else video_filter + ",showinfo"
     cmd = [ffmpeg_path, "-v", "info" if local_search_enabled else "error", "-nostdin", "-threads", "0"]
@@ -364,10 +385,13 @@ def _decode_contiguous_video_frames_ffmpeg(video_path, start_frame, max_frames, 
     cmd += ["-i", decode_path, "-an", "-sn"]
     if len(video_filter) > 0:
         cmd += ["-vf", video_filter]
-    cmd += ["-fps_mode", "passthrough", "-frames:v", str(requested_frames), "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
+    out_pix_fmt = "gbrpf32le" if hdr_linear else "rgb24"
+    cmd += ["-fps_mode", "passthrough", "-frames:v", str(requested_frames), "-f", "rawvideo", "-pix_fmt", out_pix_fmt, "pipe:1"]
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**7)
-    frame_bytes = metadata["display_width"] * metadata["display_height"] * 3
-    frames = np.empty((requested_frames, metadata["display_height"], metadata["display_width"], 3), dtype=np.uint8)
+    frame_bytes = metadata["display_width"] * metadata["display_height"] * 3 * (4 if hdr_linear else 1)
+    frame_dtype = np.float32 if hdr_linear else np.uint8
+    frames_shape = (requested_frames, 3, metadata["display_height"], metadata["display_width"]) if hdr_linear else (requested_frames, metadata["display_height"], metadata["display_width"], 3)
+    frames = np.empty(frames_shape, dtype=frame_dtype)
     frame_count = 0
     stderr_chunks = []
     stderr_thread = None
@@ -379,7 +403,10 @@ def _decode_contiguous_video_frames_ffmpeg(video_path, start_frame, max_frames, 
             raw_frame = _read_exact(process.stdout, frame_bytes)
             if raw_frame is None or len(raw_frame) < frame_bytes:
                 break
-            frames[frame_count] = np.frombuffer(raw_frame, dtype=np.uint8).reshape(metadata["display_height"], metadata["display_width"], 3)
+            if hdr_linear:
+                frames[frame_count] = np.frombuffer(raw_frame, dtype=np.float32).reshape(3, metadata["display_height"], metadata["display_width"])
+            else:
+                frames[frame_count] = np.frombuffer(raw_frame, dtype=np.uint8).reshape(metadata["display_height"], metadata["display_width"], 3)
             frame_count += 1
         return_code = process.wait()
         if stderr_thread is not None:
@@ -398,10 +425,12 @@ def _decode_contiguous_video_frames_ffmpeg(video_path, start_frame, max_frames, 
         target_pts_time = float(metadata.get("start_time") or 0.0) + (actual_start / fps_float)
         local_start_frame = filter_start_frame if first_pts_time is None else max(0, int(round((target_pts_time - first_pts_time) * fps_float)))
         frames = frames[local_start_frame:local_start_frame + max_frames]
+    if hdr_linear:
+        frames = np.ascontiguousarray(frames[:, [2, 0, 1]].transpose(0, 2, 3, 1))
     return torch.from_numpy(frames) if bridge == "torch" else frames
 
 
-def decode_video_frames_ffmpeg(video_path, start_frame, max_frames, target_fps=None, bridge="torch"):
+def decode_video_frames_ffmpeg(video_path, start_frame, max_frames, target_fps=None, bridge="torch", hdr_linear=False):
     metadata = probe_video_stream_metadata(video_path)
     if metadata is None:
         raise RuntimeError(f"Unable to probe video metadata for {video_path}")
@@ -409,17 +438,19 @@ def decode_video_frames_ffmpeg(video_path, start_frame, max_frames, target_fps=N
         return _decode_virtual_media_frames(video_path, metadata, entry, start_frame, max_frames, target_fps, bridge)
     start_frame = int(start_frame)
     if metadata.get("virtual_end_frame") is not None and start_frame >= int(metadata["frame_count"]):
-        empty = np.empty((0, metadata["display_height"], metadata["display_width"], 3), dtype=np.uint8)
+        empty_dtype = np.float32 if hdr_linear else np.uint8
+        empty = np.empty((0, metadata["display_height"], metadata["display_width"], 3), dtype=empty_dtype)
         return torch.from_numpy(empty) if bridge == "torch" else empty
     if target_fps is None or float(target_fps) <= 0:
-        return _decode_contiguous_video_frames_ffmpeg(video_path, start_frame, max_frames, bridge)
+        return _decode_contiguous_video_frames_ffmpeg(video_path, start_frame, max_frames, bridge, hdr_linear=hdr_linear)
     source_fps = metadata["fps"] if metadata["fps"] > 0 else max(1, int(round(metadata["fps_float"] or 0)))
     frame_nos = _resample_frame_indices(source_fps, metadata["frame_count"], int(max_frames), float(target_fps), int(start_frame))
     if len(frame_nos) == 0:
-        empty = np.empty((0, metadata["display_height"], metadata["display_width"], 3), dtype=np.uint8)
+        empty_dtype = np.float32 if hdr_linear else np.uint8
+        empty = np.empty((0, metadata["display_height"], metadata["display_width"], 3), dtype=empty_dtype)
         return torch.from_numpy(empty) if bridge == "torch" else empty
     decode_start = frame_nos[0]
-    decoded = _decode_contiguous_video_frames_ffmpeg(video_path, decode_start, frame_nos[-1] - decode_start + 1, bridge)
+    decoded = _decode_contiguous_video_frames_ffmpeg(video_path, decode_start, frame_nos[-1] - decode_start + 1, bridge, hdr_linear=hdr_linear)
     index_list = [frame_no - decode_start for frame_no in frame_nos if frame_no - decode_start < decoded.shape[0]]
     if bridge == "torch":
         return decoded[index_list]

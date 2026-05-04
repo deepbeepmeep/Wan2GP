@@ -11,6 +11,7 @@ from .model.networks import MMAudio, get_my_mmaudio
 from .model.sequence_config import SequenceConfig
 from .model.utils.features_utils import FeaturesUtils
 from shared.utils import files_locator as fl
+from shared.utils.audio_video import write_wav_file
 
 persistent_offloadobj = None
 persistent_model_id = None
@@ -169,8 +170,7 @@ def video_to_audio(video, prompt: str, negative_prompt: str, seed: int, num_step
 
 
     if audio_file_only:
-        import torchaudio
-        torchaudio.save(save_path, audio.unsqueeze(0) if audio.dim() == 1 else audio, seq_cfg.sampling_rate)
+        write_wav_file(save_path, audio, seq_cfg.sampling_rate)
     else:
         make_video(video, video_info, save_path, audio, sampling_rate=seq_cfg.sampling_rate)
 

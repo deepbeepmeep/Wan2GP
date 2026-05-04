@@ -200,7 +200,7 @@ def get_expected_secondary_file_entries_for_status(deps, model_type):
     for url in model_loras:
         if not isinstance(url, str) or len(url) == 0:
             continue
-        basename = os.path.basename(url)
+        basename = os.path.basename(url.split("|", 1)[0])
         if len(basename) == 0:
             continue
         _append_expected_local_path_entry(entries, seen, os.path.join(lora_dir, basename))
@@ -245,7 +245,7 @@ def has_secondary_model_files_for_status(deps, model_type, quantization, dtype_p
     for url in model_loras:
         if not isinstance(url, str) or len(url) == 0:
             continue
-        if not os.path.isfile(os.path.join(lora_dir, os.path.basename(url))):
+        if not os.path.isfile(os.path.join(lora_dir, os.path.basename(url.split("|", 1)[0]))):
             return False
 
     module_files = _get_module_files_for_status(deps, model_type, quantization, dtype_policy)

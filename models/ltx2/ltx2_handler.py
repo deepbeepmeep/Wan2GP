@@ -4,15 +4,18 @@ import sys
 import torch
 from shared.utils import files_locator as fl
 from shared.utils.hf import build_hf_url
+from shared.utils.loras_mutipliers import parse_loras_multipliers
 import gradio as gr
 from pathlib import Path
-import shutil
+
+from .lora_utils import control_video_phase2_message
 
 _GEMMA_FOLDER_URL = "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/gemma-3-12b-it-qat-q4_0-unquantized/"
 _GEMMA_FOLDER = "gemma-3-12b-it-qat-q4_0-unquantized"
 _GEMMA_FILENAME = f"{_GEMMA_FOLDER}.safetensors"
 _GEMMA_QUANTO_FILENAME = f"{_GEMMA_FOLDER}_quanto_bf16_int8.safetensors"
 _LORAS_MIGRATED = False
+_LORA_SPEC_KEYS = ("distilled_lora", "distilled_1_1_lora", "union_control_lora", "id_lora", "outpaint_lora", "hdr_lora")
 
 _ARCH_SPECS = {
     "ltx2_19B": {
@@ -44,6 +47,8 @@ _ARCH_SPECS = {
         "union_control_lora": "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",
         "id_lora": "id-lora-celebvhq-ltx2.3.safetensors",
         "outpaint_lora": "ltx-2.3-22b-ic-lora-outpaint.safetensors",
+        "hdr_lora": "ltx-2.3-22b-ic-lora-hdr-0.9.safetensors",
+        "hdr_scene_embeddings": "ltx-2.3-22b-ic-lora-hdr-scene-emb.safetensors",
         "video_vae": "ltx-2.3-22b_vae.safetensors",
         "audio_vae": "ltx-2.3-22b_audio_vae.safetensors",
         "vocoder": "ltx-2.3-22b_vocoder.safetensors",
@@ -52,7 +57,7 @@ _ARCH_SPECS = {
         "profiles_dir": "ltx2",
         "preset_profiles_dir": "ltx2_presets",
         "distilled_preset_profiles_dir": "ltx2_distilled_presets",
-        "lora_dir": "ltx2_22B",
+        "lora_dir": "ltx2",
     },
 }
 
@@ -120,29 +125,56 @@ def _migrate_loras():
     wgp = sys.modules.get("wgp")
     lora_root = wgp.get_lora_root()
 
-    lora_19B_dir = os.path.join(lora_root, _ARCH_SPECS["ltx2_19B"]["lora_dir"])
-    lora_22B_dir = os.path.join(lora_root, _ARCH_SPECS["ltx2_22B"]["lora_dir"])
-    source, target_folder = Path(lora_22B_dir), Path(lora_19B_dir)
-    if source.exists():
-        print("LTX-2 and LTX-2.3 merged again, bye bye split loras. Please verify that the loras are in the right folders.")
-        target_folder.mkdir(parents=True, exist_ok=True)
-        for f in source.iterdir():
-            if f.is_file() and not os.path.isfile(str(target_folder / f.name)):
-                shutil.move(f, target_folder / f.name)
-        shutil.move(str(source), os.path.join( os.path.dirname(str(source)),  "old_" + os.path.basename(str(source))))
+    lora_dir = Path(lora_root) / _ARCH_SPECS["ltx2_19B"]["lora_dir"]
+    lora_dir.mkdir(parents=True, exist_ok=True)
 
-    for model_type, spec in _ARCH_SPECS.items():
-        lora_dir = lora_19B_dir
-        for key in ["distilled_lora", "distilled_1_1_lora", "union_control_lora", "id_lora", "outpaint_lora"]: 
+    moved = set()
+    for spec in _ARCH_SPECS.values():
+        for key in _LORA_SPEC_KEYS:
             filename = spec.get(key, None)
-            if filename is None: continue
-            source = os.path.join(lora_dir, filename)
-            if source is not None and os.path.isfile(source):
-                target = fl.get_download_location(filename)
-                shutil.move(source, target)
-                print(f"[WAN2GP][LTX2] Moved {key} LoRA '{source}' -> '{target}'")
+            if filename is None or filename in moved:
+                continue
+            source = fl.locate_file(filename, error_if_none=False)
+            if source is None:
+                continue
+            target = lora_dir / filename
+            if Path(source).resolve() == target.resolve() or target.exists():
+                moved.add(filename)
+                continue
+            shutil.move(source, target)
+            print(f"[WAN2GP][LTX2] Moved {key} LoRA '{source}' -> '{target}'")
+            moved.add(filename)
             
     _LORAS_MIGRATED = True
+
+
+def _notify_control_video_phase2(base_model_type, model_def, inputs, any_outpainting):
+    video_prompt_type = inputs.get("video_prompt_type", "") or ""
+    if int(inputs.get("guidance_phases", 1)) != 2 or "V" not in video_prompt_type or inputs.get("video_guide") is None:
+        return ""
+    wgp = sys.modules.get("wgp")
+    lora_dir = wgp.get_lora_dir(base_model_type) if wgp is not None and hasattr(wgp, "get_lora_dir") else None
+    selected = {os.path.basename(lora).lower() for lora in inputs.get("activated_loras", []) or []}
+    spec = _get_arch_spec(base_model_type)
+    builtins = [] if model_def.get("ltx2_pipeline", "two_stage") != "distilled" else [
+        spec.get("hdr_lora") if base_model_type == "ltx2_22B" and "&" in video_prompt_type else None,
+        spec.get("union_control_lora") if any(letter in video_prompt_type for letter in "OPDE") else None,
+        spec.get("outpaint_lora") if base_model_type == "ltx2_22B" and any_outpainting else None,
+    ]
+    extra_loras = [os.path.join(lora_dir, name) if lora_dir else name for name in builtins if name and name.lower() not in selected]
+    extra_mults = [1.0] * len(extra_loras)
+    activated_loras = [os.path.join(lora_dir, os.path.basename(lora)) if lora_dir else lora for lora in inputs.get("activated_loras", []) or []]
+    steps, switch_phase = int(inputs.get("num_inference_steps", 1)), inputs.get("model_switch_phase", 1)
+    _, loras_slists, errors = parse_loras_multipliers(extra_mults, len(extra_loras), steps, nb_phases=2, model_switch_phase=switch_phase)
+    if not errors:
+        _, loras_slists, errors = parse_loras_multipliers(inputs.get("loras_multipliers", ""), len(activated_loras), steps, nb_phases=2, merge_slist=loras_slists, model_switch_phase=switch_phase)
+    if errors:
+        return f"Error parsing Loras: {errors}"
+    loras_selected = extra_loras + activated_loras
+    msg = control_video_phase2_message(loras_selected, loras_slists)
+    print(msg)
+    gr.Info(msg)
+    return ""
 
 
 class family_handler:
@@ -173,11 +205,24 @@ class family_handler:
 
     @staticmethod
     def query_model_def(base_model_type, model_def):
+        preload_urls = model_def.get("preload_URLs")
         spec = _get_arch_spec(base_model_type)
+        if isinstance(preload_urls, list): 
+            # migrate old finetunes
+            lora_filenames = {spec[key] for key in _LORA_SPEC_KEYS if key in spec}
+            def add_lora_dir_suffix(entry):
+                if not isinstance(entry, str) or "|%lora_dir" in entry:
+                    return entry
+                source_entry = entry.split("|", 1)[0]
+                if source_entry.startswith("http") and os.path.basename(source_entry) in lora_filenames:
+                    return f"{source_entry}|%lora_dir"
+                return entry
+            model_def["preload_URLs"] = [add_lora_dir_suffix(entry) for entry in preload_urls]
+
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
 
         distilled = pipeline_kind == "distilled"
-        audio_prompt_selection = ["", "A", "K"] if distilled else ["", "A", "A1OF"]
+        audio_prompt_selection = ["", "A", "K", "2"] if distilled else ["", "A", "A1OF"]
         audio_prompt_labels = {
             "": "Generate Video & Soundtrack based on Text Prompt",
             "A": "Generate Video based on Soundtrack and Text Prompt",
@@ -185,6 +230,7 @@ class family_handler:
         }
         if distilled:
             audio_prompt_labels["K"] = "Generate Video based on Control Video + its Audio Track and Text Prompt"
+            audio_prompt_labels["2"] = "Generate Audio based on Control Video and Text Prompt"
 
 
         extra_model_def = {
@@ -211,8 +257,9 @@ class family_handler:
                 "labels": audio_prompt_labels,
                 "custom_flags": {
                     "1": "Reference Voice (ID-LoRA)",
+                    "2": "Generate Audio based on Control Video and Text Prompt",
                 },
-                "letters_filter": "A1OFK",
+                "letters_filter": "A1OFK2",
                 "show_label": False,
             },
             "auto_null_audio": True,
@@ -224,6 +271,8 @@ class family_handler:
             "custom_denoising_strength": distilled,
             "profiles_dir": [spec["profiles_dir"]],
             "ltx2_spatial_upscaler_file": spec["spatial_upscaler"],
+            "ltx2_hdr_lora_file": spec.get("hdr_lora", ""),
+            "ltx2_hdr_scene_embeddings_file": spec.get("hdr_scene_embeddings", ""),
             "self_refiner": True,
             "self_refiner_max_plans": 2,
             "no_background_removal": True,
@@ -254,10 +303,12 @@ class family_handler:
         
         control_choices = [("No Video Process", "")]
         control_choices += [ ("Transfer Human Motion", "PVG"), ("Transfer Human Motion With Pose Alignment", "OVG")  , ("Transfer Depth", "DVG") , ("Transfer Canny Edges", "EVG"), ("LTX2 Raw Format / Control Video for Ic Lora", "VG")] if distilled else []
+        if distilled and base_model_type == "ltx2_22B":
+            control_choices += [("Convert SDR to HDR (IC-LoRA)", f"V&G")]
         control_choices +=   [("Inject Frames", "KFI")]
         extra_model_def["guide_custom_choices"] = {
             "choices": control_choices,
-            "letters_filter": "OPDEVGKFI",
+            "letters_filter": f"OPDEVG&KFI",
             "default": "",
             "label": "Control Video / Frames Injection"
         }
@@ -418,10 +469,28 @@ class family_handler:
                 return f"Sampler '{sample_solver}' is not supported for {base_model_type}."
         video_guide_outpainting = inputs.get("video_guide_outpainting", None) 
         video_guide_outpainting_ratio = inputs.get("video_guide_outpainting_ratio", "") 
-        video_prompt_type = inputs.get("video_prompt_type", "")
-        audio_prompt_type = inputs.get("audio_prompt_type", "")
+        video_prompt_type = inputs.get("video_prompt_type", "") or ""
+        audio_prompt_type = inputs.get("audio_prompt_type", "") or ""
         from shared.utils.utils import get_outpainting_dims 
         any_outpainting = get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio) is not None        
+        if "2" in audio_prompt_type:
+            if pipeline_kind != "distilled":
+                return "LTX2 audio generation from Control Video is supported only with distilled models."
+            if any(letter in audio_prompt_type for letter in "AK"):
+                return "LTX2 audio generation from Control Video must use the dedicated audio option, without an Audio Source or Control Video Audio Track prompt."
+            if "V" not in video_prompt_type or "G" not in video_prompt_type:
+                return "LTX2 audio generation from Control Video requires 'LTX2 Raw Format / Control Video for Ic Lora'."
+            if any(letter in video_prompt_type for letter in "OPDE&AFKI") or any_outpainting:
+                return "LTX2 audio generation from Control Video supports only raw Control Video, without Pose/Depth/Canny/HDR/Outpaint/Mask/Inject Frames."
+            if inputs.get("video_guide") is None:
+                return "You must provide a Control Video to generate audio from it."
+        if "&" in video_prompt_type:
+            if pipeline_kind != "distilled" or base_model_type != "ltx2_22B":
+                return "LTX2 HDR IC-LoRA is supported only with LTX-2.3 22B distilled."
+            if any(letter in video_prompt_type for letter in "OPDE") or any_outpainting:
+                return "LTX2 HDR IC-LoRA is not compatible with Pose/Depth/Canny/Outpaint control modes."
+            if "F" in video_prompt_type:
+                return "LTX2 HDR IC-LoRA is not yet compatible with Inject Frames."
         if pipeline_kind == "distilled" and any_outpainting:
             if "V" in video_prompt_type :
                 if any(letter in video_prompt_type for letter in "OPDE"):
@@ -434,9 +503,13 @@ class family_handler:
                     return "LTX2 outpainting doesnt support Video Mask."
 
         guide_phases = inputs.get("guidance_phases", 1)
-        if guide_phases !=1 and "V" in video_prompt_type and (any(letter in video_prompt_type for letter in "OPDE") or any_outpainting):
+        if guide_phases !=1 and "V" in video_prompt_type and any_outpainting:
             inputs["guidance_phases"]=  1            
-            gr.Info("Number of Phases has been set to 1 as Outpainting is enabled" if any_outpainting else "Number of Phases is set to 1 for Pose/Edge/Depth")
+            gr.Info("Number of Phases has been set to 1 as Outpainting is enabled")
+        if "2" not in audio_prompt_type:
+            error = _notify_control_video_phase2(base_model_type, model_def, inputs, any_outpainting)
+            if error:
+                return error
         if "A" in audio_prompt_type and inputs.get("audio_guide") is None:
             audio_source = inputs.get("audio_source")
             if audio_source is not None:

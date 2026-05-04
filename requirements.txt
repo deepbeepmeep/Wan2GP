@@ -42,12 +42,14 @@ gradio_rangeslider
 
 # Vision & segmentation
 opencv-python>=4.12.0.88
+pycocotools
 segment-anything
 rembg[gpu]==2.0.65
 onnxruntime-gpu==1.22.0; python_version < "3.11"
 onnxruntime-gpu==1.25.0.dev20260210001; python_version >= "3.11"
 decord
 timm
+iopath>=0.1.10
 insightface @ https://github.com/deepbeepmeep/insightface/releases/download/insightface/insightface-0.7.3-cp310-cp310-win_amd64.whl ; sys_platform == "win32" and python_version == "3.10"
 insightface @ https://github.com/deepbeepmeep/insightface/releases/download/insightface/insightface-0.7.3-cp311-cp311-win_amd64.whl ; sys_platform == "win32" and python_version == "3.11"
 insightface @ https://github.com/deepbeepmeep/insightface/releases/download/insightface/insightface-0.7.3-cp312-cp312-win_amd64.whl ; sys_platform == "win32" and python_version == "3.12"

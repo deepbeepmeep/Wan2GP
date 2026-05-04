@@ -144,12 +144,17 @@ def get_virtual_media_entry(value: Any) -> dict[str, Any] | None:
         return None if entry is None else dict(entry)
 
 
-def store_virtual_video(vsource: str, name: str, tensor: Any, fps: float) -> None:
+def store_virtual_video(vsource: str, name: str, tensor: Any, fps: float, *, hdr: bool = False) -> None:
     import torch
 
     tensor = tensor.detach().cpu().to(dtype=torch.float32).contiguous().clone()
     with _VIRTUAL_MEDIA_LOCK:
-        _VIRTUAL_MEDIA_SOURCES.setdefault(str(vsource).strip(), {})[str(name).strip()] = {"kind": "video", "tensor": tensor, "fps": max(float(fps or 0.0), 1.0)}
+        _VIRTUAL_MEDIA_SOURCES.setdefault(str(vsource).strip(), {})[str(name).strip()] = {
+            "kind": "video",
+            "tensor": tensor,
+            "fps": max(float(fps or 0.0), 1.0),
+            "hdr": bool(hdr),
+        }
     _clear_virtual_media_caches()
 
 

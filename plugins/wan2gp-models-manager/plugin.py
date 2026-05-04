@@ -765,7 +765,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
             get_model_def=self.get_model_def,
             get_model_recursive_prop=self.get_model_recursive_prop,
             get_model_filename=self.get_model_filename,
-            get_local_model_filename=fl.get_local_model_filename,
+            get_local_model_filename=self._get_local_model_filename,
             get_lora_dir=self.get_lora_dir,
             get_parent_model_type=self.get_parent_model_type,
             get_base_model_type=self.get_base_model_type,
@@ -774,7 +774,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
             get_transformer_dtype=self.get_transformer_dtype,
         )
 
-    def _resolve_expected_entry_path(self, entry):
+    def _resolve_expected_entry_path(self, entry, model_type=None):
         if not isinstance(entry, dict):
             return None
         local_path = entry.get("path", None)
@@ -782,7 +782,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
             return self._normalize_path(local_path)
         filename = entry.get("filename", "")
         extra_paths = entry.get("extra_paths", None)
-        return self._resolve_path(filename, force_folder=extra_paths)
+        return self._resolve_path(filename, force_folder=extra_paths, lora_dir=self._safe_get_lora_dir(model_type))
 
     def _collect_expected_missing_files(self, model_type):
         deps = self._build_dropdown_deps([model_type])
@@ -807,7 +807,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 self._errors.append(f"Missing handler file check failed for {model_type}: {exc}")
 
         for entry in expected_entries:
-            resolved_path = self._resolve_expected_entry_path(entry)
+            resolved_path = self._resolve_expected_entry_path(entry, model_type=model_type)
             if resolved_path and not os.path.isfile(resolved_path):
                 missing_paths.add(resolved_path)
         return missing_paths
@@ -1573,12 +1573,15 @@ class modelsManagerPlugin(WAN2GPPlugin):
         for entry in self._ensure_list(loras):
             if not isinstance(entry, str) or len(entry) == 0:
                 continue
-            basename = os.path.basename(entry)
+            source_entry = entry.split("|", 1)[0]
+            basename = os.path.basename(source_entry)
             if len(basename) == 0:
                 continue
-            lora_path = os.path.join(lora_dir, basename)
             files = set()
-            self._add_file(files, lora_path)
+            if entry.startswith("http") and "|" in entry:
+                self._add_file(files, entry, lora_dir=lora_dir)
+            else:
+                self._add_file(files, os.path.join(lora_dir, basename))
             if not files:
                 continue
             resolved_path = next(iter(files))
@@ -1612,16 +1615,17 @@ class modelsManagerPlugin(WAN2GPPlugin):
     ):
         other_files = set()
         shared_files = set()
+        lora_dir = self._safe_get_lora_dir(model_type)
 
         preload_urls = self.get_model_recursive_prop(
             model_type, "preload_URLs", return_list=True
         )
         for url in self._ensure_list(preload_urls):
-            self._add_file(other_files, url)
+            self._add_file(other_files, url, lora_dir=lora_dir)
 
         vae_urls = model_def.get("VAE_URLs", [])
         for url in self._ensure_list(vae_urls):
-            self._add_file(shared_files, url)
+            self._add_file(shared_files, url, lora_dir=lora_dir)
 
         handler_files = self._collect_handler_files(model_type, model_def)
         shared_files.update(handler_files)
@@ -1711,8 +1715,8 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 if not entry:
                     continue
                 entry_str = str(entry)
-                name = os.path.basename(entry_str)
-                quant_source = self._resolve_path(entry_str) or entry_str
+                name = self._locator_basename(entry_str)
+                quant_source = self._resolve_path(entry_str) or self._locator_path(entry_str) or entry_str
                 token, label = self._detect_quant_info(quant_source)
                 dtype_policy = self._detect_dtype_policy_from_name(name) or default_dtype_policy
                 if token:
@@ -1767,14 +1771,14 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 for item in entry:
                     if not item:
                         continue
-                    base = os.path.basename(str(item)).lower()
+                    base = self._locator_basename(item).lower()
                     if token in base:
                         return item
                     label = quant_router.detect_quantization_label_from_filename(item)
                     if label and self._label_to_token(label) == token:
                         return item
                 continue
-            base = os.path.basename(str(entry)).lower()
+            base = self._locator_basename(entry).lower()
             if token in base:
                 return entry
             label = quant_router.detect_quantization_label_from_filename(entry)
@@ -2896,8 +2900,8 @@ class modelsManagerPlugin(WAN2GPPlugin):
             return ["UNC"] + parts
         return parts
 
-    def _add_file(self, files_set, value, force_folder=None):
-        path = self._resolve_path(value, force_folder=force_folder)
+    def _add_file(self, files_set, value, force_folder=None, lora_dir=None):
+        path = self._resolve_path(value, force_folder=force_folder, lora_dir=lora_dir)
         if path and os.path.isfile(path):
             files_set.add(path)
 
@@ -2925,7 +2929,36 @@ class modelsManagerPlugin(WAN2GPPlugin):
             return self._normalize_path(os.path.join(self._repo_root, rel_norm))
         return None
 
-    def _resolve_path(self, value, force_folder=None):
+    def _get_local_model_filename(self, model_filename, use_locator=True, extra_paths=None, lora_dir=None):
+        try:
+            return fl.get_local_model_filename(model_filename, use_locator=use_locator, extra_paths=extra_paths, lora_dir=lora_dir)
+        except Exception:
+            return None
+
+    def _locator_path(self, value, lora_dir=None):
+        if not value:
+            return ""
+        if not isinstance(value, str):
+            value = str(value)
+        try:
+            return fl.extract_alternate_path(value, lora_dir=lora_dir)
+        except Exception:
+            source_value = value.split("|", 1)[0]
+            return os.path.basename(source_value) if source_value.startswith("http") else source_value
+
+    def _locator_basename(self, value, lora_dir=None):
+        path = self._locator_path(value, lora_dir=lora_dir)
+        return os.path.basename(path) if path else ""
+
+    def _download_location(self, value, force_folder=None, lora_dir=None):
+        try:
+            return fl.get_download_location(value, force_path=force_folder, lora_dir=lora_dir)
+        except Exception:
+            source_value = str(value).split("|", 1)[0]
+            filename = os.path.basename(source_value) if source_value.startswith("http") else source_value
+            return fl.get_download_location(filename, force_path=force_folder)
+
+    def _resolve_path(self, value, force_folder=None, lora_dir=None):
         if not value:
             return None
         if not isinstance(value, str):
@@ -2940,18 +2973,11 @@ class modelsManagerPlugin(WAN2GPPlugin):
         if repo_rel:
             return repo_rel
 
-        try:
-            local_path = fl.get_local_model_filename(value, extra_paths=force_folder)
-        except Exception:
-            local_path = None
+        local_path = self._get_local_model_filename(value, extra_paths=force_folder, lora_dir=lora_dir)
         if local_path:
             return self._normalize_path(local_path)
 
-        filename = os.path.basename(value) if value.startswith("http") else value
-        if force_folder:
-            expected = fl.get_download_location(filename, force_path=force_folder)
-        else:
-            expected = fl.get_download_location(filename)
+        expected = self._download_location(value, force_folder=force_folder, lora_dir=lora_dir)
         return self._normalize_path(expected)
 
     def _resolve_download_relpath(self, rel_path):

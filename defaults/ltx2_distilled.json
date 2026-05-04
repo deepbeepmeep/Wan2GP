@@ -8,7 +8,7 @@
             "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2-19b-distilled-fp8_diffusion_model.safetensors"
         ],
         "preload_URLs": [
-            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2-19b-ic-lora-union-control-ref0.5.safetensors"
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2-19b-ic-lora-union-control-ref0.5.safetensors|%lora_dir"
         ],
         "ltx2_pipeline": "distilled"
     },

@@ -631,10 +631,13 @@ class WanAttentionBlock(nn.Module):
 
         if cam_emb != None:
             cam_emb = self.cam_encoder(cam_emb)
-            cam_emb = cam_emb.repeat(1, 2, 1)
-            cam_emb = cam_emb.unsqueeze(2).unsqueeze(3).repeat(1, 1, grid_sizes[1], grid_sizes[2], 1)
-            cam_emb = rearrange(cam_emb, 'b f h w d -> b (f h w) d')
-            x_mod += cam_emb
+            if cam_emb.ndim == 3 and cam_emb.shape[1] == x_mod.shape[1]:
+                x_mod += cam_emb
+            else:
+                cam_emb = cam_emb.repeat(1, 2, 1)
+                cam_emb = cam_emb.unsqueeze(2).unsqueeze(3).repeat(1, 1, grid_sizes[1], grid_sizes[2], 1)
+                cam_emb = rearrange(cam_emb, 'b f h w d -> b (f h w) d')
+                x_mod += cam_emb
 
         xlist = [x_mod.to(attention_dtype)]
         if lynx_feature_extractor: get_cache("lynx_ref_buffer")[sub_x_no][self.block_no] = xlist[0]
@@ -1056,6 +1059,8 @@ class WanModel(ModelMixin, ConfigMixin):
                  scail = False,
                  any_kiwi_source = False,
                  any_kiwi_ref = False,
+                 vista4d = False,
+                 vista4d_positional_embedding_offset = 31,
                  ):
 
         super().__init__()
@@ -1178,6 +1183,10 @@ class WanModel(ModelMixin, ConfigMixin):
                 block.cam_encoder.bias.data.zero_()
                 block.projector.weight = nn.Parameter(torch.eye(dim))
                 block.projector.bias = nn.Parameter(torch.zeros(dim))            
+
+        if vista4d:
+            from ..vista4d.runtime import add_vista4d_modules
+            add_vista4d_modules(self)
 
         if fantasytalking_dim > 0:
             from ..fantasytalking.model import WanCrossAttentionProcessor
@@ -1311,12 +1320,15 @@ class WanModel(ModelMixin, ConfigMixin):
             for block in self.vace_blocks:
                 layer_list2 += [block.after_proj, block.norm3]
 
+        if hasattr(self, "latent_encoder"):
+            layer_list += [module for module in self.latent_encoder.modules() if isinstance(module, (nn.Conv3d, nn.Linear))]
+
         target_dype2 = hybrid_dtype if hybrid_dtype != None else dtype 
 
         # cam master
         if hasattr(self.blocks[0], "projector"):
             for block in self.blocks:
-                layer_list2 += [block.projector]
+                layer_list2 += [block.projector, block.cam_encoder]
 
         for current_layer_list, current_dtype in zip([layer_list, layer_list2], [target_dype, target_dype2]):
             for layer in current_layer_list:
@@ -1488,6 +1500,7 @@ class WanModel(ModelMixin, ConfigMixin):
         kiwi_source_condition = None,
         kiwi_ref_condition = None,
         kiwi_ref_pad_first = False,
+        vista = None,
     ):
         # patch_dtype =  self.patch_embedding.weight.dtype
         modulation_dtype = self.time_projection[1].weight.dtype
@@ -1505,10 +1518,12 @@ class WanModel(ModelMixin, ConfigMixin):
         real_seq = 0
         x_list = x
         output_slice = None
+        output_grid_sizes = None
         joint_pass = len(x_list) > 1
         is_source_x = [ x.data_ptr() == x_list[0].data_ptr() and i > 0 for i, x in enumerate(x_list) ]
         last_x_idx  = 0
         steadydancer = steadydancer_condition is not None
+        vista_enabled = isinstance(vista, dict) and vista.get("source_latents") is not None
         if steadydancer: # steady dancer
             x_noise_clone = x_list[0].clone()
         if isinstance(y, list):
@@ -1558,7 +1573,6 @@ class WanModel(ModelMixin, ConfigMixin):
             # Spatial Structure Adaptive Extractor.
             time_steps = steadydancer_condition[0].shape[2]
             for i, (x, condition) in enumerate(zip(x_list, steadydancer_condition)):
-                real_seq = x.shape[1]
                 # Temporal Motion Coherence Module.
                 condition_temporal =self.condition_embedding_temporal(condition)                
                 condition_spatial = rearrange(self.condition_embedding_spatial(rearrange(condition, 'b c t h w -> (b t) c h w')), '(b t) c h w -> b c t h w', t=time_steps, b=1)
@@ -1568,12 +1582,40 @@ class WanModel(ModelMixin, ConfigMixin):
                 condition_aligned = self.condition_embedding_align(condition_fused, x_noise_clone)                
                 # Condition Fusion/Injection, Hierarchical Aggregation (2): x, fused condition, aligned condition
                 x = self.patch_embedding_fuse(torch.cat([x, condition_fused, condition_aligned], 1).to(self.patch_embedding_fuse.weight.dtype))
+                real_seq = math.prod(x.shape[2:])
+                output_grid_sizes = x.shape[2:]
                 x = torch.cat([x, self.patch_embedding(steadydancer_ref_x.unsqueeze(0).to(self.patch_embedding.weight.dtype )),
                                 self.patch_embedding_ref_c(steadydancer_ref_c[:16].unsqueeze(0).to(self.patch_embedding_ref_c.weight.dtype ))], dim=2)
                 grid_sizes = x.shape[2:]
                 x_list[i] = x
                 x = condition = condition_fused = condition_aligned = condition_temporal = condition_spatial = None
             x_noise_clone = x = None
+
+        vista_condition_tokens = vista_cam_emb = None
+        if vista_enabled:
+            vista_grid_sizes = tuple(int(v) for v in grid_sizes)
+
+            def vista_tensor(name):
+                tensor = vista.get(name)
+                if tensor is not None and tensor.device != device:
+                    tensor = tensor.to(device)
+                return tensor
+
+            source_latents = vista_tensor("source_latents")
+            source_masks = vista_tensor("source_mask_latents")
+            point_latents = vista_tensor("point_latents")
+            point_masks = vista_tensor("point_mask_latents")
+            vista_source_tokens, _ = self.latent_encoder.source_patch_embedding(source_latents, source_masks, self.patch_embedding, vista_grid_sizes, "Vista4D source patch embedding")
+            vista_point_tokens, _ = self.latent_encoder.point_cloud_patch_embedding(point_latents, point_masks, self.patch_embedding, vista_grid_sizes, "Vista4D point cloud patch embedding")
+            vista_condition_tokens = torch.cat((vista_point_tokens.to(modulation_dtype), vista_source_tokens.to(modulation_dtype)), dim=1)
+            if vista_condition_tokens.shape[0] != x_list[0].shape[0]:
+                vista_condition_tokens = vista_condition_tokens.expand(x_list[0].shape[0], -1, -1)
+            vista_cam_emb = vista_tensor("cam_emb")
+            if vista_cam_emb is not None:
+                vista_cam_emb = rearrange(vista_cam_emb, "b f h w d -> b (f h w) d").repeat(1, 3, 1).to(modulation_dtype)
+            real_seq = math.prod(vista_grid_sizes)
+            output_grid_sizes = grid_sizes
+            source_latents = source_masks = point_latents = point_masks = vista_source_tokens = vista_point_tokens = None
 
         motion_vec_list = []
         pose_tokens = None
@@ -1594,12 +1636,16 @@ class WanModel(ModelMixin, ConfigMixin):
                 else:
                     x = x.flatten(2).transpose(1, 2)
 
+                if vista_condition_tokens is not None:
+                    x = torch.cat((x, vista_condition_tokens), dim=1)
+
                 if scail_pose_latents is not None:
                     if pose_tokens.shape[0] != x.shape[0]: pose_tokens = pose_tokens.repeat(x.shape[0], 1, 1)
                     x = torch.cat([x, pose_tokens], dim=1)
 
                 x_list[i] = x
         x = None
+        vista_condition_tokens = None
 
 
 
@@ -1618,13 +1664,17 @@ class WanModel(ModelMixin, ConfigMixin):
             block_mask = causal_mask.unsqueeze(0).unsqueeze(0)
             del causal_mask
 
-        offload.shared_state["embed_sizes"] = grid_sizes 
+        attention_grid_sizes = (int(grid_sizes[0]) * 3, int(grid_sizes[1]), int(grid_sizes[2])) if vista_enabled else grid_sizes
+        if vista_cam_emb is not None:
+            cam_emb = vista_cam_emb
+
+        offload.shared_state["embed_sizes"] = attention_grid_sizes 
         offload.shared_state["step_no"] = current_step_no 
         offload.shared_state["max_steps"] = max_steps
         # arguments
 
         kwargs = dict(
-            grid_sizes=grid_sizes,
+            grid_sizes=attention_grid_sizes,
             freqs=freqs,
             cam_emb = cam_emb,
             block_mask = block_mask,
@@ -1852,13 +1902,14 @@ class WanModel(ModelMixin, ConfigMixin):
                 x = reverse_voxel_chunk_no_padding(x.transpose(1, 2).unsqueeze(-1), x_og_shape, voxel_shape).squeeze(-1)
                 x = x.flatten(2).transpose(1, 2)
 
+            if real_seq > 0:
+                x = x[:, :real_seq]
+
             # head
             x = self.head(x, e)
 
             # unpatchify
-            x = self.unpatchify(x, grid_sizes)
-            if real_seq > 0:
-                x = x[:, :real_seq]
+            x = self.unpatchify(x, output_grid_sizes if output_grid_sizes is not None else grid_sizes)
             if output_slice is not None:
                 x = x[:, :, output_slice]
             x_list[i] = x

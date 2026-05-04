@@ -383,6 +383,14 @@ user-select: text;
 	align-self: center;
 }
 #refiner-input-row { align-items: center; }
+.sam3-keyword-row {
+    align-items: stretch !important;
+}
+.sam3-keyword-row .sam3-keyword-button,
+.sam3-keyword-row .sam3-keyword-button > button {
+    height: 100% !important;
+    min-height: 100% !important;
+}
 
 .header-markdown-group,
 .header-markdown-group > div {

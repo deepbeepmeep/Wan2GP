@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from scripts.dual_run_compare.route_keys import (
+    COHORT_B_EDIT_DIMENSION_FIELDS,
     cohort_e_route_key,
     direct_route_key,
     edit_route_key,
@@ -8,6 +9,21 @@ from scripts.dual_run_compare.route_keys import (
     route_key_from_payload,
     slug,
 )
+
+
+def test_cohort_b_dimension_field_contract_is_complete() -> None:
+    assert COHORT_B_EDIT_DIMENSION_FIELDS == (
+        "edit_variant",
+        "qwen_edit_model",
+        "mask_case",
+        "mask_type",
+        "annotation_case",
+        "annotation_type",
+        "style_reference_case",
+        "style_reference_type",
+        "profile",
+        "wgp_profile",
+    )
 
 
 def test_direct_cohort_a_b_aliases() -> None:
@@ -49,6 +65,19 @@ def test_cohort_b_edit_dimensions() -> None:
             }
         )
         == "image_inpaint__variant-mask__mask-binary_upload__profile-profile_5"
+    )
+    assert (
+        route_key_from_payload(
+            {
+                "task_type": "annotated_image_edit",
+                "qwen_edit_model": "qwen-edit-2511",
+                "mask_type": "soft mask",
+                "annotation_type": "drawn arrows",
+                "style_reference_type": "source image style",
+                "wgp_profile": "default",
+            }
+        )
+        == "annotated_image_edit__variant-qwen_edit_2511__mask-soft_mask__annotation-drawn_arrows__style_reference-source_image_style__profile-default"
     )
 
 

@@ -32,6 +32,19 @@ EDIT_VARIANT_ALIASES: dict[str, str] = {
     "annotation": "annotation",
 }
 
+COHORT_B_EDIT_DIMENSION_FIELDS: tuple[str, ...] = (
+    "edit_variant",
+    "qwen_edit_model",
+    "mask_case",
+    "mask_type",
+    "annotation_case",
+    "annotation_type",
+    "style_reference_case",
+    "style_reference_type",
+    "profile",
+    "wgp_profile",
+)
+
 
 def slug(value: Any) -> str:
     """Normalize route dimensions into stable lowercase token fragments."""
@@ -153,17 +166,7 @@ def route_key_from_payload(payload: Mapping[str, Any]) -> str:
             continuity_case=payload.get("continuity_case") or "first_last",
             profile=payload.get("profile") or payload.get("wgp_profile") or "default",
         )
-    if (
-        payload.get("edit_variant")
-        or payload.get("profile")
-        or payload.get("qwen_edit_model")
-        or payload.get("mask_case")
-        or payload.get("mask_type")
-        or payload.get("annotation_case")
-        or payload.get("annotation_type")
-        or payload.get("style_reference_case")
-        or payload.get("style_reference_type")
-    ):
+    if any(payload.get(field) for field in COHORT_B_EDIT_DIMENSION_FIELDS):
         return edit_route_key(
             task_type,
             edit_variant=payload.get("edit_variant") or payload.get("qwen_edit_model"),

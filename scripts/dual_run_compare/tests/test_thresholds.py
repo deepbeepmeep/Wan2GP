@@ -73,6 +73,15 @@ def test_metric_key_list_drift_rejected(tmp_path: Path) -> None:
         Thresholds.load(path)
 
 
+def test_legacy_metrics_root_rejected(tmp_path: Path) -> None:
+    def mutate(data):
+        data["metrics"] = data["defaults"]
+
+    path = _write_thresholds(tmp_path, mutate)
+    with pytest.raises(ThresholdValidationError, match="legacy threshold schema key"):
+        Thresholds.load(path)
+
+
 def test_unknown_route_override_rejected_by_strict_cli(tmp_path: Path) -> None:
     def mutate(data):
         data["routes"]["z_image_turbo"]["thresholds_override"] = {

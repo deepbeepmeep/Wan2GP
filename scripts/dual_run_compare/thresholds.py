@@ -126,6 +126,8 @@ class Thresholds:
             errors.append(f"version must be {THRESHOLD_VERSION}")
         if self.raw.get("schema_version") != SCHEMA_VERSION:
             errors.append(f"schema_version must be {SCHEMA_VERSION}")
+        if "metrics" in self.raw:
+            errors.append("metrics is a legacy threshold schema key; use metric_keys plus defaults")
 
         enum_values = self.raw.get("calibration_status_enum")
         if not isinstance(enum_values, list):

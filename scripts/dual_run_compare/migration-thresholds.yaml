@@ -115,9 +115,9 @@ metrics:
     failure_action: Auto-rollback only if measured through isolated shadow runs; otherwise mark cohort review-required and stop promotion
 
 route_defaults:
-  calibration_status: pending_calibration
+  calibration_status: deferred_pending_sprint_0c_disk
   thresholds_override: {}
-  notes: Sprint 0B seed route; WGP-vs-WGP calibration evidence pending.
+  notes: Sprint 0B WGP self-repeatability deferred; see reports/wgp-self-repeat-0b-2026-05-05-deferral.json and reports/wgp-self-repeat-0b-2026-05-05-deferral.md.
 
 routes:
   z_image_turbo:
@@ -127,8 +127,9 @@ routes:
     media_class: image
     source_fixture_status: worker_matrix_case
     source_fixture_ref: artifacts/worker-matrix/20260316T141738351426Z/z_image_turbo_db_task
-    calibration_status: pending_calibration
+    calibration_status: deferred_pending_sprint_0c_disk
     thresholds_override: {}
+    notes: Sprint 0B WGP self-repeatability deferred; see reports/wgp-self-repeat-0b-2026-05-05-deferral.json and reports/wgp-self-repeat-0b-2026-05-05-deferral.md.
   z_image_turbo_i2i:
     cohort: A
     route_key_mode: direct
@@ -136,8 +137,9 @@ routes:
     media_class: image
     source_fixture_status: worker_matrix_case
     source_fixture_ref: artifacts/worker-matrix/20260316T141738351426Z/z_image_turbo_i2i_db_task
-    calibration_status: pending_calibration
+    calibration_status: deferred_pending_sprint_0c_disk
     thresholds_override: {}
+    notes: Sprint 0B WGP self-repeatability deferred; see reports/wgp-self-repeat-0b-2026-05-05-deferral.json and reports/wgp-self-repeat-0b-2026-05-05-deferral.md.
   qwen_image:
     cohort: A
     route_key_mode: direct
@@ -145,9 +147,9 @@ routes:
     media_class: image
     source_fixture_status: seed_fixture_required
     source_fixture_ref: fixtures/golden_seed_payloads/qwen_image.json
-    calibration_status: pending_calibration
+    calibration_status: deferred_pending_sprint_0c_disk
     thresholds_override: {}
-    notes: Required Cohort A route from migration scope; current locked worker matrix only covers qwen_image_style/qwen_image_edit DB cases.
+    notes: Required Cohort A route from migration scope; current locked worker matrix only covers qwen_image_style/qwen_image_edit DB cases. Sprint 0B WGP self-repeatability deferred; see reports/wgp-self-repeat-0b-2026-05-05-deferral.json and reports/wgp-self-repeat-0b-2026-05-05-deferral.md.
   qwen_image_2512:
     cohort: A
     route_key_mode: direct
@@ -155,8 +157,9 @@ routes:
     media_class: image
     source_fixture_status: seed_fixture_required
     source_fixture_ref: fixtures/golden_seed_payloads/qwen_image_2512.json
-    calibration_status: pending_calibration
+    calibration_status: deferred_pending_sprint_0c_disk
     thresholds_override: {}
+    notes: Sprint 0B WGP self-repeatability deferred; see reports/wgp-self-repeat-0b-2026-05-05-deferral.json and reports/wgp-self-repeat-0b-2026-05-05-deferral.md.
   wan_2_2_t2i:
     cohort: A
     route_key_mode: direct
@@ -164,8 +167,9 @@ routes:
     media_class: image
     source_fixture_status: worker_matrix_case
     source_fixture_ref: artifacts/worker-matrix/20260316T135006000511Z/wan_22_t2i_basic
-    calibration_status: pending_calibration
+    calibration_status: deferred_pending_sprint_0c_disk
     thresholds_override: {}
+    notes: Sprint 0B WGP self-repeatability deferred; see reports/wgp-self-repeat-0b-2026-05-05-deferral.json and reports/wgp-self-repeat-0b-2026-05-05-deferral.md.
   qwen_image_edit:
     cohort: B
     route_key_mode: direct
@@ -174,8 +178,9 @@ routes:
     edit_variant: qwen_edit_default
     source_fixture_status: worker_matrix_case
     source_fixture_ref: artifacts/worker-matrix/20260316T141738351426Z/qwen_image_edit_db_task
-    calibration_status: pending_calibration
+    calibration_status: deferred_pending_sprint_0c_disk
     thresholds_override: {}
+    notes: Sprint 0B WGP self-repeatability deferred; see reports/wgp-self-repeat-0b-2026-05-05-deferral.json and reports/wgp-self-repeat-0b-2026-05-05-deferral.md.
   qwen_image_style:
     cohort: B
     route_key_mode: direct
@@ -184,8 +189,9 @@ routes:
     edit_variant: style_reference
     source_fixture_status: worker_matrix_case
     source_fixture_ref: artifacts/worker-matrix/20260316T141738351426Z/qwen_image_style_db_task
-    calibration_status: pending_calibration
+    calibration_status: deferred_pending_sprint_0c_disk
     thresholds_override: {}
+    notes: Sprint 0B WGP self-repeatability deferred; see reports/wgp-self-repeat-0b-2026-05-05-deferral.json and reports/wgp-self-repeat-0b-2026-05-05-deferral.md.
   image_inpaint:
     cohort: B
     route_key_mode: direct
@@ -194,8 +200,9 @@ routes:
     edit_variant: mask
     source_fixture_status: seed_fixture_required
     source_fixture_ref: fixtures/golden_seed_payloads/image_inpaint.json
-    calibration_status: pending_calibration
+    calibration_status: deferred_pending_sprint_0c_disk
     thresholds_override: {}
+    notes: Sprint 0B WGP self-repeatability deferred; see reports/wgp-self-repeat-0b-2026-05-05-deferral.json and reports/wgp-self-repeat-0b-2026-05-05-deferral.md.
   annotated_image_edit:
     cohort: B
     route_key_mode: direct
@@ -204,8 +211,9 @@ routes:
     edit_variant: annotation
     source_fixture_status: seed_fixture_required
     source_fixture_ref: fixtures/golden_seed_payloads/annotated_image_edit.json
-    calibration_status: pending_calibration
+    calibration_status: deferred_pending_sprint_0c_disk
     thresholds_override: {}
+    notes: Sprint 0B WGP self-repeatability deferred; see reports/wgp-self-repeat-0b-2026-05-05-deferral.json and reports/wgp-self-repeat-0b-2026-05-05-deferral.md.
   individual_travel_segment__model-wan22_i2v__guidance-none__continuity-first_last__profile-default:
     cohort: E
     route_key_mode: dimensional
@@ -218,9 +226,9 @@ routes:
     profile: default
     source_fixture_status: worker_matrix_case
     source_fixture_ref: artifacts/worker-matrix/20260316T141738351426Z/individual_travel_segment_wan22_i2v_baseline_2_2_2
-    calibration_status: pending_calibration
+    calibration_status: deferred_pending_sprint_0c_disk
     thresholds_override: {}
-    notes: Audited model is I2V; it must not be keyed as VACE.
+    notes: Audited model is I2V; it must not be keyed as VACE. Sprint 0B WGP self-repeatability deferred; see reports/wgp-self-repeat-0b-2026-05-05-deferral.json and reports/wgp-self-repeat-0b-2026-05-05-deferral.md.
   travel_segment__model-wan22_i2v__guidance-none__continuity-first_last__profile-default:
     cohort: E
     route_key_mode: dimensional
@@ -233,8 +241,9 @@ routes:
     profile: default
     source_fixture_status: seed_fixture_required
     source_fixture_ref: fixtures/golden_seed_payloads/travel_segment__model-wan22_i2v__guidance-none__continuity-first_last__profile-default.json
-    calibration_status: pending_calibration
+    calibration_status: deferred_pending_sprint_0c_disk
     thresholds_override: {}
+    notes: Sprint 0B WGP self-repeatability deferred; see reports/wgp-self-repeat-0b-2026-05-05-deferral.json and reports/wgp-self-repeat-0b-2026-05-05-deferral.md.
   travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default:
     cohort: E
     route_key_mode: dimensional
@@ -247,8 +256,9 @@ routes:
     profile: default
     source_fixture_status: seed_fixture_required
     source_fixture_ref: fixtures/golden_seed_payloads/travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default.json
-    calibration_status: pending_calibration
+    calibration_status: deferred_pending_sprint_0c_disk
     thresholds_override: {}
+    notes: Sprint 0B WGP self-repeatability deferred; see reports/wgp-self-repeat-0b-2026-05-05-deferral.json and reports/wgp-self-repeat-0b-2026-05-05-deferral.md.
   join_clips_segment__model-wan22_vace__guidance-vace__continuity-join_bridge__profile-default:
     cohort: E
     route_key_mode: dimensional
@@ -261,8 +271,9 @@ routes:
     profile: default
     source_fixture_status: seed_fixture_required
     source_fixture_ref: fixtures/golden_seed_payloads/join_clips_segment__model-wan22_vace__guidance-vace__continuity-join_bridge__profile-default.json
-    calibration_status: pending_calibration
+    calibration_status: deferred_pending_sprint_0c_disk
     thresholds_override: {}
+    notes: Sprint 0B WGP self-repeatability deferred; see reports/wgp-self-repeat-0b-2026-05-05-deferral.json and reports/wgp-self-repeat-0b-2026-05-05-deferral.md.
   travel_segment__model-ltx2_distilled__guidance-ltx_anchor__continuity-video_source__profile-default:
     cohort: E
     route_key_mode: dimensional
@@ -275,5 +286,6 @@ routes:
     profile: default
     source_fixture_status: seed_fixture_required
     source_fixture_ref: fixtures/golden_seed_payloads/travel_segment__model-ltx2_distilled__guidance-ltx_anchor__continuity-video_source__profile-default.json
-    calibration_status: pending_calibration
+    calibration_status: deferred_pending_sprint_0c_disk
     thresholds_override: {}
+    notes: Sprint 0B WGP self-repeatability deferred; see reports/wgp-self-repeat-0b-2026-05-05-deferral.json and reports/wgp-self-repeat-0b-2026-05-05-deferral.md.

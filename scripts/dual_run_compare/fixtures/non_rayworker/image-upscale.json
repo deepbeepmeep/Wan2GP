@@ -1,0 +1,29 @@
+{
+  "alias_mismatch": {
+    "legacy_db_row": "image_upscale",
+    "resolver_and_api_handler": "image-upscale"
+  },
+  "billing_path": "complete_task/billing.ts",
+  "completion_handler": "complete_task/generation-handlers.ts",
+  "executor_handler": "handlers/fal.py::handle_image_upscale",
+  "external_api": "fal.ai",
+  "fixture_schema_version": 1,
+  "output_shape": {
+    "image_url": "string",
+    "variant_metadata": "object optional"
+  },
+  "owner": "Peter O'Malley, interim product owner",
+  "payload_shape": {
+    "image": "string alias for image_url",
+    "image_url": "string",
+    "noise_scale": "number optional, defaults 0.1",
+    "output_format": "string optional, jpeg normalized to jpg",
+    "scale_factor": "number alias for upscale_factor",
+    "seed": "number optional",
+    "upscale_factor": "number optional, defaults 2"
+  },
+  "preserve_or_move_decision": "preserve",
+  "route_key": "image-upscale",
+  "runtime": "api_orchestrator",
+  "task_type": "image-upscale"
+}

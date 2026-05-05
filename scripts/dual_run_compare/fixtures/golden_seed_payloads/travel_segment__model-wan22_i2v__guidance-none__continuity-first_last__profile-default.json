@@ -1,0 +1,12 @@
+{
+  "params": {
+    "continuity_case": "first_last",
+    "guidance_kind": "none",
+    "model_name": "wan_2_2_i2v_lightning_baseline_2_2_2",
+    "model_type": "i2v",
+    "profile": "default"
+  },
+  "route_key": "travel_segment__model-wan22_i2v__guidance-none__continuity-first_last__profile-default",
+  "task_type": "travel_segment",
+  "threshold_version": "0B-2026-05-05"
+}

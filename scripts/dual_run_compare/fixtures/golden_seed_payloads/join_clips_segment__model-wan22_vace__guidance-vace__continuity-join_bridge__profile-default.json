@@ -1,0 +1,11 @@
+{
+  "params": {
+    "continuity_case": "join_bridge",
+    "guidance_kind": "vace",
+    "model": "wan_2_2_vace_lightning_baseline_2_2_2",
+    "profile": "default"
+  },
+  "route_key": "join_clips_segment__model-wan22_vace__guidance-vace__continuity-join_bridge__profile-default",
+  "task_type": "join_clips_segment",
+  "threshold_version": "0B-2026-05-05"
+}

@@ -1,0 +1,11 @@
+{
+  "params": {
+    "continuity_case": "video_source",
+    "guidance_kind": "ltx_anchor",
+    "model_name": "ltx2_22B_distilled_1_1",
+    "profile": "default"
+  },
+  "route_key": "travel_segment__model-ltx2_distilled__guidance-ltx_anchor__continuity-video_source__profile-default",
+  "task_type": "travel_segment",
+  "threshold_version": "0B-2026-05-05"
+}

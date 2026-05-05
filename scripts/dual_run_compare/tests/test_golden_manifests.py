@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from scripts.dual_run_compare.route_keys import cohort_e_route_key, direct_route_key
 from scripts.dual_run_compare.thresholds import DEFAULT_PATH, Thresholds
 
 
@@ -41,9 +42,15 @@ def test_yaml_and_golden_manifests_are_one_to_one() -> None:
     manifests = _load_manifests()
     assert set(manifests) == set(thresholds.routes)
     for route_key, manifest in manifests.items():
+        route = thresholds.routes[route_key]
         assert manifest["route_key"] == route_key
         assert manifest["canonical_route_key"] == route_key
         assert REQUIRED_MANIFEST_FIELDS <= set(manifest)
+        assert manifest["threshold_version"] == thresholds.raw["version"]
+        assert manifest["source_fixture_status"] == route["source_fixture_status"]
+        assert manifest["source_fixture_ref"] == route["source_fixture_ref"]
+        if route["route_key_mode"] == "direct":
+            assert direct_route_key(route["task_type"]) == route_key
 
 
 def test_cohort_e_manifest_directories_are_dimensional() -> None:
@@ -58,6 +65,16 @@ def test_cohort_e_manifest_directories_are_dimensional() -> None:
         manifest = json.loads((GOLDEN_DIR / route_key / "manifest.json").read_text())
         for field in ("model_family", "guidance_kind", "continuity_case", "profile"):
             assert manifest[field] == route[field]
+        assert (
+            cohort_e_route_key(
+                task_type=route["task_type"],
+                model_family=route["model_family"],
+                guidance_kind=route["guidance_kind"],
+                continuity_case=route["continuity_case"],
+                profile=route["profile"],
+            )
+            == route_key
+        )
 
 
 def test_i2v_travel_routes_are_not_vace_keyed() -> None:

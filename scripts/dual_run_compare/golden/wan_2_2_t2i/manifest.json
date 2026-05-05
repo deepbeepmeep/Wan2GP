@@ -1,0 +1,20 @@
+{
+  "calibration_status": "pending_calibration",
+  "canonical_route_key": "wan_2_2_t2i",
+  "cohort": "A",
+  "created_for": "Sprint 0B thresholds and golden corpus",
+  "expected_output_contract": "single_image",
+  "friendly_name": "wan_2_2_t2i",
+  "manifest_schema_version": 1,
+  "media_class": "image",
+  "metrics_profile": "image",
+  "notes": "Golden manifest seed created for route-keyed parity corpus.",
+  "owner": "Sprint 0B executor",
+  "route_key": "wan_2_2_t2i",
+  "route_key_mode": "direct",
+  "seed_payload_ref": null,
+  "source_fixture_ref": "artifacts/worker-matrix/20260316T135006000511Z/wan_22_t2i_basic",
+  "source_fixture_status": "worker_matrix_case",
+  "task_type": "wan_2_2_t2i",
+  "threshold_version": "0B-2026-05-05"
+}

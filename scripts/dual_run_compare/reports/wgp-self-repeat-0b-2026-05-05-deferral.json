@@ -1,0 +1,413 @@
+{
+  "created_at": "2026-05-05T22:08:45.533342+00:00",
+  "deferral": {
+    "blocker": "Paired WGP-vs-WGP calibration was not required as a Sprint 0B stop-the-line gate after the user correction that WGP is already trusted. Live RunPod infrastructure was separately verified by the agent on 2026-05-05 with pod f9s5vqk15gux9d: launch, SSH readiness, GPU visibility, storage health, pod listing, termination, and post-terminate absence all passed. This report remains a route-keyed deferral because it contains no paired WGP metric observations.",
+    "next_action": "In Sprint 0C or the first sprint that consumes measured WGP drift, run paired WGP self-repeatability only if fresh calibration is needed for threshold promotion; otherwise keep WGP as the trusted control and replace deferred_pending_sprint_0c_disk statuses only when measured reports contain metric observations."
+  },
+  "live_runs": [
+    {
+      "command": [
+        "python",
+        "scripts/live_test/main.py",
+        "--variant",
+        "fresh",
+        "--wgp-profile",
+        "3",
+        "--timeout-image",
+        "3600",
+        "--timeout-travel-segment",
+        "1800",
+        "--timeout-travel-orchestrator",
+        "3600"
+      ],
+      "not_executed": "record_deferral"
+    },
+    {
+      "command": [
+        "python",
+        "scripts/live_test/main.py",
+        "--variant",
+        "fresh",
+        "--wgp-profile",
+        "3",
+        "--timeout-image",
+        "3600",
+        "--timeout-travel-segment",
+        "1800",
+        "--timeout-travel-orchestrator",
+        "3600"
+      ],
+      "not_executed": "record_deferral"
+    }
+  ],
+  "mode": "deferral",
+  "report_id": "wgp-self-repeat-0b-2026-05-05-deferral",
+  "routes": [
+    {
+      "cohort": "A",
+      "comparison": {
+        "calibration_status": "deferred_pending_sprint_0c_disk",
+        "metric_keys": [
+          "image_phash_normalized_hamming",
+          "image_ssim",
+          "image_pixel_dimensions",
+          "image_format_container",
+          "video_frame_count",
+          "video_phash_mean",
+          "video_phash_p95",
+          "video_duration_ms",
+          "video_fps",
+          "video_audio_duration_ms",
+          "latency_p95_wall_clock_ratio",
+          "vram_peak_ratio",
+          "error_oom_count",
+          "canary_output_divergence_rate"
+        ],
+        "route_key": "z_image_turbo",
+        "status": "not_evaluated_no_metric_observations"
+      },
+      "route_key": "z_image_turbo",
+      "task_type": "z_image_turbo"
+    },
+    {
+      "cohort": "A",
+      "comparison": {
+        "calibration_status": "deferred_pending_sprint_0c_disk",
+        "metric_keys": [
+          "image_phash_normalized_hamming",
+          "image_ssim",
+          "image_pixel_dimensions",
+          "image_format_container",
+          "video_frame_count",
+          "video_phash_mean",
+          "video_phash_p95",
+          "video_duration_ms",
+          "video_fps",
+          "video_audio_duration_ms",
+          "latency_p95_wall_clock_ratio",
+          "vram_peak_ratio",
+          "error_oom_count",
+          "canary_output_divergence_rate"
+        ],
+        "route_key": "z_image_turbo_i2i",
+        "status": "not_evaluated_no_metric_observations"
+      },
+      "route_key": "z_image_turbo_i2i",
+      "task_type": "z_image_turbo_i2i"
+    },
+    {
+      "cohort": "A",
+      "comparison": {
+        "calibration_status": "deferred_pending_sprint_0c_disk",
+        "metric_keys": [
+          "image_phash_normalized_hamming",
+          "image_ssim",
+          "image_pixel_dimensions",
+          "image_format_container",
+          "video_frame_count",
+          "video_phash_mean",
+          "video_phash_p95",
+          "video_duration_ms",
+          "video_fps",
+          "video_audio_duration_ms",
+          "latency_p95_wall_clock_ratio",
+          "vram_peak_ratio",
+          "error_oom_count",
+          "canary_output_divergence_rate"
+        ],
+        "route_key": "qwen_image",
+        "status": "not_evaluated_no_metric_observations"
+      },
+      "route_key": "qwen_image",
+      "task_type": "qwen_image"
+    },
+    {
+      "cohort": "A",
+      "comparison": {
+        "calibration_status": "deferred_pending_sprint_0c_disk",
+        "metric_keys": [
+          "image_phash_normalized_hamming",
+          "image_ssim",
+          "image_pixel_dimensions",
+          "image_format_container",
+          "video_frame_count",
+          "video_phash_mean",
+          "video_phash_p95",
+          "video_duration_ms",
+          "video_fps",
+          "video_audio_duration_ms",
+          "latency_p95_wall_clock_ratio",
+          "vram_peak_ratio",
+          "error_oom_count",
+          "canary_output_divergence_rate"
+        ],
+        "route_key": "qwen_image_2512",
+        "status": "not_evaluated_no_metric_observations"
+      },
+      "route_key": "qwen_image_2512",
+      "task_type": "qwen_image_2512"
+    },
+    {
+      "cohort": "A",
+      "comparison": {
+        "calibration_status": "deferred_pending_sprint_0c_disk",
+        "metric_keys": [
+          "image_phash_normalized_hamming",
+          "image_ssim",
+          "image_pixel_dimensions",
+          "image_format_container",
+          "video_frame_count",
+          "video_phash_mean",
+          "video_phash_p95",
+          "video_duration_ms",
+          "video_fps",
+          "video_audio_duration_ms",
+          "latency_p95_wall_clock_ratio",
+          "vram_peak_ratio",
+          "error_oom_count",
+          "canary_output_divergence_rate"
+        ],
+        "route_key": "wan_2_2_t2i",
+        "status": "not_evaluated_no_metric_observations"
+      },
+      "route_key": "wan_2_2_t2i",
+      "task_type": "wan_2_2_t2i"
+    },
+    {
+      "cohort": "B",
+      "comparison": {
+        "calibration_status": "deferred_pending_sprint_0c_disk",
+        "metric_keys": [
+          "image_phash_normalized_hamming",
+          "image_ssim",
+          "image_pixel_dimensions",
+          "image_format_container",
+          "video_frame_count",
+          "video_phash_mean",
+          "video_phash_p95",
+          "video_duration_ms",
+          "video_fps",
+          "video_audio_duration_ms",
+          "latency_p95_wall_clock_ratio",
+          "vram_peak_ratio",
+          "error_oom_count",
+          "canary_output_divergence_rate"
+        ],
+        "route_key": "qwen_image_edit",
+        "status": "not_evaluated_no_metric_observations"
+      },
+      "route_key": "qwen_image_edit",
+      "task_type": "qwen_image_edit"
+    },
+    {
+      "cohort": "B",
+      "comparison": {
+        "calibration_status": "deferred_pending_sprint_0c_disk",
+        "metric_keys": [
+          "image_phash_normalized_hamming",
+          "image_ssim",
+          "image_pixel_dimensions",
+          "image_format_container",
+          "video_frame_count",
+          "video_phash_mean",
+          "video_phash_p95",
+          "video_duration_ms",
+          "video_fps",
+          "video_audio_duration_ms",
+          "latency_p95_wall_clock_ratio",
+          "vram_peak_ratio",
+          "error_oom_count",
+          "canary_output_divergence_rate"
+        ],
+        "route_key": "qwen_image_style",
+        "status": "not_evaluated_no_metric_observations"
+      },
+      "route_key": "qwen_image_style",
+      "task_type": "qwen_image_style"
+    },
+    {
+      "cohort": "B",
+      "comparison": {
+        "calibration_status": "deferred_pending_sprint_0c_disk",
+        "metric_keys": [
+          "image_phash_normalized_hamming",
+          "image_ssim",
+          "image_pixel_dimensions",
+          "image_format_container",
+          "video_frame_count",
+          "video_phash_mean",
+          "video_phash_p95",
+          "video_duration_ms",
+          "video_fps",
+          "video_audio_duration_ms",
+          "latency_p95_wall_clock_ratio",
+          "vram_peak_ratio",
+          "error_oom_count",
+          "canary_output_divergence_rate"
+        ],
+        "route_key": "image_inpaint",
+        "status": "not_evaluated_no_metric_observations"
+      },
+      "route_key": "image_inpaint",
+      "task_type": "image_inpaint"
+    },
+    {
+      "cohort": "B",
+      "comparison": {
+        "calibration_status": "deferred_pending_sprint_0c_disk",
+        "metric_keys": [
+          "image_phash_normalized_hamming",
+          "image_ssim",
+          "image_pixel_dimensions",
+          "image_format_container",
+          "video_frame_count",
+          "video_phash_mean",
+          "video_phash_p95",
+          "video_duration_ms",
+          "video_fps",
+          "video_audio_duration_ms",
+          "latency_p95_wall_clock_ratio",
+          "vram_peak_ratio",
+          "error_oom_count",
+          "canary_output_divergence_rate"
+        ],
+        "route_key": "annotated_image_edit",
+        "status": "not_evaluated_no_metric_observations"
+      },
+      "route_key": "annotated_image_edit",
+      "task_type": "annotated_image_edit"
+    },
+    {
+      "cohort": "E",
+      "comparison": {
+        "calibration_status": "deferred_pending_sprint_0c_disk",
+        "metric_keys": [
+          "image_phash_normalized_hamming",
+          "image_ssim",
+          "image_pixel_dimensions",
+          "image_format_container",
+          "video_frame_count",
+          "video_phash_mean",
+          "video_phash_p95",
+          "video_duration_ms",
+          "video_fps",
+          "video_audio_duration_ms",
+          "latency_p95_wall_clock_ratio",
+          "vram_peak_ratio",
+          "error_oom_count",
+          "canary_output_divergence_rate"
+        ],
+        "route_key": "individual_travel_segment__model-wan22_i2v__guidance-none__continuity-first_last__profile-default",
+        "status": "not_evaluated_no_metric_observations"
+      },
+      "route_key": "individual_travel_segment__model-wan22_i2v__guidance-none__continuity-first_last__profile-default",
+      "task_type": "individual_travel_segment"
+    },
+    {
+      "cohort": "E",
+      "comparison": {
+        "calibration_status": "deferred_pending_sprint_0c_disk",
+        "metric_keys": [
+          "image_phash_normalized_hamming",
+          "image_ssim",
+          "image_pixel_dimensions",
+          "image_format_container",
+          "video_frame_count",
+          "video_phash_mean",
+          "video_phash_p95",
+          "video_duration_ms",
+          "video_fps",
+          "video_audio_duration_ms",
+          "latency_p95_wall_clock_ratio",
+          "vram_peak_ratio",
+          "error_oom_count",
+          "canary_output_divergence_rate"
+        ],
+        "route_key": "travel_segment__model-wan22_i2v__guidance-none__continuity-first_last__profile-default",
+        "status": "not_evaluated_no_metric_observations"
+      },
+      "route_key": "travel_segment__model-wan22_i2v__guidance-none__continuity-first_last__profile-default",
+      "task_type": "travel_segment"
+    },
+    {
+      "cohort": "E",
+      "comparison": {
+        "calibration_status": "deferred_pending_sprint_0c_disk",
+        "metric_keys": [
+          "image_phash_normalized_hamming",
+          "image_ssim",
+          "image_pixel_dimensions",
+          "image_format_container",
+          "video_frame_count",
+          "video_phash_mean",
+          "video_phash_p95",
+          "video_duration_ms",
+          "video_fps",
+          "video_audio_duration_ms",
+          "latency_p95_wall_clock_ratio",
+          "vram_peak_ratio",
+          "error_oom_count",
+          "canary_output_divergence_rate"
+        ],
+        "route_key": "travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default",
+        "status": "not_evaluated_no_metric_observations"
+      },
+      "route_key": "travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default",
+      "task_type": "travel_segment"
+    },
+    {
+      "cohort": "E",
+      "comparison": {
+        "calibration_status": "deferred_pending_sprint_0c_disk",
+        "metric_keys": [
+          "image_phash_normalized_hamming",
+          "image_ssim",
+          "image_pixel_dimensions",
+          "image_format_container",
+          "video_frame_count",
+          "video_phash_mean",
+          "video_phash_p95",
+          "video_duration_ms",
+          "video_fps",
+          "video_audio_duration_ms",
+          "latency_p95_wall_clock_ratio",
+          "vram_peak_ratio",
+          "error_oom_count",
+          "canary_output_divergence_rate"
+        ],
+        "route_key": "join_clips_segment__model-wan22_vace__guidance-vace__continuity-join_bridge__profile-default",
+        "status": "not_evaluated_no_metric_observations"
+      },
+      "route_key": "join_clips_segment__model-wan22_vace__guidance-vace__continuity-join_bridge__profile-default",
+      "task_type": "join_clips_segment"
+    },
+    {
+      "cohort": "E",
+      "comparison": {
+        "calibration_status": "deferred_pending_sprint_0c_disk",
+        "metric_keys": [
+          "image_phash_normalized_hamming",
+          "image_ssim",
+          "image_pixel_dimensions",
+          "image_format_container",
+          "video_frame_count",
+          "video_phash_mean",
+          "video_phash_p95",
+          "video_duration_ms",
+          "video_fps",
+          "video_audio_duration_ms",
+          "latency_p95_wall_clock_ratio",
+          "vram_peak_ratio",
+          "error_oom_count",
+          "canary_output_divergence_rate"
+        ],
+        "route_key": "travel_segment__model-ltx2_distilled__guidance-ltx_anchor__continuity-video_source__profile-default",
+        "status": "not_evaluated_no_metric_observations"
+      },
+      "route_key": "travel_segment__model-ltx2_distilled__guidance-ltx_anchor__continuity-video_source__profile-default",
+      "task_type": "travel_segment"
+    }
+  ],
+  "threshold_path": "/Users/peteromalley/Documents/reigh-workspace/reigh-worker/scripts/dual_run_compare/migration-thresholds.yaml",
+  "threshold_version": "0B-2026-05-05"
+}

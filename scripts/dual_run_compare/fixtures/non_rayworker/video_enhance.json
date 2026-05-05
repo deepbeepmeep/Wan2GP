@@ -1,0 +1,25 @@
+{
+  "alias_mismatch": null,
+  "billing_path": "complete_task/billing.ts",
+  "completion_handler": "complete_task/generation-handlers.ts",
+  "executor_handler": "handlers/fal.py::handle_video_enhance",
+  "external_api": "fal.ai",
+  "fixture_schema_version": 1,
+  "output_shape": {
+    "metadata": "object optional",
+    "video_url": "string"
+  },
+  "owner": "Peter O'Malley, interim product owner",
+  "payload_shape": {
+    "enable_interpolation": "boolean optional",
+    "enable_upscale": "boolean optional",
+    "interpolation": "object optional",
+    "upscale": "object optional",
+    "video": "string alias for video_url",
+    "video_url": "string"
+  },
+  "preserve_or_move_decision": "preserve",
+  "route_key": "video_enhance",
+  "runtime": "api_orchestrator",
+  "task_type": "video_enhance"
+}

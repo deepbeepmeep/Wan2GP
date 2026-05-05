@@ -1,0 +1,26 @@
+{
+  "routes": {
+    "animate_character": {
+      "executor_handler": "handlers/wavespeed.py::handle_animate_character",
+      "runtime": "api_orchestrator",
+      "task_type": "animate_character"
+    },
+    "flux_klein_edit": {
+      "executor_handler": "handlers/fal.py::handle_flux_klein_edit",
+      "runtime": "api_orchestrator",
+      "task_type": "flux_klein_edit"
+    },
+    "image-upscale": {
+      "executor_handler": "handlers/fal.py::handle_image_upscale",
+      "runtime": "api_orchestrator",
+      "task_type": "image-upscale"
+    },
+    "video_enhance": {
+      "executor_handler": "handlers/fal.py::handle_video_enhance",
+      "runtime": "api_orchestrator",
+      "task_type": "video_enhance"
+    }
+  },
+  "snapshot_schema_version": 1,
+  "source": "../reigh-worker-orchestrator/api_orchestrator/task_handlers.py"
+}

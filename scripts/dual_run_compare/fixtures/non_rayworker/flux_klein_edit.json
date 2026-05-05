@@ -1,0 +1,26 @@
+{
+  "alias_mismatch": null,
+  "billing_path": "complete_task/billing.ts",
+  "completion_handler": "complete_task/generation-handlers.ts",
+  "executor_handler": "handlers/fal.py::handle_flux_klein_edit",
+  "external_api": "fal.ai",
+  "fixture_schema_version": 1,
+  "output_shape": {
+    "image_url": "string"
+  },
+  "owner": "Peter O'Malley, interim product owner",
+  "payload_shape": {
+    "image": "string alias for image_url",
+    "image_size": "string or dimensions optional",
+    "image_url": "string",
+    "klein_model": "flux-klein-4b or flux-klein-9b optional",
+    "num_images": "number optional",
+    "num_inference_steps": "number optional",
+    "prompt": "string",
+    "target_megapixels": "number optional"
+  },
+  "preserve_or_move_decision": "preserve",
+  "route_key": "flux_klein_edit",
+  "runtime": "api_orchestrator",
+  "task_type": "flux_klein_edit"
+}

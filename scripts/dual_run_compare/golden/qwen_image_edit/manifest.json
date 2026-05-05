@@ -1,0 +1,21 @@
+{
+  "calibration_status": "pending_calibration",
+  "canonical_route_key": "qwen_image_edit",
+  "cohort": "B",
+  "created_for": "Sprint 0B thresholds and golden corpus",
+  "edit_variant": "qwen_edit_default",
+  "expected_output_contract": "single_image",
+  "friendly_name": "qwen_image_edit",
+  "manifest_schema_version": 1,
+  "media_class": "image",
+  "metrics_profile": "image",
+  "notes": "Golden manifest seed created for route-keyed parity corpus.",
+  "owner": "Sprint 0B executor",
+  "route_key": "qwen_image_edit",
+  "route_key_mode": "direct",
+  "seed_payload_ref": null,
+  "source_fixture_ref": "artifacts/worker-matrix/20260316T141738351426Z/qwen_image_edit_db_task",
+  "source_fixture_status": "worker_matrix_case",
+  "task_type": "qwen_image_edit",
+  "threshold_version": "0B-2026-05-05"
+}

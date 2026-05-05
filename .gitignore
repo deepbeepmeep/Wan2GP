@@ -37,6 +37,9 @@ venv_headless_wan2gp/
 !Wan2GP/models/hyvideo/configs/*.json
 !Wan2GP/models/longcat/configs/*.json
 !Wan2GP/models/chatterbox/configs/*.json
+!scripts/dual_run_compare/fixtures/**/*.json
+!scripts/dual_run_compare/golden/**/manifest.json
+!scripts/dual_run_compare/reports/*.json
 # *.txt
 *.backup
 *.pkl

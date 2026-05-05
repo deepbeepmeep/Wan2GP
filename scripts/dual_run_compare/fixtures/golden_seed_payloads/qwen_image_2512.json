@@ -1,0 +1,10 @@
+{
+  "params": {
+    "model_name": "qwen-image-2512",
+    "prompt": "Sprint 0B golden qwen 2512 prompt",
+    "resolution": "1024x1024"
+  },
+  "route_key": "qwen_image_2512",
+  "task_type": "qwen_image_2512",
+  "threshold_version": "0B-2026-05-05"
+}

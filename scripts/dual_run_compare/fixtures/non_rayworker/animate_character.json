@@ -1,0 +1,24 @@
+{
+  "alias_mismatch": null,
+  "billing_path": "complete_task/billing.ts",
+  "completion_handler": "complete_task/generation-handlers.ts",
+  "executor_handler": "handlers/wavespeed.py::handle_animate_character",
+  "external_api": "Wavespeed",
+  "fixture_schema_version": 1,
+  "output_shape": {
+    "video_url": "string"
+  },
+  "owner": "Peter O'Malley, interim product owner",
+  "payload_shape": {
+    "character_image_url": "string",
+    "mode": "string optional, defaults animate",
+    "motion_video_url": "string optional",
+    "prompt": "string optional",
+    "resolution": "string optional, defaults 480p",
+    "seed": "number optional"
+  },
+  "preserve_or_move_decision": "preserve",
+  "route_key": "animate_character",
+  "runtime": "api_orchestrator",
+  "task_type": "animate_character"
+}

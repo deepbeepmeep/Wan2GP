@@ -1,0 +1,11 @@
+{
+  "params": {
+    "annotation_ref": "fixtures/media/seed_annotation.png",
+    "input_image_ref": "fixtures/media/seed_image.png",
+    "prompt": "Apply the annotation intent",
+    "qwen_edit_model": "qwen-edit"
+  },
+  "route_key": "annotated_image_edit",
+  "task_type": "annotated_image_edit",
+  "threshold_version": "0B-2026-05-05"
+}

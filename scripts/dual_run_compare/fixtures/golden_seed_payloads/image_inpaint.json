@@ -1,0 +1,11 @@
+{
+  "params": {
+    "input_image_ref": "fixtures/media/seed_image.png",
+    "mask_ref": "fixtures/media/seed_mask.png",
+    "prompt": "Repair the masked area",
+    "qwen_edit_model": "qwen-edit"
+  },
+  "route_key": "image_inpaint",
+  "task_type": "image_inpaint",
+  "threshold_version": "0B-2026-05-05"
+}

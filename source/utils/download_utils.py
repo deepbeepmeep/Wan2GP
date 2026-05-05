@@ -23,6 +23,10 @@ class DownloadError(RuntimeError):
     """Raised when a URL download cannot be completed."""
 
 
+def _resolve_allowed_local_worker_dir() -> Path:
+    return Path(os.environ.get("REIGH_LOCAL_WORKER_DIR", str(Path.home() / ".reigh-local-files"))).expanduser()
+
+
 def _stream_download_to_path(url: str, destination_path: Path, timeout: int = 300) -> None:
     with requests.get(url, stream=True, timeout=timeout) as response:
         response.raise_for_status()
@@ -203,6 +207,21 @@ def _download_file_if_url(
         return file_url_or_path
 
     parsed_url = urlparse(file_url_or_path)
+    if parsed_url.scheme == "file":
+        file_path = Path(parsed_url.path)
+        if any(part == ".." for part in file_path.parts):
+            raise DownloadError(f"file:// path not allowed: {file_url_or_path}")
+
+        resolved_file_path = file_path.resolve(strict=False)
+        allowed_dir = _resolve_allowed_local_worker_dir().resolve()
+        if (
+            not resolved_file_path.is_relative_to(allowed_dir)
+            or not resolved_file_path.exists()
+            or not resolved_file_path.is_file()
+        ):
+            raise DownloadError(f"file:// path not allowed: {file_url_or_path}")
+        return str(resolved_file_path)
+
     if parsed_url.scheme in ['http', 'https'] and download_target_dir:
         target_dir_path = Path(download_target_dir)
         try:

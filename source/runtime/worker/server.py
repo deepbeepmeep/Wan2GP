@@ -64,6 +64,15 @@ def _resolve_worker_db_client_key(cli_args, *, access_token: str | None) -> str:
     return resolved
 
 
+def _is_local_worker_mode(cli_args, *, access_token: str | None) -> bool:
+    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_SERVICE_KEY")
+    if service_key:
+        return False
+    if os.environ.get("WORKER_DB_CLIENT_AUTH_MODE", "").strip().lower() == "service":
+        return False
+    return bool(access_token)
+
+
 def _initialize_db_runtime(cli_args, *, access_token: str | None, debug_mode_enabled: bool):
     supabase_url = getattr(cli_args, "supabase_url", None) or os.environ.get("SUPABASE_URL")
     client_key = _resolve_worker_db_client_key(cli_args, access_token=access_token)
@@ -447,6 +456,7 @@ def main():
 
     cli_args = parse_args()
     headless_logger.essential(f"args parsed: worker={cli_args.worker}, debug={cli_args.debug}")
+    local_http_server = None
 
     # Resolve access token: prefer --reigh-access-token, fall back to --supabase-access-token
     access_token = cli_args.reigh_access_token or cli_args.supabase_access_token
@@ -506,6 +516,37 @@ def main():
 
     if cli_args.migrate_only:
         sys.exit(0)
+
+    if _is_local_worker_mode(cli_args, access_token=access_token):
+        from source.runtime.worker.local_http import start_local_http_server
+
+        port = int(os.environ.get("REIGH_LOCAL_WORKER_PORT", "8765"))
+        mat_dir = Path(os.environ.get("REIGH_LOCAL_WORKER_DIR", str(Path.home() / ".reigh-local-files"))).expanduser()
+        auth_optional = os.environ.get("REIGH_LOCAL_WORKER_AUTH_OPTIONAL") in ("1", "true", "yes")
+        file_ttl_seconds = int(os.environ.get("REIGH_LOCAL_WORKER_FILE_TTL_SECONDS", "21600"))
+        janitor_interval_seconds = int(os.environ.get("REIGH_LOCAL_WORKER_JANITOR_INTERVAL_SECONDS", "1800"))
+        try:
+            local_http_server = start_local_http_server(
+                materialization_dir=mat_dir,
+                port=port,
+                worker_id=cli_args.worker,
+                version="worker",
+                auth_optional=auth_optional,
+                file_ttl_seconds=file_ttl_seconds,
+                janitor_interval_seconds=janitor_interval_seconds,
+            )
+            headless_logger.essential(
+                f"Local HTTP server listening on 127.0.0.1:{port}, materializing to {mat_dir} "
+                f"(TTL={file_ttl_seconds}s, sweep every {janitor_interval_seconds}s)"
+            )
+            if auth_optional:
+                headless_logger.warning(
+                    "[SECURITY] REIGH_LOCAL_WORKER_AUTH_OPTIONAL=1 — /ingest and /cleanup accept requests "
+                    "WITHOUT Authorization. The brief's localhost-attacker threat model is opt-out in this "
+                    "configuration. Production worker setups must leave this knob unset."
+                )
+        except OSError as e:
+            headless_logger.warning(f"Local HTTP server could not bind to 127.0.0.1:{port}: {e}")
 
     main_output_dir = Path(cli_args.main_output_dir).resolve()
     main_output_dir.mkdir(parents=True, exist_ok=True)
@@ -810,6 +851,11 @@ def main():
             run_summary.render_to(headless_logger)
         except BaseException as _cleanup_err:
             headless_logger.debug_anomaly("SHUTDOWN", f"render_to failed: {_cleanup_err}")
+        if local_http_server:
+            try:
+                local_http_server.shutdown()
+            except BaseException as _cleanup_err:
+                headless_logger.debug_anomaly("SHUTDOWN", f"local_http_server.shutdown failed: {_cleanup_err}")
         if guardian_process:
             try:
                 guardian_process.terminate()

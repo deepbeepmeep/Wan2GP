@@ -1,0 +1,153 @@
+from __future__ import annotations
+
+import re
+from typing import Any, Mapping
+
+
+DIRECT_ROUTE_ALIASES: dict[str, str] = {
+    "z_image": "z_image_turbo",
+    "z_image_turbo": "z_image_turbo",
+    "z_image_turbo_i2i": "z_image_turbo_i2i",
+    "qwen_image": "qwen_image",
+    "qwen_image_2512": "qwen_image_2512",
+    "optimised_t2i": "wan_2_2_t2i",
+    "wan_2_2_t2i": "wan_2_2_t2i",
+    "qwen_image_edit": "qwen_image_edit",
+    "qwen_image_style": "qwen_image_style",
+    "image_inpaint": "image_inpaint",
+    "annotated_image_edit": "annotated_image_edit",
+}
+
+EDIT_VARIANT_ALIASES: dict[str, str] = {
+    "qwen-edit": "qwen_edit_default",
+    "qwen_edit": "qwen_edit_default",
+    "qwen_edit_default": "qwen_edit_default",
+    "qwen-edit-2509": "qwen_edit_2509",
+    "qwen_edit_2509": "qwen_edit_2509",
+    "qwen-edit-2511": "qwen_edit_2511",
+    "qwen_edit_2511": "qwen_edit_2511",
+    "style-reference": "style_reference",
+    "style_reference": "style_reference",
+    "mask": "mask",
+    "annotation": "annotation",
+}
+
+
+def slug(value: Any) -> str:
+    """Normalize route dimensions into stable lowercase token fragments."""
+
+    text = str(value or "none").strip().lower()
+    text = text.replace("+", "_plus_")
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text or "none"
+
+
+def direct_route_key(task_type_or_alias: str) -> str:
+    """Canonical direct Cohort A/B product route key.
+
+    Direct routes key only by production task type because the selector can safely
+    flip these routes without inspecting model/guidance dimensions.
+    """
+
+    key = slug(task_type_or_alias)
+    return DIRECT_ROUTE_ALIASES.get(key, key)
+
+
+def edit_route_key(
+    task_type_or_alias: str,
+    *,
+    edit_variant: str | None = None,
+    profile: str | int | None = None,
+) -> str:
+    """Canonical dimensional key for Cohort B edit variants when dimensions exist."""
+
+    task_type = direct_route_key(task_type_or_alias)
+    parts = [task_type]
+    if edit_variant:
+        variant = EDIT_VARIANT_ALIASES.get(slug(edit_variant), slug(edit_variant))
+        parts.append(f"variant-{variant}")
+    if profile is not None:
+        parts.append(f"profile-{slug(profile)}")
+    return "__".join(parts)
+
+
+def model_family_from_model_name(model_name: str | None) -> str:
+    """Map audited worker model ids to route-key model families.
+
+    The Wan 2.2 I2V baseline contains "lightning" and "baseline" but is not a
+    VACE model. Only model ids containing the actual "vace" token map to VACE.
+    """
+
+    normalized = slug(model_name)
+    if not normalized or normalized == "none":
+        return "unknown"
+    if "wan_2_2" in normalized or "wan22" in normalized:
+        return "wan22_vace" if "vace" in normalized else "wan22_i2v"
+    if "ltx2" in normalized:
+        return "ltx2_distilled" if "distilled" in normalized else "ltx2"
+    if "qwen" in normalized:
+        return "qwen"
+    if "z_image" in normalized:
+        return "z_image"
+    return normalized
+
+
+def cohort_e_route_key(
+    *,
+    task_type: str,
+    model_name: str | None = None,
+    model_family: str | None = None,
+    guidance_kind: str | None = "none",
+    continuity_case: str | None = "first_last",
+    profile: str | int | None = "default",
+) -> str:
+    """Canonical dimensional Cohort E route key.
+
+    Cohort E keys always include task type, model family, guidance kind,
+    continuity case, and profile because parent/child route propagation depends
+    on these dimensions.
+    """
+
+    family = slug(model_family or model_family_from_model_name(model_name))
+    return "__".join(
+        [
+            slug(task_type),
+            f"model-{family}",
+            f"guidance-{slug(guidance_kind)}",
+            f"continuity-{slug(continuity_case)}",
+            f"profile-{slug(profile)}",
+        ]
+    )
+
+
+def route_key_from_payload(payload: Mapping[str, Any]) -> str:
+    """Best-effort canonical route key from a task payload or fixture mapping."""
+
+    task_type = str(payload.get("task_type") or payload.get("type") or "")
+    cohort = payload.get("cohort")
+    if cohort == "E" or task_type in {
+        "travel_orchestrator",
+        "travel_segment",
+        "individual_travel_segment",
+        "join_clips_segment",
+        "join_clips_orchestrator",
+        "join_final_stitch",
+        "travel_stitch",
+        "edit_video_orchestrator",
+    }:
+        return cohort_e_route_key(
+            task_type=task_type,
+            model_name=payload.get("model_name") or payload.get("model"),
+            model_family=payload.get("model_family"),
+            guidance_kind=payload.get("guidance_kind") or payload.get("travel_guidance_kind") or "none",
+            continuity_case=payload.get("continuity_case") or "first_last",
+            profile=payload.get("profile") or payload.get("wgp_profile") or "default",
+        )
+    if payload.get("edit_variant") or payload.get("profile") or payload.get("qwen_edit_model"):
+        return edit_route_key(
+            task_type,
+            edit_variant=payload.get("edit_variant") or payload.get("qwen_edit_model"),
+            profile=payload.get("profile") or payload.get("wgp_profile"),
+        )
+    return direct_route_key(task_type)

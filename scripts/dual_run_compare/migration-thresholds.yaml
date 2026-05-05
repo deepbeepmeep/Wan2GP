@@ -1,0 +1,279 @@
+version: 0B-2026-05-05
+schema_version: 1
+source_document: ../../../docs/migration-vibecomfy.md#11-migration-thresholds-single-source-of-truth
+generated_for: sprint_0b_thresholds_and_golden_corpus
+
+calibration_status_enum:
+  - green
+  - pending_calibration
+  - deferred_pending_sprint_0c_disk
+  - wgp_only
+  - owner_deferred
+
+metrics:
+  image_phash_normalized_hamming:
+    class: image_dual_run
+    metric: Perceptual hash difference (normalized Hamming)
+    comparator: max
+    threshold: 0.05
+    unit: normalized_hamming
+    failure_action: Mark task RED in Sprint 3 report; block cohort canary
+  image_ssim:
+    class: image_dual_run
+    metric: SSIM
+    comparator: min
+    threshold: 0.92
+    unit: ratio
+    failure_action: Mark task RED
+  image_pixel_dimensions:
+    class: image_dual_run
+    metric: Pixel dimensions
+    comparator: exact
+    threshold: exact_match
+    unit: pixels
+    failure_action: Mark task RED
+  image_format_container:
+    class: image_dual_run
+    metric: Format / container
+    comparator: exact
+    threshold: exact_match
+    unit: container
+    failure_action: Mark task RED
+  video_frame_count:
+    class: video_dual_run
+    metric: Frame count
+    comparator: exact
+    threshold: exact_match
+    unit: frames
+    failure_action: Mark task RED
+  video_phash_mean:
+    class: video_dual_run
+    metric: Per-frame pHash mean
+    comparator: max
+    threshold: 0.08
+    unit: normalized_hamming
+    failure_action: Mark task RED
+  video_phash_p95:
+    class: video_dual_run
+    metric: Per-frame pHash p95
+    comparator: max
+    threshold: 0.12
+    unit: normalized_hamming
+    failure_action: Mark task RED
+  video_duration_ms:
+    class: video_dual_run
+    metric: Duration
+    comparator: tolerance
+    threshold:
+      absolute_ms: 50
+    unit: milliseconds
+    failure_action: Mark task RED
+  video_fps:
+    class: video_dual_run
+    metric: FPS
+    comparator: exact
+    threshold: exact_match
+    unit: fps
+    failure_action: Mark task RED
+  video_audio_duration_ms:
+    class: video_dual_run
+    metric: Audio duration (when present)
+    comparator: tolerance
+    threshold:
+      absolute_ms: 50
+    unit: milliseconds
+    applies_when: audio_present
+    failure_action: Mark task RED
+  latency_p95_wall_clock_ratio:
+    class: latency
+    metric: Comfy p95 wall-clock per task type
+    comparator: max
+    threshold: 1.10
+    unit: wgp_p95_ratio
+    failure_action: Mark task RED; cohort canary auto-rollback if sustained 24h
+  vram_peak_ratio:
+    class: vram
+    metric: Comfy peak VRAM per task type per profile
+    comparator: max
+    threshold: 1.05
+    unit: wgp_peak_ratio
+    failure_action: Mark task RED
+  error_oom_count:
+    class: error_class
+    metric: OOM count over dual-run corpus
+    comparator: exact
+    threshold: 0
+    unit: count
+    failure_action: Block cohort canary
+  canary_output_divergence_rate:
+    class: canary_divergence
+    metric: Output-divergence rate per cohort (per-frame pHash p95 breach rate)
+    comparator: max
+    threshold: 0.01
+    unit: ratio_24h
+    measurement_guard: isolated shadow/sampled tasks over 24h with no completion, billing, upload, or user-visible side effects
+    failure_action: Auto-rollback only if measured through isolated shadow runs; otherwise mark cohort review-required and stop promotion
+
+route_defaults:
+  calibration_status: pending_calibration
+  thresholds_override: {}
+  notes: Sprint 0B seed route; WGP-vs-WGP calibration evidence pending.
+
+routes:
+  z_image_turbo:
+    cohort: A
+    route_key_mode: direct
+    task_type: z_image_turbo
+    media_class: image
+    source_fixture_status: worker_matrix_case
+    source_fixture_ref: artifacts/worker-matrix/20260316T141738351426Z/z_image_turbo_db_task
+    calibration_status: pending_calibration
+    thresholds_override: {}
+  z_image_turbo_i2i:
+    cohort: A
+    route_key_mode: direct
+    task_type: z_image_turbo_i2i
+    media_class: image
+    source_fixture_status: worker_matrix_case
+    source_fixture_ref: artifacts/worker-matrix/20260316T141738351426Z/z_image_turbo_i2i_db_task
+    calibration_status: pending_calibration
+    thresholds_override: {}
+  qwen_image:
+    cohort: A
+    route_key_mode: direct
+    task_type: qwen_image
+    media_class: image
+    source_fixture_status: seed_fixture_required
+    source_fixture_ref: fixtures/golden_seed_payloads/qwen_image.json
+    calibration_status: pending_calibration
+    thresholds_override: {}
+    notes: Required Cohort A route from migration scope; current locked worker matrix only covers qwen_image_style/qwen_image_edit DB cases.
+  qwen_image_2512:
+    cohort: A
+    route_key_mode: direct
+    task_type: qwen_image_2512
+    media_class: image
+    source_fixture_status: seed_fixture_required
+    source_fixture_ref: fixtures/golden_seed_payloads/qwen_image_2512.json
+    calibration_status: pending_calibration
+    thresholds_override: {}
+  wan_2_2_t2i:
+    cohort: A
+    route_key_mode: direct
+    task_type: wan_2_2_t2i
+    media_class: image
+    source_fixture_status: worker_matrix_case
+    source_fixture_ref: artifacts/worker-matrix/20260316T135006000511Z/wan_22_t2i_basic
+    calibration_status: pending_calibration
+    thresholds_override: {}
+  qwen_image_edit:
+    cohort: B
+    route_key_mode: direct
+    task_type: qwen_image_edit
+    media_class: image
+    edit_variant: qwen_edit_default
+    source_fixture_status: worker_matrix_case
+    source_fixture_ref: artifacts/worker-matrix/20260316T141738351426Z/qwen_image_edit_db_task
+    calibration_status: pending_calibration
+    thresholds_override: {}
+  qwen_image_style:
+    cohort: B
+    route_key_mode: direct
+    task_type: qwen_image_style
+    media_class: image
+    edit_variant: style_reference
+    source_fixture_status: worker_matrix_case
+    source_fixture_ref: artifacts/worker-matrix/20260316T141738351426Z/qwen_image_style_db_task
+    calibration_status: pending_calibration
+    thresholds_override: {}
+  image_inpaint:
+    cohort: B
+    route_key_mode: direct
+    task_type: image_inpaint
+    media_class: image
+    edit_variant: mask
+    source_fixture_status: seed_fixture_required
+    source_fixture_ref: fixtures/golden_seed_payloads/image_inpaint.json
+    calibration_status: pending_calibration
+    thresholds_override: {}
+  annotated_image_edit:
+    cohort: B
+    route_key_mode: direct
+    task_type: annotated_image_edit
+    media_class: image
+    edit_variant: annotation
+    source_fixture_status: seed_fixture_required
+    source_fixture_ref: fixtures/golden_seed_payloads/annotated_image_edit.json
+    calibration_status: pending_calibration
+    thresholds_override: {}
+  individual_travel_segment__model-wan22_i2v__guidance-none__continuity-first_last__profile-default:
+    cohort: E
+    route_key_mode: dimensional
+    task_type: individual_travel_segment
+    media_class: video
+    model_name: wan_2_2_i2v_lightning_baseline_2_2_2
+    model_family: wan22_i2v
+    guidance_kind: none
+    continuity_case: first_last
+    profile: default
+    source_fixture_status: worker_matrix_case
+    source_fixture_ref: artifacts/worker-matrix/20260316T141738351426Z/individual_travel_segment_wan22_i2v_baseline_2_2_2
+    calibration_status: pending_calibration
+    thresholds_override: {}
+    notes: Audited model is I2V; it must not be keyed as VACE.
+  travel_segment__model-wan22_i2v__guidance-none__continuity-first_last__profile-default:
+    cohort: E
+    route_key_mode: dimensional
+    task_type: travel_segment
+    media_class: video
+    model_name: wan_2_2_i2v_lightning_baseline_2_2_2
+    model_family: wan22_i2v
+    guidance_kind: none
+    continuity_case: first_last
+    profile: default
+    source_fixture_status: seed_fixture_required
+    source_fixture_ref: fixtures/golden_seed_payloads/travel_segment__model-wan22_i2v__guidance-none__continuity-first_last__profile-default.json
+    calibration_status: pending_calibration
+    thresholds_override: {}
+  travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default:
+    cohort: E
+    route_key_mode: dimensional
+    task_type: travel_segment
+    media_class: video
+    model_name: wan_2_2_vace_lightning_baseline_2_2_2
+    model_family: wan22_vace
+    guidance_kind: vace
+    continuity_case: video_source
+    profile: default
+    source_fixture_status: seed_fixture_required
+    source_fixture_ref: fixtures/golden_seed_payloads/travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default.json
+    calibration_status: pending_calibration
+    thresholds_override: {}
+  join_clips_segment__model-wan22_vace__guidance-vace__continuity-join_bridge__profile-default:
+    cohort: E
+    route_key_mode: dimensional
+    task_type: join_clips_segment
+    media_class: video
+    model_name: wan_2_2_vace_lightning_baseline_2_2_2
+    model_family: wan22_vace
+    guidance_kind: vace
+    continuity_case: join_bridge
+    profile: default
+    source_fixture_status: seed_fixture_required
+    source_fixture_ref: fixtures/golden_seed_payloads/join_clips_segment__model-wan22_vace__guidance-vace__continuity-join_bridge__profile-default.json
+    calibration_status: pending_calibration
+    thresholds_override: {}
+  travel_segment__model-ltx2_distilled__guidance-ltx_anchor__continuity-video_source__profile-default:
+    cohort: E
+    route_key_mode: dimensional
+    task_type: travel_segment
+    media_class: video
+    model_name: ltx2_22B_distilled_1_1
+    model_family: ltx2_distilled
+    guidance_kind: ltx_anchor
+    continuity_case: video_source
+    profile: default
+    source_fixture_status: seed_fixture_required
+    source_fixture_ref: fixtures/golden_seed_payloads/travel_segment__model-ltx2_distilled__guidance-ltx_anchor__continuity-video_source__profile-default.json
+    calibration_status: pending_calibration
+    thresholds_override: {}

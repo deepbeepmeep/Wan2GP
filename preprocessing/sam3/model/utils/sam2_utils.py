@@ -13,6 +13,7 @@ import numpy as np
 import torch
 from PIL import Image
 from tqdm import tqdm
+from ..device_utils import get_accelerator_device
 
 
 def _load_img_as_tensor(img_path, image_size):
@@ -102,12 +103,13 @@ def load_video_frames(
     img_mean=(0.5, 0.5, 0.5),
     img_std=(0.5, 0.5, 0.5),
     async_loading_frames=False,
-    compute_device=torch.device("cuda"),
+    compute_device=None,
 ):
     """
     Load the video frames from video_path. The frames are resized to image_size as in
     the model and are loaded to GPU if offload_video_to_cpu=False. This is used by the demo.
     """
+    compute_device = compute_device or get_accelerator_device()
     is_bytes = isinstance(video_path, bytes)
     is_str = isinstance(video_path, str)
     is_mp4_path = is_str and os.path.splitext(video_path)[-1] in [".mp4", ".MP4"]
@@ -143,7 +145,7 @@ def load_video_frames_from_jpg_images(
     img_mean=(0.5, 0.5, 0.5),
     img_std=(0.5, 0.5, 0.5),
     async_loading_frames=False,
-    compute_device=torch.device("cuda"),
+    compute_device=None,
 ):
     """
     Load the video frames from a directory of JPEG files ("<frame_index>.jpg" format).
@@ -153,6 +155,7 @@ def load_video_frames_from_jpg_images(
 
     You can load a frame asynchronously by setting `async_loading_frames` to `True`.
     """
+    compute_device = compute_device or get_accelerator_device()
     if isinstance(video_path, str) and os.path.isdir(video_path):
         jpg_folder = video_path
     else:
@@ -209,22 +212,22 @@ def load_video_frames_from_video_file(
     offload_video_to_cpu,
     img_mean=(0.5, 0.5, 0.5),
     img_std=(0.5, 0.5, 0.5),
-    compute_device=torch.device("cuda"),
+    compute_device=None,
 ):
     """Load the video frames from a video file."""
-    import decord
+    from shared.utils.video_decode import decode_video_frames_ffmpeg, probe_video_stream_metadata
 
+    compute_device = compute_device or get_accelerator_device()
     img_mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None]
     img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
-    # Get the original video height and width
-    decord.bridge.set_bridge("torch")
-    video_height, video_width, _ = decord.VideoReader(video_path).next().shape
-    # Iterate over all frames in the video
-    images = []
-    for frame in decord.VideoReader(video_path, width=image_size, height=image_size):
-        images.append(frame.permute(2, 0, 1))
-
-    images = torch.stack(images, dim=0).float() / 255.0
+    metadata = probe_video_stream_metadata(video_path)
+    if metadata is None:
+        raise RuntimeError(f"Unable to probe video metadata for {video_path}")
+    video_height, video_width = metadata["display_height"], metadata["display_width"]
+    frames = decode_video_frames_ffmpeg(video_path, 0, metadata["frame_count"], target_fps=None, bridge="torch")
+    images = frames.permute(0, 3, 1, 2).float() / 255.0
+    if images.shape[-2:] != (image_size, image_size):
+        images = torch.nn.functional.interpolate(images, size=(image_size, image_size), mode="bilinear", align_corners=False)
     if not offload_video_to_cpu:
         images = images.to(compute_device)
         img_mean = img_mean.to(compute_device)

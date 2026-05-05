@@ -50,6 +50,7 @@ from .model.tokenizer_ve import SimpleTokenizer
 from .model.video_tracking_multiplex import VideoTrackingDynamicMultiplex
 from .model.vitdet import ViT
 from .model.vl_combiner import SAM3VLBackbone, SAM3VLBackboneTri, TriHeadVisionOnly
+from .model.device_utils import get_accelerator_device
 from .sam.transformer import RoPEAttention
 
 
@@ -676,8 +677,9 @@ def _load_checkpoint(model, checkpoint_path):
 
 def _setup_device_and_mode(model, device, eval_mode):
     """Setup model device and evaluation mode."""
-    if device == "cuda":
-        model = model.cuda()
+    device = torch.device(device)
+    if device.type != "cpu":
+        model = model.to(device=device)
     if eval_mode:
         model.eval()
     return model
@@ -710,7 +712,7 @@ def build_sam3_image_model(
     """
     _setup_tf32()
     if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = get_accelerator_device()
     if bpe_path is None:
         bpe_path = pkg_resources.resource_filename(
             "sam3", "assets/bpe_simple_vocab_16e6.txt.gz"
@@ -810,7 +812,7 @@ def build_sam3_video_model(
     """
     _setup_tf32()
     if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = get_accelerator_device()
     if bpe_path is None:
         bpe_path = pkg_resources.resource_filename(
             "sam3", "assets/bpe_simple_vocab_16e6.txt.gz"
@@ -1090,7 +1092,7 @@ def build_sam3_multiplex_video_model(
             "use build_sam3_multiplex_video_predictor for safetensor loading."
         )
     if move_to_device and device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = get_accelerator_device()
 
     construct_on_meta = init_device == "meta"
     empty_context = init_empty_weights(include_buffers=True) if construct_on_meta else nullcontext()

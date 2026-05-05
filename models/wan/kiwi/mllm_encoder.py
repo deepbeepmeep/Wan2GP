@@ -35,6 +35,7 @@ from packaging import version
 from PIL import Image
 from torchvision import io, transforms
 from torchvision.transforms import InterpolationMode
+from shared.utils.video_decode import decode_video_frame_indices_ffmpeg, probe_video_stream_metadata
 
 from diffusers import ModelMixin, ConfigMixin
 from diffusers.configuration_utils import register_to_config
@@ -1976,12 +1977,6 @@ def _read_video_torchvision(
     return video, video_metadata, sample_fps
 
 
-def is_decord_available() -> bool:
-    import importlib.util
-
-    return importlib.util.find_spec("decord") is not None
-
-
 def calculate_video_frame_range(
     ele: Dict[str, Any],
     total_frames: int,
@@ -2040,10 +2035,14 @@ def calculate_video_frame_range(
     return start_frame, end_frame, end_frame - start_frame + 1
 
 
-def _read_video_decord(
+def _normalize_video_path(video_path: str) -> str:
+    return video_path[7:] if video_path.startswith("file://") else video_path
+
+
+def _read_video_ffmpeg(
     ele: Dict[str, Any],
 ) -> Tuple[torch.Tensor, float]:
-    """read video using decord.VideoReader
+    """read video using WanGP's ffmpeg decoder
 
     Args:
         ele (dict): a dict contains the configuration of video.
@@ -2054,11 +2053,13 @@ def _read_video_decord(
     Returns:
         torch.Tensor: the video tensor with shape (T, C, H, W).
     """
-    import decord
     video_path = ele["video"]
     st = time.time()
-    vr = decord.VideoReader(video_path)
-    total_frames, video_fps = len(vr), vr.get_avg_fps()
+    metadata = probe_video_stream_metadata(video_path)
+    if metadata is None:
+        raise RuntimeError(f"Unable to probe video metadata for {video_path}")
+    total_frames = metadata["frame_count"]
+    video_fps = metadata["fps_float"] or metadata["fps"]
     start_frame, end_frame, total_frames = calculate_video_frame_range(
         ele,
         total_frames,
@@ -2066,16 +2067,15 @@ def _read_video_decord(
     )
     nframes = smart_nframes(ele, total_frames=total_frames, video_fps=video_fps)
     idx = torch.linspace(start_frame, end_frame, nframes).round().long().tolist()
-    video = vr.get_batch(idx).asnumpy()
-    video = torch.tensor(video).permute(0, 3, 1, 2)  # Convert to TCHW format
-    logger.info(f"decord:  {video_path=}, {total_frames=}, {video_fps=}, time={time.time() - st:.3f}s")
+    video = decode_video_frame_indices_ffmpeg(video_path, idx, bridge="torch").permute(0, 3, 1, 2)
+    logger.info(f"ffmpeg:  {video_path=}, {total_frames=}, {video_fps=}, time={time.time() - st:.3f}s")
     sample_fps = nframes / max(total_frames, 1e-6) * video_fps
 
     video_metadata = dict(
         fps=video_fps,
         frames_indices=idx,
         total_num_frames=total_frames,
-        video_backend="decord",
+        video_backend="ffmpeg",
     )
     return video, video_metadata, sample_fps
 
@@ -2129,7 +2129,7 @@ def _read_video_torchcodec(
 
 
 VIDEO_READER_BACKENDS = {
-    "decord": _read_video_decord,
+    "ffmpeg": _read_video_ffmpeg,
     "torchvision": _read_video_torchvision,
     "torchcodec": _read_video_torchcodec,
 }
@@ -2141,12 +2141,12 @@ FORCE_QWENVL_VIDEO_READER = os.getenv("FORCE_QWENVL_VIDEO_READER", None)
 def get_video_reader_backend() -> str:
     if FORCE_QWENVL_VIDEO_READER is not None:
         video_reader_backend = FORCE_QWENVL_VIDEO_READER
+        if video_reader_backend not in VIDEO_READER_BACKENDS:
+            raise ValueError(f"Unknown video reader backend: {video_reader_backend}")
     elif is_torchcodec_available():
         video_reader_backend = "torchcodec"
-    elif is_decord_available():
-        video_reader_backend = "decord"
     else:
-        video_reader_backend = "torchvision"
+        video_reader_backend = "ffmpeg"
     print(f"qwen-vl-utils using {video_reader_backend} to read video.", file=sys.stderr)
     return video_reader_backend
 
@@ -2161,8 +2161,8 @@ def fetch_video(ele: Dict[str, Any], image_patch_size: int = 14, return_video_sa
         try:
             video, video_metadata, sample_fps = VIDEO_READER_BACKENDS[video_reader_backend](ele)
         except Exception as e:
-            logger.warning(f"video_reader_backend {video_reader_backend} error, use torchvision as default, msg: {e}")
-            video, video_metadata, sample_fps = VIDEO_READER_BACKENDS["torchvision"](ele)
+            logger.warning(f"video_reader_backend {video_reader_backend} error, use ffmpeg as default, msg: {e}")
+            video, video_metadata, sample_fps = VIDEO_READER_BACKENDS["ffmpeg"](ele)
     else:
         # The input is a list of frames
         # assert isinstance(ele["video"], (list, tuple))

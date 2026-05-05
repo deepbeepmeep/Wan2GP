@@ -1,4 +1,5 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
+import sys
 import torch
 from importlib.metadata import version
 from mmgp import offload
@@ -6,7 +7,15 @@ import torch.nn.functional as F
 import warnings
 from importlib.metadata import version
 
-major, minor = torch.cuda.get_device_capability(None)
+_is_mps = sys.platform == 'darwin' and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+
+# MPS compatibility: torch.cuda.get_device_capability is patched by device_patch.py
+# but in case this module is imported before the patch, handle it gracefully
+try:
+    major, minor = torch.cuda.get_device_capability(None)
+except Exception:
+    # Fallback for MPS: assume modern architecture
+    major, minor = 11, 0
 bfloat16_supported =  major >= 8 
 
 try:
@@ -199,6 +208,9 @@ def get_attention_modes():
     return ret
 
 def get_supported_attention_modes():
+    # MPS compatibility: only SDPA is supported on Apple Silicon
+    if _is_mps:
+        return ["sdpa", "auto"]
     ret = get_attention_modes()
     major, minor = torch.cuda.get_device_capability()
     if  major < 10 or not triton_installed:
@@ -223,7 +235,9 @@ __all__ = [
 ]
 
 def get_cu_seqlens(batch_size, lens, max_len):
-    cu_seqlens = torch.zeros([2 * batch_size + 1], dtype=torch.int32, device="cuda")
+    # MPS compatibility: use dynamic device detection
+    _cu_device = "mps" if _is_mps else "cuda"
+    cu_seqlens = torch.zeros([2 * batch_size + 1], dtype=torch.int32, device=_cu_device)
 
     for i in range(batch_size):
         s = lens[i] 
@@ -340,11 +354,11 @@ def pay_attention(
             szq = q_lens[0].item() if q_lens != None else lq
             szk = k_lens[0].item() if k_lens != None else lk
             if szq != lq or szk != lk:
-                cu_seqlens_q = torch.tensor([0, szq, lq], dtype=torch.int32, device="cuda")
-                cu_seqlens_k = torch.tensor([0, szk, lk], dtype=torch.int32, device="cuda")
+                cu_seqlens_q = torch.tensor([0, szq, lq], dtype=torch.int32, device=q.device)
+                cu_seqlens_k = torch.tensor([0, szk, lk], dtype=torch.int32, device=q.device)
             else:
-                cu_seqlens_q = torch.tensor([0, lq], dtype=torch.int32, device="cuda")
-                cu_seqlens_k = torch.tensor([0, lk], dtype=torch.int32, device="cuda")
+                cu_seqlens_q = torch.tensor([0, lq], dtype=torch.int32, device=q.device)
+                cu_seqlens_k = torch.tensor([0, lk], dtype=torch.int32, device=q.device)
             q = q.squeeze(0)
             k = k.squeeze(0)
             v = v.squeeze(0)

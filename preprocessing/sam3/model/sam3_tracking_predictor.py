@@ -4,9 +4,9 @@
 
 import logging
 from collections import OrderedDict
-from contextlib import nullcontext
 
 import torch
+from ..model.device_utils import accelerator_autocast, get_accelerator_device
 from ..model.sam3_tracker_base import concat_points, NO_OBJ_SCORE, Sam3TrackerBase
 from ..model.sam3_tracker_utils import fill_holes_in_mask_scores
 from ..model.utils.sam2_utils import load_video_frames
@@ -48,7 +48,7 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         self.max_point_num_in_prompt_enc = max_point_num_in_prompt_enc
         self.non_overlap_masks_for_output = non_overlap_masks_for_output
 
-        self.bf16_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if torch.cuda.is_available() else nullcontext()
+        self.bf16_context = accelerator_autocast()
         self.bf16_context.__enter__()  # keep using for the entire model process
 
         self.iter_use_prev_mask_pred = True
@@ -80,7 +80,7 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         if offload_state_to_cpu:
             inference_state["storage_device"] = torch.device("cpu")
         else:
-            inference_state["storage_device"] = torch.device("cuda")
+            inference_state["storage_device"] = get_accelerator_device()
 
         if video_path is not None:
             images, video_height, video_width = load_video_frames(

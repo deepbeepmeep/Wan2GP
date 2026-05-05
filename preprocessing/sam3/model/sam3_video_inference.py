@@ -58,7 +58,7 @@ class Sam3VideoInference(Sam3VideoBase):
         offload_video_to_cpu=False,
         offload_state_to_cpu=False,
         async_loading_frames=False,
-        video_loader_type="cv2",
+        video_loader_type="ffmpeg",
     ):
         """Initialize an inference state from `resource_path` (an image or a video)."""
         images, orig_height, orig_width = load_resource_as_video_frames(
@@ -812,9 +812,9 @@ class Sam3VideoInference(Sam3VideoBase):
         if not self.compile_model:
             return
         self._warm_up_complete = False
-        if self.device.type != "cuda":
+        if self.device.type not in {"cuda", "mps"}:
             raise RuntimeError(
-                f"The model must be on CUDA for warm-up compilation, got {self.device=}."
+                f"The model must be on an accelerator for warm-up compilation, got {self.device=}."
             )
 
         # temporally set to single GPU temporarily for warm-up compilation

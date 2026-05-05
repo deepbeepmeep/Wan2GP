@@ -104,8 +104,9 @@ class YuePipeline:
         prompt_start_time: float = 0.0,
         prompt_end_time: float = 30.0,
         attn_implementation: Optional[str] = None,
+        device: Optional[torch.device] = None,
     ) -> None:
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._interrupt = False
 
         assets = self._resolve_assets(

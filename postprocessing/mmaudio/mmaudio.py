@@ -17,6 +17,14 @@ persistent_offloadobj = None
 persistent_model_id = None
 
 
+def _processing_device():
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 def _resolve_mmaudio_path(path):
     if path is None:
         return None
@@ -57,6 +65,7 @@ def get_model(persistent_models = False, verboseLevel = 1, model_name = None, mo
 
     log = logging.getLogger()
 
+    processing_device = _processing_device()
     device =  'cpu' #"cuda"
     # if torch.cuda.is_available():
     #     device = 'cuda'
@@ -105,7 +114,7 @@ def get_model(persistent_models = False, verboseLevel = 1, model_name = None, mo
                                     bigvgan_vocoder_ckpt=resolved_bigvgan_path,
                                     need_vae_encoder=False)
         feature_utils = feature_utils.to(device, dtype).eval()
-        feature_utils.device = "cuda"
+        feature_utils.device = processing_device
 
         pipe = { "net" : net, "clip" : feature_utils.clip_model, "syncformer" : feature_utils.synchformer, "vocode" : feature_utils.tod.vocoder, "vae" : feature_utils.tod.vae }
         from mmgp import offload
@@ -140,7 +149,7 @@ def video_to_audio(video, prompt: str, negative_prompt: str, seed: int, num_step
 
     net, feature_utils, seq_cfg, offloadobj = get_model(persistent_models, verboseLevel, model_name=model_name, model_path=model_path )
 
-    rng = torch.Generator(device="cuda")
+    rng = torch.Generator(device=feature_utils.device)
     if seed >= 0:
         rng.manual_seed(seed)
     else:

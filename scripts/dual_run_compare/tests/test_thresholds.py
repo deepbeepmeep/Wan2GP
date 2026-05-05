@@ -27,6 +27,8 @@ def _write_thresholds(tmp_path: Path, mutator=None) -> Path:
 def test_loads_complete_threshold_yaml() -> None:
     thresholds = Thresholds.load(strict=True)
     assert thresholds.raw["version"] == "0B-2026-05-05"
+    assert tuple(thresholds.raw["metric_keys"]) == EXPECTED_METRIC_KEYS
+    assert tuple(thresholds.raw["defaults"]) == EXPECTED_METRIC_KEYS
     assert tuple(thresholds.metrics) == EXPECTED_METRIC_KEYS
     assert "z_image_turbo" in thresholds.routes
 
@@ -55,10 +57,19 @@ def test_invalid_status_rejected(tmp_path: Path) -> None:
 
 def test_missing_metric_rejected(tmp_path: Path) -> None:
     def mutate(data):
-        data["metrics"].pop("video_phash_p95")
+        data["defaults"].pop("video_phash_p95")
 
     path = _write_thresholds(tmp_path, mutate)
-    with pytest.raises(ThresholdValidationError, match="missing metric rows: video_phash_p95"):
+    with pytest.raises(ThresholdValidationError, match="defaults missing metric rows: video_phash_p95"):
+        Thresholds.load(path)
+
+
+def test_metric_key_list_drift_rejected(tmp_path: Path) -> None:
+    def mutate(data):
+        data["metric_keys"].remove("video_phash_p95")
+
+    path = _write_thresholds(tmp_path, mutate)
+    with pytest.raises(ThresholdValidationError, match="metric_keys missing rows: video_phash_p95"):
         Thresholds.load(path)
 
 

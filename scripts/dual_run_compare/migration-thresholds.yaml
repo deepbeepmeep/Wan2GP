@@ -10,7 +10,23 @@ calibration_status_enum:
   - wgp_only
   - owner_deferred
 
-metrics:
+metric_keys:
+  - image_phash_normalized_hamming
+  - image_ssim
+  - image_pixel_dimensions
+  - image_format_container
+  - video_frame_count
+  - video_phash_mean
+  - video_phash_p95
+  - video_duration_ms
+  - video_fps
+  - video_audio_duration_ms
+  - latency_p95_wall_clock_ratio
+  - vram_peak_ratio
+  - error_oom_count
+  - canary_output_divergence_rate
+
+defaults:
   image_phash_normalized_hamming:
     class: image_dual_run
     metric: Perceptual hash difference (normalized Hamming)

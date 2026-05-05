@@ -81,7 +81,7 @@ class Thresholds:
 
     @property
     def metrics(self) -> Mapping[str, Mapping[str, Any]]:
-        metrics = self.raw.get("metrics")
+        metrics = self.raw.get("defaults")
         return metrics if isinstance(metrics, Mapping) else {}
 
     @property
@@ -143,15 +143,27 @@ class Thresholds:
 
     def _validate_metrics(self) -> list[str]:
         errors: list[str] = []
-        if not isinstance(self.raw.get("metrics"), Mapping):
-            return ["metrics must be a mapping"]
+        metric_keys = self.raw.get("metric_keys")
+        if not isinstance(metric_keys, list):
+            errors.append("metric_keys must be a list")
+        elif tuple(metric_keys) != EXPECTED_METRIC_KEYS:
+            missing_from_list = [key for key in EXPECTED_METRIC_KEYS if key not in metric_keys]
+            extra_in_list = [key for key in metric_keys if key not in EXPECTED_METRIC_KEYS]
+            if missing_from_list:
+                errors.append(f"metric_keys missing rows: {', '.join(missing_from_list)}")
+            if extra_in_list:
+                errors.append(f"metric_keys unknown rows: {', '.join(extra_in_list)}")
+            if not missing_from_list and not extra_in_list:
+                errors.append("metric_keys must preserve the approved row order")
+        if not isinstance(self.raw.get("defaults"), Mapping):
+            return errors + ["defaults must be a mapping"]
         metric_keys = tuple(self.metrics.keys())
         missing = [key for key in EXPECTED_METRIC_KEYS if key not in self.metrics]
         extra = [key for key in metric_keys if key not in EXPECTED_METRIC_KEYS]
         if missing:
-            errors.append(f"missing metric rows: {', '.join(missing)}")
+            errors.append(f"defaults missing metric rows: {', '.join(missing)}")
         if extra:
-            errors.append(f"unknown metric rows: {', '.join(extra)}")
+            errors.append(f"defaults unknown metric rows: {', '.join(extra)}")
         for key in EXPECTED_METRIC_KEYS:
             metric = self.metrics.get(key)
             if not isinstance(metric, Mapping):

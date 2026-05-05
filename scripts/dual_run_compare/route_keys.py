@@ -58,6 +58,9 @@ def edit_route_key(
     task_type_or_alias: str,
     *,
     edit_variant: str | None = None,
+    mask_case: str | None = None,
+    annotation_case: str | None = None,
+    style_reference_case: str | None = None,
     profile: str | int | None = None,
 ) -> str:
     """Canonical dimensional key for Cohort B edit variants when dimensions exist."""
@@ -67,6 +70,12 @@ def edit_route_key(
     if edit_variant:
         variant = EDIT_VARIANT_ALIASES.get(slug(edit_variant), slug(edit_variant))
         parts.append(f"variant-{variant}")
+    if mask_case:
+        parts.append(f"mask-{slug(mask_case)}")
+    if annotation_case:
+        parts.append(f"annotation-{slug(annotation_case)}")
+    if style_reference_case:
+        parts.append(f"style_reference-{slug(style_reference_case)}")
     if profile is not None:
         parts.append(f"profile-{slug(profile)}")
     return "__".join(parts)
@@ -144,10 +153,23 @@ def route_key_from_payload(payload: Mapping[str, Any]) -> str:
             continuity_case=payload.get("continuity_case") or "first_last",
             profile=payload.get("profile") or payload.get("wgp_profile") or "default",
         )
-    if payload.get("edit_variant") or payload.get("profile") or payload.get("qwen_edit_model"):
+    if (
+        payload.get("edit_variant")
+        or payload.get("profile")
+        or payload.get("qwen_edit_model")
+        or payload.get("mask_case")
+        or payload.get("mask_type")
+        or payload.get("annotation_case")
+        or payload.get("annotation_type")
+        or payload.get("style_reference_case")
+        or payload.get("style_reference_type")
+    ):
         return edit_route_key(
             task_type,
             edit_variant=payload.get("edit_variant") or payload.get("qwen_edit_model"),
+            mask_case=payload.get("mask_case") or payload.get("mask_type"),
+            annotation_case=payload.get("annotation_case") or payload.get("annotation_type"),
+            style_reference_case=payload.get("style_reference_case") or payload.get("style_reference_type"),
             profile=payload.get("profile") or payload.get("wgp_profile"),
         )
     return direct_route_key(task_type)

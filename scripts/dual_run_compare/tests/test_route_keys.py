@@ -23,14 +23,32 @@ def test_cohort_b_edit_dimensions() -> None:
         == "qwen_image_edit__variant-qwen_edit_2511__profile-3"
     )
     assert (
+        edit_route_key(
+            "qwen_image_style",
+            edit_variant="style-reference",
+            style_reference_case="image prompt style",
+            profile="profile 2",
+        )
+        == "qwen_image_style__variant-style_reference__style_reference-image_prompt_style__profile-profile_2"
+    )
+    assert (
+        edit_route_key("image_inpaint", edit_variant="mask", mask_case="alpha mask", profile=5)
+        == "image_inpaint__variant-mask__mask-alpha_mask__profile-5"
+    )
+    assert (
+        edit_route_key("annotated_image_edit", edit_variant="annotation", annotation_case="drawn arrows")
+        == "annotated_image_edit__variant-annotation__annotation-drawn_arrows"
+    )
+    assert (
         route_key_from_payload(
             {
                 "task_type": "image_inpaint",
                 "edit_variant": "mask",
+                "mask_case": "binary upload",
                 "profile": "profile 5",
             }
         )
-        == "image_inpaint__variant-mask__profile-profile_5"
+        == "image_inpaint__variant-mask__mask-binary_upload__profile-profile_5"
     )
 
 

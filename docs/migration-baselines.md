@@ -59,10 +59,10 @@ Routes that bypass the RayWorker entirely and execute via the API orchestrator (
 
 | task_type | Current runtime | Owner | Executor handler | External API | Preserve or move? | Rationale | Completion handler | Billing path |
 |-----------|-----------------|-------|------------------|--------------|--------------------|-----------|--------------------|-------------|
-| `video_enhance` | API orchestrator | TBD (product) | `fal.py:364` — `handle_video_enhance` | fal.ai | **Preserve** | Stable external API; no VibeComfy template equivalent exists; migrating would degrade quality. | `complete_task/generation-handlers.ts` | `complete_task/billing.ts` |
-| `image-upscale` | API orchestrator | TBD (product) | `fal.py:20` — `handle_image_upscale` | fal.ai | **Preserve** | Stable external API; note hyphen/underscore mismatch (see §2.1). | `complete_task/generation-handlers.ts` | `complete_task/billing.ts` |
-| `animate_character` | API orchestrator | TBD (product) | `wavespeed.py:356` — `handle_animate_character` | Wavespeed | **Preserve** | Stable external API; character animation via Wavespeed API. | `complete_task/generation-handlers.ts` | `complete_task/billing.ts` |
-| `flux_klein_edit` | API orchestrator | TBD (product) | `fal.py:276` — `handle_flux_klein_edit` | fal.ai | **Preserve** | Stable external API; Flux-based Klein edit via fal.ai. | `complete_task/generation-handlers.ts` | `complete_task/billing.ts` |
+| `video_enhance` | API orchestrator | Peter O'Malley, interim product owner | `fal.py:364` — `handle_video_enhance` | fal.ai | **Preserve** | Stable external API; no VibeComfy template equivalent exists; migrating would degrade quality. | `complete_task/generation-handlers.ts` | `complete_task/billing.ts` |
+| `image-upscale` | API orchestrator | Peter O'Malley, interim product owner | `fal.py:20` — `handle_image_upscale` | fal.ai | **Preserve** | Stable external API; note hyphen/underscore mismatch (see §2.1). | `complete_task/generation-handlers.ts` | `complete_task/billing.ts` |
+| `animate_character` | API orchestrator | Peter O'Malley, interim product owner | `wavespeed.py:356` — `handle_animate_character` | Wavespeed | **Preserve** | Stable external API; character animation via Wavespeed API. | `complete_task/generation-handlers.ts` | `complete_task/billing.ts` |
+| `flux_klein_edit` | API orchestrator | Peter O'Malley, interim product owner | `fal.py:276` — `handle_flux_klein_edit` | fal.ai | **Preserve** | Stable external API; Flux-based Klein edit via fal.ai. | `complete_task/generation-handlers.ts` | `complete_task/billing.ts` |
 
 All four routes confirmed active in `reigh-worker-orchestrator/api_orchestrator/task_handlers.py`:
 - `image-upscale` at line 30

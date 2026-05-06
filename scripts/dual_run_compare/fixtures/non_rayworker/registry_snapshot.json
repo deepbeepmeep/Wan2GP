@@ -1,26 +1,299 @@
 {
+  "active_api_owned_route_count": 14,
   "routes": {
-    "animate_character": {
-      "executor_handler": "handlers/wavespeed.py::handle_animate_character",
+    "annotated_image_edit": {
+      "alias_mismatch": null,
+      "canary_depth": "lightweight_shared_path",
+      "executor_handler": "handlers/image.py::handle_annotated_image_edit",
+      "external_api": "Wavespeed",
+      "landed_status": "active_api_owned_pending_shared_oracle",
+      "oracle_policy": "lightweight_shared_path",
+      "report_status_policy": "pending_until_shared_oracle_evidence",
+      "route_classification": "active_api_owned",
       "runtime": "api_orchestrator",
+      "shared_path_policy": {
+        "billing": "required_lightweight",
+        "completion": "required_lightweight",
+        "queue_contract": "required_lightweight",
+        "shadow_side_effects": "required_lightweight"
+      },
+      "task_type": "annotated_image_edit"
+    },
+    "animate_character": {
+      "alias_mismatch": null,
+      "canary_depth": "full_canary",
+      "executor_handler": "handlers/wavespeed.py::handle_animate_character",
+      "external_api": "Wavespeed",
+      "landed_status": "landed_full_canary",
+      "oracle_policy": "full_product_billing_completion",
+      "report_status_policy": "red_or_green_required",
+      "route_classification": "active_api_owned",
+      "runtime": "api_orchestrator",
+      "shared_path_policy": {
+        "billing": "required_full",
+        "completion": "required_full",
+        "queue_contract": "required_full",
+        "shadow_side_effects": "required_full"
+      },
       "task_type": "animate_character"
     },
+    "banodoco_render_timeline": {
+      "alias_mismatch": null,
+      "canary_depth": "not_applicable",
+      "executor_handler": "handlers/banodoco.py::handle_banodoco_render_timeline",
+      "external_api": "banodoco-worker",
+      "landed_status": "worker_pool_fallback",
+      "oracle_policy": "pending_worker_pool_specific",
+      "report_status_policy": "fallback",
+      "route_classification": "worker_pool_fallback",
+      "runtime": "banodoco_worker_pool",
+      "shared_path_policy": {
+        "billing": "pending_worker_pool_specific",
+        "completion": "pending_worker_pool_specific",
+        "queue_contract": "required_lightweight",
+        "shadow_side_effects": "pending_worker_pool_specific"
+      },
+      "task_type": "banodoco_render_timeline"
+    },
+    "banodoco_timeline_generate": {
+      "alias_mismatch": null,
+      "canary_depth": "not_applicable",
+      "executor_handler": "handlers/banodoco.py::handle_banodoco_timeline_generate",
+      "external_api": "banodoco-worker",
+      "landed_status": "worker_pool_fallback",
+      "oracle_policy": "pending_worker_pool_specific",
+      "report_status_policy": "fallback",
+      "route_classification": "worker_pool_fallback",
+      "runtime": "banodoco_worker_pool",
+      "shared_path_policy": {
+        "billing": "pending_worker_pool_specific",
+        "completion": "pending_worker_pool_specific",
+        "queue_contract": "required_lightweight",
+        "shadow_side_effects": "pending_worker_pool_specific"
+      },
+      "task_type": "banodoco_timeline_generate"
+    },
     "flux_klein_edit": {
+      "alias_mismatch": null,
+      "canary_depth": "full_canary",
       "executor_handler": "handlers/fal.py::handle_flux_klein_edit",
+      "external_api": "fal.ai",
+      "landed_status": "landed_full_canary",
+      "oracle_policy": "full_product_billing_completion",
+      "report_status_policy": "red_or_green_required",
+      "route_classification": "active_api_owned",
       "runtime": "api_orchestrator",
+      "shared_path_policy": {
+        "billing": "required_full",
+        "completion": "required_full",
+        "queue_contract": "required_full",
+        "shadow_side_effects": "required_full"
+      },
       "task_type": "flux_klein_edit"
     },
     "image-upscale": {
+      "alias_mismatch": {
+        "legacy_db_row": "image_upscale",
+        "resolver_and_api_handler": "image-upscale"
+      },
+      "canary_depth": "full_canary",
       "executor_handler": "handlers/fal.py::handle_image_upscale",
+      "external_api": "fal.ai",
+      "landed_status": "landed_full_canary",
+      "oracle_policy": "full_product_billing_completion",
+      "report_status_policy": "red_or_green_required",
+      "route_classification": "active_api_owned",
       "runtime": "api_orchestrator",
+      "shared_path_policy": {
+        "billing": "required_full",
+        "completion": "required_full",
+        "queue_contract": "required_full",
+        "shadow_side_effects": "required_full"
+      },
       "task_type": "image-upscale"
     },
-    "video_enhance": {
-      "executor_handler": "handlers/fal.py::handle_video_enhance",
+    "image_inpaint": {
+      "alias_mismatch": null,
+      "canary_depth": "lightweight_shared_path",
+      "executor_handler": "handlers/image.py::handle_image_inpaint",
+      "external_api": "Wavespeed",
+      "landed_status": "active_api_owned_pending_shared_oracle",
+      "oracle_policy": "lightweight_shared_path",
+      "report_status_policy": "pending_until_shared_oracle_evidence",
+      "route_classification": "active_api_owned",
       "runtime": "api_orchestrator",
+      "shared_path_policy": {
+        "billing": "required_lightweight",
+        "completion": "required_lightweight",
+        "queue_contract": "required_lightweight",
+        "shadow_side_effects": "required_lightweight"
+      },
+      "task_type": "image_inpaint"
+    },
+    "qwen_image": {
+      "alias_mismatch": null,
+      "canary_depth": "lightweight_shared_path",
+      "executor_handler": "handlers/fal.py::handle_qwen_image",
+      "external_api": "fal.ai",
+      "landed_status": "active_api_owned_pending_shared_oracle",
+      "oracle_policy": "lightweight_shared_path",
+      "report_status_policy": "pending_until_shared_oracle_evidence",
+      "route_classification": "active_api_owned",
+      "runtime": "api_orchestrator",
+      "shared_path_policy": {
+        "billing": "required_lightweight",
+        "completion": "required_lightweight",
+        "queue_contract": "required_lightweight",
+        "shadow_side_effects": "required_lightweight"
+      },
+      "task_type": "qwen_image"
+    },
+    "qwen_image_2512": {
+      "alias_mismatch": null,
+      "canary_depth": "lightweight_shared_path",
+      "executor_handler": "handlers/fal.py::handle_qwen_image",
+      "external_api": "fal.ai",
+      "landed_status": "sprint2_vibecomfy_direct_default_resolution_landed",
+      "oracle_policy": "lightweight_shared_path",
+      "report_status_policy": "red_or_green_required",
+      "route_classification": "active_api_owned",
+      "runtime": "api_orchestrator",
+      "shared_path_policy": {
+        "billing": "required_lightweight",
+        "completion": "required_lightweight",
+        "queue_contract": "required_lightweight",
+        "shadow_side_effects": "required_lightweight"
+      },
+      "task_type": "qwen_image_2512"
+    },
+    "qwen_image_edit": {
+      "alias_mismatch": null,
+      "canary_depth": "lightweight_shared_path",
+      "executor_handler": "handlers/wavespeed.py::handle_qwen_image_edit",
+      "external_api": "Wavespeed",
+      "landed_status": "active_api_owned_pending_shared_oracle",
+      "oracle_policy": "lightweight_shared_path",
+      "report_status_policy": "pending_until_shared_oracle_evidence",
+      "route_classification": "active_api_owned",
+      "runtime": "api_orchestrator",
+      "shared_path_policy": {
+        "billing": "required_lightweight",
+        "completion": "required_lightweight",
+        "queue_contract": "required_lightweight",
+        "shadow_side_effects": "required_lightweight"
+      },
+      "task_type": "qwen_image_edit"
+    },
+    "qwen_image_style": {
+      "alias_mismatch": null,
+      "canary_depth": "lightweight_shared_path",
+      "executor_handler": "handlers/wavespeed.py::handle_qwen_image_style",
+      "external_api": "Wavespeed",
+      "landed_status": "active_api_owned_pending_shared_oracle",
+      "oracle_policy": "lightweight_shared_path",
+      "report_status_policy": "pending_until_shared_oracle_evidence",
+      "route_classification": "active_api_owned",
+      "runtime": "api_orchestrator",
+      "shared_path_policy": {
+        "billing": "required_lightweight",
+        "completion": "required_lightweight",
+        "queue_contract": "required_lightweight",
+        "shadow_side_effects": "required_lightweight"
+      },
+      "task_type": "qwen_image_style"
+    },
+    "video_enhance": {
+      "alias_mismatch": null,
+      "canary_depth": "full_canary",
+      "executor_handler": "handlers/fal.py::handle_video_enhance",
+      "external_api": "fal.ai",
+      "landed_status": "landed_full_canary",
+      "oracle_policy": "full_product_billing_completion",
+      "report_status_policy": "red_or_green_required",
+      "route_classification": "active_api_owned",
+      "runtime": "api_orchestrator",
+      "shared_path_policy": {
+        "billing": "required_full",
+        "completion": "required_full",
+        "queue_contract": "required_full",
+        "shadow_side_effects": "required_full"
+      },
       "task_type": "video_enhance"
+    },
+    "wan_2_2_i2v": {
+      "alias_mismatch": null,
+      "canary_depth": "lightweight_shared_path",
+      "executor_handler": "handlers/wavespeed.py::handle_wan_2_2_i2v",
+      "external_api": "Wavespeed",
+      "landed_status": "active_api_owned_pending_shared_oracle",
+      "oracle_policy": "lightweight_shared_path",
+      "report_status_policy": "pending_until_shared_oracle_evidence",
+      "route_classification": "active_api_owned",
+      "runtime": "api_orchestrator",
+      "shared_path_policy": {
+        "billing": "required_lightweight",
+        "completion": "required_lightweight",
+        "queue_contract": "required_lightweight",
+        "shadow_side_effects": "required_lightweight"
+      },
+      "task_type": "wan_2_2_i2v"
+    },
+    "wan_2_2_t2i": {
+      "alias_mismatch": null,
+      "canary_depth": "lightweight_shared_path",
+      "executor_handler": "handlers/wavespeed.py::handle_wan_2_2_t2i",
+      "external_api": "Wavespeed",
+      "landed_status": "sprint2_wgp_only",
+      "oracle_policy": "lightweight_shared_path",
+      "report_status_policy": "wgp_only",
+      "route_classification": "active_api_owned",
+      "runtime": "api_orchestrator",
+      "shared_path_policy": {
+        "billing": "required_lightweight",
+        "completion": "required_lightweight",
+        "queue_contract": "required_lightweight",
+        "shadow_side_effects": "required_lightweight"
+      },
+      "task_type": "wan_2_2_t2i"
+    },
+    "z_image_turbo": {
+      "alias_mismatch": null,
+      "canary_depth": "lightweight_shared_path",
+      "executor_handler": "handlers/fal.py::handle_qwen_image",
+      "external_api": "fal.ai",
+      "landed_status": "sprint2_vibecomfy_direct_default_resolution_landed",
+      "oracle_policy": "lightweight_shared_path",
+      "report_status_policy": "red_or_green_required",
+      "route_classification": "active_api_owned",
+      "runtime": "api_orchestrator",
+      "shared_path_policy": {
+        "billing": "required_lightweight",
+        "completion": "required_lightweight",
+        "queue_contract": "required_lightweight",
+        "shadow_side_effects": "required_lightweight"
+      },
+      "task_type": "z_image_turbo"
+    },
+    "z_image_turbo_i2i": {
+      "alias_mismatch": null,
+      "canary_depth": "lightweight_shared_path",
+      "executor_handler": "handlers/fal.py::handle_z_image_turbo_i2i",
+      "external_api": "fal.ai",
+      "landed_status": "active_api_owned_pending_shared_oracle",
+      "oracle_policy": "lightweight_shared_path",
+      "report_status_policy": "pending_until_shared_oracle_evidence",
+      "route_classification": "active_api_owned",
+      "runtime": "api_orchestrator",
+      "shared_path_policy": {
+        "billing": "required_lightweight",
+        "completion": "required_lightweight",
+        "queue_contract": "required_lightweight",
+        "shadow_side_effects": "required_lightweight"
+      },
+      "task_type": "z_image_turbo_i2i"
     }
   },
-  "snapshot_schema_version": 1,
-  "source": "../reigh-worker-orchestrator/api_orchestrator/task_handlers.py"
+  "snapshot_schema_version": 2,
+  "source": "../reigh-worker-orchestrator/api_orchestrator/task_handlers.py",
+  "worker_pool_route_count": 2
 }

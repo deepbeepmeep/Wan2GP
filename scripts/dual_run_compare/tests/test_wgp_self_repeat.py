@@ -79,6 +79,11 @@ def test_threshold_comparison_uses_thresholds_for_route() -> None:
             "image_ssim": 0.95,
             "image_pixel_dimensions": {"observed": "1024x1024", "expected": "1024x1024"},
         },
+        required_metric_keys=[
+            "image_phash_normalized_hamming",
+            "image_ssim",
+            "image_pixel_dimensions",
+        ],
     )
 
     assert comparison["status"] == "green"

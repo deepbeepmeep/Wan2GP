@@ -9,10 +9,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from scripts.dual_run_compare.compare import compare_metric, compare_route_observations
 from scripts.dual_run_compare.thresholds import DEFAULT_PATH, Thresholds
 
 
 DUAL_RUN_DIR = DEFAULT_PATH.parent
+WORKER_ROOT = DUAL_RUN_DIR.parents[1]
 REPORTS_DIR = DUAL_RUN_DIR / "reports"
 LIVE_TEST_SCRIPT = Path("scripts/live_test/main.py")
 VALID_VARIANTS = ("fresh", "update")
@@ -86,76 +88,6 @@ def _assert_valid_live_test_command(command: Sequence[str]) -> None:
         for index, token in enumerate(command):
             if token == variant and (index == 0 or command[index - 1] != "--variant"):
                 raise ValueError(f"variant {variant!r} must be passed via --variant, not positionally")
-
-
-def compare_metric(metric: Mapping[str, Any], observed: Any, expected: Any | None = None) -> dict[str, Any]:
-    comparator = metric["comparator"]
-    threshold = metric["threshold"]
-    passed: bool
-    detail: str
-
-    if comparator == "max":
-        passed = float(observed) <= float(threshold)
-        detail = f"{observed} <= {threshold}"
-    elif comparator == "min":
-        passed = float(observed) >= float(threshold)
-        detail = f"{observed} >= {threshold}"
-    elif comparator == "exact":
-        target = expected if expected is not None else threshold
-        passed = observed == target
-        detail = f"{observed!r} == {target!r}"
-    elif comparator == "tolerance":
-        if expected is None:
-            raise ValueError("tolerance comparator requires an expected value")
-        absolute_ms = threshold["absolute_ms"]
-        delta = abs(float(observed) - float(expected))
-        passed = delta <= float(absolute_ms)
-        detail = f"delta {delta} <= {absolute_ms}"
-    else:
-        raise ValueError(f"unsupported comparator: {comparator}")
-
-    return {
-        "metric": metric["metric"],
-        "comparator": comparator,
-        "observed": observed,
-        "expected": expected,
-        "threshold": threshold,
-        "passed": passed,
-        "detail": detail,
-    }
-
-
-def compare_route_observations(
-    thresholds: Thresholds,
-    route_key: str,
-    observations: Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    route_threshold = thresholds.for_route(route_key)
-    if not observations:
-        return {
-            "route_key": route_key,
-            "status": "not_evaluated_no_metric_observations",
-            "calibration_status": route_threshold.calibration_status,
-            "metric_keys": list(route_threshold.metrics),
-        }
-
-    results = []
-    for metric_key, payload in observations.items():
-        if metric_key not in route_threshold.metrics:
-            raise ValueError(f"unknown observed metric for route {route_key}: {metric_key}")
-        if isinstance(payload, Mapping):
-            observed = payload.get("observed")
-            expected = payload.get("expected")
-        else:
-            observed = payload
-            expected = None
-        results.append(compare_metric(route_threshold.metrics[metric_key], observed, expected))
-    return {
-        "route_key": route_key,
-        "status": "green" if all(result["passed"] for result in results) else "red",
-        "calibration_status": route_threshold.calibration_status,
-        "metrics": results,
-    }
 
 
 def _selected_route_keys(thresholds: Thresholds, requested: Sequence[str]) -> list[str]:
@@ -319,7 +251,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--next-action", default="Run paired live WGP self-repeatability once GPU execution is available.")
     parser.add_argument("--report-id", default=None)
     parser.add_argument("--python-executable", default="python")
-    parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+    parser.add_argument("--repo-root", type=Path, default=WORKER_ROOT)
     return parser
 
 

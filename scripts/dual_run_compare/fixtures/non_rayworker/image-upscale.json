@@ -4,10 +4,13 @@
     "resolver_and_api_handler": "image-upscale"
   },
   "billing_path": "complete_task/billing.ts",
+  "canary_depth": "full_canary",
   "completion_handler": "complete_task/generation-handlers.ts",
   "executor_handler": "handlers/fal.py::handle_image_upscale",
   "external_api": "fal.ai",
   "fixture_schema_version": 1,
+  "landed_status": "landed_full_canary",
+  "oracle_policy": "full_product_billing_completion",
   "output_shape": {
     "image_url": "string",
     "variant_metadata": "object optional"
@@ -23,7 +26,26 @@
     "upscale_factor": "number optional, defaults 2"
   },
   "preserve_or_move_decision": "preserve",
+  "report_status_policy": "red_or_green_required",
+  "required_full_canary_sections": [
+    "media",
+    "queue_contract",
+    "product_effects",
+    "billing_idempotency",
+    "latency",
+    "vram",
+    "oom",
+    "error_class",
+    "shadow_isolation"
+  ],
   "route_key": "image-upscale",
+  "route_classification": "active_api_owned",
   "runtime": "api_orchestrator",
+  "shared_path_policy": {
+    "billing": "required_full",
+    "completion": "required_full",
+    "queue_contract": "required_full",
+    "shadow_side_effects": "required_full"
+  },
   "task_type": "image-upscale"
 }

@@ -127,3 +127,45 @@ def test_model_family_i2v_is_not_vace() -> None:
 def test_ltx_model_family_mapping() -> None:
     assert model_family_from_model_name("ltx2_22B") == "ltx2"
     assert model_family_from_model_name("ltx2_22B_distilled_1_1") == "ltx2_distilled"
+
+
+def test_cohort_e_mode_aware_guidance_keys() -> None:
+    base = {
+        "task_type": "travel_segment",
+        "model_name": "wan_2_2_vace_lightning_baseline_2_2_2",
+        "continuity_case": "first_last",
+        "profile": "default",
+    }
+
+    assert [
+        route_key_from_payload(
+            {
+                **base,
+                "travel_guidance": {"kind": "vace", "mode": mode},
+            }
+        )
+        for mode in ("flow", "canny", "depth", "raw")
+    ] == [
+        "travel_segment__model-wan22_vace__guidance-vace_flow__continuity-first_last__profile-default",
+        "travel_segment__model-wan22_vace__guidance-vace_canny__continuity-first_last__profile-default",
+        "travel_segment__model-wan22_vace__guidance-vace_depth__continuity-first_last__profile-default",
+        "travel_segment__model-wan22_vace__guidance-vace_raw__continuity-first_last__profile-default",
+    ]
+
+    assert [
+        cohort_e_route_key(
+            task_type="travel_segment",
+            model_name="ltx2_22B_distilled_1_1",
+            guidance_kind="ltx_control",
+            guidance_mode=mode,
+            continuity_case="first_last",
+            profile="default",
+        )
+        for mode in ("video", "pose", "depth", "canny", "cameraman")
+    ] == [
+        "travel_segment__model-ltx2_distilled__guidance-ltx_control_video__continuity-first_last__profile-default",
+        "travel_segment__model-ltx2_distilled__guidance-ltx_control_pose__continuity-first_last__profile-default",
+        "travel_segment__model-ltx2_distilled__guidance-ltx_control_depth__continuity-first_last__profile-default",
+        "travel_segment__model-ltx2_distilled__guidance-ltx_control_canny__continuity-first_last__profile-default",
+        "travel_segment__model-ltx2_distilled__guidance-ltx_control_cameraman__continuity-first_last__profile-default",
+    ]

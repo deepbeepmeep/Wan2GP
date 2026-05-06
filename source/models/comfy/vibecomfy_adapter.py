@@ -16,6 +16,12 @@ from source.runtime.vibecomfy_profile import (
     PROCESS_DEFAULT_PROFILE,
     build_memory_profile_cli_args,
 )
+from source.media.video_contract import (
+    VIDEO_EXTENSIONS,
+    VideoArtifactContract,
+    VideoContractError,
+    validate_video_artifact,
+)
 from source.task_handlers.tasks.template_routing import (
     ResolvedTask,
     RouteSupportState,
@@ -124,6 +130,29 @@ def handle_vibecomfy_resolved_task(
         headless_logger.error(message, task_id=resolved.task_id)
         return False, message
 
+    media_metadata = None
+    if Path(output_path).suffix.lower() in VIDEO_EXTENSIONS:
+        try:
+            media_metadata = validate_video_artifact(
+                output_path,
+                _video_contract_for_resolved_task(resolved),
+            )
+        except VideoContractError as exc:
+            message = _failure_message(
+                resolved=resolved,
+                exit_code=completed.returncode,
+                stderr=f"media contract violation: {exc}",
+                stdout=stdout,
+            )
+            _log_failure(
+                resolved=resolved,
+                exit_code=completed.returncode,
+                stderr=f"media contract violation: {exc}",
+                stdout=stdout,
+            )
+            headless_logger.error(message, task_id=resolved.task_id)
+            return False, message
+
     headless_logger.debug_block(
         "VIBECOMFY_COMPLETE",
         {
@@ -134,6 +163,7 @@ def handle_vibecomfy_resolved_task(
             "memory_profile": _memory_profile_for_log(resolved),
             "exit_code": completed.returncode,
             "output_path": output_path,
+            "media_metadata": _video_metadata_for_log(media_metadata),
         },
         task_id=resolved.task_id,
     )
@@ -291,6 +321,84 @@ def _memory_profile_for_log(resolved: ResolvedTask) -> int | None:
     if "--memory-profile" not in args:
         return None
     return int(args[args.index("--memory-profile") + 1])
+
+
+def _video_contract_for_resolved_task(resolved: ResolvedTask) -> VideoArtifactContract:
+    width, height = _expected_dimensions(resolved.params)
+    return VideoArtifactContract(
+        expected_frame_count=_int_param(resolved.params, "expected_frame_count", "num_frames", "video_length"),
+        expected_fps=_float_param(resolved.params, "expected_fps", "fps", "fps_helpers"),
+        expected_duration_seconds=_float_param(resolved.params, "expected_duration_seconds", "duration_seconds"),
+        require_audio=_bool_param(resolved.params, "require_audio", "audio_required", "requires_audio"),
+        expected_width=width,
+        expected_height=height,
+        require_thumbnail=_bool_param(resolved.params, "require_thumbnail", "thumbnail_required", "requires_thumbnail"),
+        thumbnail_path=_string_param(resolved.params, "thumbnail_path", "thumbnail_storage_path"),
+    )
+
+
+def _expected_dimensions(params: dict[str, Any]) -> tuple[int | None, int | None]:
+    width = _int_param(params, "expected_width", "width")
+    height = _int_param(params, "expected_height", "height")
+    if width is not None or height is not None:
+        return width, height
+    resolution = params.get("resolution") or params.get("parsed_resolution_wh")
+    if resolution is None:
+        return None, None
+    try:
+        return _parse_resolution(resolution)
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _int_param(params: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = params.get(key)
+        if value is not None and value != "":
+            return int(value)
+    return None
+
+
+def _float_param(params: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        value = params.get(key)
+        if value is not None and value != "":
+            return float(value)
+    return None
+
+
+def _bool_param(params: dict[str, Any], *keys: str) -> bool:
+    for key in keys:
+        value = params.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+    return False
+
+
+def _string_param(params: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = params.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _video_metadata_for_log(metadata: Any) -> dict[str, Any] | None:
+    if metadata is None:
+        return None
+    return {
+        "content_type": metadata.content_type,
+        "frame_count": metadata.frame_count,
+        "fps": metadata.fps,
+        "duration_seconds": metadata.duration_seconds,
+        "has_audio": metadata.has_audio,
+        "audio_duration_seconds": metadata.audio_duration_seconds,
+        "width": metadata.width,
+        "height": metadata.height,
+    }
 
 
 def _discover_output_path(*, stdout: str, run_workspace: Path) -> str | None:

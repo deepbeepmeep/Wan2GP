@@ -1,0 +1,98 @@
+{
+  "version": "persisted-row-replay-2026-05-06",
+  "rows": [
+    {
+      "fixture_id": "legacy-wan-vace-flow",
+      "row_id": 2,
+      "task_type": "travel_segment",
+      "backend": "wgp",
+      "selector_namespace": "legacy",
+      "selector_version": null,
+      "params": {
+        "model_name": "wan_2_2_vace_lightning_baseline_2_2_2",
+        "continuity_case": "first_last",
+        "travel_guidance": {
+          "kind": "vace",
+          "mode": "flow",
+          "videos": [
+            {
+              "path": "storage://guides/flow-control.mp4"
+            }
+          ]
+        }
+      },
+      "route_contract": {
+        "route_selection_snapshot": {
+          "route_key": "travel_segment__model-wan22_vace__guidance-vace_flow__continuity-first_last__profile-default",
+          "selected_backend": "wgp"
+        }
+      },
+      "expected_route_key": "travel_segment__model-wan22_vace__guidance-vace_flow__continuity-first_last__profile-default",
+      "expected_backend": "wgp"
+    },
+    {
+      "fixture_id": "full-ltx-promoted",
+      "row_id": 8,
+      "task_type": "travel_segment",
+      "backend": "vibecomfy",
+      "selector_namespace": "production",
+      "selector_version": 8,
+      "route_run_id": "fixture-run-ltx-fast",
+      "params": {
+        "model_name": "ltx2_22B_distilled_1_1",
+        "continuity_case": "first_last"
+      },
+      "route_contract": {
+        "selector_namespace": "production",
+        "route_key": "travel_segment__model-ltx2_distilled__guidance-none__continuity-first_last__profile-default",
+        "selected_backend": "vibecomfy",
+        "selector_version": 8,
+        "support_state": "vibecomfy_supported",
+        "selected_profile": "default",
+        "selected_template_id": "video/ltx2_3_runexx_first_last_frame",
+        "route_run_id": "fixture-run-ltx-fast",
+        "worker_contract_version": 1,
+        "route_selection_snapshot": {
+          "selector_namespace": "production",
+          "route_key": "travel_segment__model-ltx2_distilled__guidance-none__continuity-first_last__profile-default",
+          "selected_backend": "vibecomfy",
+          "selector_version": 8,
+          "support_state": "vibecomfy_supported",
+          "template_id": "video/ltx2_3_runexx_first_last_frame",
+          "selected_profile": "default",
+          "route_run_id": "fixture-run-ltx-fast",
+          "worker_contract_version": 1
+        }
+      },
+      "expected_route_key": "travel_segment__model-ltx2_distilled__guidance-none__continuity-first_last__profile-default",
+      "expected_backend": "vibecomfy"
+    },
+    {
+      "fixture_id": "legacy-ltx-control-blocked",
+      "row_id": 10,
+      "task_type": "travel_segment",
+      "backend": "wgp",
+      "selector_namespace": "legacy",
+      "selector_version": null,
+      "params": {
+        "model_name": "ltx2_22B_distilled_1_1",
+        "continuity_case": "first_last",
+        "travel_guidance": {
+          "kind": "ltx_control",
+          "mode": "pose",
+          "videos": [
+            {
+              "path": "storage://guides/pose-control.mp4"
+            }
+          ]
+        }
+      },
+      "route_contract": {
+        "route_key": "travel_segment__model-ltx2_distilled__guidance-ltx_control_pose__continuity-first_last__profile-default",
+        "selected_backend": "wgp"
+      },
+      "expected_route_key": "travel_segment__model-ltx2_distilled__guidance-ltx_control_pose__continuity-first_last__profile-default",
+      "expected_backend": "wgp"
+    }
+  ]
+}

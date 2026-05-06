@@ -121,6 +121,7 @@ def cohort_e_route_key(
     model_name: str | None = None,
     model_family: str | None = None,
     guidance_kind: str | None = "none",
+    guidance_mode: str | None = None,
     continuity_case: str | None = "first_last",
     profile: str | int | None = "default",
 ) -> str:
@@ -132,15 +133,30 @@ def cohort_e_route_key(
     """
 
     family = slug(model_family or model_family_from_model_name(model_name))
+    guidance = cohort_e_guidance_key(guidance_kind=guidance_kind, guidance_mode=guidance_mode)
     return "__".join(
         [
             slug(task_type),
             f"model-{family}",
-            f"guidance-{slug(guidance_kind)}",
+            f"guidance-{slug(guidance)}",
             f"continuity-{slug(continuity_case)}",
             f"profile-{slug(profile)}",
         ]
     )
+
+
+def cohort_e_guidance_key(
+    *,
+    guidance_kind: str | None = "none",
+    guidance_mode: str | None = None,
+) -> str:
+    """Return the route guidance dimension, preserving mode where it affects routing."""
+
+    kind = slug(guidance_kind)
+    mode = slug(guidance_mode)
+    if kind in {"vace", "ltx_control"} and mode != "none":
+        return f"{kind}_{mode}"
+    return kind
 
 
 def route_key_from_payload(payload: Mapping[str, Any]) -> str:
@@ -148,6 +164,9 @@ def route_key_from_payload(payload: Mapping[str, Any]) -> str:
 
     task_type = str(payload.get("task_type") or payload.get("type") or "")
     cohort = payload.get("cohort")
+    travel_guidance = payload.get("travel_guidance")
+    travel_guidance_kind = travel_guidance.get("kind") if isinstance(travel_guidance, Mapping) else None
+    travel_guidance_mode = travel_guidance.get("mode") if isinstance(travel_guidance, Mapping) else None
     if cohort == "E" or task_type in {
         "travel_orchestrator",
         "travel_segment",
@@ -162,7 +181,17 @@ def route_key_from_payload(payload: Mapping[str, Any]) -> str:
             task_type=task_type,
             model_name=payload.get("model_name") or payload.get("model"),
             model_family=payload.get("model_family"),
-            guidance_kind=payload.get("guidance_kind") or payload.get("travel_guidance_kind") or "none",
+            guidance_kind=(
+                payload.get("guidance_kind")
+                or payload.get("travel_guidance_kind")
+                or travel_guidance_kind
+                or "none"
+            ),
+            guidance_mode=(
+                payload.get("guidance_mode")
+                or payload.get("travel_guidance_mode")
+                or travel_guidance_mode
+            ),
             continuity_case=payload.get("continuity_case") or "first_last",
             profile=payload.get("profile") or payload.get("wgp_profile") or "default",
         )

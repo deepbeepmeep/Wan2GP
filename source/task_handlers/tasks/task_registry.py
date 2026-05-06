@@ -1301,6 +1301,35 @@ def _apply_uni3c_config(generation_params: dict, ctx: SegmentContext, gen: Gener
         generation_params["uni3c_blackout_last_frame"] = True
 
 
+def _copy_travel_control_contract_fields(target: dict, ctx: SegmentContext) -> None:
+    """Carry guidance and continuity fields into queue/routing payloads."""
+    sources = (ctx.individual_params, ctx.segment_params, ctx.orchestrator_details)
+    travel_guidance_payload = _get_param("travel_guidance", *sources, prefer_truthy=True)
+    if isinstance(travel_guidance_payload, dict):
+        target["travel_guidance"] = travel_guidance_payload
+    else:
+        structure_guidance_payload = _get_param("structure_guidance", *sources, prefer_truthy=True)
+        if isinstance(structure_guidance_payload, dict):
+            target["structure_guidance"] = structure_guidance_payload
+        structure_videos_payload = _get_param("structure_videos", *sources, prefer_truthy=True)
+        if isinstance(structure_videos_payload, list) and structure_videos_payload:
+            target["structure_videos"] = structure_videos_payload
+
+    for field_name in (
+        "chain_segments",
+        "independent_segments",
+        "continuation_config",
+        "continuity_case",
+        "video_source",
+        "prefix_video_source",
+    ):
+        value = _get_param(field_name, *sources, prefer_truthy=False)
+        if value is not None:
+            if field_name in {"video_source", "prefix_video_source"} and target.get(field_name) is not None:
+                continue
+            target[field_name] = value
+
+
 def _handle_travel_segment_via_queue_impl(task_params_dict: dict, main_output_dir_base: Path, task_id: str, colour_match_videos: bool, mask_active_frames: bool, task_queue: HeadlessTaskQueue, is_standalone: bool = False):
     """Handle travel segment tasks via direct queue integration to eliminate blocking waits.
 
@@ -1332,6 +1361,7 @@ def _handle_travel_segment_via_queue_impl(task_params_dict: dict, main_output_di
         _apply_video_source_continuation(generation_params, gen.generation_policy, image_refs, ctx, gen, task_id)
         # 7. Apply UNI3C-specific configuration
         _apply_uni3c_config(generation_params, ctx, gen, structure, task_id)
+        _copy_travel_control_contract_fields(generation_params, ctx)
 
 
         # IMPORTANT: Use the DB task_id as the queue task id.
@@ -1351,15 +1381,6 @@ def _handle_travel_segment_via_queue_impl(task_params_dict: dict, main_output_di
         route_params["_source_task_type"] = (
             "individual_travel_segment" if is_standalone else "travel_segment"
         )
-        travel_guidance_payload = _get_param(
-            "travel_guidance",
-            ctx.individual_params,
-            ctx.segment_params,
-            ctx.orchestrator_details,
-            prefer_truthy=True,
-        )
-        if isinstance(travel_guidance_payload, dict):
-            route_params["travel_guidance"] = travel_guidance_payload
         if generation_params.get("video_source") or image_refs.prefix_video_for_source:
             route_params["continuity_case"] = "video_source"
         override_profile = _get_param(

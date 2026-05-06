@@ -545,3 +545,133 @@ def test_wgp_travel_child_still_submits_and_waits(monkeypatch, tmp_path):
     assert result == "/tmp/travel-child-wgp.png"
     assert len(queue.submitted) == 1
     assert queue.submitted[0].parameters["_source_task_type"] == "travel_segment"
+
+
+def test_travel_child_queue_payload_prefers_travel_guidance_over_structure_fields(monkeypatch, tmp_path):
+    task_registry = _import_task_registry(monkeypatch)
+    monkeypatch.delenv("REIGH_BACKEND", raising=False)
+    ctx = SimpleNamespace(
+        individual_params={
+            "travel_guidance": {"kind": "vace", "mode": "flow"},
+            "structure_guidance": {"type": "canny"},
+            "structure_videos": [{"url": "https://example.test/guide.mp4"}],
+            "chain_segments": True,
+            "continuation_config": {"type": "video_source"},
+            "continuity_case": "video_source",
+        },
+        segment_params={},
+        orchestrator_details={},
+        orchestrator_task_id_ref="orchestrator-1",
+        orchestrator_run_id="run-1",
+        segment_idx=0,
+    )
+
+    monkeypatch.setattr(task_registry, "log_ram_usage", _noop)
+    monkeypatch.setattr(task_registry, "_resolve_segment_context", lambda *_args: ctx)
+    monkeypatch.setattr(
+        task_registry,
+        "_resolve_generation_inputs",
+        lambda *_args: SimpleNamespace(
+            model_name="wan_2_2_vace_lightning_baseline_2_2_2",
+            prompt_for_wgp="guided bridge",
+            generation_policy=object(),
+            segment_processing_dir=tmp_path,
+        ),
+    )
+    monkeypatch.setattr(
+        task_registry,
+        "_resolve_image_references",
+        lambda *_args: SimpleNamespace(active_svi_continuation=False, prefix_video_for_source=None),
+    )
+    monkeypatch.setattr(task_registry, "_process_structure_guidance", lambda *_args: object())
+    monkeypatch.setattr(
+        task_registry,
+        "_build_generation_params",
+        lambda *_args: {"model_name": "wan_2_2_vace_lightning_baseline_2_2_2", "prompt": "guided bridge"},
+    )
+    monkeypatch.setattr(task_registry, "_apply_video_source_continuation", _noop)
+    monkeypatch.setattr(task_registry, "_apply_uni3c_config", _noop)
+    queue = _Queue()
+
+    ok, result = task_registry._handle_travel_segment_via_queue_impl(
+        task_params_dict={"prompt": "travel"},
+        main_output_dir_base=tmp_path,
+        task_id="travel-child-guidance",
+        colour_match_videos=False,
+        mask_active_frames=False,
+        task_queue=queue,
+        is_standalone=True,
+    )
+
+    assert ok is True
+    assert result == "/tmp/travel-child-guidance.png"
+    parameters = queue.submitted[0].parameters
+    assert parameters["travel_guidance"] == {"kind": "vace", "mode": "flow"}
+    assert "structure_guidance" not in parameters
+    assert "structure_videos" not in parameters
+    assert parameters["chain_segments"] is True
+    assert parameters["continuation_config"] == {"type": "video_source"}
+    assert parameters["continuity_case"] == "video_source"
+
+
+def test_travel_child_queue_payload_preserves_legacy_structure_contract_without_travel_guidance(monkeypatch, tmp_path):
+    task_registry = _import_task_registry(monkeypatch)
+    monkeypatch.delenv("REIGH_BACKEND", raising=False)
+    ctx = SimpleNamespace(
+        individual_params={},
+        segment_params={
+            "structure_guidance": {"type": "depth", "strength": 0.8},
+            "structure_videos": [{"url": "https://example.test/depth.mp4"}],
+            "chain_segments": False,
+            "independent_segments": True,
+        },
+        orchestrator_details={},
+        orchestrator_task_id_ref="orchestrator-1",
+        orchestrator_run_id="run-1",
+        segment_idx=0,
+    )
+
+    monkeypatch.setattr(task_registry, "log_ram_usage", _noop)
+    monkeypatch.setattr(task_registry, "_resolve_segment_context", lambda *_args: ctx)
+    monkeypatch.setattr(
+        task_registry,
+        "_resolve_generation_inputs",
+        lambda *_args: SimpleNamespace(
+            model_name="wan_2_2_vace_lightning_baseline_2_2_2",
+            prompt_for_wgp="legacy guided bridge",
+            generation_policy=object(),
+            segment_processing_dir=tmp_path,
+        ),
+    )
+    monkeypatch.setattr(
+        task_registry,
+        "_resolve_image_references",
+        lambda *_args: SimpleNamespace(active_svi_continuation=False, prefix_video_for_source=None),
+    )
+    monkeypatch.setattr(task_registry, "_process_structure_guidance", lambda *_args: object())
+    monkeypatch.setattr(
+        task_registry,
+        "_build_generation_params",
+        lambda *_args: {"model_name": "wan_2_2_vace_lightning_baseline_2_2_2", "prompt": "legacy guided bridge"},
+    )
+    monkeypatch.setattr(task_registry, "_apply_video_source_continuation", _noop)
+    monkeypatch.setattr(task_registry, "_apply_uni3c_config", _noop)
+    queue = _Queue()
+
+    ok, _result = task_registry._handle_travel_segment_via_queue_impl(
+        task_params_dict={"prompt": "travel"},
+        main_output_dir_base=tmp_path,
+        task_id="travel-child-legacy-structure",
+        colour_match_videos=False,
+        mask_active_frames=False,
+        task_queue=queue,
+        is_standalone=True,
+    )
+
+    assert ok is True
+    parameters = queue.submitted[0].parameters
+    assert "travel_guidance" not in parameters
+    assert parameters["structure_guidance"] == {"type": "depth", "strength": 0.8}
+    assert parameters["structure_videos"] == [{"url": "https://example.test/depth.mp4"}]
+    assert parameters["chain_segments"] is False
+    assert parameters["independent_segments"] is True

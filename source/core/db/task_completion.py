@@ -79,6 +79,7 @@ def add_task_to_db(
         "route_key",
         "selected_backend",
         "selector_version",
+        "support_state",
         "selected_profile",
         "selected_template_id",
         "route_run_id",

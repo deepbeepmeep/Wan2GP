@@ -88,7 +88,11 @@ tests_output/
 tests/*
 !tests/test_lora_flow.py
 !tests/test_travel_guidance_config.py
+!tests/test_control_preprocessing_and_continuity.py
+!tests/test_task_status_split_modules.py
 !tests/test_pose_preprocessor.py
+!tests/fixtures/persisted_rows/
+!tests/fixtures/persisted_rows/*.json
 !tests/test_travel_ltx_vpt.py
 !tests/test_ltx_hybrid_travel.py
 !tests/test_idle_release.py
@@ -112,6 +116,8 @@ tests/*
 !tests/fixtures/
 tests/fixtures/*
 !tests/fixtures/clear_conditioning_oracle.pt
+!tests/fixtures/persisted_rows/
+!tests/fixtures/persisted_rows/*.json
 
 # Task database files
 tasks.db-shm

@@ -34,6 +34,8 @@ class RouteSelectorEntry:
     support_state: RouteSupportState
     template_id: str | None = None
     default_resolution: str | None = None
+    disposition: str | None = None
+    blocking_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -188,6 +190,90 @@ SPRINT_2_SELECTOR_MAP: Mapping[str, RouteSelectorEntry] = MappingProxyType(
 )
 
 
+SECTION3A_ROUTE_SUPPORT_MAP: Mapping[str, RouteSelectorEntry] = MappingProxyType(
+    {
+        "travel_segment__model-wan22_i2v__guidance-none__continuity-first_last__profile-default": RouteSelectorEntry(
+            route_key="travel_segment__model-wan22_i2v__guidance-none__continuity-first_last__profile-default",
+            support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            disposition="NEW",
+            blocking_reason="Requires the NEW Wan 2.2 VACE cocktail template before Wan-family travel rows can be promoted.",
+        ),
+        "travel_segment__model-wan22_vace__guidance-vace_flow__continuity-first_last__profile-default": RouteSelectorEntry(
+            route_key="travel_segment__model-wan22_vace__guidance-vace_flow__continuity-first_last__profile-default",
+            support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            disposition="NEW",
+            blocking_reason="Requires the NEW Wan 2.2 VACE cocktail template and optical-flow guide preprocessing before promotion.",
+        ),
+        "travel_segment__model-wan22_vace__guidance-vace_canny__continuity-first_last__profile-default": RouteSelectorEntry(
+            route_key="travel_segment__model-wan22_vace__guidance-vace_canny__continuity-first_last__profile-default",
+            support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            disposition="NEW",
+            blocking_reason="Requires the NEW Wan 2.2 VACE cocktail template and Canny guide preprocessing before promotion.",
+        ),
+        "travel_segment__model-wan22_vace__guidance-vace_depth__continuity-first_last__profile-default": RouteSelectorEntry(
+            route_key="travel_segment__model-wan22_vace__guidance-vace_depth__continuity-first_last__profile-default",
+            support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            disposition="NEW",
+            blocking_reason="Requires the NEW Wan 2.2 VACE cocktail template and depth guide handling before promotion.",
+        ),
+        "travel_segment__model-wan22_vace__guidance-vace_raw__continuity-first_last__profile-default": RouteSelectorEntry(
+            route_key="travel_segment__model-wan22_vace__guidance-vace_raw__continuity-first_last__profile-default",
+            support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            disposition="NEW",
+            blocking_reason="Requires the NEW Wan 2.2 VACE cocktail template and raw guide-video passthrough before promotion.",
+        ),
+        "travel_segment__model-wan22_vace__guidance-uni3c__continuity-first_last__profile-default": RouteSelectorEntry(
+            route_key="travel_segment__model-wan22_vace__guidance-uni3c__continuity-first_last__profile-default",
+            support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            disposition="NEW",
+            blocking_reason="Requires the NEW Wan 2.2 VACE cocktail template and Uni3C patch before promotion.",
+        ),
+        "travel_segment__model-ltx2__guidance-none__continuity-first_last__profile-default": RouteSelectorEntry(
+            route_key="travel_segment__model-ltx2__guidance-none__continuity-first_last__profile-default",
+            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
+            template_id="video/ltx2_3_runexx_first_last_frame",
+            disposition="ADAPT",
+        ),
+        "travel_segment__model-ltx2_distilled__guidance-none__continuity-first_last__profile-default": RouteSelectorEntry(
+            route_key="travel_segment__model-ltx2_distilled__guidance-none__continuity-first_last__profile-default",
+            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
+            template_id="video/ltx2_3_runexx_first_last_frame",
+            disposition="ADAPT",
+        ),
+        "travel_segment__model-ltx2_distilled__guidance-ltx_control_video__continuity-first_last__profile-default": RouteSelectorEntry(
+            route_key="travel_segment__model-ltx2_distilled__guidance-ltx_control_video__continuity-first_last__profile-default",
+            support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            disposition="BLOCKED",
+            blocking_reason="The pinned LTX first/last template is not yet proven control-capable for a full-length control guide.",
+        ),
+        "travel_segment__model-ltx2_distilled__guidance-ltx_control_pose__continuity-first_last__profile-default": RouteSelectorEntry(
+            route_key="travel_segment__model-ltx2_distilled__guidance-ltx_control_pose__continuity-first_last__profile-default",
+            support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            disposition="BLOCKED",
+            blocking_reason="The pinned LTX first/last template is not yet proven control-capable for pose-preprocessed full-length guides.",
+        ),
+        "travel_segment__model-ltx2_distilled__guidance-ltx_control_depth__continuity-first_last__profile-default": RouteSelectorEntry(
+            route_key="travel_segment__model-ltx2_distilled__guidance-ltx_control_depth__continuity-first_last__profile-default",
+            support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            disposition="BLOCKED",
+            blocking_reason="The pinned LTX first/last template is not yet proven control-capable for depth-preprocessed full-length guides.",
+        ),
+        "travel_segment__model-ltx2_distilled__guidance-ltx_control_canny__continuity-first_last__profile-default": RouteSelectorEntry(
+            route_key="travel_segment__model-ltx2_distilled__guidance-ltx_control_canny__continuity-first_last__profile-default",
+            support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            disposition="BLOCKED",
+            blocking_reason="The pinned LTX first/last template is not yet proven control-capable for Canny-preprocessed full-length guides.",
+        ),
+        "travel_segment__model-ltx2_distilled__guidance-ltx_control_cameraman__continuity-first_last__profile-default": RouteSelectorEntry(
+            route_key="travel_segment__model-ltx2_distilled__guidance-ltx_control_cameraman__continuity-first_last__profile-default",
+            support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            disposition="BLOCKED",
+            blocking_reason="The pinned LTX first/last template is not yet proven control-capable for cameraman full-length guides.",
+        ),
+    }
+)
+
+
 def parse_worker_backend(value: str | None = None) -> WorkerBackend:
     raw_backend = os.environ.get("REIGH_BACKEND") if value is None else value
     normalized = (raw_backend or "").strip().lower()
@@ -258,6 +344,22 @@ def route_support_state(route_key: str) -> RouteSupportState:
     return selector_entry.support_state
 
 
+def route_support_report_fields(route_key: str) -> dict[str, str | None]:
+    selector_entry = _selector_entry_for_route_key(route_key)
+    support_state = (
+        selector_entry.support_state
+        if selector_entry is not None
+        else RouteSupportState.VIBECOMFY_UNSUPPORTED
+    )
+    return {
+        "route_key": route_key,
+        "support_state": support_state.value,
+        "template_id": selector_entry.template_id if selector_entry is not None else None,
+        "disposition": selector_entry.disposition if selector_entry is not None else None,
+        "blocking_reason": selector_entry.blocking_reason if selector_entry is not None else None,
+    }
+
+
 def routing_telemetry_fields(resolved: ResolvedTask) -> dict[str, str | None]:
     """Return compact structured fields for backend route telemetry."""
 
@@ -326,11 +428,107 @@ def route_snapshot_fields(
         "route_key": route_key,
         "selected_backend": selected_backend.value,
         "selector_version": selector_version,
+        "support_state": support_state.value,
         "selected_profile": selected_profile,
         "selected_template_id": template_id,
         "route_run_id": run_id,
         "worker_contract_version": worker_contract_version,
         "route_selection_snapshot": snapshot,
+    }
+
+
+def normalize_route_snapshot_fields(
+    route_contract: Mapping[str, Any] | None,
+    *,
+    task_type: str = "legacy_task",
+    params: Mapping[str, Any] | None = None,
+    backend: WorkerBackend | str | None = None,
+) -> dict[str, Any]:
+    """Inflate legacy or partial route contracts to the full snapshot shape."""
+
+    candidate = route_contract if isinstance(route_contract, Mapping) else {}
+    snapshot = candidate.get("route_selection_snapshot")
+    snapshot = snapshot if isinstance(snapshot, Mapping) else {}
+    base = route_snapshot_fields(
+        task_type=task_type,
+        params=params,
+        backend=backend or candidate.get("selected_backend") or snapshot.get("selected_backend") or "wgp",
+    )
+
+    route_key = _non_empty_str(candidate.get("route_key")) or _non_empty_str(snapshot.get("route_key")) or base["route_key"]
+    selected_backend = _coerce_backend(
+        candidate.get("selected_backend") or snapshot.get("selected_backend") or base["selected_backend"]
+    )
+    selector_entry = _selector_entry_for_route_key(route_key)
+    fallback_support_state = (
+        selector_entry.support_state
+        if selector_entry is not None
+        else RouteSupportState.VIBECOMFY_UNSUPPORTED
+    )
+    support_state = _parse_support_state(
+        candidate.get("support_state") or snapshot.get("support_state")
+    ) or fallback_support_state
+    template_id = _nullable_str(candidate.get("selected_template_id"))
+    if template_id is None:
+        template_id = _nullable_str(snapshot.get("template_id"))
+    if template_id is None and selector_entry is not None:
+        template_id = selector_entry.template_id
+
+    selector_namespace = (
+        _non_empty_str(candidate.get("selector_namespace"))
+        or _non_empty_str(snapshot.get("selector_namespace"))
+        or base["selector_namespace"]
+    )
+    selector_version = _selector_version(
+        candidate.get("selector_version")
+        if candidate.get("selector_version") is not None
+        else snapshot.get("selector_version")
+    )
+    if selector_version is None:
+        selector_version = base["selector_version"]
+    selected_profile = (
+        _non_empty_str(candidate.get("selected_profile"))
+        or _non_empty_str(snapshot.get("selected_profile"))
+        or base["selected_profile"]
+    )
+    route_run_id = _nullable_str(candidate.get("route_run_id"))
+    if route_run_id is None:
+        route_run_id = _nullable_str(snapshot.get("route_run_id"))
+    worker_contract_version = (
+        _worker_contract_version(candidate.get("worker_contract_version"))
+        or _worker_contract_version(snapshot.get("worker_contract_version"))
+        or base["worker_contract_version"]
+    )
+
+    normalized_snapshot: dict[str, Any] = {
+        "selector_namespace": selector_namespace,
+        "route_key": route_key,
+        "selected_backend": selected_backend.value,
+        "selector_version": selector_version,
+        "support_state": support_state.value,
+        "template_id": template_id,
+        "selected_profile": selected_profile,
+        "route_run_id": route_run_id,
+        "worker_contract_version": worker_contract_version,
+    }
+    task_id = _non_empty_str(snapshot.get("task_id"))
+    parent_route_key = _non_empty_str(snapshot.get("parent_route_key"))
+    if task_id is not None:
+        normalized_snapshot["task_id"] = task_id
+    if parent_route_key is not None:
+        normalized_snapshot["parent_route_key"] = parent_route_key
+
+    return {
+        "selector_namespace": selector_namespace,
+        "route_key": route_key,
+        "selected_backend": selected_backend.value,
+        "selector_version": selector_version,
+        "support_state": support_state.value,
+        "selected_profile": selected_profile,
+        "selected_template_id": template_id,
+        "route_run_id": route_run_id,
+        "worker_contract_version": worker_contract_version,
+        "route_selection_snapshot": normalized_snapshot,
     }
 
 
@@ -558,11 +756,25 @@ def _parse_parent_route_contract(
 
     selected_profile = route_contract.get("selected_profile")
     if not isinstance(selected_profile, str) or not selected_profile.strip():
-        return "Malformed parent params.route_contract: selected_profile is required"
+        snapshot = route_contract.get("route_selection_snapshot")
+        selected_profile = (
+            snapshot.get("selected_profile")
+            if isinstance(snapshot, Mapping)
+            else None
+        )
+    if not isinstance(selected_profile, str) or not selected_profile.strip():
+        selected_profile = "default"
 
     worker_contract_version = route_contract.get("worker_contract_version")
     if not isinstance(worker_contract_version, int):
-        return "Malformed parent params.route_contract: worker_contract_version is required"
+        snapshot = route_contract.get("route_selection_snapshot")
+        worker_contract_version = (
+            snapshot.get("worker_contract_version")
+            if isinstance(snapshot, Mapping)
+            else None
+        )
+    if not isinstance(worker_contract_version, int):
+        worker_contract_version = WORKER_ROUTE_CONTRACT_VERSION
 
     selector_version = route_contract.get("selector_version")
     if selector_version is not None and not isinstance(selector_version, (int, str)):
@@ -588,6 +800,10 @@ def _selector_entry_for_route_key(route_key: str) -> RouteSelectorEntry | None:
     if selector_entry is not None:
         return selector_entry
 
+    selector_entry = SECTION3A_ROUTE_SUPPORT_MAP.get(route_key)
+    if selector_entry is not None:
+        return selector_entry
+
     if _is_dimensional_travel_route_key(route_key):
         return RouteSelectorEntry(
             route_key=route_key,
@@ -596,6 +812,29 @@ def _selector_entry_for_route_key(route_key: str) -> RouteSelectorEntry | None:
         )
 
     return None
+
+
+def _non_empty_str(value: Any) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _nullable_str(value: Any) -> str | None:
+    return value if value is None or isinstance(value, str) else None
+
+
+def _selector_version(value: Any) -> int | str | None:
+    return value if isinstance(value, (int, str)) else None
+
+
+def _worker_contract_version(value: Any) -> int | None:
+    return value if isinstance(value, int) and value > 0 else None
+
+
+def _parse_support_state(value: Any) -> RouteSupportState | None:
+    try:
+        return RouteSupportState(value)
+    except ValueError:
+        return None
 
 
 def _is_dimensional_travel_route_key(route_key: str) -> bool:
@@ -629,7 +868,7 @@ def _dimensional_child_route_key(task_type: str, params: Mapping[str, Any]) -> s
         [
             _slug(task_type),
             f"model-{_slug(_route_model_family(params))}",
-            f"guidance-{_slug(_route_guidance_kind(task_type, params))}",
+            f"guidance-{_slug(_route_guidance_key(task_type, params))}",
             f"continuity-{_slug(_route_continuity_case(task_type, params))}",
             f"profile-{_slug(_route_profile(params))}",
         ]
@@ -686,6 +925,28 @@ def _route_guidance_kind(task_type: str, params: Mapping[str, Any]) -> str:
     return "none"
 
 
+def _route_guidance_mode(params: Mapping[str, Any]) -> str:
+    explicit_mode = params.get("guidance_mode") or params.get("travel_guidance_mode")
+    if explicit_mode:
+        return str(explicit_mode)
+
+    travel_guidance = params.get("travel_guidance")
+    if isinstance(travel_guidance, Mapping):
+        mode = travel_guidance.get("mode")
+        if mode:
+            return str(mode)
+
+    return "none"
+
+
+def _route_guidance_key(task_type: str, params: Mapping[str, Any]) -> str:
+    kind = _route_guidance_kind(task_type, params)
+    mode = _route_guidance_mode(params)
+    if kind in {"vace", "ltx_control"} and mode and mode != "none":
+        return f"{kind}_{mode}"
+    return kind
+
+
 def _route_continuity_case(task_type: str, params: Mapping[str, Any]) -> str:
     explicit_case = params.get("continuity_case")
     if explicit_case:
@@ -725,6 +986,12 @@ def _fail_closed_reason(
             "explicit VibeComfy backend will not fall back to WGP"
         )
 
+    if selector_entry.template_id is None:
+        return (
+            f"Route {route_key!r} is VibeComfy-supported but has no template; "
+            "explicit VibeComfy backend will not fall back to WGP"
+        )
+
     return None
 
 
@@ -752,15 +1019,18 @@ __all__ = [
     "ResolvedTask",
     "RouteSelectorEntry",
     "RouteSupportState",
+    "SECTION3A_ROUTE_SUPPORT_MAP",
     "SPRINT_2_SELECTOR_MAP",
     "WorkerBackend",
     "WORKER_ROUTE_CONTRACT_VERSION",
     "derive_route_key",
     "parent_derived_child_route_snapshot_fields",
+    "normalize_route_snapshot_fields",
     "parse_worker_backend",
     "preflight_parent_child_route",
     "resolve_task_route",
     "route_snapshot_fields",
+    "route_support_report_fields",
     "route_support_state",
     "routing_telemetry_fields",
     "validate_existing_child_route_contracts",

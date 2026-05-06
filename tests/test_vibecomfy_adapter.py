@@ -206,6 +206,84 @@ def test_output_discovery_from_isolated_run_directory(monkeypatch, tmp_path):
     assert "vibecomfy_runs/adapter-task" in result
 
 
+def test_video_output_is_validated_with_ffprobe_contract(monkeypatch, tmp_path):
+    commands = []
+
+    def _run(command, *args, **kwargs):
+        commands.append(command)
+        if command[0] == "ffprobe":
+            return _completed(stdout=json.dumps({
+                "streams": [
+                    {
+                        "codec_type": "video",
+                        "width": 1280,
+                        "height": 720,
+                        "nb_frames": "49",
+                        "avg_frame_rate": "24/1",
+                        "duration": "2.041667",
+                    },
+                    {"codec_type": "audio", "duration": "2.041667"},
+                ],
+                "format": {"duration": "2.041667"},
+            }))
+        output = Path(kwargs["cwd"]) / "out.mp4"
+        output.write_bytes(b"fake")
+        return _completed(stdout="output: out.mp4\n")
+
+    monkeypatch.setattr(vibecomfy_adapter.subprocess, "run", _run)
+    thumbnail = tmp_path / "thumb.jpg"
+    thumbnail.write_bytes(b"fake")
+
+    ok, result = handle_vibecomfy_resolved_task(
+        _resolved({
+            "num_frames": 49,
+            "fps": 24,
+            "resolution": "1280x720",
+            "require_audio": True,
+            "require_thumbnail": True,
+            "thumbnail_path": str(thumbnail),
+        }),
+        tmp_path,
+    )
+
+    assert ok is True
+    assert result and result.endswith("out.mp4")
+    assert any(command[0] == "ffprobe" for command in commands)
+
+
+def test_video_output_contract_violation_fails_before_completion(monkeypatch, tmp_path):
+    def _run(command, *args, **kwargs):
+        if command[0] == "ffprobe":
+            return _completed(stdout=json.dumps({
+                "streams": [
+                    {
+                        "codec_type": "video",
+                        "width": 1280,
+                        "height": 720,
+                        "nb_frames": "48",
+                        "avg_frame_rate": "24/1",
+                        "duration": "2.0",
+                    }
+                ],
+                "format": {"duration": "2.0"},
+            }))
+        output = Path(kwargs["cwd"]) / "out.mp4"
+        output.write_bytes(b"fake")
+        return _completed(stdout="output: out.mp4\n")
+
+    monkeypatch.setattr(vibecomfy_adapter.subprocess, "run", _run)
+
+    ok, message = handle_vibecomfy_resolved_task(
+        _resolved({"num_frames": 49, "fps": 24}),
+        tmp_path,
+    )
+
+    assert ok is False
+    assert message
+    assert "media contract violation" in message
+    assert "frame count mismatch" in message
+
+
 def test_non_default_resolution_is_patched_through_scratchpad(monkeypatch, tmp_path):
     commands = []
 

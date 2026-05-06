@@ -230,15 +230,15 @@ SECTION3A_ROUTE_SUPPORT_MAP: Mapping[str, RouteSelectorEntry] = MappingProxyType
         ),
         "travel_segment__model-ltx2__guidance-none__continuity-first_last__profile-default": RouteSelectorEntry(
             route_key="travel_segment__model-ltx2__guidance-none__continuity-first_last__profile-default",
-            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
-            template_id="video/ltx2_3_runexx_first_last_frame",
-            disposition="ADAPT",
+            support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            disposition="BLOCKED",
+            blocking_reason="The LTX first/last ready template is not yet wired through the Reigh travel child adapter with first/last image inputs and completion semantics.",
         ),
         "travel_segment__model-ltx2_distilled__guidance-none__continuity-first_last__profile-default": RouteSelectorEntry(
             route_key="travel_segment__model-ltx2_distilled__guidance-none__continuity-first_last__profile-default",
-            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
-            template_id="video/ltx2_3_runexx_first_last_frame",
-            disposition="ADAPT",
+            support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            disposition="BLOCKED",
+            blocking_reason="The LTX first/last ready template is not yet wired through the Reigh travel child adapter with first/last image inputs and completion semantics.",
         ),
         "travel_segment__model-ltx2_distilled__guidance-ltx_control_video__continuity-first_last__profile-default": RouteSelectorEntry(
             route_key="travel_segment__model-ltx2_distilled__guidance-ltx_control_video__continuity-first_last__profile-default",

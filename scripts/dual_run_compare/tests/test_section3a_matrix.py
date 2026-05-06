@@ -51,11 +51,11 @@ def test_section3a_fixture_keeps_disposition_separate_from_runtime_support_state
     rows_by_id = {row.row_id: row for row in rows}
 
     assert {rows_by_id[row_id].disposition for row_id in range(1, 7)} == {"NEW"}
-    assert {rows_by_id[row_id].disposition for row_id in range(9, 14)} == {"BLOCKED"}
+    assert {rows_by_id[row_id].disposition for row_id in range(7, 14)} == {"BLOCKED"}
     assert {
-        rows_by_id[row_id].support_state_expectation for row_id in [*range(1, 7), *range(9, 14)]
+        rows_by_id[row_id].support_state_expectation for row_id in [*range(1, 7), *range(7, 14)]
     } == {"vibecomfy_unsupported"}
-    assert all(rows_by_id[row_id].blocking_reason for row_id in [*range(1, 7), *range(9, 14)])
+    assert all(rows_by_id[row_id].blocking_reason for row_id in [*range(1, 7), *range(7, 14)])
 
 
 def test_section3a_fixture_has_mode_aware_route_key_expectations() -> None:

@@ -318,7 +318,7 @@ def test_section3a_matrix_route_support_is_explicit_and_deterministic(routing) -
         ),
     ],
 )
-def test_section3a_promoted_ltx_rows_resolve_to_vibecomfy_template(
+def test_section3a_ltx_first_last_rows_remain_blocked_until_adapter_wiring(
     routing, model_name: str, expected_route_key: str
 ) -> None:
     resolved = routing.resolve_task_route(
@@ -333,10 +333,11 @@ def test_section3a_promoted_ltx_rows_resolve_to_vibecomfy_template(
     )
 
     assert resolved.route_key == expected_route_key
-    assert resolved.support_state == routing.RouteSupportState.VIBECOMFY_SUPPORTED
-    assert resolved.template_id == "video/ltx2_3_runexx_first_last_frame"
-    assert resolved.fail_closed_reason is None
-    assert resolved.should_use_vibecomfy is True
+    assert resolved.support_state == routing.RouteSupportState.VIBECOMFY_UNSUPPORTED
+    assert resolved.template_id is None
+    assert resolved.fail_closed_reason
+    assert "will not fall back to WGP" in resolved.fail_closed_reason
+    assert resolved.should_use_vibecomfy is False
 
 
 @pytest.mark.parametrize(
@@ -344,6 +345,8 @@ def test_section3a_promoted_ltx_rows_resolve_to_vibecomfy_template(
     [
         "travel_segment__model-wan22_i2v__guidance-none__continuity-first_last__profile-default",
         "travel_segment__model-wan22_vace__guidance-vace_flow__continuity-first_last__profile-default",
+        "travel_segment__model-ltx2__guidance-none__continuity-first_last__profile-default",
+        "travel_segment__model-ltx2_distilled__guidance-none__continuity-first_last__profile-default",
         "travel_segment__model-ltx2_distilled__guidance-ltx_control_video__continuity-first_last__profile-default",
         "travel_segment__model-ltx2_distilled__guidance-ltx_control_cameraman__continuity-first_last__profile-default",
     ],

@@ -116,11 +116,11 @@
       "guidance_mode": "none",
       "continuity_case": "first_last",
       "profile": "default",
-      "disposition": "ADAPT",
-      "expected_backend": "vibecomfy",
+      "disposition": "BLOCKED",
+      "expected_backend": "wgp",
       "route_key_expectation": "travel_segment__model-ltx2__guidance-none__continuity-first_last__profile-default",
-      "support_state_expectation": "vibecomfy_supported",
-      "blocking_reason": null
+      "support_state_expectation": "vibecomfy_unsupported",
+      "blocking_reason": "The LTX first/last ready template is not yet wired through the Reigh travel child adapter with first/last image inputs and completion semantics."
     },
     {
       "row_id": 8,
@@ -131,11 +131,11 @@
       "guidance_mode": "none",
       "continuity_case": "first_last",
       "profile": "default",
-      "disposition": "ADAPT",
-      "expected_backend": "vibecomfy",
+      "disposition": "BLOCKED",
+      "expected_backend": "wgp",
       "route_key_expectation": "travel_segment__model-ltx2_distilled__guidance-none__continuity-first_last__profile-default",
-      "support_state_expectation": "vibecomfy_supported",
-      "blocking_reason": null
+      "support_state_expectation": "vibecomfy_unsupported",
+      "blocking_reason": "The LTX first/last ready template is not yet wired through the Reigh travel child adapter with first/last image inputs and completion semantics."
     },
     {
       "row_id": 9,

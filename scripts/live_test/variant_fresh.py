@@ -14,6 +14,7 @@ from scripts.live_test.matrix import build_matrix, render_case_payload, run_matr
 from scripts.live_test.preflight import assert_user_queue_clean, get_or_create_live_test_project
 from scripts.live_test.report import write_report
 from scripts.live_test.ssh_bootstrap import (
+    clone_and_install_vibecomfy,
     clone_repo_into,
     export_env,
     fetch_worker_logs,
@@ -28,6 +29,8 @@ from scripts.live_test.token_resolver import resolve_token_to_user_id
 FRESH_VARIANT = "fresh"
 FRESH_WORKDIR = "/workspace/Reigh-Worker-LiveTest"
 FRESH_REPO_URL = "https://github.com/banodoco/Reigh-Worker.git"
+VIBECOMFY_WORKDIR = "/workspace/vibecomfy"
+VIBECOMFY_REPO_URL = "https://github.com/peteromallet/VibeComfy.git"
 
 log = get_logger(__name__)
 
@@ -68,6 +71,14 @@ def _build_worker_env(token: str, supabase_url: str, service_role_key: str, args
     selector_version = getattr(args, "selector_version", None)
     if selector_version:
         env["REIGH_SELECTOR_VERSION"] = str(selector_version)
+    if getattr(args, "backend", "wgp") == "vibecomfy":
+        env.update(
+            {
+                "VIBECOMFY_CWD": VIBECOMFY_WORKDIR,
+                "VIBECOMFY_PATH": VIBECOMFY_WORKDIR,
+                "VIBECOMFY_PYTHON": f"{FRESH_WORKDIR}/.venv/bin/python",
+            }
+        )
     return env
 
 
@@ -110,6 +121,8 @@ def _print_dry_run_plan(*, token: str, project_id: str, cases: list, args) -> No
     print("Variant: fresh")
     print(f"Project ID: {project_id}")
     print(f"Clone target: {FRESH_WORKDIR}")
+    if getattr(args, "backend", "wgp") == "vibecomfy":
+        print(f"VibeComfy clone target: {VIBECOMFY_WORKDIR}")
     print(f"Terminate after run: {not args.no_terminate}")
     print("Injected env vars:")
     for key in (
@@ -122,6 +135,9 @@ def _print_dry_run_plan(*, token: str, project_id: str, cases: list, args) -> No
         "SUPABASE_SERVICE_ROLE_KEY",
         "SUPABASE_URL",
         "WORKER_DB_CLIENT_AUTH_MODE",
+        "VIBECOMFY_CWD",
+        "VIBECOMFY_PATH",
+        "VIBECOMFY_PYTHON",
     ):
         print(f"- {key}")
     print("Planned launch command:")
@@ -197,6 +213,14 @@ def run(args) -> int:
         ssh = open_session(pod_id, api_key)
         clone_repo_into(ssh, FRESH_WORKDIR, FRESH_REPO_URL, branch=args.ref or "main")
         run_install(ssh, FRESH_WORKDIR)
+        if args.backend == "vibecomfy":
+            clone_and_install_vibecomfy(
+                ssh,
+                repo_url=VIBECOMFY_REPO_URL,
+                branch=args.vibecomfy_ref,
+                workdir=VIBECOMFY_WORKDIR,
+                python_path=f"{FRESH_WORKDIR}/.venv/bin/python",
+            )
 
         command = build_run_worker_command(
             FRESH_WORKDIR,

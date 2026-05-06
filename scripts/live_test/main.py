@@ -24,6 +24,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.set_defaults(no_terminate=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--ref", default="main", help="Branch/ref to clone for Variant Fresh.")
+    parser.add_argument(
+        "--vibecomfy-ref",
+        default="megaplan/vibecomfy-sprint-04-wan-single-frame",
+        help="VibeComfy branch/ref to clone for VibeComfy backend live tests.",
+    )
     parser.add_argument("--wgp-profile", type=int, default=3)
     parser.add_argument(
         "--backend",

@@ -126,6 +126,30 @@ def run_install(ssh, workdir: str) -> None:
     _execute(ssh, command, timeout=3600)
 
 
+def clone_and_install_vibecomfy(
+    ssh,
+    *,
+    repo_url: str,
+    branch: str,
+    workdir: str = "/workspace/vibecomfy",
+    python_path: str,
+) -> None:
+    parent = workdir.rsplit("/", 1)[0] or "/"
+    command = (
+        "bash -lc "
+        + _quote(
+            "set -euo pipefail\n"
+            f"mkdir -p {_quote(parent)}\n"
+            f"rm -rf {_quote(workdir)}\n"
+            f"git clone --branch {_quote(branch)} --single-branch {_quote(repo_url)} {_quote(workdir)}\n"
+            f"{_quote(python_path)} -m pip install -e {_quote(workdir)}\n"
+            f"test -f {_quote(workdir)}/template_index.json\n"
+            f"test -f {_quote(workdir)}/workflow_corpus/manifests/coverage.json\n"
+        )
+    )
+    _execute(ssh, command, timeout=3600)
+
+
 def export_env(env: dict[str, str]) -> str:
     exports = dict(env)
     required = {
@@ -246,6 +270,7 @@ __all__ = [
     "PROCESS_SCAN_COMMAND",
     "WorkerProcessInfo",
     "capture_current_worker_cmdline",
+    "clone_and_install_vibecomfy",
     "clone_repo_into",
     "export_env",
     "fetch_worker_logs",

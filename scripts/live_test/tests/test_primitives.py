@@ -32,6 +32,7 @@ from scripts.live_test.ssh_bootstrap import (
     KILL_COMMAND,
     WorkerProcessInfo,
     capture_current_worker_cmdline,
+    clone_and_install_vibecomfy,
     kill_supervisor_and_worker,
 )
 from scripts.live_test.task_spoofer import insert_spoof_task
@@ -631,6 +632,32 @@ def test_variant_fresh_dry_run_uses_livetest_workspace_and_env_exports(capsys, m
     assert "REIGH_BACKEND" in output
     assert "REIGH_SELECTOR_NAMESPACE" in output
     assert "REIGH_WORKER_CONTRACT_VERSION" in output
+    assert "VibeComfy clone target: /workspace/vibecomfy" in output
+    assert "VIBECOMFY_PATH" in output
+
+
+def test_clone_and_install_vibecomfy_validates_required_manifests():
+    calls = []
+
+    class DummySSH:
+        def execute_command(self, command, timeout=600):
+            calls.append((command, timeout))
+            return 0, "", ""
+
+    clone_and_install_vibecomfy(
+        DummySSH(),
+        repo_url="https://github.com/peteromallet/VibeComfy.git",
+        branch="branch-a",
+        workdir="/workspace/vibecomfy",
+        python_path="/workspace/Reigh-Worker-LiveTest/.venv/bin/python",
+    )
+
+    command, timeout = calls[0]
+    assert timeout == 3600
+    assert "git clone --branch branch-a --single-branch https://github.com/peteromallet/VibeComfy.git /workspace/vibecomfy" in command
+    assert "/workspace/Reigh-Worker-LiveTest/.venv/bin/python -m pip install -e /workspace/vibecomfy" in command
+    assert "test -f /workspace/vibecomfy/template_index.json" in command
+    assert "test -f /workspace/vibecomfy/workflow_corpus/manifests/coverage.json" in command
 
 
 def test_spawn_takeover_pod_calls_create_record_before_spawn_and_start(monkeypatch: pytest.MonkeyPatch):

@@ -564,8 +564,12 @@ def main():
 
     def _publish_preflight(result: WorkerPreflightResult, *, ready_for_tasks: bool) -> None:
         if cli_args.worker and db_config.SUPABASE_CLIENT is not None:
+            metadata_client = db_config.SUPABASE_CLIENT
+            service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_SERVICE_KEY")
+            if service_key:
+                metadata_client = create_client(cli_args.supabase_url, service_key)
             publish_preflight_metadata(
-                supabase_client=db_config.SUPABASE_CLIENT,
+                supabase_client=metadata_client,
                 worker_id=cli_args.worker,
                 result=result,
                 ready_for_tasks=ready_for_tasks,

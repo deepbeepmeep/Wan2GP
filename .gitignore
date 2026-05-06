@@ -93,6 +93,8 @@ tests/*
 !tests/test_idle_release.py
 !tests/test_travel_guidance_ic_lora_override.py
 !tests/test_task_registry_ic_lora_dedup.py
+!tests/runtime/
+!tests/runtime/test_vibecomfy_profile.py
 !tests/test_clear_conditioning_byte_identity.py
 !tests/test_runtime_model_patch_contracts.py
 !tests/test_wgp_patch_context_contracts.py

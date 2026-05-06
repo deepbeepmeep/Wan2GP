@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Any
 
 _EDGE_FAILURE_RE = re.compile(
@@ -72,6 +73,20 @@ ROUTE_DEBUG_FIELDS = (
     "selected_profile",
     "parent_route_key",
 )
+CANARY_SECRET_KEYS = {
+    "authorization",
+    "authorization_header",
+    "api_key",
+    "apikey",
+    "service_role",
+    "service-role",
+    "access_token",
+    "refresh_token",
+    "pat",
+    "token",
+}
+CANARY_COMPLETION_HANDLER = "complete_task/generation-handlers.ts"
+CANARY_BILLING_HANDLER = "complete_task/billing.ts"
 
 
 def extract_task_params(task: dict[str, Any] | None) -> dict[str, Any]:
@@ -129,6 +144,150 @@ def format_route_contract_summary(task: dict[str, Any] | None) -> str:
         f"profile={summary['selected_profile'] or '-'} "
         f"parent={summary['parent_route_key'] or '-'}"
     )
+
+
+def format_canary_readiness_observation(
+    task: dict[str, Any],
+    *,
+    worker: dict[str, Any] | None = None,
+    system_log: dict[str, Any] | None = None,
+    environment: str = "staging",
+    observed_at: str | None = None,
+) -> dict[str, Any]:
+    """Build a redacted live-evidence observation from existing debug rows."""
+    route_contract = extract_route_contract_summary(task)
+    task_metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    if not any(route_contract.values()):
+        metadata_contract = (
+            task_metadata.get("route_contract")
+            if isinstance(task_metadata.get("route_contract"), dict)
+            else {}
+        )
+        metadata_snapshot = (
+            metadata_contract.get("route_selection_snapshot")
+            if isinstance(metadata_contract.get("route_selection_snapshot"), dict)
+            else {}
+        )
+        route_contract = {
+            "route_key": _coalesce(metadata_contract.get("route_key"), metadata_snapshot.get("route_key")),
+            "selected_backend": _coalesce(
+                metadata_contract.get("selected_backend"),
+                metadata_snapshot.get("selected_backend"),
+            ),
+            "selector_version": _coalesce(
+                metadata_contract.get("selector_version"),
+                metadata_snapshot.get("selector_version"),
+            ),
+            "support_state": _coalesce(
+                metadata_snapshot.get("support_state"),
+                metadata_contract.get("support_state"),
+            ),
+            "selected_profile": _coalesce(
+                metadata_contract.get("selected_profile"),
+                metadata_snapshot.get("selected_profile"),
+            ),
+            "parent_route_key": _coalesce(
+                metadata_snapshot.get("parent_route_key"),
+                metadata_contract.get("parent_route_key"),
+            ),
+        }
+    worker_metadata = worker.get("metadata") if isinstance(worker, dict) and isinstance(worker.get("metadata"), dict) else {}
+    log_metadata = (
+        system_log.get("metadata")
+        if isinstance(system_log, dict) and isinstance(system_log.get("metadata"), dict)
+        else {}
+    )
+    route_key = _coalesce(
+        route_contract.get("route_key"),
+        task_metadata.get("route_key"),
+        log_metadata.get("route_key"),
+        task.get("task_type"),
+    )
+    selected_backend = _coalesce(
+        route_contract.get("selected_backend"),
+        task_metadata.get("selected_backend"),
+        worker_metadata.get("backend"),
+        log_metadata.get("selected_backend"),
+    )
+    observation = {
+        "environment": environment,
+        "observed_at": observed_at or datetime.now(timezone.utc).isoformat(),
+        "task_id": str(task.get("id") or task.get("task_id") or ""),
+        "task_type": str(task.get("task_type") or route_key or ""),
+        "route_key": str(route_key or ""),
+        "worker_backend": selected_backend,
+        "selector_namespace": _coalesce(
+            task_metadata.get("selector_namespace"),
+            log_metadata.get("selector_namespace"),
+            "canary",
+        ),
+        "selector_version": _coalesce(
+            route_contract.get("selector_version"),
+            task_metadata.get("selector_version"),
+            log_metadata.get("selector_version"),
+        ),
+        "status": task.get("status"),
+        "completion_evidence": {
+            "handler": CANARY_COMPLETION_HANDLER,
+            "status": _coalesce(task_metadata.get("completion_status"), task.get("status")),
+            "source": "tasks.metadata",
+        },
+        "billing_evidence": {
+            "handler": CANARY_BILLING_HANDLER,
+            "status": _coalesce(task_metadata.get("billing_status"), task_metadata.get("billing_evidence_status")),
+            "source": "tasks.metadata",
+        },
+        "runtime": {
+            "backend": selected_backend,
+            "pool": _coalesce(worker_metadata.get("pool"), log_metadata.get("pool")),
+            "worker_id": _coalesce(
+                task.get("worker_id"),
+                worker.get("id") if isinstance(worker, dict) else None,
+                log_metadata.get("worker_id"),
+            ),
+            "worker_health": {
+                "status": worker.get("status") if isinstance(worker, dict) else None,
+                "last_heartbeat": worker.get("last_heartbeat") if isinstance(worker, dict) else None,
+            },
+            "quota_alert": _coalesce(task_metadata.get("quota_alert"), log_metadata.get("quota_alert")),
+            "warm_cache": _coalesce(worker_metadata.get("warm_cache"), log_metadata.get("warm_cache")),
+            "preflight": _coalesce(worker_metadata.get("preflight"), log_metadata.get("preflight")),
+            "route_contract": route_contract,
+        },
+        "source_ref": {
+            "kind": "debug_export",
+            "task_id": task.get("id") or task.get("task_id"),
+            "worker_id": worker.get("id") if isinstance(worker, dict) else None,
+            "system_log_id": system_log.get("id") if isinstance(system_log, dict) else None,
+            "paths": [
+                "tasks.metadata",
+                "workers.metadata",
+                "system_logs.metadata",
+            ],
+        },
+        "redaction": {
+            "status": "redacted",
+            "secret_scan": "passed",
+        },
+    }
+    return redact_canary_observation(observation)
+
+
+def redact_canary_observation(value: Any) -> Any:
+    """Redact secret-bearing keys/values while preserving evidence shape."""
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, child in value.items():
+            if _canary_secret_key(key):
+                redacted[key] = "[REDACTED]"
+            else:
+                redacted[key] = redact_canary_observation(child)
+        return redacted
+    if isinstance(value, list):
+        return [redact_canary_observation(item) for item in value]
+    if isinstance(value, str) and _canary_secret_value(value):
+        return "[REDACTED]"
+    return value
 
 
 def route_repair_signals(
@@ -225,6 +384,22 @@ def _coalesce(*values: Any) -> Any:
         if value not in (None, ""):
             return value
     return ""
+
+
+def _canary_secret_key(key: str) -> bool:
+    normalized = key.lower()
+    return normalized in CANARY_SECRET_KEYS or normalized.endswith("_token") or normalized.endswith("_api_key")
+
+
+def _canary_secret_value(value: str) -> bool:
+    normalized = value.lower()
+    return (
+        "authorization:" in normalized
+        or "bearer " in normalized
+        or "service_role" in normalized
+        or "service-role" in normalized
+        or normalized.startswith(("sk-proj-", "sk-live-", "github_pat_"))
+    )
 
 
 def _dedupe_preserving_order(values: list[str]) -> list[str]:

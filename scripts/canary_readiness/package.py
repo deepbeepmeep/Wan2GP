@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from scripts.canary_readiness.non_rayworker import build_non_rayworker_gate
+from scripts.canary_readiness.soak import build_soak_gate
 from scripts.dual_run_compare.reporting import REPORTS_DIR, stable_json
 
 
@@ -39,9 +41,11 @@ def build_package(
     package_id: str,
     source_report_dir: Path = REPORTS_DIR,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
+    evidence_manifest: Mapping[str, Any] | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
     source_reports = load_source_reports(source_report_dir)
+    manifest = evidence_manifest or {}
     package = {
         "package_id": package_id,
         "created_at": created_at or datetime.now(timezone.utc).isoformat(),
@@ -52,27 +56,22 @@ def build_package(
     }
     sections = {
         "prerequisite_evidence": _prerequisite_section(source_reports),
-        "non_rayworker_smoke": _non_rayworker_section(source_reports),
-        "soak": _placeholder_section(
-            "soak",
-            "Structured soak evidence is not yet attached to the readiness package.",
-        ),
-        "dashboards": _placeholder_section(
+        "non_rayworker_smoke": _non_rayworker_section(source_reports, manifest=manifest),
+        "soak": _soak_section(manifest),
+        "dashboards": _manifest_gate_section(
+            manifest,
             "dashboards",
+            "Dashboards",
             "Dashboard export evidence is not yet attached to the readiness package.",
         ),
-        "alerts": _placeholder_section(
+        "alerts": _manifest_gate_section(
+            manifest,
             "alerts",
+            "Alerts",
             "Section 11 alert evidence is not yet attached to the readiness package.",
         ),
-        "rollback_exercise": _placeholder_section(
-            "rollback_exercise",
-            "Rollback exercise evidence is not yet attached to the readiness package.",
-        ),
-        "go_no_go": _placeholder_section(
-            "go_no_go",
-            "Go/no-go decision evidence is not yet attached to the readiness package.",
-        ),
+        "rollback_exercise": _rollback_exercise_section(manifest),
+        "go_no_go": _go_no_go_section(manifest),
     }
     package["sections"] = sections
     package["exit_policy"] = evaluate_exit_policy(sections)
@@ -91,6 +90,15 @@ def load_source_reports(source_report_dir: Path) -> list[SourceReport]:
         if isinstance(report, dict):
             reports.append(SourceReport(path=path, report=report))
     return reports
+
+
+def load_evidence_manifest(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise ValueError("evidence manifest must be a JSON object")
+    return manifest
 
 
 def write_package(package: Mapping[str, Any], *, output_dir: Path = DEFAULT_OUTPUT_DIR) -> tuple[Path, Path]:
@@ -206,29 +214,148 @@ def _prerequisite_section(source_reports: Sequence[SourceReport]) -> dict[str, A
     )
 
 
-def _non_rayworker_section(source_reports: Sequence[SourceReport]) -> dict[str, Any]:
+def _non_rayworker_section(
+    source_reports: Sequence[SourceReport],
+    *,
+    manifest: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    observations = (manifest or {}).get("non_rayworker_observations")
+    if isinstance(observations, Sequence) and not isinstance(observations, (str, bytes, bytearray)):
+        gate = build_non_rayworker_gate(observations)
+        reasons = []
+        for route in gate["routes"]:
+            if route["errors"]:
+                reasons.append(f"{route['route_key']}: " + ", ".join(route["errors"]))
+        return _section(
+            "non_rayworker_smoke",
+            "Active Non-RayWorker Smoke",
+            gate["status"],
+            reasons=reasons,
+            evidence_refs=[
+                f"{route['route_key']}:{route['task_id']}"
+                for route in gate["routes"]
+                if route.get("task_id")
+            ],
+            routes=gate["routes"],
+        )
+
     route_statuses = _latest_route_statuses(source_reports)
-    missing = [route for route in REQUIRED_NON_RAYWORKER_ROUTES if route not in route_statuses]
-    not_green = [
-        f"{route}:{route_statuses[route]}"
-        for route in REQUIRED_NON_RAYWORKER_ROUTES
-        if route in route_statuses and route_statuses[route] != "green"
-    ]
-    reasons = []
-    if missing:
-        reasons.append("Missing active non-RayWorker route evidence: " + ", ".join(missing))
-    if not_green:
-        reasons.append("Active non-RayWorker route evidence is not green: " + ", ".join(not_green))
     return _section(
         "non_rayworker_smoke",
         "Active Non-RayWorker Smoke",
-        "red" if reasons else "green",
-        reasons=reasons,
+        "red",
+        reasons=["Missing recent live/staging non-RayWorker observations."],
         evidence_refs=[
-            f"{route}:{route_statuses[route]}"
+            f"policy:{route}:{route_statuses[route]}"
             for route in REQUIRED_NON_RAYWORKER_ROUTES
             if route in route_statuses
         ],
+    )
+
+
+def _soak_section(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    scenarios = manifest.get("soak_scenarios")
+    if not isinstance(scenarios, Sequence) or isinstance(scenarios, (str, bytes, bytearray)):
+        return _placeholder_section(
+            "soak",
+            "Structured soak evidence is not yet attached to the readiness package.",
+        )
+    gate = build_soak_gate(scenarios)
+    reasons = []
+    if gate["missing_scenarios"]:
+        reasons.append("Missing soak scenarios: " + ", ".join(gate["missing_scenarios"]))
+    for scenario in gate["scenarios"]:
+        if scenario["errors"]:
+            reasons.append(f"{scenario['scenario']}: " + ", ".join(scenario["errors"]))
+    return _section(
+        "soak",
+        "Soak",
+        gate["status"],
+        reasons=reasons,
+        evidence_refs=[
+            str(ref.get("id") or ref.get("path") or ref.get("kind"))
+            for scenario in gate["scenarios"]
+            for ref in scenario.get("evidence_refs", [])
+            if isinstance(ref, Mapping)
+        ],
+        scenarios=gate["scenarios"],
+    )
+
+
+def _manifest_gate_section(
+    manifest: Mapping[str, Any],
+    key: str,
+    title: str,
+    missing_reason: str,
+) -> dict[str, Any]:
+    evidence = manifest.get(key)
+    if not isinstance(evidence, Mapping):
+        return _placeholder_section(key, missing_reason)
+    status = str(evidence.get("status") or "")
+    reasons = _string_list(evidence.get("reasons"))
+    evidence_refs = _string_list(evidence.get("evidence_refs"))
+    if status != "green":
+        reasons = reasons or [f"{title} evidence status is not green."]
+    return _section(
+        key,
+        title,
+        "green" if status == "green" else "red",
+        reasons=reasons,
+        evidence_refs=evidence_refs,
+        details=dict(evidence),
+    )
+
+
+def _rollback_exercise_section(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    evidence = manifest.get("rollback_exercise")
+    if not isinstance(evidence, Mapping):
+        return _placeholder_section(
+            "rollback_exercise",
+            "Rollback exercise evidence is not yet attached to the readiness package.",
+        )
+    missing = [
+        field
+        for field in ("observed_at", "environment", "operator", "source_ref", "status")
+        if not _present(evidence.get(field))
+    ]
+    reasons = []
+    if missing:
+        reasons.append("Missing rollback exercise fields: " + ", ".join(missing))
+    if evidence.get("status") != "pass":
+        reasons.append("Rollback exercise status must be pass.")
+    evidence_refs = []
+    source_ref = evidence.get("source_ref")
+    if isinstance(source_ref, Mapping):
+        evidence_refs.append(str(source_ref.get("id") or source_ref.get("path") or source_ref.get("kind")))
+    return _section(
+        "rollback_exercise",
+        "Rollback Exercise",
+        "red" if reasons else "green",
+        reasons=reasons,
+        evidence_refs=evidence_refs,
+        details=dict(evidence),
+    )
+
+
+def _go_no_go_section(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    evidence = manifest.get("go_no_go")
+    if not isinstance(evidence, Mapping):
+        return _placeholder_section(
+            "go_no_go",
+            "Go/no-go decision evidence is not yet attached to the readiness package.",
+        )
+    decision = evidence.get("decision")
+    status = "green" if decision == "go" else "red"
+    reasons = _string_list(evidence.get("reasons"))
+    if status != "green" and not reasons:
+        reasons = ["Go/no-go decision must be go."]
+    return _section(
+        "go_no_go",
+        "Go/No-Go",
+        status,
+        reasons=reasons,
+        evidence_refs=_string_list(evidence.get("evidence_refs")),
+        details=dict(evidence),
     )
 
 
@@ -259,12 +386,24 @@ def _section(
     *,
     reasons: Sequence[str] | None = None,
     evidence_refs: Sequence[str] | None = None,
+    **extra: Any,
 ) -> dict[str, Any]:
-    return {
+    section = {
         "key": key,
         "title": title,
         "status": status,
         "reasons": list(reasons or []),
         "evidence_refs": list(evidence_refs or []),
     }
+    section.update(extra)
+    return section
 
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _present(value: Any) -> bool:
+    return value is not None and value != "" and value != {} and value != []

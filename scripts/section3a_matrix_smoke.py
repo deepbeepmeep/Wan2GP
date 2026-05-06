@@ -66,7 +66,8 @@ def run_section3a_smoke(
             "total": len(rows),
             "passed": sum(1 for row in rows if row["replay_result"] == "pass"),
             "failed": sum(1 for row in rows if row["replay_result"] == "fail"),
-            "blocked": sum(1 for row in rows if row["wgp_only_or_blocked_reason"]),
+            "blocked": sum(1 for row in rows if row["disposition"] == "BLOCKED"),
+            "reasoned_rows": sum(1 for row in rows if row["wgp_only_or_blocked_reason"]),
         },
         "rows": rows,
     }

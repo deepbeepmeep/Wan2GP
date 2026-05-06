@@ -85,12 +85,14 @@ def test_section3a_smoke_writes_markdown_and_json_with_required_columns(tmp_path
     assert report["columns"] == list(REPORT_COLUMNS)
     assert report["summary"]["total"] == 13
     assert report["summary"]["failed"] == 0
+    assert report["summary"]["blocked"] == 7
+    assert report["summary"]["reasoned_rows"] == 13
     assert {row["row_id"] for row in report["rows"]} == set(range(1, 14))
     assert all(row["replay_result"] == "pass" for row in report["rows"])
     assert all(row["media_contract_result"] == "not_applicable_dry_run" for row in report["rows"])
 
     blocked_rows = [row for row in report["rows"] if row["disposition"] == "BLOCKED"]
-    assert {row["row_id"] for row in blocked_rows} == {9, 10, 11, 12, 13}
+    assert {row["row_id"] for row in blocked_rows} == {7, 8, 9, 10, 11, 12, 13}
     assert all(row["wgp_only_or_blocked_reason"] for row in blocked_rows)
 
     markdown = markdown_report.read_text(encoding="utf-8")

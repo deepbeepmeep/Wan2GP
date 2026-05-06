@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from source.utils.subprocess_utils import run_subprocess
+from source.runtime.worker.health_labels import guardian_label_log
+from source.runtime.worker.preflight import read_preflight_state
 
 
 def _safe_worker_fragment(worker_id: str) -> str:
@@ -83,12 +85,27 @@ def send_heartbeat_with_logs(
 ) -> bool:
     try:
         auth_token = config.get("auth_token") or config.get("api_key")
+        safe_logs = list(logs)
+        preflight = read_preflight_state(worker_id)
+        if preflight is not None:
+            safe_logs.append(
+                {
+                    "level": "info",
+                    "message": "worker_preflight_status",
+                    "metadata": {
+                        "preflight_status": preflight.get("preflight_status"),
+                        "preflight_ok": preflight.get("preflight_ok"),
+                        "preflight_failed_checks": preflight.get("preflight_failed_checks", []),
+                    },
+                }
+            )
+        safe_logs.append(guardian_label_log(worker_id))
         payload = json.dumps(
             {
                 "worker_id_param": worker_id,
                 "vram_total_mb_param": vram_total,
                 "vram_used_mb_param": vram_used,
-                "logs_param": logs,
+                "logs_param": safe_logs,
                 "status_param": status,
             }
         )

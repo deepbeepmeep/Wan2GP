@@ -38,6 +38,28 @@ def _selector_namespace() -> str:
     return value or "production"
 
 
+def _selector_version() -> str | None:
+    value = (os.getenv("REIGH_SELECTOR_VERSION") or os.getenv("ROUTE_SELECTOR_VERSION") or "").strip()
+    return value or None
+
+
+def _worker_profile() -> str:
+    value = (
+        os.getenv("REIGH_WORKER_PROFILE")
+        or os.getenv("WGP_PROFILE")
+        or os.getenv("WORKER_PROFILE")
+        or "default"
+    ).strip()
+    return value or "default"
+
+
+def _worker_contract_version() -> int:
+    try:
+        return int(os.getenv("REIGH_WORKER_CONTRACT_VERSION", "1"))
+    except (TypeError, ValueError):
+        return 1
+
+
 def _route_context(task_data: dict | None) -> dict:
     data = task_data or {}
     return {
@@ -201,11 +223,17 @@ def check_task_counts_supabase(run_type: str = "gpu", runtime_config=None) -> di
 
         worker_backend = parse_worker_backend()
         selector_namespace = _selector_namespace()
+        selector_version = _selector_version()
+        worker_profile = _worker_profile()
+        worker_contract_version = _worker_contract_version()
         payload = {
             "run_type": run_type,
             "include_active": True,
             "worker_backend": worker_backend.value,
+            "worker_profile": worker_profile,
             "selector_namespace": selector_namespace,
+            "selector_version": selector_version,
+            "worker_contract_version": worker_contract_version,
         }
 
         headless_logger.debug(f"DEBUG check_task_counts_supabase: Calling task-counts at {edge_url}")
@@ -220,7 +248,9 @@ def check_task_counts_supabase(run_type: str = "gpu", runtime_config=None) -> di
                 headless_logger.debug_anomaly(
                     "TASK_COUNTS",
                     f"totals={totals} run_type={payload.get('run_type')} "
-                    f"worker_backend={worker_backend.value} selector_namespace={selector_namespace}",
+                    f"worker_backend={worker_backend.value} worker_profile={worker_profile} "
+                    f"selector_namespace={selector_namespace} selector_version={selector_version} "
+                    f"worker_contract_version={worker_contract_version}",
                 )
             except (ValueError, KeyError, TypeError):
                 # Fall back to raw text if JSON structure unexpected
@@ -307,12 +337,25 @@ def poll_next_task(
 
     headless_logger.debug(f"DEBUG: Using worker_id: {worker_id}")
 
+    from source.runtime.worker.resource_pressure import ensure_resources_for_claim
+
+    resource_check = ensure_resources_for_claim(worker_id)
+    if not resource_check.allow_work:
+        headless_logger.warning(
+            "[CLAIM] Suppressing claim due to local resource pressure "
+            f"status={resource_check.status} reason={resource_check.reason}"
+        )
+        return ClaimPollOutcome.EMPTY, None
+
     try:
         worker_backend = parse_worker_backend()
     except ValueError as backend_error:
         headless_logger.error(f"[CLAIM] {backend_error}")
         return ClaimPollOutcome.ERROR, None
     selector_namespace = _selector_namespace()
+    selector_version = _selector_version()
+    worker_profile = _worker_profile()
+    worker_contract_version = _worker_contract_version()
 
     # OPTIMIZATION: Check task counts first to avoid unnecessary claim attempts
     headless_logger.debug("Checking task counts before attempting to claim...")
@@ -364,7 +407,10 @@ def poll_next_task(
                 "run_type": "gpu",
                 "same_model_only": same_model_only,
                 "worker_backend": worker_backend.value,
+                "worker_profile": worker_profile,
                 "selector_namespace": selector_namespace,
+                "selector_version": selector_version,
+                "worker_contract_version": worker_contract_version,
             }
             if max_task_wait_minutes is not None:
                 payload["max_task_wait_minutes"] = max_task_wait_minutes

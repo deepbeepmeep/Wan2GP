@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
-sys.modules.setdefault("httpx", SimpleNamespace(HTTPError=Exception))
+sys.modules.setdefault("httpx", SimpleNamespace(HTTPError=Exception, Response=object))
 postgrest_exceptions = ModuleType("postgrest.exceptions")
 postgrest_exceptions.APIError = Exception
 sys.modules.setdefault("postgrest", ModuleType("postgrest"))
@@ -21,6 +22,14 @@ MODULE_PATH = (
     / "task_handlers"
     / "tasks"
     / "template_routing.py"
+)
+SELECTED_ROUTE_FIXTURES_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "reigh-app"
+    / "supabase"
+    / "functions"
+    / "_shared"
+    / "selectedRoute.fixtures.json"
 )
 
 
@@ -301,6 +310,10 @@ def test_route_snapshot_fields_are_top_level_columns_plus_json_snapshot(routing)
         "route_key": route_key,
         "selected_backend": "wgp",
         "selector_version": 42,
+        "selected_profile": "default",
+        "selected_template_id": None,
+        "route_run_id": None,
+        "worker_contract_version": 1,
         "route_selection_snapshot": {
             "selector_namespace": "production",
             "route_key": route_key,
@@ -308,10 +321,33 @@ def test_route_snapshot_fields_are_top_level_columns_plus_json_snapshot(routing)
             "selector_version": 42,
             "support_state": "vibecomfy_unsupported",
             "template_id": None,
+            "selected_profile": "default",
+            "route_run_id": None,
+            "worker_contract_version": 1,
             "task_id": "child-1",
             "parent_route_key": "join_clips_orchestrator",
         },
     }
+
+
+def test_python_route_contract_matches_edge_fixtures(routing) -> None:
+    fixtures = json.loads(SELECTED_ROUTE_FIXTURES_PATH.read_text(encoding="utf-8"))
+
+    for fixture in fixtures:
+        input_payload = fixture["input"]
+        expected = fixture["expected"]
+        assert routing.route_snapshot_fields(
+            task_type=input_payload["task_type"],
+            params=input_payload.get("params"),
+            task_id=input_payload.get("task_id"),
+            backend=input_payload.get("backend"),
+            selector_namespace=input_payload.get("selector_namespace", "production"),
+            selector_version=input_payload.get("selector_version"),
+            parent_route_key=input_payload.get("parent_route_key"),
+            profile=input_payload.get("profile"),
+            run_id=input_payload.get("run_id"),
+            worker_contract_version=input_payload.get("worker_contract_version", 1),
+        ) == expected, fixture["name"]
 
 
 def test_reigh_backend_vibecomfy_is_parsed_strictly(routing, monkeypatch) -> None:
@@ -483,6 +519,9 @@ def test_claim_flow_sends_backend_and_selector_namespace(monkeypatch) -> None:
 
     monkeypatch.setenv("REIGH_BACKEND", "vibecomfy")
     monkeypatch.setenv("REIGH_SELECTOR_NAMESPACE", "staging")
+    monkeypatch.setenv("REIGH_SELECTOR_VERSION", "42")
+    monkeypatch.setenv("REIGH_WORKER_PROFILE", "3")
+    monkeypatch.setenv("REIGH_WORKER_CONTRACT_VERSION", "7")
     captured_payload = {}
 
     class _Response:
@@ -532,8 +571,114 @@ def test_claim_flow_sends_backend_and_selector_namespace(monkeypatch) -> None:
         "worker_id": "worker-vibe",
         "run_type": "gpu",
         "worker_backend": "vibecomfy",
+        "worker_profile": "3",
         "selector_namespace": "staging",
+        "selector_version": "42",
+        "worker_contract_version": 7,
     }
+
+
+def test_direct_claim_payload_sends_backend_profile_selector_and_contract(monkeypatch) -> None:
+    from source.core.db import task_claim
+
+    monkeypatch.setenv("REIGH_BACKEND", "vibecomfy")
+    monkeypatch.setenv("REIGH_SELECTOR_NAMESPACE", "canary")
+    monkeypatch.setenv("REIGH_SELECTOR_VERSION", "43")
+    monkeypatch.setenv("REIGH_WORKER_PROFILE", "3")
+    monkeypatch.setenv("REIGH_WORKER_CONTRACT_VERSION", "8")
+    monkeypatch.setattr(task_claim._cfg, "SUPABASE_URL", "https://example.supabase.co", raising=False)
+    monkeypatch.setattr(task_claim._cfg, "SUPABASE_ACCESS_TOKEN", "token", raising=False)
+    monkeypatch.setattr(
+        task_claim._cfg,
+        "SUPABASE_EDGE_CLAIM_TASK_URL",
+        "https://example.supabase.co/functions/v1/claim-next-task",
+        raising=False,
+    )
+    captured_payloads = []
+
+    class _Response:
+        def __init__(self, status_code, body):
+            self.status_code = status_code
+            self._body = body
+            self.text = json.dumps(body)
+
+        def json(self):
+            return self._body
+
+    def _fake_post(url, json=None, headers=None, timeout=None):
+        captured_payloads.append((url, dict(json or {})))
+        if url.endswith("/task-counts"):
+            return _Response(200, {"totals": {"queued_only": 1, "eligible_queued": 1}})
+        return _Response(204, {})
+
+    monkeypatch.setattr(task_claim.httpx, "post", _fake_post, raising=False)
+
+    outcome, task = task_claim.poll_next_task(
+        worker_id="worker-direct-vibe",
+        same_model_only=True,
+        max_task_wait_minutes=9,
+    )
+
+    assert outcome == task_claim.ClaimPollOutcome.EMPTY
+    assert task is None
+    task_counts_payload = captured_payloads[0][1]
+    claim_payload = captured_payloads[1][1]
+    for payload in (task_counts_payload, claim_payload):
+        assert payload["worker_backend"] == "vibecomfy"
+        assert payload["worker_profile"] == "3"
+        assert payload["selector_namespace"] == "canary"
+        assert payload["selector_version"] == "43"
+        assert payload["worker_contract_version"] == 8
+    assert claim_payload["worker_id"] == "worker-direct-vibe"
+    assert claim_payload["same_model_only"] is True
+    assert claim_payload["max_task_wait_minutes"] == 9
+
+
+def test_direct_claim_suppresses_edge_call_when_disk_near_full(monkeypatch) -> None:
+    from source.core.db import task_claim
+    from source.runtime.worker.resource_pressure import ResourcePressureResult
+    import source.runtime.worker.resource_pressure as resource_pressure
+
+    monkeypatch.setattr(task_claim._cfg, "SUPABASE_URL", "https://example.supabase.co", raising=False)
+    monkeypatch.setattr(task_claim._cfg, "SUPABASE_ACCESS_TOKEN", "token", raising=False)
+    monkeypatch.setattr(
+        task_claim._cfg,
+        "SUPABASE_EDGE_CLAIM_TASK_URL",
+        "https://example.supabase.co/functions/v1/claim-next-task",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        resource_pressure,
+        "ensure_resources_for_claim",
+        lambda _worker_id: ResourcePressureResult(
+            status="near_full",
+            action="claim_suppressed",
+            allow_work=False,
+            quota_alert=True,
+            required_free_bytes=1024,
+            recovered_bytes=0,
+            volumes=(),
+            cleanup={"lora": {}, "artifacts": {}},
+            reason="disk_pressure_unrecoverable",
+        ),
+    )
+    calls = []
+
+    def _fake_post(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("claim path should not call edge while disk is near full")
+
+    monkeypatch.setattr(task_claim.httpx, "post", _fake_post, raising=False)
+
+    outcome, task = task_claim.poll_next_task(
+        worker_id="worker-disk-full",
+        same_model_only=True,
+        max_task_wait_minutes=9,
+    )
+
+    assert outcome == task_claim.ClaimPollOutcome.EMPTY
+    assert task is None
+    assert calls == []
 
 
 def test_add_task_to_db_lifts_route_snapshot_fields_into_create_task_payload(monkeypatch) -> None:
@@ -560,11 +705,18 @@ def test_add_task_to_db_lifts_route_snapshot_fields_into_create_task_payload(mon
         "route_key": "join_clips_segment__model-wan22_vace__guidance-vace__continuity-join_bridge__profile-default",
         "selected_backend": "wgp",
         "selector_version": 12,
+        "selected_profile": "default",
+        "selected_template_id": None,
+        "route_run_id": "run-1",
+        "worker_contract_version": 1,
         "route_selection_snapshot": {
             "selector_namespace": "production",
             "route_key": "join_clips_segment__model-wan22_vace__guidance-vace__continuity-join_bridge__profile-default",
             "selected_backend": "wgp",
             "selector_version": 12,
+            "selected_profile": "default",
+            "route_run_id": "run-1",
+            "worker_contract_version": 1,
         },
     }
 

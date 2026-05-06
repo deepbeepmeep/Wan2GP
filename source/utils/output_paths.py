@@ -176,6 +176,7 @@ def upload_intermediate_file_to_storage(
                         "task_id": task_id,
                         "filename": filename,
                         "content_type": content_type,
+                        "artifact_class": "intermediate",
                     },
                     timeout=30 + (attempt * 15),
                 )

@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any
 
 from source.core.log import headless_logger
+from source.runtime.worker.health_labels import build_health_payload
+from source.runtime.worker.resource_pressure import ensure_resources_for_write
 
 
 _STATE_DIR_NAME = ".reigh-local-worker"
@@ -189,7 +191,12 @@ def _make_handler(
             if self.path != "/health":
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
                 return
-            self._send_json(HTTPStatus.OK, {"ok": True, "worker_id": worker_id, "version": version})
+            payload = build_health_payload(
+                worker_id=worker_id,
+                version=version,
+                disk_paths=[materialization_dir],
+            )
+            self._send_json(HTTPStatus.OK, payload)
 
         def do_POST(self) -> None:
             if self.path == "/ingest":
@@ -228,6 +235,12 @@ def _make_handler(
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "expected multipart/form-data"})
                 return
 
+            try:
+                required_bytes = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid content length"})
+                return
+
             form = cgi.FieldStorage(
                 fp=self.rfile,
                 headers=self.headers,
@@ -246,6 +259,21 @@ def _make_handler(
             suffix_match = _UPLOAD_SUFFIX_RE.search(filename)
             suffix = suffix_match.group(0) if suffix_match else ".bin"
             output_path = materialization_dir / f"{uuid.uuid4().hex}{suffix}"
+
+            resource_check = ensure_resources_for_write(
+                worker_id=worker_id,
+                target_path=output_path,
+                required_bytes=required_bytes,
+            )
+            if not resource_check.allow_work:
+                self._send_json(
+                    HTTPStatus.INSUFFICIENT_STORAGE,
+                    {
+                        "error": "insufficient local disk space",
+                        "resource_pressure": resource_check.to_state(),
+                    },
+                )
+                return
 
             fd = os.open(output_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             size = 0

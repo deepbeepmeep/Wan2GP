@@ -24,6 +24,9 @@ class WorkerBackend(str, Enum):
     VIBECOMFY = "vibecomfy"
 
 
+WORKER_ROUTE_CONTRACT_VERSION = 1
+
+
 @dataclass(frozen=True)
 class RouteSelectorEntry:
     route_key: str
@@ -229,6 +232,9 @@ def route_snapshot_fields(
     selector_namespace: str = "production",
     selector_version: int | str | None = None,
     parent_route_key: str | None = None,
+    profile: str | None = None,
+    run_id: str | None = None,
+    worker_contract_version: int = WORKER_ROUTE_CONTRACT_VERSION,
 ) -> dict[str, Any]:
     """Return top-level task route fields plus a JSON-safe snapshot.
 
@@ -248,6 +254,7 @@ def route_snapshot_fields(
         else RouteSupportState.VIBECOMFY_UNSUPPORTED
     )
     template_id = selector_entry.template_id if selector_entry is not None else None
+    selected_profile = str(profile or _route_profile(task_params))
 
     snapshot: dict[str, Any] = {
         "selector_namespace": selector_namespace,
@@ -256,6 +263,9 @@ def route_snapshot_fields(
         "selector_version": selector_version,
         "support_state": support_state.value,
         "template_id": template_id,
+        "selected_profile": selected_profile,
+        "route_run_id": run_id,
+        "worker_contract_version": worker_contract_version,
     }
     if task_id is not None:
         snapshot["task_id"] = task_id
@@ -267,6 +277,10 @@ def route_snapshot_fields(
         "route_key": route_key,
         "selected_backend": selected_backend.value,
         "selector_version": selector_version,
+        "selected_profile": selected_profile,
+        "selected_template_id": template_id,
+        "route_run_id": run_id,
+        "worker_contract_version": worker_contract_version,
         "route_selection_snapshot": snapshot,
     }
 
@@ -446,6 +460,7 @@ __all__ = [
     "RouteSupportState",
     "SPRINT_2_SELECTOR_MAP",
     "WorkerBackend",
+    "WORKER_ROUTE_CONTRACT_VERSION",
     "derive_route_key",
     "parse_worker_backend",
     "resolve_task_route",

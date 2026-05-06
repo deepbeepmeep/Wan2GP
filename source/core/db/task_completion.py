@@ -79,6 +79,10 @@ def add_task_to_db(
         "route_key",
         "selected_backend",
         "selector_version",
+        "selected_profile",
+        "selected_template_id",
+        "route_run_id",
+        "worker_contract_version",
         "route_selection_snapshot",
     }
     unexpected_route_fields = set(route_fields_for_input) - allowed_route_fields

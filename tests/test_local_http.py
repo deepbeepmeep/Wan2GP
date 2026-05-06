@@ -7,6 +7,8 @@ import pytest
 import requests
 
 from source.runtime.worker.local_http import start_local_http_server
+from source.runtime.worker.preflight import write_preflight_state
+from source.runtime.worker.resource_pressure import ResourcePressureResult
 
 
 def _free_port() -> int:
@@ -18,6 +20,24 @@ def _free_port() -> int:
 @pytest.fixture()
 def local_server(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("REIGH_PREFLIGHT_STATE_DIR", str(tmp_path / "preflight"))
+    monkeypatch.setenv("REIGH_WARM_CACHE_STATE_DIR", str(tmp_path / "warm-cache"))
+    for name in (
+        "REIGH_BACKEND",
+        "WORKER_BACKEND",
+        "REIGH_WORKER_PROFILE",
+        "WGP_PROFILE",
+        "REIGH_WORKER_POOL",
+        "WORKER_POOL",
+        "REIGH_SELECTOR_NAMESPACE",
+        "ROUTE_SELECTOR_NAMESPACE",
+        "REIGH_SELECTOR_VERSION",
+        "ROUTE_SELECTOR_VERSION",
+        "REIGH_WORKER_RUN_ID",
+        "WORKER_RUN_ID",
+        "REIGH_WORKER_CONTRACT_VERSION",
+    ):
+        monkeypatch.delenv(name, raising=False)
     server = start_local_http_server(
         materialization_dir=tmp_path / "mat",
         port=_free_port(),
@@ -46,7 +66,13 @@ def test_health_no_auth_returns_ok(local_server):
     response = requests.get(f"{_base_url(server)}/health", headers={"Connection": "close"}, timeout=5)
 
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "worker_id": "worker-test", "version": "test-version"}
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["worker_id"] == "worker-test"
+    assert payload["version"] == "test-version"
+    assert payload["labels"]["route"]["backend"] == "wgp"
+    assert payload["labels"]["disk"]["status"] in {"ok", "near_full"}
+    assert payload["labels"]["warm_cache"]["status"] == "unknown"
 
 
 def test_ingest_missing_auth_returns_401(local_server):
@@ -94,6 +120,37 @@ def test_ingest_valid_upload_returns_path(local_server):
     assert output_path.resolve().is_relative_to(materialization_dir.resolve())
     if os.name == "posix":
         assert output_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_ingest_returns_507_when_disk_cleanup_cannot_recover(local_server, monkeypatch):
+    server, _ = local_server
+    import source.runtime.worker.local_http as local_http
+
+    blocked = ResourcePressureResult(
+        status="near_full",
+        action="write_blocked",
+        allow_work=False,
+        quota_alert=True,
+        required_free_bytes=1024,
+        recovered_bytes=0,
+        volumes=(),
+        cleanup={"lora": {}, "artifacts": {}},
+        reason="disk_pressure_unrecoverable",
+    )
+
+    monkeypatch.setattr(local_http, "ensure_resources_for_write", lambda **_kwargs: blocked)
+
+    response = requests.post(
+        f"{_base_url(server)}/ingest",
+        files={"file": ("input.png", b"image-bytes")},
+        headers=_auth_headers(server),
+        timeout=5,
+    )
+
+    assert response.status_code == 507
+    payload = response.json()
+    assert payload["error"] == "insufficient local disk space"
+    assert payload["resource_pressure"]["resource_pressure_action"] == "write_blocked"
 
 
 def test_ingest_accepts_no_auth_when_auth_optional_true(tmp_path, monkeypatch):
@@ -223,6 +280,62 @@ def test_get_health_includes_cors_headers(local_server):
     assert response.status_code == 200
     assert response.headers["Access-Control-Allow-Origin"] == "*"
     assert response.headers["Access-Control-Allow-Headers"] == "Authorization, Content-Type"
+
+
+def test_get_health_includes_preflight_state_when_available(local_server, tmp_path, monkeypatch):
+    server, _ = local_server
+    monkeypatch.setenv("REIGH_PREFLIGHT_STATE_DIR", str(tmp_path))
+    write_preflight_state("worker-test", {"preflight_status": "passed", "ready_for_tasks": True})
+
+    response = requests.get(f"{_base_url(server)}/health", headers={"Connection": "close"}, timeout=5)
+
+    assert response.status_code == 200
+    assert response.json()["preflight"]["preflight_status"] == "passed"
+    assert response.json()["labels"]["preflight"]["status"] == "passed"
+
+
+def test_get_health_includes_safe_route_disk_and_warm_cache_labels(local_server, tmp_path, monkeypatch):
+    server, _ = local_server
+    monkeypatch.setenv("REIGH_BACKEND", "vibecomfy")
+    monkeypatch.setenv("REIGH_WORKER_PROFILE", "3")
+    monkeypatch.setenv("REIGH_SELECTOR_NAMESPACE", "canary")
+    monkeypatch.setenv("REIGH_SELECTOR_VERSION", "42")
+    monkeypatch.setenv("REIGH_WORKER_RUN_ID", "run-abc")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "must-not-leak")
+    monkeypatch.setenv("REIGH_WARM_CACHE_STATE_DIR", str(tmp_path))
+
+    from source.runtime.worker.health_labels import write_warm_cache_state
+
+    write_warm_cache_state(
+        "worker-test",
+        {
+            "warm_cache_status": "hit",
+            "warm_cache_model": "vibe-model",
+            "warm_cache_source": "manifest",
+            "api_token": "secret",
+        },
+    )
+
+    response = requests.get(f"{_base_url(server)}/health", headers={"Connection": "close"}, timeout=5)
+    payload = response.json()
+
+    assert payload["labels"]["route"] == {
+        "backend": "vibecomfy",
+        "profile": "3",
+        "pool": "gpu-wgp-production",
+        "selector_namespace": "canary",
+        "selector_version": "42",
+        "worker_contract_version": "1",
+        "run_id": "run-abc",
+        "route_key": "",
+        "template_id": "",
+        "current_task_id": "",
+        "current_task_type": "",
+    }
+    assert payload["labels"]["warm_cache"]["status"] == "hit"
+    assert payload["labels"]["warm_cache"]["model"] == "vibe-model"
+    assert "must-not-leak" not in response.text
+    assert payload["warm_cache"]["api_token"] == "[redacted]"
 
 
 def test_token_file_mode_is_0600_on_posix(local_server):

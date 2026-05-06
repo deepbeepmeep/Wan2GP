@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Edge function call helpers: retry wrapper and JWT utilities.
 """

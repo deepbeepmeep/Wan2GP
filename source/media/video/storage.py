@@ -58,6 +58,7 @@ def upload_intermediate_file_to_storage(
             "task_id": task_id,
             "filename": filename,
             "content_type": content_type,
+            "artifact_class": "intermediate",
         },
         headers=request.headers,
         function_name="generate-upload-url",

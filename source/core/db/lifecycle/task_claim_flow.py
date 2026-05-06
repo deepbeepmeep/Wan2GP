@@ -9,6 +9,13 @@ from typing import Any, Callable
 from source.task_handlers.tasks.template_routing import parse_worker_backend
 
 
+def _worker_contract_version() -> int:
+    try:
+        return int(os.getenv("REIGH_WORKER_CONTRACT_VERSION", "1"))
+    except (TypeError, ValueError):
+        return 1
+
+
 @dataclass(frozen=True)
 class TaskClaimFlowDependencies:
     check_my_assigned_tasks: Callable[..., Any]
@@ -51,11 +58,23 @@ def claim_oldest_queued_task(*, worker_id: str, runtime, deps: TaskClaimFlowDepe
             "worker_id": worker_id,
             "run_type": "gpu",
             "worker_backend": parse_worker_backend().value,
+            "worker_profile": (
+                os.getenv("REIGH_WORKER_PROFILE")
+                or os.getenv("WGP_PROFILE")
+                or os.getenv("WORKER_PROFILE")
+                or "default"
+            ),
             "selector_namespace": (
                 os.getenv("REIGH_SELECTOR_NAMESPACE")
                 or os.getenv("ROUTE_SELECTOR_NAMESPACE")
                 or "production"
             ),
+            "selector_version": (
+                os.getenv("REIGH_SELECTOR_VERSION")
+                or os.getenv("ROUTE_SELECTOR_VERSION")
+                or None
+            ),
+            "worker_contract_version": _worker_contract_version(),
         },
         headers=request.headers,
         function_name="claim-next-task",

@@ -551,6 +551,53 @@ def main():
     main_output_dir = Path(cli_args.main_output_dir).resolve()
     main_output_dir.mkdir(parents=True, exist_ok=True)
 
+    from source.runtime.worker.preflight import (
+        PREFLIGHT_STATUS_RUNNING,
+        PreflightCheck,
+        WorkerPreflightResult,
+        finalize_preflight_result,
+        publish_preflight_metadata,
+        run_worker_preflight,
+        write_preflight_state,
+    )
+    from source.runtime.worker.warm_cache import publish_warm_cache_state, resolve_warm_cache_plan
+
+    def _publish_preflight(result: WorkerPreflightResult, *, ready_for_tasks: bool) -> None:
+        if cli_args.worker and db_config.SUPABASE_CLIENT is not None:
+            publish_preflight_metadata(
+                supabase_client=db_config.SUPABASE_CLIENT,
+                worker_id=cli_args.worker,
+                result=result,
+                ready_for_tasks=ready_for_tasks,
+            )
+        elif cli_args.worker:
+            write_preflight_state(
+                cli_args.worker,
+                {
+                    **result.to_metadata(),
+                    "ready_for_tasks": bool(ready_for_tasks and result.ok),
+                },
+            )
+
+    static_preflight = run_worker_preflight(
+        repo_root=Path(repo_root),
+        wan2gp_path=Path(wan2gp_path),
+        main_output_dir=main_output_dir,
+        backend=os.environ.get("REIGH_BACKEND", os.environ.get("WORKER_BACKEND", "wgp")),
+    )
+    if not static_preflight.ok:
+        _publish_preflight(static_preflight, ready_for_tasks=False)
+        sys.exit(1)
+    _publish_preflight(
+        WorkerPreflightResult(
+            status=PREFLIGHT_STATUS_RUNNING,
+            checks=static_preflight.checks,
+            started_at=static_preflight.started_at,
+            completed_at=static_preflight.completed_at,
+        ),
+        ready_for_tasks=False,
+    )
+
     # Centralized logging with heartbeat guardian
     from source.core.log import LogBuffer, CustomLogInterceptor, set_log_interceptor
     from source.runtime.worker.guardian import send_heartbeat_with_logs
@@ -609,19 +656,46 @@ def main():
         if "transformer_types" not in wgp_mod.server_config: wgp_mod.server_config["transformer_types"] = []
 
         headless_logger.essential("WGP imported OK")
+        wgp_import_check = PreflightCheck("wgp_import", True, "wgp imported", required=True)
 
     except (ImportError, RuntimeError, AttributeError, KeyError) as e:
         headless_logger.essential(f"WGP import failed: {e}")
+        _publish_preflight(
+            finalize_preflight_result(
+                static_preflight,
+                extra_checks=[PreflightCheck("wgp_import", False, str(e), required=True)],
+            ),
+            ready_for_tasks=False,
+        )
         sys.exit(1)
     finally:
         os.chdir(original_cwd)
 
     # Clean up legacy collision-prone LoRA files
-    from source.models.lora.lora_utils import cleanup_legacy_lora_collisions
+    from source.models.lora.lora_utils import cleanup_legacy_lora_collisions, sweep_lora_cache_from_env
     cleanup_legacy_lora_collisions()
+    sweep_lora_cache_from_env(task_id="worker_startup")
 
     # Initialize Task Queue
     from headless_model_management import HeadlessTaskQueue
+    worker_backend = os.environ.get("REIGH_BACKEND", os.environ.get("WORKER_BACKEND", "wgp"))
+    worker_profile = os.environ.get(
+        "REIGH_WORKER_PROFILE",
+        os.environ.get("WGP_PROFILE", str(cli_args.wgp_profile or "1")),
+    )
+    pending_task_skip = os.environ.get("REIGH_WARM_CACHE_SKIP_REASON") == "pending_tasks"
+    warm_cache_plan = resolve_warm_cache_plan(
+        backend=worker_backend,
+        profile=worker_profile,
+        cli_preload_model=cli_args.preload_model or None,
+        pending_tasks=pending_task_skip,
+    )
+    if cli_args.worker:
+        publish_warm_cache_state(
+            cli_args.worker,
+            warm_cache_plan,
+            status="warmup" if warm_cache_plan.enabled else "skipped",
+        )
     try:
         task_queue = HeadlessTaskQueue(
             wan_dir=wan2gp_path,
@@ -629,11 +703,37 @@ def main():
             debug_mode=debug_mode,
             main_output_dir=str(main_output_dir)
         )
-        preload_model = cli_args.preload_model if cli_args.preload_model else None
+        preload_model = warm_cache_plan.preload_model
         task_queue.start(preload_model=preload_model)
     except (RuntimeError, ValueError, OSError) as e:
         headless_logger.essential(f"Queue init failed: {e}")
+        _publish_preflight(
+            finalize_preflight_result(
+                static_preflight,
+                extra_checks=[
+                    wgp_import_check,
+                    PreflightCheck("task_queue_start", False, str(e), required=True),
+                ],
+            ),
+            ready_for_tasks=False,
+        )
         sys.exit(1)
+    if cli_args.worker:
+        publish_warm_cache_state(
+            cli_args.worker,
+            warm_cache_plan,
+            status="hit" if warm_cache_plan.enabled else "skipped" if warm_cache_plan.skip_reason else "miss",
+        )
+    _publish_preflight(
+        finalize_preflight_result(
+            static_preflight,
+            extra_checks=[
+                wgp_import_check,
+                PreflightCheck("task_queue_start", True, "task queue started", required=True),
+            ],
+        ),
+        ready_for_tasks=True,
+    )
 
     # Status display with plant animation
     _gpu_name = "unknown GPU"
@@ -662,6 +762,7 @@ def main():
     from source.core.db.lifecycle.task_status_retry import requeue_task_for_retry
     from source.task_handlers.worker.fatal_error_handler import FatalWorkerError, reset_fatal_error_counter, is_retryable_error
     from source.task_handlers.worker.worker_utils import cleanup_generated_files
+    from source.runtime.worker.health_labels import write_worker_route_state
 
     STATUS_COMPLETE = "Complete"
     STATUS_IN_PROGRESS = "In Progress"
@@ -702,6 +803,8 @@ def main():
 
             _display.on_task_start()
             idle_tracker.record_claim()
+            if cli_args.worker:
+                write_worker_route_state(cli_args.worker, task_info)
 
             current_task_params = task_info["params"]
             current_task_type = task_info["task_type"]

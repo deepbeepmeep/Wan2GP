@@ -1,0 +1,5 @@
+[2026-05-06T04:43:42.846744+00:00] loaded fixture route=travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default model=wan_2_2_vace_lightning_baseline_2_2_2 seed=12345 resolution=832x480 video_length=49
+[2026-05-06T04:43:42.858043+00:00] cwd=/workspace/sprint35-wgp-20260506T043642Z/reigh-worker/Wan2GP importing WanOrchestrator
+[2026-05-06T04:47:38.081269+00:00] loading model wan_2_2_vace_lightning_baseline_2_2_2
+[2026-05-06T04:52:02.139039+00:00] starting WGP generation
+[2026-05-06T04:54:07.361147+00:00] success output=/workspace/sprint35-wgp-20260506T043642Z/reigh-worker/scripts/dual_run_compare/artifacts/sprint35/wgp_reference/20260506T044342Z/outputs/2026-05-06-04h54m05s_seed12345_A steady cinematic travel shot through a glass-roof train station at golden hour, camera gliding for.mp4 bytes=700650 sha256=66d0b7a2470666c62a9c5bd6b9aa619ef9c27bab2b3a12924cd8312f4c793824

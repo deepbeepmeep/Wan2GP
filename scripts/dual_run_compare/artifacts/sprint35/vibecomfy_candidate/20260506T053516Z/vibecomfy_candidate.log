@@ -1,0 +1,3 @@
+[2026-05-06T05:35:16.254304+00:00] starting VibeComfy embedded run
+[2026-05-06T05:35:18.991698+00:00] candidate failed: ModuleNotFoundError("No module named 'opentelemetry.instrumentation.aio_pika'")
+[2026-05-06T05:35:19.041495+00:00] finished status=failed

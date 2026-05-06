@@ -1,0 +1,143 @@
+{
+  "manifest_schema_version": 1,
+  "fixture_id": "sprint35-wan22-vace-travel-video-source-49f",
+  "created_for": "Sprint 3.5 Wan 2.2 VACE feasibility dry run",
+  "route_key": "travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default",
+  "threshold_route_key": "travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default",
+  "threshold_version": "0B-2026-05-05",
+  "task_type": "travel_segment",
+  "model_name": "wan_2_2_vace_lightning_baseline_2_2_2",
+  "model_default_path": "reigh-worker/Wan2GP/defaults/wan_2_2_vace_lightning_baseline_2_2_2.json",
+  "seed": 12345,
+  "width": 832,
+  "height": 480,
+  "fps": 16,
+  "num_frames": 49,
+  "prompt_ref": "prompt.txt",
+  "negative_prompt_ref": "negative_prompt.txt",
+  "input_refs": {
+    "start_image": "inputs/start_frame.png",
+    "end_image": "inputs/end_frame.png",
+    "guidance_video": "inputs/guidance_vace_raw.mp4",
+    "video_source": "inputs/predecessor_video_source.mp4"
+  },
+  "continuation": {
+    "case": "video_source",
+    "strategy": "svi_latent_chaining",
+    "overlap_frames": 9
+  },
+  "guidance": {
+    "kind": "vace",
+    "mode": "raw",
+    "strength": 1.0,
+    "frame_policy": "fit"
+  },
+  "wgp_schedule": {
+    "guidance_phases": 3,
+    "num_inference_steps": 6,
+    "guidance_scale": 3,
+    "guidance2_scale": 1,
+    "guidance3_scale": 1,
+    "flow_shift": 5,
+    "switch_threshold": 883,
+    "switch_threshold2": 558,
+    "model_switch_phase": 2,
+    "sample_solver": "euler",
+    "phase_step_allocation": [
+      2,
+      2,
+      2
+    ],
+    "phase_timestep_boundaries": [
+      883,
+      558
+    ],
+    "phase_model_topology": [
+      "HIGH",
+      "HIGH",
+      "LOW"
+    ]
+  },
+  "model_assets": {
+    "high_model_urls": [
+      "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/Wan2_2_Fun_VACE_A14B_HIGH_mbf16.safetensors",
+      "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/Wan2_2_Fun_VACE_A14B_HIGH_quanto_mbf16_int8.safetensors",
+      "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/Wan2_2_Fun_VACE_A14B_HIGH_quanto_mfp16_int8.safetensors"
+    ],
+    "low_model_urls": [
+      "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/Wan2_2_Fun_VACE_A14B_LOW_mbf16.safetensors",
+      "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/Wan2_2_Fun_VACE_A14B_LOW_quanto_mbf16_int8.safetensors",
+      "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/Wan2_2_Fun_VACE_A14B_LOW_quanto_mfp16_int8.safetensors"
+    ],
+    "cocktail_loras": [
+      "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/loras_accelerators/Wan21_CausVid_14B_T2V_lora_rank32_v2.safetensors",
+      "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/loras_accelerators/DetailEnhancerV1.safetensors",
+      "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/loras_accelerators/Wan21_AccVid_T2V_14B_lora_rank32_fp16.safetensors",
+      "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/loras_accelerators/Wan21_T2V_14B_MoviiGen_lora_rank32_fp16.safetensors"
+    ],
+    "cocktail_lora_multipliers": [
+      1,
+      0.2,
+      0.5,
+      0.5
+    ]
+  },
+  "source_task_or_command": {
+    "kind": "generated_local_fixture",
+    "command": "python deterministic PIL/cv2 fixture generator embedded in batch T2 execution",
+    "source_payload_ref": "task_payload.json"
+  },
+  "representativeness_rationale": "The fixture uses the default Sprint 3.5 travel route with Wan 2.2 VACE, raw VACE guidance, video_source continuity, start/end image anchors, the locked 3-phase 2-2-2 WGP schedule, and 49 frames. It avoids the skeletal golden seed payload by materializing all local media inputs and a backend-neutral task payload.",
+  "files": [
+    {
+      "path": "task_payload.json",
+      "sha256": "e3024518d664e1a521a6146578aa32ed2dc51d67368823fc8482a90e0d033832",
+      "bytes": 4822
+    },
+    {
+      "path": "prompt.txt",
+      "sha256": "7d8166cadcfc13549b330154dcdb0db96d0142bdfcb22b4f1dbbe42465de987e",
+      "bytes": 194
+    },
+    {
+      "path": "negative_prompt.txt",
+      "sha256": "ff42d1177560ef3e2effc981cbe91cfa6c2581846c60221f147ab041a7b37c16",
+      "bytes": 64
+    },
+    {
+      "path": "inputs/start_frame.png",
+      "sha256": "f2dd0d5388b80e43c0479cc3938e619bda72c8e8e8a4e671db6d838254bb84c2",
+      "bytes": 15821
+    },
+    {
+      "path": "inputs/end_frame.png",
+      "sha256": "de057fe31cd6f12d513290e2b5845859edb68a8d58f2deea4d1a45915d726d21",
+      "bytes": 13269
+    },
+    {
+      "path": "inputs/guidance_vace_raw.mp4",
+      "sha256": "5e3b71d29243485c05816e55a9583f927e11ed6cb952bdb65df02d4ada639b62",
+      "bytes": 1593875
+    },
+    {
+      "path": "inputs/predecessor_video_source.mp4",
+      "sha256": "aea2bae7d12a2fc9fafb0da766d2dc8382f4f97a7261fc5949d5e1de56b094df",
+      "bytes": 566306
+    },
+    {
+      "path": "reigh-worker/Wan2GP/defaults/wan_2_2_vace_lightning_baseline_2_2_2.json",
+      "sha256": "0548b0e6171adccc2214aa4029b871b9e41a668313226b2f884eb27220aa313d",
+      "bytes": 860
+    },
+    {
+      "path": "reigh-worker/Wan2GP/defaults/vace_fun_14B_2_2.json",
+      "sha256": "6aba9a96172d4320c5d238349a8716b543bfd1d88a768eeb4bb80f9e9c09fffc",
+      "bytes": 1173
+    },
+    {
+      "path": "reigh-worker/Wan2GP/defaults/vace_fun_14B_cocktail_2_2.json",
+      "sha256": "3f8e95649f9e2a23ae574a8fa08cc561b3c3ca5212c1f810f985eaec2609e5f7",
+      "bytes": 1346
+    }
+  ]
+}

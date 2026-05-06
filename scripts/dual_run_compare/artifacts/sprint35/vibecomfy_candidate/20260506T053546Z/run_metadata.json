@@ -1,0 +1,21 @@
+{
+  "status": "failed",
+  "generated_at": "2026-05-06T05:36:02.154390+00:00",
+  "template_id": "video/wanvideo_wrapper_22_14b_vace_cocktail_dry_run",
+  "template_path": "vibecomfy/ready_templates/video/wanvideo_wrapper_22_14b_vace_cocktail_dry_run.py",
+  "route_key": "travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default",
+  "threshold_route_key": "travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default",
+  "fixture_manifest_path": "reigh-worker/scripts/dual_run_compare/fixtures/sprint35/manifest.json",
+  "model": "wan_2_2_vace_lightning_baseline_2_2_2",
+  "seed": 12345,
+  "resolution": "832x480",
+  "fps": 16,
+  "num_frames": 49,
+  "result": {
+    "wall_clock_seconds": 15.293816804885864
+  },
+  "outputs": [],
+  "selected_video": null,
+  "selected_video_relative_to_repo": null,
+  "model_staging_notes": []
+}

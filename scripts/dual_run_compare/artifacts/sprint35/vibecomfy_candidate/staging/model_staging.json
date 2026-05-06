@@ -1,0 +1,154 @@
+[
+  {
+    "repo": "Kijai/WanVideo_comfy",
+    "filename": "umt5-xxl-enc-bf16.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--Kijai--WanVideo_comfy/blobs/4fa971faf306cad919033d5bbe192e571dc08452f800cbf2ec3c73977c01b2cc",
+    "target": "models/text_encoders/umt5-xxl-enc-bf16.safetensors",
+    "mode": "hardlink",
+    "bytes": 11361845464
+  },
+  {
+    "repo": "Kijai/WanVideo_comfy",
+    "filename": "Wan2_2_VAE_bf16.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--Kijai--WanVideo_comfy/blobs/0e913a2ca571c75fcb63385a8edadcca73454af5842596cb1ad11e4142590996",
+    "target": "models/vae/wanvideo/Wan2_2_VAE_bf16.safetensors",
+    "mode": "hardlink",
+    "bytes": 1409401152
+  },
+  {
+    "repo": "Kijai/WanVideo_comfy",
+    "filename": "Wan2_2_VAE_bf16.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--Kijai--WanVideo_comfy/blobs/0e913a2ca571c75fcb63385a8edadcca73454af5842596cb1ad11e4142590996",
+    "target": "models/vae/wanvideo\\Wan2_2_VAE_bf16.safetensors",
+    "mode": "hardlink",
+    "bytes": 1409401152
+  },
+  {
+    "repo": "DeepBeepMeep/Wan2.2",
+    "filename": "Wan2_2_Fun_VACE_A14B_HIGH_mbf16.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--DeepBeepMeep--Wan2.2/blobs/abf999f2b7dfbca59ccb164bdc9351caa506c28fd42b17f672414372f2968c9f",
+    "target": "models/diffusion_models/WanVideo/Wan2_2_Fun_VACE_A14B_HIGH_mbf16.safetensors",
+    "mode": "hardlink",
+    "bytes": 35523239441
+  },
+  {
+    "repo": "DeepBeepMeep/Wan2.2",
+    "filename": "Wan2_2_Fun_VACE_A14B_HIGH_mbf16.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--DeepBeepMeep--Wan2.2/blobs/abf999f2b7dfbca59ccb164bdc9351caa506c28fd42b17f672414372f2968c9f",
+    "target": "models/diffusion_models/WanVideo\\Wan2_2_Fun_VACE_A14B_HIGH_mbf16.safetensors",
+    "mode": "hardlink",
+    "bytes": 35523239441
+  },
+  {
+    "repo": "DeepBeepMeep/Wan2.2",
+    "filename": "Wan2_2_Fun_VACE_A14B_LOW_mbf16.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--DeepBeepMeep--Wan2.2/blobs/db05865166f933c98a7e03ae9c07a6afbfdf293a9734a953a1e6c45bdaccc453",
+    "target": "models/diffusion_models/WanVideo/Wan2_2_Fun_VACE_A14B_LOW_mbf16.safetensors",
+    "mode": "hardlink",
+    "bytes": 35523239441
+  },
+  {
+    "repo": "DeepBeepMeep/Wan2.2",
+    "filename": "Wan2_2_Fun_VACE_A14B_LOW_mbf16.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--DeepBeepMeep--Wan2.2/blobs/db05865166f933c98a7e03ae9c07a6afbfdf293a9734a953a1e6c45bdaccc453",
+    "target": "models/diffusion_models/WanVideo\\Wan2_2_Fun_VACE_A14B_LOW_mbf16.safetensors",
+    "mode": "hardlink",
+    "bytes": 35523239441
+  },
+  {
+    "repo": "DeepBeepMeep/Wan2.1",
+    "filename": "loras_accelerators/Wan21_CausVid_14B_T2V_lora_rank32_v2.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--DeepBeepMeep--Wan2.1/blobs/3d6853cb7e7e9d6d35fb6c7163a85dab98e6c91d1341e8a3cf0bfb4e66dd68cc",
+    "target": "models/loras/WanVideo/loras/Wan21_CausVid_14B_T2V_lora_rank32_v2.safetensors",
+    "mode": "hardlink",
+    "bytes": 204551064
+  },
+  {
+    "repo": "DeepBeepMeep/Wan2.1",
+    "filename": "loras_accelerators/Wan21_CausVid_14B_T2V_lora_rank32_v2.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--DeepBeepMeep--Wan2.1/blobs/3d6853cb7e7e9d6d35fb6c7163a85dab98e6c91d1341e8a3cf0bfb4e66dd68cc",
+    "target": "models/loras/WanVideo\\loras\\Wan21_CausVid_14B_T2V_lora_rank32_v2.safetensors",
+    "mode": "hardlink",
+    "bytes": 204551064
+  },
+  {
+    "repo": "DeepBeepMeep/Wan2.1",
+    "filename": "loras_accelerators/Wan21_CausVid_14B_T2V_lora_rank32_v2.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--DeepBeepMeep--Wan2.1/blobs/3d6853cb7e7e9d6d35fb6c7163a85dab98e6c91d1341e8a3cf0bfb4e66dd68cc",
+    "target": "models/loras/Wan21_CausVid_14B_T2V_lora_rank32_v2.safetensors",
+    "mode": "hardlink",
+    "bytes": 204551064
+  },
+  {
+    "repo": "DeepBeepMeep/Wan2.1",
+    "filename": "loras_accelerators/DetailEnhancerV1.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--DeepBeepMeep--Wan2.1/blobs/9ab17e3520fd2b8f97ea25f987017766ec8e76939b3445caa994882966e6d47e",
+    "target": "models/loras/WanVideo/loras/DetailEnhancerV1.safetensors",
+    "mode": "hardlink",
+    "bytes": 306847400
+  },
+  {
+    "repo": "DeepBeepMeep/Wan2.1",
+    "filename": "loras_accelerators/DetailEnhancerV1.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--DeepBeepMeep--Wan2.1/blobs/9ab17e3520fd2b8f97ea25f987017766ec8e76939b3445caa994882966e6d47e",
+    "target": "models/loras/WanVideo\\loras\\DetailEnhancerV1.safetensors",
+    "mode": "hardlink",
+    "bytes": 306847400
+  },
+  {
+    "repo": "DeepBeepMeep/Wan2.1",
+    "filename": "loras_accelerators/DetailEnhancerV1.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--DeepBeepMeep--Wan2.1/blobs/9ab17e3520fd2b8f97ea25f987017766ec8e76939b3445caa994882966e6d47e",
+    "target": "models/loras/DetailEnhancerV1.safetensors",
+    "mode": "hardlink",
+    "bytes": 306847400
+  },
+  {
+    "repo": "DeepBeepMeep/Wan2.1",
+    "filename": "loras_accelerators/Wan21_AccVid_T2V_14B_lora_rank32_fp16.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--DeepBeepMeep--Wan2.1/blobs/237cccb1fd43c6949859ec6a2884bca8bc3ca26f618c767cea6b2fa37eb06d60",
+    "target": "models/loras/WanVideo/loras/Wan21_AccVid_T2V_14B_lora_rank32_fp16.safetensors",
+    "mode": "hardlink",
+    "bytes": 316822496
+  },
+  {
+    "repo": "DeepBeepMeep/Wan2.1",
+    "filename": "loras_accelerators/Wan21_AccVid_T2V_14B_lora_rank32_fp16.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--DeepBeepMeep--Wan2.1/blobs/237cccb1fd43c6949859ec6a2884bca8bc3ca26f618c767cea6b2fa37eb06d60",
+    "target": "models/loras/WanVideo\\loras\\Wan21_AccVid_T2V_14B_lora_rank32_fp16.safetensors",
+    "mode": "hardlink",
+    "bytes": 316822496
+  },
+  {
+    "repo": "DeepBeepMeep/Wan2.1",
+    "filename": "loras_accelerators/Wan21_AccVid_T2V_14B_lora_rank32_fp16.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--DeepBeepMeep--Wan2.1/blobs/237cccb1fd43c6949859ec6a2884bca8bc3ca26f618c767cea6b2fa37eb06d60",
+    "target": "models/loras/Wan21_AccVid_T2V_14B_lora_rank32_fp16.safetensors",
+    "mode": "hardlink",
+    "bytes": 316822496
+  },
+  {
+    "repo": "DeepBeepMeep/Wan2.1",
+    "filename": "loras_accelerators/Wan21_T2V_14B_MoviiGen_lora_rank32_fp16.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--DeepBeepMeep--Wan2.1/blobs/8c5bbd191277c32a726962a165ae69ba9225e29a8490c9cf444cb89b1869affc",
+    "target": "models/loras/WanVideo/loras/Wan21_T2V_14B_MoviiGen_lora_rank32_fp16.safetensors",
+    "mode": "hardlink",
+    "bytes": 316822496
+  },
+  {
+    "repo": "DeepBeepMeep/Wan2.1",
+    "filename": "loras_accelerators/Wan21_T2V_14B_MoviiGen_lora_rank32_fp16.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--DeepBeepMeep--Wan2.1/blobs/8c5bbd191277c32a726962a165ae69ba9225e29a8490c9cf444cb89b1869affc",
+    "target": "models/loras/WanVideo\\loras\\Wan21_T2V_14B_MoviiGen_lora_rank32_fp16.safetensors",
+    "mode": "hardlink",
+    "bytes": 316822496
+  },
+  {
+    "repo": "DeepBeepMeep/Wan2.1",
+    "filename": "loras_accelerators/Wan21_T2V_14B_MoviiGen_lora_rank32_fp16.safetensors",
+    "source": "/workspace/.cache/huggingface/hub/models--DeepBeepMeep--Wan2.1/blobs/8c5bbd191277c32a726962a165ae69ba9225e29a8490c9cf444cb89b1869affc",
+    "target": "models/loras/Wan21_T2V_14B_MoviiGen_lora_rank32_fp16.safetensors",
+    "mode": "hardlink",
+    "bytes": 316822496
+  }
+]

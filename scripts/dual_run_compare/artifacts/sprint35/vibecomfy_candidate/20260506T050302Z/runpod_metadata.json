@@ -1,0 +1,18 @@
+{
+  "pod_id": "j4u2fcet62cnux",
+  "ssh_host": "213.173.102.238",
+  "ssh_port": 32218,
+  "gpu_type": "NVIDIA GeForce RTX 4090",
+  "worker_image": "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
+  "storage_name": "Peter",
+  "launched_at": "2026-05-06T05:03:06.038151+00:00",
+  "ssh_ready_at": "2026-05-06T05:03:23.922582+00:00",
+  "artifact_downloaded_at": "2026-05-06T05:36:00+00:00",
+  "terminated_by": "runpod_lifecycle.cli terminate",
+  "termination_command": "PYTHONPATH=src python -m runpod_lifecycle.cli terminate j4u2fcet62cnux --yes",
+  "termination_verified": true,
+  "status": "terminated_after_candidate_queue_failure",
+  "remote_artifact_archive": "/workspace/sprint35-vibecomfy-manual-result.tgz",
+  "local_artifact_archive": "reigh-worker/scripts/dual_run_compare/artifacts/sprint35/vibecomfy_candidate/20260506T050302Z/manual_remote_result.tgz",
+  "notes": "Focused Sprint 3.5 VibeComfy candidate run staged the dry-run template, Sprint 3.5 fixture, WanVideoWrapper custom nodes, and required Wan VACE model assets. Candidate did not produce a video because the live WanVideoWrapper node schema rejected the compiled workflow before queue execution."
+}

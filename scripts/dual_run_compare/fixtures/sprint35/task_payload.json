@@ -1,0 +1,133 @@
+{
+  "fixture_schema_version": 1,
+  "route_key": "travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default",
+  "task_type": "travel_segment",
+  "threshold_version": "0B-2026-05-05",
+  "source_task": {
+    "id": "sprint35-wan22-vace-travel-video-source-fixture",
+    "task_type": "travel_segment",
+    "params": {
+      "segment_index": 1,
+      "orchestrator_task_id_ref": "sprint35-travel-orchestrator-fixture",
+      "orchestrator_run_id": "sprint35-dry-run",
+      "segment_params": {
+        "child_order": 1,
+        "base_prompt": "A steady cinematic travel shot through a glass-roof train station at golden hour, camera gliding forward from the start frame into the end frame, coherent architecture, natural motion, no cuts.",
+        "prompt": "A steady cinematic travel shot through a glass-roof train station at golden hour, camera gliding forward from the start frame into the end frame, coherent architecture, natural motion, no cuts.",
+        "negative_prompt": "fading, breaking, shot cuts, jumpcuts, blurry, noise, distorted",
+        "model_name": "wan_2_2_vace_lightning_baseline_2_2_2",
+        "model_type": "vace",
+        "parsed_resolution_wh": "832x480",
+        "segment_frames": 49,
+        "num_frames": 49,
+        "seed": 12345,
+        "continuation_config": {
+          "strategy": "svi_latent_chaining",
+          "overlap_frames": 9
+        },
+        "svi_predecessor_video_url": "inputs/predecessor_video_source.mp4",
+        "travel_guidance": {
+          "kind": "vace",
+          "mode": "raw",
+          "strength": 1.0,
+          "videos": [
+            {
+              "path": "inputs/guidance_vace_raw.mp4",
+              "start_frame": 0,
+              "end_frame": 48
+            }
+          ],
+          "frame_policy": "fit",
+          "zero_empty_frames": true
+        }
+      },
+      "orchestrator_details": {
+        "input_image_paths_resolved": [
+          "inputs/start_frame.png",
+          "inputs/end_frame.png"
+        ],
+        "base_prompts_expanded": [
+          "A steady cinematic travel shot through a glass-roof train station at golden hour, camera gliding forward from the start frame into the end frame, coherent architecture, natural motion, no cuts."
+        ],
+        "negative_prompts_expanded": [
+          "fading, breaking, shot cuts, jumpcuts, blurry, noise, distorted"
+        ],
+        "segment_frames_expanded": [
+          49,
+          49
+        ],
+        "frame_overlap_expanded": [
+          9
+        ],
+        "parsed_resolution_wh": "832x480",
+        "model_name": "wan_2_2_vace_lightning_baseline_2_2_2",
+        "model_type": "vace",
+        "seed_base": 12345,
+        "continuation_config": {
+          "strategy": "svi_latent_chaining",
+          "overlap_frames": 9
+        },
+        "travel_guidance": {
+          "kind": "vace",
+          "mode": "raw",
+          "strength": 1.0,
+          "videos": [
+            {
+              "path": "inputs/guidance_vace_raw.mp4",
+              "start_frame": 0,
+              "end_frame": 48
+            }
+          ]
+        }
+      }
+    }
+  },
+  "wgp_generation_params": {
+    "model_name": "wan_2_2_vace_lightning_baseline_2_2_2",
+    "prompt": "A steady cinematic travel shot through a glass-roof train station at golden hour, camera gliding forward from the start frame into the end frame, coherent architecture, natural motion, no cuts.",
+    "negative_prompt": "fading, breaking, shot cuts, jumpcuts, blurry, noise, distorted",
+    "resolution": "832x480",
+    "video_length": 49,
+    "num_frames": 49,
+    "fps": 16,
+    "seed": 12345,
+    "image_end": "inputs/end_frame.png",
+    "video_source": "inputs/predecessor_video_source.mp4",
+    "video_guide": "inputs/guidance_vace_raw.mp4",
+    "video_prompt_type": "V",
+    "control_net_weight": 1.0,
+    "guidance_phases": 3,
+    "num_inference_steps": 6,
+    "guidance_scale": 3,
+    "guidance2_scale": 1,
+    "guidance3_scale": 1,
+    "flow_shift": 5,
+    "switch_threshold": 883,
+    "switch_threshold2": 558,
+    "model_switch_phase": 2,
+    "sample_solver": "euler",
+    "_source_task_type": "travel_segment",
+    "continuity_case": "video_source",
+    "travel_guidance": {
+      "kind": "vace",
+      "mode": "raw",
+      "strength": 1.0,
+      "videos": [
+        {
+          "path": "inputs/guidance_vace_raw.mp4",
+          "start_frame": 0,
+          "end_frame": 48
+        }
+      ]
+    }
+  },
+  "vibecomfy_materialization": {
+    "template_path": "vibecomfy/ready_templates/video/wanvideo_wrapper_22_14b_vace_cocktail_dry_run.py",
+    "expected_inputs": {
+      "start_image": "inputs/start_frame.png",
+      "end_image": "inputs/end_frame.png",
+      "video_source": "inputs/predecessor_video_source.mp4",
+      "vace_guidance_video": "inputs/guidance_vace_raw.mp4"
+    }
+  }
+}

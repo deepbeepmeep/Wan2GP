@@ -1,0 +1,55 @@
+[2026-05-06T04:33:27.660352+00:00] launching RunPod gpu_type=NVIDIA GeForce RTX 4090 image=runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04 storage_name=Peter
+[2026-05-06T04:33:27.660642+00:00] state=PROVISIONING pod=None detail_keys=['name']
+[2026-05-06T04:33:30.552221+00:00] state=PROVISIONING pod=c7us57m9ehw5lk detail_keys=['name', 'pod_details', 'ram_tier', 'storage_name', 'storage_volume_id']
+[2026-05-06T04:33:30.552516+00:00] launched pod_id=c7us57m9ehw5lk ram_tier=72 storage=m6ccu1lodp
+[2026-05-06T04:33:31.171431+00:00] state=PROVISIONING pod=c7us57m9ehw5lk detail_keys=['status']
+[2026-05-06T04:33:31.171705+00:00] state=STARTING pod=c7us57m9ehw5lk detail_keys=['status']
+[2026-05-06T04:33:59.540652+00:00] state=READY pod=c7us57m9ehw5lk detail_keys=['status']
+[2026-05-06T04:33:59.991069+00:00] ready status={'runpod_id': 'c7us57m9ehw5lk', 'desired_status': 'RUNNING', 'actual_status': None, 'ip': None, 'ports': [{'ip': '100.65.14.162', 'isIpPublic': False, 'privatePort': 19123, 'publicPort': 60439, 'type': 'http'}, {'ip': '213.173.98.39', 'isIpPublic': True, 'privatePort': 22, 'publicPort': 19713, 'type': 'tcp'}, {'ip': '100.65.14.162', 'isIpPublic': False, 'privatePort': 8888, 'publicPort': 60440, 'type': 'http'}], 'ssh_password': None, 'created_at': None, 'last_status_change': 'Rented by User: Wed May 06 2026 04:33:30 GMT+0000 (Coordinated Universal Time)', 'uptime_seconds': 0, 'cost_per_hr': 0.69}
+[2026-05-06T04:33:59.991516+00:00] remote_start label='mkdir' timeout=60
+[2026-05-06T04:34:00.711961+00:00] remote_end label='mkdir' exit=0 stdout_tail='' stderr_tail=''
+[2026-05-06T04:34:01.339062+00:00] uploading /tmp/reigh-worker-sprint35.tgz -> /workspace/sprint35-wgp-20260506T043327Z/reigh-worker-sprint35.tgz
+[2026-05-06T04:34:08.419761+00:00] remote_start label='extract repo' timeout=900
+[2026-05-06T04:35:35.996304+00:00] remote_end label='extract repo' exit=2 stdout_tail='' stderr_tail=' ./Wan2GP/plugins/wan2gp-downloads/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-downloads/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-plugin-manager/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-plugin-manager/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-guides/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-guides/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-sample/plugin_info.json: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-sample/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-sample/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: .: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: Exiting with failure status due to previous errors\n'
+[2026-05-06T04:35:35.997289+00:00] FAILED RuntimeError: remote command failed (extract repo) exit=2
+STDOUT:
+
+STDERR:
+an2GP/plugins/wan2gp-plugin-manager: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-downloads: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-video-mask-creator: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-models-manager: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-motion-designer: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-configuration: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-about/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-about/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-about: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-configuration/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-configuration/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-motion-designer/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-motion-designer/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-motion-designer/assets/motion_designer_iframe_template.html: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-motion-designer/assets/style.css: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-motion-designer/assets/app.js: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-motion-designer/assets: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-models-manager/plugin_info.json: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-models-manager/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-models-manager/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-video-mask-creator/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-video-mask-creator/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-downloads/plugin_info.json: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-downloads/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-downloads/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-plugin-manager/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-plugin-manager/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-guides/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-guides/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-sample/plugin_info.json: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-sample/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: ./Wan2GP/plugins/wan2gp-sample/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: .: Cannot change ownership to uid 501, gid 50: Operation not permitted
+tar: Exiting with failure status due to previous errors
+
+[2026-05-06T04:35:35.998852+00:00] terminating pod_id=c7us57m9ehw5lk
+[2026-05-06T04:35:36.471186+00:00] state=TERMINATED pod=c7us57m9ehw5lk detail_keys=['pod_id']
+[2026-05-06T04:35:36.471441+00:00] terminated pod_id=c7us57m9ehw5lk

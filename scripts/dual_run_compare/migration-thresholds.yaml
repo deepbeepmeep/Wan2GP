@@ -272,9 +272,9 @@ routes:
     profile: default
     source_fixture_status: seed_fixture_required
     source_fixture_ref: fixtures/golden_seed_payloads/travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default.json
-    calibration_status: deferred_pending_sprint_0c_disk
+    calibration_status: wgp_only
     thresholds_override: {}
-    notes: Sprint 0B WGP self-repeatability deferred; see reports/wgp-self-repeat-0b-2026-05-05-deferral.json and reports/wgp-self-repeat-0b-2026-05-05-deferral.md.
+    notes: Sprint 3.5 Wan 2.2 VACE dry run fell back because the WGP reference was produced but the VibeComfy candidate failed Comfy validation before producing a video, leaving required Section 11 video observations missing; keep this Wan VACE travel route WGP-only. See reports/dry-run-report.md.
   join_clips_segment__model-wan22_vace__guidance-vace__continuity-join_bridge__profile-default:
     cohort: E
     route_key_mode: dimensional
@@ -287,9 +287,9 @@ routes:
     profile: default
     source_fixture_status: seed_fixture_required
     source_fixture_ref: fixtures/golden_seed_payloads/join_clips_segment__model-wan22_vace__guidance-vace__continuity-join_bridge__profile-default.json
-    calibration_status: deferred_pending_sprint_0c_disk
+    calibration_status: wgp_only
     thresholds_override: {}
-    notes: Sprint 0B WGP self-repeatability deferred; see reports/wgp-self-repeat-0b-2026-05-05-deferral.json and reports/wgp-self-repeat-0b-2026-05-05-deferral.md.
+    notes: Sprint 3.5 Wan 2.2 VACE dry run fell back because the WGP reference was produced but the VibeComfy candidate failed Comfy validation before producing a video, leaving required Section 11 video observations missing; keep this Wan VACE join route WGP-only. See reports/dry-run-report.md.
   travel_segment__model-ltx2_distilled__guidance-ltx_anchor__continuity-video_source__profile-default:
     cohort: E
     route_key_mode: dimensional

@@ -1,0 +1,49 @@
+{
+  "error": "remote command failed (extract repo) exit=2\nSTDOUT:\n\nSTDERR:\nan2GP/plugins/wan2gp-plugin-manager: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-downloads: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-video-mask-creator: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-models-manager: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-motion-designer: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-configuration: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-about/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-about/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-about: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-configuration/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-configuration/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-motion-designer/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-motion-designer/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-motion-designer/assets/motion_designer_iframe_template.html: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-motion-designer/assets/style.css: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-motion-designer/assets/app.js: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-motion-designer/assets: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-models-manager/plugin_info.json: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-models-manager/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-models-manager/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-video-mask-creator/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-video-mask-creator/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-downloads/plugin_info.json: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-downloads/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-downloads/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-plugin-manager/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-plugin-manager/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-guides/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-guides/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-sample/plugin_info.json: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-sample/__init__.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: ./Wan2GP/plugins/wan2gp-sample/plugin.py: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: .: Cannot change ownership to uid 501, gid 50: Operation not permitted\ntar: Exiting with failure status due to previous errors\n",
+  "error_type": "RuntimeError",
+  "events": [
+    {
+      "detail_keys": [
+        "name"
+      ],
+      "pod_id": null,
+      "state": "PROVISIONING"
+    },
+    {
+      "detail_keys": [
+        "name",
+        "pod_details",
+        "ram_tier",
+        "storage_name",
+        "storage_volume_id"
+      ],
+      "pod_id": "r7jx4y1uu8y1mg",
+      "state": "PROVISIONING"
+    },
+    {
+      "detail_keys": [
+        "status"
+      ],
+      "pod_id": "r7jx4y1uu8y1mg",
+      "state": "PROVISIONING"
+    },
+    {
+      "detail_keys": [
+        "status"
+      ],
+      "pod_id": "r7jx4y1uu8y1mg",
+      "state": "STARTING"
+    },
+    {
+      "detail_keys": [
+        "status"
+      ],
+      "pod_id": "r7jx4y1uu8y1mg",
+      "state": "READY"
+    }
+  ],
+  "local_run_dir": "/Users/peteromalley/Documents/reigh-workspace/reigh-worker/scripts/dual_run_compare/artifacts/sprint35/wgp_reference/20260506T043213Z",
+  "pod_id": "r7jx4y1uu8y1mg",
+  "run_label": "20260506T043213Z",
+  "status": "failed"
+}

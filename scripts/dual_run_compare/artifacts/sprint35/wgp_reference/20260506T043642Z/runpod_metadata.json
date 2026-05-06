@@ -1,0 +1,145 @@
+{
+  "events": [
+    {
+      "detail_keys": [
+        "name"
+      ],
+      "pod_id": null,
+      "state": "PROVISIONING"
+    },
+    {
+      "detail_keys": [
+        "name",
+        "pod_details",
+        "ram_tier",
+        "storage_name",
+        "storage_volume_id"
+      ],
+      "pod_id": "eferweepqfsu5h",
+      "state": "PROVISIONING"
+    },
+    {
+      "detail_keys": [
+        "status"
+      ],
+      "pod_id": "eferweepqfsu5h",
+      "state": "PROVISIONING"
+    },
+    {
+      "detail_keys": [
+        "status"
+      ],
+      "pod_id": "eferweepqfsu5h",
+      "state": "STARTING"
+    },
+    {
+      "detail_keys": [
+        "status"
+      ],
+      "pod_id": "eferweepqfsu5h",
+      "state": "READY"
+    }
+  ],
+  "local_artifact_root": "/Users/peteromalley/Documents/reigh-workspace/reigh-worker/scripts/dual_run_compare/artifacts/sprint35/wgp_reference",
+  "local_run_dir": "/Users/peteromalley/Documents/reigh-workspace/reigh-worker/scripts/dual_run_compare/artifacts/sprint35/wgp_reference/20260506T043642Z",
+  "pod_id": "eferweepqfsu5h",
+  "remote_metadata": {
+    "artifact_dir": "/workspace/sprint35-wgp-20260506T043642Z/reigh-worker/scripts/dual_run_compare/artifacts/sprint35/wgp_reference/20260506T044342Z",
+    "duration_seconds": 624.514,
+    "ffprobe": {
+      "command": [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height,r_frame_rate,avg_frame_rate,nb_frames,duration",
+        "-of",
+        "json",
+        "/workspace/sprint35-wgp-20260506T043642Z/reigh-worker/scripts/dual_run_compare/artifacts/sprint35/wgp_reference/20260506T044342Z/outputs/2026-05-06-04h54m05s_seed12345_A steady cinematic travel shot through a glass-roof train station at golden hour, camera gliding for.mp4"
+      ],
+      "parsed": {
+        "programs": [],
+        "streams": [
+          {
+            "avg_frame_rate": "16/1",
+            "duration": "3.062500",
+            "height": 480,
+            "nb_frames": "49",
+            "r_frame_rate": "16/1",
+            "width": 832
+          }
+        ]
+      },
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "{\n    \"programs\": [\n\n    ],\n    \"streams\": [\n        {\n            \"width\": 832,\n            \"height\": 480,\n            \"r_frame_rate\": \"16/1\",\n            \"avg_frame_rate\": \"16/1\",\n            \"duration\": \"3.062500\",\n            \"nb_frames\": \"49\"\n        }\n    ]\n}\n"
+    },
+    "finished_at": "2026-05-06T04:54:07.342549+00:00",
+    "fixture_manifest_path": "/workspace/sprint35-wgp-20260506T043642Z/reigh-worker/scripts/dual_run_compare/fixtures/sprint35/manifest.json",
+    "fps": 16,
+    "manifest_route_key": "travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default",
+    "model": "wan_2_2_vace_lightning_baseline_2_2_2",
+    "num_frames": 49,
+    "output_bytes": 700650,
+    "output_dir": "/workspace/sprint35-wgp-20260506T043642Z/reigh-worker/scripts/dual_run_compare/artifacts/sprint35/wgp_reference/20260506T044342Z/outputs",
+    "output_path": "/workspace/sprint35-wgp-20260506T043642Z/reigh-worker/scripts/dual_run_compare/artifacts/sprint35/wgp_reference/20260506T044342Z/outputs/2026-05-06-04h54m05s_seed12345_A steady cinematic travel shot through a glass-roof train station at golden hour, camera gliding for.mp4",
+    "output_relative_to_repo": "scripts/dual_run_compare/artifacts/sprint35/wgp_reference/20260506T044342Z/outputs/2026-05-06-04h54m05s_seed12345_A steady cinematic travel shot through a glass-roof train station at golden hour, camera gliding for.mp4",
+    "output_sha256": "66d0b7a2470666c62a9c5bd6b9aa619ef9c27bab2b3a12924cd8312f4c793824",
+    "repo": "/workspace/sprint35-wgp-20260506T043642Z/reigh-worker",
+    "resolution": "832x480",
+    "route_key": "travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default",
+    "seed": 12345,
+    "started_at": "2026-05-06T04:43:42.828980+00:00",
+    "status": "success",
+    "task_payload_path": "/workspace/sprint35-wgp-20260506T043642Z/reigh-worker/scripts/dual_run_compare/fixtures/sprint35/task_payload.json",
+    "threshold_version": "0B-2026-05-05",
+    "video_length": 49,
+    "wgp_params_effective": {
+      "_source_task_type": "travel_segment",
+      "continuity_case": "video_source",
+      "control_net_weight": 1.0,
+      "custom_output_dir": "/workspace/sprint35-wgp-20260506T043642Z/reigh-worker/scripts/dual_run_compare/artifacts/sprint35/wgp_reference/20260506T044342Z/outputs",
+      "flow_shift": 5,
+      "fps": 16,
+      "guidance2_scale": 1,
+      "guidance3_scale": 1,
+      "guidance_phases": 3,
+      "guidance_scale": 3,
+      "image_end": "/workspace/sprint35-wgp-20260506T043642Z/reigh-worker/scripts/dual_run_compare/fixtures/sprint35/inputs/end_frame.png",
+      "model_switch_phase": 2,
+      "negative_prompt": "fading, breaking, shot cuts, jumpcuts, blurry, noise, distorted",
+      "num_frames": 49,
+      "num_inference_steps": 6,
+      "output_dir": "/workspace/sprint35-wgp-20260506T043642Z/reigh-worker/scripts/dual_run_compare/artifacts/sprint35/wgp_reference/20260506T044342Z/outputs",
+      "override_profile": -1,
+      "resolution": "832x480",
+      "sample_solver": "euler",
+      "seed": 12345,
+      "switch_threshold": 883,
+      "switch_threshold2": 558,
+      "task_id": "sprint35-wgp-reference",
+      "travel_guidance": {
+        "kind": "vace",
+        "mode": "raw",
+        "strength": 1.0,
+        "videos": [
+          {
+            "end_frame": 48,
+            "path": "inputs/guidance_vace_raw.mp4",
+            "start_frame": 0
+          }
+        ]
+      },
+      "video_guide": "/workspace/sprint35-wgp-20260506T043642Z/reigh-worker/scripts/dual_run_compare/fixtures/sprint35/inputs/guidance_vace_raw.mp4",
+      "video_length": 49,
+      "video_prompt_type": "V",
+      "video_source": "/workspace/sprint35-wgp-20260506T043642Z/reigh-worker/scripts/dual_run_compare/fixtures/sprint35/inputs/predecessor_video_source.mp4"
+    }
+  },
+  "remote_repo": "/workspace/sprint35-wgp-20260506T043642Z/reigh-worker",
+  "remote_root": "/workspace/sprint35-wgp-20260506T043642Z",
+  "run_label": "20260506T043642Z",
+  "status": "success"
+}

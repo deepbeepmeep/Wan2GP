@@ -28,7 +28,7 @@ def test_json_report_includes_route_sections_oracles_shadow_and_raw_refs() -> No
         "billing_idempotency_oracles",
     }
     assert report["route_status_counts"]["red"] == 6
-    assert report["route_status_counts"]["wgp_only"] == 1
+    assert report["route_status_counts"]["wgp_only"] == 3
 
     video = next(route for route in report["routes"] if route["route_key"] == "video_enhance")
     assert video["status"] == "red"
@@ -73,6 +73,23 @@ def test_json_report_includes_route_sections_oracles_shadow_and_raw_refs() -> No
     wan = next(route for route in report["routes"] if route["route_key"] == "wan_2_2_t2i")
     assert wan["status"] == "wgp_only"
     assert wan["landed_status"] == "sprint2_wgp_only"
+
+    wan_vace_fallbacks = {
+        route["route_key"]: route
+        for route in report["routes"]
+        if route["route_key"]
+        in {
+            "travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default",
+            "join_clips_segment__model-wan22_vace__guidance-vace__continuity-join_bridge__profile-default",
+        }
+    }
+    assert set(wan_vace_fallbacks) == {
+        "travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default",
+        "join_clips_segment__model-wan22_vace__guidance-vace__continuity-join_bridge__profile-default",
+    }
+    for route in wan_vace_fallbacks.values():
+        assert route["status"] == "wgp_only"
+        assert route["calibration_status"] == "wgp_only"
 
 
 def test_markdown_orders_red_routes_before_pending_and_fallback_routes() -> None:

@@ -1,0 +1,44 @@
+Traceback (most recent call last):
+  File "/tmp/run_sprint35_vibecomfy_candidate.py", line 95, in main
+    result = run_embedded_sync(workflow, backend='api')
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/vibecomfy/vibecomfy/runtime/run.py", line 109, in run_embedded_sync
+    return asyncio.run(run_embedded(workflow, backend=backend, config=config))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/base_events.py", line 654, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/workspace/vibecomfy/vibecomfy/runtime/run.py", line 98, in run_embedded
+    return await session.run(workflow, backend=backend)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/vibecomfy/vibecomfy/runtime/session.py", line 145, in run
+    return await self._run_untracked(workflow, backend=backend)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/vibecomfy/vibecomfy/runtime/session.py", line 151, in _run_untracked
+    await self.start()
+  File "/workspace/vibecomfy/vibecomfy/runtime/session.py", line 118, in start
+    from comfy.client.embedded_comfy_client import Comfy
+  File "/usr/local/lib/python3.11/dist-packages/comfy/client/embedded_comfy_client.py", line 3, in <module>
+    from ..cmd.main_pre import tracer
+  File "/usr/local/lib/python3.11/dist-packages/comfy/component_model/module_property.py", line 30, in new_getattr
+    return properties[name]()
+           ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/dist-packages/comfy/component_model/module_property.py", line 42, in wrapper
+    return func()
+           ^^^^^^
+  File "/usr/local/lib/python3.11/dist-packages/comfy/cmd/main_pre.py", line 292, in _tracer
+    return _create_tracer()
+           ^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/dist-packages/comfy/cmd/main_pre.py", line 185, in _create_tracer
+    from opentelemetry.instrumentation.aio_pika import AioPikaInstrumentor
+  File "/usr/local/lib/python3.11/dist-packages/opentelemetry/instrumentation/aio_pika/__init__.py", line 55, in <module>
+    from .aio_pika_instrumentor import AioPikaInstrumentor
+  File "/usr/local/lib/python3.11/dist-packages/opentelemetry/instrumentation/aio_pika/aio_pika_instrumentor.py", line 17, in <module>
+    from aio_pika import Exchange, Queue
+ModuleNotFoundError: No module named 'aio_pika'

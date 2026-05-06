@@ -31,7 +31,7 @@ FRESH_WORKDIR = "/workspace/Reigh-Worker-LiveTest"
 FRESH_REPO_URL = "https://github.com/banodoco/Reigh-Worker.git"
 VIBECOMFY_WORKDIR = "/workspace/vibecomfy"
 VIBECOMFY_REPO_URL = "https://github.com/peteromallet/VibeComfy.git"
-VIBECOMFY_PYTHON = f"{VIBECOMFY_WORKDIR}/.venv/bin/python"
+VIBECOMFY_PYTHON = "python3.11"
 
 log = get_logger(__name__)
 

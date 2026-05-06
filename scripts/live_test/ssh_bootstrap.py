@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import shlex
-import time
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+import time
 from typing import Literal
 
 import scripts.live_test as live_test_pkg
@@ -143,9 +142,8 @@ def clone_and_install_vibecomfy(
             f"mkdir -p {_quote(parent)}\n"
             f"rm -rf {_quote(workdir)}\n"
             f"git clone --branch {_quote(branch)} --single-branch {_quote(repo_url)} {_quote(workdir)}\n"
-            f"uv venv --python 3.11 {_quote(str(PurePosixPath(python_path).parent.parent))}\n"
-            f"uv pip install --python {_quote(python_path)} -e {_quote(workdir)}\n"
-            f"uv pip install --python {_quote(python_path)} "
+            f"{_quote(python_path)} -m pip install -e {_quote(workdir)}\n"
+            f"{_quote(python_path)} -m pip install "
             "'comfyui@git+https://github.com/peteromallet/ComfyUI.git@fix/latentupscale-model-mmap-residency' "
             "'comfy-script[default]'\n"
             f"test -f {_quote(workdir)}/template_index.json\n"

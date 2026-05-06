@@ -649,13 +649,15 @@ def test_clone_and_install_vibecomfy_validates_required_manifests():
         repo_url="https://github.com/peteromallet/VibeComfy.git",
         branch="branch-a",
         workdir="/workspace/vibecomfy",
-        python_path="/workspace/Reigh-Worker-LiveTest/.venv/bin/python",
+        python_path="/workspace/vibecomfy/.venv/bin/python",
     )
 
     command, timeout = calls[0]
     assert timeout == 3600
     assert "git clone --branch branch-a --single-branch https://github.com/peteromallet/VibeComfy.git /workspace/vibecomfy" in command
-    assert "uv pip install --python /workspace/Reigh-Worker-LiveTest/.venv/bin/python -e /workspace/vibecomfy" in command
+    assert "uv venv --python 3.11 /workspace/vibecomfy/.venv" in command
+    assert "uv pip install --python /workspace/vibecomfy/.venv/bin/python -e /workspace/vibecomfy" in command
+    assert "comfyui@git+https://github.com/peteromallet/ComfyUI.git@fix/latentupscale-model-mmap-residency" in command
     assert "test -f /workspace/vibecomfy/template_index.json" in command
     assert "test -f /workspace/vibecomfy/workflow_corpus/manifests/coverage.json" in command
 

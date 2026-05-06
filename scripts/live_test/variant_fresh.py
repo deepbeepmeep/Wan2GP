@@ -31,6 +31,7 @@ FRESH_WORKDIR = "/workspace/Reigh-Worker-LiveTest"
 FRESH_REPO_URL = "https://github.com/banodoco/Reigh-Worker.git"
 VIBECOMFY_WORKDIR = "/workspace/vibecomfy"
 VIBECOMFY_REPO_URL = "https://github.com/peteromallet/VibeComfy.git"
+VIBECOMFY_PYTHON = f"{VIBECOMFY_WORKDIR}/.venv/bin/python"
 
 log = get_logger(__name__)
 
@@ -76,7 +77,7 @@ def _build_worker_env(token: str, supabase_url: str, service_role_key: str, args
             {
                 "VIBECOMFY_CWD": VIBECOMFY_WORKDIR,
                 "VIBECOMFY_PATH": VIBECOMFY_WORKDIR,
-                "VIBECOMFY_PYTHON": f"{FRESH_WORKDIR}/.venv/bin/python",
+                "VIBECOMFY_PYTHON": VIBECOMFY_PYTHON,
             }
         )
     return env
@@ -219,7 +220,7 @@ def run(args) -> int:
                 repo_url=VIBECOMFY_REPO_URL,
                 branch=args.vibecomfy_ref,
                 workdir=VIBECOMFY_WORKDIR,
-                python_path=f"{FRESH_WORKDIR}/.venv/bin/python",
+                python_path=VIBECOMFY_PYTHON,
             )
 
         command = build_run_worker_command(

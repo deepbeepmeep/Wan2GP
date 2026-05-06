@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 from scripts.live_test.completion_poller import TaskResult, poll_until_complete
 from scripts.live_test.heartbeat_waiter import WorkerReadyTimeoutError, wait_until_ready
 from scripts.live_test.launch_command import build_direct_worker_command, build_run_worker_command
-from scripts.live_test.matrix import MATRIX, MatrixCase, run_matrix
+from scripts.live_test.matrix import MATRIX, MatrixCase, build_matrix, render_case_payload, run_matrix
 from scripts.live_test import main as live_test_main
 from scripts.live_test.preflight import (
     LIVE_TEST_PROJECT_NAME,
@@ -461,10 +461,44 @@ def test_kill_supervisor_and_worker_patterns_cover_both_families(monkeypatch: py
     assert "pgrep -af source.runtime.worker" in ssh.commands[1][0]
 
 
-def test_matrix_contains_exactly_eight_cases():
-    assert len(MATRIX) == 8
+def test_matrix_contains_route_specific_z_image_turbo_case():
+    assert len(MATRIX) == 9
+    assert [case.name for case in MATRIX].count("z_image_turbo") == 1
     assert [case.name for case in MATRIX].count("z_image_turbo_i2i") == 1
+    z_image_case = next(case for case in MATRIX if case.name == "z_image_turbo")
+    assert z_image_case.task_type == "z_image_turbo"
+    assert z_image_case.route_key == "z_image_turbo"
+    assert z_image_case.support_state == "vibecomfy_supported"
+    assert z_image_case.selected_template_id == "image/z_image"
     assert any(case.task_type == "z_image_turbo_i2i" for case in MATRIX)
+
+
+def test_route_specific_matrix_stamps_selector_contract():
+    cases = build_matrix(
+        selected_backend="vibecomfy",
+        selector_namespace="canary-a",
+        selector_version="2026-05-06",
+        worker_contract_version=1,
+        selected_profile="z-image-default",
+        route_keys=["z_image_turbo"],
+    )
+
+    assert [case.name for case in cases] == ["z_image_turbo"]
+    payload = render_case_payload(cases[0], project_id="project-1", unique_suffix="abc123")
+    params = payload["params"]
+    contract = params["route_contract"]
+    snapshot = contract["route_selection_snapshot"]
+    assert payload["task_type"] == "z_image_turbo"
+    assert contract["route_key"] == "z_image_turbo"
+    assert contract["selected_backend"] == "vibecomfy"
+    assert contract["selector_namespace"] == "canary-a"
+    assert contract["selector_version"] == "2026-05-06"
+    assert contract["worker_contract_version"] == 1
+    assert contract["selected_profile"] == "z-image-default"
+    assert contract["support_state"] == "vibecomfy_supported"
+    assert contract["selected_template_id"] == "image/z_image"
+    assert snapshot["live_test_run_id"] == "live-test-z_image_turbo-abc123"
+    assert params["live_test"] is True
 
 
 def test_run_matrix_continues_after_individual_case_failures(monkeypatch: pytest.MonkeyPatch):
@@ -576,6 +610,15 @@ def test_variant_fresh_dry_run_uses_livetest_workspace_and_env_exports(capsys, m
         anchor_image_a="https://example.com/a.png",
         anchor_image_b="https://example.com/b.png",
         ref="main",
+        backend="vibecomfy",
+        selector_namespace="canary-a",
+        selector_version="2026-05-06",
+        worker_contract_version=1,
+        worker_profile="z-image-default",
+        case=[],
+        task_type=[],
+        route_key=[],
+        wgp_rollback=False,
     )
     assert run_variant_fresh(args) == 0
     output = capsys.readouterr().out
@@ -585,6 +628,9 @@ def test_variant_fresh_dry_run_uses_livetest_workspace_and_env_exports(capsys, m
     assert "SUPABASE_SERVICE_ROLE_KEY" in output
     assert "SUPABASE_URL" in output
     assert "WORKER_DB_CLIENT_AUTH_MODE" in output
+    assert "REIGH_BACKEND" in output
+    assert "REIGH_SELECTOR_NAMESPACE" in output
+    assert "REIGH_WORKER_CONTRACT_VERSION" in output
 
 
 def test_spawn_takeover_pod_calls_create_record_before_spawn_and_start(monkeypatch: pytest.MonkeyPatch):
@@ -843,9 +889,18 @@ def test_variant_update_existing_mode_uses_stale_heartbeat_gate(monkeypatch: pyt
 def test_main_defaults_terminate_for_fresh_and_no_terminate_for_update(monkeypatch: pytest.MonkeyPatch):
     seen = []
 
-    monkeypatch.setattr("scripts.live_test.main.run_variant_fresh", lambda args: seen.append(("fresh", args.no_terminate)) or 0)
-    monkeypatch.setattr("scripts.live_test.main.run_variant_update", lambda args: seen.append(("update", args.no_terminate)) or 0)
+    monkeypatch.setattr(
+        "scripts.live_test.main.run_variant_fresh",
+        lambda args: seen.append(("fresh", args.no_terminate, args.backend, args.route_key)) or 0,
+    )
+    monkeypatch.setattr(
+        "scripts.live_test.main.run_variant_update",
+        lambda args: seen.append(("update", args.no_terminate, args.backend, args.route_key)) or 0,
+    )
 
-    assert live_test_main.main(["--variant", "fresh", "--dry-run"]) == 0
-    assert live_test_main.main(["--variant", "update", "--pod-id", "pod-1", "--dry-run"]) == 0
-    assert seen == [("fresh", False), ("update", True)]
+    assert live_test_main.main(["--variant", "fresh", "--dry-run", "--backend", "vibecomfy", "--route-key", "z_image_turbo"]) == 0
+    assert live_test_main.main(["--variant", "update", "--pod-id", "pod-1", "--dry-run", "--wgp-rollback", "--route-key", "z_image_turbo"]) == 0
+    assert seen == [
+        ("fresh", False, "vibecomfy", ["z_image_turbo"]),
+        ("update", True, "wgp", ["z_image_turbo"]),
+    ]

@@ -134,6 +134,71 @@ Expected evidence:
 }
 ```
 
+## Sprint 11A Validation Harness Rollback
+
+Sprint 11A did not change worker production runtime behavior because no
+route-specific live proof existed and no production patch boundary was selected.
+Only the worker live-validation harness gained route-specific execution controls
+for `z_image_turbo`. If that validation harness blocks rollback operations or
+confuses canary evidence collection, revert the harness changes while keeping
+the production worker route contract on WGP.
+
+Harness rollback target:
+
+```bash
+git revert <commit-that-added-sprint-11a-live-test-route-harness>
+```
+
+Stable rollback environment for reruns:
+
+```bash
+export REIGH_BACKEND=wgp
+export WORKER_BACKEND=wgp
+export REIGH_WORKER_PROFILE=1
+export WGP_PROFILE=1
+export REIGH_WORKER_POOL="$STABLE_WORKER_POOL"
+export WORKER_POOL="$STABLE_WORKER_POOL"
+export REIGH_SELECTOR_NAMESPACE="$STABLE_SELECTOR_NAMESPACE"
+export ROUTE_SELECTOR_NAMESPACE="$STABLE_SELECTOR_NAMESPACE"
+export REIGH_SELECTOR_VERSION="$STABLE_SELECTOR_VERSION"
+export ROUTE_SELECTOR_VERSION="$STABLE_SELECTOR_VERSION"
+export REIGH_WORKER_CONTRACT_VERSION=1
+```
+
+Route-specific WGP rollback rerun for the only current VibeComfy-supported
+candidate:
+
+```bash
+python -m scripts.live_test.main \
+  --variant fresh \
+  --wgp-rollback \
+  --selector-namespace "$STABLE_SELECTOR_NAMESPACE" \
+  --selector-version "$STABLE_SELECTOR_VERSION" \
+  --worker-contract-version 1 \
+  --worker-profile default \
+  --route-key z_image_turbo
+```
+
+Expected evidence:
+
+```json
+{
+  "route_key": "z_image_turbo",
+  "worker_backend": "wgp",
+  "worker_pool": "gpu-wgp-production",
+  "selector_namespace": "production",
+  "selector_version": "<stable-selector-version-or-empty>",
+  "worker_contract_version": 1,
+  "wgp_selectable": true
+}
+```
+
+Route-stale behavior remains the orchestrator-owned drain-first policy: after
+the emergency selector flip back to WGP, active stale-route workers may drain
+in-flight tasks, but idle stale-route VibeComfy workers should be terminated or
+left unclaimable. Do not use aggregate task counts as route rollback proof;
+use route-specific claim/completion evidence or selected-pool route totals.
+
 ## Alert Runbook Anchor
 
 `#output-divergence`: if `canary_output_divergence` remains nonzero, keep VibeComfy canary scaled to zero, keep stable WGP selected, and attach the failed route key plus redacted source refs to the readiness package.

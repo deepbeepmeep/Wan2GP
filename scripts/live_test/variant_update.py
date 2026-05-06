@@ -56,16 +56,32 @@ def _build_matrix_cases(args) -> list:
         timeout_image_sec=args.timeout_image,
         timeout_travel_segment_sec=args.timeout_travel_segment,
         timeout_travel_orchestrator_sec=args.timeout_travel_orchestrator,
+        selected_backend=getattr(args, "backend", "wgp"),
+        selector_namespace=getattr(args, "selector_namespace", "production"),
+        selector_version=getattr(args, "selector_version", None),
+        worker_contract_version=getattr(args, "worker_contract_version", 1),
+        selected_profile=getattr(args, "worker_profile", "default"),
+        case_names=getattr(args, "case", []),
+        task_types=getattr(args, "task_type", []),
+        route_keys=getattr(args, "route_key", []),
     )
 
 
-def _build_worker_env(token: str, supabase_url: str, service_role_key: str) -> dict[str, str]:
-    return {
+def _build_worker_env(token: str, supabase_url: str, service_role_key: str, args=None) -> dict[str, str]:
+    env = {
         "REIGH_ACCESS_TOKEN": token,
+        "REIGH_BACKEND": getattr(args, "backend", "wgp"),
+        "REIGH_SELECTOR_NAMESPACE": getattr(args, "selector_namespace", "production"),
+        "REIGH_WORKER_CONTRACT_VERSION": str(getattr(args, "worker_contract_version", 1)),
+        "REIGH_WORKER_PROFILE": getattr(args, "worker_profile", "default"),
         "SUPABASE_SERVICE_ROLE_KEY": service_role_key,
         "SUPABASE_URL": supabase_url,
         "WORKER_DB_CLIENT_AUTH_MODE": "worker",
     }
+    selector_version = getattr(args, "selector_version", None)
+    if selector_version:
+        env["REIGH_SELECTOR_VERSION"] = str(selector_version)
+    return env
 
 
 def _prepare_context(args) -> dict[str, Any]:
@@ -248,7 +264,17 @@ def _print_dry_run_plan(*, cases: list, token: str, args) -> None:
     print(f"Mode: {mode}")
     print(f"Target pod: {pod_hint}")
     print("Injected env vars:")
-    for key in ("REIGH_ACCESS_TOKEN", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_URL", "WORKER_DB_CLIENT_AUTH_MODE"):
+    for key in (
+        "REIGH_ACCESS_TOKEN",
+        "REIGH_BACKEND",
+        "REIGH_SELECTOR_NAMESPACE",
+        "REIGH_SELECTOR_VERSION",
+        "REIGH_WORKER_CONTRACT_VERSION",
+        "REIGH_WORKER_PROFILE",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_URL",
+        "WORKER_DB_CLIENT_AUTH_MODE",
+    ):
         print(f"- {key}")
     print("Planned launch command:")
     print(
@@ -263,7 +289,8 @@ def _print_dry_run_plan(*, cases: list, token: str, args) -> None:
     )
     print("Planned tasks:")
     for case in cases:
-        print(f"- {case.name} ({case.task_type}, timeout={case.timeout_sec}s)")
+        route_suffix = f", route={case.route_key}, backend={case.route_runtime.selected_backend}" if case.route_key else ""
+        print(f"- {case.name} ({case.task_type}{route_suffix}, timeout={case.timeout_sec}s)")
 
 
 def run(args) -> int:
@@ -284,7 +311,7 @@ def run(args) -> int:
     api_key = config.require_env("RUNPOD_API_KEY")
     supabase_url = config.require_env("SUPABASE_URL")
     service_role_key = config.require_env("SUPABASE_SERVICE_ROLE_KEY")
-    worker_env = _build_worker_env(token, supabase_url, service_role_key)
+    worker_env = _build_worker_env(token, supabase_url, service_role_key, args)
     mode = "spawn-takeover" if args.spawn_takeover else "existing"
     out_dir = _runs_root() / _timestamp_label()
 

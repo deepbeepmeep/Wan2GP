@@ -25,6 +25,55 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--ref", default="main", help="Branch/ref to clone for Variant Fresh.")
     parser.add_argument("--wgp-profile", type=int, default=3)
+    parser.add_argument(
+        "--backend",
+        choices=("wgp", "vibecomfy"),
+        default="wgp",
+        help="Worker backend to inject through REIGH_BACKEND.",
+    )
+    parser.add_argument(
+        "--selector-namespace",
+        default="production",
+        help="Route selector namespace to inject into worker claim validation.",
+    )
+    parser.add_argument(
+        "--selector-version",
+        help="Optional route selector version to inject into worker claim validation.",
+    )
+    parser.add_argument(
+        "--worker-contract-version",
+        type=int,
+        default=1,
+        help="Worker route contract version to stamp into Reigh-shaped live-test tasks.",
+    )
+    parser.add_argument(
+        "--worker-profile",
+        default="default",
+        help="Selected worker route profile to stamp into route-specific live-test tasks.",
+    )
+    parser.add_argument(
+        "--case",
+        action="append",
+        default=[],
+        help="Restrict the matrix to a case name. May be passed multiple times.",
+    )
+    parser.add_argument(
+        "--task-type",
+        action="append",
+        default=[],
+        help="Restrict the matrix to a task type. May be passed multiple times.",
+    )
+    parser.add_argument(
+        "--route-key",
+        action="append",
+        default=[],
+        help="Restrict the matrix to a route key. May be passed multiple times.",
+    )
+    parser.add_argument(
+        "--wgp-rollback",
+        action="store_true",
+        help="Run the selected route/task cases in rollback mode by forcing REIGH_BACKEND=wgp.",
+    )
     parser.add_argument("--timeout-image", type=int, default=config.TIMEOUT_IMAGE_SEC)
     parser.add_argument(
         "--timeout-travel-segment",
@@ -47,6 +96,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _finalize_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> argparse.Namespace:
+    if args.wgp_rollback:
+        args.backend = "wgp"
+
     if args.variant == "fresh":
         if args.pod_id or args.spawn_takeover:
             parser.error("--pod-id/--spawn-takeover are only valid with --variant update")

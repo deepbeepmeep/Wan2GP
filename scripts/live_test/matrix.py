@@ -16,6 +16,16 @@ from scripts.live_test.task_spoofer import insert_spoof_task, load_fixture
 
 TRAVEL_WAN_FIXTURE_KEY = "travel_orchestrator_wan2_1seg"
 TRAVEL_LTX_FIXTURE_KEY = "travel_orchestrator_ltx"
+Z_IMAGE_TURBO_FIXTURE_KEY = "z_image_turbo"
+
+
+@dataclass(frozen=True)
+class RouteRuntimeOptions:
+    selected_backend: str = "wgp"
+    selector_namespace: str = "production"
+    selector_version: str | None = None
+    worker_contract_version: int = 1
+    selected_profile: str = "default"
 
 
 @dataclass(frozen=True)
@@ -25,6 +35,10 @@ class MatrixCase:
     fixture_key: str
     param_overrides: dict[str, Any] = field(default_factory=dict)
     timeout_sec: int = 0
+    route_key: str | None = None
+    support_state: str | None = None
+    selected_template_id: str | None = None
+    route_runtime: RouteRuntimeOptions = field(default_factory=RouteRuntimeOptions)
 
 
 def _deep_merge(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
@@ -78,12 +92,52 @@ def _build_ltx_travel_fixture() -> dict[str, Any]:
     return template
 
 
+def _build_z_image_turbo_fixture() -> dict[str, Any]:
+    return {
+        "task_type": "z_image_turbo",
+        "status": "Queued",
+        "params": {
+            "prompt": "A compact red cube on a clean white tabletop, product-photo lighting.",
+            "resolution": "1024x1024",
+            "seed": 1732,
+            "steps": 4,
+            "num_inference_steps": 4,
+            "model": "z_image_turbo",
+        },
+    }
+
+
 def resolve_case_fixture(case: MatrixCase) -> dict[str, Any]:
     if case.fixture_key == TRAVEL_WAN_FIXTURE_KEY:
         return _build_wan_travel_fixture()
     if case.fixture_key == TRAVEL_LTX_FIXTURE_KEY:
         return _build_ltx_travel_fixture()
+    if case.fixture_key == Z_IMAGE_TURBO_FIXTURE_KEY:
+        return _build_z_image_turbo_fixture()
     return load_fixture(case.fixture_key)
+
+
+def _route_contract(case: MatrixCase, task_marker: str) -> dict[str, Any] | None:
+    if not case.route_key:
+        return None
+
+    runtime = case.route_runtime
+    snapshot = {
+        "route_key": case.route_key,
+        "task_type": case.task_type,
+        "selected_backend": runtime.selected_backend,
+        "selector_namespace": runtime.selector_namespace,
+        "selector_version": runtime.selector_version,
+        "worker_contract_version": runtime.worker_contract_version,
+        "selected_profile": runtime.selected_profile,
+        "support_state": case.support_state,
+        "selected_template_id": case.selected_template_id,
+        "live_test_run_id": task_marker,
+    }
+    return {
+        **snapshot,
+        "route_selection_snapshot": snapshot,
+    }
 
 
 def build_case_params_overrides(
@@ -119,7 +173,45 @@ def build_case_params_overrides(
         runtime["end_image_url"] = config.ANCHOR_IMAGE_B_URL
         runtime["input_image_paths_resolved"] = _anchor_pair()
 
+    route_contract = _route_contract(case, task_marker)
+    if route_contract is not None:
+        runtime["route_contract"] = route_contract
+        runtime["route_key"] = case.route_key
+        runtime["selected_backend"] = case.route_runtime.selected_backend
+        runtime["selector_namespace"] = case.route_runtime.selector_namespace
+        runtime["selector_version"] = case.route_runtime.selector_version
+        runtime["worker_contract_version"] = case.route_runtime.worker_contract_version
+        runtime["selected_profile"] = case.route_runtime.selected_profile
+
     return _deep_merge(case.param_overrides, runtime)
+
+
+def filter_matrix(
+    cases: list[MatrixCase],
+    *,
+    case_names: list[str] | None = None,
+    task_types: list[str] | None = None,
+    route_keys: list[str] | None = None,
+) -> list[MatrixCase]:
+    case_filter = set(case_names or [])
+    task_filter = set(task_types or [])
+    route_filter = set(route_keys or [])
+    if not case_filter and not task_filter and not route_filter:
+        return cases
+    selected = [
+        case
+        for case in cases
+        if (case_filter and case.name in case_filter)
+        or (task_filter and case.task_type in task_filter)
+        or (route_filter and case.route_key in route_filter)
+    ]
+    missing_cases = case_filter - {case.name for case in selected}
+    missing_tasks = task_filter - {case.task_type for case in selected}
+    missing_routes = route_filter - {case.route_key for case in selected if case.route_key}
+    missing = sorted(missing_cases | missing_tasks | missing_routes)
+    if missing:
+        raise ValueError(f"Unknown live-test case/task/route selection: {', '.join(missing)}")
+    return selected
 
 
 def render_case_payload(
@@ -153,8 +245,23 @@ def build_matrix(
     timeout_image_sec: int = config.TIMEOUT_IMAGE_SEC,
     timeout_travel_segment_sec: int = config.TIMEOUT_INDIVIDUAL_TRAVEL_SEGMENT_SEC,
     timeout_travel_orchestrator_sec: int = config.TIMEOUT_TRAVEL_ORCHESTRATOR_SEC,
+    selected_backend: str = "wgp",
+    selector_namespace: str = "production",
+    selector_version: str | None = None,
+    worker_contract_version: int = 1,
+    selected_profile: str = "default",
+    case_names: list[str] | None = None,
+    task_types: list[str] | None = None,
+    route_keys: list[str] | None = None,
 ) -> list[MatrixCase]:
-    return [
+    route_runtime = RouteRuntimeOptions(
+        selected_backend=selected_backend,
+        selector_namespace=selector_namespace,
+        selector_version=selector_version,
+        worker_contract_version=worker_contract_version,
+        selected_profile=selected_profile,
+    )
+    cases = [
         MatrixCase(
             name="travel_orchestrator_wan2_1seg",
             task_type="travel_orchestrator",
@@ -220,6 +327,16 @@ def build_matrix(
             timeout_sec=timeout_image_sec,
         ),
         MatrixCase(
+            name="z_image_turbo",
+            task_type="z_image_turbo",
+            fixture_key=Z_IMAGE_TURBO_FIXTURE_KEY,
+            timeout_sec=timeout_image_sec,
+            route_key="z_image_turbo",
+            support_state="vibecomfy_supported",
+            selected_template_id="image/z_image",
+            route_runtime=route_runtime,
+        ),
+        MatrixCase(
             name="z_image_turbo_i2i",
             task_type="z_image_turbo_i2i",
             fixture_key="z_image_turbo_i2i_basic",
@@ -227,6 +344,7 @@ def build_matrix(
             timeout_sec=timeout_image_sec,
         ),
     ]
+    return filter_matrix(cases, case_names=case_names, task_types=task_types, route_keys=route_keys)
 
 
 MATRIX = build_matrix()
@@ -273,10 +391,13 @@ def run_matrix(db, project_id: str, cases: list[MatrixCase]) -> list[TaskResult]
 __all__ = [
     "MATRIX",
     "MatrixCase",
+    "RouteRuntimeOptions",
     "TRAVEL_LTX_FIXTURE_KEY",
     "TRAVEL_WAN_FIXTURE_KEY",
+    "Z_IMAGE_TURBO_FIXTURE_KEY",
     "build_case_params_overrides",
     "build_matrix",
+    "filter_matrix",
     "render_case_payload",
     "resolve_case_fixture",
     "run_matrix",

@@ -16,6 +16,7 @@ from source.core.db.dependencies.task_dependencies_children import (
 from source.core.db.task_dependencies import get_orchestrator_child_tasks
 from source.core.log import task_logger
 from source.core.params.task_result import TaskResult
+from source.task_handlers.tasks.template_routing import validate_existing_child_route_contracts
 
 __all__ = [
     "_check_orchestrator_cancelled",
@@ -115,6 +116,8 @@ def _extract_join_settings_from_payload(orchestrator_payload: dict) -> dict:
 def _check_existing_join_tasks(
     orchestrator_task_id_str: str,
     num_joins: int,
+    parent_params: dict | None = None,
+    expected_parent_route_key: str = "join_clips_orchestrator",
     **_kwargs
 ) -> Optional[TaskResult]:
     """
@@ -137,6 +140,17 @@ def _check_existing_join_tasks(
 
     if not existing_joins and not existing_final_stitch:
         return None
+
+    if parent_params is not None:
+        route_consistency = validate_existing_child_route_contracts(
+            parent_params=parent_params,
+            child_tasks=existing_joins + existing_final_stitch,
+            expected_parent_route_key=expected_parent_route_key,
+        )
+        if not route_consistency.ok:
+            message = f"[ROUTE_REPAIR_REQUIRED] {route_consistency.fail_closed_reason}"
+            task_logger.debug_anomaly("JOIN_ROUTE_CONTRACT", message, task_id=orchestrator_task_id_str)
+            return TaskResult.failed(message)
 
     # Check completion status helper
     def is_complete(task):

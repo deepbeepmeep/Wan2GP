@@ -23,7 +23,10 @@ from ...core.params.travel_guidance import AnchorEntry, TravelGuidanceConfig
 from ...core.params.task_result import TaskResult
 from ...core.log.display_names import friendly_child_id, friendly_task_id, rel_path
 from ...runtime.wgp_bridge import get_model_fps, get_model_min_frames_and_step
-from ..tasks.template_routing import route_snapshot_fields
+from ..tasks.template_routing import (
+    parent_derived_child_route_snapshot_fields,
+    validate_existing_child_route_contracts,
+)
 
 from .svi_config import SVI_DEFAULT_PARAMS, SVI_STITCH_OVERLAP
 from .debug_utils import flush_ram_snapshots, log_ram_usage
@@ -566,6 +569,22 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             # Check if we have the expected number of tasks already
             has_required_join_orchestrator = len(existing_join_orchestrators) >= required_join_orchestrator_count
             if len(existing_segments) >= expected_segments and len(existing_stitch) >= required_stitch_count and has_required_join_orchestrator:
+                route_consistency = validate_existing_child_route_contracts(
+                    parent_params=task_params_from_db,
+                    child_tasks=existing_segments + existing_stitch + existing_join_orchestrators,
+                    expected_parent_route_key="travel_orchestrator",
+                )
+                if not route_consistency.ok:
+                    output_message_for_orchestrator_db = (
+                        f"[ROUTE_REPAIR_REQUIRED] {route_consistency.fail_closed_reason}"
+                    )
+                    travel_logger.debug_anomaly(
+                        "TRAVEL_ROUTE_CONTRACT",
+                        output_message_for_orchestrator_db,
+                        task_id=orchestrator_task_id_str,
+                    )
+                    return False, output_message_for_orchestrator_db
+
                 # Clean up any duplicates but don't create new tasks
                 cleanup_summary = cleanup_duplicate_child_tasks(orchestrator_task_id_str, expected_segments)
 
@@ -2243,12 +2262,10 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
                 task_payload=segment_payload,
                 task_type_str="travel_segment",
                 dependant_on=previous_segment_task_id,
-                route_snapshot_fields=route_snapshot_fields(
-                    task_type="travel_segment",
-                    params=segment_payload,
-                    backend="wgp",
-                    selector_namespace="production",
-                    parent_route_key="travel_orchestrator",
+                route_snapshot_fields=parent_derived_child_route_snapshot_fields(
+                    parent_params=task_params_from_db,
+                    child_task_type="travel_segment",
+                    child_params=segment_payload,
                 ),
             )
             # Record the actual DB ID so subsequent segments depend on the real DB row ID
@@ -2361,7 +2378,11 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
                 task_payload=stitch_payload, 
                 task_type_str="travel_stitch",
                 dependant_on=last_segment_task_id,
-                route_snapshot_fields=None,
+                route_snapshot_fields=parent_derived_child_route_snapshot_fields(
+                    parent_params=task_params_from_db,
+                    child_task_type="travel_stitch",
+                    child_params=stitch_payload,
+                ),
             )
             
             # Post-insert verification of dependency from DB
@@ -2461,7 +2482,11 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
                 task_payload={"orchestrator_details": join_orchestrator_payload},
                 task_type_str="join_clips_orchestrator",
                 dependant_on=all_segment_task_ids,  # Multi-dependency: all segments must complete
-                route_snapshot_fields=None,
+                route_snapshot_fields=parent_derived_child_route_snapshot_fields(
+                    parent_params=task_params_from_db,
+                    child_task_type="join_clips_orchestrator",
+                    child_params={"orchestrator_details": join_orchestrator_payload},
+                ),
             )
             travel_logger.debug(
                 f"[JOIN_STITCH] created id={join_orchestrator_task_id}, dependency_count={len(all_segment_task_ids)}",

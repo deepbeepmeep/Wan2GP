@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import json
 import os
 import re
 from types import MappingProxyType
@@ -54,6 +55,29 @@ class ResolvedTask:
             and self.support_state == RouteSupportState.VIBECOMFY_SUPPORTED
             and self.fail_closed_reason is None
         )
+
+
+@dataclass(frozen=True)
+class ParentChildRoutePreflight:
+    ok: bool
+    parent_route_key: str | None = None
+    child_route_key: str | None = None
+    backend: WorkerBackend | None = None
+    support_state: RouteSupportState | None = None
+    template_id: str | None = None
+    selector_namespace: str | None = None
+    selector_version: int | str | None = None
+    selected_profile: str | None = None
+    route_run_id: str | None = None
+    worker_contract_version: int | None = None
+    fail_closed_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ChildRouteContractConsistency:
+    ok: bool
+    fail_closed_reason: str | None = None
+    mismatched_task_ids: tuple[str, ...] = ()
 
 
 DIRECT_ROUTE_ALIASES: Mapping[str, str] = MappingProxyType(
@@ -115,6 +139,21 @@ SPRINT_2_SELECTOR_MAP: Mapping[str, RouteSelectorEntry] = MappingProxyType(
             support_state=RouteSupportState.WGP_ONLY,
             template_id=None,
         ),
+        "travel_orchestrator": RouteSelectorEntry(
+            route_key="travel_orchestrator",
+            support_state=RouteSupportState.WGP_ONLY,
+            template_id=None,
+        ),
+        "join_clips_orchestrator": RouteSelectorEntry(
+            route_key="join_clips_orchestrator",
+            support_state=RouteSupportState.WGP_ONLY,
+            template_id=None,
+        ),
+        "edit_video_orchestrator": RouteSelectorEntry(
+            route_key="edit_video_orchestrator",
+            support_state=RouteSupportState.WGP_ONLY,
+            template_id=None,
+        ),
         "travel_segment": RouteSelectorEntry(
             route_key="travel_segment",
             support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
@@ -128,6 +167,16 @@ SPRINT_2_SELECTOR_MAP: Mapping[str, RouteSelectorEntry] = MappingProxyType(
         "join_clips_segment": RouteSelectorEntry(
             route_key="join_clips_segment",
             support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            template_id=None,
+        ),
+        "travel_stitch": RouteSelectorEntry(
+            route_key="travel_stitch",
+            support_state=RouteSupportState.WGP_ONLY,
+            template_id=None,
+        ),
+        "join_final_stitch": RouteSelectorEntry(
+            route_key="join_final_stitch",
+            support_state=RouteSupportState.WGP_ONLY,
             template_id=None,
         ),
         "wan_2_2_t2i": RouteSelectorEntry(
@@ -285,10 +334,253 @@ def route_snapshot_fields(
     }
 
 
+def preflight_parent_child_route(
+    *,
+    parent_params: Mapping[str, Any] | None,
+    child_task_type: str,
+    child_params: Mapping[str, Any] | None = None,
+) -> ParentChildRoutePreflight:
+    """Validate a DB-created child can inherit its claimed parent's route."""
+
+    parent_contract = _extract_parent_route_contract(parent_params)
+    if parent_contract is None:
+        return ParentChildRoutePreflight(
+            ok=False,
+            fail_closed_reason="Missing or malformed parent params.route_contract",
+        )
+
+    contract_fields = _parse_parent_route_contract(parent_contract)
+    if isinstance(contract_fields, str):
+        return ParentChildRoutePreflight(ok=False, fail_closed_reason=contract_fields)
+
+    task_params = dict(child_params or {})
+    child_route_key = derive_route_key(child_task_type, task_params)
+    selector_entry = _selector_entry_for_route_key(child_route_key)
+    support_state = (
+        selector_entry.support_state
+        if selector_entry is not None
+        else RouteSupportState.VIBECOMFY_UNSUPPORTED
+    )
+    template_id = selector_entry.template_id if selector_entry is not None else None
+
+    fail_closed_reason = _fail_closed_reason(
+        backend=contract_fields["backend"],
+        route_key=child_route_key,
+        selector_entry=selector_entry,
+        params=task_params,
+    )
+    if fail_closed_reason is None and (
+        contract_fields["backend"] == WorkerBackend.VIBECOMFY
+        and support_state == RouteSupportState.VIBECOMFY_SUPPORTED
+        and template_id is None
+    ):
+        fail_closed_reason = (
+            f"Route {child_route_key!r} is missing a VibeComfy template; "
+            "explicit VibeComfy backend will not fall back to WGP"
+        )
+
+    return ParentChildRoutePreflight(
+        ok=fail_closed_reason is None,
+        parent_route_key=contract_fields["parent_route_key"],
+        child_route_key=child_route_key,
+        backend=contract_fields["backend"],
+        support_state=support_state,
+        template_id=template_id,
+        selector_namespace=contract_fields["selector_namespace"],
+        selector_version=contract_fields["selector_version"],
+        selected_profile=contract_fields["selected_profile"],
+        route_run_id=contract_fields["route_run_id"],
+        worker_contract_version=contract_fields["worker_contract_version"],
+        fail_closed_reason=fail_closed_reason,
+    )
+
+
+def parent_derived_child_route_snapshot_fields(
+    *,
+    parent_params: Mapping[str, Any] | None,
+    child_task_type: str,
+    child_params: Mapping[str, Any] | None = None,
+    child_task_id: str | None = None,
+) -> dict[str, Any]:
+    """Build child route snapshot fields from the parent's persisted contract."""
+
+    preflight = preflight_parent_child_route(
+        parent_params=parent_params,
+        child_task_type=child_task_type,
+        child_params=child_params,
+    )
+    if not preflight.ok:
+        raise ValueError(preflight.fail_closed_reason or "Parent-derived child route failed closed")
+
+    assert preflight.backend is not None
+    assert preflight.selector_namespace is not None
+    assert preflight.selected_profile is not None
+    assert preflight.worker_contract_version is not None
+
+    return route_snapshot_fields(
+        task_id=child_task_id,
+        task_type=child_task_type,
+        params=child_params,
+        backend=preflight.backend,
+        selector_namespace=preflight.selector_namespace,
+        selector_version=preflight.selector_version,
+        parent_route_key=preflight.parent_route_key,
+        profile=preflight.selected_profile,
+        run_id=preflight.route_run_id,
+        worker_contract_version=preflight.worker_contract_version,
+    )
+
+
+def validate_existing_child_route_contracts(
+    *,
+    parent_params: Mapping[str, Any] | None,
+    child_tasks: list[Mapping[str, Any]],
+    expected_parent_route_key: str | None = None,
+) -> ChildRouteContractConsistency:
+    """Validate existing DB children still match their claimed parent route."""
+
+    parent_contract = _extract_parent_route_contract(parent_params)
+    if parent_contract is None:
+        return ChildRouteContractConsistency(
+            ok=False,
+            fail_closed_reason="Missing or malformed parent params.route_contract",
+        )
+
+    parsed_parent = _parse_parent_route_contract(parent_contract)
+    if isinstance(parsed_parent, str):
+        return ChildRouteContractConsistency(ok=False, fail_closed_reason=parsed_parent)
+
+    parent_route_key = expected_parent_route_key or parsed_parent["parent_route_key"]
+    mismatches: list[str] = []
+    reasons: list[str] = []
+
+    for child in child_tasks:
+        child_id = _task_identity_for_contract_error(child)
+        child_params = _extract_child_params_for_contract(child)
+        child_contract = _extract_parent_route_contract(child_params)
+        if child_contract is None:
+            mismatches.append(child_id)
+            reasons.append(f"{child_id}: missing params.route_contract")
+            continue
+
+        parsed_child = _parse_parent_route_contract(child_contract)
+        if isinstance(parsed_child, str):
+            mismatches.append(child_id)
+            reasons.append(f"{child_id}: {parsed_child}")
+            continue
+
+        snapshot = child_contract.get("route_selection_snapshot")
+        child_parent_route_key = (
+            snapshot.get("parent_route_key") if isinstance(snapshot, Mapping) else None
+        )
+        comparisons = (
+            ("selected_backend", parsed_child["backend"], parsed_parent["backend"]),
+            ("selector_namespace", parsed_child["selector_namespace"], parsed_parent["selector_namespace"]),
+            ("selector_version", parsed_child["selector_version"], parsed_parent["selector_version"]),
+            ("selected_profile", parsed_child["selected_profile"], parsed_parent["selected_profile"]),
+            ("parent_route_key", child_parent_route_key, parent_route_key),
+        )
+        mismatched_fields = [
+            field_name
+            for field_name, actual, expected in comparisons
+            if actual != expected
+        ]
+        if mismatched_fields:
+            mismatches.append(child_id)
+            reasons.append(f"{child_id}: route contract mismatch in {', '.join(mismatched_fields)}")
+
+    if mismatches:
+        return ChildRouteContractConsistency(
+            ok=False,
+            fail_closed_reason="Existing child route contracts require repair: " + "; ".join(reasons),
+            mismatched_task_ids=tuple(mismatches),
+        )
+
+    return ChildRouteContractConsistency(ok=True)
+
+
 def _coerce_backend(backend: WorkerBackend | str) -> WorkerBackend:
     if isinstance(backend, WorkerBackend):
         return backend
     return parse_worker_backend(backend)
+
+
+def _extract_child_params_for_contract(task: Mapping[str, Any]) -> Mapping[str, Any]:
+    params = task.get("params")
+    if params is None:
+        params = task.get("task_params")
+    if isinstance(params, str):
+        try:
+            decoded = json.loads(params)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            return {}
+        return decoded if isinstance(decoded, Mapping) else {}
+    return params if isinstance(params, Mapping) else {}
+
+
+def _task_identity_for_contract_error(task: Mapping[str, Any]) -> str:
+    for key in ("id", "task_id"):
+        value = task.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return "<unknown-child>"
+
+
+def _extract_parent_route_contract(parent_params: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    if not isinstance(parent_params, Mapping):
+        return None
+
+    route_contract = parent_params.get("route_contract")
+    if not isinstance(route_contract, Mapping):
+        return None
+
+    return route_contract
+
+
+def _parse_parent_route_contract(
+    route_contract: Mapping[str, Any],
+) -> dict[str, Any] | str:
+    backend_value = route_contract.get("selected_backend")
+    if not isinstance(backend_value, str):
+        return "Malformed parent params.route_contract: selected_backend is required"
+    try:
+        backend = _coerce_backend(backend_value)
+    except ValueError:
+        return "Malformed parent params.route_contract: selected_backend is invalid"
+
+    parent_route_key = route_contract.get("route_key")
+    if not isinstance(parent_route_key, str) or not parent_route_key.strip():
+        return "Malformed parent params.route_contract: route_key is required"
+
+    selector_namespace = route_contract.get("selector_namespace")
+    if not isinstance(selector_namespace, str) or not selector_namespace.strip():
+        return "Malformed parent params.route_contract: selector_namespace is required"
+
+    selected_profile = route_contract.get("selected_profile")
+    if not isinstance(selected_profile, str) or not selected_profile.strip():
+        return "Malformed parent params.route_contract: selected_profile is required"
+
+    worker_contract_version = route_contract.get("worker_contract_version")
+    if not isinstance(worker_contract_version, int):
+        return "Malformed parent params.route_contract: worker_contract_version is required"
+
+    selector_version = route_contract.get("selector_version")
+    if selector_version is not None and not isinstance(selector_version, (int, str)):
+        return "Malformed parent params.route_contract: selector_version must be int, string, or null"
+
+    route_run_id = route_contract.get("route_run_id")
+    if route_run_id is not None and not isinstance(route_run_id, str):
+        return "Malformed parent params.route_contract: route_run_id must be string or null"
+
+    return {
+        "backend": backend,
+        "parent_route_key": parent_route_key,
+        "selector_namespace": selector_namespace,
+        "selector_version": selector_version,
+        "selected_profile": selected_profile,
+        "route_run_id": route_run_id,
+        "worker_contract_version": worker_contract_version,
+    }
 
 
 def _selector_entry_for_route_key(route_key: str) -> RouteSelectorEntry | None:
@@ -455,6 +747,8 @@ def _extract_memory_profile(params: Mapping[str, Any]) -> str | None:
 
 __all__ = [
     "DIRECT_ROUTE_ALIASES",
+    "ChildRouteContractConsistency",
+    "ParentChildRoutePreflight",
     "ResolvedTask",
     "RouteSelectorEntry",
     "RouteSupportState",
@@ -462,9 +756,12 @@ __all__ = [
     "WorkerBackend",
     "WORKER_ROUTE_CONTRACT_VERSION",
     "derive_route_key",
+    "parent_derived_child_route_snapshot_fields",
     "parse_worker_backend",
+    "preflight_parent_child_route",
     "resolve_task_route",
     "route_snapshot_fields",
     "route_support_state",
     "routing_telemetry_fields",
+    "validate_existing_child_route_contracts",
 ]

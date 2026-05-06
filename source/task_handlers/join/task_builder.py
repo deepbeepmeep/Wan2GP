@@ -11,7 +11,10 @@ from typing import Tuple, List, Optional
 from source.core.db.task_completion import add_task_to_db
 from source.core.log import orchestrator_logger
 from source.task_handlers.join.shared import _check_orchestrator_cancelled
-from source.task_handlers.tasks.template_routing import route_snapshot_fields
+from source.task_handlers.tasks.template_routing import (
+    parent_derived_child_route_snapshot_fields,
+    route_snapshot_fields,
+)
 
 __all__ = [
     "_create_join_chain_tasks",
@@ -19,6 +22,42 @@ __all__ = [
     "create_join_chain_tasks",
     "create_parallel_join_tasks",
 ]
+
+
+def _route_snapshot_for_join_child(
+    *,
+    parent_params: dict | None,
+    parent_route_key: str,
+    child_task_id: str | None,
+    child_task_type: str,
+    child_params: dict,
+) -> dict:
+    if parent_params is not None:
+        fields = parent_derived_child_route_snapshot_fields(
+            parent_params=parent_params,
+            child_task_id=child_task_id,
+            child_task_type=child_task_type,
+            child_params=child_params,
+        )
+        snapshot = fields.get("route_selection_snapshot")
+        snapshot_parent_route_key = (
+            snapshot.get("parent_route_key") if isinstance(snapshot, dict) else None
+        )
+        if snapshot_parent_route_key != parent_route_key:
+            raise ValueError(
+                f"Parent route key mismatch for {child_task_type}: "
+                f"expected {parent_route_key}, got {snapshot_parent_route_key}"
+            )
+        return fields
+
+    return route_snapshot_fields(
+        task_id=child_task_id,
+        task_type=child_task_type,
+        params=child_params,
+        backend="wgp",
+        selector_namespace="production",
+        parent_route_key=parent_route_key,
+    )
 
 def _create_join_chain_tasks(
     clip_list: List[dict],
@@ -30,7 +69,9 @@ def _create_join_chain_tasks(
     orchestrator_task_id_str: str,
     orchestrator_project_id: str | None,
     orchestrator_payload: dict,
-    parent_generation_id: str | None) -> Tuple[bool, str]:
+    parent_generation_id: str | None,
+    parent_params: dict | None = None,
+    parent_route_key: str = "join_clips_orchestrator") -> Tuple[bool, str]:
     """
     Core logic: Create chained join_clips_segment tasks (LEGACY - sequential pattern).
 
@@ -47,6 +88,8 @@ def _create_join_chain_tasks(
         orchestrator_project_id: Project ID for authorization
         orchestrator_payload: Full orchestrator payload for reference
         parent_generation_id: Parent generation ID for variant linking
+        parent_params: Claimed parent task params containing route_contract, when available
+        parent_route_key: Expected spawning parent route key for child snapshots
 
     Returns:
         (success: bool, message: str)
@@ -101,12 +144,12 @@ def _create_join_chain_tasks(
             task_payload=join_payload,
             task_type_str="join_clips_segment",
             dependant_on=previous_join_task_id,
-            route_snapshot_fields=route_snapshot_fields(
-                task_type="join_clips_segment",
-                params=join_payload,
-                backend="wgp",
-                selector_namespace="production",
-                parent_route_key="join_clips_orchestrator",
+            route_snapshot_fields=_route_snapshot_for_join_child(
+                parent_params=parent_params,
+                parent_route_key=parent_route_key,
+                child_task_id=None,
+                child_task_type="join_clips_segment",
+                child_params=join_payload,
             ),
         )
 
@@ -140,7 +183,13 @@ def _create_join_chain_tasks(
         task_payload=final_stitch_payload,
         task_type_str="join_final_stitch",
         dependant_on=previous_join_task_id,
-        route_snapshot_fields=None,
+        route_snapshot_fields=_route_snapshot_for_join_child(
+            parent_params=parent_params,
+            parent_route_key=parent_route_key,
+            child_task_id=None,
+            child_task_type="join_final_stitch",
+            child_params=final_stitch_payload,
+        ),
     )
 
     return True, f"Successfully enqueued {joins_created} chain joins + 1 final stitch for run {run_id}"
@@ -155,7 +204,9 @@ def _create_parallel_join_tasks(
     orchestrator_task_id_str: str,
     orchestrator_project_id: str | None,
     orchestrator_payload: dict,
-    parent_generation_id: str | None) -> Tuple[bool, str]:
+    parent_generation_id: str | None,
+    parent_params: dict | None = None,
+    parent_route_key: str = "join_clips_orchestrator") -> Tuple[bool, str]:
     """
     Create parallel join tasks with a final stitch (NEW - parallel pattern).
 
@@ -174,6 +225,8 @@ def _create_parallel_join_tasks(
         orchestrator_project_id: Project ID for authorization
         orchestrator_payload: Full orchestrator payload for reference
         parent_generation_id: Parent generation ID for variant linking
+        parent_params: Claimed parent task params containing route_contract, when available
+        parent_route_key: Expected spawning parent route key for child snapshots
 
     Returns:
         (success: bool, message: str)
@@ -226,12 +279,12 @@ def _create_parallel_join_tasks(
             task_payload=transition_payload,
             task_type_str="join_clips_segment",
             dependant_on=None,
-            route_snapshot_fields=route_snapshot_fields(
-                task_type="join_clips_segment",
-                params=transition_payload,
-                backend="wgp",
-                selector_namespace="production",
-                parent_route_key="join_clips_orchestrator",
+            route_snapshot_fields=_route_snapshot_for_join_child(
+                parent_params=parent_params,
+                parent_route_key=parent_route_key,
+                child_task_id=None,
+                child_task_type="join_clips_segment",
+                child_params=transition_payload,
             ),
         )
 
@@ -263,7 +316,13 @@ def _create_parallel_join_tasks(
         task_payload=final_stitch_payload,
         task_type_str="join_final_stitch",
         dependant_on=transition_task_ids,
-        route_snapshot_fields=None,
+        route_snapshot_fields=_route_snapshot_for_join_child(
+            parent_params=parent_params,
+            parent_route_key=parent_route_key,
+            child_task_id=None,
+            child_task_type="join_final_stitch",
+            child_params=final_stitch_payload,
+        ),
     )
 
     return True, f"Successfully enqueued {num_joins} parallel transitions + 1 final stitch for run {run_id}"

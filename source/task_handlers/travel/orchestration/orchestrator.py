@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from source.core.params.task_result import TaskResult
+from source.task_handlers.tasks.template_routing import validate_existing_child_route_contracts
 from source.task_handlers.travel import orchestrator as _canonical
 
 get_orchestrator_child_tasks = _canonical.get_orchestrator_child_tasks
@@ -58,6 +59,7 @@ def _is_terminal_failure(task: dict[str, Any]) -> bool:
 def _travel_handle_existing_children_idempotency(
     *,
     orchestrator_task_id_str: str,
+    parent_params: dict[str, Any] | None = None,
     existing_segments: list[dict[str, Any]],
     existing_stitch: list[dict[str, Any]],
     existing_join_orchestrators: list[dict[str, Any]],
@@ -116,6 +118,17 @@ def _travel_handle_existing_children_idempotency(
         )
 
     if has_required_segments and has_required_stitch and has_required_join:
+        if parent_params is not None:
+            route_consistency = validate_existing_child_route_contracts(
+                parent_params=parent_params,
+                child_tasks=existing_segments + existing_stitch + existing_join_orchestrators,
+                expected_parent_route_key="travel_orchestrator",
+            )
+            if not route_consistency.ok:
+                return TaskResult.failed(
+                    f"[ROUTE_REPAIR_REQUIRED] {route_consistency.fail_closed_reason}; marker={marker}"
+                )
+
         if all_segments_complete and all_stitch_complete and all_join_complete:
             final_output = None
             if existing_join_orchestrators:

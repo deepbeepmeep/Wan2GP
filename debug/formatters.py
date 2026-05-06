@@ -3,6 +3,7 @@
 import json
 from datetime import datetime, timezone
 from typing import Dict, Any, List
+from debug import diagnostics as route_diagnostics
 from debug.models import (
     TaskInfo, WorkerInfo, TasksSummary, WorkersSummary,
     SystemHealth, OrchestratorStatus
@@ -158,6 +159,12 @@ class Formatter:
         lines.append(f"   Worker: {task.get('worker_id', 'None')}")
         attempts = task.get('attempts', 0)
         lines.append(f"   Attempts: {attempts}")
+        route_summary = route_diagnostics.format_route_contract_summary(task)
+        if route_summary:
+            lines.append(f"   Route: {route_summary}")
+        route_signals = route_diagnostics.route_repair_signals(task)
+        if route_signals:
+            lines.append(f"   Repair Signals: {', '.join(route_signals)}")
         
         # Note: "attempts" is task-level retries (re-claimed / re-processed), not internal HTTP retries.
         if status == 'Failed' and attempts == 0:
@@ -369,6 +376,16 @@ class Formatter:
                 
                 # Show task line
                 line = f"   {emoji} Seg {seg_idx}: {child_id}... | {child_status}"
+                child_route_summary = route_diagnostics.format_route_contract_summary(child)
+                if child_route_summary:
+                    line += f"\n      └─ Route: {child_route_summary}"
+                child_route_signals = route_diagnostics.route_repair_signals(
+                    child,
+                    parent_task=task,
+                    siblings=info.child_tasks,
+                )
+                if child_route_signals:
+                    line += f"\n      └─ Repair Signals: {', '.join(child_route_signals)}"
                 if child_status == 'Failed':
                     line += f" (attempts: {child_attempts})"
                     error = child.get('error_message', '')
@@ -846,4 +863,3 @@ class Formatter:
         lines.append("\n" + "=" * 80)
         
         return "\n".join(lines)
-

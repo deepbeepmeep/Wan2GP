@@ -521,7 +521,12 @@ def _handle_edit_video_orchestrator_task(
         # === EARLY IDEMPOTENCY CHECK (before expensive preprocessing/VLM work) ===
         # Each portion to regenerate = one join task
         num_joins_expected = len(portions_to_regenerate)
-        idempotency_check = check_existing_join_tasks(orchestrator_task_id_str, num_joins_expected)
+        idempotency_check = check_existing_join_tasks(
+            orchestrator_task_id_str,
+            num_joins_expected,
+            parent_params=task_params_from_db,
+            expected_parent_route_key="edit_video_orchestrator",
+        )
         if idempotency_check is not None:
             return idempotency_check
         
@@ -626,7 +631,9 @@ def _handle_edit_video_orchestrator_task(
             orchestrator_task_id_str=orchestrator_task_id_str,
             orchestrator_project_id=orchestrator_project_id,
             orchestrator_payload=orchestrator_payload,
-            parent_generation_id=parent_generation_id)
+            parent_generation_id=parent_generation_id,
+            parent_params=task_params_from_db,
+            parent_route_key="edit_video_orchestrator")
         
         return success, message
         

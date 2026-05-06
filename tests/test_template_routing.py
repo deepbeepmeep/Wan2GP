@@ -9,7 +9,17 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-sys.modules.setdefault("httpx", SimpleNamespace(HTTPError=Exception, Response=object))
+httpx_stub = SimpleNamespace(
+    HTTPError=Exception,
+    RequestError=Exception,
+    Response=object,
+    TimeoutException=TimeoutError,
+)
+sys.modules.setdefault("httpx", httpx_stub)
+sys.modules.setdefault("cv2", ModuleType("cv2"))
+requests_stub = ModuleType("requests")
+requests_stub.RequestException = Exception
+sys.modules.setdefault("requests", requests_stub)
 postgrest_exceptions = ModuleType("postgrest.exceptions")
 postgrest_exceptions.APIError = Exception
 sys.modules.setdefault("postgrest", ModuleType("postgrest"))
@@ -328,6 +338,295 @@ def test_route_snapshot_fields_are_top_level_columns_plus_json_snapshot(routing)
             "parent_route_key": "join_clips_orchestrator",
         },
     }
+
+
+def test_parent_derived_child_snapshot_uses_parent_contract_not_env(
+    routing, monkeypatch
+) -> None:
+    monkeypatch.setenv("REIGH_BACKEND", "vibecomfy")
+    parent_route_contract = routing.route_snapshot_fields(
+        task_id="parent-1",
+        task_type="join_clips_orchestrator",
+        params={},
+        backend="wgp",
+        selector_namespace="canary",
+        selector_version=8,
+        profile="production",
+        run_id="run-parent-1",
+    )
+
+    fields = routing.parent_derived_child_route_snapshot_fields(
+        parent_params={"route_contract": parent_route_contract},
+        child_task_id="child-1",
+        child_task_type="join_clips_segment",
+        child_params={
+            "model": "wan_2_2_vace_lightning_baseline_2_2_2",
+            "model_family": "wan22_vace",
+            "guidance_kind": "vace",
+            "continuity_case": "join_bridge",
+            "wgp_profile": "default",
+        },
+    )
+
+    route_key = (
+        "join_clips_segment__model-wan22_vace__guidance-vace__"
+        "continuity-join_bridge__profile-default"
+    )
+    assert fields["route_key"] == route_key
+    assert fields["selected_backend"] == "wgp"
+    assert fields["selector_namespace"] == "canary"
+    assert fields["selector_version"] == 8
+    assert fields["selected_profile"] == "production"
+    assert fields["route_run_id"] == "run-parent-1"
+    assert fields["route_selection_snapshot"]["parent_route_key"] == "join_clips_orchestrator"
+    assert fields["route_selection_snapshot"]["task_id"] == "child-1"
+
+
+def test_parent_child_route_preflight_reports_incompatible_vibecomfy_child(routing) -> None:
+    parent_route_contract = routing.route_snapshot_fields(
+        task_id="parent-1",
+        task_type="join_clips_orchestrator",
+        params={},
+        backend="vibecomfy",
+        selector_namespace="canary",
+        selector_version=8,
+        profile="production",
+    )
+
+    preflight = routing.preflight_parent_child_route(
+        parent_params={"route_contract": parent_route_contract},
+        child_task_type="join_clips_segment",
+        child_params={
+            "model": "wan_2_2_vace_lightning_baseline_2_2_2",
+            "model_family": "wan22_vace",
+            "guidance_kind": "vace",
+            "continuity_case": "join_bridge",
+        },
+    )
+
+    assert preflight.ok is False
+    assert preflight.parent_route_key == "join_clips_orchestrator"
+    assert preflight.child_route_key == (
+        "join_clips_segment__model-wan22_vace__guidance-vace__"
+        "continuity-join_bridge__profile-default"
+    )
+    assert preflight.fail_closed_reason
+    assert "will not fall back to WGP" in preflight.fail_closed_reason
+
+
+def test_parent_derived_child_snapshot_fails_closed_on_missing_parent_contract(
+    routing,
+) -> None:
+    with pytest.raises(ValueError, match="Missing or malformed parent params.route_contract"):
+        routing.parent_derived_child_route_snapshot_fields(
+            parent_params={},
+            child_task_type="join_clips_segment",
+            child_params={},
+        )
+
+
+def test_parent_derived_child_snapshot_fails_closed_on_malformed_parent_contract(
+    routing,
+) -> None:
+    with pytest.raises(ValueError, match="selected_backend is invalid"):
+        routing.parent_derived_child_route_snapshot_fields(
+            parent_params={
+                "route_contract": {
+                    "route_key": "join_clips_orchestrator",
+                    "selected_backend": "comfy",
+                    "selector_namespace": "canary",
+                    "selected_profile": "production",
+                    "worker_contract_version": 1,
+                }
+            },
+            child_task_type="join_clips_segment",
+            child_params={},
+        )
+
+
+def test_parent_derived_child_snapshot_fails_closed_for_vibecomfy_blocked_child(
+    routing,
+) -> None:
+    parent_route_contract = routing.route_snapshot_fields(
+        task_id="parent-1",
+        task_type="travel_orchestrator",
+        params={},
+        backend="vibecomfy",
+        selector_namespace="canary",
+        selector_version=8,
+        profile="production",
+    )
+
+    with pytest.raises(ValueError, match="explicit VibeComfy backend will not fall back to WGP"):
+        routing.parent_derived_child_route_snapshot_fields(
+            parent_params={"route_contract": parent_route_contract},
+            child_task_type="travel_stitch",
+            child_params={},
+        )
+
+
+@pytest.mark.parametrize(
+    ("parent_task_type", "child_task_type", "child_params", "expected_parent_route_key"),
+    [
+        ("travel_orchestrator", "travel_stitch", {}, "travel_orchestrator"),
+        (
+            "travel_orchestrator",
+            "join_clips_orchestrator",
+            {"orchestrator_details": {"use_parallel_joins": True}},
+            "travel_orchestrator",
+        ),
+        ("join_clips_orchestrator", "join_final_stitch", {}, "join_clips_orchestrator"),
+        ("edit_video_orchestrator", "join_final_stitch", {}, "edit_video_orchestrator"),
+    ],
+)
+def test_parent_derived_control_rows_are_classified_and_parent_stamped(
+    routing,
+    parent_task_type: str,
+    child_task_type: str,
+    child_params: dict,
+    expected_parent_route_key: str,
+) -> None:
+    parent_route_contract = routing.route_snapshot_fields(
+        task_id=f"{parent_task_type}-1",
+        task_type=parent_task_type,
+        params={},
+        backend="wgp",
+        selector_namespace="canary",
+        selector_version=12,
+        profile="production",
+        run_id="run-control-1",
+    )
+
+    fields = routing.parent_derived_child_route_snapshot_fields(
+        parent_params={"route_contract": parent_route_contract},
+        child_task_type=child_task_type,
+        child_params=child_params,
+    )
+
+    assert fields["route_key"] == child_task_type
+    assert fields["selected_backend"] == "wgp"
+    assert fields["selector_namespace"] == "canary"
+    assert fields["selector_version"] == 12
+    assert fields["selected_profile"] == "production"
+    assert fields["route_run_id"] == "run-control-1"
+    assert fields["route_selection_snapshot"]["support_state"] == "wgp_only"
+    assert fields["route_selection_snapshot"]["parent_route_key"] == expected_parent_route_key
+
+
+@pytest.mark.parametrize("child_task_type", ["travel_stitch", "join_clips_orchestrator", "join_final_stitch"])
+def test_parent_derived_control_rows_require_parent_route_contract(
+    routing, child_task_type: str
+) -> None:
+    with pytest.raises(ValueError, match="Missing or malformed parent params.route_contract"):
+        routing.parent_derived_child_route_snapshot_fields(
+            parent_params={},
+            child_task_type=child_task_type,
+            child_params={"orchestrator_details": {}},
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutator", "expected_reason"),
+    [
+        (lambda contract: contract.update({"selected_backend": "vibecomfy"}), "selected_backend"),
+        (lambda contract: contract.update({"selector_version": 99}), "selector_version"),
+        (lambda contract: contract.update({"selected_profile": "3"}), "selected_profile"),
+        (
+            lambda contract: contract["route_selection_snapshot"].update(
+                {"parent_route_key": "edit_video_orchestrator"}
+            ),
+            "parent_route_key",
+        ),
+    ],
+)
+def test_existing_child_route_contract_consistency_detects_mixed_route_identity(
+    routing, mutator, expected_reason: str
+) -> None:
+    parent_route_contract = routing.route_snapshot_fields(
+        task_id="join-parent-1",
+        task_type="join_clips_orchestrator",
+        params={},
+        backend="wgp",
+        selector_namespace="canary",
+        selector_version=12,
+        profile="production",
+    )
+    child_route_contract = routing.parent_derived_child_route_snapshot_fields(
+        parent_params={"route_contract": parent_route_contract},
+        child_task_type="join_final_stitch",
+        child_params={},
+    )
+    mutator(child_route_contract)
+
+    result = routing.validate_existing_child_route_contracts(
+        parent_params={"route_contract": parent_route_contract},
+        child_tasks=[{"id": "child-1", "params": {"route_contract": child_route_contract}}],
+        expected_parent_route_key="join_clips_orchestrator",
+    )
+
+    assert result.ok is False
+    assert result.mismatched_task_ids == ("child-1",)
+    assert result.fail_closed_reason
+    assert expected_reason in result.fail_closed_reason
+
+
+def test_existing_child_route_contract_consistency_accepts_matching_children(
+    routing,
+) -> None:
+    parent_route_contract = routing.route_snapshot_fields(
+        task_id="travel-parent-1",
+        task_type="travel_orchestrator",
+        params={},
+        backend="wgp",
+        selector_namespace="canary",
+        selector_version=12,
+        profile="production",
+    )
+    child_route_contract = routing.parent_derived_child_route_snapshot_fields(
+        parent_params={"route_contract": parent_route_contract},
+        child_task_type="travel_stitch",
+        child_params={},
+    )
+
+    result = routing.validate_existing_child_route_contracts(
+        parent_params={"route_contract": parent_route_contract},
+        child_tasks=[
+            {
+                "id": "stitch-1",
+                "params": json.dumps({"route_contract": child_route_contract}),
+            }
+        ],
+        expected_parent_route_key="travel_orchestrator",
+    )
+
+    assert result.ok is True
+    assert result.fail_closed_reason is None
+    assert result.mismatched_task_ids == ()
+
+
+def test_existing_child_route_contract_consistency_fails_closed_on_missing_contract(
+    routing,
+) -> None:
+    parent_route_contract = routing.route_snapshot_fields(
+        task_id="travel-parent-1",
+        task_type="travel_orchestrator",
+        params={},
+        backend="wgp",
+        selector_namespace="canary",
+        selector_version=12,
+        profile="production",
+    )
+
+    result = routing.validate_existing_child_route_contracts(
+        parent_params={"route_contract": parent_route_contract},
+        child_tasks=[{"id": "segment-1", "params": {"segment_index": 0}}],
+        expected_parent_route_key="travel_orchestrator",
+    )
+
+    assert result.ok is False
+    assert result.mismatched_task_ids == ("segment-1",)
+    assert result.fail_closed_reason
+    assert "missing params.route_contract" in result.fail_closed_reason
 
 
 def test_python_route_contract_matches_edge_fixtures(routing) -> None:
@@ -733,7 +1032,77 @@ def test_add_task_to_db_lifts_route_snapshot_fields_into_create_task_payload(mon
     assert captured_payload["input"]["prompt"] == "bridge"
 
 
-def test_parallel_join_child_creation_snapshots_transitions_and_leaves_final_null(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("dependant_on", "expected_dependant_on"),
+    [
+        ("created-1", ["created-1"]),
+        (["created-1", "created-2"], ["created-1", "created-2"]),
+    ],
+)
+def test_add_task_to_db_preserves_control_row_dependency_arrays(
+    monkeypatch, dependant_on, expected_dependant_on
+) -> None:
+    from source.core.db import task_completion
+
+    captured_payload = {}
+
+    class _Response:
+        status_code = 200
+        text = "ok"
+
+    def _fake_edge_call(**kwargs):
+        captured_payload.update(kwargs["payload"])
+        return _Response(), None
+
+    monkeypatch.setattr(
+        task_completion._cfg,
+        "SUPABASE_EDGE_CREATE_TASK_URL",
+        "https://edge.test/create-task",
+        raising=False,
+    )
+    monkeypatch.setattr(task_completion._cfg, "SUPABASE_URL", None, raising=False)
+    monkeypatch.setattr(task_completion._cfg, "SUPABASE_ACCESS_TOKEN", "token", raising=False)
+    monkeypatch.setattr(task_completion, "_call_edge_function_with_retry", _fake_edge_call)
+    monkeypatch.setattr("uuid.uuid4", lambda: "final-stitch-fixed-id")
+
+    route_fields = {
+        "selector_namespace": "canary",
+        "route_key": "join_final_stitch",
+        "selected_backend": "wgp",
+        "selector_version": 12,
+        "selected_profile": "production",
+        "selected_template_id": None,
+        "route_run_id": "run-1",
+        "worker_contract_version": 1,
+        "route_selection_snapshot": {
+            "selector_namespace": "canary",
+            "route_key": "join_final_stitch",
+            "selected_backend": "wgp",
+            "selector_version": 12,
+            "support_state": "wgp_only",
+            "selected_profile": "production",
+            "route_run_id": "run-1",
+            "worker_contract_version": 1,
+            "parent_route_key": "join_clips_orchestrator",
+        },
+    }
+
+    task_id = task_completion.add_task_to_db(
+        task_payload={"project_id": "project-1", "transition_task_ids": expected_dependant_on},
+        task_type_str="join_final_stitch",
+        dependant_on=dependant_on,
+        route_snapshot_fields=route_fields,
+    )
+
+    assert task_id == "final-stitch-fixed-id"
+    assert captured_payload["input"]["dependant_on"] == expected_dependant_on
+    assert captured_payload["input"]["route_key"] == "join_final_stitch"
+    assert captured_payload["input"]["route_selection_snapshot"]["parent_route_key"] == "join_clips_orchestrator"
+
+
+def test_parallel_join_child_creation_derives_transition_and_final_snapshots_from_parent(
+    routing, monkeypatch, tmp_path
+) -> None:
     from source.task_handlers.join import task_builder
 
     calls = []
@@ -743,6 +1112,16 @@ def test_parallel_join_child_creation_snapshots_transitions_and_leaves_final_nul
         return f"created-{len(calls)}"
 
     monkeypatch.setattr(task_builder, "add_task_to_db", _fake_add_task_to_db)
+    parent_route_contract = routing.route_snapshot_fields(
+        task_id="join-orch-1",
+        task_type="join_clips_orchestrator",
+        params={},
+        backend="wgp",
+        selector_namespace="canary",
+        selector_version=8,
+        profile="production",
+        run_id="run-parent-1",
+    )
 
     ok, message = task_builder._create_parallel_join_tasks(
         clip_list=[
@@ -765,6 +1144,8 @@ def test_parallel_join_child_creation_snapshots_transitions_and_leaves_final_nul
         orchestrator_project_id="project-1",
         orchestrator_payload={"fps": 16},
         parent_generation_id="parent-1",
+        parent_params={"route_contract": parent_route_contract},
+        parent_route_key="join_clips_orchestrator",
     )
 
     assert ok is True
@@ -774,11 +1155,546 @@ def test_parallel_join_child_creation_snapshots_transitions_and_leaves_final_nul
         "join_clips_segment",
         "join_final_stitch",
     ]
+    assert calls[2]["dependant_on"] == ["created-1", "created-2"]
     for call in calls[:2]:
         assert call["route_snapshot_fields"]["route_key"] == (
             "join_clips_segment__model-wan22_vace__guidance-vace__"
             "continuity-join_bridge__profile-default"
         )
         assert call["route_snapshot_fields"]["selected_backend"] == "wgp"
+        assert call["route_snapshot_fields"]["selector_namespace"] == "canary"
+        assert call["route_snapshot_fields"]["selector_version"] == 8
+        assert call["route_snapshot_fields"]["selected_profile"] == "production"
         assert call["route_snapshot_fields"]["route_selection_snapshot"]["parent_route_key"] == "join_clips_orchestrator"
-    assert calls[2]["route_snapshot_fields"] is None
+    assert calls[2]["route_snapshot_fields"]["route_key"] == "join_final_stitch"
+    assert calls[2]["route_snapshot_fields"]["selected_backend"] == "wgp"
+    assert calls[2]["route_snapshot_fields"]["selector_namespace"] == "canary"
+    assert calls[2]["route_snapshot_fields"]["route_selection_snapshot"]["parent_route_key"] == "join_clips_orchestrator"
+
+
+def test_edit_video_join_child_creation_uses_edit_video_parent_route_key(
+    routing, monkeypatch, tmp_path
+) -> None:
+    from source.task_handlers.join import task_builder
+
+    calls = []
+
+    def _fake_add_task_to_db(**kwargs):
+        calls.append(kwargs)
+        return f"created-{len(calls)}"
+
+    monkeypatch.setattr(task_builder, "add_task_to_db", _fake_add_task_to_db)
+    parent_route_contract = routing.route_snapshot_fields(
+        task_id="edit-video-orch-1",
+        task_type="edit_video_orchestrator",
+        params={},
+        backend="wgp",
+        selector_namespace="canary",
+        selector_version=11,
+        profile="production",
+        run_id="run-edit-parent-1",
+    )
+
+    ok, message = task_builder._create_join_chain_tasks(
+        clip_list=[
+            {"url": "https://example.com/keeper-a.mp4"},
+            {"url": "https://example.com/keeper-b.mp4"},
+            {"url": "https://example.com/keeper-c.mp4"},
+        ],
+        run_id="edit-video-run-1",
+        join_settings={
+            "model": "wan_2_2_vace_lightning_baseline_2_2_2",
+            "guidance_kind": "vace",
+            "continuity_case": "join_bridge",
+            "wgp_profile": "default",
+            "fps": 24,
+        },
+        per_join_settings=[],
+        vlm_enhanced_prompts=[],
+        current_run_output_dir=tmp_path,
+        orchestrator_task_id_str="edit-video-orch-1",
+        orchestrator_project_id="project-1",
+        orchestrator_payload={"fps": 24},
+        parent_generation_id="parent-edit-1",
+        parent_params={"route_contract": parent_route_contract},
+        parent_route_key="edit_video_orchestrator",
+    )
+
+    assert ok is True
+    assert "chain joins" in message
+    assert [call["task_type_str"] for call in calls] == [
+        "join_clips_segment",
+        "join_clips_segment",
+        "join_final_stitch",
+    ]
+    assert calls[0]["dependant_on"] is None
+    assert calls[1]["dependant_on"] == "created-1"
+    assert calls[2]["dependant_on"] == "created-2"
+    for call in calls:
+        snapshot = call["route_snapshot_fields"]["route_selection_snapshot"]
+        assert snapshot["parent_route_key"] == "edit_video_orchestrator"
+        assert call["route_snapshot_fields"]["selector_namespace"] == "canary"
+        assert call["route_snapshot_fields"]["selector_version"] == 11
+        assert call["route_snapshot_fields"]["selected_profile"] == "production"
+    assert calls[2]["route_snapshot_fields"]["route_key"] == "join_final_stitch"
+
+
+def test_join_child_creation_fails_closed_when_parent_route_identity_mismatches(
+    routing, monkeypatch, tmp_path
+) -> None:
+    from source.task_handlers.join import task_builder
+
+    calls = []
+
+    def _fake_add_task_to_db(**kwargs):
+        calls.append(kwargs)
+        return f"created-{len(calls)}"
+
+    monkeypatch.setattr(task_builder, "add_task_to_db", _fake_add_task_to_db)
+    parent_route_contract = routing.route_snapshot_fields(
+        task_id="edit-video-orch-2",
+        task_type="edit_video_orchestrator",
+        params={},
+        backend="wgp",
+        selector_namespace="canary",
+        selector_version=11,
+        profile="production",
+    )
+
+    with pytest.raises(ValueError, match="Parent route key mismatch"):
+        task_builder._create_join_chain_tasks(
+            clip_list=[
+                {"url": "https://example.com/keeper-a.mp4"},
+                {"url": "https://example.com/keeper-b.mp4"},
+            ],
+            run_id="edit-video-run-2",
+            join_settings={
+                "model": "wan_2_2_vace_lightning_baseline_2_2_2",
+                "guidance_kind": "vace",
+                "continuity_case": "join_bridge",
+                "wgp_profile": "default",
+            },
+            per_join_settings=[],
+            vlm_enhanced_prompts=[],
+            current_run_output_dir=tmp_path,
+            orchestrator_task_id_str="edit-video-orch-2",
+            orchestrator_project_id="project-1",
+            orchestrator_payload={"fps": 24},
+            parent_generation_id="parent-edit-2",
+            parent_params={"route_contract": parent_route_contract},
+            parent_route_key="join_clips_orchestrator",
+        )
+
+    assert calls == []
+
+
+def test_parallel_join_child_creation_falls_back_only_without_parent_contract(
+    monkeypatch, tmp_path
+) -> None:
+    from source.task_handlers.join import task_builder
+
+    calls = []
+
+    def _fake_add_task_to_db(**kwargs):
+        calls.append(kwargs)
+        return f"created-{len(calls)}"
+
+    monkeypatch.setattr(task_builder, "add_task_to_db", _fake_add_task_to_db)
+
+    ok, message = task_builder._create_parallel_join_tasks(
+        clip_list=[
+            {"url": "https://example.com/a.mp4"},
+            {"url": "https://example.com/b.mp4"},
+        ],
+        run_id="join-run-direct",
+        join_settings={
+            "model": "wan_2_2_vace_lightning_baseline_2_2_2",
+            "model_family": "wan22_vace",
+            "guidance_kind": "vace",
+            "continuity_case": "join_bridge",
+            "wgp_profile": "default",
+        },
+        per_join_settings=[],
+        vlm_enhanced_prompts=[],
+        current_run_output_dir=tmp_path,
+        orchestrator_task_id_str="join-orch-direct",
+        orchestrator_project_id="project-1",
+        orchestrator_payload={"fps": 16},
+        parent_generation_id="parent-1",
+    )
+
+    assert ok is True
+    assert "parallel transitions" in message
+    assert calls[0]["route_snapshot_fields"]["selected_backend"] == "wgp"
+    assert calls[0]["route_snapshot_fields"]["selector_namespace"] == "production"
+    assert calls[0]["route_snapshot_fields"]["route_selection_snapshot"]["parent_route_key"] == "join_clips_orchestrator"
+
+
+@pytest.mark.parametrize(
+    ("builder_name", "expected_cancel_context"),
+    [
+        ("_create_join_chain_tasks", "aborting join creation at index 1"),
+        ("_create_parallel_join_tasks", "aborting transition creation at index 1"),
+    ],
+)
+def test_join_child_creation_cancellation_mid_spawn_preserves_existing_children(
+    routing,
+    monkeypatch,
+    tmp_path,
+    builder_name: str,
+    expected_cancel_context: str,
+) -> None:
+    from source.task_handlers.join import shared as join_shared
+    from source.task_handlers.join import task_builder
+
+    calls = []
+    cancelled = []
+    status_checks = iter(["In Progress", "Cancelled"])
+
+    def _fake_add_task_to_db(**kwargs):
+        calls.append(kwargs)
+        return f"created-{len(calls)}"
+
+    monkeypatch.setattr(task_builder, "add_task_to_db", _fake_add_task_to_db)
+    monkeypatch.setattr(join_shared, "get_task_current_status", lambda _task_id: next(status_checks))
+    monkeypatch.setattr(
+        join_shared,
+        "cancel_orchestrator_children",
+        lambda task_id, reason: cancelled.append((task_id, reason)),
+    )
+
+    parent_route_contract = routing.route_snapshot_fields(
+        task_id="join-orch-cancel",
+        task_type="join_clips_orchestrator",
+        params={},
+        backend="wgp",
+        selector_namespace="canary",
+        selector_version=17,
+        profile="production",
+        run_id="run-cancel-1",
+    )
+    builder = getattr(task_builder, builder_name)
+
+    ok, message = builder(
+        clip_list=[
+            {"url": "https://example.com/a.mp4"},
+            {"url": "https://example.com/b.mp4"},
+            {"url": "https://example.com/c.mp4"},
+        ],
+        run_id="join-run-cancel",
+        join_settings={
+            "model": "wan_2_2_vace_lightning_baseline_2_2_2",
+            "guidance_kind": "vace",
+            "continuity_case": "join_bridge",
+            "wgp_profile": "default",
+            "fps": 16,
+        },
+        per_join_settings=[],
+        vlm_enhanced_prompts=[],
+        current_run_output_dir=tmp_path,
+        orchestrator_task_id_str="join-orch-cancel",
+        orchestrator_project_id="project-1",
+        orchestrator_payload={"fps": 16},
+        parent_generation_id="parent-1",
+        parent_params={"route_contract": parent_route_contract},
+        parent_route_key="join_clips_orchestrator",
+    )
+
+    assert ok is False
+    assert "Orchestrator cancelled" in message
+    assert expected_cancel_context in message
+    assert [call["task_type_str"] for call in calls] == ["join_clips_segment"]
+    assert calls[0]["route_snapshot_fields"]["selector_version"] == 17
+    assert calls[0]["route_snapshot_fields"]["route_selection_snapshot"]["parent_route_key"] == "join_clips_orchestrator"
+    assert cancelled == [("join-orch-cancel", "Orchestrator cancelled by user")]
+
+
+def test_join_existing_child_route_mismatch_returns_repair_required(
+    routing, monkeypatch
+) -> None:
+    from source.core.params.task_result import TaskOutcome
+    from source.task_handlers.join import shared as join_shared
+
+    parent_route_contract = routing.route_snapshot_fields(
+        task_id="edit-parent-1",
+        task_type="edit_video_orchestrator",
+        params={},
+        backend="wgp",
+        selector_namespace="canary",
+        selector_version=12,
+        profile="production",
+    )
+    child_route_contract = routing.parent_derived_child_route_snapshot_fields(
+        parent_params={"route_contract": parent_route_contract},
+        child_task_type="join_clips_segment",
+        child_params={
+            "model": "wan_2_2_vace_lightning_baseline_2_2_2",
+            "guidance_kind": "vace",
+            "continuity_case": "join_bridge",
+            "wgp_profile": "default",
+        },
+    )
+    child_route_contract["selector_version"] = 13
+
+    monkeypatch.setattr(
+        join_shared,
+        "get_orchestrator_child_tasks",
+        lambda _task_id: {
+            "join_clips_segment": [
+                {
+                    "id": "join-child-1",
+                    "status": "In Progress",
+                    "params": {"route_contract": child_route_contract},
+                }
+            ],
+            "join_final_stitch": [],
+        },
+    )
+
+    result = join_shared._check_existing_join_tasks(
+        "edit-parent-1",
+        1,
+        parent_params={"route_contract": parent_route_contract},
+        expected_parent_route_key="edit_video_orchestrator",
+    )
+
+    assert result is not None
+    assert result.outcome == TaskOutcome.FAILED
+    assert result.error_message
+    assert "[ROUTE_REPAIR_REQUIRED]" in result.error_message
+    assert "selector_version" in result.error_message
+
+
+def test_travel_existing_child_route_mismatch_returns_repair_required(
+    routing,
+) -> None:
+    from source.core.params.task_result import TaskOutcome
+    from source.task_handlers.travel.orchestration import orchestrator as travel_orchestrator
+
+    parent_route_contract = routing.route_snapshot_fields(
+        task_id="travel-parent-1",
+        task_type="travel_orchestrator",
+        params={},
+        backend="wgp",
+        selector_namespace="canary",
+        selector_version=12,
+        profile="production",
+    )
+    child_route_contract = routing.parent_derived_child_route_snapshot_fields(
+        parent_params={"route_contract": parent_route_contract},
+        child_task_type="travel_segment",
+        child_params={},
+    )
+    child_route_contract["selected_profile"] = "3"
+
+    result = travel_orchestrator._travel_handle_existing_children_idempotency(
+        orchestrator_task_id_str="travel-parent-1",
+        parent_params={"route_contract": parent_route_contract},
+        existing_segments=[
+            {
+                "id": "travel-child-1",
+                "status": "In Progress",
+                "params": {"segment_index": 0, "route_contract": child_route_contract},
+            }
+        ],
+        existing_stitch=[],
+        existing_join_orchestrators=[],
+        expected_segments=1,
+        required_stitch_count=0,
+        required_join_orchestrator_count=0,
+    )
+
+    assert result is not None
+    assert result.outcome == TaskOutcome.FAILED
+    assert result.error_message
+    assert "[ROUTE_REPAIR_REQUIRED]" in result.error_message
+    assert "selected_profile" in result.error_message
+
+
+def _debug_route_contract(
+    routing,
+    *,
+    task_id: str = "task-1",
+    task_type: str = "travel_segment",
+    backend: str = "wgp",
+    selector_namespace: str = "canary",
+    selector_version: int = 12,
+    profile: str = "production",
+    parent_route_key: str = "travel_orchestrator",
+) -> dict:
+    contract = routing.route_snapshot_fields(
+        task_id=task_id,
+        task_type=task_type,
+        params={},
+        backend=backend,
+        selector_namespace=selector_namespace,
+        selector_version=selector_version,
+        profile=profile,
+    )
+    contract["route_selection_snapshot"]["parent_route_key"] = parent_route_key
+    return contract
+
+
+def test_debug_route_contract_summary_reads_nested_params(routing) -> None:
+    from debug import diagnostics as debug_diagnostics
+
+    task = {
+        "id": "child-1",
+        "params": {
+            "route_contract": _debug_route_contract(
+                routing,
+                task_type="join_final_stitch",
+                parent_route_key="join_clips_orchestrator",
+            )
+        },
+    }
+
+    summary = debug_diagnostics.extract_route_contract_summary(task)
+    assert summary == {
+        "route_key": "join_final_stitch",
+        "selected_backend": "wgp",
+        "selector_version": 12,
+        "support_state": "wgp_only",
+        "selected_profile": "production",
+        "parent_route_key": "join_clips_orchestrator",
+    }
+
+    formatted = debug_diagnostics.format_route_contract_summary(task)
+    assert "route=join_final_stitch" in formatted
+    assert "backend=wgp" in formatted
+    assert "selector_version=12" in formatted
+    assert "support=wgp_only" in formatted
+    assert "profile=production" in formatted
+    assert "parent=join_clips_orchestrator" in formatted
+
+
+def test_route_repair_signals_cover_lifecycle_diagnostics(routing) -> None:
+    from debug import diagnostics as debug_diagnostics
+
+    parent = {
+        "id": "travel-parent-1",
+        "task_type": "travel_orchestrator",
+        "status": "Failed",
+        "error_message": "[ROUTE_REPAIR_REQUIRED] mixed child contracts",
+        "params": {
+            "route_contract": _debug_route_contract(
+                routing,
+                task_id="travel-parent-1",
+                task_type="travel_orchestrator",
+                parent_route_key="",
+            )
+        },
+    }
+    child = {
+        "id": "travel-child-1",
+        "task_type": "travel_segment",
+        "status": "In Progress",
+        "output_location": "https://storage.example/generated.mp4",
+        "params": {
+            "segment_index": 0,
+            "route_contract": _debug_route_contract(
+                routing,
+                backend="vibecomfy",
+                selector_version=13,
+                profile="canary-profile",
+                parent_route_key="join_clips_orchestrator",
+            ),
+        },
+    }
+
+    signals = debug_diagnostics.route_repair_signals(
+        child,
+        parent_task=parent,
+        siblings=[child],
+    )
+    assert "partial_child" in signals
+    assert "uploaded_but_not_completed" in signals
+    assert "mixed_backend" in signals
+    assert "mixed_selector_version" in signals
+    assert "mixed_selected_profile" in signals
+    assert "wrong_parent_route_key" in signals
+
+    complete_a = {
+        "id": "travel-child-complete-1",
+        "task_type": "travel_segment",
+        "status": "Complete",
+        "output_location": "https://storage.example/a.mp4",
+        "params": {
+            "segment_index": 0,
+            "route_contract": _debug_route_contract(routing),
+        },
+    }
+    complete_b = {
+        "id": "travel-child-complete-2",
+        "task_type": "travel_segment",
+        "status": "Complete",
+        "output_location": "https://storage.example/b.mp4",
+        "params": {
+            "segment_index": 0,
+            "route_contract": _debug_route_contract(routing),
+        },
+    }
+    duplicate_signals = debug_diagnostics.route_repair_signals(
+        complete_a,
+        parent_task=parent,
+        siblings=[complete_a, complete_b],
+    )
+    assert "duplicate_completion_candidate" in duplicate_signals
+
+    parent_signals = debug_diagnostics.route_repair_signals(parent)
+    assert "parent_repair_required" in parent_signals
+
+
+def test_task_formatter_displays_route_contract_and_repair_signals(routing) -> None:
+    from debug.formatters import Formatter
+    from debug.models import TaskInfo
+
+    parent = {
+        "id": "travel-parent-1",
+        "task_type": "travel_orchestrator",
+        "status": "Failed",
+        "worker_id": "worker-1",
+        "attempts": 1,
+        "error_message": "[ROUTE_REPAIR_REQUIRED] mixed child contracts",
+        "params": {
+            "route_contract": _debug_route_contract(
+                routing,
+                task_id="travel-parent-1",
+                task_type="travel_orchestrator",
+                parent_route_key="",
+            )
+        },
+    }
+    child = {
+        "id": "travel-child-1",
+        "task_type": "travel_segment",
+        "status": "In Progress",
+        "attempts": 0,
+        "output_location": "https://storage.example/generated.mp4",
+        "params": {
+            "segment_index": 0,
+            "route_contract": _debug_route_contract(
+                routing,
+                backend="vibecomfy",
+                selector_version=13,
+                profile="canary-profile",
+                parent_route_key="join_clips_orchestrator",
+            ),
+        },
+    }
+
+    formatted = Formatter.format_task(
+        TaskInfo(
+            task_id="travel-parent-1",
+            state=parent,
+            logs=[],
+            child_tasks=[child],
+        )
+    )
+
+    assert "Route: route=travel_orchestrator backend=wgp" in formatted
+    assert "Repair Signals: parent_repair_required" in formatted
+    assert "Route: route=travel_segment__" in formatted
+    assert "backend=vibecomfy" in formatted
+    assert "mixed_backend" in formatted
+    assert "wrong_parent_route_key" in formatted

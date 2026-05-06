@@ -202,7 +202,12 @@ def _handle_join_clips_orchestrator_task(
         # === EARLY IDEMPOTENCY CHECK (before expensive VLM work) ===
         # On subsequent wakes we're just polling for children to finish — don't re-emit
         # the full planning/SETUP story, just a one-line resuming anchor.
-        idempotency_check = _check_existing_join_tasks(orchestrator_task_id_str, num_joins)
+        idempotency_check = _check_existing_join_tasks(
+            orchestrator_task_id_str,
+            num_joins,
+            parent_params=task_params_from_db,
+            expected_parent_route_key="join_clips_orchestrator",
+        )
         if idempotency_check is not None:
             orchestrator_logger.essential(
                 f"▸ Join [{join_anchor_id}] resuming (existing join tasks found)",
@@ -349,7 +354,9 @@ def _handle_join_clips_orchestrator_task(
                 orchestrator_task_id_str=orchestrator_task_id_str,
                 orchestrator_project_id=orchestrator_project_id,
                 orchestrator_payload=orchestrator_payload,
-                parent_generation_id=parent_generation_id)
+                parent_generation_id=parent_generation_id,
+                parent_params=task_params_from_db,
+                parent_route_key="join_clips_orchestrator")
         else:
             success, message = _create_join_chain_tasks(
                 clip_list=clip_list,
@@ -361,7 +368,9 @@ def _handle_join_clips_orchestrator_task(
                 orchestrator_task_id_str=orchestrator_task_id_str,
                 orchestrator_project_id=orchestrator_project_id,
                 orchestrator_payload=orchestrator_payload,
-                parent_generation_id=parent_generation_id)
+                parent_generation_id=parent_generation_id,
+                parent_params=task_params_from_db,
+                parent_route_key="join_clips_orchestrator")
 
         if success:
             orchestrator_logger.essential(

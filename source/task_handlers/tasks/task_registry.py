@@ -76,6 +76,12 @@ from source.utils.resolution_utils import (
 # Import centralized task type definitions
 from source.task_handlers.tasks.task_types import DIRECT_QUEUE_TASK_TYPES
 from source.task_handlers.tasks.dispatch_manifest import HANDLER_IMPORT_SPECS as _HANDLER_SPECS
+from source.task_handlers.tasks.task_execution import execute_resolved_direct_task
+from source.task_handlers.tasks.template_routing import (
+    WorkerBackend,
+    resolve_task_route,
+    routing_telemetry_fields,
+)
 
 
 # ─── Coordination dataclasses for handle_travel_segment_via_queue ────────────
@@ -1341,6 +1347,53 @@ def _handle_travel_segment_via_queue_impl(task_params_dict: dict, main_output_di
             parameters=generation_params
         )
 
+        route_params = dict(generation_params)
+        route_params["_source_task_type"] = (
+            "individual_travel_segment" if is_standalone else "travel_segment"
+        )
+        travel_guidance_payload = _get_param(
+            "travel_guidance",
+            ctx.individual_params,
+            ctx.segment_params,
+            ctx.orchestrator_details,
+            prefer_truthy=True,
+        )
+        if isinstance(travel_guidance_payload, dict):
+            route_params["travel_guidance"] = travel_guidance_payload
+        if generation_params.get("video_source") or image_refs.prefix_video_for_source:
+            route_params["continuity_case"] = "video_source"
+        override_profile = _get_param(
+            "override_profile",
+            ctx.individual_params,
+            ctx.segment_params,
+            ctx.orchestrator_details,
+            prefer_truthy=True,
+        )
+        if override_profile is not None:
+            route_params["override_profile"] = override_profile
+        resolved_route = resolve_task_route(
+            task_id=task_id,
+            task_type=route_params["_source_task_type"],
+            params=route_params,
+        )
+        if resolved_route.backend == WorkerBackend.VIBECOMFY:
+            reason = resolved_route.fail_closed_reason or (
+                f"Route {resolved_route.route_key!r} is "
+                f"{resolved_route.support_state.value}"
+            )
+            telemetry_payload = routing_telemetry_fields(resolved_route)
+            telemetry_payload["decision"] = "fail_closed"
+            telemetry_payload["fail_closed_reason"] = reason
+            headless_logger.debug_block(
+                "VIBECOMFY_ROUTING",
+                telemetry_payload,
+                task_id=task_id,
+            )
+            return False, (
+                f"VibeComfy backend fail-closed for travel child {task_id}: "
+                f"{reason}"
+            )
+
         _submitted_task_id = task_queue.submit_task(generation_task)
 
         max_wait_time = 1800
@@ -1543,40 +1596,35 @@ class TaskRegistry:
     @staticmethod
     def _handle_direct_queue_task(task_type: str, context: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         task_id = context["task_id"]
-        task_queue = context["task_queue"]
         params = context["task_params_dict"]
         
         try:
-            generation_task = db_task_to_generation_task(
-                params, task_id, task_type, context["wan2gp_path"], context["debug_mode"]
+            resolved_route = resolve_task_route(
+                task_id=task_id,
+                task_type=task_type,
+                params=params,
             )
-            
-            if task_type == "wan_2_2_t2i":
-                generation_task.parameters["video_length"] = 1
-            
-            if context["colour_match_videos"]:
-                generation_task.parameters["colour_match_videos"] = True
-            if context["mask_active_frames"]:
-                generation_task.parameters["mask_active_frames"] = True
-            
-            task_queue.submit_task(generation_task)
-            
-            # Wait for completion
-            max_wait_time = 3600
-            elapsed = 0
-            while elapsed < max_wait_time:
-                status = task_queue.get_task_status(task_id)
-                if not status: return False, "Task status became None"
-                
-                if status.status == "completed":
-                    return True, status.result_path
-                elif status.status == "failed":
-                    return False, status.error_message or "Failed without message"
-                
-                time.sleep(2)
-                elapsed += 2
-            
-            return False, "Timeout"
+
+            def _build_wgp_generation_task():
+                generation_task = db_task_to_generation_task(
+                    params, task_id, task_type, context["wan2gp_path"], context["debug_mode"]
+                )
+
+                if task_type == "wan_2_2_t2i":
+                    generation_task.parameters["video_length"] = 1
+
+                if context["colour_match_videos"]:
+                    generation_task.parameters["colour_match_videos"] = True
+                if context["mask_active_frames"]:
+                    generation_task.parameters["mask_active_frames"] = True
+
+                return generation_task
+
+            return execute_resolved_direct_task(
+                resolved=resolved_route,
+                context=context,
+                build_wgp_generation_task=_build_wgp_generation_task,
+            )
             
         except (RuntimeError, ValueError, OSError) as e:
             task_logger.error(f"Queue error: {e}", exc_info=True)

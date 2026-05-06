@@ -7,7 +7,13 @@ _cfg = _task_completion._cfg
 _call_edge_function_with_retry = _task_completion._call_edge_function_with_retry
 
 
-def add_task_to_db(task_payload: dict, task_type_str: str, dependant_on=None, db_path: str | None = None) -> str:
+def add_task_to_db(
+    task_payload: dict,
+    task_type_str: str,
+    dependant_on=None,
+    db_path: str | None = None,
+    route_snapshot_fields: dict | None = None,
+) -> str:
     """Mirror the flat helper while honoring monkeypatches on this shim module."""
     original_retry = _task_completion._call_edge_function_with_retry
     try:
@@ -17,6 +23,7 @@ def add_task_to_db(task_payload: dict, task_type_str: str, dependant_on=None, db
             task_type_str=task_type_str,
             dependant_on=dependant_on,
             db_path=db_path,
+            route_snapshot_fields=route_snapshot_fields,
         )
     finally:
         _task_completion._call_edge_function_with_retry = original_retry

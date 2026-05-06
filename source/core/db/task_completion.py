@@ -13,7 +13,13 @@ from . import config as _cfg
 from .edge_helpers import _call_edge_function_with_retry
 
 
-def add_task_to_db(task_payload: dict, task_type_str: str, dependant_on: str | list[str] | None = None, db_path: str | None = None) -> str:
+def add_task_to_db(
+    task_payload: dict,
+    task_type_str: str,
+    dependant_on: str | list[str] | None = None,
+    db_path: str | None = None,
+    route_snapshot_fields: dict | None = None,
+) -> str:
     """
     Adds a new task to the Supabase database via Edge Function.
 
@@ -23,6 +29,7 @@ def add_task_to_db(task_payload: dict, task_type_str: str, dependant_on: str | l
         dependant_on: Optional dependency - single task ID string or list of task IDs.
                       When list is provided, task will only run when ALL dependencies complete.
         db_path: Ignored (kept for API compatibility)
+        route_snapshot_fields: Optional route fields to lift through create-task for child rows.
 
     Returns:
         str: The database row ID (UUID) assigned to the task
@@ -66,11 +73,27 @@ def add_task_to_db(task_payload: dict, task_type_str: str, dependant_on: str | l
     # Family matches task_types.name in the DB. The edge function has explicit
     # resolvers for frontend-initiated types and a DB-backed passthrough for
     # worker-created types (checks task_types table).
+    route_fields_for_input = dict(route_snapshot_fields or {})
+    allowed_route_fields = {
+        "selector_namespace",
+        "route_key",
+        "selected_backend",
+        "selector_version",
+        "route_selection_snapshot",
+    }
+    unexpected_route_fields = set(route_fields_for_input) - allowed_route_fields
+    if unexpected_route_fields:
+        raise ValueError(
+            "Unexpected route snapshot fields: "
+            f"{sorted(unexpected_route_fields)}"
+        )
+
     payload_edge = {
         "family": task_type_str,
         "project_id": project_id,
         "input": {
             **params_for_db,
+            **route_fields_for_input,
             "task_id": actual_db_row_id,
             "dependant_on": dependant_on_list,
         },

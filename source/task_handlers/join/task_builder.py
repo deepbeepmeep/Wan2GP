@@ -11,6 +11,7 @@ from typing import Tuple, List, Optional
 from source.core.db.task_completion import add_task_to_db
 from source.core.log import orchestrator_logger
 from source.task_handlers.join.shared import _check_orchestrator_cancelled
+from source.task_handlers.tasks.template_routing import route_snapshot_fields
 
 __all__ = [
     "_create_join_chain_tasks",
@@ -99,7 +100,14 @@ def _create_join_chain_tasks(
         actual_db_row_id = add_task_to_db(
             task_payload=join_payload,
             task_type_str="join_clips_segment",
-            dependant_on=previous_join_task_id
+            dependant_on=previous_join_task_id,
+            route_snapshot_fields=route_snapshot_fields(
+                task_type="join_clips_segment",
+                params=join_payload,
+                backend="wgp",
+                selector_namespace="production",
+                parent_route_key="join_clips_orchestrator",
+            ),
         )
 
         previous_join_task_id = actual_db_row_id
@@ -131,7 +139,8 @@ def _create_join_chain_tasks(
     final_stitch_task_id = add_task_to_db(
         task_payload=final_stitch_payload,
         task_type_str="join_final_stitch",
-        dependant_on=previous_join_task_id
+        dependant_on=previous_join_task_id,
+        route_snapshot_fields=None,
     )
 
     return True, f"Successfully enqueued {joins_created} chain joins + 1 final stitch for run {run_id}"
@@ -216,7 +225,14 @@ def _create_parallel_join_tasks(
         trans_task_id = add_task_to_db(
             task_payload=transition_payload,
             task_type_str="join_clips_segment",
-            dependant_on=None
+            dependant_on=None,
+            route_snapshot_fields=route_snapshot_fields(
+                task_type="join_clips_segment",
+                params=transition_payload,
+                backend="wgp",
+                selector_namespace="production",
+                parent_route_key="join_clips_orchestrator",
+            ),
         )
 
         transition_task_ids.append(trans_task_id)
@@ -246,7 +262,8 @@ def _create_parallel_join_tasks(
     final_stitch_task_id = add_task_to_db(
         task_payload=final_stitch_payload,
         task_type_str="join_final_stitch",
-        dependant_on=transition_task_ids
+        dependant_on=transition_task_ids,
+        route_snapshot_fields=None,
     )
 
     return True, f"Successfully enqueued {num_joins} parallel transitions + 1 final stitch for run {run_id}"

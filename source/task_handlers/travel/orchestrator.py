@@ -23,6 +23,7 @@ from ...core.params.travel_guidance import AnchorEntry, TravelGuidanceConfig
 from ...core.params.task_result import TaskResult
 from ...core.log.display_names import friendly_child_id, friendly_task_id, rel_path
 from ...runtime.wgp_bridge import get_model_fps, get_model_min_frames_and_step
+from ..tasks.template_routing import route_snapshot_fields
 
 from .svi_config import SVI_DEFAULT_PARAMS, SVI_STITCH_OVERLAP
 from .debug_utils import flush_ram_snapshots, log_ram_usage
@@ -2241,7 +2242,14 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             actual_db_row_id = db_ops.add_task_to_db(
                 task_payload=segment_payload,
                 task_type_str="travel_segment",
-                dependant_on=previous_segment_task_id
+                dependant_on=previous_segment_task_id,
+                route_snapshot_fields=route_snapshot_fields(
+                    task_type="travel_segment",
+                    params=segment_payload,
+                    backend="wgp",
+                    selector_namespace="production",
+                    parent_route_key="travel_orchestrator",
+                ),
             )
             # Record the actual DB ID so subsequent segments depend on the real DB row ID
             actual_segment_db_id_by_index[idx] = actual_db_row_id
@@ -2352,7 +2360,8 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             actual_stitch_db_row_id = db_ops.add_task_to_db(
                 task_payload=stitch_payload, 
                 task_type_str="travel_stitch",
-                dependant_on=last_segment_task_id
+                dependant_on=last_segment_task_id,
+                route_snapshot_fields=None,
             )
             
             # Post-insert verification of dependency from DB
@@ -2451,7 +2460,8 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             join_orchestrator_task_id = db_ops.add_task_to_db(
                 task_payload={"orchestrator_details": join_orchestrator_payload},
                 task_type_str="join_clips_orchestrator",
-                dependant_on=all_segment_task_ids  # Multi-dependency: all segments must complete
+                dependant_on=all_segment_task_ids,  # Multi-dependency: all segments must complete
+                route_snapshot_fields=None,
             )
             travel_logger.debug(
                 f"[JOIN_STITCH] created id={join_orchestrator_task_id}, dependency_count={len(all_segment_task_ids)}",

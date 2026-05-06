@@ -812,7 +812,8 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
 
             db_ops.add_task_to_db(
                 task_payload=upscale_payload,
-                task_type_str=upscaler_engine_to_use
+                task_type_str=upscaler_engine_to_use,
+                route_snapshot_fields=None,
             )
             travel_logger.debug(f"Enqueued upscale sub-task {upscale_sub_task_id} ({upscaler_engine_to_use}). Waiting...", task_id=stitch_task_id_str)
 

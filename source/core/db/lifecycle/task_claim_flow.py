@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Any, Callable
+
+from source.task_handlers.tasks.template_routing import parse_worker_backend
 
 
 @dataclass(frozen=True)
@@ -44,7 +47,16 @@ def claim_oldest_queued_task(*, worker_id: str, runtime, deps: TaskClaimFlowDepe
 
     response, _error = deps.call_edge_function_with_retry(
         edge_url=request.url,
-        payload={"worker_id": worker_id, "run_type": "gpu"},
+        payload={
+            "worker_id": worker_id,
+            "run_type": "gpu",
+            "worker_backend": parse_worker_backend().value,
+            "selector_namespace": (
+                os.getenv("REIGH_SELECTOR_NAMESPACE")
+                or os.getenv("ROUTE_SELECTOR_NAMESPACE")
+                or "production"
+            ),
+        },
         headers=request.headers,
         function_name="claim-next-task",
     )

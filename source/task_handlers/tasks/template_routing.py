@@ -53,6 +53,22 @@ class ResolvedTask:
         )
 
 
+DIRECT_ROUTE_ALIASES: Mapping[str, str] = MappingProxyType(
+    {
+        "z_image": "z_image_turbo",
+        "z_image_turbo": "z_image_turbo",
+        "z_image_turbo_i2i": "z_image_turbo_i2i",
+        "qwen_image": "qwen_image",
+        "qwen_image_2512": "qwen_image_2512",
+        "optimised_t2i": "wan_2_2_t2i",
+        "wan_2_2_t2i": "wan_2_2_t2i",
+        "qwen_image_edit": "qwen_image_edit",
+        "qwen_image_style": "qwen_image_style",
+        "image_inpaint": "image_inpaint",
+        "annotated_image_edit": "annotated_image_edit",
+    }
+)
+
 SPRINT_2_SELECTOR_MAP: Mapping[str, RouteSelectorEntry] = MappingProxyType(
     {
         "z_image_turbo": RouteSelectorEntry(
@@ -60,6 +76,11 @@ SPRINT_2_SELECTOR_MAP: Mapping[str, RouteSelectorEntry] = MappingProxyType(
             support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
             template_id="image/z_image",
             default_resolution="1024x1024",
+        ),
+        "z_image_turbo_i2i": RouteSelectorEntry(
+            route_key="z_image_turbo_i2i",
+            support_state=RouteSupportState.WGP_ONLY,
+            template_id=None,
         ),
         "qwen_image_2512": RouteSelectorEntry(
             route_key="qwen_image_2512",
@@ -101,6 +122,11 @@ SPRINT_2_SELECTOR_MAP: Mapping[str, RouteSelectorEntry] = MappingProxyType(
             support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
             template_id=None,
         ),
+        "join_clips_segment": RouteSelectorEntry(
+            route_key="join_clips_segment",
+            support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            template_id=None,
+        ),
         "wan_2_2_t2i": RouteSelectorEntry(
             route_key="wan_2_2_t2i",
             support_state=RouteSupportState.WGP_ONLY,
@@ -127,13 +153,13 @@ def derive_route_key(task_type: str, params: Mapping[str, Any] | None = None) ->
     task_params = params or {}
 
     source_task_type = task_params.get("_source_task_type")
-    if source_task_type in {"travel_segment", "individual_travel_segment"}:
-        return _travel_route_key(str(source_task_type), task_params)
+    if source_task_type in _DIMENSIONAL_CHILD_TASK_TYPES:
+        return _dimensional_child_route_key(str(source_task_type), task_params)
 
-    if task_type in {"travel_segment", "individual_travel_segment"}:
-        return _travel_route_key(task_type, task_params)
+    if task_type in _DIMENSIONAL_CHILD_TASK_TYPES:
+        return _dimensional_child_route_key(task_type, task_params)
 
-    return task_type
+    return _direct_route_key(task_type)
 
 
 def resolve_task_route(
@@ -194,6 +220,57 @@ def routing_telemetry_fields(resolved: ResolvedTask) -> dict[str, str | None]:
     }
 
 
+def route_snapshot_fields(
+    *,
+    task_type: str,
+    params: Mapping[str, Any] | None = None,
+    task_id: str | None = None,
+    backend: WorkerBackend | str | None = None,
+    selector_namespace: str = "production",
+    selector_version: int | str | None = None,
+    parent_route_key: str | None = None,
+) -> dict[str, Any]:
+    """Return top-level task route fields plus a JSON-safe snapshot.
+
+    The database migration added these columns for create-time observability and
+    later child-row pinning. Live claim authorization still belongs to the
+    selector/capability RPCs; this helper only serializes the route decision a
+    caller already intends to persist.
+    """
+
+    task_params = dict(params or {})
+    selected_backend = _coerce_backend(backend) if backend is not None else parse_worker_backend()
+    route_key = derive_route_key(task_type, task_params)
+    selector_entry = _selector_entry_for_route_key(route_key)
+    support_state = (
+        selector_entry.support_state
+        if selector_entry is not None
+        else RouteSupportState.VIBECOMFY_UNSUPPORTED
+    )
+    template_id = selector_entry.template_id if selector_entry is not None else None
+
+    snapshot: dict[str, Any] = {
+        "selector_namespace": selector_namespace,
+        "route_key": route_key,
+        "selected_backend": selected_backend.value,
+        "selector_version": selector_version,
+        "support_state": support_state.value,
+        "template_id": template_id,
+    }
+    if task_id is not None:
+        snapshot["task_id"] = task_id
+    if parent_route_key is not None:
+        snapshot["parent_route_key"] = parent_route_key
+
+    return {
+        "selector_namespace": selector_namespace,
+        "route_key": route_key,
+        "selected_backend": selected_backend.value,
+        "selector_version": selector_version,
+        "route_selection_snapshot": snapshot,
+    }
+
+
 def _coerce_backend(backend: WorkerBackend | str) -> WorkerBackend:
     if isinstance(backend, WorkerBackend):
         return backend
@@ -220,20 +297,35 @@ def _is_dimensional_travel_route_key(route_key: str) -> bool:
         (
             "travel_segment__",
             "individual_travel_segment__",
+            "join_clips_segment__",
         )
     )
 
 
-def _travel_route_key(task_type: str, params: Mapping[str, Any]) -> str:
+_DIMENSIONAL_CHILD_TASK_TYPES = frozenset(
+    {
+        "travel_segment",
+        "individual_travel_segment",
+        "join_clips_segment",
+    }
+)
+
+
+def _direct_route_key(task_type: str) -> str:
+    slugged = _slug(task_type)
+    return DIRECT_ROUTE_ALIASES.get(slugged, task_type)
+
+
+def _dimensional_child_route_key(task_type: str, params: Mapping[str, Any]) -> str:
     """Derive the Cohort E child key without importing comparison scripts."""
 
     return "__".join(
         [
             _slug(task_type),
-            f"model-{_slug(_travel_model_family(params))}",
-            f"guidance-{_slug(_travel_guidance_kind(params))}",
-            f"continuity-{_slug(_travel_continuity_case(params))}",
-            f"profile-{_slug(_travel_profile(params))}",
+            f"model-{_slug(_route_model_family(params))}",
+            f"guidance-{_slug(_route_guidance_kind(task_type, params))}",
+            f"continuity-{_slug(_route_continuity_case(task_type, params))}",
+            f"profile-{_slug(_route_profile(params))}",
         ]
     )
 
@@ -246,7 +338,7 @@ def _slug(value: Any) -> str:
     return text or "none"
 
 
-def _travel_model_family(params: Mapping[str, Any]) -> str:
+def _route_model_family(params: Mapping[str, Any]) -> str:
     explicit_family = params.get("model_family")
     if explicit_family:
         return str(explicit_family)
@@ -265,7 +357,7 @@ def _travel_model_family(params: Mapping[str, Any]) -> str:
     return normalized
 
 
-def _travel_guidance_kind(params: Mapping[str, Any]) -> str:
+def _route_guidance_kind(task_type: str, params: Mapping[str, Any]) -> str:
     explicit_kind = params.get("guidance_kind") or params.get("travel_guidance_kind")
     if explicit_kind:
         return str(explicit_kind)
@@ -282,20 +374,24 @@ def _travel_guidance_kind(params: Mapping[str, Any]) -> str:
         return "vace"
     if params.get("video_guide") or params.get("video_mask"):
         return "vace"
+    if task_type == "join_clips_segment" and _route_model_family(params) == "wan22_vace":
+        return "vace"
 
     return "none"
 
 
-def _travel_continuity_case(params: Mapping[str, Any]) -> str:
+def _route_continuity_case(task_type: str, params: Mapping[str, Any]) -> str:
     explicit_case = params.get("continuity_case")
     if explicit_case:
         return str(explicit_case)
+    if task_type == "join_clips_segment":
+        return "join_bridge"
     if params.get("video_source"):
         return "video_source"
     return "first_last"
 
 
-def _travel_profile(params: Mapping[str, Any]) -> str:
+def _route_profile(params: Mapping[str, Any]) -> str:
     return str(
         params.get("profile")
         or params.get("wgp_profile")
@@ -344,6 +440,7 @@ def _extract_memory_profile(params: Mapping[str, Any]) -> str | None:
 
 
 __all__ = [
+    "DIRECT_ROUTE_ALIASES",
     "ResolvedTask",
     "RouteSelectorEntry",
     "RouteSupportState",
@@ -352,6 +449,7 @@ __all__ = [
     "derive_route_key",
     "parse_worker_backend",
     "resolve_task_route",
+    "route_snapshot_fields",
     "route_support_state",
     "routing_telemetry_fields",
 ]

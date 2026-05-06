@@ -16,6 +16,9 @@ _MODULES = {
 # Re-export commonly used functions so callers can do:
 #   from source.media.vlm import generate_transition_prompts_batch
 _FUNCTION_REEXPORTS = {
+    "generate_join_quad_prompts": ("source.media.vlm.api", "generate_join_quad_prompts"),
+    "generate_single_image_prompts": ("source.media.vlm.api", "generate_single_image_prompts"),
+    "generate_transition_pair_prompts": ("source.media.vlm.api", "generate_transition_pair_prompts"),
     "generate_transition_prompts_batch": ("source.media.vlm.api", "generate_transition_prompts_batch"),
     "generate_transition_prompt": ("source.media.vlm.api", "generate_transition_prompt"),
 }

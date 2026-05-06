@@ -3,6 +3,11 @@
 from pathlib import Path
 
 from source.core.log import headless_logger
+from source.models.lora.sanitizer import (
+    sanitize_lora_entries,
+    sanitize_lora_payload,
+    sanitize_lora_values,
+)
 
 __all__ = [
     "LORA_FULL_MODEL_TENSOR_THRESHOLD",
@@ -10,6 +15,9 @@ __all__ = [
     "HTML_SNIFF_BYTES",
     "validate_lora_file",
     "check_loras_in_directory",
+    "sanitize_lora_entries",
+    "sanitize_lora_payload",
+    "sanitize_lora_values",
 ]
 
 # --- LoRA validation thresholds ---

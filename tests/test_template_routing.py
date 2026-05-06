@@ -43,31 +43,33 @@ def test_supported_direct_routes_resolve_to_vibecomfy_templates(routing) -> None
     assert z_image.template_id == "image/z_image"
     assert z_image.should_use_vibecomfy is True
 
-    qwen = routing.resolve_task_route(
-        task_id="task-q",
-        task_type="qwen_image_2512",
-        params={"prompt": "a ceramic bowl", "resolution": "768x768"},
-        backend="vibecomfy",
-    )
-    assert qwen.route_key == "qwen_image_2512"
-    assert qwen.support_state == routing.RouteSupportState.VIBECOMFY_SUPPORTED
-    assert qwen.template_id == "image/qwen_image_2512"
-    assert qwen.should_use_vibecomfy is True
 
-
-def test_unknown_direct_route_fails_closed_under_vibecomfy(routing) -> None:
+@pytest.mark.parametrize(
+    "task_type",
+    [
+        "qwen_image_2512",
+        "qwen_image",
+        "qwen_image_edit",
+        "qwen_image_style",
+        "image_inpaint",
+        "annotated_image_edit",
+    ],
+)
+def test_sprint_qwen_direct_routes_are_explicit_wgp_only(routing, task_type: str) -> None:
     resolved = routing.resolve_task_route(
         task_id="task-unsupported",
-        task_type="qwen_image_edit",
+        task_type=task_type,
         params={"prompt": "edit this"},
         backend="vibecomfy",
     )
 
-    assert resolved.route_key == "qwen_image_edit"
-    assert resolved.support_state == routing.RouteSupportState.VIBECOMFY_UNSUPPORTED
+    assert resolved.route_key == task_type
+    assert resolved.support_state == routing.RouteSupportState.WGP_ONLY
+    assert resolved.template_id is None
     assert resolved.should_use_vibecomfy is False
     assert resolved.fail_closed_reason
-    assert "no VibeComfy selector entry" in resolved.fail_closed_reason
+    assert "wgp_only" in resolved.fail_closed_reason
+    assert "will not fall back to WGP" in resolved.fail_closed_reason
 
 
 def test_routing_telemetry_fields_are_compact_and_stable(routing) -> None:
@@ -224,33 +226,16 @@ def test_reigh_backend_vibecomfy_is_parsed_strictly(routing, monkeypatch) -> Non
         routing.parse_worker_backend("comfy")
 
 
-@pytest.mark.parametrize(
-    ("task_type", "default_resolution", "bad_resolution"),
-    [
-        ("z_image_turbo", "1024x1024", "896x496"),
-        ("qwen_image_2512", "768x768", "1024x1024"),
-    ],
-)
-def test_non_default_direct_resolution_fails_closed_under_vibecomfy(
-    routing, task_type: str, default_resolution: str, bad_resolution: str
-) -> None:
-    default_resolved = routing.resolve_task_route(
-        task_id=f"{task_type}-default",
-        task_type=task_type,
-        params={"prompt": "default resolution", "resolution": default_resolution},
+def test_z_image_non_default_resolution_remains_vibecomfy_supported(routing) -> None:
+    resolved = routing.resolve_task_route(
+        task_id="z-image-non-default",
+        task_type="z_image_turbo",
+        params={"prompt": "non default", "resolution": "896x496"},
         backend="vibecomfy",
     )
-    assert default_resolved.fail_closed_reason is None
 
-    non_default = routing.resolve_task_route(
-        task_id=f"{task_type}-non-default",
-        task_type=task_type,
-        params={"prompt": "non default", "resolution": bad_resolution},
-        backend="vibecomfy",
-    )
-    assert non_default.should_use_vibecomfy is False
-    assert non_default.fail_closed_reason
-    assert bad_resolution in non_default.fail_closed_reason
+    assert resolved.should_use_vibecomfy is True
+    assert resolved.fail_closed_reason is None
 
 
 def test_module_has_no_wgp_heavy_or_vibecomfy_imports() -> None:

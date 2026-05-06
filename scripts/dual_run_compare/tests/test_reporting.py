@@ -27,8 +27,8 @@ def test_json_report_includes_route_sections_oracles_shadow_and_raw_refs() -> No
         "product_effect_oracles",
         "billing_idempotency_oracles",
     }
-    assert report["route_status_counts"]["red"] == 6
-    assert report["route_status_counts"]["wgp_only"] == 3
+    assert report["route_status_counts"]["red"] == 5
+    assert report["route_status_counts"]["wgp_only"] == 9
 
     video = next(route for route in report["routes"] if route["route_key"] == "video_enhance")
     assert video["status"] == "red"
@@ -55,20 +55,48 @@ def test_json_report_includes_route_sections_oracles_shadow_and_raw_refs() -> No
     }.issubset({ref["kind"] for ref in video["raw_observation_refs"]})
 
     qwen = next(route for route in report["routes"] if route["route_key"] == "qwen_image")
-    assert qwen["calibration_status"] == "deferred_pending_sprint_0c_disk"
+    assert qwen["status"] == "wgp_only"
+    assert qwen["calibration_status"] == "wgp_only"
     assert qwen["comparison"]["required_metric_keys"]
     assert qwen["metric_results"] == []
 
     sprint2_landed = {
         route["route_key"]: route
         for route in report["routes"]
-        if route["route_key"] in {"z_image_turbo", "qwen_image_2512"}
+        if route["route_key"] in {"z_image_turbo"}
     }
-    assert set(sprint2_landed) == {"z_image_turbo", "qwen_image_2512"}
+    assert set(sprint2_landed) == {"z_image_turbo"}
     for route in sprint2_landed.values():
         assert route["status"] == "red"
         assert route["landed_status"] == "sprint2_vibecomfy_direct_default_resolution_landed"
         assert route["report_status_policy"] == "red_or_green_required"
+
+    sprint5_wgp_only = {
+        route["route_key"]: route
+        for route in report["routes"]
+        if route["route_key"]
+        in {
+            "qwen_image",
+            "qwen_image_2512",
+            "qwen_image_edit",
+            "qwen_image_style",
+            "image_inpaint",
+            "annotated_image_edit",
+        }
+    }
+    assert set(sprint5_wgp_only) == {
+        "qwen_image",
+        "qwen_image_2512",
+        "qwen_image_edit",
+        "qwen_image_style",
+        "image_inpaint",
+        "annotated_image_edit",
+    }
+    for route in sprint5_wgp_only.values():
+        assert route["status"] == "wgp_only"
+        assert route["calibration_status"] == "wgp_only"
+        assert route["landed_status"] == "sprint5_wgp_only"
+        assert route["report_status_policy"] == "wgp_only"
 
     wan = next(route for route in report["routes"] if route["route_key"] == "wan_2_2_t2i")
     assert wan["status"] == "wgp_only"

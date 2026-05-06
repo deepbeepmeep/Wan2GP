@@ -29,6 +29,15 @@ REQUIRED_MANIFEST_FIELDS = {
     "owner",
 }
 
+SPRINT5_DIRECT_WGP_ONLY_ROUTES = {
+    "qwen_image",
+    "qwen_image_2512",
+    "qwen_image_edit",
+    "qwen_image_style",
+    "image_inpaint",
+    "annotated_image_edit",
+}
+
 
 def _load_manifests() -> dict[str, dict]:
     return {
@@ -97,3 +106,43 @@ def test_seed_fixture_required_routes_are_explicit_and_local() -> None:
         else:
             assert manifest["source_fixture_status"] == "worker_matrix_case"
             assert manifest["seed_payload_ref"] is None
+
+
+def test_sprint5_direct_routes_have_independent_wgp_only_policy_evidence() -> None:
+    thresholds = Thresholds.load(strict=True)
+    manifests = _load_manifests()
+    registry = json.loads((DUAL_RUN_DIR / "fixtures" / "non_rayworker" / "registry_snapshot.json").read_text())
+
+    assert SPRINT5_DIRECT_WGP_ONLY_ROUTES <= set(thresholds.routes)
+    assert SPRINT5_DIRECT_WGP_ONLY_ROUTES <= set(manifests)
+    assert SPRINT5_DIRECT_WGP_ONLY_ROUTES <= set(registry["routes"])
+
+    for route_key in sorted(SPRINT5_DIRECT_WGP_ONLY_ROUTES):
+        route = thresholds.routes[route_key]
+        manifest = manifests[route_key]
+        registry_route = registry["routes"][route_key]
+
+        assert route["calibration_status"] == "wgp_only"
+        assert manifest["calibration_status"] == "wgp_only"
+        assert manifest["route_policy"] == "wgp_only"
+        assert manifest["policy_evidence_ref"] == "fixtures/non_rayworker/registry_snapshot.json"
+        assert manifest["task_type"] == route["task_type"] == registry_route["task_type"]
+        assert registry_route["report_status_policy"] == "wgp_only"
+        assert registry_route["landed_status"] == "sprint5_wgp_only"
+
+    assert manifests["qwen_image"]["task_type"] == "qwen_image"
+    assert manifests["qwen_image_2512"]["task_type"] == "qwen_image_2512"
+    assert manifests["qwen_image"]["seed_payload_ref"] != manifests["qwen_image_2512"]["seed_payload_ref"]
+    assert thresholds.routes["qwen_image"]["source_fixture_ref"] != thresholds.routes["qwen_image_2512"]["source_fixture_ref"]
+
+
+def test_sprint5_wgp_only_direct_routes_do_not_require_live_parity_observations() -> None:
+    thresholds = Thresholds.load(strict=True)
+    manifests = _load_manifests()
+    registry = json.loads((DUAL_RUN_DIR / "fixtures" / "non_rayworker" / "registry_snapshot.json").read_text())
+
+    for route_key in sorted(SPRINT5_DIRECT_WGP_ONLY_ROUTES):
+        assert thresholds.routes[route_key]["calibration_status"] == "wgp_only"
+        assert manifests[route_key]["route_policy"] == "wgp_only"
+        assert registry["routes"][route_key]["report_status_policy"] == "wgp_only"
+        assert registry["routes"][route_key]["report_status_policy"] != "red_or_green_required"

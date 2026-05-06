@@ -74,12 +74,20 @@ def test_defaults_to_python311_and_avoids_unsupported_cli_flags(monkeypatch, tmp
 
     command = commands[0]
     assert ok is True
-    assert command[:5] == ["python3.11", "-m", "vibecomfy.cli", "run", "image/z_image"]
-    assert "--ready" in command
+    assert command[:4] == ["python3.11", "-m", "vibecomfy.cli", "run"]
+    scratchpad = Path(command[4])
+    assert scratchpad.name == "z_image_turbo_scratchpad.py"
+    assert scratchpad.exists()
+    scratchpad_source = scratchpad.read_text(encoding="utf-8")
+    assert "resolution(1024, 1024)" in scratchpad_source
+    assert 'workflow.set_prompt("adapter prompt")' in scratchpad_source
+    assert "workflow.set_seed(7)" in scratchpad_source
+    assert "workflow.set_steps(8)" in scratchpad_source
+    assert "--ready" not in command
     assert "--runtime" in command
-    assert "--prompt" in command
-    assert "--seed" in command
-    assert "--steps" in command
+    assert "--prompt" not in command
+    assert "--seed" not in command
+    assert "--steps" not in command
     assert "--resolution" not in command
     assert "--output-directory" not in command
 
@@ -198,21 +206,30 @@ def test_output_discovery_from_isolated_run_directory(monkeypatch, tmp_path):
     assert "vibecomfy_runs/adapter-task" in result
 
 
-def test_non_default_resolution_fails_closed_without_subprocess(monkeypatch, tmp_path):
-    def _run(*_args, **_kwargs):
-        raise AssertionError("subprocess should not run for fail-closed resolution")
+def test_non_default_resolution_is_patched_through_scratchpad(monkeypatch, tmp_path):
+    commands = []
+
+    def _run(command, cwd, env, text, capture_output, check):
+        commands.append(command)
+        output = Path(cwd) / "out.png"
+        output.write_text("fake", encoding="utf-8")
+        return _completed(stdout="output: out.png\n")
 
     monkeypatch.setattr(vibecomfy_adapter.subprocess, "run", _run)
     resolved = resolve_task_route(
         task_id="adapter-task",
         task_type="z_image_turbo",
-        params={"prompt": "bad resolution", "resolution": "896x496"},
+        params={"prompt": "non default", "resolution": "896x496", "seed": 123, "num_inference_steps": 5},
         backend="vibecomfy",
     )
 
-    ok, message = handle_vibecomfy_resolved_task(resolved, tmp_path)
+    ok, result = handle_vibecomfy_resolved_task(resolved, tmp_path)
 
-    assert ok is False
-    assert message
-    assert "fail-closed" in message
-    assert "896x496" in message
+    assert ok is True
+    assert result and result.endswith("out.png")
+    scratchpad = Path(commands[0][4])
+    scratchpad_source = scratchpad.read_text(encoding="utf-8")
+    assert "resolution(896, 496)" in scratchpad_source
+    assert 'workflow.set_prompt("non default")' in scratchpad_source
+    assert "workflow.set_seed(123)" in scratchpad_source
+    assert "workflow.set_steps(5)" in scratchpad_source

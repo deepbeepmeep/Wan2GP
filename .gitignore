@@ -37,6 +37,7 @@ venv_headless_wan2gp/
 !Wan2GP/models/hyvideo/configs/*.json
 !Wan2GP/models/longcat/configs/*.json
 !Wan2GP/models/chatterbox/configs/*.json
+!source/models/lora/module_manifests/*.json
 !scripts/dual_run_compare/fixtures/**/*.json
 !scripts/dual_run_compare/golden/**/manifest.json
 !scripts/dual_run_compare/reports/*.json
@@ -99,6 +100,15 @@ tests/*
 !tests/test_runtime_model_patch_contracts.py
 !tests/test_wgp_patch_context_contracts.py
 !tests/test_wgp_patch_lifecycle.py
+!tests/test_qwen_model_selection.py
+!tests/test_transition_prompt_api_contracts.py
+!tests/test_join_orchestrator_and_registry.py
+!tests/test_vlm_caller_service_integration.py
+!tests/test_lora_module_manifest.py
+!tests/test_template_routing.py
+!tests/test_vibecomfy_backend_selection.py
+!tests/test_prompt_expansion.py
+!tests/test_lora_sanitizer.py
 !tests/fixtures/
 tests/fixtures/*
 !tests/fixtures/clear_conditioning_oracle.pt

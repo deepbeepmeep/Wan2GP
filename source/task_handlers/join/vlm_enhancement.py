@@ -11,9 +11,8 @@ from typing import Tuple, List, Optional
 import cv2
 
 from source.media.video import extract_frames_from_video
-from source.core.constants import BYTES_PER_GB
+from source.media.vlm.service import generate_join_quad_prompts as _service_generate_join_quad_prompts
 from source.core.log import orchestrator_logger
-from source.runtime.wgp_bridge import create_qwen_prompt_expander
 from source.utils.download_utils import download_video_if_url
 
 __all__ = [
@@ -231,100 +230,11 @@ def _generate_vlm_prompts_for_joins(
     Returns:
         List of enhanced prompts (None for joins with missing image quads)
     """
-    import torch
-
-    num_joins = len(image_quads)
-    result = [None] * num_joins
-
-    valid_quads = []
-    valid_indices = []
-
-    for idx in range(num_joins):
-        quad = image_quads[idx]
-        if all(path is not None for path in quad):
-            valid_quads.append(quad)
-            valid_indices.append(idx)
-        else:
-            orchestrator_logger.debug_anomaly("VLM_PROMPTS", f"Join {idx}: Skipping - missing image(s) in quad")
-
-    if not valid_quads:
-        orchestrator_logger.debug_anomaly("VLM_PROMPTS", f"No valid image quads for VLM processing")
-        return result
-
-    orchestrator_logger.debug_anomaly("VLM_PROMPTS", f"Processing {len(valid_quads)}/{num_joins} joins with VLM (4 images each)")
-    orchestrator_logger.debug_anomaly("VLM_PROMPTS", f"Base prompt context: '{base_prompt[:80]}...'" if base_prompt else "[VLM_PROMPTS] No base prompt (VLM will infer from frames)")
-
-    try:
-        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
-        from source.media.vlm.model import download_qwen_vlm_if_needed
-
-        if torch.cuda.is_available():
-            gpu_mem_before = torch.cuda.memory_allocated() / BYTES_PER_GB
-            orchestrator_logger.debug_anomaly("VLM_PROMPTS", f"GPU memory BEFORE VLM load: {gpu_mem_before:.2f} GB")
-
-        local_model_path = wan_dir / "ckpts" / "Qwen2.5-VL-7B-Instruct"
-        orchestrator_logger.debug_anomaly("VLM_PROMPTS", f"Checking for model at {local_model_path}...")
-        download_qwen_vlm_if_needed(local_model_path)
-
-        orchestrator_logger.debug_anomaly("VLM_PROMPTS", f"Initializing Qwen2.5-VL-7B-Instruct...")
-        extender = create_qwen_prompt_expander(
-            model_name=str(local_model_path),
-            device=vlm_device,
-            is_vl=True
-        )
-        orchestrator_logger.debug_anomaly("VLM_PROMPTS", f"Model loaded (initially on CPU, moves to {vlm_device} for inference)")
-
-        for i, quad in enumerate(valid_quads):
-            idx = valid_indices[i]
-            start_first, start_boundary, end_boundary, end_last = quad
-            try:
-                orchestrator_logger.debug_anomaly("VLM_PROMPTS", f"Processing join {idx} ({i+1}/{len(valid_quads)})...")
-
-                enhanced = _generate_join_transition_prompt(
-                    start_first_path=start_first,
-                    start_boundary_path=start_boundary,
-                    end_boundary_path=end_boundary,
-                    end_last_path=end_last,
-                    base_prompt=base_prompt,
-                    extender=extender)
-
-                result[idx] = enhanced
-                orchestrator_logger.debug_anomaly("VLM_PROMPTS", f"Join {idx}: {enhanced[:100]}...")
-
-            except (RuntimeError, ValueError, OSError) as e:
-                orchestrator_logger.debug_anomaly("VLM_PROMPTS", f"Join {idx}: ERROR - {e}")
-
-        # Cleanup VLM
-        if torch.cuda.is_available():
-            gpu_mem_before_cleanup = torch.cuda.memory_allocated() / BYTES_PER_GB
-            orchestrator_logger.debug_anomaly("VLM_CLEANUP", f"GPU memory BEFORE cleanup: {gpu_mem_before_cleanup:.2f} GB")
-
-        orchestrator_logger.debug_anomaly("VLM_CLEANUP", f"Cleaning up VLM model and processor...")
-        try:
-            del extender.model
-            del extender.processor
-            del extender
-            orchestrator_logger.debug_anomaly("VLM_CLEANUP", f"\u2705 Successfully deleted VLM objects")
-        except (RuntimeError, AttributeError) as e:
-            orchestrator_logger.debug_anomaly("VLM_CLEANUP", f"\u26a0\ufe0f  Error during deletion: {e}")
-
-        import gc
-        collected = gc.collect()
-        orchestrator_logger.debug_anomaly("VLM_CLEANUP", f"Garbage collected {collected} objects")
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            gpu_mem_after = torch.cuda.memory_allocated() / BYTES_PER_GB
-            gpu_freed = gpu_mem_before_cleanup - gpu_mem_after
-            orchestrator_logger.debug_anomaly("VLM_CLEANUP", f"GPU memory AFTER cleanup: {gpu_mem_after:.2f} GB")
-            orchestrator_logger.debug_anomaly("VLM_CLEANUP", f"GPU memory freed: {gpu_freed:.2f} GB")
-
-        orchestrator_logger.debug_anomaly("VLM_CLEANUP", f"\u2705 VLM cleanup complete")
-        return result
-
-    except (RuntimeError, ValueError, OSError, ImportError) as e:
-        orchestrator_logger.error(f"VLM_PROMPTS error in VLM processing: {e}", exc_info=True)
-        return result
+    return _service_generate_join_quad_prompts(
+        image_quads=image_quads,
+        base_prompt=base_prompt,
+        device=vlm_device,
+    )
 
 
 # Public aliases for cross-module use.

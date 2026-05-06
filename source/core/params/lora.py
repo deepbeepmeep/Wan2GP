@@ -12,6 +12,7 @@ import os
 import logging
 
 from .base import ParamGroup
+from source.models.lora.sanitizer import sanitize_lora_entries
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,19 @@ class LoRAConfig(ParamGroup):
                         source='additional_loras'
                     ))
         
+        architecture = (
+            context.get('model')
+            or context.get('model_name')
+            or params.get('model')
+            or params.get('model_name')
+        )
+        if architecture and entries:
+            entries = sanitize_lora_entries(
+                entries,
+                architecture=architecture,
+                task_id=context.get('task_id'),
+            ).entries
+
         return cls(entries=entries)
     
     @classmethod
@@ -203,6 +217,14 @@ class LoRAConfig(ParamGroup):
                 status=LoRAStatus.PENDING,
                 source='phase_config'
             ))
+
+        architecture = context.get('model') or context.get('model_name')
+        if architecture and entries:
+            entries = sanitize_lora_entries(
+                entries,
+                architecture=architecture,
+                task_id=context.get('task_id'),
+            ).entries
 
         return cls(entries=entries)
 
@@ -249,6 +271,14 @@ class LoRAConfig(ParamGroup):
                     status=LoRAStatus.LOCAL,
                     source='segment_loras'
                 ))
+
+        architecture = context.get('model') or context.get('model_name')
+        if architecture and entries:
+            entries = sanitize_lora_entries(
+                entries,
+                architecture=architecture,
+                task_id=context.get('task_id'),
+            ).entries
 
         return cls(entries=entries)
     

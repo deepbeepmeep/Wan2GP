@@ -1,5 +1,5 @@
 {
-  "calibration_status": "pending_calibration",
+  "calibration_status": "wgp_only",
   "canonical_route_key": "qwen_image_edit",
   "cohort": "B",
   "created_for": "Sprint 0B thresholds and golden corpus",
@@ -9,8 +9,10 @@
   "manifest_schema_version": 1,
   "media_class": "image",
   "metrics_profile": "image",
-  "notes": "Golden manifest seed created for route-keyed parity corpus.",
+  "notes": "Sprint 5 keeps qwen_image_edit WGP-only until image input and edit-model parity are independently proven.",
   "owner": "Sprint 0B executor",
+  "policy_evidence_ref": "fixtures/non_rayworker/registry_snapshot.json",
+  "route_policy": "wgp_only",
   "route_key": "qwen_image_edit",
   "route_key_mode": "direct",
   "seed_payload_ref": null,

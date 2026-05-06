@@ -213,8 +213,16 @@ def test_all_active_api_owned_task_handlers_have_policy_classification() -> None
 
     assert snapshot_routes["z_image_turbo"]["landed_status"] == "sprint2_vibecomfy_direct_default_resolution_landed"
     assert snapshot_routes["z_image_turbo"]["report_status_policy"] == "red_or_green_required"
-    assert snapshot_routes["qwen_image_2512"]["landed_status"] == "sprint2_vibecomfy_direct_default_resolution_landed"
-    assert snapshot_routes["qwen_image_2512"]["report_status_policy"] == "red_or_green_required"
+    for route_key in {
+        "qwen_image",
+        "qwen_image_2512",
+        "qwen_image_edit",
+        "qwen_image_style",
+        "image_inpaint",
+        "annotated_image_edit",
+    }:
+        assert snapshot_routes[route_key]["landed_status"] == "sprint5_wgp_only"
+        assert snapshot_routes[route_key]["report_status_policy"] == "wgp_only"
     assert snapshot_routes["wan_2_2_t2i"]["landed_status"] == "sprint2_wgp_only"
     assert snapshot_routes["wan_2_2_t2i"]["report_status_policy"] == "wgp_only"
 

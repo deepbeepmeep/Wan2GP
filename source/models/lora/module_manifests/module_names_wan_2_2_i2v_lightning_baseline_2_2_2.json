@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "architecture": "wan_2_2_i2v_lightning_baseline_2_2_2",
+  "module_names": [
+    "diffusion_model",
+    "model",
+    "blocks",
+    "patch_embedding",
+    "text_embedding",
+    "time_embedding"
+  ]
+}

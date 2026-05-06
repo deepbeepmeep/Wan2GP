@@ -63,9 +63,33 @@ SPRINT_2_SELECTOR_MAP: Mapping[str, RouteSelectorEntry] = MappingProxyType(
         ),
         "qwen_image_2512": RouteSelectorEntry(
             route_key="qwen_image_2512",
-            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
-            template_id="image/qwen_image_2512",
-            default_resolution="768x768",
+            support_state=RouteSupportState.WGP_ONLY,
+            template_id=None,
+        ),
+        "qwen_image": RouteSelectorEntry(
+            route_key="qwen_image",
+            support_state=RouteSupportState.WGP_ONLY,
+            template_id=None,
+        ),
+        "qwen_image_edit": RouteSelectorEntry(
+            route_key="qwen_image_edit",
+            support_state=RouteSupportState.WGP_ONLY,
+            template_id=None,
+        ),
+        "qwen_image_style": RouteSelectorEntry(
+            route_key="qwen_image_style",
+            support_state=RouteSupportState.WGP_ONLY,
+            template_id=None,
+        ),
+        "image_inpaint": RouteSelectorEntry(
+            route_key="image_inpaint",
+            support_state=RouteSupportState.WGP_ONLY,
+            template_id=None,
+        ),
+        "annotated_image_edit": RouteSelectorEntry(
+            route_key="annotated_image_edit",
+            support_state=RouteSupportState.WGP_ONLY,
+            template_id=None,
         ),
         "travel_segment": RouteSelectorEntry(
             route_key="travel_segment",
@@ -298,16 +322,6 @@ def _fail_closed_reason(
             f"Route {route_key!r} is {selector_entry.support_state.value}; "
             "explicit VibeComfy backend will not fall back to WGP"
         )
-
-    resolution = params.get("resolution")
-    if resolution and selector_entry.default_resolution:
-        normalized_resolution = _normalize_resolution(resolution)
-        if normalized_resolution != selector_entry.default_resolution:
-            return (
-                f"Route {route_key!r} requested resolution {resolution!r}, "
-                f"but Sprint 2 VibeComfy support is limited to "
-                f"{selector_entry.default_resolution}"
-            )
 
     return None
 

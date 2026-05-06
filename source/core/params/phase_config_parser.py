@@ -13,6 +13,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 from source.core.log import headless_logger
+from source.models.lora.sanitizer import sanitize_lora_values
 
 # Diffusion timestep scaling constant: maps normalized [0,1] sigmas to diffusion timestep range
 DIFFUSION_TIMESTEP_SCALE = 1000
@@ -234,34 +235,27 @@ def parse_phase_config(phase_config: dict, num_inference_steps: int, task_id: st
         phases_config, steps_per_phase, num_phases, task_id
     )
 
-    # Filter out LoRAs incompatible with the target model architecture.
-    # LTX-2 and Wan 2.2 have fundamentally different transformer architectures —
-    # no LoRA weights are cross-compatible. For LTX-2 models, only keep LoRAs
-    # that are plausibly LTX-compatible (contain "ltx" in URL/filename).
-    # Previously this only checked for "wan2.2" in the URL, which missed
-    # Wan-architecture LoRAs with non-standard filenames (e.g. bloom.safetensors).
     if model_name and all_lora_urls:
-        is_ltx2 = "ltx2" in model_name.lower()
-        is_wan = "wan" in model_name.lower()
-        filtered_indices = []
-        for i, url in enumerate(all_lora_urls):
-            url_lower = url.lower()
-            if is_ltx2 and "ltx" not in url_lower:
+        sanitized = sanitize_lora_values(
+            all_lora_urls,
+            lora_multipliers,
+            architecture=model_name,
+            task_id=task_id,
+        )
+        for decision in sanitized.decisions:
+            if not decision.accepted:
                 headless_logger.warning(
-                    f"Skipping non-LTX LoRA incompatible with LTX-2 model '{model_name}': {url}",
+                    f"Skipping LoRA for model '{model_name}': {decision.original} ({decision.reason})",
                     task_id=task_id,
                 )
-                continue
-            if is_wan and "ltx" in url_lower:
-                headless_logger.warning(
-                    f"Skipping LTX LoRA incompatible with Wan model '{model_name}': {url}",
-                    task_id=task_id,
-                )
-                continue
-            filtered_indices.append(i)
-        if len(filtered_indices) < len(all_lora_urls):
-            all_lora_urls = [all_lora_urls[i] for i in filtered_indices]
-            lora_multipliers = [lora_multipliers[i] for i in filtered_indices]
+        all_lora_urls = sanitized.loras
+        lora_multipliers = sanitized.multipliers
+        additional_loras = {}
+        for url, multiplier in zip(all_lora_urls, lora_multipliers):
+            try:
+                additional_loras[url] = float(str(multiplier).split(";")[0].split(",")[0])
+            except (ValueError, IndexError):
+                additional_loras[url] = 1.0
 
     if model_name:
         patch = _prepare_patch_config(phase_config, phases_config, num_phases, all_lora_urls, model_name, task_id)

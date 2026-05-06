@@ -47,7 +47,7 @@ def handle_vibecomfy_resolved_task(
         return False, validation_error
 
     run_workspace = _prepare_run_workspace(main_output_dir_base, resolved.task_id)
-    command = _build_vibecomfy_command(resolved)
+    command = _build_vibecomfy_command(resolved, run_workspace)
     env = _build_subprocess_env(run_workspace)
 
     headless_logger.debug_block(
@@ -158,29 +158,30 @@ def _validate_supported_resolved_task(resolved: ResolvedTask) -> str | None:
     return None
 
 
-def _build_vibecomfy_command(resolved: ResolvedTask) -> list[str]:
+def _build_vibecomfy_command(resolved: ResolvedTask, run_workspace: Path) -> list[str]:
+    workflow_ref, ready = _workflow_reference_for_resolved_task(resolved, run_workspace)
     command = [
         _vibecomfy_python(),
         "-m",
         "vibecomfy.cli",
         "run",
-        str(resolved.template_id),
-        "--ready",
+        workflow_ref,
         "--runtime",
         "embedded",
     ]
+    if ready:
+        command.append("--ready")
+        prompt = resolved.params.get("prompt")
+        if prompt is not None:
+            command.extend(["--prompt", str(prompt)])
 
-    prompt = resolved.params.get("prompt")
-    if prompt is not None:
-        command.extend(["--prompt", str(prompt)])
+        seed = resolved.params.get("seed")
+        if seed is not None:
+            command.extend(["--seed", str(int(seed))])
 
-    seed = resolved.params.get("seed")
-    if seed is not None:
-        command.extend(["--seed", str(int(seed))])
-
-    steps = resolved.params.get("steps", resolved.params.get("num_inference_steps"))
-    if steps is not None:
-        command.extend(["--steps", str(int(steps))])
+        steps = resolved.params.get("steps", resolved.params.get("num_inference_steps"))
+        if steps is not None:
+            command.extend(["--steps", str(int(steps))])
 
     command.extend(
         build_memory_profile_cli_args(
@@ -189,6 +190,53 @@ def _build_vibecomfy_command(resolved: ResolvedTask) -> list[str]:
         )
     )
     return command
+
+
+def _workflow_reference_for_resolved_task(resolved: ResolvedTask, run_workspace: Path) -> tuple[str, bool]:
+    if resolved.route_key == "z_image_turbo":
+        return str(_write_z_image_scratchpad(resolved, run_workspace)), False
+    return str(resolved.template_id), True
+
+
+def _write_z_image_scratchpad(resolved: ResolvedTask, run_workspace: Path) -> Path:
+    width, height = _parse_resolution(resolved.params.get("resolution") or "1024x1024")
+    prompt = str(resolved.params.get("prompt") or "")
+    seed = int(resolved.params.get("seed", -1))
+    steps = int(resolved.params.get("steps", resolved.params.get("num_inference_steps", 8)))
+    scratchpad = run_workspace / "z_image_turbo_scratchpad.py"
+    scratchpad.write_text(
+        "\n".join(
+            [
+                "from vibecomfy.cli_loader import load_workflow_any",
+                "from vibecomfy.patches.resolution import resolution",
+                "",
+                "",
+                "def build():",
+                "    workflow = load_workflow_any('image/z_image')",
+                f"    resolution({width}, {height}).apply(workflow)",
+                f"    workflow.set_prompt({json.dumps(prompt)})",
+                f"    workflow.set_seed({seed})",
+                f"    workflow.set_steps({steps})",
+                "    return workflow.finalize_metadata()",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return scratchpad
+
+
+def _parse_resolution(value: Any) -> tuple[int, int]:
+    if isinstance(value, (tuple, list)) and len(value) == 2:
+        return int(value[0]), int(value[1])
+    text = str(value).strip().lower().replace(" ", "").replace("×", "x")
+    if "x" not in text:
+        raise ValueError(f"invalid VibeComfy resolution {value!r}")
+    width_raw, height_raw = text.split("x", 1)
+    width, height = int(width_raw), int(height_raw)
+    if width <= 0 or height <= 0:
+        raise ValueError(f"invalid VibeComfy resolution {value!r}")
+    return width, height
 
 
 def _prepare_run_workspace(main_output_dir_base: str | Path, task_id: str) -> Path:

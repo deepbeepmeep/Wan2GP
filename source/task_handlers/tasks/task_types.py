@@ -109,7 +109,7 @@ TASK_TYPE_TO_MODEL: Dict[str, str] = {
     "image_inpaint": "qwen_image_edit_20B",
     "annotated_image_edit": "qwen_image_edit_20B",
     # Text-to-image tasks
-    "qwen_image": "qwen_image_edit_20B",
+    "qwen_image": "qwen_image_20B",
     "qwen_image_2512": "qwen_image_2512_20B",
     "z_image_turbo": "z_image",
     # Image-to-image tasks

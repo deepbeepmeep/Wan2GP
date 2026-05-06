@@ -1,3 +1,5 @@
+from dataclasses import asdict, is_dataclass
+
 from source.core.log import headless_logger
 
 
@@ -7,8 +9,19 @@ IMG2IMG_TARGET_MEGAPIXELS = 1024 * 1024
 # Default resolution string for image generation tasks
 DEFAULT_IMAGE_RESOLUTION = "1024x1024"
 from source.models.model_handlers.qwen_handler import QwenHandler
+from source.media.prompt_expansion import expand_qwen_prompt
 from source.task_handlers.queue.task_queue import GenerationTask
 from source.utils.orchestrator_utils import extract_orchestrator_parameters
+
+
+QWEN_PROMPT_EXPANSION_TASK_TYPES = {
+    "qwen_image",
+    "qwen_image_2512",
+    "qwen_image_edit",
+    "qwen_image_style",
+    "image_inpaint",
+    "annotated_image_edit",
+}
 
 def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: str, wan2gp_path: str, debug_mode: bool = False) -> GenerationTask:
     """
@@ -59,6 +72,7 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
         "tea_cache_setting", "tea_cache_start_step_perc", "RIFLEx_setting",
         "slg_switch", "slg_layers", "slg_start_perc", "slg_end_perc",
         "cfg_star_switch", "cfg_zero_step", "prompt_enhancer",
+        "qwen_prompt_expansion", "qwen_prompt_expansion_model",
         # Hires fix parameters
         "hires_scale", "hires_steps", "hires_denoise", "hires_upscale_method", "lightning_lora_strength",
         "sliding_window_size", "sliding_window_overlap", "sliding_window_overlap_noise",
@@ -117,6 +131,21 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
     # Note: LoRA resolution is handled centrally in HeadlessTaskQueue._convert_to_wgp_task()
     # via TaskConfig/LoRAConfig which detects URLs and downloads them automatically
 
+    if task_type in QWEN_PROMPT_EXPANSION_TASK_TYPES:
+        expansion = expand_qwen_prompt(
+            prompt,
+            task_type=task_type,
+            params=db_task_params,
+            seed=int(db_task_params.get("seed", -1)),
+        )
+        if getattr(expansion.metadata, "requested", False):
+            generation_params["_qwen_prompt_expansion"] = _prompt_expansion_metadata_dict(expansion.metadata)
+        if expansion.prompt != prompt:
+            generation_params["_original_prompt"] = prompt
+            prompt = expansion.prompt
+            generation_params["prompt"] = prompt
+            db_task_params = {**db_task_params, "prompt": prompt}
+
     # Qwen Task Handlers
     qwen_handler = QwenHandler(
         wan_root=wan2gp_path,
@@ -124,19 +153,22 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
 
     if task_type == "qwen_image_edit":
         qwen_handler.handle_qwen_image_edit(db_task_params, generation_params)
+        model = qwen_handler.get_edit_model_name(db_task_params)
     elif task_type == "qwen_image_hires":
         qwen_handler.handle_qwen_image_hires(db_task_params, generation_params)
     elif task_type == "image_inpaint":
         qwen_handler.handle_image_inpaint(db_task_params, generation_params)
+        model = qwen_handler.get_edit_model_name(db_task_params)
     elif task_type == "annotated_image_edit":
         qwen_handler.handle_annotated_image_edit(db_task_params, generation_params)
+        model = qwen_handler.get_edit_model_name(db_task_params)
     elif task_type == "qwen_image_style":
         qwen_handler.handle_qwen_image_style(db_task_params, generation_params)
         prompt = generation_params.get("prompt", prompt)
-        model = "qwen_image_edit_20B"
+        model = qwen_handler.get_edit_model_name(db_task_params)
     elif task_type == "qwen_image":
         qwen_handler.handle_qwen_image(db_task_params, generation_params)
-        model = "qwen_image_edit_20B"
+        model = "qwen_image_20B"
     elif task_type == "qwen_image_2512":
         qwen_handler.handle_qwen_image_2512(db_task_params, generation_params)
         model = "qwen_image_2512_20B"
@@ -323,3 +355,11 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
     )
     
     return generation_task
+
+
+def _prompt_expansion_metadata_dict(metadata) -> dict:
+    if is_dataclass(metadata):
+        return asdict(metadata)
+    if hasattr(metadata, "__dict__"):
+        return dict(metadata.__dict__)
+    return {"raw": metadata}

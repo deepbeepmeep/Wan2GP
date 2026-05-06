@@ -26,9 +26,13 @@ def test_runtime_metrics_record_distinct_missing_sections_by_landed_status() -> 
 
     assert report["runtime_metric_keys"] == list(RUNTIME_METRIC_KEYS)
     assert report["routes"]["video_enhance"]["status"] == "red"
-    assert report["routes"]["qwen_image"]["status"] == "pending"
+    assert report["routes"]["qwen_image"]["status"] == "wgp_only"
     assert report["routes"]["z_image_turbo"]["status"] == "red"
-    assert report["routes"]["qwen_image_2512"]["status"] == "red"
+    assert report["routes"]["qwen_image_2512"]["status"] == "wgp_only"
+    assert report["routes"]["qwen_image_edit"]["status"] == "wgp_only"
+    assert report["routes"]["qwen_image_style"]["status"] == "wgp_only"
+    assert report["routes"]["image_inpaint"]["status"] == "wgp_only"
+    assert report["routes"]["annotated_image_edit"]["status"] == "wgp_only"
     assert report["routes"]["wan_2_2_t2i"]["status"] == "wgp_only"
     assert report["routes"]["banodoco_timeline_generate"]["status"] == "fallback"
 
@@ -40,7 +44,7 @@ def test_runtime_metrics_record_distinct_missing_sections_by_landed_status() -> 
     assert set(wan_sections) == set(RUNTIME_METRIC_KEYS)
     for metric_key in RUNTIME_METRIC_KEYS:
         assert video_sections[metric_key]["status"] == "missing_evidence"
-        assert qwen_sections[metric_key]["status"] == "pending"
+        assert qwen_sections[metric_key]["status"] == "wgp_only"
         assert wan_sections[metric_key]["status"] == "wgp_only"
 
 

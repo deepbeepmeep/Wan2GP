@@ -205,7 +205,7 @@ def test_wgp_default_direct_route_preserves_builder_and_queue(monkeypatch, tmp_p
     assert len(queue.submitted) == 1
 
 
-@pytest.mark.parametrize("task_type", ["z_image_turbo", "qwen_image_2512"])
+@pytest.mark.parametrize("task_type", ["z_image_turbo"])
 def test_vibecomfy_supported_direct_routes_bypass_wgp_queue(
     monkeypatch, tmp_path, task_type: str
 ):
@@ -228,9 +228,6 @@ def test_vibecomfy_supported_direct_routes_bypass_wgp_queue(
     )
     context = _context(_Queue(fail_on_submit=True), tmp_path)
     context["task_params_dict"] = {"prompt": "direct", "resolution": "1024x1024"}
-    if task_type == "qwen_image_2512":
-        context["task_params_dict"]["resolution"] = "768x768"
-
     ok, result = task_registry.TaskRegistry._handle_direct_queue_task(task_type, context)
 
     assert ok is True
@@ -306,6 +303,43 @@ def test_vibecomfy_unsupported_direct_route_fails_closed_without_wgp_fallback(
     assert ok is False
     assert message
     assert "fail-closed" in message
+    assert "wgp_only" in message
+
+
+@pytest.mark.parametrize(
+    "task_type",
+    [
+        "qwen_image_2512",
+        "qwen_image",
+        "qwen_image_edit",
+        "qwen_image_style",
+        "image_inpaint",
+        "annotated_image_edit",
+    ],
+)
+def test_sprint_qwen_routes_fail_closed_without_wgp_fallback(monkeypatch, tmp_path, task_type: str):
+    task_registry = _import_task_registry(monkeypatch)
+    monkeypatch.setenv("REIGH_BACKEND", "vibecomfy")
+
+    def _builder(*_args, **_kwargs):
+        raise AssertionError("WGP builder should not run")
+
+    monkeypatch.setattr(task_registry, "db_task_to_generation_task", _builder)
+    context = _context(_Queue(fail_on_submit=True), tmp_path)
+    context["task_params_dict"] = {
+        "prompt": "direct",
+        "resolution": "768x768",
+        "image": "https://example.com/input.png",
+        "image_url": "https://example.com/input.png",
+        "mask_url": "https://example.com/mask.png",
+    }
+
+    ok, message = task_registry.TaskRegistry._handle_direct_queue_task(task_type, context)
+
+    assert ok is False
+    assert message
+    assert "fail-closed" in message
+    assert task_type in message
     assert "wgp_only" in message
 
 

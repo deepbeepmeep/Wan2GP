@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "architecture": "ltx2_22B_distilled",
+  "module_names": [
+    "diffusion_model",
+    "transformer",
+    "model",
+    "adaln_single",
+    "caption_projection",
+    "transformer_blocks"
+  ]
+}

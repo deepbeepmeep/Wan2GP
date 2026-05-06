@@ -2,6 +2,8 @@
 
 from typing import Any, Dict, Optional
 
+from source.models.lora.sanitizer import sanitize_lora_values
+
 
 # =============================================================================
 # SVI (Stable Video Infinity) Configuration for End Frame Chaining
@@ -144,6 +146,15 @@ def merge_svi_into_generation_params(
         svi_strength_1=svi_strength_1,
         svi_strength_2=svi_strength_2,
     )
+    architecture = generation_params.get("model") or generation_params.get("model_name")
+    if architecture:
+        sanitized = sanitize_lora_values(
+            merged_urls,
+            merged_mults,
+            architecture=architecture,
+        )
+        merged_urls = sanitized.loras
+        merged_mults = sanitized.multipliers
 
     generation_params["activated_loras"] = merged_urls
     generation_params["loras_multipliers"] = " ".join(merged_mults)

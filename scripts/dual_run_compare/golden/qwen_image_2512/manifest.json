@@ -1,5 +1,5 @@
 {
-  "calibration_status": "pending_calibration",
+  "calibration_status": "wgp_only",
   "canonical_route_key": "qwen_image_2512",
   "cohort": "A",
   "created_for": "Sprint 0B thresholds and golden corpus",
@@ -8,8 +8,10 @@
   "manifest_schema_version": 1,
   "media_class": "image",
   "metrics_profile": "image",
-  "notes": "Golden manifest seed created for route-keyed parity corpus.",
+  "notes": "Sprint 5 keeps qwen_image_2512 WGP-only until independent VibeComfy parity is proven; this route must remain distinct from qwen_image.",
   "owner": "Sprint 0B executor",
+  "policy_evidence_ref": "fixtures/non_rayworker/registry_snapshot.json",
+  "route_policy": "wgp_only",
   "route_key": "qwen_image_2512",
   "route_key_mode": "direct",
   "seed_payload_ref": "fixtures/golden_seed_payloads/qwen_image_2512.json",

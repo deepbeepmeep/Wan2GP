@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "architecture": "qwen_image_edit_plus_20B",
+  "module_names": [
+    "transformer",
+    "diffusion_model",
+    "model",
+    "img_in",
+    "txt_in",
+    "attn"
+  ]
+}

@@ -57,7 +57,8 @@ class TaskConfig(ParamGroup):
         phase = PhaseConfig.from_params(params, **context)
         
         # Parse LoRA config
-        lora = LoRAConfig.from_params(params, **context)
+        lora_context = {**context, 'model': model}
+        lora = LoRAConfig.from_params(params, **lora_context)
         
         # If phase config has LoRAs, merge them in
         if not phase.is_empty():
@@ -67,7 +68,7 @@ class TaskConfig(ParamGroup):
                     'additional_loras': lora_info['additional_loras'],
                     'lora_names': lora_info.get('lora_names', []),
                     'lora_multipliers': lora_info.get('lora_multipliers', []),
-                }, **context)
+                }, **lora_context)
                 lora = lora.merge(phase_lora)
         
         # Collect extra params (everything not handled by specific groups)

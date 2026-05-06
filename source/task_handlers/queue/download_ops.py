@@ -82,12 +82,16 @@ def convert_to_wgp_task_impl(queue: "HeadlessTaskQueue", task: "GenerationTask")
         },
     )
 
+    source_task_type = task.parameters.get('_source_task_type', '')
+    if source_task_type == "wan_2_2_t2i":
+        task.parameters["video_length"] = 1
+
     # Parse into typed config
     try:
         config = TaskConfig.from_db_task(
             task.parameters,
             task_id=task.id,
-            task_type=task.parameters.get('_source_task_type', ''),
+            task_type=source_task_type,
             model=task.model,
             debug_mode=is_debug_enabled()
         )
@@ -130,6 +134,9 @@ def convert_to_wgp_task_impl(queue: "HeadlessTaskQueue", task: "GenerationTask")
     # Ensure prompt and model are set
     wgp_params["prompt"] = task.prompt
     wgp_params["model"] = task.model
+    if source_task_type == "wan_2_2_t2i":
+        wgp_params["_source_task_type"] = source_task_type
+        wgp_params["video_length"] = 1
 
     # Filter out infrastructure params
     for param in ["supabase_url", "supabase_anon_key", "supabase_access_token"]:

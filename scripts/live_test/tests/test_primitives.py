@@ -655,7 +655,7 @@ def test_clone_and_install_vibecomfy_validates_required_manifests():
     command, timeout = calls[0]
     assert timeout == 3600
     assert "git clone --branch branch-a --single-branch https://github.com/peteromallet/VibeComfy.git /workspace/vibecomfy" in command
-    assert "/workspace/Reigh-Worker-LiveTest/.venv/bin/python -m pip install -e /workspace/vibecomfy" in command
+    assert "uv pip install --python /workspace/Reigh-Worker-LiveTest/.venv/bin/python -e /workspace/vibecomfy" in command
     assert "test -f /workspace/vibecomfy/template_index.json" in command
     assert "test -f /workspace/vibecomfy/workflow_corpus/manifests/coverage.json" in command
 

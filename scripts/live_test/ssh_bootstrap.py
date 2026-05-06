@@ -142,7 +142,7 @@ def clone_and_install_vibecomfy(
             f"mkdir -p {_quote(parent)}\n"
             f"rm -rf {_quote(workdir)}\n"
             f"git clone --branch {_quote(branch)} --single-branch {_quote(repo_url)} {_quote(workdir)}\n"
-            f"{_quote(python_path)} -m pip install -e {_quote(workdir)}\n"
+            f"uv pip install --python {_quote(python_path)} -e {_quote(workdir)}\n"
             f"test -f {_quote(workdir)}/template_index.json\n"
             f"test -f {_quote(workdir)}/workflow_corpus/manifests/coverage.json\n"
         )

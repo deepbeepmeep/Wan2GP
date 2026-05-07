@@ -108,6 +108,7 @@ tests/*
 !tests/test_qwen_model_selection.py
 !tests/test_transition_prompt_api_contracts.py
 !tests/test_join_orchestrator_and_registry.py
+!tests/test_architecture_boundaries.py
 !tests/test_vlm_caller_service_integration.py
 !tests/test_lora_module_manifest.py
 !tests/test_template_routing.py

@@ -209,6 +209,8 @@ def test_wgp_default_direct_route_preserves_builder_and_queue(monkeypatch, tmp_p
     "task_type",
     [
         "z_image_turbo",
+        "z_image_turbo_i2i",
+        "wan_2_2_t2i",
         "qwen_image_2512",
         "qwen_image_edit",
         "qwen_image_style",
@@ -294,7 +296,7 @@ def test_vibecomfy_direct_selection_emits_routing_card(monkeypatch, tmp_path):
     assert card["decision"] == "vibecomfy_adapter"
 
 
-def test_vibecomfy_unsupported_direct_route_fails_closed_without_wgp_fallback(
+def test_vibecomfy_wgp_only_direct_route_fails_closed_without_wgp_fallback(
     monkeypatch, tmp_path
 ):
     task_registry = _import_task_registry(monkeypatch)
@@ -306,7 +308,7 @@ def test_vibecomfy_unsupported_direct_route_fails_closed_without_wgp_fallback(
     monkeypatch.setattr(task_registry, "db_task_to_generation_task", _builder)
 
     ok, message = task_registry.TaskRegistry._handle_direct_queue_task(
-        "wan_2_2_t2i",
+        "qwen_image",
         _context(_Queue(fail_on_submit=True), tmp_path),
     )
 

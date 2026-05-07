@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from source.core.log import headless_logger
 from source.models.model_handlers.qwen_compositor import create_qwen_masked_composite
@@ -18,7 +18,7 @@ from source.runtime.vibecomfy_profile import (
     PROCESS_DEFAULT_PROFILE,
     build_memory_profile_cli_args,
 )
-from source.utils.download_utils import download_image_if_url
+from source.utils.download_utils import download_image_if_url, download_video_if_url
 from source.media.video_contract import (
     VIDEO_EXTENSIONS,
     VideoArtifactContract,
@@ -228,6 +228,8 @@ def _build_vibecomfy_command(resolved: ResolvedTask, run_workspace: Path) -> lis
 def _workflow_reference_for_resolved_task(resolved: ResolvedTask, run_workspace: Path) -> tuple[str, bool]:
     if resolved.route_key == "z_image_turbo":
         return str(_write_z_image_scratchpad(resolved, run_workspace)), False
+    if resolved.route_key == "z_image_turbo_i2i":
+        return str(_write_z_image_img2img_scratchpad(resolved, run_workspace)), False
     if resolved.route_key == "qwen_image_2512":
         return str(_write_qwen_image_2512_scratchpad(resolved, run_workspace)), False
     if resolved.route_key in {
@@ -237,6 +239,10 @@ def _workflow_reference_for_resolved_task(resolved: ResolvedTask, run_workspace:
         "annotated_image_edit",
     }:
         return str(_write_qwen_image_edit_scratchpad(resolved, run_workspace)), False
+    if resolved.route_key == "wan_2_2_t2i":
+        return str(_write_wan_2_2_t2i_scratchpad(resolved, run_workspace)), False
+    if _is_wan_vace_route(resolved.route_key):
+        return str(_write_wan_2_2_vace_scratchpad(resolved, run_workspace)), False
     return str(resolved.template_id), True
 
 
@@ -328,6 +334,216 @@ def _write_qwen_image_edit_scratchpad(resolved: ResolvedTask, run_workspace: Pat
     return scratchpad
 
 
+def _write_z_image_img2img_scratchpad(resolved: ResolvedTask, run_workspace: Path) -> Path:
+    input_name = _materialize_image_input(
+        resolved,
+        run_workspace,
+        "image",
+        "image_url",
+        "image_guide",
+        fallback_filename=f"z_image_img2img_{resolved.task_id}.png",
+    )
+    width, height = _parse_resolution(
+        resolved.params.get("resolution")
+        or resolved.params.get("parsed_resolution_wh")
+        or "1024x1024"
+    )
+    prompt = str(resolved.params.get("prompt") or "")
+    seed = int(resolved.params.get("seed", resolved.params.get("seed_to_use", -1)))
+    steps = int(resolved.params.get("steps", resolved.params.get("num_inference_steps", 8)))
+    denoise = float(resolved.params.get("denoising_strength", resolved.params.get("denoise", 0.7)))
+    scratchpad = run_workspace / "z_image_img2img_scratchpad.py"
+    scratchpad.write_text(
+        "\n".join(
+            [
+                "from vibecomfy.cli_loader import load_workflow_any",
+                "",
+                "",
+                "def build():",
+                "    workflow = load_workflow_any('image/z_image_img2img')",
+                f"    input_name = {json.dumps(input_name)}",
+                "    for node in workflow.nodes.values():",
+                "        if node.class_type == 'LoadImage':",
+                "            node.inputs['image'] = input_name",
+                "        elif node.class_type == 'ImageScale':",
+                f"            node.inputs['width'] = {width}",
+                f"            node.inputs['height'] = {height}",
+                "        elif node.class_type == 'KSampler':",
+                f"            node.inputs['seed'] = {seed}",
+                f"            node.inputs['steps'] = {steps}",
+                f"            node.inputs['denoise'] = {denoise}",
+                f"    workflow.set_prompt({json.dumps(prompt)})",
+                "    return workflow.finalize_metadata()",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return scratchpad
+
+
+def _write_wan_2_2_t2i_scratchpad(resolved: ResolvedTask, run_workspace: Path) -> Path:
+    width, height = _parse_resolution(
+        resolved.params.get("resolution")
+        or resolved.params.get("parsed_resolution_wh")
+        or "832x480"
+    )
+    prompt = str(resolved.params.get("prompt") or "")
+    negative = str(resolved.params.get("negative_prompt") or "fading, breaking, shot cuts, jumpcuts, blurry, noise, distorted")
+    seed = int(resolved.params.get("seed", resolved.params.get("seed_to_use", -1)))
+    steps = int(resolved.params.get("steps", resolved.params.get("num_inference_steps", 6)))
+    cfg_1 = float(resolved.params.get("guidance_scale", 3))
+    cfg_2 = float(resolved.params.get("guidance2_scale", 1))
+    shift = float(resolved.params.get("flow_shift", 5))
+    scratchpad = run_workspace / "wan_2_2_t2i_scratchpad.py"
+    scratchpad.write_text(
+        "\n".join(
+            [
+                "from vibecomfy.cli_loader import load_workflow_any",
+                "",
+                "",
+                "def build():",
+                "    workflow = load_workflow_any('video/wanvideo_wrapper_22_14b_t2i')",
+                f"    workflow.nodes['78'].inputs['widget_0'] = {width}",
+                f"    workflow.nodes['78'].inputs['widget_1'] = {height}",
+                "    workflow.nodes['78'].inputs['widget_2'] = 1",
+                f"    workflow.nodes['78'].inputs['width'] = {width}",
+                f"    workflow.nodes['78'].inputs['height'] = {height}",
+                "    workflow.nodes['78'].inputs['num_frames'] = 1",
+                f"    workflow.nodes['16'].inputs['widget_0'] = {json.dumps(prompt)}",
+                f"    workflow.nodes['16'].inputs['widget_1'] = {json.dumps(negative)}",
+                f"    workflow.nodes['27'].inputs['steps'] = {steps}",
+                f"    workflow.nodes['27'].inputs['widget_0'] = {steps}",
+                f"    workflow.nodes['27'].inputs['widget_1'] = {cfg_1}",
+                f"    workflow.nodes['27'].inputs['widget_2'] = {shift}",
+                f"    workflow.nodes['27'].inputs['widget_3'] = {seed}",
+                f"    workflow.nodes['87'].inputs['steps'] = {steps}",
+                f"    workflow.nodes['87'].inputs['widget_0'] = {steps}",
+                f"    workflow.nodes['87'].inputs['widget_1'] = {cfg_2}",
+                f"    workflow.nodes['87'].inputs['widget_2'] = {shift}",
+                f"    workflow.nodes['87'].inputs['widget_3'] = {seed}",
+                "    return workflow.finalize_metadata()",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return scratchpad
+
+
+def _write_wan_2_2_vace_scratchpad(resolved: ResolvedTask, run_workspace: Path) -> Path:
+    start_name = _materialize_image_input(
+        resolved,
+        run_workspace,
+        "start_image_url",
+        "start_image",
+        "image",
+        "image_url",
+        nested_keys=("individual_segment_params", "segment_params", "orchestrator_details"),
+        list_keys=("input_image_paths_resolved",),
+        list_index=0,
+        fallback_filename=f"vace_start_{resolved.task_id}.png",
+    )
+    end_name = _materialize_image_input(
+        resolved,
+        run_workspace,
+        "end_image_url",
+        "end_image",
+        nested_keys=("individual_segment_params", "segment_params", "orchestrator_details"),
+        list_keys=("input_image_paths_resolved",),
+        list_index=1,
+        fallback_filename=f"vace_end_{resolved.task_id}.png",
+    )
+    control_name = _materialize_optional_video_input(
+        resolved,
+        run_workspace,
+        "video_source",
+        "video_guide",
+        "structure_video_path",
+        "source_video_url",
+        "vid2vid_source_video_path",
+        nested_keys=("travel_guidance", "individual_segment_params", "segment_params", "orchestrator_details"),
+        fallback_filename=f"vace_control_{resolved.task_id}.mp4",
+    )
+    width, height = _parse_resolution(
+        resolved.params.get("resolution")
+        or resolved.params.get("parsed_resolution_wh")
+        or _first_nested_string(resolved.params, ("individual_segment_params", "segment_params", "orchestrator_details"), "parsed_resolution_wh")
+        or "832x480"
+    )
+    frames = int(
+        resolved.params.get("num_frames")
+        or resolved.params.get("video_length")
+        or _first_nested_value(resolved.params, ("individual_segment_params", "segment_params", "orchestrator_details"), "num_frames", "video_length")
+        or 81
+    )
+    fps = int(float(resolved.params.get("fps") or resolved.params.get("fps_helpers") or 16))
+    prompt = str(
+        resolved.params.get("prompt")
+        or resolved.params.get("base_prompt")
+        or _first_nested_string(resolved.params, ("individual_segment_params", "segment_params", "orchestrator_details"), "prompt", "base_prompt")
+        or ""
+    )
+    negative = str(
+        resolved.params.get("negative_prompt")
+        or _first_nested_string(resolved.params, ("individual_segment_params", "segment_params", "orchestrator_details"), "negative_prompt")
+        or "fading, breaking, shot cuts, jumpcuts, blurry, noise, distorted"
+    )
+    seed = int(
+        resolved.params.get("seed")
+        or resolved.params.get("seed_to_use")
+        or _first_nested_value(resolved.params, ("individual_segment_params", "segment_params", "orchestrator_details"), "seed", "seed_to_use", "seed_base")
+        or -1
+    )
+    steps = int(resolved.params.get("steps", resolved.params.get("num_inference_steps", 6)))
+    scratchpad = run_workspace / "wan_2_2_vace_scratchpad.py"
+    scratchpad.write_text(
+        "\n".join(
+            [
+                "from vibecomfy.cli_loader import load_workflow_any",
+                "",
+                "",
+                "def build():",
+                "    workflow = load_workflow_any('video/wanvideo_wrapper_22_14b_vace_cocktail')",
+                f"    workflow.nodes['64'].inputs['image'] = {json.dumps(start_name)}",
+                f"    workflow.nodes['112'].inputs['image'] = {json.dumps(end_name)}",
+                f"    control_name = {json.dumps(control_name)}",
+                "    if control_name:",
+                "        workflow.nodes['199'].inputs['video'] = control_name",
+                f"        workflow.nodes['199'].inputs['force_rate'] = {fps}",
+                f"        workflow.nodes['199'].inputs['custom_width'] = {width}",
+                f"        workflow.nodes['199'].inputs['custom_height'] = {height}",
+                f"        workflow.nodes['199'].inputs['frame_load_cap'] = {frames}",
+                "    else:",
+                "        workflow.disconnect('111.control_images')",
+                f"    workflow.nodes['111'].inputs['widget_0'] = {frames}",
+                f"    workflow.nodes['56'].inputs['widget_0'] = {width}",
+                f"    workflow.nodes['56'].inputs['widget_1'] = {height}",
+                f"    workflow.nodes['56'].inputs['widget_2'] = {frames}",
+                f"    workflow.nodes['56'].inputs['width'] = {width}",
+                f"    workflow.nodes['56'].inputs['height'] = {height}",
+                f"    workflow.nodes['56'].inputs['num_frames'] = {frames}",
+                f"    workflow.nodes['16'].inputs['widget_0'] = {json.dumps(prompt)}",
+                f"    workflow.nodes['16'].inputs['widget_1'] = {json.dumps(negative)}",
+                f"    workflow.nodes['139'].inputs['frame_rate'] = {fps}",
+                f"    workflow.nodes['27'].inputs['steps'] = {steps}",
+                f"    workflow.nodes['27'].inputs['widget_0'] = {steps}",
+                f"    workflow.nodes['27'].inputs['widget_3'] = {seed}",
+                f"    workflow.nodes['87'].inputs['steps'] = {steps}",
+                f"    workflow.nodes['87'].inputs['widget_0'] = {steps}",
+                f"    workflow.nodes['87'].inputs['widget_3'] = {seed}",
+                f"    workflow.nodes['197'].inputs['steps'] = {steps}",
+                f"    workflow.nodes['197'].inputs['widget_0'] = {steps}",
+                f"    workflow.nodes['197'].inputs['widget_3'] = {seed}",
+                "    return workflow.finalize_metadata()",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return scratchpad
+
+
 def _materialize_qwen_edit_input(resolved: ResolvedTask, run_workspace: Path) -> str:
     input_dir = run_workspace / "input"
     input_dir.mkdir(parents=True, exist_ok=True)
@@ -361,6 +577,62 @@ def _materialize_qwen_edit_input(resolved: ResolvedTask, run_workspace: Path) ->
     )
 
 
+def _is_wan_vace_route(route_key: str) -> bool:
+    return (
+        "model-wan22_vace" in route_key
+        or route_key.startswith("join_clips_segment__model-wan22_vace__")
+    )
+
+
+def _materialize_image_input(
+    resolved: ResolvedTask,
+    run_workspace: Path,
+    *keys: str,
+    nested_keys: tuple[str, ...] = (),
+    list_keys: tuple[str, ...] = (),
+    list_index: int = 0,
+    fallback_filename: str,
+) -> str:
+    input_dir = run_workspace / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    image_source = (
+        _first_string_param(resolved.params, *keys)
+        or _first_nested_string(resolved.params, nested_keys, *keys)
+        or _first_list_string(resolved.params, list_keys, list_index)
+        or _first_nested_list_string(resolved.params, nested_keys, list_keys, list_index)
+    )
+    if not image_source:
+        raise ValueError(f"VibeComfy route {resolved.route_key!r} requires image input {keys!r}")
+    return _copy_to_input_dir(
+        download_image_if_url(image_source, input_dir, resolved.task_id),
+        input_dir,
+        fallback_filename,
+    )
+
+
+def _materialize_optional_video_input(
+    resolved: ResolvedTask,
+    run_workspace: Path,
+    *keys: str,
+    nested_keys: tuple[str, ...] = (),
+    fallback_filename: str,
+) -> str | None:
+    input_dir = run_workspace / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    video_source = (
+        _first_string_param(resolved.params, *keys)
+        or _first_nested_string(resolved.params, nested_keys, *keys)
+        or _first_travel_guidance_video(resolved.params)
+    )
+    if not video_source:
+        return None
+    return _copy_to_input_dir(
+        download_video_if_url(video_source, input_dir, resolved.task_id),
+        input_dir,
+        fallback_filename,
+    )
+
+
 def _copy_to_input_dir(source: str | Path, input_dir: Path, filename: str) -> str:
     source_path = Path(source)
     suffix = source_path.suffix or Path(filename).suffix or ".png"
@@ -385,6 +657,63 @@ def _first_string_param(params: dict[str, Any], *keys: str) -> str | None:
         value = params.get(key)
         if isinstance(value, str) and value.strip():
             return value
+    return None
+
+
+def _first_nested_string(params: Mapping[str, Any], nested_keys: tuple[str, ...], *keys: str) -> str | None:
+    value = _first_nested_value(params, nested_keys, *keys)
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _first_nested_value(params: Mapping[str, Any], nested_keys: tuple[str, ...], *keys: str) -> Any:
+    for nested_key in nested_keys:
+        nested = params.get(nested_key)
+        if isinstance(nested, Mapping):
+            for key in keys:
+                value = nested.get(key)
+                if value is not None and value != "":
+                    return value
+    return None
+
+
+def _first_list_string(params: Mapping[str, Any], list_keys: tuple[str, ...], index: int) -> str | None:
+    for key in list_keys:
+        value = params.get(key)
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)) and len(value) > index:
+            item = value[index]
+            if isinstance(item, str) and item.strip():
+                return item
+    return None
+
+
+def _first_nested_list_string(
+    params: Mapping[str, Any],
+    nested_keys: tuple[str, ...],
+    list_keys: tuple[str, ...],
+    index: int,
+) -> str | None:
+    for nested_key in nested_keys:
+        nested = params.get(nested_key)
+        if isinstance(nested, Mapping):
+            found = _first_list_string(nested, list_keys, index)
+            if found:
+                return found
+    return None
+
+
+def _first_travel_guidance_video(params: Mapping[str, Any]) -> str | None:
+    guidance = params.get("travel_guidance")
+    if isinstance(guidance, Mapping):
+        videos = guidance.get("videos")
+        if isinstance(videos, Sequence) and not isinstance(videos, (str, bytes, bytearray)):
+            for entry in videos:
+                if isinstance(entry, str) and entry.strip():
+                    return entry
+                if isinstance(entry, Mapping):
+                    for key in ("url", "path", "video_url", "video_path"):
+                        value = entry.get(key)
+                        if isinstance(value, str) and value.strip():
+                            return value
     return None
 
 

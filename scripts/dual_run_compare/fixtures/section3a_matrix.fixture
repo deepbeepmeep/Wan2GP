@@ -44,8 +44,8 @@
       "disposition": "NEW",
       "expected_backend": "wgp",
       "route_key_expectation": "travel_segment__model-wan22_vace__guidance-vace_flow__continuity-first_last__profile-default",
-      "support_state_expectation": "vibecomfy_unsupported",
-      "blocking_reason": "Requires the NEW Wan 2.2 VACE cocktail template and optical-flow guide preprocessing before promotion."
+      "support_state_expectation": "vibecomfy_supported",
+      "blocking_reason": null
     },
     {
       "row_id": 3,
@@ -59,8 +59,8 @@
       "disposition": "NEW",
       "expected_backend": "wgp",
       "route_key_expectation": "travel_segment__model-wan22_vace__guidance-vace_canny__continuity-first_last__profile-default",
-      "support_state_expectation": "vibecomfy_unsupported",
-      "blocking_reason": "Requires the NEW Wan 2.2 VACE cocktail template and Canny guide preprocessing before promotion."
+      "support_state_expectation": "vibecomfy_supported",
+      "blocking_reason": null
     },
     {
       "row_id": 4,
@@ -74,8 +74,8 @@
       "disposition": "NEW",
       "expected_backend": "wgp",
       "route_key_expectation": "travel_segment__model-wan22_vace__guidance-vace_depth__continuity-first_last__profile-default",
-      "support_state_expectation": "vibecomfy_unsupported",
-      "blocking_reason": "Requires the NEW Wan 2.2 VACE cocktail template and depth guide handling before promotion."
+      "support_state_expectation": "vibecomfy_supported",
+      "blocking_reason": null
     },
     {
       "row_id": 5,
@@ -89,8 +89,8 @@
       "disposition": "NEW",
       "expected_backend": "wgp",
       "route_key_expectation": "travel_segment__model-wan22_vace__guidance-vace_raw__continuity-first_last__profile-default",
-      "support_state_expectation": "vibecomfy_unsupported",
-      "blocking_reason": "Requires the NEW Wan 2.2 VACE cocktail template and raw guide-video passthrough before promotion."
+      "support_state_expectation": "vibecomfy_supported",
+      "blocking_reason": null
     },
     {
       "row_id": 6,

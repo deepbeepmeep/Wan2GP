@@ -1398,6 +1398,54 @@ def _handle_travel_segment_via_queue_impl(task_params_dict: dict, main_output_di
             params=route_params,
         )
         if resolved_route.backend == WorkerBackend.VIBECOMFY:
+            if resolved_route.should_use_vibecomfy:
+                vibe_ok, vibe_output_path = execute_resolved_direct_task(
+                    resolved=resolved_route,
+                    context={"main_output_dir_base": main_output_dir_base},
+                    build_wgp_generation_task=lambda: generation_task,
+                )
+                if not vibe_ok:
+                    return False, vibe_output_path
+                if not vibe_output_path:
+                    return False, f"Travel segment {task_id}: VibeComfy completed without an output path"
+
+                if image_refs.active_svi_continuation:
+                    _upload_svi_latent_tail_if_available(vibe_output_path, task_id)
+
+                if is_standalone:
+                    return True, vibe_output_path
+
+                chain_success, chain_message, final_chained_path = handle_travel_chaining_after_wgp(
+                    wgp_task_params={
+                        "task_id": task_id,
+                        "use_svi": image_refs.active_svi_continuation,
+                        "video_length": generation_params.get("video_length"),
+                        "sliding_window_overlap": generation_params.get("sliding_window_overlap"),
+                        "video_source": generation_params.get("video_source"),
+                        "travel_chain_details": {
+                            "orchestrator_task_id_ref": ctx.orchestrator_task_id_ref,
+                            "orchestrator_run_id": ctx.orchestrator_run_id,
+                            "segment_index_completed": ctx.segment_idx,
+                            "orchestrator_details": ctx.orchestrator_details,
+                            "segment_processing_dir_for_saturation": str(gen.segment_processing_dir),
+                            "is_first_new_segment_after_continue": ctx.segment_params.get("is_first_segment", False) and ctx.orchestrator_details.get("continue_from_video_resolved_path"),
+                            "is_subsequent_segment": not ctx.segment_params.get("is_first_segment", True),
+                            "colour_match_videos": colour_match_videos,
+                            "cm_start_ref_path": None,
+                            "cm_end_ref_path": None,
+                            "show_input_images": False,
+                            "start_image_path": None,
+                            "end_image_path": None,
+                        },
+                    },
+                    actual_wgp_output_video_path=vibe_output_path,
+                    image_download_dir=gen.segment_processing_dir,
+                    main_output_dir_base=main_output_dir_base,
+                )
+                if chain_success and final_chained_path:
+                    return True, final_chained_path
+                return True, vibe_output_path
+
             reason = resolved_route.fail_closed_reason or (
                 f"Route {resolved_route.route_key!r} is "
                 f"{resolved_route.support_state.value}"

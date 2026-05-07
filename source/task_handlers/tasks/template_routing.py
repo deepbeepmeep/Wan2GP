@@ -108,8 +108,9 @@ SPRINT_2_SELECTOR_MAP: Mapping[str, RouteSelectorEntry] = MappingProxyType(
         ),
         "z_image_turbo_i2i": RouteSelectorEntry(
             route_key="z_image_turbo_i2i",
-            support_state=RouteSupportState.WGP_ONLY,
-            template_id=None,
+            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
+            template_id="image/z_image_img2img",
+            default_resolution="1024x1024",
         ),
         "qwen_image_2512": RouteSelectorEntry(
             route_key="qwen_image_2512",
@@ -183,8 +184,9 @@ SPRINT_2_SELECTOR_MAP: Mapping[str, RouteSelectorEntry] = MappingProxyType(
         ),
         "wan_2_2_t2i": RouteSelectorEntry(
             route_key="wan_2_2_t2i",
-            support_state=RouteSupportState.WGP_ONLY,
-            template_id=None,
+            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
+            template_id="video/wanvideo_wrapper_22_14b_t2i",
+            default_resolution="832x480",
         ),
     }
 )
@@ -200,27 +202,51 @@ SECTION3A_ROUTE_SUPPORT_MAP: Mapping[str, RouteSelectorEntry] = MappingProxyType
         ),
         "travel_segment__model-wan22_vace__guidance-vace_flow__continuity-first_last__profile-default": RouteSelectorEntry(
             route_key="travel_segment__model-wan22_vace__guidance-vace_flow__continuity-first_last__profile-default",
-            support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
+            template_id="video/wanvideo_wrapper_22_14b_vace_cocktail",
             disposition="NEW",
-            blocking_reason="Requires the NEW Wan 2.2 VACE cocktail template and optical-flow guide preprocessing before promotion.",
         ),
         "travel_segment__model-wan22_vace__guidance-vace_canny__continuity-first_last__profile-default": RouteSelectorEntry(
             route_key="travel_segment__model-wan22_vace__guidance-vace_canny__continuity-first_last__profile-default",
-            support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
+            template_id="video/wanvideo_wrapper_22_14b_vace_cocktail",
             disposition="NEW",
-            blocking_reason="Requires the NEW Wan 2.2 VACE cocktail template and Canny guide preprocessing before promotion.",
         ),
         "travel_segment__model-wan22_vace__guidance-vace_depth__continuity-first_last__profile-default": RouteSelectorEntry(
             route_key="travel_segment__model-wan22_vace__guidance-vace_depth__continuity-first_last__profile-default",
-            support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
+            template_id="video/wanvideo_wrapper_22_14b_vace_cocktail",
             disposition="NEW",
-            blocking_reason="Requires the NEW Wan 2.2 VACE cocktail template and depth guide handling before promotion.",
         ),
         "travel_segment__model-wan22_vace__guidance-vace_raw__continuity-first_last__profile-default": RouteSelectorEntry(
             route_key="travel_segment__model-wan22_vace__guidance-vace_raw__continuity-first_last__profile-default",
-            support_state=RouteSupportState.VIBECOMFY_UNSUPPORTED,
+            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
+            template_id="video/wanvideo_wrapper_22_14b_vace_cocktail",
             disposition="NEW",
-            blocking_reason="Requires the NEW Wan 2.2 VACE cocktail template and raw guide-video passthrough before promotion.",
+        ),
+        "travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default": RouteSelectorEntry(
+            route_key="travel_segment__model-wan22_vace__guidance-vace__continuity-video_source__profile-default",
+            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
+            template_id="video/wanvideo_wrapper_22_14b_vace_cocktail",
+            disposition="NEW",
+        ),
+        "individual_travel_segment__model-wan22_vace__guidance-vace__continuity-first_last__profile-default": RouteSelectorEntry(
+            route_key="individual_travel_segment__model-wan22_vace__guidance-vace__continuity-first_last__profile-default",
+            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
+            template_id="video/wanvideo_wrapper_22_14b_vace_cocktail",
+            disposition="NEW",
+        ),
+        "individual_travel_segment__model-wan22_vace__guidance-vace_raw__continuity-first_last__profile-default": RouteSelectorEntry(
+            route_key="individual_travel_segment__model-wan22_vace__guidance-vace_raw__continuity-first_last__profile-default",
+            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
+            template_id="video/wanvideo_wrapper_22_14b_vace_cocktail",
+            disposition="NEW",
+        ),
+        "join_clips_segment__model-wan22_vace__guidance-vace__continuity-join_bridge__profile-default": RouteSelectorEntry(
+            route_key="join_clips_segment__model-wan22_vace__guidance-vace__continuity-join_bridge__profile-default",
+            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
+            template_id="video/wanvideo_wrapper_22_14b_vace_cocktail",
+            disposition="NEW",
         ),
         "travel_segment__model-wan22_vace__guidance-uni3c__continuity-first_last__profile-default": RouteSelectorEntry(
             route_key="travel_segment__model-wan22_vace__guidance-uni3c__continuity-first_last__profile-default",

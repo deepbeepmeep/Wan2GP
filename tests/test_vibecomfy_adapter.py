@@ -414,3 +414,119 @@ def test_inpaint_route_uses_mask_composite(monkeypatch, tmp_path):
     source = Path(commands[0][4]).read_text(encoding="utf-8")
     assert "load_workflow_any('edit/qwen_image_edit')" in source
     assert "image_inpaint_image_inpaint-task.jpg" in source
+
+
+def test_z_image_img2img_materializes_input_and_scratchpad(monkeypatch, tmp_path):
+    commands = []
+    source_image = tmp_path / "z-input.png"
+    source_image.write_text("fake image", encoding="utf-8")
+
+    def _run(command, cwd, env, text, capture_output, check):
+        commands.append(command)
+        output = Path(cwd) / "out.png"
+        output.write_text("fake", encoding="utf-8")
+        return _completed(stdout="output: out.png\n")
+
+    monkeypatch.setattr(vibecomfy_adapter.subprocess, "run", _run)
+    resolved = _resolved_route(
+        "z_image_turbo_i2i",
+        {
+            "image_url": str(source_image),
+            "resolution": "1024x768",
+            "seed": 99,
+            "num_inference_steps": 7,
+            "denoising_strength": 0.4,
+        },
+    )
+
+    ok, result = handle_vibecomfy_resolved_task(resolved, tmp_path)
+
+    assert ok is True
+    assert result and result.endswith("out.png")
+    source = Path(commands[0][4]).read_text(encoding="utf-8")
+    assert "load_workflow_any('image/z_image_img2img')" in source
+    assert "z_image_img2img_z_image_turbo_i2i-task.png" in source
+    assert "node.inputs['width'] = 1024" in source
+    assert "node.inputs['height'] = 768" in source
+    assert "node.inputs['seed'] = 99" in source
+    assert "node.inputs['steps'] = 7" in source
+    assert "node.inputs['denoise'] = 0.4" in source
+
+
+def test_wan_2_2_t2i_uses_single_frame_scratchpad(monkeypatch, tmp_path):
+    commands = []
+
+    def _run(command, cwd, env, text, capture_output, check):
+        commands.append(command)
+        output = Path(cwd) / "out.png"
+        output.write_text("fake", encoding="utf-8")
+        return _completed(stdout="output: out.png\n")
+
+    monkeypatch.setattr(vibecomfy_adapter.subprocess, "run", _run)
+    resolved = _resolved_route(
+        "wan_2_2_t2i",
+        {
+            "resolution": "832x480",
+            "seed": 2026,
+            "num_inference_steps": 6,
+            "guidance_scale": 3,
+        },
+    )
+
+    ok, result = handle_vibecomfy_resolved_task(resolved, tmp_path)
+
+    assert ok is True
+    assert result and result.endswith("out.png")
+    source = Path(commands[0][4]).read_text(encoding="utf-8")
+    assert "load_workflow_any('video/wanvideo_wrapper_22_14b_t2i')" in source
+    assert "workflow.nodes['78'].inputs['num_frames'] = 1" in source
+    assert "workflow.nodes['27'].inputs['widget_3'] = 2026" in source
+    assert "workflow.nodes['87'].inputs['widget_3'] = 2026" in source
+
+
+def test_wan_vace_materializes_anchors_control_and_scratchpad(monkeypatch, tmp_path):
+    commands = []
+    start = tmp_path / "start.png"
+    end = tmp_path / "end.png"
+    control = tmp_path / "control.mp4"
+    start.write_text("start", encoding="utf-8")
+    end.write_text("end", encoding="utf-8")
+    control.write_text("control", encoding="utf-8")
+
+    def _run(command, cwd, env, text, capture_output, check):
+        commands.append(command)
+        output = Path(cwd) / "out.mp4"
+        output.write_bytes(b"fake")
+        return _completed(stdout="output: out.mp4\n")
+
+    monkeypatch.setattr(vibecomfy_adapter.subprocess, "run", _run)
+    monkeypatch.setattr(vibecomfy_adapter, "validate_video_artifact", lambda *_args, **_kwargs: None)
+    resolved = resolve_task_route(
+        task_id="vace-task",
+        task_type="travel_segment",
+        params={
+            "model_name": "wan_2_2_vace_lightning_baseline_2_2_2",
+            "travel_guidance": {"kind": "vace", "mode": "raw", "videos": [{"path": str(control)}]},
+            "input_image_paths_resolved": [str(start), str(end)],
+            "resolution": "832x480",
+            "num_frames": 81,
+            "fps": 16,
+            "prompt": "vace prompt",
+            "seed": 123,
+        },
+        backend="vibecomfy",
+    )
+
+    ok, result = handle_vibecomfy_resolved_task(resolved, tmp_path)
+
+    assert ok is True
+    assert result and result.endswith("out.mp4")
+    source = Path(commands[0][4]).read_text(encoding="utf-8")
+    assert "load_workflow_any('video/wanvideo_wrapper_22_14b_vace_cocktail')" in source
+    assert "vace_start_vace-task.png" in source
+    assert "vace_end_vace-task.png" in source
+    assert "vace_control_vace-task.mp4" in source
+    assert "workflow.nodes['56'].inputs['num_frames'] = 81" in source
+    assert "workflow.nodes['139'].inputs['frame_rate'] = 16" in source
+    assert 'workflow.nodes[\'16\'].inputs[\'widget_0\'] = "vace prompt"' in source
+    assert "workflow.nodes['197'].inputs['widget_3'] = 123" in source

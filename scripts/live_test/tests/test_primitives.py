@@ -570,7 +570,8 @@ def test_matrix_contains_route_specific_z_image_turbo_case():
     assert z_image_case.selected_template_id == "image/z_image"
     assert z_image_i2i_case.task_type == "z_image_turbo_i2i"
     assert z_image_i2i_case.route_key == "z_image_turbo_i2i"
-    assert z_image_i2i_case.support_state == "wgp_only"
+    assert z_image_i2i_case.support_state == "vibecomfy_supported"
+    assert z_image_i2i_case.selected_template_id == "image/z_image_img2img"
 
 
 def test_route_specific_matrix_stamps_selector_contract():
@@ -625,7 +626,6 @@ def test_travel_orchestrator_live_matrix_stamps_parent_route_contract():
 def test_live_matrix_includes_documented_wgp_only_direct_routes():
     cases = {case.name: case for case in build_matrix()}
     for name, task_type in {
-        "wan_2_2_t2i": "wan_2_2_t2i",
         "travel_stitch": "travel_stitch",
         "join_clips_orchestrator": "join_clips_orchestrator",
         "edit_video_orchestrator": "edit_video_orchestrator",
@@ -644,6 +644,8 @@ def test_live_matrix_includes_promoted_vibecomfy_direct_routes():
         "qwen_image_style": ("qwen_image_style", "edit/qwen_image_edit"),
         "image_inpaint": ("image_inpaint", "edit/qwen_image_edit"),
         "annotated_image_edit": ("annotated_image_edit", "edit/qwen_image_edit"),
+        "z_image_turbo_i2i": ("z_image_turbo_i2i", "image/z_image_img2img"),
+        "wan_2_2_t2i": ("wan_2_2_t2i", "video/wanvideo_wrapper_22_14b_t2i"),
     }
     for name, (task_type, template_id) in expected.items():
         case = cases[name]

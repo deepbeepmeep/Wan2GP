@@ -505,7 +505,8 @@ def build_matrix(
             fixture_key=WAN_2_2_T2I_FIXTURE_KEY,
             timeout_sec=timeout_image_sec,
             route_key="wan_2_2_t2i",
-            support_state="wgp_only",
+            support_state="vibecomfy_supported",
+            selected_template_id="video/wanvideo_wrapper_22_14b_t2i",
             route_runtime=route_runtime,
         ),
         MatrixCase(
@@ -559,7 +560,8 @@ def build_matrix(
             param_overrides={"image_url": anchor_image_a},
             timeout_sec=timeout_image_sec,
             route_key="z_image_turbo_i2i",
-            support_state="wgp_only",
+            support_state="vibecomfy_supported",
+            selected_template_id="image/z_image_img2img",
             route_runtime=route_runtime,
         ),
     ]

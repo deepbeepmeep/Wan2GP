@@ -688,11 +688,20 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
             num_steps = (sampling_steps + 1) // 2 if sampling_order == 2 else sampling_steps
             if (rfba_gap_steps[1] - 0.0) == 0.0:
                 num_steps += 1
+            
+            # MPS backend does not support float64; fall back to float32
+            # for the DPM-Solver ODE steps to avoid:
+            #   "Cannot convert a MPS Tensor to float64 dtype"
+            solver_dtype = torch.float32 if (
+                latents.device.type == "mps" or
+                (hasattr(torch.backends, 'mps') and torch.backends.mps.is_available())
+            ) else torch.float64
+            
             t_steps = torch.linspace(
                 rfba_gap_steps[0],
                 1.0 - rfba_gap_steps[1],
                 num_steps,
-                dtype=torch.float64,
+                dtype=solver_dtype,
             ).to(latents)
             if (rfba_gap_steps[1] - 0.0) == 0.0:
                 t_steps = t_steps[:-1]
@@ -788,7 +797,7 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                 return noise_pred
 
             input_dtype = latents.dtype
-            x_cur = latents.to(torch.float64)
+            x_cur = latents.to(solver_dtype)
             x_hats, z_hats = [], []
             buffer_freq = 1
             final_x_hat = None
@@ -818,7 +827,7 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                         break
 
                     final_x_hat = x_hat.to(torch.float32)
-                    x_hat, z_hat = x_hat.to(torch.float64), z_hat.to(torch.float64)
+                    x_hat, z_hat = x_hat.to(solver_dtype), z_hat.to(solver_dtype)
 
                     if buffer_freq > 0 and extrapol_ratio > 0:
                         z_hats.append(z_hat)
@@ -856,7 +865,7 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                             t_next.to(input_dtype),
                             t_tgt.to(input_dtype),
                         )
-                        x_pri, z_pri = x_pri.to(torch.float64), z_pri.to(torch.float64)
+                        x_pri, z_pri = x_pri.to(solver_dtype), z_pri.to(solver_dtype)
 
                         x_next = x_cur * sampler.gamma_in(t_next) / sampler.gamma_in(t_cur) + (
                             sampler.alpha_in(t_next)

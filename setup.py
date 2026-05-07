@@ -600,7 +600,16 @@ def create_wgp_config(profile_key, config_data):
     WGP_CONFIG_FILE = "wgp_config.json"
     
     if os.path.exists(WGP_CONFIG_FILE):
-        return
+        # Check for stale/invalid config (e.g., attention_mode was blank
+        # in older MPS setups, causing silent generation failures).
+        try:
+            with open(WGP_CONFIG_FILE, 'r') as f:
+                existing = json.load(f)
+            if existing.get("attention_mode") and existing.get("video_profile"):
+                return  # config looks valid, keep it
+            print("\n[*] wgp_config.json exists but has blank/invalid fields — regenerating...")
+        except (json.JSONDecodeError, IOError, KeyError):
+            print("\n[*] wgp_config.json is corrupt — regenerating...")
 
     print("\n[*] Auto-generating wgp_config.json based on hardware...")
     

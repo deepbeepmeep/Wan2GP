@@ -1,0 +1,333 @@
+{
+  "manifest_id": "sprint11b-production-canary-evidence",
+  "created_at": "2026-05-07T00:09:07Z",
+  "readiness_state": "PAUSED",
+  "dashboard_import_prerequisite": {
+    "status": "NO_GO",
+    "source_ref": {
+      "kind": "local_import_probe",
+      "path": "reigh-worker-orchestrator/scripts/dashboard.py",
+      "line": 61
+    },
+    "error": "NameError: name 'DatabaseClient' is not defined",
+    "paused_reason": "Sprint 11B dashboard validation remains blocked until the Sprint 11A DatabaseClient annotation import prerequisite is fixed.",
+    "mechanical_refs": [
+      "63e4e6b sprint-11a-production-canary-code-patches: megaplan milestone (#16)",
+      "079e3ef Record Sprint 11A VibeComfy live proof"
+    ]
+  },
+  "canary_state": {
+    "active_live_cohort": "UNKNOWN",
+    "selector_namespace": "UNKNOWN",
+    "selector_version": "UNKNOWN",
+    "promoted_route_keys": "UNKNOWN",
+    "hold_windows": {
+      "cohort_a": "UNKNOWN",
+      "cohort_b": "UNKNOWN",
+      "cohort_e": "UNKNOWN"
+    },
+    "promotion_policy": "PAUSED"
+  },
+  "source_report_refs": [
+    {
+      "kind": "thresholds",
+      "path": "reigh-worker/scripts/dual_run_compare/migration-thresholds.yaml",
+      "version": "0B-2026-05-05",
+      "summary": "Defines Cohort A/B/E route universe and current calibration status."
+    },
+    {
+      "kind": "dual_run_report",
+      "path": "reigh-worker/scripts/dual_run_compare/reports/wgp-self-repeat-0b-2026-05-05-deferral.json",
+      "summary": "WGP self-repeatability deferral source for routes marked deferred_pending_sprint_0c_disk."
+    },
+    {
+      "kind": "dual_run_report",
+      "path": "reigh-worker/scripts/dual_run_compare/reports/wgp-self-repeat-0b-2026-05-05-deferral.md",
+      "summary": "Human-readable WGP self-repeatability deferral report."
+    },
+    {
+      "kind": "dry_run_report",
+      "path": "reigh-worker/scripts/dual_run_compare/reports/dry-run-report.md",
+      "summary": "Wan/VACE dry-run fallback because required candidate video observations are missing."
+    }
+  ],
+  "dashboards": {
+    "status": "NO_GO",
+    "reasons": [
+      "Dashboard export validation is blocked by the Sprint 11A DatabaseClient import prerequisite.",
+      "Static dashboard evidence is paused/no-go context only; it is not a green live dashboard export."
+    ],
+    "evidence_refs": [
+      "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.redacted.json",
+      "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.md"
+    ],
+    "panels": [
+      "selected_pool_totals",
+      "route_totals",
+      "route_worker_health",
+      "claim_suppression",
+      "quota_alerts",
+      "preflight_status",
+      "warm_cache_status",
+      "non_rayworker_route_health"
+    ]
+  },
+  "alerts": {
+    "status": "green",
+    "reasons": [],
+    "evidence_refs": [
+      "reigh-worker-orchestrator/config/alerts/section11-canary.yaml",
+      "reigh-worker-orchestrator/tasks/canary-rollback-orchestrator.md#output-divergence",
+      "reigh-worker-orchestrator/tasks/canary-rollback-app.md#non-rayworker-route-smoke"
+    ],
+    "verified_categories": [
+      "latency_p95_ratio",
+      "vram_peak_ratio",
+      "oom_count",
+      "canary_output_divergence",
+      "missing_runtime_evidence",
+      "stale_route_workers",
+      "quota_alerts",
+      "claim_suppression",
+      "completion_billing_failure",
+      "non_rayworker_route_smoke_failure"
+    ]
+  },
+  "rollback_exercise": {
+    "observed_at": "2026-05-07T00:09:07Z",
+    "environment": "staging",
+    "operator": "UNKNOWN",
+    "source_ref": {
+      "kind": "runbook",
+      "path": "reigh-worker-orchestrator/tasks/canary-rollback-orchestrator.md"
+    },
+    "status": "NO_GO",
+    "reasons": [
+      "No live rollback exercise or operator sign-off was mechanically verified.",
+      "Emergency procedure is documented as a route selector flip back to WGP, but execution evidence remains UNKNOWN."
+    ],
+    "rollback_pr_refs": {
+      "worker": "ROLLBACK_PR_WORKER_PLACEHOLDER",
+      "orchestrator": "ROLLBACK_PR_ORCHESTRATOR_PLACEHOLDER",
+      "app": "ROLLBACK_PR_APP_PLACEHOLDER"
+    }
+  },
+  "go_no_go": {
+    "decision": "no_go",
+    "reasons": [
+      "dashboard_import_prerequisite:NO_GO",
+      "active_live_cohort:UNKNOWN",
+      "selector_namespace_version:UNKNOWN",
+      "hold_windows:UNKNOWN",
+      "non_rayworker_live_observations:UNKNOWN",
+      "shadow_isolation:UNKNOWN",
+      "operator_signoff:UNKNOWN"
+    ],
+    "evidence_refs": [
+      "sprint11b-evidence-manifest.json",
+      "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.redacted.json"
+    ]
+  },
+  "operator_signoff": {
+    "status": "UNKNOWN",
+    "source_ref": {
+      "kind": "mechanical_search",
+      "id": "not_found"
+    },
+    "reason": "No operator or stakeholder sign-off was mechanically discovered."
+  },
+  "shadow_isolation": {
+    "status": "UNKNOWN",
+    "output_divergence_auto_rollback": "NO_GO",
+    "source_ref": {
+      "kind": "policy",
+      "path": "docs/migration-vibecomfy-live-validation.md"
+    },
+    "reason": "No isolated shadow evidence proved absence of completion, billing, upload, or user-visible side effects."
+  },
+  "non_rayworker_observations": [
+    {
+      "environment": "staging",
+      "observed_at": "2026-05-07T00:09:07Z",
+      "task_id": "NO_GO_missing_live_video_enhance",
+      "task_type": "video_enhance",
+      "route_key": "video_enhance",
+      "runtime": {
+        "backend": "api_orchestrator",
+        "state": "UNKNOWN"
+      },
+      "selector_namespace": "UNKNOWN",
+      "selector_version": "UNKNOWN",
+      "status": "NO_GO",
+      "completion_evidence": {
+        "handler": "complete_task/generation-handlers.ts",
+        "status": "NO_GO",
+        "reason": "No recent live/staging completion evidence was mechanically verified."
+      },
+      "billing_evidence": {
+        "handler": "complete_task/billing.ts",
+        "status": "NO_GO",
+        "reason": "No recent live/staging billing evidence was mechanically verified."
+      },
+      "source_ref": {
+        "kind": "evidence_gap",
+        "path": "reigh-worker/scripts/dual_run_compare/fixtures/non_rayworker/video_enhance.json"
+      },
+      "redaction": {
+        "status": "redacted",
+        "secret_scan": "passed"
+      }
+    },
+    {
+      "environment": "staging",
+      "observed_at": "2026-05-07T00:09:07Z",
+      "task_id": "NO_GO_missing_live_image-upscale",
+      "task_type": "image-upscale",
+      "route_key": "image-upscale",
+      "runtime": {
+        "backend": "api_orchestrator",
+        "state": "UNKNOWN"
+      },
+      "selector_namespace": "UNKNOWN",
+      "selector_version": "UNKNOWN",
+      "status": "NO_GO",
+      "completion_evidence": {
+        "handler": "complete_task/generation-handlers.ts",
+        "status": "NO_GO",
+        "reason": "No recent live/staging completion evidence was mechanically verified."
+      },
+      "billing_evidence": {
+        "handler": "complete_task/billing.ts",
+        "status": "NO_GO",
+        "reason": "No recent live/staging billing evidence was mechanically verified."
+      },
+      "source_ref": {
+        "kind": "evidence_gap",
+        "path": "reigh-worker/scripts/dual_run_compare/fixtures/non_rayworker/image-upscale.json"
+      },
+      "redaction": {
+        "status": "redacted",
+        "secret_scan": "passed"
+      }
+    },
+    {
+      "environment": "staging",
+      "observed_at": "2026-05-07T00:09:07Z",
+      "task_id": "NO_GO_missing_live_animate_character",
+      "task_type": "animate_character",
+      "route_key": "animate_character",
+      "runtime": {
+        "backend": "api_orchestrator",
+        "state": "UNKNOWN"
+      },
+      "selector_namespace": "UNKNOWN",
+      "selector_version": "UNKNOWN",
+      "status": "NO_GO",
+      "completion_evidence": {
+        "handler": "complete_task/generation-handlers.ts",
+        "status": "NO_GO",
+        "reason": "No recent live/staging completion evidence was mechanically verified."
+      },
+      "billing_evidence": {
+        "handler": "complete_task/billing.ts",
+        "status": "NO_GO",
+        "reason": "No recent live/staging billing evidence was mechanically verified."
+      },
+      "source_ref": {
+        "kind": "evidence_gap",
+        "path": "reigh-worker/scripts/dual_run_compare/fixtures/non_rayworker/animate_character.json"
+      },
+      "redaction": {
+        "status": "redacted",
+        "secret_scan": "passed"
+      }
+    },
+    {
+      "environment": "staging",
+      "observed_at": "2026-05-07T00:09:07Z",
+      "task_id": "NO_GO_missing_live_flux_klein_edit",
+      "task_type": "flux_klein_edit",
+      "route_key": "flux_klein_edit",
+      "runtime": {
+        "backend": "api_orchestrator",
+        "state": "UNKNOWN"
+      },
+      "selector_namespace": "UNKNOWN",
+      "selector_version": "UNKNOWN",
+      "status": "NO_GO",
+      "completion_evidence": {
+        "handler": "complete_task/generation-handlers.ts",
+        "status": "NO_GO",
+        "reason": "No recent live/staging completion evidence was mechanically verified."
+      },
+      "billing_evidence": {
+        "handler": "complete_task/billing.ts",
+        "status": "NO_GO",
+        "reason": "No recent live/staging billing evidence was mechanically verified."
+      },
+      "source_ref": {
+        "kind": "evidence_gap",
+        "path": "reigh-worker/scripts/dual_run_compare/fixtures/non_rayworker/flux_klein_edit.json"
+      },
+      "redaction": {
+        "status": "redacted",
+        "secret_scan": "passed"
+      }
+    }
+  ],
+  "soak_scenarios": [
+    {
+      "scenario": "mixed_pools",
+      "status": "fail",
+      "observed_at": "2026-05-07T00:09:07Z",
+      "route_labels": {"cohort": "UNKNOWN", "selector_namespace": "UNKNOWN"},
+      "pool_labels": {"pool": "UNKNOWN", "backend": "UNKNOWN"},
+      "evidence_refs": [{"kind": "evidence_gap", "id": "mixed_pools:UNKNOWN"}]
+    },
+    {
+      "scenario": "concurrent_claims",
+      "status": "fail",
+      "observed_at": "2026-05-07T00:09:07Z",
+      "route_labels": {"cohort": "UNKNOWN", "selector_namespace": "UNKNOWN"},
+      "pool_labels": {"pool": "UNKNOWN", "backend": "UNKNOWN"},
+      "evidence_refs": [{"kind": "evidence_gap", "id": "concurrent_claims:UNKNOWN"}]
+    },
+    {
+      "scenario": "selector_flip_in_flight",
+      "status": "fail",
+      "observed_at": "2026-05-07T00:09:07Z",
+      "route_labels": {"cohort": "UNKNOWN", "selector_namespace": "UNKNOWN"},
+      "pool_labels": {"pool": "UNKNOWN", "backend": "UNKNOWN"},
+      "evidence_refs": [{"kind": "evidence_gap", "id": "selector_flip_in_flight:UNKNOWN"}]
+    },
+    {
+      "scenario": "worker_kill_restart",
+      "status": "fail",
+      "observed_at": "2026-05-07T00:09:07Z",
+      "route_labels": {"cohort": "UNKNOWN", "selector_namespace": "UNKNOWN"},
+      "pool_labels": {"pool": "UNKNOWN", "backend": "UNKNOWN"},
+      "evidence_refs": [{"kind": "evidence_gap", "id": "worker_kill_restart:UNKNOWN"}]
+    },
+    {
+      "scenario": "cold_warm_cache",
+      "status": "fail",
+      "observed_at": "2026-05-07T00:09:07Z",
+      "route_labels": {"cohort": "UNKNOWN", "selector_namespace": "UNKNOWN"},
+      "pool_labels": {"pool": "UNKNOWN", "backend": "UNKNOWN"},
+      "evidence_refs": [{"kind": "evidence_gap", "id": "cold_warm_cache:UNKNOWN"}]
+    },
+    {
+      "scenario": "disk_near_full",
+      "status": "fail",
+      "observed_at": "2026-05-07T00:09:07Z",
+      "route_labels": {"cohort": "UNKNOWN", "selector_namespace": "UNKNOWN"},
+      "pool_labels": {"pool": "UNKNOWN", "backend": "UNKNOWN"},
+      "evidence_refs": [{"kind": "evidence_gap", "id": "disk_near_full:UNKNOWN"}]
+    }
+  ],
+  "redaction": {
+    "status": "redacted",
+    "secret_scan": "passed",
+    "notes": "Manifest contains placeholders and redacted paths only; no live task ids, worker ids, authorization headers, tokens, or service credentials are included."
+  }
+}

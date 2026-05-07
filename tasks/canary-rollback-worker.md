@@ -1,43 +1,108 @@
-# Sprint 10 Canary Rollback Draft - Worker
+# Sprint 11B Canary Rollback Runbook - Worker
 
 ## Purpose
 
-Rollback worker runtime behavior to stable WGP routing and capture placeholder-safe worker evidence. This is a draft PR artifact for the worker repo; real live/staging task IDs and secrets must be supplied at execution time, not committed.
+Rollback a Sprint 11B route cohort to the stable WGP worker contract and capture redacted evidence for the readiness package. Roll back by route cohort and route key, not by a broad backend switch.
 
-Required placeholders:
+Current mechanical state for this runbook:
+
+- Active live cohort: `UNKNOWN`.
+- Selector namespace/version: `UNKNOWN`.
+- Hold windows for Cohorts A/B/E: `UNKNOWN`.
+- Dashboard validation prerequisite: `NO_GO` until `reigh-worker-orchestrator/scripts/dashboard.py` imports without `NameError: name 'DatabaseClient' is not defined`.
+- Shadow isolation: `UNKNOWN`; output-divergence auto-rollback stays disabled unless isolated shadow evidence proves no completion, billing, upload, or user-visible side effects.
+- Rollback PR references: `ROLLBACK_PR_WORKER_PLACEHOLDER`, replace when mechanically verified.
+
+## Required Placeholders
 
 ```bash
 export SUPABASE_URL="<SUPABASE_URL>"
 export SUPABASE_SERVICE_ROLE_KEY="<SUPABASE_SERVICE_ROLE_KEY>"
-export WORKER_ID="<worker-id-placeholder>"
 export STABLE_SELECTOR_NAMESPACE="production"
 export STABLE_SELECTOR_VERSION="<stable-selector-version-or-empty>"
+export STABLE_WORKER_BACKEND="wgp"
+export STABLE_WORKER_PROFILE="1"
 export STABLE_WORKER_POOL="gpu-wgp-production"
-export ROUTE_KEYS_JSON='["travel_segment","image__model-z_image_turbo","video__model-wan_t2v"]'
+export CANARY_SELECTOR_NAMESPACE="<canary-selector-namespace-or-UNKNOWN>"
+export CANARY_SELECTOR_VERSION="<canary-selector-version-or-UNKNOWN>"
+export CANARY_WORKER_POOL="<gpu-vibecomfy-canary-pool-or-UNKNOWN>"
+export ROLLBACK_ROUTE_KEYS_JSON='["<route-key-1>","<route-key-2>"]'
+export ROLLBACK_PR_WORKER="ROLLBACK_PR_WORKER_PLACEHOLDER"
 ```
 
-## Rollback Steps
+Use the mechanically verified route universe from `reigh-worker/scripts/dual_run_compare/migration-thresholds.yaml` (`version: 0B-2026-05-05`) when filling `ROLLBACK_ROUTE_KEYS_JSON`. If the live cohort is still unknown, set the readiness evidence to `PAUSED` and keep all promoted route keys on WGP.
 
-### 1. Start or restart workers with the stable WGP contract
+## Emergency Selector Flip Back To WGP
+
+The emergency rollback is a selector flip for the affected route keys back to WGP. Do not change unrelated route cohorts and do not use an all-backends switch as rollback proof.
+
+Patch the selector source of truth used by live ops. If it is exposed through Supabase REST, use the route-key scoped shape below; otherwise run the equivalent owner-approved selector command and preserve the same evidence fields.
 
 ```bash
-export REIGH_BACKEND=wgp
-export WORKER_BACKEND=wgp
-export REIGH_WORKER_PROFILE=1
-export WGP_PROFILE=1
+python - <<'PY'
+import json
+import os
+
+route_keys = json.loads(os.environ["ROLLBACK_ROUTE_KEYS_JSON"])
+print(json.dumps({
+    "selector_flip": {
+        "route_keys": route_keys,
+        "selected_backend": "wgp",
+        "selector_namespace": os.environ["STABLE_SELECTOR_NAMESPACE"],
+        "selector_version": os.environ["STABLE_SELECTOR_VERSION"],
+        "worker_pool": os.environ["STABLE_WORKER_POOL"],
+        "worker_profile": os.environ["STABLE_WORKER_PROFILE"],
+        "rollback_pr": os.environ["ROLLBACK_PR_WORKER"],
+    }
+}, indent=2, sort_keys=True))
+PY
+```
+
+Expected redacted evidence:
+
+```json
+{
+  "status": "PAUSED",
+  "rollback_action": "route_selector_flip_to_wgp",
+  "route_keys": ["<route-key-1>"],
+  "selector_namespace_before": "<canary-selector-namespace-or-UNKNOWN>",
+  "selector_version_before": "<canary-selector-version-or-UNKNOWN>",
+  "selector_namespace_after": "production",
+  "selector_version_after": "<stable-selector-version-or-empty>",
+  "selected_backend_after": "wgp",
+  "worker_pool_after": "gpu-wgp-production",
+  "worker_profile_after": "1",
+  "rollback_pr": "ROLLBACK_PR_WORKER_PLACEHOLDER",
+  "source_ref": {
+    "kind": "redacted_operator_log",
+    "id": "<replace-with-log-or-PR-ref>"
+  }
+}
+```
+
+## Restart Stable WGP Workers
+
+Start or restart WGP workers with the stable route contract:
+
+```bash
+export REIGH_BACKEND="$STABLE_WORKER_BACKEND"
+export WORKER_BACKEND="$STABLE_WORKER_BACKEND"
+export REIGH_WORKER_PROFILE="$STABLE_WORKER_PROFILE"
+export WGP_PROFILE="$STABLE_WORKER_PROFILE"
 export REIGH_WORKER_POOL="$STABLE_WORKER_POOL"
 export WORKER_POOL="$STABLE_WORKER_POOL"
 export REIGH_SELECTOR_NAMESPACE="$STABLE_SELECTOR_NAMESPACE"
 export ROUTE_SELECTOR_NAMESPACE="$STABLE_SELECTOR_NAMESPACE"
 export REIGH_SELECTOR_VERSION="$STABLE_SELECTOR_VERSION"
 export ROUTE_SELECTOR_VERSION="$STABLE_SELECTOR_VERSION"
+export REIGH_WORKER_CONTRACT_VERSION=1
 ```
 
 ```bash
 python -m source.runtime.worker.server
 ```
 
-Expected evidence:
+Expected redacted evidence:
 
 ```json
 {
@@ -46,11 +111,40 @@ Expected evidence:
   "worker_pool": "gpu-wgp-production",
   "selector_namespace": "production",
   "selector_version": "<stable-selector-version-or-empty>",
+  "worker_contract_version": 1,
   "claim_enabled": true
 }
 ```
 
-### 2. Verify stable task-count and claim request shape
+## Stale VibeComfy Worker Drain
+
+After the selector flip, active stale-route VibeComfy workers may drain only in-flight work that was already claimed before the flip. Idle or ready stale-route VibeComfy workers must be made unclaimable or terminated. Do not let stale workers claim new tasks for the rolled-back route keys.
+
+```bash
+curl --fail-with-body -sS \
+  "$SUPABASE_URL/rest/v1/workers?worker_backend=eq.vibecomfy&worker_pool=eq.$CANARY_WORKER_POOL&status=in.(ready,idle,active)&select=id,status,worker_pool,worker_backend,metadata" \
+  -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+  -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+| tee /tmp/sprint11b-vibecomfy-stale-workers.redacted.json
+```
+
+Expected drain evidence:
+
+```json
+{
+  "route_keys": ["<route-key-1>"],
+  "stale_vibecomfy_workers": {
+    "active_draining": 0,
+    "idle_terminated_or_unclaimable": 0,
+    "new_claims_allowed": false
+  },
+  "drain_policy": "active pre-flip claims may finish; idle/ready stale VibeComfy workers terminate or remain unclaimable"
+}
+```
+
+## Verify WGP Claim Contract
+
+Verify task counts and worker labels after the route selector flip:
 
 ```bash
 python - <<'PY'
@@ -65,8 +159,7 @@ PY
 python - <<'PY'
 from source.runtime.worker.health_labels import queryable_telemetry_labels
 
-labels = queryable_telemetry_labels("<worker-id-placeholder>")
-print(labels)
+print(queryable_telemetry_labels("<worker-id-placeholder>"))
 PY
 ```
 
@@ -84,121 +177,44 @@ Expected evidence:
 }
 ```
 
-### 3. Verify no VibeComfy canary worker remains claimable
+## Capture Route Evidence
 
-```bash
-curl --fail-with-body -sS \
-  "$SUPABASE_URL/rest/v1/workers?worker_pool=neq.$STABLE_WORKER_POOL&worker_backend=eq.vibecomfy&status=in.(ready,idle,active)&select=id,status,metadata" \
-  -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-  -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-| tee /tmp/canary-rollback-vibecomfy-workers.json
-```
-
-Expected evidence:
+Attach a redacted evidence document to the Sprint 11B readiness package. It must not include service-role keys, bearer tokens, raw production task payloads, private media URLs, RunPod tokens, or unredacted user IDs.
 
 ```json
 {
-  "vibecomfy_canary_claimable_workers": 0,
-  "allowed_remaining_workers": "active in-flight drain only"
-}
-```
-
-### 4. Capture route parity evidence after rollback
-
-```bash
-python - <<'PY' | tee /tmp/canary-rollback-runtime-metrics.json
-import json
-from pathlib import Path
-from scripts.dual_run_compare.runtime_metrics import normalize_live_runtime_observations
-
-observations = json.loads(Path("/tmp/redacted-live-evidence.json").read_text())
-print(json.dumps(normalize_live_runtime_observations(observations), indent=2, sort_keys=True))
-PY
-```
-
-Expected evidence:
-
-```json
-{
-  "routes": {
-    "<route_key>": {
-      "status": "green",
-      "worker_backend": "wgp",
-      "selector_namespace": "production",
-      "source_ref": {
-        "kind": "redacted_live_observation",
-        "path": "/tmp/redacted-live-evidence.json"
-      }
-    }
+  "environment": "production",
+  "observed_at": "<ISO-8601>",
+  "status": "PAUSED",
+  "dashboard_import_prerequisite": "blocked",
+  "rollback_action": "route_selector_flip_to_wgp",
+  "route_keys": ["<route-key-1>"],
+  "selected_backend": "wgp",
+  "selector_namespace": "production",
+  "selector_version": "<stable-selector-version-or-empty>",
+  "worker_backend": "wgp",
+  "worker_pool": "gpu-wgp-production",
+  "completion_evidence": {
+    "status": "UNKNOWN",
+    "reason": "live completion evidence not mechanically verified"
+  },
+  "billing_evidence": {
+    "status": "UNKNOWN",
+    "reason": "live billing evidence not mechanically verified"
+  },
+  "source_ref": {
+    "kind": "redacted_readiness_evidence",
+    "path": "<readiness-manifest-path>"
+  },
+  "redaction": {
+    "secrets": "redacted",
+    "task_ids": "redacted"
   }
 }
 ```
 
-## Sprint 11A Validation Harness Rollback
+## Output Divergence
 
-Sprint 11A did not change worker production runtime behavior because no
-route-specific live proof existed and no production patch boundary was selected.
-Only the worker live-validation harness gained route-specific execution controls
-for `z_image_turbo`. If that validation harness blocks rollback operations or
-confuses canary evidence collection, revert the harness changes while keeping
-the production worker route contract on WGP.
+Alert anchor: `#output-divergence`.
 
-Harness rollback target:
-
-```bash
-git revert <commit-that-added-sprint-11a-live-test-route-harness>
-```
-
-Stable rollback environment for reruns:
-
-```bash
-export REIGH_BACKEND=wgp
-export WORKER_BACKEND=wgp
-export REIGH_WORKER_PROFILE=1
-export WGP_PROFILE=1
-export REIGH_WORKER_POOL="$STABLE_WORKER_POOL"
-export WORKER_POOL="$STABLE_WORKER_POOL"
-export REIGH_SELECTOR_NAMESPACE="$STABLE_SELECTOR_NAMESPACE"
-export ROUTE_SELECTOR_NAMESPACE="$STABLE_SELECTOR_NAMESPACE"
-export REIGH_SELECTOR_VERSION="$STABLE_SELECTOR_VERSION"
-export ROUTE_SELECTOR_VERSION="$STABLE_SELECTOR_VERSION"
-export REIGH_WORKER_CONTRACT_VERSION=1
-```
-
-Route-specific WGP rollback rerun for the only current VibeComfy-supported
-candidate:
-
-```bash
-python -m scripts.live_test.main \
-  --variant fresh \
-  --wgp-rollback \
-  --selector-namespace "$STABLE_SELECTOR_NAMESPACE" \
-  --selector-version "$STABLE_SELECTOR_VERSION" \
-  --worker-contract-version 1 \
-  --worker-profile default \
-  --route-key z_image_turbo
-```
-
-Expected evidence:
-
-```json
-{
-  "route_key": "z_image_turbo",
-  "worker_backend": "wgp",
-  "worker_pool": "gpu-wgp-production",
-  "selector_namespace": "production",
-  "selector_version": "<stable-selector-version-or-empty>",
-  "worker_contract_version": 1,
-  "wgp_selectable": true
-}
-```
-
-Route-stale behavior remains the orchestrator-owned drain-first policy: after
-the emergency selector flip back to WGP, active stale-route workers may drain
-in-flight tasks, but idle stale-route VibeComfy workers should be terminated or
-left unclaimable. Do not use aggregate task counts as route rollback proof;
-use route-specific claim/completion evidence or selected-pool route totals.
-
-## Alert Runbook Anchor
-
-`#output-divergence`: if `canary_output_divergence` remains nonzero, keep VibeComfy canary scaled to zero, keep stable WGP selected, and attach the failed route key plus redacted source refs to the readiness package.
+If `canary_output_divergence` is nonzero, keep the affected route keys selected on WGP and attach the failed route key plus redacted source refs to the readiness package. Auto-rollback based on output divergence is allowed only when the comparison came from isolated shadow runs with no completion, billing, upload, or user-visible side effects. If isolation is absent, mark the route `NO_GO` for output-divergence auto-rollback and keep divergence sampled/offline only.

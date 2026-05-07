@@ -41,6 +41,7 @@ venv_headless_wan2gp/
 !scripts/dual_run_compare/fixtures/**/*.json
 !scripts/dual_run_compare/golden/**/manifest.json
 !scripts/dual_run_compare/reports/*.json
+!scripts/canary_readiness/reports/*.json
 # *.txt
 *.backup
 *.pkl

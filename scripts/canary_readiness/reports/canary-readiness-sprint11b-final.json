@@ -1,0 +1,413 @@
+{
+  "created_at": "2026-05-07T00:12:48.459999+00:00",
+  "exit_policy": {
+    "exit_code": 1,
+    "nonzero_reasons": [
+      {
+        "kind": "hard_gate_not_green",
+        "section": "non_rayworker_smoke",
+        "status": "red"
+      },
+      {
+        "kind": "hard_gate_not_green",
+        "section": "soak",
+        "status": "red"
+      },
+      {
+        "kind": "hard_gate_not_green",
+        "section": "dashboards",
+        "status": "red"
+      },
+      {
+        "kind": "hard_gate_not_green",
+        "section": "rollback_exercise",
+        "status": "red"
+      },
+      {
+        "kind": "hard_gate_not_green",
+        "section": "go_no_go",
+        "status": "red"
+      }
+    ]
+  },
+  "output_dir": "/Users/peteromalley/Documents/reigh-workspace/reigh-worker/scripts/canary_readiness/reports",
+  "package_id": "canary-readiness-sprint11b-final",
+  "sections": {
+    "alerts": {
+      "details": {
+        "evidence_refs": [
+          "reigh-worker-orchestrator/config/alerts/section11-canary.yaml",
+          "reigh-worker-orchestrator/tasks/canary-rollback-orchestrator.md#output-divergence",
+          "reigh-worker-orchestrator/tasks/canary-rollback-app.md#non-rayworker-route-smoke"
+        ],
+        "reasons": [],
+        "status": "green",
+        "verified_categories": [
+          "latency_p95_ratio",
+          "vram_peak_ratio",
+          "oom_count",
+          "canary_output_divergence",
+          "missing_runtime_evidence",
+          "stale_route_workers",
+          "quota_alerts",
+          "claim_suppression",
+          "completion_billing_failure",
+          "non_rayworker_route_smoke_failure"
+        ]
+      },
+      "evidence_refs": [
+        "reigh-worker-orchestrator/config/alerts/section11-canary.yaml",
+        "reigh-worker-orchestrator/tasks/canary-rollback-orchestrator.md#output-divergence",
+        "reigh-worker-orchestrator/tasks/canary-rollback-app.md#non-rayworker-route-smoke"
+      ],
+      "key": "alerts",
+      "reasons": [],
+      "status": "green",
+      "title": "Alerts"
+    },
+    "dashboards": {
+      "details": {
+        "evidence_refs": [
+          "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.redacted.json",
+          "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.md"
+        ],
+        "panels": [
+          "selected_pool_totals",
+          "route_totals",
+          "route_worker_health",
+          "claim_suppression",
+          "quota_alerts",
+          "preflight_status",
+          "warm_cache_status",
+          "non_rayworker_route_health"
+        ],
+        "reasons": [
+          "Dashboard export validation is blocked by the Sprint 11A DatabaseClient import prerequisite.",
+          "Static dashboard evidence is paused/no-go context only; it is not a green live dashboard export."
+        ],
+        "status": "NO_GO"
+      },
+      "evidence_refs": [
+        "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.redacted.json",
+        "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.md"
+      ],
+      "key": "dashboards",
+      "reasons": [
+        "Dashboard export validation is blocked by the Sprint 11A DatabaseClient import prerequisite.",
+        "Static dashboard evidence is paused/no-go context only; it is not a green live dashboard export."
+      ],
+      "status": "red",
+      "title": "Dashboards"
+    },
+    "go_no_go": {
+      "details": {
+        "decision": "no_go",
+        "evidence_refs": [
+          "sprint11b-evidence-manifest.json",
+          "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.redacted.json"
+        ],
+        "reasons": [
+          "dashboard_import_prerequisite:NO_GO",
+          "active_live_cohort:UNKNOWN",
+          "selector_namespace_version:UNKNOWN",
+          "hold_windows:UNKNOWN",
+          "non_rayworker_live_observations:UNKNOWN",
+          "shadow_isolation:UNKNOWN",
+          "operator_signoff:UNKNOWN"
+        ]
+      },
+      "evidence_refs": [
+        "sprint11b-evidence-manifest.json",
+        "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.redacted.json"
+      ],
+      "key": "go_no_go",
+      "reasons": [
+        "dashboard_import_prerequisite:NO_GO",
+        "active_live_cohort:UNKNOWN",
+        "selector_namespace_version:UNKNOWN",
+        "hold_windows:UNKNOWN",
+        "non_rayworker_live_observations:UNKNOWN",
+        "shadow_isolation:UNKNOWN",
+        "operator_signoff:UNKNOWN"
+      ],
+      "status": "red",
+      "title": "Go/No-Go"
+    },
+    "non_rayworker_smoke": {
+      "evidence_refs": [
+        "video_enhance:NO_GO_missing_live_video_enhance",
+        "image-upscale:NO_GO_missing_live_image-upscale",
+        "animate_character:NO_GO_missing_live_animate_character",
+        "flux_klein_edit:NO_GO_missing_live_flux_klein_edit"
+      ],
+      "key": "non_rayworker_smoke",
+      "reasons": [
+        "video_enhance: observation status must be completed/green/succeeded/pass",
+        "image-upscale: observation status must be completed/green/succeeded/pass",
+        "animate_character: observation status must be completed/green/succeeded/pass",
+        "flux_klein_edit: observation status must be completed/green/succeeded/pass"
+      ],
+      "routes": [
+        {
+          "errors": [
+            "observation status must be completed/green/succeeded/pass"
+          ],
+          "fixture_policy": {
+            "canary_depth": "full_canary",
+            "report_status_policy": "red_or_green_required"
+          },
+          "observed_at": "2026-05-07T00:09:07Z",
+          "route_key": "video_enhance",
+          "status": "red",
+          "task_id": "NO_GO_missing_live_video_enhance"
+        },
+        {
+          "errors": [
+            "observation status must be completed/green/succeeded/pass"
+          ],
+          "fixture_policy": {
+            "canary_depth": "full_canary",
+            "report_status_policy": "red_or_green_required"
+          },
+          "observed_at": "2026-05-07T00:09:07Z",
+          "route_key": "image-upscale",
+          "status": "red",
+          "task_id": "NO_GO_missing_live_image-upscale"
+        },
+        {
+          "errors": [
+            "observation status must be completed/green/succeeded/pass"
+          ],
+          "fixture_policy": {
+            "canary_depth": "full_canary",
+            "report_status_policy": "red_or_green_required"
+          },
+          "observed_at": "2026-05-07T00:09:07Z",
+          "route_key": "animate_character",
+          "status": "red",
+          "task_id": "NO_GO_missing_live_animate_character"
+        },
+        {
+          "errors": [
+            "observation status must be completed/green/succeeded/pass"
+          ],
+          "fixture_policy": {
+            "canary_depth": "full_canary",
+            "report_status_policy": "red_or_green_required"
+          },
+          "observed_at": "2026-05-07T00:09:07Z",
+          "route_key": "flux_klein_edit",
+          "status": "red",
+          "task_id": "NO_GO_missing_live_flux_klein_edit"
+        }
+      ],
+      "status": "red",
+      "title": "Active Non-RayWorker Smoke"
+    },
+    "prerequisite_evidence": {
+      "evidence_refs": [
+        "wgp-self-repeat-0b-2026-05-05-deferral.json"
+      ],
+      "key": "prerequisite_evidence",
+      "reasons": [],
+      "status": "green",
+      "title": "Prerequisite Evidence"
+    },
+    "rollback_exercise": {
+      "details": {
+        "environment": "staging",
+        "observed_at": "2026-05-07T00:09:07Z",
+        "operator": "UNKNOWN",
+        "reasons": [
+          "No live rollback exercise or operator sign-off was mechanically verified.",
+          "Emergency procedure is documented as a route selector flip back to WGP, but execution evidence remains UNKNOWN."
+        ],
+        "rollback_pr_refs": {
+          "app": "ROLLBACK_PR_APP_PLACEHOLDER",
+          "orchestrator": "ROLLBACK_PR_ORCHESTRATOR_PLACEHOLDER",
+          "worker": "ROLLBACK_PR_WORKER_PLACEHOLDER"
+        },
+        "source_ref": {
+          "kind": "runbook",
+          "path": "reigh-worker-orchestrator/tasks/canary-rollback-orchestrator.md"
+        },
+        "status": "NO_GO"
+      },
+      "evidence_refs": [
+        "reigh-worker-orchestrator/tasks/canary-rollback-orchestrator.md"
+      ],
+      "key": "rollback_exercise",
+      "reasons": [
+        "Rollback exercise status must be pass."
+      ],
+      "status": "red",
+      "title": "Rollback Exercise"
+    },
+    "soak": {
+      "evidence_refs": [
+        "mixed_pools:UNKNOWN",
+        "concurrent_claims:UNKNOWN",
+        "selector_flip_in_flight:UNKNOWN",
+        "worker_kill_restart:UNKNOWN",
+        "cold_warm_cache:UNKNOWN",
+        "disk_near_full:UNKNOWN"
+      ],
+      "key": "soak",
+      "reasons": [
+        "mixed_pools: scenario status is fail",
+        "concurrent_claims: scenario status is fail",
+        "selector_flip_in_flight: scenario status is fail",
+        "worker_kill_restart: scenario status is fail",
+        "cold_warm_cache: scenario status is fail",
+        "disk_near_full: scenario status is fail"
+      ],
+      "scenarios": [
+        {
+          "errors": [
+            "scenario status is fail"
+          ],
+          "evidence_refs": [
+            {
+              "id": "mixed_pools:UNKNOWN",
+              "kind": "evidence_gap"
+            }
+          ],
+          "observed_at": "2026-05-07T00:09:07Z",
+          "pool_labels": {
+            "backend": "UNKNOWN",
+            "pool": "UNKNOWN"
+          },
+          "route_labels": {
+            "cohort": "UNKNOWN",
+            "selector_namespace": "UNKNOWN"
+          },
+          "scenario": "mixed_pools",
+          "status": "fail"
+        },
+        {
+          "errors": [
+            "scenario status is fail"
+          ],
+          "evidence_refs": [
+            {
+              "id": "concurrent_claims:UNKNOWN",
+              "kind": "evidence_gap"
+            }
+          ],
+          "observed_at": "2026-05-07T00:09:07Z",
+          "pool_labels": {
+            "backend": "UNKNOWN",
+            "pool": "UNKNOWN"
+          },
+          "route_labels": {
+            "cohort": "UNKNOWN",
+            "selector_namespace": "UNKNOWN"
+          },
+          "scenario": "concurrent_claims",
+          "status": "fail"
+        },
+        {
+          "errors": [
+            "scenario status is fail"
+          ],
+          "evidence_refs": [
+            {
+              "id": "selector_flip_in_flight:UNKNOWN",
+              "kind": "evidence_gap"
+            }
+          ],
+          "observed_at": "2026-05-07T00:09:07Z",
+          "pool_labels": {
+            "backend": "UNKNOWN",
+            "pool": "UNKNOWN"
+          },
+          "route_labels": {
+            "cohort": "UNKNOWN",
+            "selector_namespace": "UNKNOWN"
+          },
+          "scenario": "selector_flip_in_flight",
+          "status": "fail"
+        },
+        {
+          "errors": [
+            "scenario status is fail"
+          ],
+          "evidence_refs": [
+            {
+              "id": "worker_kill_restart:UNKNOWN",
+              "kind": "evidence_gap"
+            }
+          ],
+          "observed_at": "2026-05-07T00:09:07Z",
+          "pool_labels": {
+            "backend": "UNKNOWN",
+            "pool": "UNKNOWN"
+          },
+          "route_labels": {
+            "cohort": "UNKNOWN",
+            "selector_namespace": "UNKNOWN"
+          },
+          "scenario": "worker_kill_restart",
+          "status": "fail"
+        },
+        {
+          "errors": [
+            "scenario status is fail"
+          ],
+          "evidence_refs": [
+            {
+              "id": "cold_warm_cache:UNKNOWN",
+              "kind": "evidence_gap"
+            }
+          ],
+          "observed_at": "2026-05-07T00:09:07Z",
+          "pool_labels": {
+            "backend": "UNKNOWN",
+            "pool": "UNKNOWN"
+          },
+          "route_labels": {
+            "cohort": "UNKNOWN",
+            "selector_namespace": "UNKNOWN"
+          },
+          "scenario": "cold_warm_cache",
+          "status": "fail"
+        },
+        {
+          "errors": [
+            "scenario status is fail"
+          ],
+          "evidence_refs": [
+            {
+              "id": "disk_near_full:UNKNOWN",
+              "kind": "evidence_gap"
+            }
+          ],
+          "observed_at": "2026-05-07T00:09:07Z",
+          "pool_labels": {
+            "backend": "UNKNOWN",
+            "pool": "UNKNOWN"
+          },
+          "route_labels": {
+            "cohort": "UNKNOWN",
+            "selector_namespace": "UNKNOWN"
+          },
+          "scenario": "disk_near_full",
+          "status": "fail"
+        }
+      ],
+      "status": "red",
+      "title": "Soak"
+    }
+  },
+  "source_report_dir": "/Users/peteromalley/Documents/reigh-workspace/reigh-worker/scripts/dual_run_compare/reports",
+  "source_reports": [
+    {
+      "created_at": "2026-05-05T22:08:45.533342+00:00",
+      "exit_code": null,
+      "mode": "deferral",
+      "path": "/Users/peteromalley/Documents/reigh-workspace/reigh-worker/scripts/dual_run_compare/reports/wgp-self-repeat-0b-2026-05-05-deferral.json",
+      "report_id": "wgp-self-repeat-0b-2026-05-05-deferral",
+      "route_count": 14
+    }
+  ]
+}

@@ -288,6 +288,14 @@ def apply_mps_patch():
     print(f"[MPS Patch] Applied successfully")
     print(f"[MPS Patch] BF16 supported: {bfloat16_supported}")
     print(f"[MPS Patch] Available system RAM: {system_ram_gb:.0f}GB")
+
+    # Fix: Some Wan model loading paths call .weight on an nn.Parameter,
+    # which is a Tensor subclass, not a Module. On MPS this fails because
+    # nn.Parameter doesn't have a .weight attribute. Duck-type it to return self.
+    # Reference: https://github.com/deepbeepmeep/Wan2GP/pull/1750#issuecomment-4387455446
+    if not hasattr(_torch.nn.Parameter, "weight"):
+        _torch.nn.Parameter.weight = property(lambda self: self)
+
     return True  # signal success
 
 def _get_chip_name():

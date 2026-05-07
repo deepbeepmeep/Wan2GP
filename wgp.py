@@ -22,6 +22,7 @@ from shared.asyncio_utils import silence_proactor_connection_reset
 silence_proactor_connection_reset()
 
 # ── Apple Silicon MPS patch: MUST come before mmgp import ──
+import torch
 is_mps = sys.platform == 'darwin' and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
 if is_mps:
     from shared.mps.device_patch import apply_mps_patch

@@ -59,7 +59,8 @@
     ],
     "evidence_refs": [
       "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.redacted.json",
-      "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.md"
+      "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.md",
+      "reigh-worker-orchestrator/docs/sprint11b-review-evidence.md#dashboard-import-prerequisite"
     ],
     "panels": [
       "selected_pool_totals",
@@ -125,7 +126,10 @@
     ],
     "evidence_refs": [
       "sprint11b-evidence-manifest.json",
-      "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.redacted.json"
+      "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.redacted.json",
+      "reigh-worker-orchestrator/docs/sprint11b-review-evidence.md#cohort-scope",
+      "reigh-worker-orchestrator/docs/sprint11b-review-evidence.md#rollback-runbooks",
+      "reigh-worker-orchestrator/docs/sprint11b-review-evidence.md#non-rayworker-smoke"
     ]
   },
   "operator_signoff": {
@@ -329,5 +333,22 @@
     "status": "redacted",
     "secret_scan": "passed",
     "notes": "Manifest contains placeholders and redacted paths only; no live task ids, worker ids, authorization headers, tokens, or service credentials are included."
+  },
+  "review_evidence": {
+    "status": "PAUSED",
+    "source_ref": {
+      "kind": "review_crosswalk",
+      "path": "reigh-worker-orchestrator/docs/sprint11b-review-evidence.md"
+    },
+    "criteria_covered": [
+      "dashboard_import_prerequisite",
+      "cohort_scoped_promotion_and_rollback",
+      "selector_flip_rollback",
+      "shadow_isolation",
+      "non_rayworker_smoke",
+      "operator_signoff",
+      "secret_handling"
+    ],
+    "reason": "Review pass had no concrete code defects; the crosswalk centralizes mechanical evidence for deferred human-review criteria while Sprint 11B remains paused/no-go."
   }
 }

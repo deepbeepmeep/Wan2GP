@@ -1,5 +1,5 @@
 {
-  "created_at": "2026-05-07T00:12:48.459999+00:00",
+  "created_at": "2026-05-07T00:19:25.033755+00:00",
   "exit_policy": {
     "exit_code": 1,
     "nonzero_reasons": [
@@ -69,7 +69,8 @@
       "details": {
         "evidence_refs": [
           "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.redacted.json",
-          "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.md"
+          "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.md",
+          "reigh-worker-orchestrator/docs/sprint11b-review-evidence.md#dashboard-import-prerequisite"
         ],
         "panels": [
           "selected_pool_totals",
@@ -89,7 +90,8 @@
       },
       "evidence_refs": [
         "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.redacted.json",
-        "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.md"
+        "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.md",
+        "reigh-worker-orchestrator/docs/sprint11b-review-evidence.md#dashboard-import-prerequisite"
       ],
       "key": "dashboards",
       "reasons": [
@@ -104,7 +106,10 @@
         "decision": "no_go",
         "evidence_refs": [
           "sprint11b-evidence-manifest.json",
-          "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.redacted.json"
+          "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.redacted.json",
+          "reigh-worker-orchestrator/docs/sprint11b-review-evidence.md#cohort-scope",
+          "reigh-worker-orchestrator/docs/sprint11b-review-evidence.md#rollback-runbooks",
+          "reigh-worker-orchestrator/docs/sprint11b-review-evidence.md#non-rayworker-smoke"
         ],
         "reasons": [
           "dashboard_import_prerequisite:NO_GO",
@@ -118,7 +123,10 @@
       },
       "evidence_refs": [
         "sprint11b-evidence-manifest.json",
-        "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.redacted.json"
+        "reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.redacted.json",
+        "reigh-worker-orchestrator/docs/sprint11b-review-evidence.md#cohort-scope",
+        "reigh-worker-orchestrator/docs/sprint11b-review-evidence.md#rollback-runbooks",
+        "reigh-worker-orchestrator/docs/sprint11b-review-evidence.md#non-rayworker-smoke"
       ],
       "key": "go_no_go",
       "reasons": [

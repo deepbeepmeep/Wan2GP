@@ -1,6 +1,6 @@
 # Canary Readiness Package: canary-readiness-sprint11b-final
 
-- Created at: `2026-05-07T00:12:48.459999+00:00`
+- Created at: `2026-05-07T00:19:25.033755+00:00`
 - Source report dir: `/Users/peteromalley/Documents/reigh-workspace/reigh-worker/scripts/dual_run_compare/reports`
 - Output dir: `/Users/peteromalley/Documents/reigh-workspace/reigh-worker/scripts/canary_readiness/reports`
 - Source reports: 1
@@ -47,6 +47,7 @@
 - Evidence refs:
   - `reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.redacted.json`
   - `reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.md`
+  - `reigh-worker-orchestrator/docs/sprint11b-review-evidence.md#dashboard-import-prerequisite`
 ### Alerts
 - Status: `green`
 - Evidence refs:
@@ -70,6 +71,9 @@
 - Evidence refs:
   - `sprint11b-evidence-manifest.json`
   - `reigh-worker-orchestrator/docs/sprint11b-dashboard-evidence.redacted.json`
+  - `reigh-worker-orchestrator/docs/sprint11b-review-evidence.md#cohort-scope`
+  - `reigh-worker-orchestrator/docs/sprint11b-review-evidence.md#rollback-runbooks`
+  - `reigh-worker-orchestrator/docs/sprint11b-review-evidence.md#non-rayworker-smoke`
 
 ## Go/No-Go
 - Decision: `no_go`

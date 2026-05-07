@@ -627,11 +627,12 @@ def create_wgp_config(profile_key, config_data):
 
     prof_settings = config_data['gpu_profiles'].get(profile_key, {})
 
-    attn_mode = ""
-    if "50" in profile_key or "40" in profile_key or "30" in profile_key:
-        attn_mode = "sage2"
-    elif "20" in profile_key:
-        attn_mode = "sage"
+    attn_mode = prof_settings.get("attention", "")
+    if not attn_mode:
+        if "50" in profile_key or "40" in profile_key or "30" in profile_key:
+            attn_mode = "sage2"
+        elif "20" in profile_key:
+            attn_mode = "sage"
 
     compile_mode = ""
     triton_key = prof_settings.get('triton')

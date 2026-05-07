@@ -4,7 +4,7 @@ import os
 
 import torch
 
-from .eval_utils import (ModelConfig, VideoInfo, all_model_cfg, generate, load_image,
+from .eval_utils import (ModelConfig, VideoInfo, generate, get_model_cfg, load_image,
                                 load_video, make_video, setup_eval_logging)
 from .model.flow_matching import FlowMatching
 from .model.networks import MMAudio, get_my_mmaudio
@@ -77,9 +77,10 @@ def get_model(persistent_models = False, verboseLevel = 1, model_name = None, mo
 
     if model_name is None:
         model_name = "large_44k_v2"
-    if model_name not in all_model_cfg:
-        raise ValueError(f"Unknown MMAudio model '{model_name}'. Available: {', '.join(all_model_cfg.keys())}")
-    model: ModelConfig = all_model_cfg[model_name]
+    model_cfg = get_model_cfg()
+    if model_name not in model_cfg:
+        raise ValueError(f"Unknown MMAudio model '{model_name}'. Available: {', '.join(model_cfg.keys())}")
+    model: ModelConfig = model_cfg[model_name]
     # model.download_if_needed()
 
     setup_eval_logging()

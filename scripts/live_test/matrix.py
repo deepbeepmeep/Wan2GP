@@ -17,6 +17,9 @@ from scripts.live_test.task_spoofer import insert_spoof_task, load_fixture
 TRAVEL_WAN_FIXTURE_KEY = "travel_orchestrator_wan2_1seg"
 TRAVEL_LTX_FIXTURE_KEY = "travel_orchestrator_ltx"
 Z_IMAGE_TURBO_FIXTURE_KEY = "z_image_turbo"
+WAN_2_2_T2I_FIXTURE_KEY = "wan_2_2_t2i"
+IMAGE_INPAINT_FIXTURE_KEY = "image_inpaint"
+ANNOTATED_IMAGE_EDIT_FIXTURE_KEY = "annotated_image_edit"
 
 
 @dataclass(frozen=True)
@@ -108,6 +111,36 @@ def _build_z_image_turbo_fixture() -> dict[str, Any]:
     }
 
 
+def _build_wan_2_2_t2i_fixture() -> dict[str, Any]:
+    return {
+        "task_type": "wan_2_2_t2i",
+        "status": "Queued",
+        "params": {
+            "prompt": "A compact cinematic still of a red cube on a clean white tabletop.",
+            "resolution": "832x480",
+            "seed": 20260507,
+            "num_inference_steps": 4,
+            "guidance_scale": 1,
+        },
+    }
+
+
+def _build_masked_qwen_fixture(task_type: str) -> dict[str, Any]:
+    return {
+        "task_type": task_type,
+        "status": "Queued",
+        "params": {
+            "prompt": "Repair the masked area while preserving the scene.",
+            "image_url": config.ANCHOR_IMAGE_A_URL,
+            "image": config.ANCHOR_IMAGE_A_URL,
+            "mask_url": config.ANCHOR_IMAGE_B_URL,
+            "resolution": "1024x1024",
+            "seed": 20260507,
+            "num_inference_steps": 4,
+        },
+    }
+
+
 def resolve_case_fixture(case: MatrixCase) -> dict[str, Any]:
     if case.fixture_key == TRAVEL_WAN_FIXTURE_KEY:
         return _build_wan_travel_fixture()
@@ -115,6 +148,12 @@ def resolve_case_fixture(case: MatrixCase) -> dict[str, Any]:
         return _build_ltx_travel_fixture()
     if case.fixture_key == Z_IMAGE_TURBO_FIXTURE_KEY:
         return _build_z_image_turbo_fixture()
+    if case.fixture_key == WAN_2_2_T2I_FIXTURE_KEY:
+        return _build_wan_2_2_t2i_fixture()
+    if case.fixture_key == IMAGE_INPAINT_FIXTURE_KEY:
+        return _build_masked_qwen_fixture("image_inpaint")
+    if case.fixture_key == ANNOTATED_IMAGE_EDIT_FIXTURE_KEY:
+        return _build_masked_qwen_fixture("annotated_image_edit")
     return load_fixture(case.fixture_key)
 
 
@@ -309,12 +348,18 @@ def build_matrix(
                 "subject_reference_image": anchor_image_a,
             },
             timeout_sec=timeout_image_sec,
+            route_key="qwen_image_style",
+            support_state="wgp_only",
+            route_runtime=route_runtime,
         ),
         MatrixCase(
             name="qwen_image_t2i",
             task_type="qwen_image",
             fixture_key="qwen_image_basic",
             timeout_sec=timeout_image_sec,
+            route_key="qwen_image",
+            support_state="wgp_only",
+            route_runtime=route_runtime,
         ),
         MatrixCase(
             name="qwen_image_2512",
@@ -322,6 +367,18 @@ def build_matrix(
             fixture_key="qwen_image_basic",
             param_overrides={"resolution": "1536x864"},
             timeout_sec=timeout_image_sec,
+            route_key="qwen_image_2512",
+            support_state="wgp_only",
+            route_runtime=route_runtime,
+        ),
+        MatrixCase(
+            name="wan_2_2_t2i",
+            task_type="wan_2_2_t2i",
+            fixture_key=WAN_2_2_T2I_FIXTURE_KEY,
+            timeout_sec=timeout_image_sec,
+            route_key="wan_2_2_t2i",
+            support_state="wgp_only",
+            route_runtime=route_runtime,
         ),
         MatrixCase(
             name="qwen_image_edit",
@@ -332,6 +389,27 @@ def build_matrix(
                 "image_url": anchor_image_b,
             },
             timeout_sec=timeout_image_sec,
+            route_key="qwen_image_edit",
+            support_state="wgp_only",
+            route_runtime=route_runtime,
+        ),
+        MatrixCase(
+            name="image_inpaint",
+            task_type="image_inpaint",
+            fixture_key=IMAGE_INPAINT_FIXTURE_KEY,
+            timeout_sec=timeout_image_sec,
+            route_key="image_inpaint",
+            support_state="wgp_only",
+            route_runtime=route_runtime,
+        ),
+        MatrixCase(
+            name="annotated_image_edit",
+            task_type="annotated_image_edit",
+            fixture_key=ANNOTATED_IMAGE_EDIT_FIXTURE_KEY,
+            timeout_sec=timeout_image_sec,
+            route_key="annotated_image_edit",
+            support_state="wgp_only",
+            route_runtime=route_runtime,
         ),
         MatrixCase(
             name="z_image_turbo",

@@ -558,7 +558,7 @@ def test_kill_supervisor_and_worker_patterns_cover_both_families(monkeypatch: py
 
 
 def test_matrix_contains_route_specific_z_image_turbo_case():
-    assert len(MATRIX) == 9
+    assert len(MATRIX) == 12
     assert [case.name for case in MATRIX].count("z_image_turbo") == 1
     assert [case.name for case in MATRIX].count("z_image_turbo_i2i") == 1
     z_image_case = next(case for case in MATRIX if case.name == "z_image_turbo")
@@ -616,6 +616,40 @@ def test_travel_orchestrator_live_matrix_stamps_parent_route_contract():
     assert contract["support_state"] == "wgp_only"
     assert contract["route_selection_snapshot"]["route_key"] == "travel_orchestrator"
     assert contract["route_selection_snapshot"]["live_test_run_id"] == "live-test-travel_orchestrator_wan2_1seg-abc123"
+
+
+def test_live_matrix_includes_documented_wgp_only_direct_routes():
+    cases = {case.name: case for case in build_matrix()}
+    for name, task_type in {
+        "wan_2_2_t2i": "wan_2_2_t2i",
+        "image_inpaint": "image_inpaint",
+        "annotated_image_edit": "annotated_image_edit",
+    }.items():
+        case = cases[name]
+        assert case.task_type == task_type
+        assert case.route_key == task_type
+        assert case.support_state == "wgp_only"
+
+
+@pytest.mark.parametrize(
+    ("case_name", "route_key"),
+    [
+        ("qwen_image_t2i", "qwen_image"),
+        ("qwen_image_2512", "qwen_image_2512"),
+        ("qwen_image_edit", "qwen_image_edit"),
+        ("qwen_image_style", "qwen_image_style"),
+        ("wan_2_2_t2i", "wan_2_2_t2i"),
+        ("image_inpaint", "image_inpaint"),
+        ("annotated_image_edit", "annotated_image_edit"),
+    ],
+)
+def test_live_matrix_stamps_direct_route_contracts(case_name: str, route_key: str):
+    cases = build_matrix(case_names=[case_name])
+    payload = render_case_payload(cases[0], project_id="project-1", unique_suffix="abc123")
+    contract = payload["params"]["route_contract"]
+    assert contract["route_key"] == route_key
+    assert contract["support_state"] == "wgp_only"
+    assert payload["params"]["selected_backend"] == "wgp"
 
 
 def test_run_matrix_continues_after_individual_case_failures(monkeypatch: pytest.MonkeyPatch):

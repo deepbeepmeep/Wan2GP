@@ -793,6 +793,7 @@ def handle_join_clips_task(
                     # Transition structure: [context_before][gap][context_after]
                     # We need at least blend_frames at each end for crossfading
                     expected_total = total_frames
+                    max_safe_blend = context_frame_count
 
                     if actual_transition_frames != expected_total:
                         orchestrator_logger.debug_anomaly(
@@ -824,8 +825,6 @@ def handle_join_clips_task(
                                 )
 
                         total_frames = actual_transition_frames  # Use actual count
-                    else:
-                        max_safe_blend = context_frame_count
 
                     # --- 8. Handle transition_only mode (early return) ---
                     if transition_only:

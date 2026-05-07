@@ -173,9 +173,9 @@ routes:
     media_class: image
     source_fixture_status: seed_fixture_required
     source_fixture_ref: fixtures/golden_seed_payloads/qwen_image_2512.json
-    calibration_status: wgp_only
+    calibration_status: green
     thresholds_override: {}
-    notes: Sprint 5 direct-route policy keeps qwen_image_2512 WGP-only until independent VibeComfy parity is proven; do not alias with qwen_image.
+    notes: Live VibeComfy worker proof passed on 2026-05-07 via template image/qwen_image_2512; do not alias plain qwen_image with qwen_image_2512.
   wan_2_2_t2i:
     cohort: A
     route_key_mode: direct
@@ -194,9 +194,9 @@ routes:
     edit_variant: qwen_edit_default
     source_fixture_status: worker_matrix_case
     source_fixture_ref: artifacts/worker-matrix/20260316T141738351426Z/qwen_image_edit_db_task
-    calibration_status: wgp_only
+    calibration_status: green
     thresholds_override: {}
-    notes: Sprint 5 direct-route policy keeps qwen_image_edit WGP-only until image input and edit-model parity are independently proven.
+    notes: Live VibeComfy worker proof passed on 2026-05-07 via template edit/qwen_image_edit with production-shaped image input materialization.
   qwen_image_style:
     cohort: B
     route_key_mode: direct
@@ -205,9 +205,9 @@ routes:
     edit_variant: style_reference
     source_fixture_status: worker_matrix_case
     source_fixture_ref: artifacts/worker-matrix/20260316T141738351426Z/qwen_image_style_db_task
-    calibration_status: wgp_only
+    calibration_status: green
     thresholds_override: {}
-    notes: Sprint 5 direct-route policy keeps qwen_image_style WGP-only until style-reference input parity is independently proven.
+    notes: Live VibeComfy worker proof passed on 2026-05-07 via template edit/qwen_image_edit; style prompt/reference conversion remains worker-side.
   image_inpaint:
     cohort: B
     route_key_mode: direct
@@ -216,9 +216,9 @@ routes:
     edit_variant: mask
     source_fixture_status: seed_fixture_required
     source_fixture_ref: fixtures/golden_seed_payloads/image_inpaint.json
-    calibration_status: wgp_only
+    calibration_status: green
     thresholds_override: {}
-    notes: Sprint 5 direct-route policy keeps image_inpaint WGP-only until image and mask input parity are independently proven.
+    notes: Live VibeComfy worker proof passed on 2026-05-07 via template edit/qwen_image_edit after worker-side mask composite creation.
   annotated_image_edit:
     cohort: B
     route_key_mode: direct
@@ -227,9 +227,9 @@ routes:
     edit_variant: annotation
     source_fixture_status: seed_fixture_required
     source_fixture_ref: fixtures/golden_seed_payloads/annotated_image_edit.json
-    calibration_status: wgp_only
+    calibration_status: green
     thresholds_override: {}
-    notes: Sprint 5 direct-route policy keeps annotated_image_edit WGP-only until annotation/input parity is independently proven.
+    notes: Live VibeComfy worker proof passed on 2026-05-07 via template edit/qwen_image_edit after worker-side annotated/masked composite creation.
   individual_travel_segment__model-wan22_i2v__guidance-none__continuity-first_last__profile-default:
     cohort: E
     route_key_mode: dimensional

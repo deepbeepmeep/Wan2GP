@@ -21,13 +21,13 @@ Task types that have a live resolver entry in `registry.ts` and are emitted by a
 |---|-----------|------------------|---------------|---------------|--------|-------|
 | 1 | `wan_2_2_t2i` | `image_generation` | Direct queue → `_handle_direct_queue_task` | YES | **runnable** | Forces `video_length=1`; Wan 2.2 T2I via WGP. |
 | 2 | `qwen_image` | `image_generation` | Direct queue → `_handle_direct_queue_task` | YES | **runnable** | Text-to-image Qwen path. |
-| 3 | `qwen_image_2512` | `image_generation` | Direct queue → `_handle_direct_queue_task` | YES | **runnable** | Qwen 2512 model. |
+| 3 | `qwen_image_2512` | `image_generation` | Direct queue → `_handle_direct_queue_task` | YES | **runnable / VibeComfy proven** | Qwen 2512 model; live worker proof via `image/qwen_image_2512` on 2026-05-07. |
 | 4 | `z_image_turbo` | `image_generation` | Direct queue → `_handle_direct_queue_task` | YES | **runnable** | Z Image Turbo via WGP. |
 | 5 | `z_image_turbo_i2i` | `z_image_turbo_i2i` | Direct queue → `_handle_direct_queue_task` | YES | **runnable** | Z Image img2img via WGP. |
-| 6 | `qwen_image_edit` | `image_generation` | Direct queue → `_handle_direct_queue_task` | YES | **runnable** | Empty prompt allowed. |
-| 7 | `qwen_image_style` | `image_generation` | Direct queue → `_handle_direct_queue_task` | YES | **runnable** | Rewrites prompt/model during conversion. |
-| 8 | `image_inpaint` | `image_generation` | Direct queue → `_handle_direct_queue_task` | YES | **runnable** | Empty prompt allowed. |
-| 9 | `annotated_image_edit` | `image_generation` | Direct queue → `_handle_direct_queue_task` | YES | **runnable** | Empty prompt allowed. |
+| 6 | `qwen_image_edit` | `image_generation` | Direct queue → `_handle_direct_queue_task` | YES | **runnable / VibeComfy proven** | Empty prompt allowed; live worker proof via `edit/qwen_image_edit` on 2026-05-07. |
+| 7 | `qwen_image_style` | `image_generation` | Direct queue → `_handle_direct_queue_task` | YES | **runnable / VibeComfy proven** | Rewrites prompt/model during conversion; live worker proof via `edit/qwen_image_edit` on 2026-05-07. |
+| 8 | `image_inpaint` | `image_generation` | Direct queue → `_handle_direct_queue_task` | YES | **runnable / VibeComfy proven** | Empty prompt allowed; worker creates masked composite before `edit/qwen_image_edit`. |
+| 9 | `annotated_image_edit` | `image_generation` | Direct queue → `_handle_direct_queue_task` | YES | **runnable / VibeComfy proven** | Empty prompt allowed; worker creates annotated/masked composite before `edit/qwen_image_edit`. |
 | 10 | `travel_orchestrator` | `travel_between_images` | Specialized handler → `handle_travel_orchestrator_task` | NO | **runnable** | Orchestrates travel segment children. |
 | 11 | `individual_travel_segment` | `individual_travel_segment` | Specialized handler → `_load_handler_callable("individual_travel_segment")` | NO | **runnable** | Standalone segment via queue seam. |
 | 12 | `travel_stitch` | (child of orchestrator) | Specialized handler → `handle_travel_stitch_task` | NO | **runnable** | ffmpeg/media stitcher; no WGP execution. |
@@ -50,6 +50,36 @@ These task types appear in the resolver registry but execute via the API orchest
 |---|-----------|------------------|---------|
 | 16 | `video_enhance` | `video_enhance` | API orchestrator (fal.ai) |
 | 17 | `image_upscale` | `image_upscale` | API orchestrator (fal.ai) — see §2.1 for hyphen/underscore note |
+
+### 1.4 VibeComfy Proof Update — 2026-05-07
+
+After the original Sprint 0A baseline, the worker promoted and live-tested the
+Qwen ready-template group through the production-shaped VibeComfy queue path:
+
+- `qwen_image_2512` -> `image/qwen_image_2512`
+- `qwen_image_edit` -> `edit/qwen_image_edit`
+- `qwen_image_style` -> `edit/qwen_image_edit`
+- `image_inpaint` -> `edit/qwen_image_edit` with a worker-created mask composite
+- `annotated_image_edit` -> `edit/qwen_image_edit` with a worker-created
+  annotated/masked composite
+
+Live RunPod report:
+`scripts/live_test/runs/20260507T065745Z/report.md`, pod `v7ozyfck7hqhbb`,
+`5/5 passed`.
+
+Remaining direct-route gaps are deliberate:
+
+- `qwen_image` stays WGP-only because VibeComfy has `qwen_image_2512`, not a
+  proven plain Qwen Image template. Aliasing these would violate the threshold
+  policy.
+- `z_image_turbo_i2i` stays WGP-only because the VibeComfy corpus has Z-Image
+  text-to-image and Flux edit templates, but no proven Z-Image Turbo img2img
+  parity template.
+- `wan_2_2_t2i` stays WGP-only because the available VibeComfy Wan templates
+  do not match the production single-frame Wan 2.2 T2I contract.
+- `travel_segment` and `join_clips_segment` stay blocked for VibeComfy because
+  the required Wan 2.2 VACE cocktail source template is not present in the
+  VibeComfy ready-template source tree.
 
 ---
 

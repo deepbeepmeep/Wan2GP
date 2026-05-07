@@ -70,6 +70,7 @@ def _build_wan_travel_fixture() -> dict[str, Any]:
     orchestrator_details["base_prompts_expanded"] = [orchestrator_details["base_prompt"]]
     orchestrator_details["negative_prompts_expanded"] = [""]
     orchestrator_details["enhanced_prompts_expanded"] = [""]
+    orchestrator_details["enhance_prompt"] = False
     return template
 
 

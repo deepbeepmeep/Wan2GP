@@ -502,6 +502,15 @@ def test_route_specific_matrix_stamps_selector_contract():
     assert params["live_test"] is True
 
 
+def test_travel_live_matrix_disables_prompt_enhancement_download():
+    cases = build_matrix(case_names=["travel_orchestrator_wan2_1seg"])
+    payload = render_case_payload(cases[0], project_id="project-1", unique_suffix="abc123")
+    details = payload["params"]["orchestrator_details"]
+
+    assert details["enhance_prompt"] is False
+    assert details["enhanced_prompts_expanded"] == [""]
+
+
 def test_run_matrix_continues_after_individual_case_failures(monkeypatch: pytest.MonkeyPatch):
     cases = [
         MatrixCase(name="case-a", task_type="qwen_image", fixture_key="qwen_image_basic", timeout_sec=5),

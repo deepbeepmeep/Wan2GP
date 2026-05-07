@@ -385,11 +385,12 @@ def test_completion_poller_records_failure(monkeypatch: pytest.MonkeyPatch):
     assert result.error_summary == "backend exploded"
 
 
-def test_heartbeat_waiter_requires_dwell_not_startup_phase(monkeypatch: pytest.MonkeyPatch):
+def test_heartbeat_waiter_requires_dwell_and_ready_for_tasks(monkeypatch: pytest.MonkeyPatch):
     workers = SequenceResponder(
         [
-            [{"id": "worker-1", "last_heartbeat": _iso_now(), "startup_phase": None}],
-            [{"id": "worker-1", "last_heartbeat": _iso_now(), "startup_phase": None}],
+            [{"id": "worker-1", "last_heartbeat": _iso_now(), "metadata": {"ready_for_tasks": False}}],
+            [{"id": "worker-1", "last_heartbeat": _iso_now(), "metadata": {"ready_for_tasks": True}}],
+            [{"id": "worker-1", "last_heartbeat": _iso_now(), "metadata": {"ready_for_tasks": True}}],
         ]
     )
     db = FakeDB(sources={"workers": workers})

@@ -215,3 +215,12 @@ def test_qwen_edit_routes_select_matching_base_model_and_lightning_lora(
 
     assert task.model == expected_model
     assert expected_lora in task.parameters["lora_names"]
+    assert "image_guide" in task.parameters
+
+    if task_type in {"qwen_image_edit", "image_inpaint", "annotated_image_edit"}:
+        assert "image" not in task.parameters
+        assert "image_url" not in task.parameters
+    if task_type in {"image_inpaint", "annotated_image_edit"}:
+        assert "mask_url" not in task.parameters
+    if task_type == "qwen_image_style":
+        assert "style_reference_image" not in task.parameters

@@ -254,6 +254,11 @@ class QwenHandler:
             generation_params["additional_loras"].update(additional_loras)
             self._log_debug(f"Added {len(additional_loras)} additional LoRAs from dict")
 
+    def _clear_raw_image_inputs(self, generation_params: Dict[str, Any], *keys: str) -> None:
+        """Remove source URL fields after they have been materialized into WGP inputs."""
+        for key in keys:
+            generation_params.pop(key, None)
+
     # ── Hires fix ───────────────────────────────────────────────────────
 
     def _maybe_add_hires_config(self, db_task_params: Dict[str, Any], generation_params: Dict[str, Any]):
@@ -354,6 +359,7 @@ class QwenHandler:
             descriptive_name="edit_image"
         )
         generation_params["image_guide"] = str(local_image_path)
+        self._clear_raw_image_inputs(generation_params, "image", "image_url")
         self._log_info(f"Using image_guide: {local_image_path}")
 
         if "resolution" in db_task_params:
@@ -403,6 +409,7 @@ class QwenHandler:
         composite_path = self.create_qwen_masked_composite(image_url, mask_url, composite_dir)
 
         generation_params["image_guide"] = str(composite_path)
+        self._clear_raw_image_inputs(generation_params, "image", "image_url", "mask_url")
 
         if "resolution" in db_task_params:
             capped_res = self.cap_qwen_resolution(db_task_params["resolution"])
@@ -484,6 +491,11 @@ class QwenHandler:
                     descriptive_name="reference_image"
                 )
                 generation_params["image_guide"] = str(local_ref_path)
+                self._clear_raw_image_inputs(
+                    generation_params,
+                    "style_reference_image",
+                    "subject_reference_image",
+                )
             except (OSError, ValueError, RuntimeError) as e:
                 self._log_warning(f"Failed to download reference image: {e}")
 

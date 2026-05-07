@@ -20,6 +20,14 @@ Z_IMAGE_TURBO_FIXTURE_KEY = "z_image_turbo"
 WAN_2_2_T2I_FIXTURE_KEY = "wan_2_2_t2i"
 IMAGE_INPAINT_FIXTURE_KEY = "image_inpaint"
 ANNOTATED_IMAGE_EDIT_FIXTURE_KEY = "annotated_image_edit"
+JOIN_CLIPS_ORCHESTRATOR_FIXTURE_KEY = "join_clips_orchestrator"
+EDIT_VIDEO_ORCHESTRATOR_FIXTURE_KEY = "edit_video_orchestrator"
+TRAVEL_STITCH_FIXTURE_KEY = "travel_stitch"
+
+LIVE_TEST_VIDEO_URL = (
+    "https://wczysqzxlwdndgxitrvc.supabase.co/storage/v1/object/public/image_uploads/"
+    "guidance-videos/onboarding/structure_video_optimized.mp4"
+)
 
 
 @dataclass(frozen=True)
@@ -141,6 +149,84 @@ def _build_masked_qwen_fixture(task_type: str) -> dict[str, Any]:
     }
 
 
+def _build_join_clips_orchestrator_fixture() -> dict[str, Any]:
+    return {
+        "task_type": "join_clips_orchestrator",
+        "status": "Queued",
+        "params": {
+            "orchestrator_details": {
+                "run_id": "live-test-join",
+                "clip_list": [
+                    {"url": LIVE_TEST_VIDEO_URL, "name": "clip_a"},
+                    {"url": LIVE_TEST_VIDEO_URL, "name": "clip_b"},
+                ],
+                "loop_first_clip": False,
+                "context_frame_count": 4,
+                "gap_frame_count": 8,
+                "replace_mode": False,
+                "prompt": "A simple coherent bridge between the clips.",
+                "negative_prompt": "",
+                "model": "wan_2_2_vace_lightning_baseline_2_2_2",
+                "seed": 20260507,
+                "resolution": "902x508",
+                "fps": 16,
+                "use_input_video_resolution": True,
+                "use_input_video_fps": True,
+                "use_parallel_joins": False,
+                "skip_frame_validation": True,
+                "enhance_prompt": False,
+            },
+        },
+    }
+
+
+def _build_edit_video_orchestrator_fixture() -> dict[str, Any]:
+    return {
+        "task_type": "edit_video_orchestrator",
+        "status": "Queued",
+        "params": {
+            "orchestrator_details": {
+                "run_id": "live-test-edit-video",
+                "source_video_url": LIVE_TEST_VIDEO_URL,
+                "source_video_fps": 16,
+                "source_video_total_frames": 80,
+                "portions_to_regenerate": [
+                    {
+                        "start_frame": 16,
+                        "end_frame": 24,
+                        "prompt": "A clean transition through the edited region.",
+                    }
+                ],
+                "context_frame_count": 4,
+                "gap_frame_count": 8,
+                "replace_mode": False,
+                "prompt": "A simple coherent edit.",
+                "negative_prompt": "",
+                "model": "wan_2_2_vace_lightning_baseline_2_2_2",
+                "seed": 20260507,
+                "resolution": "902x508",
+                "fps": 16,
+                "use_input_video_resolution": True,
+                "use_input_video_fps": True,
+                "enhance_prompt": False,
+            },
+        },
+    }
+
+
+def _build_travel_stitch_fixture() -> dict[str, Any]:
+    return {
+        "task_type": "travel_stitch",
+        "status": "Queued",
+        "params": {
+            "clip_urls": [LIVE_TEST_VIDEO_URL, LIVE_TEST_VIDEO_URL],
+            "frame_overlap_settings_expanded": [4],
+            "fps": 16,
+            "crossfade_sharp_amt": 0.3,
+        },
+    }
+
+
 def resolve_case_fixture(case: MatrixCase) -> dict[str, Any]:
     if case.fixture_key == TRAVEL_WAN_FIXTURE_KEY:
         return _build_wan_travel_fixture()
@@ -154,6 +240,12 @@ def resolve_case_fixture(case: MatrixCase) -> dict[str, Any]:
         return _build_masked_qwen_fixture("image_inpaint")
     if case.fixture_key == ANNOTATED_IMAGE_EDIT_FIXTURE_KEY:
         return _build_masked_qwen_fixture("annotated_image_edit")
+    if case.fixture_key == JOIN_CLIPS_ORCHESTRATOR_FIXTURE_KEY:
+        return _build_join_clips_orchestrator_fixture()
+    if case.fixture_key == EDIT_VIDEO_ORCHESTRATOR_FIXTURE_KEY:
+        return _build_edit_video_orchestrator_fixture()
+    if case.fixture_key == TRAVEL_STITCH_FIXTURE_KEY:
+        return _build_travel_stitch_fixture()
     return load_fixture(case.fixture_key)
 
 
@@ -197,6 +289,13 @@ def build_case_params_overrides(
                 f"{task_marker}-anchor-a",
                 f"{task_marker}-anchor-b",
             ],
+        }
+
+    if case.task_type in {"join_clips_orchestrator", "edit_video_orchestrator"}:
+        runtime["orchestrator_details"] = {
+            "run_id": task_marker,
+            "orchestrator_task_id": task_marker,
+            "orchestrator_task_id_ref": task_marker,
         }
 
     if case.task_type == "individual_travel_segment":
@@ -340,6 +439,33 @@ def build_matrix(
             timeout_sec=timeout_travel_segment_sec,
         ),
         MatrixCase(
+            name="travel_stitch",
+            task_type="travel_stitch",
+            fixture_key=TRAVEL_STITCH_FIXTURE_KEY,
+            timeout_sec=timeout_image_sec,
+            route_key="travel_stitch",
+            support_state="wgp_only",
+            route_runtime=route_runtime,
+        ),
+        MatrixCase(
+            name="join_clips_orchestrator",
+            task_type="join_clips_orchestrator",
+            fixture_key=JOIN_CLIPS_ORCHESTRATOR_FIXTURE_KEY,
+            timeout_sec=timeout_travel_orchestrator_sec,
+            route_key="join_clips_orchestrator",
+            support_state="wgp_only",
+            route_runtime=route_runtime,
+        ),
+        MatrixCase(
+            name="edit_video_orchestrator",
+            task_type="edit_video_orchestrator",
+            fixture_key=EDIT_VIDEO_ORCHESTRATOR_FIXTURE_KEY,
+            timeout_sec=timeout_travel_orchestrator_sec,
+            route_key="edit_video_orchestrator",
+            support_state="wgp_only",
+            route_runtime=route_runtime,
+        ),
+        MatrixCase(
             name="qwen_image_style",
             task_type="qwen_image_style",
             fixture_key="qwen_image_style_db_task",
@@ -427,6 +553,9 @@ def build_matrix(
             fixture_key="z_image_turbo_i2i_basic",
             param_overrides={"image_url": anchor_image_a},
             timeout_sec=timeout_image_sec,
+            route_key="z_image_turbo_i2i",
+            support_state="wgp_only",
+            route_runtime=route_runtime,
         ),
     ]
     return filter_matrix(cases, case_names=case_names, task_types=task_types, route_keys=route_keys)

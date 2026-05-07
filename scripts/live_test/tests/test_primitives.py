@@ -558,15 +558,18 @@ def test_kill_supervisor_and_worker_patterns_cover_both_families(monkeypatch: py
 
 
 def test_matrix_contains_route_specific_z_image_turbo_case():
-    assert len(MATRIX) == 12
+    assert len(MATRIX) == 15
     assert [case.name for case in MATRIX].count("z_image_turbo") == 1
     assert [case.name for case in MATRIX].count("z_image_turbo_i2i") == 1
     z_image_case = next(case for case in MATRIX if case.name == "z_image_turbo")
+    z_image_i2i_case = next(case for case in MATRIX if case.name == "z_image_turbo_i2i")
     assert z_image_case.task_type == "z_image_turbo"
     assert z_image_case.route_key == "z_image_turbo"
     assert z_image_case.support_state == "vibecomfy_supported"
     assert z_image_case.selected_template_id == "image/z_image"
-    assert any(case.task_type == "z_image_turbo_i2i" for case in MATRIX)
+    assert z_image_i2i_case.task_type == "z_image_turbo_i2i"
+    assert z_image_i2i_case.route_key == "z_image_turbo_i2i"
+    assert z_image_i2i_case.support_state == "wgp_only"
 
 
 def test_route_specific_matrix_stamps_selector_contract():
@@ -624,6 +627,9 @@ def test_live_matrix_includes_documented_wgp_only_direct_routes():
         "wan_2_2_t2i": "wan_2_2_t2i",
         "image_inpaint": "image_inpaint",
         "annotated_image_edit": "annotated_image_edit",
+        "travel_stitch": "travel_stitch",
+        "join_clips_orchestrator": "join_clips_orchestrator",
+        "edit_video_orchestrator": "edit_video_orchestrator",
     }.items():
         case = cases[name]
         assert case.task_type == task_type
@@ -638,9 +644,13 @@ def test_live_matrix_includes_documented_wgp_only_direct_routes():
         ("qwen_image_2512", "qwen_image_2512"),
         ("qwen_image_edit", "qwen_image_edit"),
         ("qwen_image_style", "qwen_image_style"),
+        ("z_image_turbo_i2i", "z_image_turbo_i2i"),
         ("wan_2_2_t2i", "wan_2_2_t2i"),
         ("image_inpaint", "image_inpaint"),
         ("annotated_image_edit", "annotated_image_edit"),
+        ("travel_stitch", "travel_stitch"),
+        ("join_clips_orchestrator", "join_clips_orchestrator"),
+        ("edit_video_orchestrator", "edit_video_orchestrator"),
     ],
 )
 def test_live_matrix_stamps_direct_route_contracts(case_name: str, route_key: str):
@@ -650,6 +660,15 @@ def test_live_matrix_stamps_direct_route_contracts(case_name: str, route_key: st
     assert contract["route_key"] == route_key
     assert contract["support_state"] == "wgp_only"
     assert payload["params"]["selected_backend"] == "wgp"
+
+
+@pytest.mark.parametrize("case_name", ["join_clips_orchestrator", "edit_video_orchestrator"])
+def test_live_matrix_orchestrator_cases_use_unique_run_ids(case_name: str):
+    cases = build_matrix(case_names=[case_name])
+    payload = render_case_payload(cases[0], project_id="project-1", unique_suffix="abc123")
+    details = payload["params"]["orchestrator_details"]
+    assert details["run_id"] == f"live-test-{case_name}-abc123"
+    assert details["orchestrator_task_id"] == f"live-test-{case_name}-abc123"
 
 
 def test_run_matrix_continues_after_individual_case_failures(monkeypatch: pytest.MonkeyPatch):

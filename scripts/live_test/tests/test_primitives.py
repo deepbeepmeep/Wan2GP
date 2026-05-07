@@ -511,6 +511,18 @@ def test_travel_live_matrix_disables_prompt_enhancement_download():
     assert details["enhanced_prompts_expanded"] == [""]
 
 
+def test_travel_orchestrator_live_matrix_stamps_parent_route_contract():
+    cases = build_matrix(case_names=["travel_orchestrator_wan2_1seg"])
+    payload = render_case_payload(cases[0], project_id="project-1", unique_suffix="abc123")
+    contract = payload["params"]["route_contract"]
+
+    assert contract["route_key"] == "travel_orchestrator"
+    assert contract["selected_backend"] == "wgp"
+    assert contract["support_state"] == "wgp_only"
+    assert contract["route_selection_snapshot"]["route_key"] == "travel_orchestrator"
+    assert contract["route_selection_snapshot"]["live_test_run_id"] == "live-test-travel_orchestrator_wan2_1seg-abc123"
+
+
 def test_run_matrix_continues_after_individual_case_failures(monkeypatch: pytest.MonkeyPatch):
     cases = [
         MatrixCase(name="case-a", task_type="qwen_image", fixture_key="qwen_image_basic", timeout_sec=5),

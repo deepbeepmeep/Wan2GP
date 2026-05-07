@@ -268,12 +268,18 @@ def build_matrix(
             task_type="travel_orchestrator",
             fixture_key=TRAVEL_WAN_FIXTURE_KEY,
             timeout_sec=timeout_travel_orchestrator_sec,
+            route_key="travel_orchestrator",
+            support_state="wgp_only",
+            route_runtime=route_runtime,
         ),
         MatrixCase(
             name="travel_orchestrator_ltx",
             task_type="travel_orchestrator",
             fixture_key=TRAVEL_LTX_FIXTURE_KEY,
             timeout_sec=timeout_travel_orchestrator_sec,
+            route_key="travel_orchestrator",
+            support_state="wgp_only",
+            route_runtime=route_runtime,
         ),
         MatrixCase(
             name="individual_travel_segment",

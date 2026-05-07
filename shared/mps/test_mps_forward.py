@@ -97,7 +97,8 @@ print(f"    5D Latent shape: {x_5d.shape}")
 x_list_input = [x_5d]
 
 # Disable skips_steps_cache (TeaCache step skipping - not needed for basic inference test)
-model.cache = None
+if hasattr(model, "cache"):
+    model.cache = None
 
 # text_embedding: Linear(4096, dim) - UMT5-XXL text encoder output is 4096-dim
 text_encoder_dim = 4096
@@ -137,7 +138,7 @@ except Exception as e:
 # Step 7: Memory check
 print("\n[7] Memory stats...")
 print(f"    MPS memory allocated: {torch.mps.current_allocated_memory() / 1024**3:.2f}GB")
-print(f"    System RAM: 16GB (Apple M5)")
+print(f"    MPS memory driver allocated: {torch.mps.driver_allocated_memory() / 1024**3:.2f}GB")
 
 print("\n" + "=" * 60)
 print("MPS Forward Pass Test PASSED!")

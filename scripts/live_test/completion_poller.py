@@ -42,7 +42,8 @@ def _parse_timestamp(value: str | None) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def _linked_generation_ids(rows: list[dict[str, Any]], task_id: str) -> tuple[list[str], str | None]:
+def _linked_generation_ids(rows: list[dict[str, Any]], task_ids: list[str]) -> tuple[list[str], str | None]:
+    linked_task_ids = {str(task_id).strip() for task_id in task_ids if str(task_id).strip()}
     generation_ids: list[str] = []
     seen_generation_ids: set[str] = set()
     first_location: str | None = None
@@ -50,13 +51,13 @@ def _linked_generation_ids(rows: list[dict[str, Any]], task_id: str) -> tuple[li
         linked = False
         tasks = row.get("tasks")
         if isinstance(tasks, str):
-            linked = tasks.strip() == task_id
+            linked = tasks.strip() in linked_task_ids
         elif isinstance(tasks, list):
-            linked = any(isinstance(item, str) and item.strip() == task_id for item in tasks)
+            linked = any(isinstance(item, str) and item.strip() in linked_task_ids for item in tasks)
 
         params = row.get("params")
         if not linked and isinstance(params, dict):
-            linked = str(params.get("source_task_id", "")).strip() == task_id
+            linked = str(params.get("source_task_id", "")).strip() in linked_task_ids
 
         if not linked:
             continue
@@ -84,13 +85,82 @@ def _fetch_task_row(db, task_id: str, project_id: str) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
+def _orchestrator_child_task_ids(rows: list[dict[str, Any]], parent_task_id: str) -> list[str]:
+    child_ids: list[str] = []
+    seen_child_ids: set[str] = set()
+    for row in rows:
+        params = row.get("params")
+        if not isinstance(params, dict):
+            continue
+
+        orchestrator_details = params.get("orchestrator_details")
+        linked_parent_ids = {
+            str(params.get("orchestrator_task_id_ref", "")).strip(),
+            str(params.get("orchestrator_task_id", "")).strip(),
+        }
+        if isinstance(orchestrator_details, dict):
+            linked_parent_ids.add(str(orchestrator_details.get("orchestrator_task_id", "")).strip())
+
+        if parent_task_id not in linked_parent_ids:
+            continue
+
+        child_id = row.get("id")
+        if child_id:
+            normalized_id = str(child_id)
+            if normalized_id not in seen_child_ids:
+                child_ids.append(normalized_id)
+                seen_child_ids.add(normalized_id)
+
+    return child_ids
+
+
+def _fetch_orchestrator_child_task_ids(
+    db,
+    *,
+    parent_task_id: str,
+    project_id: str,
+    parent_created_at: str | None,
+) -> list[str]:
+    query = (
+        db.supabase.table("tasks")
+        .select("id, params, created_at, project_id")
+        .eq("project_id", project_id)
+    )
+    if parent_created_at:
+        query = query.gte("created_at", parent_created_at)
+
+    rows = _coerce_rows(query.execute())
+    if parent_created_at:
+        created_cutoff = _parse_timestamp(parent_created_at)
+        filtered_rows = []
+        for row in rows:
+            row_created_at = _parse_timestamp(row.get("created_at"))
+            if created_cutoff is None or row_created_at is None or row_created_at >= created_cutoff:
+                filtered_rows.append(row)
+        rows = filtered_rows
+
+    return _orchestrator_child_task_ids(rows, parent_task_id)
+
+
 def _fetch_generations_since(
     db,
     *,
     task_id: str,
     project_id: str,
     task_created_at: str | None,
+    task_type: str | None = None,
 ) -> tuple[list[str], str | None]:
+    task_ids = [task_id]
+    if task_type in {"travel_orchestrator", "join_clips_orchestrator", "edit_video_orchestrator"}:
+        task_ids.extend(
+            _fetch_orchestrator_child_task_ids(
+                db,
+                parent_task_id=task_id,
+                project_id=project_id,
+                parent_created_at=task_created_at,
+            )
+        )
+
     query = (
         db.supabase.table("generations")
         .select("id, tasks, params, location, created_at, project_id")
@@ -109,7 +179,7 @@ def _fetch_generations_since(
                 filtered_rows.append(row)
         rows = filtered_rows
 
-    return _linked_generation_ids(rows, task_id)
+    return _linked_generation_ids(rows, task_ids)
 
 
 def _failure_summary(task_row: dict[str, Any] | None, final_status: str, generation_ids: list[str]) -> str | None:
@@ -152,6 +222,7 @@ def poll_until_complete(
                 task_id=task_id,
                 project_id=project_id,
                 task_created_at=task_row.get("created_at"),
+                task_type=task_type or str(task_row.get("task_type") or ""),
             )
             output_location = task_row.get("output_location") or generation_location
             return TaskResult(
@@ -174,6 +245,7 @@ def poll_until_complete(
         task_id=task_id,
         project_id=project_id,
         task_created_at=task_row.get("created_at") if task_row else None,
+        task_type=task_type or str((task_row or {}).get("task_type") or ""),
     )
     output_location = ((task_row or {}).get("output_location") or generation_location)
     return TaskResult(

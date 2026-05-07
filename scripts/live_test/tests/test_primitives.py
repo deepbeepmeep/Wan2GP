@@ -251,6 +251,101 @@ def test_completion_poller_returns_on_complete(monkeypatch: pytest.MonkeyPatch):
     assert result.error_summary is None
 
 
+def test_completion_poller_links_orchestrator_child_generations(monkeypatch: pytest.MonkeyPatch):
+    parent_created_at = _iso_now(-20)
+    child_created_at = _iso_now(-10)
+    db = FakeDB(
+        tables={
+            "tasks": [
+                {
+                    "id": "parent-1",
+                    "project_id": "project-1",
+                    "task_type": "travel_orchestrator",
+                    "status": "Complete",
+                    "created_at": parent_created_at,
+                },
+                {
+                    "id": "child-1",
+                    "project_id": "project-1",
+                    "task_type": "travel_segment",
+                    "status": "Complete",
+                    "created_at": child_created_at,
+                    "params": {"orchestrator_task_id_ref": "parent-1"},
+                },
+            ],
+            "generations": [
+                {
+                    "id": "gen-child-1",
+                    "project_id": "project-1",
+                    "created_at": _iso_now(-5),
+                    "tasks": ["child-1"],
+                    "params": {},
+                    "location": "https://out.example/segment.mp4",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr("scripts.live_test.completion_poller.time.sleep", lambda _interval: None)
+    result = poll_until_complete(
+        db,
+        "parent-1",
+        "project-1",
+        timeout_sec=1,
+        interval_sec=0,
+        task_type="travel_orchestrator",
+    )
+    assert result.final_status == "Complete"
+    assert result.generation_ids == ["gen-child-1"]
+    assert result.output_location == "https://out.example/segment.mp4"
+    assert result.error_summary is None
+
+
+def test_completion_poller_links_orchestrator_child_generations_from_details(monkeypatch: pytest.MonkeyPatch):
+    db = FakeDB(
+        tables={
+            "tasks": [
+                {
+                    "id": "join-parent-1",
+                    "project_id": "project-1",
+                    "task_type": "join_clips_orchestrator",
+                    "status": "Complete",
+                    "created_at": _iso_now(-20),
+                },
+                {
+                    "id": "join-child-1",
+                    "project_id": "project-1",
+                    "task_type": "join_clips_segment",
+                    "status": "Complete",
+                    "created_at": _iso_now(-10),
+                    "params": {"orchestrator_details": {"orchestrator_task_id": "join-parent-1"}},
+                },
+            ],
+            "generations": [
+                {
+                    "id": "gen-join-1",
+                    "project_id": "project-1",
+                    "created_at": _iso_now(-5),
+                    "tasks": "join-child-1",
+                    "params": {},
+                    "location": "https://out.example/joined.mp4",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr("scripts.live_test.completion_poller.time.sleep", lambda _interval: None)
+    result = poll_until_complete(
+        db,
+        "join-parent-1",
+        "project-1",
+        timeout_sec=1,
+        interval_sec=0,
+        task_type="join_clips_orchestrator",
+    )
+    assert result.generation_ids == ["gen-join-1"]
+    assert result.output_location == "https://out.example/joined.mp4"
+    assert result.error_summary is None
+
+
 def test_completion_poller_times_out(monkeypatch: pytest.MonkeyPatch):
     db = FakeDB(
         tables={

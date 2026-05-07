@@ -1,0 +1,183 @@
+{
+  "manifest_id": "sprint12-dual-executor-readiness-evidence",
+  "schema_version": 1,
+  "sprint": 12,
+  "created_at": "2026-05-07T12:00:00+00:00",
+  "readiness_state": "RED",
+  "evidence_blockers": [
+    {
+      "id": "non_rayworker_live_observations_unavailable",
+      "status": "RED",
+      "reason": "No real live or staging observations were mechanically available for all required non-RayWorker routes in this environment. Sprint 12 readiness must remain red rather than fabricating green completion or billing evidence.",
+      "affected_routes": [
+        "video_enhance",
+        "image-upscale",
+        "animate_character",
+        "flux_klein_edit"
+      ],
+      "review_date": "2026-06-07",
+      "approval_source": "current chain directive, 2026-05-07"
+    }
+  ],
+  "non_rayworker_observations": [
+    {
+      "environment": "staging",
+      "observed_at": "2026-05-07T12:00:00+00:00",
+      "task_id": "RED_missing_live_video_enhance",
+      "task_type": "video_enhance",
+      "route_key": "video_enhance",
+      "runtime": {
+        "backend": "api_orchestrator",
+        "state": "evidence_unavailable"
+      },
+      "selector_namespace": "staging",
+      "selector_version": "sprint12-redline",
+      "status": "red",
+      "completion_evidence": {
+        "handler": "complete_task/generation-handlers.ts",
+        "status": "missing",
+        "reason": "No recent live/staging completion evidence was mechanically verified."
+      },
+      "billing_evidence": {
+        "handler": "complete_task/billing.ts",
+        "status": "missing",
+        "reason": "No recent live/staging billing evidence was mechanically verified."
+      },
+      "source_ref": {
+        "kind": "evidence_gap",
+        "path": "reigh-worker/scripts/dual_run_compare/fixtures/non_rayworker/video_enhance.json",
+        "blocker_id": "non_rayworker_live_observations_unavailable"
+      },
+      "redaction": {
+        "status": "redacted",
+        "secret_scan": "passed",
+        "notes": "No live payload, customer media, auth token, or billing identifier is included."
+      }
+    },
+    {
+      "environment": "staging",
+      "observed_at": "2026-05-07T12:00:00+00:00",
+      "task_id": "RED_missing_live_image-upscale",
+      "task_type": "image-upscale",
+      "route_key": "image-upscale",
+      "runtime": {
+        "backend": "api_orchestrator",
+        "state": "evidence_unavailable"
+      },
+      "selector_namespace": "staging",
+      "selector_version": "sprint12-redline",
+      "status": "red",
+      "completion_evidence": {
+        "handler": "complete_task/generation-handlers.ts",
+        "status": "missing",
+        "reason": "No recent live/staging completion evidence was mechanically verified."
+      },
+      "billing_evidence": {
+        "handler": "complete_task/billing.ts",
+        "status": "missing",
+        "reason": "No recent live/staging billing evidence was mechanically verified."
+      },
+      "source_ref": {
+        "kind": "evidence_gap",
+        "path": "reigh-worker/scripts/dual_run_compare/fixtures/non_rayworker/image-upscale.json",
+        "blocker_id": "non_rayworker_live_observations_unavailable"
+      },
+      "redaction": {
+        "status": "redacted",
+        "secret_scan": "passed",
+        "notes": "No live payload, customer media, auth token, or billing identifier is included."
+      }
+    },
+    {
+      "environment": "staging",
+      "observed_at": "2026-05-07T12:00:00+00:00",
+      "task_id": "RED_missing_live_animate_character",
+      "task_type": "animate_character",
+      "route_key": "animate_character",
+      "runtime": {
+        "backend": "api_orchestrator",
+        "state": "evidence_unavailable"
+      },
+      "selector_namespace": "staging",
+      "selector_version": "sprint12-redline",
+      "status": "red",
+      "completion_evidence": {
+        "handler": "complete_task/generation-handlers.ts",
+        "status": "missing",
+        "reason": "No recent live/staging completion evidence was mechanically verified."
+      },
+      "billing_evidence": {
+        "handler": "complete_task/billing.ts",
+        "status": "missing",
+        "reason": "No recent live/staging billing evidence was mechanically verified."
+      },
+      "source_ref": {
+        "kind": "evidence_gap",
+        "path": "reigh-worker/scripts/dual_run_compare/fixtures/non_rayworker/animate_character.json",
+        "blocker_id": "non_rayworker_live_observations_unavailable"
+      },
+      "redaction": {
+        "status": "redacted",
+        "secret_scan": "passed",
+        "notes": "No live payload, customer media, auth token, or billing identifier is included."
+      }
+    },
+    {
+      "environment": "staging",
+      "observed_at": "2026-05-07T12:00:00+00:00",
+      "task_id": "RED_missing_live_flux_klein_edit",
+      "task_type": "flux_klein_edit",
+      "route_key": "flux_klein_edit",
+      "runtime": {
+        "backend": "api_orchestrator",
+        "state": "evidence_unavailable"
+      },
+      "selector_namespace": "staging",
+      "selector_version": "sprint12-redline",
+      "status": "red",
+      "completion_evidence": {
+        "handler": "complete_task/generation-handlers.ts",
+        "status": "missing",
+        "reason": "No recent live/staging completion evidence was mechanically verified."
+      },
+      "billing_evidence": {
+        "handler": "complete_task/billing.ts",
+        "status": "missing",
+        "reason": "No recent live/staging billing evidence was mechanically verified."
+      },
+      "source_ref": {
+        "kind": "evidence_gap",
+        "path": "reigh-worker/scripts/dual_run_compare/fixtures/non_rayworker/flux_klein_edit.json",
+        "blocker_id": "non_rayworker_live_observations_unavailable"
+      },
+      "redaction": {
+        "status": "redacted",
+        "secret_scan": "passed",
+        "notes": "No live payload, customer media, auth token, or billing identifier is included."
+      }
+    }
+  ],
+  "dashboards": {
+    "status": "green",
+    "evidence_refs": [
+      "reigh-worker-orchestrator/docs/sprint-12-dashboard-alert-review.md",
+      "reigh-worker-orchestrator/tests/scripts/test_dashboard_export.py"
+    ]
+  },
+  "alerts": {
+    "status": "green",
+    "evidence_refs": [
+      "reigh-worker-orchestrator/config/alerts/section11-canary.yaml",
+      "reigh-worker-orchestrator/tests/test_section11_alerts.py"
+    ]
+  },
+  "go_no_go": {
+    "decision": "no_go",
+    "reasons": [
+      "Non-RayWorker live/staging completion and billing observations are unavailable for Sprint 12 package closure."
+    ],
+    "evidence_refs": [
+      "sprint12-evidence-manifest.json#evidence_blockers"
+    ]
+  }
+}

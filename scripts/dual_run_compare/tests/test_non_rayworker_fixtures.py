@@ -35,6 +35,8 @@ REQUIRED_FIXTURE_FIELDS = {
     "billing_path",
     "output_shape",
     "owner",
+    "owner_review_date",
+    "owner_approval_source",
     "preserve_or_move_decision",
     "alias_mismatch",
     "executor_handler",
@@ -74,6 +76,13 @@ EXPECTED_HANDLERS = {
     "flux_klein_edit": "handle_flux_klein_edit",
 }
 
+EXPECTED_EXECUTOR_HANDLERS = {
+    "video_enhance": "handlers/fal.py::handle_video_enhance",
+    "image-upscale": "handlers/fal.py::handle_image_upscale",
+    "animate_character": "handlers/wavespeed.py::handle_animate_character",
+    "flux_klein_edit": "handlers/fal.py::handle_flux_klein_edit",
+}
+
 EXPECTED_PAYLOAD_KEYS = {
     "video_enhance": {"video_url", "video", "enable_interpolation", "enable_upscale", "interpolation", "upscale"},
     "image-upscale": {"image_url", "image", "upscale_factor", "scale_factor", "noise_scale", "output_format", "seed"},
@@ -110,6 +119,9 @@ def test_non_rayworker_fixture_json_and_snapshot_are_complete() -> None:
         assert fixture["route_key"] == route_key
         assert fixture["task_type"] == route_key
         assert fixture["runtime"] == "api_orchestrator"
+        assert fixture["owner"] == "Peter O'Malley, accepted interim product owner"
+        assert fixture["owner_review_date"] == "2026-06-07"
+        assert fixture["owner_approval_source"] == "current chain directive, 2026-05-07"
         assert fixture["preserve_or_move_decision"] == "preserve"
         assert fixture["route_classification"] == "active_api_owned"
         assert fixture["canary_depth"] == "full_canary"
@@ -124,6 +136,7 @@ def test_non_rayworker_fixture_json_and_snapshot_are_complete() -> None:
         assert isinstance(fixture["payload_shape"], dict) and fixture["payload_shape"]
         assert isinstance(fixture["output_shape"], dict) and fixture["output_shape"]
         assert set(fixture["payload_shape"]) == EXPECTED_PAYLOAD_KEYS[route_key]
+        assert fixture["executor_handler"] == EXPECTED_EXECUTOR_HANDLERS[route_key]
 
         snapshot_route = snapshot["routes"][route_key]
         assert snapshot_route["task_type"] == route_key

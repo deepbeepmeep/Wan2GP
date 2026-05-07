@@ -48,6 +48,12 @@ SECTION3A_FIXTURE_PATH = (
     / "fixtures"
     / "section3a_matrix.fixture"
 )
+SPRINT12_ROUTE_INVENTORY_PATH = (
+    Path(__file__).resolve().parents[2] / "docs" / "sprint-12-route-inventory.md"
+)
+SPRINT12_ROUTE_SUPPORT_PATH = (
+    Path(__file__).resolve().parents[2] / "docs" / "sprint-12-route-support.md"
+)
 
 
 @pytest.fixture()
@@ -303,6 +309,32 @@ def test_section3a_matrix_route_support_is_explicit_and_deterministic(routing) -
             "disposition": row["disposition"],
             "blocking_reason": row["blocking_reason"],
         }
+
+
+def test_sprint12_route_docs_cover_selector_maps_section3a_and_app_snapshots(routing) -> None:
+    inventory = SPRINT12_ROUTE_INVENTORY_PATH.read_text(encoding="utf-8")
+    support = SPRINT12_ROUTE_SUPPORT_PATH.read_text(encoding="utf-8")
+    app_fixtures = json.loads(SELECTED_ROUTE_FIXTURES_PATH.read_text(encoding="utf-8"))
+
+    assert "`z_image_turbo` | `dual_supported`" in inventory
+    assert "| `z_image_turbo` | supported | supported | `image/z_image`" in support
+    assert "None. Sprint 12 does not close any route as VibeComfy-only" in support
+
+    for route_key in routing.SPRINT_2_SELECTOR_MAP:
+        assert f"`{route_key}`" in inventory
+
+    for alias in routing.DIRECT_ROUTE_ALIASES:
+        assert f"`{alias}`" in inventory or alias in inventory
+
+    for route_key, entry in routing.SECTION3A_ROUTE_SUPPORT_MAP.items():
+        assert f"`{route_key}`" in inventory
+        assert entry.disposition in inventory
+        assert entry.blocking_reason in inventory
+
+    for fixture in app_fixtures:
+        route_key = fixture["expected"]["route_key"]
+        assert fixture["name"] in inventory
+        assert f"`{route_key}`" in inventory
 
 
 @pytest.mark.parametrize(

@@ -11,6 +11,9 @@ from scripts.canary_readiness.package import build_package, load_source_reports,
 from scripts.canary_readiness.soak import REQUIRED_SOAK_SCENARIOS
 
 
+SPRINT12_MANIFEST_PATH = Path(__file__).parents[1] / "reports" / "sprint12-evidence-manifest.json"
+
+
 def _write_report(path: Path, *, report_id: str, route_status: str = "green", exit_code: int = 0) -> None:
     path.write_text(
         json.dumps(
@@ -233,3 +236,44 @@ def test_cli_fixture_only_non_rayworker_evidence_exits_nonzero(tmp_path: Path) -
     package = json.loads((output_dir / "canary-readiness-fixture-only.json").read_text())
     assert package["sections"]["non_rayworker_smoke"]["status"] == "red"
     assert "fixture-only" in json.dumps(package["sections"]["non_rayworker_smoke"])
+
+
+def test_sprint12_manifest_redlines_missing_non_rayworker_live_evidence(tmp_path: Path) -> None:
+    source_dir = tmp_path / "dual_run_reports"
+    source_dir.mkdir()
+    _write_report(source_dir / "dual-run-source.json", report_id="dual-run-source")
+    manifest = json.loads(SPRINT12_MANIFEST_PATH.read_text(encoding="utf-8"))
+
+    assert manifest["readiness_state"] == "RED"
+    assert manifest["evidence_blockers"][0]["id"] == "non_rayworker_live_observations_unavailable"
+    observations = manifest["non_rayworker_observations"]
+    assert {observation["route_key"] for observation in observations} == set(REQUIRED_ROUTES)
+    for observation in observations:
+        assert observation["task_id"].startswith("RED_missing_live_")
+        assert observation["observed_at"] == "2026-05-07T12:00:00+00:00"
+        assert observation["status"] == "red"
+        assert observation["completion_evidence"]["handler"] == COMPLETION_HANDLER
+        assert observation["billing_evidence"]["handler"] == BILLING_HANDLER
+        assert observation["source_ref"]["kind"] == "evidence_gap"
+        assert observation["redaction"]["status"] == "redacted"
+        assert observation["redaction"]["secret_scan"] == "passed"
+
+    package = build_package(
+        package_id="canary-readiness-sprint12-redline",
+        source_report_dir=source_dir,
+        output_dir=tmp_path / "out",
+        evidence_manifest=manifest,
+        created_at="2026-05-07T12:00:00+00:00",
+    )
+
+    non_rayworker = package["sections"]["non_rayworker_smoke"]
+    assert non_rayworker["status"] == "red"
+    assert package["exit_policy"]["exit_code"] == 1
+    assert any(
+        reason["section"] == "non_rayworker_smoke"
+        for reason in package["exit_policy"]["nonzero_reasons"]
+    )
+    assert all(
+        any("observation status must be completed/green/succeeded/pass" in error for error in route["errors"])
+        for route in non_rayworker["routes"]
+    )

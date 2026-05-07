@@ -1,38 +1,27 @@
 """Best-effort package bootstrap for modules loaded dynamically elsewhere."""
 
+from __future__ import annotations
+
+import importlib
+
+
+def _import_optional_bootstrap(module_name: str) -> None:
+    try:
+        importlib.import_module(module_name)
+    except Exception:
+        # These imports register optional dynamic modules and patches. They must
+        # not make lightweight route/claim tests depend on the full GPU stack.
+        pass
+
+
 # Explicit imports for modules used via deferred/dynamic loading.
-# Keep them best-effort so lightweight test stubs do not fail on import.
-try:
-    from source.models.wgp import wgp_patches  # noqa: F401
-except (ImportError, AttributeError):
-    pass
-
-try:
-    from source.models.wgp import transformers_patches  # noqa: F401
-except (ImportError, AttributeError):
-    pass
-
-try:
-    from source.media.video import vace_frame_utils  # noqa: F401
-except (ImportError, AttributeError):
-    pass
-
-try:
-    from source.media.video import hires_utils  # noqa: F401
-except (ImportError, AttributeError):
-    pass
-
-try:
-    from source.models.lora import lora_utils  # noqa: F401
-except (ImportError, AttributeError):
-    pass
-
-try:
-    from source.task_handlers.worker import heartbeat_utils  # noqa: F401
-except (ImportError, AttributeError):
-    pass
-
-try:
-    from source.task_handlers.worker import fatal_error_handler  # noqa: F401
-except (ImportError, AttributeError):
-    pass
+for _module_name in (
+    "source.models.wgp.wgp_patches",
+    "source.models.wgp.transformers_patches",
+    "source.media.video.vace_frame_utils",
+    "source.media.video.hires_utils",
+    "source.models.lora.lora_utils",
+    "source.task_handlers.worker.heartbeat_utils",
+    "source.task_handlers.worker.fatal_error_handler",
+):
+    _import_optional_bootstrap(_module_name)

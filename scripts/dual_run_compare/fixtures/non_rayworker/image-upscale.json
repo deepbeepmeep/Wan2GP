@@ -15,7 +15,9 @@
     "image_url": "string",
     "variant_metadata": "object optional"
   },
-  "owner": "Peter O'Malley, interim product owner",
+  "owner": "Peter O'Malley, accepted interim product owner",
+  "owner_approval_source": "current chain directive, 2026-05-07",
+  "owner_review_date": "2026-06-07",
   "payload_shape": {
     "image": "string alias for image_url",
     "image_url": "string",

@@ -626,8 +626,6 @@ def test_live_matrix_includes_documented_wgp_only_direct_routes():
     cases = {case.name: case for case in build_matrix()}
     for name, task_type in {
         "wan_2_2_t2i": "wan_2_2_t2i",
-        "image_inpaint": "image_inpaint",
-        "annotated_image_edit": "annotated_image_edit",
         "travel_stitch": "travel_stitch",
         "join_clips_orchestrator": "join_clips_orchestrator",
         "edit_video_orchestrator": "edit_video_orchestrator",
@@ -636,6 +634,23 @@ def test_live_matrix_includes_documented_wgp_only_direct_routes():
         assert case.task_type == task_type
         assert case.route_key == task_type
         assert case.support_state == "wgp_only"
+
+
+def test_live_matrix_includes_promoted_vibecomfy_direct_routes():
+    cases = {case.name: case for case in build_matrix()}
+    expected = {
+        "qwen_image_2512": ("qwen_image_2512", "image/qwen_image_2512"),
+        "qwen_image_edit": ("qwen_image_edit", "edit/qwen_image_edit"),
+        "qwen_image_style": ("qwen_image_style", "edit/qwen_image_edit"),
+        "image_inpaint": ("image_inpaint", "edit/qwen_image_edit"),
+        "annotated_image_edit": ("annotated_image_edit", "edit/qwen_image_edit"),
+    }
+    for name, (task_type, template_id) in expected.items():
+        case = cases[name]
+        assert case.task_type == task_type
+        assert case.route_key == task_type
+        assert case.support_state == "vibecomfy_supported"
+        assert case.selected_template_id == template_id
 
 
 @pytest.mark.parametrize(
@@ -659,7 +674,7 @@ def test_live_matrix_stamps_direct_route_contracts(case_name: str, route_key: st
     payload = render_case_payload(cases[0], project_id="project-1", unique_suffix="abc123")
     contract = payload["params"]["route_contract"]
     assert contract["route_key"] == route_key
-    assert contract["support_state"] == "wgp_only"
+    assert contract["support_state"] == cases[0].support_state
     assert payload["params"]["selected_backend"] == "wgp"
 
 

@@ -102,12 +102,7 @@ def test_direct_route_aliases_match_canonical_selector_keys(
 @pytest.mark.parametrize(
     "task_type",
     [
-        "qwen_image_2512",
         "qwen_image",
-        "qwen_image_edit",
-        "qwen_image_style",
-        "image_inpaint",
-        "annotated_image_edit",
     ],
 )
 def test_sprint_qwen_direct_routes_are_explicit_wgp_only(routing, task_type: str) -> None:
@@ -125,6 +120,35 @@ def test_sprint_qwen_direct_routes_are_explicit_wgp_only(routing, task_type: str
     assert resolved.fail_closed_reason
     assert "wgp_only" in resolved.fail_closed_reason
     assert "will not fall back to WGP" in resolved.fail_closed_reason
+
+
+@pytest.mark.parametrize(
+    ("task_type", "template_id"),
+    [
+        ("qwen_image_2512", "image/qwen_image_2512"),
+        ("qwen_image_edit", "edit/qwen_image_edit"),
+        ("qwen_image_style", "edit/qwen_image_edit"),
+        ("image_inpaint", "edit/qwen_image_edit"),
+        ("annotated_image_edit", "edit/qwen_image_edit"),
+    ],
+)
+def test_qwen_ready_template_routes_are_vibecomfy_supported(
+    routing,
+    task_type: str,
+    template_id: str,
+) -> None:
+    resolved = routing.resolve_task_route(
+        task_id="task-supported",
+        task_type=task_type,
+        params={"prompt": "edit this"},
+        backend="vibecomfy",
+    )
+
+    assert resolved.route_key == task_type
+    assert resolved.support_state == routing.RouteSupportState.VIBECOMFY_SUPPORTED
+    assert resolved.template_id == template_id
+    assert resolved.should_use_vibecomfy is True
+    assert resolved.fail_closed_reason is None
 
 
 def test_routing_telemetry_fields_are_compact_and_stable(routing) -> None:

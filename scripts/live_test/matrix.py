@@ -475,7 +475,8 @@ def build_matrix(
             },
             timeout_sec=timeout_image_sec,
             route_key="qwen_image_style",
-            support_state="wgp_only",
+            support_state="vibecomfy_supported",
+            selected_template_id="edit/qwen_image_edit",
             route_runtime=route_runtime,
         ),
         MatrixCase(
@@ -494,7 +495,8 @@ def build_matrix(
             param_overrides={"resolution": "1536x864"},
             timeout_sec=timeout_image_sec,
             route_key="qwen_image_2512",
-            support_state="wgp_only",
+            support_state="vibecomfy_supported",
+            selected_template_id="image/qwen_image_2512",
             route_runtime=route_runtime,
         ),
         MatrixCase(
@@ -516,7 +518,8 @@ def build_matrix(
             },
             timeout_sec=timeout_image_sec,
             route_key="qwen_image_edit",
-            support_state="wgp_only",
+            support_state="vibecomfy_supported",
+            selected_template_id="edit/qwen_image_edit",
             route_runtime=route_runtime,
         ),
         MatrixCase(
@@ -525,7 +528,8 @@ def build_matrix(
             fixture_key=IMAGE_INPAINT_FIXTURE_KEY,
             timeout_sec=timeout_image_sec,
             route_key="image_inpaint",
-            support_state="wgp_only",
+            support_state="vibecomfy_supported",
+            selected_template_id="edit/qwen_image_edit",
             route_runtime=route_runtime,
         ),
         MatrixCase(
@@ -534,7 +538,8 @@ def build_matrix(
             fixture_key=ANNOTATED_IMAGE_EDIT_FIXTURE_KEY,
             timeout_sec=timeout_image_sec,
             route_key="annotated_image_edit",
-            support_state="wgp_only",
+            support_state="vibecomfy_supported",
+            selected_template_id="edit/qwen_image_edit",
             route_runtime=route_runtime,
         ),
         MatrixCase(

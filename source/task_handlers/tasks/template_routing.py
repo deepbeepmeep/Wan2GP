@@ -113,8 +113,8 @@ SPRINT_2_SELECTOR_MAP: Mapping[str, RouteSelectorEntry] = MappingProxyType(
         ),
         "qwen_image_2512": RouteSelectorEntry(
             route_key="qwen_image_2512",
-            support_state=RouteSupportState.WGP_ONLY,
-            template_id=None,
+            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
+            template_id="image/qwen_image_2512",
         ),
         "qwen_image": RouteSelectorEntry(
             route_key="qwen_image",
@@ -123,23 +123,23 @@ SPRINT_2_SELECTOR_MAP: Mapping[str, RouteSelectorEntry] = MappingProxyType(
         ),
         "qwen_image_edit": RouteSelectorEntry(
             route_key="qwen_image_edit",
-            support_state=RouteSupportState.WGP_ONLY,
-            template_id=None,
+            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
+            template_id="edit/qwen_image_edit",
         ),
         "qwen_image_style": RouteSelectorEntry(
             route_key="qwen_image_style",
-            support_state=RouteSupportState.WGP_ONLY,
-            template_id=None,
+            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
+            template_id="edit/qwen_image_edit",
         ),
         "image_inpaint": RouteSelectorEntry(
             route_key="image_inpaint",
-            support_state=RouteSupportState.WGP_ONLY,
-            template_id=None,
+            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
+            template_id="edit/qwen_image_edit",
         ),
         "annotated_image_edit": RouteSelectorEntry(
             route_key="annotated_image_edit",
-            support_state=RouteSupportState.WGP_ONLY,
-            template_id=None,
+            support_state=RouteSupportState.VIBECOMFY_SUPPORTED,
+            template_id="edit/qwen_image_edit",
         ),
         "travel_orchestrator": RouteSelectorEntry(
             route_key="travel_orchestrator",

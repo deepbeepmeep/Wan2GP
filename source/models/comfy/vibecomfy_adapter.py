@@ -8,14 +8,17 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 from typing import Any, Sequence
 
 from source.core.log import headless_logger
+from source.models.model_handlers.qwen_compositor import create_qwen_masked_composite
 from source.runtime.vibecomfy_profile import (
     PROCESS_DEFAULT_PROFILE,
     build_memory_profile_cli_args,
 )
+from source.utils.download_utils import download_image_if_url
 from source.media.video_contract import (
     VIDEO_EXTENSIONS,
     VideoArtifactContract,
@@ -225,6 +228,15 @@ def _build_vibecomfy_command(resolved: ResolvedTask, run_workspace: Path) -> lis
 def _workflow_reference_for_resolved_task(resolved: ResolvedTask, run_workspace: Path) -> tuple[str, bool]:
     if resolved.route_key == "z_image_turbo":
         return str(_write_z_image_scratchpad(resolved, run_workspace)), False
+    if resolved.route_key == "qwen_image_2512":
+        return str(_write_qwen_image_2512_scratchpad(resolved, run_workspace)), False
+    if resolved.route_key in {
+        "qwen_image_edit",
+        "qwen_image_style",
+        "image_inpaint",
+        "annotated_image_edit",
+    }:
+        return str(_write_qwen_image_edit_scratchpad(resolved, run_workspace)), False
     return str(resolved.template_id), True
 
 
@@ -256,6 +268,126 @@ def _write_z_image_scratchpad(resolved: ResolvedTask, run_workspace: Path) -> Pa
     return scratchpad
 
 
+def _write_qwen_image_2512_scratchpad(resolved: ResolvedTask, run_workspace: Path) -> Path:
+    width, height = _parse_resolution(resolved.params.get("resolution") or "768x768")
+    prompt = str(resolved.params.get("prompt") or "")
+    seed = int(resolved.params.get("seed", -1))
+    steps = int(resolved.params.get("steps", resolved.params.get("num_inference_steps", 4)))
+    scratchpad = run_workspace / "qwen_image_2512_scratchpad.py"
+    scratchpad.write_text(
+        "\n".join(
+            [
+                "from vibecomfy.cli_loader import load_workflow_any",
+                "from vibecomfy.patches.resolution import resolution",
+                "",
+                "",
+                "def build():",
+                "    workflow = load_workflow_any('image/qwen_image_2512')",
+                f"    resolution({width}, {height}).apply(workflow)",
+                f"    workflow.set_prompt({json.dumps(prompt)})",
+                f"    workflow.set_seed({seed})",
+                f"    workflow.nodes['238:224'].inputs['value'] = {steps}",
+                f"    workflow.nodes['238:225'].inputs['value'] = {steps}",
+                "    return workflow.finalize_metadata()",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return scratchpad
+
+
+def _write_qwen_image_edit_scratchpad(resolved: ResolvedTask, run_workspace: Path) -> Path:
+    input_name = _materialize_qwen_edit_input(resolved, run_workspace)
+    prompt = str(resolved.params.get("prompt") or _default_qwen_edit_prompt(resolved.route_key))
+    seed = int(resolved.params.get("seed", -1))
+    steps = int(resolved.params.get("steps", resolved.params.get("num_inference_steps", 4)))
+    scratchpad = run_workspace / f"{resolved.route_key}_scratchpad.py"
+    scratchpad.write_text(
+        "\n".join(
+            [
+                "from vibecomfy.cli_loader import load_workflow_any",
+                "",
+                "",
+                "def build():",
+                "    workflow = load_workflow_any('edit/qwen_image_edit')",
+                f"    workflow.nodes['78'].inputs['image'] = {json.dumps(input_name)}",
+                f"    workflow.nodes['102:76'].inputs['image'] = ['78', 0]",
+                f"    workflow.nodes['102:77'].inputs['image'] = ['78', 0]",
+                f"    workflow.nodes['102:88'].inputs['pixels'] = ['78', 0]",
+                f"    workflow.set_prompt({json.dumps(prompt)})",
+                f"    workflow.set_seed({seed})",
+                f"    workflow.nodes['102:103'].inputs['value'] = {steps}",
+                f"    workflow.nodes['102:106'].inputs['value'] = {steps}",
+                "    return workflow.finalize_metadata()",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return scratchpad
+
+
+def _materialize_qwen_edit_input(resolved: ResolvedTask, run_workspace: Path) -> str:
+    input_dir = run_workspace / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+
+    if resolved.route_key in {"image_inpaint", "annotated_image_edit"}:
+        image_source = _first_string_param(resolved.params, "image_guide", "image_url", "image")
+        mask_source = _first_string_param(resolved.params, "mask_url", "mask")
+        if image_source and mask_source:
+            composite = create_qwen_masked_composite(
+                image_source,
+                mask_source,
+                input_dir,
+                task_id=resolved.task_id,
+            )
+            return _copy_to_input_dir(composite, input_dir, f"{resolved.route_key}_{resolved.task_id}.jpg")
+
+    image_source = _first_string_param(
+        resolved.params,
+        "image_guide",
+        "image_url",
+        "image",
+        "style_reference_image",
+        "subject_reference_image",
+    )
+    if not image_source:
+        raise ValueError(f"VibeComfy route {resolved.route_key!r} requires an input image")
+    return _copy_to_input_dir(
+        download_image_if_url(image_source, input_dir, resolved.task_id),
+        input_dir,
+        f"{resolved.route_key}_{resolved.task_id}.png",
+    )
+
+
+def _copy_to_input_dir(source: str | Path, input_dir: Path, filename: str) -> str:
+    source_path = Path(source)
+    suffix = source_path.suffix or Path(filename).suffix or ".png"
+    target = input_dir / (Path(filename).stem + suffix)
+    if source_path.resolve() != target.resolve():
+        shutil.copy2(source_path, target)
+    return target.name
+
+
+def _default_qwen_edit_prompt(route_key: str) -> str:
+    if route_key == "image_inpaint":
+        return "Repair the highlighted green mask area while preserving the original scene."
+    if route_key == "annotated_image_edit":
+        return "Apply the requested edit indicated by the annotation while preserving the original scene."
+    if route_key == "qwen_image_style":
+        return "Restyle the subject using the reference image while preserving the subject identity."
+    return "Apply the requested image edit while preserving the main subject and scene."
+
+
+def _first_string_param(params: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = params.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
 def _parse_resolution(value: Any) -> tuple[int, int]:
     if isinstance(value, (tuple, list)) and len(value) == 2:
         return int(value[0]), int(value[1])
@@ -279,6 +411,25 @@ def _prepare_run_workspace(main_output_dir_base: str | Path, task_id: str) -> Pa
 def _build_subprocess_env(run_workspace: Path) -> dict[str, str]:
     env = os.environ.copy()
     env["VIBECOMFY_WORKER_RUN_DIR"] = str(run_workspace)
+    input_dir = run_workspace / "input"
+    output_dir = run_workspace / "output"
+    temp_dir = run_workspace / "temp"
+    for path in (input_dir, output_dir, temp_dir):
+        path.mkdir(parents=True, exist_ok=True)
+    comfy_config = {
+        "input_directory": str(input_dir),
+        "output_directory": str(output_dir),
+        "temp_directory": str(temp_dir),
+    }
+    existing_config = env.get("VIBECOMFY_COMFY_CONFIGURATION")
+    if existing_config:
+        try:
+            parsed = json.loads(existing_config)
+            if isinstance(parsed, dict):
+                comfy_config = {**parsed, **comfy_config}
+        except json.JSONDecodeError:
+            pass
+    env["VIBECOMFY_COMFY_CONFIGURATION"] = json.dumps(comfy_config)
 
     vibecomfy_cwd = os.environ.get("VIBECOMFY_CWD")
     if vibecomfy_cwd:

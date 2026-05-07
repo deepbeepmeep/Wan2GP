@@ -20,6 +20,15 @@ def _resolved(params=None):
     )
 
 
+def _resolved_route(task_type: str, params=None):
+    return resolve_task_route(
+        task_id=f"{task_type}-task",
+        task_type=task_type,
+        params={"prompt": f"{task_type} prompt", **(params or {})},
+        backend="vibecomfy",
+    )
+
+
 def _completed(*, returncode=0, stdout="", stderr=""):
     return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
@@ -311,3 +320,97 @@ def test_non_default_resolution_is_patched_through_scratchpad(monkeypatch, tmp_p
     assert 'workflow.set_prompt("non default")' in scratchpad_source
     assert "workflow.set_seed(123)" in scratchpad_source
     assert "workflow.set_steps(5)" in scratchpad_source
+
+
+def test_qwen_2512_uses_ready_template_scratchpad(monkeypatch, tmp_path):
+    commands = []
+
+    def _run(command, cwd, env, text, capture_output, check):
+        commands.append((command, env))
+        output = Path(cwd) / "out.png"
+        output.write_text("fake", encoding="utf-8")
+        return _completed(stdout="output: out.png\n")
+
+    monkeypatch.setattr(vibecomfy_adapter.subprocess, "run", _run)
+    resolved = _resolved_route(
+        "qwen_image_2512",
+        {"resolution": "1536x864", "seed": 2512, "num_inference_steps": 4},
+    )
+
+    ok, result = handle_vibecomfy_resolved_task(resolved, tmp_path)
+
+    assert ok is True
+    assert result and result.endswith("out.png")
+    command, env = commands[0]
+    scratchpad = Path(command[4])
+    source = scratchpad.read_text(encoding="utf-8")
+    assert "load_workflow_any('image/qwen_image_2512')" in source
+    assert "resolution(1536, 864)" in source
+    assert 'workflow.set_prompt("qwen_image_2512 prompt")' in source
+    assert "workflow.set_seed(2512)" in source
+    assert "workflow.nodes['238:224'].inputs['value'] = 4" in source
+    comfy_config = json.loads(env["VIBECOMFY_COMFY_CONFIGURATION"])
+    assert comfy_config["input_directory"].endswith("qwen_image_2512-task/input")
+    assert comfy_config["output_directory"].endswith("qwen_image_2512-task/output")
+
+
+def test_qwen_edit_materializes_input_image_and_scratchpad(monkeypatch, tmp_path):
+    commands = []
+    source_image = tmp_path / "source.png"
+    source_image.write_text("fake image", encoding="utf-8")
+
+    def _run(command, cwd, env, text, capture_output, check):
+        commands.append(command)
+        output = Path(cwd) / "out.png"
+        output.write_text("fake", encoding="utf-8")
+        return _completed(stdout="output: out.png\n")
+
+    monkeypatch.setattr(vibecomfy_adapter.subprocess, "run", _run)
+    resolved = _resolved_route(
+        "qwen_image_edit",
+        {"image": str(source_image), "seed": 44, "steps": 5},
+    )
+
+    ok, result = handle_vibecomfy_resolved_task(resolved, tmp_path)
+
+    assert ok is True
+    assert result and result.endswith("out.png")
+    run_dir = tmp_path / "vibecomfy_runs" / "qwen_image_edit-task"
+    materialized = list((run_dir / "input").glob("qwen_image_edit_qwen_image_edit-task.*"))
+    assert materialized
+    source = Path(commands[0][4]).read_text(encoding="utf-8")
+    assert "load_workflow_any('edit/qwen_image_edit')" in source
+    assert "workflow.nodes['78'].inputs['image']" in source
+    assert 'workflow.set_prompt("qwen_image_edit prompt")' in source
+    assert "workflow.set_seed(44)" in source
+    assert "workflow.nodes['102:103'].inputs['value'] = 5" in source
+
+
+def test_inpaint_route_uses_mask_composite(monkeypatch, tmp_path):
+    commands = []
+
+    def _fake_composite(image_url, mask_url, output_dir, task_id):
+        path = Path(output_dir) / "composite.jpg"
+        path.write_text(f"{image_url}|{mask_url}|{task_id}", encoding="utf-8")
+        return str(path)
+
+    def _run(command, cwd, env, text, capture_output, check):
+        commands.append(command)
+        output = Path(cwd) / "out.png"
+        output.write_text("fake", encoding="utf-8")
+        return _completed(stdout="output: out.png\n")
+
+    monkeypatch.setattr(vibecomfy_adapter, "create_qwen_masked_composite", _fake_composite)
+    monkeypatch.setattr(vibecomfy_adapter.subprocess, "run", _run)
+    resolved = _resolved_route(
+        "image_inpaint",
+        {"image_url": "https://example.invalid/image.png", "mask_url": "https://example.invalid/mask.png"},
+    )
+
+    ok, result = handle_vibecomfy_resolved_task(resolved, tmp_path)
+
+    assert ok is True
+    assert result and result.endswith("out.png")
+    source = Path(commands[0][4]).read_text(encoding="utf-8")
+    assert "load_workflow_any('edit/qwen_image_edit')" in source
+    assert "image_inpaint_image_inpaint-task.jpg" in source

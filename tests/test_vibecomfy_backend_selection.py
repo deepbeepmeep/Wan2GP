@@ -205,7 +205,17 @@ def test_wgp_default_direct_route_preserves_builder_and_queue(monkeypatch, tmp_p
     assert len(queue.submitted) == 1
 
 
-@pytest.mark.parametrize("task_type", ["z_image_turbo"])
+@pytest.mark.parametrize(
+    "task_type",
+    [
+        "z_image_turbo",
+        "qwen_image_2512",
+        "qwen_image_edit",
+        "qwen_image_style",
+        "image_inpaint",
+        "annotated_image_edit",
+    ],
+)
 def test_vibecomfy_supported_direct_routes_bypass_wgp_queue(
     monkeypatch, tmp_path, task_type: str
 ):
@@ -309,12 +319,7 @@ def test_vibecomfy_unsupported_direct_route_fails_closed_without_wgp_fallback(
 @pytest.mark.parametrize(
     "task_type",
     [
-        "qwen_image_2512",
         "qwen_image",
-        "qwen_image_edit",
-        "qwen_image_style",
-        "image_inpaint",
-        "annotated_image_edit",
     ],
 )
 def test_sprint_qwen_routes_fail_closed_without_wgp_fallback(monkeypatch, tmp_path, task_type: str):

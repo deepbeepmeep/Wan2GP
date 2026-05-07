@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from types import SimpleNamespace
 
 from source.runtime.worker import guardian
@@ -78,7 +79,10 @@ def test_worker_preflight_fails_when_wgp_path_is_missing(tmp_path, monkeypatch):
     repo_root, wan2gp = _make_worker_repo(tmp_path)
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
     monkeypatch.setenv("VIBECOMFY_PATH", str(tmp_path / "vibecomfy"))
-    monkeypatch.setattr("source.runtime.worker.preflight.importlib.util.find_spec", lambda _name: SimpleNamespace(origin="/fake"))
+    monkeypatch.setattr(
+        "source.runtime.worker.preflight.importlib.util.find_spec",
+        lambda name: None if name == "vibecomfy" else SimpleNamespace(origin="/fake"),
+    )
 
     result = run_worker_preflight(
         repo_root=repo_root,
@@ -90,6 +94,50 @@ def test_worker_preflight_fails_when_wgp_path_is_missing(tmp_path, monkeypatch):
     assert result.status == "failed"
     assert "wan2gp_path" in result.failed_checks
     assert "wgp_entrypoint" in result.failed_checks
+
+
+def test_worker_preflight_does_not_require_vibecomfy_for_wgp_backend(tmp_path, monkeypatch):
+    repo_root, wan2gp = _make_worker_repo(tmp_path)
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
+    monkeypatch.delenv("VIBECOMFY_PATH", raising=False)
+    monkeypatch.delenv("REIGH_PREFLIGHT_REQUIRE_VIBECOMFY", raising=False)
+    monkeypatch.setattr(
+        "source.runtime.worker.preflight.importlib.util.find_spec",
+        lambda name: None if name == "vibecomfy" else SimpleNamespace(origin="/fake"),
+    )
+
+    result = run_worker_preflight(
+        repo_root=repo_root,
+        wan2gp_path=wan2gp,
+        main_output_dir=tmp_path / "outputs",
+        backend="wgp",
+    )
+
+    assert result.status == PREFLIGHT_STATUS_PASSED
+    vibecomfy_checks = {check.name: check for check in result.checks if check.name.startswith("vibecomfy")}
+    assert vibecomfy_checks["vibecomfy_available"].required is False
+
+
+def test_worker_preflight_env_can_force_vibecomfy_for_wgp_backend(tmp_path, monkeypatch):
+    repo_root, wan2gp = _make_worker_repo(tmp_path)
+    shutil.rmtree(tmp_path / "vibecomfy")
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
+    monkeypatch.delenv("VIBECOMFY_PATH", raising=False)
+    monkeypatch.setenv("REIGH_PREFLIGHT_REQUIRE_VIBECOMFY", "1")
+    monkeypatch.setattr(
+        "source.runtime.worker.preflight.importlib.util.find_spec",
+        lambda name: None if name == "vibecomfy" else SimpleNamespace(origin="/fake"),
+    )
+
+    result = run_worker_preflight(
+        repo_root=repo_root,
+        wan2gp_path=wan2gp,
+        main_output_dir=tmp_path / "outputs",
+        backend="wgp",
+    )
+
+    assert result.status == "failed"
+    assert "vibecomfy_available" in result.failed_checks
 
 
 class _FakeQuery:

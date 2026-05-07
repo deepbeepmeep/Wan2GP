@@ -71,11 +71,7 @@ def run_worker_preflight(
     _append_import_check(checks, "dotenv")
     _append_import_check(checks, "fastapi")
 
-    vibecomfy_required = os.environ.get("REIGH_PREFLIGHT_REQUIRE_VIBECOMFY", "1").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-    }
+    vibecomfy_required = _vibecomfy_preflight_required(backend)
     _append_vibecomfy_check(checks, repo_root=repo_root, required=vibecomfy_required)
 
     _append_path_check(
@@ -217,6 +213,13 @@ def _append_import_check(checks: list[PreflightCheck], module_name: str, *, requ
             required=required,
         )
     )
+
+
+def _vibecomfy_preflight_required(backend: str) -> bool:
+    configured = os.environ.get("REIGH_PREFLIGHT_REQUIRE_VIBECOMFY")
+    if configured is not None:
+        return configured.strip().lower() not in {"0", "false", "no"}
+    return str(backend).strip().lower() == "vibecomfy"
 
 
 def _append_vibecomfy_check(checks: list[PreflightCheck], *, repo_root: Path, required: bool) -> None:

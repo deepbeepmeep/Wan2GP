@@ -2469,6 +2469,12 @@ def get_model_filename(model_type, quantization ="int8", dtype_policy = "", modu
         quantization = "bf16"
 
     dtype = get_transformer_dtype(model_type, dtype_policy)
+    # On Apple Silicon (MPS), skip quanto-quantized models to avoid
+    # CPU fallback crashes caused by Metal command buffer double-commit.
+    # MPS natively handles bf16/fp16, and 5B mbf16 fits easily in unified memory.
+    if sys.platform == 'darwin' and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        if quantization in ("int8", "fp8"):
+            quantization = "bf16"
     if len(choices) <= 1:
         raw_filename = choices[0]
     else:
@@ -3424,6 +3430,9 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
         print(f"Unable to create a finetune quantized model as some modules are declared in the finetune definition. If your finetune includes already the module weights you can remove the 'modules' entry and try again. If not you will need also to change temporarly the model 'architecture' to an architecture that wont require the modules part ({modules}) to quantize and then add back the original 'modules' and 'architecture' entries.")
         save_quantized = False
     quantizeTransformer = not save_quantized and model_def !=None and transformer_quantization in ("int8", "fp8") and model_def.get("auto_quantize", False) and not "quanto" in model_filename
+    # MPS: disable quanto auto-quantization to avoid CPU fallback crashes
+    if sys.platform == 'darwin' and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        quantizeTransformer = False
     if quantizeTransformer and len(modules) > 0:
         print(f"Autoquantize is not yet supported if some modules are declared")
         quantizeTransformer = False

@@ -338,9 +338,13 @@ if not hasattr(_torch.mps, 'set_device'):
 
 # Force SDPA math backend on MPS to avoid Metal command buffer double-commit crash
 # Reference: [IOGPUMetalCommandBuffer validate]:214: failed assertion `commit an already committed command buffer'
+# Root cause: Quando quantized models (5B mbf16) have ops that fallback to CPU,
+# corrupting MPS command buffers when mixed with native MPS SDPA.
+# Fix: synchronize MPS before SDPA to flush pending fallback ops.
 if _is_mps:
     _orig_sdpa = _torch.nn.functional.scaled_dot_product_attention
     def _patched_sdpa(*args, **kwargs):
+        _torch.mps.synchronize()
         with _torch.nn.attention.sdpa_kernel([_torch.nn.attention.SDPBackend.MATH]):
             return _orig_sdpa(*args, **kwargs)
     _torch.nn.functional.scaled_dot_product_attention = _patched_sdpa

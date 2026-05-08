@@ -282,11 +282,11 @@ def pay_attention(
     final_padding = 0
     b, lq, lk = q.size(0), q.size(1), k.size(1)
 
-    q = q.to(v.dtype)
-    k = k.to(v.dtype)
+    q = q.to(v.dtype).contiguous()
+    k = k.to(v.dtype).contiguous()
     batch = len(q)
-    if len(k) != batch: k = k.expand(batch, -1, -1, -1)
-    if len(v) != batch: v = v.expand(batch, -1, -1, -1)
+    if len(k) != batch: k = k.expand(batch, -1, -1, -1).contiguous()
+    if len(v) != batch: v = v.expand(batch, -1, -1, -1).contiguous()
     if attn == "chipmunk":
         from src.chipmunk.modules import SparseDiffMlp, SparseDiffAttn
         from src.chipmunk.util import LayerCounter, GLOBAL_CONFIG

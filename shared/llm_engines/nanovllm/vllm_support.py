@@ -12,6 +12,14 @@ def _env_enabled(name, default=True):
     return raw in ("1", "true", "yes", "y", "on")
 
 
+def _is_mps_available():
+    try:
+        import torch
+        return hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+    except Exception:
+        return False
+
+
 def _check_triton_runtime_smoke():
     global _TRITON_SMOKE_CACHE
     if _TRITON_SMOKE_CACHE is not None:
@@ -117,6 +125,8 @@ def probe_vllm_runtime(force=False):
 
 def resolve_lm_decoder_engine(requested_engine, engines_available = []):
     requested_engine = str(requested_engine or "").strip().lower()
+    if _is_mps_available():
+        return "legacy"
     probe_result = probe_vllm_runtime()
     supported = bool(probe_result.get("supported", False))
     cg_available = "cg" in engines_available

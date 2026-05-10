@@ -40,7 +40,6 @@ from .utils.helpers import (
     video_conditionings_by_frozen_video,
     video_conditionings_by_control_video,
 )
-from .utils.media_io import encode_video
 from .utils.types import PipelineComponents
 from shared.utils.loras_mutipliers import update_loras_slists
 from shared.utils.self_refiner import create_self_refiner_handler, normalize_self_refiner_plan
@@ -723,6 +722,8 @@ class DistilledPipeline:
 
 @torch.inference_mode()
 def main() -> None:
+    from .utils.media_io import encode_video
+
     logging.getLogger().setLevel(logging.INFO)
     parser = default_2_stage_distilled_arg_parser()
     args = parser.parse_args()

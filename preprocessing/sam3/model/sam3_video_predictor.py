@@ -31,7 +31,7 @@ class Sam3VideoPredictor(Sam3BasePredictor):
         geo_encoder_use_img_cross_attn=True,
         strict_state_dict_loading=True,
         async_loading_frames=False,
-        video_loader_type="cv2",
+        video_loader_type="ffmpeg",
         apply_temporal_disambiguation: bool = True,
         compile: bool = False,
     ):

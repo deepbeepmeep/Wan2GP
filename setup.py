@@ -180,6 +180,21 @@ def load_config():
     with open(CONFIG_PATH, 'r') as f: return json.load(f)
 
 def get_gpu_info():
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.check_output(
+                ["system_profiler", "SPDisplaysDataType"],
+                encoding="utf-8",
+                stderr=subprocess.DEVNULL
+            )
+            for line in out.split("\n"):
+                if "Chip" in line:
+                    name = line.split(":", 1)[1].strip()
+                    return name, "APPLE"
+        except:
+            pass
+        return "Apple Silicon (MPS)", "APPLE"
+
     try:
         name = subprocess.check_output(
             ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
@@ -217,6 +232,8 @@ def get_gpu_info():
 
 def get_profile_key(gpu_name, vendor):
     g = gpu_name.upper()
+    if vendor == "APPLE":
+        return "MPS"
     if vendor == "NVIDIA":
         if "50" in g: return "RTX_50"
         if "40" in g: return "RTX_40"
@@ -231,6 +248,8 @@ def get_profile_key(gpu_name, vendor):
     return "RTX_40"
 
 def get_os_key():
+    if sys.platform == "darwin":
+        return "macos"
     return "win" if IS_WIN else "linux"
 
 def resolve_cmd(cmd_entry):
@@ -701,11 +720,12 @@ def create_wgp_config(profile_key, config_data):
 
     prof_settings = config_data['gpu_profiles'].get(profile_key, {})
 
-    attn_mode = ""
-    if "50" in profile_key or "40" in profile_key or "30" in profile_key:
-        attn_mode = "sage2"
-    elif "20" in profile_key:
-        attn_mode = "sage"
+    attn_mode = prof_settings.get("attention", "")
+    if not attn_mode:
+        if "50" in profile_key or "40" in profile_key or "30" in profile_key:
+            attn_mode = "sage2"
+        elif "20" in profile_key:
+            attn_mode = "sage"
 
     compile_mode = ""
     triton_key = prof_settings.get('triton')

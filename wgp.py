@@ -20,11 +20,20 @@ if sys.platform.startswith("linux") and "NUMBA_THREADING_LAYER" not in os.enviro
     os.environ["NUMBA_THREADING_LAYER"] = "workqueue"
 from shared.asyncio_utils import silence_proactor_connection_reset
 silence_proactor_connection_reset()
+
+# ── Apple Silicon MPS patch: MUST come before mmgp import ──
+import torch
+is_mps = sys.platform == 'darwin' and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+if is_mps:
+    from shared.mps.device_patch import apply_mps_patch
+    apply_mps_patch()
+
 import time
 import threading
 import warnings
 warnings.filterwarnings('ignore', message='Failed to find.*', module='triton')
 from mmgp import offload, safetensors2, profile_type , quant_router
+offload.is_mps = is_mps
 try:
     import triton
 except ImportError:
@@ -2063,7 +2072,7 @@ else:
 args.flow_reverse = True
 processing_device = args.gpu
 if len(processing_device) == 0:
-    processing_device ="cuda"
+    processing_device = "mps" if is_mps else "cuda"
 # torch.backends.cuda.matmul.allow_fp16_accumulation = True
 lock_ui_attention = False
 lock_ui_transformer = False
@@ -2812,6 +2821,7 @@ default_profile_audio = force_profile_no if force_profile_no >= 0 else server_co
 default_profile = default_profile_video
 loaded_profile = force_profile_no = -1
 compile = server_config.get("compile", "")
+if is_mps: compile = ""
 boost = server_config.get("boost", 1)
 enable_int8_kernels = server_config.get("enable_int8_kernels", 1)
 apply_int8_kernel_setting(enable_int8_kernels)
@@ -2868,6 +2878,8 @@ lora_preset_model = transformer_type
 if  args.compile: #args.fastest or
     compile="transformer"
     lock_ui_compile = True
+if is_mps:
+    compile = ""
 
 
 def save_model(model, model_type, dtype,  config_file,  submodel_no = 1,  is_module = False, filter = None, no_fp16_main_model = True, module_source_no = 1):
@@ -3359,6 +3371,9 @@ def init_pipe(pipe, kwargs, profile):
         kwargs["asyncTransfers"] = False
     elif profile == 3.5:
         kwargs["pinnedMemory"] = False
+    if is_mps:
+        kwargs["pinnedMemory"] = False
+        kwargs["asyncTransfers"] = False
 
     return mmgp_profile
 
@@ -3543,7 +3558,7 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
         loras_transformer += ["transformer2"]
     if len(compile) > 0 and hasattr(wan_model, "custom_compile"):
         wan_model.custom_compile(backend= "inductor", mode ="default")
-    compile_modules = model_def.get("compile", compile) if len(compile) > 0 else ""
+    compile_modules = model_def.get("compile", compile) if len(compile) > 0 else False
     if compile_modules == False:
         _load_models_info("Pytorch compilation is not supported for this Model")
     # kwargs["pinnedMemory"] = "text_encoder"
@@ -6037,11 +6052,11 @@ def generate_video(
 
     if hasattr(wan_model, "get_trans_lora"):
         trans_lora, trans2_lora = wan_model.get_trans_lora()
-    else:     
+    else:
         trans_lora, trans2_lora = trans, trans2
 
     if len(loras_selected) > 0:
-        pinnedLora = loaded_profile !=5  # and transformer_loras_filenames == None False # # # 
+        pinnedLora = not is_mps and loaded_profile !=5  # and transformer_loras_filenames == None False # # #
         preprocess_target = trans_lora if trans_lora is not None else trans
         split_linear_modules_map = getattr(preprocess_target, "split_linear_modules_map", None)
         offload.load_loras_into_model(

@@ -3,6 +3,7 @@ import re
 
 import torch
 
+from shared.mps import mps_device
 from shared.utils import files_locator as fl
 
 from .prompt_enhancers import HEARTMULA_LYRIC_PROMPT
@@ -546,6 +547,7 @@ class family_handler:
                 enable_lm=enable_lm,
                 ignore_lm_cache_seed=ignore_lm_cache_seed,
                 lm_decoder_engine=lm_decoder_engine,
+                device=mps_device(),
                 dtype=dtype or torch.bfloat16,
             )
 
@@ -592,6 +594,7 @@ class family_handler:
                 vocoder_config_path=vocoder_config,
                 text_encoder_weights_path=text_encoder_weights,
                 text_encoder_tokenizer_dir=tokenizer_dir,
+                device=mps_device(),
                 dtype=dtype or torch.bfloat16,
             )
 

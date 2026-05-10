@@ -208,11 +208,25 @@ def _add_bias_in_place_or_fallback(output: torch.Tensor, bias: Optional[torch.Te
 def _default_quanto_qbytes_linear_forward(ctx, input, other, bias=None):
     ctx.save_for_backward(input, other)
     if _is_qbytes_tensor(input):
+        # MPS: torch.ops.quanto.qbytes_mm has no MPS kernel → CPU fallback
+        # → CPU/MPS op interleaving corrupts Metal command buffer.
+        # Use native MPS dequant+matmul instead.
+        if input.device.type == "mps":
+            act = input._data.to(input._scale.dtype) * input._scale
+            wgt = other._data.to(input._scale.dtype) * other._scale
+            output = act @ wgt.t()
+            return _add_bias_in_place_or_fallback(output, bias)
         output = torch.ops.quanto.qbytes_mm(input._data, other._data, input._scale * other._scale)
     else:
         in_features = input.shape[-1]
         out_features = other.shape[0]
         output_shape = input.shape[:-1] + (out_features,)
+        # MPS: same reason — qbytes_mm falls back to CPU on MPS.
+        if input.device.type == "mps":
+            wgt = other._data.to(input.dtype) * other._scale
+            output = input.reshape(-1, in_features) @ wgt.t()
+            output = output.reshape(output_shape)
+            return _add_bias_in_place_or_fallback(output, bias)
         output = torch.ops.quanto.qbytes_mm(input.reshape(-1, in_features), other._data, other._scale)
         output = output.reshape(output_shape)
     return _add_bias_in_place_or_fallback(output, bias)

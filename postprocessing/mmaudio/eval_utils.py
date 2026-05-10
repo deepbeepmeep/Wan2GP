@@ -15,7 +15,6 @@ from .model.networks import MMAudio
 from .model.sequence_config import CONFIG_16K, CONFIG_44K, SequenceConfig
 from .model.utils.features_utils import FeaturesUtils
 from .utils.download_utils import download_model_if_needed
-from shared.utils import files_locator as fl 
 
 log = logging.getLogger()
 
@@ -27,7 +26,7 @@ class ModelConfig:
     vae_path: Path
     bigvgan_16k_path: Optional[Path]
     mode: str
-    synchformer_ckpt: Path = Path( fl.locate_file('mmaudio/synchformer_state_dict.pth'))
+    synchformer_ckpt: Path = Path('mmaudio/synchformer_state_dict.pth')
 
     @property
     def seq_cfg(self) -> SequenceConfig:
@@ -44,38 +43,39 @@ class ModelConfig:
         download_model_if_needed(self.synchformer_ckpt)
 
 
-small_16k = ModelConfig(model_name='small_16k',
-                        model_path=Path('./weights/mmaudio_small_16k.pth'),
-                        vae_path=Path('./ext_weights/v1-16.pth'),
-                        bigvgan_16k_path=Path('./ext_weights/best_netG.pt'),
-                        mode='16k')
-small_44k = ModelConfig(model_name='small_44k',
-                        model_path=Path('./weights/mmaudio_small_44k.pth'),
-                        vae_path=Path('./ext_weights/v1-44.pth'),
-                        bigvgan_16k_path=None,
-                        mode='44k')
-medium_44k = ModelConfig(model_name='medium_44k',
-                         model_path=Path('./weights/mmaudio_medium_44k.pth'),
-                         vae_path=Path('./ext_weights/v1-44.pth'),
-                         bigvgan_16k_path=None,
-                         mode='44k')
-large_44k = ModelConfig(model_name='large_44k',
-                        model_path=Path('./weights/mmaudio_large_44k.pth'),
-                        vae_path=Path('./ext_weights/v1-44.pth'),
-                        bigvgan_16k_path=None,
-                        mode='44k')
-large_44k_v2 = ModelConfig(model_name='large_44k_v2',
-                        model_path=Path('./weights/mmaudio_large_44k_v2.pth'),
-                        vae_path=Path(fl.locate_file('mmaudio/v1-44.pth')),
-                        bigvgan_16k_path=None,
-                        mode='44k')
-all_model_cfg: dict[str, ModelConfig] = {
-    'small_16k': small_16k,
-    'small_44k': small_44k,
-    'medium_44k': medium_44k,
-    'large_44k': large_44k,
-    'large_44k_v2': large_44k_v2,
-}
+def get_model_cfg() -> dict[str, ModelConfig]:
+    small_16k = ModelConfig(model_name='small_16k',
+                            model_path=Path('./weights/mmaudio_small_16k.pth'),
+                            vae_path=Path('./ext_weights/v1-16.pth'),
+                            bigvgan_16k_path=Path('./ext_weights/best_netG.pt'),
+                            mode='16k')
+    small_44k = ModelConfig(model_name='small_44k',
+                            model_path=Path('./weights/mmaudio_small_44k.pth'),
+                            vae_path=Path('./ext_weights/v1-44.pth'),
+                            bigvgan_16k_path=None,
+                            mode='44k')
+    medium_44k = ModelConfig(model_name='medium_44k',
+                             model_path=Path('./weights/mmaudio_medium_44k.pth'),
+                             vae_path=Path('./ext_weights/v1-44.pth'),
+                             bigvgan_16k_path=None,
+                             mode='44k')
+    large_44k = ModelConfig(model_name='large_44k',
+                            model_path=Path('./weights/mmaudio_large_44k.pth'),
+                            vae_path=Path('./ext_weights/v1-44.pth'),
+                            bigvgan_16k_path=None,
+                            mode='44k')
+    large_44k_v2 = ModelConfig(model_name='large_44k_v2',
+                               model_path=Path('mmaudio/mmaudio_large_44k_v2.pth'),
+                               vae_path=Path('mmaudio/v1-44.pth'),
+                               bigvgan_16k_path=None,
+                               mode='44k')
+    return {
+        'small_16k': small_16k,
+        'small_44k': small_44k,
+        'medium_44k': medium_44k,
+        'large_44k': large_44k,
+        'large_44k_v2': large_44k_v2,
+    }
 
 
 def generate(

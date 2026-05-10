@@ -48,7 +48,7 @@ class FeaturesUtils(nn.Module):
         need_vae_encoder: bool = True,
     ):
         super().__init__()
-        self.device ="cuda"
+        self.device = "cuda" if torch.cuda.is_available() else ("mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
         if enable_conditions:
             old_get_model_config = open_clip.factory.get_model_config
             open_clip.factory.get_model_config = get_model_config

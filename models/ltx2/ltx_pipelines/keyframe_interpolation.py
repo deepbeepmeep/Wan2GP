@@ -35,7 +35,6 @@ from .utils.helpers import (
     prepare_mask_injection,
     simple_denoising_func,
 )
-from .utils.media_io import encode_video
 from .utils.types import PipelineComponents
 from shared.utils.loras_mutipliers import update_loras_slists
 from shared.utils.text_encoder_cache import TextEncoderCache
@@ -379,6 +378,8 @@ class KeyframeInterpolationPipeline:
 
 @torch.inference_mode()
 def main() -> None:
+    from .utils.media_io import encode_video
+
     logging.getLogger().setLevel(logging.INFO)
     parser = default_2_stage_arg_parser()
     args = parser.parse_args()

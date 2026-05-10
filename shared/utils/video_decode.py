@@ -430,6 +430,86 @@ def _decode_contiguous_video_frames_ffmpeg(video_path, start_frame, max_frames, 
     return torch.from_numpy(frames) if bridge == "torch" else frames
 
 
+def decode_video_frame_indices_ffmpeg(video_path, frame_indices, bridge="torch", hdr_linear=False):
+    if torch.is_tensor(frame_indices):
+        frame_indices = frame_indices.detach().cpu().tolist()
+    frame_indices = [int(frame_index) for frame_index in frame_indices]
+    metadata = probe_video_stream_metadata(video_path)
+    if metadata is None:
+        raise RuntimeError(f"Unable to probe video metadata for {video_path}")
+    if len(frame_indices) == 0:
+        empty_dtype = np.float32 if hdr_linear else np.uint8
+        empty = np.empty((0, metadata["display_height"], metadata["display_width"], 3), dtype=empty_dtype)
+        return torch.from_numpy(empty) if bridge == "torch" else empty
+    start_frame = min(frame_indices)
+    if (entry := get_virtual_media_entry(video_path)) is not None:
+        decoded = _decode_virtual_media_frames(video_path, metadata, entry, start_frame, max(frame_indices) - start_frame + 1, None, "torch")
+        frames = decoded[[frame_index - start_frame for frame_index in frame_indices]]
+        return frames if bridge == "torch" else frames.numpy()
+    unique_indices = sorted(set(frame_indices))
+    span = max(unique_indices) - start_frame + 1
+    if span <= len(unique_indices) * 3:
+        decoded = decode_video_frames_ffmpeg(video_path, start_frame, span, target_fps=None, bridge="torch", hdr_linear=hdr_linear)
+        frames = decoded[[frame_index - start_frame for frame_index in frame_indices]]
+        return frames if bridge == "torch" else frames.numpy()
+    ffmpeg_path = _resolve_media_binary("ffmpeg")
+    if ffmpeg_path is None:
+        raise RuntimeError("ffmpeg binary not found")
+    decode_path = os.fspath(metadata.get("source_path") or strip_virtual_media_suffix(video_path))
+    fps_float = float(metadata.get("fps_float") or metadata.get("fps") or 0.0)
+    actual_start = start_frame + int(metadata.get("virtual_start_frame") or 0)
+    rel_indices = [frame_index - start_frame for frame_index in unique_indices]
+    select_expr = "+".join(f"eq(n\\,{frame_index})" for frame_index in rel_indices)
+    video_filter = f"select={select_expr},setpts=N/FRAME_RATE/TB"
+    corrected_filter = _build_corrected_video_filter(metadata, hdr_linear=hdr_linear)
+    if len(corrected_filter) > 0:
+        video_filter += "," + corrected_filter
+    cmd = [ffmpeg_path, "-v", "error", "-nostdin", "-threads", "0"]
+    if fps_float > 0 and actual_start > 0:
+        cmd += ["-ss", f"{float(metadata.get('start_time') or 0.0) + (actual_start / fps_float):.12g}"]
+    cmd += ["-i", decode_path, "-an", "-sn", "-vf", video_filter]
+    out_pix_fmt = "gbrpf32le" if hdr_linear else "rgb24"
+    cmd += ["-fps_mode", "passthrough", "-frames:v", str(len(unique_indices)), "-f", "rawvideo", "-pix_fmt", out_pix_fmt, "pipe:1"]
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**7)
+    frame_bytes = metadata["display_width"] * metadata["display_height"] * 3 * (4 if hdr_linear else 1)
+    frame_dtype = np.float32 if hdr_linear else np.uint8
+    frames_shape = (len(unique_indices), 3, metadata["display_height"], metadata["display_width"]) if hdr_linear else (len(unique_indices), metadata["display_height"], metadata["display_width"], 3)
+    frames_np = np.empty(frames_shape, dtype=frame_dtype)
+    frame_count = 0
+    stderr_chunks = []
+    stderr_thread = None
+    try:
+        if process.stderr is not None:
+            stderr_thread = threading.Thread(target=_drain_stream, args=(process.stderr, stderr_chunks), daemon=True)
+            stderr_thread.start()
+        while frame_count < len(unique_indices):
+            raw_frame = _read_exact(process.stdout, frame_bytes)
+            if raw_frame is None or len(raw_frame) < frame_bytes:
+                break
+            if hdr_linear:
+                frames_np[frame_count] = np.frombuffer(raw_frame, dtype=np.float32).reshape(3, metadata["display_height"], metadata["display_width"])
+            else:
+                frames_np[frame_count] = np.frombuffer(raw_frame, dtype=np.uint8).reshape(metadata["display_height"], metadata["display_width"], 3)
+            frame_count += 1
+        return_code = process.wait()
+        if stderr_thread is not None:
+            stderr_thread.join()
+        stderr = b"".join(stderr_chunks).decode("utf-8", errors="ignore").strip()
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+    if return_code != 0 or frame_count != len(unique_indices):
+        raise RuntimeError(f"ffmpeg indexed decode failed for {video_path}: {stderr}")
+    if hdr_linear:
+        frames_np = np.ascontiguousarray(frames_np[:, [2, 0, 1]].transpose(0, 2, 3, 1))
+    frames = torch.from_numpy(frames_np)
+    positions = {frame_index: pos for pos, frame_index in enumerate(unique_indices)}
+    frames = frames[[positions[frame_index] for frame_index in frame_indices]]
+    return frames if bridge == "torch" else frames.numpy()
+
+
 def decode_video_frames_ffmpeg(video_path, start_frame, max_frames, target_fps=None, bridge="torch", hdr_linear=False):
     metadata = probe_video_stream_metadata(video_path)
     if metadata is None:

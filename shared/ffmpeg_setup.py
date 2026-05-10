@@ -4,6 +4,7 @@ import shutil
 import tarfile
 import tempfile
 import typing
+import importlib.util
 from pathlib import Path
 
 import requests
@@ -12,6 +13,9 @@ import zipfile
 
 
 __all__ = ["download_ffmpeg"]
+
+
+_DLL_DIRECTORY_HANDLES = {}
 
 
 def download_ffmpeg(bin_directory: typing.Optional[typing.Union[str, Path]] = None):
@@ -76,6 +80,26 @@ def download_ffmpeg(bin_directory: typing.Optional[typing.Union[str, Path]] = No
         filtered = [p for p in path_parts if _normalize(p) not in seen]
         os.environ["PATH"] = os.pathsep.join(prioritized + filtered)
 
+    def _add_windows_dll_directory(path: Path):
+        if os.name != "nt" or not hasattr(os, "add_dll_directory") or not path.is_dir():
+            return
+        normalized = os.path.normcase(os.path.normpath(str(path)))
+        if normalized in _DLL_DIRECTORY_HANDLES:
+            return
+        _DLL_DIRECTORY_HANDLES[normalized] = os.add_dll_directory(str(path))
+
+    def _ensure_decord_dll_directory():
+        if os.name != "nt":
+            return
+        decord_spec = importlib.util.find_spec("decord")
+        if not decord_spec or not decord_spec.submodule_search_locations:
+            return
+        for location in decord_spec.submodule_search_locations:
+            decord_dir = Path(location)
+            if any(decord_dir.glob("avcodec-*.dll")):
+                _add_windows_dll_directory(decord_dir)
+                break
+
     def _ensure_library_path():
         if os.name == "nt":
             return
@@ -86,6 +110,7 @@ def download_ffmpeg(bin_directory: typing.Optional[typing.Union[str, Path]] = No
 
     _quarantine_root_ffmpeg()
     _ensure_bin_dir_on_path()
+    _ensure_decord_dll_directory()
     _ensure_library_path()
 
     def _resolve_path(name: str) -> typing.Optional[Path]:

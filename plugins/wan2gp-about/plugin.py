@@ -45,8 +45,9 @@ class AboutPlugin(WAN2GPPlugin):
         gr.Markdown("- <B>FlashVSR</B>: high quality video super-resolution (https://github.com/OpenImagingLab/FlashVSR)")
 
         gr.Markdown("<BR>Special thanks to the following people for their Contributions & Support:")
-        gr.Markdown("- <B>Tophness</B> : Designed & developped the Queuing Framework, Edit Mode and WanGP PlugIns System")
+        gr.Markdown("- <B>Tophness</B> : Designed & developped the Queuing Framework, Edit Mode, Windows Installation scripts and WanGP PlugIns System")
         gr.Markdown("- <B>Gunther-Schulz</B> : for adding image Start Image / Image Refs storing in Video metadata")
         gr.Markdown("- <B>Cocktail Peanuts</B> : QA and simple installation via Pinokio.computer")
+        gr.Markdown("- <B>huangyebiaoke</B> : for his support in porting WanGP to MPS")
         gr.Markdown("- <B>AmericanPresidentJimmyCarter</B> : added original support for Skip Layer Guidance")
         gr.Markdown("- <B>Reevoy24</B> : for his repackaging / completion of the documentation")

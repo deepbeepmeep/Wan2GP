@@ -1084,6 +1084,7 @@ class WanModel(ModelMixin, ConfigMixin):
         self.num_frame_per_block = 1
         self.flag_causal_attention = False
         self.block_mask = None
+        self.cache = None
         self.inject_sample_info = inject_sample_info
         self.motion_encoder_dim = motion_encoder_dim
         self.norm_output_audio = norm_output_audio

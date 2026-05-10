@@ -6,6 +6,7 @@ from typing import Optional
 
 import torch
 
+from shared.mps import mps_device_or
 from shared.utils import files_locator as fl
 
 from .prompt_enhancers import TTS_MONOLOGUE_PROMPT, TTS_QWEN3_DIALOGUE_PROMPT
@@ -386,7 +387,7 @@ class family_handler:
             model_weights_path=weights_path,
             base_model_type=base_model_type,
             ckpt_root=ckpt_root,
-            device=torch.device("cpu"),
+            device=mps_device_or(torch.device("cpu")),
             lm_decoder_engine=lm_decoder_engine,
         )
         if str(lm_decoder_engine).strip().lower() in ("cg", "cudagraph"):

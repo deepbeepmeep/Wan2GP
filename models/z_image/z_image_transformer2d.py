@@ -1000,10 +1000,10 @@ class ZImageTransformer2DModel(nn.Module):
         assert len(cap_feats_list) == num_noise_samples, "cap_feats_list must match x_list length"
 
         device = x_list[0].device
-        t_high = t.to(dtype=torch.float64)
+        t_high = t.to(dtype=torch.float32)
         t_emb = self.t_embedder(t_high.abs() * self.t_scale)
         if target_timestep is not None:
-            target_t_high = target_timestep.to(dtype=torch.float64)
+            target_t_high = target_timestep.to(dtype=torch.float32)
             delta_t = t_high - target_t_high
             delta_t_abs = delta_t.abs()
             t_emb_2 = self.t_embedder((target_t_high - t_high) * self.t_scale)

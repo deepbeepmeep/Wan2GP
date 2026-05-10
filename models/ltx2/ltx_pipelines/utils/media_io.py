@@ -1,9 +1,10 @@
+from __future__ import annotations
+
 import math
 from collections.abc import Generator, Iterator
 from fractions import Fraction
 from io import BytesIO
 
-import av
 import numpy as np
 import torch
 from einops import rearrange
@@ -12,6 +13,11 @@ from torch._prims_common import DeviceLikeType
 from tqdm import tqdm
 
 from .constants import DEFAULT_IMAGE_CRF
+
+
+def _get_av():
+    import av
+    return av
 
 
 def resize_aspect_ratio_preserving(image: torch.Tensor, long_side: int) -> torch.Tensor:
@@ -245,6 +251,7 @@ def decode_image(image_path: str) -> np.ndarray:
 def _write_audio(
     container: av.container.Container, audio_stream: av.audio.AudioStream, samples: torch.Tensor, audio_sample_rate: int
 ) -> None:
+    av = _get_av()
     if samples.ndim == 1:
         samples = samples[:, None]
 
@@ -283,6 +290,7 @@ def _prepare_audio_stream(container: av.container.Container, audio_sample_rate: 
 def _resample_audio(
     container: av.container.Container, audio_stream: av.audio.AudioStream, frame_in: av.AudioFrame
 ) -> None:
+    av = _get_av()
     cc = audio_stream.codec_context
 
     # Use the encoder's format/layout/rate as the *target*
@@ -317,6 +325,7 @@ def encode_video(
     output_path: str,
     video_chunks_number: int,
 ) -> None:
+    av = _get_av()
     if isinstance(video, torch.Tensor):
         video = iter([video])
 
@@ -360,6 +369,7 @@ def encode_video(
 
 
 def decode_audio_from_file(path: str, device: torch.device) -> torch.Tensor | None:
+    av = _get_av()
     container = av.open(path)
     try:
         audio = []
@@ -377,6 +387,7 @@ def decode_audio_from_file(path: str, device: torch.device) -> torch.Tensor | No
 
 
 def decode_video_from_file(path: str, frame_cap: int, device: DeviceLikeType) -> Generator[torch.Tensor]:
+    av = _get_av()
     container = av.open(path)
     try:
         video_stream = next(s for s in container.streams if s.type == "video")
@@ -391,6 +402,7 @@ def decode_video_from_file(path: str, frame_cap: int, device: DeviceLikeType) ->
 
 
 def encode_single_frame(output_file: str, image_array: np.ndarray, crf: float) -> None:
+    av = _get_av()
     container = av.open(output_file, "w", format="mp4")
     try:
         stream = container.add_stream("libx264", rate=1, options={"crf": str(crf), "preset": "veryfast"})
@@ -408,6 +420,7 @@ def encode_single_frame(output_file: str, image_array: np.ndarray, crf: float) -
 
 
 def decode_single_frame(video_file: str) -> np.array:
+    av = _get_av()
     container = av.open(video_file)
     try:
         stream = next(s for s in container.streams if s.type == "video")

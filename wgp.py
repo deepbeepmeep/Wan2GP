@@ -33,6 +33,7 @@ import threading
 import warnings
 warnings.filterwarnings('ignore', message='Failed to find.*', module='triton')
 from mmgp import offload, safetensors2, profile_type , quant_router
+offload.is_mps = is_mps
 try:
     import triton
 except ImportError:

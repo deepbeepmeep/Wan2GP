@@ -251,63 +251,68 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.release_RAM_btn = gr.Button("Force Unload Models from RAM")
 
                 with gr.Tab("Extensions"):
-                    mmaudio_mode_default = self.server_config.get("mmaudio_mode", None)
-                    mmaudio_persistence_default = self.server_config.get("mmaudio_persistence", None)
-                    if mmaudio_mode_default is None:
-                        legacy_mmaudio = self.server_config.get("mmaudio_enabled", 0)
-                        mmaudio_mode_default = 0 if legacy_mmaudio == 0 else 1
-                    if mmaudio_persistence_default is None:
-                        legacy_mmaudio = self.server_config.get("mmaudio_enabled", 0)
-                        mmaudio_persistence_default = 2 if legacy_mmaudio == 2 else 1
+                    with gr.Group():
+                        mmaudio_mode_default = self.server_config.get("mmaudio_mode", None)
+                        mmaudio_persistence_default = self.server_config.get("mmaudio_persistence", None)
+                        if mmaudio_mode_default is None:
+                            legacy_mmaudio = self.server_config.get("mmaudio_enabled", 0)
+                            mmaudio_mode_default = 0 if legacy_mmaudio == 0 else 1
+                        if mmaudio_persistence_default is None:
+                            legacy_mmaudio = self.server_config.get("mmaudio_enabled", 0)
+                            mmaudio_persistence_default = 2 if legacy_mmaudio == 2 else 1
 
-                    self.mmaudio_mode_choice = gr.Dropdown(
-                        choices=[("Off", 0), ("Standard", 1), ("NSFW", 2)],
-                        value=mmaudio_mode_default,
-                        label="MMAudio Soundtrack Generation (requires 10GB extra download)"
-                    )
-                    self.mmaudio_persistence_choice = gr.Dropdown(
-                        choices=[("Unload after use", 1), ("Persistent in RAM", 2)],
-                        value=mmaudio_persistence_default,
-                        label="MMAudio Model Persistence"
-                    )
-                    self.flashvsr_mode_choice = gr.Dropdown(
-                        choices=[("Off", 0), ("FlashVSR v1.1 Tiny (Slightly Lower Quality, Faster VAE Decoding, Needs Less RAM)", 1), ("FlashVSR v1.1 Full (Best Quality, Slower VAE Decoding, Needs More RAM)", 2)], # ("FlashVSR v1.1 Tiny Long", 3)],
-                        value=self.server_config.get("flashvsr_mode", 0),
-                        label="FlashVSR Spatial Upsampling (Needs Triton; SpargeAttn optional)"
-                    )
-                    with gr.Row():
-                        self.flashvsr_persistence_choice = gr.Dropdown(
+                        self.mmaudio_mode_choice = gr.Dropdown(
+                            choices=[("Off", 0), ("Standard", 1), ("NSFW", 2)],
+                            value=mmaudio_mode_default,
+                            label="MMAudio Soundtrack Generation (requires 10GB extra download)"
+                        )
+                        self.mmaudio_persistence_choice = gr.Dropdown(
                             choices=[("Unload after use", 1), ("Persistent in RAM", 2)],
-                            value=self.server_config.get("flashvsr_persistence", 1),
-                            label="FlashVSR Model Persistence"
+                            value=mmaudio_persistence_default,
+                            label="MMAudio Model Persistence"
                         )
-                        self.flashvsr_backend_choice = gr.Dropdown(
-                            choices=SPARSE_BACKEND_CHOICES,
-                            value=normalize_sparse_backend(self.server_config.get("flashvsr_backend", SPARSE_BACKEND_AUTO)),
-                            label="Backend"
+                    with gr.Group():
+                        self.flashvsr_mode_choice = gr.Dropdown(
+                            choices=[("Off", 0), ("FlashVSR v1.1 Tiny (Slightly Lower Quality, Faster VAE Decoding, Needs Less RAM)", 1), ("FlashVSR v1.1 Full (Best Quality, Slower VAE Decoding, Needs More RAM)", 2)], # ("FlashVSR v1.1 Tiny Long", 3)],
+                            value=self.server_config.get("flashvsr_mode", 0),
+                            label="FlashVSR Spatial Upsampling (Needs Triton; SpargeAttn optional)"
                         )
-                    self.flashvsr_topk_ratio_choice = gr.Slider(
-                        0.0,
-                        4.0,
-                        value=self.server_config.get("flashvsr_topk_ratio", 0.0),
-                        step=0.05,
-                        label="FlashVSR Quality / Sparse Top-K Ratio (0 = Auto)",
-                        info="Higher keeps more sparse attention candidates and can improve quality at the cost of speed and memory."
-                    )
-                    self.rife_version_choice = gr.Dropdown(
-                        choices=[("RIFE HDv3 (default)", "v3"), ("RIFE v4.26 (latest)", "v4")],
-                        value=self.server_config.get("rife_version", "v4"),
-                        label="RIFE Temporal Upsampling Model",
-                        interactive=not self.args.lock_config
-                    )
-                    self.matanyone_version_choice = gr.Dropdown(
-                        choices=[("MatAnyone v1 (original, default)", "v1"), ("MatAnyone v2", "v2"), ("SAM3 (no Alpha / Grey level support but better Temporal Stability & Auto Mask Selection by Keyword)", "sam3")],
-                        value=self.server_config.get("matanyone_version", "v1"),
-                        label="Video Mask Model",
-                        interactive=not self.args.lock_config
-                    )
+                        with gr.Row():
+                            self.flashvsr_persistence_choice = gr.Dropdown(
+                                choices=[("Unload after use", 1), ("Persistent in RAM", 2)],
+                                value=self.server_config.get("flashvsr_persistence", 1),
+                                label="FlashVSR Model Persistence"
+                            )
+                            self.flashvsr_backend_choice = gr.Dropdown(
+                                choices=SPARSE_BACKEND_CHOICES,
+                                value=normalize_sparse_backend(self.server_config.get("flashvsr_backend", SPARSE_BACKEND_AUTO)),
+                                label="Backend"
+                            )
+                        self.flashvsr_topk_ratio_choice = gr.Slider(
+                            0.0,
+                            4.0,
+                            value=self.server_config.get("flashvsr_topk_ratio", 0.0),
+                            step=0.05,
+                            label="FlashVSR Quality / Sparse Top-K Ratio (0 = Auto)",
+                            info="Higher keeps more sparse attention candidates and can improve quality at the cost of speed and memory."
+                        )
+                    with gr.Group():
+                        self.rife_version_choice = gr.Dropdown(
+                            choices=[("RIFE HDv3 (default)", "v3"), ("RIFE v4.26 (latest)", "v4")],
+                            value=self.server_config.get("rife_version", "v4"),
+                            label="RIFE Temporal Upsampling Model",
+                            interactive=not self.args.lock_config
+                        )
+                    with gr.Group():
+                        self.matanyone_version_choice = gr.Dropdown(
+                            choices=[("MatAnyone v1 (original, default)", "v1"), ("MatAnyone v2", "v2"), ("SAM3 (no Alpha / Grey level support but better Temporal Stability & Auto Mask Selection by Keyword)", "sam3")],
+                            value=self.server_config.get("matanyone_version", "v1"),
+                            label="Video Mask Model",
+                            interactive=not self.args.lock_config
+                        )
 
-                    self.depth_anything_v2_variant_choice = gr.Dropdown(choices=[("Depth Anything 2 Large (more precise, slower)", "vitl"), ("Depth Anything 2 Big (less precise, faster)", "vitb"), ("Depth Anything 3 Metric Large (better temporal stability ?)", "da3_metric_large")], value=self.server_config.get("depth_anything_v2_variant", "vitl"), label="Depth Anything Preprocessor")
+                    with gr.Group():
+                        self.depth_anything_v2_variant_choice = gr.Dropdown(choices=[("Depth Anything 2 Large (more precise, slower)", "vitl"), ("Depth Anything 2 Big (less precise, faster)", "vitb"), ("Depth Anything 3 Metric Large (better temporal stability ?)", "da3_metric_large")], value=self.server_config.get("depth_anything_v2_variant", "vitl"), label="Depth Anything Preprocessor")
 
 
                 with gr.Tab("Prompt Enhancer / Deepy"):

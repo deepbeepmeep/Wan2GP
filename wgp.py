@@ -33,7 +33,6 @@ import threading
 import warnings
 warnings.filterwarnings('ignore', message='Failed to find.*', module='triton')
 from mmgp import offload, safetensors2, profile_type , quant_router
-offload.is_mps = is_mps
 try:
     import triton
 except ImportError:
@@ -133,7 +132,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.61"
+WanGP_version = "11.62"
 settings_version = 2.58
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None

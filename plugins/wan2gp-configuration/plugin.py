@@ -23,11 +23,19 @@ from shared.deepy.config import (
     set_deepy_runtime_config,
 )
 
+def flashvsr_sparse_attention_requirement_message():
+    try:
+        from postprocessing.flashvsr.attention_backend import sparse_attention_requirement_message
+        return sparse_attention_requirement_message()
+    except Exception as exc:
+        return f"FlashVSR sparse attention dependency check failed: {type(exc).__name__}: {exc}"
+
+
 class ConfigTabPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = "Configuration Tab"
-        self.version = "1.1.2"
+        self.version = "1.1.3"
         self.description = "Lets you adjust all your performance and UI options for WAN2GP"
 
     def setup_ui(self):
@@ -57,6 +65,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("audio_save_path")
         self.request_global("quit_application")
         self.request_global("release_model")
+        self.request_global("release_flashvsr_vram")
         self.request_global("get_sorted_dropdown")
         self.request_global("app")
         self.request_global("fl")
@@ -256,6 +265,24 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         value=mmaudio_persistence_default,
                         label="MMAudio Model Persistence"
                     )
+                    self.flashvsr_mode_choice = gr.Dropdown(
+                        choices=[("Off", 0), ("FlashVSR v1.1 Tiny (Slightly Lower Quality, Faster VAE Decoding, Needs Less RAM)", 1), ("FlashVSR v1.1 Full (Best Quality, Slower VAE Decoding, Needs More RAM)", 2)], # ("FlashVSR v1.1 Tiny Long", 3)],
+                        value=self.server_config.get("flashvsr_mode", 0),
+                        label="FlashVSR Spatial Upsampling (It requires the SpargeAttn kernels to be installed)"
+                    )
+                    self.flashvsr_persistence_choice = gr.Dropdown(
+                        choices=[("Unload after use", 1), ("Persistent in RAM", 2)],
+                        value=self.server_config.get("flashvsr_persistence", 1),
+                        label="FlashVSR Model Persistence"
+                    )
+                    self.flashvsr_topk_ratio_choice = gr.Slider(
+                        0.0,
+                        4.0,
+                        value=self.server_config.get("flashvsr_topk_ratio", 0.0),
+                        step=0.05,
+                        label="FlashVSR Quality / Sparse Top-K Ratio (0 = Auto)",
+                        info="Higher keeps more sparse attention candidates and can improve quality at the cost of speed and memory."
+                    )
                     self.rife_version_choice = gr.Dropdown(
                         choices=[("RIFE HDv3 (default)", "v3"), ("RIFE v4.26 (latest)", "v4")],
                         value=self.server_config.get("rife_version", "v4"),
@@ -437,7 +464,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.preload_in_VRAM_choice, self.max_reserved_loras_choice,
             self.enhancer_enabled_choice, self.enhancer_quantization_choice, self.enhancer_mode_choice,
             self.prompt_enhancer_temperature_choice, self.prompt_enhancer_top_p_choice, self.prompt_enhancer_randomize_seed_choice,
-            self.mmaudio_mode_choice, self.mmaudio_persistence_choice, self.rife_version_choice, self.matanyone_version_choice,
+            self.mmaudio_mode_choice, self.mmaudio_persistence_choice, self.flashvsr_mode_choice, self.flashvsr_persistence_choice, self.flashvsr_topk_ratio_choice, self.rife_version_choice, self.matanyone_version_choice,
             self.deepy_enabled_choice, self.deepy_vram_mode_choice,
             self.deepy_context_tokens_choice, self.deepy_custom_system_prompt_choice,
             self.video_output_codec_choice, self.hdr_video_crf_choice, self.image_output_codec_choice, self.audio_output_codec_choice, self.audio_stand_alone_output_codec_choice,
@@ -471,6 +498,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 enhancer_enabled = False
             if enhancer_enabled:
                 targets.append("Prompt Enhancer")
+            if int(self.server_config.get("flashvsr_mode", 0) or 0) > 0:
+                targets.append("FlashVSR")
             if deepy_available(self.server_config):
                 targets.append("Deepy")
             if len(targets) == 1:
@@ -487,6 +516,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             if "Prompt Enhancer" in unload_targets:
                 self.reset_prompt_enhancer()
                 self.reset_prompt_enhancer_if_requested()
+            if "FlashVSR" in unload_targets:
+                self.release_flashvsr_vram()
             self.release_model()
             gr.Info(f"{unload_targets} unloaded from RAM.")
 
@@ -515,7 +546,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             preload_in_VRAM_choice, max_reserved_loras_choice,
             enhancer_enabled_choice, enhancer_quantization_choice, enhancer_mode_choice,
             prompt_enhancer_temperature_choice, prompt_enhancer_top_p_choice, prompt_enhancer_randomize_seed_choice,
-            mmaudio_mode_choice, mmaudio_persistence_choice, rife_version_choice, matanyone_version_choice,
+            mmaudio_mode_choice, mmaudio_persistence_choice, flashvsr_mode_choice, flashvsr_persistence_choice, flashvsr_topk_ratio_choice, rife_version_choice, matanyone_version_choice,
             deepy_enabled_choice, deepy_vram_mode_choice,
             deepy_context_tokens_choice, deepy_custom_system_prompt_choice,
             video_output_codec_choice, hdr_video_crf_choice, image_output_codec_choice, audio_output_codec_choice, audio_stand_alone_output_codec_choice,
@@ -532,6 +563,17 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         self.fl.set_checkpoints_paths(checkpoints_paths)
 
+        flashvsr_mode_choice = int(flashvsr_mode_choice or 0)
+        flashvsr_persistence_choice = int(flashvsr_persistence_choice or 1)
+        if flashvsr_mode_choice > 0:
+            flashvsr_requirement_message = flashvsr_sparse_attention_requirement_message()
+            if flashvsr_requirement_message is not None:
+                gr.Info(flashvsr_requirement_message)
+        try:
+            flashvsr_topk_ratio_choice = float(flashvsr_topk_ratio_choice or 0.0)
+        except (TypeError, ValueError):
+            flashvsr_topk_ratio_choice = 0.0
+        flashvsr_topk_ratio_choice = max(0.0, min(4.0, flashvsr_topk_ratio_choice))
         mmaudio_enabled_choice = 0 if mmaudio_mode_choice == 0 else mmaudio_persistence_choice
 
         new_server_config = dict(old_server_config)
@@ -552,6 +594,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "prompt_enhancer_quantization": enhancer_quantization_choice,
             "enhancer_mode": enhancer_mode_choice, "mmaudio_mode": mmaudio_mode_choice,
             "mmaudio_persistence": mmaudio_persistence_choice, "mmaudio_enabled": mmaudio_enabled_choice,
+            "flashvsr_mode": flashvsr_mode_choice, "flashvsr_persistence": flashvsr_persistence_choice, "flashvsr_topk_ratio": flashvsr_topk_ratio_choice,
             "rife_version": rife_version_choice, "matanyone_version": matanyone_version_choice,
             "prompt_enhancer_temperature": prompt_enhancer_temperature_choice,
             "prompt_enhancer_top_p": prompt_enhancer_top_p_choice,
@@ -601,7 +644,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "attention_mode", "vae_config", "boost", "enable_int8_kernels", "save_path", "image_save_path", "audio_save_path",
             "metadata_type", "clear_file_list", "keep_intermediate_sliding_windows", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", "mmaudio_mode",
-            "mmaudio_persistence", "mmaudio_enabled", "rife_version", "matanyone_version",
+            "mmaudio_persistence", "mmaudio_enabled", "flashvsr_mode", "flashvsr_persistence", "flashvsr_topk_ratio", "rife_version", "matanyone_version",
             "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed", "prompt_enhancer_quantization",
             DEEPY_ENABLED_KEY, DEEPY_VRAM_MODE_KEY, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CUSTOM_SYSTEM_PROMPT_KEY,
             "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "hdr_video_crf", "video_container",

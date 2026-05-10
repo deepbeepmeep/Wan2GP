@@ -75,6 +75,8 @@ def prepare_run(
     end_seconds: float | None,
     model_type: str,
     uses_builtin_outpaint_ui: bool,
+    system_handler=None,
+    system_target_control: str = "",
 ) -> PreparedRun:
     verbose_level = get_mmgp_verbose_level()
     try:
@@ -98,11 +100,21 @@ def prepare_run(
         selected_audio_track = 1
     if selected_audio_track is not None and (selected_audio_track <= 0 or selected_audio_track > audio_track_count):
             raise gr.Error(f"Source Audio must be between 1 and {audio_track_count}.")
-    frame_plan_rules = frames.get_frame_plan_rules(model_type, get_model_def)
-    budget_resolution = output_paths.choose_resolution(output_resolution)
+    if system_handler is None:
+        frame_plan_rules = frames.get_frame_plan_rules(model_type, get_model_def)
+        budget_resolution = output_paths.choose_resolution(output_resolution)
+        output_resolution_token = output_resolution
+    else:
+        frame_plan_rules = frames.FramePlanRules(frame_step=int(getattr(system_handler, "frame_step", 1)), minimum_requested_frames=int(getattr(system_handler, "minimum_requested_frames", 1)))
+        budget_resolution = ""
+        output_resolution_token = system_handler.output_resolution_token(system_target_control) if hasattr(system_handler, "output_resolution_token") else output_resolution
     try:
         chunk_frames = frames.normalize_chunk_frames(chunk_size_seconds, processing_fps, frame_step=frame_plan_rules.frame_step, minimum_requested_frames=frame_plan_rules.minimum_requested_frames)
-        overlap_frames = frames.normalize_overlap_frames(sliding_window_overlap, frame_step=frame_plan_rules.frame_step)
+        if system_handler is not None:
+            get_overlap_frames = getattr(system_handler, "get_overlap_frames", None)
+            overlap_frames = int(get_overlap_frames(chunk_frames)) if callable(get_overlap_frames) else int(getattr(system_handler, "overlap_frames", 0))
+        else:
+            overlap_frames = frames.normalize_overlap_frames(sliding_window_overlap, frame_step=frame_plan_rules.frame_step)
     except frames.FramePlanningError as exc:
         raise gr.Error(str(exc)) from exc
     if overlap_frames >= chunk_frames:
@@ -123,12 +135,16 @@ def prepare_run(
     requested_unique_frames = frames.count_planned_unique_frames(full_plans)
     requested_source_segment = build_virtual_media_path(source_path, start_frame=start_frame, end_frame=start_frame + requested_unique_frames - 1, audio_track_no=selected_audio_track)
     default_output_container = media.normalize_container_name(plugin.server_config.get("video_container", "mp4"))
-    requested_output_path = str(output_paths.build_requested_output_path(source_path, output_path, process_display_name, active_target_ratio, output_resolution, start_seconds, end_seconds, has_outpaint=uses_builtin_outpaint_ui, default_container=default_output_container))
+    requested_output_path = str(output_paths.build_requested_output_path(source_path, output_path, process_display_name, active_target_ratio, output_resolution_token, start_seconds, end_seconds, has_outpaint=uses_builtin_outpaint_ui, default_container=default_output_container))
     if continue_enabled:
+        existing_identity = process_metadata.read_output_identity(requested_output_path)
         identity_mismatch_message = process_metadata.get_output_identity_mismatch_message(requested_output_path, process_name=process_display_name, source_path=source_path, source_segment=requested_source_segment)
         if identity_mismatch_message is not None:
-            raise ProcessInfoExit(identity_mismatch_message, output_path=requested_output_path)
-    resolved_output_path, resume_existing_output = output_paths.resolve_output_path(source_path, output_path, process_display_name, active_target_ratio, output_resolution, start_seconds, end_seconds, continue_enabled, has_outpaint=uses_builtin_outpaint_ui, default_container=default_output_container, notify=common.plugin_info)
+            can_resume_from_sidecar = existing_identity is None and system_handler is not None and callable(getattr(system_handler, "can_resume_without_output_metadata", None)) and system_handler.can_resume_without_output_metadata(requested_output_path)
+            if not can_resume_from_sidecar:
+                raise ProcessInfoExit(identity_mismatch_message, output_path=requested_output_path)
+            common.plugin_info(f"Existing output has no readable WanGP metadata, but a system continuation sidecar was found. Continuing from sidecar cache: {requested_output_path}")
+    resolved_output_path, resume_existing_output = output_paths.resolve_output_path(source_path, output_path, process_display_name, active_target_ratio, output_resolution_token, start_seconds, end_seconds, continue_enabled, has_outpaint=uses_builtin_outpaint_ui, default_container=default_output_container, notify=common.plugin_info)
     try:
         Path(resolved_output_path).parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:

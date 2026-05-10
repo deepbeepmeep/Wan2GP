@@ -42,6 +42,7 @@ class AboutPlugin(WAN2GPPlugin):
         gr.Markdown("- <B>SAM2</B> and <B>SAM3</B>: Mask Generation (https://github.com/facebookresearch/sam2, https://github.com/facebookresearch/sam3). Users should comply with Meta's SAM2/SAM3 license terms.")
         gr.Markdown("- <B>Pyannote</B>: speaker diarization (https://github.com/pyannote/pyannote-audio)")
         gr.Markdown("- <B>MMAudio</B>: sound generator (https://github.com/hkchengrex/MMAudio). Due to licensing restriction can be used only for Research work.")
+        gr.Markdown("- <B>FlashVSR</B>: high quality video super-resolution (https://github.com/OpenImagingLab/FlashVSR)")
 
         gr.Markdown("<BR>Special thanks to the following people for their Contributions & Support:")
         gr.Markdown("- <B>Tophness</B> : Designed & developped the Queuing Framework, Edit Mode and WanGP PlugIns System")

@@ -152,7 +152,10 @@ def create_config_ui(self, api_session):
             write_state.stopped = True
         job = active_job.get("job")
         if job is not None and not job.done:
-            job.cancel()
+            try:
+                job.cancel()
+            except RuntimeError as exc:
+                print(f"[Process Full Video] Stop requested; WanGP abort bridge was not available: {exc}")
             common.plugin_info("Stopping current processing job...")
             return gr.update(value="Start Process", interactive=False), gr.update(value="Stop", interactive=False)
         if active_job.get("running"):
@@ -262,12 +265,12 @@ def create_config_ui(self, api_session):
             continue_enabled = gr.Checkbox(label="Continue", value=default_state.continue_enabled, elem_classes="cbx_bottom", scale=1)
         with gr.Row():
             output_resolution = gr.Dropdown(output_resolution_choices, value=default_state.output_resolution, label="Output Resolution")
-            target_ratio = gr.Dropdown(ui_constants.RATIO_CHOICES if initial_form.target_ratio_visible else ui_constants.RATIO_CHOICES_WITH_EMPTY, value=default_state.target_ratio if initial_form.target_ratio_visible else "", label="Target Ratio", visible=initial_form.target_ratio_visible)
+            target_ratio = gr.Dropdown(initial_form.target_ratio_choices if initial_form.target_ratio_visible else ui_constants.RATIO_CHOICES_WITH_EMPTY, value=default_state.target_ratio if initial_form.target_ratio_visible else "", label=initial_form.target_ratio_label, visible=initial_form.target_ratio_visible)
             default_process_strength = 1.0 if initial_form.target_ratio_visible else default_state.process_strength
             process_strength = gr.Slider(label="Process Strength (LoRA Multiplier)", minimum=min(0.0, default_process_strength), maximum=max(3.0, default_process_strength), step=0.01, value=default_process_strength, visible=initial_form.process_strength_visible)
         with gr.Row():
             chunk_size_seconds = gr.Number(label="Chunk Size (seconds)", value=default_state.chunk_size_seconds, precision=2)
-            sliding_window_overlap = gr.Slider(label="Sliding Window Overlap", minimum=1, maximum=initial_form.overlap_max, step=initial_form.overlap_step, value=default_state.sliding_window_overlap)
+            sliding_window_overlap = gr.Slider(label="Sliding Window Overlap", minimum=0 if not initial_form.overlap_visible else 1, maximum=initial_form.overlap_max, step=initial_form.overlap_step, value=default_state.sliding_window_overlap, visible=initial_form.overlap_visible)
         with gr.Row():
             start_seconds = gr.Textbox(label="Start (s/MM:SS(.xx)/HH:MM:SS(.xx))", value=default_state.start_seconds, placeholder="seconds, MM:SS(.xx), or HH:MM:SS(.xx)")
             end_seconds = gr.Textbox(label="End (s/MM:SS(.xx)/HH:MM:SS(.xx))", value=default_state.end_seconds, placeholder="seconds, MM:SS(.xx), or HH:MM:SS(.xx)")

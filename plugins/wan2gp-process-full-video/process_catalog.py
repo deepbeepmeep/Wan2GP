@@ -27,9 +27,10 @@ def load_process_definitions() -> tuple[dict[str, dict], str | None]:
             return {}, f"Process setting file {settings_path.name} must contain a JSON object."
         process_name = str(settings_path.stem).strip()
         model_type = str(raw_settings.get("model_type") or "").strip()
+        system_handler = str(raw_settings.get("system_handler") or "").strip()
         if len(process_name) == 0:
             return {}, f"Process setting file {settings_path.name} has an empty filename stem."
-        if len(model_type) == 0:
+        if len(model_type) == 0 and len(system_handler) == 0:
             return {}, f"Process setting file {settings_path.name} is missing model_type."
         process_definitions[process_name] = {"settings": raw_settings, "path": str(settings_path)}
     if len(process_definitions) == 0:

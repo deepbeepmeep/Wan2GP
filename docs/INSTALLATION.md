@@ -84,6 +84,25 @@ cd SageAttention
 pip install -e .
 ```
 
+## Sparge Attention
+Sparge Attention (`spas_sage_attn`) provides the optimized sparse attention kernels used by FlashVSR. Install it after Pytorch and Triton.
+
+#### Windows Install Sparge Attention for Pytorch 2.10 / Python 3.11 / Cuda 13
+```
+pip install https://github.com/woct0rdho/SpargeAttn/releases/download/v0.1.0-windows.post4/spas_sage_attn-0.1.0%2Bcu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl
+```
+
+#### Windows Install Sparge Attention for Pytorch 2.7.1 / Python 3.10 / Cuda 12.8
+```
+pip install https://github.com/woct0rdho/SpargeAttn/releases/download/v0.1.0-windows.post3/spas_sage_attn-0.1.0%2Bcu128torch2.7.1.post3-cp39-abi3-win_amd64.whl
+```
+
+#### Linux Install Sparge Attention
+```
+python -m pip install ninja wheel packaging
+python -m pip install --no-build-isolation git+https://github.com/woct0rdho/SpargeAttn.git
+```
+
 
 ## Flash Attention
 Flash attention is not as fast as Sage for Generating Videos or Images but it preserves quality. However when used with a Language Model (prompt enhancer, Text to Speech, Deepy) it can offer a significant speedup.

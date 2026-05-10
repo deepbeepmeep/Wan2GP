@@ -10,6 +10,7 @@ from . import constants
 from . import frame_planning as frames
 from . import process_catalog as catalog
 from . import process_validation
+from . import system_handlers
 
 
 class ProcessLibrary:
@@ -21,6 +22,9 @@ class ProcessLibrary:
     def model_type_label(self, model_type: str) -> str:
         if len(str(model_type or "").strip()) == 0:
             return "Unknown Model"
+        handler = self.system_handler_for_model_type(str(model_type))
+        if handler is not None:
+            return str(getattr(handler, "model_label", str(model_type)))
         try:
             model_def = frames.require_model_def(str(model_type), self.get_model_def)
         except gr.Error:
@@ -202,6 +206,61 @@ class ProcessLibrary:
         settings = process_definition.get("settings") if isinstance(process_definition, dict) else None
         return str(settings.get("model_type") or "").strip() if isinstance(settings, dict) else ""
 
+    @staticmethod
+    def system_handler_for_definition(process_definition: dict | None):
+        settings = process_definition.get("settings") if isinstance(process_definition, dict) else None
+        if not isinstance(settings, dict):
+            return None
+        return system_handlers.get_system_handler(settings.get("system_handler"))
+
+    @staticmethod
+    def system_handler_for_model_type(model_type: str):
+        model_type = str(model_type or "").strip()
+        for process_definition in catalog.PROCESS_DEFINITIONS.values():
+            settings = process_definition.get("settings", {})
+            if str(settings.get("model_type") or "").strip() != model_type:
+                continue
+            handler = system_handlers.get_system_handler(settings.get("system_handler"))
+            if handler is not None:
+                return handler
+        return None
+
+    def system_handler_for_process(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None):
+        return self.system_handler_for_definition(self.process_definition(process_name, main_state, user_refs))
+
+    def target_control_choices(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> list[tuple[str, str]]:
+        handler = self.system_handler_for_process(process_name, main_state, user_refs)
+        return list(getattr(handler, "target_control_choices", [])) if handler is not None else []
+
+    def target_control_default(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> str:
+        handler = self.system_handler_for_process(process_name, main_state, user_refs)
+        return str(getattr(handler, "default_target_control", "")) if handler is not None else ""
+
+    def has_target_control(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:
+        return len(self.target_control_choices(process_name, main_state, user_refs)) > 0
+
+    def target_control_label(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> str:
+        handler = self.system_handler_for_process(process_name, main_state, user_refs)
+        return str(getattr(handler, "target_control_label", "Target")) if handler is not None else "Target"
+
+    def default_chunk_size_seconds(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> float:
+        handler = self.system_handler_for_process(process_name, main_state, user_refs)
+        if handler is not None:
+            return float(getattr(handler, "default_chunk_size_seconds", 10.0))
+        return 10.0
+
+    def hides_sliding_window_overlap(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:
+        handler = self.system_handler_for_process(process_name, main_state, user_refs)
+        return bool(getattr(handler, "hide_sliding_window_overlap", False)) if handler is not None else False
+
+    def process_frame_rules(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> frames.FramePlanRules:
+        process_definition = self.process_definition_or_default(process_name, main_state, user_refs)
+        handler = self.system_handler_for_definition(process_definition)
+        if handler is not None:
+            return frames.FramePlanRules(frame_step=int(getattr(handler, "frame_step", 1)), minimum_requested_frames=int(getattr(handler, "minimum_requested_frames", 1)))
+        model_type = self.process_definition_model_type(process_definition)
+        return frames.get_frame_plan_rules(model_type, self.get_model_def)
+
     def process_values_by_model_type(self, user_refs: list[str]) -> dict[str, list[str]]:
         values_by_model_type: dict[str, list[str]] = {}
         for process_name, process_definition in catalog.PROCESS_DEFINITIONS.items():
@@ -275,6 +334,8 @@ class ProcessLibrary:
         return isinstance(process_definition, dict) and process_definition.get("source") != "user" and isinstance(settings, dict) and "video_guide_outpainting" in settings
 
     def has_process_outpaint(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:
+        if self.has_target_control(process_name, main_state, user_refs):
+            return False
         process_definition = self.process_definition(process_name, main_state, user_refs)
         return self.uses_builtin_outpaint_ui(process_definition)
 
@@ -289,6 +350,8 @@ class ProcessLibrary:
 
     def is_process_strength_visible(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:
         process_definition = self.process_definition(process_name, main_state, user_refs)
+        if self.system_handler_for_definition(process_definition) is not None:
+            return False
         settings = process_definition.get("settings") if isinstance(process_definition, dict) else None
         if not isinstance(settings, dict) or self.uses_builtin_outpaint_ui(process_definition):
             return False

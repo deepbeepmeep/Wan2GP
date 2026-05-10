@@ -22,6 +22,19 @@ class ContinuationRecoveryResult:
     blocked: bool = False
 
 
+def _promote_system_continue_cache(system_handler, source_path: str, target_path: str) -> None:
+    if system_handler is None or not callable(getattr(system_handler, "supports_continue_cache", None)) or not system_handler.supports_continue_cache():
+        return
+    if not callable(getattr(system_handler, "cache_sidecar_path", None)):
+        return
+    source_sidecar = system_handler.cache_sidecar_path(source_path)
+    if not os.path.isfile(source_sidecar):
+        raise gr.Error(f"Continuation cache is missing for recovered system output: {source_sidecar}")
+    target_sidecar = system_handler.cache_sidecar_path(target_path)
+    Path(target_sidecar).parent.mkdir(parents=True, exist_ok=True)
+    os.replace(source_sidecar, target_sidecar)
+
+
 def merge_residual_continuations(
     ffmpeg_path: str,
     ffprobe_path: str,
@@ -36,6 +49,7 @@ def merge_residual_continuations(
     source_audio_path: str | None = None,
     source_audio_start_seconds: float | None = None,
     merged_continuation_signatures: list[dict] | None = None,
+    system_handler=None,
 ) -> tuple[list[dict], list[str], list[str]]:
     known_signatures = process_metadata.normalize_merged_continuation_signatures(merged_continuation_signatures)
     newly_merged_signatures: list[dict] = []
@@ -75,6 +89,7 @@ def merge_residual_continuations(
             source_audio_duration_seconds=merged_duration_seconds if USE_SOURCE_AUDIO_FOR_CONTINUATION_MERGE else None,
             source_audio_track_no=selected_audio_track_no if USE_SOURCE_AUDIO_FOR_CONTINUATION_MERGE else None,
         )
+        _promote_system_continue_cache(system_handler, continuation_path, output_path)
         known_signatures = committed_signatures
         newly_merged_signatures = process_metadata.append_merged_continuation_signature(newly_merged_signatures, continuation_signature)
         if os.path.isfile(continuation_path):
@@ -145,6 +160,7 @@ def recover_residual_continuations(
     verbose_level: int,
     ui_update,
     ui_skip,
+    system_handler=None,
 ):
     residual_continuation_paths = output_paths.list_continuation_output_paths(output_path)
     if not residual_continuation_paths:
@@ -202,6 +218,7 @@ def recover_residual_continuations(
             source_audio_path=source_path if selected_audio_track is not None else None,
             source_audio_start_seconds=(start_frame / fps_float) if selected_audio_track is not None else None,
             merged_continuation_signatures=merged_signatures,
+            system_handler=system_handler,
         )
         for signature in new_signatures:
             merged_signatures = process_metadata.append_merged_continuation_signature(merged_signatures, signature)

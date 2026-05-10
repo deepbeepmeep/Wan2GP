@@ -9,15 +9,6 @@
     "url": "https://github.com/Tophness/wan2gp-gallery"
   },
   {
-    "name": "FlashVSR",
-    "author": "Hakaze",
-    "version": "1.0.3",
-    "description": "AI-powered 4x video upscaling using FlashVSR models with Sparse SageAttention.",
-    "url": "https://github.com/Hakaze/wan2gp-flashvsr",
-    "date": "",
-    "wan2gp_version": ""
-  },
-  {
     "name": "HideUI",
     "author": "MrKuenning",
     "version": "1.0.0",

@@ -135,18 +135,19 @@ class family_handler():
     def query_model_files(computeList, base_model_type, model_def=None):
         vae_files = ["qwen_vae.safetensors", "qwen_vae_config.json"]
         if base_model_type in ["qwen_image_layered_20B"]:
-            vae_files.append("qwen_image_layered_vae_bf16.safetensors")
+            vae_files = ["qwen_image_layered_vae_bf16.safetensors"]
         download_def = [{  
             "repoId" : "DeepBeepMeep/Qwen_image", 
             "sourceFolderList" :  ["", "Qwen2.5-VL-7B-Instruct"],
             "fileList" : [ vae_files, ["merges.txt", "tokenizer_config.json", "config.json", "vocab.json", "video_preprocessor_config.json", "preprocessor_config.json", "chat_template.json"]  ]
             }]
 
-        download_def  += [{
-            "repoId" : "DeepBeepMeep/Wan2.1", 
-            "sourceFolderList" :  [""  ],
-            "fileList" : [ ["Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"]  ]   
-        }]
+        if base_model_type not in ["qwen_image_layered_20B"]:
+            download_def += [{
+                "repoId" : "DeepBeepMeep/Wan2.1", 
+                "sourceFolderList" :  [""  ],
+                "fileList" : [ ["Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"]  ]   
+            }]
         return download_def
 
     @staticmethod
@@ -169,8 +170,7 @@ class family_handler():
             VAE_upsampling = VAE_upsampling,
         )
 
-        from ..wan.modules.vae import WanVAE
-        pipe = {"tokenizer" : pipe_processor.tokenizer, "transformer" : pipe_processor.transformer, "text_encoder" : pipe_processor.text_encoder, "vae" : pipe_processor.vae.model if isinstance(pipe_processor.vae, WanVAE) else pipe_processor.vae }
+        pipe = {"tokenizer" : pipe_processor.tokenizer, "transformer" : pipe_processor.transformer, "text_encoder" : pipe_processor.text_encoder, "vae" : pipe_processor.vae}
 
         return pipe_processor, pipe
 

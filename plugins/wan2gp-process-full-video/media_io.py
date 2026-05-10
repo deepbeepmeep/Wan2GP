@@ -253,7 +253,7 @@ def start_video_mux_process(ffmpeg_path: str, output_path: str, width: int, heig
     return subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, bufsize=0)
 
 
-def start_av_mux_process(ffmpeg_path: str, output_path: str, width: int, height: int, fps_float: float, video_codec: str, video_container: str, source_path: str, start_seconds: float, audio_track_no: int | None, reserved_metadata_path: str | None = None) -> subprocess.Popen:
+def start_av_mux_process(ffmpeg_path: str, output_path: str, width: int, height: int, fps_float: float, video_codec: str, video_container: str, source_path: str, start_seconds: float, audio_track_no: int | None, reserved_metadata_path: str | None = None, source_audio_duration_seconds: float | None = None) -> subprocess.Popen:
     command = [
         ffmpeg_path,
         "-y",
@@ -271,9 +271,10 @@ def start_av_mux_process(ffmpeg_path: str, output_path: str, width: int, height:
         "pipe:0",
         "-ss",
         f"{max(0.0, float(start_seconds)):.12g}",
-        "-i",
-        source_path,
     ]
+    if source_audio_duration_seconds is not None and source_audio_duration_seconds > 0.0:
+        command += ["-t", f"{max(0.0, float(source_audio_duration_seconds)):.12g}"]
+    command += ["-i", source_path]
     metadata_input_index = None
     if reserved_metadata_path and os.path.isfile(reserved_metadata_path):
         command += ["-f", "ffmetadata", "-i", reserved_metadata_path]
@@ -285,7 +286,9 @@ def start_av_mux_process(ffmpeg_path: str, output_path: str, width: int, height:
         command += ["-map", "1:a?"]
     else:
         command += ["-map", f"1:a:{max(0, int(audio_track_no) - 1)}?"]
-    command += get_video_encode_args(video_codec, video_container) + ["-c:a", "copy", "-shortest"]
+    command += get_video_encode_args(video_codec, video_container) + ["-c:a", "copy"]
+    if source_audio_duration_seconds is None:
+        command += ["-shortest"]
     command += _get_live_mux_output_args(video_container)
     command += [output_path]
     return subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, bufsize=0)
@@ -321,7 +324,7 @@ def start_hdr_video_mux_process(ffmpeg_path: str, output_path: str, width: int, 
     return subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, bufsize=0)
 
 
-def start_hdr_av_mux_process(ffmpeg_path: str, output_path: str, width: int, height: int, fps_float: float, video_codec: str, video_container: str, source_path: str, start_seconds: float, audio_track_no: int | None, reserved_metadata_path: str | None = None) -> subprocess.Popen:
+def start_hdr_av_mux_process(ffmpeg_path: str, output_path: str, width: int, height: int, fps_float: float, video_codec: str, video_container: str, source_path: str, start_seconds: float, audio_track_no: int | None, reserved_metadata_path: str | None = None, source_audio_duration_seconds: float | None = None) -> subprocess.Popen:
     command = [
         ffmpeg_path,
         "-y",
@@ -339,9 +342,10 @@ def start_hdr_av_mux_process(ffmpeg_path: str, output_path: str, width: int, hei
         "pipe:0",
         "-ss",
         f"{max(0.0, float(start_seconds)):.12g}",
-        "-i",
-        source_path,
     ]
+    if source_audio_duration_seconds is not None and source_audio_duration_seconds > 0.0:
+        command += ["-t", f"{max(0.0, float(source_audio_duration_seconds)):.12g}"]
+    command += ["-i", source_path]
     if reserved_metadata_path and os.path.isfile(reserved_metadata_path):
         command += ["-f", "ffmetadata", "-i", reserved_metadata_path, "-map_metadata", "2"]
     else:
@@ -351,7 +355,9 @@ def start_hdr_av_mux_process(ffmpeg_path: str, output_path: str, width: int, hei
         command += ["-map", "1:a?"]
     else:
         command += ["-map", f"1:a:{max(0, int(audio_track_no) - 1)}?"]
-    command += get_hdr_video_encode_args(video_codec, video_container) + ["-c:a", "copy", "-shortest"]
+    command += get_hdr_video_encode_args(video_codec, video_container) + ["-c:a", "copy"]
+    if source_audio_duration_seconds is None:
+        command += ["-shortest"]
     command += _get_live_mux_output_args(video_container)
     command += [output_path]
     return subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, bufsize=0)
@@ -552,6 +558,23 @@ def _write_concat_list(list_path: str, media_paths: list[str]) -> None:
             handle.write(f"file '{escaped_path}'\n")
 
 
+def _split_sparse_fine_seek(seconds: float) -> tuple[float, float]:
+    seconds = max(0.0, float(seconds or 0.0))
+    coarse_seconds = max(0.0, seconds - 1.0)
+    return coarse_seconds, seconds - coarse_seconds
+
+
+def _build_video_reconstruct_bsf(fps_float: float) -> str:
+    fps_value = max(float(fps_float or 0.0), 1.0)
+    frame_duration_expr = f"1/({fps_value:.15g}*TB)"
+    return (
+        "setts="
+        f"pts='if(eq(N,0),PTS,PREV_OUTPTS+(PTS-PREV_INPTS)-(PREV_INDURATION-DURATION))':"
+        f"dts='if(eq(N,0),DTS,PREV_OUTDTS+(DTS-PREV_INDTS)-(PREV_INDURATION-DURATION))':"
+        f"duration='if(eq(N,0),{frame_duration_expr},DURATION)'"
+    )
+
+
 def _concat_audio_segments(ffmpeg_path: str, segment_paths: list[str], output_path: str, work_dir: str, *, segment_trim_seconds: list[float] | None = None, segment_duration_seconds: list[float | None] | None = None, audio_stream_indices: list[int] | None = None) -> None:
     extracted_paths: list[str] = []
     list_path = os.path.join(work_dir, "audio.txt")
@@ -564,12 +587,9 @@ def _concat_audio_segments(ffmpeg_path: str, segment_paths: list[str], output_pa
                 duration_seconds = max(0.0, float(segment_duration_seconds[segment_no - 1]))
             audio_stream_index = max(0, int(audio_stream_indices[segment_no - 1])) if audio_stream_indices is not None and segment_no - 1 < len(audio_stream_indices) else 0
             command = [ffmpeg_path, "-y", "-v", "error"]
-            fine_seek_seconds = 0.0
-            if trim_seconds > 0.0:
-                coarse_seek_seconds = max(0.0, trim_seconds - 1.0)
-                fine_seek_seconds = trim_seconds - coarse_seek_seconds
-                if coarse_seek_seconds > 0.0:
-                    command += ["-ss", f"{coarse_seek_seconds:.12g}"]
+            coarse_seek_seconds, fine_seek_seconds = _split_sparse_fine_seek(trim_seconds)
+            if coarse_seek_seconds > 0.0:
+                command += ["-ss", f"{coarse_seek_seconds:.12g}"]
             command += ["-i", segment_path]
             if fine_seek_seconds > 0.0:
                 command += ["-ss", f"{fine_seek_seconds:.12g}"]
@@ -646,6 +666,7 @@ def concat_video_segments(
         video_bsf = "h264_mp4toannexb" if video_codec_name == "h264" else "hevc_mp4toannexb" if video_codec_name in ("hevc", "h265") else ""
         if len(video_bsf) == 0:
             raise gr.Error(f"Unsupported continuation video codec for no-reencode merge: {video_codec_name}")
+        reconstructed_video_bsf = f"{_build_video_reconstruct_bsf(fps_value)},{video_bsf}"
         if use_source_audio_merge:
             command = [ffmpeg_path, "-y", "-v", "error", "-f", "mpegts", "-i", "pipe:0", "-ss", f"{max(0.0, float(source_audio_start_seconds or 0.0)):.12g}", "-t", f"{max(0.0, float(source_audio_duration_seconds or 0.0)):.12g}", "-i", str(source_audio_path)]
             if reserved_metadata_path and os.path.isfile(reserved_metadata_path):
@@ -666,7 +687,7 @@ def concat_video_segments(
                 if mux_process.stdin is None:
                     raise gr.Error("ffmpeg source-audio merge did not expose a writable video pipe.")
                 for segment_path in segment_paths:
-                    segment_process = subprocess.Popen([ffmpeg_path, "-v", "error", "-i", segment_path, "-map", "0:v:0", "-c", "copy", "-bsf:v", video_bsf, "-f", "mpegts", "-"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+                    segment_process = subprocess.Popen([ffmpeg_path, "-v", "error", "-i", segment_path, "-map", "0:v:0", "-c", "copy", "-bsf:v", reconstructed_video_bsf, "-f", "mpegts", "-"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
                     try:
                         if segment_process.stdout is None:
                             raise gr.Error(f"ffmpeg failed to expose the TS stream for {segment_path}.")
@@ -699,7 +720,7 @@ def concat_video_segments(
             ts_paths: list[str] = []
             for index, segment_path in enumerate(segment_paths, start=1):
                 ts_path = os.path.join(concat_dir, f"segment_{index}.ts")
-                result = subprocess.run([ffmpeg_path, "-y", "-v", "error", "-i", segment_path, "-map", "0:v:0", "-c", "copy", "-bsf:v", video_bsf, "-f", "mpegts", ts_path], capture_output=True, text=True)
+                result = subprocess.run([ffmpeg_path, "-y", "-v", "error", "-i", segment_path, "-map", "0:v:0", "-c", "copy", "-bsf:v", reconstructed_video_bsf, "-f", "mpegts", ts_path], capture_output=True, text=True)
                 if result.returncode != 0 or not os.path.isfile(ts_path):
                     raise gr.Error((result.stderr or result.stdout or f"ffmpeg failed to prepare {segment_path} for concat").strip())
                 ts_paths.append(ts_path)

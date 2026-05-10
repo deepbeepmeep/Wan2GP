@@ -19,6 +19,7 @@ _LOG_LOCK = threading.RLock()
 _THREAD_STATE = threading.local()
 _EXTERNAL_CAPTURE_DEPTH = 0
 _START_NOTICE_EMITTED = False
+_LOG_LINE_START = True
 
 
 class _SelectiveTeeTextStream:
@@ -127,13 +128,35 @@ def _should_log_current_write() -> bool:
     return _LOG_STREAM is not None and (_EXTERNAL_CAPTURE_DEPTH > 0 or _is_deepy_capture_active())
 
 
+def _format_log_prefix() -> str:
+    return f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}] "
+
+
+def _write_log_data(data: str) -> None:
+    global _LOG_LINE_START
+    if _LOG_STREAM is None:
+        return
+    text = str(data or "")
+    while len(text) > 0:
+        if _LOG_LINE_START:
+            _LOG_STREAM.write(_format_log_prefix())
+            _LOG_LINE_START = False
+        newline_index = text.find("\n")
+        if newline_index < 0:
+            _LOG_STREAM.write(text)
+            return
+        _LOG_STREAM.write(text[: newline_index + 1])
+        _LOG_LINE_START = True
+        text = text[newline_index + 1 :]
+
+
 def _maybe_write_log(data: str | None) -> None:
     if not data or not _should_log_current_write():
         return
     with _LOG_LOCK:
         if _LOG_STREAM is None:
             return
-        _LOG_STREAM.write(data)
+        _write_log_data(data)
 
 
 def _emit_start_notice() -> None:
@@ -145,7 +168,7 @@ def _emit_start_notice() -> None:
         _unwrap_stream(sys.stdout).write(notice)
         _unwrap_stream(sys.stdout).flush()
         if _LOG_STREAM is not None:
-            _LOG_STREAM.write(notice)
+            _write_log_data(notice)
             _LOG_STREAM.flush()
     _START_NOTICE_EMITTED = True
 

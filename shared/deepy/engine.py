@@ -4300,6 +4300,7 @@ class AssistantEngine:
         self._skip_generation_context_sync_once = False
         self._continued_segment_raw_text = ""
         self._continued_segment_token_ids: list[int] = []
+        self._runtime_debug_signature = ""
         bind_runtime_tools = getattr(self.tool_box, "bind_runtime_tools", None)
         if callable(bind_runtime_tools):
             bind_runtime_tools(vision_query_callback=self._run_visual_query, tool_progress_callback=self._handle_tool_progress)
@@ -4307,6 +4308,36 @@ class AssistantEngine:
     def _log(self, message: str) -> None:
         if self.debug_enabled:
             print(f"[Assistant] {message}")
+
+    def _log_runtime_info(self, model) -> None:
+        if not self.debug_enabled:
+            return
+        engine_state = ""
+        if self.runtime is not None:
+            try:
+                engine_state = self.runtime._describe_engine_state(getattr(model, "_prompt_enhancer_vllm_engine", None))
+            except Exception:
+                engine_state = ""
+        info = {
+            "model_class": model.__class__.__name__,
+            "engine": str(getattr(model, "_prompt_enhancer_engine_name", "") or ""),
+            "use_vllm": bool(getattr(model, "_prompt_enhancer_use_vllm", False)),
+            "use_legacy_cuda_runner": bool(getattr(model, "_prompt_enhancer_use_legacy_cuda_runner", False)),
+            "enable_cudagraph": bool(getattr(model, "_prompt_enhancer_enable_cudagraph", False)),
+            "allow_vllm_kernels": bool(getattr(model, "_prompt_enhancer_allow_vllm_kernels", False)),
+            "safe_legacy": bool(getattr(model, "_prompt_enhancer_safe_legacy", False)),
+            "vllm_mode": str(getattr(model, "_prompt_enhancer_vllm_mode", "") or ""),
+            "runtime_model_path": str(getattr(model, "_prompt_enhancer_vllm_model_path", "") or ""),
+            "vram_mode": self.vram_mode,
+            "context_window": int(self._get_context_window_tokens()),
+            "thinking_enabled": bool(self.thinking_enabled),
+            "engine_state": engine_state,
+        }
+        signature = _json_dumps(info)
+        if signature == self._runtime_debug_signature:
+            return
+        self._runtime_debug_signature = signature
+        print(f"[AssistantRuntime] Deepy text runtime: {signature}")
 
     def _emit_chat_event(self, payload: str | None) -> None:
         if payload is None or len(str(payload).strip()) == 0:
@@ -5035,10 +5066,13 @@ class AssistantEngine:
             self._gpu_acquired = True
             acquired_here = True
         try:
+            if self.debug_enabled:
+                print(f"[AssistantRuntime] Ensuring Deepy text runtime is loaded vram_mode={self.vram_mode} context_window={int(self._get_context_window_tokens())}")
             model, _tokenizer = self.runtime_hooks.ensure_loaded()
             model._prompt_enhancer_min_model_len_hint = self._get_context_window_tokens()
             if self.runtime is None or self.runtime.model is not model:
                 self.runtime = Qwen35AssistantRuntime(model, debug_enabled=self.debug_enabled)
+            self._log_runtime_info(model)
             return self.runtime
         except Exception:
             if acquired_here:

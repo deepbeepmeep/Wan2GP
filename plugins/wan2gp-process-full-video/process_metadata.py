@@ -168,13 +168,15 @@ def log_existing_output_metadata(output_path: str, verbose_level: int) -> None:
 def store_output_metadata(output_path: str, last_segment_path: str | None, *, source_path: str, process_name: str, source_start_seconds: float, start_frame: int, fps_float: float, selected_audio_track: int | None, total_generation_time: float, actual_frame_count: int, process_metadata: dict | None = None, verbose_level: int = 0) -> bool:
     if not os.path.isfile(output_path):
         return False
-    if not last_segment_path or not os.path.isfile(last_segment_path):
+    metadata = {}
+    if last_segment_path and os.path.isfile(last_segment_path):
+        loaded_metadata = read_metadata_from_video(last_segment_path)
+        if isinstance(loaded_metadata, dict) and len(loaded_metadata) > 0:
+            metadata = loaded_metadata
+        elif Path(last_segment_path).resolve() != Path(output_path).resolve():
+            print(f"[Process Full Video] Warning: failed to read WanGP metadata from {last_segment_path}")
+    elif last_segment_path:
         print(f"[Process Full Video] Warning: no segment metadata source was available for {output_path}")
-        return False
-    metadata = read_metadata_from_video(last_segment_path)
-    if not isinstance(metadata, dict) or len(metadata) == 0:
-        print(f"[Process Full Video] Warning: failed to read WanGP metadata from {last_segment_path}")
-        return False
     final_metadata = metadata.copy()
     source_name = os.path.basename(source_path)
     end_frame = max(int(start_frame), int(start_frame) + max(0, int(actual_frame_count)) - 1)

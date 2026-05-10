@@ -61,6 +61,7 @@
 	"skip_steps_start_step_perc": 0,
 	"temporal_upsampling": "",
 	"spatial_upsampling": "",
+	"flashvsr_topk_ratio": 0.0,
 	"film_grain_intensity": 0,
 	"film_grain_saturation": 0.5,
 	"MMAudio_setting": 0,

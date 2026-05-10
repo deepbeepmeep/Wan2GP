@@ -102,6 +102,7 @@ class ProcessRunner:
         if process_definition is None:
             yield self.info_exit(f"Unsupported process: {request.process_name}")
             return
+        system_handler = self.library.system_handler_for_definition(process_definition)
         if process_definition.get("source") == "user":
             problems = self.library.validate_user_process_definition(process_definition)
             if len(problems) > 0:
@@ -109,16 +110,16 @@ class ProcessRunner:
                 return
         process_settings = process_definition["settings"]
         model_type = str(process_settings.get("model_type") or "")
-        if len(model_type) == 0:
+        if len(model_type) == 0 and system_handler is None:
             yield self.info_exit(f"Unsupported process: {request.process_name}")
             return
         process_display_name = str(process_definition.get("name") or request.process_name or "").strip()
-        process_is_hdr = VIDEO_PROMPT_HDR_OUTPUT_FLAG in str(process_settings.get("video_prompt_type") or "")
+        process_is_hdr = False if system_handler is not None else VIDEO_PROMPT_HDR_OUTPUT_FLAG in str(process_settings.get("video_prompt_type") or "")
         is_user_process = process_definition.get("source") == "user"
         has_outpaint_setting = "video_guide_outpainting" in process_settings
         uses_builtin_outpaint_ui = self.library.uses_builtin_outpaint_ui(process_definition)
         user_lora_strength_override_default = self.library.user_lora_strength_override_default(process_definition)
-        use_lora_strength_override = not uses_builtin_outpaint_ui and (not is_user_process or user_lora_strength_override_default is not None)
+        use_lora_strength_override = system_handler is None and not uses_builtin_outpaint_ui and (not is_user_process or user_lora_strength_override_default is not None)
         process_strength_default = user_lora_strength_override_default if user_lora_strength_override_default is not None else common.get_default_process_strength(process_settings)
         active_process_strength = 1.0 if uses_builtin_outpaint_ui else (common.coerce_float(request.process_strength, process_strength_default) if use_lora_strength_override else process_strength_default)
         source_path = request.source_path
@@ -129,9 +130,10 @@ class ProcessRunner:
         prompt_text = request.prompt_text
         start_seconds = request.start_seconds
         end_seconds = request.end_seconds
+        system_target_control = system_handler.normalize_target_control(request.target_ratio) if system_handler is not None and hasattr(system_handler, "normalize_target_control") else ""
         try:
             chunk_size_seconds = common.require_float(request.chunk_size_seconds, "Chunk Size", minimum=0.1)
-            sliding_window_overlap = common.require_int(request.sliding_window_overlap, "Sliding Window Overlap", minimum=1)
+            sliding_window_overlap = int(getattr(system_handler, "overlap_frames", 0)) if system_handler is not None else common.require_int(request.sliding_window_overlap, "Sliding Window Overlap", minimum=1)
         except gr.Error as exc:
             yield self.info_exit(common.get_error_message(exc) or "Invalid processing settings.")
             return
@@ -146,7 +148,7 @@ class ProcessRunner:
                 "continue_enabled": request.continue_enabled,
                 "source_audio_track": source_audio_track,
                 "output_resolution": output_resolution,
-                "target_ratio": target_ratio,
+                "target_ratio": system_target_control if system_handler is not None else target_ratio,
                 "chunk_size_seconds": chunk_size_seconds,
                 "sliding_window_overlap": sliding_window_overlap,
                 "start_seconds": start_seconds,
@@ -204,6 +206,8 @@ class ProcessRunner:
                     end_seconds=end_seconds,
                     model_type=model_type,
                     uses_builtin_outpaint_ui=uses_builtin_outpaint_ui,
+                    system_handler=system_handler,
+                    system_target_control=system_target_control,
                 )
                 verbose_level = prepared_run.verbose_level
                 start_frame = prepared_run.start_frame
@@ -248,6 +252,7 @@ class ProcessRunner:
                     verbose_level=verbose_level,
                     ui_update=self.ui_update,
                     ui_skip=self.ui_skip,
+                    system_handler=system_handler,
                 )
                 merged_continuation_signatures = recovery_result.merged_signatures
                 if recovery_result.blocked:
@@ -269,6 +274,7 @@ class ProcessRunner:
             resolved_height = 0
             merged_continuation = False
             resume_audio_trim_seconds = 0.0
+            continue_cache = None
             self.preview_state["image"] = None
             write_state.set_output_path(output_path)
             exact_start_seconds = start_frame / fps_float
@@ -301,12 +307,27 @@ class ProcessRunner:
                     common.plugin_info(f"Continuing existing output: {output_path}")
                     resolved_resolution, resolved_width, resolved_height = video.probe_existing_output_resolution(output_path)
                     print(f"[Process Full Video] Continuing with locked output resolution {resolved_resolution}")
-                    completed_chunks, _ = frames.count_completed_chunks(full_plans, resumed_unique_frames)
+                    completed_chunks, _ = (frames.count_completed_written_chunks if system_handler is not None else frames.count_completed_chunks)(full_plans, resumed_unique_frames)
                     exact_start_seconds = (start_frame + resumed_unique_frames) / fps_float
                     if resumed_unique_frames < requested_unique_frames:
-                        yield self.ui_update(status_ui.render_chunk_status_html(len(full_plans), 0, 1, "Loading Overlap Frames", f"Continuing existing output with {resumed_unique_frames} frame(s) already written."), output_path, str(time.time_ns()))
-                        resumed_unique_frames, last_frame_image, tail_reason = video.resolve_resume_last_frame(output_path, resumed_unique_frames)
-                        if resumed_unique_frames <= 0 or last_frame_image is None:
+                        resume_phase = "Planning Source Overlap" if system_handler is not None else "Loading Overlap Frames"
+                        yield self.ui_update(status_ui.render_chunk_status_html(len(full_plans), 0, 1, resume_phase, f"Continuing existing output with {resumed_unique_frames} frame(s) already written."), output_path, str(time.time_ns()))
+                        checked_unique_frames, last_frame_image, tail_reason = video.resolve_resume_last_frame(output_path, resumed_unique_frames)
+                        if system_handler is not None:
+                            if checked_unique_frames > 0:
+                                resumed_unique_frames = checked_unique_frames
+                            if tail_reason:
+                                common.plugin_info(tail_reason)
+                            if last_frame_image is not None:
+                                self.preview_state["image"] = last_frame_image
+                            if hasattr(system_handler, "load_continue_cache"):
+                                continue_cache = system_handler.load_continue_cache(output_path)
+                            completed_chunks, _ = frames.count_completed_written_chunks(full_plans, resumed_unique_frames)
+                            exact_start_seconds = (start_frame + resumed_unique_frames) / fps_float
+                            resume_overlap_frames = 0
+                            if resumed_unique_frames < requested_unique_frames:
+                                print(f"[Process Full Video] Continuing system process from source frame {start_frame + resumed_unique_frames} using continue cache")
+                        elif checked_unique_frames <= 0 or last_frame_image is None:
                             common.plugin_info(f"Unable to continue from existing output: {output_path}. {tail_reason or 'Starting a new file instead.'}")
                             output_path = output_paths.make_output_variant(Path(output_path), notify=common.plugin_info)
                             write_state.set_output_path(output_path)
@@ -317,6 +338,7 @@ class ProcessRunner:
                             exact_start_seconds = start_frame / fps_float
                             resume_existing_output = False
                         else:
+                            resumed_unique_frames = checked_unique_frames
                             if tail_reason:
                                 common.plugin_info(tail_reason)
                             self.preview_state["image"] = last_frame_image
@@ -402,11 +424,25 @@ class ProcessRunner:
                 return {"elapsed_seconds": elapsed_seconds, "eta_seconds": eta_seconds}
 
             if len(plans) == 0:
+                if system_handler is not None and callable(getattr(system_handler, "delete_continue_cache", None)):
+                    system_handler.delete_continue_cache(output_path)
                 yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_display, completed_chunks, completed_chunks, "Completed", "Existing output already covers the requested range.", continued=continued_mode, **_timing_kwargs()), output_path, str(time.time_ns()), start_enabled=True, abort_enabled=False)
                 return
             planning_text = f"Resuming from {resumed_unique_frames} frame(s) already written." if resumed_unique_frames > 0 else f"Preparing {len(plans)} chunk(s)..."
             yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_display, completed_chunks, current_chunk_display, "Planning", planning_text, continued=continued_mode, **_timing_kwargs()), output_path, str(time.time_ns()))
 
+            chunk_progress = ChunkProgress(
+                completed_chunks=completed_chunks,
+                current_chunk_display=current_chunk_display,
+                chunk_output_paths=chunk_output_paths,
+                last_segment_path=last_segment_path,
+                write_state=write_state,
+                resolved_resolution=resolved_resolution,
+                resolved_width=resolved_width,
+                resolved_height=resolved_height,
+                continue_cache=continue_cache,
+            )
+            continue_cache = None
             chunk_result = yield from ChunkExecutor(
                 plugin=self.plugin,
                 api_session=self.api_session,
@@ -427,6 +463,7 @@ class ProcessRunner:
                 active_process_strength=active_process_strength,
                 active_target_ratio=active_target_ratio,
                 source_path=source_path,
+                output_path=output_path,
                 selected_audio_track=selected_audio_track,
                 prompt_schedule=prompt_schedule,
                 default_prompt_text=default_prompt_text,
@@ -445,16 +482,9 @@ class ProcessRunner:
                 output_container=output_container,
                 exact_start_seconds=exact_start_seconds,
                 timing_kwargs=_timing_kwargs,
-            ), ChunkProgress(
-                completed_chunks=completed_chunks,
-                current_chunk_display=current_chunk_display,
-                chunk_output_paths=chunk_output_paths,
-                last_segment_path=last_segment_path,
-                write_state=write_state,
-                resolved_resolution=resolved_resolution,
-                resolved_width=resolved_width,
-                resolved_height=resolved_height,
-            ))
+                system_handler=system_handler,
+                system_target_control=system_target_control,
+            ), chunk_progress)
             written_unique_frames = chunk_result.written_unique_frames
             completed_chunks = chunk_result.completed_chunks
             current_chunk_display = chunk_result.current_chunk_display
@@ -463,6 +493,7 @@ class ProcessRunner:
             resolved_height = chunk_result.resolved_height
             last_segment_path = chunk_result.last_segment_path
             chunk_output_paths = chunk_result.chunk_output_paths
+            continue_cache = chunk_result.continue_cache
             if write_state.mux_process is None:
                 if write_state.stopped and resumed_unique_frames > 0:
                     common.plugin_info(f"Processing was stopped before writing a new chunk. Kept existing output at {output_path}")
@@ -531,6 +562,8 @@ class ProcessRunner:
                 if os.path.isfile(write_state.output_path_for_write):
                     try:
                         os.remove(write_state.output_path_for_write)
+                        if system_handler is not None and callable(getattr(system_handler, "delete_continue_cache", None)):
+                            system_handler.delete_continue_cache(write_state.output_path_for_write)
                     except OSError:
                         undeleted_merged_continuation_paths.append(write_state.output_path_for_write)
                         common.plugin_info(f"Merged continuation progress into {Path(output_path).name}, but {Path(write_state.output_path_for_write).name} could not be deleted because it is still open. Delete it manually when released.")
@@ -542,7 +575,7 @@ class ProcessRunner:
                 raise gr.Error(f"Processing wrote {total_written_unique_frames} frame(s), but {requested_unique_frames} frame(s) were required.")
             metadata_target_path = output_path if merged_continuation or not continuation_output_path else write_state.output_path_for_write
             yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_display, completed_chunks, current_chunk_display, "Writing Metadata", "Writing final output metadata...", continued=continued_mode, **_timing_kwargs()), metadata_target_path if os.path.isfile(metadata_target_path) else output_path, str(time.time_ns()), start_enabled=False, abort_enabled=False)
-            metadata_source_path = last_segment_path or media.get_last_generated_video_path(chunk_output_paths)
+            metadata_source_path = last_segment_path or media.get_last_generated_video_path(chunk_output_paths) or metadata_target_path
             actual_output_frames = media.probe_resume_frame_count(ffprobe_path, metadata_target_path, fps_float)[0] if os.path.isfile(metadata_target_path) else 0
             if actual_output_frames <= 0:
                 if metadata_target_path != output_path or not resume_existing_output:
@@ -551,9 +584,9 @@ class ProcessRunner:
             if actual_output_frames < total_written_unique_frames:
                 if write_state.stopped:
                     common.plugin_info(f"Stopped output contains {actual_output_frames} readable frame(s), lower than the {total_written_unique_frames} frame(s) attempted. Recording the probed frame count.")
+                    total_written_unique_frames = actual_output_frames
                 else:
-                    common.plugin_info(f"Final output contains {actual_output_frames} readable frame(s), lower than the {total_written_unique_frames} frame(s) written. Recording the probed frame count.")
-                total_written_unique_frames = actual_output_frames
+                    raise gr.Error(f"Final output contains {actual_output_frames} readable frame(s), but {total_written_unique_frames} frame(s) were written.")
             total_generation_time = existing_output_generation_time + process_metadata.read_metadata_generation_time(metadata_source_path) if merged_continuation else process_metadata.read_metadata_generation_time(metadata_source_path)
             output_process_metadata = {
                 "process": process_display_name,
@@ -568,7 +601,17 @@ class ProcessRunner:
             }
             if process_is_hdr:
                 output_process_metadata["hdr"] = True
-            process_metadata.store_output_metadata(metadata_target_path, metadata_source_path, source_path=source_path, process_name=process_display_name, source_start_seconds=start_seconds, start_frame=start_frame, fps_float=fps_float, selected_audio_track=selected_audio_track, total_generation_time=total_generation_time, actual_frame_count=actual_output_frames, process_metadata=output_process_metadata, verbose_level=verbose_level)
+            metadata_written = process_metadata.store_output_metadata(metadata_target_path, metadata_source_path, source_path=source_path, process_name=process_display_name, source_start_seconds=start_seconds, start_frame=start_frame, fps_float=fps_float, selected_audio_track=selected_audio_track, total_generation_time=total_generation_time, actual_frame_count=actual_output_frames, process_metadata=output_process_metadata, verbose_level=verbose_level)
+            completed_output = not write_state.stopped and (total_written_unique_frames >= requested_unique_frames or completed_chunks >= total_chunks_display)
+            if system_handler is not None and completed_output and callable(getattr(system_handler, "delete_continue_cache", None)):
+                for cache_output_path in dict.fromkeys([metadata_target_path, output_path, write_state.output_path_for_write]):
+                    if cache_output_path:
+                        system_handler.delete_continue_cache(cache_output_path)
+                continue_cache = None
+            elif system_handler is not None and continue_cache is not None and hasattr(system_handler, "save_continue_cache"):
+                system_handler.save_continue_cache(continue_cache, metadata_target_path, metadata=output_process_metadata)
+            if not metadata_written:
+                raise gr.Error(f"Failed to write WanGP metadata to {metadata_target_path}. The partial output was kept, but continuation may require the sidecar cache.")
             chunk_output_paths = media.delete_released_chunk_outputs(request.state, chunk_output_paths)
             if write_state.stopped:
                 stopped_output_path = output_path

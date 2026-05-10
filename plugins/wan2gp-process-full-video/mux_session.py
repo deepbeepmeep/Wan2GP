@@ -36,6 +36,7 @@ class MuxSession:
         resolved_width: int,
         resolved_height: int,
         fps_float: float,
+        source_audio_duration_seconds: float | None = None,
     ) -> None:
         if self.mux_process is not None:
             return
@@ -46,10 +47,10 @@ class MuxSession:
             self.video_only_output_path = media.reserve_video_only_output_path(self.output_path_for_write)
         if process_is_hdr:
             hdr_video_crf = server_config.get("hdr_video_crf", 8)
-            self.mux_process = media.start_hdr_av_mux_process(ffmpeg_path, self.output_path_for_write, resolved_width, resolved_height, fps_float, hdr_video_crf, output_container, source_path, exact_start_seconds, selected_audio_track, self.reserved_metadata_path) if use_live_av_mux else media.start_hdr_video_mux_process(ffmpeg_path, self.video_only_output_path, resolved_width, resolved_height, fps_float, hdr_video_crf, output_container, self.reserved_metadata_path)
+            self.mux_process = media.start_hdr_av_mux_process(ffmpeg_path, self.output_path_for_write, resolved_width, resolved_height, fps_float, hdr_video_crf, output_container, source_path, exact_start_seconds, selected_audio_track, self.reserved_metadata_path, source_audio_duration_seconds) if use_live_av_mux else media.start_hdr_video_mux_process(ffmpeg_path, self.video_only_output_path, resolved_width, resolved_height, fps_float, hdr_video_crf, output_container, self.reserved_metadata_path)
             return
         video_codec = server_config.get("video_output_codec", "libx264_8")
-        self.mux_process = media.start_av_mux_process(ffmpeg_path, self.output_path_for_write, resolved_width, resolved_height, fps_float, video_codec, output_container, source_path, exact_start_seconds, selected_audio_track, self.reserved_metadata_path) if use_live_av_mux else media.start_video_mux_process(ffmpeg_path, self.video_only_output_path, resolved_width, resolved_height, fps_float, video_codec, output_container, self.reserved_metadata_path)
+        self.mux_process = media.start_av_mux_process(ffmpeg_path, self.output_path_for_write, resolved_width, resolved_height, fps_float, video_codec, output_container, source_path, exact_start_seconds, selected_audio_track, self.reserved_metadata_path, source_audio_duration_seconds) if use_live_av_mux else media.start_video_mux_process(ffmpeg_path, self.video_only_output_path, resolved_width, resolved_height, fps_float, video_codec, output_container, self.reserved_metadata_path)
 
     def write_chunk(self, *, process_is_hdr: bool, video_tensor_hdr, video_tensor_uint8, start_frame: int, frame_count: int):
         if process_is_hdr and video_tensor_hdr is not None:

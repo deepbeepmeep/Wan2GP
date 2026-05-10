@@ -713,22 +713,22 @@ def save_image(tensor,
                          
     for _ in range(retry):
         try:
-            tensor = tensor.clamp(min(value_range), max(value_range))
-            
             if format_info['use_pil'] or RGBA:
                 # Use PIL for WebP and advanced options
-                grid = torchvision.utils.make_grid(tensor, nrow=nrow, normalize=normalize, value_range=value_range)
-                # Convert to PIL Image
-                grid = grid.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to('cpu', torch.uint8).numpy()
+                if tensor.dtype == torch.uint8:
+                    grid = torchvision.utils.make_grid(tensor, nrow=nrow, normalize=False).permute(1, 2, 0).cpu().numpy()
+                else:
+                    tensor = tensor.clamp(min(value_range), max(value_range))
+                    grid = torchvision.utils.make_grid(tensor, nrow=nrow, normalize=normalize, value_range=value_range)
+                    grid = grid.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to('cpu', torch.uint8).numpy()
                 mode = 'RGBA' if RGBA else 'RGB'
                 img = Image.fromarray(grid, mode=mode)
                 img.save(save_file, **format_info['params'])
             else:
                 # Use torchvision for JPEG and PNG
-                torchvision.utils.save_image(
-                    tensor, save_file, nrow=nrow, normalize=normalize, 
-                    value_range=value_range, **format_info['params']
-                )
+                was_uint8 = tensor.dtype == torch.uint8
+                tensor = tensor.float().div_(255.0) if was_uint8 else tensor.clamp(min(value_range), max(value_range))
+                torchvision.utils.save_image(tensor, save_file, nrow=nrow, normalize=False if was_uint8 else normalize, value_range=value_range, **format_info['params'])
             break
         except Exception as e:
             error = e

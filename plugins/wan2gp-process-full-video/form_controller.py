@@ -87,8 +87,11 @@ class InitialFormPatch:
     form_state: ProcessFormState
     overlap_step: int
     overlap_max: int
+    overlap_visible: bool
     process_strength_visible: bool
     target_ratio_visible: bool
+    target_ratio_label: str
+    target_ratio_choices: list[tuple[str, str]]
 
 
 RESTORED_FORM_OUTPUT_COUNT = 12
@@ -154,6 +157,10 @@ class ProcessFormController:
             else (default_process_values[0] if default_process_values else catalog.DEFAULT_PROCESS_NAME)
         )
         form_state = self.build_form_state(default_process_name, saved_ui_settings, main_state, initial_user_refs)
+        default_rules = self.library.process_frame_rules(default_process_name, main_state, initial_user_refs)
+        target_control_choices = self.library.target_control_choices(default_process_name, main_state, initial_user_refs)
+        has_target_control = len(target_control_choices) > 0
+        overlap_visible = not self.library.hides_sliding_window_overlap(default_process_name, main_state, initial_user_refs)
         self.default_model_type = default_model_type
         return InitialFormPatch(
             model_type_choices=self.library.model_type_choices(initial_user_refs),
@@ -161,10 +168,13 @@ class ProcessFormController:
             model_type=default_model_type,
             process_name=default_process_name,
             form_state=form_state,
-            overlap_step=frames.get_vae_temporal_latent_size(default_model_type, self.get_model_def),
-            overlap_max=frames.get_overlap_slider_max(default_model_type, self.get_model_def),
+            overlap_step=default_rules.frame_step,
+            overlap_max=frames.get_overlap_slider_max(default_model_type, self.get_model_def) if overlap_visible else 1,
+            overlap_visible=overlap_visible,
             process_strength_visible=self.library.is_process_strength_visible(default_process_name, main_state, initial_user_refs),
-            target_ratio_visible=self.library.has_process_outpaint(default_process_name, main_state, initial_user_refs),
+            target_ratio_visible=has_target_control or self.library.has_process_outpaint(default_process_name, main_state, initial_user_refs),
+            target_ratio_label=self.library.target_control_label(default_process_name, main_state, initial_user_refs) if has_target_control else "Target Ratio",
+            target_ratio_choices=target_control_choices if has_target_control else ui_constants.RATIO_CHOICES,
         )
 
     def user_settings_hint_update(self, process_choices: list[tuple[str, str]]):
@@ -178,8 +188,15 @@ class ProcessFormController:
         return gr.update(visible=add_visible), gr.update(visible=delete_visible), gr.update(visible=placeholder_visible)
 
     def target_ratio_update(self, process_name: str, main_state: dict | None, user_refs: list[str] | None, target_ratio: str | None = None):
+        target_control_choices = self.library.target_control_choices(process_name, main_state, user_refs)
+        if len(target_control_choices) > 0:
+            values = {value for _label, value in target_control_choices}
+            value = str(target_ratio or "").strip()
+            if value not in values:
+                value = self.library.target_control_default(process_name, main_state, user_refs)
+            return gr.update(label=self.library.target_control_label(process_name, main_state, user_refs), value=value, visible=True, choices=target_control_choices)
         visible = self.library.has_process_outpaint(process_name, main_state, user_refs)
-        return gr.update(value=target_ratio if visible else "", visible=visible, choices=ui_constants.RATIO_CHOICES if visible else ui_constants.RATIO_CHOICES_WITH_EMPTY)
+        return gr.update(label="Target Ratio", value=target_ratio if visible else "", visible=visible, choices=ui_constants.RATIO_CHOICES if visible else ui_constants.RATIO_CHOICES_WITH_EMPTY)
 
     def process_strength_update(self, process_name: str, main_state: dict | None, user_refs: list[str] | None, process_strength: float | None = None):
         process_definition = self.library.process_definition(process_name, main_state, user_refs)
@@ -194,6 +211,8 @@ class ProcessFormController:
         return gr.update(value=value, visible=visible, minimum=minimum, maximum=maximum)
 
     def overlap_control_updates(self, process_name: str, main_state: dict | None, user_refs: list[str] | None):
+        if self.library.hides_sliding_window_overlap(process_name, main_state, user_refs):
+            return gr.update(minimum=0, maximum=1, step=1, value=0, visible=False)
         process_definition = self.library.process_definition_or_default(process_name, main_state, user_refs)
         settings = process_definition.get("settings", {})
         model_type = str(settings.get("model_type") or "")
@@ -201,14 +220,15 @@ class ProcessFormController:
         maximum = frames.get_overlap_slider_max(model_type, self.get_model_def)
         value = common.coerce_int(settings.get("sliding_window_overlap"), 1, minimum=1)
         value = self._fit_overlap_slider_value(frames.normalize_overlap_frames(value, frame_step=step), maximum)
-        return gr.update(minimum=1, maximum=maximum, step=step, value=value)
+        return gr.update(minimum=1, maximum=maximum, step=step, value=value, visible=True)
 
     def build_form_state(self, process_name: str, raw_state: dict | None = None, main_state: dict | None = None, user_refs: list[str] | None = None) -> ProcessFormState:
         process_definition = self.library.process_definition_or_default(process_name, main_state, user_refs)
         process_settings = process_definition.get("settings", {})
         model_type = str(process_settings.get("model_type") or catalog.DEFAULT_MODEL_TYPE)
-        step = frames.get_vae_temporal_latent_size(model_type, self.get_model_def)
-        maximum = frames.get_overlap_slider_max(model_type, self.get_model_def)
+        frame_rules = self.library.process_frame_rules(process_name, main_state, user_refs)
+        step = int(frame_rules.frame_step)
+        maximum = frames.get_overlap_slider_max(model_type, self.get_model_def) if not self.library.hides_sliding_window_overlap(process_name, main_state, user_refs) else 1
         raw_state = raw_state if isinstance(raw_state, dict) else {}
 
         default_strength = common.get_default_process_strength(process_settings)
@@ -216,10 +236,21 @@ class ProcessFormController:
         process_strength = default_strength if saved_process_strength is None else common.coerce_float(saved_process_strength, default_strength)
         source_audio_track = str(raw_state.get("source_audio_track") or "").strip()
         output_resolution = str(raw_state.get("output_resolution") or "").strip()
-        target_ratio = str(raw_state.get("target_ratio") or "4:3").strip()
-        overlap_default = self._fit_overlap_slider_value(frames.normalize_overlap_frames(common.coerce_int(process_settings.get("sliding_window_overlap"), 1, minimum=1), frame_step=step), maximum)
-        overlap_value = common.coerce_int(raw_state.get("sliding_window_overlap"), overlap_default, minimum=1)
-        sliding_window_overlap = self._fit_overlap_slider_value(frames.normalize_overlap_frames(overlap_value, frame_step=step), maximum)
+        target_control_choices = self.library.target_control_choices(process_name, main_state, user_refs)
+        if len(target_control_choices) > 0:
+            target_values = {value for _label, value in target_control_choices}
+            target_ratio = str(raw_state.get("target_ratio") or process_settings.get("target_ratio") or self.library.target_control_default(process_name, main_state, user_refs)).strip()
+            if target_ratio not in target_values:
+                target_ratio = self.library.target_control_default(process_name, main_state, user_refs)
+        else:
+            target_ratio = str(raw_state.get("target_ratio") or "4:3").strip()
+        if self.library.hides_sliding_window_overlap(process_name, main_state, user_refs):
+            sliding_window_overlap = 0
+        else:
+            overlap_default = self._fit_overlap_slider_value(frames.normalize_overlap_frames(common.coerce_int(process_settings.get("sliding_window_overlap"), 1, minimum=1), frame_step=step), maximum)
+            overlap_value = common.coerce_int(raw_state.get("sliding_window_overlap"), overlap_default, minimum=1)
+            sliding_window_overlap = self._fit_overlap_slider_value(frames.normalize_overlap_frames(overlap_value, frame_step=step), maximum)
+        default_chunk_size_seconds = self.library.default_chunk_size_seconds(process_name, main_state, user_refs)
 
         return ProcessFormState(
             process_model_type=model_type,
@@ -231,8 +262,8 @@ class ProcessFormController:
             continue_enabled=common.coerce_bool(raw_state.get("continue_enabled"), True),
             source_audio_track=source_audio_track if source_audio_track in self.source_audio_track_values else "",
             output_resolution=output_resolution if output_resolution in self.output_resolution_values else "720p",
-            target_ratio=target_ratio if target_ratio in self.ratio_values else "4:3",
-            chunk_size_seconds=common.coerce_float(raw_state.get("chunk_size_seconds"), 10.0, minimum=0.1),
+            target_ratio=target_ratio if len(target_control_choices) > 0 or target_ratio in self.ratio_values else "4:3",
+            chunk_size_seconds=common.coerce_float(raw_state.get("chunk_size_seconds"), default_chunk_size_seconds, minimum=0.1),
             sliding_window_overlap=sliding_window_overlap,
             start_seconds="" if raw_state.get("start_seconds") in (None, "") else str(raw_state.get("start_seconds")),
             end_seconds="" if raw_state.get("end_seconds") in (None, "") else str(raw_state.get("end_seconds")),

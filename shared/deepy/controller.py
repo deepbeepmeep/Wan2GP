@@ -88,6 +88,11 @@ class DeepyController:
         except Exception:
             return 0
 
+    def _debug_log(self, message: str) -> None:
+        if self.get_verbose_level() >= 2:
+            with deepy_log_scope(start_if_needed=True):
+                print(f"[AssistantController] {message}")
+
     def _sync_debug_enabled(self) -> bool:
         try:
             debug_enabled = int(self._deps.get_verbose_level() or 0) >= 2
@@ -293,16 +298,19 @@ class DeepyController:
         user_message_id, _user_event = assistant_chat.add_user_message(session, ask_request, queued=queued)
         if precreate_assistant_turn:
             assistant_turn_id = assistant_chat.create_assistant_turn(session)
+        self._debug_log(f"Request enqueued user_message_id={user_message_id} queued={bool(queued)} queued_jobs={int(session.queued_job_count or 0)} precreated_turn={bool(precreate_assistant_turn)}")
 
         def queue_worker_func():
             with deepy_log_scope(start_if_needed=True):
                 started_turn = False
                 if queued_epoch != session.chat_epoch:
+                    self._debug_log(f"Worker skipped stale request user_message_id={user_message_id} queued_epoch={queued_epoch} chat_epoch={session.chat_epoch}")
                     if session.control_queue is output_queue:
                         session.control_queue = None
                     raw_send_cmd("exit", None)
                     return
                 if int(session.queued_cancel_count or 0) > 0:
+                    self._debug_log(f"Worker cancelled queued request user_message_id={user_message_id}")
                     session.queued_cancel_count = max(0, int(session.queued_cancel_count or 0) - 1)
                     assistant_chat.set_message_badge(session, user_message_id, "Interrupted")
                     if session.control_queue is output_queue and session.queued_job_count <= 0:
@@ -319,6 +327,7 @@ class DeepyController:
                 session.control_queue = output_queue
                 session.worker_active = True
                 self._active_assistant_session = session
+                self._debug_log(f"Worker starting user_message_id={user_message_id} queued_jobs={int(session.queued_job_count or 0)}")
                 begin_assistant_turn(session, user_message_id, ask_request)
                 started_turn = True
                 assistant_chat.set_message_badge(session, user_message_id, None)
@@ -327,6 +336,7 @@ class DeepyController:
                 send_cmd("chat_output", assistant_chat.build_sync_event(session))
                 my_tools = self.create_tools(state, send_cmd, session=session)
                 try:
+                    self._debug_log(f"Prompt enhancer dispatch starting user_message_id={user_message_id}")
                     self._deps.exec_prompt_enhancer_engine(state, "", None, "AK", [ask_request], None, None, False, False, 0, None, 3.5, send_cmd, my_tools)
                 except Exception as e:
                     traceback.print_exc()
@@ -350,6 +360,7 @@ class DeepyController:
                         raw_send_cmd("chat_output", assistant_chat.build_sync_event(session))
                         if has_more_work:
                             raw_send_cmd("chat_output", assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued"))
+                    self._debug_log(f"Worker finished user_message_id={user_message_id} stale={bool(stale_turn)} has_more_work={bool(has_more_work)} queued_jobs={int(session.queued_job_count or 0)}")
                     session.interrupt_requested = False
                     if not has_more_work:
                         raw_send_cmd("exit", None)
@@ -422,7 +433,7 @@ class DeepyController:
             )
 
     def ask_ai(self, state, ask_request):
-        self._sync_debug_enabled()
+        debug_enabled = self._sync_debug_enabled()
 
         def get_refresh_id():
             return str(time.time()) + "_" + str(self._deps.get_new_refresh_id())
@@ -441,12 +452,20 @@ class DeepyController:
         foreign_session_reset = self._reset_foreign_active_session(session)
         request_blocks = self._expand_assistant_requests(session, ask_request)
         if len(request_blocks) == 0:
+            if debug_enabled:
+                self._debug_log("Request ignored because it was empty after normalization.")
             yield gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
             return
+        if debug_enabled:
+            self._debug_log(f"Request received blocks={len(request_blocks)} worker_active={bool(session.worker_active)} queued_jobs={int(session.queued_job_count or 0)} foreign_session_reset={bool(foreign_session_reset)}")
         if session.drop_state_requested:
+            if debug_enabled:
+                self._debug_log("Request held because a Deepy reset is pending.")
             yield assistant_chat.build_status_event("Resetting after the current work stops...", kind="queued"), gr.update(), gr.update(value=""), gr.update(), gr.update()
             return
         if not self.is_available():
+            if debug_enabled:
+                self._debug_log(f"Request rejected: {self.requirement_error_text()}")
             error_turn_id = assistant_chat.create_assistant_turn(session)
             error_event = assistant_chat.set_assistant_content(session, error_turn_id, self.requirement_error_text())
             yield error_event if error_event is not None else gr.update(), gr.update(), gr.update(value=""), gr.update(), gr.update()

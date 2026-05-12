@@ -343,11 +343,11 @@ def _compile_speak_xml(xml_text: str, voice_override: str | None = None) -> _Com
     shot_prefix = {"closeup": "Close-up in", "wide": "Wide shot of", "scene": ""}.get(shot, "Close-up in")
     scene_mode = shot in {"wide", "scene"}
     pronoun = "She" if gender == "female" else "He"
-    speaker_intro = _speaker_intro_for_gender(gender) if explicit_gender and not scene_mode else ""
 
     parts = [f"{shot_prefix} {scene}." if shot_prefix else f"{scene}."]
     blocks = _extract_speak_blocks(root)
     has_action = any(isinstance(block, _ActionBlock) for block in blocks)
+    speaker_intro = _speaker_intro_for_gender(gender) if explicit_gender and not scene_mode else ""
     first_speech = True
     speech_texts = []
     for block in blocks:

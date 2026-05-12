@@ -86,6 +86,7 @@ piexif
 nvidia-ml-py 
 misaki
 phonemizer
+espeakng-loader
 gitdb==4.0.12 
 gitpython==3.1.45
 stringzilla==4.0.14

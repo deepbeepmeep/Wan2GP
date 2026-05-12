@@ -72,7 +72,7 @@ SCENEMA_FALLBACK_WORDS_PER_SECOND = 2.2
 SCENEMA_REF_TAIL_SECONDS = 3.0
 SCENEMA_BOUNDARY_PUNCTUATION = ".!?"
 SCENEMA_TRIM_EXTRA_WORDS = True
-SCENEMA_DEBUG_PROMPT = True
+SCENEMA_DEBUG_PROMPT = False
 SCENEMA_ALIGNMENT_SILENCE_THRESHOLD = 0.015
 SCENEMA_TRANSIENT_SILENCE_THRESHOLD = 0.006
 SCENEMA_ISOLATED_TRANSIENT_THRESHOLD = 0.01
@@ -401,11 +401,18 @@ def _get_kokoro():
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=FutureWarning, message=r"`torch\.nn\.utils\.weight_norm` is deprecated.*")
             _kokoro_pipeline = KPipeline(lang_code="a", device="cpu", repo_id=fl.locate_folder(SCENEMA_KOKORO_FOLDER))
+        kokoro_model = getattr(_kokoro_pipeline, "model", None)
+        if kokoro_model is not None:
+            kokoro_model._model_dtype = torch.float32
         _kokoro_available = True
         return _kokoro_pipeline
     except Exception as exc:
         _kokoro_available = False
         raise RuntimeError(f"Kokoro TTS is required for Scenema Audio duration estimation. Error: {exc}") from exc
+
+
+def get_scenema_kokoro_model() -> torch.nn.Module | None:
+    return getattr(_get_kokoro(), "model", None)
 
 
 def _kokoro_voice_path() -> str:

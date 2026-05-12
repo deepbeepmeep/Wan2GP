@@ -322,7 +322,7 @@ class family_handler:
         profile=0,
         **kwargs,
     ):
-        from .scenema_audio import ScenemaAudioPipeline
+        from .scenema_audio import ScenemaAudioPipeline, get_scenema_kokoro_model
 
         weights_path = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename
         if not text_encoder_filename:
@@ -333,6 +333,7 @@ class family_handler:
         text_connector_path = fl.locate_file(LTX23_EMBEDDINGS_CONNECTOR_FILENAME)
         config_path = os.path.join(os.path.dirname(__file__), "configs", "ltx2_22b_config.json")
         alignment_whisper = _load_alignment_whisper()
+        kokoro_model = get_scenema_kokoro_model()
         seedvc_model = seedvc.get_model(dtype=torch.float16)
         seedvc_pipe = seedvc.get_pipe(profile_no=profile, model=seedvc_model)
 
@@ -359,6 +360,8 @@ class family_handler:
             "vocoder": pipeline.vocoder,
             "alignment_whisper": alignment_whisper,
         }
+        if kokoro_model is not None:
+            pipe["kokoro"] = kokoro_model
         pipe.update(seedvc_pipe)
         pipe = {"pipe": pipe, "coTenantsMap": seedvc.get_cotenants_map(seedvc_pipe)}
 

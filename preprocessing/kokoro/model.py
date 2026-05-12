@@ -101,7 +101,7 @@ class KModel(torch.nn.Module):
             dtype=torch.long
         )
 
-        text_mask = torch.arange(input_lengths.max()).unsqueeze(0).expand(input_lengths.shape[0], -1).type_as(input_lengths)
+        text_mask = torch.arange(int(input_lengths.max().item()), device=input_lengths.device).unsqueeze(0).expand(input_lengths.shape[0], -1)
         text_mask = torch.gt(text_mask+1, input_lengths.unsqueeze(1)).to(self.device)
         bert_dur = self.bert(input_ids, attention_mask=(~text_mask).int())
         d_en = self.bert_encoder(bert_dur).transpose(-1, -2)
@@ -113,7 +113,7 @@ class KModel(torch.nn.Module):
         pred_dur = torch.round(duration).clamp(min=1).long().squeeze()
         indices = torch.repeat_interleave(torch.arange(input_ids.shape[1], device=self.device), pred_dur)
         pred_aln_trg = torch.zeros((input_ids.shape[1], indices.shape[0]), device=self.device)
-        pred_aln_trg[indices, torch.arange(indices.shape[0])] = 1
+        pred_aln_trg[indices, torch.arange(indices.shape[0], device=indices.device)] = 1
         pred_aln_trg = pred_aln_trg.unsqueeze(0).to(self.device)
         en = d.transpose(-1, -2) @ pred_aln_trg
         F0_pred, N_pred = self.predictor.F0Ntrain(en, s)

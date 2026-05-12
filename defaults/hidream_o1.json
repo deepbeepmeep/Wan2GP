@@ -9,7 +9,7 @@
         ]
     },
     "prompt": "A tiny porcelain robot arranging wildflowers on a sunlit kitchen table, crisp details, natural colors",
-    "resolution": "1024x1024",
+    "resolution": "1920x1088",
     "batch_size": 1,
     "num_inference_steps": 50,
     "guidance_scale": 5,

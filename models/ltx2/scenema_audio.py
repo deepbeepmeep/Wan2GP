@@ -4,6 +4,7 @@ import os
 import random
 import re
 import unicodedata
+import warnings
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, replace
 from typing import Optional
@@ -397,7 +398,9 @@ def _get_kokoro():
     if _kokoro_pipeline is not None:
         return _kokoro_pipeline
     try:
-        _kokoro_pipeline = KPipeline(lang_code="a", device="cpu", repo_id=fl.locate_folder(SCENEMA_KOKORO_FOLDER))
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=FutureWarning, message=r"`torch\.nn\.utils\.weight_norm` is deprecated.*")
+            _kokoro_pipeline = KPipeline(lang_code="a", device="cpu", repo_id=fl.locate_folder(SCENEMA_KOKORO_FOLDER))
         _kokoro_available = True
         return _kokoro_pipeline
     except Exception as exc:

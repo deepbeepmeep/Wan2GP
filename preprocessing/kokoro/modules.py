@@ -139,7 +139,7 @@ class DurationEncoder(nn.Module):
         super().__init__()
         self.lstms = nn.ModuleList()
         for _ in range(nlayers):
-            self.lstms.append(nn.LSTM(d_model + sty_dim, d_model // 2, num_layers=1, batch_first=True, bidirectional=True, dropout=dropout))
+            self.lstms.append(nn.LSTM(d_model + sty_dim, d_model // 2, num_layers=1, batch_first=True, bidirectional=True))
             self.lstms.append(AdaLayerNorm(sty_dim, d_model))
         self.dropout = dropout
         self.d_model = d_model

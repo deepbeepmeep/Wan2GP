@@ -4,7 +4,6 @@ import os
 import random
 import re
 import unicodedata
-import warnings
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, replace
 from typing import Optional
@@ -17,7 +16,6 @@ from mmgp import offload
 from mmgp import offload as mmgp_offload
 from tqdm import tqdm
 
-from preprocessing.kokoro import KPipeline
 from shared.utils import files_locator as fl
 from shared.utils.audio_cleaning import ensure_trailing_silence, mute_isolated_transient_noise, trim_after_silence_boundary, trim_leading_noise_before_speech, trim_leading_transient_noise, trim_trailing_transient_noise
 from shared.utils.text_encoder_cache import TextEncoderCache
@@ -86,8 +84,6 @@ SCENEMA_CHUNK_BOUNDARY_MIN_SILENCE_SECONDS = 0.18
 SCENEMA_CHUNK_BOUNDARY_KEEP_SILENCE_SECONDS = 0.12
 SCENEMA_KOKORO_FOLDER = "kokoro"
 SCENEMA_KOKORO_VOICE = "af_heart.pt"
-_kokoro_pipeline = None
-_kokoro_available = None
 
 
 @dataclass
@@ -99,6 +95,7 @@ class _CompiledPrompt:
     language: str
     gender: str
     shot: str
+    explicit_gender: bool
 
 
 @dataclass
@@ -169,6 +166,15 @@ def _voice_with_explicit_gender(voice: str, gender: str, explicit_gender: bool) 
     if re.search(pattern, voice, flags=re.IGNORECASE):
         return voice
     return _clean_spaces(f"{prefix}, {voice}") if voice else prefix
+
+
+def _speaker_intro_for_gender(gender: str) -> str:
+    gender = _clean_spaces(gender).lower()
+    if gender == "female":
+        return "A woman says"
+    if gender == "male":
+        return "A man says"
+    return "The speaker says"
 
 
 def _normalize_speaker_id(value) -> int:
@@ -337,6 +343,7 @@ def _compile_speak_xml(xml_text: str, voice_override: str | None = None) -> _Com
     shot_prefix = {"closeup": "Close-up in", "wide": "Wide shot of", "scene": ""}.get(shot, "Close-up in")
     scene_mode = shot in {"wide", "scene"}
     pronoun = "She" if gender == "female" else "He"
+    speaker_intro = _speaker_intro_for_gender(gender) if explicit_gender and not scene_mode else ""
 
     parts = [f"{shot_prefix} {scene}." if shot_prefix else f"{scene}."]
     blocks = _extract_speak_blocks(root)
@@ -353,6 +360,8 @@ def _compile_speak_xml(xml_text: str, voice_override: str | None = None) -> _Com
             speech_texts.append(speech)
             if scene_mode and first_speech and not has_action:
                 parts.append(f'{pronoun} speaks: "{speech}"')
+            elif speaker_intro and first_speech:
+                parts.append(f'{speaker_intro}: "{speech}"')
             else:
                 parts.append(f'"{speech}"')
             first_speech = False
@@ -368,6 +377,7 @@ def _compile_speak_xml(xml_text: str, voice_override: str | None = None) -> _Com
         language=_clean_spaces(root.get("language") or "en"),
         gender=gender,
         shot=shot,
+        explicit_gender=explicit_gender,
     )
 
 
@@ -388,48 +398,24 @@ def compile_scenema_prompt(text: str, voice_instruction: str | None = None) -> _
         language="en",
         gender="male",
         shot="closeup",
+        explicit_gender=False,
     )
-
-
-def _get_kokoro():
-    global _kokoro_pipeline, _kokoro_available
-    if _kokoro_available is False:
-        return None
-    if _kokoro_pipeline is not None:
-        return _kokoro_pipeline
-    try:
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=FutureWarning, message=r"`torch\.nn\.utils\.weight_norm` is deprecated.*")
-            _kokoro_pipeline = KPipeline(lang_code="a", device="cpu", repo_id=fl.locate_folder(SCENEMA_KOKORO_FOLDER))
-        kokoro_model = getattr(_kokoro_pipeline, "model", None)
-        if kokoro_model is not None:
-            kokoro_model._model_dtype = torch.float32
-        _kokoro_available = True
-        return _kokoro_pipeline
-    except Exception as exc:
-        _kokoro_available = False
-        raise RuntimeError(f"Kokoro TTS is required for Scenema Audio duration estimation. Error: {exc}") from exc
-
-
-def get_scenema_kokoro_model() -> torch.nn.Module | None:
-    return getattr(_get_kokoro(), "model", None)
 
 
 def _kokoro_voice_path() -> str:
     return fl.locate_file(os.path.join(SCENEMA_KOKORO_FOLDER, "voices", SCENEMA_KOKORO_VOICE))
 
 
-def _kokoro_duration(text: str) -> float | None:
+def _kokoro_duration(text: str, kokoro_pipeline=None) -> float | None:
     text = _clean_spaces(text)
     if not text:
         return 0.0
-    pipe = _get_kokoro()
-    if pipe is None:
+    if kokoro_pipeline is None:
         return None
     voice_path = _kokoro_voice_path()
     try:
         total_frames = 0
-        for result in pipe(text, voice=voice_path):
+        for result in kokoro_pipeline(text, voice=voice_path):
             audio = getattr(result, "audio", None)
             if audio is None and isinstance(result, (tuple, list)) and len(result) >= 3:
                 audio = result[2]
@@ -455,27 +441,27 @@ def _split_into_sentences(text: str) -> list[str]:
     return sentences
 
 
-def _estimate_sentence_durations(sentences: list[str]) -> list[float]:
+def _estimate_sentence_durations(sentences: list[str], kokoro_pipeline=None) -> list[float]:
     durations = []
     for sentence in sentences:
-        duration = _kokoro_duration(sentence)
+        duration = _kokoro_duration(sentence, kokoro_pipeline)
         if duration is None:
             duration = len(sentence.split()) / SCENEMA_FALLBACK_WORDS_PER_SECOND + 0.3
         durations.append(duration)
     return durations
 
 
-def _split_text_by_duration(text: str, multiplier: float, max_duration: float = SCENEMA_MAX_CHUNK_DURATION_SECONDS) -> list[tuple[str, float]]:
+def _split_text_by_duration(text: str, multiplier: float, max_duration: float = SCENEMA_MAX_CHUNK_DURATION_SECONDS, kokoro_pipeline=None) -> list[tuple[str, float]]:
     sentences = _split_into_sentences(text)
     if not sentences:
         return []
 
     expanded = []
     for sentence in sentences:
-        duration = _estimate_sentence_durations([sentence])[0]
+        duration = _estimate_sentence_durations([sentence], kokoro_pipeline)[0]
         if duration * multiplier > max_duration and "," in sentence:
             clauses = [clause.strip() for clause in sentence.split(",") if clause.strip()]
-            clause_durations = _estimate_sentence_durations(clauses)
+            clause_durations = _estimate_sentence_durations(clauses, kokoro_pipeline)
             sub_texts = []
             sub_duration = 0.0
             for clause, clause_duration in zip(clauses, clause_durations):
@@ -490,7 +476,7 @@ def _split_text_by_duration(text: str, multiplier: float, max_duration: float = 
         else:
             expanded.append(sentence)
 
-    durations = _estimate_sentence_durations(expanded)
+    durations = _estimate_sentence_durations(expanded, kokoro_pipeline)
     chunks = []
     current_texts = []
     current_duration = 0.0
@@ -531,14 +517,16 @@ def _compile_chunk_prompt(
     actions_before: list[str] | None = None,
     gender: str = "male",
     shot: str = "closeup",
+    explicit_gender: bool = False,
 ) -> str:
     attrs = {
         "voice": voice or SCENEMA_DEFAULT_VOICE,
-        "gender": gender or "male",
         "scene": scene or SCENEMA_DEFAULT_SCENE,
         "shot": shot or "closeup",
         "language": "en",
     }
+    if explicit_gender:
+        attrs["gender"] = gender or "male"
     pieces = [f"<speak {_format_xml_attrs(attrs)}>"]
     for action in actions_before or []:
         pieces.append(f"<action>{_escape_xml_text(action)}</action>")
@@ -547,13 +535,13 @@ def _compile_chunk_prompt(
     return _compile_speak_xml(" ".join(pieces)).prompt
 
 
-def _plan_xml_chunks(xml_text: str, speaker: int, base_seed: int, pace: float) -> list[_ChunkSpec]:
+def _plan_xml_chunks(xml_text: str, speaker: int, base_seed: int, pace: float, kokoro_pipeline=None) -> list[_ChunkSpec]:
     xml_text = _strip_speaker_attr(xml_text)
     compiled = compile_scenema_prompt(xml_text)
     if not compiled.speech_text.strip():
         raise ValueError("Scenema <speak> blocks must contain speech text.")
 
-    kokoro_duration = _kokoro_duration(compiled.speech_text)
+    kokoro_duration = _kokoro_duration(compiled.speech_text, kokoro_pipeline)
     if kokoro_duration is not None:
         total_duration = kokoro_duration * pace
     else:
@@ -572,7 +560,7 @@ def _plan_xml_chunks(xml_text: str, speaker: int, base_seed: int, pace: float) -
         ]
 
     sentence_action_map = _extract_sentence_actions(xml_text)
-    text_chunks = _split_text_by_duration(compiled.speech_text, multiplier=pace)
+    text_chunks = _split_text_by_duration(compiled.speech_text, multiplier=pace, kokoro_pipeline=kokoro_pipeline)
     global_sentence_idx = 0
     specs = []
     for chunk_idx, (chunk_text, chunk_duration) in enumerate(text_chunks):
@@ -584,6 +572,7 @@ def _plan_xml_chunks(xml_text: str, speaker: int, base_seed: int, pace: float) -
             actions_before=actions_before,
             gender=compiled.gender,
             shot=compiled.shot,
+            explicit_gender=compiled.explicit_gender,
         )
         specs.append(
             _ChunkSpec(
@@ -599,14 +588,14 @@ def _plan_xml_chunks(xml_text: str, speaker: int, base_seed: int, pace: float) -
     return specs
 
 
-def _plan_prompt_chunks(text: str, voice_instruction: str | None, base_seed: int, pace: float, debug_prompt: bool = False) -> list[_ChunkSpec]:
+def _plan_prompt_chunks(text: str, voice_instruction: str | None, base_seed: int, pace: float, debug_prompt: bool = False, kokoro_pipeline=None) -> list[_ChunkSpec]:
     blocks = _prepare_prompt_blocks(text, voice_instruction)
     chunks = []
     for block_index, block in enumerate(blocks):
         compiler_xml = _strip_speaker_attr(block.xml_text)
         if debug_prompt:
             print(f"[Scenema Audio] XML block {block_index + 1}/{len(blocks)} (Speaker {block.speaker}):\n{compiler_xml}")
-        planned = _plan_xml_chunks(compiler_xml, block.speaker, base_seed + len(chunks) * 1000, pace)
+        planned = _plan_xml_chunks(compiler_xml, block.speaker, base_seed + len(chunks) * 1000, pace, kokoro_pipeline=kokoro_pipeline)
         if debug_prompt:
             for chunk_index, chunk in enumerate(planned):
                 print(f"[Scenema Audio] Compiled chunk {chunk_index + 1}/{len(planned)} (Speaker {chunk.speaker}, {chunk.duration_s:.2f}s): {chunk.compiled_prompt}")
@@ -957,6 +946,7 @@ class ScenemaAudioPipeline:
         gemma_path: str,
         config_path: str | None = None,
         alignment_whisper: torch.nn.Module | None = None,
+        kokoro_pipeline=None,
         seedvc=None,
         device: torch.device | None = None,
         dtype: torch.dtype = torch.bfloat16,
@@ -964,6 +954,7 @@ class ScenemaAudioPipeline:
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = dtype or torch.bfloat16
         self.alignment_whisper = alignment_whisper
+        self.kokoro_pipeline = kokoro_pipeline
         self.seedvc = seedvc
         self._interrupt = False
         self._early_stop = False
@@ -1419,7 +1410,7 @@ class ScenemaAudioPipeline:
 
         if set_progress_status is not None:
             set_progress_status("Planning Audio Chunks")
-        chunks = _limit_chunks_to_duration(_plan_prompt_chunks(text, voice_instruction, seed, pace, debug_prompt=debug_prompt), duration_seconds)
+        chunks = _limit_chunks_to_duration(_plan_prompt_chunks(text, voice_instruction, seed, pace, debug_prompt=debug_prompt, kokoro_pipeline=self.kokoro_pipeline), duration_seconds)
         if not chunks:
             raise ValueError("Scenema Audio prompt produced no chunks.")
 

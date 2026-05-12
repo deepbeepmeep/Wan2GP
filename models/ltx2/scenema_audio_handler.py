@@ -1,5 +1,6 @@
 import os
 import re
+import warnings
 
 import torch
 
@@ -218,6 +219,22 @@ def _load_alignment_whisper():
     return alignment_whisper
 
 
+def _load_kokoro_pipeline():
+    from preprocessing.kokoro import KPipeline
+
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=FutureWarning, message=r"`torch\.nn\.utils\.weight_norm` is deprecated.*")
+            kokoro_pipeline = KPipeline(lang_code="a", device="cpu", repo_id=fl.locate_folder(SCENEMA_KOKORO_DIR))
+    except Exception as exc:
+        raise RuntimeError(f"Kokoro TTS is required for Scenema Audio duration estimation. Error: {exc}") from exc
+    kokoro_model = getattr(kokoro_pipeline, "model", None)
+    if kokoro_model is None:
+        raise RuntimeError("Kokoro TTS is required for Scenema Audio duration estimation.")
+    kokoro_model._model_dtype = torch.float32
+    return kokoro_pipeline
+
+
 class family_handler:
     @staticmethod
     def query_supported_types():
@@ -322,7 +339,7 @@ class family_handler:
         profile=0,
         **kwargs,
     ):
-        from .scenema_audio import ScenemaAudioPipeline, get_scenema_kokoro_model
+        from .scenema_audio import ScenemaAudioPipeline
 
         weights_path = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename
         if not text_encoder_filename:
@@ -333,7 +350,8 @@ class family_handler:
         text_connector_path = fl.locate_file(LTX23_EMBEDDINGS_CONNECTOR_FILENAME)
         config_path = os.path.join(os.path.dirname(__file__), "configs", "ltx2_22b_config.json")
         alignment_whisper = _load_alignment_whisper()
-        kokoro_model = get_scenema_kokoro_model()
+        kokoro_pipeline = _load_kokoro_pipeline()
+        kokoro_model = kokoro_pipeline.model
         seedvc_model = seedvc.get_model(dtype=torch.float16)
         seedvc_pipe = seedvc.get_pipe(profile_no=profile, model=seedvc_model)
 
@@ -346,6 +364,7 @@ class family_handler:
             gemma_path=text_encoder_filename,
             config_path=config_path,
             alignment_whisper=alignment_whisper,
+            kokoro_pipeline=kokoro_pipeline,
             seedvc=seedvc_model,
             device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
             dtype=dtype or torch.bfloat16,
@@ -359,9 +378,8 @@ class family_handler:
             "audio_decoder": pipeline.audio_decoder,
             "vocoder": pipeline.vocoder,
             "alignment_whisper": alignment_whisper,
+            "kokoro": kokoro_model,
         }
-        if kokoro_model is not None:
-            pipe["kokoro"] = kokoro_model
         pipe.update(seedvc_pipe)
         pipe = {"pipe": pipe, "coTenantsMap": seedvc.get_cotenants_map(seedvc_pipe)}
 

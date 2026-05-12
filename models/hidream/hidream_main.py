@@ -222,6 +222,7 @@ class model_factory:
         loras_selected=None,
         frames_relative_positions_list=None,
         frames_to_inject=None,
+        **kwargs
     ):
         self._set_interrupt(False)
         is_dev = self.base_model_type == "hidream_o1_dev"

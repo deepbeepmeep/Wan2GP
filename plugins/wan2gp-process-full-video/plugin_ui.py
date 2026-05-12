@@ -264,7 +264,7 @@ def create_config_ui(self, api_session):
             output_path = gr.Textbox(label="Output File Path File (None for auto, Full Name or Target Folder)", value=default_state.output_path, scale=3)
             continue_enabled = gr.Checkbox(label="Continue", value=default_state.continue_enabled, elem_classes="cbx_bottom", scale=1)
         with gr.Row():
-            output_resolution = gr.Dropdown(output_resolution_choices, value=default_state.output_resolution, label="Output Resolution")
+            output_resolution = gr.Dropdown(output_resolution_choices, value=default_state.output_resolution, label="Output Resolution", visible=initial_form.output_resolution_visible)
             target_ratio = gr.Dropdown(initial_form.target_ratio_choices if initial_form.target_ratio_visible else ui_constants.RATIO_CHOICES_WITH_EMPTY, value=default_state.target_ratio if initial_form.target_ratio_visible else "", label=initial_form.target_ratio_label, visible=initial_form.target_ratio_visible)
             default_process_strength = 1.0 if initial_form.target_ratio_visible else default_state.process_strength
             process_strength = gr.Slider(label="Process Strength (LoRA Multiplier)", minimum=min(0.0, default_process_strength), maximum=max(3.0, default_process_strength), step=0.01, value=default_process_strength, visible=initial_form.process_strength_visible)
@@ -281,6 +281,7 @@ def create_config_ui(self, api_session):
                 value=default_state.prompt,
                 lines=1,
                 placeholder=prompts.TIMED_PROMPT_EXAMPLE,
+                visible=initial_form.prompt_visible,
             )
         with gr.Row():
             start_btn = gr.Button("Start Process")

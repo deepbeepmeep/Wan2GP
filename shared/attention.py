@@ -173,7 +173,8 @@ def sageattn3_wrapper(
 def sdpa_wrapper(
         qkv_list,
         attention_length,
-        attention_mask = None        
+        attention_mask = None,
+        causal = False,
     ):
     q, k, v = qkv_list
 
@@ -182,7 +183,7 @@ def sdpa_wrapper(
     v = v.transpose(1,2)
     if attention_mask != None:
         attention_mask = attention_mask.transpose(1,2)
-    o = F.scaled_dot_product_attention( q, k, v, attn_mask=attention_mask, is_causal=False).transpose(1,2)
+    o = F.scaled_dot_product_attention(q, k, v, attn_mask=attention_mask, is_causal=causal).transpose(1,2)
     del q, k ,v
     qkv_list.clear()
 
@@ -387,7 +388,7 @@ def pay_attention(
     elif attn=="sdpa":
         qkv_list = [q, k, v]
         del q ,k ,v
-        x = sdpa_wrapper( qkv_list, lq, attention_mask = attention_mask) #.unsqueeze(0)
+        x = sdpa_wrapper(qkv_list, lq, attention_mask=attention_mask, causal=causal)
     elif attn=="flash" and version == 3:
         x = flash_attn_interface.flash_attn_varlen_func(
             q=q,

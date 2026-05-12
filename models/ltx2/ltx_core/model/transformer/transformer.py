@@ -231,7 +231,10 @@ class BasicAVTransformerBlock(torch.nn.Module):
         audio: TransformerArgs | None,
         perturbations: BatchedPerturbationConfig | None = None,
     ) -> tuple[TransformerArgs | None, TransformerArgs | None]:
-        batch_size = video.x.shape[0]
+        source = video if video is not None else audio
+        if source is None:
+            raise ValueError("BasicAVTransformerBlock requires at least one modality.")
+        batch_size = source.x.shape[0]
         if perturbations is None:
             perturbations = BatchedPerturbationConfig.empty(batch_size)
 

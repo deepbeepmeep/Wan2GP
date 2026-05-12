@@ -33,6 +33,16 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
+### 12th of May 2026: WanGP v11.66, Can you keep up?
+
+- **HiDreamO1**: New Image Image model with editing capabilities is quite good to preserve identify and write text. WanGP version requires very Low VRAM and supports out of the Box *Control Image* & *Preview*.
+
+- **Omnivoice**: This *Text To Speech model* (TTS) is fast and supports 100 languages with voice cloning. WanGP offers as a bonus an experimental dialogue mode (not the best one since it is hard to predict when Omnivoice has finished generating)
+
+- **ScenemeAI**: A LTX2.3 derived *TTS* that leverages *LTX-2* world knowledge : it can produce lifelike audio generations since you can drive the audio generation by describing what a speaker is doing / saying. I have implemented on top a dialogue mode between any number of speakers (first two speakers support voice cloning) with very smooth transitions between speakers especially when generating English. You will find ScenemeAI among the *TTS models* but be aware it will use by default a *Video Memory Profile* since it uses LTX2 engine behind the scene. Don't hesitate to use WanGP *Prompt Enhancer* to generate lively dialogues.
+
+- **MPS / Apple Early Support**: Mac users are about to discover the world of WanGP albeit for start it wont be fast nor very optimized and not all models will be supported. Many thanks to *huangyebiaoke* (for the port), *cn0ss* & *SquishedSquirrel* (for the testing). Don't hesitate to report in the new *MPS* Discord channel your feedback if you are a mac user.
+
 ### 9th of May 2026: WanGP v11.61, The Last Mile
 
 With a slight (half year) delay WanGP supports now officially *FlashVSR* a very high quality *Spatial Upsampler* which can upsample up to 4x you videos. As FlashVSR has been almost entirely rewritten for WanGP, it can be branded as the *Ultimate Upsampler for the GPU Poor*, check these figures:

@@ -2,6 +2,7 @@ import re
 
 PROMPT_UNIT_PREFIX = "#!PROMPT!:"
 ENHANCED_PROMPT_PREFIX = "!enhanced!\n"
+SPEAKER_OPTIONS_LINE_RE = re.compile(r"^\s*Speaker\s*\d+\s*\{[^{}\n]*\}\s*:", re.IGNORECASE)
 
 def normalize_multi_prompts_mode(value):
     if value is None:
@@ -80,6 +81,9 @@ def serialize_prompt_blocks_with_prefix(prompts, original_prompts=None):
         original_prompt = original_prompts[idx - 1] if idx - 1 < len(original_prompts) else f"Prompt {idx}"
         blocks.append(f"{PROMPT_UNIT_PREFIX} {original_prompt.strip()}\n{prompt}")
     return "\n\n".join(blocks)
+
+def is_speaker_options_line(line):
+    return SPEAKER_OPTIONS_LINE_RE.search(line or "") is not None
 
 def process_template(input_text, keep_comments=False, keep_empty_lines=False):
     """
@@ -193,7 +197,7 @@ def process_template(input_text, keep_comments=False, keep_empty_lines=False):
         
         # Handle template lines
         else:
-            if not line.startswith('#'):
+            if not line.startswith('#') and not is_speaker_options_line(line):
                 # Check for unknown variables in template line
                 var_references = re.findall(r'\{([^}]+)\}', line)
                 for var_ref in var_references:

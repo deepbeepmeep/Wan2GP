@@ -121,3 +121,10 @@ def save_process_full_video_ui_settings(settings: dict) -> None:
     next_settings = dict(settings)
     next_settings[USER_SETTINGS_STORAGE_KEY] = user_refs
     save_process_full_video_settings(next_settings)
+
+
+def save_process_full_video_selection(process_model_type: str, process_name: str) -> None:
+    saved_settings = load_saved_process_full_video_settings()
+    saved_settings["process_model_type"] = str(process_model_type or "").strip()
+    saved_settings["process_name"] = str(process_name or "").strip()
+    save_process_full_video_settings(saved_settings)

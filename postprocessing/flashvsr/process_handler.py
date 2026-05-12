@@ -25,6 +25,8 @@ class FlashVSRProcessHandler:
     # FlashVSR's streaming output has an 11-frame tail that must be regenerated with the next source chunk before writing.
     overlap_frames = 11
     hide_sliding_window_overlap = True
+    hide_output_resolution = True
+    hide_prompt = True
 
     def get_overlap_frames(self, chunk_frames: int) -> int:
         return max(0, min(int(self.overlap_frames), int(chunk_frames) - 1))

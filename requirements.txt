@@ -28,7 +28,7 @@ speechbrain==1.0.3
 openai-whisper==20250625
 audio-separator==0.36.1
 pyannote.audio==3.3.2
-torchcodec
+torchcodec==0.10.0
 
 # UI & interaction
 gradio==5.29.0

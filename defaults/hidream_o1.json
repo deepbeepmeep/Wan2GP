@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "HiDream O1 Image",
+        "name": "HiDream O1 Image Full 10B",
         "architecture": "hidream_o1",
         "description": "HiDream O1 Image is an 8B unified image generation model that works directly in a shared text, pixel, and reference-image token space without a separate VAE or text encoder.",
         "URLs": [

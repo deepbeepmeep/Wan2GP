@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "HiDream O1 Image Dev",
+        "name": "HiDream O1 Image Dev 10B",
         "architecture": "hidream_o1_dev",
         "description": "HiDream O1 Image Dev is the distilled 8B HiDream O1 variant tuned for fewer inference steps.",
         "URLs": [

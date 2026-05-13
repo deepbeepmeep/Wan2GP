@@ -4,7 +4,6 @@ import torch.nn as nn
 from torch.nn import functional as F
 from .commons import sequence_mask
 import numpy as np
-from audiocodec.dac.nn.quantize import VectorQuantize
 
 # f0_bin = 256
 f0_max = 1100.0
@@ -85,6 +84,7 @@ class InterpolateRegulator(nn.Module):
         if not is_discrete:
             self.content_in_proj = nn.Linear(in_channels, channels)
             if vector_quantize:
+                from audiocodec.dac.nn.quantize import VectorQuantize
                 self.vq = VectorQuantize(channels, codebook_size, 8)
 
     def forward(self, x, ylens=None, n_quantizers=None, f0=None):

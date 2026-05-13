@@ -556,6 +556,181 @@ def open_terminal():
         linux_shell_cmd = f"bash --rcfile <(cat << 'EOF_WAN2GP'\n{rc_cmd}EOF_WAN2GP\n)"
         subprocess.run(linux_shell_cmd, shell=True, executable='/bin/bash')
 
+def switch_git_branch():
+    if not os.path.exists(".git"):
+        print("[!] Not a git repository. Cannot switch branches.")
+        input("Press Enter...")
+        return
+        
+    print("\n[*] Fetching latest branches from remote...")
+    try:
+        subprocess.run(["git", "fetch", "--prune"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        out = subprocess.check_output(["git", "branch", "-a"], encoding='utf-8')
+    except Exception as e:
+        print(f"[!] Git error: {e}")
+        input("Press Enter...")
+        return
+        
+    branches = set()
+    active_branch = ""
+    for line in out.splitlines():
+        line = line.strip()
+        if not line: continue
+        if "->" in line: continue
+        
+        is_active = line.startswith("*")
+        b = line.lstrip("* ").strip()
+        
+        if b.startswith("remotes/origin/"):
+            b = b[len("remotes/origin/"):]
+        elif b.startswith("remotes/"):
+            b = "/".join(b.split("/")[2:])
+            
+        if b and b != "HEAD":
+            branches.add(b)
+        if is_active:
+            active_branch = b
+            
+    branch_list = sorted(list(branches))
+    if not branch_list:
+        print("[!] No branches found.")
+        input("Press Enter...")
+        return
+        
+    print("\n--- Available Branches ---")
+    for i, b in enumerate(branch_list):
+        marker = "*" if b == active_branch else " "
+        print(f"{i+1}. [{marker}] {b}")
+        
+    val = input(f"\nEnter number or name of branch (Default: {active_branch}): ").strip()
+    if not val:
+        return
+        
+    target = val
+    if val.isdigit():
+        idx = int(val) - 1
+        if 0 <= idx < len(branch_list):
+            target = branch_list[idx]
+            
+    if target == active_branch:
+        print(f"[*] Already on '{target}'.")
+        input("Press Enter...")
+        return
+
+    print(f"[*] Switching to '{target}'...")
+    try:
+        subprocess.run(["git", "checkout", target], check=True, capture_output=True, text=True)
+        print(f"[*] Successfully switched to '{target}'.")
+        
+    except subprocess.CalledProcessError as e:
+        err_msg = e.stderr.lower() if e.stderr else ""
+        
+        if "overwritten" in err_msg or "please commit your changes or stash them" in err_msg:
+            print(f"\n[!] Failed to switch to '{target}' due to uncommitted changes.")
+            print("How would you like to handle this?")
+            print("  1. Carry changes over to new branch (Not recommended)")
+            print("  2. Stash changes")
+            print("  3. Discard modifications")
+            print("  4. Cancel")
+            opt = input("\nSelect option (1-4): ").strip()
+            
+            if opt == "1":
+                try:
+                    print("\n[*] Stashing changes...")
+                    subprocess.run(["git", "stash", "push", "-m", f"Auto-stash before carrying to {target}"], check=True)
+                    subprocess.run(["git", "checkout", target], check=True)
+                    print(f"[*] Switched to '{target}'. Reapplying changes...")
+                    pop_res = subprocess.run(["git", "stash", "pop"])
+                    if pop_res.returncode != 0:
+                        print("\n[!] Note: There were merge conflicts when reapplying your changes.")
+                        print("    The changes are still saved in your stash, but you will need to resolve conflicts in the files.")
+                    else:
+                        print("[*] Successfully carried changes over.")
+                except Exception as inner_e:
+                    print(f"[!] Failed to carry changes: {inner_e}")
+            elif opt == "2":
+                try:
+                    print("\n[*] Stashing changes...")
+                    subprocess.run(["git", "stash", "push", "-m", f"Auto-stash before switching to {target}"], check=True)
+                    subprocess.run(["git", "checkout", target], check=True)
+                    print(f"[*] Successfully set changes aside and switched to '{target}'.")
+                except Exception as inner_e:
+                    print(f"[!] Failed to stash and switch: {inner_e}")
+            elif opt == "3":
+                try:
+                    print("\n[*] Discarding tracked changes...")
+                    subprocess.run(["git", "checkout", "-f", target], check=True)
+                    print(f"[*] Successfully switched to '{target}'.")
+                except Exception as inner_e:
+                    print(f"[!] Failed to force switch: {inner_e}")
+            else:
+                print("[*] Cancelled.")
+        else:
+            print(f"[!] Error switching branch:\n{e.stderr.strip() if e.stderr else str(e)}")
+            
+    except Exception as e:
+        print(f"[!] Error: {e}")
+        
+    input("Press Enter...")
+
+def manage_git_stashes():
+    if not os.path.exists(".git"):
+        print("[!] Not a git repository.")
+        input("Press Enter...")
+        return
+
+    try:
+        out = subprocess.check_output(["git", "stash", "list"], encoding='utf-8')
+    except Exception as e:
+        print(f"[!] Git error: {e}")
+        input("Press Enter...")
+        return
+
+    stashes = [line for line in out.splitlines() if line.strip()]
+    if not stashes:
+        print("[*] No stashed changes found. You're all clean!")
+        input("Press Enter...")
+        return
+
+    print("\n--- Saved Stashes ---")
+    for i, s in enumerate(stashes):
+        print(f"{i+1}. {s}")
+
+    print("\nOptions:")
+    print("  A. Apply a stash (Restore changes but keep the stash)")
+    print("  P. Pop a stash (Restore changes and delete the stash)")
+    print("  D. Delete a stash")
+    print("  C. Cancel")
+
+    choice = input("\nSelect action (A/P/D/C): ").strip().upper()
+    if choice not in ["A", "P", "D"]:
+        return
+
+    idx_str = input(f"Enter stash number (1-{len(stashes)}): ").strip()
+    if not idx_str.isdigit() or not (1 <= int(idx_str) <= len(stashes)):
+        print("[!] Invalid stash number.")
+        input("Press Enter...")
+        return
+
+    stash_ref = f"stash@{{{int(idx_str)-1}}}"
+
+    try:
+        if choice == "A":
+            print(f"\n[*] Applying {stash_ref}...")
+            subprocess.run(["git", "stash", "apply", stash_ref])
+        elif choice == "P":
+            print(f"\n[*] Popping {stash_ref}...")
+            subprocess.run(["git", "stash", "pop", stash_ref])
+        elif choice == "D":
+            conf = input(f"Are you sure you want to delete {stash_ref}? (y/n): ").strip().lower()
+            if conf == 'y':
+                subprocess.run(["git", "stash", "drop", stash_ref])
+                print(f"[*] Dropped {stash_ref}.")
+    except Exception as e:
+        print(f"\n[!] Command returned an error or warning (you may need to resolve file conflicts manually).")
+
+    input("\nPress Enter...")
+
 def do_manage():
     manager = EnvsManager()
     while True:
@@ -565,34 +740,65 @@ def do_manage():
         print("==========================================================================================")
         envs = manager.list_envs()
         active = manager.get_active()
-
+        keys = list(envs.keys())
+        
         if not envs:
             print(" No environments installed.")
         else:
-            for name, data in envs.items():
+            for name in keys:
+                data = envs[name]
                 status = "(Active)" if name == active else ""
                 print(f" - {name:<15} [{data['type']}] {status}")
-
+        
         print("------------------------------------------------------------------------------------------")
         print("1. Set Active Environment")
         print("2. Delete Environment")
         print("3. Add Existing Environment")
         print("4. List Environment Details")
         print("5. Open Terminal in Active Environment")
-        print("6. Exit")
-
+        print("6. Switch Git Branch")
+        print("7. Manage Git Stashes")
+        print("8. Exit")
+        
         choice = input("\nSelect option: ")
-
+        
         if choice == "1":
-            name = input("Enter name of environment to activate: ")
+            if not keys:
+                input("No environments to activate. Press Enter...")
+                continue
+            print("\nAvailable Environments:")
+            for i, k in enumerate(keys):
+                print(f"  {i+1}. {k}")
+            val = input("\nEnter name or number of environment to activate: ").strip()
+            if val.isdigit() and 1 <= int(val) <= len(keys):
+                name = keys[int(val)-1]
+            else:
+                name = val
             manager.set_active(name)
             input("Press Enter...")
+            
         elif choice == "2":
-            name = input("Enter name of environment to DELETE: ")
-            conf = input(f"Are you sure you want to delete '{name}' and its files? (y/n): ")
-            if conf.lower() == 'y':
-                manager.remove_env(name)
-                input("Deleted. Press Enter...")
+            if not keys:
+                input("No environments to delete. Press Enter...")
+                continue
+            print("\nAvailable Environments:")
+            for i, k in enumerate(keys):
+                print(f"  {i+1}. {k}")
+            val = input("\nEnter name or number of environment to DELETE: ").strip()
+            if val.isdigit() and 1 <= int(val) <= len(keys):
+                name = keys[int(val)-1]
+            else:
+                name = val
+                
+            if name in envs:
+                conf = input(f"Are you sure you want to delete '{name}' and its files? (y/n): ")
+                if conf.lower() == 'y':
+                    manager.remove_env(name)
+                    input("Deleted. Press Enter...")
+            else:
+                print(f"[!] Environment '{name}' not found.")
+                input("Press Enter...")
+                
         elif choice == "3":
             path = input("Enter the path to the existing environment folder: ").strip()
             if not os.path.exists(path):
@@ -600,7 +806,7 @@ def do_manage():
             else:
                 name = input("Enter a nickname for this environment: ").strip()
                 if not name: name = os.path.basename(path.rstrip(os.sep))
-
+                
                 print("\nSelect Environment Type:")
                 print("1. venv")
                 print("2. uv")
@@ -610,12 +816,21 @@ def do_manage():
                 manager.add_env(name, e_type, os.path.abspath(path))
                 print(f"[*] Registered '{name}' at {os.path.abspath(path)}")
             input("Press Enter...")
+            
         elif choice == "4":
             show_status()
             input("Press Enter...")
+            
         elif choice == "5":
             open_terminal()
+            
         elif choice == "6":
+            switch_git_branch()
+            
+        elif choice == "7":
+            manage_git_stashes()
+            
+        elif choice == "8":
             break
 
 def do_upgrade(config):

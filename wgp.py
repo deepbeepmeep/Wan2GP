@@ -32,6 +32,7 @@ import time
 import threading
 import warnings
 warnings.filterwarnings('ignore', message='Failed to find.*', module='triton')
+warnings.filterwarnings("ignore", message=r"Failed to launch Triton kernels, likely due to missing CUDA toolkit; falling back to a slower .* implementation\.\.\.", category=UserWarning, module=r"whisper\.timing")
 from mmgp import offload, safetensors2, profile_type , quant_router
 try:
     import triton

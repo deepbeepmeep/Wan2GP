@@ -42,6 +42,9 @@ spacy
     gradio_rangeslider
 
 # Vision & segmentation
+Pillow>=10.0.0
+pillow-heif>=1.3.0
+HyperRez
 opencv-python>=4.12.0.88
 pycocotools
 segment-anything

@@ -760,6 +760,34 @@ class HunyuanVideoSampler(Inference):
         **kwargs,
     ):
 
+        print(f"\n--- Generation Settings ---")
+        print(f"Input Prompt: {input_prompt}")
+        print(f"N Prompt: {n_prompt}")
+        print(f"Sampling Steps: {sampling_steps}")
+        print(f"Width: {width}, Height: {height}, Frame Num: {frame_num}")
+        print(f"FPS: {fps}")
+        print(f"Seed: {seed}")
+        print(f"Guide Scale: {guide_scale}")
+        print(f"Embedded Guidance Scale: {embedded_guidance_scale}")
+        print(f"Shift: {shift}")
+        print(f"Batch Size: {batch_size}")
+        print(f"Num Videos Per Prompt: {num_videos_per_prompt}")
+        print(f"Enable RIFLEx: {enable_RIFLEx}")
+        print(f"I2V Stability: {i2v_stability}")
+        print(f"VAE Tile Size: {VAE_tile_size}")
+        print(f"Joint Pass: {joint_pass}")
+        print(f"CFG Star Switch: {cfg_star_switch}")
+        print(f"Fit Into Canvas: {fit_into_canvas}")
+        print(f"Conditioning Latents Size: {conditioning_latents_size}")
+        print(f"Input Ref Images: {'Yes' if input_ref_images is not None else 'No'}")
+        print(f"Audio Guide: {'Yes' if audio_guide is not None else 'No'}")
+        print(f"Input Frames: {'Yes' if input_frames is not None else 'No'}")
+        print(f"Input Masks: {'Yes' if input_masks is not None else 'No'}")
+        print(f"Input Video: {'Yes' if input_video is not None else 'No'}")
+        print(f"Image Start: {image_start}")
+        print(f"Kwargs: {kwargs}")
+        print(f"---------------------------\n")
+
         if VAE_tile_size != None:
             if self.hunyuan_1_5:
                 self.vae.set_tile_sample_min_size(

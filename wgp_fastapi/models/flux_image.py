@@ -1,0 +1,167 @@
+"""
+Pydantic models for flux-image generation endpoint.
+
+Supports all parameters for Flux 2 Klein 9B model.
+"""
+
+from enum import Enum
+from typing import Optional
+import uuid
+from pydantic import BaseModel, Field
+
+
+# Mapping from API model IDs to WanGP model_type strings
+FLUX_IMAGE_MODEL_TYPE_MAP = {
+    "flux_2_klein": "flux2_klein_9b",
+    "flux_2_klein_4b": "flux2_klein_4b",
+    "pi_flux2": "pi_flux2",
+}
+
+
+class FluxImageModel(str, Enum):
+    """Supported models for flux-image generation."""
+
+    FLUX_2_KLEIN = "flux_2_klein"
+    FLUX_2_KLEIN_4B = "flux_2_klein_4b"
+    PI_FLUX2 = "pi_flux2"
+
+    @property
+    def model_type(self) -> str:
+        """Get the WanGP model_type string for this model."""
+        return FLUX_IMAGE_MODEL_TYPE_MAP.get(self.value, self.value)
+
+
+class FluxImageTaskResponse(BaseModel):
+    """Response for async task submission."""
+
+    task_id: str = Field(..., description="Task ID for polling status")
+
+
+class FluxImageRequest(BaseModel):
+    """Request model for flux-image generation with all Flux 2 Klein 9B parameters."""
+
+    model_config = {"protected_namespaces": ()}
+
+    # Core parameters
+    prompt: str = Field(..., description="Text prompt for image generation")
+    seed: int = Field(
+        default=-1, description="Random seed for reproducibility (-1 for random)"
+    )
+    num_inference_steps: int = Field(
+        default=4,
+        ge=1,
+        le=100,
+        description="Number of inference steps (default: 4 for Klein)",
+    )
+    width: int = Field(
+        default=1024, ge=256, le=4096, description="Image width in pixels"
+    )
+    height: int = Field(
+        default=1024, ge=256, le=4096, description="Image height in pixels"
+    )
+    batch_size: int = Field(
+        default=1, ge=1, le=16, description="Number of images to generate"
+    )
+    model: FluxImageModel = Field(
+        default=FluxImageModel.FLUX_2_KLEIN,
+        description="Model to use (only flux_2_klein supported)",
+    )
+
+    # Image prompt type
+    image_prompt_type: str = Field(
+        default="I",
+        description="Image prompt type: S (start), E (end), V (video guide), L (continue), I (image refs)",
+    )
+
+    # LoRA parameters - comma-separated list of LoRA file paths
+    activated_loras: Optional[str] = Field(
+        default=None,
+        description="List of loras",
+    )
+
+    def to_wgp_settings(self, image_start_path: str | None = None) -> dict:
+        """Convert to WanGP task settings dict."""
+
+        # Default LoRAs for flux2_klein_9b; not supported for ultra speed
+        if self.model == FluxImageModel.FLUX_2_KLEIN:
+            loras_list = [
+                "improved_klein.safetensors"
+            ]
+        else:
+            loras_list = []
+
+
+        settings = {
+            # Core parameters
+            "prompt": self.prompt,
+            "seed": self.seed,
+            "num_inference_steps": self.num_inference_steps,
+            "resolution": f"{self.width}x{self.height}",
+            "batch_size": self.batch_size,
+            "model_type": self.model.model_type,
+            "image_mode": 1,  # Image generation mode
+            # Image parameters
+            "image_prompt_type": self.image_prompt_type,
+            # Output - auto-generate uuid filename
+            "output_filename": f"{uuid.uuid4()}.png",
+            # LoRA settings - WanGP expects activated_loras
+            "activated_loras": loras_list,
+        }
+
+        # set this so that it gets picked up correctly by the model
+        if image_start_path:
+            settings["video_prompt_type"] = "I"
+
+            # set this as an image ref
+            settings["image_refs"] = [image_start_path]
+
+        return settings
+
+
+class TaskStatus(BaseModel):
+    """Response model for task status queries."""
+
+    model_config = {"protected_namespaces": ()}
+
+    progress: int = Field(..., description="Progress percentage (0-100)")
+    preview_image: Optional[str] = Field(
+        default=None, description="Base64 encoded preview image (during generation)"
+    )
+    finished_image: Optional[str] = Field(
+        default=None, description="URL to the finished image (on completion)"
+    )
+    seed: Optional[int] = Field(default=None, description="Seed used for generation")
+
+
+class FluxImageResponse(BaseModel):
+    """Response model for flux-image generation."""
+
+    model_config = {"protected_namespaces": ()}
+
+    status: str = Field(..., description="Generation status: pending, success, failed")
+    task_id: Optional[str] = Field(default=None, description="Task ID for tracking")
+    images: Optional[list[str]] = Field(
+        default=None, description="URLs to generated images (filled on completion)"
+    )
+    seed_used: Optional[int] = Field(
+        default=None, description="Seed that was used for generation"
+    )
+    model_used: Optional[str] = Field(
+        default=None, description="Model that was used for generation"
+    )
+    steps: Optional[int] = Field(
+        default=None, description="Number of inference steps used"
+    )
+    resolution: Optional[str] = Field(default=None, description="Output resolution")
+    batch_size: Optional[int] = Field(
+        default=None, description="Number of images generated"
+    )
+    progress: Optional[int] = Field(
+        default=None, description="Progress percentage (0-100)"
+    )
+    preview_image: Optional[str] = Field(
+        default=None, description="Base64 encoded preview image (during generation)"
+    )
+    finished_image: Optional[str] = Field(
+        default=None, description="URL to the finished image (on completion)"
+    )

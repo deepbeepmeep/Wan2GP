@@ -271,6 +271,26 @@ class model_factory:
             masking_strength = 1.,
             **bbargs
     ):
+            print(f"\n--- Generation Settings ---")
+            print(f"Seed: {seed}")
+            print(f"Input Prompt: {input_prompt}")
+            print(f"N Prompt: {n_prompt}")
+            print(f"Sampling Steps: {sampling_steps}")
+            print(f"Width: {width}, Height: {height}")
+            print(f"Embedded Guidance Scale: {embedded_guidance_scale}")
+            print(f"Guide Scale: {guide_scale}")
+            print(f"Batch Size: {batch_size}")
+            print(f"Video Prompt Type: '{video_prompt_type}'")
+            print(f"Denoising Strength: {denoising_strength}")
+            print(f"Masking Strength: {masking_strength}")
+            print(f"Joint Pass: {joint_pass}")
+            print(f"Image Ref Images Count: {len(input_ref_images) if isinstance(input_ref_images, list) else (1 if input_ref_images is not None else 0)}")
+            print(f"Input Frames: {'Yes' if input_frames is not None else 'No'}")
+            print(f"Input Masks: {'Yes' if input_masks is not None else 'No'}")
+            print(f"BBArgs: {bbargs}")
+            print(f"Loras: {loras_slists}")
+            print(f"---------------------------\n")
+
             if self._interrupt:
                 return None
             device="cuda"

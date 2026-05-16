@@ -64,7 +64,14 @@ if exist "scripts\args.txt" (
     )
 )
 
-echo [*] Launching wgp.py...
+:run_loop
+echo [*] Launching WAN2GP...
 python wgp.py!EXTRA_ARGS!
+
+if !errorlevel! equ 42 (
+    echo.
+    echo [*] Restarting...
+    goto run_loop
+)
 
 pause

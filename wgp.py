@@ -1825,6 +1825,15 @@ def quit_application():
     import signal
     os.kill(os.getpid(), signal.SIGINT)
 
+def restart_application():
+    print("Restart requested...")
+    clear_startup_lock()
+    autosave_queue()
+    import sys
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(42)
+
 def start_quit_process():
     return 5, gr.update(visible=False), gr.update(visible=True)
 

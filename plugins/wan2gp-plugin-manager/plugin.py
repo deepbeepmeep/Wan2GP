@@ -162,6 +162,14 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                     
                     const payload = JSON.stringify({ restart: restart, enabled_plugins: enabledUserPlugins });
                     updateGradioInput('save_action_input', payload);
+
+                    if (restart) {
+                        setTimeout(() => {
+                            document.body.innerHTML = "<div style='display:flex;justify-content:center;align-items:center;height:100vh;background-color:#0b0f19;color:#e5e7eb;font-family:sans-serif;text-align:center;'><h2>WanGP is restarting...<br><br>You can safely close this tab.<br>A new tab will open shortly.</h2></div>";
+                            window.open('', '_self', '');
+                            window.close();
+                        }, 1000);
+                    }
                 };
             }
         """

@@ -3,6 +3,7 @@ import re
 
 import torch
 
+from shared.mps import mps_device_or
 from shared.utils import files_locator as fl
 
 from .prompt_enhancers import TTS_MONOLOGUE_PROMPT, TTS_QWEN3_DIALOGUE_PROMPT
@@ -257,7 +258,7 @@ class family_handler:
                 "It must be provided in defaults model.URLs."
             )
 
-        runtime_device = torch.device("cpu")
+        runtime_device = mps_device_or(torch.device("cpu"))
         pipeline = IndexTTS2Pipeline(
             ckpt_root=fl.get_download_location(),
             device=runtime_device,

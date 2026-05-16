@@ -7,7 +7,6 @@ import cv2
 import tempfile
 import imageio
 import torch
-import decord
 from PIL import Image
 import numpy as np
 from rembg import remove, new_session
@@ -17,7 +16,7 @@ import os
 import tempfile
 import time
 from functools import lru_cache
-from .video_decode import probe_video_stream_metadata, video_needs_corrected_decode, decode_video_frames_ffmpeg, get_video_summary_extras
+from .video_decode import probe_video_stream_metadata, decode_video_frames_ffmpeg, get_video_summary_extras
 from .virtual_media import get_virtual_image, parse_virtual_media_path, strip_virtual_media_suffix
 os.environ["U2NET_HOME"] = os.path.join(os.getcwd(), "ckpts", "rembg")
 
@@ -36,7 +35,7 @@ def seed_everything(seed: int):
 def has_video_file_extension(filename):
     filename = strip_virtual_media_suffix(filename)
     extension = os.path.splitext(filename)[-1].lower()
-    return extension in [".mp4", ".mkv"]
+    return extension in [".mp4", ".mkv", ".avi"]
 
 def has_image_file_extension(filename):
     filename = strip_virtual_media_suffix(filename)
@@ -162,7 +161,6 @@ def process_images_multithread(image_processor, items, process_type, wrap_in_lis
     return results
 
 def get_resampled_video_transparent(video_in, start_frame, max_frames, target_fps, bridge='torch'):
-    virtual_spec = parse_virtual_media_path(video_in) if isinstance(video_in, str) else None
     base_video_in = strip_virtual_media_suffix(video_in) if isinstance(video_in, str) else video_in
     virtual_image = get_virtual_image(video_in) if isinstance(video_in, str) else None
     if virtual_image is not None:
@@ -172,14 +170,6 @@ def get_resampled_video_transparent(video_in, start_frame, max_frames, target_fp
     if isinstance(video_in, Image.Image):
         frame = torch.from_numpy(np.array(video_in).astype(np.uint8)).unsqueeze(0)
         return frame if bridge == "torch" else frame.numpy()
-    if virtual_spec is None and isinstance(video_in, str) and not video_needs_corrected_decode(video_in):
-        decord.bridge.set_bridge(bridge)
-        reader = decord.VideoReader(video_in)
-        fps = round(reader.get_avg_fps())
-        if max_frames < 0:
-            max_frames = int(max(len(reader) / fps * target_fps + max_frames, 0))
-        frame_nos = resample(fps, len(reader), max_target_frames_count=max_frames, target_fps=target_fps, start_target_frame=start_frame)
-        return reader.get_batch(frame_nos)
     metadata = probe_video_stream_metadata(video_in)
     fps_float = metadata["fps_float"] if metadata is not None else 0.0
     if max_frames < 0:
@@ -323,13 +313,6 @@ def get_video_frame(file_name: str, frame_no: int, return_last_if_missing: bool 
           return Image.fromarray(frame)
     else:
         return (torch.from_numpy(frame).permute(2, 0, 1).float() / 127.5) - 1.0
-# def get_video_frame(file_name, frame_no):
-#     decord.bridge.set_bridge('torch')
-#     reader = decord.VideoReader(file_name)
-
-#     frame = reader.get_batch([frame_no]).squeeze(0)
-#     img = Image.fromarray(frame.numpy().astype(np.uint8))
-#     return img
 
 def convert_image_to_video(image):
     if image is None:

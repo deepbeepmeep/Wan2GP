@@ -275,7 +275,7 @@ def spas_sage2_attn_meansim_topk_cuda(q, k=None, v=None, attn_mask=None, dropout
         return o
 
 
-def block_sparse_sage2_attn_cuda(q, k=None, v=None, mask_id=None, dropout_p=0.0, scale=None, smooth_k=True, pvthreshd=50, attention_sink=False, tensor_layout="HND", output_dtype=torch.float16, return_sparsity=False, recycle_q=False):
+def block_sparse_attn_cuda(q, k=None, v=None, mask_id=None, dropout_p=0.0, scale=None, smooth_k=True, pvthreshd=50, attention_sink=False, tensor_layout="HND", output_dtype=torch.float16, return_sparsity=False, recycle_q=False):
     q, k, v = _unpack_qkv(q, k, v)
     mask_id = _unpack_tensor(mask_id)
     assert tensor_layout in ['HND', 'NHD']
@@ -364,6 +364,6 @@ def block_sparse_sage2_attn_cuda(q, k=None, v=None, mask_id=None, dropout_p=0.0,
         return o
 
 
-# For compatibility. spas_sage2_attn_meansim_cuda, spas_sage2_attn_meansim_topk_cuda, block_sparse_sage2_attn_cuda already support sm80/86/89/90/120
+# For compatibility. spas_sage2_attn_meansim_cuda and spas_sage2_attn_meansim_topk_cuda already support sm80/86/89/90/120
 spas_sage_attn_meansim_cuda = spas_sage2_attn_meansim_cuda
 spas_sage_attn_meansim_topk_cuda = spas_sage2_attn_meansim_topk_cuda

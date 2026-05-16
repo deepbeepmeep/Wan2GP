@@ -149,7 +149,7 @@ class ChatterboxMultilingualTTS:
         self.s3gen = s3gen
         self.ve = ve
         self.tokenizer = tokenizer
-        self.device = "cuda"
+        self.device = "mps" if str(device) == "mps" else "cuda"
         self.conds = conds
         self.watermarker = None # perth.PerthImplicitWatermarker()
 
@@ -256,8 +256,8 @@ class ChatterboxMultilingualTTS:
                 speaker_emb=_cond.speaker_emb,
                 cond_prompt_speech_tokens=_cond.cond_prompt_speech_tokens,
                 emotion_adv=exaggeration * torch.ones(1, 1, 1),
-            ).to(device="cuda") # self.device
-        self.conds.t3.to(device="cuda")
+            ).to(device=self.device)
+        self.conds.t3.to(device=self.device)
         # Norm and tokenize text
         text = punc_norm(text)
         text_tokens = self.tokenizer.text_to_tokens(text, language_id=language_id.lower() if language_id else None).to(self.device)

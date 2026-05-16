@@ -2,7 +2,7 @@
 mmgp==3.7.6
 # Core AI stack
 diffusers==0.36.0
-transformers==4.54.0 #4.53.1
+transformers==4.57.1 #4.53.1
 tokenizers>=0.20.3
 accelerate>=1.1.1
 tqdm
@@ -28,7 +28,7 @@ speechbrain==1.0.3
 openai-whisper==20250625
 audio-separator==0.36.1
 pyannote.audio==3.3.2
-torchcodec
+torchcodec==0.10.0
 
 # UI & interaction
 gradio==5.29.0
@@ -38,16 +38,18 @@ s3tokenizer
 conformer==0.3.2
 spacy_pkuseg
 spacy
-gradio_rangeslider
+    gradio_rangeslider
 
 # Vision & segmentation
 opencv-python>=4.12.0.88
 pycocotools
 segment-anything
-rembg[gpu]==2.0.65
-onnxruntime-gpu==1.22.0; python_version < "3.11"
-onnxruntime-gpu==1.25.0.dev20260210001; python_version >= "3.11"
-decord
+rembg[gpu]==2.0.65; platform_system != "Darwin"
+rembg==2.0.65; platform_system == "Darwin"
+onnxruntime-gpu==1.22.0; python_version < "3.11" and platform_system != "Darwin"
+onnxruntime-gpu==1.25.0.dev20260210001; python_version >= "3.11" and platform_system != "Darwin"
+onnxruntime>=1.22.0; platform_system == "Darwin"
+decord; sys_platform != "darwin"
 timm
 iopath>=0.1.10
 insightface @ https://github.com/deepbeepmeep/insightface/releases/download/insightface/insightface-0.7.3-cp310-cp310-win_amd64.whl ; sys_platform == "win32" and python_version == "3.10"
@@ -83,6 +85,8 @@ ftfy
 piexif
 nvidia-ml-py 
 misaki
+phonemizer-fork
+espeakng-loader
 gitdb==4.0.12 
 gitpython==3.1.45
 stringzilla==4.0.14

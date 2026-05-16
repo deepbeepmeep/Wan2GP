@@ -76,8 +76,8 @@ class KPipeline:
             lang_code: Language code for G2P processing
             model: KModel instance, True to create new model, False for no model
             trf: Whether to use transformer-based G2P
-            device: Override default device selection ('cuda' or 'cpu', or None for auto)
-                   If None, will auto-select cuda if available
+            device: Override default device selection ('cuda' or 'cpu', or None for CPU)
+                   If None, the model remains on CPU so external memory managers can move it
                    If 'cuda' and not available, will explicitly raise an error
         """
         if repo_id is None:
@@ -102,12 +102,7 @@ class KPipeline:
             if device == 'mps' and os.environ.get('PYTORCH_ENABLE_MPS_FALLBACK') != '1':
                 raise RuntimeError("MPS requested but fallback not enabled")
             if device is None:
-                if torch.cuda.is_available():
-                    device = 'cuda'
-                elif os.environ.get('PYTORCH_ENABLE_MPS_FALLBACK') == '1' and torch.backends.mps.is_available():
-                    device = 'mps'
-                else:
-                    device = 'cpu'
+                device = 'cpu'
             try:
                 self.model = KModel(repo_id=repo_id, config=config).to(device).eval()
             except RuntimeError as e:

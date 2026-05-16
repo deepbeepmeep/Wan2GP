@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from .utils import calculate_new_dimensions
+from .video_decode import decode_video_frame_indices_ffmpeg, probe_video_stream_metadata
 
 
 class VaceImageProcessor(object):
@@ -101,10 +102,10 @@ class VaceVideoProcessor(object):
     @staticmethod
     def resize_crop(video: torch.Tensor, oh: int, ow: int):
         """
-        Resize, center crop and normalize for decord loaded video (torch.Tensor type)
+        Resize, center crop and normalize loaded video frames (torch.Tensor type)
 
         Parameters:
-          video - video to process (torch.Tensor): Tensor from `reader.get_batch(frame_ids)`, in shape of (T, H, W, C)
+          video - video to process (torch.Tensor): Tensor in shape of (T, H, W, C)
           oh - target height (int)
           ow - target width (int)
 
@@ -210,27 +211,26 @@ class VaceVideoProcessor(object):
 
     def load_video_batch(self, *data_key_batch, crop_box=None, seed=2024, max_frames= 0, trim_video =0, start_frame = 0, canvas_height = 0, canvas_width = 0, fit_into_canvas = None, **kwargs):
         rng = np.random.default_rng(seed + hash(data_key_batch[0]) % 10000)
-        # read video
-        import decord
-        decord.bridge.set_bridge('torch')
-        readers = []
+        video_specs = []
         src_videos = []
         for data_k in data_key_batch:
             if torch.is_tensor(data_k):
                 src_videos.append(data_k)
             else:
-                reader = decord.VideoReader(data_k)
-                readers.append(reader)
+                metadata = probe_video_stream_metadata(data_k)
+                if metadata is None:
+                    raise RuntimeError(f"Unable to probe video metadata for {data_k}")
+                video_specs.append((data_k, metadata))
 
         if len(src_videos) >0:
             fps = 16
             length = src_videos[0].shape[0] + start_frame
-            if len(readers) > 0:
-                min_readers = min([len(r) for r in readers])
+            if len(video_specs) > 0:
+                min_readers = min([metadata["frame_count"] for _, metadata in video_specs])
                 length = min(length, min_readers )
         else:
-            fps = readers[0].get_avg_fps()
-            length = min([len(r) for r in readers])
+            fps = video_specs[0][1]["fps_float"] or video_specs[0][1]["fps"]
+            length = min([metadata["frame_count"] for _, metadata in video_specs])
         # frame_timestamps = [readers[0].get_frame_timestamp(i) for i in range(length)]
         # frame_timestamps = np.array(frame_timestamps, dtype=np.float32)
         max_frames = min(max_frames, trim_video) if trim_video > 0 else max_frames
@@ -238,11 +238,11 @@ class VaceVideoProcessor(object):
             src_videos = [ src_video[:max_frames] for src_video in src_videos]
             h, w = src_videos[0].shape[1:3]
         else:
-            h, w = readers[0].next().shape[:2]
+            h, w = video_specs[0][1]["display_height"], video_specs[0][1]["display_width"]
         frame_ids, (x1, x2, y1, y2), (oh, ow), fps = self._get_frameid_bbox(fps, length, h, w, crop_box, rng,  canvas_height = canvas_height, canvas_width = canvas_width, fit_into_canvas = fit_into_canvas,  max_frames=max_frames, start_frame = start_frame )
 
         # preprocess video
-        videos = [reader.get_batch(frame_ids)[:, y1:y2, x1:x2, :] for reader in readers]
+        videos = [decode_video_frame_indices_ffmpeg(video_path, frame_ids, bridge="torch")[:, y1:y2, x1:x2, :] for video_path, _ in video_specs]
         if len(src_videos) >0:
             videos = src_videos + videos
         videos = [self._video_preprocess(video, oh, ow) for video in videos]

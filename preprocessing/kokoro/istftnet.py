@@ -377,7 +377,7 @@ class AdainResBlk1d(nn.Module):
 
     def forward(self, x, s):
         out = self._residual(x, s)
-        out = (out + self._shortcut(x)) * torch.rsqrt(torch.tensor(2))
+        out = (out + self._shortcut(x)) * torch.rsqrt(torch.tensor(2, device=out.device, dtype=out.dtype))
         return out
 
 

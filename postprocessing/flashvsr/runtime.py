@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 from mmgp import offload
 from models.wan.modules.vae import WanVAE
-from .attention_backend import require_sparge_attention
+from .attention_backend import log_sparse_backend, require_sparge_attention
 from .tcdecoder import build_tcdecoder
 from .utils import Causal_LQ4x_Proj
 from .wan_video_dit import WanModel, precompute_freqs_cis_3d
@@ -373,6 +373,7 @@ class FlashVSRRuntime:
         kwargs = {"coTenantsMap": FLASHVSR_COTENANTS_MAP}
         profile_no = init_pipe(pipe, kwargs, profile)
         self.offloadobj = offload.profile(pipe, profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=self.dtype, verboseLevel=-1, **kwargs)
+        log_sparse_backend()
 
     def _prepare_run_state(self) -> None:
         if self.device.type != "cuda":

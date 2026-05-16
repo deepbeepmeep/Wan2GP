@@ -69,7 +69,17 @@ else
     PY_CMD="python"
 fi
 
-echo "[*] Launching wgp.py..."
-eval "$PY_CMD wgp.py $EXTRA_ARGS"
+while true; do
+    echo "[*] Launching WAN2GP..."
+    eval "$PY_CMD wgp.py $EXTRA_ARGS"
+    EXIT_CODE=$?
+
+    if [ $EXIT_CODE -eq 42 ]; then
+        echo ""
+        echo "[*] Restarting..."
+    else
+        break
+    fi
+done
 
 read -p "Press Enter to exit..."

@@ -29,7 +29,6 @@ from .utils.helpers import (
     image_conditionings_by_replacing_latent,
     prepare_mask_injection,
 )
-from .utils.media_io import encode_video
 from .utils.types import PipelineComponents
 from shared.utils.loras_mutipliers import update_loras_slists
 from shared.utils.self_refiner import create_self_refiner_handler, normalize_self_refiner_plan
@@ -289,6 +288,8 @@ class TI2VidOneStagePipeline:
 
 @torch.inference_mode()
 def main() -> None:
+    from .utils.media_io import encode_video
+
     logging.getLogger().setLevel(logging.INFO)
     parser = default_1_stage_arg_parser()
     args = parser.parse_args()

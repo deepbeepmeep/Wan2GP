@@ -35,7 +35,7 @@ def get_flashvsr_attention_mode():
     if _FLASHVSR_ATTENTION_MODE is None:
         modes = get_supported_attention_modes()
         _FLASHVSR_ATTENTION_MODE = "sage2" if "sage2" in modes else "sage" if "sage" in modes else "sdpa"
-        print(f"[FlashVSR] WanGP attention backend: {_FLASHVSR_ATTENTION_MODE}")
+        print(f"[FlashVSR] WanGP dense attention backend: {_FLASHVSR_ATTENTION_MODE}")
     return _FLASHVSR_ATTENTION_MODE
 
 # ----------------------------

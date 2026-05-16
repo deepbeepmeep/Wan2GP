@@ -88,6 +88,8 @@ class InitialFormPatch:
     overlap_step: int
     overlap_max: int
     overlap_visible: bool
+    output_resolution_visible: bool
+    prompt_visible: bool
     process_strength_visible: bool
     target_ratio_visible: bool
     target_ratio_label: str
@@ -171,6 +173,8 @@ class ProcessFormController:
             overlap_step=default_rules.frame_step,
             overlap_max=frames.get_overlap_slider_max(default_model_type, self.get_model_def) if overlap_visible else 1,
             overlap_visible=overlap_visible,
+            output_resolution_visible=not self.library.hides_output_resolution(default_process_name, main_state, initial_user_refs),
+            prompt_visible=not self.library.hides_prompt(default_process_name, main_state, initial_user_refs),
             process_strength_visible=self.library.is_process_strength_visible(default_process_name, main_state, initial_user_refs),
             target_ratio_visible=has_target_control or self.library.has_process_outpaint(default_process_name, main_state, initial_user_refs),
             target_ratio_label=self.library.target_control_label(default_process_name, main_state, initial_user_refs) if has_target_control else "Target Ratio",
@@ -209,6 +213,12 @@ class ProcessFormController:
         value = common.coerce_float(process_strength, default_value) if visible else default_value
         minimum, maximum = self._process_strength_slider_bounds(value)
         return gr.update(value=value, visible=visible, minimum=minimum, maximum=maximum)
+
+    def prompt_update(self, process_name: str, main_state: dict | None, user_refs: list[str] | None, prompt: str):
+        return gr.update(value=prompt, visible=not self.library.hides_prompt(process_name, main_state, user_refs))
+
+    def output_resolution_update(self, process_name: str, main_state: dict | None, user_refs: list[str] | None, output_resolution: str):
+        return gr.update(value=output_resolution, visible=not self.library.hides_output_resolution(process_name, main_state, user_refs))
 
     def overlap_control_updates(self, process_name: str, main_state: dict | None, user_refs: list[str] | None):
         if self.library.hides_sliding_window_overlap(process_name, main_state, user_refs):
@@ -289,10 +299,10 @@ class ProcessFormController:
             source_path_value,
             self.process_strength_update(process_name, main_state, user_refs, state.process_strength),
             state.output_path,
-            state.prompt,
+            self.prompt_update(process_name, main_state, user_refs, state.prompt),
             state.continue_enabled,
             state.source_audio_track,
-            state.output_resolution,
+            self.output_resolution_update(process_name, main_state, user_refs, state.output_resolution),
             self.target_ratio_update(process_name, main_state, user_refs, state.target_ratio),
             state.chunk_size_seconds,
             self.overlap_control_updates(process_name, main_state, user_refs),
@@ -305,6 +315,7 @@ class ProcessFormController:
         updated_memory = self.store_memory(memory_state, current_process_name, main_state, refs, values)
         process_choices, next_process_name = self.library.process_choices(next_model_type, main_state, main_lset_name, refs)
         next_process_name = str(next_process_name or ui_constants.NO_USER_SETTINGS_VALUE).strip()
+        catalog.save_process_full_video_selection(next_model_type, next_process_name)
         return (
             updated_memory,
             next_process_name,
@@ -318,6 +329,7 @@ class ProcessFormController:
         refs = catalog.get_saved_user_settings_refs({catalog.USER_SETTINGS_STORAGE_KEY: user_refs})
         updated_memory = self.store_memory(memory_state, current_process_name, main_state, refs, values)
         next_process_name = str(next_process_name or "").strip()
+        catalog.save_process_full_video_selection(process_model_type_value, next_process_name)
         _add_update, delete_update, placeholder_update = self.settings_action_updates(process_model_type_value, next_process_name)
         return (
             updated_memory,

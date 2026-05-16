@@ -60,6 +60,10 @@ def _env_enabled(name: str, default: bool = True) -> bool:
     return raw in ("1", "true", "yes", "y", "on")
 
 
+def _is_mps_available() -> bool:
+    return hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+
+
 def _resolve_gguf_model_path(model_path: str | None, assets_dir: str, variant: str | None = None) -> str:
     if model_path is not None:
         resolved = fl.locate_file(model_path, error_if_none=False) or model_path
@@ -506,7 +510,7 @@ def _use_vllm_prompt_enhancer(model) -> bool:
 
 
 def _use_legacy_cuda_runner_prompt_enhancer(model) -> bool:
-    return bool(getattr(model, "_prompt_enhancer_use_legacy_cuda_runner", False)) and torch.cuda.is_available()
+    return bool(getattr(model, "_prompt_enhancer_use_legacy_cuda_runner", False)) and (torch.cuda.is_available() or _is_mps_available())
 
 
 def _get_assistant_graph_pool_handle(model, usage_mode: str | None, enable_cudagraph: bool):
@@ -741,9 +745,11 @@ def _load_local_text_model(
 
 
 def _resolve_legacy_text_execution_device() -> torch.device:
-    if not torch.cuda.is_available():
-        raise RuntimeError("Qwen3.5 legacy prompt enhancement now requires CUDA.")
-    return torch.device("cuda", torch.cuda.current_device())
+    if torch.cuda.is_available():
+        return torch.device("cuda", torch.cuda.current_device())
+    if _is_mps_available():
+        return torch.device("mps")
+    raise RuntimeError("Qwen3.5 legacy prompt enhancement requires CUDA or MPS.")
 
 
 def _configure_qwen35_gguf_text_model(

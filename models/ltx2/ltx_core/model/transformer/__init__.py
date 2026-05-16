@@ -7,6 +7,7 @@ from .model_configurator import (
     LTXV_MODEL_COMFY_RENAMING_WITH_TRANSFORMER_LINEAR_DOWNCAST_MAP,
     UPCAST_DURING_INFERENCE,
     LTXModelConfigurator,
+    LTXAudioOnlyModelConfigurator,
     LTXVideoOnlyModelConfigurator,
     UpcastWithStochasticRounding,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "LTXV_MODEL_COMFY_RENAMING_WITH_TRANSFORMER_LINEAR_DOWNCAST_MAP",
     "UPCAST_DURING_INFERENCE",
     "LTXModel",
+    "LTXAudioOnlyModelConfigurator",
     "LTXModelConfigurator",
     "LTXVideoOnlyModelConfigurator",
     "Modality",

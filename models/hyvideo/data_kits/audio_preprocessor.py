@@ -3,7 +3,6 @@ import os
 import cv2
 import json
 import time
-import decord
 import einops
 import librosa
 import torch

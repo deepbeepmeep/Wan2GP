@@ -3,12 +3,15 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Optional
 
-import av
 import cv2
 import numpy as np
 import torch
 import os
-from av import AudioFrame
+
+
+def _get_av():
+    import av
+    return av
 
 
 @dataclass
@@ -102,6 +105,7 @@ def read_frames(video_path: Path, list_of_fps: list[float], start_sec: float, en
 
 def reencode_with_audio(video_info: VideoInfo, output_path: Path, audio: torch.Tensor,
                         sampling_rate: int):
+    av = _get_av()
     container = av.open(output_path, 'w')
     output_video_stream = container.add_stream('h264', video_info.fps)
     output_video_stream.codec_context.bit_rate = 10 * 1e6  # 10 Mbps
@@ -122,7 +126,7 @@ def reencode_with_audio(video_info: VideoInfo, output_path: Path, audio: torch.T
 
     # convert float tensor audio to numpy array
     audio_np = audio.numpy().astype(np.float32)
-    audio_frame = AudioFrame.from_ndarray(audio_np, format='flt', layout='mono')
+    audio_frame = av.AudioFrame.from_ndarray(audio_np, format='flt', layout='mono')
     audio_frame.sample_rate = sampling_rate
 
     for packet in output_audio_stream.encode(audio_frame):
@@ -157,6 +161,7 @@ def remux_with_audio_old(video_path: Path, audio: torch.Tensor, output_path: Pat
     NOTE: I don't think we can get the exact video duration right without re-encoding
     so we are not using this but keeping it here for reference
     """
+    av = _get_av()
     video = av.open(video_path)
     output = av.open(output_path, 'w')
     input_video_stream = video.streams.video[0]

@@ -253,6 +253,14 @@ class ProcessLibrary:
         handler = self.system_handler_for_process(process_name, main_state, user_refs)
         return bool(getattr(handler, "hide_sliding_window_overlap", False)) if handler is not None else False
 
+    def hides_output_resolution(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:
+        handler = self.system_handler_for_process(process_name, main_state, user_refs)
+        return bool(getattr(handler, "hide_output_resolution", False)) if handler is not None else False
+
+    def hides_prompt(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:
+        handler = self.system_handler_for_process(process_name, main_state, user_refs)
+        return bool(getattr(handler, "hide_prompt", False)) if handler is not None else False
+
     def process_frame_rules(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> frames.FramePlanRules:
         process_definition = self.process_definition_or_default(process_name, main_state, user_refs)
         handler = self.system_handler_for_definition(process_definition)

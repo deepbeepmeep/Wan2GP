@@ -16,6 +16,10 @@ limitations under the License.
 
 import sys
 import torch
+
+if sys.platform == 'darwin' and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+    raise ImportError("SageAttention is CUDA-only and is disabled on Apple Silicon MPS")
+
 import torch.nn.functional as F
 
 from sageattention.triton.quant_per_block import per_block_int8 as per_block_int8_triton

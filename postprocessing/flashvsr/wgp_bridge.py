@@ -3,6 +3,13 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
+from postprocessing.flashvsr.sparse_backend_config import (
+    SPARSE_BACKEND_AUTO,
+    SPARSE_BACKEND_SPARGE,
+    SPARSE_BACKEND_TRITON_SPARSE,
+    normalize_sparse_backend,
+)
+
 
 class FlashVSRBridge:
     MODE_OFF = 0
@@ -11,6 +18,9 @@ class FlashVSRBridge:
     MODE_TINY_LONG = 3
     PERSIST_UNLOAD = 1
     PERSIST_RAM = 2
+    BACKEND_AUTO = SPARSE_BACKEND_AUTO
+    BACKEND_TRITON_SPARSE = SPARSE_BACKEND_TRITON_SPARSE
+    BACKEND_SPARGE = SPARSE_BACKEND_SPARGE
     TOPK_RATIO_DEFAULT = 0.0
     TOPK_RATIO_MAX = 4.0
     UPSAMPLING_VALUE_PREFIX = "flashvsr"
@@ -40,6 +50,10 @@ class FlashVSRBridge:
             value = cls.TOPK_RATIO_DEFAULT
         return max(0.0, min(cls.TOPK_RATIO_MAX, value))
 
+    @classmethod
+    def normalize_backend(cls, value: Any) -> str:
+        return normalize_sparse_backend(value)
+
     def normalize_config(self, config: dict[str, Any] | None = None) -> tuple[int, int]:
         config = self.server_config if config is None else config
         mode = config.get("flashvsr_mode", self.MODE_OFF)
@@ -58,6 +72,7 @@ class FlashVSRBridge:
             persistence = self.PERSIST_UNLOAD
         config["flashvsr_mode"] = mode
         config["flashvsr_persistence"] = persistence
+        config["flashvsr_backend"] = self.normalize_backend(config.get("flashvsr_backend", self.BACKEND_AUTO))
         config["flashvsr_topk_ratio"] = self.normalize_topk_ratio(config.get("flashvsr_topk_ratio", self.TOPK_RATIO_DEFAULT))
         return mode, persistence
 
@@ -67,6 +82,9 @@ class FlashVSRBridge:
 
     def topk_ratio(self) -> float:
         return self.normalize_topk_ratio(self.server_config.get("flashvsr_topk_ratio", self.TOPK_RATIO_DEFAULT))
+
+    def backend(self) -> str:
+        return self.normalize_backend(self.server_config.get("flashvsr_backend", self.BACKEND_AUTO))
 
     def enabled(self) -> bool:
         return self.settings()[0]
@@ -169,6 +187,8 @@ class FlashVSRBridge:
         if not enabled:
             raise RuntimeError("FlashVSR spatial upsampling is disabled in Configuration > Extensions.")
         self.download(process_files)
+        from postprocessing.flashvsr.attention_backend import set_sparse_backend
+        set_sparse_backend(self.backend())
         from postprocessing.flashvsr.runtime import upscale_video
 
         output_height = int(sample.shape[-2] * scale)

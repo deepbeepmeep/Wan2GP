@@ -45,6 +45,7 @@ from .wanmove.trajectory import replace_feature, create_pos_feature_map
 from .alpha.utils import load_gauss_mask, apply_alpha_shift
 from shared.utils.audio_video import save_video
 from shared.utils.text_encoder_cache import TextEncoderCache
+from shared.utils.vae_latent_cache import VAELatentCache
 from shared.utils.self_refiner import PnPHandler, create_self_refiner_handler
 from mmgp import safetensors2
 from shared.utils import files_locator as fl 
@@ -114,6 +115,7 @@ class WanAny2V:
         self.is_mocha = model_def.get("mocha_mode", False)
         self.text_encoder = None
         self.text_encoder_cache = None
+        self.vae_latent_cache = None
         if base_model_type != "kiwi_edit":
             text_encoder_folder = model_def.get("text_encoder_folder")
             if text_encoder_folder:
@@ -122,6 +124,7 @@ class WanAny2V:
                 tokenizer_path = os.path.dirname(text_encoder_filename)
             self.text_encoder = T5EncoderModel(text_len=config.text_len, dtype=config.t5_dtype, device=torch.device('cpu'), checkpoint_path=text_encoder_filename, tokenizer_path=tokenizer_path)
             self.text_encoder_cache = TextEncoderCache()
+            self.vae_latent_cache = VAELatentCache()
         if hasattr(config, "clip_checkpoint") and not model_def.get("i2v_2_2", False) or base_model_type in ["animate"]:
             self.clip = CLIPModel(
                 dtype=config.clip_dtype,
@@ -335,7 +338,11 @@ class WanAny2V:
         ref_vae_latents = []
         for ref_image in ref_images:
             ref_image = TF.to_tensor(ref_image).sub_(0.5).div_(0.5).to(self.device)
-            img_vae_latent = self.vae.encode([ref_image.unsqueeze(1)], tile_size= tile_size)
+            img_vae_latent = self.vae_latent_cache.encode(
+                encode_fn=lambda img: self.vae.encode([img.unsqueeze(1)], tile_size=tile_size),
+                image_tensor=ref_image,
+                device=self.device,
+            )
             ref_vae_latents.append(img_vae_latent[0])
                     
         return torch.cat(ref_vae_latents, dim=1)
@@ -393,7 +400,11 @@ class WanAny2V:
         mask = mask_tensor[:, :1].to(device=self.device, dtype=self.dtype)
         mask_latents = F.interpolate(mask, size=(lat_h, lat_w), mode="nearest").unsqueeze(2).repeat(1, self.vae.model.z_dim, 1, 1, 1)
 
-        ref_latents = [self.vae.encode([convert_image_to_tensor(img).unsqueeze(1).to(device=self.device, dtype=self.VAE_dtype)], tile_size=tile_size)[0].unsqueeze(0).to(self.dtype) for img in ref_images[:2]]
+        ref_latents = [self.vae_latent_cache.encode(
+            encode_fn=lambda img: self.vae.encode([img.unsqueeze(1)], tile_size=tile_size),
+            image_tensor=convert_image_to_tensor(img).to(device=self.device, dtype=self.VAE_dtype),
+            device=self.device,
+        )[0].unsqueeze(0).to(self.dtype) for img in ref_images[:2]]
         ref_latents = torch.cat(ref_latents, dim=2)
 
         mocha_latents = torch.cat([source_latents, mask_latents, ref_latents], dim=2)
@@ -698,7 +709,11 @@ class WanAny2V:
                             overlapped_latents = self.vae.encode([torch.cat( [prefix_video[:, -(5 + overlap_size):]], dim=1)], VAE_tile_size)[0][:, -overlap_size//4: ].unsqueeze(0)
                             post_decode_pre_trim = 1
                             
-                        image_ref_latents = self.vae.encode([image_ref], VAE_tile_size)[0]
+                        image_ref_latents = self.vae_latent_cache.encode(
+                            encode_fn=lambda img: self.vae.encode([img], VAE_tile_size),
+                            image_tensor=image_ref.squeeze(1),
+                            device=self.device,
+                        )[0]
                         pad_len = lat_frames + ref_images_count - image_ref_latents.shape[1] - (overlapped_latents.shape[2] if overlapped_latents is not None else 0)
                         pad_latents = torch.zeros(image_ref_latents.shape[0], pad_len, lat_h, lat_w, device=image_ref_latents.device, dtype=image_ref_latents.dtype)
                         if overlapped_latents is None:
@@ -706,7 +721,11 @@ class WanAny2V:
                         else:
                             lat_y = torch.concat([image_ref_latents, overlapped_latents.squeeze(0), pad_latents], dim=1).to(self.device)
                         if any_end_frame:
-                            lat_y[:, -1:] = self.vae.encode([img_end_frame], VAE_tile_size)[0][:, -1:]
+                            lat_y[:, -1:] = self.vae_latent_cache.encode(
+                                encode_fn=lambda img: self.vae.encode([img.unsqueeze(1)], VAE_tile_size),
+                                image_tensor=img_end_frame.squeeze(1),
+                                device=self.device,
+                            )[0][:, -1:]
                         image_ref_latents = None
                     else:
                         svi_ref_pad_num = remaining_frames if svi_ref_pad_num == -1 else min(svi_ref_pad_num, remaining_frames)  
@@ -839,7 +858,11 @@ class WanAny2V:
             image_ref = input_ref_images[0].to(self.device) if input_ref_images is not None else convert_image_to_tensor(pre_video_frame).unsqueeze(1).to(self.device)
             insert_start_frames = window_start_frame_no + prefix_frames_count > 1
             if insert_start_frames:
-                ref_latents = self.vae.encode([image_ref], VAE_tile_size)[0].unsqueeze(0)
+                ref_latents = self.vae_latent_cache.encode(
+                    encode_fn=lambda img: self.vae.encode([img.unsqueeze(1)], VAE_tile_size),
+                    image_tensor=image_ref.squeeze(1),
+                    device=self.device,
+                )[0].unsqueeze(0)
                 start_frames = input_video.to(self.device)
                 color_reference_frame = input_video[:, :1].to(self.device)
                 start_latents = self.vae.encode([start_frames], VAE_tile_size)[0].unsqueeze(0)

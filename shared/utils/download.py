@@ -133,6 +133,76 @@ def process_files_def(repoId=None, sourceFolderList=None, fileList=None, targetF
                         hf_hub_download(repo_id=repoId, filename=onefile, local_dir=local_dir)
 
 
+def _download_relpath(source_folder, filename, target_folder=None):
+    source_folder = "" if source_folder is None else source_folder
+    if target_folder is not None and len(target_folder) == 0:
+        target_folder = None
+    if target_folder is None:
+        return os.path.join(source_folder, filename) if len(source_folder) > 0 else filename
+    return os.path.join(target_folder, source_folder, filename) if len(source_folder) > 0 else os.path.join(target_folder, filename)
+
+
+def download_def_missing_files(download_def):
+    from shared.utils import files_locator as fl
+
+    if download_def is None:
+        return []
+    source_folders = download_def.get("sourceFolderList", [])
+    file_lists = download_def.get("fileList", [])
+    target_folders = download_def.get("targetFolderList")
+    if target_folders is None:
+        target_folders = [None] * len(source_folders)
+    missing = []
+    for source_folder, files, target_folder in zip(source_folders, file_lists, target_folders):
+        if len(files) == 0:
+            rel_folder = _download_relpath(source_folder, "", target_folder).rstrip("\\/")
+            if fl.locate_folder(rel_folder, error_if_none=False) is None:
+                missing.append(rel_folder)
+            continue
+        for filename in files:
+            rel_path = _download_relpath(source_folder, filename, target_folder)
+            if fl.locate_file(rel_path, error_if_none=False) is None:
+                missing.append(rel_path)
+    return missing
+
+
+def send_download_status(send_cmd=None, status_text=None):
+    if send_cmd is not None and status_text:
+        send_cmd("status", status_text)
+
+
+def process_files_def_if_needed(download_def, send_cmd=None, status_text=None):
+    if download_def is None or len(download_def_missing_files(download_def)) == 0:
+        return False
+    send_download_status(send_cmd, status_text)
+    process_files_def(**download_def)
+    return True
+
+
+def query_audio_background_replacement_download_def():
+    return {
+        "repoId": "DeepBeepMeep/Wan2.1",
+        "sourceFolderList": ["roformer"],
+        "fileList": [["model_bs_roformer_ep_317_sdr_12.9755.ckpt", "model_bs_roformer_ep_317_sdr_12.9755.yaml", "download_checks.json"]],
+    }
+
+
+def download_audio_background_replacement(send_cmd=None, status_text="Downloading audio background replacement model files..."):
+    return process_files_def_if_needed(query_audio_background_replacement_download_def(), send_cmd=send_cmd, status_text=status_text)
+
+
+def query_speaker_separator_download_def():
+    return {
+        "repoId": "DeepBeepMeep/Wan2.1",
+        "sourceFolderList": ["pyannote"],
+        "fileList": [["pyannote_model_wespeaker-voxceleb-resnet34-LM.bin", "pytorch_model_segmentation-3.0.bin"]],
+    }
+
+
+def download_speaker_separator(send_cmd=None, status_text="Downloading speaker separator model files..."):
+    return process_files_def_if_needed(query_speaker_separator_download_def(), send_cmd=send_cmd, status_text=status_text)
+
+
 def process_download_defs(download_defs):
     if isinstance(download_defs, dict):
         process_files_def(**download_defs)

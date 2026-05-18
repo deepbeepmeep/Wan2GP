@@ -1,13 +1,33 @@
 import os
+import json
 
 import torch
 from mmgp import offload
 from shared.utils import files_locator as fl
 from shared.utils.utils import convert_image_to_tensor, convert_tensor_to_image
-from transformers import AutoProcessor, PreTrainedTokenizerBase
+from transformers import AutoTokenizer, PreTrainedTokenizerBase, Qwen2VLImageProcessorFast, Qwen2VLProcessor
+from transformers.processing_utils import ProcessorMixin
 
 from .pipeline import DEFAULT_TIMESTEPS, NOISE_SCALE, generate_image
+from .qwen3_vl_configuration import register_qwen3_vl_config
 from .qwen3_vl_transformers import Qwen3VLForConditionalGeneration
+
+
+HIDREAM_QUANTO_BF16_EXCLUDE = [
+    "model.language_model.layers.*.mlp.down_proj.weight",
+    "model.language_model.layers.*.self_attn.o_proj.weight",
+]
+
+
+class HiDreamQwen3VLProcessor(Qwen2VLProcessor):
+    attributes = ["image_processor", "tokenizer"]
+
+    def __init__(self, image_processor=None, tokenizer=None, chat_template=None, **kwargs):
+        self.image_token = "<|image_pad|>" if not hasattr(tokenizer, "image_token") else tokenizer.image_token
+        self.video_token = "<|video_pad|>" if not hasattr(tokenizer, "video_token") else tokenizer.video_token
+        self.image_token_id = tokenizer.image_token_id if getattr(tokenizer, "image_token_id", None) else tokenizer.convert_tokens_to_ids(self.image_token)
+        self.video_token_id = tokenizer.video_token_id if getattr(tokenizer, "video_token_id", None) else tokenizer.convert_tokens_to_ids(self.video_token)
+        ProcessorMixin.__init__(self, image_processor, tokenizer, chat_template=chat_template)
 
 
 def add_special_tokens(tokenizer):
@@ -22,6 +42,17 @@ def get_tokenizer(processor):
     if isinstance(processor, PreTrainedTokenizerBase):
         return processor
     return processor.tokenizer
+
+
+def load_processor(processor_path):
+    tokenizer = AutoTokenizer.from_pretrained(processor_path, trust_remote_code=True)
+    image_processor = Qwen2VLImageProcessorFast.from_pretrained(processor_path)
+    chat_template = getattr(tokenizer, "chat_template", None)
+    chat_template_path = os.path.join(processor_path, "chat_template.json")
+    if chat_template is None and os.path.isfile(chat_template_path):
+        with open(chat_template_path, "r", encoding="utf-8") as reader:
+            chat_template = json.load(reader).get("chat_template")
+    return HiDreamQwen3VLProcessor(image_processor=image_processor, tokenizer=tokenizer, chat_template=chat_template)
 
 
 def _as_pil(image):
@@ -54,7 +85,7 @@ def save_quantized_transformer(model, model_filename, dtype, config_file):
 
     quantized_path = fl.get_download_location(quantized_filename)
     os.makedirs(os.path.dirname(quantized_path), exist_ok=True)
-    offload.save_model(model, quantized_path, do_quantize=True, config_file_path=config_file)
+    offload.save_model(model, quantized_path, do_quantize=True, config_file_path=config_file, quantize_exclude=HIDREAM_QUANTO_BF16_EXCLUDE)
     print(f"New quantized file '{quantized_filename}' had been created.")
     return quantized_path
 
@@ -87,7 +118,8 @@ class model_factory:
         processor_path = os.path.dirname(fl.locate_file(os.path.join(processor_folder, "tokenizer_config.json")))
         config_path = fl.locate_file(os.path.join(processor_folder, "config.json"))
 
-        self.processor = AutoProcessor.from_pretrained(processor_path, trust_remote_code=True)
+        register_qwen3_vl_config()
+        self.processor = load_processor(processor_path)
         self.tokenizer = get_tokenizer(self.processor)
         add_special_tokens(self.tokenizer)
 

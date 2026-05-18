@@ -64,7 +64,7 @@
 	"flashvsr_topk_ratio": 0.0,
 	"film_grain_intensity": 0,
 	"film_grain_saturation": 0.5,
-	"MMAudio_setting": 0,
+	"postprocess_audio": "",
 	"MMAudio_prompt": "",
 	"MMAudio_neg_prompt": "",
 	"perturbation_switch": 0,
@@ -103,5 +103,7 @@
 	"audio_guide": null,
 	"audio_guide2": null,
 	"custom_guide": null,
-	"audio_source": null
+	"audio_source": null,
+	"seedvc_voice_sample": null,
+	"seedvc_voice_sample2": null
 }

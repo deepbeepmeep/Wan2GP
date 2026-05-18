@@ -168,16 +168,20 @@ class FlashVSRBridge:
         mixed_precision = self.server_config.get("vae_precision", "16") == "32"
         return WanVAE.get_VAE_tile_size(vae_config, device_mem_capacity, mixed_precision, output_height=output_height, output_width=output_width)
 
-    def download(self, process_files: Callable[..., Any]) -> None:
+    def download(self, process_files: Callable[..., Any], send_cmd=None, status_text: str | None = None) -> bool:
         flashvsr_def = self.query_download_def()
         if flashvsr_def is None:
-            return
+            return False
         _, variant, _ = self.settings()
         required = [os.path.join("FlashVSR", self.TRANSFORMER_FILENAME), os.path.join("FlashVSR", self.LQ_PROJ_FILENAME), os.path.join("FlashVSR", self.POSI_PROMPT_FILENAME)]
         required.append(self.VAE_FILENAME if variant == "full" else os.path.join("FlashVSR", self.TCDECODER_FILENAME))
         if all(self.files_locator.locate_file(path, error_if_none=False) is not None for path in required):
-            return
+            return False
+        from shared.utils.download import send_download_status
+
+        send_download_status(send_cmd, status_text)
         process_files(**flashvsr_def)
+        return True
 
     def upscale(self, sample, spatial_upsampling, *, seed=0, continue_cache=None, return_continue_cache=False, vae_tile_size=None, process_files: Callable[..., Any], vae_config: int, init_pipe: Callable[..., int], profile, abort_callback=None, progress_callback=None):
         scale = self.scale_for_upsampling(spatial_upsampling)

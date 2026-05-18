@@ -57,7 +57,7 @@ class FlashVSRProcessHandler:
             "spatial_upsampling": self.normalize_target_control(target_control),
             "film_grain_intensity": 0,
             "film_grain_saturation": 0.5,
-            "MMAudio_setting": 0,
+            "postprocess_audio": "",
             "repeat_generation": 1,
             "batch_size": 1,
             "seed": int(seed),

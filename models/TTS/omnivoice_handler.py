@@ -27,8 +27,11 @@ from .omnivoice.pipeline import (
     OMNIVOICE_AUTO_SPLIT_SETTING_ID,
     OMNIVOICE_CONFIG_NAME,
     OMNIVOICE_DEFAULT_VOICE_INSTRUCTION,
+    is_omnivoice_voice_instruction,
     normalize_omnivoice_voice_instruction,
 )
+from .omnivoice.modeling_omnivoice import _resolve_instruct
+from .omnivoice.utils.voice_design import _INSTRUCT_VALID_EN, _INSTRUCT_VALID_ZH, _ZH_RE
 from .prompt_enhancers import TTS_MONOLOGUE_PROMPT, TTS_QWEN3_DIALOGUE_PROMPT
 
 
@@ -75,7 +78,7 @@ OMNIVOICE_DURATION_SLIDER = {
 OMNIVOICE_AUDIO_PROMPT_TYPE_SOURCES = {
     "selection": ["", "A", "AB"],
     "labels": {
-        "": "Auto or voice design",
+        "": "Voice design",
         "A": "Voice cloning (1 reference audio)",
         "AB": "Voice cloning dialogue (Speaker 1 and Speaker 2)",
     },
@@ -94,6 +97,90 @@ OMNIVOICE_CUSTOM_SETTINGS = [
         "type": "float",
     },
 ]
+OMNIVOICE_PROMPT_SPECIAL_TAGS = [
+    "[laughter]",
+    "[sigh]",
+    "[confirmation-en]",
+    "[question-en]",
+    "[question-ah]",
+    "[question-oh]",
+    "[question-ei]",
+    "[question-yi]",
+    "[surprise-ah]",
+    "[surprise-oh]",
+    "[surprise-wa]",
+    "[surprise-yo]",
+    "[dissatisfaction-hnn]",
+]
+
+
+def _format_markdown_items(items):
+    return ", ".join(f"`{item}`" for item in sorted(items))
+
+
+def _read_omnivoice_text_input(value):
+    if value is None:
+        return ""
+    if isinstance(value, str) and os.path.isfile(value):
+        with open(value, "r", encoding="utf-8") as reader:
+            return reader.read()
+    return str(value)
+
+
+def _validate_omnivoice_instruction(instruction, target_text):
+    try:
+        _resolve_instruct(instruction, use_zh=bool(target_text and _ZH_RE.search(target_text)))
+    except ValueError as error:
+        return f"Invalid OmniVoice voice instruction:\n{error}"
+    return None
+
+
+OMNIVOICE_INFOS = f"""
+## Prompt special tags
+
+These tags can be inserted directly in the main prompt text:
+{", ".join(f"`{tag}`" for tag in OMNIVOICE_PROMPT_SPECIAL_TAGS)}
+
+## Voice instruction / reference transcript(s)
+
+Use this field differently depending on the selected voice mode.
+
+### Voice Design
+
+Leave it blank for Auto Voice. To design a voice, enter comma-separated voice tags.
+
+Valid English tags:
+{_format_markdown_items(_INSTRUCT_VALID_EN)}
+
+Valid Chinese tags:
+{_format_markdown_items(_INSTRUCT_VALID_ZH)}
+
+Examples:
+
+```text
+female, young adult, low pitch, british accent
+male, middle-aged, whisper
+```
+
+Use only valid tags here. Square-bracket non-verbal tags such as `[laughter]` belong in the main prompt, not in this field.
+
+### Voice cloning
+
+Upload a reference audio file and either leave this field blank or enter the exact transcript of the reference audio. If left blank, WanGP transcribes the reference with Whisper.
+
+The transcript must describe the reference audio, not the target prompt. For best results, use a clean 3-10 second reference clip, preferably in the same language as the text you want to generate.
+
+If this field contains only valid voice tags such as `female` or `male, british accent`, WanGP treats it as a voice instruction rather than a reference transcript.
+
+### Two-speaker cloning
+
+Upload both reference voices and provide transcripts like this, or leave blank for Whisper transcription:
+
+```text
+Speaker 1: Exact words spoken in the first reference audio.
+Speaker 2: Exact words spoken in the second reference audio.
+```
+"""
 
 
 def _detach_whisper_alignment_heads(whisper_model):
@@ -132,11 +219,12 @@ def _get_omnivoice_model_def():
         "guidance_max_phases": 1,
         "no_negative_prompt": True,
         "inference_steps": True,
-        "temperature": True,
+        "temperature": False,
         "image_prompt_types_allowed": "",
         "supports_early_stop": True,
         "profiles_dir": ["omnivoice"],
         "duration_slider": dict(OMNIVOICE_DURATION_SLIDER),
+        "infos": OMNIVOICE_INFOS,
         "model_modes": {
             "choices": list(OMNIVOICE_LANGUAGE_CHOICES),
             "default": "auto",
@@ -144,7 +232,7 @@ def _get_omnivoice_model_def():
         },
         "alt_prompt": {
             "label": "Voice instruction / reference transcript(s)",
-            "placeholder": "Auto mode: optional voice tags such as female\nVoice clone: optional transcript; blank uses Whisper\nDialogue: Speaker 1: optional transcript\nSpeaker 2: optional transcript",
+            "placeholder": "Voice Design: optional voice tags such as female\nVoice clone: optional transcript; blank uses Whisper to autotranscribe",
             "lines": 4,
         },
         "preserve_empty_prompt_lines": True,
@@ -304,6 +392,11 @@ class family_handler:
             return "Prompt text cannot be empty for OmniVoice."
         audio_prompt_type = str(inputs.get("audio_prompt_type", "") or "").upper()
         text = str(one_prompt)
+        instruction_or_ref = normalize_omnivoice_voice_instruction(_read_omnivoice_text_input(inputs.get("alt_prompt", ""))).strip()
+        if instruction_or_ref and ("A" not in audio_prompt_type or is_omnivoice_voice_instruction(instruction_or_ref)):
+            instruction_error = _validate_omnivoice_instruction(instruction_or_ref, text)
+            if instruction_error is not None:
+                return instruction_error
         has_speaker_syntax = re.search(r"Speaker\s*\d+\s*:", text, flags=re.IGNORECASE) is not None
         if "A" in audio_prompt_type and "B" not in audio_prompt_type and inputs.get("audio_guide") is None:
             return "OmniVoice voice cloning requires a reference audio file."

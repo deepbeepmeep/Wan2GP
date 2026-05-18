@@ -2,6 +2,7 @@ import torch
 import torchaudio
 import numpy as np
 import os
+import sys
 import warnings
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -11,6 +12,48 @@ import gc
 import logging
 
 verbose_output = True
+
+if not hasattr(torchaudio, "list_audio_backends"):
+    torchaudio.list_audio_backends = lambda: ["ffmpeg", "soundfile"]
+if not hasattr(torchaudio, "AudioMetaData"):
+    from collections import namedtuple
+    torchaudio.AudioMetaData = namedtuple("AudioMetaData", "sample_rate num_frames num_channels bits_per_sample encoding")
+def _torchaudio_info(uri, backend=None, format=None, buffer_size=4096):
+    import soundfile as sf
+    info = sf.info(uri)
+    bits = 0
+    for suffix in ("8", "16", "24", "32", "64"):
+        if suffix in str(info.subtype):
+            bits = int(suffix)
+            break
+    return torchaudio.AudioMetaData(sample_rate=info.samplerate, num_frames=info.frames, num_channels=info.channels, bits_per_sample=bits, encoding=info.subtype or info.format)
+def _torchaudio_load(uri, frame_offset=0, num_frames=-1, normalize=True, channels_first=True, format=None, buffer_size=4096, backend=None):
+    import soundfile as sf
+    start = max(0, int(frame_offset or 0))
+    stop = None if num_frames is None or int(num_frames) < 0 else start + int(num_frames)
+    audio_data, sample_rate = sf.read(uri, start=start, stop=stop, dtype="float32", always_2d=True)
+    waveform = torch.from_numpy(audio_data.T.copy() if channels_first else audio_data.copy())
+    return waveform, sample_rate
+def _torchaudio_save(uri, src, sample_rate, channels_first=True, format=None, encoding=None, bits_per_sample=None, buffer_size=4096, backend=None, compression=None):
+    import soundfile as sf
+    audio_data = src.detach().cpu().float().numpy() if torch.is_tensor(src) else np.asarray(src, dtype=np.float32)
+    if channels_first and audio_data.ndim == 2:
+        audio_data = audio_data.T
+    sf.write(uri, audio_data, int(sample_rate))
+torchaudio.info = _torchaudio_info
+torchaudio.load = _torchaudio_load
+torchaudio.save = _torchaudio_save
+
+try:
+    import lightning_fabric.utilities.cloud_io as lightning_cloud_io
+    _lightning_load = lightning_cloud_io._load
+    if not getattr(_lightning_load, "_wgp_pyannote_trusted_load", False):
+        def _load_pyannote_trusted_checkpoint(path_or_url, map_location=None, weights_only=None):
+            return _lightning_load(path_or_url, map_location=map_location, weights_only=False if weights_only is None else weights_only)
+        _load_pyannote_trusted_checkpoint._wgp_pyannote_trusted_load = True
+        lightning_cloud_io._load = _load_pyannote_trusted_checkpoint
+except Exception:
+    pass
 
 # Suppress specific warnings before importing pyannote
 warnings.filterwarnings("ignore", category=UserWarning, module="pyannote.audio.models.blocks.pooling")
@@ -23,9 +66,11 @@ warnings.filterwarnings("ignore", message=".*Module 'speechbrain.pretrained'.*",
 os.environ["SB_LOG_LEVEL"] = "WARNING"   
 import speechbrain
 
-def xprint(t = None):
-    if verbose_output:
-        print(t)
+def xprint(t = None, force: bool = False):
+    if verbose_output or force:
+        text = str(t)
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
 
 # Configure TF32 before any CUDA operations to avoid reproducibility warnings
 if torch.cuda.is_available():
@@ -100,7 +145,7 @@ class OptimizedPyannote31SpeakerSeparator:
         self.hf_token = hf_token
         self._overlap_pipeline = None
 
-    def separate_audio(self, audio_path: str, output1, output2, audio_original_path: str = None  ) -> Dict[str, str]:
+    def separate_audio(self, audio_path: str, output1, output2, audio_original_path: str = None, return_masks: bool = False, speech_masks_only: bool = False) -> Dict[str, str]:
         """Optimized main separation function with memory management."""
         xprint("Starting optimized audio separation...")
         self._current_audio_path = os.path.abspath(audio_path)        
@@ -120,6 +165,10 @@ class OptimizedPyannote31SpeakerSeparator:
             
             # Apply background preservation
             final_masks = self.apply_optimized_background_preservation(masks, waveform.shape[1])
+            speech_activity = np.zeros(waveform.shape[1], dtype=bool)
+            for speaker in final_masks:
+                speech_activity |= masks.get(speaker, np.zeros(waveform.shape[1], dtype=np.float32)) > 0.5
+            speech_masks = {speaker: np.asarray(final_masks[speaker] * speech_activity, dtype=np.float32) for speaker in final_masks}
         
         # Clear intermediate results
         del masks
@@ -132,8 +181,11 @@ class OptimizedPyannote31SpeakerSeparator:
             waveform_original = waveform
         else:
             waveform_original, sample_rate = self.load_audio(audio_original_path)
-        output_paths = self._save_outputs_optimized(waveform_original, final_masks, sample_rate, audio_path, output1, output2)
+        save_masks = speech_masks if speech_masks_only else final_masks
+        output_paths = self._save_outputs_optimized(waveform_original, save_masks, sample_rate, audio_path, output1, output2)
         
+        if return_masks:
+            return output_paths, save_masks, sample_rate
         return output_paths
 
     def _extract_both_speaking_regions(
@@ -267,10 +319,10 @@ class OptimizedPyannote31SpeakerSeparator:
     def load_audio(self, audio_path: str) -> Tuple[torch.Tensor, int]:
         """Load and preprocess audio efficiently."""
         xprint(f"Loading audio: {audio_path}")
-        
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=UserWarning)
-            waveform, sample_rate = torchaudio.load(audio_path)
+        import soundfile as sf
+
+        audio_data, sample_rate = sf.read(os.fspath(audio_path), dtype="float32", always_2d=True)
+        waveform = torch.from_numpy(audio_data.T.copy())
         
         # Convert to mono efficiently
         if waveform.shape[0] > 1:
@@ -381,16 +433,32 @@ class OptimizedPyannote31SpeakerSeparator:
         xprint("Creating optimized speaker masks...")
         
         speakers = list(diarization.labels())
+        first_starts = self._get_speaker_first_starts(diarization, speakers, sample_rate)
+        self._speaker_first_starts = first_starts
+        speakers = sorted(speakers, key=lambda speaker: (first_starts.get(speaker, audio_length), speaker))
         xprint(f"Processing speakers: {speakers}")
         
         # Handle edge cases
         if len(speakers) == 0:
-            xprint("⚠ No speakers detected, creating dummy masks")
-            return self._create_dummy_masks(audio_length)
+            xprint("WARNING: no speakers found; returning silent speaker outputs.", force=True)
+            return {
+                "SPEAKER_SILENT_00": np.zeros(audio_length, dtype=np.float32),
+                "SPEAKER_SILENT_01": np.zeros(audio_length, dtype=np.float32)
+            }
         
         if len(speakers) == 1:
-            xprint("⚠ Only 1 speaker detected, creating temporal split")
-            return self._create_optimized_temporal_split(diarization, audio_length, sample_rate)
+            speaker = speakers[0]
+            xprint(f"WARNING: only one speaker found ({speaker}); no artificial second speaker split will be created.", force=True)
+            segments = []
+            for segment in diarization.label_timeline(speaker):
+                start_sample = max(0, int(segment.start * sample_rate))
+                end_sample = min(audio_length, int(segment.end * sample_rate))
+                if start_sample < end_sample:
+                    segments.append((start_sample, end_sample))
+            return {
+                speaker: self._create_mask_vectorized(segments, audio_length),
+                "SPEAKER_SILENT": np.zeros(audio_length, dtype=np.float32)
+            }
         
         # Extract both-speaking regions from diarization timeline
         both_speaking_regions = self._extract_both_speaking_regions(diarization, audio_length, sample_rate)
@@ -422,6 +490,13 @@ class OptimizedPyannote31SpeakerSeparator:
         self._both_speaking_regions = both_speaking_regions
         
         return masks
+
+    def _get_speaker_first_starts(self, diarization, speakers: List[str], sample_rate: int) -> Dict[str, int]:
+        first_starts = {speaker: np.iinfo(np.int64).max for speaker in speakers}
+        for turn, _, speaker in diarization.itertracks(yield_label=True):
+            if speaker in first_starts:
+                first_starts[speaker] = min(first_starts[speaker], max(0, int(turn.start * sample_rate)))
+        return first_starts
     
     def _create_mask_vectorized(self, segments: List[Tuple[int, int]], audio_length: int) -> np.ndarray:
         """Create mask using vectorized operations."""
@@ -441,103 +516,14 @@ class OptimizedPyannote31SpeakerSeparator:
         
         return mask
     
-    def _create_dummy_masks(self, audio_length: int) -> Dict[str, np.ndarray]:
-        """Create dummy masks for edge cases."""
-        return {
-            "SPEAKER_00": np.ones(audio_length, dtype=np.float32) * 0.5,
-            "SPEAKER_01": np.ones(audio_length, dtype=np.float32) * 0.5
-        }
-    
-    def _create_optimized_temporal_split(self, diarization, audio_length: int, sample_rate: int) -> Dict[str, np.ndarray]:
-        """Optimized temporal split with vectorized operations."""
-        xprint("Creating optimized temporal split...")
-        
-        # Extract all segments at once
-        segments = []
-        for turn, _, speaker in diarization.itertracks(yield_label=True):
-            segments.append((turn.start, turn.end))
-        
-        segments.sort()
-        xprint(f"Found {len(segments)} speech segments")
-        
-        if len(segments) <= 1:
-            # Single segment or no segments - simple split
-            return self._create_simple_split(audio_length)
-        
-        # Vectorized gap analysis
-        segment_array = np.array(segments)
-        gaps = segment_array[1:, 0] - segment_array[:-1, 1]  # Vectorized gap calculation
-        
-        if len(gaps) > 0:
-            longest_gap_idx = np.argmax(gaps)
-            longest_gap_duration = gaps[longest_gap_idx]
-            
-            xprint(f"Longest gap: {longest_gap_duration:.1f}s after segment {longest_gap_idx+1}")
-            
-            if longest_gap_duration > 1.0:
-                # Split at natural break
-                split_point = longest_gap_idx + 1
-                xprint(f"Splitting at natural break: segments 1-{split_point} vs {split_point+1}-{len(segments)}")
-                
-                return self._create_split_masks(segments, split_point, audio_length, sample_rate)
-        
-        # Fallback: alternating assignment
-        xprint("Using alternating assignment...")
-        return self._create_alternating_masks(segments, audio_length, sample_rate)
-    
-    def _create_simple_split(self, audio_length: int) -> Dict[str, np.ndarray]:
-        """Simple temporal split in half."""
-        mid_point = audio_length // 2
-        masks = {
-            "SPEAKER_00": np.zeros(audio_length, dtype=np.float32),
-            "SPEAKER_01": np.zeros(audio_length, dtype=np.float32)
-        }
-        masks["SPEAKER_00"][:mid_point] = 1.0
-        masks["SPEAKER_01"][mid_point:] = 1.0
-        return masks
-    
-    def _create_split_masks(self, segments: List[Tuple[float, float]], split_point: int, 
-                           audio_length: int, sample_rate: int) -> Dict[str, np.ndarray]:
-        """Create masks with split at specific point."""
-        masks = {
-            "SPEAKER_00": np.zeros(audio_length, dtype=np.float32),
-            "SPEAKER_01": np.zeros(audio_length, dtype=np.float32)
-        }
-        
-        # Vectorized segment processing
-        for i, (start_time, end_time) in enumerate(segments):
-            start_sample = max(0, int(start_time * sample_rate))
-            end_sample = min(audio_length, int(end_time * sample_rate))
-            
-            if start_sample < end_sample:
-                speaker_key = "SPEAKER_00" if i < split_point else "SPEAKER_01"
-                masks[speaker_key][start_sample:end_sample] = 1.0
-        
-        return masks
-    
-    def _create_alternating_masks(self, segments: List[Tuple[float, float]], 
-                                 audio_length: int, sample_rate: int) -> Dict[str, np.ndarray]:
-        """Create masks with alternating assignment."""
-        masks = {
-            "SPEAKER_00": np.zeros(audio_length, dtype=np.float32),
-            "SPEAKER_01": np.zeros(audio_length, dtype=np.float32)
-        }
-        
-        for i, (start_time, end_time) in enumerate(segments):
-            start_sample = max(0, int(start_time * sample_rate))
-            end_sample = min(audio_length, int(end_time * sample_rate))
-            
-            if start_sample < end_sample:
-                speaker_key = f"SPEAKER_0{i % 2}"
-                masks[speaker_key][start_sample:end_sample] = 1.0
-        
-        return masks
-    
     def apply_optimized_background_preservation(self, masks: Dict[str, np.ndarray], 
                                               audio_length: int) -> Dict[str, np.ndarray]:
         """
         Heavily optimized background preservation using pure vectorized operations.
         """
+        if any(speaker.startswith("SPEAKER_SILENT") for speaker in masks):
+            return masks
+
         xprint("Applying optimized voice separation logic...")
         
         # Ensure exactly 2 speakers
@@ -599,10 +585,9 @@ class OptimizedPyannote31SpeakerSeparator:
             # Vectorized speaking time calculation
             speaking_times = {k: np.sum(v) for k, v in masks.items()}
             speaker_keys = sorted(speaking_times.keys(), key=lambda x: speaking_times[x], reverse=True)[:2]
+            first_starts = getattr(self, "_speaker_first_starts", {})
+            speaker_keys = sorted(speaker_keys, key=lambda speaker: (first_starts.get(speaker, audio_length), speaker))
             xprint(f"Keeping top 2 speakers: {speaker_keys}")
-        elif len(speaker_keys) == 1:
-            speaker_keys.append("SPEAKER_SILENT")
-        
         return speaker_keys
     
     def _compute_ambiguous_assignments_vectorized(self, masks: Dict[str, np.ndarray], 
@@ -817,7 +802,8 @@ class OptimizedPyannote31SpeakerSeparator:
             
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=UserWarning)
-                torchaudio.save(output, masked_audio, sample_rate)
+                import soundfile as sf
+                sf.write(output, masked_audio.squeeze(0).detach().cpu().numpy(), sample_rate)
             
             xprint(f"✓ Saved {speaker}: {output}")
             return speaker, output
@@ -839,7 +825,7 @@ class OptimizedPyannote31SpeakerSeparator:
         for turn, _, speaker in diarization.itertracks(yield_label=True):
             xprint(f"{speaker}: {turn.start:.1f}s - {turn.end:.1f}s")
 
-def extract_dual_audio(audio, output1, output2, verbose = False, audio_original = None):
+def extract_dual_audio(audio, output1, output2, verbose = False, audio_original = None, return_masks: bool = False, speech_masks_only: bool = False):
     global verbose_output
     verbose_output = verbose
     separator = OptimizedPyannote31SpeakerSeparator(
@@ -852,12 +838,14 @@ def extract_dual_audio(audio, output1, output2, verbose = False, audio_original 
     import time
     start_time = time.time()
     
-    outputs = separator.separate_audio(audio, output1, output2, audio_original)
+    result = separator.separate_audio(audio, output1, output2, audio_original, return_masks=return_masks, speech_masks_only=speech_masks_only)
+    outputs = result[0] if return_masks else result
     
     elapsed_time = time.time() - start_time
     xprint(f"\n=== SUCCESS (completed in {elapsed_time:.2f}s) ===")
     for speaker, path in outputs.items():
         xprint(f"{speaker}: {path}")
+    return result
 
 def main():
     

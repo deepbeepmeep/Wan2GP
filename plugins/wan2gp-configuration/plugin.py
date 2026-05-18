@@ -27,6 +27,19 @@ from postprocessing.flashvsr.sparse_backend_config import (
     SPARSE_BACKEND_CHOICES,
     normalize_sparse_backend,
 )
+from postprocessing.seedvc.wgp_bridge import SeedVCBridge
+from .defaults_migration import (
+    FLASHVSR_DEFAULT_MODE,
+    FLASHVSR_MODE_CHOICES,
+    MMAUDIO_DEFAULT_MODE,
+    MMAUDIO_MODE_CHOICES,
+    PROMPT_ENHANCER_CHOICES,
+    PROMPT_ENHANCER_DEFAULT_MODE,
+    SEEDVC_DEFAULT_MODE,
+    SEEDVC_MODE_CHOICES,
+    enabled_choice_value,
+    migrate_extension_defaults,
+)
 
 def flashvsr_sparse_attention_requirement_message(backend="auto"):
     try:
@@ -71,6 +84,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("quit_application")
         self.request_global("release_model")
         self.request_global("release_flashvsr_vram")
+        self.request_global("release_seedvc_vram")
         self.request_global("get_sorted_dropdown")
         self.request_global("app")
         self.request_global("fl")
@@ -102,6 +116,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         )
 
     def create_config_ui(self):
+        migrate_extension_defaults(self.server_config, self.server_config_filename)
         set_deepy_runtime_config(self.server_config, self.server_config_filename)
         with gr.Column():
             with gr.Tabs():
@@ -251,19 +266,18 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.release_RAM_btn = gr.Button("Force Unload Models from RAM")
 
                 with gr.Tab("Extensions"):
-                    with gr.Group():
+                    with gr.Row():
                         mmaudio_mode_default = self.server_config.get("mmaudio_mode", None)
                         mmaudio_persistence_default = self.server_config.get("mmaudio_persistence", None)
                         if mmaudio_mode_default is None:
-                            legacy_mmaudio = self.server_config.get("mmaudio_enabled", 0)
-                            mmaudio_mode_default = 0 if legacy_mmaudio == 0 else 1
+                            mmaudio_mode_default = MMAUDIO_DEFAULT_MODE
                         if mmaudio_persistence_default is None:
                             legacy_mmaudio = self.server_config.get("mmaudio_enabled", 0)
                             mmaudio_persistence_default = 2 if legacy_mmaudio == 2 else 1
 
                         self.mmaudio_mode_choice = gr.Dropdown(
-                            choices=[("Off", 0), ("Standard", 1), ("NSFW", 2)],
-                            value=mmaudio_mode_default,
+                            choices=MMAUDIO_MODE_CHOICES,
+                            value=enabled_choice_value(mmaudio_mode_default, MMAUDIO_MODE_CHOICES, MMAUDIO_DEFAULT_MODE),
                             label="MMAudio Soundtrack Generation (requires 10GB extra download)"
                         )
                         self.mmaudio_persistence_choice = gr.Dropdown(
@@ -271,31 +285,43 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             value=mmaudio_persistence_default,
                             label="MMAudio Model Persistence"
                         )
-                    with gr.Group():
-                        self.flashvsr_mode_choice = gr.Dropdown(
-                            choices=[("Off", 0), ("FlashVSR v1.1 Tiny (Slightly Lower Quality, Faster VAE Decoding, Needs Less RAM)", 1), ("FlashVSR v1.1 Full (Best Quality, Slower VAE Decoding, Needs More RAM)", 2)], # ("FlashVSR v1.1 Tiny Long", 3)],
-                            value=self.server_config.get("flashvsr_mode", 0),
-                            label="FlashVSR Spatial Upsampling (Needs Triton; SpargeAttn optional)"
+                    with gr.Row():
+                        self.seedvc_mode_choice = gr.Dropdown(
+                            choices=SEEDVC_MODE_CHOICES,
+                            value=enabled_choice_value(self.server_config.get("seedvc_mode", SEEDVC_DEFAULT_MODE), SEEDVC_MODE_CHOICES, SEEDVC_DEFAULT_MODE),
+                            label="SeedVC Voice Replacement"
                         )
+                        self.seedvc_persistence_choice = gr.Dropdown(
+                            choices=SeedVCBridge.persistence_choices(),
+                            value=self.server_config.get("seedvc_persistence", SeedVCBridge.PERSIST_UNLOAD),
+                            label="SeedVC Model Persistence"
+                        )
+                    with gr.Group():
                         with gr.Row():
+                            self.flashvsr_mode_choice = gr.Dropdown(
+                                choices=FLASHVSR_MODE_CHOICES,
+                                value=enabled_choice_value(self.server_config.get("flashvsr_mode", FLASHVSR_DEFAULT_MODE), FLASHVSR_MODE_CHOICES, FLASHVSR_DEFAULT_MODE),
+                                label="FlashVSR Spatial Upsampling (Needs Triton; SpargeAttn optional)"
+                            )
                             self.flashvsr_persistence_choice = gr.Dropdown(
                                 choices=[("Unload after use", 1), ("Persistent in RAM", 2)],
                                 value=self.server_config.get("flashvsr_persistence", 1),
                                 label="FlashVSR Model Persistence"
                             )
+                        with gr.Row():
                             self.flashvsr_backend_choice = gr.Dropdown(
                                 choices=SPARSE_BACKEND_CHOICES,
                                 value=normalize_sparse_backend(self.server_config.get("flashvsr_backend", SPARSE_BACKEND_AUTO)),
                                 label="Backend"
                             )
-                        self.flashvsr_topk_ratio_choice = gr.Slider(
-                            0.0,
-                            4.0,
-                            value=self.server_config.get("flashvsr_topk_ratio", 0.0),
-                            step=0.05,
-                            label="FlashVSR Quality / Sparse Top-K Ratio (0 = Auto)",
-                            info="Higher keeps more sparse attention candidates and can improve quality at the cost of speed and memory."
-                        )
+                            self.flashvsr_topk_ratio_choice = gr.Slider(
+                                0.0,
+                                4.0,
+                                value=self.server_config.get("flashvsr_topk_ratio", 0.0),
+                                step=0.05,
+                                label="FlashVSR Quality / Sparse Top-K Ratio (0 = Auto)",
+                                info="Higher keeps more sparse attention candidates and can improve quality at the cost of speed and memory."
+                            )
                     with gr.Group():
                         self.rife_version_choice = gr.Dropdown(
                             choices=[("RIFE HDv3 (default)", "v3"), ("RIFE v4.26 (latest)", "v4")],
@@ -317,7 +343,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
                 with gr.Tab("Prompt Enhancer / Deepy"):
                     with gr.Group():
-                        self.enhancer_enabled_choice = gr.Dropdown(choices=[("Off", 0), ("Florence 2 (image captioning) + LLama 3.2 3B (text generation)", 1), ("Florence 2 (image captioning) + Llama Joy 8B (uncensored, richer)", 2), ("Qwen3.5VL Abliterated 4B (captioning + uncensored text enhancement, vllm accelerated if available)", 3), ("Qwen3.5VL Abliterated 9B (captioning + uncensored high end text enhancement, vllm accelerated if available)", 4)], value=self.server_config.get("enhancer_enabled", 0), label="Prompt Enhancer (requires extra model files)")
+                        self.enhancer_enabled_choice = gr.Dropdown(
+                            choices=PROMPT_ENHANCER_CHOICES,
+                            value=enabled_choice_value(self.server_config.get("enhancer_enabled", PROMPT_ENHANCER_DEFAULT_MODE), PROMPT_ENHANCER_CHOICES, PROMPT_ENHANCER_DEFAULT_MODE),
+                            label="Prompt Enhancer (requires extra model files)"
+                        )
                         self.enhancer_quantization_choice = gr.Dropdown(
                             choices=[("Quanto Int8 (better quality)", "quanto_int8"), ("GGUF Q4 (less VRAM/RAM & faster if kernels are installed, but worse quality)", "gguf")],
                             value=self.server_config.get("prompt_enhancer_quantization", "quanto_int8"),
@@ -480,7 +510,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.preload_in_VRAM_choice, self.max_reserved_loras_choice,
             self.enhancer_enabled_choice, self.enhancer_quantization_choice, self.enhancer_mode_choice,
             self.prompt_enhancer_temperature_choice, self.prompt_enhancer_top_p_choice, self.prompt_enhancer_randomize_seed_choice,
-            self.mmaudio_mode_choice, self.mmaudio_persistence_choice, self.flashvsr_mode_choice, self.flashvsr_persistence_choice, self.flashvsr_backend_choice, self.flashvsr_topk_ratio_choice, self.rife_version_choice, self.matanyone_version_choice,
+            self.mmaudio_mode_choice, self.mmaudio_persistence_choice, self.seedvc_mode_choice, self.seedvc_persistence_choice, self.flashvsr_mode_choice, self.flashvsr_persistence_choice, self.flashvsr_backend_choice, self.flashvsr_topk_ratio_choice, self.rife_version_choice, self.matanyone_version_choice,
             self.deepy_enabled_choice, self.deepy_vram_mode_choice,
             self.deepy_context_tokens_choice, self.deepy_custom_system_prompt_choice,
             self.video_output_codec_choice, self.hdr_video_crf_choice, self.image_output_codec_choice, self.audio_output_codec_choice, self.audio_stand_alone_output_codec_choice,
@@ -514,6 +544,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 enhancer_enabled = False
             if enhancer_enabled:
                 targets.append("Prompt Enhancer")
+            if int(self.server_config.get("seedvc_mode", 0) or 0) > 0:
+                targets.append("SeedVC")
             if int(self.server_config.get("flashvsr_mode", 0) or 0) > 0:
                 targets.append("FlashVSR")
             if deepy_available(self.server_config):
@@ -534,6 +566,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 self.reset_prompt_enhancer_if_requested()
             if "FlashVSR" in unload_targets:
                 self.release_flashvsr_vram()
+            if "SeedVC" in unload_targets:
+                self.release_seedvc_vram()
             self.release_model()
             gr.Info(f"{unload_targets} unloaded from RAM.")
 
@@ -562,7 +596,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             preload_in_VRAM_choice, max_reserved_loras_choice,
             enhancer_enabled_choice, enhancer_quantization_choice, enhancer_mode_choice,
             prompt_enhancer_temperature_choice, prompt_enhancer_top_p_choice, prompt_enhancer_randomize_seed_choice,
-            mmaudio_mode_choice, mmaudio_persistence_choice, flashvsr_mode_choice, flashvsr_persistence_choice, flashvsr_backend_choice, flashvsr_topk_ratio_choice, rife_version_choice, matanyone_version_choice,
+            mmaudio_mode_choice, mmaudio_persistence_choice, seedvc_mode_choice, seedvc_persistence_choice, flashvsr_mode_choice, flashvsr_persistence_choice, flashvsr_backend_choice, flashvsr_topk_ratio_choice, rife_version_choice, matanyone_version_choice,
             deepy_enabled_choice, deepy_vram_mode_choice,
             deepy_context_tokens_choice, deepy_custom_system_prompt_choice,
             video_output_codec_choice, hdr_video_crf_choice, image_output_codec_choice, audio_output_codec_choice, audio_stand_alone_output_codec_choice,
@@ -582,6 +616,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
         flashvsr_mode_choice = int(flashvsr_mode_choice or 0)
         flashvsr_persistence_choice = int(flashvsr_persistence_choice or 1)
         flashvsr_backend_choice = normalize_sparse_backend(flashvsr_backend_choice)
+        seedvc_config = {"seedvc_mode": seedvc_mode_choice, "seedvc_persistence": seedvc_persistence_choice}
+        seedvc_mode_choice, seedvc_persistence_choice = SeedVCBridge(self.server_config, self.fl).normalize_config(seedvc_config)
         if flashvsr_mode_choice > 0:
             flashvsr_requirement_message = flashvsr_sparse_attention_requirement_message(flashvsr_backend_choice)
             if flashvsr_requirement_message is not None:
@@ -611,6 +647,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "prompt_enhancer_quantization": enhancer_quantization_choice,
             "enhancer_mode": enhancer_mode_choice, "mmaudio_mode": mmaudio_mode_choice,
             "mmaudio_persistence": mmaudio_persistence_choice, "mmaudio_enabled": mmaudio_enabled_choice,
+            "seedvc_mode": seedvc_mode_choice, "seedvc_persistence": seedvc_persistence_choice,
             "flashvsr_mode": flashvsr_mode_choice, "flashvsr_persistence": flashvsr_persistence_choice, "flashvsr_backend": flashvsr_backend_choice, "flashvsr_topk_ratio": flashvsr_topk_ratio_choice,
             "rife_version": rife_version_choice, "matanyone_version": matanyone_version_choice,
             "prompt_enhancer_temperature": prompt_enhancer_temperature_choice,
@@ -661,7 +698,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "attention_mode", "vae_config", "boost", "enable_int8_kernels", "save_path", "image_save_path", "audio_save_path",
             "metadata_type", "clear_file_list", "keep_intermediate_sliding_windows", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", "mmaudio_mode",
-            "mmaudio_persistence", "mmaudio_enabled", "flashvsr_mode", "flashvsr_persistence", "flashvsr_backend", "flashvsr_topk_ratio", "rife_version", "matanyone_version",
+            "mmaudio_persistence", "mmaudio_enabled", "seedvc_mode", "seedvc_persistence", "flashvsr_mode", "flashvsr_persistence", "flashvsr_backend", "flashvsr_topk_ratio", "rife_version", "matanyone_version",
             "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed", "prompt_enhancer_quantization",
             DEEPY_ENABLED_KEY, DEEPY_VRAM_MODE_KEY, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CUSTOM_SYSTEM_PROMPT_KEY,
             "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "hdr_video_crf", "video_container",
@@ -700,6 +737,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.release_deepy_vram(state, clear_session_state=True, discard_runtime_snapshot=True)
             self.reset_prompt_enhancer()
             self.reset_prompt_enhancer_if_requested()
+        if "seedvc_mode" in changes or "seedvc_persistence" in changes:
+            self.release_seedvc_vram()
         if "enable_int8_kernels" in changes:
             self.apply_int8_kernel_setting(new_server_config["enable_int8_kernels"], True)
 

@@ -41,7 +41,7 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, is_torchdynamo_compiling
 from transformers.utils.deprecation import deprecate_kwarg
 from transformers.utils.generic import check_model_inputs
-from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig, Qwen3VLTextConfig, Qwen3VLVisionConfig
+from .qwen3_vl_configuration import Qwen3VLConfig, Qwen3VLTextConfig, Qwen3VLVisionConfig
 
 
 # Python-level benchmark toggles for the static AR prefix cache. The cache

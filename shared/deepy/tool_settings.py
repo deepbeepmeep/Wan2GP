@@ -9,6 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from shared.utils.settings_bundle import SETTINGS_BUNDLE_ATTACHMENT_KEYS, WAN_GP_SETTINGS_SUFFIXES, is_wangp_settings_filename, load_first_settings_from_queue_zip
 from shared.utils.loras_mutipliers import merge_loras_settings
 from shared.deepy.config import (
     DEEPY_DEFAULT_EDIT_IMAGE,
@@ -111,7 +112,7 @@ def _get_configured_tool_variant(tool_name: str) -> str:
 
 def _looks_like_linked_variant(value: Any) -> bool:
     text = str(value or "").strip().strip('"').replace("\\", "/")
-    if len(text) == 0 or not text.lower().endswith(".json"):
+    if len(text) == 0 or not is_wangp_settings_filename(text):
         return False
     if text.startswith("/") or text.startswith("./") or text.startswith("../"):
         return False
@@ -168,7 +169,7 @@ def _resolve_linked_variant_path(value: Any) -> Path | None:
     except Exception:
         return None
     candidate = (lora_dir / filename).resolve()
-    if candidate.is_file() and candidate.suffix.lower() == ".json":
+    if candidate.is_file() and candidate.suffix.lower() in WAN_GP_SETTINGS_SUFFIXES:
         return candidate
     return None
 
@@ -300,7 +301,7 @@ def get_tool_variant_model_def(tool_name: str, variant: Any) -> dict[str, Any] |
 
 def resolve_wangp_settings_file(state: Any, selected_value: Any) -> Path | None:
     value = str(selected_value or "").strip()
-    if len(value) == 0 or "/" in value or "\\" in value or not value.lower().endswith(".json"):
+    if len(value) == 0 or "/" in value or "\\" in value or not is_wangp_settings_filename(value):
         return None
     get_state_model_type = _get_main_callable("get_state_model_type")
     get_lora_dir = _get_main_callable("get_lora_dir")
@@ -312,14 +313,20 @@ def resolve_wangp_settings_file(state: Any, selected_value: Any) -> Path | None:
     except Exception:
         return None
     source_path = (lora_dir / Path(value).name).resolve()
-    if source_path.is_file() and source_path.suffix.lower() == ".json":
+    if source_path.is_file() and source_path.suffix.lower() in WAN_GP_SETTINGS_SUFFIXES:
         return source_path
     return None
 
 
 def _load_wangp_settings_payload(source_path: Path) -> dict[str, Any]:
-    with Path(source_path).resolve().open("r", encoding="utf-8") as reader:
-        payload = json.load(reader)
+    source_path = Path(source_path).resolve()
+    if source_path.suffix.lower() == ".zip":
+        payload, source_task_count = load_first_settings_from_queue_zip(source_path, SETTINGS_BUNDLE_ATTACHMENT_KEYS)
+        if source_task_count > 1:
+            print(f"[Deepy] Settings bundle {source_path.name} contains {source_task_count} tasks; only the first task was extracted.")
+    else:
+        with source_path.open("r", encoding="utf-8") as reader:
+            payload = json.load(reader)
     if not isinstance(payload, dict):
         raise TypeError(f"WanGP settings file '{Path(source_path).name}' must contain a JSON object.")
     return payload
@@ -466,7 +473,7 @@ def validate_wangp_settings_for_tool(tool_name: str, source_path: Path) -> str |
 
 def build_linked_tool_variant(state: Any, source_path: Path) -> str:
     source_file = Path(source_path).resolve()
-    if not source_file.is_file() or source_file.suffix.lower() != ".json":
+    if not source_file.is_file() or source_file.suffix.lower() not in WAN_GP_SETTINGS_SUFFIXES:
         raise FileNotFoundError(f"Deepy source settings file not found: {source_file}")
     payload = _load_wangp_settings_payload(source_file)
     model_type = str(payload.get("model_type", "")).strip()

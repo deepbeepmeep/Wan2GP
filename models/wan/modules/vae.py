@@ -966,7 +966,10 @@ class WanVAE:
             if mixed_precision:
                 device_mem_capacity = device_mem_capacity / 2
             if device_mem_capacity >= 24000:
-                use_vae_config = 1
+                if output_height is not None and output_width is not None and int(output_height) * int(output_width) > 1920 * 1088:
+                    use_vae_config = 1
+                else:
+                    use_vae_config = 2
             elif device_mem_capacity >= 16000:
                 use_vae_config = 3
             elif device_mem_capacity >= 8000:
@@ -975,10 +978,7 @@ class WanVAE:
                 use_vae_config = 5
         else:
             # Keep WGP's historical public presets; Wan inserts one internal tiers between presets 1 and 3.
-            use_vae_config = vae_config if vae_config == 1 else vae_config + 2
-
-        if output_height is not None and output_width is not None and int(output_height) * int(output_width) > 1920 * 1088:
-            use_vae_config = min(use_vae_config + 1, 4)
+            use_vae_config = vae_config + 2
 
         if use_vae_config == 1:
             VAE_tile_size = 0  

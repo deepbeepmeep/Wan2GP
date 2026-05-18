@@ -19,6 +19,19 @@ from shared.llm_engines.nanovllm.utils.context import reset_context
 from shared.qtypes.gguf import materialize_module_source_tensors
 from shared.utils import files_locator as fl
 
+from .assets import (
+    QWEN35_4B_TEXT_GGUF_FILENAME,
+    QWEN35_4B_TEXT_INT8_FILENAME,
+    QWEN35_4B_VISION_FILENAME,
+    QWEN35_ABLITERATED_REPO,
+    QWEN35_ABLITERATED_TEXT_REQUIRED_FILES,
+    QWEN35_TEXT_GGUF_FILENAME,
+    QWEN35_TEXT_INT8_FILENAME,
+    QWEN35_VARIANT_4B,
+    QWEN35_VARIANT_9B,
+    QWEN35_VARIANT_SPECS,
+    QWEN35_VISION_FILENAME,
+)
 from .qwen3_5 import load_qwen35_model_class
 
 
@@ -27,68 +40,7 @@ enhancer_quantization_GGUF = "gguf"
 enhancer_quantization_SAFETENSORS = "safetensors"
 enhancer_quantization_QUANTO_INT8 = "quanto_int8"
 QWEN35_GGUF_LLAMACPP_ENV = "WGP_GGUF_LLAMACPP_CUDA"
-QWEN35_TEXT_GGUF_FILENAME = "Qwen3.5-9B-Abliterated-text-Q4_K_M_bis.gguf"
-# QWEN35_TEXT_GGUF_FILENAME = "Qwen3.5-9B-Abliterated-text-Q4_K_M.gguf"
-QWEN35_TEXT_INT8_FILENAME = "Qwen3.5-9B-Abliterated_quanto_bf16_int8.safetensors"
-# QWEN35_TEXT_INT8_FILENAME = "Qwen3.5-9B-Abliterated_bf16.safetensors"
-QWEN35_VISION_FILENAME = "Qwen3.5-9B-vision_bf16.safetensors"
 QWEN35_PROMPT_MIN_NEW_TOKENS = 4
-QWEN35_ABLITERATED_REPO = "DeepBeepMeep/Wan2.1"
-QWEN35_ABLITERATED_TEXT_REQUIRED_FILES = (
-    "chat_template.jinja",
-    "config.json",
-)
-QWEN35_4B_TEXT_GGUF_FILENAME = "Qwen3.5-4B-Abliterated-text-Q4_K_M.gguf"
-QWEN35_4B_VISION_FILENAME = "Qwen3.5-4B-vision_bf16.safetensors"
-QWEN35_4B_TEXT_INT8_FILENAME = "Qwen3.5-4B-Abliterated_quanto_bf16_int8.safetensors"
-QWEN35_VARIANT_9B = "9b"
-QWEN35_VARIANT_4B = "4b"
-QWEN35_VARIANT_SPECS = {
-    QWEN35_VARIANT_9B: {
-        "display_name": "Qwen3.5-9B Abliterated",
-        "assets_dir_name": "Qwen3_5_9B_Abliterated",
-        "root_repo": QWEN35_ABLITERATED_REPO,
-        "repo_subfolder": "Qwen3_5_9B_Abliterated",
-        "root_files": [
-            "chat_template.jinja",
-            "config.json",
-            "tokenizer.json",
-            "tokenizer_config.json",
-            "video_preprocessor_config.json",
-            "vocab.json",
-        ],
-        "text_repo": QWEN35_ABLITERATED_REPO,
-        "text_required_files": list(QWEN35_ABLITERATED_TEXT_REQUIRED_FILES),
-        "text_int8_filename": QWEN35_TEXT_INT8_FILENAME,
-        "gguf_repo": QWEN35_ABLITERATED_REPO,
-        "text_gguf_filename": QWEN35_TEXT_GGUF_FILENAME,
-        "vision_filename": QWEN35_VISION_FILENAME,
-        "tie_word_embeddings": False,
-    },
-    QWEN35_VARIANT_4B: {
-        "display_name": "Qwen3.5-4B Abliterated",
-        "assets_dir_name": "Qwen3_5_4B_Abliterated",
-        "root_repo": QWEN35_ABLITERATED_REPO,
-        "repo_subfolder": "Qwen3_5_4B_Abliterated",
-        "root_files": [
-            "chat_template.jinja",
-            "config.json",
-            "generation_config.json",
-            "merges.txt",
-            "tokenizer.json",
-            "tokenizer_config.json",
-            "video_preprocessor_config.json",
-            "vocab.json",
-        ],
-        "text_repo": None,
-        "text_required_files": [],
-        "text_int8_filename": QWEN35_4B_TEXT_INT8_FILENAME,
-        "gguf_repo": QWEN35_ABLITERATED_REPO,
-        "text_gguf_filename": QWEN35_4B_TEXT_GGUF_FILENAME,
-        "vision_filename": QWEN35_4B_VISION_FILENAME,
-        "tie_word_embeddings": True,
-    },
-}
 QWEN35_VARIANT_ALIASES = {
     "": QWEN35_VARIANT_9B,
     "9": QWEN35_VARIANT_9B,

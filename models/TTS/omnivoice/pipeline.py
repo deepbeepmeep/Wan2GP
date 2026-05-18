@@ -898,7 +898,7 @@ class OmniVoicePipeline:
         generation_config = OmniVoiceGenerationConfig(
             num_step=max(1, int(sampling_steps or 32)),
             guidance_scale=guide_scale,
-            class_temperature=max(0.0, float(temperature or 0.0)),
+            class_temperature=0.0,
             audio_chunk_duration=15.0,
             audio_chunk_threshold=30.0,
         )

@@ -14,11 +14,15 @@ from .florence2.image_processing_florence2 import Florence2ImageProcessorLite
 
 from transformers import AutoTokenizer, BartTokenizer, BartTokenizerFast
 
-
-FLORENCE2_FOLDER = "Florence2"
-LLAMA32_FOLDER = "Llama3_2"
-LLAMAJOY_FOLDER = "llama-joycaption-beta-one-hf-llava"
-PROMPT_ENHANCER_REPO = "DeepBeepMeep/LTX_Video"
+from .assets import (
+    FLORENCE2_FILES,
+    FLORENCE2_FOLDER,
+    LLAMA32_FILES,
+    LLAMA32_FOLDER,
+    LLAMAJOY_FILES,
+    LLAMAJOY_FOLDER,
+    PROMPT_ENHANCER_REPO,
+)
 
 
 @dataclass(slots=True)
@@ -38,8 +42,8 @@ def ensure_prompt_enhancer_assets(process_files_def, enhancer_enabled: int, qwen
             repoId=PROMPT_ENHANCER_REPO,
             sourceFolderList=[FLORENCE2_FOLDER, LLAMA32_FOLDER],
             fileList=[
-                ["config.json", "configuration_florence2.py", "model.safetensors", "preprocessor_config.json", "tokenizer.json", "tokenizer_config.json"],
-                ["config.json", "generation_config.json", "Llama3_2_quanto_bf16_int8.safetensors", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"],
+                FLORENCE2_FILES,
+                LLAMA32_FILES,
             ],
         )
         return
@@ -48,8 +52,8 @@ def ensure_prompt_enhancer_assets(process_files_def, enhancer_enabled: int, qwen
             repoId=PROMPT_ENHANCER_REPO,
             sourceFolderList=[FLORENCE2_FOLDER, LLAMAJOY_FOLDER],
             fileList=[
-                ["config.json", "configuration_florence2.py", "model.safetensors", "preprocessor_config.json", "tokenizer.json", "tokenizer_config.json"],
-                ["config.json", "llama_config.json", "llama_joycaption_quanto_bf16_int8.safetensors", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"],
+                FLORENCE2_FILES,
+                LLAMAJOY_FILES,
             ],
         )
         return

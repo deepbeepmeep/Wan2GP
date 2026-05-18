@@ -254,7 +254,11 @@ def _audio_scale_label(model_def: dict[str, Any] | None, _context: dict[str, Any
 
 
 def _guide_setting_visible(model_def: dict[str, Any]) -> bool:
-    return model_def.get("guide_custom_choices", None) is not None or model_def.get("guide_preprocessing", None) is not None
+    return (
+        model_def.get("guide_custom_choices", None) is not None
+        or model_def.get("guide_preprocessing", None) is not None
+        or bool(model_def.get("mask_strength_always_enabled", False))
+    )
 
 
 def _guidance_row_visible(model_def: dict[str, Any]) -> bool:

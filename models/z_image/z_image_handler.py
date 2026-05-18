@@ -21,10 +21,34 @@ class family_handler:
         ]
         extra_model_def["text_encoder_folder"] = text_encoder_folder
 
+        lanpaint_choices = [
+            ("LanPaint (2 steps): ~2x slower, easy task", 2),
+            ("LanPaint (5 steps): ~5x slower, medium task", 3),
+            ("LanPaint (10 steps): ~10x slower, hard task", 4),
+            ("LanPaint (15 steps): ~15x slower, very hard task", 5),
+        ]
+
+        if base_model_type in ["z_image", "z_image_base", "z_image_control2", "z_image_control2_1"]:
+            extra_model_def["inpaint_support"] = True
+            extra_model_def["inpaint_video_prompt_type"] = "VA"
+            extra_model_def["image_video_prompt_type"] = ""
+            extra_model_def["mask_strength_always_enabled"] = True
+            extra_model_def["video_guide_outpainting"] = [1, 2]
+            extra_model_def["mask_preprocessing"] = {
+                "selection": ["", "A", "NA"],
+                "visible": True,
+            }
+            extra_model_def["model_modes"] = {
+                "choices": lanpaint_choices,
+                "default": 2,
+                "label": "Inpainting Method",
+                "image_modes": [2],
+            }
+
         if base_model_type in ["z_image_control", "z_image_control2", "z_image_control2_1"]:
             extra_model_def["mask_preprocessing"] = {
-                "selection":[ ""],
-                "visible": False
+                "selection": ["", "A", "NA"],
+                "visible": True,
             }
 
             extra_model_def["control_net_weight_name"] = "Control"
@@ -36,14 +60,7 @@ class family_handler:
             }
 
         if base_model_type in ["z_image_control2", "z_image_control2_1"]:
-            extra_model_def["mask_preprocessing"] = {
-                "selection":[ "", "A", "NA"],
-                "visible": False, 
-            }
             extra_model_def["parent_model_type"] = "z_image_control"
-
-            extra_model_def["inpaint_support"] = True
-            extra_model_def["inpaint_video_prompt_type"]= "VA"
 
             # extra_model_def["image_ref_choices"] = {
             #     "choices":[("No Reference Image",""), ("Image is a Reference Image", "KI")],
@@ -176,6 +193,8 @@ class family_handler:
                     "NAG_scale": 1.0,
                     "NAG_tau": 3.5,
                     "NAG_alpha": 0.5,
+                    "denoising_strength": 1.0,
+                    "masking_strength": 1.0,
                 }
             )
 
@@ -186,3 +205,21 @@ class family_handler:
                         "control_net_weight":  0.75,
                     }
                 )
+
+    @staticmethod
+    def validate_generative_settings(base_model_type, model_def, inputs):
+        if base_model_type in ["z_image", "z_image_base", "z_image_control2", "z_image_control2_1"]:
+            model_mode = inputs.get("model_mode")
+            denoising_strength = inputs.get("denoising_strength", 1)
+            masking_strength = inputs.get("masking_strength", 1)
+            model_mode_int = None
+            if model_mode is not None:
+                try:
+                    model_mode_int = int(model_mode)
+                except (TypeError, ValueError):
+                    model_mode_int = None
+
+            if model_mode_int in (2, 3, 4, 5):
+                if denoising_strength != 1 or masking_strength != 1:
+                    import gradio as gr
+                    gr.Info("LanPaint forces Denoising Strength and Masking Strength to 1; non-1 values will be ignored.")

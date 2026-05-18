@@ -76,7 +76,11 @@ class LatentTools(Protocol):
         denoise_mask = torch.ones_like(latent_state.denoise_mask)[:, :num_tokens]
         positions = latent_state.positions[:, :, :num_tokens]
 
-        return LatentState(latent=latent, denoise_mask=denoise_mask, positions=positions, clean_latent=clean_latent)
+        attention_mask = None
+        if latent_state.attention_mask is not None:
+            attention_mask = latent_state.attention_mask[:, :num_tokens, :num_tokens]
+
+        return LatentState(latent=latent, denoise_mask=denoise_mask, positions=positions, clean_latent=clean_latent, attention_mask=attention_mask)
 
 
 @dataclass(frozen=True)
@@ -208,5 +212,8 @@ class AudioLatentTools(LatentTools):
         clean_latent = latent_state.clean_latent[:, start_token:stop_token]
         denoise_mask = torch.ones_like(latent_state.denoise_mask[:, start_token:stop_token])
         positions = latent_state.positions[:, :, start_token:stop_token]
+        attention_mask = None
+        if latent_state.attention_mask is not None:
+            attention_mask = latent_state.attention_mask[:, start_token:stop_token, start_token:stop_token]
 
-        return LatentState(latent=latent, denoise_mask=denoise_mask, positions=positions, clean_latent=clean_latent)
+        return LatentState(latent=latent, denoise_mask=denoise_mask, positions=positions, clean_latent=clean_latent, attention_mask=attention_mask)

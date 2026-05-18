@@ -30,10 +30,16 @@ SCENEMA_KOKORO_VOICE_FILES = ["af_heart.pt"]
 SCENEMA_DEFAULT_PACE = 1.5
 SCENEMA_DEFAULT_DURATION_SECONDS = 120
 SCENEMA_MAX_DURATION_SECONDS = 30 * 60
+DRAMABOX_DEFAULT_DURATION_SECONDS = 0
+DRAMABOX_MAX_DURATION_SECONDS = 60
+DRAMABOX_DEFAULT_NEGATIVE_PROMPT = "worst quality, inconsistent, robotic, distorted, noise, static, muffled, unclear, unnatural, monotone"
 SCENEMA_DEFAULT_CUSTOM_SETTINGS = {
     "vc_steps": 25,
     "vc_cfg_rate": 0.5,
     "pace": SCENEMA_DEFAULT_PACE,
+}
+DRAMABOX_DEFAULT_CUSTOM_SETTINGS = {
+    "duration_multiplier": 1.1,
 }
 SCENEMA_CUSTOM_SETTINGS = [
     {
@@ -60,7 +66,18 @@ SCENEMA_CUSTOM_SETTINGS = [
         "max": 3.0,
     },
 ]
-SCENEMA_TOKENIZER_FILES = [
+DRAMABOX_CUSTOM_SETTINGS = [
+    {
+        "id": "duration_multiplier",
+        "label": "Auto Duration Multiplier (default 1.1)",
+        "name": "Auto Duration Multiplier",
+        "type": "float",
+        "default": DRAMABOX_DEFAULT_CUSTOM_SETTINGS["duration_multiplier"],
+        "min": 0.5,
+        "max": 3.0,
+    },
+]
+LTX_AUDIO_TTS_TOKENIZER_FILES = [
     "added_tokens.json",
     "chat_template.json",
     "config_light.json",
@@ -112,6 +129,18 @@ Properties set in `{...}` are remembered for that speaker and reused when the sa
 ## Voice References
 
 The voice dropdown uses SeedVC for references. `Speaker 1 reference using SeedVC` applies the first audio reference. `Two Speakers references using SeedVC` applies the first reference to Speaker 1 and the second reference to Speaker 2. Additional speakers are supported, but only the first two can use uploaded reference audio.
+"""
+
+DRAMABOX_INFOS = """
+## DramaBox Prompt Format
+
+Write a scene prompt with spoken dialogue in double quotes and performance or sound cues outside the quotes.
+
+```text
+A woman speaks tenderly, "It has been a long day, my love." She whispers, "Close your eyes. I am right here." She hums quietly, "Mmmm-mmm. Sleep now."
+```
+
+Use the voice reference mode to condition on a short reference clip. Around 10 seconds is the default reference budget.
 """
 
 
@@ -178,6 +207,52 @@ def _get_scenema_model_def():
     }
 
 
+def _get_dramabox_model_def():
+    return {
+        "audio_only": True,
+        "image_outputs": False,
+        "sliding_window": False,
+        "guidance_max_phases": 0,
+        "no_negative_prompt": False,
+        "inference_steps": True,
+        "alt_scale": "Guidance Rescale",
+        "temperature": False,
+        "image_prompt_types_allowed": "",
+        "supports_early_stop": True,
+        "profiles_dir": ["dramabox_audio"],
+        "duration_slider": {
+            "label": "Target Duration (seconds, 0 = auto)",
+            "min": 0,
+            "max": DRAMABOX_MAX_DURATION_SECONDS,
+            "increment": 0.5,
+            "default": DRAMABOX_DEFAULT_DURATION_SECONDS,
+        },
+        "profile_type": "video",
+        "any_audio_prompt": True,
+        "audio_prompt_choices": True,
+        "audio_prompt_type_sources": {
+            "selection": ["", "A"],
+            "labels": {
+                "": "Text prompt",
+                "A": "Voice reference",
+            },
+            "letters_filter": "A",
+            "default": "",
+        },
+        "audio_guide_label": "Reference voice (optional)",
+        "custom_settings": [one.copy() for one in DRAMABOX_CUSTOM_SETTINGS],
+        "infos": DRAMABOX_INFOS,
+        "prompt_description": "DramaBox scene prompt",
+        "compile": False,
+        "text_encoder_folder": _GEMMA_FOLDER,
+        "text_encoder_URLs": [
+            build_hf_url("DeepBeepMeep/LTX-2", _GEMMA_FOLDER, _GEMMA_FILENAME),
+            build_hf_url("DeepBeepMeep/LTX-2", _GEMMA_FOLDER, _GEMMA_QUANTO_FILENAME),
+        ],
+        "dtype": "bf16",
+    }
+
+
 def _get_scenema_download_def():
     return [
         {
@@ -188,7 +263,7 @@ def _get_scenema_download_def():
         {
             "repoId": "DeepBeepMeep/LTX-2",
             "sourceFolderList": [_GEMMA_FOLDER],
-            "fileList": [SCENEMA_TOKENIZER_FILES],
+            "fileList": [LTX_AUDIO_TTS_TOKENIZER_FILES],
         },
         {
             "repoId": SCENEMA_WHISPER_MEDIUM_REPO,
@@ -201,6 +276,21 @@ def _get_scenema_download_def():
             "fileList": [SCENEMA_KOKORO_FILES, SCENEMA_KOKORO_VOICE_FILES],
         },
     ] + seedvc.query_download_def()
+
+
+def _get_dramabox_download_def():
+    return [
+        {
+            "repoId": SCENEMA_REPO_ID,
+            "sourceFolderList": [""],
+            "fileList": [[LTX23_AUDIO_VAE_FILENAME, LTX23_VOCODER_FILENAME, LTX23_TEXT_EMBEDDING_PROJECTION_FILENAME, LTX23_EMBEDDINGS_CONNECTOR_FILENAME]],
+        },
+        {
+            "repoId": "DeepBeepMeep/LTX-2",
+            "sourceFolderList": [_GEMMA_FOLDER],
+            "fileList": [LTX_AUDIO_TTS_TOKENIZER_FILES],
+        },
+    ]
 
 
 def _load_alignment_whisper():
@@ -235,10 +325,14 @@ def _load_kokoro_pipeline():
     return kokoro_pipeline
 
 
+def _is_dramabox(model_type: str) -> bool:
+    return model_type == "dramabox_audio"
+
+
 class family_handler:
     @staticmethod
     def query_supported_types():
-        return ["scenema_audio"]
+        return ["scenema_audio", "dramabox_audio"]
 
     @staticmethod
     def query_family_maps():
@@ -260,21 +354,70 @@ class family_handler:
             default=None,
             help=f"Path to a directory that contains Scenema Audio LoRAs (default: {os.path.join(lora_root, 'scenema_audio')})",
         )
+        parser.add_argument(
+            "--lora-dir-dramabox-audio",
+            type=str,
+            default=None,
+            help=f"Path to a directory that contains DramaBox Audio LoRAs (default: {os.path.join(lora_root, 'dramabox_audio')})",
+        )
 
     @staticmethod
     def get_lora_dir(base_model_type, args, lora_root):
+        if _is_dramabox(base_model_type):
+            return getattr(args, "lora_dir_dramabox_audio", None) or os.path.join(lora_root, "dramabox_audio")
         return getattr(args, "lora_dir_scenema_audio", None) or os.path.join(lora_root, "scenema_audio")
 
     @staticmethod
     def query_model_def(base_model_type, model_def):
-        return _get_scenema_model_def()
+        return _get_dramabox_model_def() if _is_dramabox(base_model_type) else _get_scenema_model_def()
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):
-        return _get_scenema_download_def()
+        return _get_dramabox_download_def() if _is_dramabox(base_model_type) else _get_scenema_download_def()
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
+        if _is_dramabox(base_model_type):
+            inputs.setdefault("num_inference_steps", 30)
+            inputs.setdefault("guidance_scale", 2.5)
+            inputs.setdefault("audio_guidance_scale", 1.5)
+            inputs.setdefault("alt_scale", 0.0)
+            custom_settings = inputs.get("custom_settings", None)
+            if not isinstance(custom_settings, dict):
+                custom_settings = {}
+            for key, value in DRAMABOX_DEFAULT_CUSTOM_SETTINGS.items():
+                custom_settings.setdefault(key, value)
+            try:
+                if int(inputs.get("num_inference_steps", 30)) <= 0:
+                    return "DramaBox Audio inference steps must be greater than 0."
+            except Exception:
+                return "DramaBox Audio inference steps must be an integer."
+            try:
+                if float(inputs.get("guidance_scale", 2.5)) < 1.0:
+                    return "DramaBox Audio CFG scale must be at least 1.0."
+            except Exception:
+                return "DramaBox Audio CFG scale must be a number."
+            try:
+                if float(inputs.get("audio_guidance_scale", 1.5)) < 0.0:
+                    return "DramaBox Audio STG scale must be zero or greater."
+            except Exception:
+                return "DramaBox Audio STG scale must be a number."
+            try:
+                if float(custom_settings.get("duration_multiplier", DRAMABOX_DEFAULT_CUSTOM_SETTINGS["duration_multiplier"])) <= 0:
+                    return "DramaBox Audio duration multiplier must be greater than 0."
+            except Exception:
+                return "DramaBox Audio duration multiplier must be a number."
+            try:
+                alt_scale = float(inputs.get("alt_scale", 0.0))
+                if alt_scale < 0 or alt_scale > 1:
+                    return "DramaBox Audio guidance rescale must be between 0 and 1."
+            except Exception:
+                return "DramaBox Audio guidance rescale must be a number."
+            custom_settings = {"duration_multiplier": float(custom_settings.get("duration_multiplier", DRAMABOX_DEFAULT_CUSTOM_SETTINGS["duration_multiplier"]))}
+            inputs["alt_scale"] = alt_scale
+            inputs["custom_settings"] = custom_settings
+            return None
+
         inputs.update(
             {
                 "num_inference_steps": 8,
@@ -313,6 +456,14 @@ class family_handler:
 
     @staticmethod
     def validate_generative_prompt(base_model_type, model_def, inputs, one_prompt):
+        if _is_dramabox(base_model_type):
+            if one_prompt is None or len(str(one_prompt).strip()) == 0:
+                return "Prompt text cannot be empty for DramaBox Audio."
+            audio_prompt_type = str(inputs.get("audio_prompt_type", "") or "").upper()
+            if "A" in audio_prompt_type and inputs.get("audio_guide") is None:
+                return "DramaBox Audio reference voice mode requires a reference audio file."
+            return None
+
         if one_prompt is None or len(str(one_prompt).strip()) == 0:
             return "Prompt text cannot be empty for Scenema Audio."
         audio_prompt_type = str(inputs.get("audio_prompt_type", "") or "").upper()
@@ -339,6 +490,46 @@ class family_handler:
         profile=0,
         **kwargs,
     ):
+        if _is_dramabox(base_model_type):
+            from .dramabox_audio import DramaBoxAudioPipeline
+
+            weights_path = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename
+            if not text_encoder_filename:
+                raise ValueError("DramaBox Audio requires the LTX2 Gemma text encoder.")
+            audio_vae_path = fl.locate_file(LTX23_AUDIO_VAE_FILENAME)
+            vocoder_path = fl.locate_file(LTX23_VOCODER_FILENAME)
+            text_projection_path = fl.locate_file(LTX23_TEXT_EMBEDDING_PROJECTION_FILENAME)
+            text_connector_path = fl.locate_file(LTX23_EMBEDDINGS_CONNECTOR_FILENAME)
+            config_path = os.path.join(os.path.dirname(__file__), "configs", "ltx2_22b_config.json")
+            pipeline = DramaBoxAudioPipeline(
+                model_weights_path=weights_path,
+                gemma_path=text_encoder_filename,
+                audio_vae_path=audio_vae_path,
+                vocoder_path=vocoder_path,
+                text_projection_path=text_projection_path,
+                text_connector_path=text_connector_path,
+                config_path=config_path,
+                device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+                dtype=dtype or torch.bfloat16,
+            )
+            pipe = {
+                "pipe": {
+                    "transformer": pipeline.model,
+                    "text_encoder": pipeline.text_encoder,
+                    "text_embedding_projection": pipeline.text_embedding_projection,
+                    "text_embeddings_connector": pipeline.text_embeddings_connector,
+                    "audio_encoder": pipeline.audio_encoder,
+                    "audio_decoder": pipeline.audio_decoder,
+                    "vocoder": pipeline.vocoder,
+                }
+            }
+            if save_quantized and weights_path:
+                from wgp import save_quantized_model
+
+                quantized_transformer = getattr(pipeline.model, "velocity_model", pipeline.model)
+                save_quantized_model(quantized_transformer, model_type, weights_path, dtype or torch.bfloat16, config_path)
+            return pipeline, pipe
+
         from .scenema_audio import ScenemaAudioPipeline
 
         weights_path = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename
@@ -393,6 +584,24 @@ class family_handler:
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
+        if _is_dramabox(base_model_type):
+            ui_defaults["audio_prompt_type"] = "A" if "A" in str(ui_defaults.get("audio_prompt_type", "") or "").upper() else ""
+            ui_defaults["alt_prompt"] = ""
+            ui_defaults.setdefault("duration_seconds", DRAMABOX_DEFAULT_DURATION_SECONDS)
+            ui_defaults.setdefault("num_inference_steps", 30)
+            ui_defaults.setdefault("guidance_scale", 2.5)
+            ui_defaults.setdefault("audio_guidance_scale", 1.5)
+            ui_defaults.setdefault("negative_prompt", DRAMABOX_DEFAULT_NEGATIVE_PROMPT)
+            custom_settings = ui_defaults.get("custom_settings", None)
+            if not isinstance(custom_settings, dict):
+                custom_settings = {}
+            if "alt_scale" not in ui_defaults and "rescale_scale" in custom_settings:
+                ui_defaults["alt_scale"] = custom_settings["rescale_scale"]
+            ui_defaults.setdefault("alt_scale", 0.0)
+            custom_settings = {"duration_multiplier": custom_settings.get("duration_multiplier", DRAMABOX_DEFAULT_CUSTOM_SETTINGS["duration_multiplier"])}
+            ui_defaults["custom_settings"] = custom_settings
+            return
+
         audio_prompt_type = str(ui_defaults.get("audio_prompt_type", "") or "").upper()
         ui_defaults["audio_prompt_type"] = "AB2" if "2" in audio_prompt_type and "B" in audio_prompt_type else "A2" if "2" in audio_prompt_type and "A" in audio_prompt_type else ""
         ui_defaults["alt_prompt"] = ""
@@ -406,6 +615,25 @@ class family_handler:
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
+        if _is_dramabox(base_model_type):
+            ui_defaults.update(
+                {
+                    "audio_prompt_type": "",
+                    "alt_prompt": "",
+                    "repeat_generation": 1,
+                    "duration_seconds": DRAMABOX_DEFAULT_DURATION_SECONDS,
+                    "video_length": 0,
+                    "num_inference_steps": 30,
+                    "negative_prompt": DRAMABOX_DEFAULT_NEGATIVE_PROMPT,
+                    "guidance_scale": 2.5,
+                    "audio_guidance_scale": 1.5,
+                    "alt_scale": 0.0,
+                    "custom_settings": dict(DRAMABOX_DEFAULT_CUSTOM_SETTINGS),
+                    "multi_prompts_gen_type": "FG",
+                }
+            )
+            return
+
         ui_defaults.update(
             {
                 "audio_prompt_type": "",

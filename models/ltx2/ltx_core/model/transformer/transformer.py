@@ -262,7 +262,7 @@ class BasicAVTransformerBlock(torch.nn.Module):
                 v_mask = perturbations.mask_like(PerturbationType.SKIP_VIDEO_SELF_ATTN, self.idx, vx)
                 x_list = [norm_vx]
                 del norm_vx
-                attn_out = self.attn1(x_list, pe=video.positional_embeddings)
+                attn_out = self.attn1(x_list, mask=video.self_attention_mask, pe=video.positional_embeddings)
                 attn_out = _apply_gate(attn_out, vgate_msa)
                 attn_out.mul_(v_mask)
                 vx.add_(attn_out)
@@ -297,7 +297,7 @@ class BasicAVTransformerBlock(torch.nn.Module):
                 a_mask = perturbations.mask_like(PerturbationType.SKIP_AUDIO_SELF_ATTN, self.idx, ax)
                 x_list = [norm_ax]
                 del norm_ax
-                attn_out = self.audio_attn1(x_list, pe=audio.positional_embeddings)
+                attn_out = self.audio_attn1(x_list, mask=audio.self_attention_mask, pe=audio.positional_embeddings)
                 attn_out = _apply_gate(attn_out, agate_msa)
                 attn_out.mul_(a_mask)
                 ax.add_(attn_out)

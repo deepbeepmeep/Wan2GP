@@ -373,6 +373,17 @@ class TransformerArgsPreprocessor:
             (attention_mask.shape[0], 1, -1, attention_mask.shape[-1])
         ) * torch.finfo(x_dtype).max
 
+    def _prepare_self_attention_mask(self, attention_mask: torch.Tensor | None, x_dtype: torch.dtype) -> torch.Tensor | None:
+        if attention_mask is None:
+            return None
+        finfo = torch.finfo(x_dtype)
+        eps = finfo.tiny
+        bias = torch.full_like(attention_mask, finfo.min, dtype=x_dtype)
+        positive = attention_mask > 0
+        if positive.any():
+            bias[positive] = torch.log(attention_mask[positive].clamp(min=eps)).to(x_dtype)
+        return bias.unsqueeze(2)
+
     def _prepare_positional_embeddings(
         self,
         positions: torch.Tensor,
@@ -463,6 +474,7 @@ class TransformerArgsPreprocessor:
                 prompt_timestep, _ = self._prepare_timestep(modality.sigma, self.prompt_adaln, x.shape[0], latent_dtype)
         context, attention_mask = self._prepare_context(modality.context, x, modality.context_mask)
         attention_mask = self._prepare_attention_mask(attention_mask, latent_dtype)
+        self_attention_mask = self._prepare_self_attention_mask(modality.attention_mask, latent_dtype)
         pe = self._prepare_positional_embeddings(
             positions=modality.positions,
             inner_dim=self.inner_dim,
@@ -485,6 +497,7 @@ class TransformerArgsPreprocessor:
             enabled=modality.enabled,
             nag=modality.nag,
             prompt_timestep=prompt_timestep,
+            self_attention_mask=self_attention_mask,
         )
 
 

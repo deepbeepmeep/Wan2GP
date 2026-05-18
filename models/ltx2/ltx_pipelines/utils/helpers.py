@@ -943,7 +943,7 @@ def modality_from_latent_state(
         context=context,
         nag=nag,
         context_mask=None,
-        attention_mask=None,
+        attention_mask=state.attention_mask,
         frame_indices=frame_indices,
         runtime_cache=runtime_cache,
         step_index=step_index,

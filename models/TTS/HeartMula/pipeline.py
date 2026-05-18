@@ -103,9 +103,8 @@ class HeartMuLaPipeline:
         codec_version: str = "",
         VAE_dtype = torch.float32,
         lm_decoder_engine=None,
-
     ):
-        self.device = torch.device("cpu")
+        self.device = device or torch.device("cpu")
         self.mula_device = self.device
         self.codec_device = self.device
         self.mula_dtype = None

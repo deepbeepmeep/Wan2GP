@@ -59,15 +59,8 @@ class GemmaTextEncoderModelBase(torch.nn.Module):
     ) -> torch.Tensor:
         if self.feature_extractor_linear is None:
             raise ValueError("feature_extractor_linear is not available for this text encoder")
-        encoded_text_features = torch.stack(hidden_states, dim=-1)
-        encoded_text_features_dtype = encoded_text_features.dtype
-
-        sequence_lengths = attention_mask.sum(dim=-1)
-        normed_concated_encoded_text_features = _norm_and_concat_padded_batch(
-            encoded_text_features, sequence_lengths, padding_side=padding_side
-        )
-
-        return self.feature_extractor_linear(normed_concated_encoded_text_features.to(encoded_text_features_dtype))
+        video_features, _ = self.feature_extractor_linear(hidden_states, attention_mask, padding_side=padding_side)
+        return video_features
 
     def _convert_to_additive_mask(self, attention_mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
         return (attention_mask - 1).to(dtype).reshape(
@@ -190,35 +183,31 @@ def _apply_feature_extractor(
     attention_mask: torch.Tensor,
     padding_side: str,
     feature_extractor_linear: GemmaFeaturesExtractorProjLinear,
-) -> torch.Tensor:
-    encoded_text_features = torch.stack(hidden_states, dim=-1)
-    encoded_text_features_dtype = encoded_text_features.dtype
-    sequence_lengths = attention_mask.sum(dim=-1)
-    normed = _norm_and_concat_padded_batch(
-        encoded_text_features,
-        sequence_lengths,
-        padding_side=padding_side,
-    )
-    return feature_extractor_linear(normed.to(encoded_text_features_dtype))
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    return feature_extractor_linear(hidden_states, attention_mask, padding_side=padding_side)
 
 
 def _apply_connectors(
-    encoded_input: torch.Tensor,
+    encoded_video_input: torch.Tensor,
+    encoded_audio_input: torch.Tensor | None,
     attention_mask: torch.Tensor,
     embeddings_connector: Embeddings1DConnector,
     audio_embeddings_connector: Embeddings1DConnector,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    connector_attention_mask = (attention_mask - 1).to(encoded_input.dtype).reshape(
+    connector_attention_mask = (attention_mask - 1).to(encoded_video_input.dtype).reshape(
         (attention_mask.shape[0], 1, -1, attention_mask.shape[-1])
-    ) * torch.finfo(encoded_input.dtype).max
+    ) * torch.finfo(encoded_video_input.dtype).max
     encoded, encoded_connector_attention_mask = embeddings_connector(
-        encoded_input,
+        encoded_video_input,
         connector_attention_mask,
     )
     attention_mask_out = (encoded_connector_attention_mask < 0.000001).to(torch.int64)
     attention_mask_out = attention_mask_out.reshape([encoded.shape[0], encoded.shape[1], 1])
     encoded = encoded * attention_mask_out
-    encoded_for_audio, _ = audio_embeddings_connector(encoded_input, connector_attention_mask)
+    encoded_for_audio, _ = audio_embeddings_connector(
+        encoded_video_input if encoded_audio_input is None else encoded_audio_input,
+        connector_attention_mask,
+    )
     return encoded, encoded_for_audio, attention_mask_out.squeeze(-1)
 
 def _norm_and_concat_padded_batch(
@@ -415,17 +404,18 @@ def postprocess_text_embeddings(
     projected = []
     for item in embeddings:
         attention_mask = item.attention_mask.to("cuda")
-        encoded_input = _apply_feature_extractor(
+        encoded_video_input, encoded_audio_input = _apply_feature_extractor(
             item.hidden_states,
             attention_mask,
             item.padding_side,
             feature_extractor_linear,
         )
-        projected.append((encoded_input, attention_mask))
+        projected.append((encoded_video_input, encoded_audio_input, attention_mask))
     results = []
-    for encoded_input, attention_mask in projected:
+    for encoded_video_input, encoded_audio_input, attention_mask in projected:
         video_ctx, audio_ctx, _ = _apply_connectors(
-            encoded_input,
+            encoded_video_input,
+            encoded_audio_input,
             attention_mask,
             embeddings_connector,
             audio_embeddings_connector,

@@ -31,6 +31,9 @@ class GuidesPlugin(WAN2GPPlugin):
         with open("docs/LORAS.md", "r", encoding="utf-8") as reader:
             loras = reader.read()
 
+        with open("docs/PROMPTS.md", "r", encoding="utf-8") as reader:
+            prompts = reader.read()
+
         with open("docs/FINETUNES.md", "r", encoding="utf-8") as reader:
             finetunes = reader.read()
 
@@ -39,6 +42,9 @@ class GuidesPlugin(WAN2GPPlugin):
 
         with open("docs/OVERVIEW.md", "r", encoding="utf-8") as reader:
             overview = reader.read()
+
+        with open("docs/DEEPY.md", "r", encoding="utf-8") as reader:
+            deepy = reader.read()
 
         with gr.Tabs():
             with gr.Tab("Overview", id="overview"):
@@ -57,6 +63,10 @@ class GuidesPlugin(WAN2GPPlugin):
                     inputs=[self.state],
                     outputs=[self.main_tabs]
                 )
+            with gr.Tab("Deepy", id="deepy"):
+                gr.Markdown(deepy)
+            with gr.Tab("Prompts", id="prompts"):
+                gr.Markdown(prompts)
             with gr.Tab("Loras", id="loras"):
                 gr.Markdown(loras)
             with gr.Tab("Vace", id="vace"):

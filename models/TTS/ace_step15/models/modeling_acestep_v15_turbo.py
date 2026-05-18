@@ -350,6 +350,9 @@ class AceStepAttention(nn.Module):
             attention_interface: Callable = eager_attention_forward
         elif self.config._attn_implementation != "eager":
             attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+
+        if attention_mask is not None and attention_mask.dtype is not torch.bool and attention_mask.dtype != query_states.dtype:
+            attention_mask = attention_mask.to(query_states.dtype)
     
         attn_output, attn_weights = attention_interface(
             self,
@@ -520,7 +523,7 @@ class AceStepDiTLayer(GradientCheckpointingLayer):
                 **kwargs,
             )
             # Standard residual connection for cross-attention
-            hidden_states = hidden_states + attn_output
+            hidden_states = (hidden_states + attn_output).type_as(hidden_states)
 
         # Step 3: Feed-forward (MLP) with adaptive layer norm
         # Apply adaptive normalization for MLP: norm(x) * (1 + scale) + shift

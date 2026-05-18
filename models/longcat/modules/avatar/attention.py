@@ -23,6 +23,7 @@ def _run_attention(x_list, out_dtype, **attn_kwargs):
         k = k.to(attn_dtype)
         v = v.to(attn_dtype)
     x_list[:] = [q, k, v]
+    del q, k, v
     x = pay_attention(x_list, **attn_kwargs)
     x_list[:] = []
     if x.dtype != out_dtype:
@@ -370,8 +371,9 @@ class SingleStreamAttention(nn.Module):
             encoder_k = rearrange(encoder_k, "(B N_t) S H C -> B (N_t S) H C", N_t=N_t)
             encoder_k = self.rope_1d(encoder_k, encoder_pos)
             encoder_k = rearrange(encoder_k, "B (N_t S) H C -> (B N_t) S H C", N_t=N_t)
-
-        x = _run_attention([q, encoder_k, encoder_v], out_dtype, cross_attn=True)
+        qkv_list = [q, encoder_k, encoder_v]
+        del q, encoder_k, encoder_v
+        x = _run_attention(qkv_list, out_dtype)
 
         # linear transform
         x_output_shape = (B, N, C)

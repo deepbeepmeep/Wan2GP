@@ -2,7 +2,7 @@
     "model": {
         "name": "TTS Qwen3 Custom Voice (12Hz) 1.7B",
         "architecture": "qwen3_tts_customvoice",
-        "description": "Qwen3 Custom Voice with fixed speaker presets and optional instruction control.  Use Manual Split (one empty line) or Auto Split to reduce VRAM requirements for very long speeches.",
+        "description": "Qwen3 Custom Voice with fixed speaker presets and optional instruction control.  Use Manual Split (one empty line) or Auto Split to accelerate generation for very long speeches.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/qwen3_tts_12hz_1b7_customvoice_bf16.safetensors",
             "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/qwen3_tts_12hz_1b7_customvoice_quanto_bf16_int8.safetensors"

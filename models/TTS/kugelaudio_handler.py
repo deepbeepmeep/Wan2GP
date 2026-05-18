@@ -3,6 +3,7 @@ import re
 
 import torch
 
+from shared.mps import mps_device_or
 from shared.utils import files_locator as fl
 
 from .prompt_enhancers import TTS_MONOLOGUE_PROMPT, TTS_QWEN3_DIALOGUE_PROMPT
@@ -86,7 +87,7 @@ def _get_kugelaudio_model_def():
             "labels": {
                 "": "Text only",
                 "A": "Voice cloning (1 reference audio)",
-                "AB": "Voice cloning (2 reference audios)",
+                "AB": "Voice cloning (2 reference audios: Speaker 1 and Speaker 2)",
             },
             "letters_filter": "AB",
             "default": "",
@@ -180,7 +181,7 @@ class family_handler:
         pipeline = KugelAudioPipeline(
             model_weights_path=weights_path,
             ckpt_root=fl.get_download_location(),
-            device=torch.device("cpu"),
+            device=mps_device_or(torch.device("cpu")),
             lm_decoder_engine=lm_decoder_engine,
         )
         if lm_decoder_engine == "cg":
@@ -245,7 +246,7 @@ class family_handler:
                 "negative_prompt": "",
                 "temperature": 1.0,
                 "guidance_scale": 3.0,
-                "multi_prompts_gen_type": 2,
+                "multi_prompts_gen_type": "FG",
             }
         )
 
@@ -261,10 +262,19 @@ class family_handler:
         if "B" in audio_prompt_type:
             if inputs.get("audio_guide") is None or inputs.get("audio_guide2") is None:
                 return "Two-voice cloning requires two reference audio files."
-            has_speaker_0 = re.search(r"Speaker\s*0\s*:", text, flags=re.IGNORECASE) is not None
-            has_speaker_1 = re.search(r"Speaker\s*1\s*:", text, flags=re.IGNORECASE) is not None
-            if not has_speaker_0 or not has_speaker_1:
-                return "Two-voice cloning requires prompt lines with Speaker 0: and Speaker 1:."
+            speaker_matches = list(re.finditer(r"Speaker\s*(\d+)\s*:", text, flags=re.IGNORECASE))
+            if not speaker_matches:
+                return (
+                    "Two-voice cloning requires prompt lines with Speaker 1: and Speaker 2: "
+                    "(or any two numeric speaker IDs). For headless settings, keep "
+                    "'multi_prompts_gen_type' = 'FG' so dialogue lines stay in one prompt."
+                )
+            speaker_ids = sorted({int(m.group(1)) for m in speaker_matches})
+            if len(speaker_ids) != 2:
+                return (
+                    "Two-voice cloning requires exactly two speaker IDs. Use Speaker 1: and Speaker 2:. "
+                    "For headless settings, keep 'multi_prompts_gen_type' = 'FG'."
+                )
         return None
 
     @staticmethod

@@ -258,17 +258,17 @@ class WanSelfAttention(nn.Module):
             qvl_list=[q, k, v]
             if not return_q: del q
             del k, v
-            x = pay_attention(qvl_list,  cross_attn= True)
+            x = pay_attention(qvl_list, recycle_q = not return_q)
             x = x.flatten(2, 3)
         else:
             nag_tau = offload.shared_state["_nag_tau"]
             nag_alpha = offload.shared_state["_nag_alpha"]
             qvl_list=[q, k[:1], v[:1]]
-            x_pos = pay_attention(qvl_list,  cross_attn= True)
+            x_pos = pay_attention(qvl_list)
             qvl_list=[q, k[1:], v[1:]]
             if not return_q: del q
             del k, v
-            x_neg = pay_attention(qvl_list,  cross_attn= True)
+            x_neg = pay_attention(qvl_list, recycle_q = not return_q)
 
             x_pos = x_pos.flatten(2, 3)
             x_neg = x_neg.flatten(2, 3)
@@ -379,7 +379,7 @@ class WanSelfAttention(nn.Module):
             qkv_list = [q,k,v]
             del q,k,v
 
-            x = pay_attention( qkv_list, window_size=self.window_size)
+            x = pay_attention( qkv_list, recycle_q=True)
 
         else:
             with sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=False):
@@ -435,7 +435,7 @@ class WanT2VCrossAttention(WanSelfAttention):
             ip_value = ip_value.view(batch_size, -1, self.num_heads, ip_head_dim)
             qkv_list = [q, ip_key, ip_value]
             del q, ip_key, ip_value
-            ip_hidden_states = pay_attention(qkv_list).reshape(*x.shape)
+            ip_hidden_states = pay_attention(qkv_list, recycle_q= True).reshape(*x.shape)
             x.add_(ip_hidden_states, alpha= lynx_ip_scale)
 
         x = self.o(x)
@@ -484,7 +484,7 @@ class WanI2VCrossAttention(WanSelfAttention):
             k_img, v_img = k_img.expand(b, -1, -1, -1), v_img.expand(b, -1, -1, -1)
         qkv_list = [q, k_img, v_img]
         del q, k_img, v_img
-        img_x = pay_attention(qkv_list)
+        img_x = pay_attention(qkv_list, recycle_q = True)
         img_x = img_x.flatten(2)
 
         # output
@@ -631,10 +631,13 @@ class WanAttentionBlock(nn.Module):
 
         if cam_emb != None:
             cam_emb = self.cam_encoder(cam_emb)
-            cam_emb = cam_emb.repeat(1, 2, 1)
-            cam_emb = cam_emb.unsqueeze(2).unsqueeze(3).repeat(1, 1, grid_sizes[1], grid_sizes[2], 1)
-            cam_emb = rearrange(cam_emb, 'b f h w d -> b (f h w) d')
-            x_mod += cam_emb
+            if cam_emb.ndim == 3 and cam_emb.shape[1] == x_mod.shape[1]:
+                x_mod += cam_emb
+            else:
+                cam_emb = cam_emb.repeat(1, 2, 1)
+                cam_emb = cam_emb.unsqueeze(2).unsqueeze(3).repeat(1, 1, grid_sizes[1], grid_sizes[2], 1)
+                cam_emb = rearrange(cam_emb, 'b f h w d -> b (f h w) d')
+                x_mod += cam_emb
 
         xlist = [x_mod.to(attention_dtype)]
         if lynx_feature_extractor: get_cache("lynx_ref_buffer")[sub_x_no][self.block_no] = xlist[0]
@@ -708,7 +711,7 @@ class WanAttentionBlock(nn.Module):
                         x.add_(hint, alpha= scale)
 
         if motion_vec is not None and self.block_no % 5 == 0:
-            x += self.face_adapter_fuser_blocks(x.to(self.face_adapter_fuser_blocks.linear1_kv.weight.dtype), motion_vec, None, False)
+            x += self.face_adapter_fuser_blocks(x.to(self.face_adapter_fuser_blocks.linear1_kv.weight.dtype), motion_vec, None)
 
         return x 
 
@@ -968,14 +971,27 @@ class WanModel(ModelMixin, ConfigMixin):
         if first.startswith("lora_unet_"):
             new_sd = {}
             print("Converting Lora Safetensors format to Lora Diffusers format")
-            alphas = {}
             repl_list = ["cross_attn", "self_attn", "ffn"]
             src_list = ["_" + k + "_" for k in repl_list]
             tgt_list = ["." + k + "." for k in repl_list]
+            top_level_repl_list = [
+                ("lora_unet__head_head", "diffusion_model.head.head"),
+                ("lora_unet_head_head", "diffusion_model.head.head"),
+                ("lora_unet__img_emb_proj_", "diffusion_model.img_emb.proj."),
+                ("lora_unet_img_emb_proj_", "diffusion_model.img_emb.proj."),
+                ("lora_unet__text_embedding_", "diffusion_model.text_embedding."),
+                ("lora_unet_text_embedding_", "diffusion_model.text_embedding."),
+                ("lora_unet__time_embedding_", "diffusion_model.time_embedding."),
+                ("lora_unet_time_embedding_", "diffusion_model.time_embedding."),
+                ("lora_unet__time_projection_", "diffusion_model.time_projection."),
+                ("lora_unet_time_projection_", "diffusion_model.time_projection."),
+            ]
 
             for k,v in sd.items():
                 k = k.replace("lora_unet_blocks_","diffusion_model.blocks.")
                 k = k.replace("lora_unet__blocks_","diffusion_model.blocks.")
+                for src, tgt in top_level_repl_list:
+                    k = k.replace(src, tgt)
 
                 for s,t in zip(src_list, tgt_list):
                     k = k.replace(s,t)
@@ -1041,6 +1057,10 @@ class WanModel(ModelMixin, ConfigMixin):
                  lynx=None,
                  steadydancer = False,
                  scail = False,
+                 any_kiwi_source = False,
+                 any_kiwi_ref = False,
+                 vista4d = False,
+                 vista4d_positional_embedding_offset = 31,
                  ):
 
         super().__init__()
@@ -1064,12 +1084,15 @@ class WanModel(ModelMixin, ConfigMixin):
         self.num_frame_per_block = 1
         self.flag_causal_attention = False
         self.block_mask = None
+        self.cache = None
         self.inject_sample_info = inject_sample_info
         self.motion_encoder_dim = motion_encoder_dim
         self.norm_output_audio = norm_output_audio
         self.audio_window = audio_window
         self.intermediate_dim = intermediate_dim
         self.vae_scale = vae_scale
+        self.any_kiwi_source = any_kiwi_source
+        self.any_kiwi_ref = any_kiwi_ref
 
         multitalk = multitalk_output_dim > 0
         self.multitalk = multitalk
@@ -1161,6 +1184,10 @@ class WanModel(ModelMixin, ConfigMixin):
                 block.cam_encoder.bias.data.zero_()
                 block.projector.weight = nn.Parameter(torch.eye(dim))
                 block.projector.bias = nn.Parameter(torch.zeros(dim))            
+
+        if vista4d:
+            from ..vista4d.runtime import add_vista4d_modules
+            add_vista4d_modules(self)
 
         if fantasytalking_dim > 0:
             from ..fantasytalking.model import WanCrossAttentionProcessor
@@ -1294,12 +1321,15 @@ class WanModel(ModelMixin, ConfigMixin):
             for block in self.vace_blocks:
                 layer_list2 += [block.after_proj, block.norm3]
 
+        if hasattr(self, "latent_encoder"):
+            layer_list += [module for module in self.latent_encoder.modules() if isinstance(module, (nn.Conv3d, nn.Linear))]
+
         target_dype2 = hybrid_dtype if hybrid_dtype != None else dtype 
 
         # cam master
         if hasattr(self.blocks[0], "projector"):
             for block in self.blocks:
-                layer_list2 += [block.projector]
+                layer_list2 += [block.projector, block.cam_encoder]
 
         for current_layer_list, current_dtype in zip([layer_list, layer_list2], [target_dype, target_dype2]):
             for layer in current_layer_list:
@@ -1442,7 +1472,7 @@ class WanModel(ModelMixin, ConfigMixin):
         real_step_no = 0,
         x_id= 0,
         max_steps = 0, 
-        slg_layers=None,
+        perturbation_layers=None,
         callback = None,
         cam_emb: torch.Tensor = None,
         fps = None,
@@ -1468,6 +1498,10 @@ class WanModel(ModelMixin, ConfigMixin):
         steadydancer_ref_c = None,
         steadydancer_clip_fea_c = None,
         scail_pose_latents = None,
+        kiwi_source_condition = None,
+        kiwi_ref_condition = None,
+        kiwi_ref_pad_first = False,
+        vista = None,
     ):
         # patch_dtype =  self.patch_embedding.weight.dtype
         modulation_dtype = self.time_projection[1].weight.dtype
@@ -1484,10 +1518,13 @@ class WanModel(ModelMixin, ConfigMixin):
             voxel_shape = (4, 6, 8)
         real_seq = 0
         x_list = x
+        output_slice = None
+        output_grid_sizes = None
         joint_pass = len(x_list) > 1
         is_source_x = [ x.data_ptr() == x_list[0].data_ptr() and i > 0 for i, x in enumerate(x_list) ]
         last_x_idx  = 0
         steadydancer = steadydancer_condition is not None
+        vista_enabled = isinstance(vista, dict) and vista.get("source_latents") is not None
         if steadydancer: # steady dancer
             x_noise_clone = x_list[0].clone()
         if isinstance(y, list):
@@ -1509,6 +1546,26 @@ class WanModel(ModelMixin, ConfigMixin):
                 # embeddings
                 if not steadydancer:
                     x = self.patch_embedding(x).to(modulation_dtype)
+                    if kiwi_source_condition is not None:
+                        source_cond = kiwi_source_condition.to(modulation_dtype)
+                        if source_cond.shape[2:] != x.shape[2:]:
+                            source_cond_full = torch.zeros_like(x)
+                            t_len = min(source_cond.shape[2], x.shape[2])
+                            source_cond_full[:, :, :t_len] = source_cond[:, :, :t_len] 
+                            source_cond = source_cond_full
+                        sigma = (t.flatten()[0] if t.numel() > 0 else 1000.0) / 1000.0
+                        sigma = sigma.to(device=x.device, dtype=modulation_dtype)
+                        x += source_cond * sigma
+                    if kiwi_ref_condition is not None:
+                        ref_cond = kiwi_ref_condition.to(modulation_dtype)
+                        real_latent_frames = int(x.shape[2])
+                        ref_latent_frames = int(ref_cond.shape[2])
+                        if kiwi_ref_pad_first:
+                            output_slice = slice(ref_latent_frames, ref_latent_frames + real_latent_frames)
+                            x = torch.cat([ref_cond, x], dim=2)
+                        else:
+                            output_slice = slice(0, real_latent_frames)
+                            x = torch.cat([x, ref_cond], dim=2)
                     grid_sizes = x.shape[2:]
                 x_list[i] = x
         y = y_list = None
@@ -1517,7 +1574,6 @@ class WanModel(ModelMixin, ConfigMixin):
             # Spatial Structure Adaptive Extractor.
             time_steps = steadydancer_condition[0].shape[2]
             for i, (x, condition) in enumerate(zip(x_list, steadydancer_condition)):
-                real_seq = x.shape[1]
                 # Temporal Motion Coherence Module.
                 condition_temporal =self.condition_embedding_temporal(condition)                
                 condition_spatial = rearrange(self.condition_embedding_spatial(rearrange(condition, 'b c t h w -> (b t) c h w')), '(b t) c h w -> b c t h w', t=time_steps, b=1)
@@ -1527,12 +1583,40 @@ class WanModel(ModelMixin, ConfigMixin):
                 condition_aligned = self.condition_embedding_align(condition_fused, x_noise_clone)                
                 # Condition Fusion/Injection, Hierarchical Aggregation (2): x, fused condition, aligned condition
                 x = self.patch_embedding_fuse(torch.cat([x, condition_fused, condition_aligned], 1).to(self.patch_embedding_fuse.weight.dtype))
+                real_seq = math.prod(x.shape[2:])
+                output_grid_sizes = x.shape[2:]
                 x = torch.cat([x, self.patch_embedding(steadydancer_ref_x.unsqueeze(0).to(self.patch_embedding.weight.dtype )),
                                 self.patch_embedding_ref_c(steadydancer_ref_c[:16].unsqueeze(0).to(self.patch_embedding_ref_c.weight.dtype ))], dim=2)
                 grid_sizes = x.shape[2:]
                 x_list[i] = x
                 x = condition = condition_fused = condition_aligned = condition_temporal = condition_spatial = None
             x_noise_clone = x = None
+
+        vista_condition_tokens = vista_cam_emb = None
+        if vista_enabled:
+            vista_grid_sizes = tuple(int(v) for v in grid_sizes)
+
+            def vista_tensor(name):
+                tensor = vista.get(name)
+                if tensor is not None and tensor.device != device:
+                    tensor = tensor.to(device)
+                return tensor
+
+            source_latents = vista_tensor("source_latents")
+            source_masks = vista_tensor("source_mask_latents")
+            point_latents = vista_tensor("point_latents")
+            point_masks = vista_tensor("point_mask_latents")
+            vista_source_tokens, _ = self.latent_encoder.source_patch_embedding(source_latents, source_masks, self.patch_embedding, vista_grid_sizes, "Vista4D source patch embedding")
+            vista_point_tokens, _ = self.latent_encoder.point_cloud_patch_embedding(point_latents, point_masks, self.patch_embedding, vista_grid_sizes, "Vista4D point cloud patch embedding")
+            vista_condition_tokens = torch.cat((vista_point_tokens.to(modulation_dtype), vista_source_tokens.to(modulation_dtype)), dim=1)
+            if vista_condition_tokens.shape[0] != x_list[0].shape[0]:
+                vista_condition_tokens = vista_condition_tokens.expand(x_list[0].shape[0], -1, -1)
+            vista_cam_emb = vista_tensor("cam_emb")
+            if vista_cam_emb is not None:
+                vista_cam_emb = rearrange(vista_cam_emb, "b f h w d -> b (f h w) d").repeat(1, 3, 1).to(modulation_dtype)
+            real_seq = math.prod(vista_grid_sizes)
+            output_grid_sizes = grid_sizes
+            source_latents = source_masks = point_latents = point_masks = vista_source_tokens = vista_point_tokens = None
 
         motion_vec_list = []
         pose_tokens = None
@@ -1553,12 +1637,16 @@ class WanModel(ModelMixin, ConfigMixin):
                 else:
                     x = x.flatten(2).transpose(1, 2)
 
+                if vista_condition_tokens is not None:
+                    x = torch.cat((x, vista_condition_tokens), dim=1)
+
                 if scail_pose_latents is not None:
                     if pose_tokens.shape[0] != x.shape[0]: pose_tokens = pose_tokens.repeat(x.shape[0], 1, 1)
                     x = torch.cat([x, pose_tokens], dim=1)
 
                 x_list[i] = x
         x = None
+        vista_condition_tokens = None
 
 
 
@@ -1577,13 +1665,17 @@ class WanModel(ModelMixin, ConfigMixin):
             block_mask = causal_mask.unsqueeze(0).unsqueeze(0)
             del causal_mask
 
-        offload.shared_state["embed_sizes"] = grid_sizes 
+        attention_grid_sizes = (int(grid_sizes[0]) * 3, int(grid_sizes[1]), int(grid_sizes[2])) if vista_enabled else grid_sizes
+        if vista_cam_emb is not None:
+            cam_emb = vista_cam_emb
+
+        offload.shared_state["embed_sizes"] = attention_grid_sizes 
         offload.shared_state["step_no"] = current_step_no 
         offload.shared_state["max_steps"] = max_steps
         # arguments
 
         kwargs = dict(
-            grid_sizes=grid_sizes,
+            grid_sizes=attention_grid_sizes,
             freqs=freqs,
             cam_emb = cam_emb,
             block_mask = block_mask,
@@ -1632,8 +1724,8 @@ class WanModel(ModelMixin, ConfigMixin):
             else:
                 e0 = e0 + self.fps_projection(fps_emb).unflatten(1, (6, self.dim))
 
-        # context
-        context = [self.text_embedding( u ) for u in context  ] 
+        if not (self.any_kiwi_source or self.any_kiwi_ref):
+            context = [self.text_embedding(u) for u in context]
         
         if clip_fea is not None:
             context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
@@ -1770,7 +1862,7 @@ class WanModel(ModelMixin, ConfigMixin):
                     if not standin_cache_enabled: get_cache("standin").clear()
                     standin_x = block(standin_x, context = None, grid_sizes = None, e= standin_e0, freqs = standin_freqs, standin_phase = 1)
 
-                if slg_layers is not None and block_idx in slg_layers:
+                if perturbation_layers is not None and block_idx in perturbation_layers:
                     if x_id != 0 or not x_should_calc[0]:
                         continue
                     x_list[0] = block(x_list[0], context = context_list[0], audio_scale= audio_scale_list[0], e= e0, **kwargs)
@@ -1811,13 +1903,17 @@ class WanModel(ModelMixin, ConfigMixin):
                 x = reverse_voxel_chunk_no_padding(x.transpose(1, 2).unsqueeze(-1), x_og_shape, voxel_shape).squeeze(-1)
                 x = x.flatten(2).transpose(1, 2)
 
+            if real_seq > 0:
+                x = x[:, :real_seq]
+
             # head
             x = self.head(x, e)
 
             # unpatchify
-            x_list[i] = self.unpatchify(x, grid_sizes)
-            if real_seq > 0:
-                x = x[:, :real_seq]
+            x = self.unpatchify(x, output_grid_sizes if output_grid_sizes is not None else grid_sizes)
+            if output_slice is not None:
+                x = x[:, :, output_slice]
+            x_list[i] = x
             del x
 
         return [x.float() for x in x_list]

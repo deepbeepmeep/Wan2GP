@@ -1,0 +1,105 @@
+_target_: postprocessing.seedvc.modules.v2.vc_wrapper.VoiceConversionWrapper
+sr: 22050
+hop_size: 256
+mel_fn:
+  _target_: postprocessing.seedvc.modules.audio.mel_spectrogram
+  _partial_: true
+  n_fft: 1024
+  win_size: 1024
+  hop_size: 256
+  num_mels: 80
+  sampling_rate: 22050
+  fmin: 0
+  fmax: null
+  center: False
+cfm:
+  _target_: postprocessing.seedvc.modules.v2.cfm.CFM
+  estimator:
+    _target_: postprocessing.seedvc.modules.v2.dit_wrapper.DiT
+    time_as_token: true
+    style_as_token: true
+    uvit_skip_connection: false
+    block_size: 8192
+    depth: 13
+    num_heads: 8
+    hidden_dim: 512
+    in_channels: 80
+    content_dim: 512
+    style_encoder_dim: 192
+    class_dropout_prob: 0.1
+    dropout_rate: 0.0
+    attn_dropout_rate: 0.0
+cfm_length_regulator:
+  _target_: postprocessing.seedvc.modules.v2.length_regulator.InterpolateRegulator
+  channels: 512
+  is_discrete: true
+  codebook_size: 2048
+  sampling_ratios: [ 1, 1, 1, 1 ]
+  f0_condition: false
+ar:
+  _target_: postprocessing.seedvc.modules.v2.ar.NaiveWrapper
+  model:
+    _target_: postprocessing.seedvc.modules.v2.ar.NaiveTransformer
+    config:
+      _target_: postprocessing.seedvc.modules.v2.ar.NaiveModelArgs
+      dropout: 0.0
+      rope_base: 10000.0
+      dim: 768
+      head_dim: 64
+      n_local_heads: 2
+      intermediate_size: 2304
+      n_head: 12
+      n_layer: 12
+      vocab_size: 2049  # 1 + 1 for eos
+ar_length_regulator:
+  _target_: postprocessing.seedvc.modules.v2.length_regulator.InterpolateRegulator
+  channels: 768
+  is_discrete: true
+  codebook_size: 32
+  sampling_ratios: [ ]
+  f0_condition: false
+style_encoder:
+  _target_: postprocessing.seedvc.modules.campplus.DTDNN.CAMPPlus
+  feat_dim: 80
+  embedding_size: 192
+content_extractor_narrow:
+  _target_: postprocessing.seedvc.modules.astral_quantization.default_model.AstralQuantizer
+  tokenizer_name: "openai/whisper-small"
+  ssl_model_name: "facebook/hubert-large-ll60k"
+  ssl_output_layer: 18
+  skip_ssl: true
+  encoder: &bottleneck_encoder
+    _target_: postprocessing.seedvc.modules.astral_quantization.convnext.ConvNeXtV2Stage
+    dim: 512
+    num_blocks: 12
+    intermediate_dim: 1536
+    dilation: 1
+    input_dim: 1024
+  quantizer:
+    _target_: postprocessing.seedvc.modules.astral_quantization.bsq.BinarySphericalQuantize
+    codebook_size: 32  # codebook size, must be a power of 2
+    dim: 512
+    entropy_loss_weight: 0.1
+    diversity_gamma: 1.0
+    spherical: True
+    enable_entropy_loss: True
+    soft_entropy_loss: True
+content_extractor_wide:
+  _target_: postprocessing.seedvc.modules.astral_quantization.default_model.AstralQuantizer
+  tokenizer_name: "openai/whisper-small"
+  ssl_model_name: "facebook/hubert-large-ll60k"
+  ssl_output_layer: 18
+  encoder: *bottleneck_encoder
+  quantizer:
+    _target_: postprocessing.seedvc.modules.astral_quantization.bsq.BinarySphericalQuantize
+    codebook_size: 2048  # codebook size, must be a power of 2
+    dim: 512
+    entropy_loss_weight: 0.1
+    diversity_gamma: 1.0
+    spherical: True
+    enable_entropy_loss: True
+    soft_entropy_loss: True
+vocoder:
+  _target_: postprocessing.seedvc.modules.bigvgan.bigvgan.BigVGAN.from_pretrained
+  pretrained_model_name_or_path: "nvidia/bigvgan_v2_22khz_80band_256x"
+  use_cuda_kernel: false

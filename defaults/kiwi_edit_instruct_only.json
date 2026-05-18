@@ -1,0 +1,20 @@
+{
+    "model": {
+        "name": "Kiwi Edit Instruct-Only 5B",
+        "architecture": "kiwi_edit",
+        "description": "Kiwi-Edit expects Prompt instructionss to Edit an existing video (for instance adding or removing objects or persons).",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_kiwi_edit_5B_instruct_only_mbf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_kiwi_edit_5B_instruct_only_quanto_mbf16_int8.safetensors"
+        ],
+        "text_encoder_URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/kiwi_mllm_encoder_instruct_only/instruct_only_mllm_encoder_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/kiwi_mllm_encoder_instruct_only/instruct_only_mllm_encoder_quanto_bf16_int8.safetensors"
+        ],
+        "text_encoder_folder": "kiwi_mllm_encoder_instruct_only"
+    },
+    "prompt": "Remove the monkey.",
+    "video_length": 81,
+    "flow_shift": 5,
+    "num_inference_steps": 30
+}

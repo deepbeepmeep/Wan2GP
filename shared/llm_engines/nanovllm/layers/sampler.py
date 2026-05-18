@@ -16,11 +16,21 @@ def apply_top_k_top_p(
     
     The logits tensor is updated in-place.
     """
+    squeezed = False
+    if logits.ndim == 1:
+        logits = logits.unsqueeze(0)
+        squeezed = True
+    if k is not None:
+        k = k.reshape(-1)
+    if p is not None:
+        p = p.reshape(-1)
+
     if p is None:
         if k is None:
-            return logits
+            return logits.squeeze(0) if squeezed else logits
         # Avoid sorting vocab for top-k only case
-        return apply_top_k_only(logits, k)
+        logits = apply_top_k_only(logits, k)
+        return logits.squeeze(0) if squeezed else logits
 
     # Need to sort for top-p
     logits_sort, logits_idx = logits.sort(dim=-1, descending=False)
@@ -46,7 +56,31 @@ def apply_top_k_top_p(
 
     # Re-sort back to original positions
     logits.scatter_(dim=-1, index=logits_idx, src=logits_sort)
-    return logits
+    return logits.squeeze(0) if squeezed else logits
+
+
+def apply_min_p(
+    logits: torch.Tensor,
+    min_p: Optional[torch.Tensor],
+) -> torch.Tensor:
+    if min_p is None:
+        return logits
+    squeezed = False
+    if logits.ndim == 1:
+        logits = logits.unsqueeze(0)
+        squeezed = True
+    min_p = min_p.reshape(-1)
+    active_mask = min_p > 0
+    if not torch.any(active_mask):
+        return logits.squeeze(0) if squeezed else logits
+    probs = logits.softmax(dim=-1)
+    max_probs, max_idx = probs.max(dim=-1, keepdim=True)
+    threshold = max_probs * min_p.unsqueeze(1)
+    mask = probs < threshold
+    mask.scatter_(1, max_idx, False)
+    mask &= active_mask.unsqueeze(1)
+    logits.masked_fill_(mask, float("-inf"))
+    return logits.squeeze(0) if squeezed else logits
 
 
 def apply_top_k_only(
@@ -58,6 +92,12 @@ def apply_top_k_only(
     This is much faster than sorting for top-k only cases.
     The logits tensor is updated in-place.
     """
+    squeezed = False
+    if logits.ndim == 1:
+        logits = logits.unsqueeze(0)
+        squeezed = True
+    k = k.reshape(-1)
+
     vocab_size = logits.shape[1]
     # Handle cases where k >= vocab_size (no filtering needed)
     no_top_k_mask = (k <= 0) | (k >= vocab_size)
@@ -81,7 +121,7 @@ def apply_top_k_only(
     
     # Mask all values below the threshold
     logits.masked_fill_(logits < top_k_thresh, float('-inf'))
-    return logits
+    return logits.squeeze(0) if squeezed else logits
 
 
 class Sampler(nn.Module):
@@ -95,6 +135,7 @@ class Sampler(nn.Module):
         temperatures: torch.Tensor,
         top_ks: Optional[torch.Tensor] = None,
         top_ps: Optional[torch.Tensor] = None,
+        min_ps: Optional[torch.Tensor] = None,
         repetition_penalties: Optional[torch.Tensor] = None,
         input_ids: Optional[torch.Tensor] = None,
         generator: Optional[torch.Generator] = None,
@@ -113,6 +154,7 @@ class Sampler(nn.Module):
             top_ks,
             top_ps,
         )
+        logits = apply_min_p(logits, min_ps)
         if _SAMPLER_NUMERIC_GUARD:
             logits = torch.nan_to_num(logits, nan=float("-inf"))
             invalid_rows = ~torch.isfinite(logits).any(dim=-1)
@@ -120,5 +162,5 @@ class Sampler(nn.Module):
                 logits[invalid_rows, 0] = 0.0
         probs = torch.softmax(logits, dim=-1)
         noise = torch.empty_like(probs).exponential_(1, generator=generator).clamp_min_(1e-10)
-        sample_tokens = probs.div_(noise).argmax(dim=-1)
+        sample_tokens = probs.div_(noise).argmax(dim=-1).reshape(-1)
         return sample_tokens

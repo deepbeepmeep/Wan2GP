@@ -28,7 +28,6 @@ class DTT2V:
         self,
         config,
         checkpoint_dir,
-        rank=0,
         model_filename = None,
         model_type = None,
         model_def = None,
@@ -42,7 +41,6 @@ class DTT2V:
     ):
         self.device = torch.device(f"cuda")
         self.config = config
-        self.rank = rank
         self.dtype = dtype
         self.num_train_timesteps = config.num_train_timesteps
         self.param_dtype = config.param_dtype
@@ -57,8 +55,7 @@ class DTT2V:
             dtype=config.t5_dtype,
             device=torch.device('cpu'),
             checkpoint_path=text_encoder_filename,
-            tokenizer_path=tokenizer_path,
-            shard_fn= None)
+            tokenizer_path=tokenizer_path)
         self.model_def = model_def
         self.image_outputs = model_def.get("image_outputs", False)
 
@@ -223,9 +220,9 @@ class DTT2V:
         fps: int = 24,
         VAE_tile_size = 0,
         joint_pass = False,
-        slg_layers = None,
-        slg_start = 0.0,
-        slg_end = 1.0,
+        perturbation_layers = None,
+        perturbation_start = 0.0,
+        perturbation_end = 1.0,
         callback = None,
         loras_slists = None,
         **bbargs
@@ -351,7 +348,7 @@ class DTT2V:
         kwrags.update(i2v_extra_kwrags)
 
         for i, timestep_i in enumerate(tqdm(step_matrix)):
-            kwrags["slg_layers"] = slg_layers if int(slg_start * updated_num_steps) <= i < int(slg_end * updated_num_steps) else None
+            kwrags["perturbation_layers"] = perturbation_layers if int(perturbation_start * updated_num_steps) <= i < int(perturbation_end * updated_num_steps) else None
 
             offload.set_step_no_for_lora(self.model, i)
             update_mask_i = step_update_mask[i]

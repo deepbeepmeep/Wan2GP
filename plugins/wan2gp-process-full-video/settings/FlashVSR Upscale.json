@@ -1,0 +1,8 @@
+{
+  "model_type": "__system_flashvsr",
+  "system_handler": "flashvsr",
+  "target_ratio": "flashvsr2",
+  "chunk_size_seconds": 3.0,
+  "sliding_window_overlap": 0,
+  "prompt": ""
+}

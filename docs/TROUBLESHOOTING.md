@@ -14,19 +14,19 @@ This guide covers common issues and their solutions when using WanGP.
 nvidia-smi
 
 # Install matching PyTorch version
-# For CUDA 12.4 (RTX 10XX-40XX)
-pip install torch==2.6.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu124
+# For CUDA 13.0/13.1 (RTX 20XX-50XX)
+pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 --index-url https://download.pytorch.org/whl/cu130
 
-# For CUDA 12.8 (RTX 50XX)
-pip install torch==2.7.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu128
+# For CUDA 12.8 (GTX 10XX)
+pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/test/cu128
 ```
 
 #### Python Version Issues
 **Problem**: Package compatibility errors
-**Solution**: Ensure you're using Python 3.10.9
+**Solution**: Ensure you're using the Python version for your PyTorch setup
 ```bash
-python --version  # Should show 3.10.9
-conda create -n wan2gp python=3.10.9
+python --version  # Should show 3.11.14 for PyTorch 2.10, or 3.10.9 for PyTorch 2.7.1
+conda create -n wan2gp python=3.11.14
 ```
 
 ### Dependency Installation Failures
@@ -335,4 +335,4 @@ python wgp.py --t2v-1-3B --attention sdpa --profile 4 --teacache 0 --fp16
 
 # If that fails, check basic PyTorch installation
 python -c "import torch; print(torch.cuda.is_available())"
-``` 
+```

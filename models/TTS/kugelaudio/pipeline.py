@@ -522,6 +522,15 @@ class KugelAudioPipeline:
                 line_text = text[start:end].strip()
                 if line_text:
                     parsed.append((speaker_id, line_text))
+            speaker_id_map = None
+            if parsed and audio_guide2 is not None:
+                unique_ids = sorted({speaker_id for speaker_id, _ in parsed})
+                if len(unique_ids) > 2:
+                    raise ValueError("Two-speaker mode supports exactly two speaker IDs.")
+                if len(unique_ids) >= 2:
+                    speaker_id_map = {unique_ids[0]: 0, unique_ids[1]: 1}
+                elif len(unique_ids) == 1:
+                    speaker_id_map = {unique_ids[0]: 0}
             if KUGELAUDIO_DEBUG:
                 print("[KugelAudio][debug] parsed segments:", len(parsed))
                 for idx, (sid, seg) in enumerate(parsed[:6]):
@@ -567,7 +576,10 @@ class KugelAudioPipeline:
                         if duration_left <= 0:
                             break
                     voice_path = audio_guide
-                    if speaker_id == 1 and audio_guide2 is not None:
+                    mapped_id = speaker_id
+                    if speaker_id_map is not None:
+                        mapped_id = speaker_id_map.get(speaker_id, 0)
+                    if mapped_id == 1 and audio_guide2 is not None:
                         voice_path = audio_guide2
                     extra_tail_tokens = tail_tokens
                     segment = _run_single(

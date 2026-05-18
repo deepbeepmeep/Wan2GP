@@ -30,7 +30,7 @@ class family_handler():
         extra_model_def["frames_steps"] = 20
         extra_model_def["latent_size"] = 4
         extra_model_def["sliding_window"] = True
-        extra_model_def["skip_layer_guidance"] = True
+        extra_model_def["perturbation"] = True
         extra_model_def["tea_cache"] = True
         extra_model_def["guidance_max_phases"] = 1
         extra_model_def["flow_shift"] = True

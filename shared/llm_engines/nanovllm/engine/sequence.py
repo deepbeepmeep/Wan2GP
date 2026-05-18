@@ -16,7 +16,16 @@ class Sequence:
     block_size = 256
     counter = count()
 
-    def __init__(self, token_ids: list[int], sampling_params = SamplingParams(), is_unconditional: bool = False, conditional_seq = None):
+    def __init__(
+        self,
+        token_ids: list[int],
+        sampling_params=SamplingParams(),
+        is_unconditional: bool = False,
+        conditional_seq=None,
+        prompt_embeds=None,
+        prompt_position_ids=None,
+        position_offset: int = 0,
+    ):
         self.seq_id = next(Sequence.counter)
         self.status = SequenceStatus.WAITING
         self.token_ids = copy(token_ids)
@@ -31,6 +40,7 @@ class Sequence:
         self.cfg_scale = sampling_params.cfg_scale
         self.top_k = sampling_params.top_k
         self.top_p = sampling_params.top_p
+        self.min_p = sampling_params.min_p
         self.repetition_penalty = sampling_params.repetition_penalty
         # For CFG: mark if this is an unconditional sequence
         self.is_unconditional = is_unconditional
@@ -41,6 +51,9 @@ class Sequence:
         self.logits_processor: Optional[Any] = sampling_params.logits_processor
         self.logits_processor_update_state: Optional[Callable[[int], None]] = sampling_params.logits_processor_update_state
         self.logits_bias: Optional[Any] = sampling_params.logits_bias
+        self.prompt_embeds = prompt_embeds
+        self.prompt_position_ids = prompt_position_ids
+        self.position_offset = int(position_offset or 0)
 
     def __len__(self):
         return self.num_tokens
@@ -84,6 +97,10 @@ class Sequence:
         self.token_ids.append(token_id)
         self.last_token = token_id
         self.num_tokens += 1
+
+    def clear_prompt_data(self):
+        self.prompt_embeds = None
+        self.prompt_position_ids = None
 
     def __getstate__(self):
         return (self.num_tokens, self.num_prompt_tokens, self.num_cached_tokens, self.block_table,

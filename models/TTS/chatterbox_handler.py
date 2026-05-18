@@ -2,6 +2,7 @@ import os
 
 import gradio as gr
 
+from shared.mps import mps_device_or
 from shared.utils import files_locator as fl
 
 from .prompt_enhancers import TTS_MONOLOGUE_PROMPT
@@ -170,7 +171,7 @@ class family_handler:
         from .chatterbox.pipeline import ChatterboxPipeline
 
         ckpt_root = fl.get_download_location()
-        pipeline = ChatterboxPipeline(ckpt_root=ckpt_root, device="cpu")
+        pipeline = ChatterboxPipeline(ckpt_root=ckpt_root, device=mps_device_or(torch.device("cpu")))
         pipe = {
             "ve": pipeline.model.ve,
             "s3gen": pipeline.model.s3gen,
@@ -230,7 +231,7 @@ class family_handler:
                 "custom_settings": dict(CHATTERBOX_DEFAULT_CUSTOM_SETTINGS),
                 "temperature": 0.8,
                 "guidance_scale": 1.0,
-                "multi_prompts_gen_type": 2,
+                "multi_prompts_gen_type": "FG",
             }
         )
 

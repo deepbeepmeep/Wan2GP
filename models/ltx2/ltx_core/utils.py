@@ -5,21 +5,14 @@ import torch
 
 def rms_norm(x: torch.Tensor, weight: torch.Tensor | None = None, eps: float = 1e-6, in_place = False) -> torch.Tensor:
     # deepbeepmeep RMS Norm
-    dtype = x.dtype
-    y = x.float()
-    y.pow_(2)
-    y = y.mean(dim=-1, keepdim=True)
-    y += eps
-    y.rsqrt_()
     if in_place:
-        x *=  y
-    else:
-        x = x * y.to(dtype)
-    if weight is not None:
-        x *= weight
-    return x
-
-    # return torch.nn.functional.rms_norm(x, (x.shape[-1],), weight=weight, eps=eps)
+        scale = torch.linalg.vector_norm(x, ord=2, dim=-1, keepdim=True, dtype=torch.float32)
+        scale.square_().div_(x.shape[-1]).add_(eps).rsqrt_()
+        x.mul_(scale)
+        if weight is not None:
+            x.mul_(weight)
+        return x
+    return torch.nn.functional.rms_norm(x, (x.shape[-1],), weight=weight, eps=eps)
 
 
 def check_config_value(config: dict, key: str, expected: Any) -> None:  # noqa: ANN401

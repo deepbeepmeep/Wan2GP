@@ -1,0 +1,22 @@
+{
+    "num_layers": 40,
+    "hidden_size": 5120,
+    "head_dim": 128,
+    "num_query_groups": 8,
+    "video_in_channels": 192,
+    "audio_in_channels": 64,
+    "text_in_channels": 3584,
+    "checkpoint_qk_layernorm_rope": false,
+    "params_dtype": "torch.bfloat16",
+    "tread_config": {
+        "selection_rate": 0.5,
+        "start_layer_idx": 2,
+        "end_layer_idx": 25
+    },
+    "mm_layers": [0, 1, 2, 3, 36, 37, 38, 39],
+    "local_attn_layers": [],
+    "enable_attn_gating": true,
+    "activation_type": "swiglu7",
+    "gelu7_layers": [0, 1, 2, 3],
+    "post_norm_layers": []
+}

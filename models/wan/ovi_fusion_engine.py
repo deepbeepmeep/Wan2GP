@@ -18,9 +18,7 @@ import json
 from mmgp import offload
 from shared.utils.loras_mutipliers import update_loras_slists, get_model_switch_steps
 
-
-
-def init_fusion_score_model_ovi(rank: int = 0, meta_init=True):
+def init_fusion_score_model_ovi():
     config_root = os.path.join("models", "wan", "ovi", "configs")
     video_config_path = os.path.join(config_root , "video.json")
     audio_config_path = os.path.join(config_root , "audio.json")
@@ -106,8 +104,7 @@ class OviFusionEngine:
             dtype=torch.bfloat16,
             device=torch.device('cpu'),
             checkpoint_path=text_encoder_filename,
-            tokenizer_path=tokenizer_path,
-            shard_fn= None)
+            tokenizer_path=tokenizer_path)
         
 
 
@@ -142,9 +139,9 @@ class OviFusionEngine:
                     shift=5.0,
                     guide_scale=5.0,
                     audio_cfg_scalecale=4.0,
-                    slg_layers=[11],
-                    slg_start = 0.0,
-                    slg_end = 1.0,
+                    perturbation_layers=[11],
+                    perturbation_start = 0.0,
+                    perturbation_end = 1.0,
                     n_prompt="",
                     audio_negative_prompt="",
                     loras_slists = None,
@@ -160,13 +157,13 @@ class OviFusionEngine:
         if len(audio_negative_prompt) == 0:
             audio_negative_prompt= "robotic, muffled, echo, distorted"    # Artifacts to avoid in audio
 
-        slg_layer = None
-        if isinstance(slg_layers, (list, tuple)) and slg_layers:
-            slg_layer = int(slg_layers[0])
-        elif isinstance(slg_layers, (int, float)):
-            slg_layer = int(slg_layers)
-        if slg_layer is None:
-            slg_layer = 11
+        perturbation_layer = None
+        if isinstance(perturbation_layers, (list, tuple)) and perturbation_layers:
+            perturbation_layer = int(perturbation_layers[0])
+        elif isinstance(perturbation_layers, (int, float)):
+            perturbation_layer = int(perturbation_layers)
+        if perturbation_layer is None:
+            perturbation_layer = 11
 
         video_frame_height_width=(height, width)
 
@@ -262,7 +259,7 @@ class OviFusionEngine:
                 offload.set_step_no_for_lora(self.model.video_model, i)
                 if is_i2v:
                     video_noise[:, :1] = latents_images
-                computed_slg_layers = slg_layers if int(slg_start * sampling_steps) <= i < int(slg_end * sampling_steps) else None
+                computed_perturbation_layers = perturbation_layers if int(perturbation_start * sampling_steps) <= i < int(perturbation_end * sampling_steps) else None
                 any_guidance = not (guide_scale == 1 and audio_cfg_scalecale ==1)
 
                 if any_guidance and not joint_pass:
@@ -279,7 +276,7 @@ class OviFusionEngine:
                         audio_context= [text_embeddings_audio_neg],
                         vid_context =[text_embeddings_video_neg],
                         x_id_list =[1],
-                        computed_slg_layers = computed_slg_layers,
+                        computed_perturbation_layers = computed_perturbation_layers,
                         **kwargs
                     )
                     if pred_vid_neg is None: 
@@ -288,7 +285,7 @@ class OviFusionEngine:
                     vid, audio = self.model(
                         audio_context= [text_embeddings_audio_pos, text_embeddings_audio_neg],
                         vid_context= [text_embeddings_video_pos, text_embeddings_video_neg],
-                        computed_slg_layers = computed_slg_layers,
+                        computed_perturbation_layers = computed_perturbation_layers,
                         x_id_list =[0,1],
                         **kwargs
                     )
@@ -324,10 +321,8 @@ class OviFusionEngine:
             generated_audio = self.audio_vae.wrapped_decode(audio_latents_for_vae)
             generated_audio = generated_audio.squeeze().cpu().float().numpy()
             
-            # Decode video  
-            video_latents_for_vae = video_noise.unsqueeze(0)  # 1, c, f, h, w
-            generated_video = self.vae.decode(video_latents_for_vae, VAE_tile_size)[0]
-            generated_video = generated_video.cpu().float()  # c, f, h, w
+            # Decode video
+            generated_video = self.vae.decode_to_cpu_uint8([video_noise], VAE_tile_size, target_frames=frame_num, target_height=height, target_width=width)[0]
 
         # self.last_audio = audio
         output = {"x": generated_video, "audio": generated_audio}

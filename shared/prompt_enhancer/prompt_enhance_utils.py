@@ -47,6 +47,11 @@ Do not exceed the 150 word limit!
 Output the enhanced prompt only.
 """
 
+QWEN35_THINKING_SUPER_SYSTEM_PROMPT = """Use private reasoning to solve the task as well as possible.
+Keep your thinking hidden and do not output any reasoning, chain-of-thought, or thinking process.
+Always review your final answer to ensure it meets the user request.
+"""
+
 IT2V_CINEMATIC_PROMPT = """You are an expert cinematic director with many award winning movies.
 You have the following information:
 1. The user provides a general text input about its scenes expectations 
@@ -148,6 +153,54 @@ def tensor_to_pil(tensor):
     return Image.fromarray(numpy_image)
 
 
+def _use_qwen35_thinking_prompt(prompt_enhancer_model, thinking_enabled: Optional[bool] = None) -> bool:
+    if thinking_enabled is not None:
+        return bool(thinking_enabled)
+    return bool(getattr(prompt_enhancer_model, "_prompt_enhancer_enable_thinking", False))
+
+
+def _split_prompt_enhancer_system_suffix(prompt_enhancer_model, prompt: str) -> tuple[str, str, bool]:
+    del prompt_enhancer_model
+    prompt = str(prompt or "").strip()
+    prompt_body, separator, system_suffix = prompt.partition("@@")
+    if separator == "@@":
+        return prompt_body.strip(), system_suffix.strip(), True
+    prompt_body, separator, system_suffix = prompt.partition("@")
+    if separator == "":
+        return prompt, "", False
+    return prompt_body.strip(), system_suffix.strip(), False
+
+
+def _merge_prompt_enhancer_system_prompt(prompt_enhancer_model, system_prompt: str, system_suffix: str, replace_system_prompt: bool = False, thinking_enabled: Optional[bool] = None) -> str:
+    system_prompt = str(system_prompt or "").rstrip()
+    system_suffix = str(system_suffix or "").strip()
+    if len(system_suffix) == 0:
+        merged_prompt = system_prompt
+    elif replace_system_prompt:
+        merged_prompt = system_suffix
+    else:
+        merged_prompt = f"{system_prompt}\nFollow these additional user instructions with higher priority if they conflict with the guidance above:\n{system_suffix}"
+    if not _use_qwen35_thinking_prompt(prompt_enhancer_model, thinking_enabled=thinking_enabled):
+        return merged_prompt
+    if len(merged_prompt) == 0:
+        return QWEN35_THINKING_SUPER_SYSTEM_PROMPT.strip()
+    return f"{QWEN35_THINKING_SUPER_SYSTEM_PROMPT.rstrip()}\n\n{merged_prompt}"
+
+
+def _format_prompt_enhancer_user_content(prompt_enhancer_model, prompt: str, image_caption: Optional[str] = None, thinking_enabled: Optional[bool] = None) -> str:
+    prompt, _system_suffix, _replace_system_prompt = _split_prompt_enhancer_system_suffix(prompt_enhancer_model, prompt)
+    if not _use_qwen35_thinking_prompt(prompt_enhancer_model, thinking_enabled=thinking_enabled):
+        if image_caption is None:
+            return f"user_prompt: {prompt}"
+        return f"user_prompt: {prompt}\nimage_caption: {image_caption}"
+    if image_caption is None:
+        return prompt
+    image_caption = str(image_caption or "").strip()
+    if len(prompt) == 0:
+        return f"image_caption:\n{image_caption}"
+    return f"{prompt}\n\nimage_caption:\n{image_caption}"
+
+
 def generate_cinematic_prompt(
     image_caption_model,
     image_caption_processor,
@@ -157,19 +210,21 @@ def generate_cinematic_prompt(
     images: Optional[List] = None,
     video_prompt= True,
     text_prompt = False,
-    max_new_tokens: int = 256,
+    max_new_tokens: int = 512,
     prompt_enhancer_instructions = None,
     do_sample: bool = True,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     top_k: Optional[int] = None,
     seed: Optional[int] = None,
+    post_image_caption_hook = None,
+    thinking_enabled: Optional[bool] = None,
 ) -> List[str]:
     prompts = [prompt] if isinstance(prompt, str) else prompt
 
     if images is None:
         if prompt_enhancer_instructions is None:
-            prompt_enhancer_instructions=  T2T_TEXT_PROMPT if text_prompt else (T2V_CINEMATIC_PROMPT if video_prompt else T2I_VISUAL_PROMPT)
+            prompt_enhancer_instructions = T2T_TEXT_PROMPT if text_prompt else (T2V_CINEMATIC_PROMPT if video_prompt else T2I_VISUAL_PROMPT)
         prompts = _generate_t2v_prompt(
             prompt_enhancer_model,
             prompt_enhancer_tokenizer,
@@ -181,10 +236,11 @@ def generate_cinematic_prompt(
             top_p,
             top_k,
             seed,
+            thinking_enabled,
         )
     else:
         if prompt_enhancer_instructions is None:
-            prompt_enhancer_instructions=  IT2V_CINEMATIC_PROMPT if video_prompt else IT2I_VISUAL_PROMPT
+            prompt_enhancer_instructions = IT2V_CINEMATIC_PROMPT if video_prompt else IT2I_VISUAL_PROMPT
 
         prompts = _generate_i2v_prompt(
             image_caption_model,
@@ -200,6 +256,8 @@ def generate_cinematic_prompt(
             top_p,
             top_k,
             seed,
+            post_image_caption_hook=post_image_caption_hook,
+            thinking_enabled=thinking_enabled,
         )
 
     return prompts
@@ -224,14 +282,30 @@ def _generate_t2v_prompt(
     top_p: Optional[float],
     top_k: Optional[int],
     seed: Optional[int],
+    thinking_enabled: Optional[bool],
 ) -> List[str]:
-    messages = [
-        [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"user_prompt: {p}"},
-        ]
-        for p in prompts
-    ]
+    messages = []
+    for prompt in prompts:
+        prompt_body, system_suffix, replace_system_prompt = _split_prompt_enhancer_system_suffix(prompt_enhancer_model, prompt)
+        message_system_prompt = _merge_prompt_enhancer_system_prompt(prompt_enhancer_model, system_prompt, system_suffix, replace_system_prompt, thinking_enabled=thinking_enabled)
+        messages.append(
+            [
+                {"role": "system", "content": message_system_prompt},
+                {"role": "user", "content": _format_prompt_enhancer_user_content(prompt_enhancer_model, prompt_body, thinking_enabled=thinking_enabled)},
+            ]
+        )
+
+    if hasattr(prompt_enhancer_model, "generate_messages"):
+        return prompt_enhancer_model.generate_messages(
+            messages,
+            max_new_tokens,
+            do_sample=do_sample,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            seed=seed,
+            thinking_enabled=thinking_enabled,
+        )
 
     texts = [
         prompt_enhancer_tokenizer.apply_chat_template(
@@ -276,19 +350,45 @@ def _generate_i2v_prompt(
     top_p: Optional[float],
     top_k: Optional[int],
     seed: Optional[int],
+    post_image_caption_hook = None,
+    thinking_enabled: Optional[bool] = None,
 ) -> List[str]:
-    image_captions = _generate_image_captions(
-        image_caption_model, image_caption_processor, first_frames
-    )
+    if hasattr(image_caption_model, "generate_image_captions"):
+        image_captions = image_caption_model.generate_image_captions(first_frames)
+    else:
+        image_captions = _generate_image_captions(
+            image_caption_model, image_caption_processor, first_frames
+        )
+    if callable(post_image_caption_hook):
+        if bool(getattr(prompt_enhancer_model, "_prompt_enhancer_use_vllm", False)):
+            unload_runtime = getattr(prompt_enhancer_model, "unload", None)
+            if callable(unload_runtime):
+                unload_runtime()
+        post_image_caption_hook()
     if len(image_captions) == 1 and len(image_captions) < len(prompts):
         image_captions *= len(prompts)
-    messages = [
-        [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"user_prompt: {p}\nimage_caption: {c}"},
-        ]
-        for p, c in zip(prompts, image_captions)
-    ]
+    messages = []
+    for prompt, image_caption in zip(prompts, image_captions):
+        prompt_body, system_suffix, replace_system_prompt = _split_prompt_enhancer_system_suffix(prompt_enhancer_model, prompt)
+        message_system_prompt = _merge_prompt_enhancer_system_prompt(prompt_enhancer_model, system_prompt, system_suffix, replace_system_prompt, thinking_enabled=thinking_enabled)
+        messages.append(
+            [
+                {"role": "system", "content": message_system_prompt},
+                {"role": "user", "content": _format_prompt_enhancer_user_content(prompt_enhancer_model, prompt_body, image_caption=image_caption, thinking_enabled=thinking_enabled)},
+            ]
+        )
+
+    if hasattr(prompt_enhancer_model, "generate_messages"):
+        return prompt_enhancer_model.generate_messages(
+            messages,
+            max_new_tokens,
+            do_sample=do_sample,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            seed=seed,
+            thinking_enabled=thinking_enabled,
+        )
 
     texts = [
         prompt_enhancer_tokenizer.apply_chat_template(

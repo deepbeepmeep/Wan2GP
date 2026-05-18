@@ -39,7 +39,8 @@ _TIME_PROFILE_CPU_MS = 0.0
 _TIME_PROFILE_CALLS = 0
 _DEBUG_OVERRIDE: Optional[bool] = None
 
-_PATCH_STATE = SimpleNamespace(enabled=False, orig_forward=None)
+_PATCH_STATE = SimpleNamespace(enabled=False, orig_forward=None, orig_embedding_forward=None)
+_BASE_PATCH_STATE = SimpleNamespace(enabled=False, orig_forward=None)
 _OPS_REGISTERED = False
 _OPS_NAMESPACE = "wan2gp_int8"
 _OPS_LIBS = []
@@ -83,7 +84,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _log(msg: str) -> None:
-    print(f"[WAN2GP][INT8][quanto] {msg}")
+    print(f"[Quanto][INT8] {msg}")
 
 
 def _debug(msg: str) -> None:
@@ -167,6 +168,84 @@ def _disable_runtime(reason: str) -> None:
         )
 
 
+def _reset_runtime_state(reset_triton_module: bool = True) -> None:
+    global _STARTUP_PRINTED, _RUNTIME_DISABLED, _RUNTIME_DISABLE_REASON, _RUNTIME_DISABLE_PRINTED
+    global _TRITON_MODULE, _TRITON_DIRECT_FUSED_READY, _TRITON_DIRECT_SCALED_READY, _KERNEL_USED_PRINTED
+    global _FUSED_LAUNCH_CACHE, _FUSED_LAUNCH_CACHE_FIFO, _SCALED_LAUNCH_CACHE, _SCALED_LAUNCH_CACHE_FIFO
+    global _SHAPE_COUNTS_FUSED, _SHAPE_COUNTS_SCALED, _TIME_PROFILE_EVENTS, _TIME_PROFILE_CPU_MS, _TIME_PROFILE_CALLS
+    global _NATIVE_FALLBACK_MAX_M
+
+    _STARTUP_PRINTED = False
+    _RUNTIME_DISABLED = False
+    _RUNTIME_DISABLE_REASON = ""
+    _RUNTIME_DISABLE_PRINTED = False
+    if reset_triton_module:
+        _TRITON_MODULE = None
+    _TRITON_DIRECT_FUSED_READY = False
+    _TRITON_DIRECT_SCALED_READY = False
+    _KERNEL_USED_PRINTED = False
+    _FUSED_LAUNCH_CACHE = {}
+    _FUSED_LAUNCH_CACHE_FIFO = []
+    _SCALED_LAUNCH_CACHE = {}
+    _SCALED_LAUNCH_CACHE_FIFO = []
+    _SHAPE_COUNTS_FUSED = {}
+    _SHAPE_COUNTS_SCALED = {}
+    _TIME_PROFILE_EVENTS = []
+    _TIME_PROFILE_CPU_MS = 0.0
+    _TIME_PROFILE_CALLS = 0
+    _NATIVE_FALLBACK_MAX_M = 0
+
+
+def _add_bias_in_place_or_fallback(output: torch.Tensor, bias: Optional[torch.Tensor]) -> torch.Tensor:
+    if bias is None:
+        return output
+    if bias.device != output.device or bias.dtype != output.dtype:
+        return output + bias
+    output.add_(bias)
+    return output
+
+
+def _default_quanto_qbytes_linear_forward(ctx, input, other, bias=None):
+    ctx.save_for_backward(input, other)
+    if _is_qbytes_tensor(input):
+        # MPS: torch.ops.quanto.qbytes_mm has no MPS kernel → CPU fallback
+        # → CPU/MPS op interleaving corrupts Metal command buffer.
+        # Use native MPS dequant+matmul instead.
+        if input.device.type == "mps":
+            act = input._data.to(input._scale.dtype) * input._scale
+            wgt = other._data.to(input._scale.dtype) * other._scale
+            output = act @ wgt.t()
+            return _add_bias_in_place_or_fallback(output, bias)
+        output = torch.ops.quanto.qbytes_mm(input._data, other._data, input._scale * other._scale)
+    else:
+        in_features = input.shape[-1]
+        out_features = other.shape[0]
+        output_shape = input.shape[:-1] + (out_features,)
+        # MPS: same reason — qbytes_mm falls back to CPU on MPS.
+        if input.device.type == "mps":
+            wgt = other._data.to(input.dtype) * other._scale
+            output = input.reshape(-1, in_features) @ wgt.t()
+            output = output.reshape(output_shape)
+            return _add_bias_in_place_or_fallback(output, bias)
+        output = torch.ops.quanto.qbytes_mm(input.reshape(-1, in_features), other._data, other._scale)
+        output = output.reshape(output_shape)
+    return _add_bias_in_place_or_fallback(output, bias)
+
+
+def _ensure_default_quanto_linear_patch() -> bool:
+    try:
+        from optimum.quanto.tensor.weights import qbytes as _qbytes
+    except Exception:
+        return False
+    _init_quanto_tensor_types()
+    current_forward = _qbytes.WeightQBytesLinearFunction.forward
+    if not _BASE_PATCH_STATE.enabled:
+        _BASE_PATCH_STATE.orig_forward = current_forward
+        _BASE_PATCH_STATE.enabled = True
+    _qbytes.WeightQBytesLinearFunction.forward = staticmethod(_default_quanto_qbytes_linear_forward)
+    return True
+
+
 def _init_quanto_tensor_types() -> bool:
     global _QBYTES_TENSOR_CLS, _WEIGHT_QBYTES_CLS
     if _QBYTES_TENSOR_CLS is not None and _WEIGHT_QBYTES_CLS is not None:
@@ -243,6 +322,37 @@ def _cache_launch_params(cache: dict, fifo: list, max_size: int, key: tuple[int,
         stale_key = fifo.pop(0)
         cache.pop(stale_key, None)
     return params
+
+
+def _replace_launch_params(cache: dict, fifo: list, max_size: int, key: tuple[int, int, int, int], params: tuple[int, int, int, int, int, int, int]) -> None:
+    cache[key] = params
+    if key not in fifo:
+        fifo.append(key)
+    while len(fifo) > max_size:
+        stale_key = fifo.pop(0)
+        cache.pop(stale_key, None)
+
+
+def _cache_recovered_triton_config(kind: str, device_index: int, m: int, k: int, n: int, cfg: tuple[int, int, int, int, int]) -> None:
+    mod = _TRITON_MODULE
+    if mod is None:
+        return
+    try:
+        slot_id, _ = mod._resolve_autotune_slot(m, k, n)
+        mod._set_cached_config(device_index, kind, slot_id, cfg)
+    except Exception:
+        pass
+
+
+def _compile_recovery_candidates(kind: str, preferred: tuple[int, int, int, int, int], m: int, k: int, n: int) -> list[tuple[int, int, int, int, int]]:
+    mod = _TRITON_MODULE
+    if mod is None:
+        return []
+    try:
+        baseline = mod._select_static_triton_int8_config(m, k, n)
+        return list(mod._compile_recovery_candidates(kind, baseline, preferred, m, k, n))
+    except Exception:
+        return []
 
 
 def _fused_launch_params(m: int, k: int, n: int, device: torch.device) -> tuple[int, int, int, int, int, int, int]:
@@ -401,6 +511,7 @@ def _fused_quant_scaled_mm_direct_call(x2d: torch.Tensor, qweight: torch.Tensor,
         raise RuntimeError(f"Triton int8 GEMM shape mismatch: x={x2d.shape}, w={qweight.shape}")
 
     block_m, block_n, block_k, num_warps, num_stages, grid_m, grid_n = _fused_launch_params(m, k, n, x2d.device)
+    selected_cfg = (block_m, block_n, block_k, num_warps, num_stages)
     out = torch.empty((m, n), device=x2d.device, dtype=output_dtype)
     try:
         mod._fused_dynamic_int8_blockscale_gemm_kernel[(grid_m, grid_n)](
@@ -424,10 +535,49 @@ def _fused_quant_scaled_mm_direct_call(x2d: torch.Tensor, qweight: torch.Tensor,
             num_stages=num_stages,
         )
     except Exception as exc:
+        recovery_errors = []
+        device_index = int(x2d.device.index if x2d.device.type == "cuda" else -1)
+        for candidate in _compile_recovery_candidates("fused", selected_cfg, m, k, n):
+            if candidate == selected_cfg:
+                continue
+            block_m, block_n, block_k, num_warps, num_stages = candidate
+            grid_m = mod.triton.cdiv(m, block_m)
+            grid_n = mod.triton.cdiv(n, block_n)
+            recovered_out = torch.empty((m, n), device=x2d.device, dtype=output_dtype)
+            try:
+                mod._fused_dynamic_int8_blockscale_gemm_kernel[(grid_m, grid_n)](
+                    x2d,
+                    qweight,
+                    qweight_scale,
+                    recovered_out,
+                    m,
+                    n,
+                    k,
+                    x2d.stride(0),
+                    x2d.stride(1),
+                    qweight.stride(0),
+                    qweight.stride(1),
+                    recovered_out.stride(0),
+                    recovered_out.stride(1),
+                    block_m=block_m,
+                    block_n=block_n,
+                    block_k=block_k,
+                    num_warps=num_warps,
+                    num_stages=num_stages,
+                )
+                params = (block_m, block_n, block_k, num_warps, num_stages, grid_m, grid_n)
+                key = (device_index, m, k, n)
+                _replace_launch_params(_FUSED_LAUNCH_CACHE, _FUSED_LAUNCH_CACHE_FIFO, _FUSED_LAUNCH_CACHE_MAX, key, params)
+                _cache_recovered_triton_config("fused", device_index, m, k, n, candidate)
+                _debug(f"Recovered fused int8 kernel config for shape=({m},{k},{n}): {selected_cfg} -> {candidate}")
+                return recovered_out
+            except Exception as recovery_exc:
+                recovery_errors.append(f"{candidate}: {recovery_exc}")
         raise RuntimeError(
             "Triton fused int8 kernel launch failed "
-            f"(shape m={m}, k={k}, n={n}; tile=({block_m},{block_n},{block_k}); "
-            f"warps={num_warps}, stages={num_stages}). {exc}"
+            f"(shape m={m}, k={k}, n={n}; tile=({selected_cfg[0]},{selected_cfg[1]},{selected_cfg[2]}); "
+            f"warps={selected_cfg[3]}, stages={selected_cfg[4]}). {exc}"
+            + (f" Recovery candidates also failed: {' | '.join(recovery_errors[-4:])}" if recovery_errors else "")
         ) from exc
     return out
 
@@ -451,6 +601,7 @@ def _scaled_int8_mm_direct_call(
         raise RuntimeError(f"Triton int8 GEMM shape mismatch: a={a_int8.shape}, w={b_int8.shape}")
 
     block_m, block_n, block_k, num_warps, num_stages, grid_m, grid_n = _scaled_launch_params(m, k, n, a_int8.device)
+    selected_cfg = (block_m, block_n, block_k, num_warps, num_stages)
     out = torch.empty((m, n), device=a_int8.device, dtype=output_dtype)
     try:
         mod._scaled_int8_gemm_kernel[(grid_m, grid_n)](
@@ -475,10 +626,50 @@ def _scaled_int8_mm_direct_call(
             num_stages=num_stages,
         )
     except Exception as exc:
+        recovery_errors = []
+        device_index = int(a_int8.device.index if a_int8.device.type == "cuda" else -1)
+        for candidate in _compile_recovery_candidates("scaled", selected_cfg, m, k, n):
+            if candidate == selected_cfg:
+                continue
+            block_m, block_n, block_k, num_warps, num_stages = candidate
+            grid_m = mod.triton.cdiv(m, block_m)
+            grid_n = mod.triton.cdiv(n, block_n)
+            recovered_out = torch.empty((m, n), device=a_int8.device, dtype=output_dtype)
+            try:
+                mod._scaled_int8_gemm_kernel[(grid_m, grid_n)](
+                    a_int8,
+                    b_int8,
+                    a_scale,
+                    b_scale,
+                    recovered_out,
+                    m,
+                    n,
+                    k,
+                    a_int8.stride(0),
+                    a_int8.stride(1),
+                    b_int8.stride(0),
+                    b_int8.stride(1),
+                    recovered_out.stride(0),
+                    recovered_out.stride(1),
+                    block_m=block_m,
+                    block_n=block_n,
+                    block_k=block_k,
+                    num_warps=num_warps,
+                    num_stages=num_stages,
+                )
+                params = (block_m, block_n, block_k, num_warps, num_stages, grid_m, grid_n)
+                key = (device_index, m, k, n)
+                _replace_launch_params(_SCALED_LAUNCH_CACHE, _SCALED_LAUNCH_CACHE_FIFO, _SCALED_LAUNCH_CACHE_MAX, key, params)
+                _cache_recovered_triton_config("scaled", device_index, m, k, n, candidate)
+                _debug(f"Recovered scaled int8 kernel config for shape=({m},{k},{n}): {selected_cfg} -> {candidate}")
+                return recovered_out
+            except Exception as recovery_exc:
+                recovery_errors.append(f"{candidate}: {recovery_exc}")
         raise RuntimeError(
             "Triton scaled int8 kernel launch failed "
-            f"(shape m={m}, k={k}, n={n}; tile=({block_m},{block_n},{block_k}); "
-            f"warps={num_warps}, stages={num_stages}). {exc}"
+            f"(shape m={m}, k={k}, n={n}; tile=({selected_cfg[0]},{selected_cfg[1]},{selected_cfg[2]}); "
+            f"warps={selected_cfg[3]}, stages={selected_cfg[4]}). {exc}"
+            + (f" Recovery candidates also failed: {' | '.join(recovery_errors[-4:])}" if recovery_errors else "")
         ) from exc
     return out
 
@@ -516,6 +707,68 @@ def _use_int8_kernel(input: torch.Tensor, other: torch.Tensor) -> bool:
     if _is_qbytes_tensor(input):
         return input._data.dtype == torch.int8 and input._data.is_cuda
     return input.is_cuda and input.dtype in (torch.bfloat16, torch.float16, torch.float32)
+
+
+def _use_int8_embedding_kernel(module, input: torch.Tensor) -> bool:
+    if _RUNTIME_DISABLED:
+        return False
+    if _TRITON_MODULE is None:
+        return False
+    if not torch.is_tensor(input):
+        return False
+    qweight = getattr(module, "qweight", None)
+    if not _is_weight_qbytes(qweight):
+        return False
+    if qweight._data.dtype != torch.int8:
+        return False
+    if getattr(module, "max_norm", None) is not None:
+        return False
+    if bool(getattr(module, "scale_grad_by_freq", False)) or bool(getattr(module, "sparse", False)):
+        return False
+    if input.device != qweight._data.device:
+        return False
+    scale = getattr(qweight, "_scale", None)
+    if not torch.is_tensor(scale) or scale.device != input.device:
+        return False
+    return True
+
+
+def _gather_embedding_scale(qweight, input: torch.Tensor) -> torch.Tensor:
+    scale = qweight._scale
+    if scale.ndim == 0 or scale.numel() == 1:
+        return scale
+    if scale.ndim == 1:
+        if scale.shape[0] != qweight._data.shape[0]:
+            raise RuntimeError("Quanto embedding scale length mismatch.")
+        scale = scale.unsqueeze(-1)
+    elif scale.ndim == 2:
+        if scale.shape[0] != qweight._data.shape[0]:
+            raise RuntimeError("Quanto embedding scale row count mismatch.")
+        if scale.shape[1] != 1:
+            raise RuntimeError("Quanto embedding fast path only supports per-row scales.")
+    else:
+        raise RuntimeError("Quanto embedding fast path only supports scalar or per-row scales.")
+    return torch.nn.functional.embedding(input, scale)
+
+
+def _int8_embedding_forward(module, input: torch.Tensor) -> torch.Tensor:
+    qweight = module.qweight
+    gathered = torch.nn.functional.embedding(
+        input,
+        qweight._data,
+        module.padding_idx,
+        None,
+        module.norm_type,
+        False,
+        False,
+    )
+    gathered = gathered.to(qweight._scale.dtype)
+    scale = _gather_embedding_scale(qweight, input)
+    if torch.is_tensor(scale):
+        if scale.ndim == gathered.ndim - 1:
+            scale = scale.unsqueeze(-1)
+        return gathered * scale
+    return gathered * scale
 
 
 def _activation_rows(input_shape: torch.Size) -> int:
@@ -571,7 +824,7 @@ def _int8_linear_forward_triton_dense_fast(ctx, input: torch.Tensor, other: torc
 
     out = out_2d.reshape(input_shape[:-1] + (out_features,))
     if bias is not None:
-        out = out + bias
+        out += bias
     return out
 
 
@@ -628,14 +881,24 @@ def _int8_linear_forward_triton(ctx, input: torch.Tensor, other: torch.Tensor, b
             out_2d = _fused_quant_scaled_mm_call(a_2d, b_int8, b_scale, output_dtype)
 
     out = out_2d.reshape(input_shape[:-1] + (out_features,))
-    if bias is not None:
-        out = out + bias
-    return out
+    return _add_bias_in_place_or_fallback(out, bias)
 
 
 def enable_quanto_int8_kernel(triton_mod=None) -> bool:
     global _TRITON_MODULE, _NATIVE_FALLBACK_MAX_M
     if _PATCH_STATE.enabled:
+        _reset_runtime_state(reset_triton_module=False)
+        if triton_mod is None:
+            triton_mod = _TRITON_MODULE
+        if triton_mod is None:
+            triton_mod, _ = _probe_triton_backend()
+        if triton_mod is None:
+            return False
+        _TRITON_MODULE = triton_mod
+        _refresh_triton_direct_kernel_flags()
+        _NATIVE_FALLBACK_MAX_M = _env_int(_ENV_NATIVE_FALLBACK_MAX_M, 0)
+        _init_quanto_tensor_types()
+        _ensure_compile_safe_ops()
         return True
 
     try:
@@ -643,11 +906,19 @@ def enable_quanto_int8_kernel(triton_mod=None) -> bool:
     except Exception as exc:
         _debug(f"cannot import optimum.quanto qbytes ({exc})")
         return False
+    try:
+        from mmgp import offload as _mmgp_offload
+    except Exception as exc:
+        _debug(f"cannot import mmgp.offload ({exc})")
+        return False
 
     if triton_mod is None:
         triton_mod, _ = _probe_triton_backend()
     if triton_mod is None:
+        _ensure_default_quanto_linear_patch()
         return False
+    _ensure_default_quanto_linear_patch()
+    _reset_runtime_state()
     _TRITON_MODULE = triton_mod
     _refresh_triton_direct_kernel_flags()
     _NATIVE_FALLBACK_MAX_M = _env_int(_ENV_NATIVE_FALLBACK_MAX_M, 0)
@@ -655,6 +926,7 @@ def enable_quanto_int8_kernel(triton_mod=None) -> bool:
     _ensure_compile_safe_ops()
 
     orig_forward = _qbytes.WeightQBytesLinearFunction.forward
+    orig_embedding_forward = _mmgp_offload.QEmbedding.forward
 
     def forward(ctx, input, other, bias=None):
         dense_hot_path = (
@@ -706,30 +978,48 @@ def enable_quanto_int8_kernel(triton_mod=None) -> bool:
                 f"Full Triton error details:\n{full_detail}"
             ) from exc
 
+    def embedding_forward(self, input):
+        if not _use_int8_embedding_kernel(self, input):
+            return orig_embedding_forward(self, input)
+        try:
+            return _int8_embedding_forward(self, input)
+        except Exception as exc:
+            short_reason = _summarize_kernel_error(exc)
+            if _allow_runtime_fallback():
+                _disable_runtime(short_reason)
+                _debug(f"Full embedding fast-path failure detail:\n{_format_exception_detail(exc)}")
+                return orig_embedding_forward(self, input)
+            full_detail = _format_exception_detail(exc)
+            raise RuntimeError(
+                "Injected Quanto int8 embedding fast path failed. "
+                f"Set {_ENV_ALLOW_RUNTIME_FALLBACK}=1 to force fallback to non-injected Quanto path. "
+                f"Reason: {short_reason}\n"
+                f"Full error details:\n{full_detail}"
+            ) from exc
+
     _qbytes.WeightQBytesLinearFunction.forward = staticmethod(forward)
+    _mmgp_offload.QEmbedding.forward = embedding_forward
     _PATCH_STATE.enabled = True
     _PATCH_STATE.orig_forward = orig_forward
+    _PATCH_STATE.orig_embedding_forward = orig_embedding_forward
     return True
 
 
 def disable_quanto_int8_kernel(notify_disabled = False) -> bool:
-    global _FUSED_LAUNCH_CACHE, _FUSED_LAUNCH_CACHE_FIFO, _SCALED_LAUNCH_CACHE, _SCALED_LAUNCH_CACHE_FIFO
-    global _TRITON_DIRECT_FUSED_READY, _TRITON_DIRECT_SCALED_READY, _STARTUP_PRINTED
-    
     if not _PATCH_STATE.enabled:
+        _ensure_default_quanto_linear_patch()
+        _reset_runtime_state()
         return False
     from optimum.quanto.tensor.weights import qbytes as _qbytes
 
     _qbytes.WeightQBytesLinearFunction.forward = staticmethod(_PATCH_STATE.orig_forward)
+    from mmgp import offload as _mmgp_offload
+    if _PATCH_STATE.orig_embedding_forward is not None:
+        _mmgp_offload.QEmbedding.forward = _PATCH_STATE.orig_embedding_forward
     _PATCH_STATE.enabled = False
     _PATCH_STATE.orig_forward = None
-    _FUSED_LAUNCH_CACHE = {}
-    _FUSED_LAUNCH_CACHE_FIFO = []
-    _SCALED_LAUNCH_CACHE = {}
-    _SCALED_LAUNCH_CACHE_FIFO = []
-    _TRITON_DIRECT_FUSED_READY = False
-    _TRITON_DIRECT_SCALED_READY = False
-    _STARTUP_PRINTED = False
+    _PATCH_STATE.orig_embedding_forward = None
+    _reset_runtime_state()
     if notify_disabled:
         _startup_status(False, f"disabled by User.")
     return True
@@ -748,11 +1038,13 @@ def maybe_enable_quanto_int8_kernel(verbose_level: Optional[int] = None) -> bool
     set_kernel_debug(verbose_debug)
 
     if not _env_flag(_ENV_ENABLE, "1"):
+        _ensure_default_quanto_linear_patch()
         # _startup_status(False, f"disabled by {_ENV_ENABLE}=0; using non-injected Quanto path.")
         return False
 
     triton_mod, reason = _probe_triton_backend()
     if triton_mod is None:
+        _ensure_default_quanto_linear_patch()
         # _startup_status(False, f"{reason}; using non-injected Quanto path.")
         return False
     set_triton_debug = getattr(triton_mod, "set_autotune_debug", None)
@@ -760,6 +1052,7 @@ def maybe_enable_quanto_int8_kernel(verbose_level: Optional[int] = None) -> bool
         set_triton_debug(verbose_debug)
 
     if not enable_quanto_int8_kernel(triton_mod=triton_mod):
+        _ensure_default_quanto_linear_patch()
         _startup_status(False, "failed to patch Quanto linear forward; using non-injected Quanto path.")
         return False
 

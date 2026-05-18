@@ -537,7 +537,7 @@ class model_factory:
                 if img is not None:
                     x = img * (1 - img_msk_rebuilt) + x.to(img) * img_msk_rebuilt
 
-            x = x.clamp(-1, 1)
+            x = x.clamp_(-1, 1).add_(1).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8)
             x = x.transpose(0, 1)
             return x
 

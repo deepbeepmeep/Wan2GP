@@ -25,3 +25,12 @@ class PixArtAlphaTextProjection(torch.nn.Module):
         hidden_states = self.act_1(hidden_states)
         hidden_states = self.linear_2(hidden_states)
         return hidden_states
+
+
+def create_caption_projection(transformer_config: dict, audio: bool = False) -> PixArtAlphaTextProjection:
+    caption_channels = transformer_config["caption_channels"]
+    if audio:
+        inner_dim = transformer_config["audio_num_attention_heads"] * transformer_config["audio_attention_head_dim"]
+    else:
+        inner_dim = transformer_config["num_attention_heads"] * transformer_config["attention_head_dim"]
+    return PixArtAlphaTextProjection(in_features=caption_channels, hidden_size=inner_dim)

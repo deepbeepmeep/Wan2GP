@@ -22,8 +22,8 @@
   "temporal_upsampling": "",
   "spatial_upsampling": "",
   "RIFLEx_setting": 0,
-  "slg_start_perc": 10,
-  "slg_end_perc": 90,
+  "perturbation_start_perc": 10,
+  "perturbation_end_perc": 90,
   "prompt_enhancer": "",
   "activated_loras": [
   ]

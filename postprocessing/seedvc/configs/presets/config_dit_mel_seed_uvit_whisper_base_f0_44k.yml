@@ -1,0 +1,98 @@
+log_dir: "./runs"
+save_freq: 1
+log_interval: 10
+save_interval: 1000
+device: "cuda"
+epochs: 1000 # number of epochs for first stage training (pre-training)
+batch_size: 1
+batch_length: 100 # maximum duration of audio in a batch (in seconds)
+max_len: 80 # maximum number of frames
+pretrained_model: "DiT_seed_v2_uvit_whisper_base_f0_44k_bigvgan_pruned_ft_ema.pth"
+pretrained_encoder: ""
+load_only_params: False # set to true if do not want to load epoch numbers and optimizer parameters
+
+preprocess_params:
+  sr: 44100
+  spect_params:
+    n_fft: 2048
+    win_length: 2048
+    hop_length: 512
+    n_mels: 128
+    fmin: 0
+    fmax: "None"
+
+model_params:
+  dit_type: "DiT" # uDiT or DiT
+  reg_loss_type: "l1" # l1 or l2
+
+  timbre_shifter:
+    se_db_path: "./modules/openvoice/checkpoints_v2/converter/se_db.pt"
+    ckpt_path: './modules/openvoice/checkpoints_v2/converter'
+
+  vocoder:
+    type: "bigvgan"
+    name: "nvidia/bigvgan_v2_44khz_128band_512x"
+
+  speech_tokenizer:
+    type: 'whisper'
+    name: "openai/whisper-small"
+
+  style_encoder:
+    dim: 192
+    campplus_path: "campplus_cn_common.bin"
+
+  DAC:
+    encoder_dim: 64
+    encoder_rates: [2, 5, 5, 6]
+    decoder_dim: 1536
+    decoder_rates: [ 6, 5, 5, 2 ]
+    sr: 24000
+
+  length_regulator:
+    channels: 768
+    is_discrete: false
+    in_channels: 768
+    content_codebook_size: 2048
+    sampling_ratios: [1, 1, 1, 1]
+    vector_quantize: false
+    n_codebooks: 1
+    quantizer_dropout: 0.0
+    f0_condition: true
+    n_f0_bins: 256
+
+  DiT:
+    hidden_dim: 768
+    num_heads: 12
+    depth: 17
+    class_dropout_prob: 0.1
+    block_size: 8192
+    in_channels: 128
+    style_condition: true
+    final_layer_type: 'mlp'
+    target: 'mel' # mel or codec
+    content_dim: 768
+    content_codebook_size: 1024
+    content_type: 'discrete'
+    f0_condition: true
+    n_f0_bins: 256
+    content_codebooks: 1
+    is_causal: false
+    long_skip_connection: false
+    zero_prompt_speech_token: false # for prompt component, do not input corresponding speech token
+    time_as_token: false
+    style_as_token: false
+    uvit_skip_connection: true
+    add_resblock_in_transformer: false
+
+  wavenet:
+    hidden_dim: 768
+    num_layers: 8
+    kernel_size: 5
+    dilation_rate: 1
+    p_dropout: 0.2
+    style_condition: true
+
+loss_params:
+  base_lr: 0.0001
+  lambda_mel: 45
+  lambda_kl: 1.0

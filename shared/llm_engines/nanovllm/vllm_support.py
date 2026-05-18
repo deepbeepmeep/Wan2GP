@@ -1,7 +1,65 @@
+import copy
+import os
 from typing import Any, Callable, Optional
 
 _PROBE_CACHE = None
-_WARNED_REQUESTED_VLLM_UNAVAILABLE = False
+_WARNED_REQUESTED_VLLM_NOT_SUPPORTED = False
+_TRITON_SMOKE_CACHE = None
+
+
+def _env_enabled(name, default=True):
+    raw = str(os.environ.get(name, "1" if default else "0")).strip().lower()
+    return raw in ("1", "true", "yes", "y", "on")
+
+
+def _is_mps_available():
+    try:
+        import torch
+        return hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+    except Exception:
+        return False
+
+
+def _check_triton_runtime_smoke():
+    global _TRITON_SMOKE_CACHE
+    if _TRITON_SMOKE_CACHE is not None:
+        return _TRITON_SMOKE_CACHE
+    try:
+        import torch
+        import triton
+        import triton.language as tl
+
+        if not torch.cuda.is_available():
+            _TRITON_SMOKE_CACHE = (False, "CUDA is not available")
+            return _TRITON_SMOKE_CACHE
+
+        @triton.jit
+        def _smoke_add_one_kernel(x_ptr, y_ptr, n_elements, BLOCK: tl.constexpr):
+            pid = tl.program_id(0)
+            offs = pid * BLOCK + tl.arange(0, BLOCK)
+            mask = offs < n_elements
+            x = tl.load(x_ptr + offs, mask=mask, other=0.0)
+            tl.store(y_ptr + offs, x + 1.0, mask=mask)
+
+        n_elements = 128
+        block_size = 128
+        device = torch.device("cuda", torch.cuda.current_device())
+        x = torch.arange(n_elements, dtype=torch.float32, device=device)
+        y = torch.empty_like(x)
+        grid = (triton.cdiv(n_elements, block_size),)
+        _smoke_add_one_kernel[grid](x, y, n_elements, BLOCK=block_size)
+        torch.cuda.synchronize(device=device)
+        if not torch.allclose(y, x + 1.0, atol=1e-5, rtol=1e-5):
+            _TRITON_SMOKE_CACHE = (False, "Triton runtime smoke test failed: incorrect output from smoke kernel")
+            return _TRITON_SMOKE_CACHE
+    except Exception as exc:
+        msg = str(exc).replace("\n", " ").strip()
+        if len(msg) > 260:
+            msg = msg[:260] + "..."
+        _TRITON_SMOKE_CACHE = (False, f"Triton runtime smoke test failed: {msg}")
+        return _TRITON_SMOKE_CACHE
+    _TRITON_SMOKE_CACHE = (True, "ok")
+    return _TRITON_SMOKE_CACHE
 
 
 def _check_triton():
@@ -10,6 +68,10 @@ def _check_triton():
         import triton.language as tl  # noqa: F401
     except Exception as exc:
         return False, f"Triton import failed: {exc}"
+    if _env_enabled("WGP_VLLM_TRITON_SMOKE", default=True):
+        smoke_ok, smoke_msg = _check_triton_runtime_smoke()
+        if not smoke_ok:
+            return False, smoke_msg
     return True, "ok"
 
 
@@ -19,7 +81,11 @@ def _check_flash_attention_2():
         from flash_attn import flash_attn_varlen_func  # noqa: F401
         from flash_attn import flash_attn_with_kvcache  # noqa: F401
         version = str(getattr(flash_attn, "__version__", ""))
+    except ModuleNotFoundError:
+        return False, "non installed"
     except Exception as exc:
+        if "no module named 'flash_attn'" in str(exc).strip().lower():
+            return False, "non installed"
         return False, f"FlashAttention import failed: {exc}"
 
     major = None
@@ -59,6 +125,8 @@ def probe_vllm_runtime(force=False):
 
 def resolve_lm_decoder_engine(requested_engine, engines_available = []):
     requested_engine = str(requested_engine or "").strip().lower()
+    if _is_mps_available():
+        return "legacy"
     probe_result = probe_vllm_runtime()
     supported = bool(probe_result.get("supported", False))
     cg_available = "cg" in engines_available
@@ -68,9 +136,11 @@ def resolve_lm_decoder_engine(requested_engine, engines_available = []):
         if supported:
             if vllm_available: return "vllm"
             requested_engine = default_engine
+        elif not vllm_available:
+            requested_engine = default_engine
         else:
-            global _WARNED_REQUESTED_VLLM_UNAVAILABLE
-            if not _WARNED_REQUESTED_VLLM_UNAVAILABLE:
+            global _WARNED_REQUESTED_VLLM_NOT_SUPPORTED
+            if not _WARNED_REQUESTED_VLLM_NOT_SUPPORTED:
                 checks = probe_result.get("checks", {})
                 reasons = []
                 if isinstance(checks, dict):
@@ -81,8 +151,9 @@ def resolve_lm_decoder_engine(requested_engine, engines_available = []):
                                 msg = msg[:220] + "..."
                             reasons.append(f"{check_name}={msg}")
                 reason_text = "; ".join(reasons) if len(reasons) > 0 else "unknown reason"
-                print(f"[LM] Requested decoder engine 'vllm' is unavailable at startup ({reason_text}).")
-                _WARNED_REQUESTED_VLLM_UNAVAILABLE = True
+                # print(f"[LM] Requested decoder engine 'vllm' is not supported at startup ({reason_text}).")
+                print(f"[LM] Requested decoder engine 'vllm' is not supported (triton & flash attention 2 are needed).")
+                _WARNED_REQUESTED_VLLM_NOT_SUPPORTED = True
             return default_engine
     if requested_engine == "":
         return "vllm" if supported and vllm_available else default_engine
@@ -94,13 +165,30 @@ def resolve_lm_decoder_engine(requested_engine, engines_available = []):
     return "legacy"
 
 
+def _clear_inductor_cuda_pools():
+    try:
+        from torch._inductor import cudagraph_trees as cgt
+    except Exception:
+        return
+
+    clear_cublass_cache = getattr(cgt, "clear_cublass_cache", None)
+    if callable(clear_cublass_cache):
+        try:
+            clear_cublass_cache()
+        except Exception:
+            pass
+
+
 class NanoVllmTextEngine:
     keep_loaded_for_phase2 = True
 
-    def __init__(self, model, model_path: str, tokenizer):
+    def __init__(self, model, model_path: str, tokenizer, enforce_eager: bool = False, graph_pool_handle=None):
         self.model = model
         self.model_path = model_path
         self.tokenizer = tokenizer
+        self.enforce_eager = bool(enforce_eager)
+        self.graph_pool_handle = graph_pool_handle
+        self.hf_config = getattr(model, "config", None)
         self._llm = None
         self._sampling_params_cls = None
         self._max_model_len_hint = None
@@ -114,6 +202,15 @@ class NanoVllmTextEngine:
         max_num_seqs = 2 if cfg_scale and cfg_scale > 1.0 else 1
         max_num_batched_tokens = max_model_len * max_num_seqs
         return max_model_len, max_num_seqs, max_num_batched_tokens
+
+    def _get_min_model_len_hint(self):
+        min_model_len = getattr(self.model, "_prompt_enhancer_min_model_len_hint", None)
+        if min_model_len is None:
+            return 8
+        try:
+            return max(8, int(min_model_len))
+        except Exception:
+            return 8
 
     def _ensure_runtime_capacity(self, max_model_len: int, max_num_seqs: int, max_num_batched_tokens: int):
         if self._max_model_len_hint is None:
@@ -141,6 +238,8 @@ class NanoVllmTextEngine:
             max_tokens=max_tokens,
             cfg_scale=cfg_scale,
         )
+        req_model_len = max(req_model_len, self._get_min_model_len_hint())
+        req_num_batched = max(req_num_batched, req_model_len * req_num_seqs)
         self._ensure_runtime_capacity(req_model_len, req_num_seqs, req_num_batched)
 
     def _ensure_llm(self):
@@ -162,15 +261,24 @@ class NanoVllmTextEngine:
         max_model_len = self._max_model_len_hint or 4096
         max_num_seqs = self._max_num_seqs_hint or 1
         max_num_batched_tokens = self._max_num_batched_tokens_hint or (max_model_len * max_num_seqs)
+        hf_config = self.hf_config
+        if hf_config is not None and bool(getattr(self.model, "_prompt_enhancer_allow_extended_context", False)):
+            requested_max_model_len = int(self._max_model_len_hint or 0)
+            configured_max_position_embeddings = int(getattr(hf_config, "max_position_embeddings", 0) or 0)
+            if requested_max_model_len > configured_max_position_embeddings:
+                hf_config = copy.deepcopy(hf_config)
+                hf_config.max_position_embeddings = requested_max_model_len
         self._llm = LLM(
             model=self.model_path,
-            enforce_eager=False,
+            enforce_eager=self.enforce_eager,
             tensor_parallel_size=1,
             max_model_len=max_model_len,
             max_num_seqs=max_num_seqs,
             max_num_batched_tokens=max_num_batched_tokens,
+            hf_config=hf_config,
             tokenizer=self.tokenizer,
             model_object=self.model,
+            graph_pool_handle=self.graph_pool_handle,
         )
         self._sampling_params_cls = SamplingParams
 
@@ -209,6 +317,10 @@ class NanoVllmTextEngine:
             except Exception:
                 pass
         self._sampling_params_cls = None
+        try:
+            _clear_inductor_cuda_pools()
+        except Exception:
+            pass
 
     def __del__(self):
         self.close()
@@ -347,5 +459,83 @@ class NanoVllmTextEngine:
                 denoising_extra=f"{progress_label} {max_tokens}/{max_tokens}",
                 progress_unit="tokens",
             )
+
+        return {"token_ids": token_ids, "text": text}
+
+    def generate_embedded(
+        self,
+        prompt_token_ids: list[int],
+        prompt_embeds,
+        prompt_position_ids,
+        max_tokens: int,
+        temperature: Optional[float],
+        top_p: Optional[float],
+        top_k: Optional[int],
+        cfg_scale: float,
+        seed: Optional[int],
+        use_tqdm: bool = True,
+        release_vram_after: bool = True,
+        ignore_eos: bool = False,
+        position_offset: int = 0,
+    ):
+        req_model_len, req_num_seqs, req_num_batched = self._compute_runtime_hints(
+            prompt_len=len(prompt_token_ids),
+            max_tokens=max_tokens,
+            cfg_scale=cfg_scale,
+        )
+        self._ensure_runtime_capacity(req_model_len, req_num_seqs, req_num_batched)
+        self._ensure_llm()
+        if self._llm is None:
+            return None
+        try:
+            self._llm.reset()
+        except Exception:
+            pass
+
+        seed_value = None
+        if seed is not None:
+            try:
+                seed_value = int(seed)
+            except Exception:
+                seed_value = None
+            if seed_value is not None and seed_value < 0:
+                seed_value = None
+
+        temp = temperature if temperature is not None and temperature > 0 else 1e-5
+        sampling_params = self._sampling_params_cls(
+            temperature=temp,
+            max_tokens=max_tokens,
+            cfg_scale=max(cfg_scale, 1.0),
+            top_k=top_k if top_k is not None and top_k > 0 else None,
+            top_p=top_p if top_p is not None and 0.0 < top_p < 1.0 else None,
+            ignore_eos=bool(ignore_eos),
+            seed=seed_value,
+        )
+
+        text = ""
+        token_ids: list[int] = []
+        try:
+            outputs = self._llm.generate_embedded(
+                prompts=[prompt_token_ids],
+                prompt_embeds=[prompt_embeds],
+                prompt_position_ids=[prompt_position_ids],
+                position_offsets=[int(position_offset)],
+                sampling_params=sampling_params,
+                use_tqdm=use_tqdm,
+            )
+            if outputs:
+                text, token_ids = self._extract_text_and_tokens(outputs[0])
+            if (not text) and token_ids:
+                try:
+                    text = self.tokenizer.decode(token_ids, skip_special_tokens=False)
+                except Exception:
+                    text = ""
+            self._last_failure_reason = ""
+        except Exception as exc:
+            self._last_failure_reason = str(exc)
+            raise
+        finally:
+            if release_vram_after:
+                self.release_runtime_allocations()
 
         return {"token_ids": token_ids, "text": text}

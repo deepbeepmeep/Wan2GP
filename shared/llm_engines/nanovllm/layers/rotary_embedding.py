@@ -44,7 +44,6 @@ class RotaryEmbedding(nn.Module):
         self.register_buffer("cos_sin_cache", cache, persistent=False)
 
 
-    @torch.compile
     def forward(
         self,
         positions: torch.Tensor,

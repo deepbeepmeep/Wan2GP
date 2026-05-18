@@ -218,8 +218,9 @@ class MultiHeadCrossAttention(nn.Module):
                 k_lens = k_lens.tolist() if B > 1 else k_lens.to(q.device)
             elif isinstance(k_lens, list) and B == 1:
                 k_lens = torch.tensor(k_lens, device=q.device)
-
-        x = _run_attention([q, k, v], out_dtype, k_lens=k_lens, cross_attn=True)
+        qkv_list = [q, k, v]
+        del q, k, v
+        x = _run_attention(qkv_list, out_dtype, k_lens=k_lens)
         x = x.view(B, N, C)
         x = self.proj(x)
         return x

@@ -1,0 +1,10 @@
+{
+  "name": "Motion Manager",
+  "author": "DeepBeepMeep",
+  "version": "1.0.0",
+  "description": "Cut objects, design their motion paths, preview the animation, and send the mask directly into WanGP.",
+  "date": "",
+  "wan2gp_version": "",
+  "uninstallable": false
+}
+

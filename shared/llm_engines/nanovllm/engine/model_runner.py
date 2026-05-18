@@ -42,7 +42,7 @@ def find_available_port(start_port: int = 2333, max_attempts: int = 100) -> int:
 
 class ModelRunner:
 
-    def __init__(self, config: Config, rank: int, event: Event | list[Event], model_object=None):
+    def __init__(self, config: Config, rank: int, event: Event | list[Event], model_object=None, graph_pool_handle=None):
         # Enable capturing scalar outputs to avoid graph breaks from Tensor.item() calls
         torch._dynamo.config.capture_scalar_outputs = True
         
@@ -94,6 +94,8 @@ class ModelRunner:
         self._graph_cache_order = []
         self._logits_bias_cache = {}
         self._sampling_generator = None
+        self._runtime_signature = None
+        self._graph_pool_seed = graph_pool_handle
         self._guard_counts = {}
         self._guard_seen_details = set()
         torch.set_default_dtype(config_dtype)
@@ -123,14 +125,52 @@ class ModelRunner:
 
     def ensure_runtime_ready(self):
         if self._runtime_ready:
-            return
+            # In eager mode MMGP may move parameter storage between CPU/GPU after prefill.
+            # That changes data_ptr() without invalidating the live KV cache or sequence state.
+            # Resetting here drops the prompt context and makes legacy decode drift off-topic.
+            if self.enforce_eager:
+                return
+            current_sig = self._get_graph_capture_signature()
+            if current_sig == self._runtime_signature:
+                return
+            self._note_guard("runtime_reprepare_signature_change")
+            self.reset_runtime_state()
         if self.model is None:
             raise RuntimeError("LLM model object is not available.")
         self._tie_word_embeddings_if_needed()
         self.allocate_kv_cache()
+        self._prepare_model_sequence_state()
         if not self.enforce_eager:
             self.capture_cudagraph()
         self._runtime_ready = True
+        self._runtime_signature = self._get_graph_capture_signature()
+
+    def reset_generation_state(self):
+        if self.model is None:
+            return
+        try:
+            for module in self.model.modules():
+                reset_sequence_state = getattr(module, "reset_sequence_state", None)
+                if callable(reset_sequence_state):
+                    reset_sequence_state()
+                    continue
+                if hasattr(module, "conv_state"):
+                    module.conv_state = None
+                if hasattr(module, "recurrent_state"):
+                    module.recurrent_state = None
+        except Exception:
+            pass
+        self._logits_bias_cache.clear()
+        reset_context()
+
+    def _prepare_model_sequence_state(self):
+        if self.model is None:
+            return
+        model_device = self._get_model_device()
+        for module in self.model.modules():
+            prepare = getattr(module, "prepare_sequence_state", None)
+            if callable(prepare):
+                prepare(self.config.max_num_seqs, model_device, self.dtype)
 
     def _get_tied_embeddings(self):
         if self.model is None:
@@ -167,6 +207,18 @@ class ModelRunner:
                 for module in self.model.modules():
                     if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
                         module.k_cache = module.v_cache = torch.tensor([])
+                    release_sequence_state = getattr(module, "release_sequence_state", None)
+                    if callable(release_sequence_state):
+                        release_sequence_state()
+                        continue
+                    reset_sequence_state = getattr(module, "reset_sequence_state", None)
+                    if callable(reset_sequence_state):
+                        reset_sequence_state()
+                    else:
+                        if hasattr(module, "conv_state"):
+                            module.conv_state = None
+                        if hasattr(module, "recurrent_state"):
+                            module.recurrent_state = None
         except Exception:
             pass
         if hasattr(self, "kv_cache"):
@@ -181,18 +233,26 @@ class ModelRunner:
         except Exception:
             pass
         try:
-            self.graphs = {}
-            self.graph_vars = {}
-            self.graph_bs = []
-            self.graph_pool = None
+            for attr_name in ("graphs", "graph_vars", "graph_bs", "graph_pool"):
+                if hasattr(self, attr_name):
+                    delattr(self, attr_name)
+        except Exception:
+            pass
+        try:
+            torch.cuda.synchronize()
         except Exception:
             pass
         try:
             torch.cuda.empty_cache()
         except Exception:
             pass
+        try:
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
         self._logits_bias_cache.clear()
         self._sampling_generator = None
+        self._runtime_signature = None
         self._runtime_ready = False
         gc.collect()
 
@@ -217,6 +277,20 @@ class ModelRunner:
             return next(self.model.parameters()).device
         except Exception:
             return torch.device("cpu")
+
+    def _get_runtime_device(self) -> torch.device:
+        if torch.cuda.is_available():
+            return torch.device("cuda", torch.cuda.current_device())
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return torch.device("mps")
+        return self._get_model_device()
+
+    def _pin_memory_enabled(self) -> bool:
+        return self._get_runtime_device().type == "cuda"
+
+    def _to_runtime_device(self, tensor: torch.Tensor) -> torch.Tensor:
+        device = self._get_runtime_device()
+        return tensor.to(device=device, non_blocking=device.type == "cuda")
 
     def _drop_graph_cache_entry(self, cache_key):
         entry = self._graph_cache.pop(cache_key, None)
@@ -264,12 +338,16 @@ class ModelRunner:
         return cached
 
     def set_sampling_seed(self, seed: int | None):
-        if seed is None or not torch.cuda.is_available():
+        if seed is None:
             self._sampling_generator = None
             return
-        generator = torch.Generator(device="cuda")
-        generator.manual_seed(int(seed))
-        self._sampling_generator = generator
+        device = self._get_runtime_device()
+        try:
+            generator = torch.Generator(device=device)
+            generator.manual_seed(int(seed))
+            self._sampling_generator = generator
+        except Exception:
+            self._sampling_generator = None
 
     @staticmethod
     def _apply_logits_bias(logits_row: torch.Tensor, bias: torch.Tensor):
@@ -280,33 +358,35 @@ class ModelRunner:
         max_bs = self.config.max_num_seqs
         max_tokens = self.config.max_num_batched_tokens
         max_num_blocks = (self.config.max_model_len + self.block_size - 1) // self.block_size
+        pin_memory = self._pin_memory_enabled()
         
         # Pre-allocate pinned memory buffers on CPU for fast transfer
         # Must explicitly specify device="cpu" since default device may be "cuda"
-        self._cpu_temperatures = torch.zeros(max_bs, dtype=torch.float32, device="cpu", pin_memory=True)
-        self._cpu_cfg_scales = torch.zeros(max_bs, dtype=torch.float32, device="cpu", pin_memory=True)
-        self._cpu_top_ks = torch.zeros(max_bs, dtype=torch.int32, device="cpu", pin_memory=True)
-        self._cpu_top_ps = torch.zeros(max_bs, dtype=torch.float32, device="cpu", pin_memory=True)
-        self._cpu_repetition_penalties = torch.zeros(max_bs, dtype=torch.float32, device="cpu", pin_memory=True)
+        self._cpu_temperatures = torch.zeros(max_bs, dtype=torch.float32, device="cpu", pin_memory=pin_memory)
+        self._cpu_cfg_scales = torch.zeros(max_bs, dtype=torch.float32, device="cpu", pin_memory=pin_memory)
+        self._cpu_top_ks = torch.zeros(max_bs, dtype=torch.int32, device="cpu", pin_memory=pin_memory)
+        self._cpu_top_ps = torch.zeros(max_bs, dtype=torch.float32, device="cpu", pin_memory=pin_memory)
+        self._cpu_min_ps = torch.zeros(max_bs, dtype=torch.float32, device="cpu", pin_memory=pin_memory)
+        self._cpu_repetition_penalties = torch.zeros(max_bs, dtype=torch.float32, device="cpu", pin_memory=pin_memory)
         
         # Pre-allocate decode buffers on CPU with pinned memory
-        self._cpu_input_ids = torch.zeros(max_bs, dtype=torch.int64, device="cpu", pin_memory=True)
-        self._cpu_positions = torch.zeros(max_bs, dtype=torch.int64, device="cpu", pin_memory=True)
-        self._cpu_slot_mapping = torch.zeros(max_bs, dtype=torch.int32, device="cpu", pin_memory=True)
-        self._cpu_context_lens = torch.zeros(max_bs, dtype=torch.int32, device="cpu", pin_memory=True)
+        self._cpu_input_ids = torch.zeros(max_bs, dtype=torch.int64, device="cpu", pin_memory=pin_memory)
+        self._cpu_positions = torch.zeros(max_bs, dtype=torch.int64, device="cpu", pin_memory=pin_memory)
+        self._cpu_slot_mapping = torch.zeros(max_bs, dtype=torch.int32, device="cpu", pin_memory=pin_memory)
+        self._cpu_context_lens = torch.zeros(max_bs, dtype=torch.int32, device="cpu", pin_memory=pin_memory)
         
         # Pre-allocate prefill buffers on CPU with pinned memory (optimization to avoid repeated tensor creation)
-        self._cpu_prefill_input_ids = torch.zeros(max_tokens, dtype=torch.int64, device="cpu", pin_memory=True)
-        self._cpu_prefill_positions = torch.zeros(max_tokens, dtype=torch.int64, device="cpu", pin_memory=True)
-        self._cpu_prefill_cu_seqlens = torch.zeros(max_bs + 1, dtype=torch.int32, device="cpu", pin_memory=True)
-        self._cpu_prefill_slot_mapping = torch.zeros(max_tokens, dtype=torch.int32, device="cpu", pin_memory=True)
+        self._cpu_prefill_input_ids = torch.zeros(max_tokens, dtype=torch.int64, device="cpu", pin_memory=pin_memory)
+        self._cpu_prefill_positions = torch.zeros(max_tokens, dtype=torch.int64, device="cpu", pin_memory=pin_memory)
+        self._cpu_prefill_cu_seqlens = torch.zeros(max_bs + 1, dtype=torch.int32, device="cpu", pin_memory=pin_memory)
+        self._cpu_prefill_slot_mapping = torch.zeros(max_tokens, dtype=torch.int32, device="cpu", pin_memory=pin_memory)
         
         # Pre-allocate block tables buffer (shared by both decode and prefill)
-        self._cpu_block_tables = torch.zeros(max_bs, max_num_blocks, dtype=torch.int32, device="cpu", pin_memory=True)
+        self._cpu_block_tables = torch.zeros(max_bs, max_num_blocks, dtype=torch.int32, device="cpu", pin_memory=pin_memory)
         
         # Pre-allocate buffer for sequence token IDs (used in logits processor and sampler)
         # Max length is max_model_len since sequences can be that long
-        self._seq_token_ids_buffer = torch.zeros(max_bs, self.config.max_model_len, dtype=torch.int64, device="cpu", pin_memory=True)
+        self._seq_token_ids_buffer = torch.zeros(max_bs, self.config.max_model_len, dtype=torch.int64, device="cpu", pin_memory=pin_memory)
 
     def _release_sample_buffers(self):
         buffer_names = [
@@ -314,6 +394,7 @@ class ModelRunner:
             "_cpu_cfg_scales",
             "_cpu_top_ks",
             "_cpu_top_ps",
+            "_cpu_min_ps",
             "_cpu_repetition_penalties",
             "_cpu_input_ids",
             "_cpu_positions",
@@ -354,6 +435,10 @@ class ModelRunner:
         if not self.enforce_eager:
             if hasattr(self, "graphs"):
                 del self.graphs
+            if hasattr(self, "graph_vars"):
+                del self.graph_vars
+            if hasattr(self, "graph_bs"):
+                del self.graph_bs
             if hasattr(self, "graph_pool"):
                 del self.graph_pool
         try:
@@ -362,6 +447,10 @@ class ModelRunner:
             pass
         try:
             torch.cuda.empty_cache()
+        except Exception:
+            pass
+        try:
+            torch.cuda.ipc_collect()
         except Exception:
             pass
         if dist.is_initialized():
@@ -397,79 +486,117 @@ class ModelRunner:
         method = getattr(self, method_name, None)
         return method(*args)
 
+    def _get_kv_cache_modules(self):
+        if self.model is None:
+            return []
+        return [module for module in self.model.modules() if hasattr(module, "k_cache") and hasattr(module, "v_cache")]
+
     def allocate_kv_cache(self):
         config = self.config
         hf_config = config.hf_config
+        runtime_device = self._get_runtime_device()
+        is_cuda_runtime = runtime_device.type == "cuda"
         num_kv_heads = hf_config.num_key_value_heads // self.world_size
         head_dim = getattr(hf_config, "head_dim", hf_config.hidden_size // hf_config.num_attention_heads)
-        block_bytes = 2 * hf_config.num_hidden_layers * self.block_size * num_kv_heads * head_dim * self.dtype.itemsize
+        kv_cache_modules = self._get_kv_cache_modules()
+        kv_cache_layer_count = len(kv_cache_modules)
+        block_bytes = 2 * kv_cache_layer_count * self.block_size * num_kv_heads * head_dim * self.dtype.itemsize
 
         # Strict policy: allocate exactly the blocks required by requested runtime limits.
         required_blocks_per_seq = (config.max_model_len + self.block_size - 1) // self.block_size
         required_total_blocks = required_blocks_per_seq * max(1, config.max_num_seqs)
         config.num_kvcache_blocks = max(1, int(required_total_blocks))
         required_kv_bytes = config.num_kvcache_blocks * block_bytes
-        free, total = torch.cuda.mem_get_info()
-        current = torch.cuda.memory_stats()["allocated_bytes.all.current"]
-        target_total_usage = total * config.gpu_memory_utilization
-        allowed_kv_bytes = max(0, target_total_usage - current)
-        if required_kv_bytes > allowed_kv_bytes:
-            raise RuntimeError(
-                f"Insufficient GPU memory for strict KV cache sizing under gpu_memory_utilization={config.gpu_memory_utilization:.2f}. "
-                f"Required KV: {required_kv_bytes / 1024**3:.2f} GB "
-                f"(blocks={config.num_kvcache_blocks}, block={block_bytes / 1024**2:.2f} MB), "
-                f"Allowed by limit: {allowed_kv_bytes / 1024**3:.2f} GB, "
-                f"Free: {free / 1024**3:.2f} GB, Current: {current / 1024**3:.2f} GB, "
-                f"Requested max_model_len={config.max_model_len}, max_num_seqs={config.max_num_seqs}."
-            )
+        if is_cuda_runtime:
+            free, total = torch.cuda.mem_get_info()
+            current = torch.cuda.memory_stats()["allocated_bytes.all.current"]
+            target_total_usage = total * config.gpu_memory_utilization
+            allowed_kv_bytes = max(0, target_total_usage - current)
+            if required_kv_bytes > allowed_kv_bytes:
+                raise RuntimeError(
+                    f"Insufficient GPU memory for strict KV cache sizing under gpu_memory_utilization={config.gpu_memory_utilization:.2f}. "
+                    f"Required KV: {required_kv_bytes / 1024**3:.2f} GB "
+                    f"(blocks={config.num_kvcache_blocks}, block={block_bytes / 1024**2:.2f} MB), "
+                    f"Allowed by limit: {allowed_kv_bytes / 1024**3:.2f} GB, "
+                    f"Free: {free / 1024**3:.2f} GB, Current: {current / 1024**3:.2f} GB, "
+                    f"Requested max_model_len={config.max_model_len}, max_num_seqs={config.max_num_seqs}."
+                )
         try:
             self.kv_cache = torch.empty(
                 2,
-                hf_config.num_hidden_layers,
+                kv_cache_layer_count,
                 config.num_kvcache_blocks,
                 self.block_size,
                 num_kv_heads,
                 head_dim,
-                device="cuda",
+                device=runtime_device,
                 dtype=self.dtype,
             )
         except RuntimeError as exc:
             if "out of memory" in str(exc).lower():
-                free_now, total_now = torch.cuda.mem_get_info()
+                extra = ""
+                if is_cuda_runtime:
+                    free_now, total_now = torch.cuda.mem_get_info()
+                    extra = f" Current free VRAM: {free_now / 1024**3:.2f} GB / {total_now / 1024**3:.2f} GB total."
                 raise RuntimeError(
                     f"Failed to allocate strict KV cache ({required_kv_bytes / 1024**3:.2f} GB) for "
-                    f"max_model_len={config.max_model_len}, max_num_seqs={config.max_num_seqs}. "
-                    f"Current free VRAM: {free_now / 1024**3:.2f} GB / {total_now / 1024**3:.2f} GB total."
+                    f"max_model_len={config.max_model_len}, max_num_seqs={config.max_num_seqs} on {runtime_device}.{extra}"
                 ) from exc
             raise
-        layer_id = 0
-        for module in self.model.modules():
-            if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
-                module.k_cache = self.kv_cache[0, layer_id]
-                module.v_cache = self.kv_cache[1, layer_id]
-                layer_id += 1
+        for layer_id, module in enumerate(kv_cache_modules):
+            module.k_cache = self.kv_cache[0, layer_id]
+            module.v_cache = self.kv_cache[1, layer_id]
 
     def prepare_block_tables(self, seqs: list[Sequence]):
+        bs = len(seqs)
         max_len = max(len(seq.block_table) for seq in seqs)
-        block_tables = [seq.block_table + [-1] * (max_len - len(seq.block_table)) for seq in seqs]
-        block_tables = torch.tensor(block_tables, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        return block_tables
+        block_tables = self._cpu_block_tables[:bs, :max_len]
+        block_tables.fill_(-1)
+        for row, seq in enumerate(seqs):
+            if not seq.block_table:
+                continue
+            block_tables[row, :len(seq.block_table)] = torch.tensor(seq.block_table, dtype=torch.int32, device="cpu")
+        return self._to_runtime_device(block_tables)
 
     def prepare_prefill(self, seqs: list[Sequence]):
+        use_prompt_embeds = any(getattr(seq, "prompt_embeds", None) is not None for seq in seqs)
+        if use_prompt_embeds and not all(getattr(seq, "prompt_embeds", None) is not None for seq in seqs):
+            raise RuntimeError("Mixed embedded/non-embedded prefill batches are not supported.")
         input_ids = []
         positions = []
+        prompt_embeds = []
+        prompt_position_ids = []
         cu_seqlens_q = [0]
         cu_seqlens_k = [0]
         max_seqlen_q = 0
         max_seqlen_k = 0
         slot_mapping = []
         block_tables = None
+        has_previous_state = any(int(getattr(seq, "num_cached_tokens", 0) or 0) > 0 for seq in seqs)
         for seq in seqs:
             seqlen = len(seq)
             input_ids.extend(seq[seq.num_cached_tokens:])
-            positions.extend(list(range(seq.num_cached_tokens, seqlen)))
             seqlen_q = seqlen - seq.num_cached_tokens
             seqlen_k = seqlen
+            if use_prompt_embeds:
+                seq_prompt_embeds = getattr(seq, "prompt_embeds", None)
+                seq_position_ids = getattr(seq, "prompt_position_ids", None)
+                if seq_prompt_embeds is None or seq_position_ids is None:
+                    raise RuntimeError("Embedded prefill requires both prompt_embeds and prompt_position_ids.")
+                seq_prompt_embeds = seq_prompt_embeds[seq.num_cached_tokens:seqlen]
+                if seq_prompt_embeds.ndim != 2 or seq_prompt_embeds.shape[0] != seqlen_q:
+                    raise RuntimeError("Embedded prefill prompt_embeds shape does not match uncached prompt length.")
+                if seq_position_ids.ndim == 3:
+                    seq_position_ids = seq_position_ids[:, 0]
+                if seq_position_ids.ndim != 2 or seq_position_ids.shape[0] != 3:
+                    raise RuntimeError("Embedded prefill prompt_position_ids must have shape [3, seq_len].")
+                seq_position_ids = seq_position_ids[:, seq.num_cached_tokens:seqlen]
+                if seq_position_ids.shape[1] != seqlen_q:
+                    raise RuntimeError("Embedded prefill prompt_position_ids shape does not match uncached prompt length.")
+                prompt_embeds.append(seq_prompt_embeds)
+                prompt_position_ids.append(seq_position_ids)
+            else:
+                positions.extend(list(range(seq.num_cached_tokens, seqlen)))
             cu_seqlens_q.append(cu_seqlens_q[-1] + seqlen_q)
             cu_seqlens_k.append(cu_seqlens_k[-1] + seqlen_k)
             max_seqlen_q = max(seqlen_q, max_seqlen_q)
@@ -477,22 +604,44 @@ class ModelRunner:
             if not seq.block_table:    # warmup: no blocks allocated yet
                 slot_mapping.extend([-1] * seqlen_q)
                 continue
+            cached_tokens = max(0, int(seq.num_cached_tokens or 0))
+            cached_partial_tokens = cached_tokens % self.block_size
             for i in range(seq.num_cached_blocks, seq.num_blocks):
                 start = seq.block_table[i] * self.block_size
+                if i == seq.num_cached_blocks and cached_partial_tokens > 0:
+                    start += cached_partial_tokens
                 if i != seq.num_blocks - 1:
-                    end = start + self.block_size
+                    end = seq.block_table[i] * self.block_size + self.block_size
                 else:
-                    end = start + seq.last_block_num_tokens
-                slot_mapping.extend(list(range(start, end)))
+                    end = seq.block_table[i] * self.block_size + seq.last_block_num_tokens
+                if end > start:
+                    slot_mapping.extend(list(range(start, end)))
         if cu_seqlens_k[-1] > cu_seqlens_q[-1]:    # prefix cache
             block_tables = self.prepare_block_tables(seqs)
-        input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
-        positions = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
-        cu_seqlens_q = torch.tensor(cu_seqlens_q, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        cu_seqlens_k = torch.tensor(cu_seqlens_k, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        set_context(True, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, slot_mapping, None, block_tables)
-        return input_ids, positions
+        if use_prompt_embeds:
+            input_ids = None
+            positions = self._to_runtime_device(torch.cat(prompt_position_ids, dim=1).unsqueeze(1).contiguous())
+            inputs_embeds = self._to_runtime_device(torch.cat(prompt_embeds, dim=0).unsqueeze(0).contiguous())
+        else:
+            pin_memory = self._pin_memory_enabled()
+            input_ids = self._to_runtime_device(torch.tensor(input_ids, dtype=torch.int64, pin_memory=pin_memory))
+            positions = self._to_runtime_device(torch.tensor(positions, dtype=torch.int64, pin_memory=pin_memory))
+            inputs_embeds = None
+        pin_memory = self._pin_memory_enabled()
+        cu_seqlens_q = self._to_runtime_device(torch.tensor(cu_seqlens_q, dtype=torch.int32, pin_memory=pin_memory))
+        cu_seqlens_k = self._to_runtime_device(torch.tensor(cu_seqlens_k, dtype=torch.int32, pin_memory=pin_memory))
+        slot_mapping = self._to_runtime_device(torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=pin_memory))
+        set_context(True, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, slot_mapping, None, block_tables, has_previous_state=has_previous_state)
+        return input_ids, positions, inputs_embeds
+
+    @torch.inference_mode()
+    def prefill_only(self, seqs: list[Sequence]) -> None:
+        self.ensure_runtime_ready()
+        input_ids, positions, inputs_embeds = self.prepare_prefill(seqs)
+        self.run_model(input_ids, positions, True, inputs_embeds=inputs_embeds)
+        for seq in seqs:
+            seq.clear_prompt_data()
+        reset_context()
 
     def prepare_decode(self, seqs: list[Sequence]):
         """Optimized decode preparation using pre-allocated buffers."""
@@ -501,15 +650,15 @@ class ModelRunner:
         # Use pre-allocated CPU buffers
         for i, seq in enumerate(seqs):
             self._cpu_input_ids[i] = seq.last_token
-            self._cpu_positions[i] = len(seq) - 1
+            self._cpu_positions[i] = len(seq) - 1 + int(getattr(seq, "position_offset", 0) or 0)
             self._cpu_context_lens[i] = len(seq)
             self._cpu_slot_mapping[i] = seq.block_table[-1] * self.block_size + seq.last_block_num_tokens - 1
         
-        # Transfer to GPU using sliced views
-        input_ids = self._cpu_input_ids[:bs].cuda(non_blocking=True)
-        positions = self._cpu_positions[:bs].cuda(non_blocking=True)
-        slot_mapping = self._cpu_slot_mapping[:bs].cuda(non_blocking=True)
-        context_lens = self._cpu_context_lens[:bs].cuda(non_blocking=True)
+        # Transfer to the runtime device using sliced views
+        input_ids = self._to_runtime_device(self._cpu_input_ids[:bs])
+        positions = self._to_runtime_device(self._cpu_positions[:bs])
+        slot_mapping = self._to_runtime_device(self._cpu_slot_mapping[:bs])
+        context_lens = self._to_runtime_device(self._cpu_context_lens[:bs])
         block_tables = self.prepare_block_tables(seqs)
         set_context(False, slot_mapping=slot_mapping, context_lens=context_lens, block_tables=block_tables)
         return input_ids, positions
@@ -526,6 +675,7 @@ class ModelRunner:
         # Fill pre-allocated CPU buffers
         top_ks_is_zero = True
         top_ps_is_one = True
+        min_ps_is_zero = True
         repetition_penalties_is_one = True
         for i, seq in enumerate(target_seqs):
             self._cpu_temperatures[i] = seq.temperature
@@ -536,25 +686,33 @@ class ModelRunner:
             self._cpu_top_ps[i] = seq.top_p if seq.top_p is not None else 1.0
             if seq.top_p is not None and seq.top_p != 1.0:
                 top_ps_is_one = False
+            self._cpu_min_ps[i] = seq.min_p if seq.min_p is not None else 0.0
+            if seq.min_p is not None and seq.min_p > 0.0:
+                min_ps_is_zero = False
             self._cpu_repetition_penalties[i] = seq.repetition_penalty if seq.repetition_penalty is not None else 1.0
             if seq.repetition_penalty is not None and seq.repetition_penalty != 1.0:
                 repetition_penalties_is_one = False
         
-        # Transfer to GPU using sliced views (single batched transfer)
-        temperatures = self._cpu_temperatures[:num_seqs].cuda(non_blocking=True)
-        cfg_scales = self._cpu_cfg_scales[:num_seqs].cuda(non_blocking=True)
-        top_ks = self._cpu_top_ks[:num_seqs].cuda(non_blocking=True) if not top_ks_is_zero else None
-        top_ps = self._cpu_top_ps[:num_seqs].cuda(non_blocking=True) if not top_ps_is_one else None
-        repetition_penalties = self._cpu_repetition_penalties[:num_seqs].cuda(non_blocking=True) if not repetition_penalties_is_one else None
+        # Transfer to the runtime device using sliced views (single batched transfer)
+        temperatures = self._to_runtime_device(self._cpu_temperatures[:num_seqs])
+        cfg_scales = self._to_runtime_device(self._cpu_cfg_scales[:num_seqs])
+        top_ks = self._to_runtime_device(self._cpu_top_ks[:num_seqs]) if not top_ks_is_zero else None
+        top_ps = self._to_runtime_device(self._cpu_top_ps[:num_seqs]) if not top_ps_is_one else None
+        min_ps = self._to_runtime_device(self._cpu_min_ps[:num_seqs]) if not min_ps_is_zero else None
+        repetition_penalties = self._to_runtime_device(self._cpu_repetition_penalties[:num_seqs]) if not repetition_penalties_is_one else None
         
-        return temperatures, cfg_scales, top_ks, top_ps, repetition_penalties
+        return temperatures, cfg_scales, top_ks, top_ps, min_ps, repetition_penalties
 
     @torch.inference_mode()
-    def run_model(self, input_ids: torch.Tensor, positions: torch.Tensor, is_prefill: bool):
-        if is_prefill or self.enforce_eager or input_ids.size(0) > 512:
-            return self.model.compute_logits(self.model(input_ids, positions))
+    def run_model(self, input_ids: torch.Tensor | None, positions: torch.Tensor, is_prefill: bool, inputs_embeds: torch.Tensor | None = None):
+        decode_batch_size = input_ids.size(0) if input_ids is not None else int(inputs_embeds.shape[0])
+        model_kwargs = {"input_ids": input_ids, "positions": positions}
+        if inputs_embeds is not None:
+            model_kwargs["inputs_embeds"] = inputs_embeds
+        if is_prefill or self.enforce_eager or decode_batch_size > 512:
+            return self.model.compute_logits(self.model(**model_kwargs))
         else:
-            bs = input_ids.size(0)
+            bs = decode_batch_size
             context = get_context()
             
             # Check if block_tables size exceeds pre-allocated buffer size
@@ -567,7 +725,7 @@ class ModelRunner:
                     "cudagraph_fallback_block_table_cols",
                     f"requested={context.block_tables.size(1)} max={max_num_blocks}",
                 )
-                return self.model.compute_logits(self.model(input_ids, positions))
+                return self.model.compute_logits(self.model(**model_kwargs))
             
             # Fix: Also check if block_tables row count matches batch size
             # Dimension mismatch can cause CUDA illegal memory access during graph replay
@@ -577,7 +735,7 @@ class ModelRunner:
                     "cudagraph_fallback_block_table_rows",
                     f"rows={context.block_tables.size(0)} bs={bs}",
                 )
-                return self.model.compute_logits(self.model(input_ids, positions))
+                return self.model.compute_logits(self.model(**model_kwargs))
             
             # Fix: Verify slot_mapping and context_lens dimensions match batch size
             if context.slot_mapping.size(0) != bs or context.context_lens.size(0) != bs:
@@ -586,7 +744,7 @@ class ModelRunner:
                     "cudagraph_fallback_context_shape",
                     f"slot={context.slot_mapping.size(0)} ctx={context.context_lens.size(0)} bs={bs}",
                 )
-                return self.model.compute_logits(self.model(input_ids, positions))
+                return self.model.compute_logits(self.model(**model_kwargs))
             
             graph = self.graphs[next(x for x in self.graph_bs if x >= bs)]
             graph_vars = self.graph_vars
@@ -616,15 +774,22 @@ class ModelRunner:
             # uncond_seqs = seqs[num_cond:]
             
             # Prepare inputs for both conditional and unconditional (they're already in the batch)
-            input_ids, positions = (self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs))
+            if is_prefill:
+                input_ids, positions, inputs_embeds = self.prepare_prefill(seqs)
+            else:
+                input_ids, positions = self.prepare_decode(seqs)
+                inputs_embeds = None
             sample_params = self.prepare_sample(seqs, is_cfg_batch=True) if self.rank == 0 else None
             if sample_params is not None:
-                temperatures, cfg_scales, top_ks, top_ps, repetition_penalties = sample_params
+                temperatures, cfg_scales, top_ks, top_ps, min_ps, repetition_penalties = sample_params
             else:
-                temperatures = cfg_scales = top_ks = top_ps = repetition_penalties = None
+                temperatures = cfg_scales = top_ks = top_ps = min_ps = repetition_penalties = None
             
             # Run model forward (processes entire batch: cond + uncond)
-            logits_all = self.run_model(input_ids, positions, is_prefill)
+            logits_all = self.run_model(input_ids, positions, is_prefill, inputs_embeds=inputs_embeds)
+            if is_prefill:
+                for seq in seqs:
+                    seq.clear_prompt_data()
             reset_context()
             
             if self.rank == 0:
@@ -681,6 +846,7 @@ class ModelRunner:
                     temperatures,
                     top_ks=top_ks if top_ks is not None else None,
                     top_ps=top_ps if top_ps is not None else None,
+                    min_ps=min_ps if min_ps is not None else None,
                     repetition_penalties=None,  # Already applied above
                     generator=self._sampling_generator,
                     # input_ids=cond_input_ids,
@@ -698,14 +864,20 @@ class ModelRunner:
                 return None
         else:
             # Normal batch (non-CFG)
-            input_ids, positions = (self.prepare_prefill(seqs) if is_prefill 
-                                   else self.prepare_decode(seqs))
+            if is_prefill:
+                input_ids, positions, inputs_embeds = self.prepare_prefill(seqs)
+            else:
+                input_ids, positions = self.prepare_decode(seqs)
+                inputs_embeds = None
             sample_params = self.prepare_sample(seqs, is_cfg_batch=False) if self.rank == 0 else None
             if sample_params is not None:
-                temperatures, cfg_scales, top_ks, top_ps, repetition_penalties = sample_params
+                temperatures, cfg_scales, top_ks, top_ps, min_ps, repetition_penalties = sample_params
             else:
-                temperatures = cfg_scales = top_ks = top_ps = repetition_penalties = None
-            logits = self.run_model(input_ids, positions, is_prefill)
+                temperatures = cfg_scales = top_ks = top_ps = min_ps = repetition_penalties = None
+            logits = self.run_model(input_ids, positions, is_prefill, inputs_embeds=inputs_embeds)
+            if is_prefill:
+                for seq in seqs:
+                    seq.clear_prompt_data()
             reset_context()
             
             if self.rank == 0:
@@ -754,6 +926,7 @@ class ModelRunner:
                     temperatures,
                     top_ks=top_ks if top_ks is not None else None,
                     top_ps=top_ps if top_ps is not None else None,
+                    min_ps=min_ps if min_ps is not None else None,
                     repetition_penalties=None,  # Already applied above
                     generator=self._sampling_generator,
                     # input_ids=seq_input_ids,
@@ -772,6 +945,9 @@ class ModelRunner:
 
     @torch.inference_mode()
     def capture_cudagraph(self):
+        if self._get_runtime_device().type != "cuda":
+            self.enforce_eager = True
+            return
         config = self.config
         cache_key = (config.max_model_len, config.max_num_seqs)
         model_device = torch.device("cuda") if torch.cuda.is_available() else self._get_model_device()
@@ -796,10 +972,15 @@ class ModelRunner:
         slot_mapping = torch.zeros(max_bs, dtype=torch.int32, device=model_device)
         context_lens = torch.zeros(max_bs, dtype=torch.int32, device=model_device)
         block_tables = torch.zeros(max_bs, max_num_blocks, dtype=torch.int32, device=model_device)
-        outputs = torch.zeros(max_bs, hf_config.hidden_size, device=model_device)
-        self.graph_bs = [1, 2, 4, 8] + list(range(16, max_bs + 1, 16))
+        outputs = torch.zeros(max_bs, hf_config.hidden_size, device=model_device, dtype=self.dtype)
+        base_graph_bs = [1, 2, 4, 8]
+        self.graph_bs = [bs for bs in base_graph_bs if bs <= max_bs]
+        if max_bs > 8:
+            self.graph_bs.extend(range(16, max_bs + 1, 16))
+        if not self.graph_bs:
+            self.graph_bs = [max_bs]
         self.graphs = {}
-        self.graph_pool = None
+        self.graph_pool = self._graph_pool_seed
 
         for bs in reversed(self.graph_bs):
             graph = torch.cuda.CUDAGraph()

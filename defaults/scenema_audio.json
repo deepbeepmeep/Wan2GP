@@ -1,0 +1,23 @@
+{
+    "model": {
+        "name": "Scenema Audio",
+        "architecture": "scenema_audio",
+        "description": "Audio-only Scenema TTS/SFX model integrated through the LTX 2.3 stack.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/scenema-audio-transformer_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/scenema-audio-transformer_quanto_bf16_int8.safetensors"
+        ]
+    },
+    "prompt": "Speaker 1{voice=\"Confident adult man, skeptical and emphatic\", gender=\"male\", scene=\"a spirited debate beside a map\"}: [Pointing at the map with absolute confidence] Look at this map, it's a perfect circle with the North Pole right in the middle.\nSpeaker 2{voice=\"Patient adult woman, calm and logical\", gender=\"female\", scene=\"a spirited debate beside a map\"}: [Calmly correcting, measured and patient] That's just a projection, not how the world actually looks from space.\nSpeaker 1: [Frowning, challenging the answer] But you can't see the edge of the Earth, so how do you know it's round?\nSpeaker 2: [Keeping steady, explaining carefully] I've seen photos taken from airplanes and satellites that show the curvature clearly.\nSpeaker 1: [Waving that away, skeptical] Those are just pictures, they could be edited or taken from a low altitude.\nSpeaker 2: [A little firmer now, giving an example] Even if you're close to the ground, ships disappear hull-first over the horizon because of the curve.\nSpeaker 1: [Pausing, then offering a wild theory] Maybe there's a giant wall holding up the water so it doesn't fall off.\nSpeaker 2: [Almost laughing, incredulous] A wall taller than the tallest mountain? And what happens when the sun rises on the other side?\nSpeaker 1: [Doubling down, voice rising] The flat Earth model explains everything without needing a spinning globe.\nSpeaker 2: [Dry and logical, slightly frustrated] It requires more complex explanations for gravity and seasons, which don't fit together.\nSpeaker 1: [Triumphant, as if landing the final point] Science changes, but your evidence is always circular.",
+    "alt_prompt": "",
+    "audio_prompt_type": "",
+    "duration_seconds": 120,
+    "num_inference_steps": 8,
+    "guidance_scale": 1.0,
+    "custom_settings": {
+        "vc_steps": 25,
+        "vc_cfg_rate": 0.5,
+        "pace": 1.5
+    },
+    "multi_prompts_gen_type": "FG"
+}

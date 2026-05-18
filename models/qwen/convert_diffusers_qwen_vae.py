@@ -205,3 +205,99 @@ def convert_state_dict(state_dict: Mapping[str, torch.Tensor]) -> Dict[str, torc
         out[key] = value
 
     return out
+
+
+def convert_diffusers_state_dict(state_dict: Mapping[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    """Convert a diffusers-formatted Qwen/Wan VAE checkpoint to WanGP's native WanVAE key names."""
+    out: Dict[str, torch.Tensor] = {}
+    for key, value in state_dict.items():
+        if key == "quant_conv.weight":
+            out["conv1.weight"] = value
+            continue
+        if key == "quant_conv.bias":
+            out["conv1.bias"] = value
+            continue
+        if key == "post_quant_conv.weight":
+            out["conv2.weight"] = value
+            continue
+        if key == "post_quant_conv.bias":
+            out["conv2.bias"] = value
+            continue
+        if key == "encoder.conv_in.weight":
+            out["encoder.conv1.weight"] = value
+            continue
+        if key == "encoder.conv_in.bias":
+            out["encoder.conv1.bias"] = value
+            continue
+        if key == "decoder.conv_in.weight":
+            out["decoder.conv1.weight"] = value
+            continue
+        if key == "decoder.conv_in.bias":
+            out["decoder.conv1.bias"] = value
+            continue
+        if key == "encoder.norm_out.gamma":
+            out["encoder.head.0.gamma"] = value
+            continue
+        if key == "encoder.conv_out.weight":
+            out["encoder.head.2.weight"] = value
+            continue
+        if key == "encoder.conv_out.bias":
+            out["encoder.head.2.bias"] = value
+            continue
+        if key == "decoder.norm_out.gamma":
+            out["decoder.head.0.gamma"] = value
+            continue
+        if key == "decoder.conv_out.weight":
+            out["decoder.head.2.weight"] = value
+            continue
+        if key == "decoder.conv_out.bias":
+            out["decoder.head.2.bias"] = value
+            continue
+
+        new_key = key
+        for side in ("encoder", "decoder"):
+            new_key = new_key.replace(f"{side}.mid_block.resnets.0.norm1.gamma", f"{side}.middle.0.residual.0.gamma")
+            new_key = new_key.replace(f"{side}.mid_block.resnets.0.conv1.", f"{side}.middle.0.residual.2.")
+            new_key = new_key.replace(f"{side}.mid_block.resnets.0.norm2.gamma", f"{side}.middle.0.residual.3.gamma")
+            new_key = new_key.replace(f"{side}.mid_block.resnets.0.conv2.", f"{side}.middle.0.residual.6.")
+            new_key = new_key.replace(f"{side}.mid_block.attentions.0.norm.gamma", f"{side}.middle.1.norm.gamma")
+            new_key = new_key.replace(f"{side}.mid_block.attentions.0.to_qkv.", f"{side}.middle.1.to_qkv.")
+            new_key = new_key.replace(f"{side}.mid_block.attentions.0.proj.", f"{side}.middle.1.proj.")
+            new_key = new_key.replace(f"{side}.mid_block.resnets.1.norm1.gamma", f"{side}.middle.2.residual.0.gamma")
+            new_key = new_key.replace(f"{side}.mid_block.resnets.1.conv1.", f"{side}.middle.2.residual.2.")
+            new_key = new_key.replace(f"{side}.mid_block.resnets.1.norm2.gamma", f"{side}.middle.2.residual.3.gamma")
+            new_key = new_key.replace(f"{side}.mid_block.resnets.1.conv2.", f"{side}.middle.2.residual.6.")
+        if new_key != key:
+            out[new_key] = value
+            continue
+
+        if key.startswith("encoder.down_blocks."):
+            new_key = key.replace("encoder.down_blocks.", "encoder.downsamples.")
+            new_key = new_key.replace(".norm1.gamma", ".residual.0.gamma")
+            new_key = new_key.replace(".conv1.", ".residual.2.")
+            new_key = new_key.replace(".norm2.gamma", ".residual.3.gamma")
+            new_key = new_key.replace(".conv2.", ".residual.6.")
+            new_key = new_key.replace(".conv_shortcut.", ".shortcut.")
+            out[new_key] = value
+            continue
+
+        if key.startswith("decoder.up_blocks."):
+            parts = key.split(".")
+            if len(parts) >= 6 and parts[2].isdigit() and parts[3] == "resnets" and parts[4].isdigit():
+                block_idx = int(parts[2]) * 4 + int(parts[4])
+                new_key = ".".join(["decoder", "upsamples", str(block_idx), *parts[5:]])
+                new_key = new_key.replace(".norm1.gamma", ".residual.0.gamma")
+                new_key = new_key.replace(".conv1.", ".residual.2.")
+                new_key = new_key.replace(".norm2.gamma", ".residual.3.gamma")
+                new_key = new_key.replace(".conv2.", ".residual.6.")
+                new_key = new_key.replace(".conv_shortcut.", ".shortcut.")
+                out[new_key] = value
+                continue
+            if ".upsamplers.0." in key:
+                upsampler_idx = {"0": "3", "1": "7", "2": "11"}.get(parts[2])
+                if upsampler_idx is not None:
+                    out[key.replace(f"decoder.up_blocks.{parts[2]}.upsamplers.0", f"decoder.upsamples.{upsampler_idx}")] = value
+                    continue
+
+        out[key] = value
+    return out

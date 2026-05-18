@@ -6,6 +6,7 @@ from typing import Optional
 
 import torch
 
+from shared.mps import mps_device_or
 from shared.utils import files_locator as fl
 
 from .prompt_enhancers import TTS_MONOLOGUE_PROMPT, TTS_QWEN3_DIALOGUE_PROMPT
@@ -119,7 +120,7 @@ QWEN3_TTS_AUDIO_PROMPT_TYPE_SOURCES = {
     "selection": ["A", "AB"],
     "labels": {
         "A": "Voice cloning of 1 speaker",
-        "AB": "Voice cloning of 2 speakers",
+        "AB": "Voice cloning of 2 speakers (Speaker 1 and Speaker 2)",
     },
     "letters_filter": "AB",
     "default": "A",
@@ -275,7 +276,7 @@ def get_qwen3_model_def(base_model_type: str) -> dict:
             },
             "alt_prompt": {
                 "label": "Reference transcript(s) (optional, two-speaker: one per line)",
-                "placeholder": "Speaker 0 reference transcript\nSpeaker 1 reference transcript",
+                "placeholder": "Speaker 1 reference transcript\nSpeaker 2 reference transcript",
                 "lines": 3,
             },
             "pause_between_sentences": True,
@@ -286,8 +287,8 @@ def get_qwen3_model_def(base_model_type: str) -> dict:
             "custom_settings": [one.copy() for one in QWEN3_TTS_CUSTOM_SETTINGS],
             "text_prompt_enhancer_instructions1": TTS_QWEN3_DIALOGUE_PROMPT,
             "text_prompt_enhancer_max_tokens1": 512,
-            "audio_guide_label": "Speaker 0 reference voice",
-            "audio_guide2_label": "Speaker 1 reference voice",
+            "audio_guide_label": "Speaker 1 reference voice",
+            "audio_guide2_label": "Speaker 2 reference voice",
         }
     return common
 
@@ -386,7 +387,7 @@ class family_handler:
             model_weights_path=weights_path,
             base_model_type=base_model_type,
             ckpt_root=ckpt_root,
-            device=torch.device("cpu"),
+            device=mps_device_or(torch.device("cpu")),
             lm_decoder_engine=lm_decoder_engine,
         )
         if str(lm_decoder_engine).strip().lower() in ("cg", "cudagraph"):
@@ -466,7 +467,7 @@ class family_handler:
                     "negative_prompt": "",
                     "temperature": 0.9,
                     "top_k": 50,
-                    "multi_prompts_gen_type": 2,
+                    "multi_prompts_gen_type": "FG",
                 }
             )
             return
@@ -484,7 +485,7 @@ class family_handler:
                     "negative_prompt": "",
                     "temperature": 0.9,
                     "top_k": 50,
-                    "multi_prompts_gen_type": 2,
+                    "multi_prompts_gen_type": "FG",
                 }
             )
             return
@@ -503,7 +504,7 @@ class family_handler:
                     "negative_prompt": "",
                     "temperature": 0.9,
                     "top_k": 50,
-                    "multi_prompts_gen_type": 2,
+                    "multi_prompts_gen_type": "FG",
                 }
             )
 
@@ -529,25 +530,24 @@ class family_handler:
             if one_prompt is None or len(str(one_prompt).strip()) == 0:
                 return "Prompt text cannot be empty for Qwen3 Base voice clone."
             audio_prompt_type = str(inputs.get("audio_prompt_type", "A") or "A").upper()
-            if audio_prompt_type not in ("A", "AB"):
-                return "Unsupported audio prompt mode for Qwen3 Base. Use one speaker or two speakers."
             if inputs.get("audio_guide") is None:
-                return "Qwen3 Base requires Speaker 0 reference audio."
+                return "Qwen3 Base requires Speaker 1 reference audio."
             prompt_text = str(one_prompt)
             has_speaker_syntax = re.search(r"Speaker\s*\d+\s*:", prompt_text, flags=re.IGNORECASE) is not None
-            if audio_prompt_type == "AB":
+            if "B" in audio_prompt_type:
                 if inputs.get("audio_guide2") is None:
-                    return "Two-speaker mode requires Speaker 1 reference audio."
+                    return "Two-speaker mode requires Speaker 2 reference audio."
                 speaker_matches = list(re.finditer(r"Speaker\s*(\d+)\s*:", prompt_text, flags=re.IGNORECASE))
                 if not speaker_matches:
-                    return "Two-speaker mode requires prompt lines using Speaker 0: and Speaker 1:."
-                invalid_ids = sorted({m.group(1) for m in speaker_matches if m.group(1) not in ("0", "1")})
-                if invalid_ids:
-                    return "Only Speaker 0: and Speaker 1: are supported in two-speaker mode."
-                has_speaker_0 = any(m.group(1) == "0" for m in speaker_matches)
-                has_speaker_1 = any(m.group(1) == "1" for m in speaker_matches)
-                if not has_speaker_0 or not has_speaker_1:
-                    return "Two-speaker mode requires prompt lines using both Speaker 0: and Speaker 1:."
+                    return (
+                        "Two-speaker mode requires prompt lines using Speaker 1: and Speaker 2: "
+                    )
+                speaker_ids = sorted({int(m.group(1)) for m in speaker_matches})
+                if len(speaker_ids) != 2:
+                    return (
+                        "Two-speaker mode requires exactly two speaker IDs. Use Speaker 1: and Speaker 2:. "
+                        "For headless settings, keep 'multi_prompts_gen_type' = 'FG'."
+                    )
             elif has_speaker_syntax:
                 return "Speaker-tag dialogue requires two-speaker mode (set audio prompt mode to Dialogue)."
             return None

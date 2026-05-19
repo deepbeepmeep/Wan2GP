@@ -36,7 +36,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 ### 19th of May 2026: WanGP v11.70, I can hear Voices
 It has never been easier to do voice cloning directly in video models:
 
-- **Voice Cloning on any Video Model**: you generated a great *LTX2/Ovi/Multitalk/...* and are sad the model didnt support natively *Voice Cloning*? Just use the new *SeedVC Audio Postprocessing* to replace up to two voice of your choice, it works magically with any video model ! You will find this feature in the *Audio* advanced tab or as *Late Posprocessing for Audio or Video*.  WanGP exclusive two voices feature will detect who is talking and will make seamlessly the voices replacements at the right audio locations.
+- **Voice Cloning with any Video Model**: you generated a great *LTX2/Ovi/Multitalk/...* and are sad the model didnt support natively *Voice Cloning*? Just use the new *SeedVC Audio Postprocessing* to replace up to two voices of your choice, it works magically with any video model ! You will find this feature in the *Audio* advanced tab or as *Late Posprocessing for Audio or Video*.  WanGP exclusive *Two Voices* feature will detect who is talking and will make seamlessly the voices replacements at the right audio locations.
 
 - **DramaBox**: like *ScenemeAI* that *DramBox* uses LTX2.3 world knowledge to generate lively audio outputs. DramaBox is even more expressive (but also slower) than ScenemeAI. Of course as usual you get an exclusive Dialogue mode available out of the box.
 

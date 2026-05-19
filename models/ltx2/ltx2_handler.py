@@ -242,7 +242,7 @@ class family_handler:
         pipeline_kind = "distilled" if _is_distilled_model(model_def) else "two_stage"
 
         distilled = pipeline_kind == "distilled"
-        audio_prompt_selection = ["", "A", "K", "2"] if distilled else ["", "A", "A1OF"]
+        audio_prompt_selection = ["", "A", "K", "2", "A1OF"] if distilled else ["", "A", "A1OF"]
         if editanything_ref and not distilled:
             audio_prompt_selection = ["", "A", "K"]
         audio_prompt_labels = {

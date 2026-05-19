@@ -997,8 +997,6 @@ class LTX2:
             NAG_scale = 1.0
             audio_prompt_type = ""
             input_waveform = None
-        if distill:
-            audio_prompt_type = audio_prompt_type.replace("1", "")
         audio_from_control_video = distill and "2" in audio_prompt_type
         image_start = _coerce_image_list(image_start)
         image_end = _coerce_image_list(image_end)

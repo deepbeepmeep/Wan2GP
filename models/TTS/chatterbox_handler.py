@@ -1,5 +1,5 @@
 import os
-
+import torch
 import gradio as gr
 
 from shared.mps import mps_device_or
@@ -99,16 +99,14 @@ def _get_chatterbox_model_def():
 def _get_chatterbox_download_def():
     mandatory_files = [
         "ve.safetensors",
-        "t3_mtl23ls_v2.safetensors",
         "s3gen.pt",
         "grapheme_mtl_merged_expanded_v1.json",
         "conds.pt",
         "Cangjie5_TC.json",
     ]
     return {
-        "repoId": "ResembleAI/chatterbox",
-        "sourceFolderList": [""],
-        "targetFolderList": ["chatterbox"],
+        "repoId": "DeepBeepMeep/TTS",
+        "sourceFolderList": ["chatterbox"],
         "fileList": [mandatory_files],
     }
 

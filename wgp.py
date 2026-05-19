@@ -133,7 +133,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.66"
+WanGP_version = "11.70"
 settings_version = 2.60
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -943,7 +943,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
     if "K" in audio_prompt_type and "V" not in video_prompt_type:
         return err("You must enable a Control Video to use the Control Video Audio Track as an audio prompt")
 
-    if ("B" in audio_prompt_type or "X" in audio_prompt_type) and not model_def.get("one_speaker_only", False):
+    if model_def.get("multitalk_class", False) and ("B" in audio_prompt_type or "X" in audio_prompt_type) and not model_def.get("one_speaker_only", False):
         from models.wan.multitalk.multitalk import parse_speakers_locations
         speakers_bboxes, error = parse_speakers_locations(speakers_locations)
         if len(error) > 0:
@@ -1040,6 +1040,8 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
         image_refs = clean_image_list(image_refs)
         if image_refs == None :
             return err("A Reference Image should be an Image")
+        if model_def.get("one_image_ref_only", False) and not any_letters(video_prompt_type, "KF") and len(image_refs) > 1:
+            return err("Only one Reference Image is supported by this model mode")
     else:
         image_refs = None
 
@@ -3301,7 +3303,7 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
     if not (any_source and file_type==0 or any_module_source and file_type==1):
         local_model_filename = fl.get_local_model_filename(model_filename, extra_paths= force_path)
         if local_model_filename is None and len(model_filename) > 0:
-            local_model_filename = fl.get_smart_download_location(os.path.basename(model_filename), force_path= force_path)
+            local_model_filename = fl.get_smart_download_location(model_filename, force_path= force_path)
             url = model_filename
 
             if not url.startswith("http"):
@@ -6404,7 +6406,7 @@ def generate_video(
     fantasy = base_model_type in ["fantasy"]
     multitalk = model_def.get("multitalk_class", False)
 
-    if "B" in audio_prompt_type or "X" in audio_prompt_type:
+    if multitalk and ("B" in audio_prompt_type or "X" in audio_prompt_type):
         from models.wan.multitalk.multitalk import parse_speakers_locations
         speakers_bboxes, error = parse_speakers_locations(speakers_locations)
     else:
@@ -8728,7 +8730,10 @@ def image_to_ref_image_add(state, input_file_list, choice, target, target_name):
     if len(file_list) == 0 or choice == None or choice < 0 or choice > len(file_list): return gr.update()
     model_type = get_state_model_type(state)
     model_def = get_model_def(model_type)    
-    if model_def.get("one_image_ref_needed", False):
+    ui_settings = get_current_model_settings(state)
+    video_prompt_type = ui_settings.get("video_prompt_type", "") or ""
+    one_image_ref_only = model_def.get("one_image_ref_only", False) and "I" in video_prompt_type and not any_letters(video_prompt_type, "KF")
+    if model_def.get("one_image_ref_needed", False) or one_image_ref_only:
         gr.Info(f"Selected Image was set to {target_name}")
         target =[file_list[choice]]
     else:
@@ -10242,8 +10247,8 @@ def update_value(prompt_type_value, sub_value, letter_filter):
 def get_default_value(choices, current_value, default_value = None):
     for label, value in choices:
         if value == current_value:
-            return current_value
-    return default_value
+            return current_value        
+    return choices[0][1] if default_value is None else default_value
 
 def download_lora(state, lora_url, progress=gr.Progress(track_tqdm=True),):
     if lora_url is None or not lora_url.startswith("http"):
@@ -10668,9 +10673,12 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             mask_preprocessing_choices.append( (process_label, process_type) )
 
                         video_prompt_type_video_mask_label = mask_preprocessing.get("label", "Area Processed")
+                        mask_letter_filter = "XYZWNA"
+                        mask_choices_value = get_default_value(mask_preprocessing_choices, filter_letters(video_prompt_type_value, mask_letter_filter, mask_preprocessing.get("default", "")) )
+                        video_prompt_type_value = update_value(video_prompt_type_value, mask_choices_value, mask_letter_filter)
                         video_prompt_type_video_mask = gr.Dropdown(
                             mask_preprocessing_choices,
-                            value=filter_letters(video_prompt_type_value, "XYZWNA", mask_preprocessing.get("default", "")),
+                            value= mask_choices_value,
                             label= video_prompt_type_video_mask_label , scale = 1, visible= dropdown_selectable and mask_selector_visible,
                             show_label= True,
                         )
@@ -10691,9 +10699,13 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         )
                     else:
                         any_reference_image = True
+                        images_ref_letter_filter = image_ref_choices["letters_filter"]
+                        images_ref_value = get_default_value(image_ref_choices["choices"], filter_letters(video_prompt_type_value, images_ref_letter_filter) )
+                        video_prompt_type_value = update_value(video_prompt_type_value, images_ref_value , images_ref_letter_filter)                        
+
                         video_prompt_type_image_refs = gr.Dropdown(
                             choices= image_ref_choices["choices"],
-                            value=filter_letters(video_prompt_type_value, image_ref_choices["letters_filter"]),
+                            value= images_ref_value,
                             visible = guide_selection_context_visible and image_ref_selector_visible,
                             label=image_ref_choices.get("label", "Inject Reference Images"), show_label= image_ref_choices.get("show_label", True), scale = 1
                         )
@@ -10777,7 +10789,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 masking_strength = setting_slider("masking_strength", visible=(mask_strength_always_enabled or "G" in video_prompt_type_value) and "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value)
                 mask_expand = setting_slider("mask_expand", visible="V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value)
 
-                image_refs_single_image_mode = model_def.get("one_image_ref_needed", False)
+                image_refs_single_image_mode = model_def.get("one_image_ref_needed", False) or ("I" in video_prompt_type_value and not any_letters(video_prompt_type_value, "KF") and model_def.get("one_image_ref_only", False))
                 image_refs_label = "Start Image" if hunyuan_video_avatar else ("Reference Image" if image_refs_single_image_mode else "Reference Images")  + (" (each Image will be associated to a Sliding Window)" if infinitetalk else "")
                 image_refs_row, image_refs, image_refs_extra = get_image_gallery(label= image_refs_label, value = ui_defaults.get("image_refs", None), visible= "I" in video_prompt_type_value, single_image_mode=image_refs_single_image_mode)
 
@@ -11540,10 +11552,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             label=f"Override Frames Per Second (model default={fps} fps)"
                         )
 
-
+                    profile_type = get_output_type_for_model(base_model_type, image_mode_value)
+                    profile_type = profile_type[0].upper() + profile_type[1:]
                     gr.Markdown("<B>You can set a more agressive Memory Profile if you generate only Short Videos or Images<B>")
                     override_profile = gr.Dropdown(
-                        choices=[("Default Memory Profile", -1)] + memory_profile_choices,
+                        choices=[(f"Default {profile_type} Memory Profile", -1)] + memory_profile_choices,
                         value=ui_get("override_profile"),
                         label=f"Override Memory Profile"
                     )

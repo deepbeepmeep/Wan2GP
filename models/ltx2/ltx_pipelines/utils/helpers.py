@@ -917,6 +917,8 @@ def modality_from_latent_state(
     nag: dict | None = None,
     step_index: int | None = None,
     sigma_schedule: torch.Tensor | None = None,
+    ref_context: torch.Tensor | None = None,
+    ref_adaln: torch.Tensor | None = None,
 ) -> Modality:
     """Create a Modality from a latent state.
     Constructs a Modality object with the latent state's data, timesteps derived
@@ -941,6 +943,8 @@ def modality_from_latent_state(
         timesteps=timesteps,
         positions=state.positions,
         context=context,
+        ref_context=ref_context,
+        ref_adaln=ref_adaln,
         nag=nag,
         context_mask=None,
         attention_mask=state.attention_mask,
@@ -1186,6 +1190,8 @@ def simple_denoising_func(
     audio_identity_guidance_scale: float = 0.0,
     manage_lora_step: bool = True,
     skip_audio_to_video: bool = False,
+    ref_context: torch.Tensor | None = None,
+    ref_adaln: torch.Tensor | None = None,
 ) -> DenoisingFunc:
     prepared_video_context = prepared_audio_context = None
     prepared_audio_context_n = prepared_audio_context_id = None
@@ -1216,7 +1222,14 @@ def simple_denoising_func(
         _prewarm(video_state, audio_state, sigmas)
         sigma = sigmas[step_index]
         pos_video = modality_from_latent_state(
-            video_state, prepared_video_context, sigma, nag=video_nag, step_index=step_index, sigma_schedule=sigmas
+            video_state,
+            prepared_video_context,
+            sigma,
+            nag=video_nag,
+            step_index=step_index,
+            sigma_schedule=sigmas,
+            ref_context=ref_context,
+            ref_adaln=ref_adaln,
         )
         pos_audio = None
         if audio_state is not None and prepared_audio_context is not None:
@@ -1361,6 +1374,8 @@ def guider_denoising_func(
     perturbation_start: float = 0.0,
     perturbation_end: float = 1.0,
     audio_identity_guidance_scale: float = 0.0,
+    ref_context: torch.Tensor | None = None,
+    ref_adaln: torch.Tensor | None = None,
 ) -> DenoisingFunc:
     perturb_all_layers = perturbation_layers is None
     perturbation_layers_norm = _normalize_perturbation_layers(perturbation_layers)
@@ -1387,7 +1402,13 @@ def guider_denoising_func(
         _prewarm(video_state, audio_state, sigmas)
         sigma = sigmas[step_index]
         pos_video = modality_from_latent_state(
-            video_state, prepared_v_context_p, sigma, step_index=step_index, sigma_schedule=sigmas
+            video_state,
+            prepared_v_context_p,
+            sigma,
+            step_index=step_index,
+            sigma_schedule=sigmas,
+            ref_context=ref_context,
+            ref_adaln=ref_adaln,
         )
         pos_audio = modality_from_latent_state(
             audio_state, prepared_a_context_p, sigma, step_index=step_index, sigma_schedule=sigmas
@@ -1598,6 +1619,8 @@ def multi_modal_guider_denoising_func(
     audio_identity_guidance_scale: float = 0.0,
     last_denoised_video: torch.Tensor | None = None,
     last_denoised_audio: torch.Tensor | None = None,
+    ref_context: torch.Tensor | None = None,
+    ref_adaln: torch.Tensor | None = None,
 ) -> DenoisingFunc:
     prepared_v_context_p = prepared_v_context_n = None
     prepared_a_context_p = prepared_a_context_n = prepared_a_context_id = None
@@ -1634,6 +1657,8 @@ def multi_modal_guider_denoising_func(
             enabled=not skip_video,
             step_index=step_index,
             sigma_schedule=sigmas,
+            ref_context=ref_context,
+            ref_adaln=ref_adaln,
         )
         pos_audio = modality_from_latent_state(
             audio_state,

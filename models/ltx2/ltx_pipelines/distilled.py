@@ -41,6 +41,7 @@ from .utils.helpers import (
     video_conditionings_by_control_video,
 )
 from .utils.types import PipelineComponents
+from ..editanything import build_editanything_reference_conditioning
 from shared.utils.loras_mutipliers import update_loras_slists
 from shared.utils.self_refiner import create_self_refiner_handler, normalize_self_refiner_plan
 from shared.utils.text_encoder_cache import TextEncoderCache
@@ -218,6 +219,7 @@ class DistilledPipeline:
         self_refiner_f_uncertainty: float = 0.1,
         self_refiner_certain_percentage: float = 0.999,
         self_refiner_max_plans: int = 1,
+        editanything_ref_images=None,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         assert_resolution(height=height, width=width, is_two_stage=True)
         alt_guidance_scale = 1.0
@@ -336,9 +338,26 @@ class DistilledPipeline:
         stage_1_pass_no = 0 if skip_stage_2 else 1
         if interrupt_check is not None and interrupt_check():
             return None, None
+        stage_1_output_shape = VideoPixelShape(
+            batch=1,
+            frames=num_frames,
+            width=width if skip_stage_2 else width // 2,
+            height=height if skip_stage_2 else height // 2,
+            fps=frame_rate,
+        )
         video_encoder = self._get_model("video_encoder")
         transformer = _TransformerBenchWrapper(self._get_model("transformer"), enabled=bench_transformer)
         bind_interrupt_check(transformer, interrupt_check)
+        stage_1_ref_conditionings, stage_1_ref_context, stage_1_ref_adaln = build_editanything_reference_conditioning(
+            transformer,
+            editanything_ref_images,
+            height=stage_1_output_shape.height,
+            width=stage_1_output_shape.width,
+            video_encoder=video_encoder,
+            dtype=dtype,
+            device=self.device,
+            tiling_config=tiling_config,
+        )
         # DISTILLED_SIGMA_VALUES = [0.421875, 0]
         stage_1_sigmas = torch.Tensor(DISTILLED_SIGMA_VALUES).to(self.device)
         pass_no = stage_1_pass_no
@@ -379,6 +398,8 @@ class DistilledPipeline:
                     audio_guidance_scale=audio_cfg_guidance_scale,
                     audio_identity_guidance_scale=audio_identity_guidance_scale,
                     skip_audio_to_video=frozen_video_conditioning is not None,
+                    ref_context=stage_1_ref_context,
+                    ref_adaln=stage_1_ref_adaln,
                 ),
                 mask_context=mask_context,
                 interrupt_check=interrupt_check,
@@ -391,13 +412,6 @@ class DistilledPipeline:
                 self_refiner_generator=generator,
             )
 
-        stage_1_output_shape = VideoPixelShape(
-            batch=1,
-            frames=num_frames,
-            width=width if skip_stage_2 else width // 2,
-            height=height if skip_stage_2 else height // 2,
-            fps=frame_rate,
-        )
         if interrupt_check is not None and interrupt_check():
             return None, None
         if frozen_video_conditioning is not None:
@@ -421,6 +435,7 @@ class DistilledPipeline:
                 device=self.device,
                 tiling_config=tiling_config,
             )
+        stage_1_conditionings += stage_1_ref_conditionings
         if frozen_video_conditioning is None and guiding_images:
             stage_1_conditionings += image_conditionings_by_adding_guiding_latent(
                 images=guiding_images,
@@ -532,6 +547,8 @@ class DistilledPipeline:
         cleanup_memory()
 
         pass_no = 2
+        stage_2_ref_context = stage_2_ref_adaln = None
+        stage_2_ref_conditionings = []
         if loras_slists is not None:
             stage_2_steps = len(stage_2_sigmas) - 1
             update_loras_slists(
@@ -565,6 +582,8 @@ class DistilledPipeline:
                     audio_nag=audio_NAG,
                     alt_guidance_scale=alt_guidance_scale,
                     skip_audio_to_video=frozen_video_conditioning is not None,
+                    ref_context=stage_2_ref_context,
+                    ref_adaln=stage_2_ref_adaln,
                 ),
                 mask_context=mask_context,
                 interrupt_check=interrupt_check,
@@ -583,6 +602,16 @@ class DistilledPipeline:
             width=width,
             height=height,
             fps=frame_rate,
+        )
+        stage_2_ref_conditionings, stage_2_ref_context, stage_2_ref_adaln = build_editanything_reference_conditioning(
+            transformer,
+            editanything_ref_images,
+            height=stage_2_output_shape.height,
+            width=stage_2_output_shape.width,
+            video_encoder=video_encoder,
+            dtype=dtype,
+            device=self.device,
+            tiling_config=tiling_config,
         )
         if interrupt_check is not None and interrupt_check():
             return None, None
@@ -607,6 +636,7 @@ class DistilledPipeline:
                 device=self.device,
                 tiling_config=tiling_config,
             )
+        stage_2_conditionings += stage_2_ref_conditionings
         if frozen_video_conditioning is None and guiding_images_stage2:
             stage_2_conditionings += image_conditionings_by_adding_guiding_latent(
                 images=guiding_images_stage2,

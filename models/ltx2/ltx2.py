@@ -70,6 +70,10 @@ def _normalize_config(config_value):
     return {}
 
 
+def _is_editanything_model(model_def) -> bool:
+    return bool((model_def or {}).get("ltx2_edit_anything", False))
+
+
 def _load_config_from_checkpoint(path, fallback_config_path: str | None = None):
     from mmgp import quant_router
 
@@ -356,6 +360,38 @@ def _coerce_image_list(image_value):
     if isinstance(image_value, list):
         return image_value[0] if image_value else None
     return image_value
+
+
+def _duplicate_ref_image_as_video(ref_image, frame_count: int = 9):
+    if ref_image is None:
+        return None
+    frame_count = max(1, int(frame_count))
+    if isinstance(ref_image, (list, tuple)):
+        ref_image = ref_image[0] if ref_image else None
+        if ref_image is None:
+            return None
+    if torch.is_tensor(ref_image):
+        image = ref_image.detach()
+        if image.ndim == 3:
+            if image.shape[0] in (1, 3, 4):
+                return image.unsqueeze(1).repeat(1, frame_count, 1, 1)
+            return image.unsqueeze(0).repeat(frame_count, 1, 1, 1)
+        if image.ndim == 4:
+            if image.shape[0] in (1, 3, 4):
+                return image[:, :1].repeat(1, frame_count, 1, 1)
+            if image.shape[-1] in (1, 3, 4):
+                return image[:1].repeat(frame_count, 1, 1, 1)
+        return image
+
+    import numpy as np
+    from PIL import Image
+
+    if isinstance(ref_image, str):
+        with Image.open(ref_image) as image:
+            frame = np.array(image.convert("RGB"))
+    else:
+        frame = np.array(ref_image)[..., :3]
+    return np.repeat(frame[None, ...], frame_count, axis=0)
 
 
 def _to_latent_index(frame_idx: int, stride: int) -> int:
@@ -702,6 +738,11 @@ class LTX2:
         with init_empty_weights():
             velocity_model = LTXModelConfigurator.from_config(base_config)
         velocity_model = _load_component(velocity_model, transformer_path, transformer_sd_ops, ignore_unused_weights=True)
+        transformer_modules = component_paths.get("transformer_modules") if component_paths else None
+        if transformer_modules:
+            from .editanything import install_editanything_modules
+
+            install_editanything_modules(velocity_model, transformer_modules, self.model_def)
         transformer = X0Model(velocity_model)
         transformer.eval().requires_grad_(False)
         VAE_URLs = self.model_def.get("VAE_URLs", None)
@@ -926,6 +967,8 @@ class LTX2:
         loras_slists=None,
         loras_selected=None,
         text_connectors=None,
+        input_ref_images=None,
+        input_ref_masks=None,
         input_waveform=None,
         input_waveform_sample_rate=None,
         audio_scale: float | None = None,
@@ -946,6 +989,7 @@ class LTX2:
             return None
 
         distill = self.model_def.get("ltx2_pipeline", "two_stage") == "distilled"
+        editanything = _is_editanything_model(self.model_def)
         hdr_enabled = distill and self.base_model_type == "ltx2_22B" and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type
         input_video_is_hdr = bool(kwargs.get("input_video_is_hdr", False))
         hdr_scene_context = self._load_hdr_scene_context(kwargs.get("lora_dir")) if hdr_enabled else None
@@ -1074,6 +1118,14 @@ class LTX2:
                             "start_frame": control_start_frame,
                         }
 
+        if not editanything and "I" in video_prompt_type and "F" not in video_prompt_type and "K" not in video_prompt_type and input_ref_images is not None:
+            ref_frame_count = self.model_def.get("ltx2_ic_lora_ref_video_frames", 1)
+            ref_video = _duplicate_ref_image_as_video(input_ref_images, ref_frame_count)
+            if ref_video is not None:
+                if video_conditioning is None:
+                    video_conditioning = []
+                video_conditioning.append((ref_video, 0, control_strength))
+
         latent_conditioning_stage2 = None
 
         images = []
@@ -1118,6 +1170,7 @@ class LTX2:
         tiling_config = _build_tiling_config(VAE_tile_size, fps)
         interrupt_check = lambda: self._interrupt
         text_connectors = text_connectors or getattr(self, "_text_connectors", None)
+        editanything_ref_images = input_ref_images if editanything else None
 
         audio_conditionings = None
         audio_conditionings_stage2 = None
@@ -1231,7 +1284,7 @@ class LTX2:
         video_conditioning_stage2 = None
         negative_prompt = n_prompt if n_prompt else DEFAULT_NEGATIVE_PROMPT
         skip_stage_2 = guide_phases <= 1
-        phase2_ic_lora = phase2_ic_lora_name(loras_selected, loras_slists) if video_conditioning else None
+        phase2_ic_lora = phase2_ic_lora_name(loras_selected, loras_slists, force_phase2_control=editanything, force_name="EditAnything") if video_conditioning else None
         if video_conditioning and phase2_ic_lora is not None:
             video_conditioning_stage2 = video_conditioning
         if audio_cfg_scale is None:
@@ -1291,6 +1344,7 @@ class LTX2:
                 self_refiner_f_uncertainty=self_refiner_f_uncertainty,
                 self_refiner_certain_percentage=self_refiner_certain_percentage,
                 self_refiner_max_plans=self_refiner_max_plans,
+                editanything_ref_images=editanything_ref_images,
             )
         else:
             distilled_kwargs = {}
@@ -1345,6 +1399,7 @@ class LTX2:
                 self_refiner_f_uncertainty=self_refiner_f_uncertainty,
                 self_refiner_certain_percentage=self_refiner_certain_percentage,
                 self_refiner_max_plans=self_refiner_max_plans,
+                editanything_ref_images=editanything_ref_images,
                 **distilled_kwargs,
             )
 

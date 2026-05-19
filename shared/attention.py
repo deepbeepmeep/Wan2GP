@@ -9,13 +9,7 @@ from importlib.metadata import version
 
 _is_mps = sys.platform == 'darwin' and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
 
-# MPS compatibility: torch.cuda.get_device_capability is patched by device_patch.py
-# but in case this module is imported before the patch, handle it gracefully
-try:
-    major, minor = torch.cuda.get_device_capability(None)
-except Exception:
-    # Fallback for MPS: assume modern architecture
-    major, minor = 11, 0
+major, minor = torch.cuda.get_device_capability(None)
 bfloat16_supported =  major >= 8 
 
 try:

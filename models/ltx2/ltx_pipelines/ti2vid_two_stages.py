@@ -41,6 +41,7 @@ from .utils.helpers import (
     video_conditionings_by_control_video,
 )
 from .utils.types import PipelineComponents
+from ..editanything import build_editanything_reference_conditioning
 from shared.utils.loras_mutipliers import update_loras_slists
 from shared.utils.self_refiner import create_self_refiner_handler, normalize_self_refiner_plan
 from shared.utils.text_encoder_cache import TextEncoderCache
@@ -167,6 +168,7 @@ class TI2VidTwoStagesPipeline:
         self_refiner_f_uncertainty: float = 0.1,
         self_refiner_certain_percentage: float = 0.999,
         self_refiner_max_plans: int = 1,
+        editanything_ref_images=None,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         assert_resolution(height=height, width=width, is_two_stage=True)
 
@@ -272,6 +274,16 @@ class TI2VidTwoStagesPipeline:
         video_encoder = self._get_stage_model(1, "video_encoder")
         transformer = self._get_stage_model(1, "transformer")
         bind_interrupt_check(transformer, interrupt_check)
+        stage_1_ref_conditionings, stage_1_ref_context, stage_1_ref_adaln = build_editanything_reference_conditioning(
+            transformer,
+            editanything_ref_images,
+            height=stage_1_output_shape.height,
+            width=stage_1_output_shape.width,
+            video_encoder=video_encoder,
+            dtype=dtype,
+            device=self.device,
+            tiling_config=tiling_config,
+        )
         if use_hq_sampler:
             empty_latent = torch.empty(
                 VideoLatentShape.from_pixel_shape(
@@ -337,6 +349,8 @@ class TI2VidTwoStagesPipeline:
                         a_context_p=a_context_p,
                         transformer=transformer,  # noqa: F821
                         audio_identity_guidance_scale=audio_identity_guidance_scale,
+                        ref_context=stage_1_ref_context,
+                        ref_adaln=stage_1_ref_adaln,
                     ),
                     noise_seed=seed,
                     mask_context=mask_context,
@@ -366,6 +380,8 @@ class TI2VidTwoStagesPipeline:
                     perturbation_start=perturbation_start,
                     perturbation_end=perturbation_end,
                     audio_identity_guidance_scale=audio_identity_guidance_scale,
+                    ref_context=stage_1_ref_context,
+                    ref_adaln=stage_1_ref_adaln,
                 ),
                 mask_context=mask_context,
                 interrupt_check=interrupt_check,
@@ -388,6 +404,7 @@ class TI2VidTwoStagesPipeline:
             device=self.device,
             tiling_config=tiling_config,
         )
+        stage_1_conditionings += stage_1_ref_conditionings
         if guiding_images:
             stage_1_conditionings += image_conditionings_by_adding_guiding_latent(
                 images=guiding_images,
@@ -483,6 +500,8 @@ class TI2VidTwoStagesPipeline:
 
         transformer = self._get_stage_model(2, "transformer")
         bind_interrupt_check(transformer, interrupt_check)
+        stage_2_ref_context = stage_2_ref_adaln = None
+        stage_2_ref_conditionings = []
         distilled_sigmas = torch.Tensor(STAGE_2_DISTILLED_SIGMA_VALUES).to(self.device)
         if loras_slists is not None:
             stage_2_steps = len(distilled_sigmas) - 1
@@ -511,6 +530,8 @@ class TI2VidTwoStagesPipeline:
                 transformer=transformer,  # noqa: F821
                 alt_guidance_scale=1.0,
                 manage_lora_step=not use_hq_sampler,
+                ref_context=stage_2_ref_context,
+                ref_adaln=stage_2_ref_adaln,
             )
             if use_hq_sampler:
                 return res2s_audio_video_denoising_loop(
@@ -545,6 +566,16 @@ class TI2VidTwoStagesPipeline:
             )
 
         stage_2_output_shape = VideoPixelShape(batch=1, frames=num_frames, width=width, height=height, fps=frame_rate)
+        stage_2_ref_conditionings, stage_2_ref_context, stage_2_ref_adaln = build_editanything_reference_conditioning(
+            transformer,
+            editanything_ref_images,
+            height=stage_2_output_shape.height,
+            width=stage_2_output_shape.width,
+            video_encoder=video_encoder,
+            dtype=dtype,
+            device=self.device,
+            tiling_config=tiling_config,
+        )
         if interrupt_check is not None and interrupt_check():
             return None, None
         stage_2_images = images if images_stage2 is None else images_stage2
@@ -557,6 +588,7 @@ class TI2VidTwoStagesPipeline:
             device=self.device,
             tiling_config=tiling_config,
         )
+        stage_2_conditionings += stage_2_ref_conditionings
         if guiding_images_stage2:
             stage_2_conditionings += image_conditionings_by_adding_guiding_latent(
                 images=guiding_images_stage2,

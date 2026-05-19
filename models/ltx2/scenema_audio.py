@@ -752,7 +752,7 @@ def _find_silence_boundary(audio: np.ndarray, sample_rate: int, center_sample: i
     return center_sample
 
 
-def _trim_leading_extra_words(alignment_whisper: torch.nn.Module, audio_np: np.ndarray, sample_rate: int, expected_text: str, language: str, debug_prompt: bool = False) -> np.ndarray:
+def _trim_leading_extra_words(alignment_whisper: torch.nn.Module, audio_np: np.ndarray, sample_rate: int, expected_text: str, language: str, debug_prompt: bool = False, label: str = "Scenema Audio") -> np.ndarray:
     expected_words = _normalize_alignment_words(expected_text)
     if not expected_words:
         return audio_np
@@ -774,14 +774,14 @@ def _trim_leading_extra_words(alignment_whisper: torch.nn.Module, audio_np: np.n
         return audio_np
     if debug_prompt:
         removed_words = " ".join(word["word"] for word in transcribed[:leading_insertions])
-        print(f"[Scenema Audio] Trimmed leading extra words ({trim_end / sample_rate:.2f}s): {removed_words}")
+        print(f"[{label}] Trimmed leading extra words ({trim_end / sample_rate:.2f}s): {removed_words}")
     return audio_np[trim_end:]
 
 
-def _trim_leading_extra_words_tensor(alignment_whisper: torch.nn.Module, audio: torch.Tensor, sample_rate: int, expected_text: str, language: str, debug_prompt: bool = False) -> torch.Tensor:
+def _trim_leading_extra_words_tensor(alignment_whisper: torch.nn.Module, audio: torch.Tensor, sample_rate: int, expected_text: str, language: str, debug_prompt: bool = False, label: str = "Scenema Audio") -> torch.Tensor:
     original_device = audio.device
     original_dtype = audio.dtype
-    trimmed = _trim_leading_extra_words(alignment_whisper, _audio_tensor_to_numpy(audio), sample_rate, expected_text, language, debug_prompt=debug_prompt)
+    trimmed = _trim_leading_extra_words(alignment_whisper, _audio_tensor_to_numpy(audio), sample_rate, expected_text, language, debug_prompt=debug_prompt, label=label)
     return _numpy_to_audio_tensor(trimmed).to(device=original_device, dtype=original_dtype)
 
 

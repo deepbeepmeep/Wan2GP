@@ -281,6 +281,16 @@ class BasicAVTransformerBlock(torch.nn.Module):
             )
             vx.add_(attn_out)
             attn_out = None
+            ref_context = getattr(video, "ref_context", None)
+            if ref_context is not None and hasattr(self, "ref_attn"):
+                ref_start_block = int(getattr(self, "editanything_ref_start_block", 12))
+                ref_end_block = int(getattr(self, "editanything_ref_end_block", 35))
+                if ref_start_block <= self.idx <= ref_end_block:
+                    ref_context_scale = float(getattr(self, "editanything_ref_context_scale", 0.01))
+                    if ref_context_scale != 0:
+                        attn_out = self.ref_attn([rms_norm(vx, eps=self.norm_eps)], context_list=[ref_context])
+                        vx.add_(attn_out, alpha=ref_context_scale)
+                        attn_out = None
             del vshift_msa, vscale_msa, vgate_msa
 
         if run_ax:

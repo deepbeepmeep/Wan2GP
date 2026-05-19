@@ -32,6 +32,7 @@ class TransformerArgs:
     nag: dict | None = None
     prompt_timestep: torch.Tensor | None = None
     self_attention_mask: torch.Tensor | None = None
+    ref_context: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -459,6 +460,11 @@ class TransformerArgsPreprocessor:
             timestep, embedded_timestep = self._prepare_timestep(
                 modality.timesteps, self.adaln, x.shape[0], latent_dtype, frame_indices=modality.frame_indices
             )
+        if modality.ref_adaln is not None:
+            ref_adaln = modality.ref_adaln.to(device=timestep.device, dtype=timestep.dtype)
+            if ref_adaln.ndim == 2:
+                ref_adaln = ref_adaln.unsqueeze(1)
+            timestep = timestep + ref_adaln
         prompt_timestep = None
         if self.prompt_adaln is not None:
             prompt_timestep, _ = self._prepare_timestep_from_base(
@@ -498,6 +504,7 @@ class TransformerArgsPreprocessor:
             nag=modality.nag,
             prompt_timestep=prompt_timestep,
             self_attention_mask=self_attention_mask,
+            ref_context=None if modality.ref_context is None else modality.ref_context.to(device=x.device, dtype=latent_dtype),
         )
 
 
@@ -608,6 +615,7 @@ class MultiModalTransformerArgsPreprocessor:
             nag=transformer_args.nag,
             prompt_timestep=transformer_args.prompt_timestep,
             self_attention_mask=transformer_args.self_attention_mask,
+            ref_context=transformer_args.ref_context,
         )
 
     def _prepare_cross_attention_timestep(

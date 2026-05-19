@@ -9,7 +9,7 @@ from shared.utils import files_locator as fl
 from shared.utils.hf import build_hf_url
 
 from .ltx2_handler import _GEMMA_FILENAME, _GEMMA_FOLDER, _GEMMA_QUANTO_FILENAME
-from .prompt_enhancer import SCENEMA_DIALOGUE_PROMPT, SCENEMA_SPEECH_PROMPT
+from .prompt_enhancer import DRAMABOX_DIALOGUE_PROMPT, DRAMABOX_SPEECH_PROMPT, SCENEMA_DIALOGUE_PROMPT, SCENEMA_SPEECH_PROMPT
 
 
 SCENEMA_REPO_ID = "DeepBeepMeep/LTX-2"
@@ -140,7 +140,37 @@ Write a scene prompt with spoken dialogue in double quotes and performance or so
 A woman speaks tenderly, "It has been a long day, my love." She whispers, "Close your eyes. I am right here." She hums quietly, "Mmmm-mmm. Sleep now."
 ```
 
-Use the voice reference mode to condition on a short reference clip. Around 10 seconds is the default reference budget.
+DramaBox does not use square-bracket action cues or Scenema XML. Start each segment with a compact speaker voice or delivery description, then quoted dialogue on the same line. Put physical actions, pauses, sighs, and scene reactions after a quoted line or between quoted lines, but do not write standalone action-only, quote-only, or split description/quote segment lines.
+
+## Multiline Speech
+
+For one speaker, every non-empty line is generated as a separate segment. Later lines can reuse the first generated segment as an internal voice reference.
+
+```text
+A tired woman speaks close to the microphone, "I waited until the hallway went quiet."
+A frightened whisper catches in her throat, "That was when I heard the lock turn."
+Her voice breaks into a brittle laugh, "Hahaha, I should have left when I had the chance."
+```
+
+## Dialogue
+
+Use `Speaker N:` blocks for dialogue. Any number of speakers is supported. Speaker 1 and Speaker 2 can use uploaded voice references; other speakers reuse the last 10 seconds of their first generated segment as their reference for later segments.
+
+```text
+Speaker 1:
+An older detective speaks in a low tired voice, "You came back after midnight."
+His low voice sharpens with quiet urgency, "That means you found something."
+
+Speaker 2:
+A young woman replies in a controlled but shaken voice, "I found the room they kept hidden."
+
+Speaker 1:
+His voice drops to a tense hush, "Then we do not have much time."
+```
+
+Use the voice reference mode to condition on a short reference clip. DramaBox uses a fixed 10 second reference budget internally.
+
+Enable `Remove Unexpected Words` to trim generated words at the beginning of each segment when Whisper alignment can match them against the text inside double quotes. Segments without complete double quotes are left unchanged.
 """
 
 
@@ -228,21 +258,38 @@ def _get_dramabox_model_def():
             "default": DRAMABOX_DEFAULT_DURATION_SECONDS,
         },
         "profile_type": "video",
+        "preserve_empty_prompt_lines": True,
         "any_audio_prompt": True,
         "audio_prompt_choices": True,
         "audio_prompt_type_sources": {
-            "selection": ["", "A"],
+            "selection": ["", "A", "AB"],
             "labels": {
                 "": "Text prompt",
-                "A": "Voice reference",
+                "A": "Speaker 1 voice reference",
+                "AB": "Speaker 1 and 2 voice references",
             },
-            "letters_filter": "A",
+            "letters_filter": "AB",
             "default": "",
         },
-        "audio_guide_label": "Reference voice (optional)",
+        "audio_prompt_type_custom_option": {"label": "Remove Unexpected Words", "flag": "0"},
+        "audio_guide_label": "Speaker 1 reference voice (optional)",
+        "audio_guide2_label": "Speaker 2 reference voice (optional)",
         "custom_settings": [one.copy() for one in DRAMABOX_CUSTOM_SETTINGS],
         "infos": DRAMABOX_INFOS,
         "prompt_description": "DramaBox scene prompt",
+        "text_prompt_enhancer_instructions": DRAMABOX_SPEECH_PROMPT,
+        "text_prompt_enhancer_instructions1": DRAMABOX_DIALOGUE_PROMPT,
+        "text_prompt_enhancer_max_tokens": 768,
+        "text_prompt_enhancer_max_tokens1": 1024,
+        "prompt_enhancer_def": {
+            "selection": ["T", "T1"],
+            "labels": {
+                "T": "A Speech",
+                "T1": "A Dialogue",
+            },
+            "default": "T",
+        },
+        "prompt_enhancer_button_label": "Write",
         "compile": False,
         "text_encoder_folder": _GEMMA_FOLDER,
         "text_encoder_URLs": [
@@ -290,6 +337,11 @@ def _get_dramabox_download_def():
             "sourceFolderList": [_GEMMA_FOLDER],
             "fileList": [LTX_AUDIO_TTS_TOKENIZER_FILES],
         },
+        {
+            "repoId": SCENEMA_WHISPER_MEDIUM_REPO,
+            "sourceFolderList": [SCENEMA_WHISPER_MEDIUM_DIR],
+            "fileList": [SCENEMA_WHISPER_MEDIUM_FILES],
+        },
     ]
 
 
@@ -305,6 +357,7 @@ def _load_alignment_whisper():
             module._lock_dtype = torch.float32
     alignment_whisper._offload_hooks = ["transcribe"]
     alignment_whisper._model_dtype = torch.float16
+    alignment_whisper._budget = 0
     alignment_whisper.eval().requires_grad_(False)
     return alignment_whisper
 
@@ -413,6 +466,13 @@ class family_handler:
                     return "DramaBox Audio guidance rescale must be between 0 and 1."
             except Exception:
                 return "DramaBox Audio guidance rescale must be a number."
+            audio_prompt_type = str(inputs.get("audio_prompt_type", "") or "").upper()
+            if "A" in audio_prompt_type and inputs.get("audio_guide") is None:
+                return "DramaBox Audio Speaker 1 reference mode requires a reference audio file."
+            if "B" in audio_prompt_type and inputs.get("audio_guide2") is None:
+                return "DramaBox Audio Speaker 2 reference mode requires a second reference audio file."
+            if "B" in audio_prompt_type and not re.search(r"(?im)^\s*Speaker\s*2\s*(?:\{[^\n{}]*\})?\s*:", str(inputs.get("prompt", "") or "")):
+                return "DramaBox Audio two-reference mode requires a Speaker 2: block."
             custom_settings = {"duration_multiplier": float(custom_settings.get("duration_multiplier", DRAMABOX_DEFAULT_CUSTOM_SETTINGS["duration_multiplier"]))}
             inputs["alt_scale"] = alt_scale
             inputs["custom_settings"] = custom_settings
@@ -585,7 +645,8 @@ class family_handler:
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
         if _is_dramabox(base_model_type):
-            ui_defaults["audio_prompt_type"] = "A" if "A" in str(ui_defaults.get("audio_prompt_type", "") or "").upper() else ""
+            audio_prompt_type = str(ui_defaults.get("audio_prompt_type", "") or "").upper()
+            ui_defaults["audio_prompt_type"] = ("AB" if "B" in audio_prompt_type and "A" in audio_prompt_type else "A" if "A" in audio_prompt_type else "") + ("0" if "0" in audio_prompt_type else "")
             ui_defaults["alt_prompt"] = ""
             ui_defaults.setdefault("duration_seconds", DRAMABOX_DEFAULT_DURATION_SECONDS)
             ui_defaults.setdefault("num_inference_steps", 30)

@@ -2,6 +2,27 @@ from .model import KModel
 from dataclasses import dataclass
 from huggingface_hub import hf_hub_download
 from loguru import logger
+
+
+def _patch_phonemizer_espeak_data_path() -> None:
+    import os
+    import espeakng_loader
+    from phonemizer.backend.espeak.wrapper import EspeakWrapper
+
+    if hasattr(EspeakWrapper, "set_data_path"):
+        return
+
+    @classmethod
+    def set_data_path(cls, data_path):
+        if data_path is not None:
+            os.environ["ESPEAK_DATA_PATH"] = str(data_path)
+
+    os.environ.setdefault("ESPEAK_DATA_PATH", espeakng_loader.get_data_path())
+    EspeakWrapper.set_data_path = set_data_path
+
+
+_patch_phonemizer_espeak_data_path()
+
 from misaki import en, espeak
 from typing import Callable, Generator, List, Optional, Tuple, Union
 import re

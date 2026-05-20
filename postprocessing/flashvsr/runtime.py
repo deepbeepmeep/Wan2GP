@@ -274,6 +274,7 @@ def _denoise_stream_chunk(
     kv_ratio: float = FLASHVSR_KV_CACHE_WINDOWS,
     local_range: int = 9,
     cache_next: bool = True,
+    allow_short_start: bool = False,
     abort_callback=None,
 ) -> tuple[torch.Tensor | None, list[torch.Tensor | None], list[torch.Tensor | None]]:
     x, (frames, height, width) = dit.patchify(x)
@@ -310,7 +311,7 @@ def _denoise_stream_chunk(
         x, next_cache_k, next_cache_v = block(
             x_ref, context, timestep_mod, freqs, frames, height, width, seqlen, topk,
             block_id=block_id, kv_len=kv_len, is_stream=True,
-            pre_cache_refs=cache_refs, local_range=local_range, cache_next=cache_next,
+            pre_cache_refs=cache_refs, local_range=local_range, cache_next=cache_next, allow_short_start=allow_short_start,
         )
         x_ref.clear()
         block_cache_k[block_id] = next_cache_k
@@ -492,6 +493,7 @@ class FlashVSRRuntime:
         persistent_models: bool = False,
         vae_tile_size: int | None = None,
         topk_ratio: float = FLASHVSR_TOPK_RATIO,
+        still_image: bool = False,
         abort_callback=None,
         progress_callback=None,
     ) -> tuple[torch.Tensor | None, dict[str, Any] | None]:
@@ -533,7 +535,13 @@ class FlashVSRRuntime:
             else:
                 print("[FlashVSR] TCDecoder spatial tiling policy: tile_size=0px")
         generator = torch.Generator(device="cpu").manual_seed(0 if seed is None or seed < 0 else int(seed))
-        latents = torch.empty((1, 16, (num_frames - 1) // 4, padded_output_height // 8, padded_output_width // 8), device="cpu", dtype=self.dtype)
+        still_image = bool(still_image and input_frames == 1)
+        first_chunk_latent_frames = 2 if still_image else 6
+        first_chunk_lq_steps = first_chunk_latent_frames + 1 if still_image else 7
+        if still_image:
+            print(f"[FlashVSR] Still image mode: denoising {first_chunk_latent_frames} startup latent frames instead of 6")
+        latent_frame_count = first_chunk_latent_frames if still_image else (num_frames - 1) // 4
+        latents = torch.empty((1, 16, latent_frame_count, padded_output_height // 8, padded_output_width // 8), device="cpu", dtype=self.dtype)
         latents.normal_(generator=generator)
         process_total = (num_frames - 1) // 8 - 2
         pre_cache_k = [None] * len(self.dit.blocks)
@@ -549,7 +557,7 @@ class FlashVSRRuntime:
             lq_layer_chunks = []
             torch.cuda.empty_cache()
             if process_idx == 0:
-                for inner_idx in range(7):
+                for inner_idx in range(first_chunk_lq_steps):
                     if _abort_requested(abort_callback):
                         return abort_result()
                     lq_chunk = _prepare_conditioning_range(sample, max(0, inner_idx * 4 - 3), (inner_idx + 1) * 4 - 3, output_height, output_width, padded_output_height, padded_output_width, dtype=self.dtype).unsqueeze(0).to(self.device, dtype=self.dtype)
@@ -559,9 +567,9 @@ class FlashVSRRuntime:
                     if cur is not None:
                         lq_layer_chunks.append(cur)
                     del cur
-                lq_cur_idx = 21
-                latent_start, latent_end = 0, 6
-                cur_latents = latents[:, :, :6].to(self.device, dtype=self.dtype)
+                lq_cur_idx = 1 if still_image else 21
+                latent_start, latent_end = 0, first_chunk_latent_frames
+                cur_latents = latents[:, :, :first_chunk_latent_frames].to(self.device, dtype=self.dtype)
             else:
                 for inner_idx in range(2):
                     if _abort_requested(abort_callback):
@@ -581,14 +589,16 @@ class FlashVSRRuntime:
 
             noise_pred, pre_cache_k, pre_cache_v = _denoise_stream_chunk(
                 self.dit, cur_latents, None, lq_layer_chunks, pre_cache_k, pre_cache_v, process_idx,
-                self.timestep_embed, self.timestep_mod, topk_ratio=topk_ratio, cache_next=process_idx + 1 < process_total, abort_callback=abort_callback,
+                self.timestep_embed, self.timestep_mod, topk_ratio=topk_ratio, cache_next=process_idx + 1 < process_total, allow_short_start=still_image and process_idx == 0, abort_callback=abort_callback,
             )
             if noise_pred is None:
                 return abort_result()
             cur_latents = cur_latents - noise_pred
             _report_progress(progress_callback, "Denoising", process_idx + 1, process_total)
             if self.variant == FLASHVSR_VARIANT_TINY_LONG:
-                cur_frames, tcdecoder_tile_mems = self._decode_tcdecoder(cur_latents, sample, lq_pre_idx, lq_cur_idx, output_height, output_width, padded_output_height, padded_output_width, tcdecoder_tile_size, tcdecoder_tile_mems, abort_callback=abort_callback, progress_callback=progress_callback, progress_step=process_idx, progress_total=process_total)
+                decode_latents = cur_latents[:, :, :1].contiguous() if still_image and frames_cursor == 0 else cur_latents
+                decode_lq_cur_idx = 1 if still_image and frames_cursor == 0 else lq_cur_idx
+                cur_frames, tcdecoder_tile_mems = self._decode_tcdecoder(decode_latents, sample, lq_pre_idx, decode_lq_cur_idx, output_height, output_width, padded_output_height, padded_output_width, tcdecoder_tile_size, tcdecoder_tile_mems, abort_callback=abort_callback, progress_callback=progress_callback, progress_step=process_idx, progress_total=process_total)
                 if cur_frames is None:
                     return abort_result()
                 cur_frames = _crop_output_frames(cur_frames.detach().cpu(), output_height, output_width)
@@ -621,13 +631,15 @@ class FlashVSRRuntime:
                     if _abort_requested(abort_callback):
                         return abort_result()
                     if decode_idx == 0:
-                        lq_cur_idx = 21
-                        latent_start, latent_end = 0, 6
+                        lq_cur_idx = 1 if still_image else 21
+                        latent_start, latent_end = 0, first_chunk_latent_frames
                     else:
                         lq_cur_idx = decode_idx * 8 + 21
                         latent_start, latent_end = 4 + decode_idx * 2, 6 + decode_idx * 2
                     cur_latents = latents[:, :, latent_start:latent_end].to(self.device, dtype=self.dtype)
-                    cur_frames, tcdecoder_tile_mems = self._decode_tcdecoder(cur_latents, sample, lq_pre_idx, lq_cur_idx, output_height, output_width, padded_output_height, padded_output_width, tcdecoder_tile_size, tcdecoder_tile_mems, abort_callback=abort_callback, progress_callback=progress_callback, progress_step=decode_idx, progress_total=process_total)
+                    decode_latents = cur_latents[:, :, :1].contiguous() if still_image and frames_cursor == 0 else cur_latents
+                    decode_lq_cur_idx = 1 if still_image and frames_cursor == 0 else lq_cur_idx
+                    cur_frames, tcdecoder_tile_mems = self._decode_tcdecoder(decode_latents, sample, lq_pre_idx, decode_lq_cur_idx, output_height, output_width, padded_output_height, padded_output_width, tcdecoder_tile_size, tcdecoder_tile_mems, abort_callback=abort_callback, progress_callback=progress_callback, progress_step=decode_idx, progress_total=process_total)
                     if cur_frames is None:
                         return abort_result()
                     cur_frames = _crop_output_frames(cur_frames.detach().cpu(), output_height, output_width)
@@ -648,7 +660,8 @@ class FlashVSRRuntime:
                     raise RuntimeError("FlashVSR full variant requires the Wan VAE.")
                 vae_tile_size = int(vae_tile_size or 0)
                 print(f"[FlashVSR] Wan VAE tiling policy: tile_size={vae_tile_size}px")
-                frames = self.vae.decode_to_cpu_uint8([latents[0]], vae_tile_size, target_frames=input_frames, target_height=output_height, target_width=output_width)[0]
+                decode_latents = latents[0, :, :1].contiguous() if still_image else latents[0]
+                frames = self.vae.decode_to_cpu_uint8([decode_latents], vae_tile_size, target_frames=input_frames, target_height=output_height, target_width=output_width)[0]
         if self.tcdecoder is not None:
             self.tcdecoder.clean_mem()
         if self.vae is not None:
@@ -694,13 +707,14 @@ def upscale_video(
     topk_ratio: float = FLASHVSR_TOPK_RATIO,
     init_pipe,
     profile,
+    still_image: bool = False,
     abort_callback=None,
     progress_callback=None,
 ) -> tuple[torch.Tensor | None, dict[str, Any] | None]:
     _report_progress(progress_callback, "Caching")
     _RUNTIME.load(paths, variant, profile=profile, init_pipe=init_pipe)
     try:
-        result = _RUNTIME.upscale(sample, scale, seed=seed, continue_cache=continue_cache, return_continue_cache=return_continue_cache, persistent_models=persistent_models, vae_tile_size=vae_tile_size, topk_ratio=topk_ratio, abort_callback=abort_callback, progress_callback=progress_callback)
+        result = _RUNTIME.upscale(sample, scale, seed=seed, continue_cache=continue_cache, return_continue_cache=return_continue_cache, persistent_models=persistent_models, vae_tile_size=vae_tile_size, topk_ratio=topk_ratio, still_image=still_image, abort_callback=abort_callback, progress_callback=progress_callback)
         if result[0] is None:
             if persistent_models:
                 _RUNTIME._unload_mmgp()

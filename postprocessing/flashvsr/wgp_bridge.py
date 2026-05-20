@@ -132,8 +132,6 @@ class FlashVSRBridge:
     def validate_upsampling(self, spatial_upsampling, image_mode: int) -> str:
         if not self.is_upsampling(spatial_upsampling):
             return ""
-        if image_mode > 0:
-            return "FlashVSR Spatial Upsampling is only available for videos"
         if not self.enabled():
             return "FlashVSR Spatial Upsampling is disabled in Configuration > Extensions"
         return ""
@@ -183,7 +181,7 @@ class FlashVSRBridge:
         process_files(**flashvsr_def)
         return True
 
-    def upscale(self, sample, spatial_upsampling, *, seed=0, continue_cache=None, return_continue_cache=False, vae_tile_size=None, process_files: Callable[..., Any], vae_config: int, init_pipe: Callable[..., int], profile, abort_callback=None, progress_callback=None):
+    def upscale(self, sample, spatial_upsampling, *, seed=0, continue_cache=None, return_continue_cache=False, vae_tile_size=None, process_files: Callable[..., Any], vae_config: int, init_pipe: Callable[..., int], profile, still_image=False, abort_callback=None, progress_callback=None):
         scale = self.scale_for_upsampling(spatial_upsampling)
         if scale is None:
             raise ValueError(f"Unknown FlashVSR upsampling mode: {spatial_upsampling}")
@@ -211,6 +209,7 @@ class FlashVSRBridge:
             topk_ratio=self.topk_ratio(),
             init_pipe=init_pipe,
             profile=profile,
+            still_image=still_image,
             abort_callback=abort_callback,
             progress_callback=progress_callback,
         )

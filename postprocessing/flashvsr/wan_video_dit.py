@@ -398,7 +398,8 @@ class SelfAttention(nn.Module):
 
     def forward(self, x, freqs, f=None, h=None, w=None, local_num=None, topk=None,
                 train_img=False, block_id=None, kv_len=None, is_full_block=False,
-                is_stream=False, pre_cache_k=None, pre_cache_v=None, pre_cache_refs=None, local_range = 9, cache_next=True):
+                is_stream=False, pre_cache_k=None, pre_cache_v=None, pre_cache_refs=None, local_range = 9, cache_next=True,
+                allow_short_start=False):
         if isinstance(x, list):
             x_ref = x
             x = x_ref[0]
@@ -409,7 +410,7 @@ class SelfAttention(nn.Module):
         if is_stream and pre_cache_k is not None and pre_cache_v is not None:
             assert f==2, "f must be 2"
         if is_stream and (pre_cache_k is None or pre_cache_v is None):
-            assert f==6, " start f must be 6"
+            assert f==6 or (allow_short_start and f==2), " start f must be 6"
         assert L == f * h * w, "Sequence length mismatch with provided (f,h,w)."
 
         win = (2, 8, 8)
@@ -581,7 +582,8 @@ class DiTBlock(nn.Module):
 
     def forward(self, x, context, t_mod, freqs, f, h, w, local_num=None, topk=None,
                 train_img=False, block_id=None, kv_len=None, is_full_block=False,
-                is_stream=False, pre_cache_k=None, pre_cache_v=None, pre_cache_refs=None, local_range = 9, cache_next=True):
+                is_stream=False, pre_cache_k=None, pre_cache_v=None, pre_cache_refs=None, local_range = 9, cache_next=True,
+                allow_short_start=False):
         if isinstance(x, list):
             x_ref = x
             x = x_ref[0]
@@ -594,7 +596,8 @@ class DiTBlock(nn.Module):
         self_attn_output, self_attn_cache_k, self_attn_cache_v = self.self_attn(
             x_list , freqs, f, h, w, local_num, topk, train_img, block_id,
             kv_len=kv_len, is_full_block=is_full_block, is_stream=is_stream,
-            pre_cache_k=pre_cache_k, pre_cache_v=pre_cache_v, pre_cache_refs=pre_cache_refs, local_range = local_range, cache_next=cache_next)
+            pre_cache_k=pre_cache_k, pre_cache_v=pre_cache_v, pre_cache_refs=pre_cache_refs, local_range = local_range, cache_next=cache_next,
+            allow_short_start=allow_short_start)
 
         x = self.gate(x, gate_msa, self_attn_output)
         del self_attn_output

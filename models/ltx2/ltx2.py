@@ -882,46 +882,62 @@ class LTX2:
         audio_prompt_type = kwargs["audio_prompt_type"]
         outpainting_ratio = kwargs["video_guide_outpainting_ratio"].strip()
         outpainting_setting = str(kwargs["video_guide_outpainting"])
-        preload_urls = get_model_recursive_prop(model_type, "preload_URLs")
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
         resolved_base_model_type = base_model_type
+        sample_solver = (sample_solver or "").lower()
         selected_loras = {os.path.basename(lora).lower() for lora in kwargs.get("activated_loras", [])}
+        preload_urls = get_model_recursive_prop(model_type, "preload_URLs", return_list=True)
+        if isinstance(preload_urls, str):
+            preload_urls = [preload_urls]
 
-        def _append_preload_lora(signature, multiplier):
+        def _get_preload_lora_url(signature):
+            matched_url = None
+            for entry in preload_urls:
+                if isinstance(entry, str) and entry.endswith("|%lora_dir"):
+                    source_url = entry.split("|", 1)[0]
+                    if signature in os.path.basename(source_url).lower():
+                        matched_url = source_url
+            return matched_url
+
+        def _append_system_lora(name, multiplier, signature):
             signature = signature.lower()
-            for file_name in preload_urls:
-                local_filename = fl.get_local_model_filename(file_name, lora_dir=lora_dir)
-                base_name = os.path.basename(local_filename)
-                if signature in base_name.lower():
-                    if any(signature in lora for lora in loras): return
-                    for lora in selected_loras:
-                        if signature in lora:
-                            print(f"Default system '{signature}' lora and corresponding multiplier will be ignored as User has provided its own lora ({lora})")
-                            return
-                    loras.append(local_filename)
-                    loras_mult.append(multiplier)
+            url = _get_preload_lora_url(signature) or model_def.get(f"ltx2_lora_{name}", "")
+            if not url:
+                return
+            if any(signature in os.path.basename(lora).lower() for lora in loras):
+                return
+            for lora in selected_loras:
+                if signature in lora:
+                    print(f"Default system '{signature}' lora and corresponding multiplier will be ignored as User has provided its own lora ({lora})")
                     return
+            loras.append(url)
+            loras_mult.append(multiplier)
 
-        if pipeline_kind != "distilled" and guidance_phases > 1:
+        if pipeline_kind != "distilled" and (guidance_phases > 1 or sample_solver in {"distilled_8_steps", "res2s"}):
             use_hq_sampler = sample_solver == "res2s"
+            use_distilled_8_steps = sample_solver == "distilled_8_steps"
             use_id_lora = "1" in audio_prompt_type
-            if use_hq_sampler:
+            if guidance_phases == 1 and use_hq_sampler:
+                mult = 0.2
+            elif guidance_phases == 1 and use_distilled_8_steps:
+                mult = 0.5
+            elif use_hq_sampler:
                 mult = "0.25;0.5"
             elif use_id_lora:
                 mult = "0;0.8"
+            elif use_distilled_8_steps:
+                mult = "0.5;0.5"
             else:
                 mult = "0;1"
-            _append_preload_lora("distilled", mult)
-        if pipeline_kind == "distilled":
-            if resolved_base_model_type == "ltx2_22B" and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type:
-                _append_preload_lora("ic-lora-hdr", 1.0)
-            if any(letter in video_prompt_type for letter in control_map):
-                _append_preload_lora("union-control", 1.0)
-            if resolved_base_model_type == "ltx2_22B" and get_outpainting_dims(outpainting_setting, outpainting_ratio) is not None:
-                _append_preload_lora("outpaint", 1.0)
+            _append_system_lora("distilled", mult, "distilled-lora")
+        if resolved_base_model_type == "ltx2_22B" and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type:
+            _append_system_lora("hdr", 1.0, "ic-lora-hdr")
+        if any(letter in video_prompt_type for letter in control_map):
+            _append_system_lora("union_control", 1.0, "union-control")
+        if resolved_base_model_type == "ltx2_22B" and get_outpainting_dims(outpainting_setting, outpainting_ratio) is not None:
+            _append_system_lora("outpaint", 1.0, "outpaint")
         if "1" in audio_prompt_type:
-            id_signature = "id-lora-celebvhq" if resolved_base_model_type == "ltx2_22B" else "id-lora-celebvhq-ltx2"
-            _append_preload_lora(id_signature, 1.0 if guidance_phases == 1 else "1;0")
+            _append_system_lora("id", 1.0 if guidance_phases == 1 else "1;0", "id-lora-celebvhq")
         return loras, loras_mult
 
     def generate(
@@ -990,7 +1006,7 @@ class LTX2:
 
         distill = self.model_def.get("ltx2_pipeline", "two_stage") == "distilled"
         editanything = _is_editanything_model(self.model_def)
-        hdr_enabled = distill and self.base_model_type == "ltx2_22B" and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type
+        hdr_enabled = self.base_model_type == "ltx2_22B" and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type
         input_video_is_hdr = bool(kwargs.get("input_video_is_hdr", False))
         hdr_scene_context = self._load_hdr_scene_context(kwargs.get("lora_dir")) if hdr_enabled else None
         if hdr_enabled:
@@ -1023,7 +1039,7 @@ class LTX2:
         outpainting_dims = _normalize_outpainting_dims(outpainting_dims)
         any_outpainting = outpainting_dims is not None and "V" in video_prompt_type
         self_refiner_max_plans = self.model_def.get("self_refiner_max_plans", 1)
-        requested_outpaint_gamma_roundtrip =  distill and self.base_model_type == "ltx2_22B" and any_outpainting 
+        requested_outpaint_gamma_roundtrip = self.base_model_type == "ltx2_22B" and any_outpainting 
         if hdr_enabled:
             requested_outpaint_gamma_roundtrip = False
         if any_outpainting:
@@ -1053,8 +1069,7 @@ class LTX2:
             input_video = hdr_linear_to_vae_range(input_video, transform=LTX2_HDR_TRANSFORM).to(dtype=input_video.dtype)
         control_strength = denoising_strength
         ic_lora_downscale_factor = None
-        if distill:
-            ic_lora_downscale_factor = _infer_ic_lora_downscale_factor(loras_selected)
+        ic_lora_downscale_factor = _infer_ic_lora_downscale_factor(loras_selected)
         video_conditioning_downscale_factor = ic_lora_downscale_factor or 1
          # merge_conditioning_and_guide = False
         has_prefix_frames = input_video is not None 
@@ -1424,6 +1439,8 @@ class LTX2:
 
         video_tensor = video_tensor[:, :frame_num, :height, :width]
         if use_outpaint_gamma_roundtrip:
+            if torch.is_inference(video_tensor):
+                raise RuntimeError("LTX2 decoded video output is still an inference tensor; decode_video_to_tensor must allocate the output buffer outside inference mode.")
             exponent = float(LTX2_OUTPAINT_GAMMA)
             if video_tensor.dtype == torch.uint8:
                 corrected = video_tensor.to(dtype=torch.float32).div_(255.0).clamp_(0.0, 1.0).pow_(exponent)

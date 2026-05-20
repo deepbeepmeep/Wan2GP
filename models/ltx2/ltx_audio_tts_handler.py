@@ -322,7 +322,7 @@ def _get_scenema_download_def():
             "sourceFolderList": [SCENEMA_KOKORO_DIR, SCENEMA_KOKORO_VOICE_DIR],
             "fileList": [SCENEMA_KOKORO_FILES, SCENEMA_KOKORO_VOICE_FILES],
         },
-    ] + seedvc.query_download_def()
+    ] + seedvc.query_download_def(mode=seedvc.SEEDVC_MODE_SPEECH)
 
 
 def _get_dramabox_download_def():
@@ -603,8 +603,8 @@ class family_handler:
         alignment_whisper = _load_alignment_whisper()
         kokoro_pipeline = _load_kokoro_pipeline()
         kokoro_model = kokoro_pipeline.model
-        seedvc_model = seedvc.get_model(dtype=torch.float16)
-        seedvc_pipe = seedvc.get_pipe(profile_no=profile, model=seedvc_model)
+        seedvc_model = seedvc.get_model(dtype=torch.float16, mode=seedvc.SEEDVC_MODE_SPEECH)
+        seedvc_pipe = seedvc.get_pipe(profile_no=profile, model=seedvc_model, mode=seedvc.SEEDVC_MODE_SPEECH)
 
         pipeline = ScenemaAudioPipeline(
             model_weights_path=weights_path,

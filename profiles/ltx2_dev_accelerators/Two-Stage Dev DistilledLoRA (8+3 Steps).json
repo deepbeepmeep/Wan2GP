@@ -1,0 +1,23 @@
+{
+    "model_type": "ltx2_22B",
+    "sample_solver": "distilled_8_steps",
+    "num_inference_steps": 8,
+    "guidance_phases": 2,
+    "guidance_scale": 1.0,
+    "audio_guidance_scale": 1.0,
+    "alt_guidance_scale": 1.0,
+    "alt_scale": 0.0,
+    "perturbation_switch": 0,
+    "perturbation_layers": [28],
+    "perturbation_start_perc": 0,
+    "perturbation_end_perc": 100,
+    "apg_switch": 0,
+    "cfg_star_switch": 0,
+    "self_refiner_setting": 0,
+    "activated_loras": [
+        "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-distilled-lora-384-1.1.safetensors"
+    ],
+    "loras_multipliers": "0.5",
+    "settings_version": 2.56,
+    "help": "Matches the official Lightricks ComfyUI two-stage dev workflow: 8 manual-sigma denoise steps, x2 spatial upscale, then 3 refinement steps. WanGP resolution is the final upscaled size, so this corresponds to Comfy's 960x544 first-stage latent."
+}

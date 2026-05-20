@@ -13,6 +13,10 @@ def _resolve_separator_output(out_file, output_dir: Path) -> Path:
     return out if out.is_absolute() else output_dir / out
 
 
+def _separator_stem_key(path_or_stem) -> str:
+    return "_".join(part for part in Path(path_or_stem).stem.lower().split("_") if part)
+
+
 def _prepare_separator_input(src_path: str, min_seconds: float):
     duration = librosa.get_duration(path=src_path)
     use_path = src_path
@@ -58,8 +62,8 @@ def extract_vocal_and_background_stems(src_path: str, vocals_dst_path: str, back
         sep.load_model()
         out_files = sep.separate(use_path, {"Vocals": vocals_dst.stem, "Instrumental": background_dst.stem})
         out_paths = [_resolve_separator_output(out_file, vocals_dst.parent) for out_file in out_files]
-        by_stem = {out_path.stem.lower(): str(out_path) for out_path in out_paths}
-        return by_stem[vocals_dst.stem.lower()], by_stem[background_dst.stem.lower()]
+        by_stem = {_separator_stem_key(out_path): str(out_path) for out_path in out_paths}
+        return by_stem[_separator_stem_key(vocals_dst)], by_stem[_separator_stem_key(background_dst)]
     finally:
         if sep is not None:
             del sep

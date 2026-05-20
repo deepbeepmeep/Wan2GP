@@ -16,6 +16,14 @@ _GEMMA_FILENAME = f"{_GEMMA_FOLDER}.safetensors"
 _GEMMA_QUANTO_FILENAME = f"{_GEMMA_FOLDER}_quanto_bf16_int8.safetensors"
 _LORAS_MIGRATED = False
 _LORA_SPEC_KEYS = ("distilled_lora", "distilled_1_1_lora", "union_control_lora", "id_lora", "outpaint_lora", "hdr_lora")
+_SYSTEM_LORA_SPEC_KEYS = {
+    "distilled": "distilled_lora",
+    "distilled_1_1": "distilled_1_1_lora",
+    "union_control": "union_control_lora",
+    "id": "id_lora",
+    "outpaint": "outpaint_lora",
+    "hdr": "hdr_lora",
+}
 _EDITANYTHING_MODEL_DEF = {
     "ltx2_edit_anything": True,
     "ltx2_edit_anything_ref": True,
@@ -42,6 +50,7 @@ _ARCH_SPECS = {
         "dev_embeddings_connector": "ltx-2-19b-dev_embeddings_connector.safetensors",
         "distilled_embeddings_connector": "ltx-2-19b-distilled_embeddings_connector.safetensors",
         "profiles_dir": "ltx2",
+        "dev_profiles_dir": "ltx2_dev_accelerators",
         "preset_profiles_dir": "ltx2_presets",
         "distilled_preset_profiles_dir": "ltx2_distilled_presets",
         "lora_dir": "ltx2",
@@ -64,6 +73,7 @@ _ARCH_SPECS = {
         "text_embedding_projection": "ltx-2.3-22b_text_embedding_projection.safetensors",
         "embeddings_connector": "ltx-2.3-22b_embeddings_connector.safetensors",
         "profiles_dir": "ltx2",
+        "dev_profiles_dir": "ltx2_dev_accelerators",
         "preset_profiles_dir": "ltx2_presets",
         "distilled_preset_profiles_dir": "ltx2_distilled_presets",
         "lora_dir": "ltx2",
@@ -75,13 +85,40 @@ def _get_arch_spec(base_model_type: str | None) -> dict:
     return _ARCH_SPECS.get(base_model_type or "", _ARCH_SPECS["ltx2_19B"])
 
 
+def _get_system_lora_urls(spec: dict) -> dict:
+    return {
+        f"ltx2_lora_{name}": build_hf_url(spec["repo_id"], spec[spec_key])
+        for name, spec_key in _SYSTEM_LORA_SPEC_KEYS.items()
+        if spec.get(spec_key)
+    }
+
+
 def _default_perturbation_layers(base_model_type: str | None) -> list[int]:
     return [28] if base_model_type == "ltx2_22B" else [29]
 
 
 def _default_dev_settings(base_model_type: str | None) -> dict:
+    if base_model_type == "ltx2_22B":
+        return {
+            "num_inference_steps": 8,
+            "video_length": 121,
+            "resolution": "1280x720",
+            "sample_solver": "distilled_8_steps",
+            "guidance_scale": 1.0,
+            "audio_guidance_scale": 1.0,
+            "alt_guidance_scale": 1.0,
+            "alt_scale": 0.0,
+            "perturbation_switch": 0,
+            "perturbation_layers": _default_perturbation_layers(base_model_type),
+            "perturbation_start_perc": 0,
+            "perturbation_end_perc": 100,
+            "apg_switch": 0,
+            "cfg_star_switch": 0,
+            "self_refiner_setting": 0,
+            "guidance_phases": 2,
+        }
     return {
-        "num_inference_steps": 30 if base_model_type == "ltx2_22B" else 40,
+        "num_inference_steps": 40,
         "guidance_scale": 3.0,
         # "audio_guidance_scale": 7.0,
         # "alt_guidance_scale": 3.0,
@@ -175,7 +212,7 @@ def _notify_control_video_phase2(base_model_type, model_def, inputs, any_outpain
     lora_dir = wgp.get_lora_dir(base_model_type) if wgp is not None and hasattr(wgp, "get_lora_dir") else None
     selected = {os.path.basename(lora).lower() for lora in inputs.get("activated_loras", []) or []}
     spec = _get_arch_spec(base_model_type)
-    builtins = [] if model_def.get("ltx2_pipeline", "two_stage") != "distilled" else [
+    builtins = [
         spec.get("hdr_lora") if base_model_type == "ltx2_22B" and "&" in video_prompt_type else None,
         spec.get("union_control_lora") if any(letter in video_prompt_type for letter in "OPDE") else None,
         spec.get("outpaint_lora") if base_model_type == "ltx2_22B" and any_outpainting else None,
@@ -242,18 +279,16 @@ class family_handler:
         pipeline_kind = "distilled" if _is_distilled_model(model_def) else "two_stage"
 
         distilled = pipeline_kind == "distilled"
-        audio_prompt_selection = ["", "A", "K", "2", "A1OF"] if distilled else ["", "A", "A1OF"]
+        audio_prompt_selection = ["", "A", "K", "2", "A1OF"]
         if editanything_ref and not distilled:
             audio_prompt_selection = ["", "A", "K"]
         audio_prompt_labels = {
             "": "Generate Video & Soundtrack based on Text Prompt",
             "A": "Generate Video based on Soundtrack and Text Prompt",
+            "K": "Generate Video based on Control Video + its Audio Track and Text Prompt",
+            "2": "Generate Audio based on Control Video and Text Prompt",
             "A1OF": "Generate Video based on Reference Voice (ID-LoRA) and Text Prompt",
         }
-        if distilled or editanything_ref:
-            audio_prompt_labels["K"] = "Generate Video based on Control Video + its Audio Track and Text Prompt"
-        if distilled:
-            audio_prompt_labels["2"] = "Generate Audio based on Control Video and Text Prompt"
 
 
         extra_model_def = {
@@ -293,7 +328,7 @@ class family_handler:
             "multimedia_generation": True,
             "multiple_images_as_text_prompts": True,
             "custom_denoising_strength": distilled,
-            "profiles_dir": [spec["profiles_dir"]],
+            "profiles_dir": [spec["profiles_dir"]] + ([] if distilled else [spec["dev_profiles_dir"]]),
             "ltx2_spatial_upscaler_file": spec["spatial_upscaler"],
             "ltx2_hdr_lora_file": spec.get("hdr_lora", ""),
             "ltx2_hdr_scene_embeddings_file": spec.get("hdr_scene_embeddings", ""),
@@ -302,13 +337,15 @@ class family_handler:
             # "no_background_removal": True,
             "vae_block_size": 64,
             "keep_frames_video_guide_not_supported": True,
+            "NAG": True,
         }
+        extra_model_def.update(_get_system_lora_urls(spec))
         if distilled:
             extra_model_def["ltx2_pipeline"] = "distilled"
         if editanything_ref:
             extra_model_def.update(_EDITANYTHING_MODEL_DEF)
         
-        if distilled and base_model_type in ["ltx2_22B"] and not editanything_ref:
+        if base_model_type in ["ltx2_22B"] and not editanything_ref:
             extra_model_def["video_guide_outpainting"] = [0,1]
             extra_model_def["video_guide_outpainting_label"] = "Enable Spatial Outpainting on Control Video using Ic Lora Outpaint"
             extra_model_def["guide_inpaint_color"] = 0
@@ -333,9 +370,9 @@ class family_handler:
             control_choices = [("EditAnything Source Video", "VGI")]
         else:
             control_choices = [("No Video Process", "")]
-            control_choices += [ ("Transfer Human Motion", "PVG"), ("Transfer Human Motion With Pose Alignment", "OVG")  , ("Transfer Depth", "DVG") , ("Transfer Canny Edges", "EVG"), ("LTX2 Raw Format / Control Video for Ic Lora", "VG")] if distilled else []
+            control_choices += [ ("Transfer Human Motion", "PVG"), ("Transfer Human Motion With Pose Alignment", "OVG")  , ("Transfer Depth", "DVG") , ("Transfer Canny Edges", "EVG"), ("LTX2 Raw Format / Control Video for Ic Lora", "VG")]
             # control_choices += [("Set Reference Frame (if supported by Ic Lora)", "I")]
-            if distilled and base_model_type == "ltx2_22B":
+            if base_model_type == "ltx2_22B":
                 control_choices += [("Convert SDR to HDR (IC-LoRA)", f"V&G")]
             control_choices +=   [("Inject Frames", "KFI")]
         extra_model_def["guide_custom_choices"] = {
@@ -372,7 +409,6 @@ class family_handler:
             extra_model_def.update(
                 {
                     "lock_inference_steps": True,
-                    "NAG": True,
                     "no_negative_prompt": False,
                 }
             )
@@ -394,7 +430,7 @@ class family_handler:
                 }
             )
             if base_model_type == "ltx2_22B":
-                extra_model_def["sample_solvers"] = [("Euler", "euler"), ("HQ (res2s)", "res2s")]
+                extra_model_def["sample_solvers"] = [("Distilled 8 Steps", "distilled_8_steps"), ("Euler", "euler"), ("HQ (res2s)", "res2s")]
         extra_model_def["guidance_max_phases"] = 2
         extra_model_def["visible_phases"] = 0 if distilled else 1
         # extra_model_def["lock_guidance_phases"] = True
@@ -493,9 +529,11 @@ class family_handler:
         else:
             sample_solver = inputs.get("sample_solver", "euler" if base_model_type == "ltx2_22B" else "").lower()
             if base_model_type == "ltx2_22B":
-                if sample_solver not in {"euler", "res2s"}:
+                if sample_solver not in {"distilled_8_steps", "euler", "res2s"}:
                     return f"Unsupported LTX2 sampler '{sample_solver}'."
                 inputs["sample_solver"] = sample_solver
+                if sample_solver == "distilled_8_steps":
+                    inputs["num_inference_steps"] = 8
                 if sample_solver == "res2s":
                     if inputs.get("apg_switch", 0):
                         return "HQ sampler does not support APG yet."
@@ -503,7 +541,8 @@ class family_handler:
                         return "HQ sampler does not support CFG Star yet."
                     if inputs.get("self_refiner_setting", 0):
                         return "HQ sampler does not support Self Refiner yet."
-                    inputs["perturbation_switch"] = 0
+                    if inputs.get("perturbation_switch", 0) not in (0, 2):
+                        return "HQ sampler supports only Off or Skip Self Attention guidance."
             elif sample_solver not in {"", "euler"}:
                 return f"Sampler '{sample_solver}' is not supported for {base_model_type}."
         video_guide_outpainting = inputs.get("video_guide_outpainting", None) 
@@ -524,13 +563,13 @@ class family_handler:
             if inputs.get("video_guide") is None:
                 return "You must provide a Control Video to generate audio from it."
         if "&" in video_prompt_type:
-            if pipeline_kind != "distilled" or base_model_type != "ltx2_22B":
-                return "LTX2 HDR IC-LoRA is supported only with LTX-2.3 22B distilled."
+            if base_model_type != "ltx2_22B":
+                return "LTX2 HDR IC-LoRA is supported only with LTX-2.3 22B."
             if any(letter in video_prompt_type for letter in "OPDE") or any_outpainting:
                 return "LTX2 HDR IC-LoRA is not compatible with Pose/Depth/Canny/Outpaint control modes."
             if "F" in video_prompt_type:
                 return "LTX2 HDR IC-LoRA is not yet compatible with Inject Frames."
-        if pipeline_kind == "distilled" and any_outpainting:
+        if any_outpainting:
             if "V" in video_prompt_type :
                 if any(letter in video_prompt_type for letter in "OPDE"):
                     return "LTX2 outpainting on Control Video supports only LTX2 Raw Format  / Contro Video for Ic Lora."

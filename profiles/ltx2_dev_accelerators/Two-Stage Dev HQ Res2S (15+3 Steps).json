@@ -14,5 +14,9 @@
     "apg_switch": 0,
     "cfg_star_switch": 0,
     "self_refiner_setting": 0,
+    "activated_loras": [
+        "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-distilled-lora-384-1.1.safetensors"
+    ],
+    "loras_multipliers": "0.5",
     "settings_version": 2.56
 }

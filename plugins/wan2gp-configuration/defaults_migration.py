@@ -1,12 +1,16 @@
 import json
+from decimal import Decimal, InvalidOperation
 
 from shared.deepy.config import DEEPY_ENABLED_KEY
 
 
-EXTENSIONS_DEFAULTS_MIGRATED_KEY = "_extensions_defaults_migrated"
+LEGACY_EXTENSIONS_DEFAULTS_MIGRATED_KEY = "_extensions_defaults_migrated"
+EXTENSIONS_DEFAULTS_VERSION_KEY = "extensions_defaults_version"
+EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.11")
+EXTENSIONS_DEFAULTS_TARGET_VERSION_TEXT = str(EXTENSIONS_DEFAULTS_TARGET_VERSION)
 
 MMAUDIO_MODE_CHOICES = [("Standard", 1), ("NSFW", 2)]
-SEEDVC_MODE_CHOICES = [("v1.0", 1)]
+SEEDVC_MODE_CHOICES = [("v1.0 Speech", 1), ("v1.0 Singing / F0 44k", 2), ("v2 Speech", 3)]
 FLASHVSR_MODE_CHOICES = [
     ("FlashVSR v1.1 Tiny (Slightly Lower Quality, Faster VAE Decoding, Needs Less RAM)", 1),
     ("FlashVSR v1.1 Full (Best Quality, Slower VAE Decoding, Needs More RAM)", 2),
@@ -19,7 +23,7 @@ PROMPT_ENHANCER_CHOICES = [
 ]
 
 MMAUDIO_DEFAULT_MODE = MMAUDIO_MODE_CHOICES[0][1]
-SEEDVC_DEFAULT_MODE = SEEDVC_MODE_CHOICES[0][1]
+SEEDVC_DEFAULT_MODE = 2
 FLASHVSR_DEFAULT_MODE = FLASHVSR_MODE_CHOICES[0][1]
 PROMPT_ENHANCER_DEFAULT_MODE = 3
 DEEPY_DEFAULT_ENABLED = 1
@@ -48,43 +52,67 @@ def _set_missing_persistence(config, key):
         config[key] = 1
 
 
+def _extension_defaults_version(config) -> Decimal:
+    version = config.get(EXTENSIONS_DEFAULTS_VERSION_KEY, None)
+    if version is not None:
+        try:
+            return Decimal(str(version))
+        except (InvalidOperation, ValueError):
+            return Decimal("1.0")
+    return Decimal("1.1") if config.get(LEGACY_EXTENSIONS_DEFAULTS_MIGRATED_KEY, False) else Decimal("1.0")
+
+
 def migrate_extension_defaults(server_config, server_config_filename="") -> bool:
-    if not isinstance(server_config, dict) or server_config.get(EXTENSIONS_DEFAULTS_MIGRATED_KEY, False):
+    if not isinstance(server_config, dict):
         return False
 
+    version = _extension_defaults_version(server_config)
     changed = False
 
-    mmaudio_mode = server_config.get("mmaudio_mode", None)
-    if mmaudio_mode is None:
-        mmaudio_mode = 0 if _is_off(server_config.get("mmaudio_enabled", 0)) else MMAUDIO_DEFAULT_MODE
-    if _is_off(mmaudio_mode):
-        server_config["mmaudio_mode"] = MMAUDIO_DEFAULT_MODE
-        changed = True
-    else:
-        server_config["mmaudio_mode"] = _to_int(mmaudio_mode, MMAUDIO_DEFAULT_MODE)
-    _set_missing_persistence(server_config, "mmaudio_persistence")
-    server_config["mmaudio_enabled"] = server_config["mmaudio_persistence"]
+    if version < Decimal("1.1"):
+        mmaudio_mode = server_config.get("mmaudio_mode", None)
+        if mmaudio_mode is None:
+            mmaudio_mode = 0 if _is_off(server_config.get("mmaudio_enabled", 0)) else MMAUDIO_DEFAULT_MODE
+        if _is_off(mmaudio_mode):
+            server_config["mmaudio_mode"] = MMAUDIO_DEFAULT_MODE
+            changed = True
+        else:
+            server_config["mmaudio_mode"] = _to_int(mmaudio_mode, MMAUDIO_DEFAULT_MODE)
+        _set_missing_persistence(server_config, "mmaudio_persistence")
+        server_config["mmaudio_enabled"] = server_config["mmaudio_persistence"]
 
-    if _is_off(server_config.get("seedvc_mode", 0)):
-        server_config["seedvc_mode"] = SEEDVC_DEFAULT_MODE
-        changed = True
-    _set_missing_persistence(server_config, "seedvc_persistence")
+        if _is_off(server_config.get("seedvc_mode", 0)):
+            server_config["seedvc_mode"] = SEEDVC_DEFAULT_MODE
+            changed = True
+        _set_missing_persistence(server_config, "seedvc_persistence")
 
-    if _is_off(server_config.get("flashvsr_mode", 0)):
-        server_config["flashvsr_mode"] = FLASHVSR_DEFAULT_MODE
-        changed = True
-    _set_missing_persistence(server_config, "flashvsr_persistence")
+        if _is_off(server_config.get("flashvsr_mode", 0)):
+            server_config["flashvsr_mode"] = FLASHVSR_DEFAULT_MODE
+            changed = True
+        _set_missing_persistence(server_config, "flashvsr_persistence")
 
-    if _is_off(server_config.get("enhancer_enabled", 0)):
-        server_config["enhancer_enabled"] = PROMPT_ENHANCER_DEFAULT_MODE
+        if _is_off(server_config.get("enhancer_enabled", 0)):
+            server_config["enhancer_enabled"] = PROMPT_ENHANCER_DEFAULT_MODE
+            changed = True
+
+        if _is_off(server_config.get(DEEPY_ENABLED_KEY, 0)):
+            server_config[DEEPY_ENABLED_KEY] = DEEPY_DEFAULT_ENABLED
+            changed = True
+
+    if version < EXTENSIONS_DEFAULTS_TARGET_VERSION:
+        if server_config.get("seedvc_mode") != SEEDVC_DEFAULT_MODE:
+            server_config["seedvc_mode"] = SEEDVC_DEFAULT_MODE
+            changed = True
+        _set_missing_persistence(server_config, "seedvc_persistence")
+
+    if server_config.pop(LEGACY_EXTENSIONS_DEFAULTS_MIGRATED_KEY, None) is not None:
+        changed = True
+    if server_config.get(EXTENSIONS_DEFAULTS_VERSION_KEY) != EXTENSIONS_DEFAULTS_TARGET_VERSION_TEXT:
+        server_config[EXTENSIONS_DEFAULTS_VERSION_KEY] = EXTENSIONS_DEFAULTS_TARGET_VERSION_TEXT
         changed = True
 
-    if _is_off(server_config.get(DEEPY_ENABLED_KEY, 0)):
-        server_config[DEEPY_ENABLED_KEY] = DEEPY_DEFAULT_ENABLED
-        changed = True
-
-    server_config[EXTENSIONS_DEFAULTS_MIGRATED_KEY] = True
-    _write_config(server_config, server_config_filename)
+    if changed:
+        _write_config(server_config, server_config_filename)
     return changed
 
 

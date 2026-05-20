@@ -20,9 +20,12 @@ from .utils import ModelLedger
 from .utils.args import default_2_stage_arg_parser
 from .utils.constants import (
     AUDIO_SAMPLE_RATE,
+    DISTILLED_SIGMA_VALUES,
+    DISTILLED_8_STEPS_STAGE_2_SIGMA_VALUES,
     STAGE_2_DISTILLED_SIGMA_VALUES,
 )
 from .utils.helpers import (
+    PERTURBATION_SKIP_SELF_ATTENTION,
     assert_resolution,
     bind_interrupt_check,
     cleanup_memory,
@@ -177,7 +180,8 @@ class TI2VidTwoStagesPipeline:
         noiser = GaussianNoiser(generator=generator)
         sample_solver = (sample_solver or "euler").lower()
         use_hq_sampler = sample_solver == "res2s"
-        if sample_solver not in {"euler", "res2s"}:
+        use_distilled_8_steps = sample_solver == "distilled_8_steps"
+        if sample_solver not in {"euler", "res2s", "distilled_8_steps"}:
             raise ValueError(f"Unsupported LTX2 sampler '{sample_solver}'.")
         skip_stage_2 = bool(skip_stage_2)
         stage_1_pass_no = 0 if skip_stage_2 else 1
@@ -284,7 +288,9 @@ class TI2VidTwoStagesPipeline:
             device=self.device,
             tiling_config=tiling_config,
         )
-        if use_hq_sampler:
+        if use_distilled_8_steps:
+            sigmas = torch.Tensor(DISTILLED_SIGMA_VALUES).to(dtype=torch.float32, device=self.device)
+        elif use_hq_sampler:
             empty_latent = torch.empty(
                 VideoLatentShape.from_pixel_shape(
                     stage_1_output_shape,
@@ -319,6 +325,8 @@ class TI2VidTwoStagesPipeline:
             mask_context=None,
         ) -> tuple[LatentState, LatentState]:
             if use_hq_sampler:
+                hq_stg_blocks = list(perturbation_layers or [])
+                hq_stg_scale = 1.0 if perturbation_switch == PERTURBATION_SKIP_SELF_ATTENTION else 0.0
                 return res2s_audio_video_denoising_loop(
                     sigmas=sigmas,
                     video_state=video_state,
@@ -328,8 +336,8 @@ class TI2VidTwoStagesPipeline:
                         video_guider=MultiModalGuider(
                             params=MultiModalGuiderParams(
                                 cfg_scale=cfg_guidance_scale,
-                                stg_scale=0.0,
-                                stg_blocks=[],
+                                stg_scale=hq_stg_scale,
+                                stg_blocks=hq_stg_blocks,
                                 rescale_scale=alt_scale,
                                 modality_scale=alt_guidance_scale,
                             ),
@@ -338,8 +346,8 @@ class TI2VidTwoStagesPipeline:
                         audio_guider=MultiModalGuider(
                             params=MultiModalGuiderParams(
                                 cfg_scale=audio_cfg_guidance_scale,
-                                stg_scale=0.0,
-                                stg_blocks=[],
+                                stg_scale=hq_stg_scale,
+                                stg_blocks=hq_stg_blocks,
                                 rescale_scale=1.0,
                                 modality_scale=alt_guidance_scale,
                             ),
@@ -502,7 +510,8 @@ class TI2VidTwoStagesPipeline:
         bind_interrupt_check(transformer, interrupt_check)
         stage_2_ref_context = stage_2_ref_adaln = None
         stage_2_ref_conditionings = []
-        distilled_sigmas = torch.Tensor(STAGE_2_DISTILLED_SIGMA_VALUES).to(self.device)
+        stage_2_sigma_values = DISTILLED_8_STEPS_STAGE_2_SIGMA_VALUES if use_distilled_8_steps else STAGE_2_DISTILLED_SIGMA_VALUES
+        distilled_sigmas = torch.Tensor(stage_2_sigma_values).to(self.device)
         if loras_slists is not None:
             stage_2_steps = len(distilled_sigmas) - 1
             update_loras_slists(

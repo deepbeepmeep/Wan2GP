@@ -11,9 +11,35 @@ from collections import deque
 import numpy as np
 
 CACHE_T = 2
+FLASHVSR_LQ_PROJ_SPATIAL_TILING = True
+FLASHVSR_LQ_PROJ_SPATIAL_TILE_SIZE = 128
+FLASHVSR_LQ_PROJ_SPATIAL_TILE_HALO = 2
+FLASHVSR_SHIFT_STILL_IMAGE_START_PREFIX = False
+FLASHVSR_START_PREFIX_SHIFTS = ((2, 2), (1, 1), (0, 0))
 
 def _cache_tail_cpu(x):
     return x[:, :, -CACHE_T:, :, :].detach().to(device="cpu", copy=True)
+
+
+def _copy_token_tile_to_cpu(dst, src, y0, y1, x0, x1, full_h, full_w):
+    src_cpu = src.detach().to("cpu")
+    tile_h, tile_w = y1 - y0, x1 - x0
+    frames = src.shape[1] // (tile_h * tile_w)
+    for frame_idx in range(frames):
+        src_frame = frame_idx * tile_h * tile_w
+        dst_frame = frame_idx * full_h * full_w
+        for row in range(tile_h):
+            dst[:, dst_frame + (y0 + row) * full_w + x0:dst_frame + (y0 + row) * full_w + x1].copy_(src_cpu[:, src_frame + row * tile_w:src_frame + (row + 1) * tile_w])
+    del src_cpu
+
+
+def _crop_shifted_tile(frame, y0, y1, x0, x1, shift_y, shift_x):
+    if shift_y == 0 and shift_x == 0:
+        return frame[:, :, :, y0:y1, x0:x1]
+    height, width = frame.shape[-2:]
+    ys = torch.arange(y0 - shift_y, y1 - shift_y, device=frame.device).clamp_(0, height - 1)
+    xs = torch.arange(x0 - shift_x, x1 - shift_x, device=frame.device).clamp_(0, width - 1)
+    return frame.index_select(-2, ys).index_select(-1, xs)
 
 
 def _linear_outputs_cpu(linear_layers, x):
@@ -406,6 +432,7 @@ class Causal_LQ4x_Proj(nn.Module):
         self.linear_layers = nn.ModuleList([nn.Linear(self.hidden_dim2, out_dim) for _ in range(layer_num)])
         
         self.clip_idx = 0
+        self.shift_start_prefix = False
         
     def forward(self, video):
         self.clear_cache()
@@ -459,13 +486,91 @@ class Causal_LQ4x_Proj(nn.Module):
             if 'conv2' in self.cache and self.cache['conv2'] is not None:
                 del self.cache['conv2']
                 self.cache['conv2'] = None
+
+    def _start_prefix(self, first_frame, y0, y1, x0, x1):
+        if not (self.shift_start_prefix and FLASHVSR_SHIFT_STILL_IMAGE_START_PREFIX):
+            return first_frame[:, :, :, y0:y1, x0:x1].expand(-1, -1, 3, -1, -1)
+        return torch.cat([_crop_shifted_tile(first_frame, y0, y1, x0, x1, shift_y, shift_x) for shift_y, shift_x in FLASHVSR_START_PREFIX_SHIFTS], dim=2)
+
+    def _stream_forward_tiled(self, video_clip, need_output, prepend_first_frames=False):
+        tile_size = int(FLASHVSR_LQ_PROJ_SPATIAL_TILE_SIZE)
+        halo = int(FLASHVSR_LQ_PROJ_SPATIAL_TILE_HALO)
+        height, width = video_clip.shape[-2] // self.hh, video_clip.shape[-1] // self.ww
+        old_cache1, old_cache2 = self.cache['conv1'], self.cache['conv2']
+        cache1_x = None
+        cache2_x = None
+        outputs = None
+        for y0 in range(0, height, tile_size):
+            y1 = min(y0 + tile_size, height)
+            in_y0, in_y1 = max(0, y0 - halo), min(height, y1 + halo)
+            conv2_y0, conv2_y1 = max(0, y0 - 1), min(height, y1 + 1)
+            for x0 in range(0, width, tile_size):
+                x1 = min(x0 + tile_size, width)
+                in_x0, in_x1 = max(0, x0 - halo), min(width, x1 + halo)
+                conv2_x0, conv2_x1 = max(0, x0 - 1), min(width, x1 + 1)
+                py0, py1 = in_y0 * self.hh, in_y1 * self.hh
+                px0, px1 = in_x0 * self.ww, in_x1 * self.ww
+                video_tile = video_clip[:, :, :, py0:py1, px0:px1].contiguous()
+                if prepend_first_frames:
+                    first_frame = self._start_prefix(video_clip[:, :, :1], py0, py1, px0, px1)
+                    video_tile = torch.cat([first_frame, video_tile], dim=2)
+                    del first_frame
+                x_tile = self.pixel_shuffle(video_tile)
+                del video_tile
+                tail1 = x_tile[:, :, -min(CACHE_T, x_tile.shape[2]):, y0 - in_y0:y1 - in_y0, x0 - in_x0:x1 - in_x0].detach().to("cpu")
+                if cache1_x is None:
+                    cache1_x = torch.empty((x_tile.shape[0], x_tile.shape[1], tail1.shape[2], height, width), dtype=tail1.dtype, device="cpu")
+                cache1_x[:, :, :, y0:y1, x0:x1].copy_(tail1)
+                del tail1
+                cache1_tile = None if old_cache1 is None else old_cache1[:, :, :, in_y0:in_y1, in_x0:in_x1]
+                x_list = [x_tile]
+                del x_tile
+                tile = self.conv1(x_list, cache1_tile)
+                tile = self.norm1(tile)
+                tile = self.act1(tile)
+                tail = tile[:, :, -min(CACHE_T, tile.shape[2]):, y0 - in_y0:y1 - in_y0, x0 - in_x0:x1 - in_x0].detach().to("cpu")
+                if cache2_x is None:
+                    cache2_x = torch.empty((tile.shape[0], tile.shape[1], tail.shape[2], height, width), dtype=tail.dtype, device="cpu")
+                cache2_x[:, :, :, y0:y1, x0:x1].copy_(tail)
+                del tail
+                if not need_output:
+                    del tile
+                    continue
+                conv2_tile = tile[:, :, :, conv2_y0 - in_y0:conv2_y1 - in_y0, conv2_x0 - in_x0:conv2_x1 - in_x0].contiguous()
+                del tile
+                cache2_tile = None if old_cache2 is None else old_cache2[:, :, :, conv2_y0:conv2_y1, conv2_x0:conv2_x1]
+                x_list = [conv2_tile]
+                del conv2_tile
+                tile = self.conv2(x_list, cache2_tile)
+                tile = self.norm2(tile)
+                tile = self.act2(tile)
+                tile = tile[:, :, :, y0 - conv2_y0:y1 - conv2_y0, x0 - conv2_x0:x1 - conv2_x0].contiguous()
+                out_x = rearrange(tile, 'b c f h w -> b (f h w) c')
+                del tile
+                if outputs is None:
+                    outputs = [None] * self.layer_num
+                for i, layer in enumerate(self.linear_layers):
+                    y = layer(out_x)
+                    if outputs[i] is None:
+                        outputs[i] = torch.empty((y.shape[0], y.shape[1] // ((y1 - y0) * (x1 - x0)) * height * width, y.shape[2]), dtype=y.dtype, device="cpu")
+                    _copy_token_tile_to_cpu(outputs[i], y, y0, y1, x0, x1, height, width)
+                    del y
+                del out_x
+        self.cache['conv1'] = cache1_x
+        self.cache['conv2'] = cache2_x
+        del video_clip, old_cache1, old_cache2
+        return outputs
         
     def stream_forward(self, video_clip_list):
         video_clip = video_clip_list[0]
         video_clip_list.clear()
         if self.clip_idx == 0:
             # self.clear_cache()
-            first_frame = video_clip[:, :, :1, :, :].expand(-1, -1, 3, -1, -1)
+            if FLASHVSR_LQ_PROJ_SPATIAL_TILING:
+                self._stream_forward_tiled(video_clip, False, prepend_first_frames=True)
+                self.clip_idx += 1
+                return None
+            first_frame = self._start_prefix(video_clip[:, :, :1], 0, video_clip.shape[-2], 0, video_clip.shape[-1])
             video_clip = torch.cat([first_frame, video_clip], dim=2)
             del first_frame
             x = self.pixel_shuffle(video_clip)
@@ -482,6 +587,10 @@ class Causal_LQ4x_Proj(nn.Module):
             self.clip_idx += 1
             return None
         else:
+            if FLASHVSR_LQ_PROJ_SPATIAL_TILING:
+                outputs = self._stream_forward_tiled(video_clip, True)
+                self.clip_idx += 1
+                return outputs
             x = self.pixel_shuffle(video_clip)
             del video_clip
             cache1_x = _cache_tail_cpu(x)

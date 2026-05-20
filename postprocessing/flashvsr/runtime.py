@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import gc
 import math
+import os
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -33,6 +34,10 @@ FLASHVSR_FULL_MIN_AUTO_TOPK_RATIO = 1.5
 FLASHVSR_KV_CACHE_WINDOWS = 1  # Stream cache windows kept between denoise chunks; each window is two latent frames.
 FLASHVSR_CONTINUE_CACHE_FRAMES = 11
 FLASHVSR_COTENANTS_MAP = {"lq_proj": ["transformer"]}
+FLASHVSR_SAVE_STILL_IMAGE_DEBUG_VIDEO = False
+FLASHVSR_DISABLE_STILL_IMAGE_OPTIMIZATIONS = False
+FLASHVSR_STILL_IMAGE_DEBUG_VIDEO_PATH = "flashvsr_still_image_debug.mp4"
+FLASHVSR_STILL_IMAGE_DEBUG_VIDEO_FPS = 4
 
 WAN_1_3B_CONFIG = {
     "has_image_input": False,
@@ -142,6 +147,20 @@ def _decoded_frames_to_cpu(frames: torch.Tensor, frame_count: int, height: int, 
     frames_cpu = torch.empty(tuple(frames.shape), dtype=torch.float32, device="cpu")
     frames_cpu.copy_(frames)
     return frames_cpu
+
+
+def _save_still_image_debug_video(frames: torch.Tensor) -> None:
+    if not FLASHVSR_SAVE_STILL_IMAGE_DEBUG_VIDEO:
+        return
+    path = os.path.abspath(FLASHVSR_STILL_IMAGE_DEBUG_VIDEO_PATH)
+    try:
+        from shared.utils.audio_video import save_video
+        debug_frames = frames.detach().cpu()
+        save_video(tensor=debug_frames, save_file=path, fps=FLASHVSR_STILL_IMAGE_DEBUG_VIDEO_FPS, nrow=1, normalize=True, value_range=(-1, 1), codec_type="libx264_8", container="mp4")
+        print(f"[FlashVSR] Still image debug video saved to {path} ({int(debug_frames.shape[2])} frames)")
+        del debug_frames
+    except Exception as exc:
+        print(f"[FlashVSR] Failed to save still image debug video: {exc}")
 
 
 def _nested_tensors_to(value: Any, device: torch.device | str, dtype: torch.dtype | None = None) -> Any:
@@ -536,10 +555,15 @@ class FlashVSRRuntime:
                 print("[FlashVSR] TCDecoder spatial tiling policy: tile_size=0px")
         generator = torch.Generator(device="cpu").manual_seed(0 if seed is None or seed < 0 else int(seed))
         still_image = bool(still_image and input_frames == 1)
-        first_chunk_latent_frames = 2 if still_image else 6
-        first_chunk_lq_steps = first_chunk_latent_frames + 1 if still_image else 7
-        if still_image:
+        self.lq_proj.shift_start_prefix = still_image
+        optimize_still_image = still_image and not FLASHVSR_DISABLE_STILL_IMAGE_OPTIMIZATIONS
+        first_chunk_latent_frames = 2 if optimize_still_image else 6
+        first_chunk_lq_steps = first_chunk_latent_frames + 1 if optimize_still_image else 7
+        still_debug_frame_count = (first_chunk_latent_frames - 1) * 4 + 1
+        if optimize_still_image:
             print(f"[FlashVSR] Still image mode: denoising {first_chunk_latent_frames} startup latent frames instead of 6")
+        elif still_image and FLASHVSR_DISABLE_STILL_IMAGE_OPTIMIZATIONS:
+            print("[FlashVSR] Still image debug mode: image optimizations disabled; denoising original 6 startup latent frames")
         latent_frame_count = first_chunk_latent_frames if still_image else (num_frames - 1) // 4
         latents = torch.empty((1, 16, latent_frame_count, padded_output_height // 8, padded_output_width // 8), device="cpu", dtype=self.dtype)
         latents.normal_(generator=generator)
@@ -567,7 +591,7 @@ class FlashVSRRuntime:
                     if cur is not None:
                         lq_layer_chunks.append(cur)
                     del cur
-                lq_cur_idx = 1 if still_image else 21
+                lq_cur_idx = 1 if optimize_still_image else 21
                 latent_start, latent_end = 0, first_chunk_latent_frames
                 cur_latents = latents[:, :, :first_chunk_latent_frames].to(self.device, dtype=self.dtype)
             else:
@@ -589,19 +613,22 @@ class FlashVSRRuntime:
 
             noise_pred, pre_cache_k, pre_cache_v = _denoise_stream_chunk(
                 self.dit, cur_latents, None, lq_layer_chunks, pre_cache_k, pre_cache_v, process_idx,
-                self.timestep_embed, self.timestep_mod, topk_ratio=topk_ratio, cache_next=process_idx + 1 < process_total, allow_short_start=still_image and process_idx == 0, abort_callback=abort_callback,
+                self.timestep_embed, self.timestep_mod, topk_ratio=topk_ratio, cache_next=process_idx + 1 < process_total, allow_short_start=optimize_still_image and process_idx == 0, abort_callback=abort_callback,
             )
             if noise_pred is None:
                 return abort_result()
             cur_latents = cur_latents - noise_pred
             _report_progress(progress_callback, "Denoising", process_idx + 1, process_total)
             if self.variant == FLASHVSR_VARIANT_TINY_LONG:
-                decode_latents = cur_latents[:, :, :1].contiguous() if still_image and frames_cursor == 0 else cur_latents
-                decode_lq_cur_idx = 1 if still_image and frames_cursor == 0 else lq_cur_idx
+                save_still_debug_video = still_image and frames_cursor == 0 and FLASHVSR_SAVE_STILL_IMAGE_DEBUG_VIDEO
+                decode_latents = cur_latents if save_still_debug_video else cur_latents[:, :, :1].contiguous() if optimize_still_image and frames_cursor == 0 else cur_latents
+                decode_lq_cur_idx = still_debug_frame_count if save_still_debug_video else 1 if optimize_still_image and frames_cursor == 0 else lq_cur_idx
                 cur_frames, tcdecoder_tile_mems = self._decode_tcdecoder(decode_latents, sample, lq_pre_idx, decode_lq_cur_idx, output_height, output_width, padded_output_height, padded_output_width, tcdecoder_tile_size, tcdecoder_tile_mems, abort_callback=abort_callback, progress_callback=progress_callback, progress_step=process_idx, progress_total=process_total)
                 if cur_frames is None:
                     return abort_result()
                 cur_frames = _crop_output_frames(cur_frames.detach().cpu(), output_height, output_width)
+                if save_still_debug_video:
+                    _save_still_image_debug_video(cur_frames)
                 copy_frames = min(int(cur_frames.shape[2]), input_frames - frames_cursor)
                 if copy_frames > 0:
                     if frames_out is None:
@@ -631,18 +658,21 @@ class FlashVSRRuntime:
                     if _abort_requested(abort_callback):
                         return abort_result()
                     if decode_idx == 0:
-                        lq_cur_idx = 1 if still_image else 21
+                        lq_cur_idx = 1 if optimize_still_image else 21
                         latent_start, latent_end = 0, first_chunk_latent_frames
                     else:
                         lq_cur_idx = decode_idx * 8 + 21
                         latent_start, latent_end = 4 + decode_idx * 2, 6 + decode_idx * 2
                     cur_latents = latents[:, :, latent_start:latent_end].to(self.device, dtype=self.dtype)
-                    decode_latents = cur_latents[:, :, :1].contiguous() if still_image and frames_cursor == 0 else cur_latents
-                    decode_lq_cur_idx = 1 if still_image and frames_cursor == 0 else lq_cur_idx
+                    save_still_debug_video = still_image and frames_cursor == 0 and FLASHVSR_SAVE_STILL_IMAGE_DEBUG_VIDEO
+                    decode_latents = cur_latents if save_still_debug_video else cur_latents[:, :, :1].contiguous() if optimize_still_image and frames_cursor == 0 else cur_latents
+                    decode_lq_cur_idx = still_debug_frame_count if save_still_debug_video else 1 if optimize_still_image and frames_cursor == 0 else lq_cur_idx
                     cur_frames, tcdecoder_tile_mems = self._decode_tcdecoder(decode_latents, sample, lq_pre_idx, decode_lq_cur_idx, output_height, output_width, padded_output_height, padded_output_width, tcdecoder_tile_size, tcdecoder_tile_mems, abort_callback=abort_callback, progress_callback=progress_callback, progress_step=decode_idx, progress_total=process_total)
                     if cur_frames is None:
                         return abort_result()
                     cur_frames = _crop_output_frames(cur_frames.detach().cpu(), output_height, output_width)
+                    if save_still_debug_video:
+                        _save_still_image_debug_video(cur_frames)
                     copy_frames = min(int(cur_frames.shape[2]), input_frames - frames_cursor)
                     if copy_frames > 0:
                         if frames_out is None:
@@ -660,8 +690,11 @@ class FlashVSRRuntime:
                     raise RuntimeError("FlashVSR full variant requires the Wan VAE.")
                 vae_tile_size = int(vae_tile_size or 0)
                 print(f"[FlashVSR] Wan VAE tiling policy: tile_size={vae_tile_size}px")
-                decode_latents = latents[0, :, :1].contiguous() if still_image else latents[0]
-                frames = self.vae.decode_to_cpu_uint8([decode_latents], vae_tile_size, target_frames=input_frames, target_height=output_height, target_width=output_width)[0]
+                save_still_debug_video = still_image and FLASHVSR_SAVE_STILL_IMAGE_DEBUG_VIDEO
+                decode_latents = latents[0, :, :first_chunk_latent_frames].contiguous() if save_still_debug_video else latents[0, :, :1].contiguous() if optimize_still_image else latents[0]
+                frames = self.vae.decode_to_cpu_uint8([decode_latents], vae_tile_size, target_frames=None if save_still_debug_video else input_frames, target_height=output_height, target_width=output_width)[0]
+                if save_still_debug_video:
+                    _save_still_image_debug_video(frames)
         if self.tcdecoder is not None:
             self.tcdecoder.clean_mem()
         if self.vae is not None:

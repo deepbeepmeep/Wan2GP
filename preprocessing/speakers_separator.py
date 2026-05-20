@@ -12,6 +12,13 @@ import gc
 import logging
 
 verbose_output = True
+USE_SHERPA_ONNX_SPEAKER_DIARIZATION = True
+SHERPA_ONNX_SEGMENTATION_MODEL = "sherpa/sherpa-onnx-pyannote-segmentation-3-0/model.onnx"
+SHERPA_ONNX_EMBEDDING_MODEL = "sherpa/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
+SHERPA_ONNX_NUM_SPEAKERS = 2
+SHERPA_ONNX_CLUSTER_THRESHOLD = 0.5
+SHERPA_ONNX_MIN_DURATION_ON = 0.3
+SHERPA_ONNX_MIN_DURATION_OFF = 0.5
 
 if not hasattr(torchaudio, "list_audio_backends"):
     torchaudio.list_audio_backends = lambda: ["ffmpeg", "soundfile"]
@@ -64,7 +71,6 @@ warnings.filterwarnings("ignore", message=".*Module 'speechbrain.pretrained'.*",
 # logging.getLogger('speechbrain').setLevel(logging.WARNING)
 # logging.getLogger('speechbrain.utils.checkpoints').setLevel(logging.WARNING)
 os.environ["SB_LOG_LEVEL"] = "WARNING"   
-import speechbrain
 
 def xprint(t = None, force: bool = False):
     if verbose_output or force:
@@ -77,12 +83,39 @@ if torch.cuda.is_available():
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
-try:
-    from pyannote.audio import Pipeline
+if USE_SHERPA_ONNX_SPEAKER_DIARIZATION:
     PYANNOTE_AVAILABLE = True
-except ImportError:
-    PYANNOTE_AVAILABLE = False
-    print("Install: pip install pyannote.audio")
+else:
+    import speechbrain
+    try:
+        from pyannote.audio import Pipeline
+        PYANNOTE_AVAILABLE = True
+    except ImportError:
+        PYANNOTE_AVAILABLE = False
+        print("Install: pip install pyannote.audio")
+
+
+class _SimpleSegment:
+    def __init__(self, start: float, end: float):
+        self.start = start
+        self.end = end
+
+
+class _SimpleDiarization:
+    def __init__(self, segments: List[Tuple[float, float, str]], uri: str = None):
+        self.segments = segments
+        self.uri = uri
+
+    def labels(self):
+        return sorted({speaker for _, _, speaker in self.segments})
+
+    def itertracks(self, yield_label: bool = False):
+        for index, (start, end, speaker) in enumerate(self.segments):
+            segment = _SimpleSegment(start, end)
+            yield (segment, index, speaker) if yield_label else (segment, index)
+
+    def label_timeline(self, speaker: str):
+        return [_SimpleSegment(start, end) for start, end, label in self.segments if label == speaker]
 
 
 class OptimizedPyannote31SpeakerSeparator:
@@ -91,8 +124,16 @@ class OptimizedPyannote31SpeakerSeparator:
         """
         Initialize with Pyannote 3.1 pipeline with tunable VAD sensitivity.
         """
-        embedding_path = "ckpts/pyannote/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"
-        segmentation_path = "ckpts/pyannote/pytorch_model_segmentation-3.0.bin"
+        self.hf_token = hf_token
+        self._overlap_pipeline = None
+        self.use_sherpa_onnx = USE_SHERPA_ONNX_SPEAKER_DIARIZATION
+        if self.use_sherpa_onnx:
+            self._init_sherpa_onnx_pipeline()
+            return
+
+        from shared.utils import files_locator as fl
+        embedding_path = fl.locate_file("pyannote/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin")
+        segmentation_path = fl.locate_file("pyannote/pytorch_model_segmentation-3.0.bin")
 
 
         xprint(f"Loading segmentation model from: {segmentation_path}")
@@ -141,9 +182,31 @@ class OptimizedPyannote31SpeakerSeparator:
             traceback.print_exc()
             raise
 
+    def _init_sherpa_onnx_pipeline(self):
+        from shared.utils import files_locator as fl
+        try:
+            import sherpa_onnx
+        except ImportError as exc:
+            raise ImportError("sherpa-onnx is required for speaker separation when USE_SHERPA_ONNX_SPEAKER_DIARIZATION is True.") from exc
 
-        self.hf_token = hf_token
-        self._overlap_pipeline = None
+        segmentation_path = fl.locate_file(SHERPA_ONNX_SEGMENTATION_MODEL)
+        embedding_path = fl.locate_file(SHERPA_ONNX_EMBEDDING_MODEL)
+        xprint(f"Loading Sherpa-ONNX segmentation model from: {segmentation_path}")
+        xprint(f"Loading Sherpa-ONNX embedding model from: {embedding_path}")
+
+        config = sherpa_onnx.OfflineSpeakerDiarizationConfig(
+            segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
+                pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(model=segmentation_path)
+            ),
+            embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=embedding_path),
+            clustering=sherpa_onnx.FastClusteringConfig(num_clusters=SHERPA_ONNX_NUM_SPEAKERS, threshold=SHERPA_ONNX_CLUSTER_THRESHOLD),
+            min_duration_on=SHERPA_ONNX_MIN_DURATION_ON,
+            min_duration_off=SHERPA_ONNX_MIN_DURATION_OFF,
+        )
+        if not config.validate():
+            raise RuntimeError("Invalid Sherpa-ONNX speaker diarization config. Check the pyannote ONNX and embedding checkpoints.")
+        self.pipeline = sherpa_onnx.OfflineSpeakerDiarization(config)
+        xprint(f"Sherpa-ONNX speaker diarization ready at {self.pipeline.sample_rate}Hz")
 
     def separate_audio(self, audio_path: str, output1, output2, audio_original_path: str = None, return_masks: bool = False, speech_masks_only: bool = False) -> Dict[str, str]:
         """Optimized main separation function with memory management."""
@@ -164,7 +227,7 @@ class OptimizedPyannote31SpeakerSeparator:
             masks = self.create_optimized_speaker_masks(diarization, waveform.shape[1], sample_rate)
             
             # Apply background preservation
-            final_masks = self.apply_optimized_background_preservation(masks, waveform.shape[1])
+            final_masks = self.apply_optimized_background_preservation(masks, waveform.shape[1], sample_rate)
             speech_activity = np.zeros(waveform.shape[1], dtype=bool)
             for speaker in final_masks:
                 speech_activity |= masks.get(speaker, np.zeros(waveform.shape[1], dtype=np.float32)) > 0.5
@@ -335,6 +398,9 @@ class OptimizedPyannote31SpeakerSeparator:
         """
         Optimized diarization with efficient parameter testing.
         """
+        if self.use_sherpa_onnx:
+            return self._perform_sherpa_onnx_diarization(audio_path)
+
         xprint("Running optimized Pyannote 3.1 diarization...")
         
         # Optimized strategy order - most likely to succeed first
@@ -394,6 +460,26 @@ class OptimizedPyannote31SpeakerSeparator:
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=UserWarning)
             return self.pipeline(audio_path)
+
+    def _perform_sherpa_onnx_diarization(self, audio_path: str) -> object:
+        xprint("Running Sherpa-ONNX speaker diarization...")
+        import librosa
+        import soundfile as sf
+
+        audio_data, sample_rate = sf.read(os.fspath(audio_path), dtype="float32", always_2d=True)
+        audio = audio_data.mean(axis=1)
+        target_sample_rate = self.pipeline.sample_rate
+        if sample_rate != target_sample_rate:
+            audio = librosa.resample(audio, orig_sr=sample_rate, target_sr=target_sample_rate)
+        audio = np.ascontiguousarray(audio, dtype=np.float32)
+
+        result = self.pipeline.process(audio).sort_by_start_time()
+        segments = [(float(segment.start), float(segment.end), f"SPEAKER_{int(segment.speaker):02d}") for segment in result]
+        speakers = sorted({speaker for _, _, speaker in segments})
+        xprint(f"  -> Detected {len(speakers)} speakers: {speakers}")
+        for start, end, speaker in segments:
+            xprint(f"  {speaker}: {start:.3f}s - {end:.3f}s")
+        return _SimpleDiarization(segments, uri=os.path.abspath(audio_path))
     
     def _try_aggressive_clustering(self, audio_path: str) -> object:
         """Try aggressive clustering parameters."""
@@ -516,8 +602,7 @@ class OptimizedPyannote31SpeakerSeparator:
         
         return mask
     
-    def apply_optimized_background_preservation(self, masks: Dict[str, np.ndarray], 
-                                              audio_length: int) -> Dict[str, np.ndarray]:
+    def apply_optimized_background_preservation(self, masks: Dict[str, np.ndarray], audio_length: int, sample_rate: int) -> Dict[str, np.ndarray]:
         """
         Heavily optimized background preservation using pure vectorized operations.
         """
@@ -566,7 +651,6 @@ class OptimizedPyannote31SpeakerSeparator:
             final_masks[speaker_keys[1]][neither] = (ambiguous_assignments == 1).astype(np.float32) * 0.5
         
         # xprint statistics (vectorized)
-        sample_rate = 16000  # Assume 16kHz for timing
         xprint(f"  Both speaking clearly: {np.sum(both_active)/sample_rate:.1f}s")
         xprint(f"  {speaker_keys[0]} only: {np.sum(only_0)/sample_rate:.1f}s")
         xprint(f"  {speaker_keys[1]} only: {np.sum(only_1)/sample_rate:.1f}s")

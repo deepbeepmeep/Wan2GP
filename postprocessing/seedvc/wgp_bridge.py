@@ -10,6 +10,7 @@ _persistent_converter = None
 _persistent_offloadobj = None
 _persistent_profile = None
 KEEP_ORIGINAL_AUDIO_OUTSIDE_TWO_SPEAKERS = True
+SEEDVC_RESTORE_BACKGROUND_STEM = True
 
 
 def _release_runtime_objects(converter=None, offloadobj=None) -> None:
@@ -211,14 +212,23 @@ class SeedVCBridge:
 
     def download(self, process_files: Callable[..., Any], send_cmd=None, status_text: str | None = None) -> bool:
         download_defs = self.query_download_def()
-        if not download_defs or self._assets_available():
+        if not download_defs:
             return False
-        from shared.utils.download import send_download_status
+        downloaded = False
+        from shared.utils.download import download_def_missing_files, query_audio_background_replacement_download_def, send_download_status
 
-        send_download_status(send_cmd, status_text)
-        for download_def in download_defs:
-            process_files(**download_def)
-        return True
+        if download_defs and not self._assets_available():
+            send_download_status(send_cmd, status_text)
+            for download_def in download_defs:
+                process_files(**download_def)
+            downloaded = True
+        if SEEDVC_RESTORE_BACKGROUND_STEM:
+            stem_download_def = query_audio_background_replacement_download_def()
+            if download_def_missing_files(stem_download_def):
+                send_download_status(send_cmd, "Downloading audio background replacement model files...")
+                process_files(**stem_download_def)
+                downloaded = True
+        return downloaded
 
     def _replace_two_speaker_audio_file(self, source_audio_path: str, voice_sample_path: str, output_path: str, *, voice_sample2_path: str, process_files: Callable[..., Any], profile_no=4, verbose_level: int = 1, init_pipe: Callable[..., int] | None = None, prefix: str = "seedvc") -> str:
         import numpy as np
@@ -240,8 +250,9 @@ class SeedVCBridge:
             active_mask2 = _fit_audio_mask_to_audio(mask_values[1], mask_sample_rate, info2.samplerate, info2.frames)
             normalized_track1, normalized_track2, _ = normalize_audio_pair_volumes_to_temp_files(split_track1, split_track2, output_dir=output_dir, prefix=f"{prefix}_norm_", active_mask1=active_mask1, active_mask2=active_mask2)
             temp_tracks += [normalized_track1, normalized_track2]
-            self.replace_audio_file(normalized_track1, voice_sample_path, converted_track1, process_files=process_files, profile_no=profile_no, verbose_level=verbose_level, init_pipe=init_pipe)
-            self.replace_audio_file(normalized_track2, voice_sample2_path, converted_track2, process_files=process_files, profile_no=profile_no, verbose_level=verbose_level, init_pipe=init_pipe)
+            _, _, persistence = self.settings()
+            convert_audio_file(normalized_track1, voice_sample_path, converted_track1, persistent_models=persistence == self.PERSIST_RAM, profile_no=profile_no, verbose_level=verbose_level, init_pipe=init_pipe)
+            convert_audio_file(normalized_track2, voice_sample2_path, converted_track2, persistent_models=persistence == self.PERSIST_RAM, profile_no=profile_no, verbose_level=verbose_level, init_pipe=init_pipe)
             converted_info1, converted_info2 = sf.info(converted_track1), sf.info(converted_track2)
             converted_mask1 = _fit_audio_mask_to_audio(mask_values[0], mask_sample_rate, converted_info1.samplerate, converted_info1.frames)
             converted_mask2 = _fit_audio_mask_to_audio(mask_values[1], mask_sample_rate, converted_info2.samplerate, converted_info2.frames)
@@ -260,11 +271,37 @@ class SeedVCBridge:
         if not enabled:
             raise RuntimeError("SeedVC voice replacement is disabled in Configuration > Extensions.")
         self.download(process_files)
-        if int(speaker_count) == 2:
-            if voice_sample2_path is None:
-                raise RuntimeError("Two-speaker SeedVC voice replacement requires a second voice sample.")
-            return self._replace_two_speaker_audio_file(source_audio_path, voice_sample_path, output_path, voice_sample2_path=voice_sample2_path, process_files=process_files, profile_no=profile_no, verbose_level=verbose_level, init_pipe=init_pipe, prefix=prefix)
-        return convert_audio_file(source_audio_path, voice_sample_path, output_path, persistent_models=persistence == self.PERSIST_RAM, profile_no=profile_no, verbose_level=verbose_level, init_pipe=init_pipe)
+        output_dir = os.path.dirname(os.path.abspath(output_path)) or "."
+        temp_tracks = []
+        conversion_source_path = source_audio_path
+        background_path = None
+        conversion_output_path = output_path
+        try:
+            if SEEDVC_RESTORE_BACKGROUND_STEM:
+                from preprocessing.extract_vocals import extract_vocal_and_background_stems
+
+                requested_vocals_path = _make_temp_wav(output_dir, "seedvc_vocals_")
+                requested_background_path = _make_temp_wav(output_dir, "seedvc_background_")
+                temp_tracks += [requested_vocals_path, requested_background_path]
+                conversion_source_path, background_path = extract_vocal_and_background_stems(source_audio_path, requested_vocals_path, requested_background_path)
+                temp_tracks += [conversion_source_path, background_path]
+                conversion_output_path = _make_temp_wav(output_dir, "seedvc_voice_")
+                temp_tracks.append(conversion_output_path)
+
+            if int(speaker_count) == 2:
+                if voice_sample2_path is None:
+                    raise RuntimeError("Two-speaker SeedVC voice replacement requires a second voice sample.")
+                converted_path = self._replace_two_speaker_audio_file(conversion_source_path, voice_sample_path, conversion_output_path, voice_sample2_path=voice_sample2_path, process_files=process_files, profile_no=profile_no, verbose_level=verbose_level, init_pipe=init_pipe, prefix=prefix)
+            else:
+                converted_path = convert_audio_file(conversion_source_path, voice_sample_path, conversion_output_path, persistent_models=persistence == self.PERSIST_RAM, profile_no=profile_no, verbose_level=verbose_level, init_pipe=init_pipe)
+            if background_path is not None:
+                return _merge_audio_files_to_wav([converted_path, background_path], output_path)
+            return converted_path
+        finally:
+            if temp_tracks:
+                from shared.utils.audio_video import cleanup_temp_audio_files
+
+                cleanup_temp_audio_files(temp_tracks)
 
     def replace_audio_tracks(self, audio_tracks: list[str], voice_sample_path: str | None, output_dir: str, prefix: str, *, process_files: Callable[..., Any], profile_no=4, verbose_level: int = 1, init_pipe: Callable[..., int] | None = None, voice_sample2_path: str | None = None, speaker_count: int = 1) -> tuple[list[str], list[str]]:
         if voice_sample_path is None or len(audio_tracks) == 0:

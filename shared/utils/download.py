@@ -147,6 +147,11 @@ def download_def_missing_files(download_def):
 
     if download_def is None:
         return []
+    if isinstance(download_def, list):
+        missing = []
+        for one_def in download_def:
+            missing.extend(download_def_missing_files(one_def))
+        return missing
     source_folders = download_def.get("sourceFolderList", [])
     file_lists = download_def.get("fileList", [])
     target_folders = download_def.get("targetFolderList")
@@ -175,7 +180,11 @@ def process_files_def_if_needed(download_def, send_cmd=None, status_text=None):
     if download_def is None or len(download_def_missing_files(download_def)) == 0:
         return False
     send_download_status(send_cmd, status_text)
-    process_files_def(**download_def)
+    if isinstance(download_def, list):
+        for one_def in download_def:
+            process_files_def(**one_def)
+    else:
+        process_files_def(**download_def)
     return True
 
 
@@ -192,11 +201,18 @@ def download_audio_background_replacement(send_cmd=None, status_text="Downloadin
 
 
 def query_speaker_separator_download_def():
-    return {
-        "repoId": "DeepBeepMeep/Wan2.1",
-        "sourceFolderList": ["pyannote"],
-        "fileList": [["pyannote_model_wespeaker-voxceleb-resnet34-LM.bin", "pytorch_model_segmentation-3.0.bin"]],
-    }
+    return [
+        {
+            "repoId": "DeepBeepMeep/Wan2.1",
+            "sourceFolderList": ["pyannote"],
+            "fileList": [["pyannote_model_wespeaker-voxceleb-resnet34-LM.bin", "pytorch_model_segmentation-3.0.bin"]],
+        },
+        {
+            "repoId": "DeepBeepMeep/LTX-2",
+            "sourceFolderList": ["sherpa"],
+            "fileList": [["sherpa-onnx-pyannote-segmentation-3-0/model.onnx", "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"]],
+        },
+    ]
 
 
 def download_speaker_separator(send_cmd=None, status_text="Downloading speaker separator model files..."):

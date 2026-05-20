@@ -300,6 +300,41 @@ def pil_to_base64_uri(pil_image, format="png", quality=75):
         return None
 
 
+def video_to_base64_uri(video_path):
+    if video_path is None or not os.path.exists(video_path):
+        return None
+    try:
+        with open(video_path, "rb") as f:
+            video_bytes = f.read()
+        ext = os.path.splitext(video_path)[1].lower()
+        if ext == ".webm":
+            mime = "video/webm"
+        elif ext == ".mp4":
+            mime = "video/mp4"
+        else:
+            mime = "video/mp4"
+        encoded_string = base64.b64encode(video_bytes).decode("utf-8")
+        return f"data:{mime};base64,{encoded_string}"
+    except Exception as e:
+        print(f"Error converting video to base64: {e}")
+        return None
+
+
+def _cleanup_preview_file(gen):
+    old_preview = gen.get("preview", None)
+    if isinstance(old_preview, str) and os.path.exists(old_preview):
+        try:
+            os.remove(old_preview)
+        except Exception:
+            pass
+    old_preview_path = gen.pop("preview_video_path", None)
+    if old_preview_path is not None and os.path.exists(old_preview_path):
+        try:
+            os.remove(old_preview_path)
+        except Exception:
+            pass
+
+
 def _open_image_input(image):
     if not isinstance(image, str):
         return image
@@ -3898,7 +3933,12 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
         # progress(*progress_args)
         send_cmd("progress", progress_args)
         if latent is not None:
-            payload = pipe.prepare_preview_payload(latent, preview_meta) if hasattr(pipe, "prepare_preview_payload") else latent
+            if hasattr(pipe, "prepare_preview_payload"):
+                payload = pipe.prepare_preview_payload(latent, preview_meta)
+            else:
+                payload = {"latents": latent}
+                if preview_meta is not None:
+                    payload.update(preview_meta)
             if isinstance(payload, dict):
                 data = payload.copy()
                 lat = data.get("latents")
@@ -6997,7 +7037,7 @@ def generate_video(
             gen["progress_status"] = status
             progress_phase = "Generating Audio" if audio_only else "Encoding Prompt"
             gen["progress_phase"] = (progress_phase , -1 )
-            callback = build_callback(state, trans, send_cmd, status, num_inference_steps)
+            callback = build_callback(state, trans, send_cmd, status, num_inference_steps, preview_meta={"fps": fps, "video_length": video_length})
             progress_args = [0, merge_status_context(status, progress_phase )]
             send_cmd("progress", progress_args)
 
@@ -7517,8 +7557,27 @@ def prepare_generate_video(state):
         return gr.Button(visible= False), gr.Button(visible= True), gr.Column(visible= True), gr.update(visible= False)
 
 
+def _interpolate_rgb_frames(frames, target_count):
+    """Linearly interpolate RGB frames to reach target_count."""
+    source_count = frames.shape[0]
+    if source_count >= target_count:
+        return frames
+    result = np.empty((target_count, frames.shape[1], frames.shape[2], frames.shape[3]), dtype=frames.dtype)
+    for i in range(target_count):
+        t = i * (source_count - 1) / (target_count - 1)
+        idx0 = int(np.floor(t))
+        idx1 = min(idx0 + 1, source_count - 1)
+        alpha = t - idx0
+        if alpha <= 0:
+            result[i] = frames[idx0]
+        else:
+            result[i] = (frames[idx0].astype(np.float32) * (1.0 - alpha) + frames[idx1].astype(np.float32) * alpha).astype(frames.dtype)
+    return result
+
+
 def generate_preview(model_type, payload):
     import einops
+    import imageio
     if payload is None:
         return None
     if isinstance(payload, dict):
@@ -7544,18 +7603,9 @@ def generate_preview(model_type, payload):
     else:
         return None
     if latent_rgb_factors is None: return None
-    latents = latents.unsqueeze(0) 
-    nb_latents = latents.shape[2]
-    latents_to_preview = 4
-    latents_to_preview = min(nb_latents, latents_to_preview)
-    skip_latent =  nb_latents / latents_to_preview
-    latent_no = 0
-    selected_latents = []
-    while latent_no < nb_latents:
-        selected_latents.append( latents[:, : , int(latent_no): int(latent_no)+1])
-        latent_no += skip_latent 
 
-    latents = torch.cat(selected_latents, dim = 2)
+    is_video = latents.ndim == 4 and latents.shape[1] > 1
+    latents = latents.unsqueeze(0) 
     weight = torch.tensor(latent_rgb_factors, device=latents.device, dtype=latents.dtype).transpose(0, 1)[:, :, None, None, None]
     bias = torch.tensor(latent_rgb_factors_bias, device=latents.device, dtype=latents.dtype)
 
@@ -7565,12 +7615,85 @@ def generate_preview(model_type, payload):
     if images.dtype == torch.bfloat16:
         images = images.to(torch.float16)
     images = images.numpy().clip(0, 255).astype(np.uint8)
-    images = einops.rearrange(images, 'b c t h w -> (b h) (t w) c')
-    h, w, _ = images.shape
-    scale = 200 / h
-    images= Image.fromarray(images)
-    images = images.resize(( int(w*scale),int(h*scale)), resample=Image.Resampling.BILINEAR) 
-    return images
+
+    if is_video:
+        # images shape: (1, 3, T, H, W)
+        frames = images[0].transpose(1, 2, 3, 0)  # (T, H, W, 3)
+        h, w = frames.shape[1], frames.shape[2]
+        scale = 200 / h
+        new_h, new_w = int(h * scale), int(w * scale)
+        # H.264 requires even dimensions
+        new_h = new_h + (new_h % 2)
+        new_w = new_w + (new_w % 2)
+        preview_path = os.path.join(tempfile.gettempdir(), f"wgp_preview_{int(time.time()*1000)}.mp4")
+        gen_fps = meta.get("fps", None)
+        video_length = meta.get("video_length", None)
+        if gen_fps is not None and video_length is not None and video_length > frames.shape[0]:
+            frames = _interpolate_rgb_frames(frames, int(video_length))
+            fps = float(gen_fps)
+        elif gen_fps is not None and video_length is not None and video_length > 0:
+            fps = gen_fps * frames.shape[0] / video_length
+        elif gen_fps is not None and gen_fps > 0:
+            fps = gen_fps
+        else:
+            fps = max(4, min(frames.shape[0], 12))
+        writer = None
+        video_success = False
+        try:
+            writer = imageio.get_writer(
+                preview_path,
+                fps=fps,
+                codec="libx264",
+                quality=8,
+                ffmpeg_log_level="error",
+                macro_block_size=1,
+                output_params=["-pix_fmt", "yuv420p"],
+            )
+            for frame in frames:
+                pil_frame = Image.fromarray(frame).resize(
+                    (new_w, new_h), resample=Image.Resampling.BILINEAR
+                )
+                writer.append_data(np.array(pil_frame))
+            video_success = True
+            return preview_path
+        except Exception as e:
+            print(f"Error creating animated preview: {e}")
+            is_video = False
+        finally:
+            if writer is not None:
+                try:
+                    writer.close()
+                except Exception:
+                    pass
+            if not video_success and os.path.exists(preview_path):
+                try:
+                    os.remove(preview_path)
+                except Exception:
+                    pass
+
+    if not is_video:
+        nb_latents = latents.shape[2]
+        latents_to_preview = 4
+        latents_to_preview = min(nb_latents, latents_to_preview)
+        skip_latent =  nb_latents / latents_to_preview
+        latent_no = 0
+        selected_latents = []
+        while latent_no < nb_latents:
+            selected_latents.append( latents[:, : , int(latent_no): int(latent_no)+1])
+            latent_no += skip_latent 
+        latents = torch.cat(selected_latents, dim = 2)
+        images = torch.nn.functional.conv3d(latents, weight, bias=bias, stride=1, padding=0, dilation=1, groups=1)
+        images = images.add_(1.0).mul_(127.5)
+        images = images.detach().cpu()
+        if images.dtype == torch.bfloat16:
+            images = images.to(torch.float16)
+        images = images.numpy().clip(0, 255).astype(np.uint8)
+        images = einops.rearrange(images, 'b c t h w -> (b h) (t w) c')
+        h, w, _ = images.shape
+        scale = 200 / h
+        images= Image.fromarray(images)
+        images = images.resize(( int(w*scale),int(h*scale)), resample=Image.Resampling.BILINEAR) 
+        return images
 
 
 def process_tasks(state):
@@ -7740,12 +7863,19 @@ def process_tasks(state):
             gen["prompt"] = ""
             gen["status_display"] =  False
             release_gen()
+            _cleanup_preview_file(gen)
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
             raise gr.Error(data, print_exception= False, duration = 0)
         elif cmd == "status":
             gen["status"] = data
             status_text = str(data or "").strip()
             gen["last_progress_args"] = [0, status_text] if len(status_text) > 0 else None
         elif cmd == "output":
+            _cleanup_preview_file(gen)
             gen["preview"] = None
             gen["refresh_tab"] = True
             yield time.time(), time.time(), gr.update()
@@ -7759,7 +7889,8 @@ def process_tasks(state):
             
             try:
                 torch.cuda.current_stream().synchronize()
-                preview = None if data is None else generate_preview(current_model_type, data) 
+                preview = None if data is None else generate_preview(current_model_type, data)
+                _cleanup_preview_file(gen)
                 gen["preview"] = preview
                 yield time.time(), gr.Text(), gr.update()
             except Exception:
@@ -7786,6 +7917,12 @@ def process_tasks(state):
     gen["status"] = status
     gen["status_display"] =  False
     release_gen()
+    _cleanup_preview_file(gen)
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 
 def validate_task(task, state):
@@ -9865,11 +10002,24 @@ def refresh_video_prompt_type_video_custom_checkbox(state, video_prompt_type, vi
 
 def refresh_preview(state):
     gen = get_gen_info(state)
-    preview_image = gen.get("preview", None)
-    if preview_image is None:
+    preview = gen.get("preview", None)
+    if preview is None:
         return ""
-    
-    preview_base64 = pil_to_base64_uri(preview_image, format="jpeg", quality=85)
+
+    if isinstance(preview, str) and os.path.exists(preview):
+        preview_base64 = video_to_base64_uri(preview)
+        if preview_base64 is None:
+            return ""
+        html_content = f"""
+        <div style="display: flex; justify-content: center; align-items: center; height: 200px;" onclick="showImageModal('preview_0')">
+            <video src="{preview_base64}" autoplay loop muted playsinline
+                   style="max-height: 100%; max-width: 100%; object-fit: contain; cursor: pointer;"
+                   alt="Preview"></video>
+        </div>
+        """
+        return html_content
+
+    preview_base64 = pil_to_base64_uri(preview, format="jpeg", quality=85)
     if preview_base64 is None:
         return ""
 
@@ -9901,6 +10051,17 @@ def get_modal_image(image_base64, label):
     </div>
     """
 
+def get_modal_video(video_base64, label):
+    return f"""
+    <div class="modal-flex-container" onclick="closeImageModal()">
+        <div class="modal-content-wrapper" onclick="event.stopPropagation()">
+            <div class="modal-close-btn" onclick="closeImageModal()">×</div>
+            <div class="modal-label">{label}</div>
+            <video src="{video_base64}" class="modal-image" autoplay loop muted playsinline controls alt="{label}"></video>
+        </div>
+    </div>
+    """
+
 def show_modal_image(state, action_string):
     if not action_string:
         return gr.HTML(), gr.Column(visible=False)
@@ -9911,12 +10072,18 @@ def show_modal_image(state, action_string):
         queue = gen.get("queue", [])
 
         if parts[0] == 'preview':
-            preview_image = gen.get("preview", None)
-            if preview_image:
-                preview_base64 = pil_to_base64_uri(preview_image)
-                if preview_base64:
-                    html_content = get_modal_image(preview_base64, "Preview")
-                    return gr.HTML(value=html_content), gr.Column(visible=True)
+            preview = gen.get("preview", None)
+            if preview:
+                if isinstance(preview, str) and os.path.exists(preview):
+                    preview_base64 = video_to_base64_uri(preview)
+                    if preview_base64:
+                        html_content = get_modal_video(preview_base64, "Preview")
+                        return gr.HTML(value=html_content), gr.Column(visible=True)
+                else:
+                    preview_base64 = pil_to_base64_uri(preview)
+                    if preview_base64:
+                        html_content = get_modal_image(preview_base64, "Preview")
+                        return gr.HTML(value=html_content), gr.Column(visible=True)
             return gr.HTML(), gr.Column(visible=False)
         elif parts[0] == 'current':
             img_type = parts[1]

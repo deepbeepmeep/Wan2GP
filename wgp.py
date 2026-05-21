@@ -133,7 +133,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.70"
+WanGP_version = "11.75"
 settings_version = 2.60
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -898,6 +898,8 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
 
     if not model_def.get("motion_amplitude", False): motion_amplitude = 1.
     if "vae" in spatial_upsampling:
+        if spatial_upsampling not in ("vae1", "vae2"):
+            return err("VAE Spatial Upsampling only supports x1.0 and x2.0")
         if image_mode not in model_def.get("vae_upsampler", []):
             return err(f"VAE Spatial Upsampling is not available for {medium}")
     edit_upsampler = find_edit_spatial_upsampler(spatial_upsampling)
@@ -2346,7 +2348,24 @@ def find_edit_spatial_upsampler(spatial_upsampling):
     return next((handler for handler in edit_mode_handlers if handler.is_upsampling(spatial_upsampling)), None)
 
 def get_default_image_spatial_upsampling():
-    return "lanczos2"
+    return ""
+
+SPATIAL_UPSAMPLING_METHOD_CHOICES = [("None", ""), ("Lanczos", "lanczos"), ("FlashVSR", "flashvsr"), ("FlashVSR Two Pass", "flashvsr2pass")]
+SPATIAL_UPSAMPLING_RATIO_CHOICES = [(f"x{FlashVSRBridge.format_ratio_label(scale)}", scale) for scale in FlashVSRBridge.UPSAMPLING_RATIOS]
+
+def split_spatial_upsampling_value(value):
+    text = str(value or "").strip().lower()
+    for method, prefix in (("flashvsr2pass", FlashVSRBridge.UPSAMPLING_TWO_PASS_VALUE_PREFIX), ("flashvsr", FlashVSRBridge.UPSAMPLING_VALUE_PREFIX), ("lanczos", "lanczos"), ("vae", "vae")):
+        if text.startswith(prefix):
+            try: scale = FlashVSRBridge.scale_for_upsampling(text) if method.startswith("flashvsr") else float(text[len(prefix):] or 2.0)
+            except ValueError: scale = 2.0
+            return method, scale or 2.0
+    return "", 2.0
+
+def build_spatial_upsampling_value(method, scale):
+    method, scale = str(method or ""), float(scale or 2.0)
+    ratio = FlashVSRBridge.format_ratio(scale)
+    return {"": "", "lanczos": f"lanczos{ratio}", "vae": f"vae{ratio}", "flashvsr": FlashVSRBridge.upsampling_value(scale), "flashvsr2pass": FlashVSRBridge.upsampling_two_pass_value(scale)}.get(method, "")
 
 def _normalize_mmaudio_config(config):
     mode = config.get("mmaudio_mode", None)
@@ -2987,6 +3006,9 @@ default_profile_audio = force_profile_no if force_profile_no >= 0 else server_co
 default_profile = default_profile_video
 loaded_profile = force_profile_no = -1
 compile = server_config.get("compile", "")
+if args.compile:
+    compile="transformer"
+    lock_ui_compile = True
 if is_mps: compile = ""
 boost = server_config.get("boost", 1)
 enable_int8_kernels = server_config.get("enable_int8_kernels", 1)
@@ -3042,11 +3064,6 @@ only_allow_edit_in_advanced = False
 lora_preselected_preset = args.lora_preset
 lora_preset_model = transformer_type
 
-if  args.compile: #args.fastest or
-    compile="transformer"
-    lock_ui_compile = True
-if is_mps:
-    compile = ""
 
 
 def save_model(model, model_type, dtype,  config_file,  submodel_no = 1,  is_module = False, filter = None, no_fp16_main_model = True, module_source_no = 1):
@@ -3723,7 +3740,7 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
     if len(compile) > 0 and hasattr(wan_model, "custom_compile"):
         wan_model.custom_compile(backend= "inductor", mode ="default")
     compile_modules = model_def.get("compile", compile) if len(compile) > 0 else False
-    if compile_modules == False:
+    if compile_modules == False and len(compile):
         _load_models_info("Pytorch compilation is not supported for this Model")
     # kwargs["pinnedMemory"] = "text_encoder"
     offloadobj = offload.profile(pipe, profile_no= mmgp_profile, compile = compile_modules, quantizeTransformer = False, loras = loras_transformer, perc_reserved_mem_max = perc_reserved_mem_max , vram_safety_coefficient = vram_safety_coefficient , convertWeightsFloatTo = transformer_dtype, **kwargs)  
@@ -4750,16 +4767,16 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
     visible= len(files) > 0
     if is_image:
         post_temporal_update = gr.update(visible=False, value="")
-        post_spatial_update = gr.update(visible=False)
-        post_image_spatial_update = gr.update(visible=True)
+        post_spatial_update = gr.update()
+        post_image_spatial_update = gr.update()
     elif is_video:
         post_temporal_update = gr.update(visible=True)
-        post_spatial_update = gr.update(visible=True)
-        post_image_spatial_update = gr.update(visible=False)
+        post_spatial_update = gr.update()
+        post_image_spatial_update = gr.update()
     else:
         post_temporal_update = gr.update(visible=False)
-        post_spatial_update = gr.update(visible=False)
-        post_image_spatial_update = gr.update(visible=False)
+        post_spatial_update = gr.update()
+        post_image_spatial_update = gr.update()
     return choice if source=="video" else gr.update(), html_content, gr.update(visible=visible and is_video) , gr.update(visible=visible and is_image), gr.update(visible=visible and is_audio), gr.update(visible=visible and is_deleted and source=="video"), gr.update(visible=visible and is_deleted and source=="audio"), gr.update(visible=visible and is_audio), gr.update(visible=visible and (is_video or is_image)) , gr.update(visible=visible and is_video), post_temporal_update, post_spatial_update, post_image_spatial_update
 
 def convert_image(image):
@@ -5339,8 +5356,8 @@ def perform_spatial_upsampling(sample, spatial_upsampling, seed=0, flashvsr_cont
     if spatial_upsampling == "vae1":
         scale = 0.5
         method = Image.Resampling.BICUBIC
-    elif spatial_upsampling == "lanczos1.5":
-        scale = 1.5
+    elif str(spatial_upsampling or "").startswith("lanczos"):
+        scale = split_spatial_upsampling_value(spatial_upsampling)[1]
     else:
         scale = 2
     h, w = sample.shape[-2:]
@@ -8846,6 +8863,9 @@ def apply_post_processing(state, input_file_list, choice, PP_temporal_upsampling
     if selected_is_image and len(PP_temporal_upsampling or "") > 0:
         gr.Info("Temporal Upsampling can not be used with an Image")
         return gr.update(), gr.update(), gr.update()
+    if str(PP_spatial_upsampling or "").startswith("vae") and PP_spatial_upsampling not in ("vae1", "vae2"):
+        gr.Info("VAE Spatial Upsampling only supports x1.0 and x2.0")
+        return gr.update(), gr.update(), gr.update()
     if selected_is_image and "vae" in (PP_spatial_upsampling or ""):
         gr.Info("VAE Spatial Upsampling is only available during generation")
         return gr.update(), gr.update(), gr.update()
@@ -9668,14 +9688,14 @@ def del_in_sequence(source_str, letters):
             ret = ret.replace(letter, "")
     return ret    
 
-def get_postprocess_audio_choices(any_mmaudio=True, any_control=True, any_custom=True, any_seedvc=False):
-    choices = [("None", "")]
+def get_postprocess_audio_choices(any_mmaudio=True, any_control=True, any_custom=True, any_seedvc=False, include_none=True):
+    choices = [("None", "")] if include_none else []
+    if any_custom:
+        choices.append(("Custom Soundtrack", "custom"))
     if any_mmaudio:
         choices.append(("MMAudio (generate Audio Based on Video Content)", "mmaudio"))
     if any_control:
         choices.append(("Control Video Audio Track (Reuse Control Video Audio Track)", "control"))
-    if any_custom:
-        choices.append(("Custom Soundtrack", "custom"))
     if any_seedvc:
         choices.append(("Voice Replacement using SeedVC (One Speaker)", "seedvc"))
         choices.append(("Voice Replacement using SeedVC (Two Speakers)", "seedvc2"))
@@ -11373,22 +11393,20 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 # max_height = max_height
                             )
                             
-                            spatial_upsampling_choices = [
-                                    ("Disabled", ""),
-                                    ("Lanczos x1.5", "lanczos1.5"), 
-                                    ("Lanczos x2.0", "lanczos2"), 
-                            ] + ([("VAE x1.0 (refined)", "vae1"),("VAE x2.0", "vae2")] if any_vae_upsampling else [])
-                            spatial_upsampling_choices += query_edit_spatial_upsampling_choices(include_name=True, enabled_only=not always_show_flashvsr)
-                            spatial_upsampling = gr.Dropdown(
-                                choices=spatial_upsampling_choices,
-                                value=spatial_upsampling,
-                                visible=True,
-                                scale = 1,
-                                label="Spatial Upsampling",
-                                elem_classes= element_class
-                                # max_height = max_height
-                            )
-                            duplicate_spatial_upsampling = gr.Dropdown(choices=spatial_upsampling_choices, value="", visible=False, scale=1, label="Spatial Upsampling", elem_classes=element_class) if duplicate_spatial else None
+                            spatial_method, spatial_scale = split_spatial_upsampling_value(spatial_upsampling)
+                            spatial_method_choices = SPATIAL_UPSAMPLING_METHOD_CHOICES[:2] + (SPATIAL_UPSAMPLING_METHOD_CHOICES[2:] if always_show_flashvsr or flashvsr.enabled() else []) + ([("VAE Upscaling", "vae")] if any_vae_upsampling else [])
+                            if spatial_method not in {value for _, value in spatial_method_choices}: spatial_method = ""
+                            with gr.Row():
+                                spatial_upsampling_method = gr.Dropdown(choices=spatial_method_choices, value=spatial_method, visible=True, scale=3, label="Spatial Upsampling", elem_classes=element_class)
+                                spatial_upsampling_ratio = gr.Dropdown(choices=SPATIAL_UPSAMPLING_RATIO_CHOICES, value=spatial_scale, visible=spatial_method != "", scale=1, label="Scale", elem_classes=element_class)
+                            spatial_upsampling = gr.Textbox(value=build_spatial_upsampling_value(spatial_method, spatial_scale), visible=False, elem_classes=element_class)
+                            duplicate_spatial_upsampling = gr.Textbox(value=build_spatial_upsampling_value(spatial_method, spatial_scale), visible=False, elem_classes=element_class) if duplicate_spatial else None
+                            def refresh_spatial_upsampling(method, scale):
+                                value = build_spatial_upsampling_value(method, scale)
+                                return [gr.update(visible=bool(method)), value] + ([value] if duplicate_spatial else [])
+                            if not update_form:
+                                spatial_outputs = [spatial_upsampling_ratio, spatial_upsampling] + ([duplicate_spatial_upsampling] if duplicate_spatial else [])
+                                gr.on(triggers=[spatial_upsampling_method.change, spatial_upsampling_ratio.change], fn=refresh_spatial_upsampling, inputs=[spatial_upsampling_method, spatial_upsampling_ratio], outputs=spatial_outputs, show_progress="hidden")
 
                             with gr.Row():
                                 film_grain_intensity = gr.Slider(0, 1, value=film_grain_intensity, step=0.01, label="Film Grain Intensity (0 = disabled)", show_reset_button= False) 
@@ -11782,8 +11800,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     with gr.Tab("Audio Remuxing", id= "audio_remuxing", visible = True) as audio_remuxing_tab:
 
                         with gr.Group(elem_classes= "postprocess"):
-                            PP_postprocess_audio_choices = get_postprocess_audio_choices(get_mmaudio_settings(server_config)[0], False, True, seedvc_bridge.enabled())
-                            PP_postprocess_audio_value = "" if update_form else ""
+                            PP_postprocess_audio_choices = get_postprocess_audio_choices(get_mmaudio_settings(server_config)[0], False, True, seedvc_bridge.enabled(), include_none=False)
+                            PP_postprocess_audio_value = "" if update_form else "custom"
                             with gr.Column(visible = True) as PP_MMAudio_col:
                                 with gr.Row():
                                     PP_postprocess_audio = gr.Dropdown(
@@ -11796,7 +11814,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                         PP_MMAudio_neg_prompt = gr.Text("", label="Negative Prompt (1 or 2 keywords)", elem_classes= "postprocess")
                                     PP_MMAudio_seed = gr.Slider(-1, 999999999, value=-1, step=1, label="Seed (-1 for random)", show_reset_button= False) 
                                     PP_repeat_generation = gr.Slider(1, 25.0, value=1, step=1, label="Number of Sample Videos to Generate", show_reset_button= False) 
-                            with gr.Row(**default_visibility_false) as PP_custom_audio_row:
+                            with gr.Row(visible=PP_postprocess_audio_value == "custom") as PP_custom_audio_row:
                                     PP_custom_audio = gr.Audio(label = "Soundtrack", type="filepath", show_download_button= True,)
                             with gr.Row(**default_visibility_false) as PP_seedvc_voice_sample_row:
                                     PP_seedvc_voice_sample = gr.Audio(label="Voice Sample #1", type="filepath", show_download_button=True)

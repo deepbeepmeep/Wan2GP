@@ -56,6 +56,7 @@ def normalize_container_name(video_container: str | None) -> str:
 
 
 SUPPORTED_OUTPUT_CONTAINERS = constants.SUPPORTED_OUTPUT_CONTAINERS
+LIVE_AUDIO_LOOP_PADDING_SECONDS = 5.0
 
 
 def is_supported_output_container(video_container: str | None) -> bool:
@@ -269,11 +270,13 @@ def start_av_mux_process(ffmpeg_path: str, output_path: str, width: int, height:
         f"{float(fps_float):.12g}",
         "-i",
         "pipe:0",
+        "-stream_loop",
+        "-1",
         "-ss",
         f"{max(0.0, float(start_seconds)):.12g}",
     ]
     if source_audio_duration_seconds is not None and source_audio_duration_seconds > 0.0:
-        command += ["-t", f"{max(0.0, float(source_audio_duration_seconds)):.12g}"]
+        command += ["-t", f"{max(0.0, float(source_audio_duration_seconds) + LIVE_AUDIO_LOOP_PADDING_SECONDS):.12g}"]
     command += ["-i", source_path]
     metadata_input_index = None
     if reserved_metadata_path and os.path.isfile(reserved_metadata_path):
@@ -286,9 +289,7 @@ def start_av_mux_process(ffmpeg_path: str, output_path: str, width: int, height:
         command += ["-map", "1:a?"]
     else:
         command += ["-map", f"1:a:{max(0, int(audio_track_no) - 1)}?"]
-    command += get_video_encode_args(video_codec, video_container) + ["-c:a", "copy"]
-    if source_audio_duration_seconds is None:
-        command += ["-shortest"]
+    command += get_video_encode_args(video_codec, video_container) + ["-c:a", "copy", "-shortest"]
     command += _get_live_mux_output_args(video_container)
     command += [output_path]
     return subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, bufsize=0)
@@ -340,11 +341,13 @@ def start_hdr_av_mux_process(ffmpeg_path: str, output_path: str, width: int, hei
         f"{float(fps_float):.12g}",
         "-i",
         "pipe:0",
+        "-stream_loop",
+        "-1",
         "-ss",
         f"{max(0.0, float(start_seconds)):.12g}",
     ]
     if source_audio_duration_seconds is not None and source_audio_duration_seconds > 0.0:
-        command += ["-t", f"{max(0.0, float(source_audio_duration_seconds)):.12g}"]
+        command += ["-t", f"{max(0.0, float(source_audio_duration_seconds) + LIVE_AUDIO_LOOP_PADDING_SECONDS):.12g}"]
     command += ["-i", source_path]
     if reserved_metadata_path and os.path.isfile(reserved_metadata_path):
         command += ["-f", "ffmetadata", "-i", reserved_metadata_path, "-map_metadata", "2"]
@@ -355,9 +358,7 @@ def start_hdr_av_mux_process(ffmpeg_path: str, output_path: str, width: int, hei
         command += ["-map", "1:a?"]
     else:
         command += ["-map", f"1:a:{max(0, int(audio_track_no) - 1)}?"]
-    command += get_hdr_video_encode_args(video_codec, video_container) + ["-c:a", "copy"]
-    if source_audio_duration_seconds is None:
-        command += ["-shortest"]
+    command += get_hdr_video_encode_args(video_codec, video_container) + ["-c:a", "copy", "-shortest"]
     command += _get_live_mux_output_args(video_container)
     command += [output_path]
     return subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, bufsize=0)

@@ -237,11 +237,17 @@ class ProcessLibrary:
         return self.system_handler_for_definition(self.process_definition(process_name, main_state, user_refs))
 
     def target_control_choices(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> list[tuple[str, str]]:
-        handler = self.system_handler_for_process(process_name, main_state, user_refs)
+        process_definition = self.process_definition(process_name, main_state, user_refs)
+        handler = self.system_handler_for_definition(process_definition)
+        if handler is not None and callable(getattr(handler, "target_control_choices_for_process", None)):
+            return handler.target_control_choices_for_process(process_definition.get("settings", {}))
         return list(getattr(handler, "target_control_choices", [])) if handler is not None else []
 
     def target_control_default(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> str:
-        handler = self.system_handler_for_process(process_name, main_state, user_refs)
+        process_definition = self.process_definition(process_name, main_state, user_refs)
+        handler = self.system_handler_for_definition(process_definition)
+        if handler is not None and callable(getattr(handler, "target_control_default_for_process", None)):
+            return handler.target_control_default_for_process(process_definition.get("settings", {}))
         return str(getattr(handler, "default_target_control", "")) if handler is not None else ""
 
     def has_target_control(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:

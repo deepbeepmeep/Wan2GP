@@ -130,7 +130,11 @@ class ProcessRunner:
         prompt_text = request.prompt_text
         start_seconds = request.start_seconds
         end_seconds = request.end_seconds
-        system_target_control = system_handler.normalize_target_control(request.target_ratio) if system_handler is not None and hasattr(system_handler, "normalize_target_control") else ""
+        if system_handler is not None and callable(getattr(system_handler, "normalize_target_control_for_process", None)):
+            system_target_control = system_handler.normalize_target_control_for_process(request.target_ratio, process_settings)
+        else:
+            system_target_control = system_handler.normalize_target_control(request.target_ratio) if system_handler is not None and hasattr(system_handler, "normalize_target_control") else ""
+        system_supports_continue_cache = system_handler is not None and (not callable(getattr(system_handler, "supports_continue_cache_for_target", None)) or system_handler.supports_continue_cache_for_target(system_target_control))
         try:
             chunk_size_seconds = common.require_float(request.chunk_size_seconds, "Chunk Size", minimum=0.1)
             sliding_window_overlap = int(getattr(system_handler, "overlap_frames", 0)) if system_handler is not None else common.require_int(request.sliding_window_overlap, "Sliding Window Overlap", minimum=1)
@@ -253,6 +257,7 @@ class ProcessRunner:
                     ui_update=self.ui_update,
                     ui_skip=self.ui_skip,
                     system_handler=system_handler,
+                    system_supports_continue_cache=system_supports_continue_cache,
                 )
                 merged_continuation_signatures = recovery_result.merged_signatures
                 if recovery_result.blocked:
@@ -320,13 +325,22 @@ class ProcessRunner:
                                 common.plugin_info(tail_reason)
                             if last_frame_image is not None:
                                 self.preview_state["image"] = last_frame_image
-                            if hasattr(system_handler, "load_continue_cache"):
-                                continue_cache = system_handler.load_continue_cache(output_path)
+                            if system_supports_continue_cache and hasattr(system_handler, "load_continue_cache"):
+                                sidecar_exists = callable(getattr(system_handler, "cache_sidecar_path", None)) and Path(system_handler.cache_sidecar_path(output_path)).is_file()
+                                if sidecar_exists or not callable(getattr(system_handler, "continue_cache_from_tail_frames", None)):
+                                    continue_cache = system_handler.load_continue_cache(output_path)
+                                else:
+                                    fallback_frames = min(int(getattr(system_handler, "overlap_frames", 0)), int(resumed_unique_frames))
+                                    fallback_tail = video.load_process_full_video_overlap_buffer(output_path, fallback_frames, resumed_unique_frames)
+                                    continue_cache = system_handler.continue_cache_from_tail_frames(fallback_tail, system_target_control)
+                                    if continue_cache is None:
+                                        continue_cache = system_handler.load_continue_cache(output_path)
+                                    common.plugin_info("FlashVSR continuation sidecar is missing; continuing from decoded output tail frames. The first resumed chunk may have lower temporal continuity.")
                             completed_chunks, _ = frames.count_completed_written_chunks(full_plans, resumed_unique_frames)
                             exact_start_seconds = (start_frame + resumed_unique_frames) / fps_float
                             resume_overlap_frames = 0
                             if resumed_unique_frames < requested_unique_frames:
-                                print(f"[Process Full Video] Continuing system process from source frame {start_frame + resumed_unique_frames} using continue cache")
+                                print(f"[Process Full Video] Continuing system process from source frame {start_frame + resumed_unique_frames}" + (" using continue cache" if system_supports_continue_cache else ""))
                         elif checked_unique_frames <= 0 or last_frame_image is None:
                             common.plugin_info(f"Unable to continue from existing output: {output_path}. {tail_reason or 'Starting a new file instead.'}")
                             output_path = output_paths.make_output_variant(Path(output_path), notify=common.plugin_info)

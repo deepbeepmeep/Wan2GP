@@ -24,6 +24,7 @@ class FlashVSRBridge:
     TOPK_RATIO_DEFAULT = 0.0
     TOPK_RATIO_MAX = 4.0
     UPSAMPLING_VALUE_PREFIX = "flashvsr"
+    UPSAMPLING_TWO_PASS_VALUE_PREFIX = "flashvsr2pass"
     UPSAMPLING_RATIOS = (1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0)
 
     TRANSFORMER_FILENAME = "FlashVSR_v1.1_transformer_bf16.safetensors"
@@ -103,26 +104,36 @@ class FlashVSRBridge:
         return f"{cls.UPSAMPLING_VALUE_PREFIX}{cls.format_ratio(scale)}"
 
     @classmethod
-    def upsampling_choices(cls, include_name: bool = True) -> list[tuple[str, str]]:
+    def upsampling_two_pass_value(cls, scale: float) -> str:
+        return f"{cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX}{cls.format_ratio(scale)}"
+
+    @classmethod
+    def upsampling_choices(cls, include_name: bool = True, include_two_pass: bool = False) -> list[tuple[str, str]]:
         prefix = "FlashVSR " if include_name else ""
-        return [(f"{prefix}x{cls.format_ratio_label(scale)}", cls.upsampling_value(scale)) for scale in cls.UPSAMPLING_RATIOS]
+        choices = [(f"{prefix}x{cls.format_ratio_label(scale)}", cls.upsampling_value(scale)) for scale in cls.UPSAMPLING_RATIOS]
+        return choices + ([(f"{prefix}Two Pass x{cls.format_ratio_label(scale)}", cls.upsampling_two_pass_value(scale)) for scale in cls.UPSAMPLING_RATIOS] if include_two_pass else [])
 
     @classmethod
     def scale_for_upsampling(cls, spatial_upsampling) -> float | None:
         text = str(spatial_upsampling or "").strip().lower()
-        if not text.startswith(cls.UPSAMPLING_VALUE_PREFIX):
+        prefix = cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX if text.startswith(cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX) else cls.UPSAMPLING_VALUE_PREFIX
+        if not text.startswith(prefix):
             return None
         try:
-            scale = float(text[len(cls.UPSAMPLING_VALUE_PREFIX):])
+            scale = float(text[len(prefix):])
         except ValueError:
             return None
         return scale if scale in cls.UPSAMPLING_RATIOS else None
 
     @classmethod
+    def is_two_pass_upsampling(cls, spatial_upsampling) -> bool:
+        return str(spatial_upsampling or "").strip().lower().startswith(cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX)
+
+    @classmethod
     def query_edit_mode_def(cls, include_name: bool = True) -> dict[str, Any]:
         return {
             "name": "FlashVSR",
-            "spatial_upsampling_choices": cls.upsampling_choices(include_name=include_name),
+            "spatial_upsampling_choices": cls.upsampling_choices(include_name=include_name, include_two_pass=True),
             "default_spatial_upsampling": cls.upsampling_value(2.0),
         }
 
@@ -210,6 +221,7 @@ class FlashVSRBridge:
             init_pipe=init_pipe,
             profile=profile,
             still_image=still_image,
+            two_pass=self.is_two_pass_upsampling(spatial_upsampling),
             abort_callback=abort_callback,
             progress_callback=progress_callback,
         )

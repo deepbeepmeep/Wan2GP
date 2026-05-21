@@ -63,6 +63,31 @@ def ensure_prompt_enhancer_assets(process_files_def, enhancer_enabled: int, qwen
         ensure_qwen35_prompt_enhancer_assets(process_files_def, backend=qwen_backend, variant=get_qwen35_prompt_enhancer_variant(enhancer_enabled))
 
 
+def download_prompt_enhancer_assets(enhancer_enabled: int, qwen_backend: str = "quanto_int8", send_cmd=None, progress=None, status_text="Downloading Prompt Enhancer model files..."):
+    enhancer_enabled = int(enhancer_enabled)
+    if enhancer_enabled <= 0:
+        return False
+
+    from shared.utils.download import download_def_missing_files, process_files_def_if_needed
+
+    downloaded = False
+    status_sent = False
+
+    def process_download_def(**download_def):
+        nonlocal downloaded, status_sent
+        has_missing_files = len(download_def_missing_files(download_def)) > 0
+        download_status_text = None
+        if has_missing_files and not status_sent:
+            if progress is not None:
+                progress(0, status_text)
+            download_status_text = status_text
+            status_sent = True
+        downloaded = process_files_def_if_needed(download_def, send_cmd=send_cmd, status_text=download_status_text) or downloaded
+
+    ensure_prompt_enhancer_assets(process_download_def, enhancer_enabled=enhancer_enabled, qwen_backend=qwen_backend)
+    return downloaded
+
+
 def unload_prompt_enhancer_models(*models):
     seen = set()
     for model in models:

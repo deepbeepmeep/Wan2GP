@@ -2101,7 +2101,7 @@ def generate_queue_html(queue):
         if end_img_uri:
             end_img_md = f'<div class="hover-image" onclick="showImageModal(\'end_{row_index}\')"><img src="{end_img_uri}" alt="{end_img_labels[0]}" /></div>'
 
-        edit_btn = f"""<button onclick="updateAndTrigger('edit_{task_id}')" class="action-button" title="Edit"><img src="/gradio_api/file=icons/edit.svg" style="width: 20px; height: 20px;"></button>"""
+        edit_btn = "" if _is_edit_task_params(item.get("params", {})) else f"""<button onclick="updateAndTrigger('edit_{task_id}')" class="action-button" title="Edit"><img src="/gradio_api/file=icons/edit.svg" style="width: 20px; height: 20px;"></button>"""
         remove_btn = f"""<button onclick="updateAndTrigger('remove_{task_id}')" class="action-button" title="Remove"><img src="/gradio_api/file=icons/remove.svg" style="width: 20px; height: 20px;"></button>"""
 
         row_class = "draggable-row"
@@ -3201,7 +3201,6 @@ def process_files_def(repoId = None, sourceFolderList = None, fileList = None, t
 
     return shared_process_files_def(repoId=repoId, sourceFolderList=sourceFolderList, fileList=fileList, targetFolderList=targetFolderList)
 
-
 def query_mmaudio_download_def(enabled_only=True):
     mmaudio_enabled, mmaudio_mode, _, _, _ = get_mmaudio_settings(server_config)
     if enabled_only and not mmaudio_enabled:
@@ -3296,17 +3295,6 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
     if file_type == 0:
         process_files_def(**query_core_shared_model_files())
         process_files_def(**query_matanyone_download_def(server_config))
-
-
-        enhancer_enabled = int(server_config.get("enhancer_enabled", 0) or 0)
-        if enhancer_enabled > 0:
-            from shared.prompt_enhancer import ensure_prompt_enhancer_assets
-
-            ensure_prompt_enhancer_assets(
-                process_files_def,
-                enhancer_enabled=enhancer_enabled,
-                qwen_backend=server_config.get("prompt_enhancer_quantization", "quanto_int8"),
-            )
 
         global download_shared_done
         download_shared_done = True
@@ -3604,16 +3592,23 @@ def setup_prompt_enhancer(pipe, kwargs):
         reset_prompt_enhancer()
 
 
-def ensure_prompt_enhancer_loaded(override_profile=None, progress=None):
+def ensure_prompt_enhancer_loaded(override_profile=None, progress=None, send_cmd=None):
     global enhancer_offloadobj
 
     reset_prompt_enhancer_if_requested()
     if enhancer_offloadobj is None:
+        from shared.prompt_enhancer import download_prompt_enhancer_assets
+
+        download_prompt_enhancer_assets(
+            enhancer_enabled=server_config.get("enhancer_enabled", 0),
+            qwen_backend=server_config.get("prompt_enhancer_quantization", "quanto_int8"),
+            send_cmd=send_cmd,
+            progress=progress,
+        )
         if progress is not None:
             progress(0, "Please Wait While Loading Prompt Enhancer")
         kwargs = {}
         pipe = {}
-        download_models()
         setup_prompt_enhancer(pipe, kwargs)
         profile = compute_profile(override_profile, "video")
         mmgp_profile = init_pipe(pipe, kwargs, profile)
@@ -5889,7 +5884,7 @@ def exec_prompt_enhancer_engine(state, model_type, model_def, prompt_enhancer_mo
 
     acquire_GPU_ressources(state, "prompt_enhancer", "Prompt Enhancer")
     try:
-        ensure_prompt_enhancer_loaded(override_profile=override_profile, progress=progress)
+        ensure_prompt_enhancer_loaded(override_profile=override_profile, progress=progress, send_cmd=send_cmd)
     except Exception:
         release_GPU_ressources(state, "prompt_enhancer")
         raise
@@ -6278,6 +6273,16 @@ def generate_video(
     if mode.startswith("edit_"):
         edit_video(send_cmd, state, mode, video_source, seed, temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, postprocess_audio, MMAudio_prompt, MMAudio_neg_prompt, repeat_generation, audio_source, seedvc_voice_sample, seedvc_voice_sample2, client_id=client_id, plugin_data=plugin_data)
         return True
+    enhancer_mode = server_config.get("enhancer_mode", 1)
+    auto_prompt_enhancer_requested = enhancer_mode == 0 and prompt_enhancer is not None and len(prompt_enhancer) > 0
+    if auto_prompt_enhancer_requested:
+        from shared.prompt_enhancer import download_prompt_enhancer_assets
+
+        download_prompt_enhancer_assets(
+            enhancer_enabled=server_config.get("enhancer_enabled", 0),
+            qwen_backend=server_config.get("prompt_enhancer_quantization", "quanto_int8"),
+            send_cmd=send_cmd,
+        )
     postprocess_audio = postprocess_audio or ""
     if postprocess_audio != "custom": audio_source = None
     if not seedvc_bridge.enabled():
@@ -6334,7 +6339,6 @@ def generate_video(
         if new_vae_upsampling: model_kwargs = {"VAE_upsampling": new_vae_upsampling}
     output_type = get_output_type_for_model(model_type, image_mode)
     profile = compute_profile(override_profile, output_type)
-    enhancer_mode = server_config.get("enhancer_mode", 1)
     if model_type != transformer_type or reload_needed or profile != loaded_profile:
         release_model()
         send_cmd("status", f"Loading model {get_model_name(model_type)}...")
@@ -9566,8 +9570,12 @@ def handle_queue_action(state, action_string):
             task_index = next((i for i, task in enumerate(queue) if task['id'] == task_id), -1)
         
         if task_index != -1:
-            state["editing_task_id"] = task_id
             task_data = queue[task_index]
+            if _is_edit_task_params(task_data.get("params", {})):
+                if action == "edit": gr.Info("Post-processing tasks cannot be edited.")
+                return update_queue_data(queue), gr.Tabs(), gr.update(), gr.update()
+
+            state["editing_task_id"] = task_id
 
             if task_index == 1:
                 gen["queue_paused_for_edit"] = True
@@ -11235,9 +11243,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 guidance_phases_value = ui_get("guidance_phases") 
                             visible_phases = model_def.get("visible_phases", 3) 
                             guidance_phases = gr.Dropdown(
-                                choices=[
-                                    ("One Phase", 1),
-                                    ("Two Phases", 2)] + ([("Three Phases", 3)] if guidance_max_phases >=3 else []),
+                                choices= (["none", 0] if guidance_phases_value == 0 else []) + [("One Phase", 1),("Two Phases", 2)] + ([("Three Phases", 3)] if guidance_max_phases >=3 else []),
                                 value= guidance_phases_value,
                                 label="Guidance Phases" if visible_phases>=2 else "Phases",
                                 visible= guidance_max_phases >=2 , 
@@ -12638,6 +12644,10 @@ def create_ui():
 
                     if task is None:
                         gr.Warning("Task to edit not found in queue. It might have been processed or deleted.")
+                        state["editing_task_id"] = None
+                        return default_return
+                    if _is_edit_task_params(task.get("params", {})):
+                        gr.Info("Post-processing tasks cannot be edited.")
                         state["editing_task_id"] = None
                         return default_return
 

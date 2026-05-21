@@ -3499,7 +3499,7 @@ def get_default_profile(output_type):
 def compute_profile(override_profile, output_type="video"):
     return override_profile if override_profile != -1 else get_default_profile(output_type)
 
-def get_output_type_for_model(model_type, image_mode=0):
+def get_profile_type_for_model(model_type, image_mode=0):
     model_def = get_model_def(model_type)
     if model_def is None: return "video"
     profile_type = model_def.get("profile_type", None)
@@ -3751,7 +3751,7 @@ if not "P" in preload_model_policy:
 else:
     wan_model, offloadobj = load_models(
         transformer_type,
-        output_type=get_output_type_for_model(transformer_type, 0),
+        output_type=get_profile_type_for_model(transformer_type, 0),
     )
     if check_loras:
         transformer = get_transformer_model(wan_model)
@@ -4040,6 +4040,7 @@ def refresh_gallery(state): #, msg
     early_stop_visible = False
 
     if gen.pop("refresh_tab", False):
+        gen["current_gallery_source"] = "audio" if last_was_audio else "video"
         if last_was_audio: 
             output_tabs = [gr.Tabs(selected= "audio"), 1]
         else:
@@ -4141,6 +4142,7 @@ def finalize_generation(state):
 
     gen["extra_orders"] = 0
     last_was_audio = gen.get("last_was_audio", False)
+    gen["current_gallery_source"] = "audio" if last_was_audio else "video"
     gallery_tabs = gr.Tabs(selected= "audio" if last_was_audio else "video_images")
     time.sleep(0.2)
     global gen_in_progress
@@ -4189,6 +4191,20 @@ def set_file_choice(gen, file_list, choice, audio_files = False):
     gen["audio_selected" if audio_files else "selected"] = choice
     gen["current_gallery_source"] = "audio" if audio_files else "video"
     gen["selected_video_time"] = None if audio_files or choice < 0 or choice >= len(file_list) or not has_video_file_extension(file_list[choice]) else 0.0
+
+def get_selected_late_processing_tabs_visibility(state):
+    gen = get_gen_info(state)
+    audio_files = gen.get("current_gallery_source", "video") == "audio"
+    files = gen.get("audio_file_list" if audio_files else "file_list", [])
+    choice = gen.get("audio_selected" if audio_files else "selected", -1 if audio_files else 0)
+    if len(files) > 0:
+        choice = min(len(files) - 1, max(choice, 0))
+    if choice < 0 or choice >= len(files) or not os.path.isfile(files[choice]):
+        return False, False, False
+    is_audio = has_audio_file_extension(files[choice])
+    is_video = has_video_file_extension(files[choice])
+    is_image = not (is_audio or is_video)
+    return is_audio, is_video or is_image, is_video
 
 def select_audio(state, audio_files_paths, audio_file_selected):
     gen = get_gen_info(state)
@@ -6337,7 +6353,7 @@ def generate_video(
         old_vae_upsampling =  None if reload_needed or wan_model is None or not hasattr(wan_model, "vae") or not hasattr(wan_model.vae, "upsampling_set") else wan_model.vae.upsampling_set
         reload_needed = reload_needed or old_vae_upsampling != new_vae_upsampling
         if new_vae_upsampling: model_kwargs = {"VAE_upsampling": new_vae_upsampling}
-    output_type = get_output_type_for_model(model_type, image_mode)
+    output_type = get_profile_type_for_model(model_type, image_mode)
     profile = compute_profile(override_profile, output_type)
     if model_type != transformer_type or reload_needed or profile != loaded_profile:
         release_model()
@@ -9648,7 +9664,7 @@ def preload_model_when_switching(state):
             yield f"Loading model {model_filename}..."
             wan_model, offloadobj = load_models(
                 model_type,
-                output_type=get_output_type_for_model(model_type, 0),
+                output_type=get_profile_type_for_model(model_type, 0),
             )
             yield f"Model loaded"
             reload_needed=  False 
@@ -11671,7 +11687,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             label=f"Override Frames Per Second (model default={fps} fps)"
                         )
 
-                    profile_type = get_output_type_for_model(base_model_type, image_mode_value)
+                    profile_type = get_profile_type_for_model(base_model_type, image_mode_value)
                     profile_type = profile_type[0].upper() + profile_type[1:]
                     gr.Markdown("<B>You can set a more agressive Memory Profile if you generate only Short Videos or Images<B>")
                     override_profile = gr.Dropdown(
@@ -11747,6 +11763,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
 
             with gr.Accordion("Media Info / Late Post Processing / Import Media", open=False) as video_info_accordion:
+                late_audio_postprocessing_visible, late_video_postprocessing_visible, late_audio_remuxing_visible = get_selected_late_processing_tabs_visibility(state_dict)
                 video_info_tab = gr.Text(value="video_info", interactive=False, visible=False)
                 with gr.Tabs() as video_info_tabs:
                     default_visibility_false = {} if update_form else {"visible" : False}                        
@@ -11777,7 +11794,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             video_info_to_reference_image_btn = gr.Button("To Reference Image", min_width= 1, size ="sm", visible = any_reference_image)
                             video_info_to_image_guide_btn = gr.Button("To Control Image", min_width= 1, size ="sm", visible = any_control_image )
                             video_info_eject_image_btn = gr.Button("Eject Image", min_width= 1, size ="sm")
-                    with gr.Tab("Post Processing", id="audio_postprocessing", visible=True) as audio_postprocessing_tab:
+                    with gr.Tab("Post Processing", id="audio_postprocessing", visible=late_audio_postprocessing_visible) as audio_postprocessing_tab:
                         with gr.Group(elem_classes="postprocess"):
                             PP_late_audio_postprocess_choices = get_late_audio_postprocess_choices(seedvc_bridge.enabled())
                             PP_late_audio_postprocess = gr.Dropdown(
@@ -11796,14 +11813,14 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         with gr.Row():
                             video_info_audio_postprocessing_btn = gr.Button("Apply Audio Postprocessing", size="sm", visible=True)
                             video_info_eject_audio2_btn = gr.Button("Eject Audio", size="sm", visible=True)
-                    with gr.Tab("Post Processing", id= "post_processing", visible = True) as video_postprocessing_tab:
+                    with gr.Tab("Post Processing", id= "post_processing", visible = late_video_postprocessing_visible) as video_postprocessing_tab:
                         with gr.Group(elem_classes= "postprocess"):
                             with gr.Column():
                                 PP_temporal_upsampling, PP_spatial_upsampling, PP_image_spatial_upsampling, PP_film_grain_intensity, PP_film_grain_saturation = gen_upsampling_dropdowns("",  "", 0, 0.5, element_class ="postprocess", image_outputs = False, always_show_flashvsr = True, duplicate_spatial=True)
                         with gr.Row():
                             video_info_postprocessing_btn = gr.Button("Apply Postprocessing", size ="sm", visible=True)
                             video_info_eject_video2_btn = gr.Button("Eject Media", size ="sm", visible=True)
-                    with gr.Tab("Audio Remuxing", id= "audio_remuxing", visible = True) as audio_remuxing_tab:
+                    with gr.Tab("Audio Remuxing", id= "audio_remuxing", visible = late_audio_remuxing_visible) as audio_remuxing_tab:
 
                         with gr.Group(elem_classes= "postprocess"):
                             PP_postprocess_audio_choices = get_postprocess_audio_choices(get_mmaudio_settings(server_config)[0], False, True, seedvc_bridge.enabled(), include_none=False)

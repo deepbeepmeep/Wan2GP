@@ -48,7 +48,7 @@ It has never been easier to do voice cloning directly in video models:
 
 - **LTX2 OmniNFT Lora Preset for better audio/video sync**: I have added this *LTX2 OmniNFT Lora* in a *Preset* so that it can be applied quickly. According to the authors of this Lora Audio/Video sync should be greatly improved.
 
-- **LTX2 Dev reborn in Dev-Distilled**: WanGP LTX2 Dev implementation was based on LTX2 official implementation. I hadn't notice that ComfyUI version of Dev was now completely different as it was mixing the *Distilled Lora* with Dev in both phases ( not just in phase 2). This makes dev faster and reduces the color saturation specific to Dev. So I have added a few *Dev Distilled Accelerator Profiles* you can pick from the *Settings List*. And now since Dev & Distilled are closer than ever, I have unlocked all the *Control Video* processes for Dev.
+- **LTX2 Dev reborn in Dev-Distilled**: WanGP LTX2 Dev implementation was based on LTX2 official implementation. I hadn't noticed that ComfyUI version of Dev was now completely different as it was mixing the *Distilled Lora* with Dev in both phases ( not just in phase 2). This makes dev faster and reduces the color saturation specific to Dev. So I have added a few *Dev Distilled Accelerator Profiles* you can pick from the *Settings List*. And now since Dev & Distilled are closer than ever, I have unlocked all the *Control Video* processes for Dev.
 
 - **Settings can now store Audio/Video/Images**: you can ask WanGP to store (in option) all the media you use frequently in a WanGP *Settings file*. This is very convenient for instance if you always use the same *Voice sample* or *Reference Images*. Even better, you can use these settings with *Deepy* of the *Full Video Process* plugin
 

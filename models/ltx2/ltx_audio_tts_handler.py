@@ -679,7 +679,7 @@ class family_handler:
         if _is_dramabox(base_model_type):
             ui_defaults.update(
                 {
-                    "audio_prompt_type": "",
+                    "audio_prompt_type": "0",
                     "alt_prompt": "",
                     "repeat_generation": 1,
                     "duration_seconds": DRAMABOX_DEFAULT_DURATION_SECONDS,

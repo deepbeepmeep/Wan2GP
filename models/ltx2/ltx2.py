@@ -952,6 +952,7 @@ class LTX2:
         input_video=None,
         prefix_frames_count: int = 0,
         conditioning_latents_size: int = 0,
+        window_no: int = 1,
         input_frames=None,
         input_frames2=None,
         frames_to_inject = None,
@@ -1307,6 +1308,9 @@ class LTX2:
         if "1" in audio_prompt_type and effective_audio_cfg_scale <= 1.0:
             effective_audio_cfg_scale = LTX2_ID_LORA_AUDIO_CFG_SCALE
         sample_solver = sample_solver.lower()
+        prompt_relay_frame_offset = 0
+        if int(window_no or 1) > 1 or (input_video is not None and not is_start_image_only):
+            prompt_relay_frame_offset = max(0, int(prefix_frames_count or 0))
 
         if isinstance(self.pipeline, TI2VidTwoStagesPipeline):
             pipeline_output = self.pipeline(
@@ -1317,6 +1321,7 @@ class LTX2:
                 width=target_width,
                 num_frames=int(frame_num),
                 frame_rate=float(fps),
+                prompt_relay_frame_offset=prompt_relay_frame_offset,
                 num_inference_steps=int(sampling_steps),
                 cfg_guidance_scale=float(guide_scale),
                 audio_cfg_guidance_scale=effective_audio_cfg_scale,
@@ -1377,6 +1382,7 @@ class LTX2:
                 width=target_width,
                 num_frames=int(frame_num),
                 frame_rate=float(fps),
+                prompt_relay_frame_offset=prompt_relay_frame_offset,
                 images=images,
                 guiding_images=guiding_images or None,
                 guiding_images_stage2=guiding_images_stage2 or None,

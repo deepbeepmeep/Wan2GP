@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -10,6 +11,7 @@ from contextlib import nullcontext
 import torch
 
 from mmgp import offload
+from PIL import Image
 from transformers import AutoConfig, AutoTokenizer, Qwen2TokenizerFast, Qwen2VLImageProcessorFast, Qwen2VLProcessor
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.models.qwen2_vl.video_processing_qwen2_vl import Qwen2VLVideoProcessor
@@ -41,6 +43,7 @@ enhancer_quantization_SAFETENSORS = "safetensors"
 enhancer_quantization_QUANTO_INT8 = "quanto_int8"
 QWEN35_GGUF_LLAMACPP_ENV = "WGP_GGUF_LLAMACPP_CUDA"
 QWEN35_PROMPT_MIN_NEW_TOKENS = 4
+QWEN35_IMAGE_CAPTION_MAX_EDGE = 1024
 QWEN35_VARIANT_ALIASES = {
     "": QWEN35_VARIANT_9B,
     "9": QWEN35_VARIANT_9B,
@@ -267,10 +270,27 @@ def _resolve_execution_device(self, model_inputs=None) -> torch.device:
         return torch.device("cpu")
 
 
+def _resize_image_for_caption(image: Image.Image) -> Image.Image:
+    width, height = image.size
+    max_edge = max(width, height)
+    if max_edge <= QWEN35_IMAGE_CAPTION_MAX_EDGE:
+        return image
+    scale = QWEN35_IMAGE_CAPTION_MAX_EDGE / max_edge
+    size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    return image.resize(size, Image.Resampling.LANCZOS)
+
+
+def clone_qwen35_text_embedding_for_mmgp(text_model: torch.nn.Module) -> torch.nn.Module:
+    embedding_model = copy.deepcopy(text_model.token_embd)
+    embedding_model.eval()
+    return embedding_model
+
+
 class _SharedQwen35TextAdapter(torch.nn.Module):
-    def __init__(self, text_model: torch.nn.Module):
+    def __init__(self, text_model: torch.nn.Module, input_embedding_model: torch.nn.Module | None = None):
         super().__init__()
         object.__setattr__(self, "_shared_text_model", text_model)
+        object.__setattr__(self, "_input_embedding_model", input_embedding_model)
         self.config = getattr(text_model, "config", None)
 
     @property
@@ -279,10 +299,11 @@ class _SharedQwen35TextAdapter(torch.nn.Module):
 
     @property
     def embed_tokens(self):
-        return self.text_model.embed_tokens
+        input_embedding_model = object.__getattribute__(self, "_input_embedding_model")
+        return input_embedding_model if input_embedding_model is not None else self.text_model.embed_tokens
 
     def get_input_embeddings(self):
-        return self.text_model.embed_tokens
+        return self.embed_tokens
 
     def set_input_embeddings(self, value):
         self.text_model.token_embd = value
@@ -714,6 +735,7 @@ def _generate_image_captions_vllm(self, images):
 
 
 def _generate_image_captions(self, images):
+    images = [_resize_image_for_caption(image) for image in images]
     if _get_qwen35_text_runtime_helpers()._use_vllm_prompt_enhancer(self._prompt_enhancer_text_model):
         return _generate_image_captions_vllm(self, images)
     outputs = []
@@ -778,6 +800,7 @@ def load_qwen35_vl_prompt_enhancer(
     assets_dir: str | None = None,
     attn_implementation: str = "sdpa",
     text_model: torch.nn.Module | None = None,
+    input_embedding_model: torch.nn.Module | None = None,
     backend: str = enhancer_quantization_QUANTO_INT8,
     variant: str | None = None,
 ):
@@ -818,7 +841,7 @@ def load_qwen35_vl_prompt_enhancer(
     with torch.device("meta"):
         model = model_class(config)
     model.model.visual = model.model.visual.__class__._from_config(config.vision_config)
-    model.model.language_model = _SharedQwen35TextAdapter(text_model)
+    model.model.language_model = _SharedQwen35TextAdapter(text_model, input_embedding_model)
     model.lm_head = _SharedQwen35LmHeadAdapter(text_model.lm_head)
     if str(model_path).lower().endswith(".gguf"):
         preprocess_sd = _build_qwen35_vl_gguf_preprocess_sd(tuple(model.model.visual.patch_embed.proj.weight.shape))

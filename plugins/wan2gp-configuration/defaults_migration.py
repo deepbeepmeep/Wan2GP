@@ -25,7 +25,10 @@ PROMPT_ENHANCER_CHOICES = [
 MMAUDIO_DEFAULT_MODE = MMAUDIO_MODE_CHOICES[0][1]
 SEEDVC_DEFAULT_MODE = 2
 FLASHVSR_DEFAULT_MODE = FLASHVSR_MODE_CHOICES[0][1]
-PROMPT_ENHANCER_DEFAULT_MODE = 3
+PROMPT_ENHANCER_LOW_VRAM_DEFAULT_MODE = PROMPT_ENHANCER_CHOICES[0][1]
+PROMPT_ENHANCER_HIGH_VRAM_DEFAULT_MODE = 3
+PROMPT_ENHANCER_DEFAULT_MODE = PROMPT_ENHANCER_HIGH_VRAM_DEFAULT_MODE
+PROMPT_ENHANCER_QWEN_MIN_VRAM_GB = 10
 DEEPY_DEFAULT_ENABLED = 1
 
 
@@ -38,6 +41,21 @@ def _to_int(value, default=0):
 
 def _is_off(value) -> bool:
     return _to_int(value, 0) == 0
+
+
+def _cuda_vram_gb() -> float:
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return 0.0
+        return torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory / (1024 ** 3)
+    except Exception:
+        return 0.0
+
+
+def get_prompt_enhancer_default_mode() -> int:
+    return PROMPT_ENHANCER_HIGH_VRAM_DEFAULT_MODE if _cuda_vram_gb() >= PROMPT_ENHANCER_QWEN_MIN_VRAM_GB else PROMPT_ENHANCER_LOW_VRAM_DEFAULT_MODE
 
 
 def _write_config(config, config_filename):
@@ -67,6 +85,7 @@ def migrate_extension_defaults(server_config, server_config_filename="") -> bool
         return False
 
     version = _extension_defaults_version(server_config)
+    prompt_enhancer_default_mode = get_prompt_enhancer_default_mode()
     changed = False
 
     if version < Decimal("1.1"):
@@ -92,7 +111,7 @@ def migrate_extension_defaults(server_config, server_config_filename="") -> bool
         _set_missing_persistence(server_config, "flashvsr_persistence")
 
         if _is_off(server_config.get("enhancer_enabled", 0)):
-            server_config["enhancer_enabled"] = PROMPT_ENHANCER_DEFAULT_MODE
+            server_config["enhancer_enabled"] = prompt_enhancer_default_mode
             changed = True
 
         if _is_off(server_config.get(DEEPY_ENABLED_KEY, 0)):

@@ -88,6 +88,92 @@ DRAMABOX_DIALOGUE_PROMPT = (
     "Firm and controlled, he says, \"Then we step back, breathe, and let the machine tell us what it wants.\""
 )
 
+LTX2_RELAYED_PROMPT = (
+    "You are an expert cinematic prompt writer for LTX-2 Prompt Relay in WanGP. Rewrite the user prompt into one enhanced relayed video prompt.\n\n"
+    "Prompt Relay syntax:\n"
+    "- Start with one unbracketed global prompt that applies to the full video. Use it for the stable subject, setting, style, lighting, camera language, and continuity.\n"
+    "- Then write 4 to 8 timed segment prompts. Each segment must start with a bracket range like [0%:25%], [25%:50%], [50%:75%], [75%:].\n"
+    "- The text after each bracket applies only to that segment. Describe visible action, scene progression, camera motion, expression, pose, timing, and audio-relevant events for that segment.\n"
+    "- Ranges may use percentages. Cover the whole clip from beginning to end without gaps. Use the final open-ended range when useful.\n\n"
+    "Output rules:\n"
+    "- Output only the final Prompt Relay prompt. Do not include explanations, markdown, headings, bullet lists, or code fences.\n"
+    "- Keep the global prompt concise but specific. Keep each segment one dense sentence or two short sentences.\n"
+    "- Preserve the user's intent, characters, setting, language, spoken words, and ending. Do not invent a different story.\n"
+    "- If the user includes speech, keep spoken words in double quotes and place them in the segment where they should be heard.\n"
+    "- Make transitions continuous. Do not create unrelated shots unless the user asks for cuts or a montage.\n"
+    "- Avoid generic filler. Use concrete physical action and cinematic details that can be generated.\n\n"
+    "Example output:\n"
+    "Epic cinematic fantasy battle, a lone armored knight faces a massive black dragon in a ruined mountain keep at dusk, smoke, sparks, torn banners, dramatic firelight, handheld low-angle camera, high detail, coherent action continuity.\n"
+    "[0%:25%] The knight raises a dented shield as the dragon lands among broken stones, wings throwing dust across the courtyard, embers swirling around both figures.\n"
+    "[25%:50%] The dragon lunges and breathes fire across the ground while the knight rolls under the flame, rises beside a shattered pillar, and shouts \"By oath and steel, I will not yield.\"\n"
+    "[50%:75%] The knight charges through smoke, climbs onto fallen masonry, and drives the glowing sword toward the dragon's exposed chest as the beast rears back.\n"
+    "[75%:] The blade strikes true, the dragon collapses in a wave of sparks and ash, and the exhausted knight lowers the sword and whispers \"Rest now, ancient terror.\""
+)
+
+LTX2_RELAYED_IMAGE_PROMPT = (
+    "You are an expert cinematic prompt writer for LTX-2 Prompt Relay in WanGP. Rewrite the user prompt and image caption into one enhanced relayed video prompt.\n\n"
+    "Use the image caption as the source of truth for visible identity, subject count, clothing, composition, environment, lighting, and style. "
+    "If the user text conflicts with the image caption, preserve the image identity and scene setup while following the user's requested action, mood, and story.\n\n"
+    "Prompt Relay syntax:\n"
+    "- Start with one unbracketed global prompt that applies to the full video. Use it for the stable subject, setting, style, lighting, camera language, and continuity from the image.\n"
+    "- Then write 4 to 8 timed segment prompts. Each segment must start with a bracket range like [0%:25%], [25%:50%], [50%:75%], [75%:].\n"
+    "- The text after each bracket applies only to that segment. Describe visible action, scene progression, camera motion, expression, pose, timing, and audio-relevant events for that segment.\n"
+    "- Ranges may use percentages. Cover the whole clip from beginning to end without gaps. Use the final open-ended range when useful.\n\n"
+    "Output rules:\n"
+    "- Output only the final Prompt Relay prompt. Do not include explanations, markdown, headings, bullet lists, or code fences.\n"
+    "- Keep the global prompt concise but specific. Keep each segment one dense sentence or two short sentences.\n"
+    "- Preserve the user's intent, characters, setting, language, spoken words, and ending. Do not invent a different story.\n"
+    "- If the user includes speech, keep spoken words in double quotes and place them in the segment where they should be heard.\n"
+    "- Make transitions continuous from the start image. Do not introduce sudden identity, wardrobe, environment, or camera changes unless requested.\n"
+    "- Avoid generic filler. Use concrete physical action and cinematic details that can be generated.\n\n"
+    "Example output:\n"
+    "A cinematic continuation from the provided start image, preserving the visible subject identity, clothing, environment, lighting, framing, and color palette; realistic motion, stable character consistency, detailed facial expression, smooth camera movement.\n"
+    "[0%:25%] The subject holds the starting pose for a moment, then slowly turns toward the main action while the camera begins a subtle push-in and the background remains consistent with the image.\n"
+    "[25%:50%] The subject steps forward with natural body motion, reacts to the off-screen event with a focused expression, and says \"This is where the story changes.\"\n"
+    "[50%:75%] The camera tracks alongside the subject as wind moves hair and clothing in the same style as the image, with lighting and shadows staying stable.\n"
+    "[75%:] The subject reaches the final mark, pauses in a clear finishing pose, and the scene resolves without changing identity, wardrobe, or location."
+)
+
+LTX2_PROMPT_INFOS = """
+# LTX2 Prompt Guidelines
+
+## Standard Prompts
+
+- Describe the subject, setting, action, camera, lighting, mood, and visual style in concrete cinematic language.
+- Keep identity, wardrobe, location, and chronology stable unless you intentionally want a transition.
+- Write the visible action in temporal order. LTX2 usually behaves better when it can follow a clear sequence instead of a pile of disconnected tags.
+- Put spoken words in double quotes and include who says them, when they are said, and the visible mouth or body action that supports them.
+- For better clarity, use multiline prompts in **How to Process each Line of the Text Prompt**. Use one line per shot, beat, character action, or generated item depending on the selected line-processing mode.
+
+## Relayed Prompts
+
+Prompt Relay lets you keep one global prompt for the whole clip and then apply timed subprompts to specific parts of the video. The first text before any valid `[]` range is the global prompt.
+
+Accepted range syntax:
+
+- `[0%:25%]` percentage of the full clip.
+- `[25%:]` percentage start, open end, meaning the rest of the clip.
+- `[1:5]` 1-based frame numbers, from frame 1 through frame 5.
+- `[0s:4s]` or `[0sec:4sec]` seconds.
+- `[0:05:0:10]` timecode-style seconds, from 0:05 to 0:10.
+
+Use the same unit for the start and end of a range. Cover the clip without gaps when the intended story is continuous. Short overlap at boundaries is handled softly, so adjacent segments should describe compatible motion.
+
+For sliding windows and video continuation, frame 1 and `0%` refer to the first non-overlap frame that will remain in the final output for that window. Earlier overlap frames are only used for continuity and are discarded.
+
+Prompt Relay syntax does not change **How to Process each Line of the Text Prompt**. It is recommended to enable "Each new Paragraph separated by an Empty Line" to avoid auto splitting of your prompt in multiple independent prompts.
+
+Example:
+
+```text
+Epic cinematic fantasy battle, a lone armored knight faces a massive black dragon in a ruined mountain keep at dusk, smoke, sparks, torn banners, dramatic firelight, coherent action continuity, grounded physical motion.
+[0%:25%] The knight raises a dented shield as the dragon lands among broken stones, wings throwing dust across the courtyard while embers swirl between them.
+[25%:50%] The dragon lunges and breathes fire across the ground while the knight rolls under the flame, rises beside a shattered pillar, and shouts "By oath and steel, I will not yield."
+[50%:75%] The knight charges through smoke, climbs onto fallen masonry, and drives the glowing sword toward the dragon's exposed chest as the beast rears back for one last attack.
+[75%:] The blade strikes true, the dragon collapses in a wave of sparks and ash, and the exhausted knight lowers the sword and whispers "Rest now, ancient terror."
+```
+"""
+
 
 def get_custom_prompt_enhancer_instructions(model_type, prompt_enhancer_mode, is_image, enhancer_kwargs):
     audio_prompt_type =enhancer_kwargs.get("audio_prompt_type", "")

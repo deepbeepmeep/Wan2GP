@@ -33,7 +33,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### 21st of May 2026: WanGP v11.75, I can hear Voices
+### 21st of May 2026: WanGP v11.77, I can hear Voices
 It has never been easier to do voice cloning directly in video models:
 
 - **Voice Cloning with any Video Model**: you generated a great *LTX2/Ovi/Multitalk/...* and are sad the model didnt support natively *Voice Cloning*? Just use the new *SeedVC Audio Postprocessing* to replace up to two voices of your choice, it works magically with any video model ! You will find this feature in the *Audio* advanced tab or as *Late Posprocessing for Audio or Video*.  WanGP exclusive *Two Voices* feature will detect who is talking and will make seamlessly the voices replacements at the right audio locations.
@@ -50,6 +50,10 @@ It has never been easier to do voice cloning directly in video models:
 
 - **LTX2 Dev reborn in Dev-Distilled**: WanGP LTX2 Dev implementation was based on LTX2 official implementation. I hadn't noticed that ComfyUI version of Dev was now completely different as it was mixing the *Distilled Lora* with Dev in both phases ( not just in phase 2). This makes dev faster and reduces the color saturation specific to Dev. So I have added a few *Dev Distilled Accelerator Profiles* you can pick from the *Settings List*. And now since Dev & Distilled are closer than ever, I have unlocked all the *Control Video* processes for Dev.
 
+- **LTX2 Prompt Relay**: you can now target specific time range for a part of the prompt, for instance *[25%:50%]the man says "hello". Check the new *Prompt Online Help* marked with "i" for more info. 
+
+- **LongCat 1.5 Avatar**: with this new *Talking Head* model you are going to become at last a fan of *LongCat*. It is fast (8 steps distilled) and delivers high quality potentially unlimited gens using *Sliding Windows*.
+
 - **Settings can now store Audio/Video/Images**: you can ask WanGP to store (in option) all the media you use frequently in a WanGP *Settings file*. This is very convenient for instance if you always use the same *Voice sample* or *Reference Images*. Even better, you can use these settings with *Deepy* of the *Full Video Process* plugin
 
 - **Extensions Enabled by Default**: most extensions (upsampling, mmaudio, prompt enhancer, ...) are now enabled by Default so that they are easier to be found. Don't worry their corresponding checkpoints will be downloaded only if you actually use these extensions
@@ -62,7 +66,8 @@ It has never been easier to do voice cloning directly in video models:
 
 Also various fixes (Omnivoice, IndexTTS, Chatterbox, ...)
 
-*Update 11.75*: Voice cloning with background and voice supports, FlashVSR for Images, Dev Distilled
+*Update 11.75*: Voice cloning with background and voice supports, FlashVSR for Images, Dev Distilled\
+*Update 11.77*: LTX2 Prompt Relay, LongCat Avatar
 
 ### 12th of May 2026: WanGP v11.66, Can you keep up?
 

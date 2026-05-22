@@ -33,6 +33,7 @@ class PromptEnhancerRuntime:
     llm_tokenizer: Any = None
     pipe_models: dict[str, Any] = field(default_factory=dict)
     budgets: dict[str, int] = field(default_factory=dict)
+    co_tenants: dict[str, list[str]] = field(default_factory=dict)
 
 
 def ensure_prompt_enhancer_assets(process_files_def, enhancer_enabled: int, qwen_backend: str = "quanto_int8"):
@@ -154,6 +155,7 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
         from .qwen35_text import load_qwen35_text_prompt_enhancer
         from .qwen35_vl import (
             enhancer_quantization_QUANTO_INT8,
+            clone_qwen35_text_embedding_for_mmgp,
             get_qwen35_assets_dir_name,
             get_qwen35_prompt_enhancer_variant,
             load_qwen35_vl_prompt_enhancer,
@@ -172,19 +174,25 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
         )
         runtime.llm_tokenizer = getattr(runtime.llm_model, "_prompt_enhancer_tokenizer", None)
         runtime.llm_model.eval()
+        caption_embedding_model = clone_qwen35_text_embedding_for_mmgp(runtime.llm_model)
         runtime.image_caption_model, vision_tower_model = load_qwen35_vl_prompt_enhancer(
             assets_dir=assets_dir,
             attn_implementation="sdpa",
             text_model=runtime.llm_model,
+            input_embedding_model=caption_embedding_model,
             backend=backend,
             variant=qwen35_variant,
         )
         runtime.image_caption_processor = getattr(runtime.image_caption_model, "_prompt_enhancer_processor", None)
         runtime.image_caption_model.eval()
         runtime.pipe_models["prompt_enhancer_image_caption_vision_tower_model"] = vision_tower_model
+        runtime.pipe_models["prompt_enhancer_image_caption_embedding_model"] = caption_embedding_model
         runtime.pipe_models["prompt_enhancer_llm_model"] = runtime.llm_model
         runtime.budgets["prompt_enhancer_image_caption_vision_tower_model"] = 3000
+        runtime.budgets["prompt_enhancer_image_caption_embedding_model"] = 2000
         runtime.budgets["prompt_enhancer_llm_model"] = 10000
+        runtime.co_tenants["prompt_enhancer_image_caption_vision_tower_model"] = ["prompt_enhancer_image_caption_embedding_model"]
+        runtime.co_tenants["prompt_enhancer_image_caption_embedding_model"] = ["prompt_enhancer_image_caption_vision_tower_model"]
         return runtime
 
     runtime.image_caption_model, runtime.image_caption_processor = load_florence2(fl.locate_folder(FLORENCE2_FOLDER), attn_implementation="sdpa")

@@ -263,6 +263,7 @@ class family_handler:
     def query_model_def(base_model_type, model_def):
         preload_urls = model_def.get("preload_URLs")
         spec = _get_arch_spec(base_model_type)
+        from .prompt_enhancer import LTX2_PROMPT_INFOS, LTX2_RELAYED_IMAGE_PROMPT, LTX2_RELAYED_PROMPT
         if isinstance(preload_urls, list): 
             # migrate old finetunes
             lora_filenames = {spec[key] for key in _LORA_SPEC_KEYS if key in spec}
@@ -321,6 +322,24 @@ class family_handler:
                 "show_label": False,
                 "default": "K" if editanything_ref else "",
             },
+            "prompt_enhancer_button_label": "Write",
+            "prompt_infos": LTX2_PROMPT_INFOS,
+            "prompt_enhancer_def": {
+                "selection": ["T", "TI", "T1", "TI1"],
+                "labels": {
+                    "T": "An Enhanced Prompt using existing Text Prompt",
+                    "TI": "An Enhanced Prompt using existing Text Prompt and Start Image",
+                    "T1": "An Enhanced Relayed Prompt using existing Text Prompt",
+                    "TI1": "An Enhanced Relayed Prompt using existing Text Prompt and Start Image",
+                },
+                "default": "",
+            },
+            "text_prompt_enhancer_instructions1": LTX2_RELAYED_PROMPT,
+            "video_prompt_enhancer_instructions1": LTX2_RELAYED_IMAGE_PROMPT,
+            "image_prompt_enhancer_instructions1": LTX2_RELAYED_IMAGE_PROMPT,
+            "text_prompt_enhancer_max_tokens1": 1024,
+            "video_prompt_enhancer_max_tokens1": 1024,
+            "image_prompt_enhancer_max_tokens1": 1024,
             "auto_null_audio": True,
             "audio_guide_window_slicing": True,
             "video_length_not_limited_by_audio": True,

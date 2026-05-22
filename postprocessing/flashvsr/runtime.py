@@ -156,8 +156,8 @@ def _shift_spatial_replicate(tensor: torch.Tensor, shift_y: int, shift_x: int) -
 
 
 def _apply_still_image_shift_correction(base: torch.Tensor, shifted: torch.Tensor, scale: float) -> torch.Tensor:
-    base_float = base.float()
-    corrected = base_float.lerp_(shifted.float(), float(FLASHVSR_STILL_IMAGE_SHIFT_BLEND))
+    base_float = base.to(dtype=torch.float32, copy=True)
+    corrected = base_float.lerp_(shifted.to(dtype=torch.float32), float(FLASHVSR_STILL_IMAGE_SHIFT_BLEND))
     if base.dtype == torch.uint8:
         return corrected.round_().clamp_(0, 255).to(torch.uint8)
     return corrected.clamp_(-1.0, 1.0).to(dtype=base.dtype)

@@ -133,8 +133,8 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.75"
-settings_version = 2.60
+WanGP_version = "11.77"
+settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -2292,6 +2292,7 @@ if not Path(config_load_filename).is_file():
         "save_queue_if_crash": 1,
         "queue_color_scheme": "pastel",
         "process_queues_when_browser_unfocused": 1,
+        "multi_prompts_gen_type": prompt_parser.DEFAULT_MULTI_PROMPTS_MODE,
         "model_hierarchy_type": 1,
         "mmaudio_mode": 0,
         "mmaudio_persistence": 1,
@@ -2317,6 +2318,11 @@ else:
     server_config = json.loads(text)
 
 server_config.setdefault("prompt_enhancer_quantization", "quanto_int8")
+server_config["multi_prompts_gen_type"] = prompt_parser.normalize_multi_prompts_mode(
+    server_config.get("multi_prompts_gen_type", prompt_parser.DEFAULT_MULTI_PROMPTS_MODE),
+    default=prompt_parser.DEFAULT_MULTI_PROMPTS_MODE,
+)
+primary_settings["multi_prompts_gen_type"] = server_config["multi_prompts_gen_type"]
 server_config.setdefault(gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY, 1)
 gradio_queue_focus_patch.BACKGROUND_SCHEDULER_DEFAULT_ENABLED = bool(server_config.get(gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY, 1))
 gradio_queue_focus_patch.install()
@@ -2779,14 +2785,23 @@ def fix_settings(model_type, ui_defaults, min_settings_version = 0):
     if settings_version < 2.56:
         legacy_multi_prompts_mode = ui_defaults.get("multi_prompts_gen_type", None)
         if legacy_multi_prompts_mode is None:
-            ui_defaults["multi_prompts_gen_type"] = "G"
+            ui_defaults["multi_prompts_gen_type"] = server_config["multi_prompts_gen_type"]
         else:
-            ui_defaults["multi_prompts_gen_type"] = prompt_parser.normalize_multi_prompts_mode(legacy_multi_prompts_mode)
+            ui_defaults["multi_prompts_gen_type"] = prompt_parser.normalize_multi_prompts_mode(legacy_multi_prompts_mode, default=server_config["multi_prompts_gen_type"])
     else:
-        ui_defaults["multi_prompts_gen_type"] = prompt_parser.normalize_multi_prompts_mode(ui_defaults.get("multi_prompts_gen_type", "G"))
+        ui_defaults["multi_prompts_gen_type"] = prompt_parser.normalize_multi_prompts_mode(ui_defaults.get("multi_prompts_gen_type", server_config["multi_prompts_gen_type"]), default=server_config["multi_prompts_gen_type"])
+    if not test_any_sliding_window(model_type):
+        ui_defaults["multi_prompts_gen_type"] = ui_defaults["multi_prompts_gen_type"].replace("W", "G")
 
     if settings_version < 2.60:
         ui_defaults.setdefault("seedvc_voice_sample", None)
+
+    if settings_version < 2.61:
+        prompt_enhancer = str(ui_defaults.get("prompt_enhancer") or "")
+        if prompt_enhancer == "I":
+            ui_defaults["prompt_enhancer"] = "TI"
+        elif prompt_enhancer == "IK":
+            ui_defaults["prompt_enhancer"] = "TIK"
 
     audio_prompt_type = fix_postprocess_audio_settings(ui_defaults, settings_version)
     if settings_version < 2.2: 
@@ -2885,12 +2900,12 @@ def get_default_settings(model_type):
 
         ui_defaults_update = model_def.get("settings", None) 
         if ui_defaults_update is not None: ui_defaults.update(ui_defaults_update)
-
         if len(ui_defaults.get("prompt","")) == 0:
             ui_defaults["prompt"]= get_default_prompt(i2v)
 
         with open(defaults_filename, "w", encoding="utf-8") as f:
             json.dump(ui_defaults, f, indent=4)
+        fix_settings(model_type, ui_defaults)
     else:
         with open(defaults_filename, "r", encoding="utf-8") as f:
             ui_defaults = json.load(f)
@@ -3588,6 +3603,8 @@ def setup_prompt_enhancer(pipe, kwargs):
         pipe.update(runtime.pipe_models)
         if runtime.budgets:
             kwargs.setdefault("budgets", {}).update(runtime.budgets)
+        if runtime.co_tenants:
+            kwargs.setdefault("coTenantsMap", {}).update(runtime.co_tenants)
     else:
         reset_prompt_enhancer()
 
@@ -5870,6 +5887,11 @@ def resolve_prompt_enhancer_settings(model_type, model_def, prompt_enhancer_mode
     prompt_enhancer_mode = str(prompt_enhancer_mode or "")
     if model_def is None or len(model_type) == 0:
         return prompt_enhancer_instructions, int(text_encoder_max_tokens)
+    prompt_profile_id = "0"
+    prompt_profile_match = re.search(r"\d", prompt_enhancer_mode)
+    if prompt_profile_match is not None:
+        prompt_profile_id = prompt_profile_match.group(0)
+    prompt_profile_suffix = "" if prompt_profile_id == "0" else prompt_profile_id
 
     model_handler = get_model_handler(model_type)
     if hasattr(model_handler, "get_custom_prompt_enhancer_instructions"):
@@ -5877,16 +5899,15 @@ def resolve_prompt_enhancer_settings(model_type, model_def, prompt_enhancer_mode
         if ret_prompt_enhancer_instructions is not None: prompt_enhancer_instructions = ret_prompt_enhancer_instructions 
         if ret_text_encoder_max_tokens is not None: text_encoder_max_tokens = ret_text_encoder_max_tokens
 
-    prompt_enhancer_instructions = model_def.get("image_prompt_enhancer_instructions" if is_image else "video_prompt_enhancer_instructions", prompt_enhancer_instructions)
-    text_encoder_max_tokens = model_def.get("image_prompt_enhancer_max_tokens" if is_image else "video_prompt_enhancer_max_tokens", text_encoder_max_tokens)
+    visual_prompt_prefix = "image" if is_image else "video"
+    prompt_instructions_key = f"{visual_prompt_prefix}_prompt_enhancer_instructions{prompt_profile_suffix}"
+    prompt_max_tokens_key = f"{visual_prompt_prefix}_prompt_enhancer_max_tokens{prompt_profile_suffix}"
+    prompt_enhancer_instructions = model_def.get(prompt_instructions_key, model_def.get(f"{visual_prompt_prefix}_prompt_enhancer_instructions", prompt_enhancer_instructions))
+    text_encoder_max_tokens = model_def.get(prompt_max_tokens_key, model_def.get(f"{visual_prompt_prefix}_prompt_enhancer_max_tokens", text_encoder_max_tokens))
 
     if "I" not in prompt_enhancer_mode:
-        prompt_profile_id = "0"
-        prompt_profile_match = re.search(r"\d", prompt_enhancer_mode)
-        if prompt_profile_match is not None:
-            prompt_profile_id = prompt_profile_match.group(0)
-        prompt_instructions_key = "text_prompt_enhancer_instructions" if prompt_profile_id == "0" else f"text_prompt_enhancer_instructions{prompt_profile_id}"
-        prompt_max_tokens_key = "text_prompt_enhancer_max_tokens" if prompt_profile_id == "0" else f"text_prompt_enhancer_max_tokens{prompt_profile_id}"
+        prompt_instructions_key = f"text_prompt_enhancer_instructions{prompt_profile_suffix}"
+        prompt_max_tokens_key = f"text_prompt_enhancer_max_tokens{prompt_profile_suffix}"
         prompt_enhancer_instructions = model_def.get(prompt_instructions_key, model_def.get("text_prompt_enhancer_instructions", prompt_enhancer_instructions))
         text_encoder_max_tokens = model_def.get(prompt_max_tokens_key, model_def.get("text_prompt_enhancer_max_tokens", text_encoder_max_tokens))
     return prompt_enhancer_instructions, int(text_encoder_max_tokens)
@@ -5929,6 +5950,16 @@ def exec_prompt_enhancer_engine(state, model_type, model_def, prompt_enhancer_mo
 
     release_GPU_ressources(state, "prompt_enhancer")
     return enhanced_prompts
+
+def keep_generated_prompt_newlines(multi_prompts_gen_type):
+    multi_prompts_gen_type = str(multi_prompts_gen_type or "")
+    return "P" in multi_prompts_gen_type or multi_prompts_gen_type == "FG"
+
+def normalize_generated_prompt_lines(prompt, multi_prompts_gen_type):
+    prompt = str(prompt or "")
+    if keep_generated_prompt_newlines(multi_prompts_gen_type):
+        return prompt
+    return re.sub(r"[\r\n]+", " ", prompt).strip()
 
 def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, multi_prompts_gen_type, override_profile, video_prompt_type, image_prompt_type, audio_prompt_type, progress=gr.Progress()):
     model_type = get_state_model_type(state)
@@ -5979,11 +6010,7 @@ def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, multi_
     output_prompts = []
     for enhanced_prompt, one_prompt in zip(enhanced_prompts, original_prompts):
         if enhanced_prompt is not None:
-            if any_letters(multi_prompts_gen_type, "PG"):
-                enhanced_prompt = enhanced_prompt[0]
-            else:
-                enhanced_prompt = enhanced_prompt[0].replace("\n", " ").replace("\r", "")
-            output_prompts.append(enhanced_prompt)
+            output_prompts.append(normalize_generated_prompt_lines(enhanced_prompt[0], multi_prompts_gen_type))
 
     prompt = prompt_parser.serialize_prompt_blocks_with_prefix(output_prompts, original_prompts)
     if num_prompts > 1:
@@ -6742,10 +6769,9 @@ def generate_video(
             unload_prompt_enhancer_runtime()
             if enhanced_prompts is not None:
                 print(f"Enhanced prompts: {enhanced_prompts}" )
-                if len(enhanced_prompts) > 1 and any("\n" in one_prompt for one_prompt in enhanced_prompts):
-                    task["prompt"] = prompt_parser.ENHANCED_PROMPT_PREFIX + prompt_parser.serialize_prompt_blocks_with_prefix(enhanced_prompts)
-                else:
-                    task["prompt"] = prompt_parser.ENHANCED_PROMPT_PREFIX + prompt_parser.serialize_prompt_units("", enhanced_prompts, multi_prompts_gen_type)
+                enhanced_prompts = [normalize_generated_prompt_lines(one_prompt, multi_prompts_gen_type) for one_prompt in enhanced_prompts]
+                # On-the-fly enhancement keeps task prompts clean; originals are saved in metadata.
+                task["prompt"] = prompt_parser.ENHANCED_PROMPT_PREFIX + prompt_parser.serialize_prompt_units("", enhanced_prompts, multi_prompts_gen_type)
                 gen["last_was_audio"] = audio_only
                 send_cmd("output")
                 prompts = enhanced_prompts            
@@ -10093,6 +10119,12 @@ def get_prompt_labels(multi_prompts_gen_type, model_def, image_outputs = False, 
 
     return f"{prompt_class} ({new_line_text}, # lines = comments, ! lines = macros)", f"{prompt_class} ({new_line_text}, # lines = comments)"
 
+def get_prompt_infos(model_def):
+    return model_def.get("prompt_infos", model_def.get("promt_infos", None))
+
+def render_prompt_info_label(label, model_type, model_def, prompt_id):
+    return model_infos.render_prompt_label(label, get_prompt_infos(model_def), model_type=model_type, prompt_id=prompt_id)
+
 def get_image_end_label(multi_prompts_gen_type):
     return "Images as ending points for each new Window of the same Video Generation" if "W" in multi_prompts_gen_type else "Images as ending points for new Videos in the Generation Queue"
 
@@ -10100,7 +10132,15 @@ def refresh_prompt_labels(state, multi_prompts_gen_type, image_mode):
     model_type = get_state_model_type(state)
     model_def = get_model_def(model_type)
     prompt_label, wizard_prompt_label =  get_prompt_labels(multi_prompts_gen_type, model_def, image_mode > 0, model_def.get("audio_only", False))
-    return gr.update(label=prompt_label), gr.update(label = wizard_prompt_label), gr.update(label=get_image_end_label(multi_prompts_gen_type))
+    prompt_infos = get_prompt_infos(model_def)
+    show_prompt_infos = bool(str(prompt_infos or "").strip())
+    return (
+        gr.update(label=prompt_label),
+        gr.update(label=wizard_prompt_label),
+        gr.update(label=get_image_end_label(multi_prompts_gen_type)),
+        gr.update(value=render_prompt_info_label(prompt_label, model_type, model_def, "advanced"), visible=show_prompt_infos),
+        gr.update(value=render_prompt_info_label(wizard_prompt_label, model_type, model_def, "wizard"), visible=show_prompt_infos),
+    )
 
 def update_video_guide_outpainting(video_guide_outpainting_value, value, pos):
     if len(video_guide_outpainting_value) <= 1:
@@ -10583,7 +10623,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             hunyuan_video_avatar = "hunyuan_video_avatar" in model_filename
             image_outputs = model_def.get("image_outputs", False)
             sliding_window_enabled = test_any_sliding_window(model_type)
-            multi_prompts_gen_type_value = ui_get("multi_prompts_gen_type")
+            multi_prompts_gen_type_value = prompt_parser.normalize_multi_prompts_mode(ui_get("multi_prompts_gen_type"), default=server_config["multi_prompts_gen_type"])
+            if not sliding_window_enabled:
+                multi_prompts_gen_type_value = multi_prompts_gen_type_value.replace("W", "G")
             prompt_label, wizard_prompt_label = get_prompt_labels(multi_prompts_gen_type_value, model_def, image_outputs, audio_only)            
             any_video_source = False
             fps = get_model_fps(base_model_type)
@@ -10659,7 +10701,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             image_prompt_type_endcheckbox = gr.Checkbox( value =False, show_label= False, visible= False , scale= 1)
                 image_start_row, image_start, image_start_extra = get_image_gallery(label= "Images as starting points for new Videos in the Generation Queue" + (" (None for Black Frames)" if model_def.get("black_frame", False) else ''), value = ui_defaults.get("image_start", None), visible= "S" in image_prompt_type_value )
                 video_source = gr.Video(label= "Video to Continue", height = gallery_height, visible= "V" in image_prompt_type_value, value= ui_defaults.get("video_source", None), elem_id="video_input")
-                image_end_row, image_end, image_end_extra = get_image_gallery(label= get_image_end_label(ui_get("multi_prompts_gen_type")), value = ui_defaults.get("image_end", None), visible=end_option_visible and "E" in image_prompt_type_value)
+                image_end_row, image_end, image_end_extra = get_image_gallery(label=get_image_end_label(multi_prompts_gen_type_value), value = ui_defaults.get("image_end", None), visible=end_option_visible and "E" in image_prompt_type_value)
                 if model_mode_choices is None:
                     model_mode = gr.Dropdown(value=None, label="model mode", visible=False)
                 else:
@@ -11028,7 +11070,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             else:                 
                 default_wizard_prompt, variables, values, errors =  extract_wizard_prompt(launch_prompt)
                 advanced_prompt  = len(errors) > 0
+            prompt_infos = get_prompt_infos(model_def)
+            show_prompt_infos = bool(str(prompt_infos or "").strip())
             with gr.Column(visible= advanced_prompt) as prompt_column_advanced:
+                prompt_info_label = gr.HTML(value=render_prompt_info_label(prompt_label, model_type, model_def, "advanced"), visible=show_prompt_infos, elem_classes=["wangp-prompt-info-anchor"])
                 prompt = gr.Textbox( visible= advanced_prompt, label=prompt_label, value=launch_prompt, lines=3)
 
             with gr.Column(visible=not advanced_prompt and len(variables) > 0) as prompt_column_wizard_vars:
@@ -11046,6 +11091,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     for _ in range( PROMPT_VARS_MAX - len(prompt_vars)):
                         prompt_vars.append(gr.Textbox(visible= False, min_width=80, show_label= False))
             with gr.Column(visible=not advanced_prompt) as prompt_column_wizard:
+                wizard_prompt_info_label = gr.HTML(value=render_prompt_info_label(wizard_prompt_label, model_type, model_def, "wizard"), visible=show_prompt_infos, elem_classes=["wangp-prompt-info-anchor"])
                 wizard_prompt = gr.Textbox(visible = not advanced_prompt, label=wizard_prompt_label, value=default_wizard_prompt, lines=3)
                 wizard_prompt_activated_var = gr.Text(wizard_prompt_activated, visible= False)
                 wizard_variables_var = gr.Text(wizard_variables, visible = False)
@@ -11058,8 +11104,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 prompt_enhancer_default = ""
                 prompt_enhancer_default_labels = {
                     "T": "Based on Text Prompt Content",
-                    "I": "Based on Images Prompts Content (such as Start Image and Reference Images)",
-                    "TI": "Based on both Text Prompt and Images Prompts Content",
+                    "TI": "Based on both Text Prompt and Images Prompts Content (Start Image / First Reference Image)",
                 }
                 prompt_enhancer_def = model_def.get("prompt_enhancer_def")
                 if isinstance(prompt_enhancer_def, dict):
@@ -11079,7 +11124,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         prompt_enhancer_choices.append((str(display_label), selection_value))
                     prompt_enhancer_default = str(prompt_enhancer_def.get("default", "")).strip()
                 else:
-                    prompt_enhancer_choices_allowed = model_def.get("prompt_enhancer_choices_allowed", ["T"] if audio_only else ["T", "I", "TI"])
+                    prompt_enhancer_choices_allowed = model_def.get("prompt_enhancer_choices_allowed", ["T"] if audio_only else ["T", "TI"])
                     if isinstance(prompt_enhancer_choices_allowed, str):
                         prompt_enhancer_choices_allowed = [prompt_enhancer_choices_allowed]
                     if not isinstance(prompt_enhancer_choices_allowed, list):
@@ -11335,16 +11380,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 ], visible=multiple_images_as_text_prompts and not edit_mode, label= "Multiple Images as Texts Prompts"
                             )
                         with gr.Row():
-                            multi_prompts_gen_choices = [(f"Each New Line Will Add a new {medium} Request to the Generation Queue", "G")]
-                            multi_prompts_gen_choices += [(f"Each new Paragraph separated by an Empty Line Will Add a new {medium} Request to the Generation Queue", "PG")]
-                            if sliding_window_enabled:
-                                multi_prompts_gen_choices += [("Each Line Will be used for a new Sliding Window of the same Video Generation", "W")]
-                                multi_prompts_gen_choices += [("Each Paragraph Separated by an Empty line will be used for a new Sliding Window of the same Video Generation", "PW")]
-                            multi_prompts_gen_choices += [("All the Lines are Part of the Same Prompt", "FG")]
+                            multi_prompts_gen_choices = prompt_parser.get_multi_prompts_gen_choices(medium, include_sliding_window=sliding_window_enabled)
 
                             multi_prompts_gen_type = gr.Dropdown(
                                 choices=multi_prompts_gen_choices,
-                                value=ui_get("multi_prompts_gen_type"),
+                                value=multi_prompts_gen_type_value,
                                 visible=not edit_mode,
                                 scale = 1,
                                 label= "How to Process each Line of the Text Prompt"
@@ -11945,7 +11985,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             # image_mask_guide.upload(fn=update_image_mask_guide, inputs=[state, image_mask_guide], outputs=[image_mask_guide], show_progress="hidden")
             video_prompt_type_video_mask.input(fn=refresh_video_prompt_type_video_mask, inputs = [state, video_prompt_type, video_prompt_type_video_mask, image_mode, image_mask_guide, image_guide, image_mask], outputs = [video_prompt_type, video_mask, image_mask_guide, image_guide, image_mask, mask_expand, masking_strength, magic_mask_image_btn, magic_mask_video_btn], show_progress="hidden")
             video_prompt_type_alignment.input(fn=refresh_video_prompt_type_alignment, inputs = [state, video_prompt_type, video_prompt_type_alignment], outputs = [video_prompt_type])
-            multi_prompts_gen_type.select(fn=refresh_prompt_labels, inputs=[state, multi_prompts_gen_type, image_mode], outputs=[prompt, wizard_prompt, image_end], show_progress="hidden")
+            multi_prompts_gen_type.select(fn=refresh_prompt_labels, inputs=[state, multi_prompts_gen_type, image_mode], outputs=[prompt, wizard_prompt, image_end, prompt_info_label, wizard_prompt_info_label], show_progress="hidden")
             video_guide_outpainting_top.input(fn=update_video_guide_outpainting, inputs=[video_guide_outpainting, video_guide_outpainting_top, gr.State(0)], outputs = [video_guide_outpainting], trigger_mode="multiple" )
             video_guide_outpainting_bottom.input(fn=update_video_guide_outpainting, inputs=[video_guide_outpainting, video_guide_outpainting_bottom,gr.State(1)], outputs = [video_guide_outpainting], trigger_mode="multiple" )
             video_guide_outpainting_left.input(fn=update_video_guide_outpainting, inputs=[video_guide_outpainting, video_guide_outpainting_left,gr.State(2)], outputs = [video_guide_outpainting], trigger_mode="multiple" )

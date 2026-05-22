@@ -3,6 +3,7 @@ from shared.utils.plugins import WAN2GPPlugin
 import json
 from shared.deepy.engine import get_or_create_assistant_session
 from shared.gradio import assistant_chat, gradio_queue_focus_patch
+from shared.utils import prompt_parser
 from shared.deepy.config import (
     DEEPY_CONTEXT_TOKENS_MIN,
     DEEPY_CONTEXT_TOKENS_DEFAULT,
@@ -34,10 +35,10 @@ from .defaults_migration import (
     MMAUDIO_DEFAULT_MODE,
     MMAUDIO_MODE_CHOICES,
     PROMPT_ENHANCER_CHOICES,
-    PROMPT_ENHANCER_DEFAULT_MODE,
     SEEDVC_DEFAULT_MODE,
     SEEDVC_MODE_CHOICES,
     enabled_choice_value,
+    get_prompt_enhancer_default_mode,
     migrate_extension_defaults,
 )
 
@@ -118,6 +119,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
     def create_config_ui(self):
         migrate_extension_defaults(self.server_config, self.server_config_filename)
         set_deepy_runtime_config(self.server_config, self.server_config_filename)
+        prompt_enhancer_default_mode = get_prompt_enhancer_default_mode()
         with gr.Column():
             with gr.Tabs():
                 with gr.Tab("General"):
@@ -158,6 +160,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.clear_file_list_choice = gr.Dropdown(
                         choices=[("None", 0), ("Keep last video", 1), ("Keep last 5 videos", 5), ("Keep last 10", 10), ("Keep last 20", 20), ("Keep last 30", 30)],
                         value=self.server_config.get("clear_file_list", 5), label="Keep Previous Generations in Gallery"
+                    )
+                    self.multi_prompts_gen_type_choice = gr.Dropdown(
+                        choices=prompt_parser.get_multi_prompts_gen_choices("Video"),
+                        value=prompt_parser.normalize_multi_prompts_mode(self.server_config.get("multi_prompts_gen_type", prompt_parser.DEFAULT_MULTI_PROMPTS_MODE), default=prompt_parser.DEFAULT_MULTI_PROMPTS_MODE),
+                        label="How to Process each Line of the Text Prompt (First Time Model SDefault)",
                     )
                     self.display_stats_choice = gr.Dropdown(
                         choices=[("Disabled", 0), ("Enabled", 1)],
@@ -345,7 +352,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     with gr.Group():
                         self.enhancer_enabled_choice = gr.Dropdown(
                             choices=PROMPT_ENHANCER_CHOICES,
-                            value=enabled_choice_value(self.server_config.get("enhancer_enabled", PROMPT_ENHANCER_DEFAULT_MODE), PROMPT_ENHANCER_CHOICES, PROMPT_ENHANCER_DEFAULT_MODE),
+                            value=enabled_choice_value(self.server_config.get("enhancer_enabled", prompt_enhancer_default_mode), PROMPT_ENHANCER_CHOICES, prompt_enhancer_default_mode),
                             label="Prompt Enhancer (requires extra model files)"
                         )
                         self.enhancer_quantization_choice = gr.Dropdown(
@@ -499,7 +506,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         inputs = [
             self.state,
             self.transformer_types_choices, self.model_hierarchy_type_choice, self.fit_canvas_choice,
-            self.attention_choice, self.preload_model_policy_choice, self.clear_file_list_choice, self.keep_intermediate_sliding_windows_choice,
+            self.attention_choice, self.preload_model_policy_choice, self.clear_file_list_choice, self.multi_prompts_gen_type_choice, self.keep_intermediate_sliding_windows_choice,
             self.display_stats_choice, self.max_frames_multiplier_choice, self.enable_4k_resolutions_choice, self.checkpoints_paths_choice, self.loras_root_choice, self.save_queue_if_crash_choice,
             self.UI_theme_choice, self.queue_color_scheme_choice, self.process_queues_when_browser_unfocused_choice,
             self.quantization_choice, self.transformer_dtype_policy_choice, self.mixed_precision_choice,
@@ -585,7 +592,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         (
             transformer_types_choices, model_hierarchy_type_choice, fit_canvas_choice,
-            attention_choice, preload_model_policy_choice, clear_file_list_choice, keep_intermediate_sliding_windows_choice,
+            attention_choice, preload_model_policy_choice, clear_file_list_choice, multi_prompts_gen_type_choice, keep_intermediate_sliding_windows_choice,
             display_stats_choice, max_frames_multiplier_choice, enable_4k_resolutions_choice, checkpoints_paths_choice, loras_root_choice, save_queue_if_crash_choice,
             UI_theme_choice, queue_color_scheme_choice, process_queues_when_browser_unfocused_choice,
             quantization_choice, transformer_dtype_policy_choice, mixed_precision_choice,
@@ -641,6 +648,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "mixed_precision": mixed_precision_choice, "metadata_type": metadata_choice,
             "transformer_quantization": quantization_choice, "transformer_dtype_policy": transformer_dtype_policy_choice,
             "boost": boost_choice, "enable_int8_kernels": enable_int8_kernels_choice, "clear_file_list": clear_file_list_choice,
+            "multi_prompts_gen_type": prompt_parser.normalize_multi_prompts_mode(multi_prompts_gen_type_choice, default=prompt_parser.DEFAULT_MULTI_PROMPTS_MODE),
             "keep_intermediate_sliding_windows": keep_intermediate_sliding_windows_choice,
             "preload_model_policy": preload_model_policy_choice, "UI_theme": UI_theme_choice,
             "fit_canvas": fit_canvas_choice, "enhancer_enabled": enhancer_enabled_choice,
@@ -696,7 +704,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         no_reload_keys = [
             "attention_mode", "vae_config", "boost", "enable_int8_kernels", "save_path", "image_save_path", "audio_save_path",
-            "metadata_type", "clear_file_list", "keep_intermediate_sliding_windows", "fit_canvas", "depth_anything_v2_variant",
+            "metadata_type", "clear_file_list", "multi_prompts_gen_type", "keep_intermediate_sliding_windows", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", "mmaudio_mode",
             "mmaudio_persistence", "mmaudio_enabled", "seedvc_mode", "seedvc_persistence", "flashvsr_mode", "flashvsr_persistence", "flashvsr_backend", "flashvsr_topk_ratio", "rife_version", "matanyone_version",
             "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed", "prompt_enhancer_quantization",

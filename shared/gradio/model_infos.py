@@ -75,18 +75,10 @@ def _normalize_infos(infos, model_name: str) -> tuple[str, str]:
     return str(model_name or "Model"), str(infos or "")
 
 
-def render_model_description(description: str, infos=None, *, model_type: str = "", model_name: str = "Model", height: int = 40) -> str:
-    if not infos:
-        return f"<div style='height:{int(height)}px'>{description}</div>"
-    title, markdown = _normalize_infos(infos, model_name)
-    if not markdown.strip():
-        return f"<div style='height:{int(height)}px'>{description}</div>"
-    popup_id = "wangp-model-info-" + re.sub(r"[^A-Za-z0-9_-]", "-", str(model_type or model_name)).strip("-").lower()
+def _render_info_trigger_and_popup(popup_id: str, title: str, markdown: str) -> str:
     title_attr = html.escape(title, quote=True)
     title_html = html.escape(title)
     return (
-        f"<div class='wangp-model-info-host' style='min-height:{int(height)}px'>"
-        f"<div class='wangp-model-info-description'>{description}</div>"
         f"<button type='button' class='wangp-model-info-trigger' title='{title_attr}' aria-label='{title_attr}' data-wangp-model-info-open='{popup_id}'>&#9432;</button>"
         f"<div id='{popup_id}' class='wangp-model-info-popup' role='dialog' aria-label='{title_attr}' data-wangp-model-info-popup hidden>"
         "<div class='wangp-model-info-card'>"
@@ -97,6 +89,35 @@ def render_model_description(description: str, infos=None, *, model_type: str = 
         f"<div class='wangp-model-info-content'>{_render_markdown(markdown)}</div>"
         "</div>"
         "</div>"
+    )
+
+
+def render_model_description(description: str, infos=None, *, model_type: str = "", model_name: str = "Model", height: int = 40) -> str:
+    if not infos:
+        return f"<div style='height:{int(height)}px'>{description}</div>"
+    title, markdown = _normalize_infos(infos, model_name)
+    if not markdown.strip():
+        return f"<div style='height:{int(height)}px'>{description}</div>"
+    popup_id = "wangp-model-info-" + re.sub(r"[^A-Za-z0-9_-]", "-", str(model_type or model_name)).strip("-").lower()
+    return (
+        f"<div class='wangp-model-info-host' style='min-height:{int(height)}px'>"
+        f"<div class='wangp-model-info-description'>{description}</div>"
+        f"{_render_info_trigger_and_popup(popup_id, title, markdown)}"
+        "</div>"
+    )
+
+
+def render_prompt_label(label: str, infos=None, *, model_type: str = "", prompt_id: str = "prompt", title: str = "Prompt Guidelines") -> str:
+    if not infos:
+        return ""
+    popup_title, markdown = _normalize_infos(infos, title)
+    if not markdown.strip():
+        return ""
+    popup_key = re.sub(r"[^A-Za-z0-9_-]", "-", f"{model_type or 'model'}-{prompt_id or 'prompt'}").strip("-").lower()
+    popup_id = f"wangp-prompt-info-{popup_key}"
+    return (
+        "<div class='wangp-prompt-info-host'>"
+        f"{_render_info_trigger_and_popup(popup_id, popup_title, markdown)}"
         "</div>"
     )
 
@@ -112,6 +133,51 @@ def get_css() -> str:
 }
 .wangp-model-info-description {
     line-height: 1.35;
+}
+.wangp-prompt-info-host {
+    position: relative;
+    width: 100%;
+    height: 0;
+    margin: 0;
+    overflow: visible;
+    pointer-events: none;
+    z-index: 50;
+}
+.wangp-prompt-info-anchor,
+.wangp-prompt-info-anchor > *,
+.wangp-prompt-info-anchor .html-container {
+    min-height: 0 !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    overflow: visible !important;
+    scrollbar-width: none !important;
+}
+.wangp-prompt-info-anchor::-webkit-scrollbar,
+.wangp-prompt-info-anchor *::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+}
+.wangp-prompt-info-host .wangp-model-info-trigger {
+    pointer-events: auto;
+    z-index: 60;
+    top: 23px;
+    right: 8px;
+    width: 18px;
+    height: 18px;
+    min-width: 18px;
+    min-height: 18px;
+    border: 1px solid rgba(17, 84, 118, 0.24);
+    background: rgba(255, 255, 255, 0.86);
+    box-shadow: none;
+    color: #155574;
+    font-size: 11px;
+}
+.wangp-prompt-info-host .wangp-model-info-trigger:hover {
+    box-shadow: none;
 }
 .wangp-model-info-trigger {
     position: absolute;
@@ -260,6 +326,34 @@ def get_javascript() -> str:
         const popup = closeButton?.closest("[data-wangp-model-info-popup]");
         if (popup) popup.hidden = true;
     };
+    window.wangpModelInfo.alignPromptInfoButtons = function() {
+        document.querySelectorAll(".wangp-prompt-info-anchor").forEach((anchor) => {
+            const trigger = anchor.querySelector(".wangp-prompt-info-host .wangp-model-info-trigger");
+            if (!trigger || !anchor.classList.contains("block")) return;
+            let target = null;
+            for (let sibling = anchor.nextElementSibling; sibling && !target; sibling = sibling.nextElementSibling) {
+                if (sibling.classList?.contains("wangp-prompt-info-anchor")) continue;
+                const label = sibling.querySelector?.("label");
+                if (!label) continue;
+                target = label.querySelector("span") || label.firstElementChild || label;
+            }
+            if (!target) return;
+            const host = trigger.closest(".wangp-prompt-info-host");
+            const hostRect = host.getBoundingClientRect();
+            const targetRect = target.getBoundingClientRect();
+            const triggerRect = trigger.getBoundingClientRect();
+            if (!hostRect.width || !targetRect.height) return;
+            trigger.style.top = Math.max(0, targetRect.top - hostRect.top + (targetRect.height - triggerRect.height) / 2) + "px";
+        });
+    };
+    window.wangpModelInfo.schedulePromptInfoAlign = function() {
+        if (window.wangpModelInfo.alignPending) return;
+        window.wangpModelInfo.alignPending = true;
+        requestAnimationFrame(() => {
+            window.wangpModelInfo.alignPending = false;
+            window.wangpModelInfo.alignPromptInfoButtons();
+        });
+    };
     let wangpModelInfoDrag = null;
     document.addEventListener("click", (event) => {
         const openButton = event.target.closest("[data-wangp-model-info-open]");
@@ -306,4 +400,9 @@ def get_javascript() -> str:
     document.addEventListener("pointercancel", (event) => {
         if (wangpModelInfoDrag && wangpModelInfoDrag.pointerId === event.pointerId) wangpModelInfoDrag = null;
     });
+    window.addEventListener("load", window.wangpModelInfo.schedulePromptInfoAlign);
+    window.addEventListener("resize", window.wangpModelInfo.schedulePromptInfoAlign);
+    new MutationObserver(window.wangpModelInfo.schedulePromptInfoAlign).observe(document.body, { childList: true, subtree: true, characterData: true });
+    setTimeout(window.wangpModelInfo.schedulePromptInfoAlign, 250);
+    setTimeout(window.wangpModelInfo.schedulePromptInfoAlign, 1200);
 """

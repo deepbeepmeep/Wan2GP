@@ -356,7 +356,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             label="Prompt Enhancer (requires extra model files)"
                         )
                         self.enhancer_quantization_choice = gr.Dropdown(
-                            choices=[("Quanto Int8 (better quality)", "quanto_int8"), ("GGUF Q4 (less VRAM/RAM & faster if kernels are installed, but worse quality)", "gguf")],
+                            choices=[("Quanto Int8 (recommended, better quality)", "quanto_int8"), ("GGUF Q4 (less VRAM/RAM & faster if kernels are installed, but worse quality)", "gguf")],
                             value=self.server_config.get("prompt_enhancer_quantization", "quanto_int8"),
                             label="Qwen3.5 LLM Quantization",
                         )

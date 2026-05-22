@@ -155,7 +155,7 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
         from .qwen35_text import load_qwen35_text_prompt_enhancer
         from .qwen35_vl import (
             enhancer_quantization_QUANTO_INT8,
-            clone_qwen35_text_embedding_for_mmgp,
+            alias_qwen35_text_embedding_for_mmgp,
             get_qwen35_assets_dir_name,
             get_qwen35_prompt_enhancer_variant,
             load_qwen35_vl_prompt_enhancer,
@@ -174,7 +174,7 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
         )
         runtime.llm_tokenizer = getattr(runtime.llm_model, "_prompt_enhancer_tokenizer", None)
         runtime.llm_model.eval()
-        caption_embedding_model = clone_qwen35_text_embedding_for_mmgp(runtime.llm_model)
+        caption_embedding_model = alias_qwen35_text_embedding_for_mmgp(runtime.llm_model)
         runtime.image_caption_model, vision_tower_model = load_qwen35_vl_prompt_enhancer(
             assets_dir=assets_dir,
             attn_implementation="sdpa",

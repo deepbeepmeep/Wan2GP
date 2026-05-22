@@ -18,7 +18,7 @@ FLASHVSR_MODE_CHOICES = [
 PROMPT_ENHANCER_CHOICES = [
     ("Florence 2 (image captioning) + LLama 3.2 3B (text generation)", 1),
     ("Florence 2 (image captioning) + Llama Joy 8B (uncensored, richer)", 2),
-    ("Qwen3.5VL Abliterated 4B (captioning + uncensored text enhancement, vllm accelerated if available)", 3),
+    ("Qwen3.5VL Abliterated 4B (recommended, captioning + uncensored text enhancement, vllm accelerated if available)", 3),
     ("Qwen3.5VL Abliterated 9B (captioning + uncensored high end text enhancement, vllm accelerated if available)", 4),
 ]
 

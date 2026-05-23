@@ -1,4 +1,31 @@
 import gradio as gr
+
+# ROCm Windows PyTorch lacks CPU LAPACK, breaking nn.init.orthogonal_ during
+# matanyone model construction (the QR decomposition needs torch.geqrf).
+# Our torch's GPU linalg works fine; detour CPU calls through GPU only when
+# the CPU path raises a LAPACK error. Zero overhead on systems where CPU LAPACK works.
+# Reversible: pip install --force-reinstall torch to restore stock behavior.
+import torch
+import torch.nn.init as _wan2gp_init
+_wan2gp_original_orthogonal = _wan2gp_init.orthogonal_
+
+def _wan2gp_gpu_safe_orthogonal_(tensor, gain=1, generator=None):
+    try:
+        return _wan2gp_original_orthogonal(tensor, gain=gain, generator=generator)
+    except RuntimeError as e:
+        msg = str(e)
+        if (tensor.device.type == 'cpu'
+                and torch.cuda.is_available()
+                and ('LAPACK' in msg or 'geqrf' in msg)):
+            gpu_t = tensor.detach().to('cuda')
+            _wan2gp_original_orthogonal(gpu_t, gain=gain, generator=generator)
+            tensor.copy_(gpu_t.to('cpu'))
+            del gpu_t
+            return tensor
+        raise
+
+_wan2gp_init.orthogonal_ = _wan2gp_gpu_safe_orthogonal_
+
 from shared.utils.plugins import WAN2GPPlugin
 from preprocessing.matanyone import app as matanyone_app
 

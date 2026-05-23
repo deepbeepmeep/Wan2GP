@@ -1122,15 +1122,17 @@ class AttnProcessor2_0:
                 skip_layer_mask is not None
                 and skip_layer_strategy == SkipLayerStrategy.AttentionSkip
             ):
-                hidden_states = hidden_states_a * skip_layer_mask + hidden_states * (
-                    1.0 - skip_layer_mask
+                _mask = skip_layer_mask.to(hidden_states_a.device)
+                hidden_states = hidden_states_a * _mask + hidden_states * (
+                    1.0 - _mask
                 )
             elif (
                 skip_layer_mask is not None
                 and skip_layer_strategy == SkipLayerStrategy.AttentionValues
             ):
-                hidden_states_a *= skip_layer_mask
-                value_for_stg *=  1.0 - skip_layer_mask
+                _mask = skip_layer_mask.to(hidden_states_a.device)
+                hidden_states_a *= _mask
+                value_for_stg *=  1.0 - _mask
                 hidden_states_a +=  value_for_stg
                 hidden_states = hidden_states_a
                 del value_for_stg

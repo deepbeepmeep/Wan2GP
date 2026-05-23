@@ -21,6 +21,13 @@ if sys.platform.startswith("linux") and "NUMBA_THREADING_LAYER" not in os.enviro
 from shared.asyncio_utils import silence_proactor_connection_reset
 silence_proactor_connection_reset()
 
+import logging
+logging.getLogger("asyncio").addFilter(
+    type("_SocketSendFilter", (logging.Filter,), {
+        "filter": staticmethod(lambda r: "socket.send() raised exception" not in r.getMessage())
+    })()
+)
+
 # ── Apple Silicon MPS patch: MUST come before mmgp import ──
 import torch
 is_mps = sys.platform == 'darwin' and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
@@ -755,23 +762,32 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
     resolution = inputs["resolution"]
     width, height = resolution.split("x")
     width, height = int(width), int(height)
-    image_start = inputs["image_start"]
-    image_end = inputs["image_end"]
-    image_refs = inputs["image_refs"]
-    image_prompt_type = inputs["image_prompt_type"]
-    audio_prompt_type = inputs["audio_prompt_type"]
+    # Local patch: Wan2GP UI sometimes drops media keys from the form payload (e.g. when
+    # the input image is cleared, the model is switched, or a stale tab is submitted).
+    # Use .get() so we produce a friendly error instead of crashing with KeyError, and
+    # explicitly check that i2v generations have an input image.
+    image_start = inputs.get("image_start")
+    image_end = inputs.get("image_end")
+    image_refs = inputs.get("image_refs")
+    image_prompt_type = inputs.get("image_prompt_type")
+    audio_prompt_type = inputs.get("audio_prompt_type")
     if image_prompt_type == None: image_prompt_type = ""
-    video_prompt_type = inputs["video_prompt_type"]
+    video_prompt_type = inputs.get("video_prompt_type")
     if video_prompt_type == None: video_prompt_type = ""
-    force_fps = inputs["force_fps"]
-    audio_guide = inputs["audio_guide"]
-    audio_guide2 = inputs["audio_guide2"]
-    audio_source = inputs["audio_source"]
-    video_guide = inputs["video_guide"]
-    image_guide = inputs["image_guide"]
-    video_mask = inputs["video_mask"]
-    image_mask = inputs["image_mask"]
-    custom_guide = inputs["custom_guide"]
+    force_fps = inputs.get("force_fps")
+    audio_guide = inputs.get("audio_guide")
+    audio_guide2 = inputs.get("audio_guide2")
+    audio_source = inputs.get("audio_source")
+    video_guide = inputs.get("video_guide")
+    image_guide = inputs.get("image_guide")
+    video_mask = inputs.get("video_mask")
+    image_mask = inputs.get("image_mask")
+    custom_guide = inputs.get("custom_guide")
+    # Friendly error for i2v generations that landed here without an input image.
+    if (not image_outputs
+            and image_start is None
+            and "i2v" in (get_base_model_type(model_type) or "").lower()):
+        return err("No input image provided. Upload an image in the I2V panel before clicking Generate.")
     speakers_locations = inputs["speakers_locations"]
     video_source = inputs["video_source"]
     frames_positions = inputs["frames_positions"]

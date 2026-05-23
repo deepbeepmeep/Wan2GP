@@ -68,11 +68,11 @@ class _RuntimeSegment:
 class PromptRelayConditioning:
     video_context: torch.Tensor
     audio_context: torch.Tensor | None
-    video_mask_builder: PromptRelayMaskBuilder
+    video_mask_builder: PromptRelayMaskBuilder | None
     audio_mask_builder: PromptRelayMaskBuilder | None
 
     @property
-    def mask_builder(self) -> PromptRelayMaskBuilder:
+    def mask_builder(self) -> PromptRelayMaskBuilder | None:
         return self.video_mask_builder
 
 
@@ -206,7 +206,7 @@ def _build_mask_builder(
     num_frames: int,
     frame_rate: float,
     visible_frame_offset: int = 0,
-) -> PromptRelayMaskBuilder:
+) -> PromptRelayMaskBuilder | None:
     runtime_segments = []
     num_frames = max(int(num_frames), 1)
     visible_frame_offset = min(max(int(visible_frame_offset), 0), max(num_frames - 1, 0))
@@ -223,6 +223,8 @@ def _build_mask_builder(
         end = 1.0 if segment.end is None else segment.end.resolve(total_seconds, visible_num_frames, inclusive_end=True)
         end = max(start, end)
         runtime_segments.append(_RuntimeSegment(start, end, start_key, end_key))
+    if not any(segment.start > 0.0 or segment.end < 1.0 for segment in runtime_segments):
+        return None
     return PromptRelayMaskBuilder(_normalize_key_mask(mask, seq_len), runtime_segments, seq_len, visible_start_ratio=visible_start_ratio)
 
 

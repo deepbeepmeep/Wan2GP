@@ -12,12 +12,14 @@ from pydantic import BaseModel, Field
 # Mapping from API model IDs to WanGP model_type strings
 I2V_MODEL_TYPE_MAP = {
     "hunyuan_1_5_480_i2v_step_distilled": "hunyuan_1_5_480_i2v_step_distilled",
+    "wan2_2_i2v_14b_enhanced_lightning_v2": "i2v_2_2_Enhanced_Lightning_v2",
 }
 
 
 class I2VVideoModel(str, Enum):
     """Supported models for image-to-video generation."""
     HUNYUAN_1_5_480_I2V_STEP_DISTILLED = "hunyuan_1_5_480_i2v_step_distilled"
+    WAN2_2_I2V_14B_ENHANCED_LIGHTNING_V2 = "wan2_2_i2v_14b_enhanced_lightning_v2"
 
     @property
     def model_type(self) -> str:
@@ -54,6 +56,18 @@ class ImageToVideoRequest(BaseModel):
             "force_fps": self.fps,
             "flow_shift": 5
         }
+
+        # apply some wan2.2 settings; defaults from the UI
+        if self.model == I2VVideoModel.WAN2_2_I2V_14B_ENHANCED_LIGHTNING_V2:
+            settings["sample_solver"] = "unipc"
+            settings["guidance_scale"] = 1
+            settings["guidance2_scale"] = 1
+            settings["guidance3_scale"] = 5
+            settings["guidance_phases"] = 2
+            settings["switch_threshold"] = 900
+            settings["overlap_size"] = 5
+
+
         if image_start_path:
             settings["image_start"] = image_start_path
             settings["image_prompt_type"] = "S"  # Use start image

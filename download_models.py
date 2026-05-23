@@ -4,7 +4,7 @@ Download script for Wan2GP models:
 - flux2_klein_9b
 - flux2_klein_4b
 - pi_flux2
-- hunyuan_1_5_480_i2v_step_distilled
+- i2v_2_2_Enhanced_Lightning_v2
 
 Usage: python download_models.py
 """
@@ -17,6 +17,7 @@ import time
 # Configuration
 CHECKPOINTS_DIR = "ckpts"
 HF_BASE = "https://huggingface.co/DeepBeepMeep"
+WAN22_BASE = "https://huggingface.co/DeepBeepMeep/Wan2.2"
 
 def format_bytes(bytes_val):
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
@@ -205,43 +206,49 @@ def main():
     print("\n  VAE (already downloaded above if needed)...")
     
     # =========================================================================
-    # hunyuan_1_5_480_i2v_step_distilled
+    # i2v_2_2_Enhanced_Lightning_v2
     # =========================================================================
     print("\n" + "=" * 60)
-    print("Downloading hunyuan_1_5_480_i2v_step_distilled...")
+    print("Downloading i2v_2_2_Enhanced_Lightning_v2...")
     print("=" * 60)
-    
-    hunyuan_i2v_files = [
-        # Main model
-        ("hunyuan_video_1.5_i2v_480_step_distilled_bf16.safetensors", f"{HF_BASE}/HunyuanVideo1.5/resolve/main/hunyuan_video_1.5_i2v_480_step_distilled_bf16.safetensors"),
-        ("hunyuan_video_1.5_i2v_480_step_distilled_quanto_bf16_int8.safetensors", f"{HF_BASE}/HunyuanVideo1.5/resolve/main/hunyuan_video_1.5_i2v_480_step_distilled_quanto_bf16_int8.safetensors"),
+
+    # Main transformer models (URLs and URLs2)
+    print("\n  Transformer Models (URLs + URLs2)...")
+    i2v_22_enhanced_files = [
+        ("wan22EnhancedLightning_v2I2VFP8HIGH.safetensors", f"{WAN22_BASE}/resolve/main/wan22EnhancedLightning_v2I2VFP8HIGH.safetensors"),
+        ("wan22EnhancedLightning_v2I2VFP8LOW.safetensors", f"{WAN22_BASE}/resolve/main/wan22EnhancedLightning_v2I2VFP8LOW.safetensors"),
     ]
-    download_model_list(hunyuan_i2v_files)
-    
-    # Text encoder (Qwen2.5-VL-7B)
-    print("\n  Text Encoder (Qwen2.5-VL-7B)...")
-    qwen25_vl_files = [
-        ("Qwen2.5-VL-7B-Instruct_bf16.safetensors", f"{HF_BASE}/Qwen_image/resolve/main/Qwen2.5-VL-7B-Instruct_bf16.safetensors"),
-        ("Qwen2.5-VL-7B-Instruct_quanto_bf16_int8.safetensors", f"{HF_BASE}/Qwen_image/resolve/main/Qwen2.5-VL-7B-Instruct_quanto_bf16_int8.safetensors"),
+    download_model_list(i2v_22_enhanced_files)
+
+    # Text encoder (umt5-xxl)
+    print("\n  Text Encoder (umt5-xxl)...")
+    umt5_files = [
+        ("special_tokens_map.json", f"{HF_BASE}/Wan2.1/resolve/main/umt5-xxl/special_tokens_map.json"),
+        ("spiece.model", f"{HF_BASE}/Wan2.1/resolve/main/umt5-xxl/spiece.model"),
+        ("tokenizer.json", f"{HF_BASE}/Wan2.1/resolve/main/umt5-xxl/tokenizer.json"),
+        ("tokenizer_config.json", f"{HF_BASE}/Wan2.1/resolve/main/umt5-xxl/tokenizer_config.json"),
     ]
-    download_model_list(qwen25_vl_files, "Qwen2.5-VL-7B-Instruct")
-    
-    # VAE files at top level (ckpts/)
+    download_model_list(umt5_files, "umt5-xxl")
+
+    # VAE files
     print("\n  VAE files...")
-    hunyuan_vae_files = [
-        ("hunyuan_video_1_5_VAE_fp32.safetensors", f"{HF_BASE}/HunyuanVideo1.5/resolve/main/hunyuan_video_1_5_VAE_fp32.safetensors"),
-        ("hunyuan_video_1_5_VAE.json", f"{HF_BASE}/HunyuanVideo1.5/resolve/main/hunyuan_video_1_5_VAE.json"),
+    vae_22_files = [
+        ("Wan2.1_VAE.safetensors", f"{HF_BASE}/Wan2.1/resolve/main/Wan2.1_VAE.safetensors"),
+        ("Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors", f"{HF_BASE}/Wan2.1/resolve/main/Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"),
     ]
-    download_model_list(hunyuan_vae_files)
-    
-    # Qwen VAE (for text encoding)
-    print("\n  Qwen VAE (for text encoding)...")
-    qwen_vae_files = [
-        ("qwen_vae.safetensors", f"{HF_BASE}/Qwen_image/resolve/main/qwen_vae.safetensors"),
-        ("qwen_vae_config.json", f"{HF_BASE}/Qwen_image/resolve/main/qwen_vae_config.json"),
+    download_model_list(vae_22_files)
+
+    # CLIP (xlm-roberta-large)
+    print("\n  CLIP (xlm-roberta-large)...")
+    clip_files = [
+        ("models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", f"{HF_BASE}/Wan2.1/resolve/main/xlm-roberta-large/models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors"),
+        ("sentencepiece.bpe.model", f"{HF_BASE}/Wan2.1/resolve/main/xlm-roberta-large/sentencepiece.bpe.model"),
+        ("special_tokens_map.json", f"{HF_BASE}/Wan2.1/resolve/main/xlm-roberta-large/special_tokens_map.json"),
+        ("tokenizer.json", f"{HF_BASE}/Wan2.1/resolve/main/xlm-roberta-large/tokenizer.json"),
+        ("tokenizer_config.json", f"{HF_BASE}/Wan2.1/resolve/main/xlm-roberta-large/tokenizer_config.json"),
     ]
-    download_model_list(qwen_vae_files)
-    
+    download_model_list(clip_files, "xlm-roberta-large")
+
     # =========================================================================
     # Summary
     # =========================================================================

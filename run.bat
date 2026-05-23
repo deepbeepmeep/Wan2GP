@@ -42,6 +42,10 @@ SET "SCRIPT_DIR=%~dp0"
 SET "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 
 :: Just runs the server; please run setup.bat if you have not already
-conda run -n wan2gp --live-stream python -m uvicorn wgp_fastapi.api.routes:app --host 0.0.0.0 --port 8000
+IF "%RUN_FULL%"=="1" (
+    conda run -n wan2gp python wgp.py --listen
+) ELSE (
+    conda run -n wan2gp --live-stream python -m uvicorn wgp_fastapi.api.routes:app --host 0.0.0.0 --port 8000
+)
 
 pause

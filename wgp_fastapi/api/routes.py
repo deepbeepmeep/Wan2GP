@@ -648,12 +648,55 @@ async def get_task_status(request: Request, task_id: str) -> TaskStatus:
 @app.delete(
     "/api/v1/tasks/{task_id}",
     summary="Cancel task",
-    description="Cancel a running generation task.",
+    description="Cancel a running or queued generation task.",
 )
 async def cancel_task(task_id: str):
-    """Cancel a running generation task."""
-    # TODO: Implement task cancellation
-    raise HTTPException(status_code=501, detail="Task cancellation not yet implemented")
+    """Cancel a running or queued generation task."""
+    from shared.api import GenerationResult
+
+    if task_id not in _tasks:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    task = _tasks[task_id]
+    status = task["status"]
+
+    # Already completed — nothing to cancel
+    if status in (TASK_SUCCESS, TASK_FAILED):
+        return JSONResponse(
+            content={"status": "already_completed", "task_id": task_id},
+            status_code=200,
+        )
+
+    # Pending task — remove from async queue
+    if status == TASK_PENDING:
+        with _worker_lock:
+            if task_id in _async_queue:
+                _async_queue.remove(task_id)
+        task["status"] = TASK_FAILED
+        task["result"] = GenerationResult(
+            success=False,
+            generated_files=[],
+            errors=[],
+            total_tasks=0,
+            successful_tasks=0,
+            failed_tasks=1,
+        )
+        return JSONResponse(
+            content={"status": "cancelled", "task_id": task_id},
+            status_code=200,
+        )
+
+    # Running task — cancel via session
+    if status == TASK_RUNNING:
+        session = get_wgp_session()
+        session.cancel()
+        return JSONResponse(
+            content={"status": "cancelling", "task_id": task_id},
+            status_code=200,
+        )
+
+    # Fallback
+    raise HTTPException(status_code=500, detail="Unexpected task state")
 
 
 @app.delete(

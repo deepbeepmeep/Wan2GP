@@ -11936,7 +11936,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         hidden_countdown_state = gr.Number(value=-1, visible=False, elem_id="hidden_countdown_state_num")
                         single_hidden_trigger_btn = gr.Button("trigger_countdown", visible=False, elem_id="trigger_info_single_btn")
 
-        extra_inputs = prompt_vars + [wizard_prompt, wizard_variables_var, wizard_prompt_activated_var, video_prompt_column, image_prompt_column, image_prompt_type_group, image_prompt_type_radio, image_prompt_type_endcheckbox,
+        extra_inputs = prompt_vars + [wizard_prompt, wizard_variables_var, wizard_prompt_activated_var, prompt_info_label, wizard_prompt_info_label, video_prompt_column, image_prompt_column, image_prompt_type_group, image_prompt_type_radio, image_prompt_type_endcheckbox,
                                       prompt_column_advanced, prompt_column_wizard_vars, prompt_column_wizard, alt_prompt_row, lset_name, save_lset_prompt_drop, advanced_row, speed_tab, audio_tab, mmaudio_col, quality_tab,
                                       sliding_window_tab, misc_tab, prompt_enhancer_row, inference_steps_row, perturbation_row, audio_guide_row, custom_guide_row, RIFLEx_setting_col,
                                       video_prompt_type_video_guide, video_prompt_type_video_guide_alt, video_prompt_type_video_mask, video_prompt_type_image_refs, video_prompt_type_video_custom_dropbox, video_prompt_type_video_custom_checkbox,
@@ -11990,6 +11990,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             # image_mask_guide.upload(fn=update_image_mask_guide, inputs=[state, image_mask_guide], outputs=[image_mask_guide], show_progress="hidden")
             video_prompt_type_video_mask.input(fn=refresh_video_prompt_type_video_mask, inputs = [state, video_prompt_type, video_prompt_type_video_mask, image_mode, image_mask_guide, image_guide, image_mask], outputs = [video_prompt_type, video_mask, image_mask_guide, image_guide, image_mask, mask_expand, masking_strength, magic_mask_image_btn, magic_mask_video_btn], show_progress="hidden")
             video_prompt_type_alignment.input(fn=refresh_video_prompt_type_alignment, inputs = [state, video_prompt_type, video_prompt_type_alignment], outputs = [video_prompt_type])
+            main.load(fn=refresh_prompt_labels, inputs=[state, multi_prompts_gen_type, image_mode], outputs=[prompt, wizard_prompt, image_end, prompt_info_label, wizard_prompt_info_label], show_progress="hidden")
             multi_prompts_gen_type.select(fn=refresh_prompt_labels, inputs=[state, multi_prompts_gen_type, image_mode], outputs=[prompt, wizard_prompt, image_end, prompt_info_label, wizard_prompt_info_label], show_progress="hidden")
             video_guide_outpainting_top.input(fn=update_video_guide_outpainting, inputs=[video_guide_outpainting, video_guide_outpainting_top, gr.State(0)], outputs = [video_guide_outpainting], trigger_mode="multiple" )
             video_guide_outpainting_bottom.input(fn=update_video_guide_outpainting, inputs=[video_guide_outpainting, video_guide_outpainting_bottom,gr.State(1)], outputs = [video_guide_outpainting], trigger_mode="multiple" )

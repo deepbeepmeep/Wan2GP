@@ -9,8 +9,8 @@ from importlib.metadata import version
 
 _is_mps = sys.platform == 'darwin' and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
 
-major, minor = torch.cuda.get_device_capability(None)
-bfloat16_supported =  major >= 8 
+major, minor = (0, 0) if _is_mps else torch.cuda.get_device_capability(None)
+bfloat16_supported =  major >= 8
 _MASKED_ATTENTION_SDPA_WARNED = False
 
 try:
@@ -66,12 +66,12 @@ except ImportError:
             pass
 
 try:
-    from .sage2_core import sageattn as sageattn2, is_sage2_supported, sageattn_supports_attention_mask
+    from .sage2_core import sageattn as sageattn2, is_sage2_supported, sageattn_attention_mask_support_reason
     sage2_supported =  is_sage2_supported()
 except ImportError:
     sageattn2 = None
     sage2_supported = False
-    sageattn_supports_attention_mask = lambda device=None: False
+    sageattn_attention_mask_support_reason = lambda *args, **kwargs: "SageAttention 2 is unavailable"
     if not triton_installed: 
         try:
             sg2_version = version("sageattention")
@@ -281,12 +281,18 @@ def pay_attention(
     if attention_mask != None:
         requested_attn = offload.shared_state["_attention"] if force_attention == None else force_attention
         requested_attn = "sage2" if requested_attn == "radial" else requested_attn
-        if requested_attn == "sage2" and sageattn2 != None and not causal and q_lens == None and k_lens == None and sageattn_supports_attention_mask(qkv_list[0].device):
+        support_reason = None
+        if _is_mps:
+            support_reason = "MPS uses SDPA for masked attention"
+        elif requested_attn == "sage2" and sageattn2 != None and not causal and q_lens == None and k_lens == None:
+            support_reason = sageattn_attention_mask_support_reason(qkv_list, attention_mask, tensor_layout="NHD")
+        if requested_attn == "sage2" and support_reason is None and sageattn2 != None and not causal and q_lens == None and k_lens == None:
             force_attention = "sage2"
         else:
             force_attention = "sdpa"
             if requested_attn != "sdpa" and not _MASKED_ATTENTION_SDPA_WARNED:
-                print(f"[WAN2GP] Attention mask is unsupported by selected attention '{requested_attn}'. Masked attention will use SDPA.")
+                detail = f" ({support_reason})" if support_reason else ""
+                print(f"[WAN2GP] Attention mask is unsupported by selected attention '{requested_attn}'{detail}. Masked attention will use SDPA.")
                 _MASKED_ATTENTION_SDPA_WARNED = True
         if  attention_mask.dtype == torch.bfloat16 and not bfloat16_supported:
             attention_mask = attention_mask.to(torch.float16)

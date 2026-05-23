@@ -133,7 +133,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.77"
+WanGP_version = "11.771<"
 settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -11475,9 +11475,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 film_grain_saturation = gr.Slider(0.0, 1, value=film_grain_saturation, step=0.01, label="Film Grain Saturation", show_reset_button= False) 
 
                             if duplicate_spatial:
-                                return temporal_upsampling, spatial_upsampling, duplicate_spatial_upsampling, film_grain_intensity, film_grain_saturation
-                            return temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation
-                        temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation = gen_upsampling_dropdowns(ui_get("temporal_upsampling"), ui_get("spatial_upsampling"), ui_get("film_grain_intensity"), ui_get("film_grain_saturation"), image_outputs= image_outputs, any_vae_upsampling= "vae_upsampler"in model_def)
+                                return temporal_upsampling, spatial_upsampling, duplicate_spatial_upsampling, film_grain_intensity, film_grain_saturation, spatial_upsampling_method, spatial_upsampling_ratio
+                            return temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, spatial_upsampling_method, spatial_upsampling_ratio
+                        temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, spatial_upsampling_method, spatial_upsampling_ratio = gen_upsampling_dropdowns(ui_get("temporal_upsampling"), ui_get("spatial_upsampling"), ui_get("film_grain_intensity"), ui_get("film_grain_saturation"), image_outputs= image_outputs, any_vae_upsampling= "vae_upsampler"in model_def)
 
                 with gr.Tab("Audio", visible = not (image_outputs or audio_only)) as audio_tab:
                     any_audio_source = not (image_outputs or audio_only)
@@ -11856,7 +11856,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     with gr.Tab("Post Processing", id= "post_processing", visible = late_video_postprocessing_visible) as video_postprocessing_tab:
                         with gr.Group(elem_classes= "postprocess"):
                             with gr.Column():
-                                PP_temporal_upsampling, PP_spatial_upsampling, PP_image_spatial_upsampling, PP_film_grain_intensity, PP_film_grain_saturation = gen_upsampling_dropdowns("",  "", 0, 0.5, element_class ="postprocess", image_outputs = False, always_show_flashvsr = True, duplicate_spatial=True)
+                                PP_temporal_upsampling, PP_spatial_upsampling, PP_image_spatial_upsampling, PP_film_grain_intensity, PP_film_grain_saturation, PP_spatial_upsampling_method, PP_spatial_upsampling_ratio = gen_upsampling_dropdowns("",  "", 0, 0.5, element_class ="postprocess", image_outputs = False, always_show_flashvsr = True, duplicate_spatial=True)
                         with gr.Row():
                             video_info_postprocessing_btn = gr.Button("Apply Postprocessing", size ="sm", visible=True)
                             video_info_eject_video2_btn = gr.Button("Eject Media", size ="sm", visible=True)
@@ -11942,7 +11942,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       audio_buttons_row, deleted_audio_buttons_row, video_info_extract_audio_settings_btn, video_info_to_audio_guide_btn, video_info_to_audio_guide2_btn, video_info_to_audio_source_btn, video_info_audio_postprocessing_btn, video_info_eject_audio_btn, video_info_eject_audio2_btn,
                                       video_info_to_start_image_btn, video_info_to_end_image_btn, video_info_to_reference_image_btn, video_info_to_image_guide_btn, video_info_to_image_mask_btn,
                                       NAG_col, audio_options_row, remove_background_sound, continue_beyond_audio_end, normalize_audio_volumes, audio_prompt_type_custom_option, speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, prompt_enhancer_mode_dropdown, prompt_enhancer_think,
-                                      min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, *custom_settings_rows, top_pk_row, 
+                                      min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, spatial_upsampling_method, spatial_upsampling_ratio, temperature_row, *custom_settings_rows, top_pk_row, 
                                       number_frames_row, negative_prompt_row,
                                       self_refiner_col, pause_row]+\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,

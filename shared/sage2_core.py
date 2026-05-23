@@ -108,9 +108,12 @@ def get_cuda_arch_versions():
 
 _CUDA_ARCHS = tuple(get_cuda_arch_versions())
 _SINGLE_CUDA_DEVICE = torch.cuda.device_count() <= 1
-_SM120_MASKED_BLOCK_M = 64
-_SM120_MASKED_BLOCK_N = 64
-_SM120_MASKED_TRITON_PATCH_PRINTED = False
+_LOW_SHARED_MASKED_BLOCK_M = 64
+_LOW_SHARED_MASKED_BLOCK_N = 64
+# Upstream masked Triton with HEAD_DIM=128 asks for this much shared memory.
+_UPSTREAM_MASKED_HEAD128_SHARED_BYTES = 157696
+_LOW_SHARED_MASKED_TRITON_PATCH_PRINTED = False
+_CUDA_SHARED_MEMORY_LIMITS = tuple(torch.cuda.get_device_properties(i).shared_memory_per_block_optin for i in range(torch.cuda.device_count()))
 
 
 def _get_device_index(device: torch.device) -> int:
@@ -124,6 +127,13 @@ def _get_cuda_arch(device: torch.device) -> str:
     return get_cuda_arch_versions()[idx]
 
 
+def _get_shared_memory_limit(device: torch.device) -> int:
+    idx = _get_device_index(device)
+    if idx < len(_CUDA_SHARED_MEMORY_LIMITS):
+        return _CUDA_SHARED_MEMORY_LIMITS[idx]
+    return torch.cuda.get_device_properties(idx).shared_memory_per_block_optin
+
+
 def _maybe_set_device(device: torch.device):
     if _SINGLE_CUDA_DEVICE:
         return
@@ -132,11 +142,15 @@ def _maybe_set_device(device: torch.device):
         torch.cuda.set_device(idx)
 
 
-def _attn_false_sm120_masked(q, k, v, q_scale, k_scale, tensor_layout="HND", attn_mask=None, output_dtype=torch.float16, return_lse=False):
-    global _SM120_MASKED_TRITON_PATCH_PRINTED
-    if not _SM120_MASKED_TRITON_PATCH_PRINTED:
-        print(f"[SageAttention] Using local sm120 masked Triton patch (BLOCK_M={_SM120_MASKED_BLOCK_M}, BLOCK_N={_SM120_MASKED_BLOCK_N}).")
-        _SM120_MASKED_TRITON_PATCH_PRINTED = True
+def _use_low_shared_masked_triton(device: torch.device) -> bool:
+    return _get_shared_memory_limit(device) < _UPSTREAM_MASKED_HEAD128_SHARED_BYTES
+
+
+def _attn_false_low_shared_masked(q, k, v, q_scale, k_scale, tensor_layout="HND", attn_mask=None, output_dtype=torch.float16, return_lse=False):
+    global _LOW_SHARED_MASKED_TRITON_PATCH_PRINTED
+    if not _LOW_SHARED_MASKED_TRITON_PATCH_PRINTED:
+        print(f"[SageAttention] Using low-shared-memory masked Triton patch (BLOCK_M={_LOW_SHARED_MASKED_BLOCK_M}, BLOCK_N={_LOW_SHARED_MASKED_BLOCK_N}, GPU limit={_get_shared_memory_limit(q.device)} bytes).")
+        _LOW_SHARED_MASKED_TRITON_PATCH_PRINTED = True
 
     o = torch.empty(q.shape, dtype=output_dtype, device=q.device)
 
@@ -159,7 +173,7 @@ def _attn_false_sm120_masked(q, k, v, q_scale, k_scale, tensor_layout="HND", att
 
     stride_bz_mask, stride_h_mask, stride_m_mask, stride_n_mask = attn_mask.stride(0), attn_mask.stride(1), attn_mask.stride(2), attn_mask.stride(3)
     lse = torch.empty([b, h_qo, qo_len], dtype=torch.float32, device=q.device) if return_lse else torch.empty([0], dtype=torch.float32, device="cpu")
-    grid = ((qo_len + _SM120_MASKED_BLOCK_M - 1) // _SM120_MASKED_BLOCK_M, h_qo, b)
+    grid = ((qo_len + _LOW_SHARED_MASKED_BLOCK_M - 1) // _LOW_SHARED_MASKED_BLOCK_M, h_qo, b)
     attn_qk_int8_per_block._attn_fwd[grid](
         q, k, v, q_scale, k_scale, o, attn_mask, lse,
         stride_bz_q, stride_h_q, stride_seq_q,
@@ -169,7 +183,7 @@ def _attn_false_sm120_masked(q, k, v, q_scale, k_scale, tensor_layout="HND", att
         stride_bz_mask, stride_h_mask, stride_m_mask, stride_n_mask,
         qo_len, kv_len,
         h_qo, h_qo // h_kv,
-        BLOCK_M=_SM120_MASKED_BLOCK_M, BLOCK_N=_SM120_MASKED_BLOCK_N, HEAD_DIM=head_dim,
+        BLOCK_M=_LOW_SHARED_MASKED_BLOCK_M, BLOCK_N=_LOW_SHARED_MASKED_BLOCK_N, HEAD_DIM=head_dim,
         STAGE=1, RETURN_LSE=return_lse,
         num_warps=4,
         num_stages=3,
@@ -177,14 +191,35 @@ def _attn_false_sm120_masked(q, k, v, q_scale, k_scale, tensor_layout="HND", att
     return o, lse
 
 
-def sageattn_supports_attention_mask(device: torch.device | str | None = None) -> bool:
+def sageattn_attention_mask_support_reason(qkv_list=None, attn_mask: torch.Tensor | None = None, device: torch.device | str | None = None, tensor_layout: str = "NHD") -> str | None:
+    if qkv_list is not None:
+        device = qkv_list[0].device
     if not torch.cuda.is_available():
-        return False
+        return "CUDA is unavailable"
     device = torch.device("cuda" if device is None else device)
     try:
-        return _get_cuda_arch(device) in ("sm86", "sm120") and hasattr(attn_qk_int8_per_block, "_attn_fwd") and "attn_mask" in inspect.signature(attn_false).parameters
+        major, _ = torch.cuda.get_device_capability(_get_device_index(device))
+        if major < 8:
+            return f"CUDA architecture {_get_cuda_arch(device)} has no masked SageAttention path"
+        if not hasattr(attn_qk_int8_per_block, "_attn_fwd"):
+            return "SageAttention Triton kernel is unavailable"
+        if "attn_mask" not in inspect.signature(attn_false).parameters:
+            return "installed SageAttention does not expose attn_mask"
     except (TypeError, ValueError):
-        return False
+        return "unable to inspect installed SageAttention mask support"
+    if qkv_list is None:
+        return None
+
+    q = qkv_list[0]
+    if q.dtype not in (torch.float16, torch.bfloat16):
+        return f"dtype {q.dtype} is unsupported"
+    if q.shape[-1] > 128:
+        return f"head_dim {q.shape[-1]} is unsupported"
+    return None
+
+
+def sageattn_supports_attention_mask(device: torch.device | str | None = None, qkv_list=None, attn_mask: torch.Tensor | None = None, tensor_layout: str = "NHD") -> bool:
+    return sageattn_attention_mask_support_reason(qkv_list, attn_mask, device, tensor_layout) is None
 
 def sageattn(
     qkv_list,
@@ -251,8 +286,10 @@ def sageattn(
         
     attn_mask = kwargs.pop("attn_mask", None)
     arch = _get_cuda_arch(qkv_list[0].device)
-    if attn_mask is not None and not sageattn_supports_attention_mask(qkv_list[0].device):
-        raise ValueError(f"Masked SageAttention is unsupported on CUDA architecture: {arch}")
+    if attn_mask is not None:
+        support_reason = sageattn_attention_mask_support_reason(qkv_list, attn_mask, tensor_layout=tensor_layout)
+        if support_reason is not None:
+            raise ValueError(f"Masked SageAttention is unsupported on CUDA architecture {arch}: {support_reason}")
     if attn_mask is not None:
         return sageattn_qk_int8_pv_fp16_triton(qkv_list, tensor_layout=tensor_layout, is_causal=is_causal, sm_scale=sm_scale, return_lse=return_lse, attn_mask=attn_mask)
     if arch == "sm80":
@@ -366,7 +403,7 @@ def sageattn_qk_int8_pv_fp16_triton(
     _maybe_set_device(v.device)
 
     head_dim_og = q.size(-1)
-    masked_sm120 = attn_mask is not None and _get_cuda_arch(q.device) == "sm120"
+    masked_low_shared = attn_mask is not None and _use_low_shared_masked_triton(q.device)
 
     if head_dim_og < 64:
         q = torch.nn.functional.pad(q, (0, 64 - head_dim_og))
@@ -401,8 +438,8 @@ def sageattn_qk_int8_pv_fp16_triton(
         sm_scale = 1.0 / (head_dim_og ** 0.5)
 
     if quantization_backend == "triton":
-        if masked_sm120:
-            q_int8, q_scale, k_int8, k_scale = per_block_int8_triton(q, k, km=km, BLKQ=_SM120_MASKED_BLOCK_M, BLKK=_SM120_MASKED_BLOCK_N, sm_scale=sm_scale, tensor_layout=tensor_layout)
+        if masked_low_shared:
+            q_int8, q_scale, k_int8, k_scale = per_block_int8_triton(q, k, km=km, BLKQ=_LOW_SHARED_MASKED_BLOCK_M, BLKK=_LOW_SHARED_MASKED_BLOCK_N, sm_scale=sm_scale, tensor_layout=tensor_layout)
         else:
             q_int8, q_scale, k_int8, k_scale = per_block_int8_triton(q, k, km=km, sm_scale=sm_scale, tensor_layout=tensor_layout)
     elif quantization_backend == "cuda":
@@ -422,8 +459,8 @@ def sageattn_qk_int8_pv_fp16_triton(
 
     if is_causal:
         o, lse = attn_true(q_int8, k_int8, v, q_scale, k_scale, tensor_layout=tensor_layout, output_dtype=dtype, return_lse=return_lse)
-    elif masked_sm120:
-        o, lse = _attn_false_sm120_masked(q_int8, k_int8, v, q_scale, k_scale, tensor_layout=tensor_layout, output_dtype=dtype, return_lse=return_lse, attn_mask=attn_mask)
+    elif masked_low_shared:
+        o, lse = _attn_false_low_shared_masked(q_int8, k_int8, v, q_scale, k_scale, tensor_layout=tensor_layout, output_dtype=dtype, return_lse=return_lse, attn_mask=attn_mask)
     elif attn_mask is not None:
         o, lse = attn_false(q_int8, k_int8, v, q_scale, k_scale, tensor_layout=tensor_layout, output_dtype=dtype, return_lse=return_lse, attn_mask=attn_mask)
     else:

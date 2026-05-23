@@ -4310,12 +4310,14 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             return [gr.update()] * 13
         file_list, file_settings_list = get_file_list(state, input_file_list)
         data = event_data._data if event_data is not None else None
+        # data_choice = None
+        # if data!=None and isinstance(data, dict):
+        #     data_choice = data.get("index",0)        
+        # print(f"source:{source}, file_selected={file_selected}, data_choice={data_choice}, gen_selected={gen.get('selected',None)} ")
         if data!=None and isinstance(data, dict):
             choice = data.get("index",0)        
-        elif file_selected >= 0:
-            choice = file_selected
         else:
-            choice = gen.get("selected",0)
+            choice = gen.get("selected", max(file_selected, 0) )
         choice = min(len(file_list)-1, choice) 
         set_file_choice(gen, file_list, choice)
         files, settings_list = file_list, file_settings_list
@@ -9016,6 +9018,7 @@ def clear_deleted_files(state, audio_files):
         file_settings_list[:]=new_file_settings_list 
 
 def eject_video_from_gallery(state, input_file_list, choice):
+    # print(f"eject:{time.time()}")
     gen = get_gen_info(state)
     file_list, file_settings_list = get_file_list(state, input_file_list)
     with lock:
@@ -9051,6 +9054,7 @@ def eject_audio_from_gallery(state, input_file_list, choice):
 
 
 def add_videos_to_gallery(state, input_file_list, choice, audio_files_paths, audio_file_selected, files_to_load):
+    # print(f"add:{time.time()}")
     gen = get_gen_info(state)
     if files_to_load == None:
         gr.Info("Please Select a File To Import")

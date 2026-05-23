@@ -170,10 +170,10 @@ def get_css() -> str:
     height: 18px;
     min-width: 18px;
     min-height: 18px;
-    border: 1px solid rgba(17, 84, 118, 0.24);
-    background: rgba(255, 255, 255, 0.86);
+    border: 1px solid var(--button-secondary-border-color, rgba(17, 84, 118, 0.24));
+    background: var(--button-secondary-background-fill, rgba(255, 255, 255, 0.86));
     box-shadow: none;
-    color: #155574;
+    color: var(--button-secondary-text-color, #155574);
     font-size: 11px;
 }
 .wangp-prompt-info-host .wangp-model-info-trigger:hover {
@@ -188,10 +188,10 @@ def get_css() -> str:
     min-width: 26px;
     min-height: 26px;
     padding: 0;
-    border: 1px solid rgba(17, 84, 118, 0.18);
+    border: 1px solid var(--button-secondary-border-color, rgba(17, 84, 118, 0.18));
     border-radius: 999px;
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(238, 247, 252, 0.98) 100%);
-    color: #155574;
+    background: var(--button-secondary-background-fill, linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(238, 247, 252, 0.98) 100%));
+    color: var(--button-secondary-text-color, #155574);
     box-shadow: 0 8px 18px rgba(11, 44, 63, 0.10);
     cursor: pointer;
     line-height: 1;
@@ -219,9 +219,10 @@ def get_css() -> str:
     pointer-events: auto;
     overflow: hidden;
     border-radius: 18px;
-    border: 1px solid rgba(17, 84, 118, 0.16);
-    background: rgba(255, 255, 255, 0.99);
+    border: 1px solid var(--border-color-primary, rgba(17, 84, 118, 0.16));
+    background: var(--background-fill-primary, rgba(255, 255, 255, 0.99));
     box-shadow: 0 28px 62px rgba(7, 31, 48, 0.24);
+    color: var(--body-text-color, #174a67);
 }
 .wangp-model-info-titlebar {
     display: flex;
@@ -229,8 +230,8 @@ def get_css() -> str:
     justify-content: space-between;
     gap: 14px;
     padding: 10px 14px 9px 16px;
-    background: linear-gradient(180deg, rgba(16, 86, 121, 0.98) 0%, rgba(10, 59, 84, 0.98) 100%);
-    color: #f3fbff;
+    background: var(--button-primary-background-fill, linear-gradient(180deg, rgba(16, 86, 121, 0.98) 0%, rgba(10, 59, 84, 0.98) 100%));
+    color: var(--button-primary-text-color, #f3fbff);
     cursor: grab;
     user-select: none;
     touch-action: none;
@@ -239,7 +240,7 @@ def get_css() -> str:
     cursor: grabbing;
 }
 .wangp-model-info-heading {
-    color: #f3fbff !important;
+    color: var(--button-primary-text-color, #f3fbff) !important;
     font-size: 0.92rem;
     font-weight: 800;
 }
@@ -249,10 +250,10 @@ def get_css() -> str:
     min-width: 26px;
     min-height: 26px;
     padding: 0;
-    border: 1px solid rgba(255, 255, 255, 0.24);
+    border: 1px solid var(--button-primary-border-color, rgba(255, 255, 255, 0.24));
     border-radius: 999px;
     background: rgba(255, 255, 255, 0.12);
-    color: #f3fbff;
+    color: var(--button-primary-text-color, #f3fbff);
     cursor: pointer;
     font-size: 20px;
     line-height: 1;
@@ -261,7 +262,7 @@ def get_css() -> str:
     max-height: calc(min(78vh, 720px) - 46px);
     overflow: auto;
     padding: 16px 18px 18px;
-    color: #174a67;
+    color: var(--body-text-color, #174a67);
     font-size: 0.92rem;
     line-height: 1.5;
 }
@@ -269,7 +270,7 @@ def get_css() -> str:
 .wangp-model-info-content h3,
 .wangp-model-info-content h4 {
     margin: 12px 0 7px;
-    color: #103f59;
+    color: var(--body-text-color, #103f59);
     font-weight: 800;
 }
 .wangp-model-info-content h2:first-child,
@@ -287,22 +288,22 @@ def get_css() -> str:
 .wangp-model-info-content code {
     padding: 1px 4px;
     border-radius: 5px;
-    background: rgba(16, 86, 121, 0.08);
-    color: #0f4967;
+    background: var(--background-fill-secondary, rgba(16, 86, 121, 0.08));
+    color: var(--body-text-color, #0f4967);
 }
 .wangp-model-info-content pre {
     margin: 8px 0 13px;
     padding: 12px;
     border-radius: 12px;
-    border: 1px solid rgba(17, 84, 118, 0.12);
-    background: #f4f9fc;
+    border: 1px solid var(--border-color-primary, rgba(17, 84, 118, 0.12));
+    background: var(--background-fill-secondary, #f4f9fc);
     overflow: auto;
 }
 .wangp-model-info-content pre code {
     padding: 0;
     border-radius: 0;
     background: transparent;
-    color: #123f58;
+    color: var(--body-text-color, #123f58);
 }
 """
 

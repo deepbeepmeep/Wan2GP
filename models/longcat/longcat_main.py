@@ -527,7 +527,7 @@ class LongCatModel:
 
     def _build_audio_windows(self, audio_path, frame_num, fps, window_start_frame_no, audio_stride):
         speech_array, sr = librosa.load(audio_path, sr=16000)
-        target_len = int(frame_num / fps * sr)
+        target_len = int((window_start_frame_no + frame_num) / fps * sr)
         if len(speech_array) < target_len:
             pad = target_len - len(speech_array)
             speech_array = np.pad(speech_array, (0, pad), mode="constant")
@@ -549,7 +549,7 @@ class LongCatModel:
 
     def _build_ref_target_masks(self, height, width, speakers_bboxes=None):
         if not speakers_bboxes:
-            return None
+            speakers_bboxes = {"person1": [5, 10, 45, 90], "person2": [55, 10, 95, 90]}
         human_masks = []
         background_mask = torch.zeros([height, width])
         for _, person_bbox in speakers_bboxes.items():

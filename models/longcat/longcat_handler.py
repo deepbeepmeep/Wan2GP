@@ -92,7 +92,14 @@ class family_handler:
                     "audio_guide2_label": "Voice to follow #2",
                     "audio_guidance": True,
                     "any_audio_prompt": True,
-                    "audio_prompt_choices": True,                
+                    "audio_prompt_choices": True,
+                    "audio_prompt_type_sources": {
+                        "selection": ["A", "XA", "CAB", "PAB"],
+                        "default": "A",
+                        "label": "Voices",
+                        "scale": 3,
+                    },
+                    "speaker_locations": True,
                     "image_ref_choices": {
                         "choices": [("None", ""), ("Anchor Reference Image", "KI")],
                         "letters_filter": "KI",

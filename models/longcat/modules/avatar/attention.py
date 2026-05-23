@@ -336,7 +336,7 @@ class SingleStreamAttention(nn.Module):
         self.rope_bak = int(self.class_range // 2)
         self.rope_1d = RotaryPositionalEmbedding1D(self.head_dim)
 
-    def _process_cross_attn(self, x, cond, frames_num=None, x_ref_attn_map=None):
+    def _process_cross_attn(self, x, cond, frames_num=None, x_ref_attn_map=None, human_num=None, speaker_token_masks=None):
         x = _take_tensor(x)
         cond = _take_tensor(cond)
 
@@ -362,8 +362,9 @@ class SingleStreamAttention(nn.Module):
 
             human1 = normalize_and_scale(x_ref_attn_map[0], (human1_min_value, human1_max_value), (self.rope_h1[0], self.rope_h1[1]))
             human2 = normalize_and_scale(x_ref_attn_map[1], (human2_min_value, human2_max_value), (self.rope_h2[0], self.rope_h2[1]))
-            back   = torch.full((x_ref_attn_map.size(1),), self.rope_bak, dtype=human1.dtype).to(human1.device)
-            max_indices = x_ref_attn_map.argmax(dim=0)
+            background_pos = self.rope_bak if x_ref_attn_map.shape[0] <= 3 else 100
+            back   = torch.full((x_ref_attn_map.size(1),), background_pos, dtype=human1.dtype).to(human1.device)
+            max_indices = x_ref_attn_map.argmax(dim=0).clamp(max=2)
             normalized_map = torch.stack([human1, human2, back], dim=1)
             normalized_pos = normalized_map[range(x_ref_attn_map.size(1)), max_indices] 
 
@@ -386,15 +387,34 @@ class SingleStreamAttention(nn.Module):
         # multitalk with rope1d pe
         if x_ref_attn_map is not None:
             per_frame = torch.zeros(N_a, dtype=encoder_k.dtype).to(encoder_k.device)
-            per_frame[:per_frame.size(0)//2] = (self.rope_h1[0] + self.rope_h1[1]) / 2
-            per_frame[per_frame.size(0)//2:] = (self.rope_h2[0] + self.rope_h2[1]) / 2
+            human1_pos = (self.rope_h1[0] + self.rope_h1[1]) / 2
+            human2_pos = (self.rope_h2[0] + self.rope_h2[1]) / 2
+            if human_num is not None and human_num > 2:
+                background_pos = self.rope_bak if x_ref_attn_map.shape[0] <= 3 else 100
+                tokens_per_human = per_frame.size(0) // human_num
+                per_frame[:tokens_per_human] = human1_pos
+                per_frame[tokens_per_human:2*tokens_per_human] = human2_pos
+                per_frame[2*tokens_per_human:] = background_pos
+            else:
+                per_frame[:per_frame.size(0)//2] = human1_pos
+                per_frame[per_frame.size(0)//2:] = human2_pos
             encoder_pos = torch.concat([per_frame] * N_t, dim=0)
             encoder_k = rearrange(encoder_k, "(B N_t) S H C -> B (N_t S) H C", N_t=N_t)
             encoder_k = self.rope_1d(encoder_k, encoder_pos)
             encoder_k = rearrange(encoder_k, "B (N_t S) H C -> (B N_t) S H C", N_t=N_t)
+        attention_mask = None
+        if speaker_token_masks is not None and human_num == 2:
+            token_owner = speaker_token_masks.argmax(dim=0).clamp(max=2).unsqueeze(0).expand(N_t, -1)
+            if B != N_t:
+                token_owner = token_owner.repeat(B // N_t, 1)
+            split = N_a // human_num
+            attention_mask = torch.empty((B, N, 1, N_a), device=q.device, dtype=torch.bool)
+            attention_mask[..., :split] = token_owner.ne(1).unsqueeze(-1).unsqueeze(-1)
+            attention_mask[..., split:] = token_owner.ne(0).unsqueeze(-1).unsqueeze(-1)
+
         qkv_list = [q, encoder_k, encoder_v]
         del q, encoder_k, encoder_v
-        x = _run_attention(qkv_list, out_dtype)
+        x = _run_attention(qkv_list, out_dtype, attention_mask=attention_mask)
 
         # linear transform
         x_output_shape = (B, N, C)
@@ -407,7 +427,7 @@ class SingleStreamAttention(nn.Module):
 
         return x.type(out_dtype)
 
-    def forward(self, x, cond, shape=None, num_cond_latents=None, x_ref_attn_map=None, human_num=None):
+    def forward(self, x, cond, shape=None, num_cond_latents=None, x_ref_attn_map=None, human_num=None, speaker_token_masks=None):
 
         x = _take_tensor(x)
         cond = _take_tensor(cond)
@@ -417,7 +437,7 @@ class SingleStreamAttention(nn.Module):
             x_list = [x]
             cond_list = [cond]
             x = cond = None
-            output = self._process_cross_attn(x_list, cond_list, shape[0], x_ref_attn_map)
+            output = self._process_cross_attn(x_list, cond_list, shape[0], x_ref_attn_map, human_num=human_num, speaker_token_masks=speaker_token_masks)
             return None, output
         elif num_cond_latents is not None and num_cond_latents > 0:
             # image to video or video continuation
@@ -434,7 +454,13 @@ class SingleStreamAttention(nn.Module):
                 x_noise_list = [x_noise]
                 cond_list = [cond]
                 x_noise = cond = None
-                output_noise = self._process_cross_attn(x_noise_list, cond_list, frames_num, x_ref_attn_map)
+                output_noise = self._process_cross_attn(x_noise_list, cond_list, frames_num, x_ref_attn_map, human_num=human_num, speaker_token_masks=speaker_token_masks)
+            elif human_num is not None and human_num > 2:
+                # multitalk mode with background silent audio
+                x_noise_list = [x_noise]
+                cond_list = [cond]
+                x_noise = cond = None
+                output_noise = self._process_cross_attn(x_noise_list, cond_list, frames_num, x_ref_attn_map, human_num=human_num, speaker_token_masks=speaker_token_masks)
             else:
                 # singletalk mode
                 x_noise_list = [x_noise]

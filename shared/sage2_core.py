@@ -118,6 +118,7 @@ _LOW_SHARED_MASKED_BLOCK_N = 64
 # Upstream masked Triton with HEAD_DIM=128 asks for this much shared memory.
 _UPSTREAM_MASKED_HEAD128_SHARED_BYTES = 157696
 _LOW_SHARED_MASKED_TRITON_PATCH_PRINTED = False
+_SHARED_MEMORY_LIMIT_BY_DEVICE = {}
 
 
 def _get_device_index(device: torch.device) -> int:
@@ -132,7 +133,10 @@ def _get_cuda_arch(device: torch.device) -> str:
 
 
 def _get_shared_memory_limit(device: torch.device) -> int:
-    return _device_shared_memory_limit(_get_device_index(device))
+    idx = _get_device_index(device)
+    if idx not in _SHARED_MEMORY_LIMIT_BY_DEVICE:
+        _SHARED_MEMORY_LIMIT_BY_DEVICE[idx] = _device_shared_memory_limit(idx)
+    return _SHARED_MEMORY_LIMIT_BY_DEVICE[idx]
 
 
 def _maybe_set_device(device: torch.device):

@@ -198,7 +198,7 @@ class LongCatAvatarSingleStreamBlock(nn.Module):
             video_cross_list = [video_cross]
             audio_cross_list = [audio_cross]
             video_cross = audio_cross = None
-            audio_cond_tokens, audio_output_noise = self.audio_cross_attn(video_cross_list, audio_cross_list, shape=latent_shape, num_cond_latents=num_cond_latents, x_ref_attn_map=x_ref_attn_map, human_num=human_num)
+            audio_cond_tokens, audio_output_noise = self.audio_cross_attn(video_cross_list, audio_cross_list, shape=latent_shape, num_cond_latents=num_cond_latents, x_ref_attn_map=x_ref_attn_map, human_num=human_num, speaker_token_masks=token_ref_target_masks)
 
             audio_frames = T - num_cond_latents
             audio_output_list = [audio_output_noise.view(B, audio_frames, -1, C)]

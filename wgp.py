@@ -945,7 +945,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
     if "K" in audio_prompt_type and "V" not in video_prompt_type:
         return err("You must enable a Control Video to use the Control Video Audio Track as an audio prompt")
 
-    if model_def.get("multitalk_class", False) and ("B" in audio_prompt_type or "X" in audio_prompt_type) and not model_def.get("one_speaker_only", False):
+    if (model_def.get("multitalk_class", False) or model_def.get("speaker_locations", False)) and ("B" in audio_prompt_type or "X" in audio_prompt_type) and not model_def.get("one_speaker_only", False):
         from models.wan.multitalk.multitalk import parse_speakers_locations
         speakers_bboxes, error = parse_speakers_locations(speakers_locations)
         if len(error) > 0:
@@ -5505,9 +5505,11 @@ def edit_video(
     has_already_audio = False
     audio_tracks = []
     audio_metadata = None
+    temp_audio_tracks = []
     if not source_is_image and postprocess_audio != "mmaudio" and not api_suppress_source_audio:
         audio_tracks, audio_metadata  = extract_audio_tracks(video_source, temp_format="wav" if postprocess_audio in ("seedvc", "seedvc2") else None)
-        has_already_audio = len(audio_tracks) > 0 
+        temp_audio_tracks = audio_tracks.copy()
+        has_already_audio = len(temp_audio_tracks) > 0 
     
     if postprocess_audio == "custom" and audio_source is not None:
         audio_tracks = [audio_source]
@@ -5710,8 +5712,7 @@ def edit_video(
             gen["last_was_audio"] = False
             send_cmd("output")
             seed = set_seed(-1)
-    if has_already_audio:
-        cleanup_temp_audio_files(audio_tracks)
+    cleanup_temp_audio_files(temp_audio_tracks)
     clear_status(state)
 
 
@@ -6529,7 +6530,7 @@ def generate_video(
     fantasy = base_model_type in ["fantasy"]
     multitalk = model_def.get("multitalk_class", False)
 
-    if multitalk and ("B" in audio_prompt_type or "X" in audio_prompt_type):
+    if (multitalk or model_def.get("speaker_locations", False)) and ("B" in audio_prompt_type or "X" in audio_prompt_type):
         from models.wan.multitalk.multitalk import parse_speakers_locations
         speakers_bboxes, error = parse_speakers_locations(speakers_locations)
     else:

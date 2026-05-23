@@ -106,6 +106,11 @@ def get_cuda_arch_versions():
     return cuda_archs
 
 
+def _device_shared_memory_limit(index: int) -> int:
+    props = torch.cuda.get_device_properties(index)
+    return getattr(props, "shared_memory_per_block_optin", getattr(props, "shared_memory_per_block", 0))
+
+
 _CUDA_ARCHS = tuple(get_cuda_arch_versions())
 _SINGLE_CUDA_DEVICE = torch.cuda.device_count() <= 1
 _LOW_SHARED_MASKED_BLOCK_M = 64
@@ -113,7 +118,6 @@ _LOW_SHARED_MASKED_BLOCK_N = 64
 # Upstream masked Triton with HEAD_DIM=128 asks for this much shared memory.
 _UPSTREAM_MASKED_HEAD128_SHARED_BYTES = 157696
 _LOW_SHARED_MASKED_TRITON_PATCH_PRINTED = False
-_CUDA_SHARED_MEMORY_LIMITS = tuple(torch.cuda.get_device_properties(i).shared_memory_per_block_optin for i in range(torch.cuda.device_count()))
 
 
 def _get_device_index(device: torch.device) -> int:
@@ -128,10 +132,7 @@ def _get_cuda_arch(device: torch.device) -> str:
 
 
 def _get_shared_memory_limit(device: torch.device) -> int:
-    idx = _get_device_index(device)
-    if idx < len(_CUDA_SHARED_MEMORY_LIMITS):
-        return _CUDA_SHARED_MEMORY_LIMITS[idx]
-    return torch.cuda.get_device_properties(idx).shared_memory_per_block_optin
+    return _device_shared_memory_limit(_get_device_index(device))
 
 
 def _maybe_set_device(device: torch.device):

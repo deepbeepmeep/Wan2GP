@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from shared.utils.settings_bundle import is_wangp_settings_filename
+
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 APP_ROOT_DIR = PLUGIN_DIR.parent.parent
@@ -70,7 +72,7 @@ def normalize_user_settings_ref(value) -> str:
         return ""
     base_model_type, filename = parts
     filename = Path(filename).name
-    if not filename.lower().endswith(".json"):
+    if not is_wangp_settings_filename(filename):
         return ""
     return f"{base_model_type}/{filename}"
 

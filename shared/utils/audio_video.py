@@ -100,8 +100,17 @@ def create_silent_wav_file(output_dir=None, duration_seconds=0.0, sample_rate=16
     return write_wav_file(path, np.zeros(num_samples, dtype=np.float32), sample_rate)
 
 
-def _compute_active_abs_amplitude(audio_data):
-    abs_audio = np.abs(np.asarray(audio_data, dtype=np.float32)).reshape(-1)
+def _compute_active_abs_amplitude(audio_data, active_mask=None):
+    audio_data = np.asarray(audio_data, dtype=np.float32)
+    if active_mask is not None:
+        active_mask = np.asarray(active_mask, dtype=np.float32).reshape(-1) > 0.5
+        if audio_data.ndim == 1:
+            active_mask = active_mask[:audio_data.shape[0]]
+            audio_data = audio_data[:active_mask.shape[0]][active_mask]
+        else:
+            active_mask = active_mask[:audio_data.shape[0]]
+            audio_data = audio_data[:active_mask.shape[0]][active_mask]
+    abs_audio = np.abs(audio_data).reshape(-1)
     if abs_audio.size == 0:
         return 0.0, 0.0
     avg_abs = float(abs_audio.mean())
@@ -113,19 +122,31 @@ def _compute_active_abs_amplitude(audio_data):
     return avg_abs, active_avg_abs
 
 
-def normalize_audio_pair_volumes_to_temp_files(audio_path1, audio_path2, output_dir=None, prefix="audio_norm_"):
-    audio1, sr1 = sf.read(os.fspath(audio_path1), dtype="float32", always_2d=False)
-    audio2, sr2 = sf.read(os.fspath(audio_path2), dtype="float32", always_2d=False)
-
-    avg1, active1 = _compute_active_abs_amplitude(audio1)
-    avg2, active2 = _compute_active_abs_amplitude(audio2)
+def normalize_audio_pair_volumes(audio1, audio2, active_mask1=None, active_mask2=None):
+    audio1 = np.asarray(audio1, dtype=np.float32)
+    audio2 = np.asarray(audio2, dtype=np.float32)
+    avg1, active1 = _compute_active_abs_amplitude(audio1, active_mask1)
+    avg2, active2 = _compute_active_abs_amplitude(audio2, active_mask2)
     midpoint = 0.5 * (active1 + active2)
     eps = 1e-8
     gain1 = midpoint / active1 if active1 > eps else 1.0
     gain2 = midpoint / active2 if active2 > eps else 1.0
+    stats = {
+        "audio1_avg_abs": float(avg1),
+        "audio2_avg_abs": float(avg2),
+        "audio1_active_avg_abs": float(active1),
+        "audio2_active_avg_abs": float(active2),
+        "target_active_avg_abs": float(midpoint),
+        "audio1_gain": float(gain1),
+        "audio2_gain": float(gain2),
+    }
+    return np.clip(audio1 * float(gain1), -1.0, 1.0), np.clip(audio2 * float(gain2), -1.0, 1.0), stats
 
-    norm1 = np.clip(np.asarray(audio1, dtype=np.float32) * float(gain1), -1.0, 1.0)
-    norm2 = np.clip(np.asarray(audio2, dtype=np.float32) * float(gain2), -1.0, 1.0)
+
+def normalize_audio_pair_volumes_to_temp_files(audio_path1, audio_path2, output_dir=None, prefix="audio_norm_", active_mask1=None, active_mask2=None):
+    audio1, sr1 = sf.read(os.fspath(audio_path1), dtype="float32", always_2d=False)
+    audio2, sr2 = sf.read(os.fspath(audio_path2), dtype="float32", always_2d=False)
+    norm1, norm2, stats = normalize_audio_pair_volumes(audio1, audio2, active_mask1=active_mask1, active_mask2=active_mask2)
 
     if output_dir is not None:
         os.makedirs(output_dir, exist_ok=True)
@@ -136,16 +157,6 @@ def normalize_audio_pair_volumes_to_temp_files(audio_path1, audio_path2, output_
     os.close(fd2)
     sf.write(out1, norm1, int(sr1))
     sf.write(out2, norm2, int(sr2))
-
-    stats = {
-        "audio1_avg_abs": float(avg1),
-        "audio2_avg_abs": float(avg2),
-        "audio1_active_avg_abs": float(active1),
-        "audio2_active_avg_abs": float(active2),
-        "target_active_avg_abs": float(midpoint),
-        "audio1_gain": float(gain1),
-        "audio2_gain": float(gain2),
-    }
     return out1, out2, stats
 
 

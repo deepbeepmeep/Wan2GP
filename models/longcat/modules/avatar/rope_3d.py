@@ -4,7 +4,7 @@
 import torch
 import torch.nn as nn
 
-from einops import rearrange, repeat
+from einops import rearrange
 
 def broadcat(tensors, dim=-1):
     num_tensors = len(tensors)
@@ -28,6 +28,21 @@ def broadcat(tensors, dim=-1):
 def rotate_half(x):
     x_real, x_imag = x.reshape(*x.shape[:-1], -1, 2).unbind(-1)
     return torch.stack((-x_imag, x_real), dim=-1).flatten(-2)
+
+
+def apply_rotary_inplace(x, cos, sin):
+    out_shape = x.shape
+    x_pair = x.reshape(*out_shape[:-1], -1, 2)
+    if cos.shape[-1] == out_shape[-1]:
+        cos = cos[..., ::2]
+        sin = sin[..., ::2]
+    real = x_pair[..., 0]
+    imag = x_pair[..., 1]
+    scratch = real.clone()
+    real.mul_(cos).addcmul_(imag, sin, value=-1)
+    imag.mul_(cos).addcmul_(scratch, sin)
+    del scratch
+    return x_pair.reshape(out_shape)
 
 
 class RotaryPositionalEmbedding(nn.Module):
@@ -88,9 +103,6 @@ class RotaryPositionalEmbedding(nn.Module):
         freqs_t = torch.einsum("..., f -> ... f", grid_t, freqs_t)
         freqs_h = torch.einsum("..., f -> ... f", grid_h, freqs_h)
         freqs_w = torch.einsum("..., f -> ... f", grid_w, freqs_w)
-        freqs_t = repeat(freqs_t, "... n -> ... (n r)", r=2)
-        freqs_h = repeat(freqs_h, "... n -> ... (n r)", r=2)
-        freqs_w = repeat(freqs_w, "... n -> ... (n r)", r=2)
         freqs = broadcat((freqs_t[:, None, None, :], freqs_h[None, :, None, :], freqs_w[None, None, :, :]), dim=-1)
         # (T H W D)
         freqs = rearrange(freqs, "T H W D -> (T H W) D")
@@ -114,14 +126,9 @@ class RotaryPositionalEmbedding(nn.Module):
         cos = freqs.cos().unsqueeze(0).unsqueeze(2)
         sin = freqs.sin().unsqueeze(0).unsqueeze(2)
 
-        q_out = q.float()
-        k_out = k.float()
-        q_rot = rotate_half(q_out)
-        k_rot = rotate_half(k_out)
-        q_out.mul_(cos).add_(q_rot.mul_(sin))
-        k_out.mul_(cos).add_(k_rot.mul_(sin))
-
-        return q_out.to(q.dtype), k_out.to(k.dtype)
+        q = apply_rotary_inplace(q, cos, sin)
+        k = apply_rotary_inplace(k, cos, sin)
+        return q, k
 
 
 class RotaryPositionalEmbedding1D(nn.Module):
@@ -140,11 +147,10 @@ class RotaryPositionalEmbedding1D(nn.Module):
 
     def precompute_freqs_cis_1d(self, pos_indices):
 
-        freqs = 1.0 / (self.base ** (torch.arange(0, self.head_dim, 2)[: (self.head_dim // 2)].float() / self.head_dim))
+        freqs = 1.0 / (self.base ** (torch.arange(0, self.head_dim, 2, device=pos_indices.device, dtype=torch.float32)[: (self.head_dim // 2)] / self.head_dim))
 
         freqs = freqs.to(pos_indices.device)
         freqs = torch.einsum("..., f -> ... f", pos_indices.float(), freqs)
-        freqs = repeat(freqs, "... n -> ... (n r)", r=2)
 
         return freqs
 
@@ -159,13 +165,8 @@ class RotaryPositionalEmbedding1D(nn.Module):
         """
         freqs_cis = self.precompute_freqs_cis_1d(pos_indices)
 
-        x_out = x.float()
-
         freqs_cis = freqs_cis.float().to(x.device)
         cos = freqs_cis.cos().unsqueeze(0).unsqueeze(2)
         sin = freqs_cis.sin().unsqueeze(0).unsqueeze(2)
-        x_rot = rotate_half(x_out)
-        x_out.mul_(cos).add_(x_rot.mul_(sin))
-
-        return x_out.to(x.dtype)
+        return apply_rotary_inplace(x, cos, sin)
     

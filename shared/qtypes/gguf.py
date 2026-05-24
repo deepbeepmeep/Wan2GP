@@ -1640,7 +1640,7 @@ class QConv1dGGUF(QModuleMixin, torch.nn.Conv1d):
 
 
 @register_qmodule(torch.nn.Embedding)
-class QEmbeddingGGUF(BaseQEmbedding):
+class QEmbedding(BaseQEmbedding):
     def __init__(
         self,
         num_embeddings,

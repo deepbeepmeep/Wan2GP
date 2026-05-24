@@ -262,7 +262,7 @@ class BasicAVTransformerBlock(torch.nn.Module):
                 v_mask = perturbations.mask_like(PerturbationType.SKIP_VIDEO_SELF_ATTN, self.idx, vx)
                 x_list = [norm_vx]
                 del norm_vx
-                attn_out = self.attn1(x_list, pe=video.positional_embeddings)
+                attn_out = self.attn1(x_list, mask=video.self_attention_mask, pe=video.positional_embeddings)
                 attn_out = _apply_gate(attn_out, vgate_msa)
                 attn_out.mul_(v_mask)
                 vx.add_(attn_out)
@@ -281,6 +281,16 @@ class BasicAVTransformerBlock(torch.nn.Module):
             )
             vx.add_(attn_out)
             attn_out = None
+            ref_context = getattr(video, "ref_context", None)
+            if ref_context is not None and hasattr(self, "ref_attn"):
+                ref_start_block = int(getattr(self, "editanything_ref_start_block", 12))
+                ref_end_block = int(getattr(self, "editanything_ref_end_block", 35))
+                if ref_start_block <= self.idx <= ref_end_block:
+                    ref_context_scale = float(getattr(self, "editanything_ref_context_scale", 0.01))
+                    if ref_context_scale != 0:
+                        attn_out = self.ref_attn([rms_norm(vx, eps=self.norm_eps)], context_list=[ref_context])
+                        vx.add_(attn_out, alpha=ref_context_scale)
+                        attn_out = None
             del vshift_msa, vscale_msa, vgate_msa
 
         if run_ax:
@@ -297,7 +307,7 @@ class BasicAVTransformerBlock(torch.nn.Module):
                 a_mask = perturbations.mask_like(PerturbationType.SKIP_AUDIO_SELF_ATTN, self.idx, ax)
                 x_list = [norm_ax]
                 del norm_ax
-                attn_out = self.audio_attn1(x_list, pe=audio.positional_embeddings)
+                attn_out = self.audio_attn1(x_list, mask=audio.self_attention_mask, pe=audio.positional_embeddings)
                 attn_out = _apply_gate(attn_out, agate_msa)
                 attn_out.mul_(a_mask)
                 ax.add_(attn_out)

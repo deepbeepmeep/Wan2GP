@@ -175,8 +175,10 @@ class Embeddings1DConnector(torch.nn.Module):
         Returns:
             tuple[torch.Tensor, torch.Tensor]: Processed features and the corresponding (possibly modified) mask.
         """
+        block_attention_mask = attention_mask
         if self.num_learnable_registers:
             hidden_states, attention_mask = self._replace_padded_with_learnable_registers(hidden_states, attention_mask)
+            block_attention_mask = None
 
         indices_grid = torch.arange(hidden_states.shape[1], dtype=torch.float32, device=hidden_states.device)
         indices_grid = indices_grid[None, None, :]
@@ -193,7 +195,7 @@ class Embeddings1DConnector(torch.nn.Module):
         )
 
         for block in self.transformer_1d_blocks:
-            hidden_states = block(hidden_states, attention_mask=attention_mask, pe=freqs_cis)
+            hidden_states = block(hidden_states, attention_mask=block_attention_mask, pe=freqs_cis)
 
         hidden_states = rms_norm(hidden_states)
 

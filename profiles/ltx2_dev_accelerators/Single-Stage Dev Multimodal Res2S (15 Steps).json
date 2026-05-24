@@ -1,0 +1,23 @@
+{
+    "model_type": "ltx2_22B",
+    "sample_solver": "res2s",
+    "num_inference_steps": 15,
+    "guidance_phases": 1,
+    "guidance_scale": 3.0,
+    "audio_guidance_scale": 7.0,
+    "alt_guidance_scale": 3.0,
+    "alt_scale": 0.9,
+    "perturbation_switch": 2,
+    "perturbation_layers": [28],
+    "perturbation_start_perc": 0,
+    "perturbation_end_perc": 100,
+    "apg_switch": 0,
+    "cfg_star_switch": 0,
+    "self_refiner_setting": 0,
+    "activated_loras": [
+        "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-distilled-lora-384-1.1.safetensors"
+    ],
+    "loras_multipliers": "0.2",
+    "settings_version": 2.56,
+    "help": "Matches the multimodal Res2S branch from the official LTX-2.3 single-stage full ComfyUI workflow: dev checkpoint, distilled LoRA at 0.2, LTXV scheduler at 15 steps, res2s sampler, video CFG 3, audio CFG 7, modality guidance 3, and STG block 28. WanGP has one guidance rescale slider, so this preset uses the official video rescale value 0.9."
+}

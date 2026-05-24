@@ -45,6 +45,7 @@ from .ltx_core.text_encoders.gemma import (
 from .ltx_core.text_encoders.gemma.feature_extractor import GemmaFeaturesExtractorProjLinear
 from .ltx_core.tools import AudioLatentTools
 from .ltx_core.types import AudioLatentShape, VideoPixelShape
+from .ltx_audio_tts import LTXAudioTTSPipelineBase
 from .ltx_pipelines.utils.constants import AUDIO_SAMPLE_RATE, DISTILLED_SIGMA_VALUES
 from .ltx_pipelines.utils.helpers import (
     _clear_phase_timestep_embedders,
@@ -751,7 +752,7 @@ def _find_silence_boundary(audio: np.ndarray, sample_rate: int, center_sample: i
     return center_sample
 
 
-def _trim_leading_extra_words(alignment_whisper: torch.nn.Module, audio_np: np.ndarray, sample_rate: int, expected_text: str, language: str, debug_prompt: bool = False) -> np.ndarray:
+def _trim_leading_extra_words(alignment_whisper: torch.nn.Module, audio_np: np.ndarray, sample_rate: int, expected_text: str, language: str, debug_prompt: bool = False, label: str = "Scenema Audio") -> np.ndarray:
     expected_words = _normalize_alignment_words(expected_text)
     if not expected_words:
         return audio_np
@@ -773,14 +774,14 @@ def _trim_leading_extra_words(alignment_whisper: torch.nn.Module, audio_np: np.n
         return audio_np
     if debug_prompt:
         removed_words = " ".join(word["word"] for word in transcribed[:leading_insertions])
-        print(f"[Scenema Audio] Trimmed leading extra words ({trim_end / sample_rate:.2f}s): {removed_words}")
+        print(f"[{label}] Trimmed leading extra words ({trim_end / sample_rate:.2f}s): {removed_words}")
     return audio_np[trim_end:]
 
 
-def _trim_leading_extra_words_tensor(alignment_whisper: torch.nn.Module, audio: torch.Tensor, sample_rate: int, expected_text: str, language: str, debug_prompt: bool = False) -> torch.Tensor:
+def _trim_leading_extra_words_tensor(alignment_whisper: torch.nn.Module, audio: torch.Tensor, sample_rate: int, expected_text: str, language: str, debug_prompt: bool = False, label: str = "Scenema Audio") -> torch.Tensor:
     original_device = audio.device
     original_dtype = audio.dtype
-    trimmed = _trim_leading_extra_words(alignment_whisper, _audio_tensor_to_numpy(audio), sample_rate, expected_text, language, debug_prompt=debug_prompt)
+    trimmed = _trim_leading_extra_words(alignment_whisper, _audio_tensor_to_numpy(audio), sample_rate, expected_text, language, debug_prompt=debug_prompt, label=label)
     return _numpy_to_audio_tensor(trimmed).to(device=original_device, dtype=original_dtype)
 
 
@@ -935,7 +936,7 @@ def _concatenate_audio_chunks(chunks: list[torch.Tensor], sample_rate: int, pace
     return _numpy_to_audio_tensor(audio_np).clamp_(-1.0, 1.0)
 
 
-class ScenemaAudioPipeline:
+class ScenemaAudioPipeline(LTXAudioTTSPipelineBase):
     def __init__(
         self,
         model_weights_path: str,
@@ -951,285 +952,38 @@ class ScenemaAudioPipeline:
         device: torch.device | None = None,
         dtype: torch.dtype = torch.bfloat16,
     ) -> None:
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.dtype = dtype or torch.bfloat16
         self.alignment_whisper = alignment_whisper
         self.kokoro_pipeline = kokoro_pipeline
         self.seedvc = seedvc
-        self._interrupt = False
-        self._early_stop = False
-        self.text_encoder_cache = TextEncoderCache()
-        self.pipeline_components = PipelineComponents(dtype=self.dtype, device=self.device)
-        self._init_models(model_weights_path, audio_vae_path, vocoder_path, text_projection_path, text_connector_path, gemma_path, config_path)
-
-    def _load_component(
-        self,
-        model: torch.nn.Module,
-        path: str,
-        sd_ops=None,
-        *,
-        postprocess=None,
-        ignore_unused_weights: bool = False,
-        ignore_missing_keys: bool = False,
-    ) -> torch.nn.Module:
-        if postprocess is None and sd_ops is not None:
-            postprocess = _make_sd_postprocess(sd_ops)
-        mmgp_offload.load_model_data(
-            model,
-            path,
-            postprocess_sd=postprocess,
-            default_dtype=self.dtype,
-            writable_tensors=False,
-            ignore_missing_keys=ignore_missing_keys,
-            ignore_unused_weights=ignore_unused_weights,
+        super().__init__(
+            model_weights_path=model_weights_path,
+            audio_vae_path=audio_vae_path,
+            vocoder_path=vocoder_path,
+            text_projection_path=text_projection_path,
+            text_connector_path=text_connector_path,
+            gemma_path=gemma_path,
+            config_path=config_path,
+            device=device,
+            dtype=dtype,
         )
-        model.eval().requires_grad_(False)
-        return model
-
-    def _init_models(
-        self,
-        model_weights_path: str,
-        audio_vae_path: str,
-        vocoder_path: str,
-        text_projection_path: str,
-        text_connector_path: str,
-        gemma_path: str,
-        config_path: str | None,
-    ) -> None:
-        base_config = _load_config_from_checkpoint(model_weights_path, fallback_config_path=config_path)
-        if not base_config:
-            raise ValueError("Missing Scenema Audio transformer config.")
-        pipeline_config = _load_config_from_checkpoint(audio_vae_path, fallback_config_path=config_path) or base_config
-
-        with init_empty_weights():
-            velocity_model = LTXAudioOnlyModelConfigurator.from_config(base_config)
-        velocity_model = self._load_component(velocity_model, model_weights_path, LTXV_MODEL_COMFY_RENAMING_MAP, ignore_unused_weights=True)
-        self.model = X0Model(velocity_model)
-        self.model.eval().requires_grad_(False)
-
-        with init_empty_weights():
-            audio_encoder = AudioEncoderConfigurator.from_config(pipeline_config)
-            audio_decoder = AudioDecoderConfigurator.from_config(pipeline_config)
-            if hasattr(audio_encoder, "mid") and hasattr(audio_encoder.mid, "attn_1"):
-                audio_encoder.mid.attn_1 = torch.nn.Identity()
-            audio_vae = _VAEContainer(audio_encoder, audio_decoder)
-        audio_vae = self._load_component(audio_vae, audio_vae_path, postprocess=_make_vae_postprocess("audio_vae."), ignore_unused_weights=True)
-        self.audio_encoder = audio_vae.encoder
-        self.audio_decoder = audio_vae.decoder
-
-        with init_empty_weights():
-            vocoder = VocoderConfigurator.from_config(pipeline_config)
-        self.vocoder = self._load_component(vocoder, vocoder_path, VOCODER_COMFY_KEYS_FILTER)
-
-        ddconfig = base_config.get("audio_vae", {}).get("model", {}).get("params", {}).get("ddconfig", {})
-        if "mel_bins" in ddconfig:
-            self.audio_encoder.mel_bins = int(ddconfig["mel_bins"])
-
-        with init_empty_weights():
-            text_embedding_projection = GemmaFeaturesExtractorProjLinear.from_config(pipeline_config)
-        self.text_embedding_projection = self._load_component(text_embedding_projection, text_projection_path, TEXT_EMBEDDING_PROJECTION_KEY_OPS)
-
-        with init_empty_weights():
-            text_embeddings_connector = GemmaTextEmbeddingsConnectorModelConfigurator.from_config(pipeline_config)
-        self.text_embeddings_connector = self._load_component(text_embeddings_connector, text_connector_path, TEXT_EMBEDDINGS_CONNECTOR_KEY_OPS)
-        self.video_embeddings_connector = self.text_embeddings_connector.video_embeddings_connector
-        self.audio_embeddings_connector = self.text_embeddings_connector.audio_embeddings_connector
-
-        self.text_encoder = build_gemma_text_encoder(gemma_path, default_dtype=self.dtype)
-        self.text_encoder.eval().requires_grad_(False)
-        self._text_connectors = {
-            "feature_extractor_linear": self.text_embedding_projection,
-            "embeddings_connector": self.video_embeddings_connector,
-            "audio_embeddings_connector": self.audio_embeddings_connector,
-        }
-
-    def get_trans_lora(self):
-        return self.model, None
-
-    def get_loras_transformer(self, get_model_recursive_prop, **kwargs):
-        return [], []
-
-    def abort(self):
-        self._interrupt = True
-
-    def _early_stop_requested(self) -> bool:
-        return bool(self._early_stop)
-
-    def request_early_stop(self) -> None:
-        self._early_stop = True
-
-    @staticmethod
-    def _unload_managed_model(model: torch.nn.Module | None) -> None:
-        if model is None:
-            return
-        for module in model.modules():
-            manager = getattr(module, "_mm_manager", None)
-            if manager is not None:
-                manager.unload_all()
-                return
-
-    def _encode_prompt(self, prompt: str) -> torch.Tensor:
-        feature_extractor, video_connector, audio_connector = resolve_text_connectors(self.text_encoder, self._text_connectors)
-        encode_fn = lambda prompts: postprocess_text_embeddings(
-            encode_text(self.text_encoder, prompts=prompts),
-            feature_extractor,
-            video_connector,
-            audio_connector,
-        )
-        (_, audio_context) = self.text_encoder_cache.encode(encode_fn, [prompt], device=self.device, parallel=True)[0]
-        return audio_context.to(device=self.device, dtype=self.dtype)
-
-    def _waveform_from_input(self, input_waveform, input_waveform_sample_rate, audio_guide: str | None):
-        if input_waveform is not None:
-            waveform = torch.as_tensor(input_waveform, dtype=torch.float32)
-            if waveform.ndim == 1:
-                waveform = waveform.unsqueeze(0)
-            elif waveform.ndim == 2:
-                waveform = waveform.T
-            return waveform, int(input_waveform_sample_rate)
-        if not audio_guide:
-            return None, 0
-        waveform, sample_rate = torchaudio.load(os.fspath(audio_guide))
-        return waveform.float(), int(sample_rate)
-
-    def _encode_reference_waveform(self, waveform: torch.Tensor, sample_rate: int):
-        waveform = waveform.unsqueeze(0)
-
-        target_channels = int(getattr(self.audio_encoder, "in_channels", waveform.shape[1]))
-        if waveform.shape[1] != target_channels:
-            if waveform.shape[1] == 1 and target_channels > 1:
-                waveform = waveform.repeat(1, target_channels, 1)
-            elif target_channels == 1:
-                waveform = waveform.mean(dim=1, keepdim=True)
-            else:
-                waveform = waveform[:, :target_channels, :]
-                if waveform.shape[1] < target_channels:
-                    pad_shape = (waveform.shape[0], target_channels - waveform.shape[1], waveform.shape[2])
-                    waveform = torch.cat([waveform, torch.zeros(pad_shape, dtype=waveform.dtype)], dim=1)
-
-        max_samples = int(round(float(sample_rate) * SCENEMA_MAX_REF_SECONDS))
-        waveform = waveform[:, :, :max_samples].to(dtype=torch.float32)
-        audio_processor = AudioProcessor(
-            sample_rate=self.audio_encoder.sample_rate,
-            mel_bins=self.audio_encoder.mel_bins,
-            mel_hop_length=self.audio_encoder.mel_hop_length,
-            n_fft=self.audio_encoder.n_fft,
-        ).to(waveform.device)
-        mel = audio_processor.waveform_to_mel(waveform, sample_rate)
-        audio_device, audio_dtype = _model_device_dtype(self.audio_encoder, self.device, self.dtype)
-        mel = mel.to(device=audio_device, dtype=audio_dtype)
-        with torch.inference_mode():
-            ref_latent = self.audio_encoder(mel)
-        return ref_latent.to(device=self.device, dtype=self.dtype)
-
-    def _reference_tail_waveform(self, waveform: torch.Tensor, sample_rate: int) -> torch.Tensor:
-        tail_samples = int(round(SCENEMA_REF_TAIL_SECONDS * int(sample_rate)))
-        return waveform[:, -tail_samples:] if waveform.shape[-1] > tail_samples else waveform
-
-    def _encode_reference(self, input_waveform, input_waveform_sample_rate, audio_guide: str | None):
-        waveform, sample_rate = self._waveform_from_input(input_waveform, input_waveform_sample_rate, audio_guide)
-        if waveform is None or sample_rate <= 0:
-            return None
-        return self._encode_reference_waveform(self._reference_tail_waveform(waveform, sample_rate), sample_rate)
-
-    def _encode_tail_reference(self, audio: torch.Tensor, sample_rate: int):
-        channels_first = audio.detach().cpu().float()
-        if channels_first.ndim == 3:
-            channels_first = channels_first.squeeze(0)
-        if channels_first.ndim == 1:
-            channels_first = channels_first.unsqueeze(0)
-        tail_samples = int(SCENEMA_REF_TAIL_SECONDS * sample_rate)
-        return self._encode_reference_waveform(channels_first[:, -tail_samples:], sample_rate)
-
-    def _callback_start(self, callback, total_steps: int, status_extra: str = "") -> None:
-        if callback is not None:
-            callback(-1, None, True, override_num_inference_steps=total_steps, pass_no=0, denoising_extra=status_extra)
-
-    def _callback_step(self, callback, step_idx: int, status_extra: str = "") -> None:
-        if callback is not None:
-            callback(step_idx, None, False, pass_no=0, denoising_extra=status_extra)
-
-    @staticmethod
-    def _custom_float(custom_settings, key: str, default: float) -> float:
-        if not isinstance(custom_settings, dict):
-            return default
-        raw_value = custom_settings.get(key, default)
-        if raw_value is None or raw_value == "":
-            return default
-        try:
-            value = float(raw_value)
-        except (TypeError, ValueError):
-            return default
-        return value if value > 0 else default
-
-    @staticmethod
-    def _custom_int(custom_settings, key: str, default: int) -> int:
-        if not isinstance(custom_settings, dict):
-            return default
-        raw_value = custom_settings.get(key, default)
-        if raw_value is None or raw_value == "":
-            return default
-        try:
-            value = int(raw_value)
-        except (TypeError, ValueError):
-            return default
-        return value if value > 0 else default
 
     @torch.inference_mode()
     def _generate_audio(self, audio_context: torch.Tensor, duration: float, seed: int, ref_latent=None, callback=None, status_extra: str = "", set_progress_status=None):
-        generator = torch.Generator(device=self.device).manual_seed(int(seed))
-        noiser = GaussianNoiser(generator=generator)
-        stepper = EulerDiffusionStep()
         sigmas = torch.tensor(DISTILLED_SIGMA_VALUES, dtype=torch.float32, device=self.device)
-        total_steps = len(sigmas) - 1
-        if set_progress_status is not None:
-            set_progress_status(f"Denoising | {status_extra}" if status_extra else "Denoising")
-        self._callback_start(callback, total_steps, status_extra)
-
-        pixel_shape = VideoPixelShape(batch=1, frames=_duration_to_frames(duration), width=64, height=64, fps=SCENEMA_FPS)
-        audio_shape = AudioLatentShape.from_video_pixel_shape(pixel_shape)
-        audio_tools = AudioLatentTools(self.pipeline_components.audio_patchifier, audio_shape)
-        audio_state = audio_tools.create_initial_state(self.device, self.dtype)
-        conditionings = [AudioConditionByReferenceLatent(ref_latent)] if ref_latent is not None else []
-        audio_state = state_with_conditionings(audio_state, conditionings, audio_tools)
-        audio_state = noiser(audio_state)
-
-        velocity_model = getattr(self.model, "velocity_model", self.model)
-        velocity_model.interrupt_check = lambda: bool(self._interrupt)
-        prepared_audio_context = _prepare_conditioning_context(self.model, audio_state, audio_context, sigmas, is_audio=True)
-        try:
-            for step_idx, _ in enumerate(tqdm(sigmas[:-1])):
-                if self._interrupt:
-                    return None
-                offload.set_step_no_for_lora(self.model, step_idx)
-                sigma = sigmas[step_idx]
-                pos_audio = modality_from_latent_state(
-                    audio_state,
-                    prepared_audio_context,
-                    sigma,
-                    step_index=step_idx,
-                    sigma_schedule=sigmas,
-                )
-                _, denoised_audio = self.model(video=None, audio=pos_audio, perturbations=None)
-                if denoised_audio is None:
-                    return None
-                denoised_audio = post_process_latent(denoised_audio, audio_state.denoise_mask, audio_state.clean_latent)
-                if float(sigmas[step_idx + 1].item()) == 0.0:
-                    audio_state = replace(audio_state, latent=denoised_audio)
-                else:
-                    audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio, sigmas, step_idx))
-                self._callback_step(callback, step_idx, status_extra)
-        finally:
-            velocity_model.interrupt_check = None
-            _clear_phase_timestep_embedders(self.model)
-
-        if self._interrupt:
+        audio_state, audio_tools = self._build_audio_state(duration, SCENEMA_FPS, sigmas, seed, ref_latent=ref_latent, reference_conditioner=AudioConditionByReferenceLatent)
+        audio_state = self._generate_audio_euler(audio_context, sigmas, audio_state, audio_tools, callback=callback, status_extra=status_extra, set_progress_status=set_progress_status)
+        if audio_state is None:
             return None
-        audio_state = audio_tools.clear_conditioning(audio_state)
-        audio_state = audio_tools.unpatchify(audio_state)
-        if set_progress_status is not None:
-            set_progress_status(f"VAE Decoding | {status_extra}" if status_extra else "VAE Decoding")
-        return decode_audio(audio_state.latent, self.audio_decoder, self.vocoder).detach().cpu().float()
+        return self._decode_audio_state(audio_state, set_progress_status=set_progress_status, status_extra=status_extra)
+
+    def _reference_tail_waveform(self, waveform: torch.Tensor, sample_rate: int) -> torch.Tensor:
+        return super()._reference_tail_waveform(waveform, sample_rate, SCENEMA_REF_TAIL_SECONDS)
+
+    def _encode_reference(self, input_waveform, input_waveform_sample_rate, audio_guide: str | None):
+        return super()._encode_reference(input_waveform, input_waveform_sample_rate, audio_guide, tail_seconds=SCENEMA_REF_TAIL_SECONDS, max_seconds=SCENEMA_MAX_REF_SECONDS)
+
+    def _encode_tail_reference(self, audio: torch.Tensor, sample_rate: int):
+        return super()._encode_tail_reference(audio, sample_rate, SCENEMA_REF_TAIL_SECONDS)
 
     @staticmethod
     def _generation_duration(planned_duration: float) -> float:

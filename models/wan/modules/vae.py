@@ -738,7 +738,7 @@ class WanVAE_(nn.Module):
             del x
             self.clear_cache()
 
-    def decode_to_cpu_uint8(self, z, scale=None, tile_size=0, target_frames=None, target_height=None, target_width=None, any_end_frame=False, device=None):
+    def decode_to_cpu_uint8(self, z, scale=None, tile_size=0, target_frames=None, target_height=None, target_width=None, any_end_frame=False, device=None, frame_start=0):
         device = torch.device(device) if device is not None else (scale[0].device if scale is not None and isinstance(scale[0], torch.Tensor) else z.device)
         dtype = getattr(self, "_model_dtype", z.dtype)
         tile_size = int(tile_size or 0)
@@ -746,8 +746,10 @@ class WanVAE_(nn.Module):
         if tile_size > 0 and latent_source.device.type != "cpu":
             latent_source = latent_source.to("cpu")
         decoded_frame_count = 0 if latent_source.shape[2] <= 0 else (int(latent_source.shape[2]) - 1) * 4 + 1
-        target_frames = decoded_frame_count if target_frames is None else min(int(target_frames), decoded_frame_count)
-        needed_latents = 0 if target_frames <= 0 else min(int(latent_source.shape[2]), (max(int(target_frames), 1) - 1 + 3) // 4 + 1)
+        frame_start = min(max(0, int(frame_start or 0)), decoded_frame_count)
+        target_frames = decoded_frame_count - frame_start if target_frames is None else min(int(target_frames), decoded_frame_count - frame_start)
+        target_end = frame_start + target_frames
+        needed_latents = 0 if target_frames <= 0 else min(int(latent_source.shape[2]), (max(target_end, 1) - 1 + 3) // 4 + 1)
         latent_source = latent_source[:, :, :needed_latents]
         full_height = latent_source.shape[-2] * 8 * self.upsampler_factor
         full_width = latent_source.shape[-1] * 8 * self.upsampler_factor
@@ -759,7 +761,7 @@ class WanVAE_(nn.Module):
             scale = [u.to(device=device) for u in scale]
         if tile_size <= 0:
             z = latent_source.to(device=device, dtype=dtype)
-            frames = self.decode(z, scale, any_end_frame=any_end_frame)[:, :, :target_frames, :target_height, :target_width]
+            frames = self.decode(z, scale, any_end_frame=any_end_frame)[:, :, frame_start:target_end, :target_height, :target_width]
             decoded = _vae_float_to_cpu_uint8(frames)
             del z, frames
             return decoded
@@ -798,29 +800,34 @@ class WanVAE_(nn.Module):
                 bottom_edge = None
                 right_edge = None
                 previous_edge = previous_row_edges[col_index] if row_index > 0 and col_index < len(previous_row_edges) else None
-                for frame_start, tile in self.decode_tile_chunks(tile_latents, any_end_frame=any_end_frame):
-                    if frame_start >= target_frames:
+                for tile_frame_start, tile in self.decode_tile_chunks(tile_latents, any_end_frame=any_end_frame):
+                    if tile_frame_start >= target_end:
                         break
-                    frame_end = min(frame_start + int(tile.shape[2]), target_frames)
-                    tile = tile[:, :, :frame_end - frame_start]
+                    tile_frame_end = tile_frame_start + int(tile.shape[2])
+                    copy_start, copy_end = max(tile_frame_start, frame_start), min(tile_frame_end, target_end)
+                    if copy_start >= copy_end:
+                        del tile
+                        continue
+                    out_start, out_end = copy_start - frame_start, copy_end - frame_start
+                    tile = tile[:, :, copy_start - tile_frame_start:copy_end - tile_frame_start]
                     if previous_edge is not None:
-                        _blend_v_edge_(previous_edge[:, :, frame_start:frame_end], tile, blend_extent)
+                        _blend_v_edge_(previous_edge[:, :, out_start:out_end], tile, blend_extent)
                     if left_edge is not None:
-                        _blend_h_edge_(left_edge[:, :, frame_start:frame_end], tile, blend_extent)
+                        _blend_h_edge_(left_edge[:, :, out_start:out_end], tile, blend_extent)
                     if has_next_row:
                         edge = tile[:, :, :, -min(blend_extent, tile.shape[-2]):, :].detach().cpu()
                         if bottom_edge is None:
                             bottom_edge = torch.empty((edge.shape[0], edge.shape[1], target_frames, edge.shape[3], edge.shape[4]), dtype=edge.dtype, device="cpu")
-                        bottom_edge[:, :, frame_start:frame_end].copy_(edge)
+                        bottom_edge[:, :, out_start:out_end].copy_(edge)
                         del edge
                     if has_next_col:
                         edge = tile[:, :, :, :, -min(blend_extent, tile.shape[-1]):].detach().cpu()
                         if right_edge is None:
                             right_edge = torch.empty((edge.shape[0], edge.shape[1], target_frames, edge.shape[3], edge.shape[4]), dtype=edge.dtype, device="cpu")
-                        right_edge[:, :, frame_start:frame_end].copy_(edge)
+                        right_edge[:, :, out_start:out_end].copy_(edge)
                         del edge
                     tile = tile[:, :, :, :write_y1 - write_y0, :write_x1 - write_x0]
-                    decoded[:, :, frame_start:frame_end, write_y0:write_y0 + tile.shape[-2], write_x0:write_x0 + tile.shape[-1]].copy_(_vae_float_to_cpu_uint8(tile))
+                    decoded[:, :, out_start:out_end, write_y0:write_y0 + tile.shape[-2], write_x0:write_x0 + tile.shape[-1]].copy_(_vae_float_to_cpu_uint8(tile))
                     del tile
                 current_row_edges.append(bottom_edge)
                 left_edge = right_edge
@@ -966,7 +973,10 @@ class WanVAE:
             if mixed_precision:
                 device_mem_capacity = device_mem_capacity / 2
             if device_mem_capacity >= 24000:
-                use_vae_config = 1
+                if output_height is not None and output_width is not None and int(output_height) * int(output_width) > 1920 * 1088:
+                    use_vae_config = 1
+                else:
+                    use_vae_config = 2
             elif device_mem_capacity >= 16000:
                 use_vae_config = 3
             elif device_mem_capacity >= 8000:
@@ -975,10 +985,7 @@ class WanVAE:
                 use_vae_config = 5
         else:
             # Keep WGP's historical public presets; Wan inserts one internal tiers between presets 1 and 3.
-            use_vae_config = vae_config if vae_config == 1 else vae_config + 2
-
-        if output_height is not None and output_width is not None and int(output_height) * int(output_width) > 1920 * 1088:
-            use_vae_config = min(use_vae_config + 1, 4)
+            use_vae_config = vae_config + 2
 
         if use_vae_config == 1:
             VAE_tile_size = 0  
@@ -1011,10 +1018,10 @@ class WanVAE:
         else:
             return [ self.model.decode(u.to(self.dtype).unsqueeze(0), scale, any_end_frame=any_end_frame).clamp_(-1, 1).float().squeeze(0) for u in zs ]
 
-    def decode_to_cpu_uint8(self, zs, tile_size, target_frames=None, target_height=None, target_width=None, any_end_frame=False):
+    def decode_to_cpu_uint8(self, zs, tile_size, target_frames=None, target_height=None, target_width=None, any_end_frame=False, frame_start=0):
         scale = [u.to(device=self.device) for u in self.scale]
         tile_size = int(tile_size or 0)
         return [
-            self.model.decode_to_cpu_uint8(u.detach().to(device="cpu" if tile_size > 0 else u.device, dtype=self.dtype).unsqueeze(0), scale, tile_size, target_frames=target_frames, target_height=target_height, target_width=target_width, any_end_frame=any_end_frame, device=self.device).squeeze(0)
+            self.model.decode_to_cpu_uint8(u.detach().to(device="cpu" if tile_size > 0 else u.device, dtype=self.dtype).unsqueeze(0), scale, tile_size, target_frames=target_frames, target_height=target_height, target_width=target_width, any_end_frame=any_end_frame, device=self.device, frame_start=frame_start).squeeze(0)
             for u in zs
         ]

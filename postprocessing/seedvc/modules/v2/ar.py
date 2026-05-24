@@ -364,7 +364,7 @@ class NaiveWrapper(nn.Module):
 
     @torch.no_grad()
     def infer(self, cond: Tensor) -> torch.Tensor:
-        sep_token_emb = self.sep_token_emb.expand(1, 1, -1)
+        sep_token_emb = self.sep_token_emb.to(cond.device).expand(1, 1, -1)
         emb_seq = torch.cat([sep_token_emb, cond, sep_token_emb], dim=1)
         pred_codes = []
         input_pos = torch.arange(cond.size(1) + 1, device=cond.device)
@@ -386,7 +386,7 @@ class NaiveWrapper(nn.Module):
             compiled_decode_fn = None,
             **sampling_kwargs,
     ):
-        sep_token_emb = self.sep_token_emb.expand(1, 1, -1)
+        sep_token_emb = self.sep_token_emb.to(prompt_text.device).expand(1, 1, -1)
         emb_seq = torch.cat([sep_token_emb, prompt_text, sep_token_emb], dim=1)
         input_pos = torch.arange(prompt_text.size(1) + 1, device=emb_seq.device)
         input_pos = torch.cat([input_pos, torch.LongTensor([0]).to(emb_seq.device)])

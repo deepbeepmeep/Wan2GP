@@ -70,8 +70,10 @@ def get_smart_download_root(force_path = None):
     return _checkpoints_paths[0]
 
 def get_smart_download_location(file_name = None, force_path = None):
-    if file_name is not None and os.path.isabs(file_name):
-        return file_name
+    if file_name is not None:
+        file_name = extract_alternate_path(file_name)
+        if os.path.isabs(file_name):
+            return file_name
     force_path = _normalize_force_path(force_path)
     if force_path is None:
         return get_download_location(file_name)

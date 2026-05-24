@@ -140,10 +140,11 @@ def prepare_run(
         existing_identity = process_metadata.read_output_identity(requested_output_path)
         identity_mismatch_message = process_metadata.get_output_identity_mismatch_message(requested_output_path, process_name=process_display_name, source_path=source_path, source_segment=requested_source_segment)
         if identity_mismatch_message is not None:
-            can_resume_from_sidecar = existing_identity is None and system_handler is not None and callable(getattr(system_handler, "can_resume_without_output_metadata", None)) and system_handler.can_resume_without_output_metadata(requested_output_path)
-            if not can_resume_from_sidecar:
+            system_supports_continue_cache = system_handler is not None and (not callable(getattr(system_handler, "supports_continue_cache_for_target", None)) or system_handler.supports_continue_cache_for_target(system_target_control))
+            can_resume_from_system_state = existing_identity is None and system_supports_continue_cache and callable(getattr(system_handler, "can_resume_without_output_metadata", None)) and system_handler.can_resume_without_output_metadata(requested_output_path)
+            if not can_resume_from_system_state:
                 raise ProcessInfoExit(identity_mismatch_message, output_path=requested_output_path)
-            common.plugin_info(f"Existing output has no readable WanGP metadata, but a system continuation sidecar was found. Continuing from sidecar cache: {requested_output_path}")
+            common.plugin_info(f"Existing output has no readable WanGP metadata, but the system process can continue from its cache or decoded output tail: {requested_output_path}")
     resolved_output_path, resume_existing_output = output_paths.resolve_output_path(source_path, output_path, process_display_name, active_target_ratio, output_resolution_token, start_seconds, end_seconds, continue_enabled, has_outpaint=uses_builtin_outpaint_ui, default_container=default_output_container, notify=common.plugin_info)
     try:
         Path(resolved_output_path).parent.mkdir(parents=True, exist_ok=True)

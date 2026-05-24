@@ -5,6 +5,7 @@ from .item import ConditioningItem
 from .types import (
     AudioConditionByLatent,
     AudioConditionByLatentPrefix,
+    AudioConditionByAppendedReferenceLatent,
     AudioConditionByReferenceLatent,
     VideoConditionByKeyframeIndex,
     VideoConditionByLatentIndex,
@@ -16,6 +17,7 @@ __all__ = [
     "ConditioningItem",
     "AudioConditionByLatent",
     "AudioConditionByLatentPrefix",
+    "AudioConditionByAppendedReferenceLatent",
     "AudioConditionByReferenceLatent",
     "VideoConditionByKeyframeIndex",
     "VideoConditionByLatentIndex",

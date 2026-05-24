@@ -24,6 +24,7 @@ class FlashVSRBridge:
     TOPK_RATIO_DEFAULT = 0.0
     TOPK_RATIO_MAX = 4.0
     UPSAMPLING_VALUE_PREFIX = "flashvsr"
+    UPSAMPLING_TWO_PASS_VALUE_PREFIX = "flashvsr2pass"
     UPSAMPLING_RATIOS = (1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0)
 
     TRANSFORMER_FILENAME = "FlashVSR_v1.1_transformer_bf16.safetensors"
@@ -103,26 +104,36 @@ class FlashVSRBridge:
         return f"{cls.UPSAMPLING_VALUE_PREFIX}{cls.format_ratio(scale)}"
 
     @classmethod
-    def upsampling_choices(cls, include_name: bool = True) -> list[tuple[str, str]]:
+    def upsampling_two_pass_value(cls, scale: float) -> str:
+        return f"{cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX}{cls.format_ratio(scale)}"
+
+    @classmethod
+    def upsampling_choices(cls, include_name: bool = True, include_two_pass: bool = False) -> list[tuple[str, str]]:
         prefix = "FlashVSR " if include_name else ""
-        return [(f"{prefix}x{cls.format_ratio_label(scale)}", cls.upsampling_value(scale)) for scale in cls.UPSAMPLING_RATIOS]
+        choices = [(f"{prefix}x{cls.format_ratio_label(scale)}", cls.upsampling_value(scale)) for scale in cls.UPSAMPLING_RATIOS]
+        return choices + ([(f"{prefix}Two Pass x{cls.format_ratio_label(scale)}", cls.upsampling_two_pass_value(scale)) for scale in cls.UPSAMPLING_RATIOS] if include_two_pass else [])
 
     @classmethod
     def scale_for_upsampling(cls, spatial_upsampling) -> float | None:
         text = str(spatial_upsampling or "").strip().lower()
-        if not text.startswith(cls.UPSAMPLING_VALUE_PREFIX):
+        prefix = cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX if text.startswith(cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX) else cls.UPSAMPLING_VALUE_PREFIX
+        if not text.startswith(prefix):
             return None
         try:
-            scale = float(text[len(cls.UPSAMPLING_VALUE_PREFIX):])
+            scale = float(text[len(prefix):])
         except ValueError:
             return None
         return scale if scale in cls.UPSAMPLING_RATIOS else None
 
     @classmethod
+    def is_two_pass_upsampling(cls, spatial_upsampling) -> bool:
+        return str(spatial_upsampling or "").strip().lower().startswith(cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX)
+
+    @classmethod
     def query_edit_mode_def(cls, include_name: bool = True) -> dict[str, Any]:
         return {
             "name": "FlashVSR",
-            "spatial_upsampling_choices": cls.upsampling_choices(include_name=include_name),
+            "spatial_upsampling_choices": cls.upsampling_choices(include_name=include_name, include_two_pass=True),
             "default_spatial_upsampling": cls.upsampling_value(2.0),
         }
 
@@ -132,8 +143,6 @@ class FlashVSRBridge:
     def validate_upsampling(self, spatial_upsampling, image_mode: int) -> str:
         if not self.is_upsampling(spatial_upsampling):
             return ""
-        if image_mode > 0:
-            return "FlashVSR Spatial Upsampling is only available for videos"
         if not self.enabled():
             return "FlashVSR Spatial Upsampling is disabled in Configuration > Extensions"
         return ""
@@ -168,18 +177,22 @@ class FlashVSRBridge:
         mixed_precision = self.server_config.get("vae_precision", "16") == "32"
         return WanVAE.get_VAE_tile_size(vae_config, device_mem_capacity, mixed_precision, output_height=output_height, output_width=output_width)
 
-    def download(self, process_files: Callable[..., Any]) -> None:
+    def download(self, process_files: Callable[..., Any], send_cmd=None, status_text: str | None = None) -> bool:
         flashvsr_def = self.query_download_def()
         if flashvsr_def is None:
-            return
+            return False
         _, variant, _ = self.settings()
         required = [os.path.join("FlashVSR", self.TRANSFORMER_FILENAME), os.path.join("FlashVSR", self.LQ_PROJ_FILENAME), os.path.join("FlashVSR", self.POSI_PROMPT_FILENAME)]
         required.append(self.VAE_FILENAME if variant == "full" else os.path.join("FlashVSR", self.TCDECODER_FILENAME))
         if all(self.files_locator.locate_file(path, error_if_none=False) is not None for path in required):
-            return
-        process_files(**flashvsr_def)
+            return False
+        from shared.utils.download import send_download_status
 
-    def upscale(self, sample, spatial_upsampling, *, seed=0, continue_cache=None, return_continue_cache=False, vae_tile_size=None, process_files: Callable[..., Any], vae_config: int, init_pipe: Callable[..., int], profile, abort_callback=None, progress_callback=None):
+        send_download_status(send_cmd, status_text)
+        process_files(**flashvsr_def)
+        return True
+
+    def upscale(self, sample, spatial_upsampling, *, seed=0, continue_cache=None, return_continue_cache=False, vae_tile_size=None, process_files: Callable[..., Any], vae_config: int, init_pipe: Callable[..., int], profile, still_image=False, abort_callback=None, progress_callback=None):
         scale = self.scale_for_upsampling(spatial_upsampling)
         if scale is None:
             raise ValueError(f"Unknown FlashVSR upsampling mode: {spatial_upsampling}")
@@ -207,6 +220,8 @@ class FlashVSRBridge:
             topk_ratio=self.topk_ratio(),
             init_pipe=init_pipe,
             profile=profile,
+            still_image=still_image,
+            two_pass=self.is_two_pass_upsampling(spatial_upsampling),
             abort_callback=abort_callback,
             progress_callback=progress_callback,
         )

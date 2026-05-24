@@ -41,6 +41,7 @@ class AboutPlugin(WAN2GPPlugin):
         gr.Markdown("- <B>Matanyone</B>: Mask Generation (https://github.com/pq-yang/MatAnyone)")
         gr.Markdown("- <B>SAM2</B> and <B>SAM3</B>: Mask Generation (https://github.com/facebookresearch/sam2, https://github.com/facebookresearch/sam3). Users should comply with Meta's SAM2/SAM3 license terms.")
         gr.Markdown("- <B>Pyannote</B>: speaker diarization (https://github.com/pyannote/pyannote-audio)")
+        gr.Markdown("- <B>Sherpa-ONNX</B>: speaker diarization runtime (https://github.com/k2-fsa/sherpa-onnx)")
         gr.Markdown("- <B>Kokoro</B>: text-to-speech (https://github.com/hexgrad/kokoro)")
         gr.Markdown("- <B>SeedVC</B>: voice conversion (https://github.com/Plachtaa/seed-vc)")
         gr.Markdown("- <B>MMAudio</B>: sound generator (https://github.com/hkchengrex/MMAudio). Due to licensing restriction can be used only for Research work.")

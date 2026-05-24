@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
 
 import gradio as gr
+
+from shared.utils.settings_bundle import SETTINGS_BUNDLE_ATTACHMENT_KEYS, WAN_GP_SETTINGS_SUFFIXES, is_wangp_settings_filename, load_first_settings_from_queue_zip
 
 from . import common
 from . import constants
@@ -51,15 +54,20 @@ class ProcessLibrary:
         base_model_type, filename = ref.split("/", 1)
         lora_dir = Path(self.get_lora_dir(base_model_type))
         settings_path = (lora_dir / Path(filename).name).resolve()
-        if settings_path.is_file() and settings_path.suffix.lower() == ".json":
+        if settings_path.is_file() and settings_path.suffix.lower() in WAN_GP_SETTINGS_SUFFIXES:
             return settings_path
         return None
 
     @staticmethod
     def load_settings_payload(settings_path: Path) -> dict | None:
         try:
-            payload = json.loads(settings_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            if settings_path.suffix.lower() == ".zip":
+                payload, source_task_count = load_first_settings_from_queue_zip(settings_path, SETTINGS_BUNDLE_ATTACHMENT_KEYS)
+                if source_task_count > 1:
+                    print(f"[Process Full Video] Settings bundle {settings_path.name} contains {source_task_count} tasks; only the first task was extracted.")
+            else:
+                payload = json.loads(settings_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, zipfile.BadZipFile):
             return None
         return payload if isinstance(payload, dict) else None
 
@@ -123,7 +131,7 @@ class ProcessLibrary:
         seen: set[str] = set()
         for item in loras_presets:
             filename = str(item or "").strip()
-            if "/" in filename or "\\" in filename or not filename.lower().endswith(".json"):
+            if "/" in filename or "\\" in filename or not is_wangp_settings_filename(filename):
                 continue
             if filename.casefold() in seen:
                 continue
@@ -151,7 +159,7 @@ class ProcessLibrary:
             return None
         lora_dir = Path(self.get_lora_dir(model_type))
         settings_path = (lora_dir / Path(filename).name).resolve()
-        if settings_path.is_file() and settings_path.suffix.lower() == ".json":
+        if settings_path.is_file() and settings_path.suffix.lower() in WAN_GP_SETTINGS_SUFFIXES:
             return settings_path
         return None
 
@@ -197,7 +205,7 @@ class ProcessLibrary:
             if user_refs is not None and ref.casefold() not in {item.casefold() for item in catalog.get_saved_user_settings_refs({catalog.USER_SETTINGS_STORAGE_KEY: user_refs})}:
                 return None
             return self.build_user_process_definition(ref)
-        if process_value.lower().endswith(".json"):
+        if is_wangp_settings_filename(process_value):
             return self.build_candidate_user_process_definition(main_state, process_value)
         return None
 
@@ -229,11 +237,17 @@ class ProcessLibrary:
         return self.system_handler_for_definition(self.process_definition(process_name, main_state, user_refs))
 
     def target_control_choices(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> list[tuple[str, str]]:
-        handler = self.system_handler_for_process(process_name, main_state, user_refs)
+        process_definition = self.process_definition(process_name, main_state, user_refs)
+        handler = self.system_handler_for_definition(process_definition)
+        if handler is not None and callable(getattr(handler, "target_control_choices_for_process", None)):
+            return handler.target_control_choices_for_process(process_definition.get("settings", {}))
         return list(getattr(handler, "target_control_choices", [])) if handler is not None else []
 
     def target_control_default(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> str:
-        handler = self.system_handler_for_process(process_name, main_state, user_refs)
+        process_definition = self.process_definition(process_name, main_state, user_refs)
+        handler = self.system_handler_for_definition(process_definition)
+        if handler is not None and callable(getattr(handler, "target_control_default_for_process", None)):
+            return handler.target_control_default_for_process(process_definition.get("settings", {}))
         return str(getattr(handler, "default_target_control", "")) if handler is not None else ""
 
     def has_target_control(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:

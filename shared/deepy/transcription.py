@@ -13,14 +13,18 @@ import whisper
 from safetensors.torch import load_file as load_safetensors_file
 
 from shared.deepy import video_tools as deepy_video_tools
+from shared.deepy.assets import (
+    WHISPER_MEDIUM_CONFIG_FILENAME,
+    WHISPER_MEDIUM_FOLDER,
+    WHISPER_MEDIUM_REPO,
+    WHISPER_MEDIUM_REQUIRED_FILES,
+    WHISPER_MEDIUM_WEIGHTS_FILENAME,
+    query_deepy_download_defs,
+)
 from shared.ffmpeg_setup import download_ffmpeg
 from shared.utils import files_locator as fl
 
 
-WHISPER_MEDIUM_FOLDER = "whisper_medium"
-WHISPER_MEDIUM_REPO = "DeepBeepMeep/Wan2.1"
-WHISPER_MEDIUM_CONFIG_FILENAME = "config.json"
-WHISPER_MEDIUM_WEIGHTS_FILENAME = "model.safetensors"
 _TEMP_ROOT = Path(__file__).resolve().parents[2] / "_temp_codex" / "deepy_transcribe"
 _TIMESTAMP_TYPE_ALIASES = {
     "none": None,
@@ -31,7 +35,7 @@ _TIMESTAMP_TYPE_ALIASES = {
     "word": "word",
     "words": "word",
 }
-_WHISPER_MEDIUM_REQUIRED_FILES = (WHISPER_MEDIUM_CONFIG_FILENAME, WHISPER_MEDIUM_WEIGHTS_FILENAME)
+_WHISPER_MEDIUM_REQUIRED_FILES = WHISPER_MEDIUM_REQUIRED_FILES
 
 
 def normalize_timestamp_type(value: Any) -> str | None:
@@ -59,7 +63,8 @@ def _ensure_whisper_medium_assets(model_dir: Path | None = None) -> None:
         return
     process_files_def = _get_main_callable("process_files_def")
     if callable(process_files_def):
-        process_files_def(repoId=WHISPER_MEDIUM_REPO, sourceFolderList=[WHISPER_MEDIUM_FOLDER], fileList=[list(_WHISPER_MEDIUM_REQUIRED_FILES)])
+        for download_def in query_deepy_download_defs():
+            process_files_def(**download_def)
 
 
 def _whisper_medium_dir() -> Path:

@@ -35,7 +35,6 @@ from .utils.helpers import (
     simple_denoising_func,
     video_conditionings_by_keyframe,
 )
-from .utils.media_io import encode_video
 from .utils.types import PipelineComponents
 from shared.utils.loras_mutipliers import update_loras_slists
 from shared.utils.text_encoder_cache import TextEncoderCache
@@ -394,6 +393,8 @@ class ICLoraPipeline:
 
 @torch.inference_mode()
 def main() -> None:
+    from .utils.media_io import encode_video
+
     logging.getLogger().setLevel(logging.INFO)
     parser = default_2_stage_distilled_arg_parser()
     parser.add_argument(

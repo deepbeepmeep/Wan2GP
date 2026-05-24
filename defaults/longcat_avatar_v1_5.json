@@ -1,0 +1,22 @@
+{
+    "model": {
+        "name": "LongCat Avatar 1.5 Distilled 13.6B",
+        "architecture": "longcat_avatar_v1_5",
+        "description": "LongCat Avatar 1.5 distilled audio-driven avatar video generation.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/LongCat/resolve/main/longcat_avatar_v1_5_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/LongCat/resolve/main/longcat_avatar_v1_5_quanto_bf16_int8.safetensors"
+        ],
+        "reference_image_enabled": true,
+        "ref_img_index": 10,
+        "mask_frame_range": 3,
+        "sample_solver": "distill"
+    },
+    "prompt": "A person speaking naturally with expressive eye contact and accurate lip sync.",
+    "negative_prompt": "Close-up, overexposed, static, blurred details, distorted mouth, extra teeth.",
+    "num_inference_steps": 8,
+    "guidance_scale": 1.0,
+    "audio_guidance_scale": 1.0,
+    "video_length": 93,
+    "sample_solver": "distill"
+}

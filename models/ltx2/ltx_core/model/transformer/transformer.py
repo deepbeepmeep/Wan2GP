@@ -205,10 +205,11 @@ class BasicAVTransformerBlock(torch.nn.Module):
         timestep: torch.Tensor,
         prompt_timestep: torch.Tensor | None,
         context_mask: torch.Tensor | None,
+        nag: dict | None = None,
         cross_attention_adaln: bool = False,
     ) -> torch.Tensor:
         if not cross_attention_adaln:
-            return attn([rms_norm(x, eps=self.norm_eps)], context_list=[context], mask=context_mask)
+            return attn([rms_norm(x, eps=self.norm_eps)], context_list=[context], mask=context_mask, NAG=nag)
         q_shift, q_scale, q_gate = self.get_ada_values(scale_shift_table, x.shape[0], timestep, slice(6, 9))
         return apply_cross_attention_adaln(
             x,
@@ -220,7 +221,8 @@ class BasicAVTransformerBlock(torch.nn.Module):
             prompt_scale_shift_table,
             prompt_timestep,
             context_mask,
-            self.norm_eps,
+            nag=nag,
+            norm_eps=self.norm_eps,
         )
 
     def forward(  # noqa: PLR0915
@@ -229,7 +231,10 @@ class BasicAVTransformerBlock(torch.nn.Module):
         audio: TransformerArgs | None,
         perturbations: BatchedPerturbationConfig | None = None,
     ) -> tuple[TransformerArgs | None, TransformerArgs | None]:
-        batch_size = video.x.shape[0]
+        source = video if video is not None else audio
+        if source is None:
+            raise ValueError("BasicAVTransformerBlock requires at least one modality.")
+        batch_size = source.x.shape[0]
         if perturbations is None:
             perturbations = BatchedPerturbationConfig.empty(batch_size)
 
@@ -241,6 +246,8 @@ class BasicAVTransformerBlock(torch.nn.Module):
 
         run_a2v = run_vx and (audio is not None and audio.enabled and ax.numel() > 0)
         run_v2a = run_ax and (video is not None and video.enabled and vx.numel() > 0)
+        run_a2v = run_a2v and not perturbations.all_in_batch(PerturbationType.SKIP_A2V_CROSS_ATTN, self.idx)
+        run_v2a = run_v2a and not perturbations.all_in_batch(PerturbationType.SKIP_V2A_CROSS_ATTN, self.idx)
 
         if run_vx:
             vshift_msa, vscale_msa, vgate_msa = self.get_ada_values(
@@ -255,7 +262,7 @@ class BasicAVTransformerBlock(torch.nn.Module):
                 v_mask = perturbations.mask_like(PerturbationType.SKIP_VIDEO_SELF_ATTN, self.idx, vx)
                 x_list = [norm_vx]
                 del norm_vx
-                attn_out = self.attn1(x_list, pe=video.positional_embeddings)
+                attn_out = self.attn1(x_list, mask=video.self_attention_mask, pe=video.positional_embeddings)
                 attn_out = _apply_gate(attn_out, vgate_msa)
                 attn_out.mul_(v_mask)
                 vx.add_(attn_out)
@@ -269,10 +276,21 @@ class BasicAVTransformerBlock(torch.nn.Module):
                 video.timesteps,
                 video.prompt_timestep,
                 video.context_mask,
+                nag=video.nag,
                 cross_attention_adaln=self.cross_attention_adaln,
             )
             vx.add_(attn_out)
             attn_out = None
+            ref_context = getattr(video, "ref_context", None)
+            if ref_context is not None and hasattr(self, "ref_attn"):
+                ref_start_block = int(getattr(self, "editanything_ref_start_block", 12))
+                ref_end_block = int(getattr(self, "editanything_ref_end_block", 35))
+                if ref_start_block <= self.idx <= ref_end_block:
+                    ref_context_scale = float(getattr(self, "editanything_ref_context_scale", 0.01))
+                    if ref_context_scale != 0:
+                        attn_out = self.ref_attn([rms_norm(vx, eps=self.norm_eps)], context_list=[ref_context])
+                        vx.add_(attn_out, alpha=ref_context_scale)
+                        attn_out = None
             del vshift_msa, vscale_msa, vgate_msa
 
         if run_ax:
@@ -289,7 +307,7 @@ class BasicAVTransformerBlock(torch.nn.Module):
                 a_mask = perturbations.mask_like(PerturbationType.SKIP_AUDIO_SELF_ATTN, self.idx, ax)
                 x_list = [norm_ax]
                 del norm_ax
-                attn_out = self.audio_attn1(x_list, pe=audio.positional_embeddings)
+                attn_out = self.audio_attn1(x_list, mask=audio.self_attention_mask, pe=audio.positional_embeddings)
                 attn_out = _apply_gate(attn_out, agate_msa)
                 attn_out.mul_(a_mask)
                 ax.add_(attn_out)
@@ -303,6 +321,7 @@ class BasicAVTransformerBlock(torch.nn.Module):
                 audio.timesteps,
                 audio.prompt_timestep,
                 audio.context_mask,
+                nag=audio.nag if audio.nag is not None and audio.nag.get("enable_audio_text_nag", False) else None,
                 cross_attention_adaln=self.cross_attention_adaln,
             )
             ax.add_(attn_out)
@@ -457,6 +476,7 @@ def apply_cross_attention_adaln(
     prompt_scale_shift_table: torch.Tensor | None,
     prompt_timestep: torch.Tensor | None,
     context_mask: torch.Tensor | None = None,
+    nag: dict | None = None,
     norm_eps: float = 1e-6,
 ) -> torch.Tensor:
     if prompt_scale_shift_table is not None and prompt_timestep is not None:
@@ -468,5 +488,5 @@ def apply_cross_attention_adaln(
         # Context is reused across blocks in LTX 2.3 prompt AdaLN, so this call must stay out-of-place.
         context = _apply_scale_shift(context, scale_kv, shift_kv, in_place=False)
     attn_input = _apply_scale_shift(rms_norm(x, eps=norm_eps), q_scale.squeeze(2), q_shift.squeeze(2))
-    out = attn([attn_input], context_list=[context], mask=context_mask)
+    out = attn([attn_input], context_list=[context], mask=context_mask, NAG=nag)
     return _apply_gate(out, q_gate.squeeze(2))

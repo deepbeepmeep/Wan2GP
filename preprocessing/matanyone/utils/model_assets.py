@@ -12,6 +12,8 @@ from shared.utils import files_locator as fl
 
 from .model_signature import MATANYONE_V1, MATANYONE_V2, detect_matanyone_model_version
 
+MATANYONE_SAM3 = "sam3"
+
 
 def _replace_file(src: str, dst: str) -> None:
     try:
@@ -29,6 +31,8 @@ MATANYONE_FOLDER = "mask"
 MATANYONE_CONFIG_NAME = "config.json"
 MATANYONE_SAM_NAME = "sam_vit_h_4b8939_fp16.safetensors"
 MATANYONE_LEGACY_NAME = "model.safetensors"
+SAM3_FOLDER = "sam3"
+SAM3_FILES = ["sam3.1_multiplex_bf16.safetensors", "bpe_simple_vocab_16e6.txt.gz"]
 MATANYONE_WEIGHT_FILES = {
     MATANYONE_V1: "matanyone.safetensors",
     MATANYONE_V2: "matanyone2.safetensors",
@@ -36,6 +40,7 @@ MATANYONE_WEIGHT_FILES = {
 MATANYONE_VERSION_LABELS = {
     MATANYONE_V1: "MatAnyone v1 (original)",
     MATANYONE_V2: "MatAnyone v2",
+    MATANYONE_SAM3: "SAM3",
 }
 
 
@@ -47,6 +52,8 @@ def normalize_matanyone_version(value: Any) -> str:
     if value is None:
         return MATANYONE_DEFAULT_VERSION
     text = str(value).strip().lower()
+    if text in {MATANYONE_SAM3, "sam", "sam3.1"}:
+        return MATANYONE_SAM3
     if text in {"2", MATANYONE_V2, "matanyone2"}:
         return MATANYONE_V2
     return MATANYONE_V1
@@ -89,7 +96,10 @@ def get_matanyone_title_html(server_config=None) -> str:
 
 
 def get_selected_matanyone_weight_name(server_config=None) -> str:
-    return MATANYONE_WEIGHT_FILES[get_selected_matanyone_version(server_config)]
+    selected_version = get_selected_matanyone_version(server_config)
+    if selected_version == MATANYONE_SAM3:
+        raise RuntimeError("SAM3 is not a MatAnyone checkpoint.")
+    return MATANYONE_WEIGHT_FILES[selected_version]
 
 
 def get_selected_matanyone_weights_path(server_config=None):
@@ -107,12 +117,26 @@ def get_selected_matanyone_weights_path(server_config=None):
     return None
 
 
+def _download_asset(folder: str, filename: str) -> str:
+    return hf_hub_download(repo_id=MATANYONE_REPO_ID, filename=filename, local_dir=fl.get_download_location(), subfolder=folder)
+
+
 def _download_mask_asset(filename: str) -> str:
-    return hf_hub_download(repo_id=MATANYONE_REPO_ID, filename=filename, local_dir=fl.get_download_location(), subfolder=MATANYONE_FOLDER)
+    return _download_asset(MATANYONE_FOLDER, filename)
+
+
+def _sam3_relpath(filename: str) -> str:
+    return os.path.join(SAM3_FOLDER, filename)
 
 
 def query_matanyone_download_def(server_config=None):
     runtime_config = _get_runtime_server_config(server_config)
+    if get_selected_matanyone_version(runtime_config) == MATANYONE_SAM3:
+        return {
+            "repoId": MATANYONE_REPO_ID,
+            "sourceFolderList": [SAM3_FOLDER],
+            "fileList": [list(SAM3_FILES)],
+        }
     return {
         "repoId": MATANYONE_REPO_ID,
         "sourceFolderList": [MATANYONE_FOLDER],
@@ -160,6 +184,9 @@ def migrate_matanyone_install(server_config=None):
 
 def ensure_selected_matanyone_assets(server_config=None):
     runtime_config = _get_runtime_server_config(server_config)
+    if get_selected_matanyone_version(runtime_config) == MATANYONE_SAM3:
+        return ensure_sam3_assets(runtime_config)
+
     migrate_matanyone_install(runtime_config)
 
     for filename in query_matanyone_download_def(runtime_config)["fileList"][0]:
@@ -177,7 +204,21 @@ def ensure_selected_matanyone_assets(server_config=None):
     return config_path, weights_path, sam_path
 
 
+def ensure_sam3_assets(server_config=None):
+    runtime_config = _get_runtime_server_config(server_config)
+    if get_selected_matanyone_version(runtime_config) != MATANYONE_SAM3:
+        runtime_config = {MATANYONE_SETTINGS_KEY: MATANYONE_SAM3}
+
+    for filename in SAM3_FILES:
+        if fl.locate_file(_sam3_relpath(filename), error_if_none=False) is None:
+            _download_asset(SAM3_FOLDER, filename)
+    return tuple(fl.locate_file(_sam3_relpath(filename)) for filename in SAM3_FILES)
+
+
 def load_selected_matanyone_model(server_config=None):
+    if get_selected_matanyone_version(server_config) == MATANYONE_SAM3:
+        raise RuntimeError("SAM3 is selected; call the SAM3 mask creator path instead of loading MatAnyone.")
+
     config_path, weights_path, _ = ensure_selected_matanyone_assets(server_config)
 
     with open(config_path, "r", encoding="utf-8-sig") as reader:

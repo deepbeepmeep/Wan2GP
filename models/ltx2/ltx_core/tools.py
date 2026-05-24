@@ -76,7 +76,11 @@ class LatentTools(Protocol):
         denoise_mask = torch.ones_like(latent_state.denoise_mask)[:, :num_tokens]
         positions = latent_state.positions[:, :, :num_tokens]
 
-        return LatentState(latent=latent, denoise_mask=denoise_mask, positions=positions, clean_latent=clean_latent)
+        attention_mask = None
+        if latent_state.attention_mask is not None:
+            attention_mask = latent_state.attention_mask[:, :num_tokens, :num_tokens]
+
+        return LatentState(latent=latent, denoise_mask=denoise_mask, positions=positions, clean_latent=clean_latent, attention_mask=attention_mask)
 
 
 @dataclass(frozen=True)
@@ -186,3 +190,30 @@ class AudioLatentTools(LatentTools):
                 latent=initial_latent, denoise_mask=denoise_mask, positions=latent_coords, clean_latent=clean_latent
             )
         )
+
+    def clear_conditioning(self, latent_state: LatentState) -> LatentState:
+        latent_state = latent_state.clone()
+
+        num_tokens = self.patchifier.get_token_count(self.target_shape)
+        start_token = 0
+        positions = latent_state.positions
+        if positions is not None and positions.ndim >= 4 and positions.shape[1] >= 1:
+            ref_mask = positions[:, 0, :, 1] < 0
+            if ref_mask.ndim == 2 and torch.any(ref_mask):
+                counts = ref_mask.sum(dim=1)
+                if torch.all(counts == counts[:1]):
+                    ref_tokens = int(counts[0].item())
+                    total_tokens = int(ref_mask.shape[1])
+                    if 0 < ref_tokens < total_tokens and torch.all(ref_mask[:, :ref_tokens]) and not torch.any(ref_mask[:, ref_tokens:]):
+                        start_token = ref_tokens
+
+        stop_token = start_token + num_tokens
+        latent = latent_state.latent[:, start_token:stop_token]
+        clean_latent = latent_state.clean_latent[:, start_token:stop_token]
+        denoise_mask = torch.ones_like(latent_state.denoise_mask[:, start_token:stop_token])
+        positions = latent_state.positions[:, :, start_token:stop_token]
+        attention_mask = None
+        if latent_state.attention_mask is not None:
+            attention_mask = latent_state.attention_mask[:, start_token:stop_token, start_token:stop_token]
+
+        return LatentState(latent=latent, denoise_mask=denoise_mask, positions=positions, clean_latent=clean_latent, attention_mask=attention_mask)

@@ -78,12 +78,15 @@ class DeepyChatUI:
     settings_save_btn: Any
     html_output: Any
     chat_event: Any
+    busy_queue_request: Any
+    busy_queue_btn: Any
     stats_output: Any
     stop_btn: Any
     request: Any
     ask_btn: Any
     reset_btn: Any
     auto_cancel_queue_tasks: Any
+    separate_requests_with_empty_line: Any
     use_template_properties: Any
     override_height: Any
     override_width: Any
@@ -114,6 +117,7 @@ class DeepyChatHandlers:
     update_tool_ui_settings: Callable[..., Any]
     store_selected_video_time: Callable[[Any, Any], Any]
     ask_ai: Callable[[Any, str], Any]
+    enqueue_ai: Callable[[Any, str], Any]
     stop_ai: Callable[[Any], Any]
     reset_ai: Callable[[Any], Any]
 
@@ -270,6 +274,8 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
             settings_launcher_host = gr.HTML(assistant_chat.render_settings_launcher_html(), elem_id=assistant_chat.SETTINGS_LAUNCHER_HOST_ID)
             html_output = gr.HTML(assistant_chat.render_shell_html(), elem_id=assistant_chat.CHAT_BLOCK_ID)
             chat_event = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.CHAT_EVENT_ID)
+            busy_queue_request = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.BUSY_QUEUE_INPUT_ID)
+            busy_queue_btn = gr.Button("Queue Busy Request", visible=False, elem_id=assistant_chat.BUSY_QUEUE_BUTTON_ID)
             stop_btn = gr.Button("Stop", elem_id=assistant_chat.STOP_BRIDGE_ID)
             with gr.Row(elem_id=assistant_chat.CONTROLS_ID):
                 request = gr.Text(value="", label="Request", scale=3, show_label=False, elem_id=assistant_chat.REQUEST_ID)
@@ -282,6 +288,10 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
                     with gr.Column(elem_classes=["wangp-assistant-chat__settings-scroll"]):
                         with gr.Tabs():
                             with gr.Tab("Generation Properties"):
+                                separate_requests_with_empty_line = gr.Checkbox(
+                                    value=tool_ui_state["separate_requests_with_empty_line"],
+                                    label="Separate Different Requests with an Empty Line",
+                                )
                                 auto_cancel_queue_tasks = gr.Checkbox(
                                     value=tool_ui_state["auto_cancel_queue_tasks"],
                                     label="Auto-abort or remove Deepy-started generation on Stop/Reset.",
@@ -362,12 +372,15 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
         settings_save_btn=settings_save_btn,
         html_output=html_output,
         chat_event=chat_event,
+        busy_queue_request=busy_queue_request,
+        busy_queue_btn=busy_queue_btn,
         stats_output=stats_output,
         stop_btn=stop_btn,
         request=request,
         ask_btn=ask_btn,
         reset_btn=reset_btn,
         auto_cancel_queue_tasks=auto_cancel_queue_tasks,
+        separate_requests_with_empty_line=separate_requests_with_empty_line,
         use_template_properties=use_template_properties,
         override_height=override_height,
         override_width=override_width,
@@ -454,6 +467,7 @@ def bind_deepy_chat_ui(
         audio_file_selected_value,
         ask_request,
         auto_cancel_queue_tasks,
+        separate_requests_with_empty_line,
         use_template_properties,
         override_height,
         override_width,
@@ -470,6 +484,7 @@ def bind_deepy_chat_ui(
         update_session_ui_settings(
             state_value,
             auto_cancel_queue_tasks,
+            separate_requests_with_empty_line,
             use_template_properties,
             override_height,
             override_width,
@@ -484,9 +499,50 @@ def bind_deepy_chat_ui(
         )
         yield from handlers.ask_ai(state_value, ask_request)
 
+    def enqueue_ai_with_ui_settings(
+        state_value,
+        output_value,
+        last_choice_value,
+        audio_files_paths_value,
+        audio_file_selected_value,
+        ask_request,
+        auto_cancel_queue_tasks,
+        separate_requests_with_empty_line,
+        use_template_properties,
+        override_height,
+        override_width,
+        override_num_frames,
+        override_seed,
+        default_video_generator,
+        default_video_with_speech,
+        default_image_generator,
+        default_image_editor,
+        default_speech_from_description,
+        default_speech_from_sample,
+    ):
+        handlers.prepare_request_context(state_value, output_value, last_choice_value, audio_files_paths_value, audio_file_selected_value)
+        update_session_ui_settings(
+            state_value,
+            auto_cancel_queue_tasks,
+            separate_requests_with_empty_line,
+            use_template_properties,
+            override_height,
+            override_width,
+            override_num_frames,
+            override_seed,
+            default_video_generator,
+            default_video_with_speech,
+            default_image_generator,
+            default_image_editor,
+            default_speech_from_description,
+            default_speech_from_sample,
+        )
+        return handlers.enqueue_ai(state_value, ask_request)
+
     def _apply_ui_settings(
         state_value,
         auto_cancel_queue_tasks,
+        separate_requests_with_empty_line,
         use_template_properties,
         override_height,
         override_width,
@@ -504,6 +560,7 @@ def bind_deepy_chat_ui(
         return handlers.update_tool_ui_settings(
             state_value,
             auto_cancel_queue_tasks=auto_cancel_queue_tasks,
+            separate_requests_with_empty_line=separate_requests_with_empty_line,
             use_template_properties=use_template_properties,
             width=override_width,
             height=override_height,
@@ -521,6 +578,7 @@ def bind_deepy_chat_ui(
     def update_session_ui_settings(
         state_value,
         auto_cancel_queue_tasks,
+        separate_requests_with_empty_line,
         use_template_properties,
         override_height,
         override_width,
@@ -536,6 +594,7 @@ def bind_deepy_chat_ui(
         return _apply_ui_settings(
             state_value,
             auto_cancel_queue_tasks,
+            separate_requests_with_empty_line,
             use_template_properties,
             override_height,
             override_width,
@@ -553,6 +612,7 @@ def bind_deepy_chat_ui(
     def persist_ui_settings(
         state_value,
         auto_cancel_queue_tasks,
+        separate_requests_with_empty_line,
         use_template_properties,
         override_height,
         override_width,
@@ -568,6 +628,7 @@ def bind_deepy_chat_ui(
         _apply_ui_settings(
             state_value,
             auto_cancel_queue_tasks,
+            separate_requests_with_empty_line,
             use_template_properties,
             override_height,
             override_width,
@@ -725,6 +786,7 @@ def bind_deepy_chat_ui(
         inputs=[
             state,
             ui.auto_cancel_queue_tasks,
+            ui.separate_requests_with_empty_line,
             ui.use_template_properties,
             ui.override_height,
             ui.override_width,
@@ -750,6 +812,7 @@ def bind_deepy_chat_ui(
             audio_file_selected,
             ui.request,
             ui.auto_cancel_queue_tasks,
+            ui.separate_requests_with_empty_line,
             ui.use_template_properties,
             ui.override_height,
             ui.override_width,
@@ -764,6 +827,34 @@ def bind_deepy_chat_ui(
         ],
         outputs=[ui.chat_event, load_queue_trigger, ui.request, output_trigger, abort_client_id],
         show_progress="hidden",
+        trigger_mode="multiple",
+    )
+    ui.busy_queue_btn.click(
+        fn=enqueue_ai_with_ui_settings,
+        inputs=[
+            state,
+            output,
+            last_choice,
+            audio_files_paths,
+            audio_file_selected,
+            ui.busy_queue_request,
+            ui.auto_cancel_queue_tasks,
+            ui.separate_requests_with_empty_line,
+            ui.use_template_properties,
+            ui.override_height,
+            ui.override_width,
+            ui.override_num_frames,
+            ui.override_seed,
+            ui.default_video_generator,
+            ui.default_video_with_speech,
+            ui.default_image_generator,
+            ui.default_image_editor,
+            ui.default_speech_from_description,
+            ui.default_speech_from_sample,
+        ],
+        outputs=[ui.chat_event, ui.request],
+        show_progress="hidden",
+        queue=False,
     )
     ui.stop_btn.click(fn=stop_ai_with_ui, inputs=[state], outputs=[ui.chat_event, load_queue_trigger, ui.request, abort_client_id], show_progress="hidden", queue=False)
     ui.reset_btn.click(fn=reset_ai_with_ui, inputs=[state], outputs=[ui.chat_event, load_queue_trigger, ui.request, abort_client_id], show_progress="hidden")

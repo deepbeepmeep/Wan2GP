@@ -1,0 +1,26 @@
+{
+    "model": {
+        "name": "Wan2.1 Vista4D 384p 14B",
+        "architecture": "vista4d",
+        "description": "Vista4D is a video reshooting framework which synthesizes the dynamic scene represented by an input source video from novel camera trajectories and viewpoints. For best efficiency, you must list all the dynamic objects / people in the 'Dynamic object keywords' input. ",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_vista4d_384p49_14B_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_vista4d_384p49_14B_quanto_bf16_int8.safetensors"
+        ]
+    },
+    "prompt": "a cinematic video of the scene with realistic motion and consistent geometry",
+    "negative_prompt": "",
+    "video_prompt_type": "UV",
+    "resolution": "672x384",
+    "fps": "control",
+    "video_length": 49,
+    "model_mode": "dolly_zoom",
+    "num_inference_steps": 50,
+    "guidance_scale": 5,
+    "flow_shift": 5,
+    "custom_settings": {
+        "vista4d_scene_scale": 1.0,
+        "vista4d_camera_strength": 100.0,
+        "vista4d_seg_keywords": "_all_"
+    }
+}

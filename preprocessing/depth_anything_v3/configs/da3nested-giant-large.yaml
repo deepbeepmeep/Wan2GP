@@ -1,0 +1,10 @@
+__object__:
+  path: .model.da3
+  name: NestedDepthAnything3Net
+  args: as_params
+
+anyview:
+  __inherit__: .configs.da3-giant
+
+metric:
+  __inherit__: .configs.da3metric-large

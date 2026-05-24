@@ -6,6 +6,7 @@ from typing import Optional
 
 import torch
 
+from shared.mps import mps_device_or
 from shared.utils import files_locator as fl
 
 from .prompt_enhancers import TTS_MONOLOGUE_PROMPT, TTS_QWEN3_DIALOGUE_PROMPT
@@ -386,7 +387,7 @@ class family_handler:
             model_weights_path=weights_path,
             base_model_type=base_model_type,
             ckpt_root=ckpt_root,
-            device=torch.device("cpu"),
+            device=mps_device_or(torch.device("cpu")),
             lm_decoder_engine=lm_decoder_engine,
         )
         if str(lm_decoder_engine).strip().lower() in ("cg", "cudagraph"):
@@ -466,7 +467,7 @@ class family_handler:
                     "negative_prompt": "",
                     "temperature": 0.9,
                     "top_k": 50,
-                    "multi_prompts_gen_type": 2,
+                    "multi_prompts_gen_type": "FG",
                 }
             )
             return
@@ -484,7 +485,7 @@ class family_handler:
                     "negative_prompt": "",
                     "temperature": 0.9,
                     "top_k": 50,
-                    "multi_prompts_gen_type": 2,
+                    "multi_prompts_gen_type": "FG",
                 }
             )
             return
@@ -503,7 +504,7 @@ class family_handler:
                     "negative_prompt": "",
                     "temperature": 0.9,
                     "top_k": 50,
-                    "multi_prompts_gen_type": 2,
+                    "multi_prompts_gen_type": "FG",
                 }
             )
 
@@ -545,7 +546,7 @@ class family_handler:
                 if len(speaker_ids) != 2:
                     return (
                         "Two-speaker mode requires exactly two speaker IDs. Use Speaker 1: and Speaker 2:. "
-                        "For headless settings, keep 'multi_prompts_gen_type' = 2."
+                        "For headless settings, keep 'multi_prompts_gen_type' = 'FG'."
                     )
             elif has_speaker_syntax:
                 return "Speaker-tag dialogue requires two-speaker mode (set audio prompt mode to Dialogue)."

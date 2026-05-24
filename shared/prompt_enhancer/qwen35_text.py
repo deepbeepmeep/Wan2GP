@@ -60,6 +60,10 @@ def _env_enabled(name: str, default: bool = True) -> bool:
     return raw in ("1", "true", "yes", "y", "on")
 
 
+def _is_mps_available() -> bool:
+    return hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+
+
 def _resolve_gguf_model_path(model_path: str | None, assets_dir: str, variant: str | None = None) -> str:
     if model_path is not None:
         resolved = fl.locate_file(model_path, error_if_none=False) or model_path
@@ -84,7 +88,7 @@ def get_qwen35_text_quanto_int8_path(assets_dir: str, variant: str | None = None
 
 def _resolve_gguf_linear_attention_layout_from_filename(model_path: str) -> tuple[bool, bool, bool]:
     filename = os.path.basename(str(model_path or "")).strip().lower().replace("_", "-")
-    if filename == "qwen3.5-9b-abliterated-q4-k-m-bis.gguf":
+    if filename == "qwen3.5-9b-abliterated-text-q4-k-m-bis.gguf":
         return True, True, False
     if filename in {
         "qwen3.5-9b-abliterated-text-q4-k-m.gguf",
@@ -167,14 +171,30 @@ def _split_generated_text(text: str) -> tuple[str, str]:
     think_chunks = [match.group(1) for match in re.finditer(r"<think>\s*(.*?)\s*</think>", text, flags=re.DOTALL | re.IGNORECASE)]
     answer_text = re.sub(r"<think>.*?</think>", "\n", text, flags=re.DOTALL | re.IGNORECASE)
     if len(think_chunks) == 0:
-        forced_open_match = re.search(r"</think>", text, flags=re.IGNORECASE)
-        if forced_open_match is not None:
-            forced_reasoning = text[:forced_open_match.start()]
-            forced_reasoning = forced_reasoning.replace("<think>", "\n")
-            forced_reasoning = _normalize_generated_text(forced_reasoning)
-            if len(forced_reasoning) > 0:
-                think_chunks.append(forced_reasoning)
-            answer_text = text[forced_open_match.end():]
+        close_matches = list(re.finditer(r"</think>", text, flags=re.IGNORECASE))
+        if len(close_matches) >= 2:
+            trailing_text = text[close_matches[-1].end():]
+            trailing_preview = re.sub(r"(?:<\|im_end\|>\s*|</s>\s*)+$", "", trailing_text, flags=re.IGNORECASE).lstrip()
+            if len(trailing_preview) == 0 or trailing_preview.lower().startswith("<tool_call>"):
+                recovered_chunks = []
+                leading_reasoning = _normalize_generated_text(text[: close_matches[0].start()].replace("<think>", "\n"))
+                middle_reasoning = _normalize_generated_text(text[close_matches[0].end() : close_matches[-1].start()].replace("<think>", "\n"))
+                if len(leading_reasoning) > 0:
+                    recovered_chunks.append(leading_reasoning)
+                if len(middle_reasoning) > 0:
+                    recovered_chunks.append(middle_reasoning)
+                if len(recovered_chunks) > 0:
+                    think_chunks.extend(recovered_chunks)
+                    answer_text = trailing_text
+        if len(think_chunks) == 0:
+            forced_open_match = re.search(r"</think>", text, flags=re.IGNORECASE)
+            if forced_open_match is not None:
+                forced_reasoning = text[:forced_open_match.start()]
+                forced_reasoning = forced_reasoning.replace("<think>", "\n")
+                forced_reasoning = _normalize_generated_text(forced_reasoning)
+                if len(forced_reasoning) > 0:
+                    think_chunks.append(forced_reasoning)
+                answer_text = text[forced_open_match.end():]
     if len(think_chunks) == 0:
         timeline_match = re.search(r"(?mi)^\(at\s+[0-9]+(?:\.[0-9]+)?\s+seconds?\s*:", text)
         if timeline_match is not None:
@@ -352,7 +372,7 @@ def _build_presence_penalty_logits_processor(presence_penalty: float | None):
     return logits_processor, update_state
 
 
-def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None):
+def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None, max_thinking_tokens_override: int | None = None):
     processors = []
     update_callbacks = []
 
@@ -363,9 +383,10 @@ def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None):
         update_callbacks.append(presence_update_state)
 
     if _prompt_enhancer_thinking_enabled(model, thinking_enabled=thinking_enabled):
+        thinking_max_tokens = max_thinking_tokens_override if max_thinking_tokens_override is not None else getattr(model, "_prompt_enhancer_thinking_max_tokens", QWEN35_PROMPT_THINKING_MAX_TOKENS)
         thinking_state = _ThinkingBudgetState(
             getattr(model, "_prompt_enhancer_close_think_token_id", None),
-            getattr(model, "_prompt_enhancer_thinking_max_tokens", QWEN35_PROMPT_THINKING_MAX_TOKENS),
+            thinking_max_tokens,
             getattr(model, "_prompt_enhancer_stop_token_ids", ()),
         )
         if thinking_state.enabled():
@@ -489,7 +510,7 @@ def _use_vllm_prompt_enhancer(model) -> bool:
 
 
 def _use_legacy_cuda_runner_prompt_enhancer(model) -> bool:
-    return bool(getattr(model, "_prompt_enhancer_use_legacy_cuda_runner", False)) and torch.cuda.is_available()
+    return bool(getattr(model, "_prompt_enhancer_use_legacy_cuda_runner", False)) and (torch.cuda.is_available() or _is_mps_available())
 
 
 def _get_assistant_graph_pool_handle(model, usage_mode: str | None, enable_cudagraph: bool):
@@ -676,6 +697,7 @@ def _unload_prompt_enhancer_text_runtime(self):
         finally:
             self._prompt_enhancer_vllm_engine = None
             self._prompt_enhancer_vllm_mode = None
+    self._prompt_enhancer_assistant_graph_pool_handle = None
     try:
         clear_qwen35_runtime_caches()
     except Exception:
@@ -723,9 +745,11 @@ def _load_local_text_model(
 
 
 def _resolve_legacy_text_execution_device() -> torch.device:
-    if not torch.cuda.is_available():
-        raise RuntimeError("Qwen3.5 legacy prompt enhancement now requires CUDA.")
-    return torch.device("cuda", torch.cuda.current_device())
+    if torch.cuda.is_available():
+        return torch.device("cuda", torch.cuda.current_device())
+    if _is_mps_available():
+        return torch.device("mps")
+    raise RuntimeError("Qwen3.5 legacy prompt enhancement requires CUDA or MPS.")
 
 
 def _configure_qwen35_gguf_text_model(
@@ -926,6 +950,14 @@ def load_qwen35_text_prompt_enhancer(
     if not os.path.isfile(model_path):
         raise FileNotFoundError(f"Qwen3.5 text checkpoint not found: {model_path}")
     print(f"[Qwen3.5VL][{spec['display_name']}][{backend}] Loading text checkpoint: {model_path}")
+    if backend == enhancer_quantization_GGUF:
+        print(
+            "[Qwen3.5VL]"
+            f"[{spec['display_name']}][gguf] Linear-attention layout flags: "
+            f"v_head_reordered={bool(gguf_v_head_reordered)} "
+            f"ssm_param_reordered={bool(gguf_ssm_param_reordered)} "
+            f"interleave_ssm_ab={bool(gguf_interleave_ssm_ab)}"
+        )
 
     model = _load_local_text_model(
         model_path,

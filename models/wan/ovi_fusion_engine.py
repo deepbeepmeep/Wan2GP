@@ -18,9 +18,7 @@ import json
 from mmgp import offload
 from shared.utils.loras_mutipliers import update_loras_slists, get_model_switch_steps
 
-
-
-def init_fusion_score_model_ovi(rank: int = 0, meta_init=True):
+def init_fusion_score_model_ovi():
     config_root = os.path.join("models", "wan", "ovi", "configs")
     video_config_path = os.path.join(config_root , "video.json")
     audio_config_path = os.path.join(config_root , "audio.json")
@@ -106,8 +104,7 @@ class OviFusionEngine:
             dtype=torch.bfloat16,
             device=torch.device('cpu'),
             checkpoint_path=text_encoder_filename,
-            tokenizer_path=tokenizer_path,
-            shard_fn= None)
+            tokenizer_path=tokenizer_path)
         
 
 
@@ -324,10 +321,8 @@ class OviFusionEngine:
             generated_audio = self.audio_vae.wrapped_decode(audio_latents_for_vae)
             generated_audio = generated_audio.squeeze().cpu().float().numpy()
             
-            # Decode video  
-            video_latents_for_vae = video_noise.unsqueeze(0)  # 1, c, f, h, w
-            generated_video = self.vae.decode(video_latents_for_vae, VAE_tile_size)[0]
-            generated_video = generated_video.cpu().float()  # c, f, h, w
+            # Decode video
+            generated_video = self.vae.decode_to_cpu_uint8([video_noise], VAE_tile_size, target_frames=frame_num, target_height=height, target_width=width)[0]
 
         # self.last_audio = audio
         output = {"x": generated_video, "audio": generated_audio}

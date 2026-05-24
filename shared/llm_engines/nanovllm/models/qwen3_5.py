@@ -804,7 +804,7 @@ class Qwen3_5Block(nn.Module):
         else:
             conv_state = self._get_runtime_conv_state(batch_size, hidden_states)
             recurrent_state = self._get_runtime_recurrent_state(batch_size, hidden_states)
-            has_previous_state = not context.is_prefill
+            has_previous_state = bool(getattr(context, "has_previous_state", False)) if context.is_prefill else True
         use_precomputed_states = has_previous_state and seq_len == 1
 
         mixed_qkv_input = self.attn_qkv(hidden_states)
@@ -879,6 +879,9 @@ class Qwen3_5Block(nn.Module):
                         conv_kernel,
                         self.ssm_conv1d.bias,
                     )
+            elif has_previous_state:
+                conv_kernel = self.ssm_conv1d.weight.reshape(self.ssm_conv1d.weight.shape[0], self.ssm_conv1d.weight.shape[-1])
+                mixed_qkv = torch_causal_conv1d_update(mixed_qkv, conv_state, conv_kernel, self.ssm_conv1d.bias)
             else:
                 if cache_params is not None:
                     if mixed_qkv.shape[-1] >= self.conv_kernel_size:
@@ -974,6 +977,7 @@ class Qwen3_5Block(nn.Module):
                     output_final_state=True,
                 )
         else:
+            recurrent_initial_state = recurrent_state if has_previous_state else None
             if self._fast_chunk_gated_delta_rule is not None and hidden_states.is_cuda:
                 core_attn_out, last_recurrent_state = self._fast_chunk_gated_delta_rule(
                     query,
@@ -981,7 +985,7 @@ class Qwen3_5Block(nn.Module):
                     value,
                     g=g,
                     beta=beta,
-                    initial_state=None,
+                    initial_state=recurrent_initial_state,
                     output_final_state=True,
                     use_qk_l2norm_in_kernel=True,
                 )
@@ -992,7 +996,7 @@ class Qwen3_5Block(nn.Module):
                     value,
                     g=g,
                     beta=beta,
-                    initial_state=None,
+                    initial_state=recurrent_initial_state,
                     output_final_state=True,
                 )
 

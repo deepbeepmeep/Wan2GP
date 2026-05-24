@@ -1,0 +1,9 @@
+{
+  
+    "activated_loras": [
+        "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/loras/Ltx2.3-Licon-VBVR-I2V-96000-R32.safetensors"
+    ],
+    "settings_version": 2.56,
+	"help": "This LoRA adapter enhances the base LTX-2 for Enhanced Complex Prompt Understanding, Improved Motion Dynamics & Temporal Consistency"
+	
+}

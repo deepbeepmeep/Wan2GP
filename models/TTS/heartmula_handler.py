@@ -2,6 +2,7 @@ import os
 
 import torch
 
+from shared.mps import mps_device_or
 from shared.utils import files_locator as fl
 
 from .prompt_enhancers import HEARTMULA_LYRIC_PROMPT
@@ -140,7 +141,7 @@ class family_handler:
                 heartmula_weights_path = weights_candidate
         pipeline = HeartMuLaPipeline(
             ckpt_root=ckpt_root,
-            device=torch.device("cpu"),
+            device=mps_device_or(torch.device("cpu")),
             version=HEARTMULA_VERSION,
             VAE_dtype=VAE_dtype,
             heartmula_weights_path=heartmula_weights_path,
@@ -205,7 +206,7 @@ class family_handler:
                 "temperature": 1.0,
                 "guidance_scale": model_def.get("heartmula_cfg_scale", 1.5),
                 "top_k": model_def.get("heartmula_topk", 50),
-                "multi_prompts_gen_type": 2,
+                "multi_prompts_gen_type": "FG",
             }
         )
 

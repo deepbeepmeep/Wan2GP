@@ -4,16 +4,25 @@ import os
 
 import torch
 
-from .eval_utils import (ModelConfig, VideoInfo, all_model_cfg, generate, load_image,
+from .eval_utils import (ModelConfig, VideoInfo, generate, get_model_cfg, load_image,
                                 load_video, make_video, setup_eval_logging)
 from .model.flow_matching import FlowMatching
 from .model.networks import MMAudio, get_my_mmaudio
 from .model.sequence_config import SequenceConfig
 from .model.utils.features_utils import FeaturesUtils
 from shared.utils import files_locator as fl
+from shared.utils.audio_video import write_wav_file
 
 persistent_offloadobj = None
 persistent_model_id = None
+
+
+def _processing_device():
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 def _resolve_mmaudio_path(path):
@@ -56,6 +65,7 @@ def get_model(persistent_models = False, verboseLevel = 1, model_name = None, mo
 
     log = logging.getLogger()
 
+    processing_device = _processing_device()
     device =  'cpu' #"cuda"
     # if torch.cuda.is_available():
     #     device = 'cuda'
@@ -67,9 +77,10 @@ def get_model(persistent_models = False, verboseLevel = 1, model_name = None, mo
 
     if model_name is None:
         model_name = "large_44k_v2"
-    if model_name not in all_model_cfg:
-        raise ValueError(f"Unknown MMAudio model '{model_name}'. Available: {', '.join(all_model_cfg.keys())}")
-    model: ModelConfig = all_model_cfg[model_name]
+    model_cfg = get_model_cfg()
+    if model_name not in model_cfg:
+        raise ValueError(f"Unknown MMAudio model '{model_name}'. Available: {', '.join(model_cfg.keys())}")
+    model: ModelConfig = model_cfg[model_name]
     # model.download_if_needed()
 
     setup_eval_logging()
@@ -104,7 +115,7 @@ def get_model(persistent_models = False, verboseLevel = 1, model_name = None, mo
                                     bigvgan_vocoder_ckpt=resolved_bigvgan_path,
                                     need_vae_encoder=False)
         feature_utils = feature_utils.to(device, dtype).eval()
-        feature_utils.device = "cuda"
+        feature_utils.device = processing_device
 
         pipe = { "net" : net, "clip" : feature_utils.clip_model, "syncformer" : feature_utils.synchformer, "vocode" : feature_utils.tod.vocoder, "vae" : feature_utils.tod.vae }
         from mmgp import offload
@@ -139,7 +150,7 @@ def video_to_audio(video, prompt: str, negative_prompt: str, seed: int, num_step
 
     net, feature_utils, seq_cfg, offloadobj = get_model(persistent_models, verboseLevel, model_name=model_name, model_path=model_path )
 
-    rng = torch.Generator(device="cuda")
+    rng = torch.Generator(device=feature_utils.device)
     if seed >= 0:
         rng.manual_seed(seed)
     else:
@@ -169,8 +180,7 @@ def video_to_audio(video, prompt: str, negative_prompt: str, seed: int, num_step
 
 
     if audio_file_only:
-        import torchaudio
-        torchaudio.save(save_path, audio.unsqueeze(0) if audio.dim() == 1 else audio, seq_cfg.sampling_rate)
+        write_wav_file(save_path, audio, seq_cfg.sampling_rate)
     else:
         make_video(video, video_info, save_path, audio, sampling_rate=seq_cfg.sampling_rate)
 

@@ -1,0 +1,71 @@
+__object__:
+  path: .model.da3
+  name: DepthAnything3Net
+  args: as_params
+
+net:
+  __object__:
+    path: .model.dinov2.dinov2
+    name: DinoV2
+    args: as_params
+
+  name: vitg
+  out_layers: [19, 27, 33, 39]
+  alt_start: 13
+  qknorm_start: 13
+  rope_start: 13
+  cat_token: True
+
+head:
+  __object__:
+    path: .model.dualdpt
+    name: DualDPT
+    args: as_params
+
+  dim_in: &head_dim_in 3072
+  output_dim: 2
+  features: &head_features 256
+  out_channels: &head_out_channels [256, 512, 1024, 1024]
+
+
+cam_enc:
+  __object__:
+    path: .model.cam_enc
+    name: CameraEnc
+    args: as_params
+
+  dim_out: 1536
+
+cam_dec:
+  __object__:
+    path: .model.cam_dec
+    name: CameraDec
+    args: as_params
+
+  dim_in: 3072
+
+
+gs_head:
+  __object__:
+    path: .model.gsdpt
+    name: GSDPT
+    args: as_params
+
+  dim_in: *head_dim_in
+  output_dim: 38  # should align with gs_adapter's setting, for gs params
+  features: *head_features
+  out_channels: *head_out_channels
+
+
+gs_adapter:
+  __object__:
+    path: .model.gs_adapter
+    name: GaussianAdapter
+    args: as_params
+
+  sh_degree: 2
+  pred_color: false  # predict SH coefficient if false
+  pred_offset_depth: true
+  pred_offset_xy: true
+  gaussian_scale_min: 1e-5
+  gaussian_scale_max: 30.0

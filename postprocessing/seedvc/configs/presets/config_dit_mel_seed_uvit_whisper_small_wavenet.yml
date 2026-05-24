@@ -1,0 +1,91 @@
+log_dir: "./runs"
+save_freq: 1
+log_interval: 10
+save_interval: 1000
+device: "cuda"
+epochs: 1000 # number of epochs for first stage training (pre-training)
+batch_size: 2
+batch_length: 100 # maximum duration of audio in a batch (in seconds)
+max_len: 80 # maximum number of frames
+pretrained_model: "DiT_seed_v2_uvit_whisper_small_wavenet_bigvgan_pruned.pth"
+pretrained_encoder: ""
+load_only_params: False # set to true if do not want to load epoch numbers and optimizer parameters
+
+preprocess_params:
+  sr: 22050
+  spect_params:
+    n_fft: 1024
+    win_length: 1024
+    hop_length: 256
+    n_mels: 80
+    fmin: 0
+    fmax: "None"
+
+model_params:
+  dit_type: "DiT" # uDiT or DiT
+  reg_loss_type: "l1" # l1 or l2
+
+  timbre_shifter:
+    se_db_path: "./modules/openvoice/checkpoints_v2/converter/se_db.pt"
+    ckpt_path: './modules/openvoice/checkpoints_v2/converter'
+
+  speech_tokenizer:
+    type: 'whisper'
+    name: "openai/whisper-small"
+
+  style_encoder:
+    dim: 192
+    campplus_path: "campplus_cn_common.bin"
+
+  vocoder:
+    type: "bigvgan"
+    name: "nvidia/bigvgan_v2_22khz_80band_256x"
+
+  length_regulator:
+    channels: 512
+    is_discrete: false
+    in_channels: 768
+    content_codebook_size: 2048
+    sampling_ratios: [1, 1, 1, 1]
+    vector_quantize: false
+    n_codebooks: 1
+    quantizer_dropout: 0.0
+    f0_condition: false
+    n_f0_bins: 512
+
+  DiT:
+    hidden_dim: 512
+    num_heads: 8
+    depth: 13
+    class_dropout_prob: 0.1
+    block_size: 8192
+    in_channels: 80
+    style_condition: true
+    final_layer_type: 'wavenet'
+    target: 'mel' # mel or codec
+    content_dim: 512
+    content_codebook_size: 1024
+    content_type: 'discrete'
+    f0_condition: false
+    n_f0_bins: 512
+    content_codebooks: 1
+    is_causal: false
+    long_skip_connection: true
+    zero_prompt_speech_token: false # for prompt component, do not input corresponding speech token
+    time_as_token: false
+    style_as_token: false
+    uvit_skip_connection: true
+    add_resblock_in_transformer: false
+
+  wavenet:
+    hidden_dim: 512
+    num_layers: 8
+    kernel_size: 5
+    dilation_rate: 1
+    p_dropout: 0.2
+    style_condition: true
+
+loss_params:
+  base_lr: 0.0001
+  lambda_mel: 45
+  lambda_kl: 1.0

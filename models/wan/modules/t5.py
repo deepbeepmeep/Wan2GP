@@ -630,7 +630,6 @@ class T5EncoderModel:
         device=torch.cuda.current_device(),
         checkpoint_path=None,
         tokenizer_path=None,
-        shard_fn=None,
     ):
         self.text_len = text_len
         self.dtype = dtype
@@ -658,10 +657,7 @@ class T5EncoderModel:
         offload.load_model_data(model,checkpoint_path, writable_tensors= False,  preprocess_sd= preprocess_sd )
 
         self.model = model
-        if shard_fn is not None:
-            self.model = shard_fn(self.model, sync_module_states=False)
-        else:
-            self.model.to(self.device)
+        self.model.to(self.device)
         # init tokenizer
         self.tokenizer = HuggingfaceTokenizer(
             name=tokenizer_path, seq_len=text_len, clean='whitespace')

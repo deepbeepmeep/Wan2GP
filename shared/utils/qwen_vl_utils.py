@@ -18,6 +18,7 @@ from packaging import version
 from PIL import Image
 from torchvision import io, transforms
 from torchvision.transforms import InterpolationMode
+from shared.utils.video_decode import decode_video_frame_indices_ffmpeg, probe_video_stream_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -211,14 +212,12 @@ def _read_video_torchvision(ele: dict,) -> torch.Tensor:
     return video
 
 
-def is_decord_available() -> bool:
-    import importlib.util
-
-    return importlib.util.find_spec("decord") is not None
+def _normalize_video_path(video_path: str) -> str:
+    return video_path[7:] if video_path.startswith("file://") else video_path
 
 
-def _read_video_decord(ele: dict,) -> torch.Tensor:
-    """read video using decord.VideoReader
+def _read_video_ffmpeg(ele: dict,) -> torch.Tensor:
+    """read video using WanGP's ffmpeg decoder
 
     Args:
         ele (dict): a dict contains the configuration of video.
@@ -229,27 +228,28 @@ def _read_video_decord(ele: dict,) -> torch.Tensor:
     Returns:
         torch.Tensor: the video tensor with shape (T, C, H, W).
     """
-    import decord
-    video_path = ele["video"]
+    video_path = _normalize_video_path(ele["video"])
     st = time.time()
-    vr = decord.VideoReader(video_path)
-    # TODO: support start_pts and end_pts
-    if 'video_start' in ele or 'video_end' in ele:
-        raise NotImplementedError(
-            "not support start_pts and end_pts in decord for now.")
-    total_frames, video_fps = len(vr), vr.get_avg_fps()
+    metadata = probe_video_stream_metadata(video_path)
+    if metadata is None:
+        raise RuntimeError(f"Unable to probe video metadata for {video_path}")
+    total_frames = metadata["frame_count"]
+    video_fps = metadata["fps_float"] or metadata["fps"]
     logger.info(
-        f"decord:  {video_path=}, {total_frames=}, {video_fps=}, time={time.time() - st:.3f}s"
+        f"ffmpeg:  {video_path=}, {total_frames=}, {video_fps=}, time={time.time() - st:.3f}s"
     )
-    nframes = smart_nframes(ele, total_frames=total_frames, video_fps=video_fps)
-    idx = torch.linspace(0, total_frames - 1, nframes).round().long().tolist()
-    video = vr.get_batch(idx).asnumpy()
-    video = torch.tensor(video).permute(0, 3, 1, 2)  # Convert to TCHW format
-    return video
+    start_frame = max(0, int(math.ceil(float(ele.get("video_start", 0.0)) * video_fps)))
+    end_frame = total_frames - 1 if ele.get("video_end", None) is None else min(total_frames - 1, int(math.floor(float(ele["video_end"]) * video_fps)))
+    selected_frames = end_frame - start_frame + 1
+    if selected_frames <= 0:
+        raise ValueError(f"Invalid video time range for {video_path}")
+    nframes = smart_nframes(ele, total_frames=selected_frames, video_fps=video_fps)
+    idx = torch.linspace(start_frame, end_frame, nframes).round().long().tolist()
+    return decode_video_frame_indices_ffmpeg(video_path, idx, bridge="torch").permute(0, 3, 1, 2)
 
 
 VIDEO_READER_BACKENDS = {
-    "decord": _read_video_decord,
+    "ffmpeg": _read_video_ffmpeg,
     "torchvision": _read_video_torchvision,
 }
 
@@ -259,10 +259,10 @@ FORCE_QWENVL_VIDEO_READER = os.getenv("FORCE_QWENVL_VIDEO_READER", None)
 def get_video_reader_backend() -> str:
     if FORCE_QWENVL_VIDEO_READER is not None:
         video_reader_backend = FORCE_QWENVL_VIDEO_READER
-    elif is_decord_available():
-        video_reader_backend = "decord"
+        if video_reader_backend not in VIDEO_READER_BACKENDS:
+            raise ValueError(f"Unknown video reader backend: {video_reader_backend}")
     else:
-        video_reader_backend = "torchvision"
+        video_reader_backend = "ffmpeg"
     print(
         f"qwen-vl-utils using {video_reader_backend} to read video.",
         file=sys.stderr)

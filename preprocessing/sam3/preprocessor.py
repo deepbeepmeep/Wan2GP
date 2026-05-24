@@ -1,7 +1,6 @@
 import importlib
 import importlib.util
 import os
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Iterable
 
@@ -11,6 +10,7 @@ from PIL import Image
 
 from shared.utils import files_locator as fl
 from .logger import get_logger
+from .model.device_utils import accelerator_autocast, empty_accelerator_cache, get_accelerator_device, is_accelerator_device
 
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -27,13 +27,7 @@ def _cleanup():
     import gc
 
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-        torch.cuda.empty_cache()
-        try:
-            torch.cuda.ipc_collect()
-        except Exception:
-            pass
+    empty_accelerator_cache()
 
 
 def _load_model_builder():
@@ -76,9 +70,7 @@ def _bpe_path():
 
 
 def _autocast_context():
-    if torch.cuda.is_available():
-        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-    return nullcontext()
+    return accelerator_autocast()
 
 
 def _bf16_prompt_payload(value):
@@ -120,7 +112,11 @@ def _sam3_outputs_to_binary_mask(outputs, height: int, width: int):
     return masks.astype(bool).any(axis=0)
 
 
-def _batched_grounding_batch_size():
+def resolve_sam3_grounding_batch_size(batch_size=None) -> int:
+    if batch_size is not None:
+        batch_size = int(batch_size)
+        if batch_size > 0:
+            return batch_size
     if not torch.cuda.is_available():
         return 2
     total_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
@@ -129,7 +125,7 @@ def _batched_grounding_batch_size():
 
 def _encode_text_outputs(text_encoder, captions: list[str], device: torch.device):
     masks, memories, embeds = [], [], []
-    if device.type == "cuda":
+    if is_accelerator_device(device):
         text_encoder.to(device=device, dtype=torch.bfloat16)
     for caption in captions:
         with torch.inference_mode(), _autocast_context():
@@ -149,7 +145,7 @@ def _encode_text_outputs(text_encoder, captions: list[str], device: torch.device
 def _encode_keyword_prompts(model_builder, checkpoint_path: str, bpe_path: str, keywords: list[str], keep_text_encoder_loaded: bool = False):
     global _TEXT_ENCODER_CACHE, _TEXT_ENCODER_CACHE_KEY
     text_encoder = None
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_accelerator_device()
     cache_key = (checkpoint_path, bpe_path)
     preencoded = {}
     try:
@@ -218,7 +214,7 @@ def _load_predictor(
     model_builder = model_builder or _load_model_builder()
     checkpoint_path, version = (checkpoint_path, version) if checkpoint_path is not None and version is not None else _checkpoint_path()
     bpe_path = bpe_path or _bpe_path()
-    grounding_batch_size = _batched_grounding_batch_size() if batched_grounding_batch_size is None else batched_grounding_batch_size
+    grounding_batch_size = resolve_sam3_grounding_batch_size(batched_grounding_batch_size)
     return model_builder.build_sam3_predictor(checkpoint_path=checkpoint_path, bpe_path=bpe_path, version=version, use_fa3=False, use_rope_real=True, compile=False, warm_up=False, include_text_encoder=include_text_encoder, postprocess_batch_size=postprocess_batch_size, use_batched_grounding=use_batched_grounding, batched_grounding_batch_size=grounding_batch_size, trim_past_non_cond_mem_for_eval=trim_past_non_cond_mem_for_eval, fill_hole_area=fill_hole_area, manual_model_loading=manual_model_loading)
 
 

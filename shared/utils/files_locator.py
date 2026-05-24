@@ -1,11 +1,40 @@
 from __future__ import annotations
+from functools import lru_cache
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Iterable, List, Optional, Union
 
 default_checkpoints_paths = ["ckpts", "."]
 
 _checkpoints_paths = default_checkpoints_paths
+
+@lru_cache(maxsize=4096)
+def _is_relative_down_path_cached(path: str) -> bool:
+    if len(path) == 0 or "\x00" in path:
+        return False
+    windows_path = PureWindowsPath(path)
+    posix_path = PurePosixPath(path)
+    if windows_path.drive or windows_path.root or posix_path.root:
+        return False
+    if ".." in windows_path.parts or ".." in posix_path.parts:
+        return False
+    return any(part not in ("", ".") for part in path.replace("\\", "/").split("/"))
+
+def is_relative_down_path(path: Union[str, os.PathLike]) -> bool:
+    """Return True for relative paths that cannot escape a base folder."""
+    try:
+        path = os.fspath(path).strip()
+    except TypeError:
+        return False
+    if not isinstance(path, str):
+        return False
+    return _is_relative_down_path_cached(path)
+
+def clean_relative_path(path, trigger_error = True):
+    if path=="" or path is None: return path
+    if is_relative_down_path(path): return path
+    if not trigger_error: return ""
+    raise Exception(f"Unsafe relative path found : '{path}'")
 
 def set_checkpoints_paths(checkpoints_paths):
     global _checkpoints_paths
@@ -34,7 +63,7 @@ def extract_alternate_path(url, lora_dir = None):
     new_url = os.path.basename(path_parts[0]) 
     if len(path_parts) == 1: return new_url
     if len(path_parts) != 2: raise f"Invalid path {url}"
-    alternate_path = path_parts[1]
+    alternate_path = clean_relative_path(path_parts[1])
     if alternate_path == "%lora_dir":
         if lora_dir is None:
             raise Exception(f"Unable to compute %lora_dir in {url}, no lora_dir was provided")
@@ -70,8 +99,10 @@ def get_smart_download_root(force_path = None):
     return _checkpoints_paths[0]
 
 def get_smart_download_location(file_name = None, force_path = None):
-    if file_name is not None and os.path.isabs(file_name):
-        return file_name
+    if file_name is not None:
+        file_name = extract_alternate_path(file_name)
+        if os.path.isabs(file_name):
+            return file_name
     force_path = _normalize_force_path(force_path)
     if force_path is None:
         return get_download_location(file_name)

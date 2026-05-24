@@ -16,6 +16,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("get_lora_dir")
         self.request_global("get_base_model_type")
         self.request_global("server_config")
+        self.request_global("flashvsr")
         self.request_component("state")
         self.request_component("lset_name")
         self.request_component("refresh_form_trigger")

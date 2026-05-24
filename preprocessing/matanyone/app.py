@@ -32,7 +32,7 @@ from preprocessing.sam3.logger import get_logger
 
 logger = get_logger(__name__)
 
-arg_device = "cuda"
+arg_device = str(get_device())
 arg_sam_model_type="vit_h"
 arg_mask_save = False
 model_loaded = False

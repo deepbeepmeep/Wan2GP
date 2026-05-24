@@ -1,0 +1,18 @@
+{
+    "model": {
+        "name": "HiDream O1 Image Dev 10B",
+        "architecture": "hidream_o1_dev",
+        "description": "HiDream O1 Image Dev is the distilled 8B HiDream O1 variant tuned for fewer inference steps.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/HiDream/resolve/main/HiDreamO1ImageDev_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/HiDream/resolve/main/HiDreamO1ImageDev_quanto_bf16_int8.safetensors"
+        ]
+    },
+    "prompt": "A tiny porcelain robot arranging wildflowers on a sunlit kitchen table, crisp details, natural colors",
+    "resolution": "1920x1088",
+    "batch_size": 1,
+    "num_inference_steps": 28,
+    "guidance_scale": 0,
+    "flow_shift": 1,
+    "sample_solver": "flash"
+}

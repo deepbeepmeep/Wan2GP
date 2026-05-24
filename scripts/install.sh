@@ -2,11 +2,11 @@
 cd "$(dirname "$0")/.."
 
 check_python() {
-    command -v python3 >/dev/null 2>&1 && python3 -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" >/dev/null 2>&1
+    command -v python3 >/dev/null 2>&1 && python3 -c "import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)" >/dev/null 2>&1
 }
 
 install_python() {
-    echo "[*] Attempting to install Python 3.10+ via system package manager..."
+    echo "[*] Attempting to install Python 3.11+ via system package manager..."
     
     if command -v apt-get >/dev/null 2>&1; then
         echo "[*] Detected Debian/Ubuntu based system."
@@ -22,7 +22,7 @@ install_python() {
         sudo pacman -Sy --noconfirm python python-pip
         return $?
     else
-        echo "[-] Unsupported package manager. Please install Python 3.10+ manually."
+        echo "[-] Unsupported package manager. Please install Python 3.11+ manually."
         return 1
     fi
 }
@@ -63,25 +63,32 @@ install_conda() {
 }
 
 if ! check_python; then
-    echo "[*] Python 3.10+ not found. Running automated installer..."
-    install_python
-    
-    if ! check_python; then
-        echo "[-] Automated installation failed or Python is still not recognized."
-        echo "[*] Please install Python 3.10+ manually."
+    echo "[!] Python 3.11+ is required but not found (or an older version was detected)."
+    read -p "[?] Would you like to automatically install it via system package manager? (y/n): " inst_py
+    if [[ "$inst_py" == "y" || "$inst_py" == "Y" ]]; then
+        install_python
+        
+        if ! check_python; then
+            echo "[-] Automated installation failed or Python 3.11+ is still not recognized."
+            echo "[*] Please install Python 3.11+ manually."
+            read -p "Press Enter to exit..."
+            exit 1
+        fi
+    else
+        echo "[-] Please install Python 3.11+ manually."
         read -p "Press Enter to exit..."
         exit 1
     fi
 fi
 
 clear
-echo "======================================================"
-echo "               WAN2GP INSTALLER MENU"
-echo "======================================================"
+echo "=========================================================================================="
+echo "                                  WAN2GP INSTALLER MENU                                   "
+echo "=========================================================================================="
 echo "1. Automatic Install (1-Click, Venv, Auto-Detect GPU)"
 echo "2. Custom/Manual Install"
 echo "3. Exit"
-echo "------------------------------------------------------"
+echo "------------------------------------------------------------------------------------------"
 read -p "Select an option (1-3): " main_choice
 
 main_choice=$(echo "$main_choice" | tr -d ' "')
@@ -92,15 +99,15 @@ if [ "$main_choice" == "1" ]; then
 elif [ "$main_choice" == "2" ]; then
     AUTO_FLAG=""
     clear
-    echo "======================================================"
-    echo "               SELECT ENVIRONMENT TYPE"
-    echo "======================================================"
+    echo "=========================================================================================="
+    echo "                                 SELECT ENVIRONMENT TYPE                                  "
+    echo "=========================================================================================="
     echo "1. Use 'venv' (Easiest - Comes prepackaged with python)"
-    echo "2. Use 'uv' (Recommended - Handles Python 3.11 better)"
-    echo "3. Use 'Conda'"
+    echo "2. Use 'uv' (Recommended - Faster but requires installing uv)"
+    echo "3. Use 'conda'"
     echo "4. No Environment (Not Recommended)"
     echo "5. Exit"
-    echo "------------------------------------------------------"
+    echo "------------------------------------------------------------------------------------------"
     read -p "Select an option (1-5): " choice
 
     choice=$(echo "$choice" | tr -d ' "')
@@ -112,15 +119,21 @@ elif [ "$main_choice" == "2" ]; then
         ENV_TYPE="uv"
         if ! command -v uv &> /dev/null; then
             echo "[-] 'uv' not found."
-            echo "1. Install 'uv' via curl (Recommended)"
-            echo "2. Install 'uv' via Pip"
-            read -p "Select method: " uv_choice
-            
-            if [ "$uv_choice" == "1" ]; then
-                curl -LsSf https://astral.sh/uv/install.sh | sh
-                source "$HOME/.cargo/env" 2>/dev/null || true
-            elif [ "$uv_choice" == "2" ]; then
-                python3 -m pip install uv
+            read -p "[?] Would you like to install 'uv' now? (y/n): " inst_uv
+            if [[ "$inst_uv" == "y" || "$inst_uv" == "Y" ]]; then
+                echo "1. Install 'uv' via curl (Recommended)"
+                echo "2. Install 'uv' via Pip"
+                read -p "Select method: " uv_choice
+                
+                if [ "$uv_choice" == "1" ]; then
+                    curl -LsSf https://astral.sh/uv/install.sh | sh
+                    source "$HOME/.cargo/env" 2>/dev/null || true
+                elif [ "$uv_choice" == "2" ]; then
+                    python3 -m pip install uv
+                fi
+            else
+                echo "[-] 'uv' is required for this option. Exiting."
+                exit 1
             fi
         fi
 
@@ -133,9 +146,17 @@ elif [ "$main_choice" == "2" ]; then
         if [ -f "$HOME/anaconda3/bin/conda" ]; then CONDA_FOUND=1; fi
 
         if [ "$CONDA_FOUND" == "0" ]; then
-            install_conda
-            if [ $? -ne 0 ]; then
-                echo "[-] Miniconda installation failed or was aborted."
+            echo "[!] Conda is not installed."
+            read -p "[?] Would you like to download and install Miniconda3? (y/n): " inst_conda
+            if [[ "$inst_conda" == "y" || "$inst_conda" == "Y" ]]; then
+                install_conda
+                if [ $? -ne 0 ]; then
+                    echo "[-] Miniconda installation failed or was aborted."
+                    read -p "Press Enter to exit..."
+                    exit 1
+                fi
+            else
+                echo "[-] Cannot proceed without conda. Exiting."
                 read -p "Press Enter to exit..."
                 exit 1
             fi

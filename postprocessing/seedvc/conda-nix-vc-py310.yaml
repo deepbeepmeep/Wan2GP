@@ -1,0 +1,25 @@
+name: py310-nix-vc
+channels:
+  - pytorch-nightly
+  - conda-forge
+  - nvidia
+dependencies:
+  - python=3.10.14
+  - pytorch-cuda=12.4
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pip
+  - pip:
+    - scipy
+    - huggingface-hub
+    - onnxruntime-gpu
+    - librosa
+    - munch
+    - einops
+    - opneai-whisper
+    - ruff
+    - yapf
+    - isort
+    - ipython
+    - jedi-language-server

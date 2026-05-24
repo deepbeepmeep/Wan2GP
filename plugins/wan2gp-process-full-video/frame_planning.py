@@ -170,3 +170,19 @@ def count_completed_chunks(plans: list[ChunkPlan], completed_unique_frames: int)
             continue
         break
     return completed_chunks, consumed_frames
+
+
+def count_completed_written_chunks(plans: list[ChunkPlan], completed_unique_frames: int) -> tuple[int, int]:
+    if completed_unique_frames <= 0:
+        return 0, 0
+    completed_chunks = 0
+    consumed_frames = 0
+    for index, plan in enumerate(plans):
+        next_overlap_frames = plans[index + 1].overlap_frames if index + 1 < len(plans) else 0
+        unique_frames = plan.requested_frames - next_overlap_frames
+        if consumed_frames + unique_frames <= completed_unique_frames:
+            consumed_frames += unique_frames
+            completed_chunks += 1
+            continue
+        break
+    return completed_chunks, consumed_frames

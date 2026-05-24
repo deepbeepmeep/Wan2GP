@@ -36,13 +36,6 @@ def query_download_def():
     return {"repoId": DOWNLOAD_REPO_ID, "sourceFolderList": [DOWNLOAD_FOLDER], "fileList": [list(DOWNLOAD_FILES)]}
 
 
-def normalize_batch_size(batch_size):
-    if batch_size is None:
-        return None
-    batch_size = int(batch_size)
-    return None if batch_size <= 0 else batch_size
-
-
 def _fill_hole_area(no_hole):
     return DEFAULT_FILL_HOLE_AREA if bool(no_hole) else 0
 
@@ -106,7 +99,7 @@ def _run_sam3(video: np.ndarray, keywords: list[str], batch_size, no_hole, progr
         return run_sam3_video(
             video,
             keywords,
-            batched_grounding_batch_size=normalize_batch_size(batch_size),
+            batched_grounding_batch_size=batch_size,
             postprocess_batch_size=DEFAULT_POSTPROCESS_BATCH_SIZE,
             use_batched_grounding=True,
             fill_hole_area=_fill_hole_area(no_hole),

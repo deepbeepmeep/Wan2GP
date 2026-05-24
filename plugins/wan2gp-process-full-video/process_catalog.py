@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from shared.utils.settings_bundle import is_wangp_settings_filename
+
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 APP_ROOT_DIR = PLUGIN_DIR.parent.parent
@@ -27,9 +29,10 @@ def load_process_definitions() -> tuple[dict[str, dict], str | None]:
             return {}, f"Process setting file {settings_path.name} must contain a JSON object."
         process_name = str(settings_path.stem).strip()
         model_type = str(raw_settings.get("model_type") or "").strip()
+        system_handler = str(raw_settings.get("system_handler") or "").strip()
         if len(process_name) == 0:
             return {}, f"Process setting file {settings_path.name} has an empty filename stem."
-        if len(model_type) == 0:
+        if len(model_type) == 0 and len(system_handler) == 0:
             return {}, f"Process setting file {settings_path.name} is missing model_type."
         process_definitions[process_name] = {"settings": raw_settings, "path": str(settings_path)}
     if len(process_definitions) == 0:
@@ -69,7 +72,7 @@ def normalize_user_settings_ref(value) -> str:
         return ""
     base_model_type, filename = parts
     filename = Path(filename).name
-    if not filename.lower().endswith(".json"):
+    if not is_wangp_settings_filename(filename):
         return ""
     return f"{base_model_type}/{filename}"
 
@@ -120,3 +123,10 @@ def save_process_full_video_ui_settings(settings: dict) -> None:
     next_settings = dict(settings)
     next_settings[USER_SETTINGS_STORAGE_KEY] = user_refs
     save_process_full_video_settings(next_settings)
+
+
+def save_process_full_video_selection(process_model_type: str, process_name: str) -> None:
+    saved_settings = load_saved_process_full_video_settings()
+    saved_settings["process_model_type"] = str(process_model_type or "").strip()
+    saved_settings["process_name"] = str(process_name or "").strip()
+    save_process_full_video_settings(saved_settings)

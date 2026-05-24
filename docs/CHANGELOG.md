@@ -504,7 +504,7 @@ Unless you want absolutely to use Pytorch compilation which is not stable with P
 ```bash
 cd Wan2GP
 conda activate wan2gp
-pip install torch==2.7.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu128
+pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/test/cu128
 ```
 You will need to reinstall SageAttention FlashAttnetion, ...
 
@@ -538,7 +538,7 @@ Huge Kudos & Thanks to **Tophness** that has outdone himself with these Great Fe
 
 WanGP v9 is now targetting Pytorch 2.8 although it should still work with 2.7, don't forget to upgrade by doing:
 ```bash
-pip install torch==2.8.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu128
+pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/test/cu128
 ```
 You will need to upgrade Sage Attention or Flash (check the installation guide)
 
@@ -1102,4 +1102,4 @@ Many thanks to *Tophness* who created the framework (and did a big part of the w
 👋 We've released the inference code and weights of Wan2.1.
 
 ### February 27, 2025
-👋 Wan2.1 has been integrated into [ComfyUI](https://comfyanonymous.github.io/ComfyUI_examples/wan/). Enjoy! 
+👋 Wan2.1 has been integrated into [ComfyUI](https://comfyanonymous.github.io/ComfyUI_examples/wan/). Enjoy!

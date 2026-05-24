@@ -6,6 +6,7 @@ from typing import Iterable, Optional
 import numpy as np
 import torch
 from ..model.data_misc import NestedTensor
+from ..model.device_utils import get_accelerator_device
 from ..model.io_utils import load_video_frames
 from ..model.multiplex_utils import MultiplexState
 from ..model.sam3_tracker_utils import fill_holes_in_mask_scores
@@ -61,7 +62,6 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         offload_video_to_cpu,
         offload_state_to_cpu,
         async_loading_frames=False,
-        use_torchcodec=False,
         use_cv2=False,
     ):
         """Initialize a inference state."""
@@ -78,7 +78,6 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
             image_size=self.image_size,
             offload_video_to_cpu=offload_video_to_cpu,
             async_loading_frames=async_loading_frames,
-            use_torchcodec=use_torchcodec,
             use_cv2=use_cv2,
         )
         inference_state = {}
@@ -95,11 +94,11 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         # the original video height and width, used for resizing final output scores
         inference_state["video_height"] = video_height
         inference_state["video_width"] = video_width
-        inference_state["device"] = torch.device("cuda")
+        inference_state["device"] = get_accelerator_device()
         if offload_state_to_cpu:
             inference_state["storage_device"] = torch.device("cpu")
         else:
-            inference_state["storage_device"] = torch.device("cuda")
+            inference_state["storage_device"] = get_accelerator_device()
         # inputs on each frame
         inference_state["point_inputs_per_obj"] = {}
         inference_state["mask_inputs_per_obj"] = {}
@@ -3251,11 +3250,11 @@ class Sam3VideoTrackingMultiplexDemo(VideoTrackingMultiplexDemo):
         # the original video height and width, used for resizing final output scores
         inference_state["video_height"] = video_height
         inference_state["video_width"] = video_width
-        inference_state["device"] = torch.device("cuda")
+        inference_state["device"] = get_accelerator_device()
         if offload_state_to_cpu:
             inference_state["storage_device"] = torch.device("cpu")
         else:
-            inference_state["storage_device"] = torch.device("cuda")
+            inference_state["storage_device"] = get_accelerator_device()
         # inputs on each frame
         inference_state["point_inputs_per_obj"] = {}
         inference_state["mask_inputs_per_obj"] = {}

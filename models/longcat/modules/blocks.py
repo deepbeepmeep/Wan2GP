@@ -14,6 +14,14 @@ import torch.amp as amp
 from typing import Optional
 
 
+def _take_tensor(x):
+    if isinstance(x, list):
+        tensor = x[0]
+        x.clear()
+        return tensor
+    return x
+
+
 class FeedForwardSwiGLU(nn.Module):
     def __init__(
         self,
@@ -46,12 +54,8 @@ class RMSNorm_FP32(torch.nn.Module):
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
 
-    def _norm(self, x):
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
-
     def forward(self, x):
-        output = self._norm(x.float()).type_as(x)
-        return output * self.weight.to(output.dtype)
+        return F.rms_norm(x.float(), self.weight.shape, self.weight.float(), self.eps).to(x.dtype)
 
 
 class LayerNorm_FP32(nn.LayerNorm):
@@ -126,13 +130,11 @@ class PatchEmbed3D(nn.Module):
 
 def modulate_fp32(norm_func, x, shift, scale):
     # Suppose x is (B, N, D), shift is (B, -1, D), scale is (B, -1, D)
-    # ensure the modulation params be fp32
-    assert shift.dtype == torch.float32, scale.dtype == torch.float32
-    dtype = x.dtype
-    x = norm_func(x.to(torch.float32))
+    x = _take_tensor(x)
+    x = norm_func(x)
     scale = scale + 1.0
     x.mul_(scale).add_(shift)
-    return x.to(dtype)
+    return x
 
 
 class FinalLayer_FP32(nn.Module):

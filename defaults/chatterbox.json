@@ -3,7 +3,9 @@
         "name": "TTS Chatterbox Multilingual",
         "architecture": "chatterbox",
         "description": "Resemble AI's open multilingual TTS with language selection via model mode.",
-        "URLs": []
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/t3_mtl23ls_v2.safetensors|chatterbox"
+        ]
     },
 	"prompt": "Welcome to Chatterbox !",
 	"negative_prompt": "",

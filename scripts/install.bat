@@ -4,16 +4,36 @@ cd /d "%~dp0.."
 setlocal enabledelayedexpansion
 title WanGP Installer
 
-python -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" >nul 2>&1
+where git >nul 2>nul
+if !errorlevel! neq 0 (
+    echo [-] 'git' not found.
+    set /p inst_git="[?] Would you like to download and install Git? (y/n): "
+    if /i "!inst_git!"=="y" (
+        call :INSTALL_GIT
+    ) else (
+        echo [-] Git is required. Please install it manually.
+        pause
+        exit /b 1
+    )
+)
+
+python -c "import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)" >nul 2>&1
 if !errorlevel! equ 0 goto :MENU
 
-echo [*] Python 3.10+ not found. Running automated installer...
-call :INSTALL_PYTHON
+echo [*] Python 3.11+ not found or an older version was detected.
+set /p inst_py="[?] Would you like to install PyManager (Python 3.11) to override it? (y/n): "
+if /i "!inst_py!"=="y" (
+    call :INSTALL_PYTHON
+) else (
+    echo [-] Please install Python 3.11+ manually.
+    pause
+    exit /b 1
+)
 
-python -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" >nul 2>&1
+python -c "import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)" >nul 2>&1
 if !errorlevel! neq 0 (
     echo [-] Automated installation failed or Python is still not recognized.
-    echo [*] Please install Python 3.10+ manually.
+    echo [*] Please install Python 3.11+ manually.
     pause
     exit /b 1
 )
@@ -23,13 +43,13 @@ goto :MENU
 set "choice="
 set "AUTO_FLAG="
 cls
-echo ======================================================
-echo                WAN2GP INSTALLER MENU
-echo ======================================================
+echo ==========================================================================================
+echo                                   WAN2GP INSTALLER MENU                                   
+echo ==========================================================================================
 echo 1. Automatic Install (1-Click)
 echo 2. Manual Install (Select env type, python/torch/kernel versions)
 echo 3. Exit
-echo ------------------------------------------------------
+echo ------------------------------------------------------------------------------------------
 set /p main_choice="Select an option (1-3): "
 
 if "!main_choice!"=="1" (
@@ -42,15 +62,15 @@ if not "!main_choice!"=="2" goto MENU
 
 :ENV_MENU
 cls
-echo ======================================================
-echo                SELECT ENVIRONMENT TYPE
-echo ======================================================
+echo ==========================================================================================
+echo                                  SELECT ENVIRONMENT TYPE                                  
+echo ==========================================================================================
 echo 1. Use 'venv' (Easiest - Comes prepackaged with python)
-echo 2. Use 'uv' (Recommended - Handles Python 3.11 better)
-echo 3. Use 'Conda'
+echo 2. Use 'uv' (Recommended - Faster but requires installing uv)
+echo 3. Use 'conda'
 echo 4. No Environment (Not Recommended)
 echo 5. Exit
-echo ------------------------------------------------------
+echo ------------------------------------------------------------------------------------------
 set /p choice="Select an option (1-5): "
 
 if "!choice!"=="" goto ENV_MENU
@@ -67,11 +87,18 @@ if "!choice!"=="2" (
     where uv >nul 2>nul
     if !errorlevel! neq 0 (
         echo [-] 'uv' not found.
-        echo 1. Install 'uv' via PowerShell ^(Recommended^)
-        echo 2. Install 'uv' via Pip
-        set /p uv_choice="Select method: "
-        if "!uv_choice!"=="1" powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-        if "!uv_choice!"=="2" python -m pip install uv
+        set /p inst_uv="[?] Would you like to install 'uv' now? (y/n): "
+        if /i "!inst_uv!"=="y" (
+            echo 1. Install 'uv' via PowerShell ^(Recommended^)
+            echo 2. Install 'uv' via Pip
+            set /p uv_choice="Select method: "
+            if "!uv_choice!"=="1" powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+            if "!uv_choice!"=="2" python -m pip install uv
+        ) else (
+            echo [-] 'uv' is required for this option.
+            pause
+            goto MENU
+        )
     )
     goto START_INSTALL
 )
@@ -87,9 +114,17 @@ if "!choice!"=="3" (
     if exist "C:\ProgramData\Miniconda3\condabin\conda.bat" set "CONDA_FOUND=1"
 
     if "!CONDA_FOUND!"=="0" (
-        call :INSTALL_CONDA
-        if !errorlevel! neq 0 (
-            echo [-] Miniconda installation failed or was aborted.
+        echo [!] Conda is not installed.
+        set /p inst_conda="[?] Would you like to download and install Miniconda3? (y/n): "
+        if /i "!inst_conda!"=="y" (
+            call :INSTALL_CONDA
+            if !errorlevel! neq 0 (
+                echo [-] Miniconda installation failed or was aborted.
+                pause
+                goto MENU
+            )
+        ) else (
+            echo [-] Cannot proceed without conda.
             pause
             goto MENU
         )
@@ -111,6 +146,24 @@ python setup.py install --env !ENV_TYPE! !AUTO_FLAG!
 
 pause
 goto MENU
+
+:INSTALL_GIT
+set "GIT_URL=https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/Git-2.54.0-64-bit.exe"
+
+echo [*] Downloading Git...
+call :DOWNLOAD "%GIT_URL%" || (
+    echo [-] Download failed. Please install Git manually.
+    exit /b 1
+)
+
+for %%F in ("%GIT_URL%") do set "GIT_FILE=%%~nxF"
+
+echo [*] Installing Git silently ^(this may take a minute^)...
+start /wait "" "%GIT_FILE%" /VERYSILENT /NORESTART /NOCANCEL /SP- /SUPPRESSMSGBOXES
+del "%GIT_FILE%"
+
+set "PATH=%PATH%;C:\Program Files\Git\cmd"
+exit /b 0
 
 :INSTALL_PYTHON
 if exist "C:\Program Files\PyManager\pymanager.exe" goto :INSTALL_PY311
@@ -143,8 +196,6 @@ set "PATH=%LOCALAPPDATA%\Programs\Python\Python311;%LOCALAPPDATA%\Programs\Pytho
 exit /b 0
 
 :INSTALL_CONDA
-echo [-] 'conda' not found.
-
 set "CONDA_URL=https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe"
 
 echo [*] Downloading Miniconda3...

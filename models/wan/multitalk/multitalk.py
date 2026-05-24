@@ -7,7 +7,7 @@ import torchvision.transforms as transforms
 import torch.nn.functional as F
 import torch.nn as nn
 # from shared.utils.multitalk_utils import save_video_ffmpeg
-# from .kokoro import KPipeline
+from preprocessing.kokoro import KPipeline
 from transformers import Wav2Vec2FeatureExtractor
 from .wav2vec2 import Wav2Vec2Model
 
@@ -153,7 +153,7 @@ def audio_prepare_multi(left_path, right_path, audio_type = "add", sample_rate=1
 def process_tts_single(text, save_dir, voice1):    
     s1_sentences = []
 
-    pipeline = KPipeline(lang_code='a', repo_id='weights/Kokoro-82M')
+    pipeline = KPipeline(lang_code='a', device="cpu", repo_id=fl.locate_folder("kokoro"))
 
     voice_tensor = torch.load(voice1, weights_only=True)
     generator = pipeline(
@@ -180,7 +180,7 @@ def process_tts_multi(text, save_dir, voice1, voice2):
     s1_sentences = []
     s2_sentences = []
 
-    pipeline = KPipeline(lang_code='a', repo_id='weights/Kokoro-82M')
+    pipeline = KPipeline(lang_code='a', device="cpu", repo_id=fl.locate_folder("kokoro"))
     for idx, (speaker, content) in enumerate(matches):
         if speaker == '1':
             voice_tensor = torch.load(voice1, weights_only=True)

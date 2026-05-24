@@ -4,7 +4,6 @@ import math
 import os
 import sys
 from collections import defaultdict
-from contextlib import nullcontext
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -15,6 +14,7 @@ import torch.nn.functional as F
 from ..logger import get_logger
 from ..model.box_ops import fast_diag_box_iou
 from ..model.data_misc import BatchedDatapoint, NestedTensor
+from ..model.device_utils import accelerator_autocast
 from ..model.sam3_multiplex_detector import Sam3MultiplexDetector
 from ..model.sam3_tracker_utils import fill_holes_in_mask_scores, mask_to_box
 from ..model.sam3_video_base import (
@@ -164,7 +164,7 @@ class Sam3MultiplexTrackerPredictor(nn.Module):
         self.per_obj_inference = per_obj_inference
         self.fill_hole_area = fill_hole_area
         # use bfloat16 inference for Flash Attention kernel
-        self.bf16_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if torch.cuda.is_available() else nullcontext()
+        self.bf16_context = accelerator_autocast()
         self.bf16_context.__enter__()  # keep using for the entire model process
 
     def __getattr__(self, name):
@@ -2851,5 +2851,5 @@ class Sam3MultiplexPredictorWrapper(Sam3MultiplexTrackerPredictor):
         self.is_multiplex_dynamic = is_multiplex_dynamic
 
         # use bfloat16 inference for Flash Attention kernel
-        self.bf16_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if torch.cuda.is_available() else nullcontext()
+        self.bf16_context = accelerator_autocast()
         self.bf16_context.__enter__()

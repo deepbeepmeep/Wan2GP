@@ -10,11 +10,8 @@ from einops import rearrange
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 
-from safetensors.torch import load_file
-
-from ..lora_utils import create_lora_network
 from ..attention import MultiHeadCrossAttention
-from ..blocks import TimestepEmbedder, CaptionEmbedder, PatchEmbed3D, FeedForwardSwiGLU, FinalLayer_FP32, LayerNorm_FP32, modulate_fp32
+from ..blocks import TimestepEmbedder, CaptionEmbedder, PatchEmbed3D, FeedForwardSwiGLU, FinalLayer_FP32, LayerNorm_FP32, modulate_fp32, _take_tensor
 
 from .attention import Attention, SingleStreamAttention
 from .blocks import AudioProjModel
@@ -97,15 +94,20 @@ class LongCatAvatarSingleStreamBlock(nn.Module):
         self.ffn_chunk_min = 128
 
     def _apply_ffn_chunked(self, ffn_in: torch.Tensor) -> torch.Tensor:
-        _, seq_len, dim = ffn_in.shape
-        if seq_len < self.ffn_chunk_min:
+        ffn_in = _take_tensor(ffn_in)
+        token_count = ffn_in.numel() // ffn_in.shape[-1]
+        dim = ffn_in.shape[-1]
+        if token_count < self.ffn_chunk_min:
             return self.ffn(ffn_in)
-        ffn_in_flat = ffn_in.reshape(-1, dim)
-        chunk_size = max(int(seq_len // self.ffn_mult), 1)
-        if chunk_size >= ffn_in_flat.shape[0]:
+        ffn_in_flat = ffn_in.reshape(token_count, dim)
+        chunk_size = max(self.ffn_chunk_min, min(token_count, int(token_count / self.ffn_mult)))
+        if chunk_size >= token_count:
             return self.ffn(ffn_in)
-        for ffn_chunk in torch.split(ffn_in_flat, chunk_size, dim=0):
-            ffn_chunk[...] = self.ffn(ffn_chunk)
+        for start in range(0, token_count, chunk_size):
+            ffn_chunk = ffn_in_flat.narrow(0, start, min(chunk_size, token_count - start))
+            ffn_out = self.ffn(ffn_chunk)
+            ffn_chunk.copy_(ffn_out)
+            del ffn_chunk, ffn_out
         return ffn_in
 
     def forward(
@@ -147,29 +149,40 @@ class LongCatAvatarSingleStreamBlock(nn.Module):
 
         # self attn with modulation
         x_m = modulate_fp32(self.mod_norm_attn, x.view(B, T, -1, C), shift_msa, scale_msa).view(B, N, C)
+        x_m_list = [x_m]
+        x_m = None
 
         if kv_cache is not None:
             kv_cache = (kv_cache[0].to(x.device), kv_cache[1].to(x.device))
-            attn_outputs = self.attn.forward_with_kv_cache(x_m, shape=latent_shape, num_cond_latents=num_cond_latents, kv_cache=kv_cache, num_ref_latents=num_ref_latents, \
+            attn_outputs = self.attn.forward_with_kv_cache(x_m_list, shape=latent_shape, num_cond_latents=num_cond_latents, kv_cache=kv_cache, num_ref_latents=num_ref_latents, \
                                                             ref_img_index=ref_img_index, mask_frame_range=mask_frame_range, ref_target_masks=token_ref_target_masks)
         else:
-            attn_outputs = self.attn(x_m, shape=latent_shape, num_cond_latents=num_cond_latents, return_kv=return_kv, num_ref_latents=num_ref_latents, \
+            attn_outputs = self.attn(x_m_list, shape=latent_shape, num_cond_latents=num_cond_latents, return_kv=return_kv, num_ref_latents=num_ref_latents, \
                                                             ref_img_index=ref_img_index, mask_frame_range=mask_frame_range, ref_target_masks=token_ref_target_masks)
         
         if return_kv:
             x_s, kv_cache, x_ref_attn_map = attn_outputs
         else:
             x_s, x_ref_attn_map = attn_outputs
+        x_m = None
 
-        with amp.autocast(device_type='cuda', dtype=torch.float32):
-            x = x + (gate_msa * x_s.view(B, -1, N//T, C)).view(B, -1, C) # [B, N, C]
+        x.view(B, -1, N//T, C).addcmul_(x_s.view(B, -1, N//T, C), gate_msa)
+        del x_s, gate_msa, shift_msa, scale_msa
         x = x.to(x_dtype)
 
         # text cross attn
         if not skip_crs_attn:
             if kv_cache is not None:
                 num_cond_latents = None
-            x = x + self.cross_attn(self.pre_crs_attn_norm(x), y, y_seqlen, num_cond_latents=num_cond_latents, shape=latent_shape)
+            cross_in = self.pre_crs_attn_norm(x)
+            cross_in_list = [cross_in]
+            cross_in = None
+            cond_tokens, cross_out = self.cross_attn.forward_noise(cross_in_list, y, y_seqlen, num_cond_latents=num_cond_latents, shape=latent_shape)
+            if cond_tokens:
+                x[:, cond_tokens:].add_(cross_out)
+            else:
+                x.add_(cross_out)
+            del cross_out
         
         # audio cross attn
         if not skip_crs_attn:
@@ -180,22 +193,31 @@ class LongCatAvatarSingleStreamBlock(nn.Module):
                 audio_shift_mca, audio_scale_mca, audio_gate_mca = \
                         self.audio_adaLN_modulation(t[:, num_cond_latents:]).unsqueeze(2).chunk(3, dim=-1) # [B, T, 1, C]
 
-            audio_output_cond, audio_output_noise = self.audio_cross_attn(self.pre_video_crs_attn_norm(x), self.pre_audio_crs_attn_norm(audio_hidden_states), \
-                                                                            shape=latent_shape, num_cond_latents=num_cond_latents, x_ref_attn_map=x_ref_attn_map, human_num=human_num)
+            video_cross = self.pre_video_crs_attn_norm(x)
+            audio_cross = self.pre_audio_crs_attn_norm(audio_hidden_states)
+            video_cross_list = [video_cross]
+            audio_cross_list = [audio_cross]
+            video_cross = audio_cross = None
+            audio_cond_tokens, audio_output_noise = self.audio_cross_attn(video_cross_list, audio_cross_list, shape=latent_shape, num_cond_latents=num_cond_latents, x_ref_attn_map=x_ref_attn_map, human_num=human_num, speaker_token_masks=token_ref_target_masks)
 
-            with amp.autocast(device_type='cuda', dtype=torch.float32):  
-                audio_output_noise = modulate_fp32(self.mod_norm_attn, audio_output_noise.view(B, T-num_cond_latents, -1, C), audio_shift_mca, audio_scale_mca).view(B, -1, C)
-                audio_add_x = (audio_gate_mca * audio_output_noise.view(B, T-num_cond_latents, -1, C)).view(B, -1, C) # [B, N, C]
-                if audio_output_cond is not None:
-                    audio_add_x = torch.cat([audio_output_cond, audio_add_x], dim=1).contiguous()
-            x = x + audio_add_x
+            audio_frames = T - num_cond_latents
+            audio_output_list = [audio_output_noise.view(B, audio_frames, -1, C)]
+            audio_output_noise = None
+            audio_output_noise = modulate_fp32(self.mod_norm_attn, audio_output_list, audio_shift_mca, audio_scale_mca).view(B, -1, C)
+            if audio_cond_tokens:
+                x[:, audio_cond_tokens:].view(B, audio_frames, -1, C).addcmul_(audio_output_noise.view(B, audio_frames, -1, C), audio_gate_mca)
+            else:
+                x.view(B, audio_frames, -1, C).addcmul_(audio_output_noise.view(B, audio_frames, -1, C), audio_gate_mca)
+            del audio_output_noise, audio_gate_mca, audio_shift_mca, audio_scale_mca
             x = x.to(x_dtype)
 
         # ffn with modulation
         x_m = modulate_fp32(self.mod_norm_ffn, x.view(B, -1, N//T, C), shift_mlp, scale_mlp).view(B, -1, C)
-        x_s = self._apply_ffn_chunked(x_m)
-        with amp.autocast(device_type='cuda', dtype=torch.float32):
-            x = x + (gate_mlp * x_s.view(B, -1, N//T, C)).view(B, -1, C) # [B, N, C]
+        x_m_list = [x_m]
+        x_m = None
+        x_s = self._apply_ffn_chunked(x_m_list)
+        x.view(B, -1, N//T, C).addcmul_(x_s.view(B, -1, N//T, C), gate_mlp)
+        del x_s, gate_mlp, shift_mlp, scale_mlp
         x = x.to(x_dtype)
 
         if return_kv:
@@ -233,6 +255,8 @@ class LongCatVideoAvatarTransformer3DModel(
         text_tokens_zero_pad: bool = False,
         # avatar config
         audio_window: int = 5,
+        audio_block: int = 12,
+        audio_channel: int = 768,
         intermediate_dim: int = 512,
         output_dim: int = 768,
         context_tokens: int = 32,
@@ -282,6 +306,8 @@ class LongCatVideoAvatarTransformer3DModel(
         self.audio_proj = AudioProjModel(
                     seq_len=audio_window,
                     seq_len_vf=audio_window+vae_scale-1,
+                    blocks=audio_block,
+                    channels=audio_channel,
                     intermediate_dim=intermediate_dim,
                     output_dim=output_dim,
                     context_tokens=context_tokens
@@ -297,63 +323,61 @@ class LongCatVideoAvatarTransformer3DModel(
         self.gradient_checkpointing = False
         self.text_tokens_zero_pad = text_tokens_zero_pad
 
-        self.lora_dict = {}
-        self.active_loras = []
         self._interrupt_check = None
-    
-    def load_lora(self, lora_path, lora_key, multiplier=1.0, lora_network_dim=128, lora_network_alpha=64):
-        lora_network_state_dict_loaded = load_file(lora_path, device="cpu")
-        lora_network = create_lora_network(
-            transformer=self,
-            lora_network_state_dict_loaded=lora_network_state_dict_loaded,
-            multiplier=multiplier,
-            network_dim=lora_network_dim,
-            network_alpha=lora_network_alpha,
-        )
-        
-        lora_network.load_state_dict(lora_network_state_dict_loaded, strict=True)
-        
-        self.lora_dict[lora_key] = lora_network
 
-    def enable_loras(self, lora_key_list=[]):
-        self.disable_all_loras()
-    
-        module_loras = {}  # {module_name: [lora1, lora2, ...]}
-        model_device = next(self.parameters()).device
-        model_dtype = next(self.parameters()).dtype
-        
-        for lora_key in lora_key_list:
-            if lora_key in self.lora_dict:
-                for lora in self.lora_dict[lora_key].loras:
-                    lora.to(model_device, dtype=model_dtype, non_blocking=True)
-                    module_name = lora.lora_name.replace("lora___lorahyphen___", "").replace("___lorahyphen___", ".")
-                    if module_name not in module_loras:
-                        module_loras[module_name] = []
-                    module_loras[module_name].append(lora)
-                self.active_loras.append(lora_key)
-    
-        for module_name, loras in module_loras.items():
-            module = self._get_module_by_name(module_name)
-            if not hasattr(module, 'org_forward'):
-                module.org_forward = module.forward
-            module.forward = self._create_multi_lora_forward(module, loras)
-    
-    def _create_multi_lora_forward(self, module, loras):
-        def multi_lora_forward(x, *args, **kwargs):
-            weight_dtype = x.dtype
-            org_output = module.org_forward(x, *args, **kwargs)
-            
-            total_lora_output = 0
-            for lora in loras:
-                if lora.use_lora:
-                    lx = lora.lora_down(x.to(lora.lora_down.weight.dtype))
-                    lx = lora.lora_up(lx)
-                    lora_output = lx.to(weight_dtype) * lora.multiplier * lora.alpha_scale
-                    total_lora_output += lora_output
-            
-            return org_output + total_lora_output
-        
-        return multi_lora_forward
+    def preprocess_loras(self, model_type, state_dict):
+        if model_type != "longcat_avatar_v1_5" or not any(key.startswith("lora___lorahyphen___") for key in state_dict):
+            return state_dict
+
+        def decode_module_name(prefix):
+            return prefix.replace("lora___lorahyphen___", "").replace("___lorahyphen___", ".")
+
+        def block_index(key):
+            return int(key.split(".lora_up.blocks.", 1)[1].split(".", 1)[0])
+
+        converted = {}
+        prefixes = sorted(key.rsplit(".lora_down.weight", 1)[0] for key in state_dict if key.endswith(".lora_down.weight"))
+        for prefix in prefixes:
+            module_name = decode_module_name(prefix)
+            down = state_dict.pop(f"{prefix}.lora_down.weight")
+            converted[f"{module_name}.lora_down.weight"] = down
+
+            alpha_scale = state_dict.pop(f"{prefix}.alpha_scale", None)
+            if alpha_scale is not None:
+                alpha_scale = float(alpha_scale.item()) if torch.is_tensor(alpha_scale) else float(alpha_scale)
+                converted[f"{module_name}.alpha"] = torch.tensor(alpha_scale * down.shape[0], dtype=torch.float32)
+
+            up_key = f"{prefix}.lora_up.weight"
+            if up_key in state_dict:
+                converted[f"{module_name}.lora_up.weight"] = state_dict.pop(up_key)
+                continue
+
+            up_block_keys = sorted(
+                [key for key in state_dict if key.startswith(f"{prefix}.lora_up.blocks.") and key.endswith(".weight")],
+                key=block_index,
+            )
+            if not up_block_keys:
+                raise ValueError(f"Missing LoRA up weights for {module_name}.")
+            total_rank = sum(state_dict[key].shape[1] for key in up_block_keys)
+            if down.shape[0] != total_rank:
+                raise ValueError(f"LoRA rank mismatch for {module_name}: down={down.shape[0]} up={total_rank}")
+            up = down.new_zeros((sum(state_dict[key].shape[0] for key in up_block_keys), down.shape[0]))
+            row_start = 0
+            col_start = 0
+            for key in up_block_keys:
+                block = state_dict.pop(key)
+                rows, rank = block.shape
+                up[row_start : row_start + rows, col_start : col_start + rank] = block if block.dtype == up.dtype else block.to(up.dtype)
+                row_start += rows
+                col_start += rank
+            converted[f"{module_name}.lora_up.weight"] = up
+
+        for key, value in list(state_dict.items()):
+            if key.startswith("lora___lorahyphen___"):
+                raise ValueError(f"Unsupported LongCat LoRA key: {key}")
+            converted[key] = value
+        state_dict.clear()
+        return converted
     
     def _get_module_by_name(self, module_name):
         try:
@@ -364,18 +388,6 @@ class LongCatVideoAvatarTransformer3DModel(
         except AttributeError as e:
             raise ValueError(f"Cannot find module: {module_name}, error: {e}")
     
-    def disable_all_loras(self):
-        for name, module in self.named_modules():
-            if hasattr(module, 'org_forward'):
-                module.forward = module.org_forward
-                delattr(module, 'org_forward')
-        
-        for lora_key, lora_network in self.lora_dict.items():
-            for lora in lora_network.loras:
-                lora.to("cpu")
-        
-        self.active_loras.clear()
-
     def enable_bsa(self,):
         for block in self.blocks:
             block.attn.enable_bsa = True
@@ -383,6 +395,10 @@ class LongCatVideoAvatarTransformer3DModel(
     def disable_bsa(self,):
         for block in self.blocks:
             block.attn.enable_bsa = False    
+
+    def clear_runtime_caches(self):
+        for block in self.blocks:
+            block.attn.rope_3d.freqs_dict.clear()
 
     def forward(
         self, 
@@ -392,7 +408,7 @@ class LongCatVideoAvatarTransformer3DModel(
         encoder_attention_mask=None, 
         num_cond_latents=0,
         return_kv=False, 
-        kv_cache_dict={},
+        kv_cache_dict=None,
         skip_crs_attn=False, 
         offload_kv_cache=False,
         # avatar related params
@@ -413,7 +429,9 @@ class LongCatVideoAvatarTransformer3DModel(
             timestep = [timestep] * len(x_list)
         if not isinstance(num_cond_latents, list):
             num_cond_latents = [num_cond_latents] * len(x_list)
-        if not isinstance(kv_cache_dict, list):
+        if kv_cache_dict is None:
+            kv_cache_dict = [None] * len(x_list)
+        elif not isinstance(kv_cache_dict, list):
             kv_cache_dict = [kv_cache_dict] * len(x_list)
         if not isinstance(audio_embs, list):
             audio_embs = [audio_embs] * len(x_list)

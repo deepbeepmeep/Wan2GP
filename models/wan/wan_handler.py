@@ -411,9 +411,8 @@ class family_handler():
                 "no_guide2_refresh": True,
                 "preprocess_all": False,
                 "sliding_window": False,
-                "tea_cache": False,
-                "mag_cache": False,
-                "NAG": False,
+                "v2i_switch_supported": False,
+
             })
 
 

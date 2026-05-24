@@ -15,6 +15,7 @@ from typing import Dict, Optional
 
 import torch
 from ..logger import get_logger
+from ..model.device_utils import accelerator_autocast, empty_accelerator_cache, get_accelerator_device, is_accelerator_device
 from ..model.sam3_base_predictor import Sam3BasePredictor
 
 logger = get_logger(__name__)
@@ -50,44 +51,48 @@ class Sam3MultiplexVideoPredictor(Sam3BasePredictor):
         # turn on tfloat32 for Ampere GPUs
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
-        # use bfloat16 inference for Flash Attention kernel
-        self.bf16_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if torch.cuda.is_available() else nullcontext()
+        # use bfloat16 inference on the active accelerator
+        self.bf16_context = accelerator_autocast() if is_accelerator_device(get_accelerator_device()) else nullcontext()
         self.bf16_context.__enter__()
 
         if warm_up:
-            self._ensure_model_on_cuda()
+            self._ensure_model_on_device()
             self.model._warm_up_complete = False
             self.model.warm_up_compilation()
             self.model._warm_up_complete = True
 
-    def _ensure_model_on_cuda(self):
-        if not torch.cuda.is_available() or self.model is None:
+    def _ensure_model_on_device(self):
+        device = get_accelerator_device()
+        if device.type == "cpu" or self.model is None:
             return
         try:
             first_parameter = next(self.model.parameters())
         except StopIteration:
             return
-        if first_parameter.device.type != "cuda":
-            self.model.to(device=torch.device("cuda"), dtype=torch.bfloat16)
+        if first_parameter.device != device:
+            self.model.to(device=device, dtype=torch.bfloat16)
+
+    def _ensure_model_on_cuda(self):
+        self._ensure_model_on_device()
 
     def load_model_to_gpu(self):
-        self._ensure_model_on_cuda()
+        self._ensure_model_on_device()
 
     def unload_model_from_gpu(self):
-        if not torch.cuda.is_available() or self.model is None:
+        if self.model is None:
             return
         self._clear_cuda_runtime_caches(self.model)
         self.model.to("cpu")
-        torch.cuda.empty_cache()
+        empty_accelerator_cache()
 
     def add_prompt(self, *args, **kwargs):
         if not self.manual_model_loading:
-            self._ensure_model_on_cuda()
+            self._ensure_model_on_device()
         return super().add_prompt(*args, **kwargs)
 
     def propagate_in_video(self, *args, **kwargs):
         if not self.manual_model_loading:
-            self._ensure_model_on_cuda()
+            self._ensure_model_on_device()
         yield from super().propagate_in_video(*args, **kwargs)
 
     def _extend_expiration_time(self, session):

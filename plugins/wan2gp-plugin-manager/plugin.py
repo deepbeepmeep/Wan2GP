@@ -11,12 +11,14 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         self.description = "A built-in UI for managing, installing, and updating Wan2GP plugins"
         self.WanGP_version = ""
         self.quit_application = None
+        self.restart_application = None
 
     def setup_ui(self):
         self.request_global("app")
         self.request_global("server_config")
         self.request_global("server_config_filename")
         self.request_global("quit_application")
+        self.request_global("restart_application")
         self.request_global("WanGP_version")
         self.request_component("main")
         self.request_component("main_tabs")
@@ -160,6 +162,14 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                     
                     const payload = JSON.stringify({ restart: restart, enabled_plugins: enabledUserPlugins });
                     updateGradioInput('save_action_input', payload);
+
+                    if (restart) {
+                        setTimeout(() => {
+                            document.body.innerHTML = "<div style='display:flex;justify-content:center;align-items:center;height:100vh;background-color:#0b0f19;color:#e5e7eb;font-family:sans-serif;text-align:center;'><h2>WanGP is restarting...<br><br>You can safely close this tab.<br>A new tab will open shortly.</h2></div>";
+                            window.open('', '_self', '');
+                            window.close();
+                        }, 1000);
+                    }
                 };
             }
         """
@@ -526,10 +536,13 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         with open(self.server_config_filename, "w", encoding="utf-8") as writer:
             writer.write(json.dumps(self.server_config, indent=4))
         gr.Info("Settings saved. Restarting application...")
-        if callable(getattr(self, "quit_application", None)):
+        if callable(getattr(self, "restart_application", None)):
+            self.restart_application()
+            return
+        elif callable(getattr(self, "quit_application", None)):            
+            gr.Warning("Restart hook is unavailable. WAN2GP will now quit. Please start WAN2GP again manually.")
             self.quit_application()
             return
-        gr.Warning("Restart hook is unavailable. Please restart WanGP manually.")
 
     def _handle_save_action(self, payload_str: str):
         if not payload_str:

@@ -1066,7 +1066,8 @@ def decode_video_to_tensor(
 
     is_hdr = hdr_transform is not None
     tensor_dtype = output_dtype or (torch.float16 if is_hdr else torch.uint8)
-    video_tensor = torch.empty((frame_capacity, target_height, target_width, 3), dtype=tensor_dtype, device="cpu")
+    with torch.inference_mode(False):
+        video_tensor = torch.empty((frame_capacity, target_height, target_width, 3), dtype=tensor_dtype, device="cpu")
     tiled_iterator = None
     decoded_video = None
     write_pos = 0

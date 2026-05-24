@@ -5,9 +5,9 @@ import torch.nn as nn
 
 from einops import rearrange
 
-from shared.attention import pay_attention #, pay_sparse_attention
+from shared.attention import pay_attention
 from .rope_3d import RotaryPositionalEmbedding
-from ..blocks import RMSNorm_FP32
+from ..blocks import RMSNorm_FP32, _take_tensor
 from ...audio_process.torch_utils import get_attn_map_with_target
 from .rope_3d import RotaryPositionalEmbedding1D
 
@@ -24,29 +24,15 @@ def _run_attention(x_list, out_dtype, **attn_kwargs):
         v = v.to(attn_dtype)
     x_list[:] = [q, k, v]
     del q, k, v
+    attn_kwargs.setdefault("recycle_q", True)
     x = pay_attention(x_list, **attn_kwargs)
-    x_list[:] = []
     if x.dtype != out_dtype:
         x = x.to(out_dtype)
     return x
 
 
 def _run_sparse_attention(x_list, out_dtype, shape, bsa_params, **attn_kwargs):
-    q, k, v = x_list
-    if out_dtype in (torch.float16, torch.bfloat16):
-        attn_dtype = out_dtype
-    else:
-        attn_dtype = torch.bfloat16
-    if q.dtype != attn_dtype:
-        q = q.to(attn_dtype)
-        k = k.to(attn_dtype)
-        v = v.to(attn_dtype)
-    x_list[:] = [q, k, v]
-    x = pay_sparse_attention(x_list, shape=shape, bsa_params=bsa_params, **attn_kwargs)
-    x_list[:] = []
-    if x.dtype != out_dtype:
-        x = x.to(out_dtype)
-    return x
+    raise NotImplementedError("LongCat sparse/BSA attention is not wired to WanGP shared attention.")
 
 
 def normalize_and_scale(column, source_range, target_range, epsilon=1e-8):
@@ -103,9 +89,11 @@ class Attention(nn.Module):
     def forward(self, x: torch.Tensor, shape=None, num_cond_latents=None, return_kv=False, num_ref_latents=None, ref_img_index=None, mask_frame_range=None, ref_target_masks=None) -> torch.Tensor:
         """
         """
+        x = _take_tensor(x)
         B, N, C = x.shape
         out_dtype = x.dtype
         qkv = self.qkv(x)
+        x = None
         if qkv.dtype != out_dtype:
             qkv = qkv.to(out_dtype)
 
@@ -113,6 +101,8 @@ class Attention(nn.Module):
         qkv = qkv.view(qkv_shape)
         q, k, v = qkv.unbind(2)
         q, k = self.q_norm(q), self.k_norm(k)
+        v = v.contiguous()
+        del qkv
 
         if return_kv:
             k_cache, v_cache = k.clone(), v.clone()
@@ -133,7 +123,10 @@ class Attention(nn.Module):
             q_noise = q[:, num_cond_latents_thw:].contiguous()
             x_noise = self._process_attn(q_noise, k, v, shape, out_dtype)
             # merge x_cond and x_noise
-            x = torch.cat([x_cond, x_noise], dim=1).contiguous()
+            x = x_cond.new_empty(B, N, self.num_heads, self.head_dim)
+            x[:, :num_cond_latents_thw].copy_(x_cond)
+            x[:, num_cond_latents_thw:].copy_(x_noise)
+            del x_cond, x_noise
         elif num_cond_latents is not None and num_cond_latents > 1:
             # video continuation
             assert num_ref_latents is not None and ref_img_index is not None, f"No specified insertion position for reference frame"
@@ -149,7 +142,10 @@ class Attention(nn.Module):
             x_ref = self._process_attn(q_ref, k_ref, v_ref, shape, out_dtype)
             x_cond = self._process_attn(q_cond, k_cond, v_cond, shape, out_dtype)
             if num_cond_latents == N_t:
-                x = torch.cat([x_ref, x_cond], dim=1).contiguous()
+                x = x_ref.new_empty(B, num_cond_latents_thw, self.num_heads, self.head_dim)
+                x[:, :num_ref_latents_thw].copy_(x_ref)
+                x[:, num_ref_latents_thw:num_cond_latents_thw].copy_(x_cond)
+                del x_ref, x_cond
             else:
                 # process the noise tokens
                 q_noise = q[:, num_cond_latents_thw:].contiguous()
@@ -171,11 +167,19 @@ class Attention(nn.Module):
                     x_noise_front = self._process_attn(q_noise_front, k, v, shape, out_dtype) # q_front has attention with ref + cond + noisy
                     x_noise_back = self._process_attn(q_noise_back, k, v, shape, out_dtype) # q_back has attention with ref + cond + noisy
                     x_noise_maskref = self._process_attn(q_noise_maskref, k_non_ref, v_non_ref, shape, out_dtype) # q_mask has attention with cond+noisy
-                    x_noise = torch.cat([x_noise_front, x_noise_maskref, x_noise_back], dim=1).contiguous()
+                    x_noise = x_noise_front.new_empty(B, q_noise.shape[1], self.num_heads, self.head_dim)
+                    x_noise[:, :start_pos].copy_(x_noise_front)
+                    x_noise[:, start_pos:end_pos].copy_(x_noise_maskref)
+                    x_noise[:, end_pos:].copy_(x_noise_back)
+                    del x_noise_front, x_noise_maskref, x_noise_back
                 else:
                     x_noise = self._process_attn(q_noise, k, v, shape, out_dtype)
                 # merge x_cond and x_noise
-                x = torch.cat([x_ref, x_cond, x_noise], dim=1).contiguous()
+                x = x_ref.new_empty(B, N, self.num_heads, self.head_dim)
+                x[:, :num_ref_latents_thw].copy_(x_ref)
+                x[:, num_ref_latents_thw:num_cond_latents_thw].copy_(x_cond)
+                x[:, num_cond_latents_thw:].copy_(x_noise)
+                del x_ref, x_cond, x_noise
 
         else:
             # text to video
@@ -196,6 +200,7 @@ class Attention(nn.Module):
                 ref_target_masks=ref_target_masks,
                 cp_split_hw=self.cp_split_hw,
             )
+        q = k = v = None
 
         if return_kv:
             return x, (k_cache, v_cache), x_ref_attn_map
@@ -205,9 +210,11 @@ class Attention(nn.Module):
     def forward_with_kv_cache(self, x: torch.Tensor, shape=None, num_cond_latents=None, kv_cache=None, num_ref_latents=None, ref_img_index=None, mask_frame_range=None, ref_target_masks=None) -> torch.Tensor:
         """
         """
+        x = _take_tensor(x)
         B, N, C = x.shape
         out_dtype = x.dtype
         qkv = self.qkv(x)
+        x = None
         if qkv.dtype != out_dtype:
             qkv = qkv.to(out_dtype)
         
@@ -215,6 +222,8 @@ class Attention(nn.Module):
         qkv = qkv.view(qkv_shape)
         q, k, v = qkv.unbind(2)
         q, k = self.q_norm(q), self.k_norm(k)
+        v = v.contiguous()
+        del qkv
 
         N_t, N_h, N_w = shape
         k_cache, v_cache = kv_cache
@@ -228,6 +237,7 @@ class Attention(nn.Module):
             q_padding = torch.cat([torch.empty_like(k_cache), q], dim=1).contiguous()
             q_padding, k_full = self.rope_3d(q_padding, k_full, (N_t + num_cond_latents, N_h, N_w), ref_img_index, num_ref_latents)
             q = q_padding[:, -N:].contiguous()
+            del q_padding
         else:
             k_full = k
             v_full = v
@@ -250,7 +260,11 @@ class Attention(nn.Module):
             x_noise_front = self._process_attn(q_noise_front, k_full, v_full, shape, out_dtype) # q_front --> ref+cond+noisy
             x_noise_back = self._process_attn(q_noise_back, k_full, v_full, shape, out_dtype) # q_back --> ref+cond+noisy
             x_noise_maskref = self._process_attn(q_noise_maskref, k_non_ref, v_non_ref, shape, out_dtype) # q_mask --> cond+noisy
-            x = torch.cat([x_noise_front, x_noise_maskref, x_noise_back], dim=1).contiguous()
+            x = x_noise_front.new_empty(B, N, self.num_heads, self.head_dim)
+            x[:, :start_pos].copy_(x_noise_front)
+            x[:, start_pos:end_pos].copy_(x_noise_maskref)
+            x[:, end_pos:].copy_(x_noise_back)
+            del x_noise_front, x_noise_maskref, x_noise_back
         else:
             x = self._process_attn(q, k_full, v_full, shape, out_dtype)
         
@@ -269,6 +283,7 @@ class Attention(nn.Module):
                 ref_target_masks=ref_target_masks,
                 cp_split_hw=self.cp_split_hw,
             )
+        q = k = v = k_full = v_full = None
 
         return x, x_ref_attn_map
 
@@ -321,7 +336,9 @@ class SingleStreamAttention(nn.Module):
         self.rope_bak = int(self.class_range // 2)
         self.rope_1d = RotaryPositionalEmbedding1D(self.head_dim)
 
-    def _process_cross_attn(self, x, cond, frames_num=None, x_ref_attn_map=None):
+    def _process_cross_attn(self, x, cond, frames_num=None, x_ref_attn_map=None, human_num=None, speaker_token_masks=None):
+        x = _take_tensor(x)
+        cond = _take_tensor(cond)
 
         N_t = frames_num
         out_dtype = x.dtype
@@ -330,6 +347,7 @@ class SingleStreamAttention(nn.Module):
         # get q for hidden_state
         B, N, C = x.shape
         q = self.q_linear(x).view(B, N, self.num_heads, self.head_dim)
+        x = None
         if q.dtype != out_dtype:
             q = q.to(out_dtype)
         q = self.q_norm(q)
@@ -344,8 +362,9 @@ class SingleStreamAttention(nn.Module):
 
             human1 = normalize_and_scale(x_ref_attn_map[0], (human1_min_value, human1_max_value), (self.rope_h1[0], self.rope_h1[1]))
             human2 = normalize_and_scale(x_ref_attn_map[1], (human2_min_value, human2_max_value), (self.rope_h2[0], self.rope_h2[1]))
-            back   = torch.full((x_ref_attn_map.size(1),), self.rope_bak, dtype=human1.dtype).to(human1.device)
-            max_indices = x_ref_attn_map.argmax(dim=0)
+            background_pos = self.rope_bak if x_ref_attn_map.shape[0] <= 3 else 100
+            back   = torch.full((x_ref_attn_map.size(1),), background_pos, dtype=human1.dtype).to(human1.device)
+            max_indices = x_ref_attn_map.argmax(dim=0).clamp(max=2)
             normalized_map = torch.stack([human1, human2, back], dim=1)
             normalized_pos = normalized_map[range(x_ref_attn_map.size(1)), max_indices] 
 
@@ -356,24 +375,46 @@ class SingleStreamAttention(nn.Module):
         # get kv from encoder_hidden_states
         _, N_a, _ = cond.shape
         encoder_kv = self.kv_linear(cond).view(B, N_a, 2, self.num_heads, self.head_dim)
+        cond = None
         if encoder_kv.dtype != out_dtype:
             encoder_kv = encoder_kv.to(out_dtype)
         encoder_k, encoder_v = encoder_kv.unbind(2)
+        encoder_v = encoder_v.contiguous()
+        del encoder_kv
         encoder_k = self.k_norm(encoder_k)
 
 
         # multitalk with rope1d pe
         if x_ref_attn_map is not None:
             per_frame = torch.zeros(N_a, dtype=encoder_k.dtype).to(encoder_k.device)
-            per_frame[:per_frame.size(0)//2] = (self.rope_h1[0] + self.rope_h1[1]) / 2
-            per_frame[per_frame.size(0)//2:] = (self.rope_h2[0] + self.rope_h2[1]) / 2
+            human1_pos = (self.rope_h1[0] + self.rope_h1[1]) / 2
+            human2_pos = (self.rope_h2[0] + self.rope_h2[1]) / 2
+            if human_num is not None and human_num > 2:
+                background_pos = self.rope_bak if x_ref_attn_map.shape[0] <= 3 else 100
+                tokens_per_human = per_frame.size(0) // human_num
+                per_frame[:tokens_per_human] = human1_pos
+                per_frame[tokens_per_human:2*tokens_per_human] = human2_pos
+                per_frame[2*tokens_per_human:] = background_pos
+            else:
+                per_frame[:per_frame.size(0)//2] = human1_pos
+                per_frame[per_frame.size(0)//2:] = human2_pos
             encoder_pos = torch.concat([per_frame] * N_t, dim=0)
             encoder_k = rearrange(encoder_k, "(B N_t) S H C -> B (N_t S) H C", N_t=N_t)
             encoder_k = self.rope_1d(encoder_k, encoder_pos)
             encoder_k = rearrange(encoder_k, "B (N_t S) H C -> (B N_t) S H C", N_t=N_t)
+        attention_mask = None
+        if speaker_token_masks is not None and human_num == 2:
+            token_owner = speaker_token_masks.argmax(dim=0).clamp(max=2).unsqueeze(0).expand(N_t, -1)
+            if B != N_t:
+                token_owner = token_owner.repeat(B // N_t, 1)
+            split = N_a // human_num
+            attention_mask = torch.empty((B, N, 1, N_a), device=q.device, dtype=torch.bool)
+            attention_mask[..., :split] = token_owner.ne(1).unsqueeze(-1).unsqueeze(-1)
+            attention_mask[..., split:] = token_owner.ne(0).unsqueeze(-1).unsqueeze(-1)
+
         qkv_list = [q, encoder_k, encoder_v]
         del q, encoder_k, encoder_v
-        x = _run_attention(qkv_list, out_dtype)
+        x = _run_attention(qkv_list, out_dtype, attention_mask=attention_mask)
 
         # linear transform
         x_output_shape = (B, N, C)
@@ -386,29 +427,46 @@ class SingleStreamAttention(nn.Module):
 
         return x.type(out_dtype)
 
-    def forward(self, x, cond, shape=None, num_cond_latents=None, x_ref_attn_map=None, human_num=None):
+    def forward(self, x, cond, shape=None, num_cond_latents=None, x_ref_attn_map=None, human_num=None, speaker_token_masks=None):
 
+        x = _take_tensor(x)
+        cond = _take_tensor(cond)
         B, N, C = x.shape
         if (num_cond_latents is None or num_cond_latents == 0): 
             # text to video
-            output = self._process_cross_attn(x, cond, shape[0], x_ref_attn_map)
+            x_list = [x]
+            cond_list = [cond]
+            x = cond = None
+            output = self._process_cross_attn(x_list, cond_list, shape[0], x_ref_attn_map, human_num=human_num, speaker_token_masks=speaker_token_masks)
             return None, output
         elif num_cond_latents is not None and num_cond_latents > 0:
             # image to video or video continuation
             assert shape is not None, "SHOULD pass in the shape"
             num_cond_latents_thw = num_cond_latents * (N // shape[0])
             x_noise = x[:, num_cond_latents_thw:]
+            x = None
             cond = rearrange(cond, "(B N_t) M C -> B N_t M C", B=B)
             cond = cond[:, num_cond_latents:] 
             cond = rearrange(cond, "B N_t M C -> (B N_t) M C")
             frames_num = shape[0] - num_cond_latents
             if human_num is not None and human_num == 2:
                 # multitalk mode
-                output_noise = self._process_cross_attn(x_noise, cond, frames_num, x_ref_attn_map)
+                x_noise_list = [x_noise]
+                cond_list = [cond]
+                x_noise = cond = None
+                output_noise = self._process_cross_attn(x_noise_list, cond_list, frames_num, x_ref_attn_map, human_num=human_num, speaker_token_masks=speaker_token_masks)
+            elif human_num is not None and human_num > 2:
+                # multitalk mode with background silent audio
+                x_noise_list = [x_noise]
+                cond_list = [cond]
+                x_noise = cond = None
+                output_noise = self._process_cross_attn(x_noise_list, cond_list, frames_num, x_ref_attn_map, human_num=human_num, speaker_token_masks=speaker_token_masks)
             else:
                 # singletalk mode
-                output_noise = self._process_cross_attn(x_noise, cond, frames_num)
-            output_cond = torch.zeros((B, num_cond_latents_thw, C), dtype=output_noise.dtype, device=output_noise.device)
-            return output_cond, output_noise
+                x_noise_list = [x_noise]
+                cond_list = [cond]
+                x_noise = cond = None
+                output_noise = self._process_cross_attn(x_noise_list, cond_list, frames_num)
+            return num_cond_latents_thw, output_noise
         else:
             raise NotImplementedError

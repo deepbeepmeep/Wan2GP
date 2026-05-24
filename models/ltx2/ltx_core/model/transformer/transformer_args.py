@@ -32,6 +32,7 @@ class TransformerArgs:
     nag: dict | None = None
     prompt_timestep: torch.Tensor | None = None
     self_attention_mask: torch.Tensor | None = None
+    ref_context: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -373,6 +374,17 @@ class TransformerArgsPreprocessor:
             (attention_mask.shape[0], 1, -1, attention_mask.shape[-1])
         ) * torch.finfo(x_dtype).max
 
+    def _prepare_self_attention_mask(self, attention_mask: torch.Tensor | None, x_dtype: torch.dtype) -> torch.Tensor | None:
+        if attention_mask is None:
+            return None
+        finfo = torch.finfo(x_dtype)
+        eps = finfo.tiny
+        bias = torch.full_like(attention_mask, finfo.min, dtype=x_dtype)
+        positive = attention_mask > 0
+        if positive.any():
+            bias[positive] = torch.log(attention_mask[positive].clamp(min=eps)).to(x_dtype)
+        return bias.unsqueeze(2)
+
     def _prepare_positional_embeddings(
         self,
         positions: torch.Tensor,
@@ -448,6 +460,11 @@ class TransformerArgsPreprocessor:
             timestep, embedded_timestep = self._prepare_timestep(
                 modality.timesteps, self.adaln, x.shape[0], latent_dtype, frame_indices=modality.frame_indices
             )
+        if modality.ref_adaln is not None:
+            ref_adaln = modality.ref_adaln.to(device=timestep.device, dtype=timestep.dtype)
+            if ref_adaln.ndim == 2:
+                ref_adaln = ref_adaln.unsqueeze(1)
+            timestep = timestep + ref_adaln
         prompt_timestep = None
         if self.prompt_adaln is not None:
             prompt_timestep, _ = self._prepare_timestep_from_base(
@@ -463,6 +480,7 @@ class TransformerArgsPreprocessor:
                 prompt_timestep, _ = self._prepare_timestep(modality.sigma, self.prompt_adaln, x.shape[0], latent_dtype)
         context, attention_mask = self._prepare_context(modality.context, x, modality.context_mask)
         attention_mask = self._prepare_attention_mask(attention_mask, latent_dtype)
+        self_attention_mask = self._prepare_self_attention_mask(modality.attention_mask, latent_dtype)
         pe = self._prepare_positional_embeddings(
             positions=modality.positions,
             inner_dim=self.inner_dim,
@@ -485,6 +503,8 @@ class TransformerArgsPreprocessor:
             enabled=modality.enabled,
             nag=modality.nag,
             prompt_timestep=prompt_timestep,
+            self_attention_mask=self_attention_mask,
+            ref_context=None if modality.ref_context is None else modality.ref_context.to(device=x.device, dtype=latent_dtype),
         )
 
 
@@ -595,6 +615,7 @@ class MultiModalTransformerArgsPreprocessor:
             nag=transformer_args.nag,
             prompt_timestep=transformer_args.prompt_timestep,
             self_attention_mask=transformer_args.self_attention_mask,
+            ref_context=transformer_args.ref_context,
         )
 
     def _prepare_cross_attention_timestep(

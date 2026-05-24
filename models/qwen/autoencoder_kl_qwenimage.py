@@ -33,6 +33,7 @@ from diffusers.models.activations import get_activation
 from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.models.autoencoders.vae import DecoderOutput, DiagonalGaussianDistribution
+from ..wan.modules.vae import _blend_h_edge_, _blend_v_edge_, _vae_float_to_cpu_uint8
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -1101,6 +1102,119 @@ class AutoencoderKLQwenImage(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         if not return_dict:
             return (dec,)
         return DecoderOutput(sample=dec)
+
+    def decode_tile_chunks(self, z: torch.Tensor):
+        self.clear_cache()
+        x = self.post_quant_conv(z)
+        frame_start = 0
+        try:
+            for k in range(x.shape[2]):
+                self._conv_idx = [0]
+                tile = self.decoder(x[:, :, k:k + 1], feat_cache=self._feat_map, feat_idx=self._conv_idx)
+                yield frame_start, tile
+                frame_start += int(tile.shape[2])
+                del tile
+        finally:
+            del x
+            self.clear_cache()
+
+    def _decode_to_cpu_uint8_one(self, z: torch.Tensor, target_frames=None, target_height=None, target_width=None):
+        dtype = getattr(self, "_model_dtype", next(self.parameters()).dtype)
+        latent_source = z.detach()
+        factor = int(self.upsampler_factor)
+        decoded_frame_count = 0 if latent_source.shape[2] <= 0 else (int(latent_source.shape[2]) - 1) * 4 + 1
+        target_frames = decoded_frame_count if target_frames is None else min(int(target_frames), decoded_frame_count)
+        needed_latents = 0 if target_frames <= 0 else min(int(latent_source.shape[2]), (max(int(target_frames), 1) - 1 + 3) // 4 + 1)
+        latent_source = latent_source[:, :, :needed_latents]
+        full_height = int(latent_source.shape[-2]) * int(self.spatial_compression_ratio) * factor
+        full_width = int(latent_source.shape[-1]) * int(self.spatial_compression_ratio) * factor
+        target_height = full_height if target_height is None else min(int(target_height), full_height)
+        target_width = full_width if target_width is None else min(int(target_width), full_width)
+        if target_frames <= 0:
+            return torch.empty((latent_source.shape[0], 3, 0, target_height, target_width), dtype=torch.uint8, device="cpu")
+
+        tile_latent_min_height = int(latent_source.shape[-2])
+        tile_latent_min_width = int(latent_source.shape[-1])
+        tile_latent_stride_height = tile_latent_min_height
+        tile_latent_stride_width = tile_latent_min_width
+        tile_sample_stride_height = full_height
+        tile_sample_stride_width = full_width
+        blend_height = blend_width = 0
+        if self.use_tiling:
+            min_latent_h = max(1, int(self.tile_sample_min_height) // int(self.spatial_compression_ratio))
+            min_latent_w = max(1, int(self.tile_sample_min_width) // int(self.spatial_compression_ratio))
+            if int(latent_source.shape[-1]) > min_latent_w or int(latent_source.shape[-2]) > min_latent_h:
+                if latent_source.device.type != "cpu":
+                    latent_source = latent_source.to("cpu")
+                tile_latent_min_height = min_latent_h
+                tile_latent_min_width = min_latent_w
+                tile_latent_stride_height = max(1, int(self.tile_sample_stride_height) // int(self.spatial_compression_ratio))
+                tile_latent_stride_width = max(1, int(self.tile_sample_stride_width) // int(self.spatial_compression_ratio))
+                tile_sample_stride_height = int(self.tile_sample_stride_height) * factor
+                tile_sample_stride_width = int(self.tile_sample_stride_width) * factor
+                blend_height = int(self.tile_sample_min_height) * factor - tile_sample_stride_height
+                blend_width = int(self.tile_sample_min_width) * factor - tile_sample_stride_width
+
+        device = z.device
+        decoded = torch.empty((latent_source.shape[0], 3, target_frames, target_height, target_width), dtype=torch.uint8, device="cpu")
+        previous_row_edges = []
+        row_index = 0
+        for latent_y in range(0, latent_source.shape[-2], tile_latent_stride_height):
+            current_row_edges = []
+            left_edge = None
+            col_index = 0
+            write_y0 = row_index * tile_sample_stride_height
+            write_y1 = min(write_y0 + tile_sample_stride_height, target_height)
+            has_next_row = write_y1 < target_height
+            if write_y1 <= write_y0:
+                break
+            for latent_x in range(0, latent_source.shape[-1], tile_latent_stride_width):
+                write_x0 = col_index * tile_sample_stride_width
+                write_x1 = min(write_x0 + tile_sample_stride_width, target_width)
+                has_next_col = write_x1 < target_width
+                if write_x1 <= write_x0:
+                    break
+                tile_latents = latent_source[:, :, :, latent_y:latent_y + tile_latent_min_height, latent_x:latent_x + tile_latent_min_width].to(device=device, dtype=dtype)
+                bottom_edge = None
+                right_edge = None
+                previous_edge = previous_row_edges[col_index] if row_index > 0 and col_index < len(previous_row_edges) else None
+                for frame_start, tile in self.decode_tile_chunks(tile_latents):
+                    if frame_start >= target_frames:
+                        break
+                    frame_end = min(frame_start + int(tile.shape[2]), target_frames)
+                    tile = tile[:, :, :frame_end - frame_start]
+                    if previous_edge is not None:
+                        _blend_v_edge_(previous_edge[:, :, frame_start:frame_end], tile, blend_height)
+                    if left_edge is not None:
+                        _blend_h_edge_(left_edge[:, :, frame_start:frame_end], tile, blend_width)
+                    if has_next_row:
+                        edge = tile[:, :, :, -min(blend_height, tile.shape[-2]):, :].detach().cpu()
+                        if bottom_edge is None:
+                            bottom_edge = torch.empty((edge.shape[0], edge.shape[1], target_frames, edge.shape[3], edge.shape[4]), dtype=edge.dtype, device="cpu")
+                        bottom_edge[:, :, frame_start:frame_end].copy_(edge)
+                        del edge
+                    if has_next_col:
+                        edge = tile[:, :, :, :, -min(blend_width, tile.shape[-1]):].detach().cpu()
+                        if right_edge is None:
+                            right_edge = torch.empty((edge.shape[0], edge.shape[1], target_frames, edge.shape[3], edge.shape[4]), dtype=edge.dtype, device="cpu")
+                        right_edge[:, :, frame_start:frame_end].copy_(edge)
+                        del edge
+                    tile = tile[:, :, :, :write_y1 - write_y0, :write_x1 - write_x0]
+                    decoded[:, :, frame_start:frame_end, write_y0:write_y0 + tile.shape[-2], write_x0:write_x0 + tile.shape[-1]].copy_(_vae_float_to_cpu_uint8(tile))
+                    del tile
+                current_row_edges.append(bottom_edge)
+                left_edge = right_edge
+                del tile_latents, previous_edge
+                col_index += 1
+            left_edge = None
+            previous_row_edges = current_row_edges
+            row_index += 1
+        return decoded
+
+    def decode_to_cpu_uint8(self, z: torch.Tensor, target_frames=None, target_height=None, target_width=None) -> torch.Tensor:
+        if self.use_slicing and z.shape[0] > 1:
+            return torch.cat([self._decode_to_cpu_uint8_one(z_slice, target_frames=target_frames, target_height=target_height, target_width=target_width) for z_slice in z.split(1)])
+        return self._decode_to_cpu_uint8_one(z, target_frames=target_frames, target_height=target_height, target_width=target_width)
 
     def forward(
         self,

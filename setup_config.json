@@ -5,20 +5,24 @@
             "3.11": { "ver": "3.11.14", "label": "Python 3.11.14 (Recommended)" }
         },
         "torch": {
-            "cu128": { 
-                "label": "Torch 2.7.1 + CUDA 12.8", 
-                "cmd": "torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128" 
+            "cu128": {
+                "label": "Torch 2.7.1 + CUDA 12.8",
+                "cmd": "torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128"
             },
-            "cu130": { 
-                "label": "Torch 2.10.0 + CUDA 13.0", 
-                "cmd": "torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130" 
+            "cu130": {
+                "label": "Torch 2.10.0 + CUDA 13.0",
+                "cmd": "torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130"
             },
-            "rocm65": { 
-                "label": "ROCm 6.5 (TheRock)", 
+            "rocm65": {
+                "label": "ROCm 6.5 (TheRock)",
                 "cmd": {
                     "win": "https://github.com/scottt/rocm-TheRock/releases/download/v6.5.0rc-pytorch-gfx110x/torch-2.7.0a0+rocm_git3f903c3-cp311-cp311-win_amd64.whl https://github.com/scottt/rocm-TheRock/releases/download/v6.5.0rc-pytorch-gfx110x/torchvision-0.22.0+9eb57cd-cp311-cp311-win_amd64.whl https://github.com/scottt/rocm-TheRock/releases/download/v6.5.0rc-pytorch-gfx110x/torchaudio-2.7.0a0+52638ef-cp311-cp311-win_amd64.whl",
                     "linux": "torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.2"
                 }
+            },
+            "mps": {
+                "label": "Torch (MPS / Apple Silicon)",
+                "cmd": "torch torchvision torchaudio"
             }
         },
         "triton": {
@@ -46,31 +50,47 @@
         },
         "sage": {
             "v1": { "label": "Sage Attention 1.0.6", "cmd": "sageattention==1.0.6" },
-            "v211": { 
-                "label": "Sage Attention 2.1.1", 
+            "v211": {
+                "label": "Sage Attention 2.1.1",
                 "cmd": {
                     "win": "https://github.com/woct0rdho/SageAttention/releases/download/v2.1.1-windows/sageattention-2.1.1+cu126torch2.6.0-cp310-cp310-win_amd64.whl",
-                    "linux": "pip install \"setuptools<=75.8.2\" && git clone https://github.com/thu-ml/SageAttention && pip install -e SageAttention"
+                    "linux": "pip install \"setuptools<=75.8.2\" ninja wheel --force-reinstall && git clone https://github.com/thu-ml/SageAttention && pip install --no-build-isolation -e SageAttention"
                 }
             },
             "v220": { 
                 "label": "Sage Attention 2.2.0", 
                 "cmd": {
                     "win": "https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows/sageattention-2.2.0+cu128torch2.7.1-cp310-cp310-win_amd64.whl",
-                    "linux": "pip install \"setuptools<=75.8.2\" && git clone https://github.com/thu-ml/SageAttention && pip install -e SageAttention"
+                    "linux": "pip install \"setuptools<=75.8.2\" ninja wheel --force-reinstall && git clone https://github.com/thu-ml/SageAttention && pip install --no-build-isolation -e SageAttention"
                 }
             },
             "v220_cu13": { 
                 "label": "Sage Attention 2.2.0 (CUDA 13)", 
                 "cmd": {
                     "win": "https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post4/sageattention-2.2.0+cu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl",
-                    "linux": "pip install \"setuptools<=75.8.2\" && git clone https://github.com/thu-ml/SageAttention && pip install -e SageAttention"
+                    "linux": "pip install \"setuptools<=75.8.2\" ninja wheel --force-reinstall && git clone https://github.com/thu-ml/SageAttention && pip install --no-build-isolation -e SageAttention"
+                }
+            }
+        },
+        "sparge": {
+            "v010_cu128": {
+                "label": "Sparge Attention 0.1.0 (CUDA 12.8 / Torch 2.7.1)",
+                "cmd": {
+                    "win": "https://github.com/woct0rdho/SpargeAttn/releases/download/v0.1.0-windows.post3/spas_sage_attn-0.1.0%2Bcu128torch2.7.1.post3-cp39-abi3-win_amd64.whl",
+                    "linux": "{pip} ninja wheel packaging && {pip} --no-build-isolation git+https://github.com/woct0rdho/SpargeAttn.git"
+                }
+            },
+            "v010_cu13": {
+                "label": "Sparge Attention 0.1.0 (CUDA 13 / Torch 2.9+ ABI)",
+                "cmd": {
+                    "win": "https://github.com/woct0rdho/SpargeAttn/releases/download/v0.1.0-windows.post4/spas_sage_attn-0.1.0%2Bcu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl",
+                    "linux": "{pip} ninja wheel packaging && {pip} --no-build-isolation git+https://github.com/woct0rdho/SpargeAttn.git"
                 }
             }
         },
         "flash": {
-            "v210": { 
-                "label": "Flash Attention 2.8.x", 
+            "v210": {
+                "label": "Flash Attention 2.8.x",
                 "cmd": {
                     "win": "https://github.com/deepbeepmeep/kernels/releases/download/Flash2/flash_attn-2.8.3-cp311-cp311-win_amd64.whl",
                     "linux": "flash-attn"
@@ -109,13 +129,14 @@
         }
     },
     "gpu_profiles": {
-        "GTX_10":      { "python": "3.10", "torch": "cu128", "triton": null,     "sage": null,       "flash": null, "kernels": [] },
-        "RTX_20":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v1", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
-        "RTX_30":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
-        "RTX_40":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
-        "RTX_50":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "flash": "v210", "kernels": ["nunchaku_cu13","light2xv", "gguf"] },
-        "AMD_GFX110X": { "python": "3.11", "torch": "rocm65", "triton": null, "sage": null, "flash": null, "kernels": [], "env": {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"} },
-        "AMD_GFX1151": { "python": "3.11", "torch": "rocm65", "triton": null, "sage": null, "flash": null, "kernels": [], "env": {"HSA_OVERRIDE_GFX_VERSION": "11.5.1"} },
-        "AMD_GFX1201": { "python": "3.11", "torch": "rocm65", "triton": null, "sage": null, "flash": null, "kernels": [], "env": {"HSA_OVERRIDE_GFX_VERSION": "12.0.1"} }
+        "GTX_10":      { "python": "3.10", "torch": "cu128", "triton": null,     "sage": null,       "sparge": null, "flash": null, "kernels": [] },
+        "RTX_20":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v1", "sparge": null, "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
+        "RTX_30":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
+        "RTX_40":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
+        "RTX_50":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13","light2xv", "gguf"] },
+        "AMD_GFX110X": { "python": "3.11", "torch": "rocm65", "triton": null, "sage": null, "sparge": null, "flash": null, "kernels": [], "env": {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"} },
+        "AMD_GFX1151": { "python": "3.11", "torch": "rocm65", "triton": null, "sage": null, "sparge": null, "flash": null, "kernels": [], "env": {"HSA_OVERRIDE_GFX_VERSION": "11.5.1"} },
+        "AMD_GFX1201": { "python": "3.11", "torch": "rocm65", "triton": null, "sage": null, "sparge": null, "flash": null, "kernels": [], "env": {"HSA_OVERRIDE_GFX_VERSION": "12.0.1"} },
+        "MPS":         { "python": "3.11", "torch": "mps", "triton": null, "sage": null, "sparge": null, "flash": null, "kernels": [], "attention": "sdpa" }
     }
 }

@@ -14,7 +14,9 @@ def is_ic_lora_filename(value) -> bool:
     return "ic-lora" in os.path.basename(str(value)).lower()
 
 
-def phase2_ic_lora_name(loras_selected, loras_slists) -> str | None:
+def phase2_ic_lora_name(loras_selected, loras_slists, force_phase2_control=False, force_name=None) -> str | None:
+    if force_phase2_control:
+        return force_name or "forced phase 2 control"
     phase2 = (loras_slists or {}).get("phase2", [])
     for index, lora_path in enumerate(loras_selected or []):
         name = os.path.basename(str(lora_path))
@@ -25,8 +27,10 @@ def phase2_ic_lora_name(loras_selected, loras_slists) -> str | None:
     return None
 
 
-def control_video_phase2_message(loras_selected, loras_slists) -> str:
-    lora_name = phase2_ic_lora_name(loras_selected, loras_slists)
+def control_video_phase2_message(loras_selected, loras_slists, force_phase2_control=False, force_name=None) -> str:
+    lora_name = phase2_ic_lora_name(loras_selected, loras_slists, force_phase2_control=force_phase2_control, force_name=force_name)
     if lora_name is not None:
+        if force_phase2_control:
+            return f"Control Video will also be injected in LTX-2 Phase 2 because {lora_name} forces phase 2 control injection."
         return f'Control Video will also be injected in LTX-2 Phase 2 since a non null phase 2 lora multiplier has been detected for Ic Lora "{lora_name}"'
     return "Control Video will be only injected in LTX-2 Phase 1 since there isnt't any non null phase 2 Ic Lora multiplier"

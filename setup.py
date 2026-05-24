@@ -16,7 +16,7 @@ ENV_TEMPLATES = {
     "uv": {
         "create": "uv venv --seed --python {ver} \"{dir}\"",
         "run": _PY_PATH,
-        "install": "uv pip install --python \"{dir}\""
+        "install": "uv pip install --index-strategy unsafe-best-match --python \"{dir}\""
     },
     "venv": {
         "create": "\"{sys_py}\" -m venv \"{dir}\"",
@@ -40,11 +40,11 @@ import sys
 import importlib
 import importlib.metadata
 
-pkgs = ['torch', 'triton', 'sageattention', 'flash_attn']
+pkgs = ['torch', 'triton', 'sageattention', 'spas_sage_attn', 'flash_attn']
 res = []
 try:
     res.append(f"python={sys.version.split()[0]}")
-except: 
+except:
     res.append("python=Unknown")
 
 for p in pkgs:
@@ -93,7 +93,22 @@ class EnvsManager:
             print(f"[!] Environment '{name}' not found.")
 
     def add_env(self, name, type, path):
-        self.data["envs"][name] = {"type": type, "path": path}
+        if path:
+            cwd = os.getcwd()
+            abs_path = os.path.abspath(path)
+            try:
+                rel_path = os.path.relpath(abs_path, cwd)
+                if rel_path.startswith("..") or rel_path == ".":
+                    final_path = abs_path
+                else:
+                    final_path = os.path.join(".", rel_path)
+            except ValueError:
+                final_path = abs_path
+        else:
+            final_path = ""
+
+        self.data["envs"][name] = {"type": type, "path": final_path}
+
         if not self.data["active"]:
             self.data["active"] = name
         self.save()
@@ -133,7 +148,7 @@ class EnvsManager:
         if not envs:
             print("[!] No environments found. Please run install first.")
             sys.exit(1)
-        
+
         active = self.get_active()
 
         if len(envs) == 1:
@@ -144,10 +159,10 @@ class EnvsManager:
         for i, k in enumerate(keys):
             marker = "*" if k == active else " "
             print(f"{i+1}. [{marker}] {k} ({envs[k]['type']})")
-        
+
         print(f"Default: {active}")
         choice = input("Select environment (Number) or Press Enter for Default: ").strip()
-        
+
         if choice == "":
             return active
         try:
@@ -165,10 +180,25 @@ def load_config():
     with open(CONFIG_PATH, 'r') as f: return json.load(f)
 
 def get_gpu_info():
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.check_output(
+                ["system_profiler", "SPDisplaysDataType"],
+                encoding="utf-8",
+                stderr=subprocess.DEVNULL
+            )
+            for line in out.split("\n"):
+                if "Chip" in line:
+                    name = line.split(":", 1)[1].strip()
+                    return name, "APPLE"
+        except:
+            pass
+        return "Apple Silicon (MPS)", "APPLE"
+
     try:
         name = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], 
-            encoding='utf-8', 
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            encoding='utf-8',
             stderr=subprocess.DEVNULL
         ).strip()
         return name, "NVIDIA"
@@ -177,9 +207,9 @@ def get_gpu_info():
     if IS_WIN:
         try:
             name = subprocess.check_output(
-                "wmic path win32_VideoController get name", 
-                shell=True, 
-                encoding='utf-8', 
+                "wmic path win32_VideoController get name",
+                shell=True,
+                encoding='utf-8',
                 stderr=subprocess.DEVNULL
             )
             name = name.replace("Name", "").strip().split('\n')[0].strip()
@@ -189,9 +219,9 @@ def get_gpu_info():
     else:
         try:
             name = subprocess.check_output(
-                "lspci | grep -i vga", 
-                shell=True, 
-                encoding='utf-8', 
+                "lspci | grep -i vga",
+                shell=True,
+                encoding='utf-8',
                 stderr=subprocess.DEVNULL
             )
             if "NVIDIA" in name: return name, "NVIDIA"
@@ -202,6 +232,8 @@ def get_gpu_info():
 
 def get_profile_key(gpu_name, vendor):
     g = gpu_name.upper()
+    if vendor == "APPLE":
+        return "MPS"
     if vendor == "NVIDIA":
         if "50" in g: return "RTX_50"
         if "40" in g: return "RTX_40"
@@ -212,10 +244,12 @@ def get_profile_key(gpu_name, vendor):
         if any(x in g for x in ["7600", "7700", "7800", "7900"]): return "AMD_GFX110X"
         if any(x in g for x in ["7000", "Z1", "PHOENIX"]): return "AMD_GFX1151"
         if any(x in g for x in ["8000", "STRIX", "1201"]): return "AMD_GFX1201"
-        return "AMD_GFX110X" 
+        return "AMD_GFX110X"
     return "RTX_40"
 
 def get_os_key():
+    if sys.platform == "darwin":
+        return "macos"
     return "win" if IS_WIN else "linux"
 
 def resolve_cmd(cmd_entry):
@@ -242,14 +276,27 @@ def run_cmd(cmd, env_vars=None):
 
     subprocess.run(cmd, shell=True, check=True, env=custom_env)
 
+def run_pip_component(pip, cmd):
+    if not cmd: return
+    run_cmd(cmd.format(pip=pip) if "{pip}" in cmd else f"{pip} {cmd}")
+
+def install_plugin_requirements(pip_cmd):
+    plugins_dir = "plugins"
+    if os.path.exists(plugins_dir) and os.path.isdir(plugins_dir):
+        for entry in os.listdir(plugins_dir):
+            plugin_req = os.path.join(plugins_dir, entry, "requirements.txt")
+            if os.path.isfile(plugin_req):
+                print(f"\n[*] Installing requirements for plugin '{entry}'...")
+                run_cmd(f"{pip_cmd} -r \"{plugin_req}\"")
+
 def get_env_details(name, env_data):
     env_type = env_data["type"]
     dir_name = env_data["path"]
     entry = ENV_TEMPLATES[env_type]
-    
+
     py_exec = entry['run'].format(dir=dir_name).strip('"')
     full_cmd = [py_exec, "-c", VERSION_CHECK_SCRIPT]
-        
+
     try:
         output = subprocess.check_output(full_cmd, encoding='utf-8', stderr=subprocess.DEVNULL)
         data = {k: v for k, v in [x.split('=') for x in output.strip().split('||')]}
@@ -261,45 +308,46 @@ def get_env_details(name, env_data):
 
 def show_status():
     manager = EnvsManager()
-    print("\n" + "="*95)
-    print(f"{'INSTALLED ENVIRONMENTS & VERSIONS':^95}")
-    print("="*95)
-    
+    print("\n" + "="*90)
+    print(f"{'INSTALLED ENVIRONMENTS & VERSIONS':^90}")
+    print("="*90)
+
     envs = manager.list_envs()
     active = manager.get_active()
-    
+
     if not envs:
         print("   No environments installed.")
-        print("="*95)
+        print("="*90)
         return
 
-    print(f"{'NAME':<15} | {'TYPE':<6} | {'PYTHON':<8} | {'TORCH':<15} | {'TRITON':<10} | {'SAGE':<12} | {'FLASH':<12}")
-    print("-" * 95)
+    print(f"{'NAME':<15} | {'TYPE':<5} | {'PYTHON':<8} | {'TORCH':<15} | {'TRITON':<9} | {'SAGE':<10} | {'SPARGE':<10} | {'FLASH':<10}")
+    print("-" * 90)
 
     for name, data in envs.items():
         details = get_env_details(name, data)
         marker = "*" if name == active else " "
         display_name = f"[{marker}] {name}"
-        
+
         if 'error' in details:
-            print(f"{display_name:<15} | {data['type']:<6} | [Error reading environment]")
+            print(f"{display_name:<15} | {data['type']:<5} | [Error reading environment]")
             continue
-            
-        print(f"{display_name:<15} | {data['type']:<6} | "
+
+        print(f"{display_name:<15} | {data['type']:<5} | "
               f"{details.get('python','?'):<8} | "
               f"{details.get('torch','?'):<15} | "
-              f"{details.get('triton','?'):<10} | "
-              f"{details.get('sageattention','?'):<12} | "
-              f"{details.get('flash_attn','?'):<12}")
-    
-    print("-" * 95)
-    print(f" * = Active Environment")
-    print("="*95 + "\n")
+              f"{details.get('triton','?'):<9} | "
+              f"{details.get('sageattention','?'):<10} | "
+              f"{details.get('spas_sage_attn','?'):<10} | "
+              f"{details.get('flash_attn','?'):<10}")
 
-def install_logic(env_name, env_type, env_path, py_k, torch_k, triton_k, sage_k, flash_k, kernel_list, config):
+    print("-" * 90)
+    print(f" * = Active Environment")
+    print("="*90 + "\n")
+
+def install_logic(env_name, env_type, env_path, py_k, torch_k, triton_k, sage_k, sparge_k, flash_k, kernel_list, config):
     template = ENV_TEMPLATES[env_type]
     target_py_ver = config['components']['python'][py_k]['ver']
-    
+
     print(f"\n[1/3] Preparing Environment: {env_name} ({env_type})...")
 
     if env_type != "none":
@@ -321,19 +369,19 @@ def install_logic(env_name, env_type, env_path, py_k, torch_k, triton_k, sage_k,
         run_cmd(create_cmd)
 
     pip = template["install"].format(dir=env_path)
-    
+
     print(f"\n[2/3] Installing Torch: {config['components']['torch'][torch_k]['label']}...")
     torch_cmd = resolve_cmd(config['components']['torch'][torch_k]['cmd'])
     run_cmd(f"{pip} {torch_cmd}")
-    
+
     print(f"\n[3/3] Installing Requirements & Extras...")
     run_cmd(f"{pip} -r requirements.txt")
-    
-    if triton_k: 
+
+    if triton_k:
         cmd = resolve_cmd(config['components']['triton'][triton_k]['cmd'])
         if cmd: run_cmd(f"{pip} {cmd}")
-        
-    if sage_k: 
+
+    if sage_k:
         cmd = resolve_cmd(config['components']['sage'][sage_k]['cmd'])
         if cmd.startswith("http") or cmd.startswith("sageattention"):
             run_cmd(f"{pip} {cmd}")
@@ -344,14 +392,20 @@ def install_logic(env_name, env_type, env_path, py_k, torch_k, triton_k, sage_k,
             elif env_type == "conda":
                 pass
 
-    if flash_k: 
+    if sparge_k:
+        cmd = resolve_cmd(config['components']['sparge'][sparge_k]['cmd'])
+        if cmd: run_pip_component(pip, cmd)
+
+    if flash_k:
         cmd = resolve_cmd(config['components']['flash'][flash_k]['cmd'])
         if cmd: run_cmd(f"{pip} {cmd}")
-        
+
     for k in kernel_list:
         if k in config['components']['kernels']:
             cmd = resolve_cmd(config['components']['kernels'][k]['cmd'])
             if cmd: run_cmd(f"{pip} {cmd}")
+
+    install_plugin_requirements(pip)
 
 def menu(title, options, recommended_key=None):
     print(f"\n--- {title} ---")
@@ -372,10 +426,10 @@ def do_install_interactive(env_type, config, detected_key):
     print(f"\n--- Configuration for {env_type} ---")
     name = input(f"Enter a name for this environment (Default: {default_name}): ").strip()
     if not name: name = default_name
-    
+
     cwd = os.getcwd()
     path = os.path.join(cwd, name) if env_type != "none" else ""
-    
+
     if name in manager.list_envs():
         print(f"\n[!] Warning: Environment '{name}' already exists in registry.")
         choice = input("Do you want to overwrite it? (This will delete the old folder) [y/N]: ").lower()
@@ -392,29 +446,30 @@ def do_install_interactive(env_type, config, detected_key):
     print("1. Autoselect (Based on your GPU)")
     print("2. Manual Selection")
     print("3. Use Latest")
-    
+
     mode = input("Select option (1-3) [Default: 1]: ").strip()
-    
+
     if mode == "2":
         base = config['gpu_profiles'][detected_key]
         py_k = menu("Python Version", config['components']['python'], base['python'])
         torch_k = menu("Torch Version", config['components']['torch'], base['torch'])
         triton_k = menu("Triton", config['components']['triton'], base['triton'])
         sage_k = menu("Sage Attention", config['components']['sage'], base['sage'])
+        sparge_k = menu("Sparge Attention", config['components']['sparge'], base.get('sparge'))
         flash_k = menu("Flash Attention", config['components']['flash'], base['flash'])
         kernels = base['kernels']
-        
-        install_logic(name, env_type, path, py_k, torch_k, triton_k, sage_k, flash_k, kernels, config)
-        
+
+        install_logic(name, env_type, path, py_k, torch_k, triton_k, sage_k, sparge_k, flash_k, kernels, config)
+
     elif mode == "3":
         p = config['gpu_profiles']['RTX_50']
-        install_logic(name, env_type, path, p['python'], p['torch'], p['triton'], p['sage'], p.get('flash'), p['kernels'], config)
+        install_logic(name, env_type, path, p['python'], p['torch'], p['triton'], p['sage'], p.get('sparge'), p.get('flash'), p['kernels'], config)
     else:
         p = config['gpu_profiles'][detected_key]
-        install_logic(name, env_type, path, p['python'], p['torch'], p['triton'], p['sage'], p.get('flash'), p['kernels'], config)
+        install_logic(name, env_type, path, p['python'], p['torch'], p['triton'], p['sage'], p.get('sparge'), p.get('flash'), p['kernels'], config)
 
     manager.add_env(name, env_type, path)
-    
+
     if len(manager.list_envs()) > 1:
         choice = input(f"\nDo you want to make '{name}' the active environment? [Y/n]: ").lower()
         if choice != 'n':
@@ -439,49 +494,311 @@ def do_install_auto(env_type, config, detected_key):
 
     print(f"\n[*] Starting Automatic Install (Hardware Profile: {detected_key})...")
     p = config['gpu_profiles'][detected_key]
-    
-    install_logic(name, env_type, path, p['python'], p['torch'], p['triton'], p['sage'], p.get('flash'), p['kernels'], config)
+
+    install_logic(name, env_type, path, p['python'], p['torch'], p['triton'], p['sage'], p.get('sparge'), p.get('flash'), p['kernels'], config)
 
     manager.add_env(name, env_type, path)
     manager.set_active(name)
     print(f"\n[*] Automatic Install Complete! '{name}' is now active.")
 
+def open_terminal():
+    manager = EnvsManager()
+    env_name = manager.get_active()
+
+    if not env_name:
+        print("[!] No active environment. Please select or install one first.")
+        input("Press Enter...")
+        return
+
+    env_data = manager.list_envs().get(env_name)
+    if not env_data:
+        print(f"[!] Could not find environment data for '{env_name}'.")
+        return
+
+    e_type = env_data["type"]
+    e_path = env_data["path"]
+
+    print(f"\n[*] Spawning interactive terminal for '{env_name}'...")
+    print(f"[*] (Type 'exit' when you are done to return to the menu)\n")
+
+    if IS_WIN:
+        if e_type in ["venv", "uv"]:
+            act_bat = os.path.join(e_path, 'Scripts', 'activate.bat')
+            subprocess.run(f'cmd.exe /K "{act_bat}"')
+        elif e_type == "conda":
+            conda_bat = "conda.bat"
+            if not shutil.which("conda"):
+                user = os.environ.get("USERPROFILE", "")
+                paths = [
+                    os.path.join(user, "Miniconda3", "condabin", "conda.bat"),
+                    os.path.join(user, "Anaconda3", "condabin", "conda.bat"),
+                    r"C:\ProgramData\Miniconda3\condabin\conda.bat"
+                ]
+                for p in paths:
+                    if os.path.exists(p):
+                        conda_bat = p
+                        break
+            subprocess.run(f'cmd.exe /K "{conda_bat}" activate "{e_path}"')
+        else:
+            subprocess.run('cmd.exe /K')
+    else:
+        rc_cmd = "if [ -f ~/.bashrc ]; then source ~/.bashrc; fi\n"
+        if e_type in ["venv", "uv"]:
+            rc_cmd += f"source '{os.path.join(e_path, 'bin', 'activate')}'\n"
+        elif e_type == "conda":
+            rc_cmd += (
+                "if command -v conda >/dev/null 2>&1; then eval \"$(conda shell.bash hook)\"; "
+                "else for base in \"$HOME/miniconda3\" \"$HOME/anaconda3\" \"/opt/miniconda3\" \"/opt/anaconda3\"; do "
+                "if [ -f \"$base/etc/profile.d/conda.sh\" ]; then source \"$base/etc/profile.d/conda.sh\"; break; fi; done; fi\n"
+                f"conda activate '{e_path}'\n"
+            )
+
+        linux_shell_cmd = f"bash --rcfile <(cat << 'EOF_WAN2GP'\n{rc_cmd}EOF_WAN2GP\n)"
+        subprocess.run(linux_shell_cmd, shell=True, executable='/bin/bash')
+
+def switch_git_branch():
+    if not os.path.exists(".git"):
+        print("[!] Not a git repository. Cannot switch branches.")
+        input("Press Enter...")
+        return
+        
+    print("\n[*] Fetching latest branches from remote...")
+    try:
+        subprocess.run(["git", "fetch", "--prune"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        out = subprocess.check_output(["git", "branch", "-a"], encoding='utf-8')
+    except Exception as e:
+        print(f"[!] Git error: {e}")
+        input("Press Enter...")
+        return
+        
+    branches = set()
+    active_branch = ""
+    for line in out.splitlines():
+        line = line.strip()
+        if not line: continue
+        if "->" in line: continue
+        
+        is_active = line.startswith("*")
+        b = line.lstrip("* ").strip()
+        
+        if b.startswith("remotes/origin/"):
+            b = b[len("remotes/origin/"):]
+        elif b.startswith("remotes/"):
+            b = "/".join(b.split("/")[2:])
+            
+        if b and b != "HEAD":
+            branches.add(b)
+        if is_active:
+            active_branch = b
+            
+    branch_list = sorted(list(branches))
+    if not branch_list:
+        print("[!] No branches found.")
+        input("Press Enter...")
+        return
+        
+    print("\n--- Available Branches ---")
+    for i, b in enumerate(branch_list):
+        marker = "*" if b == active_branch else " "
+        print(f"{i+1}. [{marker}] {b}")
+        
+    val = input(f"\nEnter number or name of branch (Default: {active_branch}): ").strip()
+    if not val:
+        return
+        
+    target = val
+    if val.isdigit():
+        idx = int(val) - 1
+        if 0 <= idx < len(branch_list):
+            target = branch_list[idx]
+            
+    if target == active_branch:
+        print(f"[*] Already on '{target}'.")
+        input("Press Enter...")
+        return
+
+    print(f"[*] Switching to '{target}'...")
+    try:
+        subprocess.run(["git", "checkout", target], check=True, capture_output=True, text=True)
+        print(f"[*] Successfully switched to '{target}'.")
+        
+    except subprocess.CalledProcessError as e:
+        err_msg = e.stderr.lower() if e.stderr else ""
+        
+        if "overwritten" in err_msg or "please commit your changes or stash them" in err_msg:
+            print(f"\n[!] Failed to switch to '{target}' due to uncommitted changes.")
+            print("How would you like to handle this?")
+            print("  1. Carry changes over to new branch (Not recommended)")
+            print("  2. Stash changes")
+            print("  3. Discard modifications")
+            print("  4. Cancel")
+            opt = input("\nSelect option (1-4): ").strip()
+            
+            if opt == "1":
+                try:
+                    print("\n[*] Stashing changes...")
+                    subprocess.run(["git", "stash", "push", "-m", f"Auto-stash before carrying to {target}"], check=True)
+                    subprocess.run(["git", "checkout", target], check=True)
+                    print(f"[*] Switched to '{target}'. Reapplying changes...")
+                    pop_res = subprocess.run(["git", "stash", "pop"])
+                    if pop_res.returncode != 0:
+                        print("\n[!] Note: There were merge conflicts when reapplying your changes.")
+                        print("    The changes are still saved in your stash, but you will need to resolve conflicts in the files.")
+                    else:
+                        print("[*] Successfully carried changes over.")
+                except Exception as inner_e:
+                    print(f"[!] Failed to carry changes: {inner_e}")
+            elif opt == "2":
+                try:
+                    print("\n[*] Stashing changes...")
+                    subprocess.run(["git", "stash", "push", "-m", f"Auto-stash before switching to {target}"], check=True)
+                    subprocess.run(["git", "checkout", target], check=True)
+                    print(f"[*] Successfully set changes aside and switched to '{target}'.")
+                except Exception as inner_e:
+                    print(f"[!] Failed to stash and switch: {inner_e}")
+            elif opt == "3":
+                try:
+                    print("\n[*] Discarding tracked changes...")
+                    subprocess.run(["git", "checkout", "-f", target], check=True)
+                    print(f"[*] Successfully switched to '{target}'.")
+                except Exception as inner_e:
+                    print(f"[!] Failed to force switch: {inner_e}")
+            else:
+                print("[*] Cancelled.")
+        else:
+            print(f"[!] Error switching branch:\n{e.stderr.strip() if e.stderr else str(e)}")
+            
+    except Exception as e:
+        print(f"[!] Error: {e}")
+        
+    input("Press Enter...")
+
+def manage_git_stashes():
+    if not os.path.exists(".git"):
+        print("[!] Not a git repository.")
+        input("Press Enter...")
+        return
+
+    try:
+        out = subprocess.check_output(["git", "stash", "list"], encoding='utf-8')
+    except Exception as e:
+        print(f"[!] Git error: {e}")
+        input("Press Enter...")
+        return
+
+    stashes = [line for line in out.splitlines() if line.strip()]
+    if not stashes:
+        print("[*] No stashed changes found. You're all clean!")
+        input("Press Enter...")
+        return
+
+    print("\n--- Saved Stashes ---")
+    for i, s in enumerate(stashes):
+        print(f"{i+1}. {s}")
+
+    print("\nOptions:")
+    print("  A. Apply a stash (Restore changes but keep the stash)")
+    print("  P. Pop a stash (Restore changes and delete the stash)")
+    print("  D. Delete a stash")
+    print("  C. Cancel")
+
+    choice = input("\nSelect action (A/P/D/C): ").strip().upper()
+    if choice not in ["A", "P", "D"]:
+        return
+
+    idx_str = input(f"Enter stash number (1-{len(stashes)}): ").strip()
+    if not idx_str.isdigit() or not (1 <= int(idx_str) <= len(stashes)):
+        print("[!] Invalid stash number.")
+        input("Press Enter...")
+        return
+
+    stash_ref = f"stash@{{{int(idx_str)-1}}}"
+
+    try:
+        if choice == "A":
+            print(f"\n[*] Applying {stash_ref}...")
+            subprocess.run(["git", "stash", "apply", stash_ref])
+        elif choice == "P":
+            print(f"\n[*] Popping {stash_ref}...")
+            subprocess.run(["git", "stash", "pop", stash_ref])
+        elif choice == "D":
+            conf = input(f"Are you sure you want to delete {stash_ref}? (y/n): ").strip().lower()
+            if conf == 'y':
+                subprocess.run(["git", "stash", "drop", stash_ref])
+                print(f"[*] Dropped {stash_ref}.")
+    except Exception as e:
+        print(f"\n[!] Command returned an error or warning (you may need to resolve file conflicts manually).")
+
+    input("\nPress Enter...")
+
 def do_manage():
     manager = EnvsManager()
     while True:
         os.system('cls' if IS_WIN else 'clear')
-        print("======================================================")
-        print("               ENVIRONMENT MANAGER")
-        print("======================================================")
+        print("==========================================================================================")
+        print(f"{'ENVIRONMENT MANAGER':^90}")
+        print("==========================================================================================")
         envs = manager.list_envs()
         active = manager.get_active()
+        keys = list(envs.keys())
         
         if not envs:
             print(" No environments installed.")
         else:
-            for name, data in envs.items():
+            for name in keys:
+                data = envs[name]
                 status = "(Active)" if name == active else ""
                 print(f" - {name:<15} [{data['type']}] {status}")
         
-        print("------------------------------------------------------")
+        print("------------------------------------------------------------------------------------------")
         print("1. Set Active Environment")
         print("2. Delete Environment")
         print("3. Add Existing Environment")
         print("4. List Environment Details")
-        print("5. Return to Menu / Exit")
+        print("5. Open Terminal in Active Environment")
+        print("6. Switch Git Branch")
+        print("7. Manage Git Stashes")
+        print("8. Exit")
         
         choice = input("\nSelect option: ")
         
         if choice == "1":
-            name = input("Enter name of environment to activate: ")
+            if not keys:
+                input("No environments to activate. Press Enter...")
+                continue
+            print("\nAvailable Environments:")
+            for i, k in enumerate(keys):
+                print(f"  {i+1}. {k}")
+            val = input("\nEnter name or number of environment to activate: ").strip()
+            if val.isdigit() and 1 <= int(val) <= len(keys):
+                name = keys[int(val)-1]
+            else:
+                name = val
             manager.set_active(name)
             input("Press Enter...")
+            
         elif choice == "2":
-            name = input("Enter name of environment to DELETE: ")
-            conf = input(f"Are you sure you want to delete '{name}' and its files? (y/n): ")
-            if conf.lower() == 'y':
-                manager.remove_env(name)
-                input("Deleted. Press Enter...")
+            if not keys:
+                input("No environments to delete. Press Enter...")
+                continue
+            print("\nAvailable Environments:")
+            for i, k in enumerate(keys):
+                print(f"  {i+1}. {k}")
+            val = input("\nEnter name or number of environment to DELETE: ").strip()
+            if val.isdigit() and 1 <= int(val) <= len(keys):
+                name = keys[int(val)-1]
+            else:
+                name = val
+                
+            if name in envs:
+                conf = input(f"Are you sure you want to delete '{name}' and its files? (y/n): ")
+                if conf.lower() == 'y':
+                    manager.remove_env(name)
+                    input("Deleted. Press Enter...")
+            else:
+                print(f"[!] Environment '{name}' not found.")
+                input("Press Enter...")
+                
         elif choice == "3":
             path = input("Enter the path to the existing environment folder: ").strip()
             if not os.path.exists(path):
@@ -496,25 +813,35 @@ def do_manage():
                 print("3. conda")
                 t_choice = input("Choice (Default 1): ")
                 e_type = "uv" if t_choice == "2" else "conda" if t_choice == "3" else "venv"
-                
                 manager.add_env(name, e_type, os.path.abspath(path))
                 print(f"[*] Registered '{name}' at {os.path.abspath(path)}")
             input("Press Enter...")
+            
         elif choice == "4":
             show_status()
             input("Press Enter...")
+            
         elif choice == "5":
+            open_terminal()
+            
+        elif choice == "6":
+            switch_git_branch()
+            
+        elif choice == "7":
+            manage_git_stashes()
+            
+        elif choice == "8":
             break
 
 def do_upgrade(config):
     manager = EnvsManager()
-    print("\n" + "="*60)
-    print("      WAN2GP MANUAL COMPONENT UPGRADE")
-    print("="*60)
-    
+    print("\n" + "="*90)
+    print(f"{'WAN2GP MANUAL COMPONENT UPGRADE':^90}")
+    print("="*90)
+
     env_name = manager.resolve_target_env()
     env_data = manager.list_envs()[env_name]
-    
+
     gpu_name, vendor = get_gpu_info()
     rec = config['gpu_profiles'][get_profile_key(gpu_name, vendor)]
 
@@ -522,9 +849,10 @@ def do_upgrade(config):
     torch_k = menu("Torch Version", config['components']['torch'], rec['torch'])
     triton_k = menu("Triton", config['components']['triton'], rec['triton'])
     sage_k = menu("Sage Attention", config['components']['sage'], rec['sage'])
+    sparge_k = menu("Sparge Attention", config['components']['sparge'], rec.get('sparge'))
     flash_k = menu("Flash Attention", config['components']['flash'], rec['flash'])
 
-    install_logic(env_name, env_data['type'], env_data['path'], py_k, torch_k, triton_k, sage_k, flash_k, rec['kernels'], config)
+    install_logic(env_name, env_data['type'], env_data['path'], py_k, torch_k, triton_k, sage_k, sparge_k, flash_k, rec['kernels'], config)
 
 def get_system_specs():
     ram_gb = 0
@@ -541,7 +869,7 @@ def get_system_specs():
         except:
             try:
                 out = subprocess.check_output(
-                    "wmic computersystem get TotalPhysicalMemory /value", 
+                    "wmic computersystem get TotalPhysicalMemory /value",
                     shell=True, encoding='utf-8', stderr=subprocess.DEVNULL
                 )
                 for line in out.splitlines():
@@ -566,24 +894,24 @@ def get_system_specs():
 
     try:
         out = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"], 
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
             encoding='utf-8', stderr=subprocess.DEVNULL
         ).strip()
         vram_gb = float(out.split('\n')[0]) / 1024
     except:
         print("[!] Warning: Could not detect VRAM via nvidia-smi. Defaulting to 8GB.")
         vram_gb = 8
-        
+
     return ram_gb, vram_gb
 
 def create_wgp_config(profile_key, config_data):
     WGP_CONFIG_FILE = "wgp_config.json"
-    
+
     if os.path.exists(WGP_CONFIG_FILE):
         return
 
     print("\n[*] Auto-generating wgp_config.json based on hardware...")
-    
+
     ram, vram = get_system_specs()
     print(f"    Detected: {int(ram)}GB RAM / {int(vram)}GB VRAM")
 
@@ -591,15 +919,15 @@ def create_wgp_config(profile_key, config_data):
     has_mid_ram = ram > 30
     has_huge_vram = vram > 22
     has_high_vram = vram > 11
-    
+
     pid = 5
-    
+
     if has_high_ram and has_huge_vram:
         pid = 1
-    elif has_high_ram: 
+    elif has_high_ram:
         pid = 2
     elif has_mid_ram and has_huge_vram:
-        pid = 3 
+        pid = 3
     elif has_mid_ram and has_high_vram:
         pid = 4
     else:
@@ -607,11 +935,12 @@ def create_wgp_config(profile_key, config_data):
 
     prof_settings = config_data['gpu_profiles'].get(profile_key, {})
 
-    attn_mode = ""
-    if "50" in profile_key or "40" in profile_key or "30" in profile_key:
-        attn_mode = "sage2"
-    elif "20" in profile_key:
-        attn_mode = "sage"
+    attn_mode = prof_settings.get("attention", "")
+    if not attn_mode:
+        if "50" in profile_key or "40" in profile_key or "30" in profile_key:
+            attn_mode = "sage2"
+        elif "20" in profile_key:
+            attn_mode = "sage"
 
     compile_mode = ""
     triton_key = prof_settings.get('triton')
@@ -625,7 +954,7 @@ def create_wgp_config(profile_key, config_data):
         "image_profile": pid,
         "audio_profile": pid,
     }
-    
+
     try:
         with open(WGP_CONFIG_FILE, 'w') as f:
             json.dump(config_out, f, indent=4)
@@ -636,7 +965,7 @@ def create_wgp_config(profile_key, config_data):
 def inject_system_paths():
     if not IS_WIN:
         return
-        
+
     paths = []
     user = os.environ.get("USERPROFILE", "")
     local_app = os.environ.get("LOCALAPPDATA", "")
@@ -656,23 +985,57 @@ def inject_system_paths():
             os.path.join(local_app, "Programs", "Python", "PyManager"),
             os.path.join(local_app, "Programs", "Python", "Python311", "Scripts")
         ])
-        
+
     current_path = os.environ.get("PATH", "")
     for p in paths:
         if p and os.path.exists(p) and p not in current_path:
             current_path = f"{p};{current_path}"
-            
+
     os.environ["PATH"] = current_path
+
+def repair_git_repo():
+    print("[*] Repairing WAN2GP repository...")
+    if not os.path.exists(".git"):
+        run_cmd("git init")
+
+    try:
+        subprocess.run(["git", "remote", "add", "origin", "https://github.com/deepbeepmeep/Wan2GP.git"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except:
+        pass
+
+    run_cmd("git fetch origin")
+
+    try:
+        subprocess.run(["git", "rev-parse", "--verify", "origin/main"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        default_branch = "main"
+    except subprocess.CalledProcessError:
+        default_branch = "master"
+
+    print(f"[*] Force resetting local files to match origin/{default_branch}...")
+    run_cmd(f"git reset --hard origin/{default_branch}")
+    run_cmd(f"git branch -M {default_branch}")
+    run_cmd(f"git branch --set-upstream-to=origin/{default_branch} {default_branch}")
 
 if __name__ == "__main__":
     inject_system_paths()
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["install", "run", "update", "upgrade", "status", "manage"])
+    parser.add_argument("mode", choices=["install", "update", "upgrade", "status", "manage", "get_env_info"])
     parser.add_argument("--env", default="venv", help="Type of env for install (venv, uv, conda, none)")
     parser.add_argument("--auto", action="store_true", help="Run 1-click automatic install")
     args = parser.parse_args()
     cfg = load_config()
-    
+
+    if args.mode == "get_env_info":
+        manager = EnvsManager()
+        active = manager.get_active()
+
+        if not active or not manager.list_envs().get(active):
+            sys.exit(1)
+
+        env_data = manager.list_envs()[active]
+        print(f"ENV_INFO|{env_data['type']}|{env_data['path']}")
+        sys.exit(0)
+
     if args.mode == "status":
         show_status()
         sys.exit(0)
@@ -691,41 +1054,45 @@ if __name__ == "__main__":
             do_install_auto(args.env, cfg, profile_key)
         else:
             do_install_interactive(args.env, cfg, profile_key)
-    
-    elif args.mode == "run":
-        manager = EnvsManager()
-        active = manager.get_active()
-        if not active:
-            print("[!] No active environment found. Run install or manage.")
-            sys.exit(1)
-        
-        env_data = manager.list_envs().get(active)
-        if not env_data:
-            print(f"[!] Active environment '{active}' data missing from registry.")
-            sys.exit(1)
-
-        print(f"[*] Launching using active environment: {active}")
-
-        extra_args = ""
-        if os.path.exists("scripts/args.txt"):
-            with open("scripts/args.txt", "r") as f:
-                lines = [l.strip() for l in f.readlines() if l.strip() and not l.startswith("#")]
-                extra_args = " ".join(lines)
-        
-        env_vars = profile.get("env", {})
-        cmd_fmt = ENV_TEMPLATES[env_data['type']]['run']
-        cmd = f"{cmd_fmt.format(dir=env_data['path'])} wgp.py {extra_args}"
-        run_cmd(cmd, env_vars=env_vars)
 
     elif args.mode == "update":
-        run_cmd("git pull")
         manager = EnvsManager()
         env_name = manager.resolve_target_env()
         env_data = manager.list_envs()[env_name]
-        
-        install_fmt = ENV_TEMPLATES[env_data['type']]['install']
-        cmd = f"{install_fmt.format(dir=env_data['path'])} -r requirements.txt"
-        run_cmd(cmd)
+
+        needs_install = False
+
+        if not os.path.exists(".git"):
+            print("[*] No .git folder found.")
+            repair_git_repo()
+            needs_install = True
+        else:
+            print("[*] Checking for updates...")
+            try:
+                old_head = subprocess.check_output(["git", "rev-parse", "HEAD"], encoding='utf-8', stderr=subprocess.DEVNULL).strip()
+            except:
+                old_head = ""
+
+            try:
+                subprocess.run(["git", "pull"], check=True)
+                new_head = subprocess.check_output(["git", "rev-parse", "HEAD"], encoding='utf-8', stderr=subprocess.DEVNULL).strip()
+
+                if old_head != new_head or not old_head:
+                    needs_install = True
+
+            except subprocess.CalledProcessError:
+                print("\n[!] 'git pull' failed.")
+                print("[*] Attempting automatic recovery...")
+                repair_git_repo()
+                needs_install = True
+
+        if needs_install:
+            print("\n[*] Updates found. Installing/Verifying requirements...")
+            install_fmt = ENV_TEMPLATES[env_data['type']]['install']
+            pip_cmd = install_fmt.format(dir=env_data['path'])
+            run_cmd(f"{pip_cmd} -r requirements.txt")
+        else:
+            print("\n[*] Code is already up to date. Skipping requirements installation.")
 
     elif args.mode == "upgrade":
         do_upgrade(cfg)

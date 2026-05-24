@@ -3,6 +3,7 @@ import re
 
 import torch
 
+from shared.mps import mps_device_or
 from shared.utils import files_locator as fl
 
 from .prompt_enhancers import TTS_MONOLOGUE_PROMPT, TTS_QWEN3_DIALOGUE_PROMPT
@@ -180,7 +181,7 @@ class family_handler:
         pipeline = KugelAudioPipeline(
             model_weights_path=weights_path,
             ckpt_root=fl.get_download_location(),
-            device=torch.device("cpu"),
+            device=mps_device_or(torch.device("cpu")),
             lm_decoder_engine=lm_decoder_engine,
         )
         if lm_decoder_engine == "cg":

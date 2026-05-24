@@ -5,14 +5,14 @@ title WanGP Update & Upgrade
 
 :MENU
 cls
-echo ======================================================
-echo                WAN2GP UPDATE / UPGRADE
-echo ======================================================
+echo ==========================================================================================
+echo                                  WAN2GP UPDATE / UPGRADE                                  
+echo ==========================================================================================
 python setup.py status
 echo 1. Update (git pull + install requirements)
 echo 2. Upgrade (Upgrade Torch, Triton, Sage Attention, etc.)
 echo 3. Exit
-echo ------------------------------------------------------
+echo ------------------------------------------------------------------------------------------
 set /p choice="Select an option (1-3): "
 
 if "%choice%"=="1" (

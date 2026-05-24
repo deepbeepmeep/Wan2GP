@@ -5,8 +5,8 @@ This guide will help you get started with WanGP video generation quickly and eas
 ## Prerequisites
 
 Before starting, ensure you have:
-- A compatible GPU (RTX 10XX or newer recommended)
-- Python 3.10.9 installed
+- A compatible GPU (RTX 20XX or newer recommended)
+- Python 3.11.14 installed
 - At least 6GB of VRAM for basic models
 - Internet connection for model downloads
 
@@ -19,9 +19,9 @@ Use [Pinokio App](https://pinokio.computer/) for the easiest installation experi
 ```bash
 git clone https://github.com/deepbeepmeep/Wan2GP.git
 cd Wan2GP
-conda create -n wan2gp python=3.10.9
+conda create -n wan2gp python=3.11.14
 conda activate wan2gp
-pip install torch==2.6.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu124
+pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 --index-url https://download.pytorch.org/whl/cu130
 pip install -r requirements.txt
 ```
 
@@ -191,4 +191,4 @@ Once you're comfortable with basic generation:
 - Enable performance optimizations
 - Check [CLI.md](CLI.md) for optimization flags
 
-Remember: Start simple and gradually explore more advanced features as you become comfortable with the basics! 
+Remember: Start simple and gradually explore more advanced features as you become comfortable with the basics!

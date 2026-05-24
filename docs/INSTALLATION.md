@@ -22,7 +22,7 @@ git clone https://github.com/deepbeepmeep/Wan2GP.git
 cd Wan2GP
 conda create -n wan2gp python=3.11.14
 conda activate wan2gp
-pip install torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
+pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 --index-url https://download.pytorch.org/whl/cu130
 pip install -r requirements.txt
 ```
 
@@ -36,7 +36,7 @@ git clone https://github.com/deepbeepmeep/Wan2GP.git
 cd Wan2GP
 conda create -n wan2gp python=3.10.9
 conda activate wan2gp
-pip install torch==2.7.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu128
+pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/test/cu128
 pip install -r requirements.txt
 ```
 
@@ -82,6 +82,25 @@ python -m pip install "setuptools<=75.8.2" --force-reinstall
 git clone https://github.com/thu-ml/SageAttention
 cd SageAttention 
 pip install -e .
+```
+
+## Sparge Attention
+Sparge Attention (`spas_sage_attn`) provides the optimized sparse attention kernels used by FlashVSR. Install it after Pytorch and Triton.
+
+#### Windows Install Sparge Attention for Pytorch 2.10 / Python 3.11 / Cuda 13
+```
+pip install https://github.com/woct0rdho/SpargeAttn/releases/download/v0.1.0-windows.post4/spas_sage_attn-0.1.0%2Bcu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl
+```
+
+#### Windows Install Sparge Attention for Pytorch 2.7.1 / Python 3.10 / Cuda 12.8
+```
+pip install https://github.com/woct0rdho/SpargeAttn/releases/download/v0.1.0-windows.post3/spas_sage_attn-0.1.0%2Bcu128torch2.7.1.post3-cp39-abi3-win_amd64.whl
+```
+
+#### Linux Install Sparge Attention
+```
+python -m pip install ninja wheel packaging
+python -m pip install --no-build-isolation git+https://github.com/woct0rdho/SpargeAttn.git
 ```
 
 

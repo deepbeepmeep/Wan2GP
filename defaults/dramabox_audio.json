@@ -1,0 +1,23 @@
+{
+    "model": {
+        "name": "DramaBox Audio",
+        "architecture": "dramabox_audio",
+        "description": "Expressive prompt-driven TTS with optional voice reference, integrated through the LTX 2.3 audio stack.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/dramabox-dit-v1_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/dramabox-dit-v1_quanto_bf16_int8.safetensors"
+        ]
+    },
+    "prompt": "Speaker 1:\nA confident, slightly condescending man leans in close with a smooth baritone voice, \"You've been looking at the wrong evidence. The horizon doesn't curve; it stays flat right up until your eyes give out.\"\nSpeaker 2:\nAn incredulous woman tilts her head back, her tone sharp and rising in pitch, \"But if I stood on top of Everest, wouldn't the ground slope away from me? That's how gravity works!\"\nSpeaker 1:\nHe chuckles softly, shaking his head with an air of gentle amusement, \"Gravity is just a trick of the light when you're standing on a giant sphere. Try this instead: look at the sun. It rises in the east and sets in the west because the earth is tilted on its side like a pancake.\"\nSpeaker 2:\nShe rolls her eyes, crossing her arms tightly against her chest, \"That's the most logical explanation I've ever heard, yet every satellite picture shows a blue marble spinning through space.\"\nSpeaker 1:\nHis voice drops to a conspiratorial whisper, leaning even closer to invade her personal space, \"Satellites are just mirrors reflecting off the dome. You don't need to see the whole thing to know the shape. Just trust the feeling of the ground beneath your feet.\"\nSpeaker 2:\nShe sighs deeply, running a hand through her hair as she looks around the room with growing frustration, \"I can feel the wind changing direction, and that only happens if there's a massive curve blocking it. You're making this sound so simple, but it feels complicated to me.\"\nSpeaker 1:\nWith a sudden burst of manic energy, he claps his hands together loudly, \"Complicated? No! Simple! It's all about perspective. If you could stand on the edge of the world, you'd see the sky drop off instantly, not fade into a distant curve.\"\nSpeaker 2:\nShe lets out a short, dismissive laugh, stepping back to create distance between them, \"Maybe for you, but for everyone else, the earth holds us up. We have oceans on three sides, not one. How does a flat plate explain that?\"\nSpeaker 1:\nHe shrugs casually, spreading his arms wide as if embracing the absurdity, \"The ocean is contained within the bowl of the earth. There is no 'three sides' because the water fills the entire surface, creating a perfect circle of liquid that keeps everything safe inside the crust.\"\nSpeaker 2:\nHer expression hardens into something determined, her voice steady and resolute, \"Then tell me why ships disappear hull-first over the horizon. If it were flat, we would just see smaller ships get further away, not vanish entirely.\"\nSpeaker 1:\nHe waves a hand dismissively, smiling with a mix of pity and triumph, \"Because they are sailing towards the center of the dish. They aren't going over a curve; they are moving deeper into the well where the curvature begins.\"\nSpeaker 2:\nShe shakes her head slowly, a small smile playing on her lips as she finally accepts the challenge, \"Okay, maybe I'll believe you once you show me a picture of the Earth from space that isn't generated using AI.\"",
+    "negative_prompt": "worst quality, inconsistent, robotic, distorted, noise, static, muffled, unclear, unnatural, monotone",
+    "audio_prompt_type": "0",
+    "duration_seconds": 0,
+    "num_inference_steps": 30,
+    "guidance_scale": 2.5,
+    "audio_guidance_scale": 1.5,
+    "alt_scale": 0.0,
+    "custom_settings": {
+        "duration_multiplier": 1.1
+    },
+    "multi_prompts_gen_type": "FG"
+}

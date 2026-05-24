@@ -421,6 +421,7 @@ class WebUIQueueProbe:
                         audio_tensor=artifact.audio_tensor,
                         audio_sampling_rate=artifact.audio_sampling_rate,
                         fps=artifact.fps,
+                        flashvsr_continue_cache=artifact.flashvsr_continue_cache,
                     )
                 self._missing_output_since.pop(client_id, None)
                 self._logged_missing_output_client_ids.discard(client_id)
@@ -447,6 +448,7 @@ class WebUIQueueProbe:
                         audio_tensor=artifact.audio_tensor,
                         audio_sampling_rate=artifact.audio_sampling_rate,
                         fps=artifact.fps,
+                        flashvsr_continue_cache=artifact.flashvsr_continue_cache,
                     )
                 self._missing_output_since.pop(client_id, None)
                 self._logged_missing_output_client_ids.discard(client_id)
@@ -582,7 +584,8 @@ class WebUIQueueProbe:
         owner = getattr(self._session, "_gradio_session_proxy", None)
         enqueue = getattr(owner, "_enqueue_abort_client_id", None)
         if not callable(enqueue) or not enqueue(self._job, client_id):
-            raise RuntimeError("WanGP WebUI abort trigger is unavailable for the current wrapped Gradio call.")
+            self._gen["abort"] = True
+            print("WanGP API set direct abort flag because the WebUI abort trigger was unavailable.")
 
     def _remove_inline_queue_client_id(self, client_id: str) -> bool:
         inline_queue = self._gen.get("inline_queue")

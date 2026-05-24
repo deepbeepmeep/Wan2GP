@@ -4,6 +4,7 @@ from . import (
     heartmula_handler,
     index_tts2_handler,
     kugelaudio_handler,
+    omnivoice_handler,
     qwen3_handler,
     yue_handler,
 )

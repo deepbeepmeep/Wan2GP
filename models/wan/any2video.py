@@ -1444,10 +1444,10 @@ class WanAny2V:
 
         if chrono_edit:
             if frame_num == 5 :
-                videos = self.vae.decode(x0, VAE_tile_size)
+                videos = self.vae.decode_to_cpu_uint8(x0, VAE_tile_size)
             else:
-                videos_edit = self.vae.decode([x[:, [0,-1]] for x in x0 ], VAE_tile_size)
-                videos = self.vae.decode([x[:, :-1] for x in x0 ], VAE_tile_size)
+                videos_edit = self.vae.decode_to_cpu_uint8([x[:, [0,-1]] for x in x0 ], VAE_tile_size)
+                videos = self.vae.decode_to_cpu_uint8([x[:, :-1] for x in x0 ], VAE_tile_size)
                 videos = [ torch.cat([video, video_edit[:, 1:]], dim=1) for video, video_edit in zip(videos, videos_edit)]
             if image_outputs:
                 return torch.cat([video[:,-1:] for video in videos], dim=1) if len(videos) > 1 else videos[0][:,-1:]
@@ -1456,10 +1456,11 @@ class WanAny2V:
         if image_outputs :
             x0 = [x[:,:1] for x in x0 ]
 
-        videos = self.vae.decode(x0, VAE_tile_size)
         any_vae2= self.vae2 is not None
+        needs_color_correction = color_correction_strength > 0 and (window_start_frame_no + prefix_frames_count) > 1
+        videos = self.vae.decode_to_cpu_uint8(x0, VAE_tile_size)
         if any_vae2:
-            videos2 = self.vae2.decode(x0, VAE_tile_size)
+            videos2 = self.vae2.decode_to_cpu_uint8(x0, VAE_tile_size)
 
         if image_outputs:
             videos = torch.cat([video[:,:1] for video in videos], dim=1) if len(videos) > 1 else videos[0][:,:1]
@@ -1467,13 +1468,15 @@ class WanAny2V:
         else:
             videos = videos[0] # return only first video
             if any_vae2: videos2 = videos2[0] # return only first video
-        if color_correction_strength > 0 and (window_start_frame_no + prefix_frames_count) >1:
+        if needs_color_correction:
+            videos = videos.float().div_(127.5).sub_(1.0) if videos.dtype == torch.uint8 else videos
             if vace and False:
                 # videos = match_and_blend_colors_with_mask(videos.unsqueeze(0), input_frames[0].unsqueeze(0), input_masks[0][:1].unsqueeze(0), color_correction_strength,copy_mode= "progressive_blend").squeeze(0)
                 videos = match_and_blend_colors_with_mask(videos.unsqueeze(0), input_frames[0].unsqueeze(0), input_masks[0][:1].unsqueeze(0), color_correction_strength,copy_mode= "reference").squeeze(0)
                 # videos = match_and_blend_colors_with_mask(videos.unsqueeze(0), videos.unsqueeze(0), input_masks[0][:1].unsqueeze(0), color_correction_strength,copy_mode= "reference").squeeze(0)
             elif color_reference_frame is not None:
                 videos = match_and_blend_colors(videos.unsqueeze(0), color_reference_frame.unsqueeze(0), color_correction_strength).squeeze(0)
+            videos = videos.clamp_(-1, 1).add_(1.0).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8)
 
         ret = { "x" : videos, "latent_slice" : latent_slice}
         if post_decode_pre_trim > 0:
@@ -1482,10 +1485,14 @@ class WanAny2V:
         if alpha_class:
             BGRA_frames = None
             from .alpha.utils import render_video, from_BRGA_numpy_to_RGBA_torch
-            videos, BGRA_frames = render_video(videos[None], videos2[None])            
+            videos_for_alpha = videos.float().div_(127.5).sub_(1.0) if videos.dtype == torch.uint8 else videos
+            videos2_for_alpha = videos2.float().div_(127.5).sub_(1.0) if videos2.dtype == torch.uint8 else videos2
+            videos, BGRA_frames = render_video(videos_for_alpha[None], videos2_for_alpha[None])
             if image_outputs: 
                 videos = from_BRGA_numpy_to_RGBA_torch(BGRA_frames) 
                 BGRA_frames = None
+            if videos.dtype != torch.uint8:
+                videos = videos.clamp_(-1, 1).add_(1.0).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8)
             if BGRA_frames is not None: ret["BGRA_frames"] =  BGRA_frames
         return ret
 

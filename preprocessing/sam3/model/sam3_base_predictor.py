@@ -12,11 +12,11 @@ Subclasses only need to override methods where their behavior differs.
 import gc
 import time
 import uuid
-from contextlib import nullcontext
 from typing import Dict, List, Optional
 
 import torch
 from ..logger import get_logger
+from ..model.device_utils import accelerator_autocast, empty_accelerator_cache
 
 logger = get_logger(__name__)
 
@@ -38,9 +38,7 @@ class Sam3BasePredictor:
 
     @staticmethod
     def _bf16_autocast():
-        if torch.cuda.is_available():
-            return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-        return nullcontext()
+        return accelerator_autocast()
 
     # ── Request dispatch ──────────────────────────────────────────────
 
@@ -354,8 +352,7 @@ class Sam3BasePredictor:
                 model.to("cpu")
             self.model = None
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        empty_accelerator_cache()
 
     def _exit_bf16_contexts(self):
         seen = set()

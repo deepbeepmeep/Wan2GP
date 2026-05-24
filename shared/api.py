@@ -39,7 +39,7 @@ def extract_status_phase_label(text: str | None) -> str:
     parts = [part.strip() for part in raw_text.split("|") if len(part.strip()) > 0] or [raw_text]
     stripped_wrapper = False
     for part in parts:
-        phase_text = part.rsplit(" - ", 1)[-1].strip()
+        phase_text = part
         while True:
             cleaned = _STATUS_INDEX_RE.sub("", phase_text)
             cleaned = _STATUS_STEP_PREFIX_RE.sub("", cleaned)
@@ -98,6 +98,7 @@ class GeneratedArtifact:
     audio_tensor: Any = None
     audio_sampling_rate: int | None = None
     fps: float | None = None
+    flashvsr_continue_cache: Any = None
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any], *, default_client_id: str = "") -> "GeneratedArtifact | None":
@@ -113,6 +114,7 @@ class GeneratedArtifact:
             audio_tensor=payload.get("audio_tensor"),
             audio_sampling_rate=payload.get("audio_sampling_rate"),
             fps=payload.get("fps"),
+            flashvsr_continue_cache=payload.get("flashvsr_continue_cache"),
         )
 
 
@@ -162,13 +164,17 @@ def _coerce_api_video_tensor_uint8(output_video_frames: Any) -> Any:
     except Exception:
         torch = None
     if torch is not None and torch.is_tensor(output_video_frames):
-        return output_video_frames if output_video_frames.dtype == torch.uint8 else None
+        if output_video_frames.dtype == torch.uint8:
+            return output_video_frames
+        return output_video_frames.detach().cpu().float().clamp(-1, 1).add(1.0).mul(127.5).round().to(torch.uint8)
     if isinstance(output_video_frames, list) and len(output_video_frames) == 1 and torch is not None and torch.is_tensor(output_video_frames[0]):
-        return output_video_frames[0] if output_video_frames[0].dtype == torch.uint8 else None
+        return _coerce_api_video_tensor_uint8(output_video_frames[0])
     if isinstance(output_video_frames, list) and torch is not None:
         tensors = [item for item in output_video_frames if torch.is_tensor(item)]
         if len(tensors) == len(output_video_frames) and tensors and all(item.dtype == torch.uint8 and item.ndim == 4 for item in tensors):
             return torch.cat(tensors, dim=1)
+        if len(tensors) == len(output_video_frames) and tensors and all(item.dtype != torch.uint8 and item.ndim == 4 for item in tensors):
+            return torch.cat([_coerce_api_video_tensor_uint8(item) for item in tensors], dim=1)
     return None
 
 
@@ -192,7 +198,7 @@ def _coerce_api_audio_tensor(output_audio_data: Any) -> Any:
     return None if output_audio_data is None else np.asarray(output_audio_data, dtype=np.float32)
 
 
-def build_api_output_artifact_payload(client_id: str, video_path: Any, media_type: str, output_video_frames: Any, output_audio_data: Any, output_audio_sampling_rate: Any, output_fps: Any, *, hdr: bool = False) -> dict[str, Any] | None:
+def build_api_output_artifact_payload(client_id: str, video_path: Any, media_type: str, output_video_frames: Any, output_audio_data: Any, output_audio_sampling_rate: Any, output_fps: Any, *, hdr: bool = False, flashvsr_continue_cache: Any = None) -> dict[str, Any] | None:
     client_id = str(client_id or "").strip()
     if len(client_id) == 0:
         return None
@@ -207,11 +213,12 @@ def build_api_output_artifact_payload(client_id: str, video_path: Any, media_typ
         "audio_tensor": _coerce_api_audio_tensor(output_audio_data),
         "audio_sampling_rate": int(output_audio_sampling_rate) if output_audio_sampling_rate else None,
         "fps": float(output_fps) if output_fps else None,
+        "flashvsr_continue_cache": flashvsr_continue_cache,
     }
 
 
-def store_api_output_artifact(gen: dict[str, Any], client_id: str, video_path: Any, media_type: str, output_video_frames: Any, output_audio_data: Any, output_audio_sampling_rate: Any, output_fps: Any, *, hdr: bool = False) -> bool:
-    payload = build_api_output_artifact_payload(client_id, video_path, media_type, output_video_frames, output_audio_data, output_audio_sampling_rate, output_fps, hdr=hdr)
+def store_api_output_artifact(gen: dict[str, Any], client_id: str, video_path: Any, media_type: str, output_video_frames: Any, output_audio_data: Any, output_audio_sampling_rate: Any, output_fps: Any, *, hdr: bool = False, flashvsr_continue_cache: Any = None) -> bool:
+    payload = build_api_output_artifact_payload(client_id, video_path, media_type, output_video_frames, output_audio_data, output_audio_sampling_rate, output_fps, hdr=hdr, flashvsr_continue_cache=flashvsr_continue_cache)
     if payload is None:
         return False
     gen.setdefault("api_output_artifacts", {})[payload["client_id"]] = payload
@@ -352,6 +359,9 @@ class SessionJob:
         self._webui_manifest = copy.deepcopy(list(manifest))
         self._webui_client_ids = tuple(str(client_id or "").strip() for client_id in client_ids if str(client_id or "").strip())
         self._webui_load_queue_token = str(load_queue_token or "").strip()
+
+    def release_input_payload(self) -> None:
+        self._webui_manifest = []
 
     def _mark_webui_submission_ready(self) -> None:
         self._webui_submission_ready.set()

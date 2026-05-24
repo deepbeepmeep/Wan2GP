@@ -303,7 +303,7 @@ class family_handler:
             "frames_minimum": 17,
             "frames_steps": 8,
             "sliding_window": True,
-            "image_prompt_types_allowed": "TSEV",
+            "image_prompt_types_allowed": "TSEVL",
             "end_frames_always_enabled": True,
             "returns_audio": True,
             "any_audio_prompt": True,

@@ -6,6 +6,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from shared.utils import files_locator as fl
+
 
 WAN_GP_SETTINGS_SUFFIXES = {".json", ".zip"}
 SETTINGS_BUNDLE_ATTACHMENT_KEYS = ("image_start", "image_end", "image_refs", "image_guide", "image_mask", "video_guide", "video_mask", "video_source", "audio_guide", "audio_guide2", "audio_source", "seedvc_voice_sample", "seedvc_voice_sample2", "custom_guide")
@@ -21,7 +23,7 @@ def _cache_root() -> Path:
 
 def _safe_zip_name(name: Any) -> str:
     text = str(name or "").strip().replace("\\", "/")
-    if len(text) == 0 or text.startswith("/") or ".." in Path(text).parts:
+    if not fl.is_relative_down_path(text):
         return ""
     return text
 

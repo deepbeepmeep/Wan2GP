@@ -3378,6 +3378,14 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
 offload.default_verboseLevel = verbose_level
 
 
+def get_lora_local_path(lora_dir, lora):
+    if os.path.isabs(lora): return lora
+    if (lora.startswith("http:") or lora.startswith("https:")):
+        parts = lora.split("|")
+        lora_path = os.path.join(fl.clean_relative_path(parts[1]), os.path.basename(lora)) if len(parts) > 1 else os.path.basename(lora)
+    else:
+        lora_path = lora
+    return os.path.join(lora_dir, lora_path)
 
 def check_loras_exist(model_type, loras_choices_files, download = False, send_cmd = None):
     _ensure_loras_url_cache()
@@ -3385,7 +3393,7 @@ def check_loras_exist(model_type, loras_choices_files, download = False, send_cm
     missing_local_loras = []
     missing_remote_loras = []
     for lora_file in loras_choices_files:
-        local_path = os.path.join(lora_dir, os.path.basename(lora_file))
+        local_path = get_lora_local_path(lora_dir, lora_file)
         if not os.path.isfile(local_path):
             url = loras_url_cache.get(local_path, None)         
             if url is not None:
@@ -5793,7 +5801,6 @@ def get_transformer_loras(model_type):
     model_def = get_model_def(model_type)
     transformer_loras_filenames = get_model_recursive_prop(model_type, "loras", return_list=True)
     lora_dir = get_lora_dir(model_type)
-    transformer_loras_filenames = [ os.path.join(lora_dir, os.path.basename(filename)) for filename in transformer_loras_filenames]
     transformer_loras_multipliers = get_model_recursive_prop(model_type, "loras_multipliers", return_list=True) + [1.] * len(transformer_loras_filenames)
     transformer_loras_multipliers = transformer_loras_multipliers[:len(transformer_loras_filenames)]
     return transformer_loras_filenames, transformer_loras_multipliers
@@ -6472,7 +6479,7 @@ def generate_video(
     if len(activated_loras) > 0:
         loras_list_mult_choices_nums, loras_slists, errors =  parse_loras_multipliers(loras_multipliers, len(activated_loras), num_inference_steps, nb_phases = guidance_phases, merge_slist= loras_slists, model_switch_phase= model_switch_phase )
         if len(errors) > 0: raise Exception(f"Error parsing Loras: {errors}")
-        loras_selected += [ os.path.join(lora_dir, os.path.basename(lora)) for lora in activated_loras]
+        loras_selected += activated_loras
 
     if hasattr(wan_model, "get_trans_lora"):
         trans_lora, trans2_lora = wan_model.get_trans_lora()
@@ -6483,7 +6490,7 @@ def generate_video(
         loras_selected = update_loras_url_cache(lora_dir, loras_selected)
         errors = check_loras_exist(model_type, loras_selected, True, send_cmd)
         if len(errors) > 0 : raise gr.Error(errors)
-        loras_selected = [ os.path.join(lora_dir, os.path.basename(lora)) for lora in loras_selected]
+        loras_selected = [ get_lora_local_path(lora_dir, lora) for lora in loras_selected]
         pinnedLora = not is_mps and loaded_profile !=5  # and transformer_loras_filenames == None False # # #
         preprocess_target = trans_lora if trans_lora is not None else trans
         split_linear_modules_map = getattr(preprocess_target, "split_linear_modules_map", None)
@@ -9238,9 +9245,8 @@ def update_loras_url_cache(lora_dir, loras_selected):
     new_loras_selected = []
     update = False
     for lora in loras_selected:
-        base_name = os.path.basename(lora)
-        local_name = os.path.join(lora_dir, base_name)
-        url = loras_url_cache.get(local_name, base_name)
+        local_name = get_lora_local_path(lora_dir, lora) 
+        url = loras_url_cache.get(local_name, local_name)
         if (lora.startswith("http:") or lora.startswith("https:")) and url != lora:
             loras_url_cache[local_name]=lora
             update = True

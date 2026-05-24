@@ -133,7 +133,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.775"
+WanGP_version = "11.776"
 settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -3637,6 +3637,7 @@ def ensure_prompt_enhancer_loaded(override_profile=None, progress=None, send_cmd
         setup_prompt_enhancer(pipe, kwargs)
         profile = compute_profile(override_profile, "video")
         mmgp_profile = init_pipe(pipe, kwargs, profile)
+        kwargs["pinnedMemory"] = False
         enhancer_offloadobj = offload.profile(pipe, profile_no=mmgp_profile, **kwargs)
 
     if prompt_enhancer_llm_model is None or prompt_enhancer_llm_tokenizer is None:
@@ -3750,8 +3751,6 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
         pipe = kwargs.pop("pipe")
     if "coTenantsMap" not in kwargs: kwargs["coTenantsMap"] = {}
     mmgp_profile = init_pipe(pipe, kwargs, profile)
-    if server_config.get("enhancer_mode", 1) == 0:
-        setup_prompt_enhancer(pipe, kwargs)
     loras_transformer = kwargs.pop("loras", [])
     if "transformer" in pipe:
         loras_transformer += ["transformer"]        
@@ -6327,15 +6326,7 @@ def generate_video(
         edit_video(send_cmd, state, mode, video_source, seed, temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, postprocess_audio, MMAudio_prompt, MMAudio_neg_prompt, repeat_generation, audio_source, seedvc_voice_sample, seedvc_voice_sample2, client_id=client_id, plugin_data=plugin_data)
         return True
     enhancer_mode = server_config.get("enhancer_mode", 1)
-    auto_prompt_enhancer_requested = enhancer_mode == 0 and prompt_enhancer is not None and len(prompt_enhancer) > 0
-    if auto_prompt_enhancer_requested:
-        from shared.prompt_enhancer import download_prompt_enhancer_assets
-
-        download_prompt_enhancer_assets(
-            enhancer_enabled=server_config.get("enhancer_enabled", 0),
-            qwen_backend=server_config.get("prompt_enhancer_quantization", "quanto_int8"),
-            send_cmd=send_cmd,
-        )
+    auto_prompt_enhancer_requested = server_config.get("enhancer_enabled", 0) > 0 and enhancer_mode == 0 and prompt_enhancer is not None and len(prompt_enhancer) > 0
     postprocess_audio = postprocess_audio or ""
     if postprocess_audio != "custom": audio_source = None
     if not seedvc_bridge.enabled():
@@ -6411,6 +6402,13 @@ def generate_video(
         seedvc_voice_sample=seedvc_voice_sample if not (is_image or audio_only) else None,
         seedvc_voice_sample2=seedvc_voice_sample2 if not (is_image or audio_only) else None,
     )
+    if args.test and auto_prompt_enhancer_requested:
+        try:
+            ensure_prompt_enhancer_loaded(override_profile=override_profile, send_cmd=send_cmd)
+        finally:
+            unload_prompt_enhancer_runtime()
+            if enhancer_offloadobj is not None:
+                enhancer_offloadobj.unload_all()
     if args.test:
         send_cmd("info", "Test mode: model loaded, skipping generation.")
         return True
@@ -6772,11 +6770,16 @@ def generate_video(
         cached_video_guide_processed = cached_video_mask_processed = cached_video_guide_processed2 = cached_video_mask_processed2 = None
         cached_video_video_start_frame = cached_video_video_end_frame = -1
         start_time = time.time()
-        if prompt_enhancer_image_caption_model != None and prompt_enhancer !=None and len(prompt_enhancer)>0 and enhancer_mode == 0:
+        if auto_prompt_enhancer_requested:
             send_cmd("progress", [0, get_latest_status(state, "Enhancing Prompt")])
             enhancer_kwargs = {"image_prompt_type":  image_prompt_type, "video_prompt_type":  video_prompt_type, "audio_prompt_type":  audio_prompt_type}
-            enhanced_prompts = process_prompt_enhancer(model_type, model_def, prompt_enhancer, original_prompts,  image_start if image_start is not None else image_end , original_image_refs, is_image, audio_only, seed, enhancer_kwargs = enhancer_kwargs )
-            unload_prompt_enhancer_runtime()
+            try:
+                ensure_prompt_enhancer_loaded(override_profile=override_profile, send_cmd=send_cmd)
+                enhanced_prompts = process_prompt_enhancer(model_type, model_def, prompt_enhancer, original_prompts,  image_start if image_start is not None else image_end , original_image_refs, is_image, audio_only, seed, enhancer_kwargs = enhancer_kwargs )
+            finally:
+                unload_prompt_enhancer_runtime()
+                if enhancer_offloadobj is not None:
+                    enhancer_offloadobj.unload_all()
             if enhanced_prompts is not None:
                 print(f"Enhanced prompts: {enhanced_prompts}" )
                 enhanced_prompts = [normalize_generated_prompt_lines(one_prompt, multi_prompts_gen_type) for one_prompt in enhanced_prompts]
@@ -11168,6 +11171,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 prompt_enhancer_think_visible = server_config.get("enhancer_enabled", 0) in (3, 4)
                 prompt_enhancer_think_value = prompt_enhancer_think_visible and "K" in prompt_enhancer_value and len(prompt_enhancer_mode_value) > 0
                 prompt_enhancer_value = build_prompt_enhancer_value(prompt_enhancer_mode_value, prompt_enhancer_think_value)
+                prompt_enhancer_think_classes = "cbx_centered" if on_demand_prompt_enhancer else "cbx_bottom"
                 prompt_enhancer = gr.Text(value=prompt_enhancer_value, visible=False)
                 prompt_enhancer_mode_dropdown = gr.Dropdown(
                     choices=prompt_enhancer_choices,
@@ -11175,7 +11179,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     label=model_def.get("prompt_enhancer_button_label", "Enhance Prompt using a LLM") , scale = 5,
                     visible= True, show_label= not on_demand_prompt_enhancer,
                 )
-                prompt_enhancer_think = gr.Checkbox(label="Think", value=prompt_enhancer_think_value, visible=prompt_enhancer_think_visible, scale=1, elem_classes="cbx_centered")
+                prompt_enhancer_think = gr.Checkbox(label="Think", value=prompt_enhancer_think_value, visible=prompt_enhancer_think_visible, scale=1, elem_classes=prompt_enhancer_think_classes)
             alt_prompt_def = model_def.get("alt_prompt", None)
             alt_prompt_label = None
             alt_prompt_placeholder = ""

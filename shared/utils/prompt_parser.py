@@ -77,17 +77,17 @@ def split_prompt_original_units(prompt_text, multi_prompts_gen_type, single_prom
         return line[len(PROMPT_UNIT_PREFIX):].strip() if line.startswith(PROMPT_UNIT_PREFIX) else None
 
     if single_prompt or multi_prompts_gen_type == "FG":
-        original, visible_lines = None, []
+        originals, visible_lines = [], []
         for raw_line in prompt_text.split("\n"):
             marker = split_marker(raw_line)
             if marker is not None:
-                if original is None and marker:
-                    original = marker
+                if marker:
+                    originals.append(marker)
                 continue
             if not raw_line.strip().startswith("#"):
                 visible_lines.append(raw_line.rstrip())
         visible_prompt = "\n".join(visible_lines).strip()
-        prompt = original or visible_prompt
+        prompt = "\n".join(originals) if originals else visible_prompt
         return [prompt] if prompt else []
 
     if "P" in multi_prompts_gen_type:
@@ -104,7 +104,7 @@ def split_prompt_original_units(prompt_text, multi_prompts_gen_type, single_prom
         for raw_line in prompt_text.split("\n"):
             marker = split_marker(raw_line)
             if marker is not None:
-                if current_lines:
+                if current_lines or current_original:
                     flush_paragraph()
                 current_original = marker or current_original
                 continue
@@ -121,12 +121,16 @@ def split_prompt_original_units(prompt_text, multi_prompts_gen_type, single_prom
     for raw_line in prompt_text.split("\n"):
         marker = split_marker(raw_line)
         if marker is not None:
+            if pending_original:
+                prompts.append(pending_original)
             pending_original = marker or pending_original
             continue
         if not raw_line.strip() or raw_line.strip().startswith("#"):
             continue
         prompts.append(pending_original or raw_line.rstrip().strip())
         pending_original = None
+    if pending_original:
+        prompts.append(pending_original)
     return prompts
 
 def serialize_prompt_blocks_with_prefix(prompts, original_prompts=None):

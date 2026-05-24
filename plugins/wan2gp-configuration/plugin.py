@@ -707,7 +707,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "metadata_type", "clear_file_list", "multi_prompts_gen_type", "keep_intermediate_sliding_windows", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", "mmaudio_mode",
             "mmaudio_persistence", "mmaudio_enabled", "seedvc_mode", "seedvc_persistence", "flashvsr_mode", "flashvsr_persistence", "flashvsr_backend", "flashvsr_topk_ratio", "rife_version", "matanyone_version",
-            "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed", "prompt_enhancer_quantization",
+            "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed", "prompt_enhancer_quantization", "enhancer_mode",
             DEEPY_ENABLED_KEY, DEEPY_VRAM_MODE_KEY, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CUSTOM_SYSTEM_PROMPT_KEY,
             "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "hdr_video_crf", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "audio_stand_alone_output_codec", "checkpoints_paths", "loras_root", "save_queue_if_crash",
@@ -740,9 +740,15 @@ class ConfigTabPlugin(WAN2GPPlugin):
         if needs_reload: self.set_global("reload_needed", True)
         self.server_config.update(new_server_config)
 
-        if "enhancer_enabled" in changes or "enhancer_mode" in changes or "prompt_enhancer_quantization" in changes or "lm_decoder_engine" in changes or DEEPY_ENABLED_KEY in changes or DEEPY_VRAM_MODE_KEY in changes:
+        enhancer_runtime_changed = "enhancer_enabled" in changes or "prompt_enhancer_quantization" in changes or "lm_decoder_engine" in changes or DEEPY_ENABLED_KEY in changes or DEEPY_VRAM_MODE_KEY in changes
+        enhancer_profile_changed = "profile" in changes or "video_profile" in changes
+        if enhancer_runtime_changed:
             get_or_create_assistant_session(state).force_loading_status_once = True
             self.release_deepy_vram(state, clear_session_state=True, discard_runtime_snapshot=True)
+            self.reset_prompt_enhancer()
+            self.reset_prompt_enhancer_if_requested()
+        elif enhancer_profile_changed:
+            self.release_deepy_vram(state, clear_session_state=False, discard_runtime_snapshot=True)
             self.reset_prompt_enhancer()
             self.reset_prompt_enhancer_if_requested()
         if "seedvc_mode" in changes or "seedvc_persistence" in changes:

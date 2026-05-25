@@ -2191,8 +2191,8 @@ def get_lora_dir(model_type):
         raise Exception(f"loras path '{lora_dir}' exists and is not a directory")
     if not os.path.isdir(lora_dir):
         os.makedirs(lora_dir, exist_ok=True)
-    return os.path.abspath(lora_dir)        
-    # return lora_dir
+    # return os.path.abspath(lora_dir)        
+    return lora_dir
 
 attention_modes_installed = get_attention_modes()
 attention_modes_supported = get_supported_attention_modes()
@@ -3386,7 +3386,7 @@ def get_lora_local_path(lora_dir, lora):
         lora_path = os.path.join(fl.clean_relative_path(parts[1]), os.path.basename(lora)) if len(parts) > 1 else os.path.basename(lora)
     else:
         lora_path = lora
-    return os.path.join(lora_dir, lora_path)
+    return lora_path if lora_dir is None else os.path.join(lora_dir, lora_path) 
 
 def check_loras_exist(model_type, loras_choices_files, download = False, send_cmd = None):
     _ensure_loras_url_cache()
@@ -3396,7 +3396,8 @@ def check_loras_exist(model_type, loras_choices_files, download = False, send_cm
     for lora_file in loras_choices_files:
         local_path = get_lora_local_path(lora_dir, lora_file)
         if not os.path.isfile(local_path):
-            url = loras_url_cache.get(local_path, None)         
+            rel_path = get_lora_local_path(None, lora_file)
+            url = loras_url_cache.get(lora_dir + "|" +  rel_path, None)         
             if url is not None:
                 if download:
                     if send_cmd is not None:
@@ -8447,9 +8448,9 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
                 prompts = [prompt for prompt in prompts if len(prompt)>0 and not prompt.startswith("#")]
                 prompt = "\n".join(prompts) 
                 prompt = preset_prompt + '\n' + prompt
+            lora_dir = get_lora_dir(current_model_type)
             loras_choices, loras_mult_choices = merge_loras_settings(old_activated_loras, old_loras_multipliers, loras_choices, loras_mult_choices, "merge after")
-            loras_choices = update_loras_url_cache(get_lora_dir(current_model_type), loras_choices)
-            loras_choices = [os.path.basename(lora) for lora in loras_choices]
+            loras_choices = update_loras_url_cache(lora_dir, loras_choices)
             gr.Info(f"Lora Preset '{lset_name}' has been applied")
             state["apply_success"] = 1
             wizard_prompt_activated = "on"
@@ -9236,7 +9237,7 @@ def update_loras_url_cache(lora_dir, loras_selected):
     if loras_selected is None:
         return None
     global loras_url_cache
-    loras_cache_file = "loras_url_cache.json"
+    loras_cache_file = "loras_url_cache_v2.json"
     if loras_url_cache is None:
         if os.path.isfile(loras_cache_file):
             try:
@@ -9249,12 +9250,16 @@ def update_loras_url_cache(lora_dir, loras_selected):
     new_loras_selected = []
     update = False
     for lora in loras_selected:
-        local_name = get_lora_local_path(lora_dir, lora) 
-        url = loras_url_cache.get(local_name, local_name)
-        if (lora.startswith("http:") or lora.startswith("https:")) and url != lora:
-            loras_url_cache[local_name]=lora
-            update = True
-        new_loras_selected.append(url)
+        if os.path.isabs(lora):
+            new_loras_selected.append(lora)
+        else:
+            rel_path= get_lora_local_path(None, lora)
+            if (lora.startswith("http:") or lora.startswith("https:")):
+                url = loras_url_cache.get( lora_dir + "|" + rel_path, None)
+                if url is None:
+                    loras_url_cache[lora_dir + "|" + rel_path]= lora.split("|")[0]
+                    update = True
+            new_loras_selected.append(rel_path)
 
     if update:
         with open(loras_cache_file, "w", encoding="utf-8") as writer:

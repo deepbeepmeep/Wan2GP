@@ -33,6 +33,10 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
+### 25th of May 2026: WanGP v11.80, LoRA Collectors Special Edition
+- **Create Hierarchies of Loras**
+- **Change Order of Loras** (even if order doesnt matter)
+
 ### 21st of May 2026: WanGP v11.77, I can hear Voices
 It has never been easier to do voice cloning directly in video models:
 

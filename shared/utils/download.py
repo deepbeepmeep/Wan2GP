@@ -248,7 +248,9 @@ def download_file(url, filename):
             if not os.path.exists(target_path):
                 os.makedirs(target_path)
             hf_hub_download(repo_id=repoId, filename=onefile, local_dir=temp_dir_path, subfolder=sourceFolder)
-            shutil.move(os.path.join(target_path, onefile), fl.get_download_location() if len(base_dir) == 0 else base_dir)
+            tgt = fl.get_download_location() if len(base_dir) == 0 else base_dir
+            os.makedirs(tgt)
+            shutil.move(os.path.join(target_path, onefile), tgt)
             shutil.rmtree(temp_dir_path)
     else:
         from urllib.request import urlretrieve

@@ -1506,5 +1506,5 @@ class WanAny2V:
             preloadURLs = get_model_recursive_prop(model_type,  "preload_URLs")
             model_mode = int(model_mode)
             if len(preloadURLs) > model_mode: 
-                return [fl.locate_file(os.path.basename(preloadURLs[model_mode]))] , [1]
+                return [os.path.abspath(fl.locate_file(os.path.basename(preloadURLs[model_mode])))] , [1]
         return [], []

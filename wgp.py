@@ -108,6 +108,7 @@ logging.set_verbosity_error
 from tqdm import tqdm
 import requests
 from shared.gradio.gallery import AdvancedMediaGallery, get_gradio_file_path
+from shared.gradio.hierarchy_selector import HierarchySelector, build_choices_hierarchy
 from shared.ffmpeg_setup import download_ffmpeg
 from shared.api import get_api_output_options, store_api_output_artifact
 from shared.utils.plugins import PluginManager, WAN2GPApplication, SYSTEM_PLUGINS
@@ -133,7 +134,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.7777"
+WanGP_version = "11.80"
 settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -3378,15 +3379,40 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
 
 offload.default_verboseLevel = verbose_level
 
+loras_url_cache = None
+loras_cache_file = "loras_url_cache_v2.json"
+def _ensure_loras_url_cache():
+    global loras_url_cache
+    if loras_url_cache is None:
+        if os.path.isfile(loras_cache_file):
+            try:
+                with open(loras_cache_file, 'r', encoding='utf-8') as f:
+                    loras_url_cache = json.load(f)
+            except:
+                loras_url_cache = {}
+        else:
+            loras_url_cache = {}
+
 
 def get_lora_local_path(lora_dir, lora):
     if os.path.isabs(lora): return lora
     if (lora.startswith("http:") or lora.startswith("https:")):
         parts = lora.split("|")
-        lora_path = os.path.join(fl.clean_relative_path(parts[1]), os.path.basename(lora)) if len(parts) > 1 else os.path.basename(lora)
+        lora_path = os.path.join(fl.clean_relative_path(parts[1]), os.path.basename(parts[0])) if len(parts) > 1 else os.path.basename(lora)
     else:
         lora_path = lora
     return lora_path if lora_dir is None else os.path.join(lora_dir, lora_path) 
+
+def get_lora_URL(lora_dir, lora):
+    if os.path.isabs(lora): return lora
+    _ensure_loras_url_cache()
+    rel_path = get_lora_local_path(None, lora)
+    if lora_dir is None: return rel_path
+    url = loras_url_cache.get(lora_dir + "|" +  rel_path, None)         
+    if url is None:
+        return rel_path
+    base = os.path.dirname(rel_path)
+    return url if len(base)==0 else url + "|" + base
 
 def check_loras_exist(model_type, loras_choices_files, download = False, send_cmd = None):
     _ensure_loras_url_cache()
@@ -3462,8 +3488,8 @@ def setup_loras(model_type, transformer,  lora_dir, lora_preselected_preset, spl
 
 
     if lora_dir != None:
-        dir_loras =  glob.glob( os.path.join(lora_dir , "*.sft") ) + glob.glob( os.path.join(lora_dir , "*.safetensors") )
-        dir_loras.sort()
+        dir_loras = glob.glob(os.path.join(lora_dir, "**", "*.sft"), recursive=True) + glob.glob(os.path.join(lora_dir, "**", "*.safetensors"), recursive=True)
+        dir_loras.sort(key=lambda path: os.path.relpath(path, lora_dir).casefold())
         loras += [element for element in dir_loras if element not in loras ]
 
         dir_presets_settings = glob.glob( os.path.join(lora_dir , "*.json") ) + glob.glob( os.path.join(lora_dir , "*.zip") )
@@ -3477,7 +3503,7 @@ def setup_loras(model_type, transformer,  lora_dir, lora_preselected_preset, spl
         loras = offload.load_loras_into_model(transformer, loras,  activate_all_loras=False, check_only= True, preprocess_sd=get_loras_preprocessor(transformer, base_model_type), split_linear_modules_map = split_linear_modules_map) #lora_multiplier,
 
     if len(loras) > 0:
-        loras = [ os.path.basename(lora) for lora in loras  ]
+        loras = [get_lora_local_path(None, os.path.relpath(lora, lora_dir).replace("\\", "/")) if lora_dir is not None else get_lora_local_path(None, lora) for lora in loras]
 
     if len(lora_preselected_preset) > 0:
         if not os.path.isfile(os.path.join(lora_dir, lora_preselected_preset + ".lset")):
@@ -4593,10 +4619,10 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             video_loras_multipliers = configs.get("loras_multipliers", "")
             video_loras_multipliers =  preparse_loras_multipliers(video_loras_multipliers)
             video_loras_multipliers += [""] * len(video_activated_loras)
-
-            video_activated_loras = [ f"<span class='copy-swap' tabindex=0><SPAN class='copy-swap__trunc' >{os.path.basename(lora)}</span><span class='copy-swap__full'>{lora}</span></span>" for lora in video_activated_loras] 
-            video_activated_loras = [ f"<TR><TD style='padding-top:0px;padding-left:0px'>{lora}</TD><TD>x{multiplier if len(multiplier)>0 else '1'}</TD></TR>" for lora, multiplier in zip(video_activated_loras, video_loras_multipliers) ]
-            video_activated_loras_str = "<TABLE style='border:0px;padding:0px'>" + "".join(video_activated_loras) + "</TABLE>" if len(video_activated_loras) > 0 else ""
+            lora_dir = None if video_model_type is None else get_lora_dir(video_model_type)
+            video_activated_loras = [ f"<span class='copy-swap' tabindex=0><SPAN class='copy-swap__trunc' >{get_lora_local_path(None, lora)}</span><span class='copy-swap__full'>{get_lora_URL(lora_dir, lora) .split('|')[0]}</span></span>" for lora in video_activated_loras] 
+            video_activated_loras = [ f"<TR><TD style='padding-top:0px;padding-left:0px;width:100%;max-width:0'>{lora}</TD><TD style='width:1%;white-space:nowrap;vertical-align:top'>x{multiplier if len(multiplier)>0 else '1'}</TD></TR>" for lora, multiplier in zip(video_activated_loras, video_loras_multipliers) ]
+            video_activated_loras_str = "<TABLE style='border:0px;padding:0px;width:100%;table-layout:fixed'>" + "".join(video_activated_loras) + "</TABLE>" if len(video_activated_loras) > 0 else ""
             video_duration_seconds = configs.get("duration_seconds", 0)
             if model_def.get("duration_slider", None) is not None and video_duration_seconds > 0:
                 misc_values += [ f"{video_duration_seconds}s"]
@@ -8378,7 +8404,8 @@ def delete_lset(state, lset_name):
     return  gr.Dropdown(choices=lset_choices, value= selected_lset_name), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Checkbox(visible= False)
 
 def get_updated_loras_dropdown(loras, loras_choices):
-    loras_choices = [os.path.basename(choice) for choice in loras_choices]    
+    if loras_choices is None:
+        loras_choices = []
     loras_choices_dict = { choice : True for choice in loras_choices}
     for lora in loras:
         loras_choices_dict.pop(lora, False)
@@ -8386,16 +8413,17 @@ def get_updated_loras_dropdown(loras, loras_choices):
     for choice, _ in loras_choices_dict.items():
         new_loras.append(choice)    
 
-    new_loras_dropdown= [ ( os.path.splitext(choice)[0], choice) for choice in new_loras ]
-    return new_loras, new_loras_dropdown
+    return new_loras, build_choices_hierarchy(new_loras)
 
 def refresh_lora_list(state, lset_name, loras_choices):
     model_type= get_state_model_type(state)
-    loras, loras_presets, _, _, _, _  = setup_loras(model_type, None,  get_lora_dir(model_type), lora_preselected_preset, None)
+    lora_dir = get_lora_dir(model_type)
+    loras, loras_presets, _, _, _, _  = setup_loras(model_type, None, lora_dir, lora_preselected_preset, None)
     state["loras_presets"] = loras_presets
     gc.collect()
 
-    loras, new_loras_dropdown = get_updated_loras_dropdown(loras, loras_choices)
+    loras_choices = [] if loras_choices is None else loras_choices
+    loras, new_loras_hierarchy = get_updated_loras_dropdown(loras, loras_choices)
     state["loras"] = loras
     model_type = get_state_model_type(state)    
     lset_choices = compute_lset_choices(model_type, loras_presets)
@@ -8415,7 +8443,7 @@ def refresh_lora_list(state, lset_name, loras_choices):
             gr.Info("Lora List has been refreshed")
 
 
-    return gr.Dropdown(choices=lset_choices, value= lset_name), gr.Dropdown(choices=new_loras_dropdown, value= loras_choices) 
+    return gr.Dropdown(choices=lset_choices, value= lset_name), gr.update(hierarchy=new_loras_hierarchy, value=loras_choices) 
 
 def update_lset_type(state, lset_name):
     if lset_name.endswith(".lset"):
@@ -8644,7 +8672,8 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         loras_choices = inputs["activated_loras"]
     if model_type == None: model_type = get_state_model_type(state)
     
-    inputs["activated_loras"] = update_loras_url_cache(get_lora_dir(model_type), loras_choices)
+    lora_dir = get_lora_dir(model_type)    
+    inputs["activated_loras"] = [get_lora_URL(lora_dir, lora) for lora in loras_choices]
     model_def = get_model_def(model_type)
     custom_settings = get_model_custom_settings(model_def)
     parsed_custom_settings, _ = collect_custom_settings_from_inputs(model_def, inputs, strict=False)
@@ -9232,21 +9261,10 @@ def use_video_settings(state, input_file_list, choice, source):
         gr.Info(f"Please Select a File")
 
     return gr.update(), gr.update(), gr.update(), gr.update()
-loras_url_cache = None
-def update_loras_url_cache(lora_dir, loras_selected):
+def update_loras_url_cache(lora_dir, loras_selected, return_URLs = False):
     if loras_selected is None:
         return None
-    global loras_url_cache
-    loras_cache_file = "loras_url_cache_v2.json"
-    if loras_url_cache is None:
-        if os.path.isfile(loras_cache_file):
-            try:
-                with open(loras_cache_file, 'r', encoding='utf-8') as f:
-                    loras_url_cache = json.load(f)
-            except:
-                loras_url_cache = {}
-        else:
-            loras_url_cache = {}
+    _ensure_loras_url_cache()
     new_loras_selected = []
     update = False
     for lora in loras_selected:
@@ -9267,8 +9285,6 @@ def update_loras_url_cache(lora_dir, loras_selected):
 
     return new_loras_selected
 
-def _ensure_loras_url_cache():
-    update_loras_url_cache("", [])
 
 def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, switch_type_if_compatible, min_settings_version = 0, merge_loras = None):    
     configs = None
@@ -10587,7 +10603,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
         launch_prompt = ui_defaults.get("prompt","")
     if len(launch_loras) == 0:
         launch_multis_str = ui_defaults.get("loras_multipliers","")
-        launch_loras = [os.path.basename(path) for path in ui_defaults.get("activated_loras",[])]
+        launch_loras = ui_defaults.get("activated_loras",[])
     with gr.Row():
         column_kwargs = {'elem_id': 'edit-tab-content'} if tab_id == 'edit' else {}
         with gr.Column(**column_kwargs):
@@ -11416,14 +11432,13 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 with gr.Tab("Loras", visible= not audio_only or model_def.get("enabled_audio_lora", False)) as loras_tab:
                     with gr.Column(visible = True): #as loras_column:
                         gr.Markdown("<B>Loras can be used to create special effects on the video by mentioning a trigger word in the Prompt. You can save Loras combinations in presets.</B>")
-                        loras, loras_choices = get_updated_loras_dropdown(loras, launch_loras)
+                        loras, loras_hierarchy = get_updated_loras_dropdown(loras, launch_loras)
                         state_dict["loras"] = loras
-                        loras_choices = gr.Dropdown(
-                            choices=loras_choices,
+                        loras_choices = HierarchySelector(
+                            hierarchy=loras_hierarchy,
                             value= launch_loras,
-                            multiselect= True,
+                            height=10,
                             label="Activated Loras",
-                            allow_custom_value= True,
                         )
                         loras_multipliers = gr.Textbox(label="Loras Multipliers (1.0 by default) separated by Space chars or CR, lines that start with # are ignored", value=launch_multis_str)
                 with gr.Tab("Steps Skipping", visible = any_tea_cache or any_mag_cache) as speed_tab:

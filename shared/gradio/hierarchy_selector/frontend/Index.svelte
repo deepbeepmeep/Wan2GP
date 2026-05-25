@@ -21,10 +21,12 @@
 
 	let rootEl;
 	let inputEl;
+	let searchInputEl;
 	let panelEl;
 	let open = false;
 	let focused = false;
 	let expanded = new Set();
+	let searchQuery = "";
 	let draggedIndex = null;
 	let dragOverIndex = null;
 	let itemLabels = {};
@@ -33,10 +35,16 @@
 	const panelPadding = 8;
 	const panelGap = 6;
 	const viewportPadding = 8;
+	const uniqueId = `hierarchy-selector-${Math.random().toString(36).slice(2)}`;
 
 	$: selectedValue = normalizeValue(value);
 	$: normalizedHierarchy = normalizeHierarchy(hierarchy);
 	$: itemLabels = collectLabels(normalizedHierarchy);
+	$: flatItems = flattenItems(normalizedHierarchy);
+	$: searchTerm = searchQuery.trim().toLowerCase();
+	$: searchMode = searchTerm.length > 0;
+	$: searchResults = searchMode ? filterItems(flatItems, searchTerm) : [];
+	$: panelId = elem_id ? `${elem_id}-panel` : `${uniqueId}-panel`;
 	$: panelRows = Math.max(10, Number(height) || 10);
 	$: panelHeight = panelRows * rowHeight + panelPadding;
 	$: classes = [
@@ -98,6 +106,33 @@
 		return labels;
 	}
 
+	function flattenItems(root) {
+		const items = [];
+		function visit(folder, folderPath = "") {
+			for (const item of folder.items || []) {
+				const itemPath = String(item.path || item.name || item.value || "");
+				const slash = itemPath.lastIndexOf("/");
+				const parentPath = slash > -1 ? itemPath.slice(0, slash) : folderPath;
+				items.push({ ...item, search_name: labelForItem(item), search_path: parentPath });
+			}
+			for (const child of folder.folders || []) visit(child, String(child.path || child.name || ""));
+		}
+		visit(root);
+		return items;
+	}
+
+	function filterItems(items, term) {
+		return items
+			.map((item) => {
+				const name = String(item.search_name || labelForItem(item));
+				const path = String(item.search_path || "");
+				return { item, index: name.toLowerCase().indexOf(term), name, path };
+			})
+			.filter((match) => match.index > -1)
+			.sort((a, b) => a.index - b.index || a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.path.localeCompare(b.path, undefined, { sensitivity: "base" }))
+			.map((match) => match.item);
+	}
+
 	function displayValue(selected) {
 		return itemLabels[selected] || stripSuffix(selected);
 	}
@@ -150,11 +185,12 @@
 
 	function openPanel() {
 		if (!interactive) return;
+		const wasFocused = focused;
 		open = true;
 		focused = true;
-		gradio?.dispatch?.("focus");
+		if (!wasFocused) gradio?.dispatch?.("focus");
 		tick().then(() => {
-			inputEl?.focus();
+			searchInputEl?.focus();
 			updatePanelPosition();
 		});
 	}
@@ -163,7 +199,23 @@
 		if (!open && !focused) return;
 		open = false;
 		focused = false;
+		searchQuery = "";
 		gradio?.dispatch?.("blur");
+	}
+
+	function onSearchFocus() {
+		openPanel();
+	}
+
+	function onSearchInput(event) {
+		searchQuery = event.currentTarget.value;
+		openPanel();
+	}
+
+	function onInputPointerDown(event) {
+		if (!interactive || event.target === searchInputEl || event.target.closest?.("button") || event.target.closest?.(".hierarchy-selector-chip")) return;
+		event.preventDefault();
+		openPanel();
 	}
 
 	function onDocumentPointerDown(event) {
@@ -195,10 +247,18 @@
 	}
 
 	function onInputKeydown(event) {
-		if (event.key === "Escape") closePanel();
-		else if (event.key === "Enter" || event.key === " " || event.key === "ArrowDown") {
+		if (event.key === "Escape") {
+			event.preventDefault();
+			if (searchQuery) searchQuery = "";
+			else closePanel();
+		} else if (event.key === "Enter" && searchMode && searchResults.length) {
+			event.preventDefault();
+			toggleItem(searchResults[0]);
+		} else if (event.key === "ArrowDown") {
 			event.preventDefault();
 			openPanel();
+		} else if (event.key === "Backspace" && !searchQuery && selectedValue.length) {
+			removeValue(selectedValue.length - 1);
 		}
 	}
 
@@ -215,7 +275,7 @@
 		return normalizeValue(value);
 	}
 
-	$: if (open && selectedValue) tick().then(updatePanelPosition);
+	$: if (open && (selectedValue || searchQuery)) tick().then(updatePanelPosition);
 
 	onMount(() => {
 		document.addEventListener("pointerdown", onDocumentPointerDown, true);
@@ -238,18 +298,16 @@
 			<div
 				class="hierarchy-selector-input"
 				class:hierarchy-selector-disabled={!interactive}
-				role="button"
+				role="combobox"
 				tabindex={interactive ? 0 : -1}
 				aria-haspopup="tree"
-				aria-expanded={open}
+				aria-expanded={open ? "true" : "false"}
+				aria-controls={panelId}
 				bind:this={inputEl}
-				on:click={openPanel}
+				on:mousedown={onInputPointerDown}
 				on:keydown={onInputKeydown}
 			>
 				<div class="hierarchy-selector-chips">
-					{#if selectedValue.length === 0}
-						<span class="hierarchy-selector-placeholder">{label}</span>
-					{/if}
 					{#each selectedValue as selected, index}
 						<span
 							class="hierarchy-selector-chip"
@@ -270,11 +328,63 @@
 							<button type="button" class="hierarchy-selector-remove" aria-label="Remove" on:click|stopPropagation={() => removeValue(index)}>x</button>
 						</span>
 					{/each}
+					<input
+						bind:this={searchInputEl}
+						bind:value={searchQuery}
+						class="hierarchy-selector-search-input"
+						type="text"
+						autocomplete="off"
+						spellcheck="false"
+						disabled={!interactive}
+						tabindex={interactive ? 0 : -1}
+						placeholder={selectedValue.length === 0 ? label : ""}
+						aria-label={label}
+						on:focus={onSearchFocus}
+						on:input={onSearchInput}
+						on:keydown|stopPropagation={onInputKeydown}
+					/>
 				</div>
 			</div>
 			{#if open}
-				<div bind:this={panelEl} use:portal class="hierarchy-selector-panel" style={panelStyle}>
-					<TreeNodes folders={normalizedHierarchy.folders || []} items={normalizedHierarchy.items || []} depth={0} {expanded} value={selectedValue} {toggleItem} {toggleFolder} {valueForItem} {labelForItem} />
+				<div id={panelId} bind:this={panelEl} use:portal class="hierarchy-selector-panel" style={panelStyle}>
+					{#if searchMode}
+						{#if searchResults.length}
+							{#each searchResults as item (valueForItem(item))}
+								{@const selected = selectedValue.includes(valueForItem(item))}
+								<div
+									class="hierarchy-search-row"
+									class:hierarchy-search-row-selected={selected}
+									title={selectedLabelForItem(item)}
+									role="button"
+									tabindex="0"
+									aria-pressed={selected}
+									on:click={() => toggleItem(item)}
+									on:keydown={(event) => {
+										if (event.key === "Enter" || event.key === " ") {
+											event.preventDefault();
+											toggleItem(item);
+										}
+									}}
+								>
+									<span class="hierarchy-search-spacer"></span>
+									<svg class="hierarchy-search-icon" viewBox="0 0 20 20" aria-hidden="true">
+										<path d="M5.25 2.75h6.05L15.75 7.2v10.05H5.25V2.75Z" />
+										<path d="M11.25 2.95V7.3h4.3" />
+									</svg>
+									<span class="hierarchy-search-label">
+										<span class="hierarchy-search-name">{labelForItem(item)}</span>
+										{#if item.search_path}
+											<span class="hierarchy-search-path"> [{item.search_path}]</span>
+										{/if}
+									</span>
+								</div>
+							{/each}
+						{:else}
+							<div class="hierarchy-search-empty">No matching LoRAs</div>
+						{/if}
+					{:else}
+						<TreeNodes folders={normalizedHierarchy.folders || []} items={normalizedHierarchy.items || []} depth={0} {expanded} value={selectedValue} {toggleItem} {toggleFolder} {valueForItem} {labelForItem} />
+					{/if}
 				</div>
 			{/if}
 		</div>
@@ -354,16 +464,6 @@
 		min-width: 0;
 	}
 
-	.hierarchy-selector-placeholder {
-		display: inline-flex;
-		align-items: center;
-		min-height: 26px;
-		color: var(--body-text-color-subdued);
-		font-size: var(--text-sm);
-		line-height: 20px;
-		padding: 2px 4px;
-	}
-
 	.hierarchy-selector-chip {
 		display: inline-flex;
 		align-items: center;
@@ -425,6 +525,25 @@
 		background: transparent;
 	}
 
+	.hierarchy-selector-search-input {
+		flex: 1 1 96px;
+		min-width: 70px;
+		min-height: 26px;
+		border: 0;
+		outline: 0;
+		background: transparent;
+		color: var(--body-text-color);
+		font: inherit;
+		font-size: var(--text-sm);
+		line-height: 20px;
+		padding: 2px 4px;
+	}
+
+	.hierarchy-selector-search-input::placeholder {
+		color: var(--body-text-color-subdued);
+		opacity: 1;
+	}
+
 	.hierarchy-selector-info {
 		margin-top: var(--spacing-sm);
 		color: var(--body-text-color-subdued);
@@ -443,5 +562,67 @@
 		overflow-y: auto;
 		padding: 4px;
 		scrollbar-width: thin;
+	}
+
+	.hierarchy-search-row {
+		display: grid;
+		grid-template-columns: 16px 20px minmax(0, 1fr);
+		column-gap: 7px;
+		align-items: center;
+		min-height: 32px;
+		box-sizing: border-box;
+		border-radius: var(--radius-sm);
+		color: var(--body-text-color);
+		font-size: var(--text-sm);
+		line-height: 1.2;
+		user-select: none;
+		padding: 0 4px 0 6px;
+		cursor: pointer;
+		transition: background-color 120ms ease, color 120ms ease;
+	}
+
+	.hierarchy-search-row:hover {
+		background: var(--background-fill-secondary);
+	}
+
+	.hierarchy-search-spacer {
+		width: 16px;
+		height: 16px;
+	}
+
+	.hierarchy-search-icon {
+		width: 17px;
+		height: 18px;
+		color: var(--body-text-color-subdued);
+		stroke: currentColor;
+		stroke-width: 1.5;
+		stroke-linecap: round;
+		stroke-linejoin: round;
+		fill: none;
+	}
+
+	.hierarchy-search-label {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.hierarchy-search-path {
+		color: var(--body-text-color-subdued);
+		font-style: italic;
+	}
+
+	.hierarchy-search-row-selected .hierarchy-search-name {
+		font-weight: 700;
+	}
+
+	.hierarchy-search-empty {
+		display: flex;
+		align-items: center;
+		min-height: 32px;
+		padding: 0 10px;
+		color: var(--body-text-color-subdued);
+		font-size: var(--text-sm);
 	}
 </style>

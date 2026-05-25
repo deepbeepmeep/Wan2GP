@@ -133,7 +133,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.777"
+WanGP_version = "11.7777"
 settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -6871,8 +6871,8 @@ def generate_video(
                 input_waveform, input_waveform_sample_rate = full_audio_guide_waveform, full_audio_guide_sample_rate
             elif audio_guide is not None and model_def.get("audio_guide_window_slicing", False):
                 audio_start_frame = aligned_window_start_frame
-                if reset_control_aligment:
-                    audio_start_frame += source_video_overlap_frames_count
+                # if reset_control_aligment:
+                #     audio_start_frame += source_video_overlap_frames_count
                 input_waveform, input_waveform_sample_rate = slice_audio_window(audio_guide, audio_start_frame, current_video_length, fps, save_path, suffix=f"_win{window_no}", pad_tail=not video_length_not_limited_by_audio) 
                 if input_waveform.shape[0] == 0: input_waveform, input_waveform_sample_rate = pre_audio_guide, pre_audio_guide_sample_rate
             elif model_def.get("audio_guide_window_slicing", False):
@@ -8465,7 +8465,7 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
             configs, _, _ = get_settings_from_file(state,lset_path , True, True, True, min_settings_version=2.38, merge_loras = merge_loras )
 
             if configs == None:
-                gr.Info("File not supported")
+                gr.Info("File not supported" + (f": {state.get('_last_settings_file_error')}" if state.get("_last_settings_file_error") else ""))
                 return [gr.update()] * 9
             settings_bundle_task_count = configs.pop("_settings_bundle_task_count", 0)
             model_type = configs["model_type"]
@@ -9274,6 +9274,7 @@ def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, sw
     configs = None
     any_image_or_video = False
     any_audio = False
+    state["_last_settings_file_error"] = None
     file_path = getattr(file_path, "name", file_path)
     file_path = str(file_path or "")
     file_path_lower = file_path.lower()
@@ -9285,6 +9286,7 @@ def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, sw
             pass
     elif file_path_lower.endswith(".zip") and allow_json:
         loaded_queue, error, source_task_count = _parse_settings_zip(file_path, state)
+        state["_last_settings_file_error"] = error
         if error is None and loaded_queue:
             configs = (loaded_queue[0].get("params", {}) or {}).copy()
             if source_task_count > 1:
@@ -9415,7 +9417,7 @@ def load_settings_from_file(state, file_path):
 
     configs, any_video_or_image_file, any_audio = get_settings_from_file(state, file_path, True, True, True)
     if configs == None:
-        gr.Info("File not supported")
+        gr.Info("File not supported" + (f": {state.get('_last_settings_file_error')}" if state.get("_last_settings_file_error") else ""))
         return gr.update(), gr.update(), gr.update(), gr.update(), None
     if is_deepy_display_metadata(configs):
         gr.Info("Deepy helper metadata is display-only and cannot be loaded as WanGP settings")

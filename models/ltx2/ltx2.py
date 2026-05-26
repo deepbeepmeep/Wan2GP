@@ -1221,60 +1221,67 @@ class LTX2:
                             )
                             waveform = torch.cat([waveform, pad], dim=1)
 
+                waveform = waveform.to(device="cpu", dtype=torch.float32)
+                if "1" in audio_prompt_type:
+                    max_samples = int(round(float(waveform_sample_rate) * LTX2_ID_LORA_MAX_REFERENCE_SECONDS))
+                    waveform = waveform[:, :, :max_samples]
                 audio_processor = AudioProcessor(
                     sample_rate=self.audio_encoder.sample_rate,
                     mel_bins=self.audio_encoder.mel_bins,
                     mel_hop_length=self.audio_encoder.mel_hop_length,
                     n_fft=self.audio_encoder.n_fft,
                 )
-                waveform = waveform.to(device="cpu", dtype=torch.float32)
-                if "1" in audio_prompt_type:
-                    max_samples = int(round(float(waveform_sample_rate) * LTX2_ID_LORA_MAX_REFERENCE_SECONDS))
-                    waveform = waveform[:, :, :max_samples]
-                audio_processor = audio_processor.to(waveform.device)
-                mel = audio_processor.waveform_to_mel(waveform, waveform_sample_rate)
-                if self._interrupt:
-                    return None
-                audio_params = next(self.audio_encoder.parameters(), None)
-                audio_device = audio_params.device if audio_params is not None else self.device
-                audio_dtype = audio_params.dtype if audio_params is not None else self.dtype
-                mel = mel.to(device=audio_device, dtype=audio_dtype)
-                with torch.inference_mode():
-                    audio_latent = self.audio_encoder(mel)
-                if self._interrupt:
-                    return None
-                audio_downsample = getattr(
-                    getattr(self.audio_encoder, "patchifier", None),
-                    "audio_latent_downsample_factor",
-                    4,
-                )
-                audio_latent = audio_latent.to(device=self.device, dtype=self.dtype)
-                if "1" in audio_prompt_type:
-                    audio_conditionings = [AudioConditionByReferenceLatent(audio_latent)]
-                    audio_conditionings_stage2 = []
-                    audio_identity_guidance_scale = LTX2_ID_LORA_GUIDANCE_SCALE
-                else:
-                    target_shape = AudioLatentShape.from_video_pixel_shape(
-                        VideoPixelShape(
-                            batch=audio_latent.shape[0],
-                            frames=int(frame_num),
-                            width=1,
-                            height=1,
-                            fps=float(fps),
-                        ),
-                        channels=audio_latent.shape[1],
-                        mel_bins=audio_latent.shape[3],
-                        sample_rate=self.audio_encoder.sample_rate,
-                        hop_length=self.audio_encoder.mel_hop_length,
-                        audio_latent_downsample_factor=audio_downsample,
+                skip_audio_conditioning = False
+                waveform_sample_rate = int(waveform_sample_rate or 0)
+                input_samples = int(waveform.shape[-1])
+                if "1" not in audio_prompt_type and audio_processor.waveform_too_short_for_mel(waveform, waveform_sample_rate):
+                    print(f"[WAN2GP][LTX2] Audio conditioning is too short for mel encoding ({input_samples} samples at {waveform_sample_rate} Hz); disabling it so audio frames are denoised.")
+                    skip_audio_conditioning = True
+                if not skip_audio_conditioning:
+                    audio_processor = audio_processor.to(waveform.device)
+                    mel = audio_processor.waveform_to_mel(waveform, waveform_sample_rate)
+                    if self._interrupt:
+                        return None
+                    audio_params = next(self.audio_encoder.parameters(), None)
+                    audio_device = audio_params.device if audio_params is not None else self.device
+                    audio_dtype = audio_params.dtype if audio_params is not None else self.dtype
+                    mel = mel.to(device=audio_device, dtype=audio_dtype)
+                    with torch.inference_mode():
+                        audio_latent = self.audio_encoder(mel)
+                    if self._interrupt:
+                        return None
+                    audio_downsample = getattr(
+                        getattr(self.audio_encoder, "patchifier", None),
+                        "audio_latent_downsample_factor",
+                        4,
                     )
-                    target_frames = target_shape.frames
-                    if audio_latent.shape[2] < target_frames:
-                        audio_conditionings = [AudioConditionByLatentPrefix(audio_latent)]
+                    audio_latent = audio_latent.to(device=self.device, dtype=self.dtype)
+                    if "1" in audio_prompt_type:
+                        audio_conditionings = [AudioConditionByReferenceLatent(audio_latent)]
+                        audio_conditionings_stage2 = []
+                        audio_identity_guidance_scale = LTX2_ID_LORA_GUIDANCE_SCALE
                     else:
-                        if audio_latent.shape[2] > target_frames:
-                            audio_latent = audio_latent[:, :, :target_frames, :]
-                        audio_conditionings = [AudioConditionByLatent(audio_latent, audio_strength)]
+                        target_shape = AudioLatentShape.from_video_pixel_shape(
+                            VideoPixelShape(
+                                batch=audio_latent.shape[0],
+                                frames=int(frame_num),
+                                width=1,
+                                height=1,
+                                fps=float(fps),
+                            ),
+                            channels=audio_latent.shape[1],
+                            mel_bins=audio_latent.shape[3],
+                            sample_rate=self.audio_encoder.sample_rate,
+                            hop_length=self.audio_encoder.mel_hop_length,
+                            audio_latent_downsample_factor=audio_downsample,
+                        )
+                        target_frames = target_shape.frames
+                        if audio_latent.shape[2] < target_frames:
+                            audio_conditionings = [AudioConditionByLatentPrefix(audio_latent)]
+                        else:
+                            if audio_latent.shape[2] > target_frames:
+                                audio_latent = audio_latent[:, :, :target_frames, :]
+                            audio_conditionings = [AudioConditionByLatent(audio_latent, audio_strength)]
 
         target_height = int(height)
         target_width = int(width)

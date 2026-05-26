@@ -45,7 +45,7 @@ from .ltx_pipelines.utils.constants import AUDIO_SAMPLE_RATE, DEFAULT_NEGATIVE_P
 
 _GEMMA_FOLDER = "gemma-3-12b-it-qat-q4_0-unquantized"
 _SPATIAL_UPSCALER_FILENAME = "ltx-2-spatial-upscaler-x2-1.0.safetensors"
-LTX2_USE_FP32_ROPE_FREQS = True #False
+LTX2_USE_FP32_ROPE_FREQS = True
 LTX2_ID_LORA_GUIDANCE_SCALE = 3.0
 LTX2_ID_LORA_AUDIO_CFG_SCALE = 7.0
 LTX2_ID_LORA_MAX_REFERENCE_SECONDS = 121.0 / 25.0
@@ -1182,6 +1182,7 @@ class LTX2:
         _append_injected_ref_entries(guiding_images, guiding_images_stage2)
 
         tiling_config = _build_tiling_config(VAE_tile_size, fps)
+        # tiling_config = _build_tiling_config(VAE_tile_size, None)
         interrupt_check = lambda: self._interrupt
         text_connectors = text_connectors or getattr(self, "_text_connectors", None)
         editanything_ref_images = input_ref_images if editanything else None
@@ -1363,6 +1364,7 @@ class LTX2:
                 self_refiner_certain_percentage=self_refiner_certain_percentage,
                 self_refiner_max_plans=self_refiner_max_plans,
                 editanything_ref_images=editanything_ref_images,
+                base_model_type=self.base_model_type,
             )
         else:
             distilled_kwargs = {}
@@ -1419,6 +1421,7 @@ class LTX2:
                 self_refiner_certain_percentage=self_refiner_certain_percentage,
                 self_refiner_max_plans=self_refiner_max_plans,
                 editanything_ref_images=editanything_ref_images,
+                base_model_type=self.base_model_type,
                 **distilled_kwargs,
             )
 

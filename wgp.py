@@ -136,7 +136,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.81"
+WanGP_version = "11.82"
 settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -4809,7 +4809,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
 
             if len(video_activated_loras_str) > 0:
                 values += [video_activated_loras_str]
-                labels += ["Loras"] 
+                labels += ["LoRAs"] 
             if nb_audio_tracks  > 0:
                 values +=[nb_audio_tracks]
                 labels +=["Nb Audio Tracks"]
@@ -11433,19 +11433,19 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 label= "How to Process each Line of the Text Prompt"
                             )
 
-                with gr.Tab("Loras", visible= not audio_only or model_def.get("enabled_audio_lora", False)) as loras_tab:
+                with gr.Tab("LoRAs", visible= not audio_only or model_def.get("enabled_audio_lora", False)) as loras_tab:
                     with gr.Column(visible = True): #as loras_column:
-                        gr.Markdown("<B>Loras can be used to create special effects on the video by mentioning a trigger word in the Prompt. You can save Loras combinations in presets.</B>")
+                        gr.Markdown("<B>LoRAs can be used to create special effects on the video by mentioning a trigger word in the Prompt. You can save Loras combinations in presets.</B>")
                         loras, loras_hierarchy = get_updated_loras_dropdown(loras, launch_loras)
                         state_dict["loras"] = loras
                         loras_choices = HierarchySelector(
                             hierarchy=loras_hierarchy,
                             value= launch_loras,
                             height=10,
-                            label="Activated Loras",
+                            label="Activated LoRAs",
                             search_empty_label="No matching LoRAs",
                         )
-                        loras_multipliers = gr.Textbox(label="Loras Multipliers (1.0 by default) separated by Space chars or CR, lines that start with # are ignored", value=launch_multis_str)
+                        loras_multipliers = gr.Textbox(label="LoRAs Multipliers (1.0 by default) separated by Space chars or CR, lines that start with # are ignored", value=launch_multis_str)
                 with gr.Tab("Steps Skipping", visible = any_tea_cache or any_mag_cache) as speed_tab:
                     with gr.Column():
                         gr.Markdown("<B>Tea Cache and Mag Cache accelerate the Video Generation by skipping intelligently some steps, the more steps are skipped the lower the quality of the video.</B>")

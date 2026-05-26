@@ -974,9 +974,9 @@ class WanVAE:
                 device_mem_capacity = device_mem_capacity / 2
             if device_mem_capacity >= 24000:
                 if output_height is not None and output_width is not None and int(output_height) * int(output_width) > 1920 * 1088:
-                    use_vae_config = 1
-                else:
                     use_vae_config = 2
+                else:
+                    use_vae_config = 1
             elif device_mem_capacity >= 16000:
                 use_vae_config = 3
             elif device_mem_capacity >= 8000:

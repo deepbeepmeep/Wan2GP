@@ -4,6 +4,8 @@ os.environ["GRADIO_LANG"] = "en"
 p = os.path.dirname(os.path.abspath(__file__))
 if p not in sys.path:
     sys.path.insert(0, p)
+from shared.native_runtime import preload_preferred_libstdcxx
+preload_preferred_libstdcxx()
 from shared.default_device import set_default_cuda_device_from_arg; set_default_cuda_device_from_arg("gpu")
 # # os.environ.pop("TORCH_LOGS", None)  # make sure no env var is suppressing/overriding
 # os.environ["TORCH_LOGS"]= "recompiles"

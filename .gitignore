@@ -46,3 +46,4 @@ loras_i2v/
 wgp_config.json
 plugins_local.json
 loras_url_cache.json
+loras_url_cache_v2.json

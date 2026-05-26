@@ -118,6 +118,11 @@ class HierarchySelector(FormComponent):
         *,
         value: Sequence[str] | str | Callable | None = None,
         height: int = 10,
+        display_mode: str = "file",
+        breadcrumb_separator: str = " ",
+        sort_hierarchy: bool = True,
+        search_empty_label: str = "No matches",
+        show_placeholder: bool = False,
         label: str | None = None,
         info: str | None = None,
         every: "Timer | float | None" = None,
@@ -133,7 +138,12 @@ class HierarchySelector(FormComponent):
         render: bool = True,
         key: int | str | None = None,
     ):
-        self.hierarchy = _sorted_hierarchy(hierarchy or {"folders": [], "items": []})
+        self.display_mode = display_mode
+        self.breadcrumb_separator = breadcrumb_separator
+        self.sort_hierarchy = sort_hierarchy
+        self.search_empty_label = search_empty_label
+        self.show_placeholder = show_placeholder
+        self.hierarchy = _sorted_hierarchy(hierarchy or {"folders": [], "items": []}) if sort_hierarchy else hierarchy or {"folders": [], "items": []}
         self.height = int(height)
         super().__init__(
             label=label,

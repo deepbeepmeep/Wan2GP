@@ -3,6 +3,7 @@ from shared.utils.plugins import WAN2GPPlugin
 import json
 from shared.deepy.engine import get_or_create_assistant_session
 from shared.gradio import assistant_chat, gradio_queue_focus_patch
+from shared.gradio.hierarchy_selector import HierarchySelector
 from shared.utils import prompt_parser
 from shared.deepy.config import (
     DEEPY_CONTEXT_TOKENS_MIN,
@@ -86,12 +87,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("release_model")
         self.request_global("release_flashvsr_vram")
         self.request_global("release_seedvc_vram")
-        self.request_global("get_sorted_dropdown")
         self.request_global("app")
         self.request_global("fl")
         self.request_global("is_generation_in_progress")
         self.request_global("generate_header")
         self.request_global("generate_dropdown_model_list")
+        self.request_global("create_models_selector_hierarchy")
         self.request_global("get_unique_id")
         self.request_global("reset_prompt_enhancer")
         self.request_global("reset_prompt_enhancer_if_requested")
@@ -123,11 +124,15 @@ class ConfigTabPlugin(WAN2GPPlugin):
         with gr.Column():
             with gr.Tabs():
                 with gr.Tab("General"):
-                    _, _, dropdown_choices = self.get_sorted_dropdown(self.displayed_model_types, None, None, False)
-
-                    self.transformer_types_choices = gr.Dropdown(
-                        choices=dropdown_choices, value=self.transformer_types,
-                        label="Selectable Generative Models (leave empty for all)", multiselect=True
+                    self.transformer_types_choices = HierarchySelector(
+                        hierarchy=self.create_models_selector_hierarchy(self.displayed_model_types),
+                        value=self.transformer_types,
+                        height=10,
+                        label="Selectable Generative Models (leave empty for all)",
+                        display_mode="breadcrumb",
+                        sort_hierarchy=False,
+                        search_empty_label="No matching models",
+                        interactive=not self.args.lock_config,
                     )
                     self.model_hierarchy_type_choice = gr.Dropdown(
                         choices=[

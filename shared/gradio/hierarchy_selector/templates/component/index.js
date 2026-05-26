@@ -1,38 +1,38 @@
 const {
-  SvelteComponent: Kt,
-  append: E,
-  attr: S,
-  check_outros: ft,
-  create_component: Qt,
-  destroy_block: Wt,
-  destroy_component: Jt,
-  detach: se,
-  element: fe,
-  empty: ht,
-  ensure_array_like: be,
-  flush: Z,
-  group_outros: dt,
-  init: Ut,
-  insert: ae,
-  listen: Ie,
-  mount_component: Xt,
-  outro_and_destroy_block: Yt,
-  run_all: _t,
-  safe_not_equal: $t,
-  set_data: mt,
-  set_style: Fe,
-  space: Y,
-  svg_element: Q,
-  text: gt,
-  toggle_class: Se,
-  transition_in: he,
-  transition_out: Me,
-  update_keyed_each: Qe
+  SvelteComponent: ol,
+  append: A,
+  attr: M,
+  check_outros: It,
+  create_component: cl,
+  destroy_block: ul,
+  destroy_component: hl,
+  detach: de,
+  element: ke,
+  empty: Ft,
+  ensure_array_like: ze,
+  flush: U,
+  group_outros: St,
+  init: fl,
+  insert: me,
+  listen: Ee,
+  mount_component: _l,
+  outro_and_destroy_block: dl,
+  run_all: Mt,
+  safe_not_equal: ml,
+  set_data: Dt,
+  set_style: Ne,
+  space: ie,
+  svg_element: ee,
+  text: Lt,
+  toggle_class: Ae,
+  transition_in: we,
+  transition_out: Pe,
+  update_keyed_each: lt
 } = window.__gradio__svelte__internal;
-function We(l, e, t) {
+function nt(l, e, t) {
   const n = l.slice();
   n[13] = e[t];
-  const i = (
+  const r = (
     /*value*/
     n[4].includes(
       /*valueForItem*/
@@ -42,20 +42,20 @@ function We(l, e, t) {
       )
     )
   );
-  return n[14] = i, n;
+  return n[14] = r, n;
 }
-function Je(l, e, t) {
+function rt(l, e, t) {
   const n = l.slice();
   n[17] = e[t];
-  const i = pt(
+  const r = Ct(
     /*folder*/
     n[17]
   );
-  return n[18] = i, n;
+  return n[18] = r, n;
 }
-function Ue(l) {
+function it(l) {
   let e, t;
-  return e = new vt({
+  return e = new zt({
     props: {
       folders: (
         /*folder*/
@@ -96,56 +96,56 @@ function Ue(l) {
     }
   }), {
     c() {
-      Qt(e.$$.fragment);
+      cl(e.$$.fragment);
     },
-    m(n, i) {
-      Xt(e, n, i), t = !0;
+    m(n, r) {
+      _l(e, n, r), t = !0;
     },
-    p(n, i) {
+    p(n, r) {
       const s = {};
-      i & /*folders*/
+      r & /*folders*/
       1 && (s.folders = /*folder*/
-      n[17].folders || []), i & /*folders*/
+      n[17].folders || []), r & /*folders*/
       1 && (s.items = /*folder*/
-      n[17].items || []), i & /*depth*/
+      n[17].items || []), r & /*depth*/
       4 && (s.depth = /*depth*/
-      n[2] + 1), i & /*expanded*/
+      n[2] + 1), r & /*expanded*/
       8 && (s.expanded = /*expanded*/
-      n[3]), i & /*value*/
+      n[3]), r & /*value*/
       16 && (s.value = /*value*/
-      n[4]), i & /*toggleItem*/
+      n[4]), r & /*toggleItem*/
       32 && (s.toggleItem = /*toggleItem*/
-      n[5]), i & /*toggleFolder*/
+      n[5]), r & /*toggleFolder*/
       64 && (s.toggleFolder = /*toggleFolder*/
-      n[6]), i & /*valueForItem*/
+      n[6]), r & /*valueForItem*/
       128 && (s.valueForItem = /*valueForItem*/
-      n[7]), i & /*labelForItem*/
+      n[7]), r & /*labelForItem*/
       256 && (s.labelForItem = /*labelForItem*/
       n[8]), e.$set(s);
     },
     i(n) {
-      t || (he(e.$$.fragment, n), t = !0);
+      t || (we(e.$$.fragment, n), t = !0);
     },
     o(n) {
-      Me(e.$$.fragment, n), t = !1;
+      Pe(e.$$.fragment, n), t = !1;
     },
     d(n) {
-      Jt(e, n);
+      hl(e, n);
     }
   };
 }
-function Xe(l, e) {
-  let t, n, i, s, a, o, _, k, m, w = we(
+function st(l, e) {
+  let t, n, r, s, a, o, _, w, m, y = He(
     /*folder*/
     e[17]
-  ) + "", u, c, p, z = (
+  ) + "", u, c, g, H = (
     /*expanded*/
     e[3].has(
       /*path*/
       e[18]
     )
-  ), h, I, B, v;
-  function H() {
+  ), f, b, P, D;
+  function k() {
     return (
       /*click_handler*/
       e[9](
@@ -154,22 +154,22 @@ function Xe(l, e) {
       )
     );
   }
-  function C(...b) {
+  function G(...F) {
     return (
       /*keydown_handler*/
       e[10](
         /*path*/
         e[18],
-        ...b
+        ...F
       )
     );
   }
-  let g = z && Ue(e);
+  let v = H && it(e);
   return {
     key: l,
     first: null,
     c() {
-      t = fe("div"), n = Q("svg"), i = Q("path"), s = Y(), a = Q("svg"), o = Q("path"), _ = Q("path"), k = Y(), m = fe("span"), u = gt(w), p = Y(), g && g.c(), h = ht(), S(i, "d", "M6 4.5L10 8l-4 3.5"), S(n, "class", "hierarchy-twist svelte-1p05czg"), S(n, "viewBox", "0 0 16 16"), S(n, "aria-hidden", "true"), Se(
+      t = ke("div"), n = ee("svg"), r = ee("path"), s = ie(), a = ee("svg"), o = ee("path"), _ = ee("path"), w = ie(), m = ke("span"), u = Lt(y), g = ie(), v && v.c(), f = Ft(), M(r, "d", "M6 4.5L10 8l-4 3.5"), M(n, "class", "hierarchy-twist svelte-1p05czg"), M(n, "viewBox", "0 0 16 16"), M(n, "aria-hidden", "true"), Ae(
         n,
         "hierarchy-twist-open",
         /*expanded*/
@@ -177,21 +177,21 @@ function Xe(l, e) {
           /*path*/
           e[18]
         )
-      ), S(o, "d", "M2.75 6.25h5.4l1.55 1.7h7.55c.55 0 1 .45 1 1v6.3c0 .55-.45 1-1 1H2.75c-.55 0-1-.45-1-1v-8c0-.55.45-1 1-1Z"), S(_, "d", "M2.25 7.95V5.6c0-.55.45-1 1-1h4.5l1.35 1.65"), S(a, "class", "hierarchy-icon hierarchy-folder-icon svelte-1p05czg"), S(a, "viewBox", "0 0 20 20"), S(a, "aria-hidden", "true"), S(m, "class", "hierarchy-name svelte-1p05czg"), S(t, "class", "hierarchy-row hierarchy-folder svelte-1p05czg"), S(t, "role", "button"), S(t, "tabindex", "0"), S(t, "title", c = we(
+      ), M(o, "d", "M2.75 6.25h5.4l1.55 1.7h7.55c.55 0 1 .45 1 1v6.3c0 .55-.45 1-1 1H2.75c-.55 0-1-.45-1-1v-8c0-.55.45-1 1-1Z"), M(_, "d", "M2.25 7.95V5.6c0-.55.45-1 1-1h4.5l1.35 1.65"), M(a, "class", "hierarchy-icon hierarchy-folder-icon svelte-1p05czg"), M(a, "viewBox", "0 0 20 20"), M(a, "aria-hidden", "true"), M(m, "class", "hierarchy-name svelte-1p05czg"), M(t, "class", "hierarchy-row hierarchy-folder svelte-1p05czg"), M(t, "role", "button"), M(t, "tabindex", "0"), M(t, "title", c = He(
         /*folder*/
         e[17]
-      )), Fe(t, "padding-left", `${/*depth*/
+      )), Ne(t, "padding-left", `${/*depth*/
       e[2] * 18 + 6}px`), this.first = t;
     },
-    m(b, f) {
-      ae(b, t, f), E(t, n), E(n, i), E(t, s), E(t, a), E(a, o), E(a, _), E(t, k), E(t, m), E(m, u), ae(b, p, f), g && g.m(b, f), ae(b, h, f), I = !0, B || (v = [
-        Ie(t, "click", H),
-        Ie(t, "keydown", C)
-      ], B = !0);
+    m(F, I) {
+      me(F, t, I), A(t, n), A(n, r), A(t, s), A(t, a), A(a, o), A(a, _), A(t, w), A(t, m), A(m, u), me(F, g, I), v && v.m(F, I), me(F, f, I), b = !0, P || (D = [
+        Ee(t, "click", k),
+        Ee(t, "keydown", G)
+      ], P = !0);
     },
-    p(b, f) {
-      e = b, (!I || f & /*expanded, folderPath, folders*/
-      9) && Se(
+    p(F, I) {
+      e = F, (!b || I & /*expanded, folderPath, folders*/
+      9) && Ae(
         n,
         "hierarchy-twist-open",
         /*expanded*/
@@ -199,46 +199,46 @@ function Xe(l, e) {
           /*path*/
           e[18]
         )
-      ), (!I || f & /*folders*/
-      1) && w !== (w = we(
+      ), (!b || I & /*folders*/
+      1) && y !== (y = He(
         /*folder*/
         e[17]
-      ) + "") && mt(u, w), (!I || f & /*folders*/
-      1 && c !== (c = we(
+      ) + "") && Dt(u, y), (!b || I & /*folders*/
+      1 && c !== (c = He(
         /*folder*/
         e[17]
-      ))) && S(t, "title", c), f & /*depth*/
-      4 && Fe(t, "padding-left", `${/*depth*/
-      e[2] * 18 + 6}px`), f & /*expanded, folders*/
-      9 && (z = /*expanded*/
+      ))) && M(t, "title", c), I & /*depth*/
+      4 && Ne(t, "padding-left", `${/*depth*/
+      e[2] * 18 + 6}px`), I & /*expanded, folders*/
+      9 && (H = /*expanded*/
       e[3].has(
         /*path*/
         e[18]
-      )), z ? g ? (g.p(e, f), f & /*expanded, folders*/
-      9 && he(g, 1)) : (g = Ue(e), g.c(), he(g, 1), g.m(h.parentNode, h)) : g && (dt(), Me(g, 1, 1, () => {
-        g = null;
-      }), ft());
+      )), H ? v ? (v.p(e, I), I & /*expanded, folders*/
+      9 && we(v, 1)) : (v = it(e), v.c(), we(v, 1), v.m(f.parentNode, f)) : v && (St(), Pe(v, 1, 1, () => {
+        v = null;
+      }), It());
     },
-    i(b) {
-      I || (he(g), I = !0);
+    i(F) {
+      b || (we(v), b = !0);
     },
-    o(b) {
-      Me(g), I = !1;
+    o(F) {
+      Pe(v), b = !1;
     },
-    d(b) {
-      b && (se(t), se(p), se(h)), g && g.d(b), B = !1, _t(v);
+    d(F) {
+      F && (de(t), de(g), de(f)), v && v.d(F), P = !1, Mt(D);
     }
   };
 }
-function Ye(l, e) {
-  let t, n, i, s, a, o, _, k, m = (
+function at(l, e) {
+  let t, n, r, s, a, o, _, w, m = (
     /*labelForItem*/
     e[8](
       /*item*/
       e[13]
     ) + ""
-  ), w, u, c, p, z, h;
-  function I() {
+  ), y, u, c, g, H, f;
+  function b() {
     return (
       /*click_handler_1*/
       e[11](
@@ -247,13 +247,13 @@ function Ye(l, e) {
       )
     );
   }
-  function B(...v) {
+  function P(...D) {
     return (
       /*keydown_handler_1*/
       e[12](
         /*item*/
         e[13],
-        ...v
+        ...D
       )
     );
   }
@@ -261,71 +261,71 @@ function Ye(l, e) {
     key: l,
     first: null,
     c() {
-      t = fe("div"), n = fe("span"), i = Y(), s = Q("svg"), a = Q("path"), o = Q("path"), _ = Y(), k = fe("span"), w = gt(m), u = Y(), S(n, "class", "hierarchy-twist-spacer svelte-1p05czg"), S(a, "d", "M5.25 2.75h6.05L15.75 7.2v10.05H5.25V2.75Z"), S(o, "d", "M11.25 2.95V7.3h4.3"), S(s, "class", "hierarchy-icon hierarchy-item-icon svelte-1p05czg"), S(s, "viewBox", "0 0 20 20"), S(s, "aria-hidden", "true"), S(k, "class", "hierarchy-name svelte-1p05czg"), S(t, "class", "hierarchy-row hierarchy-item svelte-1p05czg"), S(t, "title", c = /*labelForItem*/
+      t = ke("div"), n = ke("span"), r = ie(), s = ee("svg"), a = ee("path"), o = ee("path"), _ = ie(), w = ke("span"), y = Lt(m), u = ie(), M(n, "class", "hierarchy-twist-spacer svelte-1p05czg"), M(a, "d", "M5.25 2.75h6.05L15.75 7.2v10.05H5.25V2.75Z"), M(o, "d", "M11.25 2.95V7.3h4.3"), M(s, "class", "hierarchy-icon hierarchy-item-icon svelte-1p05czg"), M(s, "viewBox", "0 0 20 20"), M(s, "aria-hidden", "true"), M(w, "class", "hierarchy-name svelte-1p05czg"), M(t, "class", "hierarchy-row hierarchy-item svelte-1p05czg"), M(t, "title", c = /*labelForItem*/
       e[8](
         /*item*/
         e[13]
-      )), S(t, "role", "button"), S(t, "tabindex", "0"), S(t, "aria-pressed", p = /*selected*/
-      e[14]), Se(
+      )), M(t, "role", "button"), M(t, "tabindex", "0"), M(t, "aria-pressed", g = /*selected*/
+      e[14]), Ae(
         t,
         "hierarchy-item-selected",
         /*selected*/
         e[14]
-      ), Fe(t, "padding-left", `${/*depth*/
+      ), Ne(t, "padding-left", `${/*depth*/
       e[2] * 18 + 6}px`), this.first = t;
     },
-    m(v, H) {
-      ae(v, t, H), E(t, n), E(t, i), E(t, s), E(s, a), E(s, o), E(t, _), E(t, k), E(k, w), E(t, u), z || (h = [
-        Ie(t, "click", I),
-        Ie(t, "keydown", B)
-      ], z = !0);
+    m(D, k) {
+      me(D, t, k), A(t, n), A(t, r), A(t, s), A(s, a), A(s, o), A(t, _), A(t, w), A(w, y), A(t, u), H || (f = [
+        Ee(t, "click", b),
+        Ee(t, "keydown", P)
+      ], H = !0);
     },
-    p(v, H) {
-      e = v, H & /*labelForItem, items*/
+    p(D, k) {
+      e = D, k & /*labelForItem, items*/
       258 && m !== (m = /*labelForItem*/
       e[8](
         /*item*/
         e[13]
-      ) + "") && mt(w, m), H & /*labelForItem, items*/
+      ) + "") && Dt(y, m), k & /*labelForItem, items*/
       258 && c !== (c = /*labelForItem*/
       e[8](
         /*item*/
         e[13]
-      )) && S(t, "title", c), H & /*value, valueForItem, items*/
-      146 && p !== (p = /*selected*/
-      e[14]) && S(t, "aria-pressed", p), H & /*value, valueForItem, items*/
-      146 && Se(
+      )) && M(t, "title", c), k & /*value, valueForItem, items*/
+      146 && g !== (g = /*selected*/
+      e[14]) && M(t, "aria-pressed", g), k & /*value, valueForItem, items*/
+      146 && Ae(
         t,
         "hierarchy-item-selected",
         /*selected*/
         e[14]
-      ), H & /*depth*/
-      4 && Fe(t, "padding-left", `${/*depth*/
+      ), k & /*depth*/
+      4 && Ne(t, "padding-left", `${/*depth*/
       e[2] * 18 + 6}px`);
     },
-    d(v) {
-      v && se(t), z = !1, _t(h);
+    d(D) {
+      D && de(t), H = !1, Mt(f);
     }
   };
 }
-function xt(l) {
-  let e = [], t = /* @__PURE__ */ new Map(), n, i = [], s = /* @__PURE__ */ new Map(), a, o, _ = be(
+function pl(l) {
+  let e = [], t = /* @__PURE__ */ new Map(), n, r = [], s = /* @__PURE__ */ new Map(), a, o, _ = ze(
     /*folders*/
     l[0]
   );
-  const k = (u) => pt(
+  const w = (u) => Ct(
     /*folder*/
     u[17]
   );
   for (let u = 0; u < _.length; u += 1) {
-    let c = Je(l, _, u), p = k(c);
-    t.set(p, e[u] = Xe(p, c));
+    let c = rt(l, _, u), g = w(c);
+    t.set(g, e[u] = st(g, c));
   }
-  let m = be(
+  let m = ze(
     /*items*/
     l[1]
   );
-  const w = (u) => (
+  const y = (u) => (
     /*valueForItem*/
     u[7](
       /*item*/
@@ -333,92 +333,92 @@ function xt(l) {
     )
   );
   for (let u = 0; u < m.length; u += 1) {
-    let c = We(l, m, u), p = w(c);
-    s.set(p, i[u] = Ye(p, c));
+    let c = nt(l, m, u), g = y(c);
+    s.set(g, r[u] = at(g, c));
   }
   return {
     c() {
       for (let u = 0; u < e.length; u += 1)
         e[u].c();
-      n = Y();
-      for (let u = 0; u < i.length; u += 1)
-        i[u].c();
-      a = ht();
+      n = ie();
+      for (let u = 0; u < r.length; u += 1)
+        r[u].c();
+      a = Ft();
     },
     m(u, c) {
-      for (let p = 0; p < e.length; p += 1)
-        e[p] && e[p].m(u, c);
-      ae(u, n, c);
-      for (let p = 0; p < i.length; p += 1)
-        i[p] && i[p].m(u, c);
-      ae(u, a, c), o = !0;
+      for (let g = 0; g < e.length; g += 1)
+        e[g] && e[g].m(u, c);
+      me(u, n, c);
+      for (let g = 0; g < r.length; g += 1)
+        r[g] && r[g].m(u, c);
+      me(u, a, c), o = !0;
     },
     p(u, [c]) {
       c & /*folders, depth, expanded, value, toggleItem, toggleFolder, valueForItem, labelForItem, folderPath, folderLabel*/
-      509 && (_ = be(
+      509 && (_ = ze(
         /*folders*/
         u[0]
-      ), dt(), e = Qe(e, c, k, 1, u, _, t, n.parentNode, Yt, Xe, n, Je), ft()), c & /*labelForItem, items, value, valueForItem, depth, toggleItem*/
-      438 && (m = be(
+      ), St(), e = lt(e, c, w, 1, u, _, t, n.parentNode, dl, st, n, rt), It()), c & /*labelForItem, items, value, valueForItem, depth, toggleItem*/
+      438 && (m = ze(
         /*items*/
         u[1]
-      ), i = Qe(i, c, w, 1, u, m, s, a.parentNode, Wt, Ye, a, We));
+      ), r = lt(r, c, y, 1, u, m, s, a.parentNode, ul, at, a, nt));
     },
     i(u) {
       if (!o) {
         for (let c = 0; c < _.length; c += 1)
-          he(e[c]);
+          we(e[c]);
         o = !0;
       }
     },
     o(u) {
       for (let c = 0; c < e.length; c += 1)
-        Me(e[c]);
+        Pe(e[c]);
       o = !1;
     },
     d(u) {
-      u && (se(n), se(a));
+      u && (de(n), de(a));
       for (let c = 0; c < e.length; c += 1)
         e[c].d(u);
-      for (let c = 0; c < i.length; c += 1)
-        i[c].d(u);
+      for (let c = 0; c < r.length; c += 1)
+        r[c].d(u);
     }
   };
 }
-function we(l) {
+function He(l) {
   return String(l.name || l.path || "");
 }
-function pt(l) {
+function Ct(l) {
   return String(l.path || l.name || "");
 }
-function el(l, e, t) {
-  let { folders: n = [] } = e, { items: i = [] } = e, { depth: s = 0 } = e, { expanded: a } = e, { value: o } = e, { toggleItem: _ } = e, { toggleFolder: k } = e, { valueForItem: m } = e, { labelForItem: w } = e;
-  const u = (h) => k(h), c = (h, I) => {
-    (I.key === "Enter" || I.key === " ") && (I.preventDefault(), k(h));
-  }, p = (h) => _(h), z = (h, I) => {
-    (I.key === "Enter" || I.key === " ") && (I.preventDefault(), _(h));
+function gl(l, e, t) {
+  let { folders: n = [] } = e, { items: r = [] } = e, { depth: s = 0 } = e, { expanded: a } = e, { value: o } = e, { toggleItem: _ } = e, { toggleFolder: w } = e, { valueForItem: m } = e, { labelForItem: y } = e;
+  const u = (f) => w(f), c = (f, b) => {
+    (b.key === "Enter" || b.key === " ") && (b.preventDefault(), w(f));
+  }, g = (f) => _(f), H = (f, b) => {
+    (b.key === "Enter" || b.key === " ") && (b.preventDefault(), _(f));
   };
-  return l.$$set = (h) => {
-    "folders" in h && t(0, n = h.folders), "items" in h && t(1, i = h.items), "depth" in h && t(2, s = h.depth), "expanded" in h && t(3, a = h.expanded), "value" in h && t(4, o = h.value), "toggleItem" in h && t(5, _ = h.toggleItem), "toggleFolder" in h && t(6, k = h.toggleFolder), "valueForItem" in h && t(7, m = h.valueForItem), "labelForItem" in h && t(8, w = h.labelForItem);
+  return l.$$set = (f) => {
+    "folders" in f && t(0, n = f.folders), "items" in f && t(1, r = f.items), "depth" in f && t(2, s = f.depth), "expanded" in f && t(3, a = f.expanded), "value" in f && t(4, o = f.value), "toggleItem" in f && t(5, _ = f.toggleItem), "toggleFolder" in f && t(6, w = f.toggleFolder), "valueForItem" in f && t(7, m = f.valueForItem), "labelForItem" in f && t(8, y = f.labelForItem);
   }, [
     n,
-    i,
+    r,
     s,
     a,
     o,
     _,
-    k,
-    m,
     w,
+    m,
+    y,
     u,
     c,
-    p,
-    z
+    g,
+    H
   ];
 }
-class vt extends Kt {
+class zt extends ol {
   constructor(e) {
-    super(), Ut(this, e, el, xt, $t, {
+    super(), fl(this, e, gl, pl, ml, {
       folders: 0,
       items: 1,
       depth: 2,
@@ -434,355 +434,361 @@ class vt extends Kt {
     return this.$$.ctx[0];
   }
   set folders(e) {
-    this.$$set({ folders: e }), Z();
+    this.$$set({ folders: e }), U();
   }
   get items() {
     return this.$$.ctx[1];
   }
   set items(e) {
-    this.$$set({ items: e }), Z();
+    this.$$set({ items: e }), U();
   }
   get depth() {
     return this.$$.ctx[2];
   }
   set depth(e) {
-    this.$$set({ depth: e }), Z();
+    this.$$set({ depth: e }), U();
   }
   get expanded() {
     return this.$$.ctx[3];
   }
   set expanded(e) {
-    this.$$set({ expanded: e }), Z();
+    this.$$set({ expanded: e }), U();
   }
   get value() {
     return this.$$.ctx[4];
   }
   set value(e) {
-    this.$$set({ value: e }), Z();
+    this.$$set({ value: e }), U();
   }
   get toggleItem() {
     return this.$$.ctx[5];
   }
   set toggleItem(e) {
-    this.$$set({ toggleItem: e }), Z();
+    this.$$set({ toggleItem: e }), U();
   }
   get toggleFolder() {
     return this.$$.ctx[6];
   }
   set toggleFolder(e) {
-    this.$$set({ toggleFolder: e }), Z();
+    this.$$set({ toggleFolder: e }), U();
   }
   get valueForItem() {
     return this.$$.ctx[7];
   }
   set valueForItem(e) {
-    this.$$set({ valueForItem: e }), Z();
+    this.$$set({ valueForItem: e }), U();
   }
   get labelForItem() {
     return this.$$.ctx[8];
   }
   set labelForItem(e) {
-    this.$$set({ labelForItem: e }), Z();
+    this.$$set({ labelForItem: e }), U();
   }
 }
 const {
-  SvelteComponent: tl,
-  action_destroyer: ll,
-  append: M,
-  attr: d,
-  binding_callbacks: ke,
-  check_outros: Ve,
-  create_component: nl,
-  destroy_block: il,
-  destroy_component: rl,
-  destroy_each: sl,
-  detach: R,
-  element: V,
-  empty: Be,
-  ensure_array_like: De,
-  flush: N,
-  group_outros: Ne,
-  init: al,
-  insert: q,
-  listen: A,
-  mount_component: ol,
-  noop: Pe,
-  null_to_empty: $e,
-  run_all: Ae,
-  safe_not_equal: ul,
-  set_data: de,
-  set_input_value: xe,
-  space: j,
-  stop_propagation: bt,
-  svg_element: ze,
-  text: $,
-  toggle_class: W,
-  transition_in: G,
-  transition_out: x,
-  update_keyed_each: cl
-} = window.__gradio__svelte__internal, { onDestroy: fl, onMount: hl, tick: Ce } = window.__gradio__svelte__internal;
-function et(l, e, t) {
+  SvelteComponent: bl,
+  action_destroyer: vl,
+  append: S,
+  attr: h,
+  binding_callbacks: Be,
+  check_outros: Ke,
+  create_component: yl,
+  destroy_block: kl,
+  destroy_component: wl,
+  destroy_each: Il,
+  detach: O,
+  element: E,
+  empty: Qe,
+  ensure_array_like: Te,
+  flush: V,
+  group_outros: We,
+  init: Fl,
+  insert: Z,
+  listen: R,
+  mount_component: Sl,
+  noop: Ze,
+  null_to_empty: ot,
+  run_all: Je,
+  safe_not_equal: Ml,
+  set_data: ae,
+  set_input_value: ct,
+  space: J,
+  stop_propagation: Ue,
+  svg_element: Re,
+  text: X,
+  toggle_class: te,
+  transition_in: Y,
+  transition_out: se,
+  update_keyed_each: Dl
+} = window.__gradio__svelte__internal, { onDestroy: Ll, onMount: Cl, tick: je } = window.__gradio__svelte__internal;
+function ut(l, e, t) {
   const n = l.slice();
-  n[67] = e[t];
-  const i = (
+  n[80] = e[t];
+  const r = (
     /*selectedValue*/
-    n[8].includes(_e(
+    n[10].includes(Ie(
       /*item*/
-      n[67]
+      n[80]
     ))
   );
-  return n[68] = i, n;
+  return n[81] = r, n;
 }
-function tt(l, e, t) {
+function ht(l, e, t) {
   const n = l.slice();
-  return n[68] = e[t], n[72] = t, n;
+  return n[81] = e[t], n[85] = t, n;
 }
-function lt(l) {
-  let e, t, n, i, s, a, o, _, k, m, w, u, c, p, z, h, I, B, v = (
+function ft(l) {
+  let e, t, n, r, s, a, o, _, w, m, y, u, c, g, H, f, b, P, D, k = (
     /*show_label*/
-    l[4] && /*label*/
-    l[2] && nt(l)
-  ), H = De(
+    l[6] && /*label*/
+    l[4] && _t(l)
+  ), G = Te(
     /*selectedValue*/
-    l[8]
-  ), C = [];
-  for (let f = 0; f < H.length; f += 1)
-    C[f] = it(tt(l, H, f));
-  let g = (
+    l[10]
+  ), v = [];
+  for (let d = 0; d < G.length; d += 1)
+    v[d] = dt(ht(l, G, d));
+  let F = (
+    /*selectedValue*/
+    l[10].length > 0 && mt(l)
+  ), I = (
     /*open*/
-    l[6] && rt(l)
-  ), b = (
+    l[8] && pt(l)
+  ), T = (
     /*info*/
-    l[3] && ot(l)
+    l[5] && vt(l)
   );
   return {
     c() {
-      e = V("div"), t = V("div"), v && v.c(), n = j(), i = V("div"), s = V("div");
-      for (let f = 0; f < C.length; f += 1)
-        C[f].c();
-      a = j(), o = V("input"), c = j(), g && g.c(), p = j(), b && b.c(), d(o, "class", "hierarchy-selector-search-input svelte-n293wu"), d(o, "type", "text"), d(o, "autocomplete", "off"), d(o, "spellcheck", "false"), o.disabled = _ = !/*interactive*/
-      l[5], d(o, "tabindex", k = /*interactive*/
-      l[5] ? 0 : -1), d(o, "placeholder", m = /*selectedValue*/
-      l[8].length === 0 ? (
+      e = E("div"), t = E("div"), k && k.c(), n = J(), r = E("div"), s = E("div");
+      for (let d = 0; d < v.length; d += 1)
+        v[d].c();
+      a = J(), o = E("input"), y = J(), F && F.c(), g = J(), I && I.c(), H = J(), T && T.c(), h(o, "class", "hierarchy-selector-search-input svelte-14blvp4"), h(o, "type", "text"), h(o, "autocomplete", "off"), h(o, "spellcheck", "false"), o.disabled = _ = !/*interactive*/
+      l[7], h(o, "tabindex", w = /*interactive*/
+      l[7] ? 0 : -1), h(o, "placeholder", m = /*show_placeholder*/
+      l[3] && /*selectedValue*/
+      l[10].length === 0 ? (
         /*label*/
-        l[2]
-      ) : ""), d(
+        l[4]
+      ) : ""), h(
         o,
         "aria-label",
         /*label*/
-        l[2]
-      ), d(s, "class", "hierarchy-selector-chips svelte-n293wu"), d(i, "class", "hierarchy-selector-input svelte-n293wu"), d(i, "role", "combobox"), d(i, "tabindex", w = /*interactive*/
-      l[5] ? 0 : -1), d(i, "aria-haspopup", "tree"), d(i, "aria-expanded", u = /*open*/
-      l[6] ? "true" : "false"), d(
-        i,
+        l[4]
+      ), h(s, "class", "hierarchy-selector-chips svelte-14blvp4"), h(r, "class", "hierarchy-selector-input svelte-14blvp4"), h(r, "role", "combobox"), h(r, "tabindex", u = /*interactive*/
+      l[7] ? 0 : -1), h(r, "aria-haspopup", "tree"), h(r, "aria-expanded", c = /*open*/
+      l[8] ? "true" : "false"), h(
+        r,
         "aria-controls",
         /*panelId*/
-        l[22]
-      ), W(i, "hierarchy-selector-disabled", !/*interactive*/
-      l[5]), d(t, "class", "hierarchy-selector-field svelte-n293wu"), d(
+        l[25]
+      ), te(r, "hierarchy-selector-disabled", !/*interactive*/
+      l[7]), h(t, "class", "hierarchy-selector-field svelte-14blvp4"), h(
         e,
         "id",
         /*elem_id*/
         l[0]
-      ), d(e, "class", z = $e(
+      ), h(e, "class", f = ot(
         /*classes*/
-        l[21]
-      ) + " svelte-n293wu"), d(
+        l[24]
+      ) + " svelte-14blvp4"), h(
         e,
         "style",
         /*style*/
-        l[20]
+        l[23]
       );
     },
-    m(f, D) {
-      q(f, e, D), M(e, t), v && v.m(t, null), M(t, n), M(t, i), M(i, s);
-      for (let L = 0; L < C.length; L += 1)
-        C[L] && C[L].m(s, null);
-      M(s, a), M(s, o), l[52](o), xe(
+    m(d, C) {
+      Z(d, e, C), S(e, t), k && k.m(t, null), S(t, n), S(t, r), S(r, s);
+      for (let B = 0; B < v.length; B += 1)
+        v[B] && v[B].m(s, null);
+      S(s, a), S(s, o), l[60](o), ct(
         o,
         /*searchQuery*/
-        l[7]
-      ), l[54](i), M(t, c), g && g.m(t, null), M(e, p), b && b.m(e, null), l[58](e), h = !0, I || (B = [
-        A(
+        l[9]
+      ), S(r, y), F && F.m(r, null), l[62](r), S(t, g), I && I.m(t, null), S(e, H), T && T.m(e, null), l[66](e), b = !0, P || (D = [
+        R(
           o,
           "input",
           /*input_input_handler*/
-          l[53]
+          l[61]
         ),
-        A(
+        R(
           o,
           "focus",
           /*onSearchFocus*/
-          l[27]
+          l[32]
         ),
-        A(
+        R(
           o,
           "input",
           /*onSearchInput*/
-          l[28]
-        ),
-        A(o, "keydown", bt(
-          /*onInputKeydown*/
           l[33]
+        ),
+        R(o, "keydown", Ue(
+          /*onInputKeydown*/
+          l[38]
         )),
-        A(
-          i,
+        R(
+          r,
           "mousedown",
           /*onInputPointerDown*/
-          l[29]
+          l[34]
         ),
-        A(
-          i,
+        R(
+          r,
           "keydown",
           /*onInputKeydown*/
-          l[33]
+          l[38]
         )
-      ], I = !0);
+      ], P = !0);
     },
-    p(f, D) {
+    p(d, C) {
       if (/*show_label*/
-      f[4] && /*label*/
-      f[2] ? v ? v.p(f, D) : (v = nt(f), v.c(), v.m(t, n)) : v && (v.d(1), v = null), D[0] & /*interactive, draggedIndex, dragOverIndex, onDragStart, removeValue, displayValue, selectedValue*/
-      1115881760 | D[1] & /*onDragEnd, onDrop*/
-      3) {
-        H = De(
+      d[6] && /*label*/
+      d[4] ? k ? k.p(d, C) : (k = _t(d), k.c(), k.m(t, n)) : k && (k.d(1), k = null), C[0] & /*interactive, draggedIndex, dragOverIndex, removeValue, displayValue, selectedValue*/
+      672662656 | C[1] & /*onDragStart, onDragEnd, onDrop*/
+      112) {
+        G = Te(
           /*selectedValue*/
-          f[8]
+          d[10]
         );
-        let L;
-        for (L = 0; L < H.length; L += 1) {
-          const F = tt(f, H, L);
-          C[L] ? C[L].p(F, D) : (C[L] = it(F), C[L].c(), C[L].m(s, a));
+        let B;
+        for (B = 0; B < G.length; B += 1) {
+          const oe = ht(d, G, B);
+          v[B] ? v[B].p(oe, C) : (v[B] = dt(oe), v[B].c(), v[B].m(s, a));
         }
-        for (; L < C.length; L += 1)
-          C[L].d(1);
-        C.length = H.length;
+        for (; B < v.length; B += 1)
+          v[B].d(1);
+        v.length = G.length;
       }
-      (!h || D[0] & /*interactive*/
-      32 && _ !== (_ = !/*interactive*/
-      f[5])) && (o.disabled = _), (!h || D[0] & /*interactive*/
-      32 && k !== (k = /*interactive*/
-      f[5] ? 0 : -1)) && d(o, "tabindex", k), (!h || D[0] & /*selectedValue, label*/
-      260 && m !== (m = /*selectedValue*/
-      f[8].length === 0 ? (
+      (!b || C[0] & /*interactive*/
+      128 && _ !== (_ = !/*interactive*/
+      d[7])) && (o.disabled = _), (!b || C[0] & /*interactive*/
+      128 && w !== (w = /*interactive*/
+      d[7] ? 0 : -1)) && h(o, "tabindex", w), (!b || C[0] & /*show_placeholder, selectedValue, label*/
+      1048 && m !== (m = /*show_placeholder*/
+      d[3] && /*selectedValue*/
+      d[10].length === 0 ? (
         /*label*/
-        f[2]
-      ) : "")) && d(o, "placeholder", m), (!h || D[0] & /*label*/
-      4) && d(
+        d[4]
+      ) : "")) && h(o, "placeholder", m), (!b || C[0] & /*label*/
+      16) && h(
         o,
         "aria-label",
         /*label*/
-        f[2]
-      ), D[0] & /*searchQuery*/
-      128 && o.value !== /*searchQuery*/
-      f[7] && xe(
+        d[4]
+      ), C[0] & /*searchQuery*/
+      512 && o.value !== /*searchQuery*/
+      d[9] && ct(
         o,
         /*searchQuery*/
-        f[7]
-      ), (!h || D[0] & /*interactive*/
-      32 && w !== (w = /*interactive*/
-      f[5] ? 0 : -1)) && d(i, "tabindex", w), (!h || D[0] & /*open*/
-      64 && u !== (u = /*open*/
-      f[6] ? "true" : "false")) && d(i, "aria-expanded", u), (!h || D[0] & /*panelId*/
-      4194304) && d(
-        i,
+        d[9]
+      ), /*selectedValue*/
+      d[10].length > 0 ? F ? F.p(d, C) : (F = mt(d), F.c(), F.m(r, null)) : F && (F.d(1), F = null), (!b || C[0] & /*interactive*/
+      128 && u !== (u = /*interactive*/
+      d[7] ? 0 : -1)) && h(r, "tabindex", u), (!b || C[0] & /*open*/
+      256 && c !== (c = /*open*/
+      d[8] ? "true" : "false")) && h(r, "aria-expanded", c), (!b || C[0] & /*panelId*/
+      33554432) && h(
+        r,
         "aria-controls",
         /*panelId*/
-        f[22]
-      ), (!h || D[0] & /*interactive*/
-      32) && W(i, "hierarchy-selector-disabled", !/*interactive*/
-      f[5]), /*open*/
-      f[6] ? g ? (g.p(f, D), D[0] & /*open*/
-      64 && G(g, 1)) : (g = rt(f), g.c(), G(g, 1), g.m(t, null)) : g && (Ne(), x(g, 1, 1, () => {
-        g = null;
-      }), Ve()), /*info*/
-      f[3] ? b ? b.p(f, D) : (b = ot(f), b.c(), b.m(e, null)) : b && (b.d(1), b = null), (!h || D[0] & /*elem_id*/
-      1) && d(
+        d[25]
+      ), (!b || C[0] & /*interactive*/
+      128) && te(r, "hierarchy-selector-disabled", !/*interactive*/
+      d[7]), /*open*/
+      d[8] ? I ? (I.p(d, C), C[0] & /*open*/
+      256 && Y(I, 1)) : (I = pt(d), I.c(), Y(I, 1), I.m(t, null)) : I && (We(), se(I, 1, 1, () => {
+        I = null;
+      }), Ke()), /*info*/
+      d[5] ? T ? T.p(d, C) : (T = vt(d), T.c(), T.m(e, null)) : T && (T.d(1), T = null), (!b || C[0] & /*elem_id*/
+      1) && h(
         e,
         "id",
         /*elem_id*/
-        f[0]
-      ), (!h || D[0] & /*classes*/
-      2097152 && z !== (z = $e(
+        d[0]
+      ), (!b || C[0] & /*classes*/
+      16777216 && f !== (f = ot(
         /*classes*/
-        f[21]
-      ) + " svelte-n293wu")) && d(e, "class", z), (!h || D[0] & /*style*/
-      1048576) && d(
+        d[24]
+      ) + " svelte-14blvp4")) && h(e, "class", f), (!b || C[0] & /*style*/
+      8388608) && h(
         e,
         "style",
         /*style*/
-        f[20]
+        d[23]
       );
     },
-    i(f) {
-      h || (G(g), h = !0);
+    i(d) {
+      b || (Y(I), b = !0);
     },
-    o(f) {
-      x(g), h = !1;
+    o(d) {
+      se(I), b = !1;
     },
-    d(f) {
-      f && R(e), v && v.d(), sl(C, f), l[52](null), l[54](null), g && g.d(), b && b.d(), l[58](null), I = !1, Ae(B);
+    d(d) {
+      d && O(e), k && k.d(), Il(v, d), l[60](null), F && F.d(), l[62](null), I && I.d(), T && T.d(), l[66](null), P = !1, Je(D);
     }
   };
 }
-function nt(l) {
+function _t(l) {
   let e, t;
   return {
     c() {
-      e = V("span"), t = $(
+      e = E("span"), t = X(
         /*label*/
-        l[2]
-      ), d(e, "class", "hierarchy-selector-label svelte-n293wu");
+        l[4]
+      ), h(e, "class", "hierarchy-selector-label svelte-14blvp4");
     },
-    m(n, i) {
-      q(n, e, i), M(e, t);
+    m(n, r) {
+      Z(n, e, r), S(e, t);
     },
-    p(n, i) {
-      i[0] & /*label*/
-      4 && de(
+    p(n, r) {
+      r[0] & /*label*/
+      16 && ae(
         t,
         /*label*/
-        n[2]
+        n[4]
       );
     },
     d(n) {
-      n && R(e);
+      n && O(e);
     }
   };
 }
-function it(l) {
+function dt(l) {
   let e, t, n = (
     /*displayValue*/
-    l[23](
+    l[27](
       /*selected*/
-      l[68]
+      l[81]
     ) + ""
-  ), i, s, a, o, _;
-  function k() {
+  ), r, s, a, o, _;
+  function w() {
     return (
       /*click_handler*/
-      l[47](
+      l[55](
         /*index*/
-        l[72]
+        l[85]
       )
     );
   }
   function m(...c) {
     return (
       /*dragstart_handler*/
-      l[48](
+      l[56](
         /*index*/
-        l[72],
+        l[85],
         ...c
       )
     );
   }
-  function w(...c) {
+  function y(...c) {
     return (
       /*dragover_handler*/
-      l[49](
+      l[57](
         /*index*/
-        l[72],
+        l[85],
         ...c
       )
     );
@@ -790,329 +796,408 @@ function it(l) {
   function u(...c) {
     return (
       /*drop_handler*/
-      l[51](
+      l[59](
         /*index*/
-        l[72],
+        l[85],
         ...c
       )
     );
   }
   return {
     c() {
-      e = V("span"), t = V("span"), i = $(n), s = j(), a = V("button"), a.textContent = "x", d(t, "class", "hierarchy-selector-chip-text svelte-n293wu"), d(a, "type", "button"), d(a, "class", "hierarchy-selector-remove svelte-n293wu"), d(a, "aria-label", "Remove"), d(e, "class", "hierarchy-selector-chip svelte-n293wu"), d(e, "role", "listitem"), d(
+      e = E("span"), t = E("span"), r = X(n), s = J(), a = E("button"), a.textContent = "x", h(t, "class", "hierarchy-selector-chip-text svelte-14blvp4"), h(a, "type", "button"), h(a, "class", "hierarchy-selector-remove svelte-14blvp4"), h(a, "aria-label", "Remove"), h(e, "class", "hierarchy-selector-chip svelte-14blvp4"), h(e, "role", "listitem"), h(
         e,
         "draggable",
         /*interactive*/
-        l[5]
-      ), W(
+        l[7]
+      ), te(
         e,
         "hierarchy-selector-chip-dragging",
         /*draggedIndex*/
-        l[16] === /*index*/
-        l[72]
-      ), W(
+        l[19] === /*index*/
+        l[85]
+      ), te(
         e,
         "hierarchy-selector-chip-over",
         /*dragOverIndex*/
-        l[17] === /*index*/
-        l[72]
+        l[20] === /*index*/
+        l[85]
       );
     },
-    m(c, p) {
-      q(c, e, p), M(e, t), M(t, i), M(e, s), M(e, a), o || (_ = [
-        A(a, "click", bt(k)),
-        A(e, "dragstart", m),
-        A(
+    m(c, g) {
+      Z(c, e, g), S(e, t), S(t, r), S(e, s), S(e, a), o || (_ = [
+        R(a, "click", Ue(w)),
+        R(e, "dragstart", m),
+        R(
           e,
           "dragend",
           /*onDragEnd*/
-          l[31]
+          l[36]
         ),
-        A(e, "dragover", w),
-        A(
+        R(e, "dragover", y),
+        R(
           e,
           "dragleave",
           /*dragleave_handler*/
-          l[50]
+          l[58]
         ),
-        A(e, "drop", u)
+        R(e, "drop", u)
       ], o = !0);
     },
-    p(c, p) {
-      l = c, p[0] & /*selectedValue*/
-      256 && n !== (n = /*displayValue*/
-      l[23](
+    p(c, g) {
+      l = c, g[0] & /*selectedValue*/
+      1024 && n !== (n = /*displayValue*/
+      l[27](
         /*selected*/
-        l[68]
-      ) + "") && de(i, n), p[0] & /*interactive*/
-      32 && d(
+        l[81]
+      ) + "") && ae(r, n), g[0] & /*interactive*/
+      128 && h(
         e,
         "draggable",
         /*interactive*/
-        l[5]
-      ), p[0] & /*draggedIndex*/
-      65536 && W(
+        l[7]
+      ), g[0] & /*draggedIndex*/
+      524288 && te(
         e,
         "hierarchy-selector-chip-dragging",
         /*draggedIndex*/
-        l[16] === /*index*/
-        l[72]
-      ), p[0] & /*dragOverIndex*/
-      131072 && W(
+        l[19] === /*index*/
+        l[85]
+      ), g[0] & /*dragOverIndex*/
+      1048576 && te(
         e,
         "hierarchy-selector-chip-over",
         /*dragOverIndex*/
-        l[17] === /*index*/
-        l[72]
+        l[20] === /*index*/
+        l[85]
       );
     },
     d(c) {
-      c && R(e), o = !1, Ae(_);
+      c && O(e), o = !1, Je(_);
     }
   };
 }
-function rt(l) {
-  let e, t, n, i, s, a;
-  const o = [_l, dl], _ = [];
-  function k(m, w) {
+function mt(l) {
+  let e, t, n;
+  return {
+    c() {
+      e = E("button"), e.textContent = "x", h(e, "type", "button"), h(e, "class", "hierarchy-selector-clear svelte-14blvp4"), h(e, "aria-label", "Clear selection");
+    },
+    m(r, s) {
+      Z(r, e, s), t || (n = R(e, "click", Ue(
+        /*clearValues*/
+        l[30]
+      )), t = !0);
+    },
+    p: Ze,
+    d(r) {
+      r && O(e), t = !1, n();
+    }
+  };
+}
+function pt(l) {
+  let e, t, n, r, s, a;
+  const o = [Hl, zl], _ = [];
+  function w(m, y) {
     return (
       /*searchMode*/
-      m[9] ? 0 : 1
+      m[11] ? 0 : 1
     );
   }
-  return t = k(l), n = _[t] = o[t](l), {
+  return t = w(l), n = _[t] = o[t](l), {
     c() {
-      e = V("div"), n.c(), d(
+      e = E("div"), n.c(), h(
         e,
         "id",
         /*panelId*/
-        l[22]
-      ), d(e, "class", "hierarchy-selector-panel svelte-n293wu"), d(
+        l[25]
+      ), h(e, "class", "hierarchy-selector-panel svelte-14blvp4"), h(
         e,
         "style",
         /*panelStyle*/
-        l[18]
+        l[21]
       );
     },
-    m(m, w) {
-      q(m, e, w), _[t].m(e, null), l[57](e), i = !0, s || (a = ll(Fl.call(null, e)), s = !0);
+    m(m, y) {
+      Z(m, e, y), _[t].m(e, null), l[65](e), r = !0, s || (a = vl(Ol.call(null, e)), s = !0);
     },
-    p(m, w) {
+    p(m, y) {
       let u = t;
-      t = k(m), t === u ? _[t].p(m, w) : (Ne(), x(_[u], 1, 1, () => {
+      t = w(m), t === u ? _[t].p(m, y) : (We(), se(_[u], 1, 1, () => {
         _[u] = null;
-      }), Ve(), n = _[t], n ? n.p(m, w) : (n = _[t] = o[t](m), n.c()), G(n, 1), n.m(e, null)), (!i || w[0] & /*panelId*/
-      4194304) && d(
+      }), Ke(), n = _[t], n ? n.p(m, y) : (n = _[t] = o[t](m), n.c()), Y(n, 1), n.m(e, null)), (!r || y[0] & /*panelId*/
+      33554432) && h(
         e,
         "id",
         /*panelId*/
-        m[22]
-      ), (!i || w[0] & /*panelStyle*/
-      262144) && d(
+        m[25]
+      ), (!r || y[0] & /*panelStyle*/
+      2097152) && h(
         e,
         "style",
         /*panelStyle*/
-        m[18]
+        m[21]
       );
     },
     i(m) {
-      i || (G(n), i = !0);
+      r || (Y(n), r = !0);
     },
     o(m) {
-      x(n), i = !1;
+      se(n), r = !1;
     },
     d(m) {
-      m && R(e), _[t].d(), l[57](null), s = !1, a();
+      m && O(e), _[t].d(), l[65](null), s = !1, a();
     }
   };
 }
-function dl(l) {
+function zl(l) {
   let e, t;
-  return e = new vt({
+  return e = new zt({
     props: {
       folders: (
         /*normalizedHierarchy*/
-        l[10].folders || []
+        l[13].folders || []
       ),
       items: (
         /*normalizedHierarchy*/
-        l[10].items || []
+        l[13].items || []
       ),
       depth: 0,
       expanded: (
         /*expanded*/
-        l[15]
+        l[18]
       ),
       value: (
         /*selectedValue*/
-        l[8]
+        l[10]
       ),
       toggleItem: (
         /*toggleItem*/
-        l[24]
+        l[28]
       ),
       toggleFolder: (
         /*toggleFolder*/
-        l[26]
+        l[31]
       ),
-      valueForItem: _e,
-      labelForItem: ee
+      valueForItem: Ie,
+      labelForItem: x
     }
   }), {
     c() {
-      nl(e.$$.fragment);
+      yl(e.$$.fragment);
     },
-    m(n, i) {
-      ol(e, n, i), t = !0;
+    m(n, r) {
+      Sl(e, n, r), t = !0;
     },
-    p(n, i) {
+    p(n, r) {
       const s = {};
-      i[0] & /*normalizedHierarchy*/
-      1024 && (s.folders = /*normalizedHierarchy*/
-      n[10].folders || []), i[0] & /*normalizedHierarchy*/
-      1024 && (s.items = /*normalizedHierarchy*/
-      n[10].items || []), i[0] & /*expanded*/
-      32768 && (s.expanded = /*expanded*/
-      n[15]), i[0] & /*selectedValue*/
-      256 && (s.value = /*selectedValue*/
-      n[8]), e.$set(s);
+      r[0] & /*normalizedHierarchy*/
+      8192 && (s.folders = /*normalizedHierarchy*/
+      n[13].folders || []), r[0] & /*normalizedHierarchy*/
+      8192 && (s.items = /*normalizedHierarchy*/
+      n[13].items || []), r[0] & /*expanded*/
+      262144 && (s.expanded = /*expanded*/
+      n[18]), r[0] & /*selectedValue*/
+      1024 && (s.value = /*selectedValue*/
+      n[10]), e.$set(s);
     },
     i(n) {
-      t || (G(e.$$.fragment, n), t = !0);
+      t || (Y(e.$$.fragment, n), t = !0);
     },
     o(n) {
-      x(e.$$.fragment, n), t = !1;
+      se(e.$$.fragment, n), t = !1;
     },
     d(n) {
-      rl(e, n);
+      wl(e, n);
     }
   };
 }
-function _l(l) {
+function Hl(l) {
   let e;
   function t(s, a) {
     return (
       /*searchResults*/
-      s[19].length ? gl : ml
+      s[22].length ? Vl : Bl
     );
   }
-  let n = t(l), i = n(l);
+  let n = t(l), r = n(l);
   return {
     c() {
-      i.c(), e = Be();
+      r.c(), e = Qe();
     },
     m(s, a) {
-      i.m(s, a), q(s, e, a);
+      r.m(s, a), Z(s, e, a);
     },
     p(s, a) {
-      n === (n = t(s)) && i ? i.p(s, a) : (i.d(1), i = n(s), i && (i.c(), i.m(e.parentNode, e)));
+      n === (n = t(s)) && r ? r.p(s, a) : (r.d(1), r = n(s), r && (r.c(), r.m(e.parentNode, e)));
     },
-    i: Pe,
-    o: Pe,
+    i: Ze,
+    o: Ze,
     d(s) {
-      s && R(e), i.d(s);
+      s && O(e), r.d(s);
     }
   };
 }
-function ml(l) {
-  let e;
+function Bl(l) {
+  let e, t;
   return {
     c() {
-      e = V("div"), e.textContent = "No matching LoRAs", d(e, "class", "hierarchy-search-empty svelte-n293wu");
+      e = E("div"), t = X(
+        /*search_empty_label*/
+        l[2]
+      ), h(e, "class", "hierarchy-search-empty svelte-14blvp4");
     },
-    m(t, n) {
-      q(t, e, n);
+    m(n, r) {
+      Z(n, e, r), S(e, t);
     },
-    p: Pe,
-    d(t) {
-      t && R(e);
+    p(n, r) {
+      r[0] & /*search_empty_label*/
+      4 && ae(
+        t,
+        /*search_empty_label*/
+        n[2]
+      );
+    },
+    d(n) {
+      n && O(e);
     }
   };
 }
-function gl(l) {
-  let e = [], t = /* @__PURE__ */ new Map(), n, i = De(
+function Vl(l) {
+  let e = [], t = /* @__PURE__ */ new Map(), n, r = Te(
     /*searchResults*/
-    l[19]
+    l[22]
   );
-  const s = (a) => _e(
+  const s = (a) => Ie(
     /*item*/
-    a[67]
+    a[80]
   );
-  for (let a = 0; a < i.length; a += 1) {
-    let o = et(l, i, a), _ = s(o);
-    t.set(_, e[a] = at(_, o));
+  for (let a = 0; a < r.length; a += 1) {
+    let o = ut(l, r, a), _ = s(o);
+    t.set(_, e[a] = bt(_, o));
   }
   return {
     c() {
       for (let a = 0; a < e.length; a += 1)
         e[a].c();
-      n = Be();
+      n = Qe();
     },
     m(a, o) {
       for (let _ = 0; _ < e.length; _ += 1)
         e[_] && e[_].m(a, o);
-      q(a, n, o);
+      Z(a, n, o);
     },
     p(a, o) {
-      o[0] & /*searchResults, selectedValue, toggleItem*/
-      17301760 && (i = De(
+      o[0] & /*searchResults, selectedLabelForItem, selectedValue, toggleItem, breadcrumbMode*/
+      339743744 && (r = Te(
         /*searchResults*/
-        a[19]
-      ), e = cl(e, o, s, 1, a, i, t, n.parentNode, il, at, n, et));
+        a[22]
+      ), e = Dl(e, o, s, 1, a, r, t, n.parentNode, kl, bt, n, ut));
     },
     d(a) {
-      a && R(n);
+      a && O(n);
       for (let o = 0; o < e.length; o += 1)
         e[o].d(a);
     }
   };
 }
-function st(l) {
-  let e, t, n = (
+function El(l) {
+  let e, t, n = x(
     /*item*/
-    l[67].search_path + ""
-  ), i, s;
+    l[80]
+  ) + "", r, s, a = (
+    /*item*/
+    l[80].search_path && gt(l)
+  );
   return {
     c() {
-      e = V("span"), t = $("["), i = $(n), s = $("]"), d(e, "class", "hierarchy-search-path svelte-n293wu");
+      e = E("span"), t = E("span"), r = X(n), s = J(), a && a.c(), h(t, "class", "hierarchy-search-name svelte-14blvp4"), h(e, "class", "hierarchy-search-label svelte-14blvp4");
     },
-    m(a, o) {
-      q(a, e, o), M(e, t), M(e, i), M(e, s);
+    m(o, _) {
+      Z(o, e, _), S(e, t), S(t, r), S(e, s), a && a.m(e, null);
     },
-    p(a, o) {
-      o[0] & /*searchResults*/
-      524288 && n !== (n = /*item*/
-      a[67].search_path + "") && de(i, n);
+    p(o, _) {
+      _[0] & /*searchResults*/
+      4194304 && n !== (n = x(
+        /*item*/
+        o[80]
+      ) + "") && ae(r, n), /*item*/
+      o[80].search_path ? a ? a.p(o, _) : (a = gt(o), a.c(), a.m(e, null)) : a && (a.d(1), a = null);
     },
-    d(a) {
-      a && R(e);
+    d(o) {
+      o && O(e), a && a.d();
     }
   };
 }
-function at(l, e) {
-  let t, n, i, s, a, o, _, k, m, w = ee(
+function Nl(l) {
+  let e, t = (
     /*item*/
-    e[67]
-  ) + "", u, c, p, z, h, I, B, v = (
+    l[80].search_display + ""
+  ), n;
+  return {
+    c() {
+      e = E("span"), n = X(t), h(e, "class", "hierarchy-search-label hierarchy-search-name svelte-14blvp4");
+    },
+    m(r, s) {
+      Z(r, e, s), S(e, n);
+    },
+    p(r, s) {
+      s[0] & /*searchResults*/
+      4194304 && t !== (t = /*item*/
+      r[80].search_display + "") && ae(n, t);
+    },
+    d(r) {
+      r && O(e);
+    }
+  };
+}
+function gt(l) {
+  let e, t, n = (
     /*item*/
-    e[67].search_path && st(e)
-  );
-  function H() {
+    l[80].search_path + ""
+  ), r, s;
+  return {
+    c() {
+      e = E("span"), t = X("["), r = X(n), s = X("]"), h(e, "class", "hierarchy-search-path svelte-14blvp4");
+    },
+    m(a, o) {
+      Z(a, e, o), S(e, t), S(e, r), S(e, s);
+    },
+    p(a, o) {
+      o[0] & /*searchResults*/
+      4194304 && n !== (n = /*item*/
+      a[80].search_path + "") && ae(r, n);
+    },
+    d(a) {
+      a && O(e);
+    }
+  };
+}
+function bt(l, e) {
+  let t, n, r, s, a, o, _, w, m, y, u, c;
+  function g(D, k) {
+    return (
+      /*breadcrumbMode*/
+      D[12] ? Nl : El
+    );
+  }
+  let H = g(e), f = H(e);
+  function b() {
     return (
       /*click_handler_1*/
-      e[55](
+      e[63](
         /*item*/
-        e[67]
+        e[80]
       )
     );
   }
-  function C(...g) {
+  function P(...D) {
     return (
       /*keydown_handler*/
-      e[56](
+      e[64](
         /*item*/
-        e[67],
-        ...g
+        e[80],
+        ...D
       )
     );
   }
@@ -1120,399 +1205,458 @@ function at(l, e) {
     key: l,
     first: null,
     c() {
-      t = V("div"), n = V("span"), i = j(), s = ze("svg"), a = ze("path"), o = ze("path"), _ = j(), k = V("span"), m = V("span"), u = $(w), c = j(), v && v.c(), p = j(), d(n, "class", "hierarchy-search-spacer svelte-n293wu"), d(a, "d", "M5.25 2.75h6.05L15.75 7.2v10.05H5.25V2.75Z"), d(o, "d", "M11.25 2.95V7.3h4.3"), d(s, "class", "hierarchy-search-icon svelte-n293wu"), d(s, "viewBox", "0 0 20 20"), d(s, "aria-hidden", "true"), d(m, "class", "hierarchy-search-name svelte-n293wu"), d(k, "class", "hierarchy-search-label svelte-n293wu"), d(t, "class", "hierarchy-search-row svelte-n293wu"), d(t, "title", z = Ee(
+      t = E("div"), n = E("span"), r = J(), s = Re("svg"), a = Re("path"), o = Re("path"), _ = J(), f.c(), w = J(), h(n, "class", "hierarchy-search-spacer svelte-14blvp4"), h(a, "d", "M5.25 2.75h6.05L15.75 7.2v10.05H5.25V2.75Z"), h(o, "d", "M11.25 2.95V7.3h4.3"), h(s, "class", "hierarchy-search-icon svelte-14blvp4"), h(s, "viewBox", "0 0 20 20"), h(s, "aria-hidden", "true"), h(t, "class", "hierarchy-search-row svelte-14blvp4"), h(t, "title", m = /*item*/
+      e[80].search_display || /*selectedLabelForItem*/
+      e[26](
         /*item*/
-        e[67]
-      )), d(t, "role", "button"), d(t, "tabindex", "0"), d(t, "aria-pressed", h = /*selected*/
-      e[68]), W(
+        e[80]
+      )), h(t, "role", "button"), h(t, "tabindex", "0"), h(t, "aria-pressed", y = /*selected*/
+      e[81]), te(
         t,
         "hierarchy-search-row-selected",
         /*selected*/
-        e[68]
+        e[81]
       ), this.first = t;
     },
-    m(g, b) {
-      q(g, t, b), M(t, n), M(t, i), M(t, s), M(s, a), M(s, o), M(t, _), M(t, k), M(k, m), M(m, u), M(k, c), v && v.m(k, null), M(t, p), I || (B = [
-        A(t, "click", H),
-        A(t, "keydown", C)
-      ], I = !0);
+    m(D, k) {
+      Z(D, t, k), S(t, n), S(t, r), S(t, s), S(s, a), S(s, o), S(t, _), f.m(t, null), S(t, w), u || (c = [
+        R(t, "click", b),
+        R(t, "keydown", P)
+      ], u = !0);
     },
-    p(g, b) {
-      e = g, b[0] & /*searchResults*/
-      524288 && w !== (w = ee(
+    p(D, k) {
+      e = D, H === (H = g(e)) && f ? f.p(e, k) : (f.d(1), f = H(e), f && (f.c(), f.m(t, w))), k[0] & /*searchResults*/
+      4194304 && m !== (m = /*item*/
+      e[80].search_display || /*selectedLabelForItem*/
+      e[26](
         /*item*/
-        e[67]
-      ) + "") && de(u, w), /*item*/
-      e[67].search_path ? v ? v.p(e, b) : (v = st(e), v.c(), v.m(k, null)) : v && (v.d(1), v = null), b[0] & /*searchResults*/
-      524288 && z !== (z = Ee(
-        /*item*/
-        e[67]
-      )) && d(t, "title", z), b[0] & /*selectedValue, searchResults*/
-      524544 && h !== (h = /*selected*/
-      e[68]) && d(t, "aria-pressed", h), b[0] & /*selectedValue, searchResults*/
-      524544 && W(
+        e[80]
+      )) && h(t, "title", m), k[0] & /*selectedValue, searchResults*/
+      4195328 && y !== (y = /*selected*/
+      e[81]) && h(t, "aria-pressed", y), k[0] & /*selectedValue, searchResults*/
+      4195328 && te(
         t,
         "hierarchy-search-row-selected",
         /*selected*/
-        e[68]
+        e[81]
       );
     },
-    d(g) {
-      g && R(t), v && v.d(), I = !1, Ae(B);
+    d(D) {
+      D && O(t), f.d(), u = !1, Je(c);
     }
   };
 }
-function ot(l) {
+function vt(l) {
   let e, t;
   return {
     c() {
-      e = V("div"), t = $(
+      e = E("div"), t = X(
         /*info*/
-        l[3]
-      ), d(e, "class", "hierarchy-selector-info svelte-n293wu");
+        l[5]
+      ), h(e, "class", "hierarchy-selector-info svelte-14blvp4");
     },
-    m(n, i) {
-      q(n, e, i), M(e, t);
+    m(n, r) {
+      Z(n, e, r), S(e, t);
     },
-    p(n, i) {
-      i[0] & /*info*/
-      8 && de(
+    p(n, r) {
+      r[0] & /*info*/
+      32 && ae(
         t,
         /*info*/
-        n[3]
+        n[5]
       );
     },
     d(n) {
-      n && R(e);
+      n && O(e);
     }
   };
 }
-function pl(l) {
+function Al(l) {
   let e, t, n = (
     /*visible*/
-    l[1] && lt(l)
+    l[1] && ft(l)
   );
   return {
     c() {
-      n && n.c(), e = Be();
+      n && n.c(), e = Qe();
     },
-    m(i, s) {
-      n && n.m(i, s), q(i, e, s), t = !0;
+    m(r, s) {
+      n && n.m(r, s), Z(r, e, s), t = !0;
     },
-    p(i, s) {
+    p(r, s) {
       /*visible*/
-      i[1] ? n ? (n.p(i, s), s[0] & /*visible*/
-      2 && G(n, 1)) : (n = lt(i), n.c(), G(n, 1), n.m(e.parentNode, e)) : n && (Ne(), x(n, 1, 1, () => {
+      r[1] ? n ? (n.p(r, s), s[0] & /*visible*/
+      2 && Y(n, 1)) : (n = ft(r), n.c(), Y(n, 1), n.m(e.parentNode, e)) : n && (We(), se(n, 1, 1, () => {
         n = null;
-      }), Ve());
+      }), Ke());
     },
-    i(i) {
-      t || (G(n), t = !0);
+    i(r) {
+      t || (Y(n), t = !0);
     },
-    o(i) {
-      x(n), t = !1;
+    o(r) {
+      se(n), t = !1;
     },
-    d(i) {
-      i && R(e), n && n.d(i);
+    d(r) {
+      r && O(e), n && n.d(r);
     }
   };
 }
-const ut = 32, vl = 8, ye = 6, ce = 8;
-function He(l) {
+const yt = 32, Pl = 8, Ve = 6, ye = 8;
+function Oe(l) {
   return Array.isArray(l) ? l.map((e) => String(e)) : l == null || l === "" ? [] : [String(l)];
 }
-function bl(l) {
+function Tl(l, e) {
+  const t = {
+    folders: (l == null ? void 0 : l.folders) || [],
+    items: (l == null ? void 0 : l.items) || []
+  };
+  return e ? {
+    folders: Bt(t.folders),
+    items: Vt(t.items)
+  } : Ht(t);
+}
+function Ht(l) {
   return {
-    folders: wt((l == null ? void 0 : l.folders) || []),
-    items: kt((l == null ? void 0 : l.items) || [])
+    ...l,
+    folders: (l.folders || []).map((e) => Ht(e)),
+    items: (l.items || []).map((e) => ({ ...e }))
   };
 }
-function wt(l) {
+function Bt(l) {
   return l.map((e) => ({
     ...e,
-    folders: wt(e.folders || []),
-    items: kt(e.items || [])
-  })).sort((e, t) => ct(e).localeCompare(ct(t), void 0, { sensitivity: "base" }));
+    folders: Bt(e.folders || []),
+    items: Vt(e.items || [])
+  })).sort((e, t) => Ge(e).localeCompare(Ge(t), void 0, { sensitivity: "base" }));
 }
-function kt(l) {
-  return l.map((e) => ({ ...e })).sort((e, t) => ee(e).localeCompare(ee(t), void 0, { sensitivity: "base" }));
+function Vt(l) {
+  return l.map((e) => ({ ...e })).sort((e, t) => x(e).localeCompare(x(t), void 0, { sensitivity: "base" }));
 }
-function ct(l) {
+function Ge(l) {
   return String(l.name || l.path || "");
 }
-function ee(l) {
+function x(l) {
   return String(l.name || l.path || l.value || "");
 }
-function Ee(l) {
-  return String(l.path || l.name || l.value || "");
-}
-function _e(l) {
+function Ie(l) {
   return String(l.value || l.path || l.name || "");
 }
-function wl(l) {
-  const e = {};
-  function t(n) {
-    for (const i of n.items || []) e[_e(i)] = Ee(i);
-    for (const i of n.folders || []) t(i);
-  }
-  return t(l), e;
+function kt(l, e = "") {
+  const t = String(l.path || "");
+  if (t) return t;
+  const n = Ge(l);
+  return e && n ? `${e}/${n}` : n;
 }
-function kl(l) {
-  const e = [];
-  function t(n, i = "") {
-    for (const s of n.items || []) {
-      const a = String(s.path || s.name || s.value || ""), o = a.lastIndexOf("/"), _ = o > -1 ? a.slice(0, o) : i;
-      e.push({
-        ...s,
-        search_name: ee(s),
-        search_path: _
-      });
-    }
-    for (const s of n.folders || []) t(s, String(s.path || s.name || ""));
-  }
-  return t(l), e;
+function wt(l, e = "") {
+  const t = String(l.path || "");
+  if (t) return t;
+  const n = x(l);
+  return e && n ? `${e}/${n}` : n;
 }
-function yl(l, e) {
+function ql(l) {
+  return String(l || "").split("/").map((e) => e.trim()).filter(Boolean);
+}
+function Rl(l, e) {
   return l.map((t) => {
-    const n = String(t.search_name || ee(t)), i = String(t.search_path || "");
+    const n = String(t.search_name || x(t)), r = String(t.search_path || ""), s = String(t.search_text || n), a = String(t.search_display || n);
     return {
       item: t,
-      index: n.toLowerCase().indexOf(e),
-      name: n,
-      path: i
+      index: s.toLowerCase().indexOf(e),
+      name: a,
+      path: r
     };
   }).filter((t) => t.index > -1).sort((t, n) => t.index - n.index || t.name.localeCompare(n.name, void 0, { sensitivity: "base" }) || t.path.localeCompare(n.path, void 0, { sensitivity: "base" })).map((t) => t.item);
 }
-function Il(l) {
+function jl(l) {
   return l.replace(/\\/g, "/").replace(/\.[^/.]+$/, "");
 }
-function Fl(l) {
+function Ol(l) {
   return document.body.appendChild(l), {
     destroy() {
       l.remove();
     }
   };
 }
-function Sl(l, e, t) {
-  let n, i, s, a, o, _, k, m, w, u, c, { elem_id: p = "" } = e, { elem_classes: z = [] } = e, { visible: h = !0 } = e, { value: I = [] } = e, { hierarchy: B = { folders: [], items: [] } } = e, { height: v = 10 } = e, { label: H = "Hierarchy Selector" } = e, { info: C = void 0 } = e, { show_label: g = !0 } = e, { container: b = !0 } = e, { scale: f = null } = e, { min_width: D = void 0 } = e, { interactive: L = !0 } = e, { gradio: F } = e, te, oe, J, le, ne = !1, ie = !1, re = /* @__PURE__ */ new Set(), O = "", U = null, ue = null, Te = {}, Re = "";
-  const yt = `hierarchy-selector-${Math.random().toString(36).slice(2)}`;
-  function It(r) {
-    return Te[r] || Il(r);
+function Zl(l, e, t) {
+  let n, r, s, a, o, _, w, m, y, u, c, g, { elem_id: H = "" } = e, { elem_classes: f = [] } = e, { visible: b = !0 } = e, { value: P = [] } = e, { hierarchy: D = { folders: [], items: [] } } = e, { height: k = 10 } = e, { display_mode: G = "file" } = e, { breadcrumb_separator: v = " " } = e, { sort_hierarchy: F = !0 } = e, { search_empty_label: I = "No matches" } = e, { show_placeholder: T = !1 } = e, { label: d = "Hierarchy Selector" } = e, { info: C = void 0 } = e, { show_label: B = !0 } = e, { container: oe = !0 } = e, { scale: Fe = null } = e, { min_width: Se = void 0 } = e, { interactive: $ = !0 } = e, { gradio: L } = e, ce, pe, le, ue, he = !1, fe = !1, _e = /* @__PURE__ */ new Set(), K = "", ne = null, ge = null, Xe = {}, Ye = "";
+  const Et = `hierarchy-selector-${Math.random().toString(36).slice(2)}`;
+  function Nt(i) {
+    return Me(i);
   }
-  function me(r, y = "change", P = void 0) {
-    var T, K, ve;
-    t(34, I = He(r)), (T = F == null ? void 0 : F.dispatch) == null || T.call(F, "input"), y === "select" && ((K = F == null ? void 0 : F.dispatch) == null || K.call(F, "select", P)), (ve = F == null ? void 0 : F.dispatch) == null || ve.call(F, "change"), Ce().then(X);
+  function At(i, p, z) {
+    const N = {};
+    function j(W, Q = "") {
+      for (const q of W.items || []) N[Ie(q)] = Me(q, Q);
+      for (const q of W.folders || []) j(q, kt(q, Q));
+    }
+    return j(i), N;
   }
-  function ge(r) {
-    if (!L) return;
-    const y = _e(r);
-    n.includes(y) ? me(n.filter((P) => P !== y), "select", { value: y, selected: !1 }) : me([...n, y], "select", { value: y, selected: !0 });
+  function Pt(i) {
+    const p = ql(i);
+    return p.length ? p.join(v) : String(i || "");
   }
-  function Le(r) {
-    if (!L) return;
-    const y = n.filter((P, T) => T !== r);
-    me(y, "select", {
-      value: n[r],
+  function Me(i, p = "") {
+    const z = wt(i, p) || String(i.value || "");
+    return s ? Pt(z) : z;
+  }
+  function Tt(i, p = "") {
+    return s ? Me(i, p) : x(i);
+  }
+  function qt(i, p, z) {
+    const N = [];
+    function j(W, Q = "") {
+      for (const q of W.items || []) {
+        const ve = wt(q, Q), Ce = ve.lastIndexOf("/"), al = Ce > -1 ? ve.slice(0, Ce) : Q;
+        N.push({
+          ...q,
+          search_name: x(q),
+          search_path: al,
+          search_text: Tt(q, Q),
+          search_display: Me(q, Q)
+        });
+      }
+      for (const q of W.folders || []) j(q, kt(q, Q));
+    }
+    return j(i), N;
+  }
+  function Rt(i) {
+    return Xe[i] || jl(i);
+  }
+  function be(i, p = "change", z = void 0) {
+    var N, j, W;
+    t(39, P = Oe(i)), (N = L == null ? void 0 : L.dispatch) == null || N.call(L, "input"), p === "select" && ((j = L == null ? void 0 : L.dispatch) == null || j.call(L, "select", z)), (W = L == null ? void 0 : L.dispatch) == null || W.call(L, "change"), je().then(re);
+  }
+  function De(i) {
+    if (!$) return;
+    const p = Ie(i);
+    n.includes(p) ? be(n.filter((z) => z !== p), "select", { value: p, selected: !1 }) : be([...n, p], "select", { value: p, selected: !0 });
+  }
+  function qe(i) {
+    if (!$) return;
+    const p = n.filter((z, N) => N !== i);
+    be(p, "select", {
+      value: n[i],
       selected: !1
     });
   }
-  function Ft(r) {
-    re.has(r) ? re.delete(r) : re.add(r), t(15, re = new Set(re));
+  function jt() {
+    if (!$ || n.length === 0) return;
+    const i = n;
+    t(9, K = ""), be([], "select", { value: i, selected: !1 });
   }
-  function X() {
-    if (!oe || !ne) return;
-    const r = oe.getBoundingClientRect(), y = w, P = r.top - ce - ye, T = window.innerHeight - r.bottom - ce - ye, K = P < y && T > P, ve = Math.max(ut * 4, K ? T : P), Ge = Math.min(y, ve), jt = K ? r.bottom + ye : Math.max(ce, r.top - Ge - ye), Ke = Math.max(ce, r.left), Gt = Math.max(240, Math.min(r.width, window.innerWidth - Ke - ce));
-    t(18, Re = `top:${Math.round(jt)}px;left:${Math.round(Ke)}px;width:${Math.round(Gt)}px;height:${Math.round(Ge)}px;`);
+  function Ot(i) {
+    _e.has(i) ? _e.delete(i) : _e.add(i), t(18, _e = new Set(_e));
   }
-  function pe() {
-    var y;
-    if (!L) return;
-    const r = ie;
-    t(6, ne = !0), t(43, ie = !0), r || (y = F == null ? void 0 : F.dispatch) == null || y.call(F, "focus"), Ce().then(() => {
-      J == null || J.focus(), X();
+  function re() {
+    if (!pe || !he) return;
+    const i = pe.getBoundingClientRect(), p = u, z = i.top - ye - Ve, N = window.innerHeight - i.bottom - ye - Ve, j = z < p && N > z, W = Math.max(yt * 4, j ? N : z), Q = Math.min(p, W), q = j ? i.bottom + Ve : Math.max(ye, i.top - Q - Ve), ve = Math.max(ye, i.left), Ce = Math.max(240, Math.min(i.width, window.innerWidth - ve - ye));
+    t(21, Ye = `top:${Math.round(q)}px;left:${Math.round(ve)}px;width:${Math.round(Ce)}px;height:${Math.round(Q)}px;`);
+  }
+  function Le() {
+    var p;
+    if (!$) return;
+    const i = fe;
+    t(8, he = !0), t(51, fe = !0), i || (p = L == null ? void 0 : L.dispatch) == null || p.call(L, "focus"), je().then(() => {
+      le == null || le.focus(), re();
     });
   }
-  function qe() {
-    var r;
-    !ne && !ie || (t(6, ne = !1), t(43, ie = !1), t(7, O = ""), (r = F == null ? void 0 : F.dispatch) == null || r.call(F, "blur"));
+  function xe() {
+    var i;
+    !he && !fe || (t(8, he = !1), t(51, fe = !1), t(9, K = ""), (i = L == null ? void 0 : L.dispatch) == null || i.call(L, "blur"));
   }
-  function St() {
-    pe();
+  function Zt() {
+    Le();
   }
-  function Mt(r) {
-    t(7, O = r.currentTarget.value), pe();
+  function Gt(i) {
+    t(9, K = i.currentTarget.value), Le();
   }
-  function Dt(r) {
-    var y, P, T, K;
-    !L || r.target === J || (P = (y = r.target).closest) != null && P.call(y, "button") || (K = (T = r.target).closest) != null && K.call(T, ".hierarchy-selector-chip") || (r.preventDefault(), pe());
+  function Kt(i) {
+    var p, z, N, j;
+    !$ || i.target === le || (z = (p = i.target).closest) != null && z.call(p, "button") || (j = (N = i.target).closest) != null && j.call(N, ".hierarchy-selector-chip") || (i.preventDefault(), Le());
   }
-  function Oe(r) {
-    te != null && te.contains(r.target) || le != null && le.contains(r.target) || qe();
+  function $e(i) {
+    ce != null && ce.contains(i.target) || ue != null && ue.contains(i.target) || xe();
   }
-  function Ze(r, y) {
-    var P;
-    L && (t(16, U = r), (P = y.dataTransfer) == null || P.setData("text/plain", String(r)), y.dataTransfer && (y.dataTransfer.effectAllowed = "move"));
+  function et(i, p) {
+    var z;
+    $ && (t(19, ne = i), (z = p.dataTransfer) == null || z.setData("text/plain", String(i)), p.dataTransfer && (p.dataTransfer.effectAllowed = "move"));
   }
-  function Lt() {
-    t(16, U = null), t(17, ue = null);
+  function Qt() {
+    t(19, ne = null), t(20, ge = null);
   }
-  function je(r, y) {
-    if (y.preventDefault(), U === null || U === r) return;
-    const P = [...n], [T] = P.splice(U, 1);
-    P.splice(r, 0, T), t(16, U = null), t(17, ue = null), me(P);
+  function tt(i, p) {
+    if (p.preventDefault(), ne === null || ne === i) return;
+    const z = [...n], [N] = z.splice(ne, 1);
+    z.splice(i, 0, N), t(19, ne = null), t(20, ge = null), be(z);
   }
-  function zt(r) {
-    r.key === "Escape" ? (r.preventDefault(), O ? t(7, O = "") : qe()) : r.key === "Enter" && o && _.length ? (r.preventDefault(), ge(_[0])) : r.key === "ArrowDown" ? (r.preventDefault(), pe()) : r.key === "Backspace" && !O && n.length && Le(n.length - 1);
+  function Wt(i) {
+    i.key === "Escape" ? (i.preventDefault(), K ? t(9, K = "") : xe()) : i.key === "Enter" && _ && w.length ? (i.preventDefault(), De(w[0])) : i.key === "ArrowDown" ? (i.preventDefault(), Le()) : i.key === "Backspace" && !K && n.length && qe(n.length - 1);
   }
-  function Ct() {
-    return He(I);
+  function Jt() {
+    return Oe(P);
   }
-  hl(() => {
-    document.addEventListener("pointerdown", Oe, !0), window.addEventListener("resize", X), window.addEventListener("scroll", X, !0);
-  }), fl(() => {
-    document.removeEventListener("pointerdown", Oe, !0), window.removeEventListener("resize", X), window.removeEventListener("scroll", X, !0);
+  Cl(() => {
+    document.addEventListener("pointerdown", $e, !0), window.addEventListener("resize", re), window.addEventListener("scroll", re, !0);
+  }), Ll(() => {
+    document.removeEventListener("pointerdown", $e, !0), window.removeEventListener("resize", re), window.removeEventListener("scroll", re, !0);
   });
-  const Ht = (r) => Le(r), Pt = (r, y) => Ze(r, y), Et = (r, y) => {
-    y.preventDefault(), t(17, ue = r);
-  }, Vt = () => t(17, ue = null), Bt = (r, y) => je(r, y);
-  function Nt(r) {
-    ke[r ? "unshift" : "push"](() => {
-      J = r, t(13, J);
+  const Ut = (i) => qe(i), Xt = (i, p) => et(i, p), Yt = (i, p) => {
+    p.preventDefault(), t(20, ge = i);
+  }, xt = () => t(20, ge = null), $t = (i, p) => tt(i, p);
+  function el(i) {
+    Be[i ? "unshift" : "push"](() => {
+      le = i, t(16, le);
     });
   }
-  function At() {
-    O = this.value, t(7, O);
+  function tl() {
+    K = this.value, t(9, K);
   }
-  function Tt(r) {
-    ke[r ? "unshift" : "push"](() => {
-      oe = r, t(12, oe);
+  function ll(i) {
+    Be[i ? "unshift" : "push"](() => {
+      pe = i, t(15, pe);
     });
   }
-  const Rt = (r) => ge(r), qt = (r, y) => {
-    (y.key === "Enter" || y.key === " ") && (y.preventDefault(), ge(r));
+  const nl = (i) => De(i), rl = (i, p) => {
+    (p.key === "Enter" || p.key === " ") && (p.preventDefault(), De(i));
   };
-  function Ot(r) {
-    ke[r ? "unshift" : "push"](() => {
-      le = r, t(14, le);
+  function il(i) {
+    Be[i ? "unshift" : "push"](() => {
+      ue = i, t(17, ue);
     });
   }
-  function Zt(r) {
-    ke[r ? "unshift" : "push"](() => {
-      te = r, t(11, te);
+  function sl(i) {
+    Be[i ? "unshift" : "push"](() => {
+      ce = i, t(14, ce);
     });
   }
-  return l.$$set = (r) => {
-    "elem_id" in r && t(0, p = r.elem_id), "elem_classes" in r && t(35, z = r.elem_classes), "visible" in r && t(1, h = r.visible), "value" in r && t(34, I = r.value), "hierarchy" in r && t(36, B = r.hierarchy), "height" in r && t(37, v = r.height), "label" in r && t(2, H = r.label), "info" in r && t(3, C = r.info), "show_label" in r && t(4, g = r.show_label), "container" in r && t(38, b = r.container), "scale" in r && t(39, f = r.scale), "min_width" in r && t(40, D = r.min_width), "interactive" in r && t(5, L = r.interactive), "gradio" in r && t(41, F = r.gradio);
+  return l.$$set = (i) => {
+    "elem_id" in i && t(0, H = i.elem_id), "elem_classes" in i && t(40, f = i.elem_classes), "visible" in i && t(1, b = i.visible), "value" in i && t(39, P = i.value), "hierarchy" in i && t(41, D = i.hierarchy), "height" in i && t(42, k = i.height), "display_mode" in i && t(43, G = i.display_mode), "breadcrumb_separator" in i && t(44, v = i.breadcrumb_separator), "sort_hierarchy" in i && t(45, F = i.sort_hierarchy), "search_empty_label" in i && t(2, I = i.search_empty_label), "show_placeholder" in i && t(3, T = i.show_placeholder), "label" in i && t(4, d = i.label), "info" in i && t(5, C = i.info), "show_label" in i && t(6, B = i.show_label), "container" in i && t(46, oe = i.container), "scale" in i && t(47, Fe = i.scale), "min_width" in i && t(48, Se = i.min_width), "interactive" in i && t(7, $ = i.interactive), "gradio" in i && t(49, L = i.gradio);
   }, l.$$.update = () => {
     l.$$.dirty[1] & /*value*/
-    8 && t(8, n = He(I)), l.$$.dirty[1] & /*hierarchy*/
-    32 && t(10, i = bl(B)), l.$$.dirty[0] & /*normalizedHierarchy*/
-    1024 && (Te = wl(i)), l.$$.dirty[0] & /*normalizedHierarchy*/
-    1024 && t(46, s = kl(i)), l.$$.dirty[0] & /*searchQuery*/
-    128 && t(45, a = O.trim().toLowerCase()), l.$$.dirty[1] & /*searchTerm*/
-    16384 && t(9, o = a.length > 0), l.$$.dirty[0] & /*searchMode*/
-    512 | l.$$.dirty[1] & /*flatItems, searchTerm*/
-    49152 && t(19, _ = o ? yl(s, a) : []), l.$$.dirty[0] & /*elem_id*/
-    1 && t(22, k = p ? `${p}-panel` : `${yt}-panel`), l.$$.dirty[1] & /*height*/
-    64 && t(44, m = Math.max(10, Number(v) || 10)), l.$$.dirty[1] & /*panelRows*/
-    8192 && (w = m * ut + vl), l.$$.dirty[1] & /*container, focused, elem_classes*/
-    4240 && t(21, u = [
+    256 && t(10, n = Oe(P)), l.$$.dirty[1] & /*hierarchy, sort_hierarchy*/
+    17408 && t(13, r = Tl(D, F)), l.$$.dirty[1] & /*display_mode*/
+    4096 && t(12, s = G === "breadcrumb"), l.$$.dirty[0] & /*normalizedHierarchy, breadcrumbMode*/
+    12288 | l.$$.dirty[1] & /*breadcrumb_separator*/
+    8192 && (Xe = At(r)), l.$$.dirty[0] & /*normalizedHierarchy, breadcrumbMode*/
+    12288 | l.$$.dirty[1] & /*breadcrumb_separator*/
+    8192 && t(54, a = qt(r)), l.$$.dirty[0] & /*searchQuery*/
+    512 && t(53, o = K.trim().toLowerCase()), l.$$.dirty[1] & /*searchTerm*/
+    4194304 && t(11, _ = o.length > 0), l.$$.dirty[0] & /*searchMode*/
+    2048 | l.$$.dirty[1] & /*flatItems, searchTerm*/
+    12582912 && t(22, w = _ ? Rl(a, o) : []), l.$$.dirty[0] & /*elem_id*/
+    1 && t(25, m = H ? `${H}-panel` : `${Et}-panel`), l.$$.dirty[1] & /*height*/
+    2048 && t(52, y = Math.max(10, Number(k) || 10)), l.$$.dirty[1] & /*panelRows*/
+    2097152 && (u = y * yt + Pl), l.$$.dirty[1] & /*container, focused, elem_classes*/
+    1081856 && t(24, c = [
       "hierarchy-selector",
-      b ? "hierarchy-selector-container" : "",
-      ie ? "hierarchy-selector-focused" : "",
-      ...Array.isArray(z) ? z : []
+      oe ? "hierarchy-selector-container" : "",
+      fe ? "hierarchy-selector-focused" : "",
+      ...Array.isArray(f) ? f : []
     ].filter(Boolean).join(" ")), l.$$.dirty[1] & /*scale, min_width*/
-    768 && t(20, c = [
-      f !== null ? `flex-grow:${f};` : "",
-      D !== void 0 ? `min-width:${D}px;` : ""
+    196608 && t(23, g = [
+      Fe !== null ? `flex-grow:${Fe};` : "",
+      Se !== void 0 ? `min-width:${Se}px;` : ""
     ].join("")), l.$$.dirty[0] & /*open, selectedValue, searchQuery*/
-    448 && ne && (n || O) && Ce().then(X);
+    1792 && he && (n || K) && je().then(re);
   }, [
-    p,
-    h,
     H,
-    C,
-    g,
-    L,
-    ne,
-    O,
-    n,
-    o,
-    i,
-    te,
-    oe,
-    J,
-    le,
-    re,
-    U,
-    ue,
-    Re,
-    _,
-    c,
-    u,
-    k,
-    It,
-    ge,
-    Le,
-    Ft,
-    St,
-    Mt,
-    Dt,
-    Ze,
-    Lt,
-    je,
-    zt,
-    I,
-    z,
-    B,
-    v,
     b,
+    I,
+    T,
+    d,
+    C,
+    B,
+    $,
+    he,
+    K,
+    n,
+    _,
+    s,
+    r,
+    ce,
+    pe,
+    le,
+    ue,
+    _e,
+    ne,
+    ge,
+    Ye,
+    w,
+    g,
+    c,
+    m,
+    Nt,
+    Rt,
+    De,
+    qe,
+    jt,
+    Ot,
+    Zt,
+    Gt,
+    Kt,
+    et,
+    Qt,
+    tt,
+    Wt,
+    P,
     f,
     D,
+    k,
+    G,
+    v,
     F,
-    Ct,
-    ie,
-    m,
+    oe,
+    Fe,
+    Se,
+    L,
+    Jt,
+    fe,
+    y,
+    o,
     a,
-    s,
-    Ht,
-    Pt,
-    Et,
-    Vt,
-    Bt,
-    Nt,
-    At,
-    Tt,
-    Rt,
-    qt,
-    Ot,
-    Zt
+    Ut,
+    Xt,
+    Yt,
+    xt,
+    $t,
+    el,
+    tl,
+    ll,
+    nl,
+    rl,
+    il,
+    sl
   ];
 }
-class Ml extends tl {
+class Gl extends bl {
   constructor(e) {
-    super(), al(
+    super(), Fl(
       this,
       e,
-      Sl,
-      pl,
-      ul,
+      Zl,
+      Al,
+      Ml,
       {
         elem_id: 0,
-        elem_classes: 35,
+        elem_classes: 40,
         visible: 1,
-        value: 34,
-        hierarchy: 36,
-        height: 37,
-        label: 2,
-        info: 3,
-        show_label: 4,
-        container: 38,
-        scale: 39,
-        min_width: 40,
-        interactive: 5,
-        gradio: 41,
-        get_value: 42
+        value: 39,
+        hierarchy: 41,
+        height: 42,
+        display_mode: 43,
+        breadcrumb_separator: 44,
+        sort_hierarchy: 45,
+        search_empty_label: 2,
+        show_placeholder: 3,
+        label: 4,
+        info: 5,
+        show_label: 6,
+        container: 46,
+        scale: 47,
+        min_width: 48,
+        interactive: 7,
+        gradio: 49,
+        get_value: 50
       },
       null,
       [-1, -1, -1]
@@ -1522,90 +1666,120 @@ class Ml extends tl {
     return this.$$.ctx[0];
   }
   set elem_id(e) {
-    this.$$set({ elem_id: e }), N();
+    this.$$set({ elem_id: e }), V();
   }
   get elem_classes() {
-    return this.$$.ctx[35];
+    return this.$$.ctx[40];
   }
   set elem_classes(e) {
-    this.$$set({ elem_classes: e }), N();
+    this.$$set({ elem_classes: e }), V();
   }
   get visible() {
     return this.$$.ctx[1];
   }
   set visible(e) {
-    this.$$set({ visible: e }), N();
+    this.$$set({ visible: e }), V();
   }
   get value() {
-    return this.$$.ctx[34];
-  }
-  set value(e) {
-    this.$$set({ value: e }), N();
-  }
-  get hierarchy() {
-    return this.$$.ctx[36];
-  }
-  set hierarchy(e) {
-    this.$$set({ hierarchy: e }), N();
-  }
-  get height() {
-    return this.$$.ctx[37];
-  }
-  set height(e) {
-    this.$$set({ height: e }), N();
-  }
-  get label() {
-    return this.$$.ctx[2];
-  }
-  set label(e) {
-    this.$$set({ label: e }), N();
-  }
-  get info() {
-    return this.$$.ctx[3];
-  }
-  set info(e) {
-    this.$$set({ info: e }), N();
-  }
-  get show_label() {
-    return this.$$.ctx[4];
-  }
-  set show_label(e) {
-    this.$$set({ show_label: e }), N();
-  }
-  get container() {
-    return this.$$.ctx[38];
-  }
-  set container(e) {
-    this.$$set({ container: e }), N();
-  }
-  get scale() {
     return this.$$.ctx[39];
   }
-  set scale(e) {
-    this.$$set({ scale: e }), N();
+  set value(e) {
+    this.$$set({ value: e }), V();
   }
-  get min_width() {
-    return this.$$.ctx[40];
-  }
-  set min_width(e) {
-    this.$$set({ min_width: e }), N();
-  }
-  get interactive() {
-    return this.$$.ctx[5];
-  }
-  set interactive(e) {
-    this.$$set({ interactive: e }), N();
-  }
-  get gradio() {
+  get hierarchy() {
     return this.$$.ctx[41];
   }
+  set hierarchy(e) {
+    this.$$set({ hierarchy: e }), V();
+  }
+  get height() {
+    return this.$$.ctx[42];
+  }
+  set height(e) {
+    this.$$set({ height: e }), V();
+  }
+  get display_mode() {
+    return this.$$.ctx[43];
+  }
+  set display_mode(e) {
+    this.$$set({ display_mode: e }), V();
+  }
+  get breadcrumb_separator() {
+    return this.$$.ctx[44];
+  }
+  set breadcrumb_separator(e) {
+    this.$$set({ breadcrumb_separator: e }), V();
+  }
+  get sort_hierarchy() {
+    return this.$$.ctx[45];
+  }
+  set sort_hierarchy(e) {
+    this.$$set({ sort_hierarchy: e }), V();
+  }
+  get search_empty_label() {
+    return this.$$.ctx[2];
+  }
+  set search_empty_label(e) {
+    this.$$set({ search_empty_label: e }), V();
+  }
+  get show_placeholder() {
+    return this.$$.ctx[3];
+  }
+  set show_placeholder(e) {
+    this.$$set({ show_placeholder: e }), V();
+  }
+  get label() {
+    return this.$$.ctx[4];
+  }
+  set label(e) {
+    this.$$set({ label: e }), V();
+  }
+  get info() {
+    return this.$$.ctx[5];
+  }
+  set info(e) {
+    this.$$set({ info: e }), V();
+  }
+  get show_label() {
+    return this.$$.ctx[6];
+  }
+  set show_label(e) {
+    this.$$set({ show_label: e }), V();
+  }
+  get container() {
+    return this.$$.ctx[46];
+  }
+  set container(e) {
+    this.$$set({ container: e }), V();
+  }
+  get scale() {
+    return this.$$.ctx[47];
+  }
+  set scale(e) {
+    this.$$set({ scale: e }), V();
+  }
+  get min_width() {
+    return this.$$.ctx[48];
+  }
+  set min_width(e) {
+    this.$$set({ min_width: e }), V();
+  }
+  get interactive() {
+    return this.$$.ctx[7];
+  }
+  set interactive(e) {
+    this.$$set({ interactive: e }), V();
+  }
+  get gradio() {
+    return this.$$.ctx[49];
+  }
   set gradio(e) {
-    this.$$set({ gradio: e }), N();
+    this.$$set({ gradio: e }), V();
   }
   get get_value() {
-    return this.$$.ctx[42];
+    return this.$$.ctx[50];
   }
 }
 export {
-  Ml as default
+  Gl as default
 };

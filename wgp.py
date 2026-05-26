@@ -134,7 +134,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.80"
+WanGP_version = "11.81"
 settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -3430,7 +3430,8 @@ def check_loras_exist(model_type, loras_choices_files, download = False, send_cm
                         send_cmd("status", f'Downloading Lora {os.path.basename(lora_file)}...')
                     try:
                         download_file(url, local_path)
-                    except:
+                    except Exception as e:
+                        print(f"Error downloading {url}:{e}")
                         missing_remote_loras.append(lora_file)
             else:
                 missing_local_loras.append(lora_file)
@@ -6494,7 +6495,7 @@ def generate_video(
     if transformer_loras_filenames != None:
         loras_list_mult_choices_nums, loras_slists, errors =  parse_loras_multipliers(transformer_loras_multipliers, len(transformer_loras_filenames), num_inference_steps, nb_phases = guidance_phases, model_switch_phase= model_switch_phase )
         if len(errors) > 0: raise Exception(f"Error parsing Transformer Loras: {errors}")
-        loras_selected = transformer_loras_filenames 
+        loras_selected = transformer_loras_filenames[:] 
 
     if hasattr(wan_model, "get_loras_transformer"):
         extra_loras_transformers, extra_loras_multipliers = wan_model.get_loras_transformer(get_model_recursive_prop, **locals())
@@ -10604,6 +10605,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
     if len(launch_loras) == 0:
         launch_multis_str = ui_defaults.get("loras_multipliers","")
         launch_loras = ui_defaults.get("activated_loras",[])
+    launch_loras = update_loras_url_cache(get_lora_dir(model_type), launch_loras)
     with gr.Row():
         column_kwargs = {'elem_id': 'edit-tab-content'} if tab_id == 'edit' else {}
         with gr.Column(**column_kwargs):
@@ -11439,6 +11441,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             value= launch_loras,
                             height=10,
                             label="Activated Loras",
+                            search_empty_label="No matching LoRAs",
                         )
                         loras_multipliers = gr.Textbox(label="Loras Multipliers (1.0 by default) separated by Space chars or CR, lines that start with # are ignored", value=launch_multis_str)
                 with gr.Tab("Steps Skipping", visible = any_tea_cache or any_mag_cache) as speed_tab:
@@ -12492,6 +12495,9 @@ def _get_dropdown_deps():
 
 def create_models_hierarchy(rows):
     return model_dropdowns.create_models_hierarchy(rows)
+
+def create_models_selector_hierarchy(dropdown_types=None):
+    return model_dropdowns.create_models_selector_hierarchy(_get_dropdown_deps(), dropdown_types)
 
 def get_sorted_dropdown(dropdown_types, current_model_family, current_model_type, three_levels = True):
     return model_dropdowns.get_sorted_dropdown(_get_dropdown_deps(), dropdown_types, current_model_family, current_model_type, three_levels)

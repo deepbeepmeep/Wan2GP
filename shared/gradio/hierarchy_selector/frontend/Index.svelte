@@ -10,6 +10,11 @@
 	export let value = [];
 	export let hierarchy = { folders: [], items: [] };
 	export let height = 10;
+	export let display_mode = "file";
+	export let breadcrumb_separator = " ";
+	export let sort_hierarchy = true;
+	export let search_empty_label = "No matches";
+	export let show_placeholder = false;
 	export let label = "Hierarchy Selector";
 	export let info = undefined;
 	export let show_label = true;
@@ -38,9 +43,10 @@
 	const uniqueId = `hierarchy-selector-${Math.random().toString(36).slice(2)}`;
 
 	$: selectedValue = normalizeValue(value);
-	$: normalizedHierarchy = normalizeHierarchy(hierarchy);
-	$: itemLabels = collectLabels(normalizedHierarchy);
-	$: flatItems = flattenItems(normalizedHierarchy);
+	$: normalizedHierarchy = normalizeHierarchy(hierarchy, sort_hierarchy);
+	$: breadcrumbMode = display_mode === "breadcrumb";
+	$: itemLabels = collectLabels(normalizedHierarchy, breadcrumbMode, breadcrumb_separator);
+	$: flatItems = flattenItems(normalizedHierarchy, breadcrumbMode, breadcrumb_separator);
 	$: searchTerm = searchQuery.trim().toLowerCase();
 	$: searchMode = searchTerm.length > 0;
 	$: searchResults = searchMode ? filterItems(flatItems, searchTerm) : [];
@@ -64,8 +70,17 @@
 		return [String(next)];
 	}
 
-	function normalizeHierarchy(next) {
-		return { folders: sortFolders(next?.folders || []), items: sortItems(next?.items || []) };
+	function normalizeHierarchy(next, shouldSort) {
+		const root = { folders: next?.folders || [], items: next?.items || [] };
+		return shouldSort ? { folders: sortFolders(root.folders), items: sortItems(root.items) } : cloneHierarchy(root);
+	}
+
+	function cloneHierarchy(node) {
+		return {
+			...node,
+			folders: (node.folders || []).map((folder) => cloneHierarchy(folder)),
+			items: (node.items || []).map((item) => ({ ...item }))
+		};
 	}
 
 	function sortFolders(folders) {
@@ -89,33 +104,65 @@
 	}
 
 	function selectedLabelForItem(item) {
-		return String(item.path || item.name || item.value || "");
+		return displayLabelForItem(item);
 	}
 
 	function valueForItem(item) {
 		return String(item.value || item.path || item.name || "");
 	}
 
-	function collectLabels(root) {
+	function collectLabels(root, _breadcrumbMode, _breadcrumbSeparator) {
 		const labels = {};
-		function visit(folder) {
-			for (const item of folder.items || []) labels[valueForItem(item)] = selectedLabelForItem(item);
-			for (const child of folder.folders || []) visit(child);
+		function visit(folder, folderPath = "") {
+			for (const item of folder.items || []) labels[valueForItem(item)] = displayLabelForItem(item, folderPath);
+			for (const child of folder.folders || []) visit(child, folderPathForFolder(child, folderPath));
 		}
 		visit(root);
 		return labels;
 	}
 
-	function flattenItems(root) {
+	function folderPathForFolder(folder, parentPath = "") {
+		const explicit = String(folder.path || "");
+		if (explicit) return explicit;
+		const name = labelForFolder(folder);
+		return parentPath && name ? `${parentPath}/${name}` : name;
+	}
+
+	function pathForItem(item, folderPath = "") {
+		const explicit = String(item.path || "");
+		if (explicit) return explicit;
+		const name = labelForItem(item);
+		return folderPath && name ? `${folderPath}/${name}` : name;
+	}
+
+	function pathParts(path) {
+		return String(path || "").split("/").map((part) => part.trim()).filter(Boolean);
+	}
+
+	function formatBreadcrumb(path) {
+		const parts = pathParts(path);
+		return parts.length ? parts.join(breadcrumb_separator) : String(path || "");
+	}
+
+	function displayLabelForItem(item, folderPath = "") {
+		const itemPath = pathForItem(item, folderPath) || String(item.value || "");
+		return breadcrumbMode ? formatBreadcrumb(itemPath) : itemPath;
+	}
+
+	function searchTextForItem(item, folderPath = "") {
+		return breadcrumbMode ? displayLabelForItem(item, folderPath) : labelForItem(item);
+	}
+
+	function flattenItems(root, _breadcrumbMode, _breadcrumbSeparator) {
 		const items = [];
 		function visit(folder, folderPath = "") {
 			for (const item of folder.items || []) {
-				const itemPath = String(item.path || item.name || item.value || "");
+				const itemPath = pathForItem(item, folderPath);
 				const slash = itemPath.lastIndexOf("/");
 				const parentPath = slash > -1 ? itemPath.slice(0, slash) : folderPath;
-				items.push({ ...item, search_name: labelForItem(item), search_path: parentPath });
+				items.push({ ...item, search_name: labelForItem(item), search_path: parentPath, search_text: searchTextForItem(item, folderPath), search_display: displayLabelForItem(item, folderPath) });
 			}
-			for (const child of folder.folders || []) visit(child, String(child.path || child.name || ""));
+			for (const child of folder.folders || []) visit(child, folderPathForFolder(child, folderPath));
 		}
 		visit(root);
 		return items;
@@ -126,7 +173,9 @@
 			.map((item) => {
 				const name = String(item.search_name || labelForItem(item));
 				const path = String(item.search_path || "");
-				return { item, index: name.toLowerCase().indexOf(term), name, path };
+				const text = String(item.search_text || name);
+				const display = String(item.search_display || name);
+				return { item, index: text.toLowerCase().indexOf(term), name: display, path };
 			})
 			.filter((match) => match.index > -1)
 			.sort((a, b) => a.index - b.index || a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.path.localeCompare(b.path, undefined, { sensitivity: "base" }))
@@ -160,6 +209,13 @@
 		if (!interactive) return;
 		const next = selectedValue.filter((_, pos) => pos !== index);
 		dispatch(next, "select", { value: selectedValue[index], selected: false });
+	}
+
+	function clearValues() {
+		if (!interactive || selectedValue.length === 0) return;
+		const previous = selectedValue;
+		searchQuery = "";
+		dispatch([], "select", { value: previous, selected: false });
 	}
 
 	function toggleFolder(path) {
@@ -337,13 +393,16 @@
 						spellcheck="false"
 						disabled={!interactive}
 						tabindex={interactive ? 0 : -1}
-						placeholder={selectedValue.length === 0 ? label : ""}
+						placeholder={show_placeholder && selectedValue.length === 0 ? label : ""}
 						aria-label={label}
 						on:focus={onSearchFocus}
 						on:input={onSearchInput}
 						on:keydown|stopPropagation={onInputKeydown}
 					/>
 				</div>
+				{#if selectedValue.length > 0}
+					<button type="button" class="hierarchy-selector-clear" aria-label="Clear selection" on:click|stopPropagation={clearValues}>x</button>
+				{/if}
 			</div>
 			{#if open}
 				<div id={panelId} bind:this={panelEl} use:portal class="hierarchy-selector-panel" style={panelStyle}>
@@ -354,7 +413,7 @@
 								<div
 									class="hierarchy-search-row"
 									class:hierarchy-search-row-selected={selected}
-									title={selectedLabelForItem(item)}
+									title={item.search_display || selectedLabelForItem(item)}
 									role="button"
 									tabindex="0"
 									aria-pressed={selected}
@@ -371,16 +430,20 @@
 										<path d="M5.25 2.75h6.05L15.75 7.2v10.05H5.25V2.75Z" />
 										<path d="M11.25 2.95V7.3h4.3" />
 									</svg>
-									<span class="hierarchy-search-label">
-										<span class="hierarchy-search-name">{labelForItem(item)}</span>
-										{#if item.search_path}
-											<span class="hierarchy-search-path"> [{item.search_path}]</span>
-										{/if}
-									</span>
+									{#if breadcrumbMode}
+										<span class="hierarchy-search-label hierarchy-search-name">{item.search_display}</span>
+									{:else}
+										<span class="hierarchy-search-label">
+											<span class="hierarchy-search-name">{labelForItem(item)}</span>
+											{#if item.search_path}
+												<span class="hierarchy-search-path"> [{item.search_path}]</span>
+											{/if}
+										</span>
+									{/if}
 								</div>
 							{/each}
 						{:else}
-							<div class="hierarchy-search-empty">No matching LoRAs</div>
+							<div class="hierarchy-search-empty">{search_empty_label}</div>
 						{/if}
 					{:else}
 						<TreeNodes folders={normalizedHierarchy.folders || []} items={normalizedHierarchy.items || []} depth={0} {expanded} value={selectedValue} {toggleItem} {toggleFolder} {valueForItem} {labelForItem} />
@@ -435,6 +498,7 @@
 	.hierarchy-selector-input {
 		display: flex;
 		align-items: center;
+		gap: 4px;
 		min-height: 42px;
 		border: var(--input-border-width) solid var(--input-border-color);
 		border-radius: var(--input-radius);
@@ -542,6 +606,29 @@
 	.hierarchy-selector-search-input::placeholder {
 		color: var(--body-text-color-subdued);
 		opacity: 1;
+	}
+
+	.hierarchy-selector-clear {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex: 0 0 auto;
+		width: 26px;
+		height: 26px;
+		border: none;
+		border-radius: var(--button-small-radius);
+		background: transparent;
+		color: var(--body-text-color-subdued);
+		cursor: pointer;
+		font-size: var(--text-sm);
+		font-weight: 600;
+		line-height: 1;
+		padding: 0;
+	}
+
+	.hierarchy-selector-clear:hover {
+		color: var(--body-text-color);
+		background: var(--background-fill-secondary);
 	}
 
 	.hierarchy-selector-info {

@@ -161,6 +161,14 @@ class Qwen3Config(PretrainedConfig):
         layer_types=None,
         **kwargs,
     ):
+        rope_parameters = kwargs.pop("rope_parameters", None)
+        if rope_parameters is not None:
+            rope_theta = rope_parameters.get("rope_theta", rope_theta)
+            rope_type = rope_parameters.get("rope_type", rope_parameters.get("type", "default"))
+            if rope_type != "default":
+                rope_scaling = dict(rope_parameters)
+                rope_scaling["rope_type"] = rope_type
+
         self.vocab_size = vocab_size
         self.max_position_embeddings = max_position_embeddings
         self.hidden_size = hidden_size

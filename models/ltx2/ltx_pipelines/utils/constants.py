@@ -16,7 +16,6 @@ STAGE_2_DISTILLED_SIGMA_VALUES = [0.909375, 0.725, 0.421875, 0.0]
 DISTILLED_8_STEPS_STAGE_2_SIGMA_VALUES = [0.85, 0.7250, 0.4219, 0.0]
 
 LTX23_USE_DISTILLED_8_STEPS_STAGE_2_SIGMAS = True
-LTX23_BASE_MODEL_TYPES = {"ltx2_22B"}
 
 
 # =============================================================================

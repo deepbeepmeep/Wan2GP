@@ -12,7 +12,7 @@
     "audio_prompt_type": "",
     "model_mode": "auto",
     "multi_prompts_gen_type": "FG",
-    "duration_seconds": 30,
+    "duration_seconds": 0,
     "pause_seconds": 0.2,
     "num_inference_steps": 32,
     "guidance_scale": 2.0,

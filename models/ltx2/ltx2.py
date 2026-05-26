@@ -431,7 +431,7 @@ def _normalize_temporal_overlap(overlap_frames: int, tile_frames: int) -> int:
     return overlap_frames
 
 
-def _build_tiling_config(tile_size: int | tuple | list | None, fps: float | None) -> TilingConfig | None:
+def _build_tiling_config(tile_size: int | tuple | list | None, num_frames: int | None) -> TilingConfig | None:
     temporal_tiling_divisor = 1
     spatial_config = None
     if isinstance(tile_size, (tuple, list)):
@@ -451,9 +451,9 @@ def _build_tiling_config(tile_size: int | tuple | list | None, fps: float | None
             spatial_config = SpatialTilingConfig(tile_size_in_pixels=tile_size, tile_overlap_in_pixels=overlap)
 
     temporal_config = None
-    if fps is not None and fps > 0:
+    if num_frames is not None and num_frames > 241:
         temporal_tiling_divisor = max(1, temporal_tiling_divisor)
-        tile_frames = _normalize_temporal_tiling_size(int(math.ceil(float(fps) * 5.0 / temporal_tiling_divisor)))
+        tile_frames = _normalize_temporal_tiling_size(int(math.ceil(232 / temporal_tiling_divisor)))
         if tile_frames > 0:
             overlap_frames = int(round(tile_frames * 3 / 8))
             overlap_frames = _normalize_temporal_overlap(overlap_frames, tile_frames)
@@ -1181,8 +1181,7 @@ class LTX2:
 
         _append_injected_ref_entries(guiding_images, guiding_images_stage2)
 
-        tiling_config = _build_tiling_config(VAE_tile_size, fps)
-        # tiling_config = _build_tiling_config(VAE_tile_size, None)
+        tiling_config = _build_tiling_config(VAE_tile_size, frame_num)
         interrupt_check = lambda: self._interrupt
         text_connectors = text_connectors or getattr(self, "_text_connectors", None)
         editanything_ref_images = input_ref_images if editanything else None
@@ -1312,6 +1311,7 @@ class LTX2:
         prompt_relay_frame_offset = 0
         if int(window_no or 1) > 1 or (input_video is not None and not is_start_image_only):
             prompt_relay_frame_offset = max(0, int(prefix_frames_count or 0))
+        ltx2_22B_class = self.model_def.get("ltx2_22B_class", False)
 
         if isinstance(self.pipeline, TI2VidTwoStagesPipeline):
             pipeline_output = self.pipeline(
@@ -1364,7 +1364,7 @@ class LTX2:
                 self_refiner_certain_percentage=self_refiner_certain_percentage,
                 self_refiner_max_plans=self_refiner_max_plans,
                 editanything_ref_images=editanything_ref_images,
-                base_model_type=self.base_model_type,
+                ltx2_22B_class=ltx2_22B_class,
             )
         else:
             distilled_kwargs = {}
@@ -1421,7 +1421,7 @@ class LTX2:
                 self_refiner_certain_percentage=self_refiner_certain_percentage,
                 self_refiner_max_plans=self_refiner_max_plans,
                 editanything_ref_images=editanything_ref_images,
-                base_model_type=self.base_model_type,
+                ltx2_22B_class=ltx2_22B_class,
                 **distilled_kwargs,
             )
 

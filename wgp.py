@@ -136,7 +136,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.82"
+WanGP_version = "11.83"
 settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -4355,8 +4355,9 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
         if data!=None and isinstance(data, dict):
             choice = data.get("index",0)        
         else:
-            choice = gen.get("selected", max(file_selected, 0) )
+            choice = gen.get("selected", file_selected)
         choice = min(len(file_list)-1, choice) 
+        if choice < 0 and len(file_list) > 0: choice = 0
         set_file_choice(gen, file_list, choice)
         files, settings_list = file_list, file_settings_list
     else:
@@ -4368,6 +4369,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
         else:
             choice = gen.get("audio_selected",-1)
         choice = min(len(audio_file_list)-1, choice)
+        if choice < 0 and len(audio_file_list) > 0: choice = 0
         set_file_choice(gen,  audio_file_list, choice, audio_files=True )
         files, settings_list = audio_file_list, audio_file_settings_list
 
@@ -9194,11 +9196,16 @@ def collect_current_model_settings_with_media(state):
     settings["model_type"] = model_type
     return settings
 
-def export_settings(state):
+def export_settings(state, include_media=False):
     model_type = get_state_model_type(state)
+    filename = sanitize_file_name(model_type + "_" + datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d-%Hh%Mm%Ss") + (".zip" if include_media else ".json"))
+    if include_media:
+        with io.BytesIO() as zip_buffer:
+            ok = _save_queue_to_zip([{"id": 1, "params": collect_current_model_settings_with_media(state)}], zip_buffer)
+            if not ok: gr.Warning("Failed to export settings with media.")
+            return (base64.b64encode(zip_buffer.getvalue()).decode('utf-8'), filename) if ok else ("", "")
     text = json.dumps(collect_current_model_settings(state), indent=4)
-    text_base64 = base64.b64encode(text.encode('utf8')).decode('utf-8')
-    return text_base64, sanitize_file_name(model_type + "_" + datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d-%Hh%Mm%Ss") + ".json")
+    return base64.b64encode(text.encode('utf8')).decode('utf-8'), filename
 
 
 def extract_and_apply_source_images(file_path, current_settings):
@@ -11761,6 +11768,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 ("24", "24"), 
                                 ("25", "25"), 
                                 ("30", "30"), 
+                                ("48", "48"), 
                                 ("50", "50"), 
                             ]
                     
@@ -11799,6 +11807,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 with gr.Row():
                     save_settings_btn = gr.Button("Set Settings as Default", visible = not args.lock_config)
                     export_settings_from_file_btn = gr.Button("Export Settings to File")
+                    export_settings_include_media = gr.Checkbox(label="include Media", value=False, min_width=1)
                     reset_settings_btn = gr.Button("Reset Settings")
                 with gr.Row():
                     settings_file = gr.File(height=41,label="Load Settings From Video / Image / Audio / JSON / ZIP")
@@ -12232,7 +12241,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 inputs =[target_state] + gen_inputs,
                 outputs= None
             ).then(fn=export_settings, 
-                inputs =[state], 
+                inputs =[state, export_settings_include_media],
                 outputs= [settings_base64_output, settings_filename]
             ).then(
                 fn=None,

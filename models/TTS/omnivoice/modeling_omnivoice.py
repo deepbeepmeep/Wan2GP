@@ -71,8 +71,8 @@ from .utils.voice_design import (
 logger = logging.getLogger(__name__)
 
 
-OMNIVOICE_AUTO_REF_MAX_DURATION = 5.0
-OMNIVOICE_AUTO_REF_TRIM_THRESHOLD = 6.0
+OMNIVOICE_AUTO_REF_MAX_DURATION = 15.0
+OMNIVOICE_AUTO_REF_TRIM_THRESHOLD = 20.0
 OMNIVOICE_AUTO_REF_MID_SILENCE_MS = 200
 OMNIVOICE_AUTO_REF_LEAD_SILENCE_MS = 100
 OMNIVOICE_AUTO_REF_TRAIL_SILENCE_MS = 200
@@ -226,6 +226,7 @@ class OmniVoice(PreTrainedModel):
         self.audio_tokenizer = None
         self.duration_estimator = None
         self.sampling_rate = None
+        self._last_generated_token_results = None
         self._abort_callback = None
         self._progress_callback = None
         self._transcribe_reference_callback = None
@@ -457,6 +458,8 @@ class OmniVoice(PreTrainedModel):
             for idx, res in zip(long_idx, long_results):
                 results[idx] = res
 
+        self._last_generated_token_results = results
+
         generated_audios = []
         for i in range(full_task.batch_size):
             assert results[i] is not None, f"Result {i} was not generated"
@@ -517,7 +520,7 @@ class OmniVoice(PreTrainedModel):
             ref_wav = ref_wav * 0.1 / ref_rms
 
         if preprocess_prompt:
-            # Auto-transcribed references work best in the recommended 3-10s range.
+            # Match upstream reference preprocessing: only trim long references.
             # Skip trimming when ref_text is user-provided, otherwise the
             # trimmed audio will no longer match the full transcript.
             if ref_text is None:

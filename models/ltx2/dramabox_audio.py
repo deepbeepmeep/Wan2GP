@@ -401,7 +401,7 @@ class DramaBoxAudioPipeline(LTXAudioTTSPipelineBase):
         else:
             audio_context = self._encode_prompt(segment.prompt)
             audio_context_n = None
-        if self._interrupt:
+        if self._interrupt or self._early_stop_requested():
             return None
 
         audio_state, audio_tools = self._build_audio_state(
@@ -653,7 +653,7 @@ class DramaBoxAudioPipeline(LTXAudioTTSPipelineBase):
                 status_extra=status_extra,
             )
             if audio is None:
-                if self._interrupt and generated_segments:
+                if generated_segments and (self._interrupt or self._early_stop_requested()):
                     break
                 return None
             if set_progress_status is not None:

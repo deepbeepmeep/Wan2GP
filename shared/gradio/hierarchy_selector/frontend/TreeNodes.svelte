@@ -91,12 +91,12 @@
 		grid-template-columns: 16px 20px minmax(0, 1fr);
 		column-gap: 7px;
 		align-items: center;
-		min-height: 32px;
+		min-height: 28px;
 		box-sizing: border-box;
 		border-radius: var(--radius-sm);
 		color: var(--body-text-color);
-		font-size: var(--text-sm);
-		line-height: 1.2;
+		font-size: var(--text-md, var(--text-sm));
+		line-height: 1.12;
 		user-select: none;
 		padding-right: 4px;
 		transition: background-color 120ms ease, color 120ms ease, opacity 120ms ease;

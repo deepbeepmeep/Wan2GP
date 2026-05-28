@@ -136,7 +136,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.84"
+WanGP_version = "11.85"
 settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -4207,7 +4207,7 @@ def finalize_generation(state):
     return gallery_tabs, 1 if last_was_audio else 0, gr.update() if last_was_audio else gr.Gallery(value=gen.get("file_list", []), selected_index=choice),  *pack_audio_gallery_state(audio_file_list, audio_choice), gr.Button(interactive=  True), gr.Button(interactive=  True, visible= False), gr.Button(visible= True), gr.Button(visible= False), gr.Column(visible= False), gr.HTML(visible= False, value="")
 
 def get_default_video_info():
-    return "Please Select an Video / Image"    
+    return "Please Select a Video / Image"    
 
 
 def get_file_list(state, input_file_list, audio_files = False):
@@ -11448,7 +11448,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         loras_choices = HierarchySelector(
                             hierarchy=loras_hierarchy,
                             value= launch_loras,
-                            height=10,
+                            height=0,
                             label="Activated LoRAs",
                             search_empty_label="No matching LoRAs",
                         )

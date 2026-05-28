@@ -1,5 +1,6 @@
 import os
 import json
+import types
 
 import torch
 from mmgp import offload
@@ -8,7 +9,7 @@ from shared.utils.utils import convert_image_to_tensor, convert_tensor_to_image
 from transformers import AutoTokenizer, PreTrainedTokenizerBase, Qwen2VLImageProcessorFast, Qwen2VLProcessor
 from transformers.processing_utils import ProcessorMixin
 
-from .pipeline import DEFAULT_TIMESTEPS, NOISE_SCALE, generate_image
+from .pipeline import DEFAULT_TIMESTEPS, NOISE_SCALE, generate_image, resample_timesteps
 from .qwen3_vl_configuration import register_qwen3_vl_config
 from .qwen3_vl_transformers import Qwen3VLForConditionalGeneration
 
@@ -90,6 +91,37 @@ def save_quantized_transformer(model, model_filename, dtype, config_file):
     return quantized_path
 
 
+def _attach_lora_preprocessor(transformer):
+    def preprocess_loras(self, model_type, sd):
+        if not sd:
+            return sd
+
+        qwen3_model_prefixes = (
+            "visual.",
+            "language_model.",
+            "t_embedder1.",
+            "t_embedder2.",
+            "x_embedder.",
+            "final_layer2.",
+        )
+        wrapper_prefixes = ("diffusion_model.", "transformer.")
+        new_sd = {}
+        for key, value in sd.items():
+            for wrapper_prefix in wrapper_prefixes:
+                if key.startswith(wrapper_prefix):
+                    inner_key = key[len(wrapper_prefix):]
+                    if inner_key.startswith(qwen3_model_prefixes):
+                        key = wrapper_prefix + "model." + inner_key
+                    break
+            else:
+                if key.startswith(qwen3_model_prefixes):
+                    key = "model." + key
+            new_sd[key] = value
+        return new_sd
+
+    transformer.preprocess_loras = types.MethodType(preprocess_loras, transformer)
+
+
 class model_factory:
     def __init__(
         self,
@@ -136,6 +168,7 @@ class model_factory:
         )
         self.transformer.eval().requires_grad_(False)
         self.model = self.transformer
+        _attach_lora_preprocessor(self.transformer)
         self._set_interrupt(False)
 
         if source is not None:
@@ -259,6 +292,7 @@ class model_factory:
         self._set_interrupt(False)
         is_dev = self.base_model_type == "hidream_o1_dev"
         custom_settings = custom_settings or {}
+        sampling_steps = int(sampling_steps)
 
         if seed is None or int(seed) < 0:
             seed = int(torch.seed() % (2**31 - 1))
@@ -267,7 +301,7 @@ class model_factory:
 
         if is_dev:
             scheduler_name = "flash"
-            timesteps_list = DEFAULT_TIMESTEPS
+            timesteps_list = resample_timesteps(DEFAULT_TIMESTEPS, sampling_steps)
             guide_scale = 0.0
             shift = 1.0 if shift is None else shift
             noise_scale_start = float(custom_settings.get("noise_scale_start", 7.5))

@@ -634,7 +634,7 @@ class family_handler:
         text_encoder_filename=None,
         **kwargs,
     ):
-        from .ltx2 import LTX2
+        from .ltx2 import LTX2, LTX2_ENABLE_EMBEDDING_LORAS
 
         checkpoint_paths = _resolve_multi_file_paths(model_def, base_model_type)
         transformer_modules = []
@@ -690,7 +690,7 @@ class family_handler:
         if ltx2_model.model2 is not None:
             pipe["transformer2"] = ltx2_model.model2
 
-        if model_def.get("ltx2_pipeline", "") != "distilled":
+        if LTX2_ENABLE_EMBEDDING_LORAS:
             pipe = { "pipe": pipe, "loras" : ["text_embedding_projection", "text_embeddings_connector"] }
 
         return ltx2_model, pipe

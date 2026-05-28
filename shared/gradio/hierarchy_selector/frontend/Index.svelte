@@ -28,6 +28,7 @@
 	let inputEl;
 	let searchInputEl;
 	let panelEl;
+	let panelContentEl;
 	let open = false;
 	let focused = false;
 	let expanded = new Set();
@@ -36,7 +37,7 @@
 	let dragOverIndex = null;
 	let itemLabels = {};
 	let panelStyle = "";
-	const rowHeight = 32;
+	const rowHeight = 28;
 	const panelPadding = 8;
 	const panelGap = 6;
 	const viewportPadding = 8;
@@ -51,7 +52,9 @@
 	$: searchMode = searchTerm.length > 0;
 	$: searchResults = searchMode ? filterItems(flatItems, searchTerm) : [];
 	$: panelId = elem_id ? `${elem_id}-panel` : `${uniqueId}-panel`;
-	$: panelRows = Math.max(10, Number(height) || 10);
+	$: heightRows = Number(height);
+	$: autoPanelHeight = heightRows === 0;
+	$: panelRows = autoPanelHeight ? 0 : Math.max(10, heightRows || 10);
 	$: panelHeight = panelRows * rowHeight + panelPadding;
 	$: classes = [
 		"hierarchy-selector",
@@ -222,16 +225,18 @@
 		if (expanded.has(path)) expanded.delete(path);
 		else expanded.add(path);
 		expanded = new Set(expanded);
+		tick().then(updatePanelPosition);
 	}
 
 	function updatePanelPosition() {
 		if (!inputEl || !open) return;
 		const rect = inputEl.getBoundingClientRect();
-		const preferredHeight = panelHeight;
+		const contentHeight = Math.max(rowHeight + panelPadding, panelContentEl ? Math.ceil(panelContentEl.scrollHeight + panelPadding) : rowHeight + panelPadding);
+		const preferredHeight = autoPanelHeight ? contentHeight : panelHeight;
 		const spaceAbove = rect.top - viewportPadding - panelGap;
 		const spaceBelow = window.innerHeight - rect.bottom - viewportPadding - panelGap;
 		const placeBelow = spaceAbove < preferredHeight && spaceBelow > spaceAbove;
-		const availableHeight = Math.max(rowHeight * 4, placeBelow ? spaceBelow : spaceAbove);
+		const availableHeight = Math.max(rowHeight + panelPadding, placeBelow ? spaceBelow : spaceAbove);
 		const actualHeight = Math.min(preferredHeight, availableHeight);
 		const top = placeBelow ? rect.bottom + panelGap : Math.max(viewportPadding, rect.top - actualHeight - panelGap);
 		const left = Math.max(viewportPadding, rect.left);
@@ -331,7 +336,7 @@
 		return normalizeValue(value);
 	}
 
-	$: if (open && (selectedValue || searchQuery)) tick().then(updatePanelPosition);
+	$: if (open && (selectedValue || searchQuery || expanded || normalizedHierarchy || searchResults || autoPanelHeight || panelHeight)) tick().then(updatePanelPosition);
 
 	onMount(() => {
 		document.addEventListener("pointerdown", onDocumentPointerDown, true);
@@ -406,48 +411,50 @@
 			</div>
 			{#if open}
 				<div id={panelId} bind:this={panelEl} use:portal class="hierarchy-selector-panel" style={panelStyle}>
-					{#if searchMode}
-						{#if searchResults.length}
-							{#each searchResults as item (valueForItem(item))}
-								{@const selected = selectedValue.includes(valueForItem(item))}
-								<div
-									class="hierarchy-search-row"
-									class:hierarchy-search-row-selected={selected}
-									title={item.search_display || selectedLabelForItem(item)}
-									role="button"
-									tabindex="0"
-									aria-pressed={selected}
-									on:click={() => toggleItem(item)}
-									on:keydown={(event) => {
-										if (event.key === "Enter" || event.key === " ") {
-											event.preventDefault();
-											toggleItem(item);
-										}
-									}}
-								>
-									<span class="hierarchy-search-spacer"></span>
-									<svg class="hierarchy-search-icon" viewBox="0 0 20 20" aria-hidden="true">
-										<path d="M5.25 2.75h6.05L15.75 7.2v10.05H5.25V2.75Z" />
-										<path d="M11.25 2.95V7.3h4.3" />
-									</svg>
-									{#if breadcrumbMode}
-										<span class="hierarchy-search-label hierarchy-search-name">{item.search_display}</span>
-									{:else}
-										<span class="hierarchy-search-label">
-											<span class="hierarchy-search-name">{labelForItem(item)}</span>
-											{#if item.search_path}
-												<span class="hierarchy-search-path"> [{item.search_path}]</span>
-											{/if}
-										</span>
-									{/if}
-								</div>
-							{/each}
+					<div bind:this={panelContentEl} class="hierarchy-selector-panel-content">
+						{#if searchMode}
+							{#if searchResults.length}
+								{#each searchResults as item (valueForItem(item))}
+									{@const selected = selectedValue.includes(valueForItem(item))}
+									<div
+										class="hierarchy-search-row"
+										class:hierarchy-search-row-selected={selected}
+										title={item.search_display || selectedLabelForItem(item)}
+										role="button"
+										tabindex="0"
+										aria-pressed={selected}
+										on:click={() => toggleItem(item)}
+										on:keydown={(event) => {
+											if (event.key === "Enter" || event.key === " ") {
+												event.preventDefault();
+												toggleItem(item);
+											}
+										}}
+									>
+										<span class="hierarchy-search-spacer"></span>
+										<svg class="hierarchy-search-icon" viewBox="0 0 20 20" aria-hidden="true">
+											<path d="M5.25 2.75h6.05L15.75 7.2v10.05H5.25V2.75Z" />
+											<path d="M11.25 2.95V7.3h4.3" />
+										</svg>
+										{#if breadcrumbMode}
+											<span class="hierarchy-search-label hierarchy-search-name">{item.search_display}</span>
+										{:else}
+											<span class="hierarchy-search-label">
+												<span class="hierarchy-search-name">{labelForItem(item)}</span>
+												{#if item.search_path}
+													<span class="hierarchy-search-path"> [{item.search_path}]</span>
+												{/if}
+											</span>
+										{/if}
+									</div>
+								{/each}
+							{:else}
+								<div class="hierarchy-search-empty">{search_empty_label}</div>
+							{/if}
 						{:else}
-							<div class="hierarchy-search-empty">{search_empty_label}</div>
+							<TreeNodes folders={normalizedHierarchy.folders || []} items={normalizedHierarchy.items || []} depth={0} {expanded} value={selectedValue} {toggleItem} {toggleFolder} {valueForItem} {labelForItem} />
 						{/if}
-					{:else}
-						<TreeNodes folders={normalizedHierarchy.folders || []} items={normalizedHierarchy.items || []} depth={0} {expanded} value={selectedValue} {toggleItem} {toggleFolder} {valueForItem} {labelForItem} />
-					{/if}
+					</div>
 				</div>
 			{/if}
 		</div>
@@ -651,17 +658,22 @@
 		scrollbar-width: thin;
 	}
 
+	.hierarchy-selector-panel-content {
+		min-width: 0;
+		min-height: 28px;
+	}
+
 	.hierarchy-search-row {
 		display: grid;
 		grid-template-columns: 16px 20px minmax(0, 1fr);
 		column-gap: 7px;
 		align-items: center;
-		min-height: 32px;
+		min-height: 28px;
 		box-sizing: border-box;
 		border-radius: var(--radius-sm);
 		color: var(--body-text-color);
-		font-size: var(--text-sm);
-		line-height: 1.2;
+		font-size: var(--text-md, var(--text-sm));
+		line-height: 1.12;
 		user-select: none;
 		padding: 0 4px 0 6px;
 		cursor: pointer;
@@ -707,9 +719,10 @@
 	.hierarchy-search-empty {
 		display: flex;
 		align-items: center;
-		min-height: 32px;
+		min-height: 28px;
 		padding: 0 10px;
 		color: var(--body-text-color-subdued);
-		font-size: var(--text-sm);
+		font-size: var(--text-md, var(--text-sm));
+		line-height: 1.12;
 	}
 </style>

@@ -127,7 +127,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.transformer_types_choices = HierarchySelector(
                         hierarchy=self.create_models_selector_hierarchy(self.displayed_model_types),
                         value=self.transformer_types,
-                        height=10,
+                        height=0,
                         label="Selectable Generative Models (leave empty for all)",
                         display_mode="breadcrumb",
                         sort_hierarchy=False,

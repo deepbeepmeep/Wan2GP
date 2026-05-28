@@ -52,6 +52,15 @@ LTX2_ID_LORA_MAX_REFERENCE_SECONDS = 121.0 / 25.0
 LTX2_OUTPAINT_GAMMA = 2.0
 LTX2_HDR_TRANSFORM = "logc3"
 LTX2_DISABLE_STAGE2_WITH_CONTROL_VIDEO = True
+LTX2_ENABLE_EMBEDDING_LORAS = False
+LTX2_EMBEDDING_LORA_PREFIXES = (
+    "text_embedding_projection.",
+    "feature_extractor_linear.",
+    "text_embeddings_connector.",
+    "embeddings_connector.",
+    "video_embeddings_connector.",
+    "audio_embeddings_connector.",
+)
 
 
 def _normalize_config(config_value):
@@ -225,8 +234,7 @@ class LTX2SuperModel(torch.nn.Module):
             self.split_linear_modules_map = split_map
 
         self.text_embedding_projection = ltx2_model.text_embedding_projection
-        self.video_embeddings_connector = ltx2_model.video_embeddings_connector
-        self.audio_embeddings_connector = ltx2_model.audio_embeddings_connector
+        self.text_embeddings_connector = ltx2_model.text_embeddings_connector
 
     @property
     def _interrupt(self) -> bool:
@@ -327,8 +335,14 @@ def _attach_lora_preprocessor(transformer: torch.nn.Module) -> None:
                 key = key[len("diffusion_model.") :]
             if key.startswith("transformer."):
                 key = key[len("transformer.") :]
+            if not LTX2_ENABLE_EMBEDDING_LORAS and key.startswith(LTX2_EMBEDDING_LORA_PREFIXES):
+                continue
             if key.startswith("embeddings_connector."):
-                key = f"video_embeddings_connector.{key[len('embeddings_connector.'):]}"
+                key = f"text_embeddings_connector.video_embeddings_connector.{key[len('embeddings_connector.'):]}"
+            if key.startswith("video_embeddings_connector."):
+                key = f"text_embeddings_connector.{key}"
+            if key.startswith("audio_embeddings_connector."):
+                key = f"text_embeddings_connector.{key}"
             if key.startswith("feature_extractor_linear."):
                 key = f"text_embedding_projection.{key[len('feature_extractor_linear.'):]}"
 

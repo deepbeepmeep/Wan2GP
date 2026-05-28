@@ -9,7 +9,7 @@ from shared.utils.audio_video import read_image_metadata
 
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"}
-_VIDEO_EXTENSIONS = {".mp4", ".mkv"}
+_VIDEO_EXTENSIONS = {".mkv", ".mov", ".mp4"}
 _AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac"}
 _MEDIA_TYPES = {"image", "video", "audio", "any", "all"}
 _TYPE_HINTS = {

@@ -32,7 +32,7 @@ from shared.utils.utils import get_video_info
 
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"}
-_VIDEO_EXTENSIONS = {".mp4", ".mkv"}
+_VIDEO_EXTENSIONS = {".mkv", ".mov", ".mp4"}
 _AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac", ".flac", ".m4a", ".ogg", ".wma"}
 _USER32 = getattr(ctypes, "windll", None)
 _USER32 = None if _USER32 is None else getattr(_USER32, "user32", None)

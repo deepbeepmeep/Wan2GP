@@ -5549,7 +5549,7 @@ def edit_video(
     audio_metadata = None
     temp_audio_tracks = []
     if not source_is_image and postprocess_audio != "mmaudio" and not api_suppress_source_audio:
-        audio_tracks, audio_metadata  = extract_audio_tracks(video_source, temp_format="wav" if postprocess_audio in ("seedvc", "seedvc2") else None)
+        audio_tracks, audio_metadata = extract_audio_tracks(video_source, temp_format="wav" if postprocess_audio in ("seedvc", "seedvc2") else None, codec_key=server_config.get("audio_output_codec", "aac_128"))
         temp_audio_tracks = audio_tracks.copy()
         has_already_audio = len(temp_audio_tracks) > 0 
     
@@ -5630,6 +5630,8 @@ def edit_video(
     any_mmaudio = postprocess_audio == "mmaudio" and mmaudio_enabled and frames_count >=output_fps
     seedvc_speaker_count = get_seedvc_speaker_count(postprocess_audio=postprocess_audio)
     any_seedvc = seedvc_speaker_count > 0 and seedvc_bridge.enabled() and seedvc_voice_sample is not None
+    video_container = server_config.get("video_container", "mp4")
+    video_extension = f".{video_container}"
 
     tmp_path = None
     any_change = False
@@ -5648,7 +5650,7 @@ def edit_video(
             send_cmd("output")
             clear_status(state)
             return
-        video_path =get_available_filename(save_path, video_source, "_tmp") if any_mmaudio or has_already_audio else get_available_filename(save_path, video_source, "_post")  
+        video_path = get_available_filename(save_path, video_source, "_tmp", force_extension=video_extension) if any_mmaudio or has_already_audio else get_available_filename(save_path, video_source, "_post", force_extension=video_extension)
         video_path = save_video( tensor=sample[None], save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type= server_config.get("video_output_codec", None), container=server_config.get("video_container", "mp4"))
 
         if any_mmaudio or has_already_audio: tmp_path = video_path
@@ -5698,15 +5700,15 @@ def edit_video(
         if any_mmaudio:
             send_cmd("progress", [0, get_latest_status(state,"MMAudio Soundtrack Generation")])
             from postprocessing.mmaudio.mmaudio import video_to_audio
-            new_video_path = get_available_filename(save_path, video_source, suffix)
-            video_to_audio(video_path, prompt = MMAudio_prompt, negative_prompt = MMAudio_neg_prompt, seed = seed, num_steps = 25, cfg_strength = 4.5, duration= frames_count /output_fps, save_path = new_video_path , persistent_models = mmaudio_persistence == MMAUDIO_PERSIST_RAM, verboseLevel = verbose_level, model_name = mmaudio_model_name, model_path = mmaudio_model_path)
+            new_video_path = get_available_filename(save_path, video_source, suffix, force_extension=video_extension)
+            video_to_audio(video_path, prompt = MMAudio_prompt, negative_prompt = MMAudio_neg_prompt, seed = seed, num_steps = 25, cfg_strength = 4.5, duration= frames_count /output_fps, save_path = new_video_path , persistent_models = mmaudio_persistence == MMAUDIO_PERSIST_RAM, verboseLevel = verbose_level, model_name = mmaudio_model_name, model_path = mmaudio_model_path, audio_codec_key=server_config.get("audio_output_codec", "aac_128"))
             configs["postprocess_audio"] = postprocess_audio
             configs["MMAudio_prompt"] = MMAudio_prompt
             configs["MMAudio_neg_prompt"] = MMAudio_neg_prompt
             configs["MMAudio_seed"] = seed
             any_change = True
         elif len(audio_tracks) > 0:
-            new_video_path = get_available_filename(save_path, video_source, suffix)
+            new_video_path = get_available_filename(save_path, video_source, suffix, force_extension=video_extension)
             if any_seedvc:
                 send_cmd("progress", [0, get_latest_status(state,"SeedVC Voice Replacement")])
                 if seedvc_speaker_count == 2:
@@ -5726,7 +5728,7 @@ def edit_video(
                 )
                 cleanup_temp_audio_files(seedvc_temp_tracks)
             else:
-                combine_video_with_audio_tracks(video_path, audio_tracks, new_video_path, audio_metadata=audio_metadata)
+                combine_video_with_audio_tracks(video_path, audio_tracks, new_video_path, audio_metadata=audio_metadata, audio_codec_key=server_config.get("audio_output_codec", "aac_128"))
         else:
             new_video_path = video_path
         if tmp_path != None:
@@ -5748,7 +5750,7 @@ def edit_video(
                 if not bool(api_options.get("suppress_metadata_images")):
                     temp_images_path = get_available_filename(save_path, video_source, force_extension= ".temp")
                     embedded_images = extract_source_images(video_source, temp_images_path)
-                save_video_metadata(new_video_path, configs, embedded_images, verbose_level=verbose_level)
+                save_video_metadata(new_video_path, configs, embedded_images, allow_inplace_update=True, verbose_level=verbose_level)
                 if temp_images_path is not None and os.path.isdir(temp_images_path):
                     shutil.rmtree(temp_images_path, ignore_errors= True)
             gen["last_was_audio"] = False
@@ -6580,8 +6582,8 @@ def generate_video(
         if len(file_list)>0:
             video_source = file_list[-1]
         else:
-            mp4_files = glob.glob(os.path.join(save_path, "*.mp4"))
-            video_source = max(mp4_files, key=os.path.getmtime) if mp4_files else None                            
+            video_files = glob.glob(os.path.join(save_path, "*.mp4")) + glob.glob(os.path.join(save_path, "*.mov")) + glob.glob(os.path.join(save_path, "*.mkv"))
+            video_source = max(video_files, key=os.path.getmtime) if video_files else None
     fps = 1 if is_image else get_computed_fps(force_fps, base_model_type , video_guide, video_source )
     control_audio_tracks = source_audio_tracks = source_audio_metadata = []
     if postprocess_audio == "control" and video_guide is not None:
@@ -8990,7 +8992,7 @@ def remux_audio(state, input_file_list, choice, PP_postprocess_audio, PP_MMAudio
     if len(file_list) == 0 or choice == None or choice < 0 or choice > len(file_list)  :
         return gr.update(), gr.update(), gr.update()
     
-    if not (file_list[choice].endswith(".mp4") or file_list[choice].endswith(".mkv")):
+    if not file_list[choice].lower().endswith((".mp4", ".mkv", ".mov")):
         gr.Info("Post processing is only available with Videos")
         return gr.update(), gr.update(), gr.update()
     overrides = {
@@ -9317,7 +9319,7 @@ def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, sw
             configs = (loaded_queue[0].get("params", {}) or {}).copy()
             if source_task_count > 1:
                 configs["_settings_bundle_task_count"] = source_task_count
-    elif file_path_lower.endswith(".mp4") or file_path_lower.endswith(".mkv"):
+    elif file_path_lower.endswith((".mp4", ".mkv", ".mov")):
         from shared.utils.video_metadata import read_metadata_from_video
         try:
             configs = read_metadata_from_video(file_path)
@@ -9458,7 +9460,7 @@ def load_settings_from_file(state, file_path):
     # Extract and apply embedded source images from video files
     extracted_images = 0
     file_path_text = str(getattr(file_path, "name", file_path) or "")
-    if file_path_text.lower().endswith(('.mkv', '.mp4')):
+    if file_path_text.lower().endswith((".mkv", ".mov", ".mp4")):
         extracted_images = extract_and_apply_source_images(file_path_text, configs)
     if settings_bundle_task_count > 1:
         gr.Info(f"Settings bundle contains {settings_bundle_task_count} tasks; only the first task has been extracted.")

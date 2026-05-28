@@ -256,6 +256,6 @@ def load_image(image_path: Path) -> VideoInfo:
     return video_info
 
 
-def make_video(source_path, video_info: VideoInfo, output_path: Path, audio: torch.Tensor, sampling_rate: int):
+def make_video(source_path, video_info: VideoInfo, output_path: Path, audio: torch.Tensor, sampling_rate: int, audio_codec_key: str = "aac_128"):
     # reencode_with_audio(video_info, output_path, audio, sampling_rate)
-    remux_with_audio(source_path, output_path, audio, sampling_rate)
+    remux_with_audio(source_path, output_path, audio, sampling_rate, audio_codec_key=audio_codec_key)

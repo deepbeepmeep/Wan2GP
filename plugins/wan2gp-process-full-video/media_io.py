@@ -230,10 +230,16 @@ def validate_audio_copy_container(ffprobe_path: str, source_path: str, video_con
         raise gr.Error(f"{video_container.upper()} output cannot packet-copy {track_label} with codec(s): {codecs_text}. Use an .mkv output path or choose a compatible track.")
 
 
+def validate_output_codec_container(video_codec: str, video_container: str, audio_codec: str | None = None, width: int | None = None, height: int | None = None, output_path: str | None = None) -> None:
+    error = validate_video_output_settings(video_codec, video_container, audio_codec=audio_codec, width=width, height=height, allowed_containers=SUPPORTED_OUTPUT_CONTAINERS)
+    if error is None:
+        return
+    suffix = Path(output_path).suffix if output_path else f".{normalize_container_name(video_container)}"
+    raise gr.Error(f"Output file extension '{suffix}' is incompatible with the current video codec/container settings. {error} Choose a compatible output extension or update the Configuration plugin settings.")
+
+
 def start_video_mux_process(ffmpeg_path: str, output_path: str, width: int, height: int, fps_float: float, video_codec: str, video_container: str, reserved_metadata_path: str | None = None) -> subprocess.Popen:
-    error = validate_video_output_settings(video_codec, video_container, width=width, height=height, allowed_containers=SUPPORTED_OUTPUT_CONTAINERS)
-    if error is not None:
-        raise gr.Error(error)
+    validate_output_codec_container(video_codec, video_container, width=width, height=height, output_path=output_path)
     command = [
         ffmpeg_path,
         "-y",
@@ -264,9 +270,7 @@ def start_video_mux_process(ffmpeg_path: str, output_path: str, width: int, heig
 
 
 def start_av_mux_process(ffmpeg_path: str, output_path: str, width: int, height: int, fps_float: float, video_codec: str, video_container: str, source_path: str, start_seconds: float, audio_track_no: int | None, reserved_metadata_path: str | None = None, source_audio_duration_seconds: float | None = None) -> subprocess.Popen:
-    error = validate_video_output_settings(video_codec, video_container, width=width, height=height, allowed_containers=SUPPORTED_OUTPUT_CONTAINERS)
-    if error is not None:
-        raise gr.Error(error)
+    validate_output_codec_container(video_codec, video_container, width=width, height=height, output_path=output_path)
     command = [
         ffmpeg_path,
         "-y",

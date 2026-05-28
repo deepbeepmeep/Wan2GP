@@ -627,7 +627,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         video_output_error = validate_video_output_settings(video_output_codec_choice, video_container_choice, audio_output_codec_choice)
         if video_output_error is not None:
-            raise gr.Error(video_output_error)
+            gr.Info(f"Configuration was not saved: {video_output_error}")
+            return f"<div style='color:red; text-align:center;'>Configuration was not saved: {video_output_error}</div>", *[gr.update()]*8
 
         self.fl.set_checkpoints_paths(checkpoints_paths)
 

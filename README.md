@@ -55,9 +55,13 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-### 25th of May 2026: WanGP v11.80, LoRA Collectors Special Edition
-- **Create Hierarchies of Loras**
-- **Change Order of Loras** (even if order doesnt matter)
+### 25th of May 2026: WanGP v11.85, Mixed Bag
+- **Create Hierarchies of Loras / Change Order of Loras**
+- **MOV/MKV Container Support**: beside *mp4* files you can now store you video gens in *mov* and *mkv* containers
+- **ProRes422 & DNxHR HQ* Video Codecs**: these professional video codecs have some fans out there
+- **LTX2 Smearing Fix**: the smearing / ghosting is now mostly gone
+- **Omnivoice Fix**: you will enjoy this fix unless you liked the gibberish generator of the previous version
+
 
 ### 21st of May 2026: WanGP v11.77, I can hear Voices
 It has never been easier to do voice cloning directly in video models:

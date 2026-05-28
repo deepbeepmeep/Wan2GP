@@ -43,7 +43,7 @@ except ImportError:
 from pathlib import Path
 from datetime import datetime
 import gradio as gr
-from shared.gradio import gradio_queue_focus_patch
+from shared.gradio import gradio_queue_focus_patch, video_preview
 from gradio.themes.utils.sizes import Size
 import random
 import json
@@ -136,7 +136,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.85"
+WanGP_version = "11.86"
 settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None

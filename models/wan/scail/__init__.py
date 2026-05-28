@@ -161,7 +161,8 @@ class ScailPoseProcessor:
     def _ensure_matanyone_loaded(self) -> None:
         from preprocessing.matanyone.utils.model_assets import get_selected_matanyone_version, load_selected_matanyone_model
 
-        selected_version = get_selected_matanyone_version()
+        scail_matanyone_config = {"matanyone_version": "v1"}
+        selected_version = get_selected_matanyone_version(scail_matanyone_config)
         if self._matanyone_model is not None and self._matanyone_version == selected_version:
             return
         if self._matanyone_model is not None:
@@ -169,7 +170,7 @@ class ScailPoseProcessor:
             self._matanyone_model = None
             torch.cuda.empty_cache()
 
-        self._matanyone_model, self._matanyone_version, _ = load_selected_matanyone_model()
+        self._matanyone_model, self._matanyone_version, _ = load_selected_matanyone_model(scail_matanyone_config)
         self._matanyone_model = self._matanyone_model.eval()
         self._matanyone_model.to(f"cuda:{self.gpu_id}")
 

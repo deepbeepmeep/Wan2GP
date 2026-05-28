@@ -200,7 +200,7 @@ def get_expected_secondary_file_entries_for_status(deps, model_type):
     for url in model_loras:
         if not isinstance(url, str) or len(url) == 0:
             continue
-        basename = os.path.basename(url)
+        basename = os.path.basename(url.split("|", 1)[0])
         if len(basename) == 0:
             continue
         _append_expected_local_path_entry(entries, seen, os.path.join(lora_dir, basename))
@@ -220,7 +220,7 @@ def has_secondary_model_files_for_status(deps, model_type, quantization, dtype_p
             text_encoder_folder = model_def.get("text_encoder_folder", None)
             if deps.get_local_model_filename(text_encoder_filename, extra_paths=text_encoder_folder) is None:
                 return False
-
+    lora_dir = deps.get_lora_dir(model_type)
     for prop, recursive in (("preload_URLs", True), ("VAE_URLs", False)):
         if recursive:
             urls = deps.get_model_recursive_prop(model_type, prop, return_list=True)
@@ -233,7 +233,7 @@ def has_secondary_model_files_for_status(deps, model_type, quantization, dtype_p
         for url in urls:
             if not isinstance(url, str) or len(url) == 0:
                 continue
-            if deps.get_local_model_filename(url) is None:
+            if deps.get_local_model_filename(url, lora_dir=lora_dir) is None:
                 return False
 
     model_loras = deps.get_model_recursive_prop(model_type, "loras", return_list=True)
@@ -245,7 +245,7 @@ def has_secondary_model_files_for_status(deps, model_type, quantization, dtype_p
     for url in model_loras:
         if not isinstance(url, str) or len(url) == 0:
             continue
-        if not os.path.isfile(os.path.join(lora_dir, os.path.basename(url))):
+        if not os.path.isfile(os.path.join(lora_dir, os.path.basename(url.split("|", 1)[0]))):
             return False
 
     module_files = _get_module_files_for_status(deps, model_type, quantization, dtype_policy)
@@ -477,6 +477,35 @@ def create_models_hierarchy(rows):
 
     parents_list = sorted(parents_list, key=lambda c: c[0])
     return parents_list, children_dict
+
+
+def create_models_selector_hierarchy(deps, dropdown_types=None):
+    dropdown_types = get_dropdown_model_types(deps) if dropdown_types is None else list(dict.fromkeys(dropdown_types))
+    family_model_types = defaultdict(list)
+    for model_type in dropdown_types:
+        family = deps.get_model_family(model_type, for_ui=True)
+        if family in deps.families_infos:
+            family_model_types[family].append(model_type)
+
+    tree = {"folders": [], "items": []}
+    sorted_families = sorted(family_model_types, key=lambda family: deps.families_infos[family][0])
+    for family in sorted_families:
+        family_name = deps.families_infos[family][1]
+        rows = [
+            (compact_name(family_name, deps.get_model_name(model_type)), model_type, deps.get_parent_model_type(model_type))
+            for model_type in family_model_types[family]
+        ]
+        rows.sort(key=lambda row: row[0].casefold())
+        parent_choices, children_by_parent = create_models_hierarchy(rows)
+        family_folder = {"name": family_name, "path": family_name, "folders": [], "items": []}
+        for parent_name, parent_model_type in parent_choices:
+            parent_path = f"{family_name}/{parent_name}"
+            parent_folder = {"name": parent_name, "path": parent_path, "folders": [], "items": []}
+            for child_name, child_model_type in children_by_parent.get(parent_model_type, []):
+                parent_folder["items"].append({"name": child_name, "value": child_model_type})
+            family_folder["folders"].append(parent_folder)
+        tree["folders"].append(family_folder)
+    return tree
 
 
 def get_sorted_dropdown(deps, dropdown_types, current_model_family, current_model_type, three_levels=True):

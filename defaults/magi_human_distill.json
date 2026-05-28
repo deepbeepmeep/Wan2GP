@@ -1,0 +1,17 @@
+{
+    "model": {
+        "name": "Magi Human Distill 15B",
+        "architecture": "magi_human_distill",
+        "description": "A fast audio-video talking head model that takes a start image and generates synchronized speech and motion. Optionally use a driving audio clip instead of generating audio from the prompt. Best results will be obtained at 256p. For higher res you must use an Upsampler.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/MagiHuman/resolve/main/magi_human_distill_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/MagiHuman/resolve/main/magi_human_distill_quanto_bf16_int8.safetensors"
+        ]
+    },
+    "num_inference_steps": 8,
+    "guidance_scale": 1.0,
+    "video_length": 101,
+    "resolution": "448x256",
+    "image_prompt_type": "S",
+    "prompt": "A calm woman with short dark hair looks into the camera and speaks clearly in English about how small daily habits can improve confidence. Her expression stays warm and natural, with subtle head movement, realistic blinking, and clean lip sync. Background Sound: <No prominent background sound>"
+}

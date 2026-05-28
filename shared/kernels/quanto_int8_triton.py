@@ -861,9 +861,27 @@ def _select_triton_int8_config(
     session_key = (device_index, kernel_kind, slot_id)
     cached = _AUTOTUNE_SESSION_CACHE.get(session_key)
     if cached is not None:
-        return cached
+        if _config_compatible_with_baseline(kernel_kind, baseline, cached):
+            return cached
+        _AUTOTUNE_SESSION_CACHE.pop(session_key, None)
     cached_cfg = _get_cached_config(device_index, kernel_kind, slot_id, m, k, n)
     if cached_cfg is not None and _config_compatible_with_baseline(kernel_kind, baseline, cached_cfg):
+        if not _is_stream_capturing():
+            compile_safe, _ = _ensure_compile_compatible_config(
+                kernel_kind,
+                device_index,
+                slot_id,
+                cached_cfg,
+                baseline,
+                m,
+                k,
+                n,
+                rep_shapes,
+            )
+            if compile_safe != cached_cfg:
+                _set_cached_config(device_index, kernel_kind, slot_id, compile_safe)
+            _AUTOTUNE_SESSION_CACHE[session_key] = compile_safe
+            return compile_safe
         _AUTOTUNE_SESSION_CACHE[session_key] = cached_cfg
         return cached_cfg
     if _is_stream_capturing():

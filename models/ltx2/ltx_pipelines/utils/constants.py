@@ -11,6 +11,12 @@ DISTILLED_SIGMA_VALUES = [1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725,
 # Reduced schedule for super-resolution stage 2 (subset of distilled values)
 STAGE_2_DISTILLED_SIGMA_VALUES = [0.909375, 0.725, 0.421875, 0.0]
 
+# Distilled 8 Steps follows Lightricks' ComfyUI LTX-2.3 two-stage dev workflow,
+# which uses this slightly lower starting sigma for its second denoise pass.
+DISTILLED_8_STEPS_STAGE_2_SIGMA_VALUES = [0.85, 0.7250, 0.4219, 0.0]
+
+LTX23_USE_DISTILLED_8_STEPS_STAGE_2_SIGMAS = True
+
 
 # =============================================================================
 # Video Generation Defaults

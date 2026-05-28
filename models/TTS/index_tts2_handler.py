@@ -3,6 +3,7 @@ import re
 
 import torch
 
+from shared.mps import mps_device_or
 from shared.utils import files_locator as fl
 
 from .prompt_enhancers import TTS_MONOLOGUE_PROMPT, TTS_QWEN3_DIALOGUE_PROMPT
@@ -257,7 +258,7 @@ class family_handler:
                 "It must be provided in defaults model.URLs."
             )
 
-        runtime_device = torch.device("cpu")
+        runtime_device = mps_device_or(torch.device("cpu"))
         pipeline = IndexTTS2Pipeline(
             ckpt_root=fl.get_download_location(),
             device=runtime_device,
@@ -332,7 +333,7 @@ class family_handler:
                 "temperature": 0.8,
                 "top_p": 0.8,
                 "top_k": 30,
-                "multi_prompts_gen_type": 2,
+                "multi_prompts_gen_type": "FG",
             }
         )
 
@@ -363,13 +364,13 @@ class family_handler:
                 return (
                     "Two-speaker mode requires prompt lines using Speaker 1: and Speaker 2: "
                     "(or any two numeric speaker IDs). For headless settings, keep "
-                    "'multi_prompts_gen_type' = 2 so dialogue lines stay in one prompt."
+                    "'multi_prompts_gen_type' = 'FG' so dialogue lines stay in one prompt."
                 )
             speaker_ids = sorted({int(match.group(1)) for match in speaker_matches})
             if len(speaker_ids) != 2:
                 return (
                     "Two-speaker mode requires exactly two speaker IDs. Use Speaker 1: and Speaker 2:. "
-                    "For headless settings, keep 'multi_prompts_gen_type' = 2."
+                    "For headless settings, keep 'multi_prompts_gen_type' = 'FG'."
                 )
         elif has_speaker_syntax:
             return "Speaker-tag dialogue requires two-speaker mode (set audio prompt mode to Dialogue)."

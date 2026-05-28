@@ -3,9 +3,9 @@ from typing import List, Optional
 import torch
 import torch.nn as nn
 
-from shared.attention import pay_attention #, pay_sparse_attention
+from shared.attention import pay_attention
 from .rope_3d import RotaryPositionalEmbedding
-from .blocks import RMSNorm_FP32
+from .blocks import RMSNorm_FP32, _take_tensor
 
 
 def _run_attention(x_list, out_dtype, **attn_kwargs):
@@ -19,29 +19,16 @@ def _run_attention(x_list, out_dtype, **attn_kwargs):
         k = k.to(attn_dtype)
         v = v.to(attn_dtype)
     x_list[:] = [q, k, v]
+    del q, k, v
+    attn_kwargs.setdefault("recycle_q", True)
     x = pay_attention(x_list, **attn_kwargs)
-    x_list[:] = []
     if x.dtype != out_dtype:
         x = x.to(out_dtype)
     return x
 
 
 def _run_sparse_attention(x_list, out_dtype, shape, bsa_params, **attn_kwargs):
-    q, k, v = x_list
-    if out_dtype in (torch.float16, torch.bfloat16):
-        attn_dtype = out_dtype
-    else:
-        attn_dtype = torch.bfloat16
-    if q.dtype != attn_dtype:
-        q = q.to(attn_dtype)
-        k = k.to(attn_dtype)
-        v = v.to(attn_dtype)
-    x_list[:] = [q, k, v]
-    x = pay_sparse_attention(x_list, shape=shape, bsa_params=bsa_params, **attn_kwargs)
-    x_list[:] = []
-    if x.dtype != out_dtype:
-        x = x.to(out_dtype)
-    return x
+    raise NotImplementedError("LongCat sparse/BSA attention is not wired to WanGP shared attention.")
 
 
 class Attention(nn.Module):
@@ -90,9 +77,11 @@ class Attention(nn.Module):
     def forward(self, x: torch.Tensor, shape=None, num_cond_latents=None, return_kv=False) -> torch.Tensor:
         """
         """
+        x = _take_tensor(x)
         B, N, C = x.shape
         out_dtype = x.dtype
         qkv = self.qkv(x)
+        x = None
         if qkv.dtype != out_dtype:
             qkv = qkv.to(out_dtype)
 
@@ -100,6 +89,8 @@ class Attention(nn.Module):
         qkv = qkv.view(qkv_shape)
         q, k, v = qkv.unbind(2)
         q, k = self.q_norm(q), self.k_norm(k)
+        v = v.contiguous()
+        del qkv
 
         if return_kv:
             k_cache, v_cache = k.clone(), v.clone()
@@ -118,9 +109,13 @@ class Attention(nn.Module):
             q_noise = q[:, num_cond_latents_thw:].contiguous()
             x_noise = self._process_attn(q_noise, k, v, shape, out_dtype)
             # merge x_cond and x_noise
-            x = torch.cat([x_cond, x_noise], dim=1).contiguous()
+            x = x_cond.new_empty(B, N, self.num_heads, self.head_dim)
+            x[:, :num_cond_latents_thw].copy_(x_cond)
+            x[:, num_cond_latents_thw:].copy_(x_noise)
+            del x_cond, x_noise
         else:
             x = self._process_attn(q, k, v, shape, out_dtype)
+        q = k = v = None
 
         x_output_shape = (B, N, C)
         x = x.reshape(x_output_shape)
@@ -134,9 +129,11 @@ class Attention(nn.Module):
     def forward_with_kv_cache(self, x: torch.Tensor, shape=None, num_cond_latents=None, kv_cache=None) -> torch.Tensor:
         """
         """
+        x = _take_tensor(x)
         B, N, C = x.shape
         out_dtype = x.dtype
         qkv = self.qkv(x)
+        x = None
         if qkv.dtype != out_dtype:
             qkv = qkv.to(out_dtype)
         
@@ -144,6 +141,8 @@ class Attention(nn.Module):
         qkv = qkv.view(qkv_shape)
         q, k, v = qkv.unbind(2)
         q, k = self.q_norm(q), self.k_norm(k)
+        v = v.contiguous()
+        del qkv
 
         T, H, W = shape
         k_cache, v_cache = kv_cache
@@ -157,11 +156,13 @@ class Attention(nn.Module):
             q_padding = torch.cat([torch.empty_like(k_cache), q], dim=1).contiguous()
             q_padding, k_full = self.rope_3d(q_padding, k_full, (T + num_cond_latents, H, W))
             q = q_padding[:, -N:].contiguous()
+            del q_padding
         else:
             k_full = k
             v_full = v
             
         x = self._process_attn(q, k_full, v_full, shape, out_dtype)
+        q = k = v = k_full = v_full = None
         
         x_output_shape = (B, N, C)
         x = x.reshape(x_output_shape)
@@ -198,17 +199,23 @@ class MultiHeadCrossAttention(nn.Module):
         self.enable_xformers = enable_xformers
 
     def _process_cross_attn(self, x, cond, kv_seqlen):
+        x = _take_tensor(x)
+        cond = _take_tensor(cond)
         B, N, C = x.shape
         assert C == self.dim and cond.shape[2] == self.dim
         out_dtype = x.dtype
 
         q = self.q_linear(x).view(B, N, self.num_heads, self.head_dim)
+        x = None
         if q.dtype != out_dtype:
             q = q.to(out_dtype)
         kv = self.kv_linear(cond).view(B, -1, 2, self.num_heads, self.head_dim)
+        cond = None
         if kv.dtype != out_dtype:
             kv = kv.to(out_dtype)
         k, v = kv.unbind(2)
+        v = v.contiguous()
+        del kv
 
         q, k = self.q_norm(q), self.k_norm(k)
 
@@ -225,25 +232,33 @@ class MultiHeadCrossAttention(nn.Module):
         x = self.proj(x)
         return x
 
+    def forward_noise(self, x, cond, kv_seqlen, num_cond_latents=None, shape=None):
+        x = _take_tensor(x)
+        if num_cond_latents is None or num_cond_latents == 0:
+            x_list = [x]
+            x = None
+            return 0, self._process_cross_attn(x_list, cond, kv_seqlen)
+        assert shape is not None, "SHOULD pass in the shape"
+        B, N, C = x.shape
+        num_cond_latents_thw = num_cond_latents * (N // shape[0])
+        x_noise = x[:, num_cond_latents_thw:]
+        x = None
+        x_list = [x_noise]
+        x_noise = None
+        return num_cond_latents_thw, self._process_cross_attn(x_list, cond, kv_seqlen)
+
     def forward(self, x, cond, kv_seqlen, num_cond_latents=None, shape=None):
         """
             x: [B, N, C]
             cond: [B, M, C]
         """
-        if num_cond_latents is None or num_cond_latents == 0:
-            return self._process_cross_attn(x, cond, kv_seqlen)
-        else:
-            B, N, C = x.shape
-            if num_cond_latents is not None and num_cond_latents > 0:
-                assert shape is not None, "SHOULD pass in the shape"
-                num_cond_latents_thw = num_cond_latents * (N // shape[0])
-                x_noise = x[:, num_cond_latents_thw:] # [B, N_noise, C]
-                output_noise = self._process_cross_attn(x_noise, cond, kv_seqlen) # [B, N_noise, C]
-                output = torch.cat([
-                    torch.zeros((B, num_cond_latents_thw, C), dtype=output_noise.dtype, device=output_noise.device),
-                    output_noise
-                ], dim=1).contiguous()
-            else:
-                raise NotImplementedError
-                
-            return output
+        x = _take_tensor(x)
+        B, N, C = x.shape
+        x_list = [x]
+        x = None
+        cond_tokens, output_noise = self.forward_noise(x_list, cond, kv_seqlen, num_cond_latents=num_cond_latents, shape=shape)
+        if cond_tokens == 0:
+            return output_noise
+        output = output_noise.new_zeros(B, N, C)
+        output[:, cond_tokens:].copy_(output_noise)
+        return output

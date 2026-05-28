@@ -10,8 +10,6 @@ import imageio.v3 as iio
 import numpy as np
 
 import torch
-import decord
-from decord import VideoReader
 from PIL import Image, ImageDraw
 from torchvision import transforms
 

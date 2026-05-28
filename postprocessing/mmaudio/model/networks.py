@@ -278,8 +278,8 @@ class MMAudio(nn.Module):
 
 
 
-        self.latent_rot = self.latent_rot.to("cuda")
-        self.clip_rot = self.clip_rot.to("cuda")
+        self.latent_rot = self.latent_rot.to(latent.device)
+        self.clip_rot = self.clip_rot.to(latent.device)
         for block in self.joint_blocks:
             latent, clip_f, text_f = block(latent, clip_f, text_f, global_c, extended_c,
                                            self.latent_rot, self.clip_rot)  # (B, N, D)

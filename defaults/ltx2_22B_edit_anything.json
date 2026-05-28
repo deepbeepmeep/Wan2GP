@@ -1,0 +1,21 @@
+{
+    "model": {
+        "name": "LTX-2 2.3 EditAnything Ref V2V Dev 1.0 22B",
+        "architecture": "ltx2_22B_edit_anything",
+        "description": "Experimental EditAnything reference video-to-video workflow for LTX-2.3 Dev 22B. Uses a source/control video plus one reference image, with the standard EditAnything LoRA and its sidecar reference module loaded together.",
+        "URLs": "ltx2_22B",
+        "modules": [
+            [
+                "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/edit_anything_reference_v0.1_r128_ref_adaln_proj-role_embedding-ref_attn-ref_visual_proj.module.safetensors"
+            ]
+        ],
+        "loras": [
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/edit_anything_reference_v0.1_r128_ref_adaln_proj-role_embedding-ref_attn-ref_visual_proj.standard.safetensors"
+        ],
+        "loras_multipliers": [1]
+    },
+    "prompt": "Add a middle-aged man with curly grey hair, a beard and glasses, wearing a blue quarter-zip sweater, on the right side of the frame, standing in front of a raw cut of meat on a tray.",
+    "num_inference_steps": 30,
+    "video_length": 81,
+    "resolution": "1280x720"
+}

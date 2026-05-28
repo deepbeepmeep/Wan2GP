@@ -489,7 +489,7 @@ class LTXV:
             if letter in video_prompt_type:
                 for file_name in preloadURLs:
                     if signature in file_name:
-                        loras += [ fl.locate_file(os.path.basename(file_name))]
+                        loras += [ os.path.abspath(fl.locate_file(os.path.basename(file_name)))]
                         break
         loras_mult = [1.] * len(loras)
         return loras, loras_mult 

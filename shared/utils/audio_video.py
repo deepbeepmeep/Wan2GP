@@ -1,6 +1,8 @@
 import subprocess
 import tempfile, os
 import ffmpeg
+import struct
+from typing import Any
 import torchvision.transforms.functional as TF
 import torch.nn.functional as F
 import cv2
@@ -14,6 +16,20 @@ import os.path as osp
 import json
 import numpy as np
 import soundfile as sf
+import zlib
+import re
+from .hdr import hdr10_x265_params, hdr10_zscale_filter, iter_hdr_gbrpf32_frames, iter_video_chunks
+
+from .video_decode import probe_video_stream_metadata, resolve_media_binary
+from .virtual_media import get_virtual_media_entry, parse_virtual_media_path, strip_virtual_media_suffix
+
+def _ffmpeg_binary():
+    return resolve_media_binary("ffmpeg") or "ffmpeg"
+
+
+def _ffprobe_binary():
+    return resolve_media_binary("ffprobe") or "ffprobe"
+
 
 def rand_name(length=8, suffix=''):
     name = binascii.b2a_hex(os.urandom(length)).decode('utf-8')
@@ -40,8 +56,61 @@ def write_wav_file(path, audio_data, sample_rate):
     return path
 
 
-def _compute_active_abs_amplitude(audio_data):
-    abs_audio = np.abs(np.asarray(audio_data, dtype=np.float32)).reshape(-1)
+def resample_audio_array(audio_data, source_sample_rate, target_sample_rate):
+    audio_array = np.asarray(audio_data, dtype=np.float32)
+    source_sample_rate = int(source_sample_rate or 0)
+    target_sample_rate = int(target_sample_rate or 0)
+    if audio_array.size == 0 or source_sample_rate <= 0 or target_sample_rate <= 0 or source_sample_rate == target_sample_rate:
+        return audio_array.astype(np.float32, copy=False)
+    import torchaudio.functional as taF
+    wave = torch.from_numpy(audio_array.T.copy() if audio_array.ndim == 2 else audio_array[None].copy()).to(dtype=torch.float32)
+    resampled = taF.resample(wave, source_sample_rate, target_sample_rate).cpu().numpy()
+    return (resampled.T if audio_array.ndim == 2 else resampled[0]).astype(np.float32, copy=False)
+
+
+def append_sliding_window_audio(existing_audio_data, existing_audio_path, generated_audio, audio_sampling_rate, committed_audio_samples, existing_audio_sample_rate=None):
+    generated_audio = np.asarray(generated_audio, dtype=np.float32)
+    if generated_audio.size == 0:
+        return generated_audio
+    prefix_sample_rate = int(existing_audio_sample_rate or audio_sampling_rate)
+    if existing_audio_data is not None:
+        prefix_audio = np.asarray(existing_audio_data, dtype=np.float32)
+    elif existing_audio_path:
+        prefix_audio, prefix_sample_rate = sf.read(os.fspath(existing_audio_path), dtype="float32", always_2d=generated_audio.ndim == 2)
+    else:
+        return generated_audio
+    if prefix_sample_rate != int(audio_sampling_rate):
+        prefix_audio = resample_audio_array(prefix_audio, prefix_sample_rate, audio_sampling_rate)
+    prefix_audio = prefix_audio[:max(0, int(committed_audio_samples))]
+    if prefix_audio.size == 0:
+        return generated_audio
+    if prefix_audio.ndim != generated_audio.ndim:
+        prefix_audio = prefix_audio[:, None] if prefix_audio.ndim == 1 else prefix_audio
+        generated_audio = generated_audio[:, None] if generated_audio.ndim == 1 else generated_audio
+    if prefix_audio.ndim == 2 and prefix_audio.shape[1] != generated_audio.shape[1]:
+        prefix_audio = np.repeat(prefix_audio[:, :1], generated_audio.shape[1], axis=1) if prefix_audio.shape[1] == 1 else prefix_audio[:, :generated_audio.shape[1]]
+    return np.concatenate([prefix_audio, generated_audio], axis=0)
+
+
+def create_silent_wav_file(output_dir=None, duration_seconds=0.0, sample_rate=16000, prefix="null_audio_"):
+    sample_rate = int(sample_rate)
+    num_samples = max(1, int(np.ceil(float(duration_seconds) * sample_rate)))
+    fd, path = tempfile.mkstemp(prefix=prefix, suffix=".wav", dir=output_dir)
+    os.close(fd)
+    return write_wav_file(path, np.zeros(num_samples, dtype=np.float32), sample_rate)
+
+
+def _compute_active_abs_amplitude(audio_data, active_mask=None):
+    audio_data = np.asarray(audio_data, dtype=np.float32)
+    if active_mask is not None:
+        active_mask = np.asarray(active_mask, dtype=np.float32).reshape(-1) > 0.5
+        if audio_data.ndim == 1:
+            active_mask = active_mask[:audio_data.shape[0]]
+            audio_data = audio_data[:active_mask.shape[0]][active_mask]
+        else:
+            active_mask = active_mask[:audio_data.shape[0]]
+            audio_data = audio_data[:active_mask.shape[0]][active_mask]
+    abs_audio = np.abs(audio_data).reshape(-1)
     if abs_audio.size == 0:
         return 0.0, 0.0
     avg_abs = float(abs_audio.mean())
@@ -53,19 +122,31 @@ def _compute_active_abs_amplitude(audio_data):
     return avg_abs, active_avg_abs
 
 
-def normalize_audio_pair_volumes_to_temp_files(audio_path1, audio_path2, output_dir=None, prefix="audio_norm_"):
-    audio1, sr1 = sf.read(os.fspath(audio_path1), dtype="float32", always_2d=False)
-    audio2, sr2 = sf.read(os.fspath(audio_path2), dtype="float32", always_2d=False)
-
-    avg1, active1 = _compute_active_abs_amplitude(audio1)
-    avg2, active2 = _compute_active_abs_amplitude(audio2)
+def normalize_audio_pair_volumes(audio1, audio2, active_mask1=None, active_mask2=None):
+    audio1 = np.asarray(audio1, dtype=np.float32)
+    audio2 = np.asarray(audio2, dtype=np.float32)
+    avg1, active1 = _compute_active_abs_amplitude(audio1, active_mask1)
+    avg2, active2 = _compute_active_abs_amplitude(audio2, active_mask2)
     midpoint = 0.5 * (active1 + active2)
     eps = 1e-8
     gain1 = midpoint / active1 if active1 > eps else 1.0
     gain2 = midpoint / active2 if active2 > eps else 1.0
+    stats = {
+        "audio1_avg_abs": float(avg1),
+        "audio2_avg_abs": float(avg2),
+        "audio1_active_avg_abs": float(active1),
+        "audio2_active_avg_abs": float(active2),
+        "target_active_avg_abs": float(midpoint),
+        "audio1_gain": float(gain1),
+        "audio2_gain": float(gain2),
+    }
+    return np.clip(audio1 * float(gain1), -1.0, 1.0), np.clip(audio2 * float(gain2), -1.0, 1.0), stats
 
-    norm1 = np.clip(np.asarray(audio1, dtype=np.float32) * float(gain1), -1.0, 1.0)
-    norm2 = np.clip(np.asarray(audio2, dtype=np.float32) * float(gain2), -1.0, 1.0)
+
+def normalize_audio_pair_volumes_to_temp_files(audio_path1, audio_path2, output_dir=None, prefix="audio_norm_", active_mask1=None, active_mask2=None):
+    audio1, sr1 = sf.read(os.fspath(audio_path1), dtype="float32", always_2d=False)
+    audio2, sr2 = sf.read(os.fspath(audio_path2), dtype="float32", always_2d=False)
+    norm1, norm2, stats = normalize_audio_pair_volumes(audio1, audio2, active_mask1=active_mask1, active_mask2=active_mask2)
 
     if output_dir is not None:
         os.makedirs(output_dir, exist_ok=True)
@@ -76,16 +157,6 @@ def normalize_audio_pair_volumes_to_temp_files(audio_path1, audio_path2, output_
     os.close(fd2)
     sf.write(out1, norm1, int(sr1))
     sf.write(out2, norm2, int(sr2))
-
-    stats = {
-        "audio1_avg_abs": float(avg1),
-        "audio2_avg_abs": float(avg2),
-        "audio1_active_avg_abs": float(active1),
-        "audio2_active_avg_abs": float(active2),
-        "target_active_avg_abs": float(midpoint),
-        "audio1_gain": float(gain1),
-        "audio2_gain": float(gain2),
-    }
     return out1, out2, stats
 
 
@@ -116,12 +187,54 @@ def get_mp4_audio_codec_settings(codec_key):
     return settings.get(codec_key, settings["aac_128"])
 
 
+def get_video_encode_args(codec_key: str | None, container: str | None) -> list[str]:
+    codec_key = str(codec_key or "libx264_8").strip().lower() or "libx264_8"
+    container = str(container or "mp4").strip().lower() or "mp4"
+    if codec_key == "libx264_8":
+        return ["-c:v", "libx264", "-crf", "23", "-pix_fmt", "yuv420p"]
+    if codec_key == "libx264_10":
+        return ["-c:v", "libx264", "-crf", "21", "-pix_fmt", "yuv420p"]
+    if codec_key == "libx265_28":
+        return ["-c:v", "libx265", "-crf", "28", "-pix_fmt", "yuv420p", "-x265-params", "log-level=none"]
+    if codec_key == "libx265_8":
+        return ["-c:v", "libx265", "-crf", "8", "-pix_fmt", "yuv420p", "-x265-params", "log-level=none"]
+    if codec_key == "libx264_lossless":
+        if container == "mkv":
+            return ["-c:v", "ffv1", "-pix_fmt", "rgb24"]
+        return ["-c:v", "libx264", "-crf", "0", "-pix_fmt", "yuv444p"]
+    return ["-c:v", "libx264", "-crf", "23", "-pix_fmt", "yuv420p"]
+
+
+def _crf_from_video_codec(codec_key: str | None, default: str = "18") -> str:
+    codec_key = str(codec_key or "").strip().lower()
+    if re.fullmatch(r"\d+", codec_key):
+        return codec_key
+    match = re.search(r"_(\d+)$", codec_key)
+    return match.group(1) if match is not None else str(default)
+
+
+def get_hdr_video_encode_args(codec_key: str | None, container: str | None) -> list[str]:
+    crf = _crf_from_video_codec(codec_key, default="18")
+    return [
+        "-vf", hdr10_zscale_filter(),
+        "-c:v", "libx265",
+        "-preset", "medium",
+        "-crf", crf,
+        "-pix_fmt", "yuv420p10le",
+        "-tag:v", "hvc1",
+        "-color_primaries", "bt2020",
+        "-color_trc", "smpte2084",
+        "-colorspace", "bt2020nc",
+        "-x265-params", hdr10_x265_params(),
+    ]
+
+
 def get_audio_codec_extension(codec_key):
     return _get_audio_codec_settings(codec_key)["ext"]
 
 
 def _run_ffmpeg_encode(input_path, output_path, codec, bitrate=None, sample_rate=None, drop_video=False):
-    cmd = ["ffmpeg", "-y", "-v", "error", "-i", input_path]
+    cmd = [_ffmpeg_binary(), "-y", "-v", "error", "-i", input_path]
     if drop_video:
         cmd.append("-vn")
     cmd += ["-c:a", codec]
@@ -153,12 +266,47 @@ def save_audio_file(path, audio_data, sample_rate, codec_key="wav"):
     return path
 
 
+def _resolve_virtual_audio_segment(video_path: str) -> tuple[str, dict[str, Any], int]:
+    if isinstance(video_path, Image.Image):
+        return "", {}, 0
+    if get_virtual_media_entry(video_path) is not None:
+        return "", {}, 0
+    spec = parse_virtual_media_path(video_path)
+    source_path = os.fspath(strip_virtual_media_suffix(video_path))
+    time_args: dict[str, Any] = {}
+    if spec is None:
+        return source_path, time_args, 0
+    metadata = probe_video_stream_metadata(video_path)
+    if metadata is not None and metadata.get("virtual_end_frame") is not None:
+        start_frame = int(metadata.get("virtual_start_frame") or 0)
+        end_frame = int(metadata.get("virtual_end_frame") or start_frame)
+        fps_float = float(metadata.get("fps_float") or metadata.get("fps") or 0.0)
+        if fps_float > 0:
+            time_args["ss"] = max(0.0, start_frame / fps_float)
+            time_args["to"] = max(time_args["ss"], (end_frame + 1) / fps_float)
+    audio_track_no = 1 if spec.audio_track_no is None else max(1, int(spec.audio_track_no))
+    return source_path, time_args, audio_track_no - 1
+
+
 def extract_audio_track_to_wav(video_path, output_path):
     if not video_path:
         return None
+    if isinstance(video_path, Image.Image):
+        return None
     video_path = os.fspath(video_path)
+    source_path, time_args, audio_track_index = _resolve_virtual_audio_segment(video_path)
+    if len(source_path) == 0:
+        return None
     import ffmpeg
-    ffmpeg.input(video_path).output(output_path, **{"map": "0:a:0", "acodec": "pcm_s16le"}).overwrite_output().run(quiet=True)
+    try:
+        output_kwargs = {"map": f"0:a:{audio_track_index}", "acodec": "pcm_s16le"}
+        ffmpeg.input(source_path, **time_args).output(output_path, **output_kwargs).overwrite_output().run(cmd=_ffmpeg_binary(), quiet=True)
+    except ffmpeg.Error as err:
+        stderr = getattr(err, "stderr", b"")
+        if isinstance(stderr, (bytes, bytearray)):
+            stderr = stderr.decode("utf-8", errors="ignore")
+        stderr = (stderr or str(err)).strip()
+        raise RuntimeError(f"ffmpeg audio extract failed for {source_path} -> {output_path}: {stderr}") from err
     return output_path
 
 
@@ -174,25 +322,32 @@ def extract_audio_tracks(source_video, verbose=False, query_only=False, codec_ke
               {'codec', 'sample_rate', 'channels', 'duration', 'language'}
               where 'duration' is set to container duration (for consistency).
     """
-    if not os.path.exists(source_video):
+    if isinstance(source_video, Image.Image):
+        return 0 if query_only else ([], [])
+    source_path, time_args, selected_track_index = _resolve_virtual_audio_segment(source_video)
+    if len(source_path) == 0:
+        return 0 if query_only else ([], [])
+    if not os.path.exists(source_path):
         msg = f"ffprobe skipped; file not found: {source_video}"
         if verbose:
             print(msg)
         raise FileNotFoundError(msg)
 
     try:
-        probe = ffmpeg.probe(source_video)
+        probe = ffmpeg.probe(source_path, cmd=_ffprobe_binary())
     except ffmpeg.Error as err:
         stderr = getattr(err, 'stderr', b'')
         if isinstance(stderr, (bytes, bytearray)):
             stderr = stderr.decode('utf-8', errors='ignore')
         stderr = (stderr or str(err)).strip()
-        message = f"ffprobe failed for {source_video}: {stderr}"
+        message = f"ffprobe failed for {source_path}: {stderr}"
         if verbose:
             print(message)
         raise RuntimeError(message) from err
     audio_streams = [s for s in probe['streams'] if s['codec_type'] == 'audio']
     container_duration = float(probe['format'].get('duration', 0.0))
+    if selected_track_index is not None:
+        audio_streams = [audio_streams[selected_track_index]] if 0 <= selected_track_index < len(audio_streams) else []
 
     if not audio_streams:
         if query_only: return 0
@@ -225,10 +380,11 @@ def extract_audio_tracks(source_video, verbose=False, query_only=False, codec_ke
             'language': stream.get('tags', {}).get('language', None)
         })
 
-        output_kwargs = {f'map': f'0:a:{i}', 'acodec': audio_settings["codec"]}
+        stream_index = i if selected_track_index is None else selected_track_index
+        output_kwargs = {f'map': f'0:a:{stream_index}', 'acodec': audio_settings["codec"]}
         if audio_settings["bitrate"]:
             output_kwargs['b:a'] = audio_settings["bitrate"]
-        ffmpeg.input(source_video).output(temp_path, **output_kwargs).overwrite_output().run(quiet=not verbose)
+        ffmpeg.input(source_path, **time_args).output(temp_path, **output_kwargs).overwrite_output().run(cmd=_ffmpeg_binary(), quiet=not verbose)
 
     return file_paths, metadata
 
@@ -303,7 +459,7 @@ def combine_and_concatenate_video_with_audio_tracks(
 
         maps += ['-map', f'[aout{i}]']
 
-    cmd = ['ffmpeg', '-y', *inputs,
+    cmd = [_ffmpeg_binary(), '-y', *inputs,
            '-filter_complex', ';'.join(filters),  # ✅ Only change made
            *maps, *metadata_args,
            '-c:v', 'copy',
@@ -327,11 +483,11 @@ def combine_video_with_audio_tracks(target_video, audio_tracks, output_video,
     if not audio_tracks:
         if verbose: print("No audio tracks to combine."); return False
 
-    dur = float(next(s for s in ffmpeg.probe(target_video)['streams']
+    dur = float(next(s for s in ffmpeg.probe(target_video, cmd=_ffprobe_binary())['streams']
                      if s['codec_type'] == 'video')['duration'])
     if verbose: print(f"Video duration: {dur:.3f}s")
 
-    cmd = ['ffmpeg', '-y', '-i', target_video]
+    cmd = [_ffmpeg_binary(), '-y', '-i', target_video]
     for path in audio_tracks:
         cmd += ['-i', path]
 
@@ -455,6 +611,74 @@ def save_video(tensor,
             print(f"error saving {save_file}: {e}")
 
 
+def save_hdr_video(
+                tensor,
+                save_file=None,
+                fps=30,
+                codec_type='libx264_8',
+                container='mp4',
+                preview_exposure=0.0,
+                retry=5):
+    """Save linear HDR video as a tagged 10-bit HEVC HDR file."""
+    suffix = f'.{container}'
+    output_file = osp.join('/tmp', rand_name(suffix=suffix)) if save_file is None else save_file
+    if not output_file.endswith(suffix):
+        output_file = osp.splitext(output_file)[0] + suffix
+    ffmpeg_path = resolve_media_binary("ffmpeg")
+    if ffmpeg_path is None:
+        raise RuntimeError("ffmpeg binary not found")
+
+    width = height = None
+    for chunk in iter_video_chunks(tensor):
+        if chunk is None:
+            continue
+        cur = chunk[0] if chunk.ndim == 5 and chunk.shape[0] == 1 else chunk
+        if cur.ndim == 4:
+            height, width = int(cur.shape[2]), int(cur.shape[3])
+            break
+    if width is None or height is None:
+        raise RuntimeError("Unable to determine HDR video dimensions.")
+
+    error = None
+    for _ in range(retry):
+        cmd = [
+            ffmpeg_path, "-y", "-v", "error",
+            "-f", "rawvideo",
+            "-pix_fmt", "gbrpf32le",
+            "-video_size", f"{width}x{height}",
+            "-framerate", f"{float(fps):.12g}",
+            "-i", "pipe:0",
+            *get_hdr_video_encode_args(codec_type, container),
+            "-an",
+            output_file,
+        ]
+        process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        try:
+            assert process.stdin is not None
+            wrote_frame = False
+            for frame_bytes in iter_hdr_gbrpf32_frames(tensor):
+                process.stdin.write(frame_bytes)
+                wrote_frame = True
+            if not wrote_frame:
+                raise RuntimeError("No HDR frames available to save.")
+            process.stdin.close()
+            stderr = process.stderr.read().decode("utf-8", errors="ignore").strip() if process.stderr is not None else ""
+            ret = process.wait()
+            if ret != 0:
+                raise RuntimeError(stderr or "ffmpeg HDR encode failed")
+            return output_file
+        except Exception as e:
+            error = e
+            try:
+                if process.stdin is not None and not process.stdin.closed:
+                    process.stdin.close()
+            except Exception:
+                pass
+            process.kill()
+            print(f"error saving HDR {save_file}: {e}")
+    raise error or RuntimeError(f"Failed to save HDR video: {save_file}")
+
+
 def _get_codec_params(codec_type, container):
     """Get codec parameters based on codec type and container."""
     if codec_type == 'libx264_8':
@@ -500,22 +724,22 @@ def save_image(tensor,
                          
     for _ in range(retry):
         try:
-            tensor = tensor.clamp(min(value_range), max(value_range))
-            
             if format_info['use_pil'] or RGBA:
                 # Use PIL for WebP and advanced options
-                grid = torchvision.utils.make_grid(tensor, nrow=nrow, normalize=normalize, value_range=value_range)
-                # Convert to PIL Image
-                grid = grid.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to('cpu', torch.uint8).numpy()
+                if tensor.dtype == torch.uint8:
+                    grid = torchvision.utils.make_grid(tensor, nrow=nrow, normalize=False).permute(1, 2, 0).cpu().numpy()
+                else:
+                    tensor = tensor.clamp(min(value_range), max(value_range))
+                    grid = torchvision.utils.make_grid(tensor, nrow=nrow, normalize=normalize, value_range=value_range)
+                    grid = grid.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to('cpu', torch.uint8).numpy()
                 mode = 'RGBA' if RGBA else 'RGB'
                 img = Image.fromarray(grid, mode=mode)
                 img.save(save_file, **format_info['params'])
             else:
                 # Use torchvision for JPEG and PNG
-                torchvision.utils.save_image(
-                    tensor, save_file, nrow=nrow, normalize=normalize, 
-                    value_range=value_range, **format_info['params']
-                )
+                was_uint8 = tensor.dtype == torch.uint8
+                tensor = tensor.float().div_(255.0) if was_uint8 else tensor.clamp(min(value_range), max(value_range))
+                torchvision.utils.save_image(tensor, save_file, nrow=nrow, normalize=False if was_uint8 else normalize, value_range=value_range, **format_info['params'])
             break
         except Exception as e:
             error = e
@@ -562,21 +786,85 @@ def _dec_uc(b):
     if b.startswith(b"UNICODE\0"):   return b[8:].decode("utf-16le", "ignore")
     return b.decode("utf-8", "ignore")
 
+
+def _blank_exif_dict():
+    return {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
+
+
+def _load_exif_dict(image_path, ext):
+    import piexif
+    try:
+        if ext in (".jpg", ".jpeg"):
+            return piexif.load(image_path)
+        if ext == ".webp":
+            with Image.open(image_path) as im:
+                exif_bytes = im.info.get("exif")
+            return piexif.load(exif_bytes) if exif_bytes else _blank_exif_dict()
+    except Exception:
+        pass
+    return _blank_exif_dict()
+
+
+def _insert_exif_user_comment(image_path, comment_text, ext):
+    import piexif
+    exif_dict = _load_exif_dict(image_path, ext)
+    exif_dict.setdefault("Exif", {})
+    exif_dict["Exif"][piexif.ExifIFD.UserComment] = _enc_uc(comment_text)
+    piexif.insert(piexif.dump(exif_dict), image_path)
+
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _build_png_chunk(chunk_type, data):
+    return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", zlib.crc32(chunk_type + data) & 0xffffffff)
+
+
+def _is_png_comment_chunk(chunk_type, data):
+    if chunk_type not in {b"tEXt", b"zTXt", b"iTXt"}:
+        return False
+    return data.split(b"\x00", 1)[0] == b"comment"
+
+
+def _write_png_comment_metadata(image_path, comment_text):
+    raw = open(image_path, "rb").read()
+    if not raw.startswith(_PNG_SIGNATURE):
+        raise ValueError("Invalid PNG signature")
+    comment_chunk = _build_png_chunk(b"iTXt", b"comment\x00\x00\x00\x00\x00" + comment_text.encode("utf-8"))
+    out = bytearray(_PNG_SIGNATURE)
+    pos = len(_PNG_SIGNATURE)
+    inserted = False
+    while pos < len(raw):
+        if pos + 8 > len(raw):
+            raise ValueError("Corrupted PNG chunk header")
+        length = struct.unpack(">I", raw[pos:pos + 4])[0]
+        chunk_type = raw[pos + 4:pos + 8]
+        end = pos + 12 + length
+        if end > len(raw):
+            raise ValueError("Corrupted PNG chunk payload")
+        chunk_data = raw[pos + 8:pos + 8 + length]
+        chunk = raw[pos:end]
+        pos = end
+        if _is_png_comment_chunk(chunk_type, chunk_data):
+            continue
+        if not inserted and chunk_type == b"IDAT":
+            out.extend(comment_chunk)
+            inserted = True
+        out.extend(chunk)
+    if not inserted:
+        raise ValueError("PNG image data chunk not found")
+    with open(image_path, "wb") as writer:
+        writer.write(out)
+
 def save_image_metadata(image_path, metadata_dict, **save_kwargs):
     try:
         j = json.dumps(metadata_dict, ensure_ascii=False)
         ext = os.path.splitext(image_path)[1].lower()
-        with Image.open(image_path) as im:
-            if ext == ".png":
-                pi = PngImagePlugin.PngInfo(); pi.add_text("comment", j)
-                im.save(image_path, pnginfo=pi, **save_kwargs); return True
-            if ext in (".jpg", ".jpeg"):
-                im.save(image_path, comment=j.encode("utf-8"), **save_kwargs); return True
-            if ext == ".webp":
-                import piexif
-                exif = {"0th":{}, "Exif":{piexif.ExifIFD.UserComment:_enc_uc(j)}, "GPS":{}, "1st":{}, "thumbnail":None}
-                im.save(image_path, format="WEBP", exif=piexif.dump(exif), **save_kwargs); return True
-            raise ValueError("Unsupported format")
+        if ext == ".png":
+            _write_png_comment_metadata(image_path, j); return True
+        if ext in (".jpg", ".jpeg", ".webp"):
+            _insert_exif_user_comment(image_path, j, ext); return True
+        raise ValueError("Unsupported format")
     except Exception as e:
         print(f"Error saving metadata: {e}"); return False
 
@@ -588,6 +876,14 @@ def read_image_metadata(image_path):
                 val = (getattr(im, "text", {}) or {}).get("comment") or im.info.get("comment")
                 return json.loads(val) if val else None
             if ext in (".jpg", ".jpeg"):
+                import piexif
+                try:
+                    uc = piexif.load(image_path).get("Exif", {}).get(piexif.ExifIFD.UserComment)
+                    s = _dec_uc(uc) if uc else None
+                    if s:
+                        return json.loads(s)
+                except Exception:
+                    pass
                 val = im.info.get("comment")
                 if isinstance(val, (bytes, bytearray)): val = val.decode("utf-8", "ignore")
                 if val:
@@ -602,9 +898,9 @@ def read_image_metadata(image_path):
                         except Exception: pass
                 return None
             if ext == ".webp":
-                exif_bytes = Image.open(image_path).info.get("exif")
-                if not exif_bytes: return None
                 import piexif
+                exif_bytes = im.info.get("exif")
+                if not exif_bytes: return None
                 uc = piexif.load(exif_bytes).get("Exif", {}).get(piexif.ExifIFD.UserComment)
                 s = _dec_uc(uc) if uc else None
                 return json.loads(s) if s else None

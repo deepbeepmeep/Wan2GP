@@ -34,6 +34,7 @@ def matanyone(processor, frames_np, mask, r_erode=0, r_dilate=0, n_warmup=10):
     # print(f'===== [r_erode] {r_erode}; [r_dilate] {r_dilate} =====')
     bgr = (np.array([120, 255, 155], dtype=np.float32)/255).reshape((1, 1, 3))
     objects = [1]
+    device = next(processor.network.parameters()).device
 
     # [optional] erode & dilate on given seg mask
     if r_dilate > 0:
@@ -41,7 +42,7 @@ def matanyone(processor, frames_np, mask, r_erode=0, r_dilate=0, n_warmup=10):
     if r_erode > 0:
         mask = gen_erosion(mask, r_erode, r_erode)
 
-    mask = torch.from_numpy(mask).cuda()
+    mask = torch.from_numpy(mask).to(device)
 
     frames_np = [frames_np[0]]* n_warmup + frames_np
 
@@ -49,7 +50,7 @@ def matanyone(processor, frames_np, mask, r_erode=0, r_dilate=0, n_warmup=10):
     phas = []
     i = 0
     for ti, frame_single in tqdm.tqdm(enumerate(frames_np)):
-        image = to_tensor(frame_single).cuda().float()
+        image = to_tensor(frame_single).to(device).float()
         if i % 10 ==0:
             pass
             # torch.cuda.empty_cache()

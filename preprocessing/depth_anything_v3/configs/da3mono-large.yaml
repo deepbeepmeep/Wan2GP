@@ -1,0 +1,28 @@
+__object__:
+  path: .model.da3
+  name: DepthAnything3Net
+  args: as_params
+
+net:
+  __object__:
+    path: .model.dinov2.dinov2
+    name: DinoV2
+    args: as_params
+
+  name: vitl
+  out_layers: [4, 11, 17, 23]
+  alt_start: -1 # -1 means disable
+  qknorm_start: -1
+  rope_start: -1
+  cat_token: False
+
+head:
+  __object__:
+    path: .model.dpt
+    name: DPT
+    args: as_params
+
+  dim_in: 1024
+  output_dim: 1
+  features: 256
+  out_channels: [256, 512, 1024, 1024]

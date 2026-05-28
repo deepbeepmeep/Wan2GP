@@ -6,6 +6,7 @@ import torch.cuda.amp as amp
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from .vae import _blend_h_edge_, _blend_v_edge_, _vae_float_to_cpu_uint8
 
 __all__ = [
     "Wan2_2_VAE",
@@ -933,6 +934,119 @@ class WanVAE_(nn.Module):
 
         return torch.cat(result_rows, dim=-2)
 
+    def decode_tile_chunks(self, z, any_end_frame=False):
+        self.clear_cache()
+        x = self.conv2(z)
+        frame_start = 0
+        try:
+            for i in range(x.shape[2]):
+                self._conv_idx = [0]
+                if i == 0:
+                    tile = self.decoder(x[:, :, i:i + 1, :, :], feat_cache=self._feat_map, feat_idx=self._conv_idx, first_chunk=True)
+                elif any_end_frame and i == x.shape[2] - 1:
+                    tile = self.decoder(x[:, :, -1:, :, :], feat_cache=None, feat_idx=self._conv_idx)
+                else:
+                    tile = self.decoder(x[:, :, i:i + 1, :, :], feat_cache=self._feat_map, feat_idx=self._conv_idx)
+                tile = unpatchify(tile, patch_size=2)
+                yield frame_start, tile
+                frame_start += int(tile.shape[2])
+                del tile
+        finally:
+            del x
+            self.clear_cache()
+
+    def decode_to_cpu_uint8(self, z, scale=None, tile_size=0, target_frames=None, target_height=None, target_width=None, any_end_frame=False, device=None):
+        device = torch.device(device) if device is not None else (scale[0].device if scale is not None and isinstance(scale[0], torch.Tensor) else z.device)
+        dtype = getattr(self, "_model_dtype", z.dtype)
+        tile_size = int(tile_size or 0)
+        latent_source = z.detach()
+        if tile_size > 0 and latent_source.device.type != "cpu":
+            latent_source = latent_source.to("cpu")
+        decoded_frame_count = 0 if latent_source.shape[2] <= 0 else (int(latent_source.shape[2]) - 1) * 4 + 1
+        target_frames = decoded_frame_count if target_frames is None else min(int(target_frames), decoded_frame_count)
+        needed_latents = 0 if target_frames <= 0 else min(int(latent_source.shape[2]), (max(int(target_frames), 1) - 1 + 3) // 4 + 1)
+        latent_source = latent_source[:, :, :needed_latents]
+        full_height = latent_source.shape[-2] * 16
+        full_width = latent_source.shape[-1] * 16
+        target_height = full_height if target_height is None else min(int(target_height), full_height)
+        target_width = full_width if target_width is None else min(int(target_width), full_width)
+        if target_frames <= 0:
+            return torch.empty((latent_source.shape[0], 3, 0, target_height, target_width), dtype=torch.uint8, device="cpu")
+        if scale is not None and isinstance(scale[0], torch.Tensor):
+            scale = [u.to(device=device) for u in scale]
+        if tile_size <= 0:
+            z = latent_source.to(device=device, dtype=dtype)
+            frames = self.decode(z, scale, any_end_frame=any_end_frame)[:, :, :target_frames, :target_height, :target_width]
+            decoded = _vae_float_to_cpu_uint8(frames)
+            del z, frames
+            return decoded
+
+        tile_sample_min_size = tile_size
+        tile_latent_min_size = max(1, int(tile_sample_min_size / 16))
+        tile_overlap_factor = 0.25
+        overlap_size = max(1, int(tile_latent_min_size * (1 - tile_overlap_factor)))
+        blend_extent = int(tile_sample_min_size * tile_overlap_factor)
+        row_limit = max(1, tile_sample_min_size - blend_extent)
+        decoded = torch.empty((latent_source.shape[0], 3, target_frames, target_height, target_width), dtype=torch.uint8, device="cpu")
+        previous_row_edges = []
+        row_index = 0
+        for latent_y in range(0, latent_source.shape[-2], overlap_size):
+            current_row_edges = []
+            left_edge = None
+            col_index = 0
+            write_y0 = row_index * row_limit
+            write_y1 = min(write_y0 + row_limit, target_height)
+            has_next_row = write_y1 < target_height
+            if write_y1 <= write_y0:
+                break
+            for latent_x in range(0, latent_source.shape[-1], overlap_size):
+                write_x0 = col_index * row_limit
+                write_x1 = min(write_x0 + row_limit, target_width)
+                has_next_col = write_x1 < target_width
+                if write_x1 <= write_x0:
+                    break
+                tile_latents = latent_source[:, :, :, latent_y:latent_y + tile_latent_min_size, latent_x:latent_x + tile_latent_min_size].to(device=device, dtype=dtype)
+                if scale is not None:
+                    if isinstance(scale[0], torch.Tensor):
+                        tile_latents.div_(scale[1].view(1, self.z_dim, 1, 1, 1)).add_(scale[0].view(1, self.z_dim, 1, 1, 1))
+                    else:
+                        tile_latents.div_(scale[1]).add_(scale[0])
+                bottom_edge = None
+                right_edge = None
+                previous_edge = previous_row_edges[col_index] if row_index > 0 and col_index < len(previous_row_edges) else None
+                for frame_start, tile in self.decode_tile_chunks(tile_latents, any_end_frame=any_end_frame):
+                    if frame_start >= target_frames:
+                        break
+                    frame_end = min(frame_start + int(tile.shape[2]), target_frames)
+                    tile = tile[:, :, :frame_end - frame_start]
+                    if previous_edge is not None:
+                        _blend_v_edge_(previous_edge[:, :, frame_start:frame_end], tile, blend_extent)
+                    if left_edge is not None:
+                        _blend_h_edge_(left_edge[:, :, frame_start:frame_end], tile, blend_extent)
+                    if has_next_row:
+                        edge = tile[:, :, :, -min(blend_extent, tile.shape[-2]):, :].detach().cpu()
+                        if bottom_edge is None:
+                            bottom_edge = torch.empty((edge.shape[0], edge.shape[1], target_frames, edge.shape[3], edge.shape[4]), dtype=edge.dtype, device="cpu")
+                        bottom_edge[:, :, frame_start:frame_end].copy_(edge)
+                        del edge
+                    if has_next_col:
+                        edge = tile[:, :, :, :, -min(blend_extent, tile.shape[-1]):].detach().cpu()
+                        if right_edge is None:
+                            right_edge = torch.empty((edge.shape[0], edge.shape[1], target_frames, edge.shape[3], edge.shape[4]), dtype=edge.dtype, device="cpu")
+                        right_edge[:, :, frame_start:frame_end].copy_(edge)
+                        del edge
+                    tile = tile[:, :, :, :write_y1 - write_y0, :write_x1 - write_x0]
+                    decoded[:, :, frame_start:frame_end, write_y0:write_y0 + tile.shape[-2], write_x0:write_x0 + tile.shape[-1]].copy_(_vae_float_to_cpu_uint8(tile))
+                    del tile
+                current_row_edges.append(bottom_edge)
+                left_edge = right_edge
+                del tile_latents, previous_edge
+                col_index += 1
+            left_edge = None
+            previous_row_edges = current_row_edges
+            row_index += 1
+        return decoded
+
 
     def spatial_tiled_encode(self, x, scale, tile_size, any_end_frame = False) :
         tile_sample_min_size = tile_size
@@ -1209,4 +1323,12 @@ class Wan2_2_VAE:
             return [ self.model.spatial_tiled_decode(u.to(self.dtype).unsqueeze(0), scale, tile_size, any_end_frame=any_end_frame).clamp_(-1, 1).float().squeeze(0) for u in zs ]
         else:
             return [ self.model.decode(u.to(self.dtype).unsqueeze(0), scale, any_end_frame=any_end_frame).clamp_(-1, 1).float().squeeze(0) for u in zs ]
+
+    def decode_to_cpu_uint8(self, zs, tile_size=256, target_frames=None, target_height=None, target_width=None, any_end_frame=False):
+        scale = [u.to(device=self.device) for u in self.scale]
+        tile_size = int(tile_size or 0)
+        return [
+            self.model.decode_to_cpu_uint8(u.detach().to(device="cpu" if tile_size > 0 else u.device, dtype=self.dtype).unsqueeze(0), scale, tile_size, target_frames=target_frames, target_height=target_height, target_width=target_width, any_end_frame=any_end_frame, device=self.device).squeeze(0)
+            for u in zs
+        ]
 

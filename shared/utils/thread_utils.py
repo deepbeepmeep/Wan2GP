@@ -6,18 +6,20 @@ import traceback
 from threading import Thread, Lock
 
 
-class Listener:
-    task_queue = []
-    lock = Lock()
-    thread = None
-    
-    @classmethod
-    def _process_tasks(cls):
+class _TaskRunner:
+    def __init__(self, runner_name="default"):
+        self.runner_name = str(runner_name or "default")
+        self.thread_name = self.runner_name.replace("_", " ").strip().title() or "Default"
+        self.task_queue = []
+        self.lock = Lock()
+        self.thread = None
+
+    def _process_tasks(self):
         while True:
             task = None
-            with cls.lock:
-                if cls.task_queue:
-                    task = cls.task_queue.pop(0)
+            with self.lock:
+                if self.task_queue:
+                    task = self.task_queue.pop(0)
                     
             if task is None:
                 time.sleep(0.001)
@@ -25,10 +27,11 @@ class Listener:
                 
             func, args, kwargs, thread_name = task
             current_name = None
+            thread = self.thread
             try:
-                if thread_name:
-                    current_name = cls.thread.name
-                    cls.thread.name = thread_name
+                if thread_name and thread is not None:
+                    current_name = thread.name
+                    thread.name = thread_name
                 func(*args, **kwargs)
             except Exception as e:
                 tb = traceback.format_exc().split('\n')[:-1] 
@@ -36,21 +39,45 @@ class Listener:
 
                 # print(f"Error in listener thread: {e}")
             finally:
-                if current_name is not None:
-                    cls.thread.name = current_name
-    
-    @classmethod
-    def add_task(cls, func, *args, thread_name=None, **kwargs):
-        with cls.lock:
-            cls.task_queue.append((func, args, kwargs, thread_name))
+                if current_name is not None and thread is not None:
+                    thread.name = current_name
 
-        if cls.thread is None:
-            cls.thread = Thread(target=cls._process_tasks, daemon=True)
-            cls.thread.start()
+    def add_task(self, func, *args, thread_name=None, **kwargs):
+        with self.lock:
+            self.task_queue.append((func, args, kwargs, thread_name))
+            thread = None if self.thread is not None else Thread(target=self._process_tasks, daemon=True, name=self.thread_name)
+            if thread is not None:
+                self.thread = thread
+
+        if thread is not None:
+            thread.start()
+
+
+class Listener:
+    runners = {}
+    lock = Lock()
+
+    @classmethod
+    def _get_runner(cls, runner_name="default"):
+        runner_name = str(runner_name or "default")
+        with cls.lock:
+            runner = cls.runners.get(runner_name, None)
+            if runner is None:
+                runner = _TaskRunner(runner_name)
+                cls.runners[runner_name] = runner
+            return runner
+
+    @classmethod
+    def add_task(cls, func, *args, runner_name="default", thread_name=None, **kwargs):
+        cls._get_runner(runner_name).add_task(func, *args, thread_name=thread_name, **kwargs)
 
 
 def async_run(func, *args, thread_name=None, **kwargs):
     Listener.add_task(func, *args, thread_name=thread_name, **kwargs)
+
+
+def async_run_in(runner_name, func, *args, thread_name=None, **kwargs):
+    Listener.add_task(func, *args, runner_name=runner_name, thread_name=thread_name, **kwargs)
 
 
 class FIFOQueue:

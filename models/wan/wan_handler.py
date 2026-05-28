@@ -17,7 +17,7 @@ def test_class_i2v(base_model_type):
     return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate", "chrono_edit", "steadydancer", "wanmove", "scail", "i2v_2_2_svi2pro" ]
 
 def test_class_t2v(base_model_type):    
-    return base_model_type in ["t2v", "t2v_2_2", "alpha", "alpha2", "lynx"]
+    return base_model_type in ["t2v", "t2v_2_2", "alpha", "alpha2", "lynx", "vista4d"]
 
 def test_oneframe_overlap(base_model_type):
     return test_class_i2v(base_model_type) and not (test_multitalk(base_model_type) or base_model_type in ["animate", "scail"] or test_svi2pro(base_model_type))  or test_wan_5B(base_model_type)
@@ -53,7 +53,7 @@ class family_handler():
         return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_14B_2_2", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B",
                     "t2v_1.3B", "standin", "lynx_lite", "lynx", "t2v", "t2v_2_2", "vace_1.3B", "vace_ditto_14B", "phantom_1.3B", "phantom_14B",
                     "recam_1.3B", "animate", "alpha", "alpha2", "alpha_lynx", "chrono_edit",
-                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "kiwi_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp", "mocha", "steadydancer", "wanmove", "scail", "i2v_2_2_svi2pro"]
+                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "kiwi_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp", "mocha", "steadydancer", "wanmove", "scail", "vista4d", "i2v_2_2_svi2pro"]
 
 
     @staticmethod
@@ -67,6 +67,7 @@ class family_handler():
             "alpha" : "t2v", 
             "alpha2" : "t2v", 
             "lynx" : "t2v", 
+            "vista4d": "t2v",
             "standin" : "t2v", 
             "vace_standin_14B" : "vace_14B",
             "vace_lynx_14B" : "vace_14B",
@@ -123,7 +124,6 @@ class family_handler():
             default=None,
             help=f"Path to a directory that contains Wan i2v Loras (default: {os.path.join(lora_root, 'wan_i2v')})"
         )
-
     @staticmethod
     def get_lora_dir(base_model_type, args, lora_root):
         i2v = test_class_i2v(base_model_type) and not test_i2v_2_2(base_model_type)
@@ -258,6 +258,7 @@ class family_handler():
 
         if  (test_class_t2v(base_model_type) or vace_class or base_model_type in ["chrono_edit"]) and not test_alpha(base_model_type):
             extra_model_def["vae_upsampler"] = [1,2]
+        extra_model_def["vae_block_size"] = 32 if test_wan_5B(base_model_type) or base_model_type in ["scail"] else 16
 
         extra_model_def["profiles_dir"] = [profiles_dir]
         extra_model_def["group"] = group
@@ -357,6 +358,63 @@ class family_handler():
                 }
             extra_model_def["v2i_switch_supported"] = True
 
+        if base_model_type == "vista4d":
+            extra_model_def.update({
+                "guide_custom_choices": {
+                    "choices": [("Use Vista4D control video", "UV")],
+                    "default": "UV",
+                    "visible": False,
+                    "show_label": False,
+                    "letters_filter": "UV",
+                    "label": "Vista4D Control",
+                },
+                "model_modes": {
+                    "label": "Vista4D Camera Movement",
+                    "default": "dolly_zoom",
+                    "image_modes": [0],
+                    "choices": [
+                        ("Dolly Zoom", "dolly_zoom"),
+                        ("Left Front Zoom", "left_front_zoom"),
+                        ("Right Front Zoom", "right_front_zoom"),
+                        ("Close Crane Above", "close_crane_above"),
+                        ("Close Crane Below", "close_crane_below"),
+                        ("Arc Right 45 deg", "arc_right_45"),
+                        ("Arc Left 45 deg", "arc_left_45"),
+                        ("Push In", "push_in"),
+                        ("Pull Back", "pull_back"),
+                        ("Truck Right", "truck_right"),
+                        ("Truck Left", "truck_left"),
+                        ("Pedestal Up", "pedestal_up"),
+                        ("Pedestal Down", "pedestal_down"),
+                        ("Pan Right 45 deg", "pan_right_45"),
+                        ("Pan Left 45 deg", "pan_left_45"),
+                        ("Tilt Up 45 deg", "tilt_up_45"),
+                        ("Tilt Down 45 deg", "tilt_down_45"),
+                        ("Zoom In", "zoom_in"),
+                        ("Zoom Out", "zoom_out"),
+                        ("Bird View", "bird_view"),
+                        ("Crane Above Right", "crane_above_right"),
+                        ("Crane Above Left", "crane_above_left"),
+                        ("Crane Below Right", "crane_below_right"),
+                        ("Crane Below Left", "crane_below_left"),
+                    ],
+                },
+                "custom_guide": {"label": "Custom Camera Movement (.npz)", "required": False, "file_types": [".npz"]},
+                "mask_preprocessing": {"selection": [""], "visible": False},
+                "custom_settings": [
+                    {"id": "vista4d_scene_scale", "name": "Scene scale", "label": "Vista4D scene scale", "type": "float", "default": 1.0},
+                    {"id": "vista4d_camera_strength", "name": "Camera strength", "label": "Vista4D camera strength (%)", "type": "float", "default": 100.0},
+                    {"id": "vista4d_seg_keywords", "name": "Dynamic object keywords", "label": "Dynamic object keywords", "type": "text", "default": "_all_", "info": "Comma-separated prompts; use _all_ for all pixels."},
+                ],
+                "control_video_trim": True,
+                "keep_frames_video_guide_not_supported": True,
+                "no_guide2_refresh": True,
+                "preprocess_all": False,
+                "sliding_window": False,
+                "v2i_switch_supported": False,
+
+            })
+
 
         if base_model_type in ["wanmove"]:
             extra_model_def["custom_guide"] = { "label": "Trajectory File", "required": True, "file_types": [".npy"]}
@@ -421,6 +479,11 @@ class family_handler():
         if base_model_type in ["infinitetalk"]: 
             extra_model_def["no_background_removal"] = True
             extra_model_def["all_image_refs_are_background_ref"] = True
+            extra_model_def["deepy_tools"] = {
+                "gen_video_with_speech": {
+                    "image_start": "image_refs",
+                }
+            }
             extra_model_def["guide_custom_choices"] = {
             "choices":[
                 ("Images to Video, each Reference Image will start a new shot with a new Sliding Window", "KI"),
@@ -527,7 +590,7 @@ class family_handler():
             extra_model_def["control_net_weight_name"] = "Vace"
             extra_model_def["control_net_weight_size"] = 2
             extra_model_def["guide_preprocessing"] = {
-                    "selection": ["", "UV", "PV", "DV", "SV", "LV", "CV", "MV", "V", "PDV", "PSV", "PLV" , "DSV", "DLV", "SLV"],
+                    "selection": ["", "UV", "PV", "OV", "DV", "SV", "LV", "CV", "MV", "V", "PDV", "PSV", "PLV" , "DSV", "DLV", "SLV"],
                     "labels" : { "V": "Use Vace raw format"}
                 }
             extra_model_def["mask_preprocessing"] = {
@@ -712,10 +775,6 @@ class family_handler():
         
 
     @staticmethod
-    def get_vae_block_size(base_model_type):
-        return 32 if test_wan_5B(base_model_type) or base_model_type in ["scail"] else 16
-
-    @staticmethod
     def get_rgb_factors(base_model_type ):
         from shared.RGB_factors import get_rgb_factors
         if test_wan_5B(base_model_type): base_model_type = "ti2v_2_2"
@@ -761,6 +820,14 @@ class family_handler():
                     "repoId": "DeepBeepMeep/Wan2.1",
                     "sourceFolderList": ["pose"],
                     "fileList": [["nlf_l_multi_0.3.2.eager.safetensors", "nlf_l_multi_0.3.2.eager.meta.json"]],
+                }
+            ]
+        elif base_model_type == "vista4d":
+            download_def += [
+                {
+                    "repoId": "DeepBeepMeep/Wan2.1",
+                    "sourceFolderList": ["depth", "sam3"],
+                    "fileList": [["depth_anything_v3_vitl_bf16.safetensors"], ["sam3.1_multiplex_bf16.safetensors", "bpe_simple_vocab_16e6.txt.gz"]],
                 }
             ]
 

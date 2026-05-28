@@ -1,6 +1,5 @@
 import json
 import math
-import gc
 import os
 from typing import Optional, List
 
@@ -12,7 +11,8 @@ from tqdm import tqdm
 import librosa
 import pyloudnorm as pyln
 import scipy.signal as ss
-from transformers import Wav2Vec2FeatureExtractor
+import torch.nn.functional as F
+from transformers import AutoFeatureExtractor, Wav2Vec2FeatureExtractor, WhisperModel
 
 from shared.utils import files_locator as fl
 from ..wan.modules.t5 import T5EncoderModel
@@ -30,6 +30,8 @@ def _load_json_config(path):
         cfg = json.load(f)
     cfg.pop("_class_name", None)
     cfg.pop("_diffusers_version", None)
+    cfg.pop("architectures", None)
+    cfg.pop("model_max_length", None)
     return cfg
 
 
@@ -53,6 +55,9 @@ def optimized_scale(positive_flat, negative_flat):
     return dot_product / squared_norm
 
 
+LONGCAT_AVATAR_TYPES = {"longcat_avatar", "longcat_avatar_v1_5"}
+
+
 class LongCatModel:
     def __init__(
         self,
@@ -74,7 +79,9 @@ class LongCatModel:
         self.VAE_dtype = VAE_dtype
         self.model_def = model_def or {}
         self.base_model_type = base_model_type
-        self.is_avatar = base_model_type in ["longcat_avatar"]
+        self.is_avatar = base_model_type in LONGCAT_AVATAR_TYPES
+        self.is_avatar_v1_5 = base_model_type == "longcat_avatar_v1_5"
+        self.audio_encoder_name = None
         self.sparse_attention_enabled = bool(self.model_def.get("sparse_attention", False))
         self._interrupt = False
         self._reference_image = None
@@ -93,15 +100,16 @@ class LongCatModel:
             device=torch.device("cpu"),
             checkpoint_path=text_encoder_path,
             tokenizer_path=tokenizer_path,
-            shard_fn=None,
         )
         self.text_encoder_cache = TextEncoderCache()
 
-        transformer_config_path = (
-            "models/longcat/configs/longcat_avatar.json"
-            if self.is_avatar
-            else "models/longcat/configs/longcat_video.json"
-        )
+        transformer_config_path = self.model_def.get("transformer_config")
+        if not transformer_config_path:
+            transformer_config_path = (
+                "models/longcat/configs/longcat_avatar.json"
+                if self.is_avatar
+                else "models/longcat/configs/longcat_video.json"
+            )
         transformer_cfg = _load_json_config(transformer_config_path)
         if self.sparse_attention_enabled:
             transformer_cfg["enable_bsa"] = True
@@ -115,7 +123,7 @@ class LongCatModel:
             if self.is_avatar
             else LongCatVideoTransformer3DModel
         )
-        with init_empty_weights():
+        with init_empty_weights(include_buffers=True):
             transformer = transformer_cls(**transformer_cfg)
         model_path = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename
         if model_path is None:
@@ -156,27 +164,61 @@ class LongCatModel:
         self.vae._dtype = VAE_dtype
         self.vae.eval().requires_grad_(False)
 
-        scheduler_cfg = _load_json_config("models/longcat/configs/longcat_scheduler.json")
+        scheduler_cfg = _load_json_config(self.model_def.get("scheduler_config", "models/longcat/configs/longcat_scheduler.json"))
         self.scheduler = FlowMatchEulerDiscreteScheduler(**scheduler_cfg)
         self.num_timesteps = 1000
-        self.num_distill_sample_steps = 50
+        self.num_distill_sample_steps = int(self.model_def.get("num_distill_sample_steps", 8 if self.is_avatar_v1_5 else 50))
 
         if self.is_avatar:
-            wav2vec_folder = fl.locate_folder("chinese-wav2vec2-base")
-            self.audio_encoder = Wav2Vec2ModelWrapper(wav2vec_folder)
-            self.audio_encoder.eval().requires_grad_(False)
-            if hasattr(self.audio_encoder, "feature_extractor"):
-                self.audio_encoder.feature_extractor._freeze_parameters()
-            self.wav2vec_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
-                wav2vec_folder, local_files_only=True
-            )
+            if self.is_avatar_v1_5:
+                whisper_folder_name = self.model_def.get("audio_encoder_folder", "whisper-large-v3")
+                whisper_folder = fl.locate_folder(whisper_folder_name)
+                whisper_model_path = fl.locate_file(os.path.join(whisper_folder_name, "model.safetensors"))
+                whisper_config_path = fl.locate_file(os.path.join(whisper_folder_name, "config.json"))
+                fl.locate_file(os.path.join(whisper_folder_name, "generation_config.json"))
+                fl.locate_file(os.path.join(whisper_folder_name, "preprocessor_config.json"))
+                self.audio_encoder_name = "whisper-large-v3"
+                self.audio_encoder = offload.fast_load_transformers_model(
+                    whisper_model_path,
+                    modelClass=WhisperModel,
+                    defaultConfigPath=whisper_config_path,
+                    modelPrefix="model",
+                    writable_tensors=False,
+                    default_dtype=dtype,
+                    ignore_unused_weights=True,
+                )
+                if hasattr(self.audio_encoder, "decoder"):
+                    del self.audio_encoder.decoder
+                self.audio_encoder._model_dtype = dtype
+                self.audio_encoder.eval().requires_grad_(False)
+                self.audio_feature_extractor = AutoFeatureExtractor.from_pretrained(whisper_folder, local_files_only=True)
+            else:
+                wav2vec_folder = fl.locate_folder("chinese-wav2vec2-base")
+                self.audio_encoder_name = "wav2vec2"
+                self.audio_encoder = Wav2Vec2ModelWrapper(wav2vec_folder)
+                self.audio_encoder.eval().requires_grad_(False)
+                if hasattr(self.audio_encoder, "feature_extractor"):
+                    self.audio_encoder.feature_extractor._freeze_parameters()
+                self.audio_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(wav2vec_folder, local_files_only=True)
         else:
             self.audio_encoder = None
-            self.wav2vec_feature_extractor = None
+            self.audio_feature_extractor = None
 
         self.vae_scale_factor_temporal = getattr(self.vae.config, "scale_factor_temporal", 4)
         self.vae_scale_factor_spatial = getattr(self.vae.config, "scale_factor_spatial", 8)
         self.transformer._interrupt_check = lambda: self._interrupt
+
+    def get_loras_transformer(self, get_model_recursive_prop, **kwargs):
+        if not self.is_avatar_v1_5:
+            return [], []
+        sample_solver = kwargs.get("sample_solver") or self.model_def.get("sample_solver", "distill")
+        lora_url = self.model_def.get("distill_lora_URL") if sample_solver == "distill" else None
+        return ([lora_url], ["1.0"]) if lora_url else ([], [])
+
+    def _clear_runtime_caches(self):
+        clear = getattr(self.transformer, "clear_runtime_caches", None)
+        if clear is not None:
+            clear()
 
     def prepare_preview_payload(self, latents, preview_meta=None):
         if not torch.is_tensor(latents):
@@ -399,8 +441,16 @@ class LongCatModel:
         b, a = ss.butter(3, 3000 / (sr / 2))
         return ss.lfilter(b, a, audio_array)
 
+    @staticmethod
+    def _interpolate_audio_state(audio_state, target_len):
+        if audio_state.shape[0] == target_len:
+            return audio_state
+        audio_state = audio_state.transpose(0, 1).unsqueeze(0).float()
+        audio_state = F.interpolate(audio_state, size=target_len, mode="linear", align_corners=False)
+        return audio_state.squeeze(0).transpose(0, 1)
+
     @torch.no_grad()
-    def _get_audio_embedding(self, speech_array, fps=32, device="cpu", sample_rate=16000):
+    def _get_audio_embedding_wav2vec(self, speech_array, fps=32, device="cpu", sample_rate=16000):
         audio_duration = len(speech_array) / sample_rate
         video_length = audio_duration * fps
 
@@ -409,7 +459,7 @@ class LongCatModel:
         speech_array = self._smooth_transients(speech_array, sample_rate)
 
         audio_feature = np.squeeze(
-            self.wav2vec_feature_extractor(speech_array, sampling_rate=sample_rate).input_values
+            self.audio_feature_extractor(speech_array, sampling_rate=sample_rate).input_values
         )
         audio_feature = np.nan_to_num(audio_feature, nan=0.0, posinf=0.0, neginf=0.0)
         audio_feature = torch.from_numpy(audio_feature).float().to(device=device)
@@ -421,29 +471,85 @@ class LongCatModel:
         audio_emb = torch.nan_to_num(audio_emb, nan=0.0, posinf=0.0, neginf=0.0)
         return audio_emb
 
+    @torch.no_grad()
+    def _get_audio_embedding_whisper(self, speech_array, fps=25, device=None, sample_rate=16000):
+        device = device or self.device
+        audio_duration = len(speech_array) / sample_rate
+        video_length = max(int(round(audio_duration * fps)), 1)
+        encoder_length = max(int(math.ceil(audio_duration * 50)), 1)
+        speech_array = self._loudness_norm(speech_array, sample_rate)
+        speech_array = self._add_noise_floor(speech_array)
+        speech_array = self._smooth_transients(speech_array, sample_rate)
+
+        layer_groups = [(0, 8), (8, 16), (16, 24), (24, 32), (32, 33)]
+        audio_chunks = [[] for _ in layer_groups]
+        mel_chunk = 750 * 640
+        for start in range(0, len(speech_array), mel_chunk):
+            chunk = speech_array[start : start + mel_chunk]
+            features = self.audio_feature_extractor(
+                [chunk],
+                return_tensors="pt",
+                return_attention_mask=True,
+                sampling_rate=sample_rate,
+            )
+            input_features = features.input_features.to(device=device, dtype=self.dtype)
+            attention_mask = getattr(features, "attention_mask", None)
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(device=device)
+            input_features = self.audio_encoder._mask_input_features(input_features, attention_mask=attention_mask)
+            encoder_dtype = getattr(self.audio_encoder.encoder, "dtype", self.dtype)
+            outputs = self.audio_encoder.encoder(
+                input_features.to(encoder_dtype),
+                head_mask=None,
+                output_attentions=False,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+            chunk_states = outputs.hidden_states
+            for group_idx, (layer_start, layer_end) in enumerate(layer_groups):
+                layer_state = torch.stack(chunk_states[layer_start:layer_end], dim=0).mean(dim=0).squeeze(0)
+                audio_chunks[group_idx].append(layer_state.detach().to("cpu"))
+            del outputs, chunk_states, input_features, attention_mask, features
+
+        audio_layers = []
+        for chunks in audio_chunks:
+            layer_state = torch.cat(chunks, dim=0)[:encoder_length]
+            layer_state = self._interpolate_audio_state(layer_state, video_length).to(dtype=self.dtype)
+            audio_layers.append(layer_state)
+        audio_emb = torch.stack(audio_layers, dim=1).contiguous()
+        return torch.nan_to_num(audio_emb, nan=0.0, posinf=0.0, neginf=0.0)
+
+    @torch.no_grad()
+    def _get_audio_embedding(self, speech_array, fps=32, device="cpu", sample_rate=16000):
+        if self.is_avatar_v1_5:
+            return self._get_audio_embedding_whisper(speech_array, fps=fps, device=device, sample_rate=sample_rate)
+        return self._get_audio_embedding_wav2vec(speech_array, fps=fps, device=device, sample_rate=sample_rate)
+
     def _build_audio_windows(self, audio_path, frame_num, fps, window_start_frame_no, audio_stride):
         speech_array, sr = librosa.load(audio_path, sr=16000)
-        target_len = int(frame_num / fps * sr)
+        target_len = int((window_start_frame_no + frame_num) / fps * sr)
         if len(speech_array) < target_len:
             pad = target_len - len(speech_array)
             speech_array = np.pad(speech_array, (0, pad), mode="constant")
 
-        full_audio_emb = self._get_audio_embedding(speech_array, fps=fps * audio_stride, device="cpu", sample_rate=sr)
+        audio_device = self.device if self.is_avatar_v1_5 else "cpu"
+        full_audio_emb = self._get_audio_embedding(speech_array, fps=fps * audio_stride, device=audio_device, sample_rate=sr)
         if torch.isnan(full_audio_emb).any():
             raise ValueError("Audio embedding contains NaNs.")
 
         audio_start_idx = window_start_frame_no * audio_stride
         audio_end_idx = audio_start_idx + audio_stride * frame_num
         window = self.transformer.audio_window if hasattr(self.transformer, "audio_window") else 5
-        offsets = torch.arange(window) - window // 2
-        centers = torch.arange(audio_start_idx, audio_end_idx, audio_stride).unsqueeze(1) + offsets.unsqueeze(0)
+        offsets = torch.arange(window, device=full_audio_emb.device) - window // 2
+        centers = torch.arange(audio_start_idx, audio_end_idx, audio_stride, device=full_audio_emb.device).unsqueeze(1) + offsets.unsqueeze(0)
         centers = torch.clamp(centers, min=0, max=full_audio_emb.shape[0] - 1)
-        audio_emb = full_audio_emb[centers][None, ...]
+        audio_emb = full_audio_emb[centers][None, ...].to("cpu")
+        del full_audio_emb
         return audio_emb
 
     def _build_ref_target_masks(self, height, width, speakers_bboxes=None):
         if not speakers_bboxes:
-            return None
+            speakers_bboxes = {"person1": [5, 10, 45, 90], "person2": [55, 10, 95, 90]}
         human_masks = []
         background_mask = torch.zeros([height, width])
         for _, person_bbox in speakers_bboxes.items():
@@ -467,9 +573,17 @@ class LongCatModel:
         if use_distill:
             distill_indices = torch.arange(1, self.num_distill_sample_steps + 1, dtype=torch.float32)
             distill_indices = (distill_indices * (self.num_timesteps // self.num_distill_sample_steps)).round().long()
-            inference_indices = np.linspace(0, self.num_distill_sample_steps, num=sampling_steps, endpoint=False)
-            inference_indices = np.floor(inference_indices).astype(np.int64)
-            sigmas = torch.flip(distill_indices, [0])[inference_indices].float() / self.num_timesteps
+            if self.is_avatar_v1_5:
+                distill_indices = self.num_timesteps - distill_indices
+                sigmas = torch.flip(torch.linspace(0, 1, self.num_timesteps), [0])
+                sigmas = torch.flip(sigmas[distill_indices], [0]).float()
+                if sampling_steps != self.num_distill_sample_steps:
+                    inference_indices = np.linspace(0, self.num_distill_sample_steps, num=sampling_steps, endpoint=False)
+                    sigmas = sigmas[np.floor(inference_indices).astype(np.int64)]
+            else:
+                inference_indices = np.linspace(0, self.num_distill_sample_steps, num=sampling_steps, endpoint=False)
+                inference_indices = np.floor(inference_indices).astype(np.int64)
+                sigmas = torch.flip(distill_indices, [0])[inference_indices].float() / self.num_timesteps
         else:
             sigmas = torch.linspace(1, 0.001, sampling_steps, dtype=torch.float32)
         return sigmas.to(dtype=torch.float32, device="cpu")
@@ -489,23 +603,87 @@ class LongCatModel:
         input_video=None,
         image_start=None,
         image_end=None,
+        input_ref_masks=None,
+        input_faces=None,
+        input_custom=None,
         frame_num=93,
         batch_size=1,
         height=480,
         width=832,
+        fit_into_canvas=None,
+        alt_prompt=None,
         guide_scale=4.0,
+        guide2_scale=None,
+        guide3_scale=None,
+        shift=None,
         audio_cfg_scale=None,
         joint_pass=False,
         VAE_tile_size=None,
         prefix_frames_count=0,
         conditioning_latents_size=0,
         callback=None,
+        embedded_guidance_scale=None,
+        enable_RIFLEx=None,
         cfg_star_switch=False,
         cfg_zero_step=-1,
+        apg_switch=None,
+        perturbation_switch=None,
+        perturbation_layers=None,
+        perturbation_start=None,
+        perturbation_end=None,
+        switch_threshold=None,
+        switch2_threshold=None,
+        guide_phases=None,
+        model_switch_phase=None,
+        alt_guide_scale=None,
+        input_waveform=None,
+        input_waveform_sample_rate=None,
         audio_guide=None,
         audio_guide2=None,
+        audio_prompt_type=None,
+        audio_proj=None,
+        audio_scale=None,
+        audio_context_lens=None,
+        context_scale=None,
+        control_scale_alt=None,
+        alt_scale=None,
+        motion_amplitude=None,
+        model_mode=None,
+        causal_block_size=None,
+        causal_attention=None,
         fps=None,
         window_start_frame_no=0,
+        sample_solver=None,
+        reference_image_enabled=None,
+        ref_img_index=None,
+        mask_frame_range=None,
+        overlapped_latents=None,
+        return_latent_slice=None,
+        speakers_bboxes=None,
+        window_no=None,
+        overlap_noise=None,
+        overlap_size=None,
+        color_correction_strength=None,
+        input_video_is_hdr=False,
+        lora_dir=None,
+        keep_frames_parsed=None,
+        model_filename=None,
+        model_type=None,
+        loras_slists=None,
+        NAG_scale=None,
+        NAG_tau=None,
+        NAG_alpha=None,
+        image_mode=None,
+        video_prompt_type=None,
+        offloadobj=None,
+        set_header_text=None,
+        pre_video_frame=None,
+        prefix_video=None,
+        original_input_ref_images=None,
+        image_refs_relative_size=None,
+        outpainting_dims=None,
+        face_arc_embeds=None,
+        custom_settings=None,
         **kwargs,
     ):
         if self._interrupt:
@@ -523,7 +701,7 @@ class LongCatModel:
             frame_num = frame_num // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
         frame_num = max(frame_num, 1)
 
-        sample_solver = kwargs.get("sample_solver", self.model_def.get("sample_solver", "auto"))
+        sample_solver = self.model_def.get("sample_solver", "auto") if sample_solver is None else sample_solver
         if sample_solver in (None, ""):
             sample_solver = "default"
 
@@ -540,13 +718,13 @@ class LongCatModel:
                 audio_cfg_scale = 1.0
             any_guidance = any_guidance or audio_cfg_scale > 1
 
-        reference_image_enabled = self.is_avatar and bool(
-            kwargs.get("reference_image_enabled", self.model_def.get("reference_image_enabled", True))
-        )
+        if reference_image_enabled is None:
+            reference_image_enabled = self.model_def.get("reference_image_enabled", True)
+        reference_image_enabled = self.is_avatar and bool(reference_image_enabled)
         reference_features_enabled = reference_image_enabled
 
-        ref_img_index = kwargs.get("ref_img_index", self.model_def.get("ref_img_index", 10))
-        mask_frame_range = kwargs.get("mask_frame_range", self.model_def.get("mask_frame_range", 3))
+        ref_img_index = self.model_def.get("ref_img_index", 10) if ref_img_index is None else ref_img_index
+        mask_frame_range = self.model_def.get("mask_frame_range", 3) if mask_frame_range is None else mask_frame_range
         if not reference_features_enabled:
             ref_img_index = None
             mask_frame_range = None
@@ -557,7 +735,6 @@ class LongCatModel:
                 ref_list = input_ref_images if isinstance(input_ref_images, list) else [input_ref_images]
                 if len(ref_list) > 0:
                     ref_image = ref_list[0]
-            window_no = kwargs.get("window_no", None)
             if window_no == 1:
                 if ref_image is not None:
                     self._reference_image = (
@@ -589,6 +766,8 @@ class LongCatModel:
 
         if sample_solver not in ("auto", "default", "enhance_hf", "distill"):
             raise ValueError(f"Unsupported scheduler '{sample_solver}' for LongCat.")
+        if self.model_def.get("distill_only", False) and sample_solver != "distill":
+            raise ValueError("LongCat Avatar 1.5 currently supports the distilled scheduler only.")
         use_distill = sample_solver == "distill"
         enhance_hf = sample_solver == "enhance_hf"
         if sample_solver == "auto":
@@ -621,7 +800,6 @@ class LongCatModel:
                 ref_latent = self.normalize_latents(ref_latent).to(torch.float32)
                 num_ref_latents = 1
 
-        overlapped_latents = kwargs.get("overlapped_latents")
         if torch.is_tensor(overlapped_latents):
             if overlapped_latents.dim() == 4:
                 overlapped_latents = overlapped_latents.unsqueeze(0)
@@ -743,21 +921,22 @@ class LongCatModel:
         if self.is_avatar:
             if audio_guide is None:
                 raise ValueError("Audio guide is required for LongCat Avatar.")
-            audio_stride = 2
+            audio_stride = int(self.model_def.get("audio_stride", 1 if self.is_avatar_v1_5 else 2))
             audio_emb = self._build_audio_windows(
                 audio_guide, frame_num, fps, window_start_frame_no, audio_stride
             )
-            if self.base_model_type == "longcat_avatar_multi":
+            if audio_guide2 is not None or self.model_def.get("multi_speakers_only", False):
                 if audio_guide2 is None:
                     raise ValueError("Second audio guide is required for LongCat Avatar Multi.")
                 audio_emb2 = self._build_audio_windows(
                     audio_guide2, frame_num, fps, window_start_frame_no, audio_stride
                 )
                 audio_emb = torch.cat([audio_emb, audio_emb2], dim=0)
-                speakers_bboxes = kwargs.get("speakers_bboxes")
                 ref_target_masks = self._build_ref_target_masks(height, width, speakers_bboxes)
             if ref_target_masks is not None:
                 ref_target_masks = ref_target_masks.to(self.device)
+            if self.is_avatar_v1_5 and offloadobj is not None:
+                offloadobj.unload_all()
             audio_emb = audio_emb.to(self.device, dtype=self.dtype)
 
         latents = latents.to(self.device, dtype=self.dtype)
@@ -917,7 +1096,6 @@ class LongCatModel:
             num_cond_latents -= num_ref_latents
 
         latent_slice = None
-        return_latent_slice = kwargs.get("return_latent_slice")
         if return_latent_slice is not None:
             latent_slice = latents[:, :, return_latent_slice].detach().to("cpu")
 
@@ -926,6 +1104,7 @@ class LongCatModel:
         video = self.vae.decode(latents, return_dict=False)[0].clamp(-1, 1)
         if video.dim() == 5:
             video = video[0]
+        self._clear_runtime_caches()
 
         if latent_slice is not None:
             return {"x": video, "latent_slice": latent_slice}

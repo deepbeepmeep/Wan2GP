@@ -64,21 +64,32 @@ def _repeat_kv(hidden_states: torch.Tensor, num_repeats: int) -> torch.Tensor:
     return hidden_states.repeat_interleave(num_repeats, dim=1)
 
 
-def _eager_attention(
+def _sdpa_attention(
     query_states: torch.Tensor,
     key_states: torch.Tensor,
     value_states: torch.Tensor,
     scaling: float,
     num_key_value_groups: int,
     attention_bias: torch.Tensor | None = None,
+    is_causal: bool = True,
 ) -> torch.Tensor:
+    # Avoid enable_gqa here: on the local Torch 2.10 + CUDA 13 build it can pick
+    # a much higher-workspace backend than the explicit-repeat SDPA path.
     key_states = _repeat_kv(key_states, num_key_value_groups)
     value_states = _repeat_kv(value_states, num_key_value_groups)
-    attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) * scaling
-    if attention_bias is not None:
-        attn_weights = attn_weights + attention_bias
-    attn_weights = torch.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-    return torch.matmul(attn_weights, value_states)
+    if attention_bias is not None and not torch.is_floating_point(attention_bias):
+        attention_bias = attention_bias.to(dtype=query_states.dtype)
+    elif attention_bias is not None and attention_bias.dtype != query_states.dtype:
+        attention_bias = attention_bias.to(dtype=query_states.dtype)
+    return F.scaled_dot_product_attention(
+        query_states,
+        key_states,
+        value_states,
+        attn_mask=attention_bias,
+        dropout_p=0.0,
+        is_causal=bool(is_causal),
+        scale=scaling,
+    )
 
 
 def _build_causal_bias(query_len: int, key_len: int, device: torch.device, query_offset: int = 0) -> torch.Tensor:
@@ -88,7 +99,6 @@ def _build_causal_bias(query_len: int, key_len: int, device: torch.device, query
     bias = torch.zeros((query_len, key_len), dtype=torch.float32, device=device)
     bias.masked_fill_(~valid, float("-inf"))
     return bias
-
 
 def _gather_cache_tokens(cache: torch.Tensor, block_table: torch.Tensor, seq_len: int) -> torch.Tensor:
     if seq_len <= 0:
@@ -126,12 +136,13 @@ def _flash_attention_fallback_prefill(
             k_i = _gather_cache_tokens(k_cache, context.block_tables[idx], k_len).transpose(0, 1).unsqueeze(0)
             v_i = _gather_cache_tokens(v_cache, context.block_tables[idx], k_len).transpose(0, 1).unsqueeze(0)
             query_offset = k_len - q_len
+            bias = _build_causal_bias(q_len, k_len, q.device, query_offset=query_offset).view(1, 1, q_len, k_len)
+            output = _sdpa_attention(q_i, k_i, v_i, scale, num_key_value_groups, attention_bias=bias, is_causal=False)
         else:
             k_i = k[k_start:k_end].transpose(0, 1).unsqueeze(0)
             v_i = v[k_start:k_end].transpose(0, 1).unsqueeze(0)
-            query_offset = 0
-        bias = _build_causal_bias(q_len, k_len, q.device, query_offset=query_offset).view(1, 1, q_len, k_len)
-        outputs.append(_eager_attention(q_i, k_i, v_i, scale, num_key_value_groups, attention_bias=bias).squeeze(0).transpose(0, 1))
+            output = _sdpa_attention(q_i, k_i, v_i, scale, num_key_value_groups)
+        outputs.append(output.squeeze(0).transpose(0, 1))
     return torch.cat(outputs, dim=0) if outputs else torch.empty_like(q)
 
 
@@ -156,9 +167,21 @@ def _flash_attention_fallback_decode(
         valid_tokens = block_mask & token_positions.lt(context.context_lens.unsqueeze(1))
         has_tokens = valid_tokens.any(dim=1, keepdim=True)
         safe_valid_tokens = valid_tokens | (~has_tokens & token_positions.eq(0))
-        attention_bias = torch.zeros((batch_size, 1, 1, total_cache_tokens), dtype=torch.float32, device=q.device)
-        attention_bias.masked_fill_(~safe_valid_tokens.unsqueeze(1).unsqueeze(1), float("-inf"))
-        attn_output = _eager_attention(q.unsqueeze(2), k_tokens.permute(0, 2, 1, 3), v_tokens.permute(0, 2, 1, 3), scale, num_key_value_groups, attention_bias=attention_bias).transpose(1, 2)
+        kv_valid_mask = safe_valid_tokens.unsqueeze(-1).unsqueeze(-1)
+        # The last active block may be only partially written. Zero invalid slots by replacement
+        # so unwritten `torch.empty` cache contents cannot leak NaNs into SDPA.
+        k_tokens = torch.where(kv_valid_mask, k_tokens, torch.zeros((), dtype=k_tokens.dtype, device=k_tokens.device))
+        v_tokens = torch.where(kv_valid_mask, v_tokens, torch.zeros((), dtype=v_tokens.dtype, device=v_tokens.device))
+        attention_bias = safe_valid_tokens.unsqueeze(1).unsqueeze(1)
+        attn_output = _sdpa_attention(
+            q.unsqueeze(2),
+            k_tokens.permute(0, 2, 1, 3),
+            v_tokens.permute(0, 2, 1, 3),
+            scale,
+            num_key_value_groups,
+            attention_bias=attention_bias,
+            is_causal=False,
+        ).transpose(1, 2)
         return attn_output * has_tokens.view(batch_size, 1, 1, 1).to(attn_output.dtype)
 
     outputs = []
@@ -167,7 +190,7 @@ def _flash_attention_fallback_decode(
         q_i = q[idx:idx + 1].transpose(0, 1).unsqueeze(0)
         k_i = _gather_cache_tokens(k_cache, context.block_tables[idx], seq_len).transpose(0, 1).unsqueeze(0)
         v_i = _gather_cache_tokens(v_cache, context.block_tables[idx], seq_len).transpose(0, 1).unsqueeze(0)
-        outputs.append(_eager_attention(q_i, k_i, v_i, scale, num_key_value_groups).transpose(1, 2))
+        outputs.append(_sdpa_attention(q_i, k_i, v_i, scale, num_key_value_groups, is_causal=False).transpose(1, 2))
     return torch.cat(outputs, dim=0)
 
 

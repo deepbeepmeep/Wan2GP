@@ -557,7 +557,7 @@ class model_factory:
                 if img is not None:
                     x = img * (1 - img_msk_rebuilt) + x.to(img) * img_msk_rebuilt
 
-            x = x.clamp(-1, 1)
+            x = x.clamp_(-1, 1).add_(1).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8)
             x = x.transpose(0, 1)
             return x
 
@@ -566,7 +566,7 @@ class model_factory:
             resolved = fl.locate_file(lora_ref, error_if_none=False)
             if resolved is None:
                 resolved = fl.locate_file(os.path.basename(lora_ref))
-            return resolved
+            return os.path.abspath(resolved)
 
         preloadURLs = get_model_recursive_prop(model_type,  "preload_URLs")
         if self.is_piflux2:

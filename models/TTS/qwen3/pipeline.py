@@ -145,6 +145,7 @@ class Qwen3TTSPipeline:
         assets = self._resolve_assets(model_weights_path)
         self.model = self._load_main_model(assets)
         self.speech_tokenizer = self._load_speech_tokenizer(assets)
+        self.speech_tokenizer.device = self.device
         self.processor = self._load_text_processor(assets)
 
         self.model.load_speech_tokenizer(self.speech_tokenizer)
@@ -154,6 +155,7 @@ class Qwen3TTSPipeline:
             processor=self.processor,
             generate_defaults=self.model.generate_config or {},
         )
+        self.tts._device = self.device
         self.sample_rate = int(self.speech_tokenizer.get_output_sample_rate())
 
         _set_interrupt_check(self.model, self._abort_requested)

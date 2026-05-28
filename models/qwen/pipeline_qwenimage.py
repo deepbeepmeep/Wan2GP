@@ -21,10 +21,8 @@ import math
 from diffusers.image_processor import VaeImageProcessor
 from .transformer_qwenimage import QwenImageTransformer2DModel
 
-from diffusers.utils import logging, replace_example_docstring
+from diffusers.utils import logging
 from diffusers.utils.torch_utils import randn_tensor
-from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer, AutoTokenizer
-from .autoencoder_kl_qwenimage import AutoencoderKLQwenImage
 from diffusers import FlowMatchEulerDiscreteScheduler
 from PIL import Image
 from shared.utils.utils import calculate_new_dimensions, convert_image_to_tensor, convert_tensor_to_image
@@ -492,10 +490,7 @@ class QwenImagePipeline(): #DiffusionPipeline
             for image in images:
                 image = image.to(device=device, dtype=dtype)
                 if image.shape[1] != self.latent_channels:
-                    if self.use_Wan_VAE:
-                        image_latents = self.vae.encode(image, tile_size = tile_size)[0].unsqueeze(0)
-                    else:
-                        image_latents = self._encode_vae_image(image=image, generator=generator)
+                    image_latents = self._encode_vae_image(image=image, generator=generator)
                 else:
                     image_latents = image
                 if batch_size > image_latents.shape[0] and batch_size % image_latents.shape[0] == 0:
@@ -1023,19 +1018,16 @@ class QwenImagePipeline(): #DiffusionPipeline
                 latents_to_decode = latents_to_decode.reshape(latents.shape[0] * num_layers, seq_len, dim)
             latents_to_decode = self._unpack_latents(latents_to_decode, height, width, self.vae_scale_factor)
             latents_to_decode = latents_to_decode.to(self.vae.dtype)
-            if self.use_Wan_VAE:
-                output_image = torch.cat([image.transpose(0,1) for image in self.vae.decode(latents_to_decode, tile_size= VAE_tile_size)])
-            else:
-                latents_mean = (
-                    torch.tensor(self.vae.config.latents_mean)
-                    .view(1, vae_z_dim, 1, 1, 1)
-                    .to(latents_to_decode.device, latents_to_decode.dtype)
-                )
-                latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(1, vae_z_dim, 1, 1, 1).to(
-                    latents_to_decode.device, latents_to_decode.dtype
-                )
-                latents_to_decode = latents_to_decode / latents_std + latents_mean
-                output_image = self.vae.decode(latents_to_decode, return_dict=False)[0][:, :, 0]
+            latents_mean = (
+                torch.tensor(self.vae.config.latents_mean)
+                .view(1, vae_z_dim, 1, 1, 1)
+                .to(latents_to_decode.device, latents_to_decode.dtype)
+            )
+            latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(1, vae_z_dim, 1, 1, 1).to(
+                latents_to_decode.device, latents_to_decode.dtype
+            )
+            latents_to_decode = latents_to_decode / latents_std + latents_mean
+            output_image = self.vae.decode_to_cpu_uint8(latents_to_decode)[:, :, 0]
             # looks worse
             # if (
             #     num_layers == 1

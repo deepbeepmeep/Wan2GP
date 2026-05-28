@@ -75,3 +75,128 @@ class AudioConditionByLatent(ConditioningItem):
         latent_state.denoise_mask[:, : tokens.shape[1]] = 1.0 - self.strength
 
         return latent_state
+
+
+class AudioConditionByLatentPrefix(ConditioningItem):
+    """
+    Conditions audio generation by freezing only an initial latent prefix.
+    The provided latents remain clean while the remaining target tokens stay noisy.
+    """
+
+    def __init__(self, latent: torch.Tensor):
+        self.latent = latent
+
+    def apply_to(self, latent_state: LatentState, latent_tools: LatentTools) -> LatentState:
+        if not isinstance(latent_tools.target_shape, AudioLatentShape):
+            raise ConditioningError("Audio prefix conditioning requires an audio latent target shape.")
+
+        cond_batch, cond_channels, cond_frames, cond_bins = self.latent.shape
+        tgt_batch, tgt_channels, tgt_frames, tgt_bins = latent_tools.target_shape.to_torch_shape()
+
+        if (cond_batch, cond_channels, cond_bins) != (tgt_batch, tgt_channels, tgt_bins) or cond_frames > tgt_frames:
+            raise ConditioningError(
+                f"Can't apply audio prefix conditioning item to latent with shape {latent_tools.target_shape}, expected "
+                f"shape is ({tgt_batch}, {tgt_channels}, <= {tgt_frames}, {tgt_bins})."
+            )
+
+        tokens = latent_tools.patchifier.patchify(self.latent)
+        latent_state = latent_state.clone()
+        latent_state.latent[:, : tokens.shape[1]] = tokens
+        latent_state.clean_latent[:, : tokens.shape[1]] = tokens
+        latent_state.denoise_mask[:, : tokens.shape[1]] = 0.0
+
+        return latent_state
+
+
+class AudioConditionByReferenceLatent(ConditioningItem):
+    """
+    Prepends clean reference-audio tokens to the audio latent state.
+    The prepended tokens use negative temporal positions and a zero denoise mask so
+    they act as a fixed identity reference during denoising.
+    """
+
+    def __init__(self, latent: torch.Tensor):
+        self.latent = latent
+
+    def apply_to(self, latent_state: LatentState, latent_tools: LatentTools) -> LatentState:
+        if not isinstance(latent_tools.target_shape, AudioLatentShape):
+            raise ConditioningError("Audio reference conditioning requires an audio latent target shape.")
+
+        cond_batch, cond_channels, _, cond_bins = self.latent.shape
+        tgt_batch, tgt_channels, _, tgt_bins = latent_tools.target_shape.to_torch_shape()
+        if (cond_batch, cond_channels, cond_bins) != (tgt_batch, tgt_channels, tgt_bins):
+            raise ConditioningError(
+                f"Can't apply audio reference conditioning item to latent with shape {latent_tools.target_shape}, "
+                f"expected shape is ({tgt_batch}, {tgt_channels}, *, {tgt_bins})."
+            )
+
+        ref_shape = AudioLatentShape.from_torch_shape(self.latent.shape)
+        tokens = latent_tools.patchifier.patchify(self.latent)
+        positions = latent_tools.patchifier.get_patch_grid_bounds(ref_shape, device=tokens.device).to(dtype=torch.float32)
+        time_per_latent = float(latent_tools.patchifier.hop_length)
+        time_per_latent *= float(latent_tools.patchifier.audio_latent_downsample_factor)
+        time_per_latent /= float(latent_tools.patchifier.sample_rate)
+        ref_duration = positions[:, :, -1:, 1]
+        positions = positions - ref_duration - time_per_latent
+        ref_mask = torch.zeros((tokens.shape[0], tokens.shape[1], 1), device=tokens.device, dtype=torch.float32)
+
+        latent_state = latent_state.clone()
+        return LatentState(
+            latent=torch.cat([tokens, latent_state.latent], dim=1),
+            denoise_mask=torch.cat([ref_mask, latent_state.denoise_mask], dim=1),
+            positions=torch.cat([positions.to(latent_state.positions.dtype), latent_state.positions], dim=2),
+            clean_latent=torch.cat([tokens, latent_state.clean_latent], dim=1),
+        )
+
+
+class AudioConditionByAppendedReferenceLatent(ConditioningItem):
+    """
+    Appends reference-audio tokens as read-only IC-LoRA conditioning.
+
+    Target tokens can attend to the reference, while reference tokens only attend
+    to themselves. Positions share the target coordinate space with a small
+    offset, matching DramaBox's reference conditioning recipe.
+    """
+
+    def __init__(self, latent: torch.Tensor, strength: float = 1.0, position_offset: float = 0.5):
+        self.latent = latent
+        self.strength = strength
+        self.position_offset = position_offset
+
+    def apply_to(self, latent_state: LatentState, latent_tools: LatentTools) -> LatentState:
+        if not isinstance(latent_tools.target_shape, AudioLatentShape):
+            raise ConditioningError("Audio reference conditioning requires an audio latent target shape.")
+
+        cond_batch, cond_channels, _, cond_bins = self.latent.shape
+        tgt_batch, tgt_channels, _, tgt_bins = latent_tools.target_shape.to_torch_shape()
+        if (cond_batch, cond_channels, cond_bins) != (tgt_batch, tgt_channels, tgt_bins):
+            raise ConditioningError(
+                f"Can't apply audio reference conditioning item to latent with shape {latent_tools.target_shape}, "
+                f"expected shape is ({tgt_batch}, {tgt_channels}, *, {tgt_bins})."
+            )
+
+        tokens = latent_tools.patchifier.patchify(self.latent)
+        ref_shape = AudioLatentShape.from_torch_shape(self.latent.shape)
+        positions = latent_tools.patchifier.get_patch_grid_bounds(ref_shape, device=tokens.device).to(dtype=latent_state.positions.dtype)
+        positions = positions + float(self.position_offset)
+        denoise_mask = torch.full((tokens.shape[0], tokens.shape[1], 1), 1.0 - float(self.strength), device=tokens.device, dtype=torch.float32)
+
+        batch_size = tokens.shape[0]
+        target_tokens = latent_state.latent.shape[1]
+        ref_tokens = tokens.shape[1]
+        total_tokens = target_tokens + ref_tokens
+        attention_mask = torch.zeros((batch_size, total_tokens, total_tokens), device=tokens.device, dtype=torch.float32)
+        if latent_state.attention_mask is not None:
+            attention_mask[:, :target_tokens, :target_tokens] = latent_state.attention_mask
+        else:
+            attention_mask[:, :target_tokens, :target_tokens] = 1.0
+        attention_mask[:, :target_tokens, target_tokens:] = 1.0
+        attention_mask[:, target_tokens:, target_tokens:] = 1.0
+
+        return LatentState(
+            latent=torch.cat([latent_state.latent, tokens], dim=1),
+            denoise_mask=torch.cat([latent_state.denoise_mask, denoise_mask], dim=1),
+            positions=torch.cat([latent_state.positions, positions], dim=2),
+            clean_latent=torch.cat([latent_state.clean_latent, tokens], dim=1),
+            attention_mask=attention_mask,
+        )

@@ -61,7 +61,8 @@ class family_handler:
             "sliding_window": True,
             "sliding_window_size_locked": True,
             "sliding_window_defaults" : { "overlap_min" : 1, "overlap_max" : 1, "overlap_step": 0, "overlap_default": 1},
-            "compile":  ["transformer", "transformer2"]
+            "compile":  ["transformer", "transformer2"],
+            "vae_block_size": 32,
         }
         cfg.update(model_def)
         return cfg
@@ -149,10 +150,6 @@ class family_handler:
                         "perturbation_layers" : [11]
         })
 
-
-    @staticmethod
-    def get_vae_block_size(base_model_type):
-        return 32
 
     @staticmethod
     def get_rgb_factors(base_model_type):

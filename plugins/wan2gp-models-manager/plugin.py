@@ -11,6 +11,8 @@ from mmgp import quant_router
 VARIANT_LABEL_OTHER_NON_SHARED = "Other Non Shared"
 VARIANT_LABEL_OTHER_SHARED = "Other Shared"
 VARIANT_LABEL_MISSING = "Missing"
+GLOBAL_SHARED_MODEL_TYPE = "__wgp_global_shared__"
+GLOBAL_SHARED_LABEL = "WanGP global shared assets"
 
 
 class modelsManagerPlugin(WAN2GPPlugin):
@@ -51,7 +53,6 @@ class modelsManagerPlugin(WAN2GPPlugin):
         self.request_global("get_model_handler")
         self.request_global("get_model_recursive_prop")
         self.request_global("get_model_filename")
-        self.request_global("get_local_model_filename")
         self.request_global("get_lora_dir")
         self.request_global("compact_name")
         self.request_global("create_models_hierarchy")
@@ -64,6 +65,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
         self.request_global("displayed_model_types")
         self.request_global("transformer_types")
         self.request_global("get_transformer_dtype")
+        self.request_global("query_global_shared_model_files")
 
         self.add_custom_js(self._get_js())
 
@@ -719,6 +721,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
             for path in model_files:
                 self._file_usage_models[path].add(model_type)
 
+        self._mark_global_shared_files()
         self._rebalance_other_shared_variants(model_types)
 
         self._usage_files = {}
@@ -766,7 +769,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
             get_model_def=self.get_model_def,
             get_model_recursive_prop=self.get_model_recursive_prop,
             get_model_filename=self.get_model_filename,
-            get_local_model_filename=self.get_local_model_filename,
+            get_local_model_filename=self._get_local_model_filename,
             get_lora_dir=self.get_lora_dir,
             get_parent_model_type=self.get_parent_model_type,
             get_base_model_type=self.get_base_model_type,
@@ -775,7 +778,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
             get_transformer_dtype=self.get_transformer_dtype,
         )
 
-    def _resolve_expected_entry_path(self, entry):
+    def _resolve_expected_entry_path(self, entry, model_type=None):
         if not isinstance(entry, dict):
             return None
         local_path = entry.get("path", None)
@@ -783,7 +786,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
             return self._normalize_path(local_path)
         filename = entry.get("filename", "")
         extra_paths = entry.get("extra_paths", None)
-        return self._resolve_path(filename, force_folder=extra_paths)
+        return self._resolve_path(filename, force_folder=extra_paths, lora_dir=self._safe_get_lora_dir(model_type))
 
     def _collect_expected_missing_files(self, model_type):
         deps = self._build_dropdown_deps([model_type])
@@ -808,7 +811,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 self._errors.append(f"Missing handler file check failed for {model_type}: {exc}")
 
         for entry in expected_entries:
-            resolved_path = self._resolve_expected_entry_path(entry)
+            resolved_path = self._resolve_expected_entry_path(entry, model_type=model_type)
             if resolved_path and not os.path.isfile(resolved_path):
                 missing_paths.add(resolved_path)
         return missing_paths
@@ -1574,12 +1577,15 @@ class modelsManagerPlugin(WAN2GPPlugin):
         for entry in self._ensure_list(loras):
             if not isinstance(entry, str) or len(entry) == 0:
                 continue
-            basename = os.path.basename(entry)
+            source_entry = entry.split("|", 1)[0]
+            basename = os.path.basename(source_entry)
             if len(basename) == 0:
                 continue
-            lora_path = os.path.join(lora_dir, basename)
             files = set()
-            self._add_file(files, lora_path)
+            if entry.startswith("http") and "|" in entry:
+                self._add_file(files, entry, lora_dir=lora_dir)
+            else:
+                self._add_file(files, os.path.join(lora_dir, basename))
             if not files:
                 continue
             resolved_path = next(iter(files))
@@ -1613,16 +1619,17 @@ class modelsManagerPlugin(WAN2GPPlugin):
     ):
         other_files = set()
         shared_files = set()
+        lora_dir = self._safe_get_lora_dir(model_type)
 
         preload_urls = self.get_model_recursive_prop(
             model_type, "preload_URLs", return_list=True
         )
         for url in self._ensure_list(preload_urls):
-            self._add_file(other_files, url)
+            self._add_file(other_files, url, lora_dir=lora_dir)
 
         vae_urls = model_def.get("VAE_URLs", [])
         for url in self._ensure_list(vae_urls):
-            self._add_file(shared_files, url)
+            self._add_file(shared_files, url, lora_dir=lora_dir)
 
         handler_files = self._collect_handler_files(model_type, model_def)
         shared_files.update(handler_files)
@@ -1712,8 +1719,8 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 if not entry:
                     continue
                 entry_str = str(entry)
-                name = os.path.basename(entry_str)
-                quant_source = self._resolve_path(entry_str) or entry_str
+                name = self._locator_basename(entry_str)
+                quant_source = self._resolve_path(entry_str) or self._locator_path(entry_str) or entry_str
                 token, label = self._detect_quant_info(quant_source)
                 dtype_policy = self._detect_dtype_policy_from_name(name) or default_dtype_policy
                 if token:
@@ -1768,14 +1775,14 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 for item in entry:
                     if not item:
                         continue
-                    base = os.path.basename(str(item)).lower()
+                    base = self._locator_basename(item).lower()
                     if token in base:
                         return item
                     label = quant_router.detect_quantization_label_from_filename(item)
                     if label and self._label_to_token(label) == token:
                         return item
                 continue
-            base = os.path.basename(str(entry)).lower()
+            base = self._locator_basename(entry).lower()
             if token in base:
                 return entry
             label = quant_router.detect_quantization_label_from_filename(entry)
@@ -1935,6 +1942,9 @@ class modelsManagerPlugin(WAN2GPPlugin):
             self._errors.append(f"{model_type}: {exc}")
             return set()
 
+        return self._collect_download_def_file_paths(download_defs)
+
+    def _collect_download_def_file_paths(self, download_defs):
         if not download_defs:
             return set()
         if isinstance(download_defs, dict):
@@ -1942,6 +1952,8 @@ class modelsManagerPlugin(WAN2GPPlugin):
 
         files = set()
         for download_def in download_defs:
+            if not isinstance(download_def, dict):
+                continue
             source_folders = download_def.get("sourceFolderList", [])
             file_lists = download_def.get("fileList", [])
             target_folders = download_def.get("targetFolderList")
@@ -1967,6 +1979,21 @@ class modelsManagerPlugin(WAN2GPPlugin):
                     )
                     files.add(self._resolve_download_relpath(rel_path))
         return {path for path in files if path}
+
+    def _collect_global_shared_file_paths(self):
+        query = getattr(self, "query_global_shared_model_files", None)
+        if query is None:
+            return set()
+        try:
+            return self._collect_download_def_file_paths(query())
+        except Exception as exc:
+            self._errors.append(f"Global shared files: {exc}")
+            return set()
+
+    def _mark_global_shared_files(self):
+        for path in self._collect_global_shared_file_paths():
+            if path in self._file_usage_models:
+                self._file_usage_models[path].add(GLOBAL_SHARED_MODEL_TYPE)
 
     def _collect_handler_files(self, model_type, model_def):
         files = self._collect_handler_file_paths(model_type, model_def)
@@ -2243,6 +2270,8 @@ class modelsManagerPlugin(WAN2GPPlugin):
             self._model_variants[model_type] = new_variants
 
     def _get_model_shared_label(self, model_type):
+        if model_type == GLOBAL_SHARED_MODEL_TYPE:
+            return GLOBAL_SHARED_LABEL
         model_name = self.get_model_name(model_type)
         if model_name:
             return model_name
@@ -2286,6 +2315,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
         .ckpt-badge { padding: 3px 8px; border-radius: 999px; font-weight: 600; font-size: 0.82em; font-variant-numeric: tabular-nums; min-width: 84px; width: 100%; display: inline-flex; align-items: center; justify-content: center; }
         .ckpt-badge-unique { background: rgba(64, 120, 255, 0.18); color: #2f5bd4; border: 1px solid rgba(64, 120, 255, 0.4); }
         .ckpt-badge-shared { background: rgba(240, 200, 40, 0.25); color: #a66a00; border: 1px solid rgba(240, 200, 40, 0.5); }
+        .ckpt-badge-zero { background: rgba(120, 120, 120, 0.12); color: #888; border: 1px solid rgba(120, 120, 120, 0.25); }
         .ckpt-badge-missing { background: rgba(220, 60, 60, 0.18); color: #b71c1c; border: 1px solid rgba(220, 60, 60, 0.45); min-width: auto; width: auto; }
         .ckpt-actions { display: flex; gap: 18px; }
         .ckpt-action-btn { padding: 3px 12px; height: 30px; border: 1px solid var(--border-color-primary); border-radius: 6px; cursor: pointer; font-size: 0.85em; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; background: transparent; color: inherit; }
@@ -2545,8 +2575,16 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 "</div>"
             )
         else:
-            unique_badge = f"<span class='ckpt-badge ckpt-badge-unique'>{unique}</span>"
-            shared_badge = f"<span class='ckpt-badge ckpt-badge-shared'>{shared}</span>"
+            unique_badge_class = "ckpt-badge ckpt-badge-unique"
+            shared_badge_class = "ckpt-badge ckpt-badge-shared"
+
+            if unique == "0.00 GB":
+                unique_badge_class += " ckpt-badge-zero"
+            if shared == "0.00 GB":
+                shared_badge_class += " ckpt-badge-zero"
+
+            unique_badge = f"<span class='{unique_badge_class}'>{unique}</span>"
+            shared_badge = f"<span class='{shared_badge_class}'>{shared}</span>"
             sizes_html = (
                 "<div class='ckpt-sizes'>"
                 f"<div class='ckpt-size-unique' title='Unique size'>{unique_badge}</div>"
@@ -2897,8 +2935,8 @@ class modelsManagerPlugin(WAN2GPPlugin):
             return ["UNC"] + parts
         return parts
 
-    def _add_file(self, files_set, value, force_folder=None):
-        path = self._resolve_path(value, force_folder=force_folder)
+    def _add_file(self, files_set, value, force_folder=None, lora_dir=None):
+        path = self._resolve_path(value, force_folder=force_folder, lora_dir=lora_dir)
         if path and os.path.isfile(path):
             files_set.add(path)
 
@@ -2926,7 +2964,36 @@ class modelsManagerPlugin(WAN2GPPlugin):
             return self._normalize_path(os.path.join(self._repo_root, rel_norm))
         return None
 
-    def _resolve_path(self, value, force_folder=None):
+    def _get_local_model_filename(self, model_filename, use_locator=True, extra_paths=None, lora_dir=None):
+        try:
+            return fl.get_local_model_filename(model_filename, use_locator=use_locator, extra_paths=extra_paths, lora_dir=lora_dir)
+        except Exception:
+            return None
+
+    def _locator_path(self, value, lora_dir=None):
+        if not value:
+            return ""
+        if not isinstance(value, str):
+            value = str(value)
+        try:
+            return fl.extract_alternate_path(value, lora_dir=lora_dir)
+        except Exception:
+            source_value = value.split("|", 1)[0]
+            return os.path.basename(source_value) if source_value.startswith("http") else source_value
+
+    def _locator_basename(self, value, lora_dir=None):
+        path = self._locator_path(value, lora_dir=lora_dir)
+        return os.path.basename(path) if path else ""
+
+    def _download_location(self, value, force_folder=None, lora_dir=None):
+        try:
+            return fl.get_download_location(value, force_path=force_folder, lora_dir=lora_dir)
+        except Exception:
+            source_value = str(value).split("|", 1)[0]
+            filename = os.path.basename(source_value) if source_value.startswith("http") else source_value
+            return fl.get_download_location(filename, force_path=force_folder)
+
+    def _resolve_path(self, value, force_folder=None, lora_dir=None):
         if not value:
             return None
         if not isinstance(value, str):
@@ -2941,18 +3008,11 @@ class modelsManagerPlugin(WAN2GPPlugin):
         if repo_rel:
             return repo_rel
 
-        try:
-            local_path = self.get_local_model_filename(value, extra_paths=force_folder)
-        except Exception:
-            local_path = None
+        local_path = self._get_local_model_filename(value, extra_paths=force_folder, lora_dir=lora_dir)
         if local_path:
             return self._normalize_path(local_path)
 
-        filename = os.path.basename(value) if value.startswith("http") else value
-        if force_folder:
-            expected = fl.get_download_location(filename, force_path=force_folder)
-        else:
-            expected = fl.get_download_location(filename)
+        expected = self._download_location(value, force_folder=force_folder, lora_dir=lora_dir)
         return self._normalize_path(expected)
 
     def _resolve_download_relpath(self, rel_path):

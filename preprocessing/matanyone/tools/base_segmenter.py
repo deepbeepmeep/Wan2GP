@@ -127,9 +127,9 @@ class BaseSegmenter:
         # Apply VRAM optimizations before loading model
         set_image_encoder_patch()
 
-        self.device = device
+        self.device = torch.device(device)
         # SAM_checkpoint = None
-        self.torch_dtype = torch.float16 if 'cuda' in device else torch.float32
+        self.torch_dtype = torch.float16 if self.device.type == "cuda" else torch.float32
         from accelerate import init_empty_weights
 
         # self.model = sam_model_registry[model_type](checkpoint=SAM_checkpoint)
@@ -177,7 +177,7 @@ class BaseSegmenter:
         assert self.embedded, 'prediction is called before set_image (feature embedding).'
         assert mode in ['point', 'mask', 'both'], 'mode must be point, mask, or both'
         
-        with torch.autocast(device_type='cuda', dtype=torch.float16):
+        with torch.autocast(device_type=self.device.type, dtype=torch.float16, enabled=self.device.type == "cuda"):
             if mode == 'point':
                 masks, scores, logits = self.predictor.predict(point_coords=prompts['point_coords'], 
                                     point_labels=prompts['point_labels'], 

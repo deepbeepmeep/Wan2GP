@@ -1,7 +1,8 @@
 import os
-
+import torch
 import gradio as gr
 
+from shared.mps import mps_device_or
 from shared.utils import files_locator as fl
 
 from .prompt_enhancers import TTS_MONOLOGUE_PROMPT
@@ -98,16 +99,14 @@ def _get_chatterbox_model_def():
 def _get_chatterbox_download_def():
     mandatory_files = [
         "ve.safetensors",
-        "t3_mtl23ls_v2.safetensors",
         "s3gen.pt",
         "grapheme_mtl_merged_expanded_v1.json",
         "conds.pt",
         "Cangjie5_TC.json",
     ]
     return {
-        "repoId": "ResembleAI/chatterbox",
-        "sourceFolderList": [""],
-        "targetFolderList": ["chatterbox"],
+        "repoId": "DeepBeepMeep/TTS",
+        "sourceFolderList": ["chatterbox"],
         "fileList": [mandatory_files],
     }
 
@@ -170,7 +169,7 @@ class family_handler:
         from .chatterbox.pipeline import ChatterboxPipeline
 
         ckpt_root = fl.get_download_location()
-        pipeline = ChatterboxPipeline(ckpt_root=ckpt_root, device="cpu")
+        pipeline = ChatterboxPipeline(ckpt_root=ckpt_root, device=mps_device_or(torch.device("cpu")))
         pipe = {
             "ve": pipeline.model.ve,
             "s3gen": pipeline.model.s3gen,
@@ -230,7 +229,7 @@ class family_handler:
                 "custom_settings": dict(CHATTERBOX_DEFAULT_CUSTOM_SETTINGS),
                 "temperature": 0.8,
                 "guidance_scale": 1.0,
-                "multi_prompts_gen_type": 2,
+                "multi_prompts_gen_type": "FG",
             }
         )
 

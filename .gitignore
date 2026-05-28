@@ -33,10 +33,7 @@ samples/
 .DS_Store
 *DS_Store
 google/
-Wan2.1-T2V-14B/
-Wan2.1-T2V-1.3B/
-Wan2.1-I2V-14B-480P/
-Wan2.1-I2V-14B-720P/
+finetunes/
 outputs/
 outputs2/
 gradio_outputs/
@@ -44,10 +41,9 @@ ckpts/
 loras/
 loras_i2v/
 
-settings/
+/settings/
 
 wgp_config.json
 plugins_local.json
 loras_url_cache.json
-/upscaler/
-/inputs/
+loras_url_cache_v2.json

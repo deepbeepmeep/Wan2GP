@@ -1,0 +1,20 @@
+{
+    "model": {
+        "name": "TTS OmniVoice",
+        "architecture": "omnivoice",
+        "description": "OmniVoice zero-shot TTS with auto voice, voice design, one-speaker voice cloning, and two-speaker dialogue using Speaker 1: and Speaker 2: tags.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/omnivoice_bf16.safetensors"
+        ]
+    },
+    "prompt": "I told you this would happen.[laughter] But no, nobody listened. Dont you feel dumb now ? [question-en] What now?",
+    "alt_prompt": "",
+    "audio_prompt_type": "",
+    "model_mode": "auto",
+    "multi_prompts_gen_type": "FG",
+    "duration_seconds": 0,
+    "pause_seconds": 0.2,
+    "num_inference_steps": 32,
+    "guidance_scale": 2.0,
+    "temperature": 0.1
+}

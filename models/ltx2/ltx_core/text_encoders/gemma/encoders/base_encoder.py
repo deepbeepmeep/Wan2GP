@@ -193,7 +193,7 @@ def _apply_connectors(
     attention_mask: torch.Tensor,
     embeddings_connector: Embeddings1DConnector,
     audio_embeddings_connector: Embeddings1DConnector,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     connector_attention_mask = (attention_mask - 1).to(encoded_video_input.dtype).reshape(
         (attention_mask.shape[0], 1, -1, attention_mask.shape[-1])
     ) * torch.finfo(encoded_video_input.dtype).max
@@ -204,11 +204,13 @@ def _apply_connectors(
     attention_mask_out = (encoded_connector_attention_mask < 0.000001).to(torch.int64)
     attention_mask_out = attention_mask_out.reshape([encoded.shape[0], encoded.shape[1], 1])
     encoded = encoded * attention_mask_out
-    encoded_for_audio, _ = audio_embeddings_connector(
+    encoded_for_audio, encoded_audio_connector_attention_mask = audio_embeddings_connector(
         encoded_video_input if encoded_audio_input is None else encoded_audio_input,
         connector_attention_mask,
     )
-    return encoded, encoded_for_audio, attention_mask_out.squeeze(-1)
+    audio_attention_mask_out = (encoded_audio_connector_attention_mask < 0.000001).to(torch.int64)
+    audio_attention_mask_out = audio_attention_mask_out.reshape([encoded_for_audio.shape[0], encoded_for_audio.shape[1], 1])
+    return encoded, encoded_for_audio, attention_mask_out.squeeze(-1), audio_attention_mask_out.squeeze(-1)
 
 def _norm_and_concat_padded_batch(
     encoded_text: torch.Tensor,
@@ -397,7 +399,8 @@ def postprocess_text_embeddings(
     feature_extractor_linear: GemmaFeaturesExtractorProjLinear,
     embeddings_connector: Embeddings1DConnector,
     audio_embeddings_connector: Embeddings1DConnector,
-) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    return_attention_masks: bool = False,
+) -> list[tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
     """
     Apply projection and connector post-processing to raw embeddings.
     """
@@ -413,14 +416,17 @@ def postprocess_text_embeddings(
         projected.append((encoded_video_input, encoded_audio_input, attention_mask))
     results = []
     for encoded_video_input, encoded_audio_input, attention_mask in projected:
-        video_ctx, audio_ctx, _ = _apply_connectors(
+        video_ctx, audio_ctx, video_attention_mask_out, audio_attention_mask_out = _apply_connectors(
             encoded_video_input,
             encoded_audio_input,
             attention_mask,
             embeddings_connector,
             audio_embeddings_connector,
         )
-        results.append((video_ctx, audio_ctx))
+        if return_attention_masks:
+            results.append((video_ctx, audio_ctx, video_attention_mask_out, audio_attention_mask_out))
+        else:
+            results.append((video_ctx, audio_ctx))
     return results
 
 

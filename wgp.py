@@ -4,6 +4,8 @@ os.environ["GRADIO_LANG"] = "en"
 p = os.path.dirname(os.path.abspath(__file__))
 if p not in sys.path:
     sys.path.insert(0, p)
+from shared.native_runtime import preload_preferred_libstdcxx
+preload_preferred_libstdcxx()
 from shared.default_device import set_default_cuda_device_from_arg; set_default_cuda_device_from_arg("gpu")
 # # os.environ.pop("TORCH_LOGS", None)  # make sure no env var is suppressing/overriding
 # os.environ["TORCH_LOGS"]= "recompiles"
@@ -41,7 +43,7 @@ except ImportError:
 from pathlib import Path
 from datetime import datetime
 import gradio as gr
-from shared.gradio import gradio_queue_focus_patch
+from shared.gradio import gradio_queue_focus_patch, video_preview
 from gradio.themes.utils.sizes import Size
 import random
 import json
@@ -108,6 +110,7 @@ logging.set_verbosity_error
 from tqdm import tqdm
 import requests
 from shared.gradio.gallery import AdvancedMediaGallery, get_gradio_file_path
+from shared.gradio.hierarchy_selector import HierarchySelector, build_choices_hierarchy
 from shared.ffmpeg_setup import download_ffmpeg
 from shared.api import get_api_output_options, store_api_output_artifact
 from shared.utils.plugins import PluginManager, WAN2GPApplication, SYSTEM_PLUGINS
@@ -133,7 +136,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.777"
+WanGP_version = "11.86"
 settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -2226,8 +2229,8 @@ def get_lora_dir(model_type):
         raise Exception(f"loras path '{lora_dir}' exists and is not a directory")
     if not os.path.isdir(lora_dir):
         os.makedirs(lora_dir, exist_ok=True)
-    return os.path.abspath(lora_dir)        
-    # return lora_dir
+    # return os.path.abspath(lora_dir)        
+    return lora_dir
 
 attention_modes_installed = get_attention_modes()
 attention_modes_supported = get_supported_attention_modes()
@@ -3413,15 +3416,40 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
 
 offload.default_verboseLevel = verbose_level
 
+loras_url_cache = None
+loras_cache_file = "loras_url_cache_v2.json"
+def _ensure_loras_url_cache():
+    global loras_url_cache
+    if loras_url_cache is None:
+        if os.path.isfile(loras_cache_file):
+            try:
+                with open(loras_cache_file, 'r', encoding='utf-8') as f:
+                    loras_url_cache = json.load(f)
+            except:
+                loras_url_cache = {}
+        else:
+            loras_url_cache = {}
+
 
 def get_lora_local_path(lora_dir, lora):
     if os.path.isabs(lora): return lora
     if (lora.startswith("http:") or lora.startswith("https:")):
         parts = lora.split("|")
-        lora_path = os.path.join(fl.clean_relative_path(parts[1]), os.path.basename(lora)) if len(parts) > 1 else os.path.basename(lora)
+        lora_path = os.path.join(fl.clean_relative_path(parts[1]), os.path.basename(parts[0])) if len(parts) > 1 else os.path.basename(lora)
     else:
         lora_path = lora
-    return os.path.join(lora_dir, lora_path)
+    return lora_path if lora_dir is None else os.path.join(lora_dir, lora_path) 
+
+def get_lora_URL(lora_dir, lora):
+    if os.path.isabs(lora): return lora
+    _ensure_loras_url_cache()
+    rel_path = get_lora_local_path(None, lora)
+    if lora_dir is None: return rel_path
+    url = loras_url_cache.get(lora_dir + "|" +  rel_path, None)         
+    if url is None:
+        return rel_path
+    base = os.path.dirname(rel_path)
+    return url if len(base)==0 else url + "|" + base
 
 def check_loras_exist(model_type, loras_choices_files, download = False, send_cmd = None):
     _ensure_loras_url_cache()
@@ -3431,14 +3459,16 @@ def check_loras_exist(model_type, loras_choices_files, download = False, send_cm
     for lora_file in loras_choices_files:
         local_path = get_lora_local_path(lora_dir, lora_file)
         if not os.path.isfile(local_path):
-            url = loras_url_cache.get(local_path, None)         
+            rel_path = get_lora_local_path(None, lora_file)
+            url = loras_url_cache.get(lora_dir + "|" +  rel_path, None)         
             if url is not None:
                 if download:
                     if send_cmd is not None:
                         send_cmd("status", f'Downloading Lora {os.path.basename(lora_file)}...')
                     try:
                         download_file(url, local_path)
-                    except:
+                    except Exception as e:
+                        print(f"Error downloading {url}:{e}")
                         missing_remote_loras.append(lora_file)
             else:
                 missing_local_loras.append(lora_file)
@@ -3496,8 +3526,8 @@ def setup_loras(model_type, transformer,  lora_dir, lora_preselected_preset, spl
 
 
     if lora_dir != None:
-        dir_loras =  glob.glob( os.path.join(lora_dir , "*.sft") ) + glob.glob( os.path.join(lora_dir , "*.safetensors") )
-        dir_loras.sort()
+        dir_loras = glob.glob(os.path.join(lora_dir, "**", "*.sft"), recursive=True) + glob.glob(os.path.join(lora_dir, "**", "*.safetensors"), recursive=True)
+        dir_loras.sort(key=lambda path: os.path.relpath(path, lora_dir).casefold())
         loras += [element for element in dir_loras if element not in loras ]
 
         dir_presets_settings = glob.glob( os.path.join(lora_dir , "*.json") ) + glob.glob( os.path.join(lora_dir , "*.zip") )
@@ -3511,7 +3541,7 @@ def setup_loras(model_type, transformer,  lora_dir, lora_preselected_preset, spl
         loras = offload.load_loras_into_model(transformer, loras,  activate_all_loras=False, check_only= True, preprocess_sd=get_loras_preprocessor(transformer, base_model_type), split_linear_modules_map = split_linear_modules_map) #lora_multiplier,
 
     if len(loras) > 0:
-        loras = [ os.path.basename(lora) for lora in loras  ]
+        loras = [get_lora_local_path(None, os.path.relpath(lora, lora_dir).replace("\\", "/")) if lora_dir is not None else get_lora_local_path(None, lora) for lora in loras]
 
     if len(lora_preselected_preset) > 0:
         if not os.path.isfile(os.path.join(lora_dir, lora_preselected_preset + ".lset")):
@@ -3948,13 +3978,13 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
                 if pass_no <=0:
                     phase = "Denoising"
                 elif pass_no == 1:
-                    phase = "Denoising First Pass"
+                    phase = "Denoising First Phase"
                 elif pass_no == 2:
-                    phase = "Denoising Second Pass"
+                    phase = "Denoising Second Phase"
                 elif pass_no == 3:
-                    phase = "Denoising Third Pass"
+                    phase = "Denoising Third Phase"
                 else:
-                    phase = f"Denoising {pass_no}th Pass"
+                    phase = f"Denoising {pass_no}th Phase"
 
                 if len(denoising_extra) > 0: phase += " | " + denoising_extra
 
@@ -4217,7 +4247,7 @@ def finalize_generation(state):
     return gallery_tabs, 1 if last_was_audio else 0, gr.update() if last_was_audio else gr.Gallery(value=gen.get("file_list", []), selected_index=choice),  *pack_audio_gallery_state(audio_file_list, audio_choice), gr.Button(interactive=  True), gr.Button(interactive=  True, visible= False), gr.Button(visible= True), gr.Button(visible= False), gr.Column(visible= False), gr.HTML(visible= False, value="")
 
 def get_default_video_info():
-    return "Please Select an Video / Image"    
+    return "Please Select a Video / Image"    
 
 
 def get_file_list(state, input_file_list, audio_files = False):
@@ -4365,8 +4395,9 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
         if data!=None and isinstance(data, dict):
             choice = data.get("index",0)        
         else:
-            choice = gen.get("selected", max(file_selected, 0) )
+            choice = gen.get("selected", file_selected)
         choice = min(len(file_list)-1, choice) 
+        if choice < 0 and len(file_list) > 0: choice = 0
         set_file_choice(gen, file_list, choice)
         files, settings_list = file_list, file_settings_list
     else:
@@ -4378,6 +4409,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
         else:
             choice = gen.get("audio_selected",-1)
         choice = min(len(audio_file_list)-1, choice)
+        if choice < 0 and len(audio_file_list) > 0: choice = 0
         set_file_choice(gen,  audio_file_list, choice, audio_files=True )
         files, settings_list = audio_file_list, audio_file_settings_list
 
@@ -4632,10 +4664,10 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             video_loras_multipliers = configs.get("loras_multipliers", "")
             video_loras_multipliers =  preparse_loras_multipliers(video_loras_multipliers)
             video_loras_multipliers += [""] * len(video_activated_loras)
-
-            video_activated_loras = [ f"<span class='copy-swap' tabindex=0><SPAN class='copy-swap__trunc' >{os.path.basename(lora)}</span><span class='copy-swap__full'>{lora}</span></span>" for lora in video_activated_loras] 
-            video_activated_loras = [ f"<TR><TD style='padding-top:0px;padding-left:0px'>{lora}</TD><TD>x{multiplier if len(multiplier)>0 else '1'}</TD></TR>" for lora, multiplier in zip(video_activated_loras, video_loras_multipliers) ]
-            video_activated_loras_str = "<TABLE style='border:0px;padding:0px'>" + "".join(video_activated_loras) + "</TABLE>" if len(video_activated_loras) > 0 else ""
+            lora_dir = None if video_model_type is None else get_lora_dir(video_model_type)
+            video_activated_loras = [ f"<span class='copy-swap' tabindex=0><SPAN class='copy-swap__trunc' >{get_lora_local_path(None, lora)}</span><span class='copy-swap__full'>{get_lora_URL(lora_dir, lora) .split('|')[0]}</span></span>" for lora in video_activated_loras] 
+            video_activated_loras = [ f"<TR><TD style='padding-top:0px;padding-left:0px;width:100%;max-width:0'>{lora}</TD><TD style='width:1%;white-space:nowrap;vertical-align:top'>x{multiplier if len(multiplier)>0 else '1'}</TD></TR>" for lora, multiplier in zip(video_activated_loras, video_loras_multipliers) ]
+            video_activated_loras_str = "<TABLE style='border:0px;padding:0px;width:100%;table-layout:fixed'>" + "".join(video_activated_loras) + "</TABLE>" if len(video_activated_loras) > 0 else ""
             video_duration_seconds = configs.get("duration_seconds", 0)
             if model_def.get("duration_slider", None) is not None and video_duration_seconds > 0:
                 misc_values += [ f"{video_duration_seconds}s"]
@@ -4819,7 +4851,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
 
             if len(video_activated_loras_str) > 0:
                 values += [video_activated_loras_str]
-                labels += ["Loras"] 
+                labels += ["LoRAs"] 
             if nb_audio_tracks  > 0:
                 values +=[nb_audio_tracks]
                 labels +=["Nb Audio Tracks"]
@@ -5557,7 +5589,7 @@ def edit_video(
     audio_metadata = None
     temp_audio_tracks = []
     if not source_is_image and postprocess_audio != "mmaudio" and not api_suppress_source_audio:
-        audio_tracks, audio_metadata  = extract_audio_tracks(video_source, temp_format="wav" if postprocess_audio in ("seedvc", "seedvc2") else None)
+        audio_tracks, audio_metadata = extract_audio_tracks(video_source, temp_format="wav" if postprocess_audio in ("seedvc", "seedvc2") else None, codec_key=server_config.get("audio_output_codec", "aac_128"))
         temp_audio_tracks = audio_tracks.copy()
         has_already_audio = len(temp_audio_tracks) > 0 
     
@@ -5638,6 +5670,8 @@ def edit_video(
     any_mmaudio = postprocess_audio == "mmaudio" and mmaudio_enabled and frames_count >=output_fps
     seedvc_speaker_count = get_seedvc_speaker_count(postprocess_audio=postprocess_audio)
     any_seedvc = seedvc_speaker_count > 0 and seedvc_bridge.enabled() and seedvc_voice_sample is not None
+    video_container = server_config.get("video_container", "mp4")
+    video_extension = f".{video_container}"
 
     tmp_path = None
     any_change = False
@@ -5656,7 +5690,7 @@ def edit_video(
             send_cmd("output")
             clear_status(state)
             return
-        video_path =get_available_filename(save_path, video_source, "_tmp") if any_mmaudio or has_already_audio else get_available_filename(save_path, video_source, "_post")  
+        video_path = get_available_filename(save_path, video_source, "_tmp", force_extension=video_extension) if any_mmaudio or has_already_audio else get_available_filename(save_path, video_source, "_post", force_extension=video_extension)
         video_path = save_video( tensor=sample[None], save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type= server_config.get("video_output_codec", None), container=server_config.get("video_container", "mp4"))
 
         if any_mmaudio or has_already_audio: tmp_path = video_path
@@ -5706,15 +5740,15 @@ def edit_video(
         if any_mmaudio:
             send_cmd("progress", [0, get_latest_status(state,"MMAudio Soundtrack Generation")])
             from postprocessing.mmaudio.mmaudio import video_to_audio
-            new_video_path = get_available_filename(save_path, video_source, suffix)
-            video_to_audio(video_path, prompt = MMAudio_prompt, negative_prompt = MMAudio_neg_prompt, seed = seed, num_steps = 25, cfg_strength = 4.5, duration= frames_count /output_fps, save_path = new_video_path , persistent_models = mmaudio_persistence == MMAUDIO_PERSIST_RAM, verboseLevel = verbose_level, model_name = mmaudio_model_name, model_path = mmaudio_model_path)
+            new_video_path = get_available_filename(save_path, video_source, suffix, force_extension=video_extension)
+            video_to_audio(video_path, prompt = MMAudio_prompt, negative_prompt = MMAudio_neg_prompt, seed = seed, num_steps = 25, cfg_strength = 4.5, duration= frames_count /output_fps, save_path = new_video_path , persistent_models = mmaudio_persistence == MMAUDIO_PERSIST_RAM, verboseLevel = verbose_level, model_name = mmaudio_model_name, model_path = mmaudio_model_path, audio_codec_key=server_config.get("audio_output_codec", "aac_128"))
             configs["postprocess_audio"] = postprocess_audio
             configs["MMAudio_prompt"] = MMAudio_prompt
             configs["MMAudio_neg_prompt"] = MMAudio_neg_prompt
             configs["MMAudio_seed"] = seed
             any_change = True
         elif len(audio_tracks) > 0:
-            new_video_path = get_available_filename(save_path, video_source, suffix)
+            new_video_path = get_available_filename(save_path, video_source, suffix, force_extension=video_extension)
             if any_seedvc:
                 send_cmd("progress", [0, get_latest_status(state,"SeedVC Voice Replacement")])
                 if seedvc_speaker_count == 2:
@@ -5734,7 +5768,7 @@ def edit_video(
                 )
                 cleanup_temp_audio_files(seedvc_temp_tracks)
             else:
-                combine_video_with_audio_tracks(video_path, audio_tracks, new_video_path, audio_metadata=audio_metadata)
+                combine_video_with_audio_tracks(video_path, audio_tracks, new_video_path, audio_metadata=audio_metadata, audio_codec_key=server_config.get("audio_output_codec", "aac_128"))
         else:
             new_video_path = video_path
         if tmp_path != None:
@@ -5756,7 +5790,7 @@ def edit_video(
                 if not bool(api_options.get("suppress_metadata_images")):
                     temp_images_path = get_available_filename(save_path, video_source, force_extension= ".temp")
                     embedded_images = extract_source_images(video_source, temp_images_path)
-                save_video_metadata(new_video_path, configs, embedded_images, verbose_level=verbose_level)
+                save_video_metadata(new_video_path, configs, embedded_images, allow_inplace_update=True, verbose_level=verbose_level)
                 if temp_images_path is not None and os.path.isdir(temp_images_path):
                     shutil.rmtree(temp_images_path, ignore_errors= True)
             gen["last_was_audio"] = False
@@ -6507,7 +6541,7 @@ def generate_video(
     if transformer_loras_filenames != None:
         loras_list_mult_choices_nums, loras_slists, errors =  parse_loras_multipliers(transformer_loras_multipliers, len(transformer_loras_filenames), num_inference_steps, nb_phases = guidance_phases, model_switch_phase= model_switch_phase )
         if len(errors) > 0: raise Exception(f"Error parsing Transformer Loras: {errors}")
-        loras_selected = transformer_loras_filenames 
+        loras_selected = transformer_loras_filenames[:] 
 
     if hasattr(wan_model, "get_loras_transformer"):
         extra_loras_transformers, extra_loras_multipliers = wan_model.get_loras_transformer(get_model_recursive_prop, **locals())
@@ -6588,8 +6622,8 @@ def generate_video(
         if len(file_list)>0:
             video_source = file_list[-1]
         else:
-            mp4_files = glob.glob(os.path.join(save_path, "*.mp4"))
-            video_source = max(mp4_files, key=os.path.getmtime) if mp4_files else None                            
+            video_files = glob.glob(os.path.join(save_path, "*.mp4")) + glob.glob(os.path.join(save_path, "*.mov")) + glob.glob(os.path.join(save_path, "*.mkv"))
+            video_source = max(video_files, key=os.path.getmtime) if video_files else None
     fps = 1 if is_image else get_computed_fps(force_fps, base_model_type , video_guide, video_source )
     control_audio_tracks = source_audio_tracks = source_audio_metadata = []
     if postprocess_audio == "control" and video_guide is not None:
@@ -6910,8 +6944,8 @@ def generate_video(
                 input_waveform, input_waveform_sample_rate = full_audio_guide_waveform, full_audio_guide_sample_rate
             elif audio_guide is not None and model_def.get("audio_guide_window_slicing", False):
                 audio_start_frame = aligned_window_start_frame
-                if reset_control_aligment:
-                    audio_start_frame += source_video_overlap_frames_count
+                # if reset_control_aligment:
+                #     audio_start_frame += source_video_overlap_frames_count
                 input_waveform, input_waveform_sample_rate = slice_audio_window(audio_guide, audio_start_frame, current_video_length, fps, save_path, suffix=f"_win{window_no}", pad_tail=not video_length_not_limited_by_audio) 
                 if input_waveform.shape[0] == 0: input_waveform, input_waveform_sample_rate = pre_audio_guide, pre_audio_guide_sample_rate
             elif model_def.get("audio_guide_window_slicing", False):
@@ -8514,7 +8548,8 @@ def delete_lset(state, lset_name):
     return  gr.Dropdown(choices=lset_choices, value= selected_lset_name), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Checkbox(visible= False)
 
 def get_updated_loras_dropdown(loras, loras_choices):
-    loras_choices = [os.path.basename(choice) for choice in loras_choices]    
+    if loras_choices is None:
+        loras_choices = []
     loras_choices_dict = { choice : True for choice in loras_choices}
     for lora in loras:
         loras_choices_dict.pop(lora, False)
@@ -8522,16 +8557,17 @@ def get_updated_loras_dropdown(loras, loras_choices):
     for choice, _ in loras_choices_dict.items():
         new_loras.append(choice)    
 
-    new_loras_dropdown= [ ( os.path.splitext(choice)[0], choice) for choice in new_loras ]
-    return new_loras, new_loras_dropdown
+    return new_loras, build_choices_hierarchy(new_loras)
 
 def refresh_lora_list(state, lset_name, loras_choices):
     model_type= get_state_model_type(state)
-    loras, loras_presets, _, _, _, _  = setup_loras(model_type, None,  get_lora_dir(model_type), lora_preselected_preset, None)
+    lora_dir = get_lora_dir(model_type)
+    loras, loras_presets, _, _, _, _  = setup_loras(model_type, None, lora_dir, lora_preselected_preset, None)
     state["loras_presets"] = loras_presets
     gc.collect()
 
-    loras, new_loras_dropdown = get_updated_loras_dropdown(loras, loras_choices)
+    loras_choices = [] if loras_choices is None else loras_choices
+    loras, new_loras_hierarchy = get_updated_loras_dropdown(loras, loras_choices)
     state["loras"] = loras
     model_type = get_state_model_type(state)    
     lset_choices = compute_lset_choices(model_type, loras_presets)
@@ -8551,7 +8587,7 @@ def refresh_lora_list(state, lset_name, loras_choices):
             gr.Info("Lora List has been refreshed")
 
 
-    return gr.Dropdown(choices=lset_choices, value= lset_name), gr.Dropdown(choices=new_loras_dropdown, value= loras_choices) 
+    return gr.Dropdown(choices=lset_choices, value= lset_name), gr.update(hierarchy=new_loras_hierarchy, value=loras_choices) 
 
 def update_lset_type(state, lset_name):
     if lset_name.endswith(".lset"):
@@ -8584,9 +8620,9 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
                 prompts = [prompt for prompt in prompts if len(prompt)>0 and not prompt.startswith("#")]
                 prompt = "\n".join(prompts) 
                 prompt = preset_prompt + '\n' + prompt
+            lora_dir = get_lora_dir(current_model_type)
             loras_choices, loras_mult_choices = merge_loras_settings(old_activated_loras, old_loras_multipliers, loras_choices, loras_mult_choices, "merge after")
-            loras_choices = update_loras_url_cache(get_lora_dir(current_model_type), loras_choices)
-            loras_choices = [os.path.basename(lora) for lora in loras_choices]
+            loras_choices = update_loras_url_cache(lora_dir, loras_choices)
             gr.Info(f"Lora Preset '{lset_name}' has been applied")
             state["apply_success"] = 1
             wizard_prompt_activated = "on"
@@ -8601,7 +8637,7 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
             configs, _, _ = get_settings_from_file(state,lset_path , True, True, True, min_settings_version=2.38, merge_loras = merge_loras )
 
             if configs == None:
-                gr.Info("File not supported")
+                gr.Info("File not supported" + (f": {state.get('_last_settings_file_error')}" if state.get("_last_settings_file_error") else ""))
                 return [gr.update()] * 9
             settings_bundle_task_count = configs.pop("_settings_bundle_task_count", 0)
             model_type = configs["model_type"]
@@ -8780,7 +8816,8 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         loras_choices = inputs["activated_loras"]
     if model_type == None: model_type = get_state_model_type(state)
     
-    inputs["activated_loras"] = update_loras_url_cache(get_lora_dir(model_type), loras_choices)
+    lora_dir = get_lora_dir(model_type)    
+    inputs["activated_loras"] = [get_lora_URL(lora_dir, lora) for lora in loras_choices]
     model_def = get_model_def(model_type)
     custom_settings = get_model_custom_settings(model_def)
     parsed_custom_settings, _ = collect_custom_settings_from_inputs(model_def, inputs, strict=False)
@@ -9092,7 +9129,7 @@ def remux_audio(state, input_file_list, choice, PP_postprocess_audio, PP_MMAudio
     if len(file_list) == 0 or choice == None or choice < 0 or choice > len(file_list)  :
         return gr.update(), gr.update(), gr.update()
     
-    if not (file_list[choice].endswith(".mp4") or file_list[choice].endswith(".mkv")):
+    if not file_list[choice].lower().endswith((".mp4", ".mkv", ".mov")):
         gr.Info("Post processing is only available with Videos")
         return gr.update(), gr.update(), gr.update()
     overrides = {
@@ -9298,11 +9335,16 @@ def collect_current_model_settings_with_media(state):
     settings["model_type"] = model_type
     return settings
 
-def export_settings(state):
+def export_settings(state, include_media=False):
     model_type = get_state_model_type(state)
+    filename = sanitize_file_name(model_type + "_" + datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d-%Hh%Mm%Ss") + (".zip" if include_media else ".json"))
+    if include_media:
+        with io.BytesIO() as zip_buffer:
+            ok = _save_queue_to_zip([{"id": 1, "params": collect_current_model_settings_with_media(state)}], zip_buffer)
+            if not ok: gr.Warning("Failed to export settings with media.")
+            return (base64.b64encode(zip_buffer.getvalue()).decode('utf-8'), filename) if ok else ("", "")
     text = json.dumps(collect_current_model_settings(state), indent=4)
-    text_base64 = base64.b64encode(text.encode('utf8')).decode('utf-8')
-    return text_base64, sanitize_file_name(model_type + "_" + datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d-%Hh%Mm%Ss") + ".json")
+    return base64.b64encode(text.encode('utf8')).decode('utf-8'), filename
 
 
 def extract_and_apply_source_images(file_path, current_settings):
@@ -9368,30 +9410,23 @@ def use_video_settings(state, input_file_list, choice, source):
         gr.Info(f"Please Select a File")
 
     return gr.update(), gr.update(), gr.update(), gr.update()
-loras_url_cache = None
-def update_loras_url_cache(lora_dir, loras_selected):
+def update_loras_url_cache(lora_dir, loras_selected, return_URLs = False):
     if loras_selected is None:
         return None
-    global loras_url_cache
-    loras_cache_file = "loras_url_cache.json"
-    if loras_url_cache is None:
-        if os.path.isfile(loras_cache_file):
-            try:
-                with open(loras_cache_file, 'r', encoding='utf-8') as f:
-                    loras_url_cache = json.load(f)
-            except:
-                loras_url_cache = {}
-        else:
-            loras_url_cache = {}
+    _ensure_loras_url_cache()
     new_loras_selected = []
     update = False
     for lora in loras_selected:
-        local_name = get_lora_local_path(lora_dir, lora) 
-        url = loras_url_cache.get(local_name, local_name)
-        if (lora.startswith("http:") or lora.startswith("https:")) and url != lora:
-            loras_url_cache[local_name]=lora
-            update = True
-        new_loras_selected.append(url)
+        if os.path.isabs(lora):
+            new_loras_selected.append(lora)
+        else:
+            rel_path= get_lora_local_path(None, lora)
+            if (lora.startswith("http:") or lora.startswith("https:")):
+                url = loras_url_cache.get( lora_dir + "|" + rel_path, None)
+                if url is None:
+                    loras_url_cache[lora_dir + "|" + rel_path]= lora.split("|")[0]
+                    update = True
+            new_loras_selected.append(rel_path)
 
     if update:
         with open(loras_cache_file, "w", encoding="utf-8") as writer:
@@ -9399,13 +9434,12 @@ def update_loras_url_cache(lora_dir, loras_selected):
 
     return new_loras_selected
 
-def _ensure_loras_url_cache():
-    update_loras_url_cache("", [])
 
 def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, switch_type_if_compatible, min_settings_version = 0, merge_loras = None):    
     configs = None
     any_image_or_video = False
     any_audio = False
+    state["_last_settings_file_error"] = None
     file_path = getattr(file_path, "name", file_path)
     file_path = str(file_path or "")
     file_path_lower = file_path.lower()
@@ -9417,11 +9451,12 @@ def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, sw
             pass
     elif file_path_lower.endswith(".zip") and allow_json:
         loaded_queue, error, source_task_count = _parse_settings_zip(file_path, state)
+        state["_last_settings_file_error"] = error
         if error is None and loaded_queue:
             configs = (loaded_queue[0].get("params", {}) or {}).copy()
             if source_task_count > 1:
                 configs["_settings_bundle_task_count"] = source_task_count
-    elif file_path_lower.endswith(".mp4") or file_path_lower.endswith(".mkv"):
+    elif file_path_lower.endswith((".mp4", ".mkv", ".mov")):
         from shared.utils.video_metadata import read_metadata_from_video
         try:
             configs = read_metadata_from_video(file_path)
@@ -9547,7 +9582,7 @@ def load_settings_from_file(state, file_path):
 
     configs, any_video_or_image_file, any_audio = get_settings_from_file(state, file_path, True, True, True)
     if configs == None:
-        gr.Info("File not supported")
+        gr.Info("File not supported" + (f": {state.get('_last_settings_file_error')}" if state.get("_last_settings_file_error") else ""))
         return gr.update(), gr.update(), gr.update(), gr.update(), None
     if is_deepy_display_metadata(configs):
         gr.Info("Deepy helper metadata is display-only and cannot be loaded as WanGP settings")
@@ -9562,7 +9597,7 @@ def load_settings_from_file(state, file_path):
     # Extract and apply embedded source images from video files
     extracted_images = 0
     file_path_text = str(getattr(file_path, "name", file_path) or "")
-    if file_path_text.lower().endswith(('.mkv', '.mp4')):
+    if file_path_text.lower().endswith((".mkv", ".mov", ".mp4")):
         extracted_images = extract_and_apply_source_images(file_path_text, configs)
     if settings_bundle_task_count > 1:
         gr.Info(f"Settings bundle contains {settings_bundle_task_count} tasks; only the first task has been extracted.")
@@ -10747,7 +10782,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
         launch_prompt = ui_defaults.get("prompt","")
     if len(launch_loras) == 0:
         launch_multis_str = ui_defaults.get("loras_multipliers","")
-        launch_loras = [os.path.basename(path) for path in ui_defaults.get("activated_loras",[])]
+        launch_loras = ui_defaults.get("activated_loras",[])
+    launch_loras = update_loras_url_cache(get_lora_dir(model_type), launch_loras)
     with gr.Row():
         column_kwargs = {'elem_id': 'edit-tab-content'} if tab_id == 'edit' else {}
         with gr.Column(**column_kwargs):
@@ -11573,19 +11609,19 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 label= "How to Process each Line of the Text Prompt"
                             )
 
-                with gr.Tab("Loras", visible= not audio_only or model_def.get("enabled_audio_lora", False)) as loras_tab:
+                with gr.Tab("LoRAs", visible= not audio_only or model_def.get("enabled_audio_lora", False)) as loras_tab:
                     with gr.Column(visible = True): #as loras_column:
-                        gr.Markdown("<B>Loras can be used to create special effects on the video by mentioning a trigger word in the Prompt. You can save Loras combinations in presets.</B>")
-                        loras, loras_choices = get_updated_loras_dropdown(loras, launch_loras)
+                        gr.Markdown("<B>LoRAs can be used to create special effects on the video by mentioning a trigger word in the Prompt. You can save Loras combinations in presets.</B>")
+                        loras, loras_hierarchy = get_updated_loras_dropdown(loras, launch_loras)
                         state_dict["loras"] = loras
-                        loras_choices = gr.Dropdown(
-                            choices=loras_choices,
+                        loras_choices = HierarchySelector(
+                            hierarchy=loras_hierarchy,
                             value= launch_loras,
-                            multiselect= True,
-                            label="Activated Loras",
-                            allow_custom_value= True,
+                            height=0,
+                            label="Activated LoRAs",
+                            search_empty_label="No matching LoRAs",
                         )
-                        loras_multipliers = gr.Textbox(label="Loras Multipliers (1.0 by default) separated by Space chars or CR, lines that start with # are ignored", value=launch_multis_str)
+                        loras_multipliers = gr.Textbox(label="LoRAs Multipliers (1.0 by default) separated by Space chars or CR, lines that start with # are ignored", value=launch_multis_str)
                 with gr.Tab("Steps Skipping", visible = any_tea_cache or any_mag_cache) as speed_tab:
                     with gr.Column():
                         gr.Markdown("<B>Tea Cache and Mag Cache accelerate the Video Generation by skipping intelligently some steps, the more steps are skipped the lower the quality of the video.</B>")
@@ -11901,6 +11937,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 ("24", "24"), 
                                 ("25", "25"), 
                                 ("30", "30"), 
+                                ("48", "48"), 
                                 ("50", "50"), 
                             ]
                     
@@ -11939,9 +11976,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 with gr.Row():
                     save_settings_btn = gr.Button("Set Settings as Default", visible = not args.lock_config)
                     export_settings_from_file_btn = gr.Button("Export Settings to File")
+                    export_settings_include_media = gr.Checkbox(label="Include Media", value=False)
                     reset_settings_btn = gr.Button("Reset Settings")
                 with gr.Row():
-                    settings_file = gr.File(height=41,label="Load Settings From Video / Image / Audio / JSON / ZIP")
+                    settings_file = gr.File(height=41,label="Load Settings From Media File / Json / Zip")
                     settings_base64_output = gr.Text(interactive= False, visible=False, value = "")
                     settings_filename =  gr.Text(interactive= False, visible=False, value = "")
                 with gr.Group():
@@ -12372,7 +12410,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 inputs =[target_state] + gen_inputs,
                 outputs= None
             ).then(fn=export_settings, 
-                inputs =[state], 
+                inputs =[state, export_settings_include_media],
                 outputs= [settings_base64_output, settings_filename]
             ).then(
                 fn=None,
@@ -12637,6 +12675,9 @@ def _get_dropdown_deps():
 
 def create_models_hierarchy(rows):
     return model_dropdowns.create_models_hierarchy(rows)
+
+def create_models_selector_hierarchy(dropdown_types=None):
+    return model_dropdowns.create_models_selector_hierarchy(_get_dropdown_deps(), dropdown_types)
 
 def get_sorted_dropdown(dropdown_types, current_model_family, current_model_type, three_levels = True):
     return model_dropdowns.get_sorted_dropdown(_get_dropdown_deps(), dropdown_types, current_model_family, current_model_type, three_levels)

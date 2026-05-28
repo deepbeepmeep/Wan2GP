@@ -21,6 +21,7 @@ import re
 from .hdr import hdr10_x265_params, hdr10_zscale_filter, iter_hdr_gbrpf32_frames, iter_video_chunks
 
 from .video_decode import probe_video_stream_metadata, resolve_media_binary
+from .video_codecs import SUPPORTED_VIDEO_CONTAINERS, get_imageio_codec_params, get_video_encode_args, validate_video_output_settings
 from .virtual_media import get_virtual_media_entry, parse_virtual_media_path, strip_virtual_media_suffix
 
 def _ffmpeg_binary():
@@ -187,22 +188,30 @@ def get_mp4_audio_codec_settings(codec_key):
     return settings.get(codec_key, settings["aac_128"])
 
 
-def get_video_encode_args(codec_key: str | None, container: str | None) -> list[str]:
-    codec_key = str(codec_key or "libx264_8").strip().lower() or "libx264_8"
-    container = str(container or "mp4").strip().lower() or "mp4"
-    if codec_key == "libx264_8":
-        return ["-c:v", "libx264", "-crf", "23", "-pix_fmt", "yuv420p"]
-    if codec_key == "libx264_10":
-        return ["-c:v", "libx264", "-crf", "21", "-pix_fmt", "yuv420p"]
-    if codec_key == "libx265_28":
-        return ["-c:v", "libx265", "-crf", "28", "-pix_fmt", "yuv420p", "-x265-params", "log-level=none"]
-    if codec_key == "libx265_8":
-        return ["-c:v", "libx265", "-crf", "8", "-pix_fmt", "yuv420p", "-x265-params", "log-level=none"]
-    if codec_key == "libx264_lossless":
-        if container == "mkv":
-            return ["-c:v", "ffv1", "-pix_fmt", "rgb24"]
-        return ["-c:v", "libx264", "-crf", "0", "-pix_fmt", "yuv444p"]
-    return ["-c:v", "libx264", "-crf", "23", "-pix_fmt", "yuv420p"]
+def _infer_video_dimensions(tensor):
+    if torch.is_tensor(tensor):
+        if tensor.ndim == 5:
+            return int(tensor.shape[-1]), int(tensor.shape[-2])
+        if tensor.ndim == 4:
+            if tensor.shape[-1] in (1, 3, 4):
+                return int(tensor.shape[2]), int(tensor.shape[1])
+            return int(tensor.shape[-1]), int(tensor.shape[-2])
+    if isinstance(tensor, (list, tuple)):
+        for chunk in tensor:
+            dims = _infer_video_dimensions(chunk)
+            if dims is not None:
+                return dims
+    return None
+
+
+def _validate_video_save_settings(codec_type, container, tensor):
+    dims = _infer_video_dimensions(tensor)
+    width = height = None
+    if dims is not None:
+        width, height = dims
+    error = validate_video_output_settings(codec_type, container, width=width, height=height, allowed_containers=SUPPORTED_VIDEO_CONTAINERS)
+    if error is not None:
+        raise RuntimeError(error)
 
 
 def _crf_from_video_codec(codec_key: str | None, default: str = "18") -> str:
@@ -479,7 +488,7 @@ def combine_and_concatenate_video_with_audio_tracks(
 
 
 def combine_video_with_audio_tracks(target_video, audio_tracks, output_video,
-                                     audio_metadata=None, verbose=False):
+                                     audio_metadata=None, audio_codec_key="aac_128", verbose=False):
     if not audio_tracks:
         if verbose: print("No audio tracks to combine."); return False
 
@@ -499,7 +508,11 @@ def combine_video_with_audio_tracks(target_video, audio_tracks, output_video,
         if (lang := meta.get('language')):
             cmd += ['-metadata:s:a:' + str(i), f'language={lang}']
 
-    cmd += ['-c:v', 'copy', '-c:a', 'copy', '-t', str(dur), output_video]
+    audio_settings = get_mp4_audio_codec_settings(audio_codec_key)
+    cmd += ['-c:v', 'copy', '-c:a', audio_settings["codec"]]
+    if audio_settings["bitrate"]:
+        cmd += ['-b:a', audio_settings["bitrate"]]
+    cmd += ['-t', str(dur), output_video]
 
     result = subprocess.run(cmd, capture_output=not verbose, text=True)
     if result.returncode != 0:
@@ -553,6 +566,8 @@ def save_video(tensor,
         
     if torch.is_tensor(tensor) and len(tensor.shape) == 4:
         tensor = tensor.unsqueeze(0)
+
+    _validate_video_save_settings(codec_type, container, tensor)
         
     suffix = f'.{container}'
     cache_file = osp.join('/tmp', rand_name(suffix=suffix)) if save_file is None else save_file
@@ -681,21 +696,7 @@ def save_hdr_video(
 
 def _get_codec_params(codec_type, container):
     """Get codec parameters based on codec type and container."""
-    if codec_type == 'libx264_8':
-        return {'codec': 'libx264', 'quality': 8, 'pixelformat': 'yuv420p'}
-    elif codec_type == 'libx264_10':
-        return {'codec': 'libx264', 'quality': 10, 'pixelformat': 'yuv420p'}
-    elif codec_type == 'libx265_28':
-        return {'codec': 'libx265', 'pixelformat': 'yuv420p', 'output_params': ['-crf', '28', '-x265-params', 'log-level=none','-hide_banner', '-nostats']}
-    elif codec_type == 'libx265_8':
-        return {'codec': 'libx265', 'pixelformat': 'yuv420p', 'output_params': ['-crf', '8', '-x265-params', 'log-level=none','-hide_banner', '-nostats']}
-    elif codec_type == 'libx264_lossless':
-        if container == 'mkv':
-            return {'codec': 'ffv1', 'pixelformat': 'rgb24'}
-        else:  # mp4
-            return {'codec': 'libx264', 'output_params': ['-crf', '0'], 'pixelformat': 'yuv444p'}
-    else:  # libx264
-        return {'codec': 'libx264', 'pixelformat': 'yuv420p'}
+    return get_imageio_codec_params(codec_type, container)
 
 
 

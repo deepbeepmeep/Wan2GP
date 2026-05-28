@@ -479,6 +479,35 @@ def create_models_hierarchy(rows):
     return parents_list, children_dict
 
 
+def create_models_selector_hierarchy(deps, dropdown_types=None):
+    dropdown_types = get_dropdown_model_types(deps) if dropdown_types is None else list(dict.fromkeys(dropdown_types))
+    family_model_types = defaultdict(list)
+    for model_type in dropdown_types:
+        family = deps.get_model_family(model_type, for_ui=True)
+        if family in deps.families_infos:
+            family_model_types[family].append(model_type)
+
+    tree = {"folders": [], "items": []}
+    sorted_families = sorted(family_model_types, key=lambda family: deps.families_infos[family][0])
+    for family in sorted_families:
+        family_name = deps.families_infos[family][1]
+        rows = [
+            (compact_name(family_name, deps.get_model_name(model_type)), model_type, deps.get_parent_model_type(model_type))
+            for model_type in family_model_types[family]
+        ]
+        rows.sort(key=lambda row: row[0].casefold())
+        parent_choices, children_by_parent = create_models_hierarchy(rows)
+        family_folder = {"name": family_name, "path": family_name, "folders": [], "items": []}
+        for parent_name, parent_model_type in parent_choices:
+            parent_path = f"{family_name}/{parent_name}"
+            parent_folder = {"name": parent_name, "path": parent_path, "folders": [], "items": []}
+            for child_name, child_model_type in children_by_parent.get(parent_model_type, []):
+                parent_folder["items"].append({"name": child_name, "value": child_model_type})
+            family_folder["folders"].append(parent_folder)
+        tree["folders"].append(family_folder)
+    return tree
+
+
 def get_sorted_dropdown(deps, dropdown_types, current_model_family, current_model_type, three_levels=True):
     models_families = [deps.get_model_family(t, for_ui=True) for t in dropdown_types]
     families = {}

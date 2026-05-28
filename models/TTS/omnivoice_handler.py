@@ -69,11 +69,11 @@ OMNIVOICE_LANGUAGE_CHOICES = [
     ("Russian", "russian"),
 ]
 OMNIVOICE_DURATION_SLIDER = {
-    "label": "Max duration (seconds)",
-    "min": 1,
+    "label": "Max duration (seconds, 0 = auto)",
+    "min": 0,
     "max": 600,
     "increment": 1,
-    "default": 30,
+    "default": 0,
 }
 OMNIVOICE_AUDIO_PROMPT_TYPE_SOURCES = {
     "selection": ["", "A", "AB"],
@@ -375,7 +375,7 @@ class family_handler:
                 "prompt": "The lights are already on, so we can start whenever you are ready.",
                 "alt_prompt": OMNIVOICE_DEFAULT_VOICE_INSTRUCTION,
                 "repeat_generation": 1,
-                "duration_seconds": duration_def.get("default", 30),
+                "duration_seconds": duration_def.get("default", 0),
                 "pause_seconds": 0.2,
                 "video_length": 0,
                 "num_inference_steps": 32,

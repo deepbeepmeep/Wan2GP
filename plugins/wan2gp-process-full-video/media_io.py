@@ -11,6 +11,7 @@ from pathlib import Path
 import gradio as gr
 
 from shared.utils.audio_video import get_hdr_video_encode_args, get_video_encode_args
+from shared.utils.video_codecs import normalize_video_container, validate_video_output_settings
 from shared.utils.utils import get_video_info_details
 from shared.utils.video_decode import resolve_media_binary
 from shared.utils.video_metadata import DEFAULT_RESERVED_VIDEO_METADATA_BYTES, write_reserved_video_ffmetadata
@@ -52,7 +53,7 @@ def probe_resume_frame_count(ffprobe_path: str, output_path: str, fps_float: flo
 
 
 def normalize_container_name(video_container: str | None) -> str:
-    return str(video_container or "mp4").strip().lower() or "mp4"
+    return normalize_video_container(video_container)
 
 
 SUPPORTED_OUTPUT_CONTAINERS = constants.SUPPORTED_OUTPUT_CONTAINERS
@@ -63,11 +64,15 @@ def is_supported_output_container(video_container: str | None) -> bool:
     return normalize_container_name(video_container) in SUPPORTED_OUTPUT_CONTAINERS
 
 
+def is_quicktime_output_container(video_container: str | None) -> bool:
+    return normalize_container_name(video_container) in {"mp4", "mov"}
+
+
 def _get_live_mux_output_args(video_container: str | None) -> list[str]:
     video_container = normalize_container_name(video_container)
     if video_container == "mkv":
         return ["-fflags", "+flush_packets", "-flush_packets", "1", "-f", "matroska", "-live", "1"]
-    if video_container == "mp4":
+    if is_quicktime_output_container(video_container):
         return ["-movflags", "+frag_keyframe+empty_moov+default_base_moof"]
     return []
 
@@ -208,9 +213,10 @@ def _probe_audio_stream_codecs(ffprobe_path: str, media_path: str) -> list[str]:
 
 
 def validate_audio_copy_container(ffprobe_path: str, source_path: str, video_container: str, audio_track_no: int | None) -> None:
-    if normalize_container_name(video_container) != "mp4":
+    video_container = normalize_container_name(video_container)
+    if video_container not in {"mp4", "mov"}:
         return
-    supported_codecs = {"aac", "ac3", "alac", "eac3", "mp3", "opus"}
+    supported_codecs = {"aac", "ac3", "alac", "eac3", "mp3", "opus"} if video_container == "mp4" else {"aac", "ac3", "alac", "eac3", "mp3", "pcm_s16le", "pcm_s24le", "pcm_s32le"}
     audio_codecs = _probe_audio_stream_codecs(ffprobe_path, source_path)
     if audio_track_no is None:
         selected_codecs = [codec for codec in audio_codecs if len(codec) > 0]
@@ -221,10 +227,19 @@ def validate_audio_copy_container(ffprobe_path: str, source_path: str, video_con
     if len(incompatible_codecs) > 0:
         track_label = f"audio track {int(audio_track_no)}" if audio_track_no is not None else "the selected audio tracks"
         codecs_text = ", ".join(sorted(set(incompatible_codecs)))
-        raise gr.Error(f"MP4 output cannot packet-copy {track_label} with codec(s): {codecs_text}. Use an .mkv output path or choose a compatible track.")
+        raise gr.Error(f"{video_container.upper()} output cannot packet-copy {track_label} with codec(s): {codecs_text}. Use an .mkv output path or choose a compatible track.")
+
+
+def validate_output_codec_container(video_codec: str, video_container: str, audio_codec: str | None = None, width: int | None = None, height: int | None = None, output_path: str | None = None) -> None:
+    error = validate_video_output_settings(video_codec, video_container, audio_codec=audio_codec, width=width, height=height, allowed_containers=SUPPORTED_OUTPUT_CONTAINERS)
+    if error is None:
+        return
+    suffix = Path(output_path).suffix if output_path else f".{normalize_container_name(video_container)}"
+    raise gr.Error(f"Output file extension '{suffix}' is incompatible with the current video codec/container settings. {error} Choose a compatible output extension or update the Configuration plugin settings.")
 
 
 def start_video_mux_process(ffmpeg_path: str, output_path: str, width: int, height: int, fps_float: float, video_codec: str, video_container: str, reserved_metadata_path: str | None = None) -> subprocess.Popen:
+    validate_output_codec_container(video_codec, video_container, width=width, height=height, output_path=output_path)
     command = [
         ffmpeg_path,
         "-y",
@@ -255,6 +270,7 @@ def start_video_mux_process(ffmpeg_path: str, output_path: str, width: int, heig
 
 
 def start_av_mux_process(ffmpeg_path: str, output_path: str, width: int, height: int, fps_float: float, video_codec: str, video_container: str, source_path: str, start_seconds: float, audio_track_no: int | None, reserved_metadata_path: str | None = None, source_audio_duration_seconds: float | None = None) -> subprocess.Popen:
+    validate_output_codec_container(video_codec, video_container, width=width, height=height, output_path=output_path)
     command = [
         ffmpeg_path,
         "-y",
@@ -450,7 +466,7 @@ def delete_released_chunk_outputs(state: dict, chunk_output_paths: list[str], *,
 
 
 def get_last_generated_video_path(paths: list[str]) -> str | None:
-    video_paths = [str(Path(path).resolve()) for path in paths if isinstance(path, str) and os.path.isfile(path) and str(Path(path).suffix).lower() in {".mp4", ".mkv"}]
+    video_paths = [str(Path(path).resolve()) for path in paths if isinstance(path, str) and os.path.isfile(path) and str(Path(path).suffix).lower() in {".mp4", ".mkv", ".mov"}]
     return video_paths[-1] if len(video_paths) > 0 else None
 
 
@@ -680,7 +696,7 @@ def concat_video_segments(
             else:
                 command += ["-map", f"1:a:{max(0, int(source_audio_track_no) - 1)}?"]
             command += ["-c", "copy"]
-            if normalize_container_name(video_container) == "mp4":
+            if is_quicktime_output_container(video_container):
                 command += ["-movflags", "+faststart"]
             command += [temp_output_path]
             mux_process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, bufsize=0)
@@ -758,7 +774,7 @@ def concat_video_segments(
             if has_audio:
                 command += ["-map", "1:a:0"]
             command += ["-c", "copy"]
-            if normalize_container_name(video_container) == "mp4":
+            if is_quicktime_output_container(video_container):
                 command += ["-movflags", "+faststart"]
             command += [temp_output_path]
             result = subprocess.run(command, capture_output=True, text=True)

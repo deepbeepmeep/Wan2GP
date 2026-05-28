@@ -3,7 +3,9 @@ from shared.utils.plugins import WAN2GPPlugin
 import json
 from shared.deepy.engine import get_or_create_assistant_session
 from shared.gradio import assistant_chat, gradio_queue_focus_patch
+from shared.gradio.hierarchy_selector import HierarchySelector
 from shared.utils import prompt_parser
+from shared.utils.video_codecs import SDR_VIDEO_CODEC_CHOICES, VIDEO_CONTAINER_CHOICES, validate_video_output_settings
 from shared.deepy.config import (
     DEEPY_CONTEXT_TOKENS_MIN,
     DEEPY_CONTEXT_TOKENS_DEFAULT,
@@ -86,12 +88,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("release_model")
         self.request_global("release_flashvsr_vram")
         self.request_global("release_seedvc_vram")
-        self.request_global("get_sorted_dropdown")
         self.request_global("app")
         self.request_global("fl")
         self.request_global("is_generation_in_progress")
         self.request_global("generate_header")
         self.request_global("generate_dropdown_model_list")
+        self.request_global("create_models_selector_hierarchy")
         self.request_global("get_unique_id")
         self.request_global("reset_prompt_enhancer")
         self.request_global("reset_prompt_enhancer_if_requested")
@@ -123,11 +125,15 @@ class ConfigTabPlugin(WAN2GPPlugin):
         with gr.Column():
             with gr.Tabs():
                 with gr.Tab("General"):
-                    _, _, dropdown_choices = self.get_sorted_dropdown(self.displayed_model_types, None, None, False)
-
-                    self.transformer_types_choices = gr.Dropdown(
-                        choices=dropdown_choices, value=self.transformer_types,
-                        label="Selectable Generative Models (leave empty for all)", multiselect=True
+                    self.transformer_types_choices = HierarchySelector(
+                        hierarchy=self.create_models_selector_hierarchy(self.displayed_model_types),
+                        value=self.transformer_types,
+                        height=0,
+                        label="Selectable Generative Models (leave empty for all)",
+                        display_mode="breadcrumb",
+                        sort_hierarchy=False,
+                        search_empty_label="No matching models",
+                        interactive=not self.args.lock_config,
                     )
                     self.model_hierarchy_type_choice = gr.Dropdown(
                         choices=[
@@ -414,7 +420,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.deepy_requirement_md = gr.Markdown(value=deepy_requirement_message(self.server_config))
 
                 with gr.Tab("Outputs"):
-                    self.video_output_codec_choice = gr.Dropdown(choices=[("x265 CRF 28 (Balanced)", 'libx265_28'), ("x264 Level 8 (Balanced)", 'libx264_8'), ("x265 CRF 8 (High Quality)", 'libx265_8'), ("x264 Level 10 (High Quality)", 'libx264_10'), ("x264 Lossless", 'libx264_lossless')], value=self.server_config.get("video_output_codec", "libx264_8"), label="SDR Video Codec")
+                    self.video_container_choice = gr.Dropdown(choices=VIDEO_CONTAINER_CHOICES, value=self.server_config.get("video_container", "mp4"), label="Video Container")
+                    self.video_output_codec_choice = gr.Dropdown(choices=SDR_VIDEO_CODEC_CHOICES, value=self.server_config.get("video_output_codec", "libx264_8"), label="SDR Video Codec")
                     self.hdr_video_crf_choice = gr.Dropdown(
                         choices=[
                             ("Low (x265 CRF 14)", 14),
@@ -435,7 +442,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         ],
                         value=self.server_config.get("audio_output_codec", "aac_128"),
                         visible=True,
-                        label="Audio Codec to use for mp4 container",
+                        label="Audio Codec to use for MP4/MOV/MKV container",
                     )
                     audio_standalone_default = self.server_config.get("audio_stand_alone_output_codec", "wav")
                     if audio_standalone_default == "mp3":
@@ -463,7 +470,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.embed_source_images_choice = gr.Checkbox(
                         value=self.server_config.get("embed_source_images", False),
                         label="Embed Source Images",
-                        info="Saves i2v source images inside MP4 files"
+                        info="Saves i2v source images inside MP4/MOV/MKV files"
                     )
                     self.video_save_path_choice = gr.Textbox(label="Video Output Folder (requires restart)", value=self.save_path)
                     self.image_save_path_choice = gr.Textbox(label="Image Output Folder (requires restart)", value=self.image_save_path)
@@ -520,7 +527,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.mmaudio_mode_choice, self.mmaudio_persistence_choice, self.seedvc_mode_choice, self.seedvc_persistence_choice, self.flashvsr_mode_choice, self.flashvsr_persistence_choice, self.flashvsr_backend_choice, self.flashvsr_topk_ratio_choice, self.rife_version_choice, self.matanyone_version_choice,
             self.deepy_enabled_choice, self.deepy_vram_mode_choice,
             self.deepy_context_tokens_choice, self.deepy_custom_system_prompt_choice,
-            self.video_output_codec_choice, self.hdr_video_crf_choice, self.image_output_codec_choice, self.audio_output_codec_choice, self.audio_stand_alone_output_codec_choice,
+            self.video_container_choice, self.video_output_codec_choice, self.hdr_video_crf_choice, self.image_output_codec_choice, self.audio_output_codec_choice, self.audio_stand_alone_output_codec_choice,
             self.metadata_choice, self.embed_source_images_choice,
             self.video_save_path_choice, self.image_save_path_choice, self.audio_save_path_choice,
             self.notification_sound_enabled_choice, self.notification_sound_volume_choice,
@@ -606,7 +613,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             mmaudio_mode_choice, mmaudio_persistence_choice, seedvc_mode_choice, seedvc_persistence_choice, flashvsr_mode_choice, flashvsr_persistence_choice, flashvsr_backend_choice, flashvsr_topk_ratio_choice, rife_version_choice, matanyone_version_choice,
             deepy_enabled_choice, deepy_vram_mode_choice,
             deepy_context_tokens_choice, deepy_custom_system_prompt_choice,
-            video_output_codec_choice, hdr_video_crf_choice, image_output_codec_choice, audio_output_codec_choice, audio_stand_alone_output_codec_choice,
+            video_container_choice, video_output_codec_choice, hdr_video_crf_choice, image_output_codec_choice, audio_output_codec_choice, audio_stand_alone_output_codec_choice,
             metadata_choice, embed_source_images_choice,
             save_path_choice, image_save_path_choice, audio_save_path_choice,
             notification_sound_enabled_choice, notification_sound_volume_choice,
@@ -617,6 +624,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
             checkpoints_paths = self.fl.default_checkpoints_paths
         else:
             checkpoints_paths = [path.strip() for path in checkpoints_paths_choice.replace("\r", "").split("\n") if len(path.strip()) > 0]
+
+        video_output_error = validate_video_output_settings(video_output_codec_choice, video_container_choice, audio_output_codec_choice)
+        if video_output_error is not None:
+            gr.Info(f"Configuration was not saved: {video_output_error}")
+            return f"<div style='color:red; text-align:center;'>Configuration was not saved: {video_output_error}</div>", *[gr.update()]*8
 
         self.fl.set_checkpoints_paths(checkpoints_paths)
 
@@ -682,7 +694,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "queue_color_scheme": queue_color_scheme_choice,
             gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY: process_queues_when_browser_unfocused_choice,
             "embed_source_images": embed_source_images_choice,
-            "video_container": "mp4", # Fixed to MP4
+            "video_container": video_container_choice,
             "last_model_type": state["model_type"],
             "last_model_per_family": state["last_model_per_family"],
             "last_model_per_type": state["last_model_per_type"],

@@ -1501,10 +1501,10 @@ class WanAny2V:
             if "#" in video_prompt_type and "1" in video_prompt_type:
                 preloadURLs = get_model_recursive_prop(model_type,  "preload_URLs")
                 if len(preloadURLs) > 0: 
-                    return [fl.locate_file(os.path.basename(preloadURLs[0]))] , [1]
+                    return [os.path.abspath(fl.locate_file(os.path.basename(preloadURLs[0])))] , [1]
         elif base_model_type == "vace_ditto_14B":
             preloadURLs = get_model_recursive_prop(model_type,  "preload_URLs")
             model_mode = int(model_mode)
             if len(preloadURLs) > model_mode: 
-                return [fl.locate_file(os.path.basename(preloadURLs[model_mode]))] , [1]
+                return [os.path.abspath(fl.locate_file(os.path.basename(preloadURLs[model_mode])))] , [1]
         return [], []

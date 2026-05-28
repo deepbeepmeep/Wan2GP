@@ -144,7 +144,7 @@ def get_model(persistent_models = False, verboseLevel = 1, model_name = None, mo
 
 @torch.inference_mode()
 def video_to_audio(video, prompt: str, negative_prompt: str, seed: int, num_steps: int,
-                   cfg_strength: float, duration: float, save_path , persistent_models = False, audio_file_only = False, verboseLevel = 1, model_name = None, model_path = None):
+                   cfg_strength: float, duration: float, save_path , persistent_models = False, audio_file_only = False, verboseLevel = 1, model_name = None, model_path = None, audio_codec_key = "aac_128"):
 
     global device
 
@@ -182,7 +182,7 @@ def video_to_audio(video, prompt: str, negative_prompt: str, seed: int, num_step
     if audio_file_only:
         write_wav_file(save_path, audio, seq_cfg.sampling_rate)
     else:
-        make_video(video, video_info, save_path, audio, sampling_rate=seq_cfg.sampling_rate)
+        make_video(video, video_info, save_path, audio, sampling_rate=seq_cfg.sampling_rate, audio_codec_key=audio_codec_key)
 
     offloadobj.unload_all()
     if not persistent_models:

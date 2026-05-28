@@ -389,7 +389,7 @@ class LTXAudioTTSPipelineBase:
         self._callback_start(callback, total_steps, status_extra)
 
         velocity_model = getattr(self.model, "velocity_model", self.model)
-        velocity_model.interrupt_check = lambda: bool(self._interrupt)
+        velocity_model.interrupt_check = lambda: bool(self._interrupt or self._early_stop_requested())
         prepared_audio_context = _prepare_conditioning_context(self.model, audio_state, audio_context, sigmas, is_audio=True)
         prepared_audio_context_n = None
         use_cfg = audio_context_n is not None and abs(float(cfg_scale) - 1.0) > 1e-6
@@ -399,7 +399,7 @@ class LTXAudioTTSPipelineBase:
             if use_cfg:
                 prepared_audio_context_n = _prepare_conditioning_context(self.model, audio_state, audio_context_n, sigmas, is_audio=True)
             for step_idx, _ in enumerate(tqdm(sigmas[:-1])):
-                if self._interrupt:
+                if self._interrupt or self._early_stop_requested():
                     return None
                 offload.set_step_no_for_lora(self.model, step_idx)
                 sigma = sigmas[step_idx]
@@ -443,7 +443,7 @@ class LTXAudioTTSPipelineBase:
             velocity_model.interrupt_check = None
             _clear_phase_timestep_embedders(self.model)
 
-        if self._interrupt:
+        if self._interrupt or self._early_stop_requested():
             return None
         audio_state = audio_tools.clear_conditioning(audio_state)
         audio_state = audio_tools.unpatchify(audio_state)

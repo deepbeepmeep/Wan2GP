@@ -109,11 +109,18 @@ def _is_browser_playable(path):
         return path.suffix.lower() in _BROWSER_VIDEO_EXTENSIONS
 
 
+def _is_video_path(path):
+    mime_type = mimetypes.guess_type(str(path))[0]
+    return bool(mime_type and mime_type.startswith("video/"))
+
+
 def needs_fast_video_preview(video_path):
     if not video_path or _is_http_url_like(video_path):
         return False
     path = Path(os.fspath(video_path))
     if not path.is_file():
+        return False
+    if not _is_video_path(path):
         return False
     return path.suffix.lower() in _ALWAYS_PREVIEW_EXTENSIONS or not _is_browser_playable(path)
 

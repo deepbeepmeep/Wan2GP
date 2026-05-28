@@ -133,6 +133,7 @@ AUTOSAVE_FILENAME = "queue.zip"
 AUTOSAVE_PATH = AUTOSAVE_FILENAME
 AUTOSAVE_ERROR_FILENAME = "error_queue.zip"
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
+_preview_temp_files = set()
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
@@ -328,14 +329,28 @@ def _cleanup_preview_file(gen):
     if isinstance(old_preview, str) and os.path.exists(old_preview):
         try:
             os.remove(old_preview)
+            _preview_temp_files.discard(old_preview)
         except Exception:
             pass
     old_preview_path = gen.pop("preview_video_path", None)
     if old_preview_path is not None and os.path.exists(old_preview_path):
         try:
             os.remove(old_preview_path)
+            _preview_temp_files.discard(old_preview_path)
         except Exception:
             pass
+    gen["preview"] = None
+
+
+def _cleanup_all_preview_files():
+    global _preview_temp_files
+    for path in list(_preview_temp_files):
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+    _preview_temp_files.clear()
 
 
 def _open_image_input(image):
@@ -7800,6 +7815,7 @@ def generate_preview(model_type, payload):
         new_h = new_h + (new_h % 2)
         new_w = new_w + (new_w % 2)
         preview_path = os.path.join(tempfile.gettempdir(), f"wgp_preview_{int(time.time()*1000)}.mp4")
+        _preview_temp_files.add(preview_path)
         gen_fps = meta.get("fps", None)
         video_length = meta.get("video_length", None)
         if gen_fps is not None and video_length is not None and video_length > frames.shape[0]:
@@ -7924,6 +7940,7 @@ def process_tasks(state):
     global gen_in_progress
     gen_in_progress = True
     gen["in_progress"] = True
+    _cleanup_all_preview_files()
     gen["preview"] = None
     gen["status"] = get_task_status_text(queue[0])
     gen["header_text"] = ""    
@@ -8009,94 +8026,98 @@ def process_tasks(state):
 
     async_run_in("generation", queue_worker_func)
 
-    while True:
-        cmd, data = com_stream.output_queue.next()               
-        if cmd == "exit":
-            pass
-        elif cmd == "worker_exit":
-            break
-        elif cmd == "info":
-            gr.Info(data)
-        elif cmd == "error": 
-            record_queue_error(state, queue, data)
-            queue.clear()
-            try:
-                save_queue_if_crash = server_config.get("save_queue_if_crash", 1)
-                if save_queue_if_crash:
-                    error_filename = AUTOSAVE_ERROR_FILENAME if save_queue_if_crash == 1 else get_available_filename("", AUTOSAVE_ERROR_FILENAME, f"_{datetime.now():%Y%m%d_%H%M%S}")
-                    if _save_queue_to_zip(global_queue_ref, error_filename):
-                        print(f"Error Queue autosaved successfully to {error_filename}")
-                        gr.Info(f"Error Queue autosaved successfully to {error_filename}")
-                    else:
-                        print("Autosave Error Queue failed.")
-            except Exception as e:
-                print(f"Error during autosave: {e}")
-
-            update_global_queue_ref(queue)
-            gen["prompts_max"] = 0
-            gen["prompt"] = ""
-            gen["status_display"] =  False
-            release_gen()
-            _cleanup_preview_file(gen)
-            try:
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except Exception:
-                pass
-            raise gr.Error(data, print_exception= False, duration = 0)
-        elif cmd == "status":
-            gen["status"] = data
-            status_text = str(data or "").strip()
-            gen["last_progress_args"] = [0, status_text] if len(status_text) > 0 else None
-        elif cmd == "output":
-            _cleanup_preview_file(gen)
-            gen["preview"] = None
-            gen["refresh_tab"] = True
-            yield time.time(), time.time(), gr.update()
-        elif cmd == "progress":
-            gen["last_progress_args"] = gen["progress_args"] = data
-        elif cmd == "preview":
-            current_model_type = "unknown"
-            with lock:
-                if len(queue) > 0:
-                    current_model_type = queue[0]["params"].get("model_type")
-            
-            try:
-                torch.cuda.current_stream().synchronize()
-                preview = None if data is None else generate_preview(current_model_type, data)
-                _cleanup_preview_file(gen)
-                gen["preview"] = preview
-                yield time.time(), gr.Text(), gr.update()
-            except Exception:
-                pass
-        elif cmd == "refresh_models":
-            yield gr.update(), gr.update(), (data if data is not None else get_unique_id())
-        else:
-            pass
-
-    gen["prompts_max"] = 0
-    gen["prompt"] = ""
-    end_time = time.time()
-    if gen.get("abort", False):
-        record_queue_error(state, queue[:1], "abort", abort=True)
-        status = f"Video generation was aborted. Total Generation Time: {format_time(end_time-start_time)}" 
-    else:
-        status = f"Total Generation Time: {format_time(end_time-start_time)}"
-        try:
-            if server_config.get("notification_sound_enabled", 1):
-                volume = server_config.get("notification_sound_volume", 50)
-                notification_sound.notify_video_completion(volume=volume)
-        except Exception as e:
-            print(f"Error playing notification sound: {e}")
-    gen["status"] = status
-    gen["status_display"] =  False
-    release_gen()
-    _cleanup_preview_file(gen)
     try:
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except Exception:
-        pass
+        while True:
+            cmd, data = com_stream.output_queue.next()               
+            if cmd == "exit":
+                pass
+            elif cmd == "worker_exit":
+                break
+            elif cmd == "info":
+                gr.Info(data)
+            elif cmd == "error": 
+                record_queue_error(state, queue, data)
+                queue.clear()
+                try:
+                    save_queue_if_crash = server_config.get("save_queue_if_crash", 1)
+                    if save_queue_if_crash:
+                        error_filename = AUTOSAVE_ERROR_FILENAME if save_queue_if_crash == 1 else get_available_filename("", AUTOSAVE_ERROR_FILENAME, f"_{datetime.now():%Y%m%d_%H%M%S}")
+                        if _save_queue_to_zip(global_queue_ref, error_filename):
+                            print(f"Error Queue autosaved successfully to {error_filename}")
+                            gr.Info(f"Error Queue autosaved successfully to {error_filename}")
+                        else:
+                            print("Autosave Error Queue failed.")
+                except Exception as e:
+                    print(f"Error during autosave: {e}")
+
+                update_global_queue_ref(queue)
+                gen["prompts_max"] = 0
+                gen["prompt"] = ""
+                gen["status_display"] =  False
+                release_gen()
+                _cleanup_preview_file(gen)
+                try:
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                raise gr.Error(data, print_exception= False, duration = 0)
+            elif cmd == "status":
+                gen["status"] = data
+                status_text = str(data or "").strip()
+                gen["last_progress_args"] = [0, status_text] if len(status_text) > 0 else None
+            elif cmd == "output":
+                _cleanup_preview_file(gen)
+                gen["preview"] = None
+                gen["refresh_tab"] = True
+                yield time.time(), time.time(), gr.update()
+            elif cmd == "progress":
+                gen["last_progress_args"] = gen["progress_args"] = data
+            elif cmd == "preview":
+                current_model_type = "unknown"
+                with lock:
+                    if len(queue) > 0:
+                        current_model_type = queue[0]["params"].get("model_type")
+                
+                try:
+                    torch.cuda.current_stream().synchronize()
+                    preview = None if data is None else generate_preview(current_model_type, data)
+                    _cleanup_preview_file(gen)
+                    gen["preview"] = preview
+                    yield time.time(), gr.Text(), gr.update()
+                except Exception:
+                    pass
+            elif cmd == "refresh_models":
+                yield gr.update(), gr.update(), (data if data is not None else get_unique_id())
+            else:
+                pass
+
+        gen["prompts_max"] = 0
+        gen["prompt"] = ""
+        end_time = time.time()
+        if gen.get("abort", False):
+            record_queue_error(state, queue[:1], "abort", abort=True)
+            status = f"Video generation was aborted. Total Generation Time: {format_time(end_time-start_time)}" 
+        else:
+            status = f"Total Generation Time: {format_time(end_time-start_time)}"
+            try:
+                if server_config.get("notification_sound_enabled", 1):
+                    volume = server_config.get("notification_sound_volume", 50)
+                    notification_sound.notify_video_completion(volume=volume)
+            except Exception as e:
+                print(f"Error playing notification sound: {e}")
+        gen["status"] = status
+        gen["status_display"] =  False
+        release_gen()
+        _cleanup_preview_file(gen)
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+    finally:
+        _cleanup_all_preview_files()
+        release_gen()
 
 
 def validate_task(task, state):

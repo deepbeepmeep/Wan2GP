@@ -111,6 +111,8 @@ def run_cli_job(session, job: SessionJob, tasks: list[dict[str, Any]]) -> None:
     finally:
         job.events.close()
         if runtime is not None:
+            if hasattr(runtime.module, '_cleanup_all_preview_files'):
+                runtime.module._cleanup_all_preview_files()
             session._reset_state_after_run()
         with session._job_lock:
             if session._active_job is job:

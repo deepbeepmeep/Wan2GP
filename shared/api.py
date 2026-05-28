@@ -665,6 +665,10 @@ class WanGPSession:
         if queue_tasks:
             model_type = str(self._get_task_settings(queue_tasks[0]).get("model_type", ""))
         image = wgp.generate_preview(model_type, payload) if model_type else None
+        # Clean up previous preview to prevent temp file leaks in API mode
+        if hasattr(wgp, '_cleanup_preview_file'):
+            wgp._cleanup_preview_file(self._state["gen"])
+        self._state["gen"]["preview"] = image
         return PreviewUpdate(
             image=image,
             phase=progress.phase,

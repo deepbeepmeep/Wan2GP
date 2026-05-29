@@ -244,12 +244,10 @@ def download_file(url, filename):
             hf_hub_download(repo_id=repoId, filename=onefile, local_dir=fl.get_download_location() if len(base_dir) == 0 else base_dir)
         else:
             tgt = fl.get_download_location() if len(base_dir) == 0 else base_dir
-            if not os.path.exists(tgt):
-                os.makedirs(tgt)
+            os.makedirs(tgt, exist_ok=True)
             temp_dir_path = os.path.join(tgt, f"_temp{time.time()}")
             temp_full_path = os.path.join(temp_dir_path, sourceFolder)
-            if not os.path.exists(temp_full_path):
-                os.makedirs(temp_full_path)
+            os.makedirs(temp_full_path, exist_ok=True)
             hf_hub_download(repo_id=repoId, filename=onefile, local_dir=temp_dir_path, subfolder=sourceFolder)
             shutil.move(os.path.join(temp_full_path, onefile), tgt)
             shutil.rmtree(temp_dir_path)

@@ -55,7 +55,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-### 25th of May 2026: WanGP v11.88, Humans Accelerators
+### 29th of May 2026: WanGP v11.88, Humans Accelerators
 - **Create Hierarchies of Loras / Change Order of Loras**
 
 - **WanGP Toolbar** with keyboard shortcuts:

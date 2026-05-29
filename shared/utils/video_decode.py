@@ -167,6 +167,8 @@ def probe_video_stream_metadata(video_path):
     if len(streams) == 0:
         return None
     stream = streams[0]
+    codec_name = str(stream.get("codec_name") or "")
+    codec_profile = str(stream.get("profile") or "")
     width = int(stream.get("width") or 0)
     height = int(stream.get("height") or 0)
     if width <= 0 or height <= 0:
@@ -203,6 +205,8 @@ def probe_video_stream_metadata(video_path):
         str(item.get("side_data_type") or "").lower() in {"mastering display metadata", "content light level metadata"} for item in side_data
     )
     return _augment_virtual_metadata(video_path, {
+        "codec_name": codec_name,
+        "codec_profile": codec_profile,
         "width": width,
         "height": height,
         "display_width": display_width,

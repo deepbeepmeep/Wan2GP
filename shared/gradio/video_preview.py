@@ -16,14 +16,36 @@ from gradio.data_classes import FileData
 from shared.utils.video_decode import probe_video_stream_metadata, resolve_media_binary
 
 
-_ALWAYS_PREVIEW_EXTENSIONS = {".mkv", ".mov"}
 _BROWSER_VIDEO_EXTENSIONS = {".mp4", ".webm", ".ogg", ".ogv"}
+_BROWSER_PLAYABLE_VIDEO_CODECS = {
+    (".mp4", "h264"),
+    (".mp4", "h265"),
+    (".mp4", "hevc"),
+    (".mkv", "h265"),
+    (".mkv", "hevc"),
+    (".mov", "h265"),
+    (".mov", "hevc"),
+    (".webm", "vp9"),
+    (".ogg", "theora"),
+    (".ogv", "theora"),
+}
 _PREVIEW_SECONDS = 20
 _PREVIEW_MAX_WIDTH = 1280
 _PREVIEW_CRF = "24"
 _PREVIEW_PRESET = "veryfast"
-_PREVIEW_CACHE_VERSION = 3
-_PREVIEW_LABEL = "Low Res Preview"
+_PREVIEW_CACHE_VERSION = 5
+_CODEC_DISPLAY_NAMES = {
+    "av1": "AV1",
+    "dnxhd": "DNxHD",
+    "ffv1": "FFV1",
+    "h264": "H.264",
+    "h265": "HEVC",
+    "hevc": "HEVC",
+    "prores": "ProRes",
+    "theora": "Theora",
+    "vp8": "VP8",
+    "vp9": "VP9",
+}
 
 _lock = threading.Lock()
 _installed = False
@@ -101,12 +123,11 @@ def _restore_preview_path(path):
 
 
 def _is_browser_playable(path):
-    try:
-        from gradio import processing_utils
-
-        return processing_utils.video_is_playable(str(path))
-    except Exception:
-        return path.suffix.lower() in _BROWSER_VIDEO_EXTENSIONS
+    metadata = probe_video_stream_metadata(str(path)) or {}
+    codec_name = str(metadata.get("codec_name") or "").strip().lower()
+    if len(codec_name) > 0:
+        return (path.suffix.lower(), codec_name) in _BROWSER_PLAYABLE_VIDEO_CODECS
+    return path.suffix.lower() in _BROWSER_VIDEO_EXTENSIONS
 
 
 def _is_video_path(path):
@@ -122,7 +143,17 @@ def needs_fast_video_preview(video_path):
         return False
     if not _is_video_path(path):
         return False
-    return path.suffix.lower() in _ALWAYS_PREVIEW_EXTENSIONS or not _is_browser_playable(path)
+    return not _is_browser_playable(path)
+
+
+def _format_codec_label(metadata):
+    codec_name = str((metadata or {}).get("codec_name") or "").strip().lower()
+    codec_profile = str((metadata or {}).get("codec_profile") or "").strip()
+    if codec_name == "dnxhd" and codec_profile.upper().startswith("DNXHR"):
+        return codec_profile.upper().replace("DNXHR", "DNxHR", 1)
+    if codec_name in _CODEC_DISPLAY_NAMES:
+        return _CODEC_DISPLAY_NAMES[codec_name]
+    return codec_name.upper() if len(codec_name) > 0 else "Unknown Codec"
 
 
 def _preview_video_filter(source_path):
@@ -132,8 +163,9 @@ def _preview_video_filter(source_path):
         scale_filter = f"scale={_PREVIEW_MAX_WIDTH}:-2:flags=fast_bilinear"
     else:
         scale_filter = "scale=trunc(iw/2)*2:trunc(ih/2)*2:flags=fast_bilinear"
-    text = _PREVIEW_LABEL.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
-    label_filter = f"drawtext=text='{text}':fontcolor=white@0.9:fontsize=max(14\\,h/32):box=1:boxcolor=black@0.45:boxborderw=8:x=w-tw-16:y=16"
+    text = f"Codec {_format_codec_label(metadata)} Not Supported, Low Res Preview"
+    text = text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+    label_filter = f"drawtext=text='{text}':fontcolor=white@0.9:fontsize=max(11\\,h/44):box=1:boxcolor=black@0.45:boxborderw=6:x=w-tw-12:y=12"
     return f"{scale_filter},{label_filter}"
 
 

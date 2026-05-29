@@ -55,11 +55,20 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-### 25th of May 2026: WanGP v11.85, Mixed Bag
+### 25th of May 2026: WanGP v11.88, Humans Accelerators
 - **Create Hierarchies of Loras / Change Order of Loras**
+
+- **WanGP Toolbar** with keyboard shortcuts:
+    - **Search**: switch quickly to another model by just entering a few letters of its name
+    - **Refresh Model List**: no longer needed to restart the app to add or modify a finetune
+    - **Unload All**: free most of the RAM/VRAM used by WanGP
+
 - **MOV/MKV Container Support**: beside *mp4* files you can now store you video gens in *mov* and *mkv* containers
+
 - **ProRes422 & DNxHR HQ Video Codecs**: these professional video codecs have some fans out there
+
 - **LTX2 Smearing Fix**: the smearing / ghosting is now mostly gone
+
 - **Omnivoice Fix**: you will enjoy this fix unless you liked the gibberish generator of the previous version
 
 

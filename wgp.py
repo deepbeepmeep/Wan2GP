@@ -74,6 +74,7 @@ from shared.utils.process_locks import (
     set_main_generation_running,
     unregister_GPU_resident,
 )
+from shared.utils.model_unload import model_unload_guard, wait_for_model_unload
 from shared.deepy.config import get_deepy_default_runtime_config, set_deepy_runtime_config
 from shared.loras_migration import migrate_loras_layout
 from shared.utils import files_locator as fl 
@@ -115,7 +116,7 @@ from shared.ffmpeg_setup import download_ffmpeg
 from shared.api import get_api_output_options, store_api_output_artifact
 from shared.utils.plugins import PluginManager, WAN2GPApplication, SYSTEM_PLUGINS
 from shared.llm_engines.nanovllm.vllm_support import resolve_lm_decoder_engine
-from shared.gradio import assistant_chat, model_infos
+from shared.gradio import assistant_chat, model_infos, model_selector_toolbar
 from shared.gradio.magic_mask import MagicMaskUI
 from shared import model_dropdowns
 from shared.cli_args import parse_wgp_args
@@ -136,7 +137,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.86"
+WanGP_version = "11.88"
 settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -2928,7 +2929,7 @@ def get_default_settings(model_type):
 
 
 def init_model_def(model_type, model_def):
-    base_model_type = get_base_model_type(model_type)
+    base_model_type = model_def.get("architecture", None) or get_base_model_type(model_type)
     family_handler = model_types_handlers.get(base_model_type, None)
     if family_handler is None:
         if model_def.get("visible", True):
@@ -2943,46 +2944,59 @@ def init_model_def(model_type, model_def):
 
 def refresh_model_defs():
     global models_def, model_types, displayed_model_types
-    models_def = {}
-    displayed_model_types = []
-    model_types = []
-    models_def_paths =  glob.glob( os.path.join("defaults", "*.json") ) 
-    defaults_paths = models_def_paths.copy()
-    models_def_paths += glob.glob( os.path.join("finetunes", "*.json") ) 
-    models_def_paths.sort()
+    new_models_def, parse_errors, previous_models_def, old_model_types = {}, [], models_def.copy(), set()
+    defaults_paths = set(glob.glob(os.path.join("defaults", "*.json")))
+    models_def_paths = sorted([*defaults_paths, *glob.glob(os.path.join("finetunes", "*.json"))])
+    def warn(msg):
+        print(msg)
+        parse_errors.append(msg)
+    def use_previous_model_def(model_type, file_path, error):
+        previous_model_def = previous_models_def.get(model_type, None)
+        if previous_model_def is None:
+            return False
+        warn(f"Model Definition File '{file_path}' could not be refreshed; using previous definition for '{model_type}': {str(error)}")
+        old_model_types.add(model_type)
+        new_models_def[model_type] = previous_model_def
+        return True
     for file_path in models_def_paths:
         model_type = os.path.basename(file_path)[:-5]
+        if model_type in old_model_types:
+            continue
         with open(file_path, "r", encoding="utf-8") as f:
             try:
                 json_def = json.load(f)
             except Exception as e:
-                if file_path in defaults_paths:
+                if use_previous_model_def(model_type, file_path, e):
+                    continue
+                elif file_path in defaults_paths:
                     raise Exception(f"Error while parsing Model Definition File '{file_path}': {str(e)}")
                 else:
-                    print(f"Finetune Definition File '{file_path}' will be ignored as there was an error in its parsing: {str(e)}")
+                    warn(f"Finetune Definition File '{file_path}' will be ignored as there was an error in its parsing: {str(e)}")
                     continue
-        model_def = json_def["model"]
-        model_def["path"] = file_path
-        del json_def["model"]      
-        settings = json_def   
-        existing_model_def = models_def.get(model_type, None) 
-        if existing_model_def is not None:
-            existing_settings = models_def.get("settings", None)
-            if existing_settings != None:
-                existing_settings.update(settings)
-            existing_model_def.update(model_def)
-        else:
-            models_def[model_type] = model_def # partial def
-            model_def= init_model_def(model_type, model_def)
-            models_def[model_type] = model_def # replace with full def
-            model_def["settings"] = settings
+        try:
+            model_def = json_def.pop("model")
+            model_def["path"] = file_path
+            existing_model_def = new_models_def.get(model_type, None)
+            if existing_model_def is not None:
+                existing_model_def.setdefault("settings", {}).update(json_def)
+                existing_model_def.update(model_def)
+            else:
+                new_models_def[model_type] = model_def
+                model_def = init_model_def(model_type, model_def)
+                new_models_def[model_type] = model_def
+                model_def["settings"] = json_def
+        except Exception as e:
+            if use_previous_model_def(model_type, file_path, e):
+                continue
+            elif file_path in defaults_paths:
+                raise Exception(f"Error while refreshing Model Definition File '{file_path}': {str(e)}")
+            else:
+                warn(f"Finetune Definition File '{file_path}' will be ignored as there was an error in its refresh: {str(e)}")
 
+    models_def = new_models_def
     model_types = models_def.keys()
-    displayed_model_types= []
-    for model_type in model_types:
-        model_def = get_model_def(model_type)
-        if not model_def is None and model_def.get("visible", True): 
-            displayed_model_types.append(model_type)
+    displayed_model_types = [model_type for model_type, model_def in models_def.items() if model_def.get("visible", True)]
+    return parse_errors
 
 refresh_model_defs()
 
@@ -3663,13 +3677,15 @@ def ensure_prompt_enhancer_loaded(override_profile=None, progress=None, send_cmd
         )
         if progress is not None:
             progress(0, "Please Wait While Loading Prompt Enhancer")
-        kwargs = {}
-        pipe = {}
-        setup_prompt_enhancer(pipe, kwargs)
-        profile = compute_profile(override_profile, "video")
-        mmgp_profile = init_pipe(pipe, kwargs, profile)
-        kwargs["pinnedMemory"] = False
-        enhancer_offloadobj = offload.profile(pipe, profile_no=mmgp_profile, **kwargs)
+        with model_unload_guard():
+            if enhancer_offloadobj is None:
+                kwargs = {}
+                pipe = {}
+                setup_prompt_enhancer(pipe, kwargs)
+                profile = compute_profile(override_profile, "video")
+                mmgp_profile = init_pipe(pipe, kwargs, profile)
+                kwargs["pinnedMemory"] = False
+                enhancer_offloadobj = offload.profile(pipe, profile_no=mmgp_profile, **kwargs)
 
     if prompt_enhancer_llm_model is None or prompt_enhancer_llm_tokenizer is None:
         raise gr.Error("Prompt enhancer text runtime is not available.")
@@ -3771,29 +3787,30 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
     if lm_decoder_engine_obtained in ("cg", "vllm") and int(profile) not in [ 1, 3]:
         _load_models_info(f"Unable to use LM Engine '{lm_decoder_engine_obtained}' as it requires a Memory Profile such as 1,3 or 3+ that loads entirely the Main Models in VRAM. Switching to Legacy LM Engine...")
         lm_decoder_engine_obtained = "legacy"
-    torch.set_default_device('cpu')    
-    wan_model, pipe = model_type_handler.load_model(
-                local_model_file_list, model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = text_encoder_quantization,
-                dtype = transformer_dtype, VAE_dtype = VAE_dtype, mixed_precision_transformer = mixed_precision_transformer, save_quantized = save_quantized, submodel_no_list   = model_submodel_no_list, text_encoder_filename = text_encoder_filename, profile=profile, lm_decoder_engine=lm_decoder_engine_obtained, **model_kwargs )
+    with model_unload_guard():
+        torch.set_default_device('cpu')
+        wan_model, pipe = model_type_handler.load_model(
+                    local_model_file_list, model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = text_encoder_quantization,
+                    dtype = transformer_dtype, VAE_dtype = VAE_dtype, mixed_precision_transformer = mixed_precision_transformer, save_quantized = save_quantized, submodel_no_list   = model_submodel_no_list, text_encoder_filename = text_encoder_filename, profile=profile, lm_decoder_engine=lm_decoder_engine_obtained, **model_kwargs )
 
-    kwargs = {}
-    if "pipe" in pipe:
-        kwargs = pipe
-        pipe = kwargs.pop("pipe")
-    if "coTenantsMap" not in kwargs: kwargs["coTenantsMap"] = {}
-    mmgp_profile = init_pipe(pipe, kwargs, profile)
-    loras_transformer = kwargs.pop("loras", [])
-    if "transformer" in pipe:
-        loras_transformer += ["transformer"]        
-    if "transformer2" in pipe:
-        loras_transformer += ["transformer2"]
-    if len(compile) > 0 and hasattr(wan_model, "custom_compile"):
-        wan_model.custom_compile(backend= "inductor", mode ="default")
-    compile_modules = model_def.get("compile", compile) if len(compile) > 0 else False
-    if compile_modules == False and len(compile):
-        _load_models_info("Pytorch compilation is not supported for this Model")
-    # kwargs["pinnedMemory"] = "text_encoder"
-    offloadobj = offload.profile(pipe, profile_no= mmgp_profile, compile = compile_modules, quantizeTransformer = False, loras = loras_transformer, perc_reserved_mem_max = perc_reserved_mem_max , vram_safety_coefficient = vram_safety_coefficient , convertWeightsFloatTo = transformer_dtype, **kwargs)  
+        kwargs = {}
+        if "pipe" in pipe:
+            kwargs = pipe
+            pipe = kwargs.pop("pipe")
+        if "coTenantsMap" not in kwargs: kwargs["coTenantsMap"] = {}
+        mmgp_profile = init_pipe(pipe, kwargs, profile)
+        loras_transformer = kwargs.pop("loras", [])
+        if "transformer" in pipe:
+            loras_transformer += ["transformer"]
+        if "transformer2" in pipe:
+            loras_transformer += ["transformer2"]
+        if len(compile) > 0 and hasattr(wan_model, "custom_compile"):
+            wan_model.custom_compile(backend= "inductor", mode ="default")
+        compile_modules = model_def.get("compile", compile) if len(compile) > 0 else False
+        if compile_modules == False and len(compile):
+            _load_models_info("Pytorch compilation is not supported for this Model")
+        # kwargs["pinnedMemory"] = "text_encoder"
+        offloadobj = offload.profile(pipe, profile_no= mmgp_profile, compile = compile_modules, quantizeTransformer = False, loras = loras_transformer, perc_reserved_mem_max = perc_reserved_mem_max , vram_safety_coefficient = vram_safety_coefficient , convertWeightsFloatTo = transformer_dtype, **kwargs)
     if len(args.gpu) > 0:
         torch.set_default_device(args.gpu)
     transformer_type = model_type
@@ -5379,6 +5396,7 @@ def parse_keep_frames_video_guide(keep_frames, video_length):
 
 
 def perform_temporal_upsampling(sample, previous_last_frame, temporal_upsampling, fps):
+    wait_for_model_unload()
     exp = 0
     if temporal_upsampling == "rife2":
         exp = 1
@@ -5414,6 +5432,7 @@ def perform_temporal_upsampling(sample, previous_last_frame, temporal_upsampling
 
 
 def perform_spatial_upsampling(sample, spatial_upsampling, seed=0, flashvsr_continue_cache=None, return_flashvsr_continue_cache=False, vae_tile_size=None, still_image=False, abort_callback=None, progress_callback=None):
+    wait_for_model_unload()
     from shared.utils.utils import resize_lanczos 
     if spatial_upsampling == "vae2":
         return (sample, None) if return_flashvsr_continue_cache else sample
@@ -5958,6 +5977,7 @@ def resolve_prompt_enhancer_settings(model_type, model_def, prompt_enhancer_mode
 
 def exec_prompt_enhancer_engine(state, model_type, model_def, prompt_enhancer_modes, original_prompts, image_start, original_image_refs, is_image, audio_only, seed, progress, override_profile, send_cmd = None, tools = None, enhancer_kwargs = None):
     global enhancer_offloadobj
+    wait_for_model_unload()
 
     assistant_mode = "A" in prompt_enhancer_modes
     if assistant_mode:
@@ -6331,6 +6351,7 @@ def generate_video(
     mode,
     plugin_data=None,
 ):
+    wait_for_model_unload()
 
     def remove_temp_filenames(temp_filenames_list):
         for temp_filename in temp_filenames_list: 
@@ -10535,7 +10556,7 @@ _deepy = deepy_controller.create_controller(
 release_deepy_vram = _deepy.release_vram
 
 
-def generate_video_tab(update_form = False, state_dict = None, ui_defaults = None, model_family = None, model_base_type_choice = None, model_choice = None, model_description = None, header = None, main = None, main_tabs= None, tab_id='generate', edit_tab=None, default_state=None):
+def generate_video_tab(update_form = False, state_dict = None, ui_defaults = None, model_family = None, model_base_type_choice = None, model_choice = None, model_description = None, header = None, main = None, main_tabs= None, tab_id='generate', edit_tab=None, default_state=None, model_toolbar=None):
     global inputs_names #, advanced
     plugin_data = gr.State({})
     edit_mode = tab_id=='edit'
@@ -12281,6 +12302,31 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 outputs= None
             ).then(fn=goto_model_type, inputs =[state, model_choice_target] , outputs= [model_family, model_base_type_choice, model_choice, refresh_form_trigger])
 
+            if tab_id == 'generate' and model_toolbar is not None:
+                model_selector_toolbar.bind_toolbar(
+                    model_toolbar,
+                    deps_factory=_get_dropdown_deps,
+                    state=state,
+                    model_family=model_family,
+                    model_base_type_choice=model_base_type_choice,
+                    model_choice=model_choice,
+                    model_choice_target=model_choice_target,
+                    refresh_form_trigger=refresh_form_trigger,
+                    refresh_model_defs=refresh_model_defs,
+                    refresh_model_dropdowns=refresh_model_dropdowns,
+                    unload_handler=lambda state_value: model_selector_toolbar.unload_models_from_ram(
+                        state_value,
+                        server_config=server_config,
+                        any_GPU_process_running=any_GPU_process_running,
+                        release_deepy_vram=release_deepy_vram,
+                        reset_prompt_enhancer=reset_prompt_enhancer,
+                        reset_prompt_enhancer_if_requested=reset_prompt_enhancer_if_requested,
+                        release_flashvsr_vram=release_flashvsr_vram,
+                        release_seedvc_vram=release_seedvc_vram,
+                        release_model=release_model,
+                    ),
+                )
+
             reset_settings_btn.click(fn=validate_wizard_prompt,
                 inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
                 outputs= [prompt],
@@ -12653,6 +12699,7 @@ def create_ui():
     css += "\n" + MagicMaskUI.get_css()
     css += "\n" + assistant_chat.get_css()
     css += "\n" + model_infos.get_css()
+    css += "\n" + model_selector_toolbar.get_css()
     UI_theme = server_config.get("UI_theme", "default")
     UI_theme  = args.theme if len(args.theme) > 0 else UI_theme
     if UI_theme == "gradio":
@@ -12668,6 +12715,7 @@ def create_ui():
     js += MagicMaskUI.get_javascript()
     js += assistant_chat.get_javascript()
     js += model_infos.get_javascript()
+    js += model_selector_toolbar.get_javascript()
     AudioGallery.install_gradio_upload_mtime_patch()
     app.initialize_plugins(globals())
     plugin_js = ""
@@ -12694,6 +12742,7 @@ def create_ui():
         with gr.Tabs(selected="video_gen", ) as main_tabs:
             # JS keepalive patch targets the stable Gradio tab id "video_gen"; the label can change, but if this id changes the patch must be updated too.
             with gr.Tab("Video Generator", id="video_gen") as video_generator_tab:
+                model_toolbar = None
                 with gr.Row():
                     if args.lock_model:    
                         gr.Markdown("<div class='title-with-lines'><div class=line></div><h2>" + get_model_name(transformer_type) + "</h2><div class=line></div>")
@@ -12702,7 +12751,9 @@ def create_ui():
                     else:
                         gr.Markdown("<div class='title-with-lines'><div class=line width=100%></div></div>")                        
                         model_family, model_base_type_choice, model_choice = generate_dropdown_model_list(transformer_type)
-                        gr.Markdown("<div class='title-with-lines'><div class=line width=100%></div></div>")
+                        model_toolbar = model_selector_toolbar.create_toolbar()
+                if model_toolbar is not None:
+                    model_selector_toolbar.create_search_panel(model_toolbar)
                 with gr.Row():
                     with gr.Column():
                         with gr.Group(elem_classes="header-markdown-group"):
@@ -12721,7 +12772,8 @@ def create_ui():
                         header=header,
                         main=main,
                         main_tabs=main_tabs,
-                        tab_id='generate'
+                        tab_id='generate',
+                        model_toolbar=model_toolbar,
                     )
                     (state, loras_choices, lset_name, resolution, refresh_form_trigger, save_form_trigger) = generator_tab_components['state'], generator_tab_components['loras_choices'], generator_tab_components['lset_name'], generator_tab_components['resolution'], generator_tab_components['refresh_form_trigger'], generator_tab_components['save_form_trigger']
             with gr.Tab("Edit", id="edit", visible=False) as edit_tab:

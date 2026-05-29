@@ -8,6 +8,7 @@ from shared.utils.loras_mutipliers import parse_loras_multipliers
 import gradio as gr
 from pathlib import Path
 
+from .infos import LTX2_INFOS
 from .lora_utils import control_video_phase2_message
 
 _GEMMA_FOLDER_URL = "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/gemma-3-12b-it-qat-q4_0-unquantized/"
@@ -299,6 +300,7 @@ class family_handler:
         extra_model_def = {
             "ltx2_22B_class": base_model_type in LTX2_22B_CLASS,
             "ltx2_edit_anything": editanything_ref,
+            "infos": model_def.get("infos", LTX2_INFOS),
             "text_encoder_folder": _GEMMA_FOLDER,
             "text_encoder_URLs": [
                 build_hf_url("DeepBeepMeep/LTX-2", _GEMMA_FOLDER, _GEMMA_FILENAME),
@@ -577,8 +579,6 @@ class family_handler:
         from shared.utils.utils import get_outpainting_dims 
         any_outpainting = get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio) is not None        
         if "2" in audio_prompt_type:
-            if pipeline_kind != "distilled":
-                return "LTX2 audio generation from Control Video is supported only with distilled models."
             if any(letter in audio_prompt_type for letter in "AK"):
                 return "LTX2 audio generation from Control Video must use the dedicated audio option, without an Audio Source or Control Video Audio Track prompt."
             if "V" not in video_prompt_type or "G" not in video_prompt_type:

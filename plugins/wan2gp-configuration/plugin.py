@@ -5,6 +5,7 @@ from shared.deepy.engine import get_or_create_assistant_session
 from shared.gradio import assistant_chat, gradio_queue_focus_patch
 from shared.gradio.hierarchy_selector import HierarchySelector
 from shared.utils import prompt_parser
+from shared.gradio.model_selector_toolbar import unload_models_from_ram
 from shared.utils.video_codecs import SDR_VIDEO_CODEC_CHOICES, VIDEO_CONTAINER_CHOICES, validate_video_output_settings
 from shared.deepy.config import (
     DEEPY_CONTEXT_TOKENS_MIN,
@@ -550,40 +551,18 @@ class ConfigTabPlugin(WAN2GPPlugin):
             ]
         )
 
-        def _unload_targets_text():
-            targets = ["Models"]
-            try:
-                enhancer_enabled = int(self.server_config.get("enhancer_enabled", 0) or 0) > 0
-            except Exception:
-                enhancer_enabled = False
-            if enhancer_enabled:
-                targets.append("Prompt Enhancer")
-            if int(self.server_config.get("seedvc_mode", 0) or 0) > 0:
-                targets.append("SeedVC")
-            if int(self.server_config.get("flashvsr_mode", 0) or 0) > 0:
-                targets.append("FlashVSR")
-            if deepy_available(self.server_config):
-                targets.append("Deepy")
-            if len(targets) == 1:
-                return targets[0]
-            return ", ".join(targets[:-1]) + f", and {targets[-1]}" if len(targets) > 2 else " and ".join(targets)
-
         def release_ram_and_notify(state):
-            unload_targets = _unload_targets_text()
-            if self.any_GPU_process_running(state, "configuration"):
-                gr.Info(f"Unable to unload {unload_targets} while GPU resources are allocated.")
-                return
-            if deepy_available(self.server_config):
-                self.release_deepy_vram(state, clear_session_state=False, discard_runtime_snapshot=True)
-            if "Prompt Enhancer" in unload_targets:
-                self.reset_prompt_enhancer()
-                self.reset_prompt_enhancer_if_requested()
-            if "FlashVSR" in unload_targets:
-                self.release_flashvsr_vram()
-            if "SeedVC" in unload_targets:
-                self.release_seedvc_vram()
-            self.release_model()
-            gr.Info(f"{unload_targets} unloaded from RAM.")
+            unload_models_from_ram(
+                state,
+                server_config=self.server_config,
+                any_GPU_process_running=self.any_GPU_process_running,
+                release_deepy_vram=self.release_deepy_vram,
+                reset_prompt_enhancer=self.reset_prompt_enhancer,
+                reset_prompt_enhancer_if_requested=self.reset_prompt_enhancer_if_requested,
+                release_flashvsr_vram=self.release_flashvsr_vram,
+                release_seedvc_vram=self.release_seedvc_vram,
+                release_model=self.release_model,
+            )
 
         self.release_RAM_btn.click(fn=release_ram_and_notify, inputs=[self.state])
         return [self.release_RAM_btn]

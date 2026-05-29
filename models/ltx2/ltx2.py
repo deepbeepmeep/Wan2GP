@@ -1028,7 +1028,7 @@ class LTX2:
             NAG_scale = 1.0
             audio_prompt_type = ""
             input_waveform = None
-        audio_from_control_video = distill and "2" in audio_prompt_type
+        audio_from_control_video = "2" in audio_prompt_type
         image_start = _coerce_image_list(image_start)
         image_end = _coerce_image_list(image_end)
         if frames_to_inject is None:
@@ -1379,6 +1379,8 @@ class LTX2:
                 return_latent_slice=return_latent_slice,
                 continuous_conditioning_and_guide=continuous_conditioning_and_guide,
                 skip_stage_2=skip_stage_2,
+                frozen_video_conditioning=frozen_control_video,
+                frozen_output_video=frozen_control_video,
                 self_refiner_setting=self_refiner_setting,
                 self_refiner_plan=self_refiner_plan,
                 self_refiner_f_uncertainty=self_refiner_f_uncertainty,

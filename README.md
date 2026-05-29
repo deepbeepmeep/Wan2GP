@@ -67,6 +67,8 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 - **ProRes422 & DNxHR HQ Video Codecs**: these professional video codecs have some fans out there
 
+- **LTX-2 Guide**: click the "i" to the right of the model description to get tips / explanations on how to use LTX2 models
+
 - **LTX2 Smearing Fix**: the smearing / ghosting is now mostly gone
 
 - **Omnivoice Fix**: you will enjoy this fix unless you liked the gibberish generator of the previous version

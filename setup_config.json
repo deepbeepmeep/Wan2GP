@@ -129,7 +129,7 @@
         }
     },
     "gpu_profiles": {
-        "GTX_10":      { "python": "3.10", "torch": "cu128", "triton": null,     "sage": null,       "sparge": null, "flash": null, "kernels": [] },
+        "GTX_10":      { "python": "3.11", "torch": "cu128", "triton": null, "sage": null, "sparge": null, "flash": null, "kernels": [] },
         "RTX_20":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v1", "sparge": null, "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
         "RTX_30":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
         "RTX_40":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },

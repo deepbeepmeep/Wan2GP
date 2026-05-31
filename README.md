@@ -57,11 +57,13 @@ WanGP is a one-stop super app for the best open source generative models across 
 ## 🔥 Latest Updates : 
 ### 1sth of June 2026: WanGP v11.90, Everything will be fine...
 **Finetune Creator / Editor**
-Create a new Finetune (reuse an existing model with your own checkpoints) or Edit an existing Finetune in only one click directly from the *WanGP UI*.
-Check for the new **+** in the tool bar.
+*Create* a new *Finetune* (use an existing model with your own checkpoints), *Edit* or *Import* an existing Finetune in only one click directly from the *WanGP UI*. You can then share easily a finetune with other users by clicking the *Export* button.
 
-The finetune creator allows you not only to customize an existing models with *Custom URLs* or *Local Paths* but also to define *User help* and set *Custom System Templates* to be used with the finetune *Prompt Enhancer*.
+Look for the new **+** in the *WanGP Tool Bar*.
 
+The finetune creator allows you not only to customize an existing models with *Custom URLs* or *Local Paths* for both the main *Transformer files* & *Text encoders* but also to define *User help* and set *Custom System Templates* to be used with the finetune *Prompt Enhancer*.
+
+Please check *docs/FINETUNE.md* doc for info about finetunes.
 
 ### 29th of May 2026: WanGP v11.88, Humans Accelerators
 - **Create Hierarchies of Loras / Change Order of Loras**

@@ -27,6 +27,15 @@ DEFAULT_TIMESTEPS = [
     707, 675, 640, 602, 560, 515, 464, 409, 347, 278, 199, 110, 8,
 ]
 
+
+def resample_timesteps(timesteps, num_steps):
+    if num_steps == len(timesteps):
+        return list(timesteps)
+    positions = np.linspace(0, len(timesteps) - 1, num_steps)
+    values = np.interp(positions, np.arange(len(timesteps)), timesteps)
+    return [int(round(value)) for value in values]
+
+
 def build_t2i_text_sample(prompt, height, width, tokenizer, processor, model_config):
     image_token_id = model_config.image_token_id
     video_token_id = model_config.video_token_id

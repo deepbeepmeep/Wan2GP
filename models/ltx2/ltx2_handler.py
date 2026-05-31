@@ -8,6 +8,7 @@ from shared.utils.loras_mutipliers import parse_loras_multipliers
 import gradio as gr
 from pathlib import Path
 
+from .infos import LTX2_INFOS
 from .lora_utils import control_video_phase2_message
 
 _GEMMA_FOLDER_URL = "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/gemma-3-12b-it-qat-q4_0-unquantized/"
@@ -79,7 +80,10 @@ _ARCH_SPECS = {
         "lora_dir": "ltx2",
     },
 }
-
+LTX2_22B_CLASS = {"ltx2_22B", "ltx2_22B_edit_anything"}
+for model_type in LTX2_22B_CLASS:
+    if  model_type!= "ltx2_22B":
+        _ARCH_SPECS[model_type]=_ARCH_SPECS["ltx2_22B"]
 
 def _get_arch_spec(base_model_type: str | None) -> dict:
     return _ARCH_SPECS.get(base_model_type or "", _ARCH_SPECS["ltx2_19B"])
@@ -94,11 +98,11 @@ def _get_system_lora_urls(spec: dict) -> dict:
 
 
 def _default_perturbation_layers(base_model_type: str | None) -> list[int]:
-    return [28] if base_model_type == "ltx2_22B" else [29]
+    return [28] if base_model_type in LTX2_22B_CLASS else [29]
 
 
 def _default_dev_settings(base_model_type: str | None) -> dict:
-    if base_model_type == "ltx2_22B":
+    if base_model_type in LTX2_22B_CLASS:
         return {
             "num_inference_steps": 8,
             "video_length": 121,
@@ -134,7 +138,7 @@ def _default_dev_settings(base_model_type: str | None) -> dict:
 
 
 def _is_editanything_model(model_def) -> bool:
-    return bool(model_def.get("ltx2_edit_anything", False))
+    return model_def.get("ltx2_edit_anything", False) or model_def.get("architecture","")=="ltx2_22B_edit_anything"
 
 
 def _is_distilled_model(model_def) -> bool:
@@ -237,17 +241,18 @@ class family_handler:
     @staticmethod
     def query_supported_types():
         _migrate_loras()
-        return ["ltx2_19B", "ltx2_22B"]
+        return ["ltx2_19B", "ltx2_22B", "ltx2_22B_edit_anything"]
 
     @staticmethod
     def query_family_maps():
 
         models_eqv_map = {
             "ltx2_19B" : "ltx2_22B",
+            "ltx2_22B_edit_anything" : "ltx2_22B",
         }
 
         models_comp_map = { 
-                    "ltx2_19B" : [ "ltx2_22B"],
+                    "ltx2_19B" : [ "ltx2_22B", "ltx2_22B_edit_anything"],
                     }
         return models_eqv_map, models_comp_map
 
@@ -293,6 +298,9 @@ class family_handler:
 
 
         extra_model_def = {
+            "ltx2_22B_class": base_model_type in LTX2_22B_CLASS,
+            "ltx2_edit_anything": editanything_ref,
+            "infos": model_def.get("infos", LTX2_INFOS),
             "text_encoder_folder": _GEMMA_FOLDER,
             "text_encoder_URLs": [
                 build_hf_url("DeepBeepMeep/LTX-2", _GEMMA_FOLDER, _GEMMA_FILENAME),
@@ -303,7 +311,7 @@ class family_handler:
             "frames_minimum": 17,
             "frames_steps": 8,
             "sliding_window": True,
-            "image_prompt_types_allowed": "TSEV",
+            "image_prompt_types_allowed": "TSEVL",
             "end_frames_always_enabled": True,
             "returns_audio": True,
             "any_audio_prompt": True,
@@ -364,7 +372,7 @@ class family_handler:
         if editanything_ref:
             extra_model_def.update(_EDITANYTHING_MODEL_DEF)
         
-        if base_model_type in ["ltx2_22B"] and not editanything_ref:
+        if base_model_type in ["ltx2_22B"]:
             extra_model_def["video_guide_outpainting"] = [0,1]
             extra_model_def["video_guide_outpainting_label"] = "Enable Spatial Outpainting on Control Video using Ic Lora Outpaint"
             extra_model_def["guide_inpaint_color"] = 0
@@ -385,7 +393,7 @@ class family_handler:
             "name": "Masked Control Duration",
         }
         
-        if editanything_ref: 
+        if base_model_type in ["ltx2_22B_edit_anything"]: 
             control_choices = [("EditAnything Source Video", "VGI")]
         else:
             control_choices = [("No Video Process", "")]
@@ -448,7 +456,7 @@ class family_handler:
                     "perturbation_layers_max": 48,
                 }
             )
-            if base_model_type == "ltx2_22B":
+            if base_model_type in LTX2_22B_CLASS:
                 extra_model_def["sample_solvers"] = [("Distilled 8 Steps", "distilled_8_steps"), ("Euler", "euler"), ("HQ (res2s)", "res2s")]
         extra_model_def["guidance_max_phases"] = 2
         extra_model_def["visible_phases"] = 0 if distilled else 1
@@ -547,7 +555,7 @@ class family_handler:
                 inputs["perturbation"] = 0
         else:
             sample_solver = inputs.get("sample_solver", "euler" if base_model_type == "ltx2_22B" else "").lower()
-            if base_model_type == "ltx2_22B":
+            if base_model_type in LTX2_22B_CLASS:
                 if sample_solver not in {"distilled_8_steps", "euler", "res2s"}:
                     return f"Unsupported LTX2 sampler '{sample_solver}'."
                 inputs["sample_solver"] = sample_solver
@@ -571,8 +579,6 @@ class family_handler:
         from shared.utils.utils import get_outpainting_dims 
         any_outpainting = get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio) is not None        
         if "2" in audio_prompt_type:
-            if pipeline_kind != "distilled":
-                return "LTX2 audio generation from Control Video is supported only with distilled models."
             if any(letter in audio_prompt_type for letter in "AK"):
                 return "LTX2 audio generation from Control Video must use the dedicated audio option, without an Audio Source or Control Video Audio Track prompt."
             if "V" not in video_prompt_type or "G" not in video_prompt_type:
@@ -628,7 +634,7 @@ class family_handler:
         text_encoder_filename=None,
         **kwargs,
     ):
-        from .ltx2 import LTX2
+        from .ltx2 import LTX2, LTX2_ENABLE_EMBEDDING_LORAS
 
         checkpoint_paths = _resolve_multi_file_paths(model_def, base_model_type)
         transformer_modules = []
@@ -684,7 +690,7 @@ class family_handler:
         if ltx2_model.model2 is not None:
             pipe["transformer2"] = ltx2_model.model2
 
-        if model_def.get("ltx2_pipeline", "") != "distilled":
+        if LTX2_ENABLE_EMBEDDING_LORAS:
             pipe = { "pipe": pipe, "loras" : ["text_embedding_projection", "text_embeddings_connector"] }
 
         return ltx2_model, pipe

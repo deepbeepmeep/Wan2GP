@@ -479,6 +479,35 @@ def create_models_hierarchy(rows):
     return parents_list, children_dict
 
 
+def create_models_selector_hierarchy(deps, dropdown_types=None):
+    dropdown_types = get_dropdown_model_types(deps) if dropdown_types is None else list(dict.fromkeys(dropdown_types))
+    family_model_types = defaultdict(list)
+    for model_type in dropdown_types:
+        family = deps.get_model_family(model_type, for_ui=True)
+        if family in deps.families_infos:
+            family_model_types[family].append(model_type)
+
+    tree = {"folders": [], "items": []}
+    sorted_families = sorted(family_model_types, key=lambda family: deps.families_infos[family][0])
+    for family in sorted_families:
+        family_name = deps.families_infos[family][1]
+        rows = [
+            (compact_name(family_name, deps.get_model_name(model_type)), model_type, deps.get_parent_model_type(model_type))
+            for model_type in family_model_types[family]
+        ]
+        rows.sort(key=lambda row: row[0].casefold())
+        parent_choices, children_by_parent = create_models_hierarchy(rows)
+        family_folder = {"name": family_name, "path": family_name, "folders": [], "items": []}
+        for parent_name, parent_model_type in parent_choices:
+            parent_path = f"{family_name}/{parent_name}"
+            parent_folder = {"name": parent_name, "path": parent_path, "folders": [], "items": []}
+            for child_name, child_model_type in children_by_parent.get(parent_model_type, []):
+                parent_folder["items"].append({"name": child_name, "value": child_model_type})
+            family_folder["folders"].append(parent_folder)
+        tree["folders"].append(family_folder)
+    return tree
+
+
 def get_sorted_dropdown(deps, dropdown_types, current_model_family, current_model_type, three_levels=True):
     models_families = [deps.get_model_family(t, for_ui=True) for t in dropdown_types]
     families = {}
@@ -517,8 +546,8 @@ def generate_dropdown_model_list(deps, current_model_type):
     sorted_finetunes = decorate_dropdown_choices_with_status(sorted_finetunes, direct_status_map)
 
     dropdown_families = gr.Dropdown(choices=sorted_familes, value=current_model_family, show_label=False, scale=2 if deps.three_levels_hierarchy else 1, elem_id="family_list", min_width=50)
-    dropdown_models = gr.Dropdown(choices=sorted_models, value=deps.get_parent_model_type(current_model_type) if deps.three_levels_hierarchy else deps.get_base_model_type(current_model_type), show_label=False, scale=3 if len(sorted_finetunes) > 1 else 7, elem_id="model_base_types_list", visible=deps.three_levels_hierarchy)
-    dropdown_finetunes = gr.Dropdown(choices=sorted_finetunes, value=current_model_type, show_label=False, scale=4, visible=len(sorted_finetunes) > 1 or not deps.three_levels_hierarchy, elem_id="model_list")
+    dropdown_models = gr.Dropdown(choices=sorted_models, value=deps.get_parent_model_type(current_model_type) if deps.three_levels_hierarchy else deps.get_base_model_type(current_model_type), show_label=False, scale=3 if len(sorted_finetunes) > 1 else 6, elem_id="model_base_types_list", visible=deps.three_levels_hierarchy)
+    dropdown_finetunes = gr.Dropdown(choices=sorted_finetunes, value=current_model_type, show_label=False, scale=3, visible=len(sorted_finetunes) > 1 or not deps.three_levels_hierarchy, elem_id="model_list")
     return dropdown_families, dropdown_models, dropdown_finetunes
 
 
@@ -548,7 +577,7 @@ def change_model_family(deps, state, current_model_family):
         dropdown_base_types_choices = list({deps.get_base_model_type(model[1]) for model in dropdown_choices})
         dropdown_choices = decorate_dropdown_choices_with_status(dropdown_choices, direct_status_map)
 
-    return gr.Dropdown(choices=dropdown_base_types_choices, value=parent_model_type, scale=3 if model_finetunes_visible else 7), gr.Dropdown(choices=dropdown_choices, value=model_type, visible=model_finetunes_visible)
+    return gr.Dropdown(choices=dropdown_base_types_choices, value=parent_model_type, scale=3 if model_finetunes_visible else 6), gr.Dropdown(choices=dropdown_choices, value=model_type, visible=model_finetunes_visible)
 
 
 def change_model_base_types(deps, state, current_model_family, model_base_type_choice):
@@ -567,4 +596,4 @@ def change_model_base_types(deps, state, current_model_family, model_base_type_c
     model_type = last_model_per_type.get(model_base_type_choice, "")
     if len(model_type) == "" or model_type not in [choice[1] for choice in dropdown_choices]:
         model_type = dropdown_choices[0][1]
-    return gr.update(scale=3 if model_finetunes_visible else 7), gr.Dropdown(choices=dropdown_choices, value=model_type, visible=model_finetunes_visible)
+    return gr.update(scale=3 if model_finetunes_visible else 6), gr.Dropdown(choices=dropdown_choices, value=model_type, visible=model_finetunes_visible)

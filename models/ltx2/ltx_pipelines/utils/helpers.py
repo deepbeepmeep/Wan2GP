@@ -986,6 +986,21 @@ def _skip_audio_to_video_perturbations(batch_size: int) -> BatchedPerturbationCo
     return BatchedPerturbationConfig(perts)
 
 
+def _merge_perturbations(batch_size: int, *configs: BatchedPerturbationConfig | None) -> BatchedPerturbationConfig | None:
+    merged = []
+    any_perturbation = False
+    for batch_idx in range(batch_size):
+        perturbations = []
+        for config in configs:
+            if config is None or batch_idx >= len(config.perturbations):
+                continue
+            items = config.perturbations[batch_idx].perturbations or []
+            perturbations.extend(items)
+        any_perturbation = any_perturbation or bool(perturbations)
+        merged.append(PerturbationConfig(perturbations))
+    return BatchedPerturbationConfig(merged) if any_perturbation else None
+
+
 PERTURBATION_perturbation = 1
 PERTURBATION_SKIP_SELF_ATTENTION = 2
 
@@ -1419,6 +1434,7 @@ def guider_denoising_func(
     ref_adaln: torch.Tensor | None = None,
     v_context_p_mask_builder: Callable[[LatentState, torch.Tensor | None, torch.Tensor], torch.Tensor | None] | None = None,
     a_context_p_mask_builder: Callable[[LatentState, torch.Tensor | None, torch.Tensor], torch.Tensor | None] | None = None,
+    skip_audio_to_video: bool = False,
 ) -> DenoisingFunc:
     perturb_all_layers = perturbation_layers is None
     perturbation_layers_norm = _normalize_perturbation_layers(perturbation_layers)
@@ -1485,11 +1501,12 @@ def guider_denoising_func(
             perturbation_switch == PERTURBATION_SKIP_SELF_ATTENTION and use_perturbation and has_perturbation_layers
         )
         selected_layers = None if perturb_all_layers else perturbation_layers_norm
+        batch_size = _get_batch_size(video_state, audio_state)
+        a2v_perturbations = _skip_audio_to_video_perturbations(batch_size) if skip_audio_to_video else None
         if use_cfg or use_alt or use_stg or use_id:
-            batch_size = _get_batch_size(video_state, audio_state)
             video_list = [pos_video]
             audio_list = [pos_audio]
-            perturbations: list[BatchedPerturbationConfig | None] = [None]
+            perturbations: list[BatchedPerturbationConfig | None] = [a2v_perturbations]
             neg_index = None
             stg_index = None
             alt_index = None
@@ -1530,7 +1547,11 @@ def guider_denoising_func(
                     )
                 )
                 perturbations.append(
-                    _legacy_perturbation_layer_configs(batch_size, selected_layers) if use_legacy_perturbation else None
+                    _merge_perturbations(
+                        batch_size,
+                        a2v_perturbations,
+                        _legacy_perturbation_layer_configs(batch_size, selected_layers) if use_legacy_perturbation else None,
+                    )
                 )
 
             if use_stg:
@@ -1555,7 +1576,9 @@ def guider_denoising_func(
                         context_mask_builder=a_context_p_mask_builder,
                     )
                 )
-                perturbations.append(_self_attn_perturbation_configs(batch_size, selected_layers))
+                perturbations.append(
+                    _merge_perturbations(batch_size, a2v_perturbations, _self_attn_perturbation_configs(batch_size, selected_layers))
+                )
 
             if use_alt:
                 alt_index = len(video_list)
@@ -1579,7 +1602,7 @@ def guider_denoising_func(
                         context_mask_builder=a_context_p_mask_builder,
                     )
                 )
-                perturbations.append(_cross_attn_perturbations(batch_size))
+                perturbations.append(_merge_perturbations(batch_size, a2v_perturbations, _cross_attn_perturbations(batch_size)))
 
             if use_id:
                 id_index = len(video_list)
@@ -1603,7 +1626,7 @@ def guider_denoising_func(
                         context_mask_builder=a_context_p_mask_builder,
                     )
                 )
-                perturbations.append(None)
+                perturbations.append(a2v_perturbations)
 
             denoised_video_list, denoised_audio_list = transformer(
                 video=video_list,
@@ -1660,7 +1683,7 @@ def guider_denoising_func(
                         pos_denoised_audio[:, ref_audio_tokens:] - id_denoised_audio
                     )
         else:
-            denoised_video, denoised_audio = transformer(video=pos_video, audio=pos_audio, perturbations=None)
+            denoised_video, denoised_audio = transformer(video=pos_video, audio=pos_audio, perturbations=a2v_perturbations)
             if denoised_video is None and denoised_audio is None:
                 return None, None
             pos_denoised_video = denoised_video
@@ -1726,6 +1749,7 @@ def multi_modal_guider_denoising_func(
     ref_adaln: torch.Tensor | None = None,
     v_context_p_mask_builder: Callable[[LatentState, torch.Tensor | None, torch.Tensor], torch.Tensor | None] | None = None,
     a_context_p_mask_builder: Callable[[LatentState, torch.Tensor | None, torch.Tensor], torch.Tensor | None] | None = None,
+    skip_audio_to_video: bool = False,
 ) -> DenoisingFunc:
     prepared_v_context_p = prepared_v_context_n = None
     prepared_a_context_p = prepared_a_context_n = prepared_a_context_id = None
@@ -1793,9 +1817,10 @@ def multi_modal_guider_denoising_func(
 
         if use_cfg or use_stg or use_modality or use_id:
             batch_size = _get_batch_size(video_state, audio_state)
+            a2v_perturbations = _skip_audio_to_video_perturbations(batch_size) if skip_audio_to_video else None
             video_list = [pos_video]
             audio_list = [pos_audio]
-            perturbations: list[BatchedPerturbationConfig | None] = [None]
+            perturbations: list[BatchedPerturbationConfig | None] = [a2v_perturbations]
             neg_index = None
             stg_index = None
             modality_index = None
@@ -1837,7 +1862,7 @@ def multi_modal_guider_denoising_func(
                         context_mask_builder=neg_audio_mask_builder,
                     )
                 )
-                perturbations.append(None)
+                perturbations.append(a2v_perturbations)
 
             if use_stg:
                 stg_index = len(video_list)
@@ -1870,7 +1895,8 @@ def multi_modal_guider_denoising_func(
                     stg_perturbations.append(
                         Perturbation(type=PerturbationType.SKIP_AUDIO_SELF_ATTN, blocks=audio_guider.params.stg_blocks or None)
                     )
-                perturbations.append(BatchedPerturbationConfig([PerturbationConfig(stg_perturbations) for _ in range(batch_size)]))
+                stg_config = BatchedPerturbationConfig([PerturbationConfig(stg_perturbations) for _ in range(batch_size)])
+                perturbations.append(_merge_perturbations(batch_size, a2v_perturbations, stg_config))
 
             if use_modality:
                 modality_index = len(video_list)
@@ -1894,7 +1920,7 @@ def multi_modal_guider_denoising_func(
                         context_mask_builder=a_context_p_mask_builder,
                     )
                 )
-                perturbations.append(_cross_attn_perturbations(batch_size))
+                perturbations.append(_merge_perturbations(batch_size, a2v_perturbations, _cross_attn_perturbations(batch_size)))
 
             if use_id:
                 id_index = len(video_list)
@@ -1918,7 +1944,7 @@ def multi_modal_guider_denoising_func(
                         context_mask_builder=a_context_p_mask_builder,
                     )
                 )
-                perturbations.append(None)
+                perturbations.append(a2v_perturbations)
 
             denoised_video_list, denoised_audio_list = transformer(
                 video=video_list,
@@ -1996,7 +2022,9 @@ def multi_modal_guider_denoising_func(
                         pos_denoised_audio[:, ref_audio_tokens:] - id_denoised_audio
                     )
         else:
-            denoised_video, denoised_audio = transformer(video=pos_video, audio=pos_audio, perturbations=None)
+            batch_size = _get_batch_size(video_state, audio_state)
+            a2v_perturbations = _skip_audio_to_video_perturbations(batch_size) if skip_audio_to_video else None
+            denoised_video, denoised_audio = transformer(video=pos_video, audio=pos_audio, perturbations=a2v_perturbations)
             if denoised_video is None and denoised_audio is None:
                 return None, None
             if skip_video and last_denoised_video is not None:

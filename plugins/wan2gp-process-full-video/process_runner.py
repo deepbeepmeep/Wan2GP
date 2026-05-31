@@ -209,6 +209,7 @@ class ProcessRunner:
                     start_seconds=start_seconds,
                     end_seconds=end_seconds,
                     model_type=model_type,
+                    process_is_hdr=process_is_hdr,
                     uses_builtin_outpaint_ui=uses_builtin_outpaint_ui,
                     system_handler=system_handler,
                     system_target_control=system_target_control,

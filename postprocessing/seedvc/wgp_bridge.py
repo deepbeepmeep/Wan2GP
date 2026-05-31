@@ -53,6 +53,7 @@ def _get_runtime(persistent_models: bool, profile_no=4, verbose_level: int = 1, 
         offload_kwargs = {"coTenantsMap": seedvc.get_cotenants_map(pipe)}
         if init_pipe is not None:
             profile_no = init_pipe(pipe, offload_kwargs, profile_no)
+        offload_kwargs["pinnedMemory"] = False
         offloadobj = offload.profile(pipe, profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=torch.float16, verboseLevel=verbose_level, **offload_kwargs)
         if persistent_models:
             _persistent_converter = converter

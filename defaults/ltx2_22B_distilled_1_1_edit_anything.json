@@ -1,0 +1,16 @@
+{
+    "model": {
+        "name": "LTX-2 2.3 EditAnything Ref V2V Distilled 1.0 22B",
+        "architecture": "ltx2_22B_edit_anything",
+        "description": "Experimental EditAnything reference video-to-video workflow for LTX-2.3 Distilled 22B. Faster 8-step preset using a source/control video plus one reference image, with the standard EditAnything LoRA and its sidecar reference module loaded together.This version uses Distilled v1.1.",
+        "URLs": "ltx2_22B_distilled",
+        "modules": "ltx2_22B_edit_anything",
+        "loras": "ltx2_22B_edit_anything",
+        "loras_multipliers": "ltx2_22B_edit_anything",
+        "ltx2_pipeline": "distilled"
+    },
+    "prompt": "Add a middle-aged man with curly grey hair, a beard and glasses, wearing a blue quarter-zip sweater, on the right side of the frame, standing in front of a raw cut of meat on a tray.",
+    "num_inference_steps": 8,
+    "video_length": 81,
+    "resolution": "1280x720"
+}

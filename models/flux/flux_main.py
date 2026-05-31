@@ -546,7 +546,7 @@ class model_factory:
             resolved = fl.locate_file(lora_ref, error_if_none=False)
             if resolved is None:
                 resolved = fl.locate_file(os.path.basename(lora_ref))
-            return resolved
+            return os.path.abspath(resolved)
 
         preloadURLs = get_model_recursive_prop(model_type,  "preload_URLs")
         if self.is_piflux2:

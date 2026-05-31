@@ -192,7 +192,7 @@ def get_css() -> str:
     border-radius: 999px;
     background: var(--button-secondary-background-fill, linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(238, 247, 252, 0.98) 100%));
     color: var(--button-secondary-text-color, #155574);
-    box-shadow: 0 8px 18px rgba(11, 44, 63, 0.10);
+    box-shadow: none;
     cursor: pointer;
     line-height: 1;
     display: inline-flex;
@@ -201,7 +201,7 @@ def get_css() -> str:
 }
 .wangp-model-info-trigger:hover {
     border-color: rgba(16, 86, 121, 0.36);
-    box-shadow: 0 10px 22px rgba(11, 44, 63, 0.16);
+    box-shadow: none;
 }
 .wangp-model-info-popup[hidden] {
     display: none !important;

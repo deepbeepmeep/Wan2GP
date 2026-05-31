@@ -74,6 +74,7 @@ def prepare_run(
     start_seconds: float,
     end_seconds: float | None,
     model_type: str,
+    process_is_hdr: bool,
     uses_builtin_outpaint_ui: bool,
     system_handler=None,
     system_target_control: str = "",
@@ -160,6 +161,8 @@ def prepare_run(
     if ffprobe_path is None:
         raise gr.Error("ffprobe binary not found.")
     output_container = media.normalize_container_name(Path(resolved_output_path).suffix.lstrip(".") or plugin.server_config.get("video_container", "mp4"))
+    output_video_codec = "libx265_8" if process_is_hdr else plugin.server_config.get("video_output_codec", "libx264_8")
+    media.validate_output_codec_container(output_video_codec, output_container, output_path=resolved_output_path)
     if selected_audio_track is not None:
         media.validate_audio_copy_container(ffprobe_path, source_path, output_container, selected_audio_track)
     return PreparedRun(

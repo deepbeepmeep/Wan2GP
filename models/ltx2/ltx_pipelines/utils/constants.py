@@ -15,6 +15,8 @@ STAGE_2_DISTILLED_SIGMA_VALUES = [0.909375, 0.725, 0.421875, 0.0]
 # which uses this slightly lower starting sigma for its second denoise pass.
 DISTILLED_8_STEPS_STAGE_2_SIGMA_VALUES = [0.85, 0.7250, 0.4219, 0.0]
 
+LTX23_USE_DISTILLED_8_STEPS_STAGE_2_SIGMAS = True
+
 
 # =============================================================================
 # Video Generation Defaults

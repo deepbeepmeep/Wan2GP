@@ -3,7 +3,7 @@ Video Metadata Utilities
 
 This module provides functionality to read and write JSON metadata to video files.
 - MP4: Uses mutagen to store metadata in ©cmt tag
-- MKV: Uses FFmpeg to store metadata in comment/description tags
+- MKV: Uses FFmpeg to store metadata in comment/description tags and source images as attached pictures
 """
 
 import json
@@ -24,6 +24,8 @@ _MP4_COMMENT_BOX = b"\xa9cmt"
 _MKV_COMMENT_NAME = b"\x45\xa3\x87COMMENT"
 _CONTAINER_COMMENT_TAGS = ("comment", "COMMENT", "description", "DESCRIPTION")
 _MP4_METADATA_CONTAINERS = {b"moov", b"udta", b"meta", b"ilst", _MP4_COMMENT_BOX}
+_MP4_METADATA_EXTENSIONS = (".mp4", ".mov")
+_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
 
 
 def _resolve_media_tool(name):
@@ -164,6 +166,32 @@ def _find_mp4_comment_slot(file_path):
             return _find_mp4_comment_slot_in_range(mm, 0, len(mm))
 
 
+def _find_reserved_metadata_text_slot(file_path):
+    placeholder = _encode_metadata_bytes({_RESERVED_METADATA_KEY: True})
+    with open(file_path, "rb") as handle:
+        with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            cursor = 0
+            fallback_slot = None
+            comment_slot = None
+            while True:
+                payload_offset = mm.find(placeholder, cursor)
+                if payload_offset < 0:
+                    break
+                payload_end = payload_offset + len(placeholder)
+                while payload_end < len(mm) and mm[payload_end] == 0x20:
+                    payload_end += 1
+                slot = payload_offset, payload_end - payload_offset
+                fallback_slot = slot
+                if mm.rfind(_MP4_COMMENT_BOX, max(0, payload_offset - 64), payload_offset) >= 0:
+                    comment_slot = slot
+                cursor = payload_offset + len(placeholder)
+            return comment_slot or fallback_slot
+
+
+def _find_mp4_metadata_slot(file_path):
+    return _find_reserved_metadata_text_slot(file_path) or _find_mp4_comment_slot(file_path)
+
+
 def _read_ebml_size(mm, offset):
     if offset >= len(mm):
         return None
@@ -236,7 +264,7 @@ def _maybe_update_metadata_in_place(file_path, payload_bytes, *, container_name,
     return ok
 
 
-def _copy_video_with_comment(file_path, metadata_text):
+def _copy_video_with_comment(file_path, metadata_text, source_images=None):
     ffmpeg_path = _resolve_media_tool("ffmpeg")
     temp_output_path = _make_temp_output_path(file_path, "metadata")
     meta_dir = tempfile.mkdtemp(prefix="wangp_metadata_")
@@ -245,7 +273,11 @@ def _copy_video_with_comment(file_path, metadata_text):
     tags["comment"] = metadata_text
     try:
         _write_ffmetadata_file(metadata_path, tags)
-        result = subprocess.run([ffmpeg_path, "-y", "-v", "error", "-i", file_path, "-f", "ffmetadata", "-i", metadata_path, "-map", "0", "-map_metadata", "1", "-c", "copy", temp_output_path], capture_output=True, text=True, encoding="utf-8", errors="ignore", check=False)
+        command = [ffmpeg_path, "-y", "-v", "error", "-i", file_path, "-f", "ffmetadata", "-i", metadata_path, "-map", "0", "-map_metadata", "1", "-c", "copy"]
+        for attachment_no, (attachment_path, attachment_filename, mimetype) in enumerate(_materialize_mkv_attachments(source_images, meta_dir)):
+            command += ["-attach", attachment_path, f"-metadata:s:t:{attachment_no}", f"mimetype={mimetype}", f"-metadata:s:t:{attachment_no}", f"filename={attachment_filename}"]
+        command += [temp_output_path]
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="ignore", check=False)
         if result.returncode != 0 or not os.path.isfile(temp_output_path):
             if os.path.exists(temp_output_path):
                 os.remove(temp_output_path)
@@ -342,15 +374,89 @@ def _convert_image_to_bytes(img):
         print(f"Error converting image to bytes: {e}")
         return None, None
 
+
+def _safe_metadata_filename_part(text, default):
+    safe = "".join(char if char.isalnum() or char in "._-" else "_" for char in str(text or "").strip())
+    safe = safe.strip("._")
+    return safe or default
+
+
+def _split_mkv_attachment_filename(filename):
+    filename = os.path.basename(str(filename or ""))
+    stem, ext = os.path.splitext(filename)
+    if "__" in stem:
+        tag, original_stem = stem.split("__", 1)
+        return _safe_metadata_filename_part(tag, "unknown"), _safe_metadata_filename_part(original_stem, "source") + ext
+    return "unknown", _safe_metadata_filename_part(filename, "source.png")
+
+
+def _normalize_source_images(source_images):
+    if not source_images:
+        return None
+    normalized = {}
+    if isinstance(source_images, dict):
+        iterable = source_images.items()
+    else:
+        iterable = ((_split_mkv_attachment_filename(img)[0], img) for img in list(source_images if isinstance(source_images, (list, tuple)) else [source_images]))
+    for img_tag, img_data in iterable:
+        img_list = img_data if isinstance(img_data, list) else [img_data]
+        valid_images = [img for img in img_list if img is not None]
+        if valid_images:
+            normalized.setdefault(str(img_tag or "unknown"), []).extend(valid_images)
+    return normalized or None
+
+
+def _image_extension_and_mimetype(image_bytes):
+    if image_bytes.startswith(b"\x89PNG"):
+        return ".png", "image/png"
+    return ".jpg", "image/jpeg"
+
+
+def _materialize_mkv_attachments(source_images, work_dir):
+    source_images = _normalize_source_images(source_images)
+    if source_images is None:
+        return []
+    attachments = []
+    used_filenames = set()
+    for img_tag, img_list in source_images.items():
+        safe_tag = _safe_metadata_filename_part(img_tag, "unknown")
+        for image_no, img in enumerate(img_list):
+            image_bytes, _image_format = _convert_image_to_bytes(img)
+            if not image_bytes:
+                continue
+            extension, mimetype = _image_extension_and_mimetype(image_bytes)
+            if isinstance(img, str) and os.path.exists(img):
+                _attachment_tag, original_filename = _split_mkv_attachment_filename(os.path.basename(img))
+                original_name = os.path.splitext(original_filename)[0]
+            else:
+                original_name = f"source_{image_no}"
+            safe_name = _safe_metadata_filename_part(original_name, f"source_{image_no}")
+            attachment_filename = f"{safe_tag}__{safe_name}{extension}"
+            base_name, ext = os.path.splitext(attachment_filename)
+            counter = 1
+            while attachment_filename.lower() in used_filenames:
+                attachment_filename = f"{base_name}_{counter}{ext}"
+                counter += 1
+            used_filenames.add(attachment_filename.lower())
+            attachment_path = os.path.join(work_dir, attachment_filename)
+            with open(attachment_path, "wb") as handle:
+                handle.write(image_bytes)
+            attachments.append((attachment_path, attachment_filename, mimetype))
+    return attachments
+
+
 def embed_source_images_metadata_mp4(file, source_images):
     from mutagen.mp4 import MP4, MP4Cover, AtomDataType
     import json
     import os
     
+    source_images = _normalize_source_images(source_images)
     if not source_images:
         return file
     
     try:
+        if file.tags is None:
+            file.add_tags()
         
         # Convert source images to cover art and build metadata
         cover_data = []
@@ -482,9 +588,9 @@ def _legacy_save_video_metadata(file_path, metadata_dict, source_images=  None):
         bool: True if successful, False otherwise
     """
 
-    if file_path.endswith('.mp4'):
+    if str(file_path).lower().endswith(_MP4_METADATA_EXTENSIONS):
         return save_metadata_to_mp4(file_path, metadata_dict, source_images)
-    elif file_path.endswith('.mkv'):
+    elif str(file_path).lower().endswith('.mkv'):
         return save_metadata_to_mkv(file_path, metadata_dict)
     else:
         return False
@@ -552,9 +658,9 @@ def _legacy_read_metadata_from_video(file_path):
     Returns:
         dict or None: Metadata dictionary if found, None otherwise
     """
-    if file_path.endswith('.mp4'):
+    if str(file_path).lower().endswith(_MP4_METADATA_EXTENSIONS):
         return read_metadata_from_mp4(file_path)
-    elif file_path.endswith('.mkv'):
+    elif str(file_path).lower().endswith('.mkv'):
         return read_metadata_from_mkv(file_path)
     else:
         return None
@@ -563,13 +669,16 @@ def _legacy_read_metadata_from_video(file_path):
 def save_metadata_to_mp4(file_path, metadata_dict, source_images = None, allow_inplace_update=False, verbose_level=0):
     metadata_text = json.dumps(metadata_dict, ensure_ascii=False, separators=(",", ":"))
     payload_bytes = metadata_text.encode("utf-8")
-    if source_images is None and _maybe_update_metadata_in_place(file_path, payload_bytes, container_name="MP4", find_slot_fn=_find_mp4_comment_slot, allow_inplace_update=allow_inplace_update, verbose_level=verbose_level):
+    source_images = _normalize_source_images(source_images)
+    if source_images is None and _maybe_update_metadata_in_place(file_path, payload_bytes, container_name="MP4", find_slot_fn=_find_mp4_metadata_slot, allow_inplace_update=allow_inplace_update, verbose_level=verbose_level):
         return True
     if source_images is not None:
         _log_metadata_debug(verbose_level, "MP4: skipping in-place update because embedded images are being written too")
     try:
         from mutagen.mp4 import MP4
         file = MP4(file_path)
+        if file.tags is None:
+            file.add_tags()
         file.tags[_MP4_COMMENT_TAG] = [metadata_text]
         if source_images is not None:
             embed_source_images_metadata_mp4(file, source_images)
@@ -581,13 +690,16 @@ def save_metadata_to_mp4(file_path, metadata_dict, source_images = None, allow_i
         return False
 
 
-def save_metadata_to_mkv(file_path, metadata_dict, allow_inplace_update=False, verbose_level=0):
+def save_metadata_to_mkv(file_path, metadata_dict, source_images=None, allow_inplace_update=False, verbose_level=0):
     metadata_text = json.dumps(metadata_dict, ensure_ascii=False, separators=(",", ":"))
     payload_bytes = metadata_text.encode("utf-8")
-    if _maybe_update_metadata_in_place(file_path, payload_bytes, container_name="MKV", find_slot_fn=_find_mkv_comment_slot, allow_inplace_update=allow_inplace_update, verbose_level=verbose_level):
+    source_images = _normalize_source_images(source_images)
+    if source_images is None and _maybe_update_metadata_in_place(file_path, payload_bytes, container_name="MKV", find_slot_fn=_find_mkv_comment_slot, allow_inplace_update=allow_inplace_update, verbose_level=verbose_level):
         return True
+    if source_images is not None:
+        _log_metadata_debug(verbose_level, "MKV: skipping in-place update because embedded images are being written too")
     try:
-        ok, error = _copy_video_with_comment(file_path, metadata_text)
+        ok, error = _copy_video_with_comment(file_path, metadata_text, source_images)
         if ok:
             _log_metadata_debug(verbose_level, "MKV: created a rewritten container copy to store metadata")
             return True
@@ -599,10 +711,11 @@ def save_metadata_to_mkv(file_path, metadata_dict, allow_inplace_update=False, v
 
 
 def save_video_metadata(file_path, metadata_dict, source_images=  None, allow_inplace_update=False, verbose_level=0):
-    if file_path.endswith('.mp4'):
+    source_images = _normalize_source_images(source_images)
+    if str(file_path).lower().endswith(_MP4_METADATA_EXTENSIONS):
         return save_metadata_to_mp4(file_path, metadata_dict, source_images, allow_inplace_update=allow_inplace_update, verbose_level=verbose_level)
-    if file_path.endswith('.mkv'):
-        return save_metadata_to_mkv(file_path, metadata_dict, allow_inplace_update=allow_inplace_update, verbose_level=verbose_level)
+    if str(file_path).lower().endswith('.mkv'):
+        return save_metadata_to_mkv(file_path, metadata_dict, source_images, allow_inplace_update=allow_inplace_update, verbose_level=verbose_level)
     return False
 
 
@@ -611,9 +724,16 @@ def read_metadata_from_mp4(file_path):
         from mutagen.mp4 import MP4
         file = MP4(file_path)
         tag_values = file.tags.get(_MP4_COMMENT_TAG) if file.tags is not None else None
-        return None if not tag_values else _parse_metadata_text(tag_values[0])
+        metadata = None if not tag_values else _parse_metadata_text(tag_values[0])
+        if metadata is not None:
+            return metadata
     except Exception:
-        return None
+        pass
+    for tag_key in _CONTAINER_COMMENT_TAGS:
+        metadata = _parse_metadata_text(_read_container_tags(file_path).get(tag_key))
+        if metadata is not None:
+            return metadata
+    return None
 
 
 def read_metadata_from_mkv(file_path):
@@ -633,9 +753,9 @@ def read_metadata_from_mkv(file_path):
 
 
 def read_metadata_from_video(file_path):
-    if file_path.endswith('.mp4'):
+    if str(file_path).lower().endswith(_MP4_METADATA_EXTENSIONS):
         return read_metadata_from_mp4(file_path)
-    if file_path.endswith('.mkv'):
+    if str(file_path).lower().endswith('.mkv'):
         return read_metadata_from_mkv(file_path)
     return None
 
@@ -738,16 +858,19 @@ def _create_temp_dir():
 def extract_source_images(video_path, output_dir = None):
     
     # Handle MP4 files with mutagen
-    if video_path.lower().endswith('.mp4'):
+    if video_path.lower().endswith(_MP4_METADATA_EXTENSIONS):
         return _extract_mp4_cover_art(video_path, output_dir)
     if output_dir is None:
         output_dir = _create_temp_dir()
+    os.makedirs(output_dir, exist_ok=True)
 
-    # Handle MKV files with ffmpeg (existing logic)
+    # Handle MKV files with ffmpeg attached pictures.
     try:
+        ffprobe_path = _resolve_media_tool("ffprobe")
+        ffmpeg_path = _resolve_media_tool("ffmpeg")
         # First, probe the video to find attachment streams (attached pics)
         probe_cmd = [
-            'ffprobe', '-v', 'quiet', '-print_format', 'json', 
+            ffprobe_path, '-v', 'quiet', '-print_format', 'json', 
             '-show_streams', video_path
         ]
         
@@ -781,10 +904,10 @@ def extract_source_images(video_path, output_dir = None):
                 attachment_streams.append(i)
         
         if not attachment_streams:
-            return []
+            return {}
         
         # Extract each attachment stream
-        extracted_files = []
+        extracted_files = {}
         used_filenames = set()  # Track filenames to avoid collisions
         
         for stream_idx in attachment_streams:
@@ -797,9 +920,11 @@ def extract_source_images(video_path, output_dir = None):
                 f'attachment_{stream_idx}.png'
             )
             
+            img_tag, original_filename = _split_mkv_attachment_filename(original_filename)
+            
             # Clean filename for filesystem
             safe_filename = os.path.basename(original_filename)
-            if not safe_filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+            if not safe_filename.lower().endswith(_IMAGE_EXTENSIONS):
                 safe_filename += '.png'
             
             # Handle filename collisions
@@ -815,15 +940,15 @@ def extract_source_images(video_path, output_dir = None):
             
             # Extract the attachment stream
             extract_cmd = [
-                'ffmpeg', '-y', '-i', video_path,
-                '-map', f'0:{stream_idx}', '-frames:v', '1',
+                ffmpeg_path, '-y', '-v', 'error', '-i', video_path,
+                '-map', f'0:{stream_idx}', '-frames:v', '1', '-update', '1',
                 output_file
             ]
             
             try:
                 subprocess.run(extract_cmd, capture_output=True, text=True, check=True)
                 if os.path.exists(output_file):
-                    extracted_files.append(output_file)
+                    extracted_files.setdefault(img_tag, []).append(output_file)
             except subprocess.CalledProcessError as e:
                 print(f"Failed to extract attachment {stream_idx} from {os.path.basename(video_path)}: {e.stderr}")
         
@@ -831,5 +956,5 @@ def extract_source_images(video_path, output_dir = None):
             
     except subprocess.CalledProcessError as e:
         print(f"Error extracting source images from {os.path.basename(video_path)}: {e.stderr}")
-        return []
+        return {}
 

@@ -346,7 +346,10 @@ transition: visibility 0s linear 1s, opacity 0.3s linear 1s; /* 1s delay before 
 .btn_centered {margin-top: calc(10px * var(--wangp-ui-scale)); text-wrap-mode: nowrap;}
 .cbx_centered label {margin-top: calc(8px * var(--wangp-ui-scale)); text-wrap-mode: nowrap;}
 .cbx_bottom label {padding-top: calc(48px * var(--wangp-ui-scale)); text-wrap-mode: nowrap;}
-.copy-swap { display:block; max-width:100%;
+.copy-swap {
+display: block;
+max-width: 100%;
+position: relative;
 }
 .copy-swap__trunc {
 display: block;
@@ -356,11 +359,24 @@ text-overflow: ellipsis;
 }
 .copy-swap__full { display: none; }
 .copy-swap:hover .copy-swap__trunc,
-.copy-swap:focus-within .copy-swap__trunc { display: none; }
+.copy-swap:focus-within .copy-swap__trunc { visibility: hidden; }
 .copy-swap:hover .copy-swap__full,
 .copy-swap:focus-within .copy-swap__full {
-display: inline;
+display: block;
+position: absolute;
+left: 0;
+top: 0;
+z-index: 50;
+min-width: 100%;
+width: 100%;
+box-sizing: border-box;
+padding: calc(2px * var(--wangp-ui-scale)) calc(4px * var(--wangp-ui-scale));
+border: 1px solid var(--border-color-primary);
+border-radius: 4px;
+background: var(--background-fill-primary);
+box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
 white-space: normal;
+overflow-wrap: anywhere;
 user-select: text;
 }
 .compact_text {padding: calc(1px * var(--wangp-ui-scale))}

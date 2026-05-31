@@ -1210,7 +1210,11 @@ class ScenemaAudioPipeline(LTXAudioTTSPipelineBase):
                 if set_progress_status is not None:
                     set_progress_status("Generating Audio")
                 audio = self._generate_audio(audio_context, self._generation_duration(chunk.duration_s), chunk.seed, ref_latent=speaker_active_latents.get(chunk.speaker), callback=callback, status_extra=f"Chunk {chunk_index + 1}/{len(chunks)}", set_progress_status=set_progress_status)
-                if audio is None or self._interrupt:
+                if audio is None:
+                    if self._early_stop_requested() and generated_chunks:
+                        break
+                    return None
+                if self._interrupt:
                     return None
                 if SCENEMA_TRIM_EXTRA_WORDS:
                     if set_progress_status is not None:

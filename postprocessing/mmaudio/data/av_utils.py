@@ -144,7 +144,7 @@ import tempfile
 from pathlib import Path
 import torch
 
-def remux_with_audio(video_path: Path, output_path: Path, audio: torch.Tensor, sampling_rate: int):
+def remux_with_audio(video_path: Path, output_path: Path, audio: torch.Tensor, sampling_rate: int, audio_codec_key: str = "aac_128"):
     from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, cleanup_temp_audio_files
 
     with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
@@ -153,7 +153,7 @@ def remux_with_audio(video_path: Path, output_path: Path, audio: torch.Tensor, s
     import torchaudio
     torchaudio.save(temp_path_str, audio.unsqueeze(0) if audio.dim() == 1 else audio, sampling_rate)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    combine_video_with_audio_tracks(video_path, [temp_path_str], output_path )
+    combine_video_with_audio_tracks(video_path, [temp_path_str], output_path, audio_codec_key=audio_codec_key)
     temp_path.unlink(missing_ok=True)
 
 def remux_with_audio_old(video_path: Path, audio: torch.Tensor, output_path: Path, sampling_rate: int):

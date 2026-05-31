@@ -276,6 +276,6 @@ class model_factory():
         if image_mode !=2 or model_mode != 1: return [], []
         preloadURLs = get_model_recursive_prop(model_type,  "preload_URLs")
         if len(preloadURLs) == 0: return [], []
-        return [ fl.locate_file(os.path.basename(preloadURLs[0]))] , [1]
+        return [ os.path.abspath(fl.locate_file(os.path.basename(preloadURLs[0])))] , [1]
 
 

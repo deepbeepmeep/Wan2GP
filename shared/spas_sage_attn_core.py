@@ -22,36 +22,78 @@ from spas_sage_attn.triton_kernel_example import spas_sage_attn_meansim as spas_
 from einops import rearrange
 
 
-def _load_qattn_kernel(compile_module, direct_module, attr_name, op_namespace):
+def _has_exports(module, names):
+    return all(hasattr(module, name) for name in names)
+
+
+def _load_qattn_kernel(compile_module, direct_module, attr_name, op_namespace, required_exports):
     try:
-        return getattr(importlib.import_module(compile_module), attr_name)
+        compile_kernel = getattr(importlib.import_module(compile_module), attr_name)
+        if _has_exports(compile_kernel, required_exports):
+            return compile_kernel
     except ModuleNotFoundError as exc:
         if exc.name != compile_module:
             raise
-        importlib.import_module(direct_module)
-        return getattr(torch.ops, op_namespace)
+    direct_kernel = importlib.import_module(direct_module)
+    op_kernel = getattr(torch.ops, op_namespace)
+    if _has_exports(op_kernel, required_exports):
+        return op_kernel
+    if _has_exports(direct_kernel, required_exports):
+        return direct_kernel
+    raise AttributeError(f"{direct_module} does not expose required kernels: {', '.join(required_exports)}")
+
+
+def _load_fused_kernel():
+    direct_kernel = importlib.import_module("spas_sage_attn._fused")
+    op_kernel = torch.ops.spas_sage_attn_fused
+    required_exports = ("transpose_pad_permute_cuda", "scale_fuse_quant_cuda")
+    if _has_exports(op_kernel, required_exports):
+        return op_kernel
+    if _has_exports(direct_kernel, required_exports):
+        return direct_kernel
+    raise AttributeError(f"spas_sage_attn._fused does not expose required kernels: {', '.join(required_exports)}")
 
 
 try:
-    _qattn_sm80 = _load_qattn_kernel("spas_sage_attn.sm80_compile", "spas_sage_attn._qattn_sm80", "_qattn_sm80", "spas_sage_attn_qattn_sm80")
+    _qattn_sm80 = _load_qattn_kernel(
+        "spas_sage_attn.sm80_compile",
+        "spas_sage_attn._qattn_sm80",
+        "_qattn_sm80",
+        "spas_sage_attn_qattn_sm80",
+        ("qk_int8_sv_f16_accum_f16_block_sparse_attn_inst_buf_with_pv_threshold",),
+    )
     SM80_ENABLED = True
 except:
     SM80_ENABLED = False
 
 try:
-    _qattn_sm89 = _load_qattn_kernel("spas_sage_attn.sm89_compile", "spas_sage_attn._qattn_sm89", "_qattn_sm89", "spas_sage_attn_qattn_sm89")
+    _qattn_sm89 = _load_qattn_kernel(
+        "spas_sage_attn.sm89_compile",
+        "spas_sage_attn._qattn_sm89",
+        "_qattn_sm89",
+        "spas_sage_attn_qattn_sm89",
+        (
+            "qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold",
+            "qk_int8_sv_f8_accum_f16_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold",
+        ),
+    )
     SM89_ENABLED = True
 except:
     SM89_ENABLED = False
 
 try:
-    _qattn_sm90 = _load_qattn_kernel("spas_sage_attn.sm90_compile", "spas_sage_attn._qattn_sm90", "_qattn_sm90", "spas_sage_attn_qattn_sm90")
+    _qattn_sm90 = _load_qattn_kernel(
+        "spas_sage_attn.sm90_compile",
+        "spas_sage_attn._qattn_sm90",
+        "_qattn_sm90",
+        "spas_sage_attn_qattn_sm90",
+        ("qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold_sm90",),
+    )
     SM90_ENABLED = True
 except:
     SM90_ENABLED = False
 
-import spas_sage_attn._fused
-_fused = torch.ops.spas_sage_attn_fused
+_fused = _load_fused_kernel()
 
 
 def get_cuda_version():

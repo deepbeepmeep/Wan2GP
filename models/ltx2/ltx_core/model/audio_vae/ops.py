@@ -15,6 +15,7 @@ class AudioProcessor(nn.Module):
     ) -> None:
         super().__init__()
         self.sample_rate = sample_rate
+        self.n_fft = n_fft
         self.mel_transform = torchaudio.transforms.MelSpectrogram(
             sample_rate=sample_rate,
             n_fft=n_fft,
@@ -42,6 +43,18 @@ class AudioProcessor(nn.Module):
             return waveform
         resampled = torchaudio.functional.resample(waveform, source_rate, target_rate)
         return resampled.to(device=waveform.device, dtype=waveform.dtype)
+
+    def waveform_too_short_for_mel(
+        self,
+        waveform: torch.Tensor,
+        waveform_sample_rate: int,
+    ) -> bool:
+        source_rate = int(waveform_sample_rate or 0)
+        if waveform.shape[-1] <= 0:
+            return True
+        if source_rate <= 0:
+            return False
+        return waveform.shape[-1] * int(self.sample_rate) <= (int(self.n_fft) // 2) * source_rate
 
     def waveform_to_mel(
         self,

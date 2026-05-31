@@ -4,17 +4,19 @@ A Finetuned model is model that shares the same architecture of one specific mod
 
 As there are potentially an infinite number of finetunes, specific finetuned models are not known by default by WanGP. However you can create a finetuned model definition that will tell WanGP about the existence of this finetuned model and WanGP will do as usual all the work for you: autodownload the model and build the user interface.
 
+You can create a WanGP finetune definition in two ways:
+- **With the Finetune Creator / Editor** in the model toolbar. This is the recommended path when you want to create a finetune from the currently selected model, edit an existing finetune, import a shared finetune JSON file, or keep the current model settings as the finetune defaults.
+- **Manually**, by writing or editing a JSON definition in the **finetunes/** subfolder. This remains useful for advanced definitions, bulk editing, sharing files outside the UI, or when you want to review the exact JSON structure.
+
 WanGP finetune system can be also used to tweak default models : for instance you can add on top of an existing model some loras that will be always applied transparently.
 
 Finetune models definitions are light json files that can be easily shared. You can find some of them on the WanGP *discord* server https://discord.gg/g7efUW9jGV
 
 All the finetunes definitions files should be stored in the *finetunes/* subfolder.
 
-Finetuned models have been tested so far with Wan2.1 text2video, Wan2.1 image2video,  Hunyuan Video text2video. There isn't currently any support for LTX Video finetunes.
 
 
-
-## Create a new Finetune Model Definition
+## Create a new Finetune Model Definition Manually
 All the finetune models definitions are json files stored in the **finetunes/** sub folder. All the corresponding finetune model weights when they are downloaded will be stored in the *ckpts/* subfolder and will sit next to the base models.
 
 All the models used by WanGP are also described using the finetunes json format and can be found in the **defaults/** subfolder. Please don’t modify any file in the **defaults/** folder.
@@ -31,7 +33,7 @@ Here are steps:
 1) Create a *settings file*
 2) Add a **model** subtree with the finetune description
 3) Save this file in the subfolder **finetunes**. The name used for the file will be used as its id. It is a good practise to prefix the name of this file with the base model. For instance for a finetune named **Fast*** based on  Hunyuan Text 2 Video model *hunyuan_t2v_fast.json*. In this example the Id is *hunyuan_t2v_fast*.
-4) Restart WanGP
+4) Use **Refresh Model List** in the model toolbar, or restart WanGP if you edited files while the UI was not active.
 
 ## Architecture Models Ids
 A finetune is derived from a base model and will inherit all the user interface and corresponding model capabilities, here are some Architecture Ids:
@@ -151,3 +153,26 @@ If you launch the app with the *--save-quantized* switch, WanGP will create a qu
 You need to create a quantized model specifically for *bf16* or *fp16* as they can not converted on the fly. However there is no need for a non quantized model as they can be converted on the fly while being loaded.
 
 Wan models supports both *fp16* and *bf16* data types albeit *fp16* delivers in theory better quality. On the contrary Hunyuan and LTXV supports only *bf16*.
+
+## Using the Finetune Creator / Editor
+
+The model toolbar contains a finetune tool. When the currently selected model is a base model, the tool opens the **Finetune Creator**. When the selected model is already a finetune, the tool opens the **Finetune Editor**. Both modes use the same shortcut.
+
+In **Creator** mode:
+1) Select the base model you want to derive from.
+2) Open the finetune tool from the model toolbar.
+3) Choose **Using Current Model** to create a new finetune from the selected model, or **By importing a File** to import an existing finetune JSON.
+4) Fill **Id**, **Name**, and **Description**. If **auto** is enabled, WanGP generates the id from the source model and the finetune name.
+5) In the **URLs** tab, set checkpoint files or URLs. Use the folder icon next to each field to pick local files from the server machine. Multiple checkpoint fields accept one entry per line.
+6) In the **Help** tab, optionally customize **Model Infos** and **Prompt Help** markdown.
+7) In the **Prompt Enhancer** tab, optionally override the source model prompt enhancer instructions. If an eye icon is shown, it copies the source model system prompt into the field.
+8) Enable **Use Current Model Settings as Default Settings** if you want the current UI settings to become the finetune defaults.
+9) Click **Create** to create and switch to the new finetune, or **Create & New** to create it and immediately start another finetune.
+
+In **Editor** mode:
+1) Select the finetune in the model hierarchy. Finetunes are marked with a `*` in the third level of the selector.
+2) Open the finetune tool from the toolbar.
+3) Edit the same fields as in Creator mode. Changing the **Id** renames the finetune JSON file; WanGP also renames the matching settings file when one exists.
+4) Click **Save** to update the finetune, **Export** to download/share its JSON definition, or **Delete** to remove it. Delete shows a confirmation row in place of the editor action buttons.
+
+After creation, import, save, or delete, WanGP refreshes the model list automatically.

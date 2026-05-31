@@ -1,5 +1,6 @@
 import html
 import re
+import time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -19,6 +20,7 @@ class ModelSelectorToolbar:
     search_button: gr.Button
     refresh_button: gr.Button
     unload_button: gr.Button
+    finetune_button: gr.Button | None = None
     tool_row: gr.Row | None = None
     search_row: gr.Row | None = None
     search_query: gr.Textbox | None = None
@@ -28,17 +30,18 @@ class ModelSelectorToolbar:
     search_close_button: gr.Button | None = None
 
 
-def create_toolbar():
-    with gr.Column(scale=2, min_width=150, elem_classes=["wangp-model-selector-tools"]):
+def create_toolbar(is_finetune_editor=False):
+    with gr.Column(scale=2, min_width=210, elem_classes=["wangp-model-selector-tools"]):
         with gr.Row(elem_classes=["wangp-model-selector-tool-row"]) as tool_row:
             search_button = gr.Button("⌕", elem_id="wangp_model_tool_search", elem_classes=["wangp-model-selector-tool", "wangp-model-selector-tool-search"], size="sm", scale=0)
+            finetune_button = gr.Button("✎" if is_finetune_editor else "+", elem_id="wangp_model_tool_finetune", elem_classes=["wangp-model-selector-tool", "wangp-model-selector-tool-finetune"], size="sm", scale=0)
             refresh_button = gr.Button("↻", elem_id="wangp_model_tool_refresh", elem_classes=["wangp-model-selector-tool", "wangp-model-selector-tool-refresh"], size="sm", scale=0)
             unload_button = gr.Button("⏏", elem_id="wangp_model_tool_unload", elem_classes=["wangp-model-selector-tool", "wangp-model-selector-tool-unload"], size="sm", scale=0)
         with gr.Row(visible=False, elem_classes=["wangp-model-selector-search-row"]) as search_row:
             with gr.Column(scale=1, min_width=0, elem_classes=["wangp-model-selector-search-box"]):
                 search_query = gr.Textbox(value="", show_label=False, placeholder="Search models", elem_id="wangp_model_search_query", elem_classes=["wangp-model-selector-search-input"])
                 search_results = gr.HTML(value="", visible=False, elem_id="wangp_model_search_results")
-    return ModelSelectorToolbar(search_button, refresh_button, unload_button, tool_row=tool_row, search_row=search_row, search_query=search_query, search_results=search_results)
+    return ModelSelectorToolbar(search_button, refresh_button, unload_button, finetune_button=finetune_button, tool_row=tool_row, search_row=search_row, search_query=search_query, search_results=search_results)
 
 
 def create_search_panel(toolbar: ModelSelectorToolbar):
@@ -156,7 +159,8 @@ def render_search_results(deps, state, query):
 
 
 def apply_search_selection(model_type):
-    return str(model_type or "").strip(), *clear_search_panel()
+    model_type = str(model_type or "").strip()
+    return (f"{model_type}|{time.time()}" if model_type else gr.update()), *clear_search_panel()
 
 
 def _prune_orphan_model_settings(state, deps):
@@ -301,6 +305,13 @@ def get_javascript():
             return el?.matches("button") ? el : el?.querySelector("button");
         }
 
+        function updateFinetuneTooltip() {
+            const button = toolButton("#wangp_model_tool_finetune");
+            if (!button) return;
+            const text = (button.textContent || "").trim();
+            button.dataset.wangpTooltip = text.includes("✎") ? "Edit finetune [Alt+F]" : "Create finetune [Alt+F]";
+        }
+
         function resultItems() {
             return Array.from(root().querySelectorAll("#wangp_model_search_results [data-model-type]"));
         }
@@ -395,12 +406,20 @@ def get_javascript():
             if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.repeat) return;
             const key = event.key.toLowerCase();
             const target = key === "s" ? "#wangp_model_tool_search" : key === "r" ? "#wangp_model_tool_refresh" : key === "u" ? "#wangp_model_tool_unload" : "";
+            if (key === "f") {
+                event.preventDefault();
+                toolButton("#wangp_model_tool_finetune")?.click();
+                return;
+            }
             if (!target) return;
             event.preventDefault();
             toolButton(target)?.click();
         });
 
-        setInterval(bindSearchKeyboard, 400);
+        setInterval(() => {
+            bindSearchKeyboard();
+            updateFinetuneTooltip();
+        }, 400);
     })();
     """
 
@@ -475,6 +494,14 @@ def get_css():
         font-size: 22px;
         transform: translateY(-1px);
     }
+    .wangp-model-selector-tool-finetune {
+        font-size: 24px !important;
+        font-family: "Segoe UI Symbol", "Arial Unicode MS", sans-serif !important;
+        transform: translateY(-1px);
+    }
+    .wangp-model-selector-tool-finetune::before {
+        content: "";
+    }
     .wangp-model-selector-tool::after {
         position: absolute;
         left: 50%;
@@ -499,6 +526,7 @@ def get_css():
     }
     .wangp-model-selector-tool-search::after { content: "Search models [Alt+S]"; }
     .wangp-model-selector-tool-refresh::after { content: "Refresh model list [Alt+R]"; }
+    .wangp-model-selector-tool-finetune::after { content: attr(data-wangp-tooltip); }
     .wangp-model-selector-tool-unload::after { content: "Unload models and extensions [Alt+U]"; }
     .wangp-model-selector-search-row {
         --wangp-model-selector-gap: calc(16px * var(--wangp-ui-scale, 0.9));

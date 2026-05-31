@@ -143,6 +143,16 @@ def get_css() -> str:
     pointer-events: none;
     z-index: 50;
 }
+.wangp-prompt-info-stack {
+    position: relative;
+}
+.wangp-prompt-info-stack .wangp-prompt-info-anchor {
+    position: absolute !important;
+    inset: 0 0 auto 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    z-index: 50;
+}
 .wangp-prompt-info-anchor,
 .wangp-prompt-info-anchor > *,
 .wangp-prompt-info-anchor .html-container {
@@ -372,14 +382,14 @@ def get_javascript() -> str:
         }
     });
     document.addEventListener("pointerdown", (event) => {
-        const handle = event.target.closest("[data-wangp-model-info-drag]");
-        if (!handle || event.target.closest("[data-wangp-model-info-close]")) return;
-        const popup = handle.closest("[data-wangp-model-info-popup]");
+        const handle = event.target.closest("[data-wangp-model-info-drag], .wangp-local-file-picker-titlebar");
+        if (!handle || event.target.closest("[data-wangp-model-info-close], .wangp-local-file-picker-close")) return;
+        const popup = handle.closest("[data-wangp-model-info-popup], .wangp-local-file-picker-popup");
         if (!popup) return;
         const rect = popup.getBoundingClientRect();
-        popup.style.left = rect.left + "px";
-        popup.style.top = rect.top + "px";
-        popup.style.right = "auto";
+        popup.style.setProperty("left", rect.left + "px", "important");
+        popup.style.setProperty("top", rect.top + "px", "important");
+        popup.style.setProperty("right", "auto", "important");
         wangpModelInfoDrag = { popup, pointerId: event.pointerId, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top };
         handle.setPointerCapture?.(event.pointerId);
         event.preventDefault();
@@ -391,8 +401,8 @@ def get_javascript() -> str:
         const rect = popup.getBoundingClientRect();
         const left = Math.min(Math.max(margin, event.clientX - wangpModelInfoDrag.offsetX), Math.max(margin, window.innerWidth - rect.width - margin));
         const top = Math.min(Math.max(margin, event.clientY - wangpModelInfoDrag.offsetY), Math.max(margin, window.innerHeight - 48));
-        popup.style.left = left + "px";
-        popup.style.top = top + "px";
+        popup.style.setProperty("left", left + "px", "important");
+        popup.style.setProperty("top", top + "px", "important");
         event.preventDefault();
     });
     document.addEventListener("pointerup", (event) => {

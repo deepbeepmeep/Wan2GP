@@ -188,8 +188,8 @@ class ProcessFormController:
     def settings_action_updates(process_model_type_value: str, process_value: str) -> tuple:
         add_visible = process_model_type_value == ui_constants.ADD_USER_SETTINGS_MODEL_TYPE
         delete_visible = catalog.is_user_process_value(process_value)
-        placeholder_visible = not add_visible and not delete_visible
-        return gr.update(visible=add_visible), gr.update(visible=delete_visible), gr.update(visible=placeholder_visible)
+        actions_visible = add_visible or delete_visible
+        return gr.update(visible=actions_visible), gr.update(visible=add_visible), gr.update(visible=delete_visible), gr.update(visible=False)
 
     def target_ratio_update(self, process_name: str, main_state: dict | None, user_refs: list[str] | None, target_ratio: str | None = None):
         target_control_choices = self.library.target_control_choices(process_name, main_state, user_refs)
@@ -330,10 +330,11 @@ class ProcessFormController:
         updated_memory = self.store_memory(memory_state, current_process_name, main_state, refs, values)
         next_process_name = str(next_process_name or "").strip()
         catalog.save_process_full_video_selection(process_model_type_value, next_process_name)
-        _add_update, delete_update, placeholder_update = self.settings_action_updates(process_model_type_value, next_process_name)
+        actions_update, _add_update, delete_update, placeholder_update = self.settings_action_updates(process_model_type_value, next_process_name)
         return (
             updated_memory,
             next_process_name,
+            actions_update,
             delete_update,
             placeholder_update,
             *self.restore_state(updated_memory, next_process_name, values.source_path, main_state, refs),

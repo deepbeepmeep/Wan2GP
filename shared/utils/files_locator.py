@@ -8,6 +8,86 @@ default_checkpoints_paths = ["ckpts", "."]
 
 _checkpoints_paths = default_checkpoints_paths
 
+
+def _is_probable_url(value: str) -> bool:
+    return "://" in str(value) or str(value).startswith(("mailto:", "urn:"))
+
+
+def _absolute_normalized_path(path: Union[str, os.PathLike]) -> str:
+    return os.path.abspath(os.path.normpath(os.path.expanduser(os.fspath(path))))
+
+
+def _checkpoint_roots() -> list[str]:
+    roots = []
+    seen = set()
+    for root in _checkpoints_paths:
+        normalized = _absolute_normalized_path(root)
+        key = normalized.casefold()
+        if key not in seen:
+            roots.append(normalized)
+            seen.add(key)
+    return roots
+
+
+def _is_under_root(path: str, root: str) -> bool:
+    try:
+        return os.path.commonpath([path, root]).casefold() == root.casefold()
+    except ValueError:
+        return False
+
+
+def compress_path(path: Union[str, os.PathLike]) -> str:
+    """Store checkpoint-root paths as relative paths; leave URLs unchanged."""
+    if path is None:
+        return ""
+    value = os.fspath(path).strip()
+    if not value or _is_probable_url(value) or value.startswith("="):
+        return value
+    if not os.path.isabs(value):
+        normalized_relative = os.path.normpath(value)
+        if is_relative_down_path(normalized_relative):
+            return normalized_relative.replace("\\", "/")
+        normalized = _absolute_normalized_path(value)
+    else:
+        normalized = _absolute_normalized_path(value)
+    for root in sorted(_checkpoint_roots(), key=len, reverse=True):
+        if not _is_under_root(normalized, root):
+            continue
+        relative = os.path.relpath(normalized, root)
+        if relative and relative != ".":
+            return relative.replace("\\", "/")
+    return normalized
+
+
+def uncompress_path(path: Union[str, os.PathLike]) -> str:
+    """Return an absolute local path for checkpoint-relative values; leave URLs unchanged."""
+    if path is None:
+        return ""
+    value = os.fspath(path).strip()
+    if not value or _is_probable_url(value) or value.startswith("="):
+        return value
+    if os.path.isabs(value):
+        return _absolute_normalized_path(value)
+    if not is_relative_down_path(value):
+        return _absolute_normalized_path(value)
+    located = locate_file(value, error_if_none=False)
+    if located is not None:
+        return _absolute_normalized_path(located)
+    roots = _checkpoint_roots()
+    return _absolute_normalized_path(os.path.join(roots[0] if roots else ".", value))
+
+
+def compress_paths(paths):
+    if isinstance(paths, (list, tuple)):
+        return [compress_path(path) for path in paths]
+    return compress_path(paths)
+
+
+def uncompress_paths(paths):
+    if isinstance(paths, (list, tuple)):
+        return [uncompress_path(path) for path in paths]
+    return uncompress_path(paths)
+
 @lru_cache(maxsize=4096)
 def _is_relative_down_path_cached(path: str) -> bool:
     if len(path) == 0 or "\x00" in path:

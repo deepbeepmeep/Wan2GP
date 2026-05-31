@@ -5,6 +5,8 @@ from pathlib import Path
 
 import gradio as gr
 
+from shared.gradio.local_file_picker import LocalFilePickerTextbox, VIDEO_FILE_EXTENSIONS
+
 from . import common
 from . import constants as ui_constants
 from . import process_catalog as catalog
@@ -79,7 +81,8 @@ def create_config_ui(self, api_session):
             raise gr.Error("The selected user settings file could not be found.")
         problems = library.validate_user_process_definition(process_definition)
         if len(problems) > 0:
-            raise gr.Error(library.format_user_process_validation_error(process_definition, problems))
+            gr.Info(library.format_user_process_validation_error(process_definition, problems))
+            return (gr.skip(),) * 9
         ref = catalog.normalize_user_settings_ref(process_definition.get("ref"))
         if len(ref) == 0:
             raise gr.Error("The selected user settings file could not be linked.")
@@ -100,9 +103,7 @@ def create_config_ui(self, api_session):
             gr.update(choices=process_choices, value=selected),
             form_controller.user_settings_hint_update(process_choices),
             selected,
-            gr.update(visible=True),
-            gr.update(visible=False),
-            gr.update(visible=False),
+            *form_controller.settings_action_updates(ui_constants.ADD_USER_SETTINGS_MODEL_TYPE, selected),
         )
 
     def _delete_user_process_link(memory_state: dict | None, process_value: str, main_state: dict | None, user_refs: list[str] | None, source_path: str):
@@ -212,11 +213,13 @@ def create_config_ui(self, api_session):
                 padding: 0 !important;
             }
             #process-full-video-settings-actions .process-full-video-settings-action-placeholder {
-                width: 34px;
-                min-width: 34px;
-                max-width: 34px;
-                height: 34px;
-                min-height: 34px;
+                display: none !important;
+                width: 0 !important;
+                min-width: 0 !important;
+                max-width: 0 !important;
+                height: 0 !important;
+                min-height: 0 !important;
+                overflow: hidden !important;
             }
             #process-full-video-user-settings-hint-row {
                 height: 12px !important;
@@ -252,14 +255,13 @@ def create_config_ui(self, api_session):
         with gr.Row():
             process_model_type = gr.Dropdown(model_type_choices, value=default_model_type, label="Model", scale=1)
             process_name = gr.Dropdown(default_process_choices, value=default_process_name, label="Process", scale=3)
-            with gr.Column(scale=0, min_width=34, elem_id="process-full-video-settings-actions"):
+            with gr.Column(scale=0, min_width=34, visible=default_model_type == ui_constants.ADD_USER_SETTINGS_MODEL_TYPE or catalog.is_user_process_value(default_process_name), elem_id="process-full-video-settings-actions") as settings_actions_column:
                 add_user_settings_btn = gr.Button("\u2795", size="sm", min_width=1, visible=default_model_type == ui_constants.ADD_USER_SETTINGS_MODEL_TYPE, elem_classes=["wangp-assistant-chat__template-tool-icon-btn"])
                 delete_user_settings_btn = gr.Button("\U0001F5D1\uFE0F", size="sm", min_width=1, visible=catalog.is_user_process_value(default_process_name), elem_classes=["wangp-assistant-chat__template-tool-icon-btn", "wangp-assistant-chat__template-tool-icon-btn--danger"])
-                settings_actions_placeholder = gr.HTML("<div class='process-full-video-settings-action-placeholder'></div>", visible=default_model_type != ui_constants.ADD_USER_SETTINGS_MODEL_TYPE and not catalog.is_user_process_value(default_process_name))
+                settings_actions_placeholder = gr.HTML("<div class='process-full-video-settings-action-placeholder'></div>", visible=False)
         with gr.Row(visible=library.process_choices_have_user_settings(default_process_choices), elem_id="process-full-video-user-settings-hint-row") as process_user_settings_hint_row:
             gr.HTML(value=ui_constants.USER_SETTINGS_HINT_HTML)
-        with gr.Row():
-            source_path = gr.Textbox(label="Source Video Path File", value=default_state.source_path, scale=3)
+        source_path = LocalFilePickerTextbox(label="Source Video Path File", value=default_state.source_path, file_extensions=VIDEO_FILE_EXTENSIONS, popup_title="Browse Local Source Video").mount()
         with gr.Row():
             output_path = gr.Textbox(label="Output File Path File (None for auto, Full Name or Target Folder)", value=default_state.output_path, scale=3)
             continue_enabled = gr.Checkbox(label="Continue", value=default_state.continue_enabled, elem_classes="cbx_bottom", scale=1)
@@ -318,40 +320,40 @@ def create_config_ui(self, api_session):
     process_model_type.change(
         fn=_change_process_model_type,
         inputs=[process_form_memory, active_process_name_state, process_model_type, self.state, self.lset_name, user_process_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
-        outputs=[process_form_memory, active_process_name_state, process_name, process_user_settings_hint_row, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+        outputs=[process_form_memory, active_process_name_state, process_name, process_user_settings_hint_row, settings_actions_column, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         queue=False,
         show_progress="hidden",
     )
     process_name.change(
         fn=_change_process_name,
         inputs=[process_form_memory, active_process_name_state, process_name, process_model_type, self.state, user_process_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
-        outputs=[process_form_memory, active_process_name_state, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+        outputs=[process_form_memory, active_process_name_state, settings_actions_column, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         queue=False,
         show_progress="hidden",
     )
     add_user_settings_btn.click(
         fn=_add_user_process_link,
         inputs=[process_name, self.state, self.lset_name, user_process_refs],
-        outputs=[user_process_refs, process_model_type, process_name, process_user_settings_hint_row, active_process_name_state, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder],
+        outputs=[user_process_refs, process_model_type, process_name, process_user_settings_hint_row, active_process_name_state, settings_actions_column, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder],
         show_progress="hidden",
     )
     delete_user_settings_btn.click(
         fn=_delete_user_process_link,
         inputs=[process_form_memory, process_name, self.state, user_process_refs, source_path],
-        outputs=[user_process_refs, process_model_type, process_name, process_user_settings_hint_row, active_process_name_state, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+        outputs=[user_process_refs, process_model_type, process_name, process_user_settings_hint_row, active_process_name_state, settings_actions_column, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         show_progress="hidden",
     )
     self.refresh_form_trigger.change(
         fn=_refresh_from_main,
         inputs=[self.refresh_form_trigger, process_form_memory, active_process_name_state, process_model_type, self.state, self.lset_name, user_process_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
-        outputs=[process_model_type, process_name, process_user_settings_hint_row, process_form_memory, active_process_name_state, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+        outputs=[process_model_type, process_name, process_user_settings_hint_row, process_form_memory, active_process_name_state, settings_actions_column, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         queue=False,
         show_progress="hidden",
     )
     tab_refresh_trigger.change(
         fn=_refresh_from_main,
         inputs=[tab_refresh_trigger, process_form_memory, active_process_name_state, process_model_type, self.state, self.lset_name, user_process_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
-        outputs=[process_model_type, process_name, process_user_settings_hint_row, process_form_memory, active_process_name_state, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+        outputs=[process_model_type, process_name, process_user_settings_hint_row, process_form_memory, active_process_name_state, settings_actions_column, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         queue=False,
         show_progress="hidden",
     )

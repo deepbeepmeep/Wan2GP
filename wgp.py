@@ -116,7 +116,7 @@ from shared.ffmpeg_setup import download_ffmpeg
 from shared.api import get_api_output_options, store_api_output_artifact
 from shared.utils.plugins import PluginManager, WAN2GPApplication, SYSTEM_PLUGINS
 from shared.llm_engines.nanovllm.vllm_support import resolve_lm_decoder_engine
-from shared.gradio import assistant_chat, model_infos, model_selector_toolbar
+from shared.gradio import assistant_chat, finetune_editor, local_file_picker, model_infos, model_selector_toolbar
 from shared.gradio.magic_mask import MagicMaskUI
 from shared import model_dropdowns
 from shared.cli_args import parse_wgp_args
@@ -137,7 +137,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.88"
+WanGP_version = "11.90"
 settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -8489,7 +8489,7 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
     lset_name = get_lset_name(state, lset_name)
     if len(lset_name) == 0:
         gr.Info("Please choose a Lora Preset or Setting File in the list or create one")
-        return wizard_prompt_activated, loras_choices, loras_mult_choices, prompt, gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+        return wizard_prompt_activated, loras_choices, loras_mult_choices, prompt, gr.update(), gr.update(), gr.update()
     else:
         current_model_type = get_state_model_type(state)
         ui_settings = get_current_model_settings(state)
@@ -8511,7 +8511,7 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
             state["apply_success"] = 1
             wizard_prompt_activated = "on"
 
-            return wizard_prompt_activated, loras_choices, loras_mult_choices, prompt, get_unique_id(), gr.update(), gr.update(), gr.update(), gr.update()
+            return wizard_prompt_activated, loras_choices, loras_mult_choices, prompt, get_unique_id(), gr.update(), gr.update()
         else:
             builtin_lset_type = _get_builtin_lset_type(current_model_type, lset_name)
             accelerator_profile = builtin_lset_type == "accelerator_profiles"
@@ -8522,7 +8522,7 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
 
             if configs == None:
                 gr.Info("File not supported" + (f": {state.get('_last_settings_file_error')}" if state.get("_last_settings_file_error") else ""))
-                return [gr.update()] * 9
+                return [gr.update()] * 7
             settings_bundle_task_count = configs.pop("_settings_bundle_task_count", 0)
             model_type = configs["model_type"]
             configs["lset_name"] = lset_name
@@ -8538,10 +8538,11 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
             if help is not None: gr.Info(help)
             if model_type == current_model_type:
                 set_model_settings(state, current_model_type, configs)        
-                return *[gr.update()] * 4, gr.update(), gr.update(), gr.update(), gr.update(), get_unique_id()
+                return *[gr.update()] * 4, gr.update(), get_unique_id(), gr.update()
             else:
                 set_model_settings(state, model_type, configs)        
-                return *[gr.update()] * 4, gr.update(), *generate_dropdown_model_list(model_type), gr.update()
+                state["ignore_save_form"] = True
+                return *[gr.update()] * 5, gr.update(), _model_choice_target_value(model_type)
 
 def extract_prompt_from_wizard(state, variables_names, prompt, wizard_prompt, allow_null_values, *args):
 
@@ -9287,13 +9288,14 @@ def use_video_settings(state, input_file_list, choice, source):
                 gr.Info(info_msg)
             
             if models_compatible:
-                return gr.update(), gr.update(), gr.update(), str(time.time())
+                return str(time.time()), gr.update()
             else:
-                return *generate_dropdown_model_list(model_type), gr.update()
+                state["ignore_save_form"] = True
+                return gr.update(), _model_choice_target_value(model_type)
     else:
         gr.Info(f"Please Select a File")
 
-    return gr.update(), gr.update(), gr.update(), gr.update()
+    return gr.update(), gr.update()
 def update_loras_url_cache(lora_dir, loras_selected, return_URLs = False):
     if loras_selected is None:
         return None
@@ -9462,15 +9464,15 @@ def load_settings_from_file(state, file_path):
     gen = get_gen_info(state)
 
     if file_path==None:
-        return gr.update(), gr.update(), gr.update(), gr.update(), None
+        return gr.update(), gr.update(), None
 
     configs, any_video_or_image_file, any_audio = get_settings_from_file(state, file_path, True, True, True)
     if configs == None:
         gr.Info("File not supported" + (f": {state.get('_last_settings_file_error')}" if state.get("_last_settings_file_error") else ""))
-        return gr.update(), gr.update(), gr.update(), gr.update(), None
+        return gr.update(), gr.update(), None
     if is_deepy_display_metadata(configs):
         gr.Info("Deepy helper metadata is display-only and cannot be loaded as WanGP settings")
-        return gr.update(), gr.update(), gr.update(), gr.update(), None
+        return gr.update(), gr.update(), None
 
     current_model_type = get_state_model_type(state)
     model_type = configs["model_type"]
@@ -9497,14 +9499,27 @@ def load_settings_from_file(state, file_path):
 
     if model_type == current_model_type:
         set_model_settings(state, current_model_type, configs)        
-        return gr.update(), gr.update(), gr.update(), str(time.time()), None
+        return str(time.time()), gr.update(), None
     else:
         set_model_settings(state, model_type, configs)        
-        return *generate_dropdown_model_list(model_type), gr.update(), None
+        state["ignore_save_form"] = True
+        return gr.update(), _model_choice_target_value(model_type), None
+
+def _model_choice_target_model_type(model_type):
+    return str(model_type or "").split("|", 1)[0].strip()
+
+def _model_choice_target_value(model_type):
+    model_type = _model_choice_target_model_type(model_type)
+    return gr.update() if len(model_type) == 0 else f"{model_type}|{time.time()}"
 
 def goto_model_type(state, model_type):
-    gen = get_gen_info(state)
+    model_type = _model_choice_target_model_type(model_type)
+    if len(model_type) == 0:
+        return gr.update(), gr.update(), gr.update(), gr.update()
     return *generate_dropdown_model_list(model_type), gr.update()
+
+def change_model_from_target(state, model_type):
+    return change_model(state, _model_choice_target_model_type(model_type))
 
 def refresh_model_dropdowns(state):
     return *generate_dropdown_model_list(get_state_model_type(state)), gr.update()
@@ -9773,6 +9788,11 @@ def unload_model_if_needed(state):
     if "U" in preload_model_policy:
         if wan_model != None:
             release_model()
+
+def request_reload_if_loaded(model_type):
+    global reload_needed
+    if model_type == transformer_type:
+        reload_needed = True
 
 def all_letters(source_str, letters):
     for letter in letters:
@@ -10763,7 +10783,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         image_prompt_type_radio_allowed_values= filter_letters(image_prompt_types_allowed, "SVL")
                         image_prompt_type_radio_value = filter_letters(image_prompt_type_value, image_prompt_type_radio_allowed_values,  image_prompt_type_choices[0][1] if len(image_prompt_type_choices) > 0 else "")
                         if len(image_prompt_type_choices) > 0:
-                            image_prompt_type_radio = gr.Radio( image_prompt_type_choices, value = image_prompt_type_radio_value, label="Location", show_label= False, visible= len(image_prompt_types_allowed)>1, scale= 3)
+                            image_prompt_type_radio = gr.Radio( image_prompt_type_choices, value = image_prompt_type_radio_value, label="Location", show_label= False, visible= len(image_prompt_types_allowed)>1, scale= 5)
                         else:
                             image_prompt_type_radio = gr.Radio(choices=[("", "")], value="", visible= False)
                         if "E" in image_prompt_types_allowed:
@@ -11144,7 +11164,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 advanced_prompt  = len(errors) > 0
             prompt_infos = get_prompt_infos(model_def)
             show_prompt_infos = bool(str(prompt_infos or "").strip())
-            with gr.Column(visible= advanced_prompt) as prompt_column_advanced:
+            with gr.Column(visible= advanced_prompt, elem_classes=["wangp-prompt-info-stack"]) as prompt_column_advanced:
                 prompt_info_label = gr.HTML(value=render_prompt_info_label(prompt_label, model_type, model_def, "advanced"), visible=show_prompt_infos, elem_classes=["wangp-prompt-info-anchor"])
                 prompt = gr.Textbox( visible= advanced_prompt, label=prompt_label, value=launch_prompt, lines=3)
 
@@ -11162,7 +11182,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             wizard_variables = "\n".join(variables)
                     for _ in range( PROMPT_VARS_MAX - len(prompt_vars)):
                         prompt_vars.append(gr.Textbox(visible= False, min_width=80, show_label= False))
-            with gr.Column(visible=not advanced_prompt) as prompt_column_wizard:
+            with gr.Column(visible=not advanced_prompt, elem_classes=["wangp-prompt-info-stack"]) as prompt_column_wizard:
                 wizard_prompt_info_label = gr.HTML(value=render_prompt_info_label(wizard_prompt_label, model_type, model_def, "wizard"), visible=show_prompt_infos, elem_classes=["wangp-prompt-info-anchor"])
                 wizard_prompt = gr.Textbox(visible = not advanced_prompt, label=wizard_prompt_label, value=default_wizard_prompt, lines=3)
                 wizard_prompt_activated_var = gr.Text(wizard_prompt_activated, visible= False)
@@ -12162,7 +12182,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             ).then(fn=save_inputs,
                 inputs =[target_state] + gen_inputs,
                 outputs= None
-            ).then( fn=use_video_settings, inputs =[state, output, last_choice, gr.State("video")] , outputs= [model_family, model_base_type_choice, model_choice, refresh_form_trigger])
+            ).then( fn=use_video_settings, inputs =[state, output, last_choice, gr.State("video")] , outputs= [refresh_form_trigger, model_choice_target])
 
             gr.on( triggers=[video_info_extract_audio_settings_btn.click], fn=validate_wizard_prompt,
                 inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
@@ -12171,7 +12191,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             ).then(fn=save_inputs,
                 inputs =[target_state] + gen_inputs,
                 outputs= None
-            ).then( fn=use_video_settings, inputs =[state, audio_files_paths, audio_file_selected, gr.State("audio")] , outputs= [model_family, model_base_type_choice, model_choice, refresh_form_trigger])
+            ).then( fn=use_video_settings, inputs =[state, audio_files_paths, audio_file_selected, gr.State("audio")] , outputs= [refresh_form_trigger, model_choice_target])
 
 
             prompt_enhancer_btn.click(fn=validate_wizard_prompt,
@@ -12251,7 +12271,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             confirm_delete_lset_btn.click(delete_lset, inputs=[state, lset_name], outputs=[lset_name, apply_lset_btn, refresh_lora_btn, delete_lset_btn, save_lset_btn,confirm_delete_lset_btn, cancel_lset_btn ])
             cancel_lset_btn.click(cancel_lset, inputs=[], outputs=[apply_lset_btn, refresh_lora_btn, delete_lset_btn, save_lset_btn, confirm_delete_lset_btn,confirm_save_lset_btn, cancel_lset_btn,save_lset_prompt_drop ])
             apply_lset_btn.click(fn=save_inputs, inputs =[target_state] + gen_inputs, outputs= None).then(fn=apply_lset, 
-                inputs=[state, wizard_prompt_activated_var, lset_name,loras_choices, loras_multipliers, prompt], outputs=[wizard_prompt_activated_var, loras_choices, loras_multipliers, prompt, fill_wizard_prompt_trigger, model_family, model_base_type_choice, model_choice, refresh_form_trigger])
+                inputs=[state, wizard_prompt_activated_var, lset_name,loras_choices, loras_multipliers, prompt], outputs=[wizard_prompt_activated_var, loras_choices, loras_multipliers, prompt, fill_wizard_prompt_trigger, refresh_form_trigger, model_choice_target])
             refresh_lora_btn.click(refresh_lora_list, inputs=[state, lset_name,loras_choices], outputs=[lset_name, loras_choices])
             refresh_lora_btn2.click(refresh_lora_list, inputs=[state, lset_name,loras_choices], outputs=[lset_name, loras_choices])
 
@@ -12290,17 +12310,32 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             ).then(fn=save_inputs,
                 inputs =[target_state] + gen_inputs,
                 outputs= None
-            ).then(fn=load_settings_from_file, inputs =[state, settings_file] , outputs= [model_family, model_base_type_choice, model_choice, refresh_form_trigger, settings_file])
+            ).then(fn=load_settings_from_file, inputs =[state, settings_file] , outputs= [refresh_form_trigger, model_choice_target, settings_file])
 
 
-            model_choice_target.change(fn=validate_wizard_prompt,
-                inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
-                outputs= [prompt],
-                show_progress="hidden",
-            ).then(fn=save_inputs,
-                inputs =[target_state] + gen_inputs,
-                outputs= None
-            ).then(fn=goto_model_type, inputs =[state, model_choice_target] , outputs= [model_family, model_base_type_choice, model_choice, refresh_form_trigger])
+            if tab_id == 'generate':
+                model_choice_target.change(fn=validate_wizard_prompt,
+                    inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
+                    outputs= [prompt],
+                    show_progress="hidden",
+                ).then(fn=save_inputs,
+                    inputs =[target_state] + gen_inputs,
+                    outputs= None,
+                    show_progress="hidden",
+                ).then(fn=goto_model_type, inputs =[state, model_choice_target] , outputs= [model_family, model_base_type_choice, model_choice, refresh_form_trigger],
+                    show_progress="hidden",
+                ).then(fn= change_model_from_target,
+                    inputs=[state, model_choice_target],
+                    outputs= [model_description, header],
+                    show_progress="hidden",
+                ).then(fn= fill_inputs, 
+                    inputs=[state],
+                    outputs=gen_inputs + extra_inputs,
+                    show_progress="full" if args.debug_gen_form else "hidden",
+                ).then(fn= preload_model_when_switching, 
+                    inputs=[state],
+                    outputs=[gen_status],
+                    show_progress="hidden")
 
             if tab_id == 'generate' and model_toolbar is not None:
                 model_selector_toolbar.bind_toolbar(
@@ -12326,6 +12361,27 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         release_model=release_model,
                     ),
                 )
+                if model_toolbar.finetune_button is not None:
+                    finetune_editor_ui = finetune_editor.create_editor()
+                    finetune_editor.bind_editor(
+                        finetune_editor_ui,
+                        deps_factory=_get_finetune_editor_deps,
+                        state=state,
+                        toolbar_button=model_toolbar.finetune_button,
+                        model_family=model_family,
+                        model_base_type_choice=model_base_type_choice,
+                        model_choice=model_choice,
+                        model_choice_target=model_choice_target,
+                        refresh_form_trigger=refresh_form_trigger,
+                        model_description=model_description,
+                        header=header,
+                        validate_wizard_prompt=validate_wizard_prompt,
+                        wizard_inputs=[state, wizard_prompt_activated_var, wizard_variables_var, prompt, wizard_prompt, *prompt_vars],
+                        prompt_output=prompt,
+                        save_inputs_handler=save_inputs,
+                        target_state=target_state,
+                        generation_inputs=gen_inputs,
+                    )
 
             reset_settings_btn.click(fn=validate_wizard_prompt,
                 inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
@@ -12354,27 +12410,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
             if tab_id == 'generate':
                 # main_tabs.select(fn=detect_auto_save_form, inputs= [state], outputs= save_form_trigger, trigger_mode="multiple")
-                model_family.input(fn=change_model_family, inputs=[state, model_family], outputs= [model_base_type_choice, model_choice], show_progress="hidden")
-                model_base_type_choice.input(fn=change_model_base_types, inputs=[state, model_family, model_base_type_choice], outputs= [model_base_type_choice, model_choice], show_progress="hidden")
+                model_family.input(fn=change_model_family_target, inputs=[state, model_family], outputs= [model_choice_target], show_progress="hidden", queue=False)
+                model_base_type_choice.input(fn=change_model_base_types_target, inputs=[state, model_family, model_base_type_choice], outputs= [model_choice_target], show_progress="hidden", queue=False)
                 refresh_models_trigger.change(fn=refresh_model_dropdowns, inputs=[state], outputs=[model_family, model_base_type_choice, model_choice, refresh_form_trigger], show_progress="hidden")
 
-                model_choice.change(fn=validate_wizard_prompt,
-                    inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
-                    outputs= [prompt],
-                    show_progress="hidden",
-                ).then(fn=save_inputs,
-                    inputs =[target_state] + gen_inputs,
-                    outputs= None
-                ).then(fn= change_model,
-                    inputs=[state, model_choice],
-                    outputs= [model_description, header]
-                ).then(fn= fill_inputs, 
-                    inputs=[state],
-                    outputs=gen_inputs + extra_inputs,
-                    show_progress="full" if args.debug_gen_form else "hidden",
-                ).then(fn= preload_model_when_switching, 
-                    inputs=[state],
-                    outputs=[gen_status])
+                model_choice.input(fn=_model_choice_target_value, inputs=[model_choice], outputs=[model_choice_target], show_progress="hidden", queue=False)
             
                 generate_btn.click(fn = init_generate, inputs = [state, output, last_choice, audio_files_paths, audio_file_selected], outputs=[generate_trigger, mode])
                 add_to_queue_btn.click(fn = lambda : (get_unique_id(), ""), inputs = None, outputs=[add_to_queue_trigger, mode])
@@ -12552,6 +12592,29 @@ def _get_dropdown_deps():
         get_transformer_dtype=get_transformer_dtype,
     )
 
+def _get_finetune_editor_deps():
+    return finetune_editor.FinetuneEditorDeps(
+        settings_version=settings_version,
+        families_infos=families_infos,
+        transformer_types=transformer_types,
+        displayed_model_types=displayed_model_types,
+        three_levels_hierarchy=three_levels_hierarchy,
+        get_model_def=get_model_def,
+        get_model_name=get_model_name,
+        get_base_model_type=get_base_model_type,
+        get_parent_model_type=get_parent_model_type,
+        get_model_family=get_model_family,
+        get_state_model_type=get_state_model_type,
+        get_model_settings=get_model_settings,
+        set_model_settings=set_model_settings,
+        get_default_settings=get_default_settings,
+        get_settings_file_name=get_settings_file_name,
+        refresh_model_defs=refresh_model_defs,
+        refresh_model_dropdowns=refresh_model_dropdowns,
+        change_model=change_model,
+        request_reload_if_loaded=request_reload_if_loaded,
+    )
+
 def create_models_hierarchy(rows):
     return model_dropdowns.create_models_hierarchy(rows)
 
@@ -12564,11 +12627,13 @@ def get_sorted_dropdown(dropdown_types, current_model_family, current_model_type
 def generate_dropdown_model_list(current_model_type):
     return model_dropdowns.generate_dropdown_model_list(_get_dropdown_deps(), current_model_type)
 
-def change_model_family(state, current_model_family):
-    return model_dropdowns.change_model_family(_get_dropdown_deps(), state, current_model_family)
+def change_model_family_target(state, current_model_family):
+    _, model_choice_update = model_dropdowns.change_model_family(_get_dropdown_deps(), state, current_model_family)
+    return _model_choice_target_value(model_choice_update.constructor_args["value"])
 
-def change_model_base_types(state,  current_model_family, model_base_type_choice):
-    return model_dropdowns.change_model_base_types(_get_dropdown_deps(), state, current_model_family, model_base_type_choice)
+def change_model_base_types_target(state, current_model_family, model_base_type_choice):
+    _, model_choice_update = model_dropdowns.change_model_base_types(_get_dropdown_deps(), state, current_model_family, model_base_type_choice)
+    return _model_choice_target_value(model_choice_update.constructor_args["value"])
 
 def get_js():
     start_quit_timer_js = """
@@ -12700,6 +12765,8 @@ def create_ui():
     css += "\n" + assistant_chat.get_css()
     css += "\n" + model_infos.get_css()
     css += "\n" + model_selector_toolbar.get_css()
+    css += "\n" + finetune_editor.get_css()
+    local_file_picker.configure_last_directory_store(server_config)
     UI_theme = server_config.get("UI_theme", "default")
     UI_theme  = args.theme if len(args.theme) > 0 else UI_theme
     if UI_theme == "gradio":
@@ -12716,6 +12783,7 @@ def create_ui():
     js += assistant_chat.get_javascript()
     js += model_infos.get_javascript()
     js += model_selector_toolbar.get_javascript()
+    js += finetune_editor.get_javascript()
     AudioGallery.install_gradio_upload_mtime_patch()
     app.initialize_plugins(globals())
     plugin_js = ""
@@ -12751,7 +12819,7 @@ def create_ui():
                     else:
                         gr.Markdown("<div class='title-with-lines'><div class=line width=100%></div></div>")                        
                         model_family, model_base_type_choice, model_choice = generate_dropdown_model_list(transformer_type)
-                        model_toolbar = model_selector_toolbar.create_toolbar()
+                        model_toolbar = model_selector_toolbar.create_toolbar(is_finetune_editor=finetune_editor.is_finetune_model(_get_finetune_editor_deps(), transformer_type))
                 if model_toolbar is not None:
                     model_selector_toolbar.create_search_panel(model_toolbar)
                 with gr.Row():

@@ -13,7 +13,7 @@ LLAMA32_FILES = ["config.json", "generation_config.json", "Llama3_2_quanto_bf16_
 LLAMAJOY_FILES = ["config.json", "llama_config.json", "llama_joycaption_quanto_bf16_int8.safetensors", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"]
 
 QWEN35_TEXT_GGUF_FILENAME = "Qwen3.5-9B-Abliterated-text-Q4_K_M_bis.gguf"
-QWEN35_9B_ABLITERATED_TEXT_INT8_VERSION = 2
+QWEN35_9B_ABLITERATED_TEXT_INT8_VERSION = 1
 QWEN35_TEXT_INT8_FILENAME_V1 = "Qwen3.5-9B-Abliterated_quanto_bf16_int8.safetensors"
 QWEN35_TEXT_INT8_FILENAME_V2 = "Qwen3.5-9B-Abliterated_v2_quanto_bf16_int8.safetensors"
 QWEN35_TEXT_INT8_FILENAME = QWEN35_TEXT_INT8_FILENAME_V2 if QWEN35_9B_ABLITERATED_TEXT_INT8_VERSION == 2 else QWEN35_TEXT_INT8_FILENAME_V1

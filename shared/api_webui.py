@@ -749,6 +749,27 @@ class GradioWanGPSession:
         self._capture_job_for_current_call(job)
         return job
 
+    def list_model_defs(self, **filters: Any) -> list[dict[str, Any]]:
+        return self._ensure_session().list_model_defs(**filters)
+
+    def get_model_defs(self, **filters: Any) -> list[dict[str, Any]]:
+        return self.list_model_defs(**filters)
+
+    def list_model_metadata(self, **filters: Any) -> list[dict[str, Any]]:
+        return self._ensure_session().list_model_metadata(**filters)
+
+    def get_model_def(self, model_type: str) -> dict[str, Any] | None:
+        return self._ensure_session().get_model_def(model_type)
+
+    def get_model_metadata(self, model_type: str) -> dict[str, Any] | None:
+        return self._ensure_session().get_model_metadata(model_type)
+
+    def get_default_settings(self, model_type: str) -> dict[str, Any]:
+        return self._ensure_session().get_default_settings(model_type)
+
+    def get_model_schema(self, model_type: str) -> dict[str, Any] | None:
+        return self._ensure_session().get_model_schema(model_type)
+
     def submit_task(self, settings: dict[str, Any], callbacks: object | None = None) -> SessionJob:
         session = self._ensure_session()
         self._bind_gradio_context(session)

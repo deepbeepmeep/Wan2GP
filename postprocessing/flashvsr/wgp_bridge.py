@@ -177,7 +177,7 @@ class FlashVSRBridge:
         mixed_precision = self.server_config.get("vae_precision", "16") == "32"
         return WanVAE.get_VAE_tile_size(vae_config, device_mem_capacity, mixed_precision, output_height=output_height, output_width=output_width)
 
-    def download(self, process_files: Callable[..., Any], send_cmd=None, status_text: str | None = None) -> bool:
+    def download(self, process_files: Callable[..., Any], send_cmd=None, status_text: str | None = None, spatial_upsampling=None) -> bool:
         flashvsr_def = self.query_download_def()
         if flashvsr_def is None:
             return False

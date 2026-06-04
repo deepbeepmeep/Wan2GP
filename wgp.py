@@ -49,6 +49,7 @@ import random
 import json
 import numpy as np
 import importlib
+from models import model_metadata
 from shared.utils import notification_sound
 from shared.utils.loras_mutipliers import preparse_loras_multipliers, parse_loras_multipliers
 from shared.utils.utils import convert_tensor_to_image, save_image, get_video_info, get_file_creation_date, convert_image_to_video, calculate_new_dimensions, convert_image_to_tensor, calculate_dimensions_and_resize_image, rescale_and_crop, get_video_frame, resize_and_remove_background, rgb_bw_to_rgba_mask, to_rgb_tensor, get_resampled_video_transparent, get_video_summary_extras
@@ -62,7 +63,7 @@ from shared.utils.settings_bundle import is_wangp_settings_filename
 from shared.utils.video_decode import decode_video_frames_ffmpeg, probe_video_stream_metadata
 from shared.utils.virtual_media import get_virtual_image, get_virtual_media_entry, get_virtual_media_vsource, parse_virtual_media_path, replace_virtual_media_source, strip_virtual_media_suffix
 from shared.match_archi import match_nvidia_architecture
-from shared.attention import get_attention_modes, get_supported_attention_modes
+from shared.attention import get_attention_modes, get_supported_attention_modes, get_default_attention_mode
 from shared.utils.utils import truncate_for_filesystem, sanitize_file_name, process_images_multithread, get_default_workers
 from shared.utils.process_locks import (
     acquire_GPU_ressources,
@@ -116,7 +117,7 @@ from shared.ffmpeg_setup import download_ffmpeg
 from shared.api import get_api_output_options, store_api_output_artifact
 from shared.utils.plugins import PluginManager, WAN2GPApplication, SYSTEM_PLUGINS
 from shared.llm_engines.nanovllm.vllm_support import resolve_lm_decoder_engine
-from shared.gradio import assistant_chat, finetune_editor, local_file_picker, model_infos, model_selector_toolbar
+from shared.gradio import assistant_chat, field_help, finetune_editor, local_file_picker, model_infos, model_selector_toolbar
 from shared.gradio.magic_mask import MagicMaskUI
 from shared import model_dropdowns
 from shared.cli_args import parse_wgp_args
@@ -137,12 +138,12 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.90"
+WanGP_version = "12.00"
 settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
-CUSTOM_SETTINGS_MAX = 6
+CUSTOM_SETTINGS_MAX = 5
 CUSTOM_SETTINGS_PER_ROW = 2
 CUSTOM_SETTING_TYPES = {"int", "float", "text"}
 lm_decoder_engine = ""
@@ -173,6 +174,7 @@ reload_needed = True
 _HANDLER_MODULES = [
     "shared.qtypes.scaled_fp8",
     "shared.qtypes.nvfp4",
+    "shared.qtypes.bnb_nf4",
     "shared.qtypes.nunchaku_int4",
     "shared.qtypes.nunchaku_fp4",
     "shared.qtypes.gguf",
@@ -638,6 +640,9 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
 def get_custom_setting_key(index):
     return f"custom_setting_{index + 1}"
 
+def get_custom_setting_slider_key(index):
+    return f"custom_setting_slider_{index + 1}"
+
 def _normalize_custom_setting_type(setting_type):
     parsed_type = str(setting_type or "text").strip().lower()
     return parsed_type if parsed_type in CUSTOM_SETTING_TYPES else "text"
@@ -680,6 +685,29 @@ def get_model_custom_settings(model_def):
         one["id"] = setting_id
         normalized.append(one)
     return normalized
+
+def get_custom_setting_slider_bounds(setting_def):
+    if not isinstance(setting_def, dict) or setting_def.get("type") not in {"int", "float"} or not all(key in setting_def for key in ("min", "max", "inc")):
+        return None
+    try:
+        min_value, max_value, step_value = float(setting_def["min"]), float(setting_def["max"]), float(setting_def["inc"])
+    except Exception:
+        return None
+    if max_value < min_value or step_value <= 0:
+        return None
+    if setting_def.get("type") == "int":
+        if not min_value.is_integer() or not max_value.is_integer() or not step_value.is_integer():
+            return None
+        return int(min_value), int(max_value), int(step_value)
+    return min_value, max_value, step_value
+
+def get_custom_setting_slider_value(raw_value, slider_bounds):
+    min_value, max_value, _ = slider_bounds
+    try:
+        value = float(raw_value)
+    except Exception:
+        value = min_value
+    return min(max(value, min_value), max_value)
 
 
 def end_frames_always_enabled(model_def):
@@ -754,8 +782,9 @@ def collect_custom_settings_from_inputs(model_def, inputs, strict=False):
     custom_settings = get_model_custom_settings(model_def)
     for idx, setting_def in enumerate(custom_settings):
         slot_key = get_custom_setting_key(idx)
+        slider_key = get_custom_setting_slider_key(idx)
         setting_id = setting_def["id"]
-        raw_value = inputs.get(slot_key, None)
+        raw_value = inputs.get(slider_key if get_custom_setting_slider_bounds(setting_def) is not None else slot_key, None)
         if raw_value is None and setting_id in existing_custom_settings:
             raw_value = existing_custom_settings.get(setting_id, None)
         parsed_value, parse_error = parse_custom_setting_typed_value(raw_value, setting_def.get("type", "text"))
@@ -774,6 +803,7 @@ def collect_custom_settings_from_inputs(model_def, inputs, strict=False):
 def clear_custom_setting_slots(inputs):
     for idx in range(CUSTOM_SETTINGS_MAX):
         inputs.pop(get_custom_setting_key(idx), None)
+        inputs.pop(get_custom_setting_slider_key(idx), None)
 
 def validate_settings(state, model_type, single_prompt, inputs, silent=False):
     def err(error=""):
@@ -797,9 +827,10 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
     multi_prompts_gen_type = inputs["multi_prompts_gen_type"]
     prompt = inputs["prompt"]
     keep_empty_lines = model_def.get("preserve_empty_prompt_lines", False) or "P" in multi_prompts_gen_type or prompt_parser.PROMPT_UNIT_PREFIX in prompt
-    prompt, errors = prompt_parser.process_template(prompt, keep_comments=prompt_parser.PROMPT_UNIT_PREFIX in prompt, keep_empty_lines=keep_empty_lines)
-    if len(errors) > 0:
-        return err("Error processing prompt template: " + errors)
+    if not model_def.get("skip_prompt_template", False):
+        prompt, errors = prompt_parser.process_template(prompt, keep_comments=prompt_parser.PROMPT_UNIT_PREFIX in prompt, keep_empty_lines=keep_empty_lines)
+        if len(errors) > 0:
+            return err("Error processing prompt template: " + errors)
     prompt = prompt.strip("\n").strip()
 
     prompts = prompt_parser.split_prompt_units(prompt, multi_prompts_gen_type, single_prompt=single_prompt)
@@ -874,6 +905,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
     self_refiner_setting = inputs["self_refiner_setting"]
     self_refiner_plan = inputs["self_refiner_plan"]
     model_mode = inputs["model_mode"]
+    if image_mode == 0 and model_def.get("image_outputs", False): image_mode = 1
     medium = "Videos" if image_mode == 0 else "Images"
 
     if image_start is not None and not isinstance(image_start, list): image_start = [image_start]
@@ -901,11 +933,13 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
             return err(error)
 
     if not model_def.get("motion_amplitude", False): motion_amplitude = 1.
-    if "vae" in spatial_upsampling:
+    if str(spatial_upsampling or "").startswith("vae"):
         if spatial_upsampling not in ("vae1", "vae2"):
             return err("VAE Spatial Upsampling only supports x1.0 and x2.0")
         if image_mode not in model_def.get("vae_upsampler", []):
             return err(f"VAE Spatial Upsampling is not available for {medium}")
+    if is_pid_vae_upsampling(spatial_upsampling) and image_mode not in model_def.get("pid_upsampler", []):
+        return err(f"VAE Pid Upsampler is not available for {medium}")
     edit_upsampler = find_edit_spatial_upsampler(spatial_upsampling)
     if edit_upsampler is not None:
         edit_upsampling_error = edit_upsampler.validate_upsampling(spatial_upsampling, image_mode)
@@ -1212,6 +1246,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
         "video_guide_outpainting_ratio": inputs.get("video_guide_outpainting_ratio", ""),
         "custom_settings": inputs.get("custom_settings", None),
         "self_refiner_plan": self_refiner_plan,
+        "image_mode": image_mode,
     } 
     inputs.update(override_inputs)
     if hasattr(model_handler, "validate_generative_settings"):
@@ -2163,8 +2198,8 @@ def update_generation_status(html_content):
     if(html_content):
         return gr.update(value=html_content)
 
-family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.ltx2.ltx2_handler", "models.ltx2.ltx_audio_tts_handler", "models.longcat.longcat_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.kandinsky5.kandinsky_handler",  "models.z_image.z_image_handler", "models.hidream.hidream_handler", "models.magi_human.magi_human_handler", "models.TTS.ace_step_handler", "models.TTS.chatterbox_handler", "models.TTS.qwen3_handler", "models.TTS.yue_handler", "models.TTS.heartmula_handler", "models.TTS.kugelaudio_handler", "models.TTS.index_tts2_handler", "models.TTS.omnivoice_handler"]
-DEFAULT_LORA_ROOT = "loras"
+family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.ltx2.ltx2_handler", "models.ltx2.ltx_audio_tts_handler", "models.longcat.longcat_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.kandinsky5.kandinsky_handler",  "models.z_image.z_image_handler", "models.hidream.hidream_handler", "models.ideogram4.ideogram4_handler", "models.magi_human.magi_human_handler", "models.TTS.ace_step_handler", "models.TTS.chatterbox_handler", "models.TTS.qwen3_handler", "models.TTS.yue_handler", "models.TTS.heartmula_handler", "models.TTS.kugelaudio_handler", "models.TTS.index_tts2_handler", "models.TTS.stable_audio3_handler", "models.TTS.omnivoice_handler"]
+DEFAULT_LORA_ROOT = "loras" #"models.cosmos3.cosmos3_handler",
 
 def get_lora_root():
     cli_lora_root = getattr(args, "loras", "")
@@ -2305,6 +2340,8 @@ if not Path(config_load_filename).is_file():
         "seedvc_persistence": 1,
         "flashvsr_mode": 0,
         "flashvsr_persistence": 1,
+        "pid_tiling_threshold": 0,
+        "pid_persistence": 1,
         "flashvsr_topk_ratio": 0.0,
         "rife_version": "v4",
         **get_deepy_default_runtime_config(),
@@ -2323,6 +2360,8 @@ else:
     server_config = json.loads(text)
 
 server_config.setdefault("prompt_enhancer_quantization", "quanto_int8")
+server_config.setdefault("pid_tiling_threshold", 0)
+server_config.setdefault("pid_persistence", 1)
 server_config["multi_prompts_gen_type"] = prompt_parser.normalize_multi_prompts_mode(
     server_config.get("multi_prompts_gen_type", prompt_parser.DEFAULT_MULTI_PROMPTS_MODE),
     default=prompt_parser.DEFAULT_MULTI_PROMPTS_MODE,
@@ -2342,13 +2381,18 @@ MMAUDIO_MODE_V2 = 1
 MMAUDIO_MODE_NEW = 2
 MMAUDIO_PERSIST_UNLOAD = 1
 MMAUDIO_PERSIST_RAM = 2
+PID_PERSIST_UNLOAD = 1
+PID_PERSIST_RAM = 2
 MMAUDIO_STANDARD = "mmaudio_large_44k_v2.pth"
 MMAUDIO_ALTERNATE = "mmaudio_large_44k_gold_8.5k_final_fp16.safetensors"
 from postprocessing.flashvsr.wgp_bridge import FlashVSRBridge
 from postprocessing.seedvc.wgp_bridge import SeedVCBridge
+from postprocessing.pid import get_pid_download_def, get_pid_upsampler, is_pid_upsampling, is_pid_vae_upsampling, pid_backbone_for_upsampling, pid_checkpoint_types_for_tiling_threshold, pid_vae_upsampling_choice, release_models as release_pid_models
+from postprocessing.pid.wgp_bridge import PiDBridge
 flashvsr = FlashVSRBridge(server_config, fl)
+pid_bridge = PiDBridge(server_config, fl)
 seedvc_bridge = SeedVCBridge(server_config, fl)
-edit_mode_handlers = [flashvsr]
+edit_mode_handlers = [flashvsr, pid_bridge]
 
 
 def query_edit_spatial_upsampling_choices(include_name=True, enabled_only=False):
@@ -2363,9 +2407,12 @@ def get_default_image_spatial_upsampling():
 
 SPATIAL_UPSAMPLING_METHOD_CHOICES = [("None", ""), ("Lanczos", "lanczos"), ("FlashVSR", "flashvsr"), ("FlashVSR Two Pass", "flashvsr2pass")]
 SPATIAL_UPSAMPLING_RATIO_CHOICES = [(f"x{FlashVSRBridge.format_ratio_label(scale)}", scale) for scale in FlashVSRBridge.UPSAMPLING_RATIOS]
+PID_UPSAMPLING_RATIO_CHOICES = [("x4", 4.0)]
 
 def split_spatial_upsampling_value(value):
     text = str(value or "").strip().lower()
+    if is_pid_upsampling(text):
+        return text, 4.0
     for method, prefix in (("flashvsr2pass", FlashVSRBridge.UPSAMPLING_TWO_PASS_VALUE_PREFIX), ("flashvsr", FlashVSRBridge.UPSAMPLING_VALUE_PREFIX), ("lanczos", "lanczos"), ("vae", "vae")):
         if text.startswith(prefix):
             try: scale = FlashVSRBridge.scale_for_upsampling(text) if method.startswith("flashvsr") else float(text[len(prefix):] or 2.0)
@@ -2375,6 +2422,8 @@ def split_spatial_upsampling_value(value):
 
 def build_spatial_upsampling_value(method, scale):
     method, scale = str(method or ""), float(scale or 2.0)
+    if is_pid_upsampling(method):
+        return method
     ratio = FlashVSRBridge.format_ratio(scale)
     return {"": "", "lanczos": f"lanczos{ratio}", "vae": f"vae{ratio}", "flashvsr": FlashVSRBridge.upsampling_value(scale), "flashvsr2pass": FlashVSRBridge.upsampling_two_pass_value(scale)}.get(method, "")
 
@@ -2482,6 +2531,15 @@ def map_family_handlers(family_handlers):
 
 model_types_handlers, families_infos,  models_eqv_map, models_comp_map = map_family_handlers(family_handlers)
 
+def _store_model_metadata(model_type, model_def):
+    return model_metadata.store_metadata(model_type, model_def, model_types_handlers, families_infos)
+
+def list_model_defs(family=None, base_model_type=None, finetune=None, model_type=None, main_output=None, inputs=None):
+    return model_metadata.list_model_defs(models_def, family=family, base_model_type=base_model_type, finetune=finetune, model_type=model_type, main_output=main_output, inputs=inputs)
+
+def get_model_defs(**filters):
+    return list_model_defs(**filters)
+
 def get_base_model_type(model_type):
     model_def = get_model_def(model_type)
     if model_def == None:
@@ -2540,16 +2598,8 @@ def get_model_family(model_type, for_ui = False):
     base_model_type = get_base_model_type(model_type)
     if base_model_type is None:
         return "unknown"
-    
-    if for_ui : 
-        model_def = get_model_def(model_type)
-        model_family = model_def.get("group", None)
-        if model_family is not None and model_family in families_infos:
-            return model_family
-    handler = model_types_handlers.get(base_model_type, None)
-    if handler is None: 
-        return "unknown"
-    return handler.query_model_family()
+    model_def = get_model_def(model_type) or {}
+    return model_metadata.get_model_family(base_model_type, model_def, model_types_handlers, families_infos, for_ui=for_ui)
 
 def test_class_i2v(model_type):    
     model_def = get_model_def(model_type)
@@ -2939,7 +2989,7 @@ def init_model_def(model_type, model_def):
     default_model_def = family_handler.query_model_def(base_model_type, model_def)
     if default_model_def is None: return model_def
     default_model_def.update(model_def)
-    return default_model_def
+    return _store_model_metadata(model_type, default_model_def)
 
 
 def refresh_model_defs():
@@ -2980,11 +3030,13 @@ def refresh_model_defs():
             if existing_model_def is not None:
                 existing_model_def.setdefault("settings", {}).update(json_def)
                 existing_model_def.update(model_def)
+                _store_model_metadata(model_type, existing_model_def)
             else:
                 new_models_def[model_type] = model_def
                 model_def = init_model_def(model_type, model_def)
                 new_models_def[model_type] = model_def
                 model_def["settings"] = json_def
+                _store_model_metadata(model_type, model_def)
         except Exception as e:
             if use_previous_model_def(model_type, file_path, e):
                 continue
@@ -3234,6 +3286,25 @@ def process_files_def(repoId = None, sourceFolderList = None, fileList = None, t
 
     return shared_process_files_def(repoId=repoId, sourceFolderList=sourceFolderList, fileList=fileList, targetFolderList=targetFolderList)
 
+def _get_pid_backbone_for_model(base_model_type, model_def):
+    if str(base_model_type or "").startswith("z_image"):
+        return "z_image"
+    if model_def.get("flux2", False):
+        return "flux2"
+    return "flux"
+
+def download_requested_pid_assets(send_cmd, *, base_model_type, model_def, width, height):
+    from shared.utils.download import process_files_def_if_needed
+
+    backbone = _get_pid_backbone_for_model(base_model_type, model_def)
+    ckpt_types = pid_checkpoint_types_for_tiling_threshold(server_config.get("pid_tiling_threshold", 0))
+    process_files_def_if_needed(
+        get_pid_download_def(backbone, ckpt_type=ckpt_types, include_vae=True),
+        send_cmd=send_cmd,
+        status_text="Downloading PiD upsampler model files...",
+    )
+    return backbone, "2k" if ckpt_types == ("2k",) else None
+
 def query_mmaudio_download_def(enabled_only=True):
     mmaudio_enabled, mmaudio_mode, _, _, _ = get_mmaudio_settings(server_config)
     if enabled_only and not mmaudio_enabled:
@@ -3259,6 +3330,9 @@ def download_seedvc(send_cmd=None, status_text="Downloading SeedVC model files..
 def release_flashvsr_vram():
     flashvsr.release_vram()
 
+def release_pid_vram():
+    release_pid_models()
+
 def release_seedvc_vram():
     seedvc_bridge.release_vram()
 
@@ -3270,7 +3344,7 @@ def download_requested_postprocessing_assets(send_cmd, *, postprocess_audio="", 
         download_audio_background_replacement(send_cmd, "Downloading audio background replacement model files...")
     edit_upsampler = find_edit_spatial_upsampler(spatial_upsampling)
     if edit_upsampler is not None and hasattr(edit_upsampler, "download"):
-        edit_upsampler.download(process_files_def, send_cmd=send_cmd, status_text=f"Downloading {edit_upsampler.query_edit_mode_def().get('name', 'postprocessing')} model files...")
+        edit_upsampler.download(process_files_def, send_cmd=send_cmd, status_text=f"Downloading {edit_upsampler.query_edit_mode_def().get('name', 'postprocessing')} model files...", spatial_upsampling=spatial_upsampling)
     if seedvc_voice_sample is not None:
         download_seedvc(send_cmd, "Downloading SeedVC model files...")
     if seedvc_voice_sample2 is not None or postprocess_audio == "seedvc2":
@@ -3839,10 +3913,7 @@ def is_generation_in_progress():
     return gen_in_progress
 
 def get_auto_attention():
-    for attn in ["sage2","sage","sdpa"]:
-        if attn in attention_modes_supported:
-            return attn
-    return "sdpa"
+    return get_default_attention_mode()
 
 def generate_header(model_type, compile, attention_mode):
 
@@ -5434,13 +5505,13 @@ def perform_temporal_upsampling(sample, previous_last_frame, temporal_upsampling
 def perform_spatial_upsampling(sample, spatial_upsampling, seed=0, flashvsr_continue_cache=None, return_flashvsr_continue_cache=False, vae_tile_size=None, still_image=False, abort_callback=None, progress_callback=None):
     wait_for_model_unload()
     from shared.utils.utils import resize_lanczos 
-    if spatial_upsampling == "vae2":
+    if spatial_upsampling == "vae2" or is_pid_vae_upsampling(spatial_upsampling):
         return (sample, None) if return_flashvsr_continue_cache else sample
     edit_upsampler = find_edit_spatial_upsampler(spatial_upsampling)
     if edit_upsampler is not None:
-        profile = loaded_profile if loaded_profile >= 0 else get_default_profile("video")
-        sample, flashvsr_cache = edit_upsampler.upscale(sample, spatial_upsampling, seed=seed, continue_cache=flashvsr_continue_cache, return_continue_cache=return_flashvsr_continue_cache, vae_tile_size=vae_tile_size, process_files=process_files_def, vae_config=vae_config, init_pipe=init_pipe, profile=profile, still_image=still_image, abort_callback=abort_callback, progress_callback=progress_callback)
-        return (sample, flashvsr_cache) if return_flashvsr_continue_cache else sample
+        profile = get_default_profile("image") if getattr(edit_upsampler, "uses_image_profile", False) else (loaded_profile if loaded_profile >= 0 else get_default_profile("video"))
+        sample, upsampler_cache = edit_upsampler.upscale(sample, spatial_upsampling, seed=seed, continue_cache=flashvsr_continue_cache, return_continue_cache=return_flashvsr_continue_cache, vae_tile_size=vae_tile_size, process_files=process_files_def, vae_config=vae_config, init_pipe=init_pipe, profile=profile, still_image=still_image, abort_callback=abort_callback, progress_callback=progress_callback)
+        return (sample, upsampler_cache) if return_flashvsr_continue_cache else sample
     method = None
     if spatial_upsampling == "vae1":
         scale = 0.5
@@ -5480,7 +5551,7 @@ def perform_spatial_upsampling(sample, spatial_upsampling, seed=0, flashvsr_cont
 
 def perform_image_spatial_upsampling(sample, spatial_upsampling, seed=0, vae_tile_size=None, abort_callback=None, progress_callback=None):
     edit_upsampler = find_edit_spatial_upsampler(spatial_upsampling)
-    if edit_upsampler is None or sample.shape[1] <= 1:
+    if edit_upsampler is None or sample.shape[1] <= 1 or getattr(edit_upsampler, "batch_image_inputs", False):
         return perform_spatial_upsampling(sample, spatial_upsampling, seed=seed, vae_tile_size=vae_tile_size, still_image=True, abort_callback=abort_callback, progress_callback=progress_callback)
     frames = []
     for frame_no in range(sample.shape[1]):
@@ -5601,7 +5672,7 @@ def edit_video(
     )
 
     if mode == "edit_postprocessing":
-        if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 or film_grain_intensity > 0:                
+        if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 or film_grain_intensity > 0:
             send_cmd("progress", [0, get_latest_status(state,"Upsampling - Starting" if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 else "Adding Film Grain"  )])
             if source_is_image:
                 sample = torch.from_numpy(np.array(image).astype(np.uint8)).unsqueeze(0).permute(-1,0,1,2)
@@ -6028,16 +6099,18 @@ def normalize_generated_prompt_lines(prompt, multi_prompts_gen_type):
 def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, multi_prompts_gen_type, override_profile, video_prompt_type, image_prompt_type, audio_prompt_type, progress=gr.Progress()):
     model_type = get_state_model_type(state)
     inputs = get_model_settings(state, model_type)
+    model_def = get_model_def(model_type)
     original_prompts = inputs["prompt"]
 
-    original_prompts, errors = prompt_parser.process_template(
-        original_prompts,
-        keep_comments=True,
-        keep_empty_lines="P" in multi_prompts_gen_type or prompt_parser.PROMPT_UNIT_PREFIX in original_prompts,
-    )
-    if len(errors) > 0:
-        gr.Info("Error processing prompt template: " + errors)
-        return gr.update(), gr.update()
+    if not model_def.get("skip_prompt_template", False):
+        original_prompts, errors = prompt_parser.process_template(
+            original_prompts,
+            keep_comments=True,
+            keep_empty_lines="P" in multi_prompts_gen_type or prompt_parser.PROMPT_UNIT_PREFIX in original_prompts,
+        )
+        if len(errors) > 0:
+            gr.Info("Error processing prompt template: " + errors)
+            return gr.update(), gr.update()
     original_prompts = prompt_parser.split_prompt_units(original_prompts, multi_prompts_gen_type, originals=True)
     num_prompts = len(original_prompts) 
     image_prompt_type = inputs["image_prompt_type"]
@@ -6426,6 +6499,8 @@ def generate_video(
     base_model_type = get_base_model_type(model_type)
     model_handler = get_model_handler(base_model_type)
     block_size = model_def.get("vae_block_size", 16)
+    width, height = resolution.split("x")
+    width, height = int(width) // block_size * block_size, int(height) // block_size * block_size
 
     if "P" in preload_model_policy and not "U" in preload_model_policy:
         while wan_model == None:
@@ -6433,10 +6508,16 @@ def generate_video(
     vae_upsampling = model_def.get("vae_upsampler", None)
     model_kwargs = {}
     if vae_upsampling is not None:
-        new_vae_upsampling = None if image_mode not in vae_upsampling or "vae" not in spatial_upsampling else spatial_upsampling
+        new_vae_upsampling = None if image_mode not in vae_upsampling or not str(spatial_upsampling or "").startswith("vae") else spatial_upsampling
         old_vae_upsampling =  None if reload_needed or wan_model is None or not hasattr(wan_model, "vae") or not hasattr(wan_model.vae, "upsampling_set") else wan_model.vae.upsampling_set
         reload_needed = reload_needed or old_vae_upsampling != new_vae_upsampling
-        if new_vae_upsampling: model_kwargs = {"VAE_upsampling": new_vae_upsampling}
+        if new_vae_upsampling: model_kwargs["VAE_upsampling"] = new_vae_upsampling
+    pid_upsampling = model_def.get("pid_upsampler", None)
+    pid_runtime_backbone = pid_runtime_ckpt_type = None
+    if pid_upsampling is not None:
+        new_pid_upsampling = None if image_mode not in pid_upsampling or not is_pid_vae_upsampling(spatial_upsampling) else spatial_upsampling
+        if new_pid_upsampling is not None:
+            pid_runtime_backbone, pid_runtime_ckpt_type = download_requested_pid_assets(send_cmd, base_model_type=base_model_type, model_def=model_def, width=width, height=height)
     output_type = get_profile_type_for_model(model_type, image_mode)
     profile = compute_profile(override_profile, output_type)
     if model_type != transformer_type or reload_needed or profile != loaded_profile:
@@ -6458,6 +6539,21 @@ def generate_video(
         seedvc_voice_sample=seedvc_voice_sample if not (is_image or audio_only) else None,
         seedvc_voice_sample2=seedvc_voice_sample2 if not (is_image or audio_only) else None,
     )
+    pid_upsampler_session = None
+    pid_persistent = int(server_config.get("pid_persistence", PID_PERSIST_UNLOAD) or PID_PERSIST_UNLOAD) == PID_PERSIST_RAM
+    pid_tiling_threshold = server_config.get("pid_tiling_threshold", 0)
+    if pid_runtime_backbone is not None:
+        send_cmd("status", "Preparing PiD upsampler...")
+        pid_upsampler_session = get_pid_upsampler(
+            pid_runtime_backbone,
+            pid_runtime_ckpt_type,
+            init_pipe=init_pipe,
+            profile=compute_profile(override_profile, "image"),
+            main_offloadobj=offloadobj,
+            persistent_models=pid_persistent,
+            tiling_threshold=pid_tiling_threshold,
+        )
+        send_cmd("status", "PiD upsampler prepared")
     if args.test and auto_prompt_enhancer_requested:
         try:
             ensure_prompt_enhancer_loaded(override_profile=override_profile, send_cmd=send_cmd)
@@ -6466,6 +6562,8 @@ def generate_video(
             if enhancer_offloadobj is not None:
                 enhancer_offloadobj.unload_all()
     if args.test:
+        if pid_upsampler_session is not None and not pid_persistent:
+            release_pid_models()
         send_cmd("info", "Test mode: model loaded, skipping generation.")
         return True
     overridden_attention = override_attention if len(override_attention) else get_overridden_attention(model_type)
@@ -6478,8 +6576,6 @@ def generate_video(
         send_cmd("exit")
         return True
     
-    width, height = resolution.split("x")
-    width, height = int(width) // block_size *  block_size, int(height) // block_size *  block_size
     default_image_size = (height, width)
 
     if perturbation_switch == 0:
@@ -7226,6 +7322,7 @@ def generate_video(
                     if control_source_height is not None and control_source_width is not None:
                         model_outpainting_dims = resolve_outpainting_dims(control_source_height, control_source_width, outpainting_dims, video_guide_outpainting_ratio)
                 overridden_inputs = None
+                extra_generate_kwargs = {"pid_upsampler": pid_upsampler_session} if pid_upsampler_session is not None else {}
                 samples = wan_model.generate(
                     input_prompt = prompt,
                     alt_prompt = alt_prompt,
@@ -7334,8 +7431,15 @@ def generate_video(
                     frames_relative_positions_list = frames_relative_positions_list,
                     frames_to_inject = frames_to_inject_parsed,
                     verbose_level=verbose_level,
+                    **extra_generate_kwargs,
                 )
+                if pid_upsampler_session is not None and not pid_persistent:
+                    release_pid_models()
+                    pid_upsampler_session = None
             except Exception as e:
+                if pid_upsampler_session is not None and not pid_persistent:
+                    release_pid_models()
+                    pid_upsampler_session = None
                 if len(control_audio_tracks) > 0 or len(source_audio_tracks) > 0:
                     cleanup_temp_audio_files(control_audio_tracks + source_audio_tracks)
                 remove_temp_filenames(temp_filenames_list)
@@ -7491,7 +7595,7 @@ def generate_video(
                     output_new_audio_data = full_generated_audio
 
 
-                if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 and not "vae2" in spatial_upsampling:                
+                if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 and not "vae2" in spatial_upsampling and not is_pid_vae_upsampling(spatial_upsampling):
                     send_cmd("progress", [0, get_latest_status(state,"Upsampling - Starting")])
                 
                 output_fps  = fps
@@ -9637,6 +9741,11 @@ def save_inputs(
             custom_setting_3,
             custom_setting_4,
             custom_setting_5,
+            custom_setting_slider_1,
+            custom_setting_slider_2,
+            custom_setting_slider_3,
+            custom_setting_slider_4,
+            custom_setting_slider_5,
             top_p,
             top_k,
             self_refiner_setting,
@@ -10211,10 +10320,14 @@ def get_prompt_labels(multi_prompts_gen_type, model_def, image_outputs = False, 
     return f"{prompt_class} ({new_line_text}, # lines = comments, ! lines = macros)", f"{prompt_class} ({new_line_text}, # lines = comments)"
 
 def get_prompt_infos(model_def):
-    return model_def.get("prompt_infos", model_def.get("promt_infos", None))
+    return field_help.get_model_prompt_help(model_def)
+
+PROMPT_ADVANCED_ELEM_ID = "wangp-prompt-advanced"
+PROMPT_WIZARD_ELEM_ID = "wangp-prompt-wizard"
 
 def render_prompt_info_label(label, model_type, model_def, prompt_id):
-    return model_infos.render_prompt_label(label, get_prompt_infos(model_def), model_type=model_type, prompt_id=prompt_id)
+    elem_id = PROMPT_WIZARD_ELEM_ID if prompt_id == "wizard" else PROMPT_ADVANCED_ELEM_ID
+    return field_help.render_model_prompt_marker(elem_id, model_type, model_def, prompt_id)
 
 def get_image_end_label(multi_prompts_gen_type):
     return "Images as ending points for each new Window of the same Video Generation" if "W" in multi_prompts_gen_type else "Images as ending points for new Videos in the Generation Queue"
@@ -11164,9 +11277,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 advanced_prompt  = len(errors) > 0
             prompt_infos = get_prompt_infos(model_def)
             show_prompt_infos = bool(str(prompt_infos or "").strip())
-            with gr.Column(visible= advanced_prompt, elem_classes=["wangp-prompt-info-stack"]) as prompt_column_advanced:
-                prompt_info_label = gr.HTML(value=render_prompt_info_label(prompt_label, model_type, model_def, "advanced"), visible=show_prompt_infos, elem_classes=["wangp-prompt-info-anchor"])
-                prompt = gr.Textbox( visible= advanced_prompt, label=prompt_label, value=launch_prompt, lines=3)
+            with gr.Column(visible= advanced_prompt) as prompt_column_advanced:
+                prompt = gr.Textbox( visible= advanced_prompt, label=prompt_label, value=launch_prompt, lines=3, elem_id=PROMPT_ADVANCED_ELEM_ID, elem_classes=["wangp-field-help-target"])
+                prompt_info_label = gr.HTML(value=render_prompt_info_label(prompt_label, model_type, model_def, "advanced"), visible=show_prompt_infos, elem_classes=["wangp-field-help-marker-host"])
 
             with gr.Column(visible=not advanced_prompt and len(variables) > 0) as prompt_column_wizard_vars:
                 gr.Markdown("<B>Please fill the following input fields to adapt automatically the Prompt:</B>")
@@ -11182,9 +11295,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             wizard_variables = "\n".join(variables)
                     for _ in range( PROMPT_VARS_MAX - len(prompt_vars)):
                         prompt_vars.append(gr.Textbox(visible= False, min_width=80, show_label= False))
-            with gr.Column(visible=not advanced_prompt, elem_classes=["wangp-prompt-info-stack"]) as prompt_column_wizard:
-                wizard_prompt_info_label = gr.HTML(value=render_prompt_info_label(wizard_prompt_label, model_type, model_def, "wizard"), visible=show_prompt_infos, elem_classes=["wangp-prompt-info-anchor"])
-                wizard_prompt = gr.Textbox(visible = not advanced_prompt, label=wizard_prompt_label, value=default_wizard_prompt, lines=3)
+            with gr.Column(visible=not advanced_prompt) as prompt_column_wizard:
+                wizard_prompt = gr.Textbox(visible = not advanced_prompt, label=wizard_prompt_label, value=default_wizard_prompt, lines=3, elem_id=PROMPT_WIZARD_ELEM_ID, elem_classes=["wangp-field-help-target"])
+                wizard_prompt_info_label = gr.HTML(value=render_prompt_info_label(wizard_prompt_label, model_type, model_def, "wizard"), visible=show_prompt_infos, elem_classes=["wangp-field-help-marker-host"])
                 wizard_prompt_activated_var = gr.Text(wizard_prompt_activated, visible= False)
                 wizard_variables_var = gr.Text(wizard_variables, visible = False)
             with gr.Row(visible= server_config.get("enhancer_enabled", 0) > 0  ) as prompt_enhancer_row:
@@ -11298,13 +11411,25 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         if setting_default is None:
                             setting_default = ""
                         setting_label = setting_def.get("label", f"Custom Setting {setting_index + 1}") if setting_def is not None else f"Custom Setting {setting_index + 1}"
+                        slider_bounds = get_custom_setting_slider_bounds(setting_def)
+                        slider_visible = setting_visible and slider_bounds is not None
                         custom_setting_component = gr.Textbox(
                             value=str(setting_default),
                             label=setting_label,
-                            visible=setting_visible,
+                            visible=setting_visible and not slider_visible,
                             lines=1,
                         )
+                        custom_setting_slider = gr.Slider(
+                            minimum=slider_bounds[0] if slider_bounds is not None else 0,
+                            maximum=slider_bounds[1] if slider_bounds is not None else 1,
+                            value=get_custom_setting_slider_value(setting_default, slider_bounds) if slider_bounds is not None else 0,
+                            step=slider_bounds[2] if slider_bounds is not None else 1,
+                            label=setting_label,
+                            visible=slider_visible,
+                            show_reset_button=False,
+                        )
                         custom_setting_components_map[setting_key] = custom_setting_component
+                        custom_setting_components_map[get_custom_setting_slider_key(setting_index)] = custom_setting_slider
                 custom_settings_rows.append(custom_settings_row)
 
 
@@ -11529,7 +11654,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
                     with gr.Column():
                         gr.Markdown("<B>Upsampling - postprocessing that may improve fluidity and the size of the output</B>")
-                        def gen_upsampling_dropdowns(temporal_upsampling, spatial_upsampling , film_grain_intensity, film_grain_saturation, element_class= None, max_height= None, image_outputs = False, any_vae_upsampling = False, always_show_flashvsr = False, duplicate_spatial=False):
+                        def gen_upsampling_dropdowns(temporal_upsampling, spatial_upsampling , film_grain_intensity, film_grain_saturation, element_class= None, max_height= None, image_outputs = False, any_vae_upsampling = False, any_pid_upsampling = False, always_show_flashvsr = False, always_show_pid_postprocessing=False, duplicate_spatial=False):
                             if image_outputs:
                                 temporal_upsampling = ""
                                 if len(str(spatial_upsampling or "").strip()) == 0:
@@ -11549,16 +11674,30 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             )
                             
                             spatial_method, spatial_scale = split_spatial_upsampling_value(spatial_upsampling)
-                            spatial_method_choices = SPATIAL_UPSAMPLING_METHOD_CHOICES[:2] + (SPATIAL_UPSAMPLING_METHOD_CHOICES[2:] if always_show_flashvsr or flashvsr.enabled() else []) + ([("VAE Upscaling", "vae")] if any_vae_upsampling else [])
+                            pid_model_backbone = _get_pid_backbone_for_model(base_model_type, model_def) if any_pid_upsampling else None
+                            pid_vae_choice = pid_vae_upsampling_choice(pid_model_backbone) if pid_model_backbone is not None else None
+                            if pid_vae_choice is not None and image_outputs and not always_show_pid_postprocessing and is_pid_upsampling(spatial_method) and not is_pid_vae_upsampling(spatial_method) and pid_backbone_for_upsampling(spatial_method) == pid_model_backbone:
+                                spatial_method = pid_vae_choice[1]
+                            pid_vae_choices = [pid_vae_choice] if pid_vae_choice is not None else []
+                            pid_post_choices = pid_bridge.query_edit_mode_def(include_name=True)["spatial_upsampling_choices"] if always_show_pid_postprocessing or image_outputs else []
+                            if pid_model_backbone is not None and image_outputs and not always_show_pid_postprocessing:
+                                pid_post_choices = [choice for choice in pid_post_choices if pid_backbone_for_upsampling(choice[1]) != pid_model_backbone]
+                            spatial_method_choices = SPATIAL_UPSAMPLING_METHOD_CHOICES[:2] + (SPATIAL_UPSAMPLING_METHOD_CHOICES[2:] if always_show_flashvsr or flashvsr.enabled() else []) + ([("VAE Upscaling", "vae")] if any_vae_upsampling else []) + pid_vae_choices + pid_post_choices
                             if spatial_method not in {value for _, value in spatial_method_choices}: spatial_method = ""
+                            spatial_ratio_choices = PID_UPSAMPLING_RATIO_CHOICES if is_pid_upsampling(spatial_method) else SPATIAL_UPSAMPLING_RATIO_CHOICES
+                            if is_pid_upsampling(spatial_method):
+                                spatial_scale = 4.0
                             with gr.Row():
                                 spatial_upsampling_method = gr.Dropdown(choices=spatial_method_choices, value=spatial_method, visible=True, scale=3, label="Spatial Upsampling", elem_classes=element_class)
-                                spatial_upsampling_ratio = gr.Dropdown(choices=SPATIAL_UPSAMPLING_RATIO_CHOICES, value=spatial_scale, visible=spatial_method != "", scale=1, label="Scale", elem_classes=element_class)
+                                field_help.bind(spatial_upsampling_method, "spatial_upsampling")
+                                spatial_upsampling_ratio = gr.Dropdown(choices=spatial_ratio_choices, value=spatial_scale, visible=spatial_method != "", scale=1, label="Scale", elem_classes=element_class)
                             spatial_upsampling = gr.Textbox(value=build_spatial_upsampling_value(spatial_method, spatial_scale), visible=False, elem_classes=element_class)
                             duplicate_spatial_upsampling = gr.Textbox(value=build_spatial_upsampling_value(spatial_method, spatial_scale), visible=False, elem_classes=element_class) if duplicate_spatial else None
                             def refresh_spatial_upsampling(method, scale):
+                                scale = 4.0 if is_pid_upsampling(method) else scale
                                 value = build_spatial_upsampling_value(method, scale)
-                                return [gr.update(visible=bool(method)), value] + ([value] if duplicate_spatial else [])
+                                ratio_choices = PID_UPSAMPLING_RATIO_CHOICES if is_pid_upsampling(method) else SPATIAL_UPSAMPLING_RATIO_CHOICES
+                                return [gr.update(choices=ratio_choices, value=scale, visible=bool(method)), value] + ([value] if duplicate_spatial else [])
                             if not update_form:
                                 spatial_outputs = [spatial_upsampling_ratio, spatial_upsampling] + ([duplicate_spatial_upsampling] if duplicate_spatial else [])
                                 gr.on(triggers=[spatial_upsampling_method.change, spatial_upsampling_ratio.change], fn=refresh_spatial_upsampling, inputs=[spatial_upsampling_method, spatial_upsampling_ratio], outputs=spatial_outputs, show_progress="hidden")
@@ -11570,7 +11709,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             if duplicate_spatial:
                                 return temporal_upsampling, spatial_upsampling, duplicate_spatial_upsampling, film_grain_intensity, film_grain_saturation, spatial_upsampling_method, spatial_upsampling_ratio
                             return temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, spatial_upsampling_method, spatial_upsampling_ratio
-                        temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, spatial_upsampling_method, spatial_upsampling_ratio = gen_upsampling_dropdowns(ui_get("temporal_upsampling"), ui_get("spatial_upsampling"), ui_get("film_grain_intensity"), ui_get("film_grain_saturation"), image_outputs= image_outputs, any_vae_upsampling= "vae_upsampler"in model_def)
+                        temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, spatial_upsampling_method, spatial_upsampling_ratio = gen_upsampling_dropdowns(ui_get("temporal_upsampling"), ui_get("spatial_upsampling"), ui_get("film_grain_intensity"), ui_get("film_grain_saturation"), image_outputs= image_outputs, any_vae_upsampling= "vae_upsampler"in model_def, any_pid_upsampling="pid_upsampler" in model_def)
 
                 with gr.Tab("Audio", visible = not (image_outputs or audio_only)) as audio_tab:
                     any_audio_source = not (image_outputs or audio_only)
@@ -11951,7 +12090,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     with gr.Tab("Post Processing", id= "post_processing", visible = late_video_postprocessing_visible) as video_postprocessing_tab:
                         with gr.Group(elem_classes= "postprocess"):
                             with gr.Column():
-                                PP_temporal_upsampling, PP_spatial_upsampling, PP_image_spatial_upsampling, PP_film_grain_intensity, PP_film_grain_saturation, PP_spatial_upsampling_method, PP_spatial_upsampling_ratio = gen_upsampling_dropdowns("",  "", 0, 0.5, element_class ="postprocess", image_outputs = False, always_show_flashvsr = True, duplicate_spatial=True)
+                                PP_temporal_upsampling, PP_spatial_upsampling, PP_image_spatial_upsampling, PP_film_grain_intensity, PP_film_grain_saturation, PP_spatial_upsampling_method, PP_spatial_upsampling_ratio = gen_upsampling_dropdowns("",  "", 0, 0.5, element_class ="postprocess", image_outputs = False, always_show_flashvsr = True, always_show_pid_postprocessing=True, duplicate_spatial=True)
                         with gr.Row():
                             video_info_postprocessing_btn = gr.Button("Apply Postprocessing", size ="sm", visible=True)
                             video_info_eject_video2_btn = gr.Button("Eject Media", size ="sm", visible=True)
@@ -12357,6 +12496,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         reset_prompt_enhancer=reset_prompt_enhancer,
                         reset_prompt_enhancer_if_requested=reset_prompt_enhancer_if_requested,
                         release_flashvsr_vram=release_flashvsr_vram,
+                        release_pid_vram=release_pid_vram,
                         release_seedvc_vram=release_seedvc_vram,
                         release_model=release_model,
                     ),
@@ -12764,6 +12904,7 @@ def create_ui():
     css += "\n" + MagicMaskUI.get_css()
     css += "\n" + assistant_chat.get_css()
     css += "\n" + model_infos.get_css()
+    css += "\n" + field_help.get_css()
     css += "\n" + model_selector_toolbar.get_css()
     css += "\n" + finetune_editor.get_css()
     local_file_picker.configure_last_directory_store(server_config)
@@ -12782,6 +12923,7 @@ def create_ui():
     js += MagicMaskUI.get_javascript()
     js += assistant_chat.get_javascript()
     js += model_infos.get_javascript()
+    js += field_help.get_javascript()
     js += model_selector_toolbar.get_javascript()
     js += finetune_editor.get_javascript()
     AudioGallery.install_gradio_upload_mtime_patch()
@@ -12956,6 +13098,46 @@ def clear_startup_lock():
         except:
             pass
 
+def _mcp_forwarded_wgp_args():
+    mcp_value_args = {"--mcp-transport", "--mcp-host", "--mcp-port"}
+    forwarded = []
+    skip_next = False
+    for arg in sys.argv[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--mcp" or arg == "--mcp-console-output":
+            continue
+        if arg in mcp_value_args:
+            skip_next = True
+            continue
+        if any(arg.startswith(f"{name}=") for name in mcp_value_args):
+            continue
+        forwarded.append(arg)
+    return forwarded
+
+def run_mcp_server():
+    from types import SimpleNamespace
+    from shared.mcp_server import build_server, run_server
+
+    output_dir = args.output_dir.strip() if isinstance(args.output_dir, str) else args.output_dir
+    mcp_args = SimpleNamespace(
+        root=wgp_root,
+        config=args.config.strip() or None,
+        output_dir=output_dir or None,
+        cli_arg=_mcp_forwarded_wgp_args(),
+        console_output=args.mcp_console_output,
+        transport=args.mcp_transport,
+        host=args.mcp_host.strip() or None,
+        port=args.mcp_port,
+    )
+    try:
+        server = build_server(mcp_args)
+    except RuntimeError as exc:
+        print(str(exc))
+        return 1
+    return run_server(server, mcp_args)
+
 if __name__ == "__main__":
     if args.merge_catalog:
         manager = PluginManager()
@@ -12977,6 +13159,9 @@ if __name__ == "__main__":
             message = f"{updates_available} Plugin Updates are available"
         print(f"[Plugins] Checked {checked} {scope}. {message}.")
         sys.exit(0)
+
+    if args.mcp:
+        sys.exit(run_mcp_server())
 
     app = WAN2GPApplication()
 

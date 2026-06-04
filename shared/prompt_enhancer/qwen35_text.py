@@ -744,6 +744,15 @@ def _load_local_text_model(
     return model
 
 
+def _tie_qwen35_output_to_embeddings(model: torch.nn.Module) -> None:
+    token_embd = getattr(model, "token_embd", None)
+    output = getattr(model, "output", None)
+    if token_embd is None or output is None or not hasattr(token_embd, "weight") or not hasattr(output, "weight"):
+        raise RuntimeError("Cannot tie Qwen3.5 output head to token embeddings.")
+    if output.weight is not token_embd.weight:
+        output.weight = token_embd.weight
+
+
 def _resolve_legacy_text_execution_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda", torch.cuda.current_device())
@@ -967,6 +976,8 @@ def load_qwen35_text_prompt_enhancer(
         safe_legacy_mode=safe_legacy_mode,
         materialize_source_tensors=backend != enhancer_quantization_GGUF,
     )
+    if backend == enhancer_quantization_QUANTO_INT8 and spec.get("text_int8_tie_word_embeddings", False):
+        _tie_qwen35_output_to_embeddings(model)
     if backend == enhancer_quantization_GGUF:
         _configure_qwen35_gguf_text_model(
             model,

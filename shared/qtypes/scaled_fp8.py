@@ -140,6 +140,18 @@ def _normalize_scaled_mm_scale(scale):
     return scale.reshape(())
 
 
+def _scaled_mm_weight_scale(scale, weight):
+    scale = scale if scale.device == weight.device else scale.to(weight.device)
+    tensor_scale = _normalize_scaled_mm_scale(scale)
+    if tensor_scale is not None:
+        return tensor_scale, None
+    if scale.ndim == 1 and scale.shape[0] == weight.shape[0]:
+        return torch.ones((), device=weight.device, dtype=torch.float32), scale
+    if scale.ndim == 2 and scale.shape[0] == weight.shape[0] and scale.shape[1] == 1:
+        return torch.ones((), device=weight.device, dtype=torch.float32), scale.reshape(weight.shape[0])
+    return None, None
+
+
 def _quantize_activation(x, fp8_dtype):
     minv, maxv = _FP8_RANGE[fp8_dtype]
     absmax = x.abs().max().float()
@@ -161,9 +173,8 @@ def _scaled_mm_static_ok(weight, scale):
         return False
     if weight.shape[0] % 16 != 0 or weight.shape[1] % 16 != 0:
         return False
-    if scale.numel() != 1:
-        return False
-    return True
+    scale_b, output_scale = _scaled_mm_weight_scale(scale, weight)
+    return scale_b is not None or output_scale is not None
 
 
 
@@ -293,6 +304,7 @@ class ScaledFP8WeightTensor(QTensor):
         out_features = weights.shape[0]
         output_shape = input.shape[:-1] + (out_features,)
         weights = weights.to(target_type)
+        output_scales = _reshape_scale(output_scales, weights)
         weights *= output_scales
         out = torch.matmul(input.reshape(-1, in_features), weights.t())
         out = out.reshape(output_shape)
@@ -313,7 +325,7 @@ class ScaledFP8WeightTensor(QTensor):
         ):
             return torch.nn.functional.linear(input, self.dequantize(dtype=input.dtype, device=input.device), bias)
 
-        scale_b = _normalize_scaled_mm_scale(self._scale)
+        scale_b, output_scale = _scaled_mm_weight_scale(self._scale, self._data)
         if scale_b is None:
             return torch.nn.functional.linear(input, self.dequantize(dtype=input.dtype, device=input.device), bias)
 
@@ -331,7 +343,7 @@ class ScaledFP8WeightTensor(QTensor):
             return torch.nn.functional.linear(input, self.dequantize(dtype=input.dtype, device=input.device), bias)
         scale_b = scale_b.to(device=x_fp8.device, dtype=torch.float32)
 
-        bias_arg = bias
+        bias_arg = bias if output_scale is None else None
         if bias_arg is not None:
             if bias_arg.device != x_fp8.device:
                 bias_arg = bias_arg.to(x_fp8.device)
@@ -346,6 +358,15 @@ class ScaledFP8WeightTensor(QTensor):
             bias=bias_arg,
             out_dtype=input.dtype,
         )
+        if output_scale is not None:
+            out *= output_scale.to(device=out.device, dtype=out.dtype).view(1, -1)
+            if bias is not None:
+                bias_arg = bias
+                if bias_arg.device != out.device:
+                    bias_arg = bias_arg.to(out.device)
+                if bias_arg.dtype != out.dtype:
+                    bias_arg = bias_arg.to(dtype=out.dtype)
+                out += bias_arg.view(1, -1)
 
         return out.reshape(*input.shape[:-1], self._data.shape[0])
 

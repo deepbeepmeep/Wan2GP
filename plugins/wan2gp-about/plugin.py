@@ -28,9 +28,11 @@ class AboutPlugin(WAN2GPPlugin):
         gr.Markdown("- <B>Resemble.AI</B> for the incredible ChatterBox (https://github.com/resemble-ai/chatterbox)")
         gr.Markdown("- <B>HeartMuLa Team</B> for the open music generation models (https://github.com/HeartMuLa/heartlib)")
         gr.Markdown("- <B>ACE-Step Team</B> for the ACE-Step music generation model (https://github.com/ace-step/ACE-Step) & ACE-Step 1.5 (https://github.com/ace-step/ACE-Step-1.5)")
+        gr.Markdown("- <B>Stability AI</B> for Stable Audio 3 (https://github.com/Stability-AI/stable-audio-3)")
         gr.Markdown("- <B>Alibaba Qwen Team</B> for Qwen 3 TTS (https://github.com/QwenLM/Qwen3-TTS)")
         gr.Markdown("- <B>KugelAudio</B> for Kugel Audio (https://huggingface.co/kugelaudio/kugelaudio-0-open)")
         gr.Markdown("- <B>Remade_AI</B> : for their awesome Loras collection (https://huggingface.co/Remade-AI)")
+        gr.Markdown("- <B>ByteDance Bernini Team</B> for Bernini (https://github.com/bytedance/Bernini)")
         gr.Markdown("- <B>ByteDance</B> : for their great Wan and Flux extensions Lynx (https://github.com/bytedance/lynx), UMO (https://github.com/bytedance/UMO), USO (https://github.com/bytedance/USO) ")
         gr.Markdown("- <B>Hugging Face</B> for providing hosting for the models and developing must have open source libraries such as Tranformers, Diffusers, Accelerate and Gradio (https://huggingface.co/)")
 
@@ -46,6 +48,7 @@ class AboutPlugin(WAN2GPPlugin):
         gr.Markdown("- <B>SeedVC</B>: voice conversion (https://github.com/Plachtaa/seed-vc)")
         gr.Markdown("- <B>MMAudio</B>: sound generator (https://github.com/hkchengrex/MMAudio). Due to licensing restriction can be used only for Research work.")
         gr.Markdown("- <B>FlashVSR</B>: high quality video super-resolution (https://github.com/OpenImagingLab/FlashVSR)")
+        gr.Markdown("- <B>NVIDIA PiD</B>: diffusion-based image super-resolution (https://github.com/nv-tlabs/PiD)")
 
         gr.Markdown("<BR>Special thanks to the following people for their Contributions & Support:")
         gr.Markdown("- <B>Tophness</B> : Designed & developped the Queuing Framework, Edit Mode, Windows Installation scripts and WanGP PlugIns System")

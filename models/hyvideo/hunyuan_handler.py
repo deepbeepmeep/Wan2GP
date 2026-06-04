@@ -69,6 +69,7 @@ class family_handler():
 
         if base_model_type in [ "hunyuan_avatar", "hunyuan_custom_audio"]:
             extra_model_def["any_audio_prompt"] = True
+            extra_model_def["returns_audio"] = True
 
         extra_model_def["fps"] = fps
         extra_model_def["frames_minimum"] = 5

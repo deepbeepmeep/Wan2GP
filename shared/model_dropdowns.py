@@ -448,18 +448,11 @@ def create_models_hierarchy(rows):
             })
 
         default_info = next(info for info in kid_infos if info["mid"] == pid)
-        other_words = set()
-        for info in kid_infos:
-            if info["mid"] != pid:
-                other_words |= info["rem_set"]
-        default_shares = bool(default_info["rem_set"] & other_words)
 
         def disp(info):
             if info["outlier"]:
                 return info["name"]
             if info["mid"] == pid:
-                if not default_shares:
-                    return "Default"
                 rem = info["rem_trim"]
             else:
                 rem = info["rem_trim"]

@@ -189,6 +189,7 @@ class model_factory:
         NAG_tau: float = 3.5,
         NAG_alpha: float = 0.5,
         loras_slists=None,
+        pid_upsampler=None,
         **kwargs,
     ):
         generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu")
@@ -217,6 +218,16 @@ class model_factory:
         if self.model_def.get("guidance_max_phases", 0) < 1:
             guide_scale = 0
 
+        set_progress_status = kwargs.get("set_progress_status", None)
+        def _pid_progress(_phase, current_step=None, total_steps=None):
+            if callable(set_progress_status):
+                if current_step is None or total_steps is None:
+                    set_progress_status("PiD Spatial Upsampling in progress")
+                else:
+                    total_steps = int(total_steps)
+                    step_no = min(int(current_step) + 1, total_steps)
+                    set_progress_status(f"PiD Spatial Upsampling in progress ({step_no}/{total_steps})")
+
         images = self.pipeline(
             prompt=input_prompt,
             negative_prompt=n_prompt,
@@ -243,6 +254,9 @@ class model_factory:
             NAG_tau=NAG_tau,
             NAG_alpha=NAG_alpha,
             loras_slists=loras_slists,
+            pid_upsampler=pid_upsampler,
+            pid_seed=seed,
+            pid_progress_callback=_pid_progress,
         )
 
         if images is None:

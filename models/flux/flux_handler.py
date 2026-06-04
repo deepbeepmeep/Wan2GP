@@ -158,6 +158,8 @@ class family_handler():
             extra_model_def["radiance"] = True
         elif not flux_schnell and not flux2_klein:
             extra_model_def["embedded_guidance"] = True
+        if not flux_chroma_radiance:
+            extra_model_def["pid_upsampler"] = [1, 2]
         if flux_uso :
             extra_model_def["any_image_refs_relative_size"] = True
             extra_model_def["no_background_removal"] = True
@@ -388,7 +390,7 @@ class family_handler():
             dtype = dtype,
             VAE_dtype = VAE_dtype, 
             mixed_precision_transformer = mixed_precision_transformer,
-            save_quantized = save_quantized
+            save_quantized = save_quantized,
         )
 
         pipe = { "transformer": flux_model.model, "vae" : flux_model.vae}

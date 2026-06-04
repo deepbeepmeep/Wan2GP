@@ -1,0 +1,4 @@
+interface:
+  display_name: "WanGP Agent"
+  short_description: "Use WanGP models through API or MCP"
+  default_prompt: "Use $wangp-agent to discover the right WanGP model, prepare settings, generate media, and return artifact paths."

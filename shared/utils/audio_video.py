@@ -474,10 +474,9 @@ def combine_and_concatenate_video_with_audio_tracks(
            '-c:v', 'copy',
            '-c:a', audio_codec,
            '-ar', str(audio_sampling_rate),
-           '-ac', '1',
            '-shortest', save_path_tmp]
     if audio_bitrate:
-        cmd[-6:-6] = ['-b:a', audio_bitrate]
+        cmd[-4:-4] = ['-b:a', audio_bitrate]
 
     if verbose:
         print(f"ffmpeg command: {cmd}")

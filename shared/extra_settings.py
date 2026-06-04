@@ -7,7 +7,7 @@ from typing import Any, Callable
 _GetModelDef = Callable[[str], dict[str, Any] | None]
 _Resolver = Callable[[dict[str, Any] | None, dict[str, Any]], Any]
 _MODEL_DEF_PROVIDER: _GetModelDef | None = None
-_CUSTOM_SETTINGS_MAX = 6
+_CUSTOM_SETTINGS_MAX = 5
 
 
 @dataclass(frozen=True)

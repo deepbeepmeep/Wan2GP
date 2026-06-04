@@ -1,0 +1,17 @@
+{
+    "model": {
+        "name": "Ideogram v4 FP8 9.3B",
+        "architecture": "ideogram4",
+        "description": "Ideogram v4 is a 9.3B open image model focused on typography, layout control, graphic design, and high-resolution text-to-image generation. Prompt can be basic text, but you will get better results if you use the json format. So the Magic Prompt Enhancer is a must use. If you are unlucky you will get a 'Image Blocked by Safety Filter', no way to remove this right now.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Ideogram4/resolve/main/Ideogram4_Transformer_fp8.safetensors"
+        ],
+        "URLs2": [
+            "https://huggingface.co/DeepBeepMeep/Ideogram4/resolve/main/Ideogram4_Unconditional_Transformer_fp8.safetensors"
+        ],
+        "image_outputs": true
+    },
+    "prompt": "{\"aspect_ratio\":\"4:3\",\"high_level_description\":\"A playful cinematic highway scene of a large gray elephant standing in a white bathtub on the flatbed trailer of a moving semi-truck, using its raised trunk like a shower hose to spray water over its own head and back, low-angle view, bright daylight, motion-blurred road scenery.\",\"compositional_deconstruction\":{\"background\":\"A sunlit highway with asphalt lanes receding into the distance, pale blue sky, soft clouds, and motion-blurred roadside vegetation. The scene is viewed from a low roadside angle, making the flatbed truck and elephant feel large and dynamic.\",\"elements\":[{\"type\":\"obj\",\"bbox\":[120,260,760,760],\"desc\":\"A massive African elephant with wrinkled gray skin standing inside the bathtub. Its ears are spread wide, its body faces slightly right, and its trunk curls upward above its head, spraying a bright arc of water down over its own forehead, ears, shoulders, and back as if showering itself.\"},{\"type\":\"obj\",\"bbox\":[80,330,420,720],\"desc\":\"A curved stream of clear sparkling water spraying from the elephant's raised trunk, arcing upward and falling back onto the elephant like a shower. Fine mist and droplets catch the sunlight around the elephant's head and upper body.\"},{\"type\":\"obj\",\"bbox\":[560,190,840,840],\"desc\":\"A rectangular white fiberglass bathtub with rounded corners, placed firmly on the truck flatbed. The tub is filled with sloshing clear water, small waves, foam, and splashes caused by the elephant standing and showering inside it.\"},{\"type\":\"obj\",\"bbox\":[650,0,920,1000],\"desc\":\"A dark gray flatbed trailer extending horizontally across the lower part of the image. Its metal surface has worn texture, tie-down straps around the bathtub, visible wheel assemblies below, and slight motion blur showing the truck is moving.\"},{\"type\":\"obj\",\"bbox\":[390,20,680,260],\"desc\":\"The semi-truck cab ahead on the left side of the frame, dark gray and angled slightly away from the camera, connected to the flatbed and partially blurred by speed and perspective.\"}]}}",
+    "batch_size": 1,
+    "model_mode": "V4_DEFAULT_20"
+}

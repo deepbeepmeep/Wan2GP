@@ -1,4 +1,5 @@
 import html
+import json
 import re
 
 
@@ -75,21 +76,49 @@ def _normalize_infos(infos, model_name: str) -> tuple[str, str]:
     return str(model_name or "Model"), str(infos or "")
 
 
-def _render_info_trigger_and_popup(popup_id: str, title: str, markdown: str) -> str:
+def _json_script_payload(value: str) -> str:
+    return json.dumps(value).replace("</", "<\\/")
+
+
+def render_info_trigger(popup_id: str, title: str, *, extra_class: str = "") -> str:
+    title_attr = html.escape(title, quote=True)
+    classes = "wangp-model-info-trigger" + (f" {html.escape(extra_class, quote=True)}" if extra_class else "")
+    return f"<button type='button' class='{classes}' title='{title_attr}' aria-label='{title_attr}' data-wangp-model-info-open='{html.escape(popup_id, quote=True)}'>&#9432;</button>"
+
+
+def render_info_popup(popup_id: str, title: str, markdown: str, *, lazy: bool = False) -> str:
     title_attr = html.escape(title, quote=True)
     title_html = html.escape(title)
+    if lazy:
+        payload_id = f"{popup_id}-payload"
+        payload = html.escape(_json_script_payload(_render_markdown(markdown)), quote=False)
+        content = (
+            f"<div class='wangp-model-info-content' data-wangp-model-info-content data-wangp-model-info-source='{html.escape(payload_id, quote=True)}'>"
+            "<div class='wangp-model-info-loading'>Loading...</div>"
+            "</div>"
+            f"<textarea id='{html.escape(payload_id, quote=True)}' hidden>{payload}</textarea>"
+        )
+    else:
+        content = f"<div class='wangp-model-info-content'>{_render_markdown(markdown)}</div>"
     return (
-        f"<button type='button' class='wangp-model-info-trigger' title='{title_attr}' aria-label='{title_attr}' data-wangp-model-info-open='{popup_id}'>&#9432;</button>"
-        f"<div id='{popup_id}' class='wangp-model-info-popup' role='dialog' aria-label='{title_attr}' data-wangp-model-info-popup hidden>"
+        f"<div id='{html.escape(popup_id, quote=True)}' class='wangp-model-info-popup' role='dialog' aria-label='{title_attr}' data-wangp-model-info-popup hidden>"
         "<div class='wangp-model-info-card'>"
         "<div class='wangp-model-info-titlebar' data-wangp-model-info-drag>"
         f"<div class='wangp-model-info-heading'>{title_html}</div>"
         "<button type='button' class='wangp-model-info-close' aria-label='Close information' data-wangp-model-info-close>&times;</button>"
         "</div>"
-        f"<div class='wangp-model-info-content'>{_render_markdown(markdown)}</div>"
+        f"{content}"
         "</div>"
         "</div>"
     )
+
+
+def render_info_trigger_and_popup(popup_id: str, title: str, markdown: str, *, lazy: bool = False) -> str:
+    return render_info_trigger(popup_id, title) + render_info_popup(popup_id, title, markdown, lazy=lazy)
+
+
+def _render_info_trigger_and_popup(popup_id: str, title: str, markdown: str, *, lazy: bool = False) -> str:
+    return render_info_trigger_and_popup(popup_id, title, markdown, lazy=lazy)
 
 
 def render_model_description(description: str, infos=None, *, model_type: str = "", model_name: str = "Model", height: int = 40) -> str:
@@ -107,7 +136,7 @@ def render_model_description(description: str, infos=None, *, model_type: str = 
     )
 
 
-def render_prompt_label(label: str, infos=None, *, model_type: str = "", prompt_id: str = "prompt", title: str = "Prompt Guidelines") -> str:
+def render_prompt_label(label: str, infos=None, *, model_type: str = "", prompt_id: str = "prompt", title: str = "Prompt Guidelines", lazy: bool = False) -> str:
     if not infos:
         return ""
     popup_title, markdown = _normalize_infos(infos, title)
@@ -117,7 +146,7 @@ def render_prompt_label(label: str, infos=None, *, model_type: str = "", prompt_
     popup_id = f"wangp-prompt-info-{popup_key}"
     return (
         "<div class='wangp-prompt-info-host'>"
-        f"{_render_info_trigger_and_popup(popup_id, popup_title, markdown)}"
+        f"{_render_info_trigger_and_popup(popup_id, popup_title, markdown, lazy=lazy)}"
         "</div>"
     )
 
@@ -315,19 +344,43 @@ def get_css() -> str:
     background: transparent;
     color: var(--body-text-color, #123f58);
 }
+.wangp-model-info-loading {
+    opacity: 0.72;
+    font-style: italic;
+}
 """
 
 
 def get_javascript() -> str:
     return """
     window.wangpModelInfo = window.wangpModelInfo || {};
+    window.wangpModelInfo.hydrate = function(popup) {
+        const content = popup?.querySelector("[data-wangp-model-info-content]");
+        if (!content || content.dataset.wangpHydrated === "1") return;
+        const sourceId = content.getAttribute("data-wangp-model-info-source");
+        const source = sourceId ? document.getElementById(sourceId) : null;
+        if (!source) return;
+        try {
+            content.innerHTML = JSON.parse(source.value || source.textContent || '""');
+            content.dataset.wangpHydrated = "1";
+        } catch (_err) {
+            content.innerHTML = "<p>Unable to load help content.</p>";
+            content.dataset.wangpHydrated = "1";
+        }
+    };
     window.wangpModelInfo.open = function(button) {
         const popupId = button?.getAttribute("data-wangp-model-info-open");
         const popup = popupId ? document.getElementById(popupId) : null;
         if (!popup) return;
+        const wasOpen = !popup.hidden;
+        window.wangpModelInfo.hydrate(popup);
         document.querySelectorAll("[data-wangp-model-info-popup]").forEach((other) => {
             if (other !== popup) other.hidden = true;
         });
+        if (wasOpen) {
+            popup.hidden = true;
+            return;
+        }
         popup.hidden = false;
         popup.style.left = "auto";
         popup.style.right = "32px";

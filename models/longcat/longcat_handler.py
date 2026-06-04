@@ -92,6 +92,7 @@ class family_handler:
                     "audio_guide2_label": "Voice to follow #2",
                     "audio_guidance": True,
                     "any_audio_prompt": True,
+                    "returns_audio": True,
                     "audio_prompt_choices": True,
                     "audio_prompt_type_sources": {
                         "selection": ["A", "XA", "CAB", "PAB"],

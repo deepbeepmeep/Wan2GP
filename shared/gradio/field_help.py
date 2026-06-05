@@ -162,12 +162,32 @@ def get_javascript():
         if (label) return label;
         return null;
     };
-    window.wangpFieldHelp.hasTrigger = function(label, popupId) {
+    window.wangpFieldHelp.ensureSingleTrigger = function(label, popupId, targetId) {
+        var existing = null;
         var triggers = label.querySelectorAll("[data-wangp-field-help-trigger]");
         for (var i = 0; i < triggers.length; i++) {
-            if (triggers[i].getAttribute("data-wangp-field-help-trigger") === popupId) return true;
+            var trigger = triggers[i];
+            var triggerPopupId = trigger.getAttribute("data-wangp-field-help-trigger");
+            var triggerTargetId = trigger.getAttribute("data-wangp-field-help-target") || "";
+            var sameTrigger = triggerPopupId === popupId && (!triggerTargetId || triggerTargetId === targetId);
+            var sameTarget = targetId && (!triggerTargetId || triggerTargetId === targetId);
+            if (sameTrigger && !existing) {
+                existing = trigger;
+                trigger.setAttribute("data-wangp-field-help-target", targetId);
+            } else if (sameTrigger || sameTarget) {
+                trigger.remove();
+            }
         }
-        return false;
+        return existing;
+    };
+    window.wangpFieldHelp.collectActiveMarkers = function() {
+        var markersByTarget = {};
+        document.querySelectorAll("[data-wangp-field-help-for]").forEach(function(marker) {
+            var targetId = marker.getAttribute("data-wangp-field-help-for");
+            var popupId = marker.getAttribute("data-wangp-field-help-popup");
+            if (targetId && popupId) markersByTarget[targetId] = marker;
+        });
+        return Object.keys(markersByTarget).map(function(targetId) { return markersByTarget[targetId]; });
     };
     window.wangpFieldHelp.collectActivePopups = function(markers) {
         var activePopups = {};
@@ -187,7 +207,7 @@ def get_javascript():
         });
     };
     window.wangpFieldHelp.attach = function() {
-        var markers = document.querySelectorAll("[data-wangp-field-help-for]");
+        var markers = window.wangpFieldHelp.collectActiveMarkers();
         var activePopups = window.wangpFieldHelp.collectActivePopups(markers);
         window.wangpFieldHelp.cleanupStaleTriggers(activePopups);
         markers.forEach(function(marker) {
@@ -198,7 +218,7 @@ def get_javascript():
             if (popup && popup.parentElement !== document.body) document.body.appendChild(popup);
             var target = targetId ? document.getElementById(targetId) : null;
             var label = window.wangpFieldHelp.findLabel(target);
-            if (!label || !popupId || window.wangpFieldHelp.hasTrigger(label, popupId)) return;
+            if (!label || !popupId || window.wangpFieldHelp.ensureSingleTrigger(label, popupId, targetId)) return;
             var labelTarget = label.matches && label.matches('[data-testid="block-info"]') ? label : (label.querySelector("span") || label);
             var button = document.createElement("button");
             button.type = "button";
@@ -207,6 +227,7 @@ def get_javascript():
             button.setAttribute("aria-label", title);
             button.setAttribute("data-wangp-model-info-open", popupId);
             button.setAttribute("data-wangp-field-help-trigger", popupId);
+            button.setAttribute("data-wangp-field-help-target", targetId);
             button.innerHTML = "&#9432;";
             labelTarget.appendChild(button);
         });

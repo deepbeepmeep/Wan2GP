@@ -487,6 +487,9 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
     if mode.startswith("edit_"):
         edit_video_source =gen.get("edit_video_source", None)
         edit_overrides =gen.get("edit_overrides", None)
+        if edit_video_source is None or edit_overrides is None:
+            gr.Info("You must select a Video or Image file")
+            return ret()
         frames_count = 1 if has_image_file_extension(edit_video_source) else get_video_info(edit_video_source)[3]
         if frames_count > max_source_video_frames:
             gr.Info(f"Post processing is not supported on videos longer than {max_source_video_frames} frames. Output Video will be truncated")
@@ -3081,6 +3084,7 @@ attention_mode = server_config["attention_mode"]
 if len(args.attention)> 0:
     if args.attention in ["auto", "sdpa", "sage", "sage2", "flash", "xformers"]:
         attention_mode = args.attention
+        server_config["attention_mode"] = attention_mode
         lock_ui_attention = True
     else:
         raise Exception(f"Unknown attention mode '{args.attention}'")
@@ -6552,6 +6556,7 @@ def generate_video(
             main_offloadobj=offloadobj,
             persistent_models=pid_persistent,
             tiling_threshold=pid_tiling_threshold,
+            attention_mode=attention_mode,
         )
         send_cmd("status", "PiD upsampler prepared")
     if args.test and auto_prompt_enhancer_requested:

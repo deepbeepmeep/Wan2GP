@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 from mmgp import offload
 from models.wan.modules.vae import WanVAE
-from shared.attention import attention_shared_state
+from shared.attention import attention_config_shared_state
 from .attention_backend import log_sparse_backend, require_sparge_attention
 from .tcdecoder import build_tcdecoder
 from .utils import Causal_LQ4x_Proj
@@ -808,12 +808,13 @@ def upscale_video(
     topk_ratio: float = FLASHVSR_TOPK_RATIO,
     init_pipe,
     profile,
+    attention_mode: str | None = None,
     still_image: bool = False,
     two_pass: bool = False,
     abort_callback=None,
     progress_callback=None,
 ) -> tuple[torch.Tensor | None, dict[str, Any] | None]:
-    with attention_shared_state():
+    with attention_config_shared_state(attention_mode):
         _report_progress(progress_callback, "Caching")
         _RUNTIME.load(paths, variant, profile=profile, init_pipe=init_pipe)
         try:

@@ -5,7 +5,7 @@ from contextlib import nullcontext
 import torch
 from accelerate import init_empty_weights
 
-from shared.attention import attention_shared_state
+from shared.attention import attention_config_shared_state
 from postprocessing.pid.networks import PidNet
 from postprocessing.pid.networks.pixeldit_official import get_pid_linear_split_map
 
@@ -630,7 +630,20 @@ class PiDUpsampler:
 
 
 class PiDUpsamplerSession:
-    def __init__(self, runtime, backbone, ckpt_type, *, init_pipe, profile, main_offloadobj=None, persistent_models=False, dtype=torch.bfloat16, tiling_threshold=PID_TILING_THRESHOLD_DEFAULT):
+    def __init__(
+        self,
+        runtime,
+        backbone,
+        ckpt_type,
+        *,
+        init_pipe,
+        profile,
+        main_offloadobj=None,
+        persistent_models=False,
+        dtype=torch.bfloat16,
+        tiling_threshold=PID_TILING_THRESHOLD_DEFAULT,
+        attention_mode=None,
+    ):
         self._runtime = runtime
         self.backbone = normalize_pid_backbone(backbone)
         self.tiling_threshold = normalize_pid_tiling_threshold(tiling_threshold)
@@ -641,6 +654,7 @@ class PiDUpsamplerSession:
         self.main_offloadobj = main_offloadobj
         self.dtype = dtype
         self.persistent_models = bool(persistent_models)
+        self.attention_mode = attention_mode
 
     def ensure_loaded(self):
         self._runtime.load(self.backbone, init_pipe=self.init_pipe, profile=self.profile, dtype=self.dtype, ckpt_types=self.ckpt_types)
@@ -666,7 +680,14 @@ class PiDUpsamplerSession:
     def decode(self, *args, **kwargs):
         self.unload_main_model_vram()
         self.ensure_loaded()
-        return self._runtime.decode(*args, ckpt_type=self.ckpt_type, persistent_models=self.persistent_models, tiling_threshold=self.tiling_threshold, **kwargs)
+        return self._runtime.decode(
+            *args,
+            ckpt_type=self.ckpt_type,
+            persistent_models=self.persistent_models,
+            tiling_threshold=self.tiling_threshold,
+            attention_mode=self.attention_mode,
+            **kwargs,
+        )
 
 
 class PiDRuntime:
@@ -699,8 +720,19 @@ class PiDRuntime:
         self.ckpt_types = ckpt_types
         self.dtype = dtype
 
-    def session(self, backbone, ckpt_type, *, init_pipe, profile, main_offloadobj=None, persistent_models=False, dtype=torch.bfloat16, tiling_threshold=PID_TILING_THRESHOLD_DEFAULT):
-        return PiDUpsamplerSession(self, backbone, ckpt_type, init_pipe=init_pipe, profile=profile, main_offloadobj=main_offloadobj, persistent_models=persistent_models, dtype=dtype, tiling_threshold=tiling_threshold)
+    def session(self, backbone, ckpt_type, *, init_pipe, profile, main_offloadobj=None, persistent_models=False, dtype=torch.bfloat16, tiling_threshold=PID_TILING_THRESHOLD_DEFAULT, attention_mode=None):
+        return PiDUpsamplerSession(
+            self,
+            backbone,
+            ckpt_type,
+            init_pipe=init_pipe,
+            profile=profile,
+            main_offloadobj=main_offloadobj,
+            persistent_models=persistent_models,
+            dtype=dtype,
+            tiling_threshold=tiling_threshold,
+            attention_mode=attention_mode,
+        )
 
     def _unload_mmgp(self):
         if self.offloadobj is not None:
@@ -720,11 +752,11 @@ class PiDRuntime:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def decode(self, *args, persistent_models=False, **kwargs):
+    def decode(self, *args, persistent_models=False, attention_mode=None, **kwargs):
         if self.upsampler is None:
             raise RuntimeError("PiD upsampler is not loaded.")
         try:
-            with attention_shared_state():
+            with attention_config_shared_state(attention_mode, disable_sage_pre_ada=True):
                 return self.upsampler.decode(*args, **kwargs)
         finally:
             if persistent_models:
@@ -736,8 +768,18 @@ class PiDRuntime:
 _RUNTIME = PiDRuntime()
 
 
-def get_pid_upsampler(backbone, ckpt_type, *, init_pipe, profile, main_offloadobj=None, persistent_models=False, dtype=torch.bfloat16, tiling_threshold=PID_TILING_THRESHOLD_DEFAULT):
-    return _RUNTIME.session(backbone, ckpt_type, init_pipe=init_pipe, profile=profile, main_offloadobj=main_offloadobj, persistent_models=persistent_models, dtype=dtype, tiling_threshold=tiling_threshold)
+def get_pid_upsampler(backbone, ckpt_type, *, init_pipe, profile, main_offloadobj=None, persistent_models=False, dtype=torch.bfloat16, tiling_threshold=PID_TILING_THRESHOLD_DEFAULT, attention_mode=None):
+    return _RUNTIME.session(
+        backbone,
+        ckpt_type,
+        init_pipe=init_pipe,
+        profile=profile,
+        main_offloadobj=main_offloadobj,
+        persistent_models=persistent_models,
+        dtype=dtype,
+        tiling_threshold=tiling_threshold,
+        attention_mode=attention_mode,
+    )
 
 
 def release_models():

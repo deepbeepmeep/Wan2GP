@@ -16,8 +16,15 @@ os.environ.setdefault('TORCH_COMPILE', '0')
 os.environ.setdefault('TORCHINDUCTOR', '0')
 os.environ.setdefault('PYTORCH_ENABLE_MPS_FALLBACK', '1')
 
+_MPS_PATCH_LOGGED = False
+
+
 def apply_mps_patch():
     """Patch torch.cuda functions for MPS compatibility."""
+    global _MPS_PATCH_LOGGED
+    log_this_call = not _MPS_PATCH_LOGGED
+    _MPS_PATCH_LOGGED = True
+
     import torch as _torch
 
     chip_name = _get_chip_name()
@@ -31,13 +38,14 @@ def apply_mps_patch():
         dev_cap = (11, 0)
         bfloat16_supported = True
 
-    print(f"[MPS Patch] Detected: {chip_name}, {system_ram_gb:.0f}GB RAM")
-    print(f"[MPS Patch] Device capability: {dev_cap}, BF16: {bfloat16_supported}")
+    if log_this_call:
+        print(f"[MPS] Detected: {chip_name}, {system_ram_gb:.0f}GB RAM")
+        print(f"[MPS] Device capability: {dev_cap}, BF16: {bfloat16_supported}")
 
     # Dummy objects
     _dummy_stream = types.SimpleNamespace(
         synchronize=_torch.mps.synchronize,
-        wait_stream=lambda *a, **kw: None,
+        wait_stream=lambda *a, **kw: _torch.mps.synchronize(),
         query=lambda: True,
         priority=0,
     )
@@ -54,9 +62,9 @@ def apply_mps_patch():
 
     class _DummyEvent:
         def __init__(self, *a, **kw): pass
-        def record(self, *a, **kw): pass
+        def record(self, *a, **kw): _torch.mps.synchronize()
         def elapsed_time(self, *a, **kw): return 0.0
-        def synchronize(self, *a, **kw): pass
+        def synchronize(self, *a, **kw): _torch.mps.synchronize()
         def query(self): return True
 
     class _DummyDeviceContext:
@@ -66,8 +74,11 @@ def apply_mps_patch():
 
     class _DummyStreamContext:
         def __init__(self, s): pass
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
+        def __enter__(self):
+            _torch.mps.synchronize()
+            return self
+        def __exit__(self, *a):
+            _torch.mps.synchronize()
 
     class _DummyGraph:
         replay = lambda s, *a, **kw: None
@@ -105,9 +116,16 @@ def apply_mps_patch():
     _cuda = _torch.cuda
 
     # Core function patches
+    _orig_mps_empty_cache = _torch.mps.empty_cache
+    def _safe_mps_empty_cache(*args, **kwargs):
+        _torch.mps.synchronize()
+        result = _orig_mps_empty_cache(*args, **kwargs)
+        _torch.mps.synchronize()
+        return result
+
     _cuda.is_available = lambda: False
     _cuda._is_compiled = lambda: False
-    _cuda.empty_cache = _torch.mps.empty_cache
+    _cuda.empty_cache = _safe_mps_empty_cache
     _cuda.synchronize = _torch.mps.synchronize
     _cuda.get_device_capability = lambda device=None: dev_cap
     _cuda.manual_seed_all = lambda seed: None
@@ -125,8 +143,8 @@ def apply_mps_patch():
     class _PatchedStream:
         priority = 0
         def __init__(self, *a, **kw): pass
-        def synchronize(self, *a, **kw): pass
-        def wait_stream(self, *a, **kw): pass
+        def synchronize(self, *a, **kw): _torch.mps.synchronize()
+        def wait_stream(self, *a, **kw): _torch.mps.synchronize()
         def query(self): return True
 
     _cuda.Stream = _PatchedStream
@@ -190,6 +208,12 @@ def apply_mps_patch():
         # Handle torch.cuda.amp.autocast which calls with device_type=None initially
         if device_type is None and 'device_type' not in kwargs:
             device_type = 'mps'
+        # MPS only supports fp16/bf16 autocast
+        dtype = kwargs.get("dtype", None)
+        if device_type == "mps":
+            if dtype not in (_torch.float16, _torch.bfloat16, None):
+                # safest choice for Apple Silicon
+                kwargs["dtype"] = _torch.float16
         return _orig_autocast(device_type, *args, **kwargs)
     _torch.autocast = _patched_autocast
     # Also patch torch.amp.autocast
@@ -232,6 +256,17 @@ def apply_mps_patch():
         # Handle keyword device arg
         if "device" in kwargs:
             kwargs["device"] = _replace_cuda_device(kwargs["device"])
+        target_device = kwargs.get("device", None)
+        if target_device is None:
+            for arg in new_args:
+                if isinstance(arg, str) and arg.startswith("mps"):
+                    target_device = arg
+                    break
+                if isinstance(arg, _torch.device) and arg.type == "mps":
+                    target_device = arg
+                    break
+        if target_device == "mps" or (isinstance(target_device, _torch.device) and target_device.type == "mps"):
+            kwargs["non_blocking"] = False
         return _orig_tensor_to(self, *new_args, **kwargs)
     _torch.Tensor.to = _patched_tensor_to
 
@@ -285,9 +320,10 @@ def apply_mps_patch():
                 return patched
             setattr(_torch, fn_name, make_patcher(orig))
 
-    print(f"[MPS Patch] Applied successfully")
-    print(f"[MPS Patch] BF16 supported: {bfloat16_supported}")
-    print(f"[MPS Patch] Available system RAM: {system_ram_gb:.0f}GB")
+    if log_this_call:
+        print(f"[MPS] Applied successfully")
+        print(f"[MPS] BF16 supported: {bfloat16_supported}")
+        print(f"[MPS] Available system RAM: {system_ram_gb:.0f}GB")
 
     # Fix: Some Wan model loading paths call .weight on an nn.Parameter,
     # which is a Tensor subclass, not a Module. On MPS this fails because
@@ -336,59 +372,76 @@ if not hasattr(_torch.mps, 'device_count'):
 if not hasattr(_torch.mps, 'set_device'):
     _torch.mps.set_device = lambda device: None
 
-# Force SDPA math backend on MPS to avoid Metal command buffer double-commit crash
-# Reference: [IOGPUMetalCommandBuffer validate]:214: failed assertion `commit an already committed command buffer'
-#
-# Root cause: MPS fallback ops (CPU fallback from PYTORCH_ENABLE_MPS_FALLBACK=1)
-# corrupt Metal command buffers when mixed with native MPS SDPA. This affects:
-#   - Wan 2.2 5B (quanto mbf16 quantization)
-#   - Wan 2.1 1.3B (standard safetensors, but ops still fallback)
-#   - Any model where CPU-fallback ops precede an SDPA call
-#
-# Fix strategy (defense in depth):
-#   1. Synchronize MPS before SDPA to flush pending fallback ops
-#   2. Force MATH backend (avoids MPS-native SDPA bugs on some macOS versions)
-#   3. If SDPA fails with Metal error, fall back to manual attention (matmul + softmax)
-#   4. Periodic empty_cache to prevent memory fragmentation
+# Native MPS SDPA can still intermittently trip Metal command-buffer assertions
+# on WAN video paths. Default to a synchronized matmul fallback for stability.
+# Set WAN2GP_MPS_NATIVE_SDPA=1 to opt into native SDPA for diagnostics.
 if _is_mps:
     _orig_sdpa = _torch.nn.functional.scaled_dot_product_attention
-    _sdpa_call_count = [0]
+    _sdpa_mode_announced = [False]
 
-    def _manual_sdpa_fallback(query, key, value, attn_mask=None, is_causal=False, scale=None):
+    def _expand_attn_bias(attn_bias, ndim):
+        while attn_bias.dim() < ndim:
+            attn_bias = attn_bias.unsqueeze(0)
+        return attn_bias
+
+    def _manual_sdpa_fallback(
+        query,
+        key,
+        value,
+        attn_mask=None,
+        dropout_p=0.0,
+        is_causal=False,
+        scale=None,
+        enable_gqa=False,
+    ):
         """Manual attention fallback: matmul + softmax, no Metal SDPA."""
-        # query: (B, H, L, D) or (B, L, H, D) after sdpa_kernel wrap
-        L = query.size(-2)
-        D = query.size(-1)
-        if scale is None:
-            scale = D ** -0.5
+        if enable_gqa:
+            repeat = query.size(-3) // key.size(-3)
+            key = key.repeat_interleave(repeat, -3)
+            value = value.repeat_interleave(repeat, -3)
 
-        attn_weights = _torch.matmul(query, key.transpose(-2, -1)) * scale
-        if attn_mask is not None:
-            attn_weights = attn_weights + attn_mask
+        L = query.size(-2)
+        S = key.size(-2)
+        D = query.size(-1)
+        scale_factor = D ** -0.5 if scale is None else scale
+
+        attn_bias = _torch.zeros(L, S, dtype=query.dtype, device=query.device)
         if is_causal:
-            causal_mask = _torch.triu(
-                _torch.ones(L, L, device=query.device, dtype=_torch.bool), diagonal=1
-            )
-            attn_weights = attn_weights.masked_fill(causal_mask, float('-inf'))
-        attn_weights = _torch.nn.functional.softmax(attn_weights, dim=-1)
-        return _torch.matmul(attn_weights, value)
+            causal_mask = _torch.ones(L, S, dtype=_torch.bool, device=query.device).tril()
+            attn_bias = attn_bias.masked_fill(causal_mask.logical_not(), float("-inf"))
+
+        if attn_mask is not None:
+            if attn_mask.dtype == _torch.bool:
+                attn_bias = _expand_attn_bias(attn_bias, attn_mask.dim())
+                attn_bias = attn_bias.masked_fill(attn_mask.logical_not(), float("-inf"))
+            else:
+                attn_bias = attn_bias + attn_mask
+
+        attn_weight = _torch.matmul(query, key.transpose(-2, -1)) * scale_factor
+        attn_weight = attn_weight + _expand_attn_bias(attn_bias, query.dim())
+        attn_weight = _torch.nn.functional.softmax(attn_weight, dim=-1)
+
+        if dropout_p:
+            attn_weight = _torch.dropout(attn_weight, dropout_p, train=True)
+
+        return _torch.matmul(attn_weight, value)
 
     def _patched_sdpa(*args, **kwargs):
-        # Flush pending MPS fallback ops before SDPA
+        if os.environ.get("WAN2GP_MPS_NATIVE_SDPA") != "1":
+            if not _sdpa_mode_announced[0]:
+                print("[MPS] SDPA mode: synchronized manual MPS fallback", flush=True)
+                _sdpa_mode_announced[0] = True
+            _torch.mps.synchronize()
+            out = _manual_sdpa_fallback(*args, **kwargs)
+            _torch.mps.synchronize()
+            return out
+        if not _sdpa_mode_announced[0]:
+            print("[MPS] SDPA mode: native MPS diagnostic", flush=True)
+            _sdpa_mode_announced[0] = True
         _torch.mps.synchronize()
-
-        # Periodic cache cleanup every 256 SDPA calls
-        _sdpa_call_count[0] += 1
-        if _sdpa_call_count[0] % 256 == 0:
-            _torch.mps.empty_cache()
-
-        try:
-            with _torch.nn.attention.sdpa_kernel([_torch.nn.attention.SDPBackend.MATH]):
-                return _orig_sdpa(*args, **kwargs)
-        except Exception:
-            # Metal command buffer corruption caught — fall back to manual attention
-            # This handles cases where synchronize isn't sufficient (e.g. macOS 26.x bugs)
-            return _manual_sdpa_fallback(*args, **kwargs)
+        out = _orig_sdpa(*args, **kwargs)
+        _torch.mps.synchronize()
+        return out
 
     _torch.nn.functional.scaled_dot_product_attention = _patched_sdpa
 
@@ -396,6 +449,6 @@ if _is_mps:
     try:
         apply_mps_patch()
     except Exception as e:
-        print(f"[MPS Patch] Failed to apply patch: {e}")
+        print(f"[MPS] Failed to apply patch: {e}")
         import traceback
         traceback.print_exc()

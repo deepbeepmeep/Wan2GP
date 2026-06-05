@@ -3778,7 +3778,7 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
     base_model_type = get_base_model_type(model_type)
     model_def = get_model_def(model_type)
     save_quantized = args.save_quantized and model_def != None
-    model_filename = get_model_filename(model_type=model_type, quantization= "" if save_quantized else transformer_quantization, dtype_policy = transformer_dtype_policy) 
+    model_filename = get_model_filename(model_type=model_type, quantization= "" if save_quantized else transformer_quantization, dtype_policy = transformer_dtype_policy)
     if "URLs2" in model_def:
         model_filename2 = get_model_filename(model_type=model_type, quantization= "" if save_quantized else transformer_quantization, dtype_policy = transformer_dtype_policy, submodel_no=2) # !!!!
     else:
@@ -3966,6 +3966,46 @@ def get_gen_info(state):
         cache = dict()
         state["gen"] = cache
     return cache
+
+
+def _env_flag_enabled(name, default=False):
+    raw_value = os.environ.get(name, None)
+    if raw_value is None:
+        return default
+    return str(raw_value).strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _is_quantized_transformer_filename(filename):
+    basename = os.path.basename(str(filename or "")).lower()
+    return "quanto" in basename or "int8" in basename or "fp8" in basename
+
+
+def _mps_webui_inline_worker_required(queue):
+    if not is_mps:
+        return False
+    if os.environ.get("WAN2GP_MPS_WEBUI_INLINE_WORKER") is not None:
+        return _env_flag_enabled("WAN2GP_MPS_WEBUI_INLINE_WORKER")
+    if transformer_quantization not in ("int8", "fp8"):
+        return False
+
+    for task in list(queue or []):
+        if not isinstance(task, dict):
+            continue
+        params = task.get("params", {})
+        if not isinstance(params, dict):
+            continue
+        model_type = params.get("model_type")
+        if not model_type:
+            continue
+        if get_profile_type_for_model(model_type, params.get("image_mode", 0)) != "video":
+            continue
+        if get_model_family(model_type) != "wan":
+            continue
+        model_filename = get_model_filename(model_type, transformer_quantization, transformer_dtype_policy)
+        if _is_quantized_transformer_filename(model_filename):
+            return True
+    return False
+
 
 def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_meta=None):
     gen = get_gen_info(state)
@@ -6755,7 +6795,12 @@ def generate_video(
         fit_crop = False
         fit_canvas = 0
 
-    joint_pass = boost ==1 #and profile != 1 and profile != 3  
+    joint_pass = boost == 1 #and profile != 1 and profile != 3
+    if boost == 1 and sys.platform == "darwin" and _env_flag_enabled("WAN2GP_MPS_DISABLE_JOINT_CFG"):
+        # Diagnostic escape hatch for older PyTorch/MPS stacks where WAN's
+        # joint CFG transformer pass could abort inside Metal validation.
+        joint_pass = False
+        print("[MPS] Disabled WAN joint CFG pass on macOS for diagnostics", flush=True)
     
     skip_steps_cache = None if len(skip_steps_cache_type) == 0 else DynamicClass(cache_type = skip_steps_cache_type) 
 
@@ -6853,7 +6898,7 @@ def generate_video(
         length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         current_video_length = min(current_video_length, length)
 
-    if test_any_sliding_window(model_type) :
+    if test_any_sliding_window(model_type):
         sliding_window = current_video_length > sliding_window_size
         reuse_frames = min(sliding_window_size - latent_size, sliding_window_overlap) 
     else:
@@ -8014,7 +8059,11 @@ def process_tasks(state):
         finally:
             send_cmd("worker_exit", None)
 
-    async_run_in("generation", queue_worker_func)
+    if _mps_webui_inline_worker_required(queue):
+        print("[MPS] Running WebUI generation inline for quantized WAN transformer stability", flush=True)
+        queue_worker_func()
+    else:
+        async_run_in("generation", queue_worker_func)
 
     while True:
         cmd, data = com_stream.output_queue.next()               

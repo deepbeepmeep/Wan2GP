@@ -262,6 +262,27 @@ def get_default_attention_mode():
     return "sdpa"
 
 
+def get_current_cuda_architecture(device=None):
+    if _is_mps or not torch.cuda.is_available():
+        return None
+    major, minor = torch.cuda.get_device_capability(device)
+    return major * 10 + minor
+
+
+_SAGE_ATTENTION_MODES = {"sage", "sage2", "sage3", "radial"}
+
+
+def resolve_attention_mode(attention_mode=None, disable_sage_pre_ada=False):
+    attn = str(attention_mode or "auto").strip().lower()
+    attn = get_default_attention_mode() if attn == "auto" else attn
+    architecture = get_current_cuda_architecture() if disable_sage_pre_ada else None
+    if architecture is not None and architecture < 89 and attn in _SAGE_ATTENTION_MODES:
+        attn = "sdpa"
+    if attn not in get_supported_attention_modes():
+        raise ValueError(f"Attention mode '{attn}' is not installed or supported on this system.")
+    return attn
+
+
 @contextmanager
 def attention_shared_state(default_attention=None):
     previous = offload.shared_state.get("_attention", _MISSING)
@@ -277,7 +298,24 @@ def attention_shared_state(default_attention=None):
         else:
             offload.shared_state["_attention"] = previous
 
+
+@contextmanager
+def attention_config_shared_state(attention_mode=None, resolver=resolve_attention_mode, **resolver_kwargs):
+    previous = offload.shared_state.get("_attention", _MISSING)
+    offload.shared_state["_attention"] = resolver(attention_mode, **resolver_kwargs)
+    try:
+        yield offload.shared_state["_attention"]
+    finally:
+        if previous is _MISSING:
+            offload.shared_state.pop("_attention", None)
+        else:
+            offload.shared_state["_attention"] = previous
+
 __all__ = [
+    'attention_config_shared_state',
+    'attention_shared_state',
+    'get_current_cuda_architecture',
+    'resolve_attention_mode',
     'pay_attention',
     'attention',
 ]

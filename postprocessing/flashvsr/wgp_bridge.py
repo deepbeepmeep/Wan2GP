@@ -220,6 +220,7 @@ class FlashVSRBridge:
             topk_ratio=self.topk_ratio(),
             init_pipe=init_pipe,
             profile=profile,
+            attention_mode=self.server_config.get("attention_mode"),
             still_image=still_image,
             two_pass=self.is_two_pass_upsampling(spatial_upsampling),
             abort_callback=abort_callback,

@@ -505,6 +505,9 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
     if mode.startswith("edit_"):
         edit_video_source =gen.get("edit_video_source", None)
         edit_overrides =gen.get("edit_overrides", None)
+        if edit_video_source is None or edit_overrides is None:
+            gr.Info("You must select a Video or Image file")
+            return ret()
         frames_count = 1 if has_image_file_extension(edit_video_source) else get_video_info(edit_video_source)[3]
         if frames_count > max_source_video_frames:
             gr.Info(f"Post processing is not supported on videos longer than {max_source_video_frames} frames. Output Video will be truncated")
@@ -3170,6 +3173,7 @@ attention_mode = server_config["attention_mode"]
 if len(args.attention)> 0:
     if args.attention in ["auto", "sdpa", "sage", "sage2", "flash", "xformers"]:
         attention_mode = args.attention
+        server_config["attention_mode"] = attention_mode
         lock_ui_attention = True
     else:
         raise Exception(f"Unknown attention mode '{args.attention}'")
@@ -4684,8 +4688,8 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             values +=[video_creation_date]
             labels +=["Creation Date"]
         else: 
-            video_prompt =  html.escape(configs.get("prompt", "")[:1024]).replace("\n", "<BR>")
-            enhanced_video_prompt = html.escape(configs.get("enhanced_prompt", "")[:1024]).replace("\n", "<BR>")
+            video_prompt =  html.escape(configs.get("prompt", "")[:4096]).replace("\n", "<BR>")
+            enhanced_video_prompt = html.escape(configs.get("enhanced_prompt", "")[:4096]).replace("\n", "<BR>")
             video_video_prompt_type = configs.get("video_prompt_type", "")
             video_image_prompt_type = configs.get("image_prompt_type", "")
             video_audio_prompt_type = configs.get("audio_prompt_type", "")
@@ -6633,7 +6637,16 @@ def generate_video(
     pid_tiling_threshold = server_config.get("pid_tiling_threshold", 0)
     if pid_runtime_backbone is not None:
         send_cmd("status", "Preparing PiD upsampler...")
-        pid_upsampler_session = get_pid_upsampler(pid_runtime_backbone, pid_runtime_ckpt_type, init_pipe=init_pipe, profile=get_default_profile("image"), main_offloadobj=offloadobj, persistent_models=pid_persistent, tiling_threshold=pid_tiling_threshold)
+        pid_upsampler_session = get_pid_upsampler(
+            pid_runtime_backbone,
+            pid_runtime_ckpt_type,
+            init_pipe=init_pipe,
+            profile=compute_profile(override_profile, "image"),
+            main_offloadobj=offloadobj,
+            persistent_models=pid_persistent,
+            tiling_threshold=pid_tiling_threshold,
+            attention_mode=attention_mode,
+        )
         send_cmd("status", "PiD upsampler prepared")
     if args.test and auto_prompt_enhancer_requested:
         try:

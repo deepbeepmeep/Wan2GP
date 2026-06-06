@@ -97,7 +97,16 @@ class PiDBridge:
         self.download(process_files, spatial_upsampling=spatial_upsampling)
         backbone = pid_backbone_for_upsampling(spatial_upsampling)
         persistent = int(self.server_config.get("pid_persistence", self.PERSIST_UNLOAD) or self.PERSIST_UNLOAD) == self.PERSIST_RAM
-        session = get_pid_upsampler(backbone, None, init_pipe=init_pipe, profile=profile, main_offloadobj=None, persistent_models=persistent, tiling_threshold=self.server_config.get("pid_tiling_threshold", PID_TILING_THRESHOLD_DEFAULT))
+        session = get_pid_upsampler(
+            backbone,
+            None,
+            init_pipe=init_pipe,
+            profile=profile,
+            main_offloadobj=None,
+            persistent_models=persistent,
+            tiling_threshold=self.server_config.get("pid_tiling_threshold", PID_TILING_THRESHOLD_DEFAULT),
+            attention_mode=self.server_config.get("attention_mode"),
+        )
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         images = self._prepare_sample(sample, device, session.dtype)
         output = session.decode(

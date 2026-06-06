@@ -781,8 +781,7 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
             const available = Math.max(1, content.clientHeight - splitterSpace);
             const minTop = Math.min(180, Math.max(100, Math.round(available * 0.28)));
             const minBottom = Math.min(120, Math.max(70, Math.round(available * 0.20)));
-            const splitterCenterOffset = parseFloat(style.marginTop || 0) + splitter.offsetHeight / 2;
-            return { available, minTop, maxTop: Math.max(minTop, available - minBottom), splitterSpace, splitterCenterOffset };
+            return { available, minTop, maxTop: Math.max(minTop, available - minBottom), splitterSpace };
         }
         function applySplitTop(top) {
             const metrics = splitMetrics();
@@ -797,9 +796,8 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
         }
         function updateSplitFromEvent(event) {
             const metrics = splitMetrics();
-            const rect = content.getBoundingClientRect();
-            const pointerY = event.clientY - (state.splitting?.offsetY || 0);
-            const height = applySplitTop(pointerY - rect.top - metrics.splitterCenterOffset);
+            const split = state.splitting;
+            const height = applySplitTop((split?.startTop || 0) + event.clientY - (split?.startY || event.clientY));
             state.splitRatio = height / metrics.available;
         }
         function updateResolution() {
@@ -1263,8 +1261,7 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
         });
         splitter.addEventListener("pointerdown", (event) => {
             if (event.button !== 0) return;
-            const rect = splitter.getBoundingClientRect();
-            state.splitting = { pointerId: event.pointerId, offsetY: event.clientY - (rect.top + rect.height / 2) };
+            state.splitting = { pointerId: event.pointerId, startY: event.clientY, startTop: workspace.getBoundingClientRect().height };
             content.classList.add("is-splitting");
             splitter.setPointerCapture?.(event.pointerId);
             event.preventDefault();

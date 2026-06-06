@@ -5,7 +5,6 @@ import os
 import re
 import tempfile
 
-import numpy as np
 import torch
 
 
@@ -13,194 +12,202 @@ JOYAI_CONTROL_MEMORY_SETTING = "joyai_control_memory_positions"
 JOYAI_CONTROL_MEMORY_MAX_SECONDS = 60.0
 JOYAI_AUDIO_SILENCE_DYNAMIC_RANGE_DB = 6.0
 JOYAI_AUDIO_SILENCE_THRESHOLD_FRACTION = 0.35
-JOYAI_ECHO_PROMPT_INFOS = """### JoyAI-Echo prompt format
+JOYAI_DEBUG_MEMORY = True
+JOYAI_ECHO_PROMPT_INFOS = """**JoyAI-Echo Prompt Format**
 
-Write one complete generation as plain text. Separate shots with one empty line. Each shot should be self-contained and repeat the important persistent details: character IDs, voices, wardrobe, objects, location, action, camera framing, dialogue, and sound design.
+JoyAI-Echo keeps a small audio-video memory between sliding windows. Each memory slot is a short visual moment paired with nearby voice or sound, so prompts work best when recurring people, voices, objects, and settings are described consistently across windows. Use stable IDs such as `ID_A`, `ID_B`, `ID_OBJECT`, and `ID_PLACE`, then repeat the details that matter each time they reappear.
 
-Use stable IDs such as `ID_A` and `ID_B` whenever a person, object, or place must persist across shots. JoyAI-Echo remembers compact moments from previous shots, but explicit prompt continuity is still important.
+Write one story window per line or paragraph, depending on the selected Text Prompt processing mode. Each window should be self-contained: identity, wardrobe, voice, setting, action, camera framing, dialogue, visible lips when someone speaks, ambience, and sound effects.
 
-Add optional Joy shot options inside a shot only when needed: `[/duration=121]` for frames, `[/duration=5s]` for seconds, `[/overlap]` to reinject overlap frames from the previous shot, `[/overlap=0]` for a sharp transition, or `[/duration=5s,/nomem]` to generate a shot without recording it as future memory. If a shot has no duration marker, it uses the UI Video Length. Joy shot options are removed before text encoding. Other bracket syntax, including Prompt Relay markers, is preserved.
+**Window Commands**
 
-Only `/duration`, `/overlap`, and `/nomem` are valid Joy slash options. Any other `[/...]` command is rejected during validation.
+WanGP removes `[/...]` commands before sending the text to the model. Brackets that do not start with `/` are preserved for other prompt syntax.
 
-Long example:
+Generic window commands:
 
-`[/duration=5s] ID_A is Mara, a cheerful disaster archivist in a cobalt raincoat, short black hair tucked behind one ear, silver round glasses, and a bright orange satchel marked with hand-written labels. ID_PLACE is the Midnight Ferry Terminal, a glass-and-brass station floating on dark water under violet city lights. ID_OBJECT is a tiny mechanical moon inside a cracked snow globe, glowing pale blue whenever it hears a lie. ID_A holds ID_OBJECT near her face so her mouth movement stays readable, smiles with nervous confidence, and says, "If this moon starts singing, we all pretend that was planned." The camera is a stable medium close-up with wet reflections, soft terminal announcements, distant waves, and a delicate ticking sound from ID_OBJECT.`
+- `[/duration=121]`: this window contributes about 121 output frames.
+- `[/duration=5s]`: this window contributes about 5 seconds at the generation FPS.
+- `[/duration=20%]`: this window contributes 20% of the requested total frame count.
+- `[/overlap]`: use the model's default overlap for this window.
+- `[/overlap=9]`: use overlap frames from the previous window to make a smoother transition.
+- `[/overlap=0]`: use no overlap frames, when the model supports text-to-video windows.
+- `[/new_shot]`: start without overlap frames. Use it for a hard cut, a different scene, a new character introduction, or when Continue Video should be preserved in the output but not visually continued by the model.
 
-`ID_A is still Mara in the cobalt raincoat, silver glasses, and orange satchel, standing inside ID_PLACE, the Midnight Ferry Terminal. ID_OBJECT, the cracked snow-globe moon, is now balanced on a ticket counter between stacks of impossible ferry passes. At normal speed, ID_A taps the glass and the moon projects a miniature map of glowing canals across her hands. She whispers, "Good, it remembers the route I forgot." Keep the same violet city lights, rainy brass-and-glass station design, readable face, gentle comedic tension, terminal ambience, water sounds, and the ticking blue moon.`
+JoyAI-Echo memory commands:
 
-`[/duration=6s] ID_B is Sol, a tall soft-spoken lighthouse engineer with warm brown skin, a moss-green work jacket, a knitted red scarf, and a tool belt full of polished copper instruments. ID_B enters ID_PLACE carrying ID_OBJECT_B, a lunchbox-sized foghorn that occasionally sneezes sparks. ID_B notices Mara's glowing snow-globe moon, raises an eyebrow, and says, "That thing owes my lighthouse an apology." The camera frames ID_B from the waist up, showing the scarf, tool belt, and foghorn clearly. Add warm dry humor, soft footsteps on wet tile, distant ferry bells, and the little foghorn's embarrassed squeak.`
+- `[/no_mem]`: generate this window without recording it into future Joy memory.
+- `[/store_mem]`: store one automatic memory slot from this window.
+- `[/store_mem=2]`: store or replace numeric slot 2.
+- `[/store_mem=man1,man2]`: store multiple named slots from this window, sampled at different moments. Multiple slots for the same character can strengthen later reuse.
+- `[/drop_mem]`: drop the latest memory slot before this window.
+- `[/drop_mem=2]`: drop numeric slot 2.
+- `[/drop_mem=2-4]`: drop a numeric range.
+- `[/drop_mem=man1,woman1]`: drop named slots. This is useful before a new scene, cast change, or when you want to free memory for new identities.
 
-`ID_A, Mara in the cobalt raincoat with silver glasses and orange satchel, and ID_B, Sol in the moss-green jacket with red scarf and copper tools, stand together at ID_PLACE. ID_OBJECT, the glowing cracked snow-globe moon, floats above ID_OBJECT_B, the tiny foghorn, and both devices argue in musical beeps while projecting a route over the dark water. Mara laughs and says, "I think our machines are flirting." Sol looks horrified but amused and replies, "Then they can buy their own ferry tickets." Keep both faces readable, both wardrobes consistent, the rainy violet terminal continuous, the blue moon glow, the foghorn sparks, lively dialogue timing, ferry bells, water ambience, and a playful magical-realism mood.`
+You can combine commands in one bracket, for example `[/duration=8s,/new_shot,/store_mem=duck]`.
 
-The first Start Image or Continue Video applies to the first shot only; later shots continue from JoyAI-Echo memory. A Control Video with an audio track can also be used as artificial memory by selecting JoyAI-Echo Control Video Memory. Leave the positions field empty to auto-pick a non-silent moment from the first minute, or enter comma-separated memory positions such as `2s, 5s, 9s` or `49, 121, 217`.
+**Tips**
+
+- Reuse the same ID and repeat important visible and audio traits. Memory helps, but the prompt still guides identity.
+- Use named memory slots when the story has several people or objects. Names make it easier to replace or drop the right memory later.
+- Use `[/new_shot]` to introduce a new person or location without visual overlap from the previous window. Stored Joy memory can still influence later windows unless you drop it.
+- Use `[/no_mem]` for transitional action, abstract inserts, or shots that should not become identity reference material.
+- Use a Control Video with an audio track to predefine memory before generation. Select JoyAI-Echo Control Video Memory, then leave positions empty for automatic non-silent selection or enter positions like `2s, 8s, 15s`.
+
+**Three-Window Example**
+
+```text
+[/duration=8s,/store_mem=magician1,magician2] ID_A is a retired stage magician with silver hair, a burgundy velvet jacket, expressive eyebrows, and a dry theatrical voice. He stands inside an abandoned seaside theater at night, opens a lacquered box, reveals a glowing blue playing card, and says, "I retired from miracles because the miracles started freelancing." Keep his face and lip movement clear in a stable medium close-up. Add dusty gold footlights, torn red curtains, distant waves, old wood creaks, and soft card handling.
+
+[/duration=8s,/new_shot,/store_mem=duck1,duck2] ID_B is a small yellow duck inspector wearing a tiny teal raincoat, round brass spectacles, polished rubber boots, and a serious waterproof satchel. ID_B waddles through the theater aisle, sees the glowing card, and quacks in a crisp subtitle-like comic rhythm, "That door has not filed the proper puddle paperwork." Keep ID_B's duck design, bill movement, spectacles, and raincoat clear in a medium shot with squeaky footsteps, distant surf, and a tiny official whistle.
+
+[/duration=8s,/new_shot] ID_A and ID_B are together on the same seaside theater stage. ID_A is still the silver-haired retired magician in the burgundy velvet jacket with the dry theatrical voice and glowing blue card. ID_B is still the small yellow duck inspector in the teal raincoat, spectacles, boots, and serious satchel. The glowing door opens between them onto a miniature harbor full of lantern boats. ID_A says, "I told you the door was shy." ID_B replies, "Shy doors still need permits." Keep both identities, voices, scale difference, readable lip and bill movement, card glow, theater details, tiny waves, and playful overlapping laughter.
+```
 """
 
-JOYAI_ECHO_INFOS = """JoyAI-Echo is an LTX-2.3 based multi-shot audio-video model. WanGP treats each Paragraph seberated by a blank-line block as one shot, generates them sequentially, and injects compact video/audio memory from earlier shots into later shots.
+JOYAI_ECHO_INFOS = """**JoyAI-Echo**
 
-- Each remembered video point represents a very short moment: about 8 frames, roughly 320 ms at 25 fps. Generated-shot memory also keeps up to about 3.8 seconds of nearby voice/sound from the same shot.
-- Optional per-shot controls use Joy slash syntax: `[/duration=5s]` changes one shot duration, `[/overlap]` reinjects the previous shot tail into the current shot, `[/overlap=0]` forces a sharp transition, and `[/nomem]` prevents that shot from being saved into future memory. Unknown `[/...]` commands are rejected.
-- Optional Control Video Memory builds artificial memory before shot 1 from the first minute of a Control Video with an audio track. Leave memory positions empty to auto-pick a non-silent moment, or enter comma-separated positions; integers are frame positions, `Ns` values are seconds. Each frame position may correspond to a Person you will reference in your Text Prompt.
+JoyAI-Echo is an LTX-2.3 based audio-video model for connected multi-window stories. WanGP generates one sliding window after another and keeps compact memory from previous windows so later windows can reuse people, voices, objects, and places.
+
+**How Generation Works**
+
+- A sliding window acts like one story beat or shot.
+- Write one prompt per line or one paragraph per window, depending on the Text Prompt processing mode.
+- A Start Image or Continue Video applies to the first window.
+- Later windows rely on their own prompt text, optional overlap frames, and Joy memory.
+- Use **1 phase** for best JoyAI-Echo performance. Two phases can refine the image, but one phase is usually faster and more reliable for connected audio-video memory.
+
+**Memory**
+
+- Joy memory has up to **7 slots**.
+- Each slot stores a very short visual moment: about **9 frames**, roughly **360 ms at 25 fps**.
+- Each visual moment is paired with about **3.8 seconds** of nearby voice or sound from the same window, centered on the selected memory moment when a frame position is provided: roughly **1.9 seconds before** and **1.9 seconds after**. If that centered audio is silent, Joy shifts to the nearest non-silent audio window.
+- When slots are full, automatic storage reuses free slots first and then replaces the oldest slot.
+- Memory slots can be named from the prompt, which makes it easier to replace or drop specific memories later.
+
+Use several slots for an important character when identity matters. For example, store two or three moments of the same person from different angles or expressions, then reuse that character in later windows. You can also drop old slots before a new scene so memory is not wasted on characters or objects that no longer matter.
+
+**Control Video Memory**
+
+Control Video Memory can predefine memory before the first generated window. Provide a Control Video with an audio track, choose **JoyAI-Echo Control Video Memory**, and either leave positions empty for automatic non-silent selection or enter frame/second positions.
+
+WanGP uses only the needed moments instead of treating the full control video as the generated source.
+
+Example: to use two reference moments from the first 20 seconds of a Control Video, set **Control Video Memory Positions** to `4s, 14s`. Joy will sample a short visual memory at each target time and pair it with nearby centered audio from the same Control Video.
+
+**Prompt Commands**
+
+Joy supports optional `[/...]` prompt commands for per-window duration, hard cuts, overlap, and memory management. See the prompt help for the full syntax.
 """
 
-JOYAI_ECHO_PROMPT_ENHANCER = """You are writing prompts for JoyAI-Echo, an LTX-2.3 based multi-shot audio-video model.
+JOYAI_ECHO_PROMPT_ENHANCER = """You are writing prompts for JoyAI-Echo, an LTX-2.3 based audio-video model for connected multi-window stories.
+
+JoyAI-Echo works best when each window is a clear cinematic beat and later windows deliberately reuse earlier people, voices, objects, or places. It keeps compact audio-video memories across windows, but the prompt should still repeat the identity details that must remain stable.
 
 Return only the final prompt text. Do not return JSON, bullets, headings, commentary, or code fences.
 
 Format:
-- Write 2 to 6 cinematic shots.
-- Separate shots with exactly one empty line.
-- Each shot is a complete paragraph.
-- Preserve any useful Prompt Relay bracket syntax the user requested.
-- Add `[/duration=5s]` style markers only when the user asks for different per-shot durations; otherwise omit them and let the UI Video Length apply.
-- Add `[/overlap]` only when the shot should start from overlap frames of the previous shot, or `[/overlap=0]` to force no overlap, including on shot 1 after a Continue Video.
-- Add `[/nomem]` or combine it as `[/duration=5s,/nomem]` only when a shot should not be recorded into future Joy memory.
-- Do not invent other `[/...]` commands. Only `/duration`, `/overlap`, and `/nomem` are supported.
+- Write 2 to 6 cinematic story windows.
+- Separate windows with exactly one empty line.
+- Each window is a complete paragraph.
+- Preserve any useful bracket syntax the user already provided.
+- You may prefix a window with `[/new_shot]` when introducing a new character, cutting to a new location, or starting a later joint scene without visual overlap from the previous window.
+- Do not add other `[/...]` commands unless the user already provided them.
 
 Content rules:
 - Use stable IDs such as ID_A, ID_B, ID_OBJECT, or ID_PLACE for recurring people, objects, and settings.
-- Reintroduce the key visual identity, wardrobe, voice, location, and recurring object details in every shot where they matter.
-- Include natural movement, camera framing, facial/lip visibility when there is speech, sound effects, ambience, and any spoken lines.
-- Make later shots clearly reuse earlier characters, objects, or locations so JoyAI-Echo memory has something meaningful to carry forward.
-- Avoid JSON, shot numbering, Markdown, and unrelated clips stitched together without continuity.
+- Reintroduce the key visual identity, wardrobe, voice, location, and recurring object details in every window where they matter.
+- Include natural movement, camera framing, facial/lip visibility when there is speech, sound effects, ambience, and spoken lines.
+- Make later windows clearly reuse earlier characters, objects, or locations so JoyAI-Echo memory has something meaningful to carry forward.
+- When introducing a new character, give them a distinct silhouette, wardrobe or object, voice quality, and a readable action.
+- Avoid unrelated clips stitched together without continuity.
+
+Example:
+ID_A is Martin Bell, a careful apartment superintendent in his early fifties with salt-and-pepper hair, a gray mustache, a navy work shirt, keys on his belt, and a warm gravelly voice. He stands alone beside an old apartment elevator at night. The elevator dings and announces, "Third floor: lasagna is experiencing delays." ID_A looks at the panel, sighs, and says, "I fixed the water pressure. I did not authorize culinary announcements." Keep his face and lip movement clear in a stable medium close-up. Keep background sound minimal, with only the elevator bell and a soft room hum.
+
+[/new_shot] ID_B is Nora Chen, a sharp tenant association president in her late thirties with shoulder-length black hair, tortoiseshell glasses, a mustard cardigan, a canvas tote, and a clear quick alto voice. She stands alone in the lobby near the elevator, holding a few complaint forms. The elevator opens behind her and calmly announces, "Laundry room: socks are now al dente." ID_B raises one eyebrow and says, "That elevator owes me four quarters and a written apology." Keep her face, glasses, clothing, and lip movement clear in a medium shot. Keep sound minimal, with only the elevator doors and a soft paper rustle.
+
+[/new_shot] ID_A and ID_B are together beside the open elevator service panel in the same apartment building. ID_A is still the gray-mustached superintendent in the navy work shirt with keys and a warm gravelly voice. ID_B is still Nora Chen with black hair, tortoiseshell glasses, mustard cardigan, canvas tote, and quick alto voice. They discover an old baby monitor inside the panel, picking up a cooking show from another apartment. ID_A says, "So the elevator is not haunted, just subscribed." ID_B replies, "Excellent. Then I am billing apartment 4B for emotional ravioli." Keep both faces and lip movement readable, preserve their distinct voices and personalities, and keep background sound minimal.
 """
 
-_SHOT_OPTIONS_RE = re.compile(r"\[\s*/\s*([^\]]+?)\s*\]", re.IGNORECASE)
-_SHOT_OPTIONS_HELP = "Supported JoyAI-Echo shot options are /duration, /overlap, and /nomem."
+_MEMORY_ID_RE = re.compile(r"^[^\s,/=\[\]]+$")
 
 
-def _normalize_frame_count(frame_count: int, minimum: int, step: int) -> int:
-    frame_count = max(int(minimum), int(frame_count))
-    step = max(1, int(step))
-    if step <= 1:
-        return frame_count
-    return int(math.ceil(max(0, frame_count - 1) / step) * step + 1)
+def _memory_option_items(value) -> list[str]:
+    if value is True or value is None:
+        return []
+    items = [item.strip() for item in str(value).split(",")]
+    return [item for item in items if item]
 
 
-def _parse_duration_frames(raw_value: str, fps: float, default_frames: int, minimum: int, step: int) -> int:
-    raw_value = (raw_value or "").strip().lower()
-    try:
-        if raw_value.endswith("s"):
-            seconds = float(raw_value[:-1].strip())
-            frame_count = int(round(seconds * float(fps)))
+def _is_number_id(value: str) -> bool:
+    return bool(re.fullmatch(r"\d+", str(value).strip()))
+
+
+def _validate_memory_name(value: str, command: str) -> str:
+    value = str(value).strip()
+    if not value:
+        raise ValueError(f"JoyAI-Echo /{command} memory name cannot be empty.")
+    if _is_number_id(value):
+        raise ValueError(f"JoyAI-Echo /{command} memory names must not be pure numbers.")
+    if not _MEMORY_ID_RE.fullmatch(value):
+        raise ValueError(f"JoyAI-Echo /{command} memory name '{value}' contains unsupported characters.")
+    return value
+
+
+def parse_store_mem_option(value) -> list[int | str | None]:
+    if value is True or value is None:
+        return [None]
+    selectors: list[int | str | None] = []
+    for item in _memory_option_items(value):
+        if _is_number_id(item):
+            selector = int(item)
+            if selector < 1:
+                raise ValueError("JoyAI-Echo /store_mem slots start from 1.")
+            selectors.append(selector)
         else:
-            frame_count = int(raw_value)
-    except Exception as exc:
-        raise ValueError(f"Invalid JoyAI-Echo /duration value '{raw_value}'. Use an integer frame count or seconds like 5s.") from exc
-    return _normalize_frame_count(frame_count, minimum, step)
+            selectors.append(_validate_memory_name(item, "store_mem"))
+    if not selectors:
+        raise ValueError("JoyAI-Echo /store_mem requires a memory slot index or name.")
+    return selectors
 
 
-def _normalize_overlap_frames(frame_count: int, step: int) -> int:
-    frame_count = int(frame_count)
-    if frame_count < 0:
-        raise ValueError("JoyAI-Echo /overlap must be 0 or a positive frame count.")
-    if frame_count == 0:
-        return 0
-    step = max(1, int(step))
-    return int(((frame_count - 1 + step // 2) // step) * step + 1)
-
-
-def _parse_overlap_frames(raw_value: str | None, default_overlap: int, step: int) -> int:
-    if raw_value is None:
-        return _normalize_overlap_frames(default_overlap, step)
-    raw_value = (raw_value or "").strip()
-    if not raw_value:
-        raise ValueError("JoyAI-Echo /overlap value cannot be empty. Use [/overlap] or [/overlap=9].")
-    try:
-        return _normalize_overlap_frames(int(raw_value), step)
-    except Exception as exc:
-        if isinstance(exc, ValueError) and str(exc).startswith("JoyAI-Echo"):
-            raise
-        raise ValueError(f"Invalid JoyAI-Echo /overlap value '{raw_value}'. Use an integer frame count.") from exc
-
-
-def _apply_shot_options(block: str, *, default_frames: int, fps: float, minimum: int, step: int, default_overlap: int) -> tuple[str, int, bool, int | None]:
-    duration = default_frames
-    record_memory = True
-    overlap_frames = None
-
-    def replace_options(match):
-        nonlocal duration, record_memory, overlap_frames
-        for raw_option in match.group(1).split(","):
-            option = raw_option.strip()
-            if option.startswith("/"):
-                option = option[1:].strip()
-            key, separator, value = option.partition("=")
-            key = key.strip().lower()
-            if key == "duration":
-                if not separator or not value.strip():
-                    raise ValueError("JoyAI-Echo /duration requires a value, e.g. [/duration=5s].")
-                duration = _parse_duration_frames(value, fps, default_frames, minimum, step)
-            elif key == "nomem":
-                if separator:
-                    raise ValueError("JoyAI-Echo /nomem does not take a value.")
-                record_memory = False
-            elif key == "overlap":
-                overlap_frames = _parse_overlap_frames(value if separator else None, default_overlap, step)
-            else:
-                raise ValueError(f"Unknown JoyAI-Echo shot option '/{key}'. {_SHOT_OPTIONS_HELP}")
-        return ""
-
-    return _SHOT_OPTIONS_RE.sub(replace_options, block), duration, record_memory, overlap_frames
-
-
-def split_blank_line_shots(prompt: str, *, default_frames: int, fps: float, minimum: int, step: int, default_overlap: int = 0) -> list[tuple[str, int, bool, int | None]]:
-    shots = []
-    blocks = re.split(r"\n\s*\n+", (prompt or "").strip())
-    for block in blocks:
-        if not block.strip():
-            continue
-        block, duration, record_memory, overlap_frames = _apply_shot_options(block, default_frames=default_frames, fps=fps, minimum=minimum, step=step, default_overlap=default_overlap)
-        shot = re.sub(r"\s*\n\s*", " ", block).strip()
-        if shot:
-            shots.append((shot, duration, record_memory, overlap_frames))
-    return shots
-
-
-def validate_joyai_prompt_options(prompt: str, *, default_frames: int, fps: float, minimum: int, step: int, default_overlap: int = 0) -> str | None:
-    try:
-        split_blank_line_shots(prompt, default_frames=default_frames, fps=fps, minimum=minimum, step=step, default_overlap=default_overlap)
-    except Exception as exc:
-        return str(exc)
-    return None
-
-
-def merge_shot_results(results: list[dict]) -> dict | None:
-    if not results:
+def parse_drop_mem_option(value) -> list[int | str] | None:
+    if value is True or value is None:
         return None
-    if len(results) == 1:
-        return results[0]
-    merged = dict(results[-1])
-    merged["x"] = torch.cat([one["x"] for one in results], dim=1)
-    audio_arrays = [one.get("audio") for one in results if one.get("audio") is not None]
-    merged["audio"] = np.concatenate(audio_arrays, axis=0) if len(audio_arrays) == len(results) else None
-    return merged
+    selectors: list[int | str] = []
+    for item in _memory_option_items(value):
+        if re.fullmatch(r"\d+\s*-\s*\d+", item):
+            start, end = [int(part.strip()) for part in item.split("-", 1)]
+            if start < 1 or end < 1:
+                raise ValueError("JoyAI-Echo /drop_mem slots start from 1.")
+            if end < start:
+                raise ValueError("JoyAI-Echo /drop_mem ranges must be written from low to high, e.g. [/drop_mem=2-4].")
+            selectors.extend(range(start, end + 1))
+        elif _is_number_id(item):
+            index = int(item)
+            if index < 1:
+                raise ValueError("JoyAI-Echo /drop_mem slots start from 1.")
+            selectors.append(index)
+        else:
+            selectors.append(_validate_memory_name(item, "drop_mem"))
+    if not selectors:
+        raise ValueError("JoyAI-Echo /drop_mem requires a memory slot, range, or name.")
+    return selectors
 
 
-def _default_overlap_frames(model_def: dict, step: int) -> int:
-    defaults = model_def.get("sliding_window_defaults", {}) if isinstance(model_def, dict) else {}
-    return _normalize_overlap_frames(int(defaults.get("overlap_default", 0) or 0), step)
+def _memory_labels_text(labels: list[str]) -> str:
+    return ", ".join(labels) if labels else "none"
 
 
-def _video_overlap_input(video: torch.Tensor | None, overlap_frames: int) -> torch.Tensor | None:
-    if video is None or int(overlap_frames) <= 0:
-        return None
-    frames = min(int(overlap_frames), int(video.shape[1]))
-    if frames <= 0:
-        return None
-    tail = video[:, -frames:].detach().cpu().contiguous()
-    if tail.dtype == torch.uint8:
-        return tail.float().div_(127.5).sub_(1.0)
-    return tail
+def _memory_selectors_text(selectors: list[int | str | None]) -> str:
+    values = ["auto" if selector is None else str(selector) for selector in selectors]
+    return ", ".join(values) if values else "none"
 
 
-def _audio_overlap_input(audio, sample_rate: int | None, overlap_frames: int, fps: float):
-    if audio is None or not sample_rate or int(overlap_frames) <= 0:
-        return None, 0
-    samples = int(round(float(overlap_frames) * float(sample_rate) / float(fps)))
-    if samples <= 0:
-        return None, 0
-    return np.ascontiguousarray(audio[-min(samples, int(audio.shape[0])):]), int(sample_rate)
+def _debug_memory(message: str) -> None:
+    if JOYAI_DEBUG_MEMORY:
+        print(f"[WAN2GP][JoyAI-Echo][memory] {message}", flush=True)
 
 
 def _trim_audio_start(audio, trim_frames: int, fps: float, sample_rate: int | None):
@@ -235,34 +242,114 @@ def _trim_memory_latents(model, memory_latents: dict | None, trim_frames: int, t
 
 class JoyAIEchoMemoryBank:
     def __init__(self, max_size: int = 7, num_fix_frames: int = 3, audio_window_size: int = 96) -> None:
-        self.max_size = int(max_size)
+        self.max_size = max(0, int(max_size))
         self.num_fix_frames = max(0, int(num_fix_frames))
         self.audio_window_size = max(1, int(audio_window_size))
-        self.entries: list[dict] = []
+        self.entries: dict[int, dict] = {}
+        self.created_at = 0
 
     def __len__(self) -> int:
         return len(self.entries)
 
-    def _trim(self) -> None:
-        if self.max_size <= 0 or len(self.entries) <= self.max_size:
-            return
-        fixed = self.entries[: self.num_fix_frames]
-        tail = self.entries[self.num_fix_frames :]
-        keep_tail = max(0, self.max_size - len(fixed))
-        self.entries = fixed + tail[-keep_tail:]
+    def _slot_items(self):
+        return sorted(self.entries.items())
 
-    def _build_entry(self, model, phase: str, video_latent: torch.Tensor | None, audio_latent: torch.Tensor | None, audio_waveform=None, audio_sample_rate: int | None = None) -> dict | None:
+    def _creation_items(self):
+        return sorted(self.entries.items(), key=lambda item: item[1].get("created_at", 0))
+
+    def _entry_label(self, slot_id: int, entry: dict) -> str:
+        name = entry.get("name")
+        return f"{slot_id}[{name}]" if name else str(slot_id)
+
+    def labels(self) -> list[str]:
+        return [self._entry_label(slot_id, entry) for slot_id, entry in self._slot_items()]
+
+    def _next_created_at(self) -> int:
+        self.created_at += 1
+        return self.created_at
+
+    def _slot_for_name(self, name: str) -> int | None:
+        for slot_id, entry in self.entries.items():
+            if entry.get("name") == name:
+                return slot_id
+        return None
+
+    def _oldest_slot(self) -> int | None:
+        if not self.entries:
+            return None
+        return self._creation_items()[0][0]
+
+    def _free_slot(self) -> int | None:
+        for slot_id in range(1, self.max_size + 1):
+            if slot_id not in self.entries:
+                return slot_id
+        return None
+
+    def drop(self, selectors: list[int | str] | None = None) -> list[str]:
+        if not self.entries:
+            return []
+        slots = {self._creation_items()[-1][0]}
+        if selectors is not None:
+            slots = set()
+            for selector in selectors:
+                if isinstance(selector, int):
+                    if selector < 1 or selector > self.max_size:
+                        raise RuntimeError(f"JoyAI-Echo /drop_mem slot {selector} is outside the valid memory range 1-{self.max_size}.")
+                    if selector not in self.entries:
+                        raise RuntimeError(f"JoyAI-Echo /drop_mem slot {selector} is already empty.")
+                    slots.add(selector)
+                else:
+                    slot_id = self._slot_for_name(selector)
+                    if slot_id is None:
+                        raise RuntimeError(f"JoyAI-Echo /drop_mem memory name '{selector}' was not found.")
+                    slots.add(slot_id)
+        dropped = [self._entry_label(slot_id, self.entries[slot_id]) for slot_id in sorted(slots)]
+        for slot_id in slots:
+            del self.entries[slot_id]
+        return dropped
+
+    def _target_slot(self, selector: int | str | None, entry: dict) -> tuple[int | None, list[str]]:
+        if self.max_size <= 0:
+            return None, []
+        discarded = []
+        if isinstance(selector, int):
+            if selector < 1 or selector > self.max_size:
+                raise RuntimeError(f"JoyAI-Echo /store_mem slot {selector} is outside the valid memory range 1-{self.max_size}.")
+            slot_id = selector
+        elif isinstance(selector, str):
+            slot_id = self._slot_for_name(selector) or self._free_slot()
+            entry["name"] = selector
+        else:
+            slot_id = self._free_slot()
+        if slot_id is None:
+            slot_id = self._oldest_slot()
+            if slot_id is not None:
+                discarded.append(self._entry_label(slot_id, self.entries[slot_id]))
+        elif slot_id in self.entries:
+            discarded.append(self._entry_label(slot_id, self.entries[slot_id]))
+        return slot_id, discarded
+
+    def _store_entry(self, selector: int | str | None, entry: dict) -> tuple[str | None, list[str]]:
+        slot_id, discarded = self._target_slot(selector, entry)
+        if slot_id is None:
+            return None, discarded
+        entry["created_at"] = self._next_created_at()
+        self.entries[slot_id] = entry
+        return self._entry_label(slot_id, entry), discarded
+
+    def _build_entry(self, model, phase: str, video_latent: torch.Tensor | None, audio_latent: torch.Tensor | None, audio_waveform=None, audio_sample_rate: int | None = None, center_ratio: float | None = None) -> dict | None:
         if video_latent is None:
             return None
         video_latent = video_latent.detach().cpu().contiguous()
         video_frames = int(video_latent.shape[2])
         if audio_latent is None:
-            video_idx = max(0, video_frames // 2)
+            video_idx = max(0, video_frames // 2) if center_ratio is None else max(0, min(int(round(float(center_ratio) * float(max(video_frames - 1, 0)))), max(video_frames - 1, 0)))
             return {"video": {phase: video_latent[:, :, video_idx : video_idx + 1]}, "audio": {}, "audio_lengths": {}}
         audio_latent = audio_latent.detach().cpu().contiguous()
         total_audio_frames = int(audio_latent.shape[2])
         waveform = None if audio_waveform is None or audio_sample_rate is None else _normalize_waveform(audio_waveform, channels_first=False)
-        window_start, window_len = _select_audio_window_start(model, audio_latent, waveform, audio_sample_rate, self.audio_window_size)
+        center_latent = None if center_ratio is None else int(round(float(center_ratio) * float(max(total_audio_frames - 1, 0))))
+        window_start, window_len = _select_audio_window_start(model, audio_latent, waveform, audio_sample_rate, self.audio_window_size, center_latent=center_latent)
         window_end = window_start + window_len
         video_idx = _video_idx_from_audio_window(video_frames, total_audio_frames, window_start, window_len)
         return {
@@ -271,29 +358,37 @@ class JoyAIEchoMemoryBank:
             "audio_lengths": {phase: int(window_len)},
         }
 
-    def add_generation(self, model, memory_latents: dict | None, audio_waveform=None, audio_sample_rate: int | None = None) -> None:
+    def add_generation(self, model, memory_latents: dict | None, audio_waveform=None, audio_sample_rate: int | None = None, store_selectors: list[int | str | None] | None = None) -> tuple[list[str], list[str]]:
         if not memory_latents:
-            return
+            return [], []
         phase_latents = memory_latents if "phase1" in memory_latents or "phase2" in memory_latents else {"phase1": memory_latents}
-        entry = {"video": {}, "audio": {}, "audio_lengths": {}}
-        for phase, latents in phase_latents.items():
-            if not isinstance(latents, dict):
-                continue
-            phase_entry = self._build_entry(model, phase, latents.get("video"), latents.get("audio"), audio_waveform, audio_sample_rate)
-            if phase_entry is None:
-                continue
-            entry["video"].update(phase_entry["video"])
-            entry["audio"].update(phase_entry["audio"])
-            entry["audio_lengths"].update(phase_entry["audio_lengths"])
-        if entry["video"]:
-            self.entries.append(entry)
-            self._trim()
+        store_selectors = store_selectors or [None]
+        center_ratios = [None] if len(store_selectors) <= 1 else [(slot + 1) / float(len(store_selectors) + 1) for slot in range(len(store_selectors))]
+        stored, discarded = [], []
+        for selector, center_ratio in zip(store_selectors, center_ratios):
+            entry = {"video": {}, "audio": {}, "audio_lengths": {}}
+            for phase, latents in phase_latents.items():
+                if not isinstance(latents, dict):
+                    continue
+                phase_entry = self._build_entry(model, phase, latents.get("video"), latents.get("audio"), audio_waveform, audio_sample_rate, center_ratio=center_ratio)
+                if phase_entry is None:
+                    continue
+                entry["video"].update(phase_entry["video"])
+                entry["audio"].update(phase_entry["audio"])
+                entry["audio_lengths"].update(phase_entry["audio_lengths"])
+            if entry["video"]:
+                stored_label, discarded_labels = self._store_entry(selector, entry)
+                if stored_label is not None:
+                    stored.append(stored_label)
+                discarded.extend(discarded_labels)
+        return stored, discarded
 
-    def add_artificial_memory(self, memory: dict) -> None:
+    def add_artificial_memory(self, memory: dict) -> tuple[list[str], list[str]]:
         phase_video_latents = memory.get("video", {}) if isinstance(memory, dict) else {}
         phase_audio_slots = memory.get("audio", {}) if isinstance(memory, dict) else {}
         if not phase_video_latents:
-            return
+            return [], []
+        stored, discarded = [], []
         slots = max(int(latent.shape[2]) for latent in phase_video_latents.values() if latent is not None)
         for slot_idx in range(slots):
             entry = {"video": {}, "audio": {}, "audio_lengths": {}}
@@ -305,30 +400,33 @@ class JoyAIEchoMemoryBank:
                     entry["audio"][phase] = audio_slots[slot_idx].detach().cpu().contiguous()
                     entry["audio_lengths"][phase] = int(audio_slots[slot_idx].shape[2])
             if entry["video"]:
-                self.entries.append(entry)
-        self._trim()
+                stored_label, discarded_labels = self._store_entry(None, entry)
+                if stored_label is not None:
+                    stored.append(stored_label)
+                discarded.extend(discarded_labels)
+        return stored, discarded
 
     def video_latent(self, phase: str = "phase1") -> torch.Tensor | None:
-        latents = [entry["video"][phase] for entry in self.entries if phase in entry["video"]]
+        latents = [entry["video"][phase] for _, entry in self._slot_items() if phase in entry["video"]]
         if not latents:
             return None
         return torch.cat(latents, dim=2).contiguous()
 
     def audio_latent(self, phase: str = "phase1") -> torch.Tensor | None:
-        latents = [entry["audio"][phase] for entry in self.entries if phase in entry["audio"]]
+        latents = [entry["audio"][phase] for _, entry in self._slot_items() if phase in entry["audio"]]
         if not latents:
             return None
         return torch.cat(latents, dim=2).contiguous()
 
     def audio_segment_lengths(self, phase: str = "phase1"):
-        lengths = [entry["audio_lengths"][phase] for entry in self.entries if phase in entry["audio_lengths"]]
+        lengths = [entry["audio_lengths"][phase] for _, entry in self._slot_items() if phase in entry["audio_lengths"]]
         if not lengths:
             return None
         return (tuple(lengths),)
 
     def paired_audio_memory(self, phase: str = "phase1") -> bool:
-        video_slots = sum(1 for entry in self.entries if phase in entry["video"])
-        audio_slots = sum(1 for entry in self.entries if phase in entry["audio"])
+        video_slots = sum(1 for entry in self.entries.values() if phase in entry["video"])
+        audio_slots = sum(1 for entry in self.entries.values() if phase in entry["audio"])
         return video_slots > 0 and video_slots == audio_slots
 
 
@@ -596,132 +694,105 @@ def build_control_video_memory(model, control_video_path: str, positions_text: s
     return {"video": video, "audio": audio}
 
 
-def generate_joyai_echo_shots(model, single_shot_generate, **call_args):
+def generate_joyai_echo_window(model, single_shot_generate, **call_args):
+    gen_state = call_args.get("gen_state")
+    if not isinstance(gen_state, dict):
+        gen_state = {}
+    joy_state = gen_state.setdefault("joyai_echo", {})
+    memory_bank = joy_state.get("memory_bank")
+    if memory_bank is None:
+        memory_bank = JoyAIEchoMemoryBank(
+            max_size=int(model.model_def.get("joyai_memory_max_size", 7)),
+            num_fix_frames=int(model.model_def.get("joyai_memory_num_fix_frames", 3)),
+            audio_window_size=int(model.model_def.get("joyai_audio_memory_window_size", 96)),
+        )
+        joy_state["memory_bank"] = memory_bank
+
     fps = float(call_args.get("fps", model.model_def.get("fps", 25)) or 25)
-    frames_minimum = int(model.model_def.get("frames_minimum", 17))
-    frames_step = int(model.model_def.get("frames_steps", 8))
-    source_overlap = int(call_args.get("prefix_frames_count", 0) or 0) if torch.is_tensor(call_args.get("input_video")) else 0
-    default_frames = _normalize_frame_count(int(call_args.get("frame_num", 0) or frames_minimum) - max(0, source_overlap - 1), frames_minimum, frames_step)
-    default_overlap = _default_overlap_frames(model.model_def, frames_step)
-    shots = split_blank_line_shots(
-        call_args.get("input_prompt", ""),
-        default_frames=default_frames,
-        fps=fps,
-        minimum=frames_minimum,
-        step=frames_step,
-        default_overlap=default_overlap,
-    )
-    if not shots:
-        return None
-    total = len(shots)
-    base_seed = int(call_args.get("seed", 0) or 0)
-    set_progress_status = call_args.get("set_progress_status")
     custom_settings = call_args.get("custom_settings") if isinstance(call_args.get("custom_settings"), dict) else {}
-    guide_phases = int(call_args.get("guide_phases", call_args.get("guidance_phases", 1)) or 1)
-    two_phase = guide_phases > 1
-    memory_bank = JoyAIEchoMemoryBank(
-        max_size=int(model.model_def.get("joyai_memory_max_size", 7)),
-        num_fix_frames=int(model.model_def.get("joyai_memory_num_fix_frames", 3)),
-        audio_window_size=int(model.model_def.get("joyai_audio_memory_window_size", 96)),
-    )
     control_memory_enabled = "1" in (call_args.get("video_prompt_type", "") or "")
-    positions_text = custom_settings.get(JOYAI_CONTROL_MEMORY_SETTING, "") if control_memory_enabled else ""
-    if control_memory_enabled:
-        control_video_path = call_args.get("video_guide")
+    control_video_path = call_args.get("video_guide")
+    control_key = (control_video_path, custom_settings.get(JOYAI_CONTROL_MEMORY_SETTING, ""), int(call_args.get("height")), int(call_args.get("width")), int(call_args.get("guide_phases", call_args.get("guidance_phases", 1)) or 1))
+    if control_memory_enabled and joy_state.get("control_key") != control_key:
         if not control_video_path:
             raise RuntimeError("JoyAI-Echo Control Video Memory requires the original Control Video path.")
-        target_height = int(call_args.get("height"))
-        target_width = int(call_args.get("width"))
-        if target_height % 64 != 0:
-            target_height = int(math.ceil(target_height / 64) * 64)
-        if target_width % 64 != 0:
-            target_width = int(math.ceil(target_width / 64) * 64)
+        target_height, target_width = int(call_args.get("height")), int(call_args.get("width"))
+        target_height = int(math.ceil(target_height / 64) * 64) if target_height % 64 else target_height
+        target_width = int(math.ceil(target_width / 64) * 64) if target_width % 64 else target_width
         artificial_memory = build_control_video_memory(
             model,
             control_video_path,
-            str(positions_text),
+            str(custom_settings.get(JOYAI_CONTROL_MEMORY_SETTING, "")),
             fps=fps,
             height=target_height,
             width=target_width,
-            two_phase=two_phase,
+            two_phase=int(call_args.get("guide_phases", call_args.get("guidance_phases", 1)) or 1) > 1,
             VAE_tile_size=call_args.get("VAE_tile_size"),
         )
-        memory_bank.add_artificial_memory(artificial_memory)
-    results = []
-    previous_video = previous_audio = None
-    previous_audio_sample_rate = None
-    for shot_idx, (shot, shot_frames, record_memory, overlap_frames) in enumerate(shots):
-        if model._interrupt:
-            return None
-        prefix = f"Shot {shot_idx + 1}/{total}"
-        if set_progress_status is not None:
-            set_progress_status(prefix)
+        stored, discarded = memory_bank.add_artificial_memory(artificial_memory)
+        _debug_memory(f"control video memory stored {len(stored)} slot(s): {_memory_labels_text(stored)}")
+        if discarded:
+            _debug_memory(f"slots {len(discarded)} discarded: {_memory_labels_text(discarded)}")
+        joy_state["control_key"] = control_key
 
-        def shot_progress(status, *, _prefix=prefix):
-            if set_progress_status is not None:
-                set_progress_status(f"{_prefix} - {status}")
+    window_options = call_args.get("frame_window_options") if isinstance(call_args.get("frame_window_options"), dict) else {}
+    model_options = window_options.get("model_options", {}) if isinstance(window_options.get("model_options", {}), dict) else {}
+    drop_mem = model_options.get("drop_mem", None)
+    if drop_mem is not None:
+        dropped = memory_bank.drop(parse_drop_mem_option(drop_mem))
+        _debug_memory(f"/drop_mem={drop_mem}: slots {len(dropped)} discarded: {_memory_labels_text(dropped)}")
+    record_memory = not bool(model_options.get("no_mem", False))
+    if "no_mem" in model_options:
+        _debug_memory("/no_mem: this window will not record Joy memory")
+    store_mem = model_options.get("store_mem", True)
+    store_mem_selectors = parse_store_mem_option(store_mem)
+    if "store_mem" in model_options:
+        store_action = "ignored because /no_mem is set" if not record_memory else f"will try to store {len(store_mem_selectors)} slot(s): {_memory_selectors_text(store_mem_selectors)}"
+        _debug_memory(f"/store_mem={store_mem}: {store_action}")
+    audio_memory_enabled = bool(model.model_def.get("joyai_audio_memory", False))
+    reference_context = {
+        "video_latent": memory_bank.video_latent("phase1"),
+        "audio_latent": memory_bank.audio_latent("phase1"),
+        "audio_segment_lengths": memory_bank.audio_segment_lengths("phase1"),
+        "paired_audio": audio_memory_enabled and memory_bank.paired_audio_memory("phase1"),
+        "video_latent_stage2": memory_bank.video_latent("phase2"),
+        "audio_latent_stage2": memory_bank.audio_latent("phase2"),
+        "audio_segment_lengths_stage2": memory_bank.audio_segment_lengths("phase2"),
+        "paired_audio_stage2": audio_memory_enabled and memory_bank.paired_audio_memory("phase2"),
+        "freeze_stage2_audio": True,
+        "downscale_factor": int(model.model_def.get("joyai_memory_downscale_factor", 1)),
+        "return_latents": record_memory,
+        "debug_memory": JOYAI_DEBUG_MEMORY,
+        "window_no": call_args.get("window_no", 1),
+        "memory_labels": memory_bank.labels(),
+    }
 
-        def shot_callback(*args, _prefix=prefix, _callback=call_args.get("callback"), **kwargs):
-            if _callback is not None:
-                kwargs["status_prefix"] = _prefix
-                return _callback(*args, **kwargs)
-
-        audio_memory_enabled = bool(model.model_def.get("joyai_audio_memory", False))
-        shot_args = dict(call_args)
-        overlap_prefix = None
-        overlap_audio = None
-        overlap_audio_sample_rate = 0
-        if overlap_frames is not None and overlap_frames > 0:
-            if shot_idx == 0:
-                overlap_prefix = _video_overlap_input(call_args.get("input_video"), overlap_frames)
-            else:
-                overlap_prefix = _video_overlap_input(previous_video, overlap_frames)
-        actual_overlap = int(overlap_prefix.shape[1]) if overlap_prefix is not None else 0
-        if actual_overlap > 0:
-            if shot_idx == 0:
-                overlap_audio, overlap_audio_sample_rate = _audio_overlap_input(call_args.get("input_waveform"), call_args.get("input_waveform_sample_rate"), actual_overlap, fps)
-            else:
-                overlap_audio, overlap_audio_sample_rate = _audio_overlap_input(previous_audio, previous_audio_sample_rate, actual_overlap, fps)
-        if overlap_frames == 0:
-            actual_overlap = 0
-        frame_num = int(shot_frames + max(0, actual_overlap - 1))
-        trim_frames = max(0, frame_num - int(shot_frames))
-        print(f"[WAN2GP][JoyAI-Echo] shot {shot_idx + 1}/{total}: frames={shot_frames} overlap={actual_overlap} memory_slots={len(memory_bank)} record_memory={record_memory} seed={base_seed + shot_idx}", flush=True)
-        shot_args.update({"input_prompt": shot, "frame_num": frame_num, "seed": base_seed + shot_idx, "set_progress_status": shot_progress, "callback": shot_callback})
-        if overlap_frames is not None:
-            shot_args.update({"input_video": overlap_prefix, "prefix_frames_count": actual_overlap, "input_waveform": overlap_audio, "input_waveform_sample_rate": overlap_audio_sample_rate})
-        reference_context = {
-            "video_latent": memory_bank.video_latent("phase1"),
-            "audio_latent": memory_bank.audio_latent("phase1"),
-            "audio_segment_lengths": memory_bank.audio_segment_lengths("phase1"),
-            "paired_audio": audio_memory_enabled and memory_bank.paired_audio_memory("phase1"),
-            "video_latent_stage2": memory_bank.video_latent("phase2"),
-            "audio_latent_stage2": memory_bank.audio_latent("phase2"),
-            "audio_segment_lengths_stage2": memory_bank.audio_segment_lengths("phase2"),
-            "paired_audio_stage2": audio_memory_enabled and memory_bank.paired_audio_memory("phase2"),
-            "downscale_factor": int(model.model_def.get("joyai_memory_downscale_factor", 1)),
-            "return_latents": record_memory,
-        }
-        shot_args.pop("video_guide", None)
-        if control_memory_enabled or "V" in (call_args.get("video_prompt_type", "") or ""):
-            shot_args.update({"input_frames": None, "input_frames2": None, "input_masks": None, "input_masks2": None, "video_prompt_type": ""})
-        if shot_idx > 0:
-            shot_args.update({"image_start": None, "image_prompt_type": ""})
-            if overlap_frames is None:
-                shot_args.update({"input_video": None, "prefix_frames_count": 0, "input_waveform": None, "input_waveform_sample_rate": 0})
-        with model.pipeline.joyai_echo_context(reference_context):
-            result = single_shot_generate(**shot_args)
-        if result is None:
-            return None
-        memory_latents = result.pop("_memory_latents", None)
-        if trim_frames > 0:
-            result["x"] = result["x"][:, trim_frames:].contiguous()
-            result["audio"] = _trim_audio_start(result.get("audio"), trim_frames, fps, result.get("audio_sampling_rate"))
-            memory_latents = _trim_memory_latents(model, memory_latents, trim_frames, frame_num)
-        if record_memory:
-            memory_bank.add_generation(model, memory_latents, audio_waveform=result.get("audio"), audio_sample_rate=result.get("audio_sampling_rate"))
-        previous_video = result.get("x")
-        previous_audio = result.get("audio")
-        previous_audio_sample_rate = result.get("audio_sampling_rate")
-        results.append(result)
-    return merge_shot_results(results)
+    shot_args = dict(call_args)
+    shot_args["joyai_single_window"] = True
+    if control_memory_enabled or "V" in (call_args.get("video_prompt_type", "") or ""):
+        shot_args.update({"input_frames": None, "input_frames2": None, "input_masks": None, "input_masks2": None, "video_prompt_type": ""})
+    print(f"[WAN2GP][JoyAI-Echo] window={call_args.get('window_no', 1)} frames={call_args.get('frame_num')} overlap={call_args.get('prefix_frames_count', 0)} memory_slots={len(memory_bank)} slots={_memory_labels_text(memory_bank.labels())} record_memory={record_memory} store_mem={len(store_mem_selectors)}", flush=True)
+    if JOYAI_DEBUG_MEMORY:
+        phase1_video_slots = 0 if reference_context["video_latent"] is None else reference_context["video_latent"].shape[2]
+        phase2_video_slots = 0 if reference_context["video_latent_stage2"] is None else reference_context["video_latent_stage2"].shape[2]
+        phase1_audio_slots = 0 if reference_context["audio_segment_lengths"] is None else len(reference_context["audio_segment_lengths"][0])
+        phase2_audio_slots = 0 if reference_context["audio_segment_lengths_stage2"] is None else len(reference_context["audio_segment_lengths_stage2"][0])
+        _debug_memory(f"window={call_args.get('window_no', 1)} guiding memory to inject: phase1_video={phase1_video_slots} phase1_audio={phase1_audio_slots} phase2_video={phase2_video_slots} phase2_audio={phase2_audio_slots} slots={_memory_labels_text(reference_context['memory_labels'])}")
+    with model.pipeline.joyai_echo_context(reference_context):
+        result = single_shot_generate(**shot_args)
+    if result is None:
+        return None
+    memory_latents = result.pop("_memory_latents", None)
+    if record_memory:
+        trim_frames = max(0, int(call_args.get("prefix_frames_count", 0) or 0))
+        stored, discarded = memory_bank.add_generation(
+            model,
+            _trim_memory_latents(model, memory_latents, trim_frames, int(call_args.get("frame_num", 0) or 0)),
+            audio_waveform=_trim_audio_start(result.get("audio"), trim_frames, fps, result.get("audio_sampling_rate")),
+            audio_sample_rate=result.get("audio_sampling_rate"),
+            store_selectors=store_mem_selectors,
+        )
+        _debug_memory(f"stored {len(stored)} slot(s): {_memory_labels_text(stored)}")
+        if discarded:
+            _debug_memory(f"slots {len(discarded)} discarded: {_memory_labels_text(discarded)}")
+    return result

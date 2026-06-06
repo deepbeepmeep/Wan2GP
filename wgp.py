@@ -62,6 +62,7 @@ from shared.utils.media_recording import record_file_metadata as shared_record_f
 from shared.utils.settings_bundle import is_wangp_settings_filename
 from shared.utils.video_decode import decode_video_frames_ffmpeg, probe_video_stream_metadata
 from shared.utils.virtual_media import get_virtual_image, get_virtual_media_entry, get_virtual_media_vsource, parse_virtual_media_path, replace_virtual_media_source, strip_virtual_media_suffix
+from shared.utils.frame_scheduler import build_extension_window, build_frame_scheduler, has_slash_commands
 from shared.match_archi import match_nvidia_architecture
 from shared.attention import get_attention_modes, get_supported_attention_modes, get_default_attention_mode
 from shared.utils.utils import truncate_for_filesystem, sanitize_file_name, process_images_multithread, get_default_workers
@@ -138,7 +139,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "12.00"
+WanGP_version = "12.10"
 settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -327,6 +328,23 @@ def get_state_model_type(state):
 def compute_sliding_window_no(current_video_length, sliding_window_size, discard_last_frames, reuse_frames):
     left_after_first_window = current_video_length - sliding_window_size + discard_last_frames
     return 1 + math.ceil(left_after_first_window / (sliding_window_size - discard_last_frames - reuse_frames))
+
+def estimate_first_window_overlap_frames(image_start, video_source, keep_frames_video_source, target_fps):
+    if image_start is not None:
+        return 1
+    if video_source is None:
+        return 0
+    try:
+        source_fps, _, _, source_frames = get_video_info(video_source)
+        source_frames = int(source_frames / source_fps * target_fps) if source_fps else int(source_frames)
+    except Exception:
+        return max_source_video_frames
+    try:
+        keep_frames = max_source_video_frames if len(str(keep_frames_video_source or "")) == 0 else int(keep_frames_video_source)
+    except Exception:
+        return source_frames
+    source_frames = max(0, source_frames + keep_frames) if keep_frames < 0 else min(source_frames, keep_frames)
+    return source_frames
 
 def clean_image_list(gradio_list):
     if not isinstance(gradio_list, list): gradio_list = [gradio_list]
@@ -856,9 +874,36 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
             return err("Error processing prompt template: " + errors)
     prompt = prompt.strip("\n").strip()
 
-    prompts = prompt_parser.split_prompt_units(prompt, multi_prompts_gen_type, single_prompt=single_prompt)
+    prompts = prompt_parser.split_prompt_units(prompt, multi_prompts_gen_type, single_prompt=single_prompt and "W" not in multi_prompts_gen_type)
     if len(prompts) == 0:
         return err("Prompt cannot be empty.")
+    validation_prompts = prompts
+    frames_minimum, frames_steps, latent_size = get_model_min_frames_and_step(model_type)
+    inputs.pop("frame_scheduler", None)
+    frame_scheduler = None
+    scheduler_supported = frame_scheduler_supported(model_type, model_def, inputs.get("image_mode", 0), is_edit_mode)
+    if not scheduler_supported and has_slash_commands(prompts):
+        return err("Prompt slash window commands require a video model with Sliding Window support.")
+    if scheduler_supported:
+        schedule_fps = get_computed_fps(inputs.get("force_fps", ""), model_type, inputs.get("video_guide"), inputs.get("video_source"))
+        frame_scheduler, frame_scheduler_error = build_frame_scheduler(
+            prompts,
+            total_frames=int(inputs.get("video_length", frames_minimum) or frames_minimum),
+            fps=float(schedule_fps),
+            window_size=int(inputs.get("sliding_window_size", inputs.get("video_length", frames_minimum)) or frames_minimum),
+            default_overlap=int(inputs.get("sliding_window_overlap", 0) or 0),
+            minimum=frames_minimum,
+            step=frames_steps,
+            overlap_offset=model_def.get("sliding_window_defaults", {}).get("overlap_offset", 1),
+            supported_model_commands=model_def.get("prompt_slash_commands", []),
+            allow_new_shot=image_prompt_types_allow_t2v(model_def, inputs.get("image_mode", 0)),
+            first_window_overlap_frames=estimate_first_window_overlap_frames(inputs.get("image_start"), inputs.get("video_source"), inputs.get("keep_frames_video_source", ""), schedule_fps),
+            discard_last_frames=int(inputs.get("sliding_window_discard_last_frames", 0) or 0) // latent_size * latent_size,
+        )
+        if frame_scheduler_error is not None:
+            return err(frame_scheduler_error)
+        validation_prompts = frame_scheduler["prompts"]
+        inputs["frame_scheduler"] = frame_scheduler
     inputs["prompt"] = prompt_parser.serialize_prompt_units(prompt, prompts, multi_prompts_gen_type)
 
     parsed_custom_settings, custom_settings_error = collect_custom_settings_from_inputs(model_def, inputs, strict=True)
@@ -871,7 +916,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
         return err(extra_settings_error)
 
     if hasattr(model_handler, "validate_generative_prompt"):
-        for one_prompt in prompts:
+        for one_prompt in validation_prompts:
             error = model_handler.validate_generative_prompt(model_type, model_def, inputs, one_prompt)
             if error is not None and len(error) > 0:
                 return err(error)
@@ -1208,8 +1253,11 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
             return err("Aligned Pose transfer supports only Inpainting process outside the masked area")    
 
     if test_any_sliding_window(model_type) and image_mode == 0:
-        if video_length > sliding_window_size:
-            if test_class_t2v(model_type) and not "G" in video_prompt_type :
+        if frame_scheduler is not None and frame_scheduler["active"]:
+            extra = f", which is more than the original number of frames {video_length}" if frame_scheduler["predicted_total_frames"] > video_length else ""
+            gr.Info(f"{len(frame_scheduler['windows'])} Sliding Windows will be generated, for an estimated total of {frame_scheduler['predicted_total_frames']} output frames{extra}.")
+        elif video_length > sliding_window_size:
+            if image_prompt_types_allow_t2v(model_def, image_mode) and not any_letters(image_prompt_type, "SVL") and not "G" in video_prompt_type:
                 return err(f"You have requested to Generate Sliding Windows with a Text to Video model. Unless you use the Video to Video feature this is useless as a t2v model doesn't see past frames and it will generate the same video in each new window.")
             full_video_length = video_length if video_source is None else video_length +  sliding_window_overlap -1
             extra = "" if full_video_length == video_length else f" including {sliding_window_overlap} added for Video Continuation"
@@ -1276,6 +1324,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
         error = model_handler.validate_generative_settings(model_type, model_def, inputs)
         if error is not None and len(error) > 0:
             return err(error)
+    inputs.pop("frame_scheduler", None)
     return inputs, prompts, image_start, image_end, ""
 
 
@@ -2645,6 +2694,12 @@ def test_vace_module(model_type):
 def test_class_t2v(model_type):
     model_def = get_model_def(model_type)
     return model_def.get("t2v_class", False)
+
+def image_prompt_types_allow_t2v(model_def, image_mode=0):
+    return int(image_mode or 0) == 0 and "T" in model_def.get("image_prompt_types_allowed", "")
+
+def frame_scheduler_supported(model_type, model_def, image_mode=0, is_edit_mode=False):
+    return not is_edit_mode and int(image_mode or 0) == 0 and not model_def.get("audio_only", False) and test_any_sliding_window(model_type)
 
 def test_any_sliding_window(model_type):
     model_def = get_model_def(model_type)
@@ -6637,6 +6692,8 @@ def generate_video(
     audio_sampling_rate = 16000
 
     prompts = prompt_parser.split_prompt_units(prompt, multi_prompts_gen_type)
+    display_prompts = prompts.copy()
+    frames_minimum, frames_steps, latent_size = get_model_min_frames_and_step(model_type)
     parsed_keep_frames_video_source= max_source_video_frames if len(keep_frames_video_source) ==0 else int(keep_frames_video_source) 
     transformer_loras_filenames, transformer_loras_multipliers  = get_transformer_loras(model_type)
     lora_dir = get_lora_dir(model_type)
@@ -6691,14 +6748,14 @@ def generate_video(
     # negative_prompt = "" # not applicable in the inference
     model_filename = get_model_filename(base_model_type)  
 
-    _, _, latent_size = get_model_min_frames_and_step(model_type)  
     video_length = (video_length -1) // latent_size * latent_size + 1
     if sliding_window_size !=0:
         sliding_window_size = (sliding_window_size -1) // latent_size * latent_size + 1
     if sliding_window_overlap !=0:
         sliding_window_defaults = model_def.get("sliding_window_defaults", {})
         if sliding_window_defaults.get("overlap_default", 0) != sliding_window_overlap:
-            sliding_window_overlap = (sliding_window_overlap -1) // latent_size * latent_size + 1
+            overlap_offset = sliding_window_defaults.get("overlap_offset", 1)
+            sliding_window_overlap = sliding_window_overlap // latent_size * latent_size if overlap_offset == 0 else (sliding_window_overlap - overlap_offset) // latent_size * latent_size + overlap_offset
     if sliding_window_discard_last_frames !=0:
         sliding_window_discard_last_frames = sliding_window_discard_last_frames // latent_size * latent_size 
 
@@ -6728,6 +6785,32 @@ def generate_video(
             video_files = glob.glob(os.path.join(save_path, "*.mp4")) + glob.glob(os.path.join(save_path, "*.mov")) + glob.glob(os.path.join(save_path, "*.mkv"))
             video_source = max(video_files, key=os.path.getmtime) if video_files else None
     fps = 1 if is_image else get_computed_fps(force_fps, base_model_type , video_guide, video_source )
+    gen_state = {}
+    frame_scheduler = None
+    scheduler_supported = frame_scheduler_supported(model_type, model_def, image_mode)
+    if not scheduler_supported and has_slash_commands(prompts):
+        raise gr.Error("Prompt slash window commands require a video model with Sliding Window support.")
+    if scheduler_supported:
+        frame_scheduler, frame_scheduler_error = build_frame_scheduler(
+            prompts,
+            total_frames=int(video_length or frames_minimum),
+            fps=float(fps),
+            window_size=int(sliding_window_size or video_length or frames_minimum),
+            default_overlap=int(sliding_window_overlap or 0),
+            minimum=frames_minimum,
+            step=frames_steps,
+            overlap_offset=model_def.get("sliding_window_defaults", {}).get("overlap_offset", 1),
+            supported_model_commands=model_def.get("prompt_slash_commands", []),
+            allow_new_shot=image_prompt_types_allow_t2v(model_def, image_mode),
+            first_window_overlap_frames=estimate_first_window_overlap_frames(image_start, video_source, keep_frames_video_source, fps),
+            discard_last_frames=sliding_window_discard_last_frames,
+        )
+        if frame_scheduler_error is not None:
+            raise gr.Error(frame_scheduler_error)
+    if frame_scheduler is not None and frame_scheduler["active"]:
+        prompts = frame_scheduler["prompts"]
+        video_length = frame_scheduler["predicted_total_frames"]
+        current_video_length = video_length
     control_audio_tracks = source_audio_tracks = source_audio_metadata = []
     if postprocess_audio == "control" and video_guide is not None:
         control_audio_tracks, _  = extract_audio_tracks(video_guide, temp_format="wav")
@@ -6874,9 +6957,17 @@ def generate_video(
         length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         current_video_length = min(current_video_length, length)
 
-    if test_any_sliding_window(model_type) :
+    scheduler_active = frame_scheduler is not None and frame_scheduler["active"]
+    scheduled_windows_template = [dict(window) for window in frame_scheduler["windows"]] if scheduler_active else []
+    scheduled_windows = [dict(window) for window in scheduled_windows_template]
+    default_reuse_frames = min(sliding_window_size - latent_size, sliding_window_overlap) if test_any_sliding_window(model_type) else 0
+    if scheduler_active:
+        sliding_window = True
+        reuse_frames = default_reuse_frames
+        current_video_length = scheduled_windows[0]["frame_num"]
+    elif test_any_sliding_window(model_type) :
         sliding_window = current_video_length > sliding_window_size
-        reuse_frames = min(sliding_window_size - latent_size, sliding_window_overlap) 
+        reuse_frames = default_reuse_frames
     else:
         sliding_window = False
         sliding_window_size = current_video_length
@@ -6899,16 +6990,21 @@ def generate_video(
     extra_generation = 0
     initial_total_windows = 0
     discard_last_frames = sliding_window_discard_last_frames
+    default_discard_last_frames = discard_last_frames
     default_requested_frames_to_generate = current_video_length
     nb_frames_positions = 0
-    if sliding_window:
+    if scheduler_active:
+        initial_total_windows = len(scheduled_windows)
+        default_requested_frames_to_generate = frame_scheduler["predicted_total_frames"]
+        current_video_length = scheduled_windows[0]["frame_num"]
+    elif sliding_window:
         initial_total_windows= compute_sliding_window_no(default_requested_frames_to_generate, sliding_window_size, discard_last_frames, reuse_frames) 
         current_video_length = sliding_window_size
     else:
         initial_total_windows = 1
 
     first_window_video_length = current_video_length
-    original_prompts = prompts.copy()
+    original_prompts = display_prompts.copy()
     gen["sliding_window"] = sliding_window 
     while not abort: 
         stop_current_sample = False
@@ -6920,6 +7016,9 @@ def generate_video(
         if repeat_no >= total_generation: break
         repeat_no +=1
         gen["repeat_no"] = repeat_no
+        gen_state = {}
+        if scheduler_active:
+            scheduled_windows = [dict(window) for window in scheduled_windows_template]
         src_video = src_video2 = src_mask = src_mask2 = src_faces = sparse_video_image = full_generated_audio =None
         prefix_video = pre_video_frame = None
         source_video_overlap_frames_count = 0 # number of frames overalapped in source video for first window
@@ -6966,40 +7065,61 @@ def generate_video(
                 task["prompt"] = prompt_parser.ENHANCED_PROMPT_PREFIX + prompt_parser.serialize_prompt_units("", enhanced_prompts, multi_prompts_gen_type)
                 gen["last_was_audio"] = audio_only
                 send_cmd("output")
-                prompts = enhanced_prompts            
+                prompts = enhanced_prompts
+                if scheduler_active:
+                    for idx, window in enumerate(scheduled_windows):
+                        window["prompt"] = prompts[idx] if idx < len(prompts) else prompts[-1]
+                    frame_scheduler["prompts"] = [window["prompt"] for window in scheduled_windows]
                 abort = gen.get("abort", False)
 
  
         while not abort and not stop_current_sample:
-            enable_RIFLEx = RIFLEx_setting == 0 and current_video_length > (6* get_model_fps(base_model_type)+1) or RIFLEx_setting == 1
-            prompt =  prompts[window_no] if window_no < len(prompts) else prompts[-1]
             new_extra_windows = gen.get("extra_windows",0)
             gen["extra_windows"] = 0
             extra_windows += new_extra_windows
-            requested_frames_to_generate +=  new_extra_windows * (sliding_window_size - discard_last_frames - reuse_frames)
-            sliding_window = sliding_window  or extra_windows > 0
-            if sliding_window and window_no > 0:
+            if scheduler_active:
+                for _ in range(new_extra_windows):
+                    scheduled_windows.append(build_extension_window(scheduled_windows[-1]["prompt"], window_size=sliding_window_size, overlap_frames=default_reuse_frames, discard_last_frames=default_discard_last_frames, minimum=frames_minimum, step=frames_steps))
+                    requested_frames_to_generate += scheduled_windows[-1]["output_frames"]
+                if window_no >= len(scheduled_windows):
+                    break
+                frame_window_options = scheduled_windows[window_no]
+                prompt, reuse_frames, current_video_length, new_shot, discard_last_frames = frame_window_options["prompt"], frame_window_options["overlap_frames"], frame_window_options["frame_num"], frame_window_options["new_shot"], frame_window_options["discard_last_frames"]
+                sliding_window = True
+            else:
+                frame_window_options, new_shot, discard_last_frames = None, False, default_discard_last_frames
+                prompt =  prompts[window_no] if window_no < len(prompts) else prompts[-1]
+                requested_frames_to_generate +=  new_extra_windows * (sliding_window_size - discard_last_frames - reuse_frames)
+                sliding_window = sliding_window  or extra_windows > 0
+            if scheduler_active:
+                next_overlap_frames = scheduled_windows[window_no + 1]["overlap_frames"] if window_no + 1 < len(scheduled_windows) else default_reuse_frames
+            else:
+                next_overlap_frames = reuse_frames
+            if not scheduler_active and sliding_window and window_no > 0:
                 # num_frames_generated -= reuse_frames
                 if (requested_frames_to_generate - num_frames_generated) <  latent_size:
                     break
                 current_video_length = min(sliding_window_size, ((requested_frames_to_generate - num_frames_generated + reuse_frames + discard_last_frames) // latent_size) * latent_size + 1 )
 
-            total_windows = initial_total_windows + extra_windows
+            total_windows = len(scheduled_windows) if scheduler_active else initial_total_windows + extra_windows
             gen["total_windows"] = total_windows
             if window_no >= total_windows:
                 break
             window_no += 1
             gen["window_no"] = window_no
+            enable_RIFLEx = RIFLEx_setting == 0 and current_video_length > (6 * fps + 1) or RIFLEx_setting == 1
             return_latent_slice = None 
             frames_relative_positions_list = []
             if reuse_frames > 0:                
                 return_latent_slice = slice(- max(1, (reuse_frames + discard_last_frames ) // latent_size) , None if discard_last_frames == 0 else -(discard_last_frames // latent_size) )
             refresh_preview  = {"image_guide" : image_guide, "image_mask" : image_mask} if image_mode >= 1 else {}
+            if new_shot:
+                pre_video_guide, pre_audio_guide, pre_audio_guide_sample_rate = None, None, 0
 
             if hasattr(model_handler, "custom_prompt_preprocess"):
                 prompt = model_handler.custom_prompt_preprocess(**locals())
             image_start_tensor = image_end_tensor = None
-            if window_no == 1 and (video_source is not None or image_start is not None):
+            if window_no == 1 and (video_source is not None or (image_start is not None and not new_shot)):
                 if image_start is not None:
                     image_start_tensor, new_height, new_width = calculate_dimensions_and_resize_image(image_start, height, width, sample_fit_canvas, fit_crop, block_size = block_size)
                     if fit_crop: refresh_preview["image_start"] = image_start_tensor 
@@ -7013,17 +7133,18 @@ def generate_video(
                     if fit_crop or "L" in image_prompt_type: refresh_preview["video_source"] = convert_tensor_to_image(prefix_video, 0) 
 
                     new_height, new_width = prefix_video.shape[-2:]
-                    source_overlap = min(prefix_video.shape[1], reuse_frames if reuse_frames > 0 else 1)
-                    pre_video_guide = prefix_video[:, -source_overlap:].float()
-                    if prefix_video_is_hdr:
-                        pre_video_guide_is_hdr = True
-                    else:
-                        pre_video_guide = pre_video_guide.div_(127.5).sub_(1.) # c, f, h, w
+                    source_overlap = 0 if new_shot else min(prefix_video.shape[1], reuse_frames if reuse_frames > 0 else 1)
+                    if source_overlap > 0:
+                        pre_video_guide = prefix_video[:, -source_overlap:].float()
+                        if prefix_video_is_hdr:
+                            pre_video_guide_is_hdr = True
+                        else:
+                            pre_video_guide = pre_video_guide.div_(127.5).sub_(1.) # c, f, h, w
                 pre_video_frame = convert_tensor_to_image(prefix_video[:, -1])
-                source_video_overlap_frames_count = pre_video_guide.shape[1]
+                source_video_overlap_frames_count = source_overlap if video_source is not None else pre_video_guide.shape[1]
                 source_video_frames_count = prefix_video.shape[1]
                 if sample_fit_canvas != None: 
-                    image_size  = pre_video_guide.shape[-2:]
+                    image_size = (pre_video_guide if pre_video_guide is not None else prefix_video).shape[-2:]
                     sample_fit_canvas = None
                 guide_start_frame =  prefix_video.shape[1]
             if image_end is not None:
@@ -7095,7 +7216,8 @@ def generate_video(
                         frames_to_inject[pos] = image_refs[i] 
 
             video_guide_processed = video_mask_processed = video_guide_processed2 = video_mask_processed2 = sparse_video_image = None
-            if video_guide is not None:
+            skip_video_guide_preprocess = bool(model_def.get("joyai_echo", False) and "1" in (video_prompt_type or ""))
+            if video_guide is not None and not skip_video_guide_preprocess:
                 keep_frames_parsed_full, error = parse_keep_frames_video_guide(keep_frames_video_guide, source_video_frames_count -source_video_overlap_frames_count + requested_frames_to_generate)
                 if len(error) > 0:
                     raise gr.Error(f"invalid keep frames {keep_frames_video_guide}")
@@ -7233,7 +7355,7 @@ def generate_video(
                                                                                         ignore_last_refs =model_def.get("no_processing_on_last_images_refs",0),
                                                                                         background_removal_color = model_def.get("background_removal_color", [255, 255, 255] ))
             frames_to_inject_parsed = frames_to_inject[ window_start_frame if extract_guide_from_window_start else guide_start_frame: guide_end_frame]
-            if video_guide is not None or len(frames_to_inject_parsed) > 0 and not custom_frames_injection or model_def.get("forced_guide_mask_inputs", False): 
+            if (video_guide is not None and not skip_video_guide_preprocess) or len(frames_to_inject_parsed) > 0 and not custom_frames_injection or model_def.get("forced_guide_mask_inputs", False):
                 any_mask = video_mask is not None or model_def.get("forced_guide_mask_inputs", False)
                 any_guide_padding = model_def.get("pad_guide_video", False)
                 dont_cat_preguide = extract_guide_from_window_start or model_def.get("dont_cat_preguide", False) or sparse_video_image is not None 
@@ -7266,7 +7388,7 @@ def generate_video(
                         src_faces = torch.concat( [src_faces,  src_faces[:, -1:].repeat(1, src_video.shape[1] - src_faces.shape[1], 1,1)], dim =1)
                     else:
                         src_faces = src_faces[:, :src_video.shape[1]]
-                if video_guide is not None or len(frames_to_inject_parsed) > 0:
+                if (video_guide is not None and not skip_video_guide_preprocess) or len(frames_to_inject_parsed) > 0:
                     if args.save_masks:
                         if src_video is not None: 
                             save_video( src_video, "masked_frames.mp4", fps)
@@ -7274,7 +7396,7 @@ def generate_video(
                         if src_video2 is not None: 
                             save_video( src_video2, "masked_frames2.mp4", fps)
                             if any_mask: save_video( src_mask2, "masks2.mp4", fps, value_range=(0, 1))
-                if video_guide is not None:                        
+                if video_guide is not None and not skip_video_guide_preprocess:
                     preview_frame_no = 0 if extract_guide_from_window_start or model_def.get("dont_cat_preguide", False) or sparse_video_image is not None else (guide_start_frame - window_start_frame) 
                     preview_frame_no = min(src_video.shape[1] -1, preview_frame_no)
                     refresh_preview["video_guide"] = convert_tensor_to_image(src_video, preview_frame_no)
@@ -7330,10 +7452,12 @@ def generate_video(
                 send_cmd("output")
 
             try:
-                input_video_for_model = pre_video_guide
+                input_video_for_model = None if new_shot else pre_video_guide
                 input_video_is_hdr = pre_video_guide_is_hdr
-                prefix_frames_count = source_video_overlap_frames_count if window_no <= 1 else reuse_frames
+                prefix_frames_count = 0 if new_shot else source_video_overlap_frames_count if window_no <= 1 else reuse_frames
                 prefix_video_for_model = None if model_def.get("joyai_echo", False) or str(base_model_type).startswith("ltx2") else prefix_video
+                if new_shot:
+                    prefix_video_for_model = None
                 if prefix_video_for_model is not None and prefix_video_for_model.dtype == torch.uint8:
                     prefix_video_for_model = prefix_video_for_model.float().div_(127.5).sub_(1.0)
                 if window_no <= 1 and video_source is not None and "&" in video_prompt_type and _video_input_is_hdr(video_source):
@@ -7418,7 +7542,7 @@ def generate_video(
                     overlapped_latents = overlapped_latents,
                     return_latent_slice= return_latent_slice,
                     overlap_noise = sliding_window_overlap_noise,
-                    overlap_size = sliding_window_overlap,
+                    overlap_size = reuse_frames,
                     color_correction_strength = sliding_window_color_correction_strength,
                     conditioning_latents_size = conditioning_latents_size,
                     input_video_is_hdr=input_video_is_hdr,
@@ -7443,6 +7567,8 @@ def generate_video(
                     outpainting_dims = model_outpainting_dims,
                     face_arc_embeds = face_arc_embeds,
                     custom_settings=custom_settings_for_model,
+                    frame_window_options=frame_window_options,
+                    gen_state=gen_state,
                     temperature=temperature,
                     window_start_frame_no = window_start_frame,
                     input_video_strength = input_video_strength,
@@ -7565,21 +7691,18 @@ def generate_video(
                         sample = sample[: , :-discard_last_frames]
                         guide_start_frame -= discard_last_frames
                         if generated_audio is not None:
-                            generated_audio = truncate_audio( generated_audio, 0, discard_last_frames, fps, output_audio_sampling_rate,)
-                    if generated_audio is not None and reuse_frames > 0 and not drop_generated_audio:
-                        pre_audio_guide = generated_audio[-int(round(reuse_frames * output_audio_sampling_rate / fps)):]
+                            generated_audio = truncate_audio(generated_audio, 0, discard_last_frames, fps, output_audio_sampling_rate)
+                    if generated_audio is not None and next_overlap_frames > 0 and not drop_generated_audio:
+                        pre_audio_guide = generated_audio[-int(round(next_overlap_frames * output_audio_sampling_rate / fps)):]
                         pre_audio_guide_sample_rate = output_audio_sampling_rate
                     else:
                         pre_audio_guide, pre_audio_guide_sample_rate = None, 0
 
-                    if reuse_frames == 0:
-                        pre_video_guide =  sample[:,max_source_video_frames :].clone()
-                    else:
-                        pre_video_guide =  sample[:, -reuse_frames:].clone()
+                    pre_video_guide = sample[:, -next_overlap_frames:].clone() if next_overlap_frames > 0 else None if scheduler_active else sample[:, max_source_video_frames:].clone()
                     pre_video_guide_is_hdr = sample_is_hdr
-                    if pre_video_guide.dtype == torch.uint8:
+                    if pre_video_guide is not None and pre_video_guide.dtype == torch.uint8:
                         pre_video_guide =  pre_video_guide.float().div_(127.5).sub_(1.0)
-                if not (audio_only or is_image):                    
+                if not (audio_only or is_image):
                     if not sample_is_hdr:
                         sample = _video_tensor_to_uint8_chunk_inplace(sample)
 
@@ -7681,6 +7804,8 @@ def generate_video(
                     output_dir = save_path
                 inputs = get_function_arguments(generate_video, locals())
                 if overridden_inputs is not None: inputs.update(overridden_inputs)
+                if scheduler_active and output_frame_count is not None:
+                    inputs["video_length"] = output_frame_count
                 if len(output_filename):
                     from shared.utils.filename_formatter import FilenameFormatter
                     file_name = FilenameFormatter.format_filename(output_filename, inputs)                    

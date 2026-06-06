@@ -243,6 +243,42 @@ Important practical limitation:
 
 - only one `Start Image` is supported in this mode
 
+#### Optional `[/...]` Window Commands
+
+Sliding-window prompts can include optional slash commands in brackets. WanGP removes these commands before sending the prompt text to the model. Brackets that do not start with `/` are ignored by this parser and remain available for model-specific prompt syntax such as Prompt Relay.
+
+Generic WanGP window commands:
+
+- `[/duration=121]`: this window should contribute 121 output frames
+- `[/duration=5s]`: this window should contribute about 5 seconds of output at the generation FPS
+- `[/duration=20%]`: this window should contribute 20% of the requested total frame count
+- `[/overlap]`: use the model's default overlap for this window
+- `[/overlap=9]`: use 9 overlap frames for this window, rounded to the model's overlap frame step
+- `[/overlap=0]`: use no overlap frames, when the model supports text-to-video windows
+- `[/new_shot]`: start this window without overlap frames, creating a hard transition
+
+Use `[/new_shot]` when a window should behave like a hard cut: a new scene, a new character introduction, or the first generated window after Continue Video when the source video should remain in the final output but should not visually condition the new generated window.
+
+Multiple commands can be combined in one bracket, for example `[/duration=5s,/overlap=9]` or `[/duration=4s,/new_shot]`.
+
+Overlap frames are generated in addition to the requested window duration. For example, a `[/duration=5s,/overlap=9]` window at 25 fps aims to contribute about 5 seconds to the final video, while the 9 overlap frames are only used to condition the transition and are not counted as newly committed output frames.
+
+If a window has no `[/duration=...]`, WanGP uses the remaining requested frame count, capped by the Sliding Window Size. If explicit durations produce more output frames than the UI frame count, validation does not block the prompt; WanGP reports the predicted total frame count. Validation only rejects a prompt when a later window would receive 0 frames because previous windows already consumed the requested frame count.
+
+Example:
+
+```text
+[/duration=25%] A wide dawn shot of a mountain train station. Steam rolls across the platform, red lanterns sway, and the camera slowly pushes toward a violinist waiting beside a blue suitcase.
+
+[/duration=5s,/overlap=17] The violinist steps onto the train as the platform slides backward. Keep the blue suitcase visible, the lantern reflections in the glass, and a gentle handheld camera rhythm.
+
+[/new_shot,/duration=4s] A sharp cut to inside the dining car at night. The violinist now sits across from a silent chess player in a silver coat while rain lashes the window.
+
+[/duration=30%,/overlap=9] The chess player moves a knight, the train lights flicker, and the blue suitcase opens by itself, revealing a tiny glowing city.
+```
+
+Models may declare their own additional slash commands. Unknown slash commands are rejected during validation. JoyAI-Echo adds memory commands such as `[/no_mem]`, `[/store_mem]`, `[/store_mem=2]`, `[/store_mem=man1,man2]`, `[/drop_mem]`, `[/drop_mem=2]`, `[/drop_mem=2-4]`, and `[/drop_mem=man1,woman1]`.
+
 ### 3. All The Lines Are Part Of The Same Prompt
 
 This is the right choice when line breaks are part of the prompt format itself.

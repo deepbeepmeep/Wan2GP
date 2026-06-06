@@ -42,6 +42,26 @@ def _parse_media_ratio(value, default=None):
     return default if den == 0 else num / den
 
 
+def _parse_media_duration(value, default=0.0):
+    if value in [None, "", "N/A"]:
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if ":" not in text:
+        try:
+            return float(text)
+        except (TypeError, ValueError):
+            return default
+    try:
+        total = 0.0
+        for part in text.split(":"):
+            total = total * 60.0 + float(part)
+        return total
+    except (TypeError, ValueError):
+        return default
+
+
 def _resample_frame_indices(video_fps, video_frames_count, max_target_frames_count, target_fps, start_target_frame):
     import math
 
@@ -146,6 +166,36 @@ def _build_vsource_metadata(video_path, entry):
     })
 
 
+def _frame_timestamp(frame):
+    for key in ("best_effort_timestamp_time", "pts_time", "pkt_pts_time"):
+        try:
+            return float(frame.get(key))
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _probe_mkv_sparse_frame_count(source_path, ffprobe_path, duration, start_time, fps_float):
+    if duration <= 0 or fps_float <= 0:
+        return 0
+    candidate = int(round(max(0.0, duration - max(0.0, start_time)) * fps_float))
+    if candidate <= 0:
+        return 0
+    tail_frames = 64
+    tail_start = max(0.0, start_time + max(0, candidate - tail_frames) / fps_float)
+    probe_cmd = [ffprobe_path, "-v", "error", "-select_streams", "v:0", "-read_intervals", f"{tail_start:.6f}%+#96", "-show_entries", "frame=best_effort_timestamp_time,pts_time,pkt_pts_time", "-of", "json", source_path]
+    probe = subprocess.run(probe_cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore", check=False)
+    if probe.returncode != 0:
+        return candidate
+    try:
+        timestamps = [timestamp for timestamp in (_frame_timestamp(frame) for frame in (json.loads(probe.stdout).get("frames") or [])) if timestamp is not None]
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return candidate
+    if not timestamps or min(timestamps) < tail_start - tail_frames / fps_float:
+        return candidate
+    return max(1, int(round((max(timestamps) - start_time) * fps_float)) + 1)
+
+
 @lru_cache(maxsize=128)
 def probe_video_stream_metadata(video_path):
     video_path = os.fspath(video_path)
@@ -193,7 +243,11 @@ def probe_video_stream_metadata(video_path):
     try:
         frame_count = int(stream.get("nb_frames"))
     except (TypeError, ValueError):
-        frame_count = int(round(duration * fps_float)) if duration > 0 and fps_float > 0 else 0
+        frame_count = 0
+        if source_path.lower().endswith(".mkv"):
+            frame_count = _probe_mkv_sparse_frame_count(source_path, ffprobe_path, _parse_media_duration((stream.get("tags") or {}).get("DURATION"), duration), start_time, fps_float)
+        if frame_count <= 0:
+            frame_count = int(round(duration * fps_float)) if duration > 0 and fps_float > 0 else 0
     side_data = stream.get("side_data_list") or []
     color_transfer = str(stream.get("color_transfer") or "").lower()
     color_primaries = str(stream.get("color_primaries") or "").lower()

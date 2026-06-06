@@ -124,7 +124,7 @@ def _joyai_settings(custom_settings=None, *, video_prompt_type="", image_prompt_
         "video_prompt_type": video_prompt_type,
         "image_prompt_type": image_prompt_type,
         "custom_settings": custom_settings,
-        "multi_prompts_gen_type": "FG",
+        "multi_prompts_gen_type": "PW",
     }
     if runtime:
         settings["audio_cfg_scale"] = 1.0
@@ -133,21 +133,32 @@ def _joyai_settings(custom_settings=None, *, video_prompt_type="", image_prompt_
 
 def _validate_joyai_inputs(model_def, inputs):
     from shared.utils.audio_video import extract_audio_tracks
-    from .joyai_echo import JOYAI_CONTROL_MEMORY_MAX_SECONDS, JOYAI_CONTROL_MEMORY_SETTING, validate_control_memory_positions, validate_joyai_prompt_options
-
-    prompt_error = validate_joyai_prompt_options(
-        inputs.get("prompt", ""),
-        default_frames=int(inputs.get("video_length", inputs.get("frame_num", model_def.get("frames_minimum", 17))) or model_def.get("frames_minimum", 17)),
-        fps=float(model_def.get("fps", 25) or 25),
-        minimum=int(model_def.get("frames_minimum", 17)),
-        step=int(model_def.get("frames_steps", 8)),
-        default_overlap=int((model_def.get("sliding_window_defaults", {}) or {}).get("overlap_default", 0) or 0),
-    )
-    if prompt_error:
-        return prompt_error
+    from .joyai_echo import JOYAI_CONTROL_MEMORY_MAX_SECONDS, JOYAI_CONTROL_MEMORY_SETTING, parse_drop_mem_option, parse_store_mem_option, validate_control_memory_positions
     custom_settings = inputs.get("custom_settings", None)
     if not isinstance(custom_settings, dict):
         custom_settings = {}
+    max_memory_slot = int(model_def.get("joyai_memory_max_size", 7))
+    for window in (inputs.get("frame_scheduler", {}) or {}).get("windows", []):
+        model_options = window.get("model_options", {}) or {}
+        no_mem = model_options.get("no_mem", None)
+        if no_mem is not None and no_mem is not True:
+            return "JoyAI-Echo /no_mem does not take a value."
+        store_mem = model_options.get("store_mem", None)
+        if store_mem is not None:
+            try:
+                store_selectors = parse_store_mem_option(store_mem)
+            except ValueError as exc:
+                return str(exc)
+            if any(isinstance(selector, int) and selector > max_memory_slot for selector in store_selectors):
+                return f"JoyAI-Echo /store_mem slot is outside the valid memory range 1-{max_memory_slot}."
+        drop_mem = model_options.get("drop_mem", None)
+        if drop_mem is not None:
+            try:
+                drop_selectors = parse_drop_mem_option(drop_mem)
+            except ValueError as exc:
+                return str(exc)
+            if drop_selectors is not None and any(isinstance(selector, int) and selector > max_memory_slot for selector in drop_selectors):
+                return f"JoyAI-Echo /drop_mem slot is outside the valid memory range 1-{max_memory_slot}."
     memory_positions = str(custom_settings.get(JOYAI_CONTROL_MEMORY_SETTING, "") or "").strip()
     video_prompt_type, _ = _joyai_prompt_types(inputs.get("video_prompt_type", ""), inputs.get("image_prompt_type", ""))
     if not video_prompt_type:
@@ -416,6 +427,7 @@ class family_handler:
                     "joyai_memory_num_fix_frames": 3,
                     "joyai_memory_downscale_factor": 1,
                     "joyai_audio_memory_window_size": 96,
+                    "prompt_slash_commands": ["no_mem", "store_mem", "drop_mem"],
                     "preserve_empty_prompt_lines": True,
                     "infos": model_def.get("infos", JOYAI_ECHO_INFOS),
                     "fps": 25,

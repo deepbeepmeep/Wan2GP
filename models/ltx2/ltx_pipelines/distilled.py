@@ -189,10 +189,19 @@ class DistilledPipeline:
 
     def _joyai_echo_reference_conditionings(self, joyai_echo, suffix: str, dtype):
         paired_audio = bool(joyai_echo.get(f"paired_audio{suffix}"))
+        video_latent = joyai_echo.get(f"video_latent{suffix}")
+        audio_latent = joyai_echo.get(f"audio_latent{suffix}")
+        audio_segment_lengths = joyai_echo.get(f"audio_segment_lengths{suffix}")
+        if joyai_echo.get("debug_memory", False):
+            stage = "stage2" if suffix == "_stage2" else "stage1"
+            video_slots = 0 if video_latent is None else video_latent.shape[2]
+            audio_slots = 0 if audio_segment_lengths is None else len(audio_segment_lengths[0])
+            labels = ", ".join(joyai_echo.get("memory_labels", [])) or "none"
+            print(f"[WAN2GP][JoyAI-Echo][memory] window={joyai_echo.get('window_no', 1)} injecting {stage} guiding memory: video_slots={video_slots} audio_slots={audio_slots} paired_audio={paired_audio} slots={labels}", flush=True)
         return paired_reference_conditionings_by_latents(
-            video_latent=joyai_echo.get(f"video_latent{suffix}"),
-            audio_latent=joyai_echo.get(f"audio_latent{suffix}"),
-            audio_segment_lengths=joyai_echo.get(f"audio_segment_lengths{suffix}"),
+            video_latent=video_latent,
+            audio_latent=audio_latent,
+            audio_segment_lengths=audio_segment_lengths,
             components=self.pipeline_components,
             dtype=dtype,
             device=self.device,
@@ -758,7 +767,7 @@ class DistilledPipeline:
         )
         if callback is not None:
             callback(-1, None, True, override_num_inference_steps=len(stage_2_sigmas) - 1, pass_no=pass_no)
-        freeze_audio_stage2 = audio_identity_guidance_scale > 0.0
+        freeze_audio_stage2 = audio_identity_guidance_scale > 0.0 or bool(joyai_echo.get("freeze_stage2_audio", False))
         stage_2_audio_conditionings = audio_conditionings if audio_conditionings_stage2 is None else audio_conditionings_stage2
         stage_2_audio_conditionings = list(stage_2_audio_conditionings or []) + stage_2_memory_audio_conditionings
         video_state, audio_state = denoise_audio_video(

@@ -55,6 +55,16 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
+### 7th of June 2026: WanGP v12.10, Prompt Control
+- **Ideogram 4 Prompt Helper**: the great thing about Ideogram 4 is that you can position every object or text exactly where you expect it in your output image. Ideogram 4 now has a *Visual Helper* to create and edit its JSON prompt format. Click the *Magic Wand* next to the prompt to draw or resize text/object boxes, tune the main prompt fields, and apply the final JSON back to the prompt. *Magic Prompt* can still create the first draft for you.
+
+- **JoyAI-Echo**: this new LTX-2.3 model is the closest thing to *SeaDance 2* that you may find in the open source world. It is an audio-video model for connected multi-window stories. JoyAI-Echo keeps compact memories between windows so later shots can reuse characters, voices, objects, and places. WanGP implementation of *JoyAI-Echo* goes well beyond the original implementation:
+   - Use a *Control Video* to target audio/video segments in the *Joy memory positions* field and seed the first memories with characters and background.
+   - With the new *Sliding Window commands* (see below), you can extend existing *Sliding Windows*, *Create New Shots*, or *Continue a Video*.
+   - The new memory command system (`[/store_mem]`, `[/no_mem]`, and `[/drop_mem]`) lets you pick which sliding windows can be reused for future memory and which ones should be ignored. Please check the JoyAI-Echo *Prompt help* for the full syntax.
+
+- **Sliding Window Commands**: thanks to new inline prompt commands (for instance `[/duration=...]`, `[/overlap=...]`, and `[/new_shot]`), you can now define a different duration, number of frames, or transition style on a per-window basis. See `docs/PROMPTS.md` for the full syntax and examples.
+
 ### 4th of June 2026: WanGP v12.00, The Journey Continues
 - **PiD**: a new high quality x4 spatial upsampler for images by Nvidia. It is supposed to work with only Flux/Flux2 compatible models since it needs to plug directly to the VAE Decoder. However thanks to a simple trick it is available everywhere. Some automated Tiling may be triggered if you ask for very high out res. WanGP version is as usual ultra optimized and should require little VRAM even when tiling is not used.
 

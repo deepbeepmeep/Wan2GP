@@ -34,6 +34,7 @@ class Modality:
     enabled: bool = True
     context_mask: torch.Tensor | None = None
     attention_mask: torch.Tensor | None = None
+    cross_attention_mask: torch.Tensor | None = None
     frame_indices: torch.Tensor | None = None
     runtime_cache: LatentStateRuntimeCache | None = None
     step_index: int | None = None

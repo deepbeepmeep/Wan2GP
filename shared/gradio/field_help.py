@@ -88,17 +88,36 @@ def _resolve_help(help_id, *, title=None, markdown=None):
     return title or "Help", str(help_def or "")
 
 
-def render_marker(elem_id, help_id, *, title=None, markdown=None):
-    title, markdown = _resolve_help(help_id, title=title, markdown=markdown)
-    if not str(markdown or "").strip():
-        return ""
-    popup_key = re.sub(r"[^A-Za-z0-9_-]", "-", f"{elem_id}-{help_id}").strip("-").lower()
-    popup_id = f"wangp-field-help-{popup_key}"
+def _tool_button(kind, popup_id, title, icon):
+    popup_id = str(popup_id or "").strip()
+    title = str(title or "")
+    open_attr = f" data-wangp-model-info-open='{html.escape(popup_id, quote=True)}'" if popup_id else ""
+    hidden_attr = "" if popup_id else " aria-hidden='true' tabindex='-1'"
     return (
-        f"<div class='wangp-field-help-marker' data-wangp-field-help-for='{html.escape(elem_id, quote=True)}' "
-        f"data-wangp-field-help-popup='{html.escape(popup_id, quote=True)}' data-wangp-field-help-title='{html.escape(title, quote=True)}'>"
-        f"{model_infos.render_info_popup(popup_id, title, markdown, lazy=True)}"
-        "</div>"
+        f"<button type='button' class='wangp-context-tool wangp-context-tool-{html.escape(kind, quote=True)}' "
+        f"title='{html.escape(title, quote=True)}' aria-label='{html.escape(title, quote=True)}'{open_attr}{hidden_attr}>{icon}</button>"
+    )
+
+
+def render_marker(elem_id, help_id, *, title=None, markdown=None, helper_popup_id=None, helper_title=None):
+    title, markdown = _resolve_help(help_id, title=title, markdown=markdown)
+    has_markdown = bool(str(markdown or "").strip())
+    has_helper = bool(str(helper_popup_id or "").strip())
+    if not has_markdown and not has_helper:
+        return ""
+    popup_html = ""
+    popup_id = ""
+    if has_markdown:
+        popup_key = re.sub(r"[^A-Za-z0-9_-]", "-", f"{elem_id}-{help_id}").strip("-").lower()
+        popup_id = f"wangp-field-help-{popup_key}"
+        popup_html = model_infos.render_info_popup(popup_id, title, markdown, lazy=True)
+    info_button = _tool_button("info", popup_id, title, "&#9432;")
+    helper_button = _tool_button("helper", helper_popup_id if has_helper else "", helper_title or "Prompt Helper", "&#129668;")
+    return (
+        "<span class='wangp-field-help-inline'>"
+        f"{info_button}{helper_button}"
+        "</span>"
+        f"{popup_html}"
     )
 
 
@@ -107,25 +126,97 @@ def bind(component, help_id, *, title=None, markdown=None):
     marker = render_marker(elem_id, help_id, title=title, markdown=markdown)
     if not marker:
         return gr.HTML("", visible=False)
-    return gr.HTML(marker, elem_classes=["wangp-field-help-marker-host"])
+    return gr.HTML(marker, elem_classes=["wangp-field-help-inline-host"])
 
 
-def render_model_prompt_marker(elem_id, model_type, model_def, prompt_id):
+def render_model_prompt_marker(elem_id, model_type, model_def, prompt_id, *, helper_popup_id=None, helper_title=None):
+    return render_model_prompt_tools("", elem_id, model_type, model_def, prompt_id, helper_popup_id=helper_popup_id, helper_title=helper_title)
+
+
+def render_model_prompt_tools(label, elem_id, model_type, model_def, prompt_id, *, helper_popup_id=None, helper_title=None):
     infos = get_model_prompt_help(model_def)
     if isinstance(infos, (list, tuple)) and len(infos) >= 2:
         title, markdown = str(infos[0] or "Prompt Guidelines"), str(infos[1] or "")
     else:
         title, markdown = "Prompt Guidelines", str(infos or "")
-    return render_marker(elem_id, f"prompt-{model_type or 'model'}-{prompt_id or 'prompt'}", title=title, markdown=markdown)
+    popup_html = ""
+    popup_id = ""
+    if markdown.strip():
+        popup_key = re.sub(r"[^A-Za-z0-9_-]", "-", f"{elem_id}-prompt-{model_type or 'model'}-{prompt_id or 'prompt'}").strip("-").lower()
+        popup_id = f"wangp-field-help-{popup_key}"
+        popup_html = model_infos.render_info_popup(popup_id, title, markdown, lazy=True)
+    info_button = _tool_button("info", popup_id, title, "&#9432;")
+    helper_button = _tool_button("helper", helper_popup_id, helper_title or "Prompt Helper", "&#129668;")
+    row_class = "wangp-prompt-tools-row" if popup_id or str(helper_popup_id or "").strip() else "wangp-prompt-tools-row wangp-prompt-tools-empty"
+    return (
+        f"<div class='{row_class}' data-wangp-prompt-tools-for='{html.escape(elem_id, quote=True)}'>"
+        f"<span class='wangp-context-tools'>{info_button}{helper_button}</span>"
+        "</div>"
+        f"{popup_html}"
+    )
 
 
 def get_css():
     return """
-.wangp-field-help-marker-host,
-.wangp-field-help-marker {
+.wangp-prompt-tools-stack {
+    position: relative;
+}
+.wangp-prompt-tools-anchor {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 0 !important;
+    min-height: 0 !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    overflow: visible !important;
+}
+.wangp-prompt-tools-anchor > :not(.wangp-model-info-popup):not([data-wangp-model-info-popup]),
+.wangp-prompt-tools-anchor .html-container {
+    min-height: 0 !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    overflow: visible !important;
+}
+.wangp-prompt-tools-anchor .wangp-prompt-tools-row {
     display: none !important;
 }
-.wangp-field-help-trigger {
+.wangp-prompt-tools-row {
+    display: inline-flex !important;
+    align-items: center;
+    gap: 4px;
+    margin: 0 0 0 6px;
+    vertical-align: middle;
+}
+.wangp-prompt-tools-empty {
+    display: none !important;
+    margin: 0 !important;
+}
+.wangp-context-tools,
+.wangp-field-help-inline {
+    display: inline-flex !important;
+    align-items: center;
+    gap: 4px;
+    vertical-align: middle;
+    white-space: nowrap;
+}
+.wangp-field-help-inline-host,
+.wangp-field-help-inline-host > *,
+.wangp-field-help-inline-host .html-container {
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    overflow: visible !important;
+}
+.wangp-context-tool {
     position: static !important;
     display: inline-flex !important;
     align-items: center;
@@ -135,7 +226,7 @@ def get_css():
     min-width: 18px !important;
     min-height: 18px !important;
     padding: 0 !important;
-    margin: 0 0 0 6px !important;
+    margin: 0 !important;
     border: 1px solid var(--button-secondary-border-color, rgba(17, 84, 118, 0.24)) !important;
     border-radius: 999px !important;
     background: var(--button-secondary-background-fill, rgba(255, 255, 255, 0.86)) !important;
@@ -148,82 +239,42 @@ def get_css():
     opacity: 1 !important;
     visibility: visible !important;
 }
+.wangp-context-tool:not([data-wangp-model-info-open]) {
+    display: none !important;
+}
+.wangp-context-tool-helper {
+    border: 1px solid var(--button-secondary-border-color, rgba(118, 74, 17, 0.26)) !important;
+    color: var(--button-secondary-text-color, #7a520c) !important;
+}
 """
 
 
 def get_javascript():
     return """
-    window.wangpFieldHelp = window.wangpFieldHelp || {};
-    window.wangpFieldHelp.findLabel = function(target) {
-        if (!target) return null;
-        var blockInfo = target.querySelector('[data-testid="block-info"]');
-        if (blockInfo) return blockInfo;
-        var label = target.querySelector("label");
-        if (label) return label;
-        return null;
-    };
-    window.wangpFieldHelp.hasTrigger = function(label, popupId) {
-        var triggers = label.querySelectorAll("[data-wangp-field-help-trigger]");
-        for (var i = 0; i < triggers.length; i++) {
-            if (triggers[i].getAttribute("data-wangp-field-help-trigger") === popupId) return true;
-        }
-        return false;
-    };
-    window.wangpFieldHelp.collectActivePopups = function(markers) {
-        var activePopups = {};
-        markers.forEach(function(marker) {
-            var popupId = marker.getAttribute("data-wangp-field-help-popup");
-            if (popupId) activePopups[popupId] = true;
-        });
-        return activePopups;
-    };
-    window.wangpFieldHelp.cleanupStaleTriggers = function(activePopups) {
-        document.querySelectorAll("[data-wangp-field-help-trigger]").forEach(function(trigger) {
-            var popupId = trigger.getAttribute("data-wangp-field-help-trigger");
-            if (!popupId || !activePopups[popupId]) trigger.remove();
-        });
-        document.querySelectorAll('[data-wangp-model-info-popup][id^="wangp-field-help-"]').forEach(function(popup) {
-            if (!activePopups[popup.id]) popup.remove();
+    window.wangpPromptTools = window.wangpPromptTools || {};
+    window.wangpPromptTools.attach = function(root) {
+        const scope = root && root.querySelectorAll ? root : document;
+        scope.querySelectorAll(".wangp-prompt-tools-row[data-wangp-prompt-tools-for]").forEach((row) => {
+            if (!row.isConnected) return;
+            const sourceRoot = row.parentElement;
+            const targetId = row.getAttribute("data-wangp-prompt-tools-for") || "";
+            const target = document.getElementById(targetId);
+            const label = target?.querySelector('[data-testid="block-info"]');
+            if (!label) return;
+            row.querySelectorAll("[data-wangp-model-info-open]").forEach((button) => {
+                const popupId = button.getAttribute("data-wangp-model-info-open");
+                if (!popupId) return;
+                const popups = Array.from(document.querySelectorAll("[id]")).filter((popup) => popup.id === popupId);
+                const popup = popups.find((candidate) => sourceRoot?.contains(candidate)) || popups[popups.length - 1];
+                popups.forEach((candidate) => {
+                    if (candidate !== popup) candidate.remove();
+                });
+                if (popup && popup.parentElement !== document.body) document.body.appendChild(popup);
+            });
+            label.querySelectorAll(".wangp-prompt-tools-row[data-wangp-prompt-tools-for]").forEach((existing) => {
+                if (existing !== row && existing.getAttribute("data-wangp-prompt-tools-for") === targetId) existing.remove();
+            });
+            if (row.isConnected && row.parentElement !== label) label.appendChild(row);
         });
     };
-    window.wangpFieldHelp.attach = function() {
-        var markers = document.querySelectorAll("[data-wangp-field-help-for]");
-        var activePopups = window.wangpFieldHelp.collectActivePopups(markers);
-        window.wangpFieldHelp.cleanupStaleTriggers(activePopups);
-        markers.forEach(function(marker) {
-            var targetId = marker.getAttribute("data-wangp-field-help-for");
-            var popupId = marker.getAttribute("data-wangp-field-help-popup");
-            var title = marker.getAttribute("data-wangp-field-help-title") || "Help";
-            var popup = popupId ? document.getElementById(popupId) : null;
-            if (popup && popup.parentElement !== document.body) document.body.appendChild(popup);
-            var target = targetId ? document.getElementById(targetId) : null;
-            var label = window.wangpFieldHelp.findLabel(target);
-            if (!label || !popupId || window.wangpFieldHelp.hasTrigger(label, popupId)) return;
-            var labelTarget = label.matches && label.matches('[data-testid="block-info"]') ? label : (label.querySelector("span") || label);
-            var button = document.createElement("button");
-            button.type = "button";
-            button.className = "wangp-field-help-trigger";
-            button.title = title;
-            button.setAttribute("aria-label", title);
-            button.setAttribute("data-wangp-model-info-open", popupId);
-            button.setAttribute("data-wangp-field-help-trigger", popupId);
-            button.innerHTML = "&#9432;";
-            labelTarget.appendChild(button);
-        });
-    };
-    window.wangpFieldHelp.start = function() {
-        window.wangpFieldHelp.attach();
-        if (!window.wangpFieldHelp.observer && document.body) {
-            window.wangpFieldHelp.observer = new MutationObserver(window.wangpFieldHelp.attach);
-            window.wangpFieldHelp.observer.observe(document.body, { childList: true, subtree: true });
-        }
-    };
-    if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", window.wangpFieldHelp.start);
-    } else {
-        window.wangpFieldHelp.start();
-    }
-    window.addEventListener("load", window.wangpFieldHelp.start);
-    setTimeout(window.wangpFieldHelp.start, 250);
-    setTimeout(window.wangpFieldHelp.start, 1200);
 """

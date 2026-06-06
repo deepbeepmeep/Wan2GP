@@ -1,0 +1,24 @@
+{
+    "model": {
+        "name": "JoyAI-Echo",
+        "architecture": "joyai_echo",
+        "description": "JoyAI-Echo is an LTX-2.3-based audio-video model for multi-shot story generation. Write the whole generation as plain text and separate shots with an empty line. Optional shot options use slash syntax, for example [/duration=5s], [/overlap], [/overlap=0], or [/duration=5s,/nomem]. You can build a sequence from scratch or provide a Control Video for one or multiple character references (visual+audio). ",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/JoyAI-Echo_diffusion_model_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/JoyAI-Echo_diffusion_model_quanto_bf16_int8.safetensors"
+        ]
+    },
+    "prompt": "ID_A is a young woman in her twenties with shoulder-length dark brown hair and a slim build. ID_A wears a loose light beige knit top and relaxed dark trousers. ID_A's voice is a clear young female voice with a soft mid-high register, gentle breathiness, and intimate vlog-style pacing. Her expression is calm and thoughtful. The mouth movement is clearly visible in the frame and stays naturally synchronized with the spoken line. At normal speed, ID_A steps into the center of the frame, settles her posture, and begins speaking. In a soft young female voice with reflective warmth, ID_A says, \"I did not plan to record tonight, but this room feels different now.\" The shot uses realistic indoor imagery with soft practical light, neutral warm tones, and a calm introspective domestic mood. A stable medium shot frames ID_A from the waist up, keeping the face and visible lip movement clearly readable. The background includes a white curtain, soft string lights, part of a small table, and the warm interior of a well-kept room. Very soft indoor room tone, light fabric movement, and subtle foot placement are audible. No prominent background music; the audio focus stays on speech and subtle room ambience.\n\nID_A is a young woman in her twenties with shoulder-length dark brown hair and a slim build. ID_A wears a loose light beige knit top and relaxed dark trousers. ID_A's voice is a clear young female voice with a soft mid-high register, gentle breathiness, and intimate vlog-style pacing. Her expression is quiet and sincere. The mouth movement stays clearly visible and naturally synchronized with the spoken line through the slower delivery. At normal speed, ID_A rests one hand on the notebook on the desk and lets it stay there for a beat before speaking. In a soft young female voice with quiet sincerity, ID_A says, \"This notebook has waited here for months, like a version of me waiting to be answered.\" The shot stays realistic and tactile, with warm desk light and close domestic detail. A close-medium shot keeps one hand on the notebook and part of the face in frame so speech and object interaction stay connected. The background includes the desk surface, the notebook, a soft lamp glow, and blurred warm curtain lights. Soft contact with the notebook cover, a slight paper shift, and low room ambience are audible. No prominent background music; the soundscape stays minimal and speech-centered.",
+    "num_inference_steps": 8,
+    "video_length": 241,
+    "resolution": "1280x720",
+    "guidance_scale": 1.0,
+    "audio_guidance_scale": 1.0,
+    "alt_guidance_scale": 1.0,
+    "alt_scale": 0.0,
+    "guidance_phases": 2,
+    "custom_settings": {
+        "joyai_control_memory_positions": ""
+    },
+    "multi_prompts_gen_type": "FG"
+}

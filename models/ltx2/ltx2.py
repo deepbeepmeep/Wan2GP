@@ -248,6 +248,9 @@ class LTX2SuperModel(torch.nn.Module):
         return self._ltx2.model(*args, **kwargs)
 
     def generate(self, *args, **kwargs):
+        if self._ltx2.model_def.get("joyai_echo", False):
+            from .joyai_echo import generate_joyai_echo_shots
+            return generate_joyai_echo_shots(self._ltx2, self._ltx2.generate, **kwargs)
         return self._ltx2.generate(*args, **kwargs)
 
     def get_trans_lora(self):
@@ -1014,16 +1017,18 @@ class LTX2:
         set_progress_status=None,
         VAE_tile_size=None,
         guide_phases= 1,
+        custom_settings=None,
+        input_video_is_hdr: bool = False,
+        lora_dir: str | None = None,
         **kwargs,
     ):
         if self._interrupt:
             return None
-
         distill = self.model_def.get("ltx2_pipeline", "two_stage") == "distilled"
         editanything = _is_editanything_model(self.model_def)
         hdr_enabled = self.base_model_type == "ltx2_22B" and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type
-        input_video_is_hdr = bool(kwargs.get("input_video_is_hdr", False))
-        hdr_scene_context = self._load_hdr_scene_context(kwargs.get("lora_dir")) if hdr_enabled else None
+        input_video_is_hdr = bool(input_video_is_hdr)
+        hdr_scene_context = self._load_hdr_scene_context(lora_dir) if hdr_enabled else None
         if hdr_enabled:
             NAG_scale = 1.0
             audio_prompt_type = ""
@@ -1449,7 +1454,10 @@ class LTX2:
             )
 
         latent_slice = None
-        if isinstance(pipeline_output, tuple) and len(pipeline_output) == 3:
+        memory_latents = None
+        if isinstance(pipeline_output, tuple) and len(pipeline_output) == 4:
+            video, audio, latent_slice, memory_latents = pipeline_output
+        elif isinstance(pipeline_output, tuple) and len(pipeline_output) == 3:
             video, audio, latent_slice = pipeline_output
         else:
             video, audio = pipeline_output
@@ -1496,4 +1504,6 @@ class LTX2:
             result["hdr_transform"] = LTX2_HDR_TRANSFORM
         if latent_slice is not None:
             result["latent_slice"] = latent_slice
+        if memory_latents is not None:
+            result["_memory_latents"] = memory_latents
         return result

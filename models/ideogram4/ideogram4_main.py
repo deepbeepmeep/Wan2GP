@@ -198,12 +198,10 @@ class Ideogram4WanPipeline:
         return self.autoencoder.decoder(z.to(vae_dtype)).float().clamp(-1.0, 1.0)
 
     def _decode(self, z: torch.Tensor, grid_h: int, grid_w: int) -> torch.Tensor:
-        return self._decode_image(z, grid_h, grid_w).unsqueeze(1).cpu()
+        return self._decode_image(z, grid_h, grid_w).cpu().transpose(0, 1)
 
     def _unpack_vae_latents(self, z: torch.Tensor, grid_h: int, grid_w: int) -> torch.Tensor:
-        latent_shift = self.latent_shift.to(z.device, z.dtype)
-        latent_scale = self.latent_scale.to(z.device, z.dtype)
-        z = z * latent_scale + latent_shift
+        z = self._normalize_packed_latents(z)
         batch_size = z.shape[0]
         patch = self.patch_size
         ae_channels = z.shape[-1] // (patch * patch)
@@ -211,8 +209,10 @@ class Ideogram4WanPipeline:
         z = z.permute(0, 5, 1, 3, 2, 4).contiguous()
         return z.view(batch_size, ae_channels, grid_h * patch, grid_w * patch)
 
-    def _pack_pid_lq_latent(self, z: torch.Tensor, grid_h: int, grid_w: int) -> torch.Tensor:
-        return z.view(z.shape[0], grid_h, grid_w, z.shape[-1]).permute(0, 3, 1, 2).contiguous()
+    def _normalize_packed_latents(self, z: torch.Tensor) -> torch.Tensor:
+        latent_shift = self.latent_shift.to(z.device, z.dtype)
+        latent_scale = self.latent_scale.to(z.device, z.dtype)
+        return z * latent_scale + latent_shift
 
     @torch.inference_mode()
     def __call__(
@@ -326,7 +326,7 @@ class Ideogram4WanPipeline:
 
         _pid_progress(None)
         lq_image_ref = [self._decode_image(z, grid_h=grid_h, grid_w=grid_w)]
-        lq_latent_ref = [self._pack_pid_lq_latent(z, grid_h, grid_w)]
+        lq_latent_ref = [None]
         image = pid_upsampler.decode_inputs(
             lq_image_ref,
             lq_latent_ref,
@@ -337,7 +337,7 @@ class Ideogram4WanPipeline:
         )
         if image is None:
             return None
-        return image.unsqueeze(1).cpu()
+        return image.cpu().transpose(0, 1)
 
 
 class model_factory:

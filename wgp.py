@@ -139,7 +139,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "12.10"
+WanGP_version = "12.11"
 settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -1260,7 +1260,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
             extra = f", which is more than the original number of frames {video_length}" if frame_scheduler["predicted_total_frames"] > video_length else ""
             gr.Info(f"{len(frame_scheduler['windows'])} Sliding Windows will be generated, for an estimated total of {frame_scheduler['predicted_total_frames']} output frames{extra}.")
         elif video_length > sliding_window_size:
-            if image_prompt_types_allow_t2v(model_def, image_mode) and not any_letters(image_prompt_type, "SVL") and not "G" in video_prompt_type:
+            if test_class_t2v(model_type) and not "G" in video_prompt_type :
                 return err(f"You have requested to Generate Sliding Windows with a Text to Video model. Unless you use the Video to Video feature this is useless as a t2v model doesn't see past frames and it will generate the same video in each new window.")
             full_video_length = video_length if video_source is None else video_length +  sliding_window_overlap -1
             extra = "" if full_video_length == video_length else f" including {sliding_window_overlap} added for Video Continuation"
@@ -7599,7 +7599,7 @@ def generate_video(
                     frames_to_inject = frames_to_inject_parsed,
                     verbose_level=verbose_level,
                     gen_cache=gen_cache,
-                    pid_upsampler= pid_upsampler_session if pid_upsampler_session is not None else {},
+                    pid_upsampler=pid_upsampler_session,
                 )
                 if pid_upsampler_session is not None and not pid_persistent:
                     release_pid_models()

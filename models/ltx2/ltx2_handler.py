@@ -882,6 +882,6 @@ class family_handler:
         if model_type == "joyai_echo":
             from .joyai_echo import JOYAI_ECHO_PROMPT_ENHANCER
 
-            return JOYAI_ECHO_PROMPT_ENHANCER
+            return JOYAI_ECHO_PROMPT_ENHANCER, 4096
         from .prompt_enhancer import  get_custom_prompt_enhancer_instructions
         return get_custom_prompt_enhancer_instructions(model_type, prompt_enhancer_mode, is_image, enhancer_kwargs)

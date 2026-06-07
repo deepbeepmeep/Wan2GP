@@ -214,6 +214,17 @@ class Ideogram4WanPipeline:
         latent_scale = self.latent_scale.to(z.device, z.dtype)
         return z * latent_scale + latent_shift
 
+    def _pack_pid_lq_latent(self, z: torch.Tensor, grid_h: int, grid_w: int) -> torch.Tensor:
+        z = self._normalize_packed_latents(z)
+        batch_size = z.shape[0]
+        patch = self.patch_size
+        ae_channels = z.shape[-1] // (patch * patch)
+        z = z.view(batch_size, grid_h, grid_w, patch, patch, ae_channels).permute(0, 5, 3, 4, 1, 2).contiguous()
+        z = z.view(batch_size, ae_channels * patch * patch, grid_h, grid_w)
+        vae_mean = self.autoencoder.bn.running_mean.view(1, -1, 1, 1).to(device=z.device, dtype=z.dtype)
+        vae_scale = torch.sqrt(self.autoencoder.bn.running_var.view(1, -1, 1, 1) + self.autoencoder.bn_eps).to(device=z.device, dtype=z.dtype)
+        return z.sub(vae_mean).div(vae_scale)
+
     @torch.inference_mode()
     def __call__(
         self,
@@ -326,7 +337,7 @@ class Ideogram4WanPipeline:
 
         _pid_progress(None)
         lq_image_ref = [self._decode_image(z, grid_h=grid_h, grid_w=grid_w)]
-        lq_latent_ref = [None]
+        lq_latent_ref = [self._pack_pid_lq_latent(z, grid_h, grid_w)]
         image = pid_upsampler.decode_inputs(
             lq_image_ref,
             lq_latent_ref,

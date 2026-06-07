@@ -14,6 +14,7 @@ class family_handler:
             "fit_into_canvas_image_refs": 0,
             "profiles_dir": [],
             "pid_upsampler": [1, 2],
+            "pid_vae_backbone": "flux",
         }
         text_encoder_folder = "Qwen3"
         extra_model_def["text_encoder_URLs"] = [

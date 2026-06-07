@@ -277,7 +277,7 @@ Example:
 [/duration=30%,/overlap=9] The chess player moves a knight, the train lights flicker, and the blue suitcase opens by itself, revealing a tiny glowing city.
 ```
 
-Models may declare their own additional slash commands. Unknown slash commands are rejected during validation. JoyAI-Echo adds memory commands such as `[/no_mem]`, `[/store_mem]`, `[/store_mem=2]`, `[/store_mem=man1,man2]`, `[/drop_mem]`, `[/drop_mem=2]`, `[/drop_mem=2-4]`, and `[/drop_mem=man1,woman1]`.
+Models may declare their own additional slash commands. Unknown slash commands are rejected during validation. JoyAI-Echo adds named-memory commands such as `[/store_mem=man1,man2]`, `[/load_mem=man1,woman1]`, `[/load_mem]`, and `[/drop_mem=old_scene]`. If a Joy window has no `[/load_mem...]`, it keeps the active memory set from the previous window plus any memory stored by that previous window. `[/no_mem]` is deprecated and ignored because Joy memories are no longer saved automatically.
 
 ### 3. All The Lines Are Part Of The Same Prompt
 

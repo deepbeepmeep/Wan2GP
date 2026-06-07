@@ -35,6 +35,7 @@ class family_handler:
             "image_outputs": True,
             "flux2": True,
             "pid_upsampler": [1],
+            "pid_vae_backbone": "flux2",
             "guidance_max_phases": 0,
             "inference_steps": False,
             "lock_inference_steps": True,

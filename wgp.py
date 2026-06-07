@@ -139,7 +139,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "12.11"
+WanGP_version = "12.12"
 settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -1011,6 +1011,8 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
             return err(f"VAE Spatial Upsampling is not available for {medium}")
     if is_pid_vae_upsampling(spatial_upsampling) and image_mode not in model_def.get("pid_upsampler", []):
         return err(f"VAE Pid Upsampler is not available for {medium}")
+    if is_pid_vae_upsampling(spatial_upsampling) and pid_backbone_for_upsampling(spatial_upsampling) != _get_pid_backbone_for_model(model_type, model_def):
+        return err(f"This model does not support the selected VAE PiD Upsampler")
     edit_upsampler = find_edit_spatial_upsampler(spatial_upsampling)
     if edit_upsampler is not None:
         edit_upsampling_error = edit_upsampler.validate_upsampling(spatial_upsampling, image_mode)
@@ -3380,16 +3382,15 @@ def process_files_def(repoId = None, sourceFolderList = None, fileList = None, t
     return shared_process_files_def(repoId=repoId, sourceFolderList=sourceFolderList, fileList=fileList, targetFolderList=targetFolderList)
 
 def _get_pid_backbone_for_model(base_model_type, model_def):
-    if str(base_model_type or "").startswith("z_image"):
-        return "z_image"
-    if model_def.get("flux2", False):
-        return "flux2"
-    return "flux"
+    backbone = model_def.get("pid_vae_backbone", None)
+    return backbone if backbone in ("flux", "flux2") else None
 
 def download_requested_pid_assets(send_cmd, *, base_model_type, model_def, width, height):
     from shared.utils.download import process_files_def_if_needed
 
     backbone = _get_pid_backbone_for_model(base_model_type, model_def)
+    if backbone is None:
+        raise gr.Error("This model does not declare a supported VAE PiD backbone.")
     ckpt_types = pid_checkpoint_types_for_tiling_threshold(server_config.get("pid_tiling_threshold", 0))
     process_files_def_if_needed(
         get_pid_download_def(backbone, ckpt_type=ckpt_types, include_vae=True),
@@ -6183,8 +6184,18 @@ def keep_generated_prompt_newlines(multi_prompts_gen_type):
     multi_prompts_gen_type = str(multi_prompts_gen_type or "")
     return "P" in multi_prompts_gen_type or multi_prompts_gen_type == "FG"
 
-def normalize_generated_prompt_lines(prompt, multi_prompts_gen_type):
-    prompt = str(prompt or "")
+def prompt_enhancer_outputs_multiple_prompts(prompt_enhancer_mode):
+    return "M" in str(prompt_enhancer_mode or "")
+
+def normalize_generated_prompt_lines(prompt, multi_prompts_gen_type, multi_prompt_output=False):
+    prompt = str(prompt or "").replace("\r\n", "\n").replace("\r", "\n")
+    if multi_prompt_output:
+        prompt_lines = [line.strip() for line in prompt.split("\n") if line.strip()]
+        if len(prompt_lines) == 0:
+            return ""
+        if str(multi_prompts_gen_type or "") == "FG":
+            return "\n".join(prompt_lines)
+        return ("\n\n" if "P" in str(multi_prompts_gen_type or "") else "\n").join(prompt_lines)
     if keep_generated_prompt_newlines(multi_prompts_gen_type):
         return prompt
     return re.sub(r"[\r\n]+", " ", prompt).strip()
@@ -6205,6 +6216,9 @@ def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, multi_
             gr.Info("Error processing prompt template: " + errors)
             return gr.update(), gr.update()
     original_prompts = prompt_parser.split_prompt_units(original_prompts, multi_prompts_gen_type, originals=True)
+    multi_prompt_output = prompt_enhancer_outputs_multiple_prompts(prompt_enhancer)
+    if multi_prompt_output:
+        original_prompts = original_prompts[:1]
     num_prompts = len(original_prompts) 
     image_prompt_type = inputs["image_prompt_type"]
     video_prompt_type = inputs["video_prompt_type"]
@@ -6215,7 +6229,9 @@ def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, multi_
         image_start = [None] * num_prompts
     else:
         image_start = [convert_image(img[0]) for img in image_start]
-        if len(image_start) == 1:
+        if multi_prompt_output:
+            image_start = image_start[:1] or [None] * num_prompts
+        elif len(image_start) == 1:
             image_start = image_start * num_prompts
         else:
             if multi_images_gen_type !=1:
@@ -6240,7 +6256,7 @@ def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, multi_
     output_prompts = []
     for enhanced_prompt, one_prompt in zip(enhanced_prompts, original_prompts):
         if enhanced_prompt is not None:
-            output_prompts.append(normalize_generated_prompt_lines(enhanced_prompt[0], multi_prompts_gen_type))
+            output_prompts.append(normalize_generated_prompt_lines(enhanced_prompt[0], multi_prompts_gen_type, multi_prompt_output=multi_prompt_output))
 
     prompt = prompt_parser.serialize_prompt_blocks_with_prefix(output_prompts, original_prompts)
     if num_prompts > 1:
@@ -7064,16 +7080,22 @@ def generate_video(
         if auto_prompt_enhancer_requested:
             send_cmd("progress", [0, get_latest_status(state, "Enhancing Prompt")])
             enhancer_kwargs = {"image_prompt_type":  image_prompt_type, "video_prompt_type":  video_prompt_type, "audio_prompt_type":  audio_prompt_type}
+            multi_prompt_output = prompt_enhancer_outputs_multiple_prompts(prompt_enhancer)
+            prompts_to_enhance = original_prompts[:1] if multi_prompt_output else original_prompts
             try:
                 ensure_prompt_enhancer_loaded(override_profile=override_profile, send_cmd=send_cmd)
-                enhanced_prompts = process_prompt_enhancer(model_type, model_def, prompt_enhancer, original_prompts,  image_start if image_start is not None else image_end , original_image_refs, is_image, audio_only, seed, enhancer_kwargs = enhancer_kwargs )
+                enhanced_prompts = process_prompt_enhancer(model_type, model_def, prompt_enhancer, prompts_to_enhance,  image_start if image_start is not None else image_end , original_image_refs, is_image, audio_only, seed, enhancer_kwargs = enhancer_kwargs )
             finally:
                 unload_prompt_enhancer_runtime()
                 if enhancer_offloadobj is not None:
                     enhancer_offloadobj.unload_all()
             if enhanced_prompts is not None:
                 print(f"Enhanced prompts: {enhanced_prompts}" )
-                enhanced_prompts = [normalize_generated_prompt_lines(one_prompt, multi_prompts_gen_type) for one_prompt in enhanced_prompts]
+                if multi_prompt_output:
+                    enhanced_prompt = normalize_generated_prompt_lines(enhanced_prompts[0], multi_prompts_gen_type, multi_prompt_output=True)
+                    enhanced_prompts = prompt_parser.split_prompt_units(enhanced_prompt, multi_prompts_gen_type)
+                else:
+                    enhanced_prompts = [normalize_generated_prompt_lines(one_prompt, multi_prompts_gen_type) for one_prompt in enhanced_prompts]
                 # On-the-fly enhancement keeps task prompts clean; originals are saved in metadata.
                 task["prompt"] = prompt_parser.ENHANCED_PROMPT_PREFIX + prompt_parser.serialize_prompt_units("", enhanced_prompts, multi_prompts_gen_type)
                 gen["last_was_audio"] = audio_only
@@ -11902,7 +11924,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             if duplicate_spatial:
                                 return temporal_upsampling, spatial_upsampling, duplicate_spatial_upsampling, film_grain_intensity, film_grain_saturation, spatial_upsampling_method, spatial_upsampling_ratio
                             return temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, spatial_upsampling_method, spatial_upsampling_ratio
-                        temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, spatial_upsampling_method, spatial_upsampling_ratio = gen_upsampling_dropdowns(ui_get("temporal_upsampling"), ui_get("spatial_upsampling"), ui_get("film_grain_intensity"), ui_get("film_grain_saturation"), image_outputs= image_outputs, any_vae_upsampling= "vae_upsampler"in model_def, any_pid_upsampling="pid_upsampler" in model_def)
+                        temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, spatial_upsampling_method, spatial_upsampling_ratio = gen_upsampling_dropdowns(ui_get("temporal_upsampling"), ui_get("spatial_upsampling"), ui_get("film_grain_intensity"), ui_get("film_grain_saturation"), image_outputs= image_outputs, any_vae_upsampling= "vae_upsampler"in model_def, any_pid_upsampling="pid_upsampler" in model_def and "pid_vae_backbone" in model_def)
 
                 with gr.Tab("Audio", visible = not (image_outputs or audio_only)) as audio_tab:
                     any_audio_source = not (image_outputs or audio_only)

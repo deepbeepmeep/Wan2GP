@@ -133,32 +133,34 @@ def _joyai_settings(custom_settings=None, *, video_prompt_type="", image_prompt_
 
 def _validate_joyai_inputs(model_def, inputs):
     from shared.utils.audio_video import extract_audio_tracks
-    from .joyai_echo import JOYAI_CONTROL_MEMORY_MAX_SECONDS, JOYAI_CONTROL_MEMORY_SETTING, parse_drop_mem_option, parse_store_mem_option, validate_control_memory_positions
+    from .joyai_echo import JOYAI_CONTROL_MEMORY_MAX_SECONDS, JOYAI_CONTROL_MEMORY_SETTING, parse_drop_mem_option, parse_load_mem_option, parse_store_mem_option, validate_control_memory_positions
     custom_settings = inputs.get("custom_settings", None)
     if not isinstance(custom_settings, dict):
         custom_settings = {}
-    max_memory_slot = int(model_def.get("joyai_memory_max_size", 7))
+    no_mem_notified = False
     for window in (inputs.get("frame_scheduler", {}) or {}).get("windows", []):
         model_options = window.get("model_options", {}) or {}
-        no_mem = model_options.get("no_mem", None)
-        if no_mem is not None and no_mem is not True:
-            return "JoyAI-Echo /no_mem does not take a value."
+        if "no_mem" in model_options and not no_mem_notified:
+            gr.Info("JoyAI-Echo /no_mem is deprecated because memories are no longer saved automatically. It will be ignored; use /store_mem=name only on windows you want to remember.")
+            no_mem_notified = True
         store_mem = model_options.get("store_mem", None)
         if store_mem is not None:
             try:
-                store_selectors = parse_store_mem_option(store_mem)
+                parse_store_mem_option(store_mem)
             except ValueError as exc:
                 return str(exc)
-            if any(isinstance(selector, int) and selector > max_memory_slot for selector in store_selectors):
-                return f"JoyAI-Echo /store_mem slot is outside the valid memory range 1-{max_memory_slot}."
+        load_mem = model_options.get("load_mem", None)
+        if load_mem is not None:
+            try:
+                parse_load_mem_option(load_mem)
+            except ValueError as exc:
+                return str(exc)
         drop_mem = model_options.get("drop_mem", None)
         if drop_mem is not None:
             try:
-                drop_selectors = parse_drop_mem_option(drop_mem)
+                parse_drop_mem_option(drop_mem)
             except ValueError as exc:
                 return str(exc)
-            if drop_selectors is not None and any(isinstance(selector, int) and selector > max_memory_slot for selector in drop_selectors):
-                return f"JoyAI-Echo /drop_mem slot is outside the valid memory range 1-{max_memory_slot}."
     memory_positions = str(custom_settings.get(JOYAI_CONTROL_MEMORY_SETTING, "") or "").strip()
     video_prompt_type, _ = _joyai_prompt_types(inputs.get("video_prompt_type", ""), inputs.get("image_prompt_type", ""))
     if not video_prompt_type:
@@ -427,13 +429,14 @@ class family_handler:
                     "joyai_memory_num_fix_frames": 3,
                     "joyai_memory_downscale_factor": 1,
                     "joyai_audio_memory_window_size": 96,
-                    "prompt_slash_commands": ["no_mem", "store_mem", "drop_mem"],
+                    "prompt_slash_commands": ["no_mem", "store_mem", "load_mem", "drop_mem"],
                     "preserve_empty_prompt_lines": True,
+                    "NAG": True,
                     "infos": model_def.get("infos", JOYAI_ECHO_INFOS),
                     "fps": 25,
                     "image_prompt_types_allowed": "TSV",
                     "prompt_infos": JOYAI_ECHO_PROMPT_INFOS,
-                    "prompt_enhancer_def": {"selection": ["T", "TI"], "labels": {"T": "A JoyAI-Echo multi-shot prompt using existing Text Prompt", "TI": "A JoyAI-Echo multi-shot prompt using existing Text Prompt and Start Image"}, "default": ""},
+                    "prompt_enhancer_def": {"selection": ["TM", "TIM"], "labels": {"TM": "A JoyAI-Echo multi-shot prompt using existing Text Prompt", "TIM": "A JoyAI-Echo multi-shot prompt using existing Text Prompt and Start Image"}, "default": ""},
                     "text_prompt_enhancer_instructions1": JOYAI_ECHO_PROMPT_ENHANCER,
                     "video_prompt_enhancer_instructions1": JOYAI_ECHO_PROMPT_ENHANCER,
                     "image_prompt_enhancer_instructions1": JOYAI_ECHO_PROMPT_ENHANCER,
@@ -441,7 +444,7 @@ class family_handler:
                     "video_prompt_enhancer_max_tokens1": 1536,
                     "image_prompt_enhancer_max_tokens1": 1536,
                     "guide_custom_choices": {"choices": [("No Control Video Memory", ""), ("JoyAI-Echo Control Video Memory", "V1")], "letters_filter": "V1", "default": "", "label": "Control Video Memory"},
-                    "custom_settings": [{"id": JOYAI_CONTROL_MEMORY_SETTING, "name": "Control Video Memory Positions", "label": "Joy memory positions from Control Video (frames or seconds, comma-separated)", "type": "text", "default": "", "video_prompt_type": "1"}],
+                    "custom_settings": [{"id": JOYAI_CONTROL_MEMORY_SETTING, "name": "Control Video Memory Positions", "label": "Joy Memory Positions from Control Video (frames or seconds, comma-separated)", "type": "text", "default": "", "video_prompt_type": "1"}],
                 }
             )
         else:

@@ -356,6 +356,32 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
         });
         return { comments, jsonText: jsonLines.join("\\n").trim() };
     };
+    helper.normalizePromptJsonText = function(raw) {
+        const text = String(raw || "").trim();
+        const notes = [];
+        if (!text) return { jsonText: "", notes };
+        const start = text.indexOf("{");
+        if (start < 0) return { jsonText: text, notes };
+        if (text.slice(0, start).trim()) notes.push("ignored text before JSON");
+        const openCount = (text.match(/{/g) || []).length;
+        const closeCount = (text.match(/}/g) || []).length;
+        if (openCount === closeCount) {
+            const end = text.lastIndexOf("}");
+            if (text.slice(end + 1).trim()) notes.push("ignored text after JSON");
+            return { jsonText: text.slice(start, end + 1).trim(), notes };
+        }
+        if (openCount > closeCount) {
+            const missing = openCount - closeCount;
+            notes.push(`added ${missing} missing closing ${missing === 1 ? "brace" : "braces"}`);
+            return { jsonText: text.slice(start).trimEnd() + "}".repeat(missing), notes };
+        }
+        return { jsonText: text.slice(start).trim(), notes };
+    };
+    helper.parsePromptJson = function(raw) {
+        const normalized = helper.normalizePromptJsonText(raw);
+        if (!normalized.jsonText) return { doc: helper.defaultDoc(), notes: normalized.notes };
+        return { doc: JSON.parse(normalized.jsonText), notes: normalized.notes };
+    };
     helper.withPromptComments = function(jsonText, comments) {
         return comments && comments.length ? comments.join("\\n") + "\\n" + jsonText : jsonText;
     };
@@ -942,12 +968,15 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
             const parsedPrompt = helper.extractPromptComments(rawPrompt);
             const raw = parsedPrompt.jsonText;
             let doc = helper.defaultDoc();
+            let promptNotes = [];
             state.dirty = false;
             state.promptComments = parsedPrompt.comments;
             setStatus("");
             if (raw) {
                 try {
-                    doc = JSON.parse(raw);
+                    const parsedDoc = helper.parsePromptJson(raw);
+                    doc = parsedDoc.doc;
+                    promptNotes = parsedDoc.notes || [];
                 } catch (err) {
                     state.doc = helper.defaultDoc();
                     state.elements = [];
@@ -1008,6 +1037,7 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
             resetHistory();
             if (state.unboxedElements.length) setStatus(`Preserved ${state.unboxedElements.length} unboxed element(s).`, true);
             else if (fields.extras.value.trim()) setStatus("Custom JSON leftovers are editable below.");
+            else if (promptNotes.length) setStatus(`Loaded JSON prompt (${promptNotes.join(", ")}).`);
         }
         function buildElement(source, extra) {
             const type = typeValue(source.type);

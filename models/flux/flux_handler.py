@@ -160,6 +160,7 @@ class family_handler():
             extra_model_def["embedded_guidance"] = True
         if not flux_chroma_radiance:
             extra_model_def["pid_upsampler"] = [1, 2]
+            extra_model_def["pid_vae_backbone"] = "flux2" if flux2 else "flux"
         if flux_uso :
             extra_model_def["any_image_refs_relative_size"] = True
             extra_model_def["no_background_removal"] = True

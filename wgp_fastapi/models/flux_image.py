@@ -79,6 +79,16 @@ class FluxImageRequest(BaseModel):
         description="List of loras",
     )
 
+    # Mask and inpainting reference
+    mask_path: Optional[str] = Field(
+        default=None,
+        description="Path to mask image for inpainting",
+    )
+    inpaint_reference_path: Optional[str] = Field(
+        default=None,
+        description="Path to reference image for mask generation",
+    )
+
     def to_wgp_settings(self, image_start_path: str | None = None) -> dict:
         """Convert to WanGP task settings dict."""
 
@@ -108,12 +118,29 @@ class FluxImageRequest(BaseModel):
             "activated_loras": loras_list,
         }
 
-        # set this so that it gets picked up correctly by the model
-        if image_start_path:
-            settings["video_prompt_type"] = "I"
+        # Handle mask inpainting
+        if self.mask_path:
+            # For inpainting: V=control guide, I=image refs, A=mask
+            settings["video_prompt_type"] = "VIA"
+            settings["image_mask"] = [self.mask_path]
 
-            # set this as an image ref
-            settings["image_refs"] = [image_start_path]
+            # The input image (or inpaint-reference if provided) serves as the control guide
+            guide_path = self.inpaint_reference_path or image_start_path
+            if guide_path:
+                settings["image_guide"] = [guide_path]
+
+            # Build image_refs: input image still passed in as before
+            if image_start_path:
+                refs = [image_start_path]
+                # Add inpaint-reference as an additional reference for inpainting context
+                if self.inpaint_reference_path and self.inpaint_reference_path != image_start_path:
+                    refs.append(self.inpaint_reference_path)
+                settings["image_refs"] = refs
+        else:
+            # Default behaviour (no mask)
+            if image_start_path:
+                settings["video_prompt_type"] = "I"
+                settings["image_refs"] = [image_start_path]
 
         return settings
 

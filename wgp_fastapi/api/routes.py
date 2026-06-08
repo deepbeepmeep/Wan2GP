@@ -410,7 +410,7 @@ async def serve_file(file_path: str):
     "/api/v1/flux-image",
     response_model=FluxImageResponse,
     summary="Flux Image Generation",
-    description="Generate images using Flux 2 Klein 9B model with all available parameters. Supports text-to-image and image-to-image generation.",
+    description="Generate images using Flux 2 Klein 9B model with all available parameters. Supports text-to-image and image-to-image generation. Optionally accepts a mask for inpainting and an inpaint-reference image.",
 )
 async def flux_image(
     prompt: str,
@@ -422,23 +422,27 @@ async def flux_image(
     model: FluxImageModel = FluxImageModel.FLUX_2_KLEIN,
     image_prompt_type: str = "I",
     image: UploadFile = File(None),
-    activated_loras: Optional[str] = Form(None)
+    activated_loras: Optional[str] = Form(None),
+    mask: UploadFile = File(None),
+    inpaint_reference: UploadFile = File(None),
 ) -> FluxImageResponse:
-    # map input to object
+    # Map input to object
     flux_request = FluxImageRequest(
         prompt=prompt,
         seed=seed,
         num_inference_steps=num_inference_steps,
         width=width,
         height=height,
-        # batch size internally used for queueing mroe than 1 request
+        # batch size internally used for queueing more than 1 request
         batch_size=1,
         model=model,
         image_prompt_type=image_prompt_type,
-        activated_loras=activated_loras
+        activated_loras=activated_loras,
     )
 
     image_path: str | None = None
+    mask_path: str | None = None
+    inpaint_reference_path: str | None = None
 
     try:
         try:
@@ -447,6 +451,24 @@ async def flux_image(
                 image_path = save_upload_file(image, suffix=".png")
         except Exception as e:
             print(f"Unable to process the image: {e}")
+
+        try:
+            # Handle mask upload
+            if mask is not None:
+                mask_path = save_upload_file(mask, suffix=".png")
+        except Exception as e:
+            print(f"Unable to process the mask: {e}")
+
+        try:
+            # Handle inpaint-reference upload
+            if inpaint_reference is not None:
+                inpaint_reference_path = save_upload_file(inpaint_reference, suffix=".png")
+        except Exception as e:
+            print(f"Unable to process the inpaint-reference: {e}")
+
+        # Set mask and inpaint-reference paths on the request
+        flux_request.mask_path = mask_path
+        flux_request.inpaint_reference_path = inpaint_reference_path
 
         # first to be processed
         task_id = _queue_flux_task(flux_request, image_path)
@@ -478,6 +500,8 @@ async def flux_image(
                 "height": height,
                 "batch_size": batch_size,
                 "image_uploaded": image is not None,
+                "mask_uploaded": mask is not None,
+                "inpaint_reference_uploaded": inpaint_reference is not None,
             }
         }
         raise HTTPException(status_code=500, detail=error_detail)

@@ -191,8 +191,9 @@ def get_css():
     display: inline-flex !important;
     align-items: center;
     gap: 4px;
-    margin: 0 0 0 6px;
+    margin: -2px 0 -2px 6px;
     vertical-align: middle;
+    line-height: 0 !important;
 }
 .wangp-prompt-tools-empty {
     display: none !important;
@@ -205,6 +206,8 @@ def get_css():
     gap: 4px;
     vertical-align: middle;
     white-space: nowrap;
+    margin-block: -2px !important;
+    line-height: 0 !important;
 }
 .wangp-field-help-inline-host,
 .wangp-field-help-inline-host > *,
@@ -241,6 +244,7 @@ def get_css():
     vertical-align: middle;
     font-size: 11px !important;
     line-height: 1 !important;
+    overflow: hidden !important;
     opacity: 1 !important;
     visibility: visible !important;
 }

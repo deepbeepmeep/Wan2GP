@@ -6,12 +6,12 @@
         },
         "torch": {
             "cu128": {
-                "label": "Torch 2.7.1 + CUDA 12.8",
-                "cmd": "torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128"
+                "label": "Torch 2.10.0 + CUDA 12.8",
+                "cmd": "torch==2.10.0+cu128 torchvision==0.25.0+cu128 torchaudio==2.10.0+cu128 --index-url https://download.pytorch.org/whl/cu128"
             },
             "cu130": {
                 "label": "Torch 2.10.0 + CUDA 13.0",
-                "cmd": "torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130"
+                "cmd": "torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 --index-url https://download.pytorch.org/whl/cu130"
             },
             "rocm65": {
                 "label": "ROCm 6.5 (TheRock)",
@@ -93,7 +93,7 @@
                 "label": "Flash Attention 2.8.x",
                 "cmd": {
                     "win": "https://github.com/deepbeepmeep/kernels/releases/download/Flash2/flash_attn-2.8.3-cp311-cp311-win_amd64.whl",
-                    "linux": "flash-attn"
+                    "linux": "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.0/flash_attn-2.8.3+cu130torch2.10-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl"
                 }
             }
         },
@@ -129,7 +129,7 @@
         }
     },
     "gpu_profiles": {
-        "GTX_10":      { "python": "3.10", "torch": "cu128", "triton": null,     "sage": null,       "sparge": null, "flash": null, "kernels": [] },
+        "GTX_10":      { "python": "3.11", "torch": "cu128", "triton": null, "sage": null, "sparge": null, "flash": null, "kernels": [] },
         "RTX_20":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v1", "sparge": null, "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
         "RTX_30":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
         "RTX_40":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },

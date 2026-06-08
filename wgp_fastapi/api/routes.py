@@ -7,10 +7,10 @@ import os
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from typing import Optional
+from typing import Optional, List
 import threading
 
 # Import WanGPSession from shared.api
@@ -719,6 +719,63 @@ async def delete_file(file_name: str):
 
     # file was not found
     return Response(status_code=404)
+
+
+@app.delete(
+    "/api/v1/files",
+    summary="Delete files",
+    description="Delete one or more files from the outputs directory by filename. "
+    "Accepts a JSON array of filenames in the request body. "
+    "Supports all file extension types.",
+)
+async def delete_files(
+    file_names: List[str] = Body(
+        ...,
+        description="List of filenames to delete (e.g., [\"image.png\", \"video.mp4\"])",
+        examples=[["image.png", "video.mp4"]],
+    ),
+):
+    """
+    Delete one or more files. Accepts a JSON body with a list of filenames.
+    Example body: ["image1.png", "video.mp4", "subfolder/image.jpg"]
+    Supports all file extension types.
+    """
+    if not file_names:
+        return JSONResponse(
+            content={"error": "No filenames provided. Send a JSON array of filenames."},
+            status_code=400,
+        )
+
+    results: dict[str, list] = {"deleted": [], "not_found": [], "errors": []}
+
+    # Collect all files once to avoid re-walking the directory
+    all_files = list(
+        glob.iglob(os.path.join(f"{output_dir}", "**", "*"), recursive=True)
+    )
+
+    for file_name in file_names:
+        matched = False
+        for file_path in all_files:
+            if file_name in file_path:
+                try:
+                    os.remove(file_path)
+                    results["deleted"].append(file_name)
+                    print(f"Deleted file: {file_path}")
+                except Exception as e:
+                    results["errors"].append(
+                        {"file": file_name, "detail": str(e)}
+                    )
+                    print(f"Error deleting {file_path}: {e}")
+                matched = True
+                break  # only delete the first match per filename
+
+        if not matched:
+            results["not_found"].append(file_name)
+
+    if not results["deleted"] and not results["errors"]:
+        return JSONResponse(content=results, status_code=404)
+
+    return JSONResponse(content=results, status_code=200)
 
 
 if __name__ == "__main__":

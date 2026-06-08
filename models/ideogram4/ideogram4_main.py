@@ -407,18 +407,16 @@ class model_factory:
         self,
         seed=None,
         input_prompt="",
-        sampling_steps=20,
         sample_solver="",
         width=1024,
         height=1024,
         guide_scale=7.0,
-        shift=None,
         batch_size=1,
         model_mode=_DEFAULT_PRESET,
         pid_upsampler=None,
         set_progress_status=None,
         callback=None,
-        **bkwargs,
+        **kwargs,
     ):
         preset_name = model_mode if model_mode in PRESETS else sample_solver if sample_solver in PRESETS else _DEFAULT_PRESET
         preset = PRESETS[preset_name]

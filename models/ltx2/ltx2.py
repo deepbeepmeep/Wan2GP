@@ -4,6 +4,7 @@ import math
 import os
 import re
 import types
+from contextlib import nullcontext
 from typing import Callable, Iterator
 
 import torch
@@ -965,7 +966,6 @@ class LTX2:
         alt_guide_scale: float = 1.0,
         input_video=None,
         prefix_frames_count: int = 0,
-        conditioning_latents_size: int = 0,
         window_no: int = 1,
         input_frames=None,
         input_frames2=None,
@@ -999,11 +999,9 @@ class LTX2:
         loras_selected=None,
         text_connectors=None,
         input_ref_images=None,
-        input_ref_masks=None,
         input_waveform=None,
         input_waveform_sample_rate=None,
         audio_scale: float | None = None,
-        masking_source: dict | None = None,
         outpainting_dims: list[int] | None = None,
         frame_num: int = 121,
         height: int = 1024,
@@ -1020,18 +1018,19 @@ class LTX2:
         gen_state=None,
         input_video_is_hdr: bool = False,
         lora_dir: str | None = None,
-        joyai_single_window: bool = False,
         **kwargs,
     ):
         if self._interrupt:
             return None
-        if self.model_def.get("joyai_echo", False) and not joyai_single_window:
-            from .joyai_echo import generate_joyai_echo_window
-            call_args = locals().copy()
-            call_args.pop("self")
-            extra_kwargs = call_args.pop("kwargs")
-            call_args.update(extra_kwargs)
-            return generate_joyai_echo_window(self, self.generate, **call_args)
+        joyai_context = None
+        joyai_memory_bank = None
+        joyai_store_mem_selectors = []
+        if self.model_def.get("joyai_echo", False):
+            from .joyai_echo import prepare_joyai_echo_context
+            joyai_context, joyai_memory_bank, joyai_store_mem_selectors, clear_joyai_control_inputs = prepare_joyai_echo_context(self, gen_state, custom_settings, video_guide, frame_window_options, fps, video_prompt_type, height, width, guide_phases, VAE_tile_size, window_no)
+            if clear_joyai_control_inputs:
+                input_frames = input_frames2 = input_masks = input_masks2 = None
+                video_prompt_type = ""
         distill = self.model_def.get("ltx2_pipeline", "two_stage") == "distilled"
         editanything = _is_editanything_model(self.model_def)
         hdr_enabled = self.base_model_type == "ltx2_22B" and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type
@@ -1347,8 +1346,13 @@ class LTX2:
             prompt_relay_frame_offset = max(0, int(prefix_frames_count or 0))
         ltx2_22B_class = self.model_def.get("ltx2_22B_class", False)
 
+        def run_ltx2_pipeline(**pipeline_kwargs):
+            pipeline_context = self.pipeline.joyai_echo_context(joyai_context) if joyai_context is not None else nullcontext()
+            with pipeline_context:
+                return self.pipeline(**pipeline_kwargs)
+
         if isinstance(self.pipeline, TI2VidTwoStagesPipeline):
-            pipeline_output = self.pipeline(
+            pipeline_output = run_ltx2_pipeline(
                 prompt=input_prompt,
                 negative_prompt=negative_prompt,
                 seed=int(seed),
@@ -1412,7 +1416,7 @@ class LTX2:
                         "NAG_alpha": float(NAG_alpha),
                     }
                 )
-            pipeline_output = self.pipeline(
+            pipeline_output = run_ltx2_pipeline(
                 prompt=input_prompt,
                 negative_prompt=negative_prompt,
                 seed=int(seed),
@@ -1514,4 +1518,7 @@ class LTX2:
             result["latent_slice"] = latent_slice
         if memory_latents is not None:
             result["_memory_latents"] = memory_latents
+        if joyai_memory_bank is not None:
+            from .joyai_echo import record_joyai_echo_memory
+            result = record_joyai_echo_memory(self, result, joyai_memory_bank, joyai_store_mem_selectors, prefix_frames_count, frame_num, fps, window_no)
         return result

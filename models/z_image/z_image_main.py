@@ -190,6 +190,7 @@ class model_factory:
         NAG_alpha: float = 0.5,
         loras_slists=None,
         pid_upsampler=None,
+        set_progress_status=None,
         **kwargs,
     ):
         generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu")
@@ -218,7 +219,6 @@ class model_factory:
         if self.model_def.get("guidance_max_phases", 0) < 1:
             guide_scale = 0
 
-        set_progress_status = kwargs.get("set_progress_status", None)
         def _pid_progress(_phase, current_step=None, total_steps=None):
             if callable(set_progress_status):
                 if current_step is None or total_steps is None:

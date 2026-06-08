@@ -475,7 +475,6 @@ class DramaBoxAudioPipeline(LTXAudioTTSPipelineBase):
     def generate(
         self,
         input_prompt: str,
-        model_mode: Optional[str] = None,
         audio_guide: Optional[str] = None,
         sampling_steps: int = DRAMABOX_DEFAULT_STEPS,
         guide_scale: float = DRAMABOX_DEFAULT_CFG_SCALE,
@@ -493,7 +492,7 @@ class DramaBoxAudioPipeline(LTXAudioTTSPipelineBase):
         duration_seconds: Optional[float] = None,
         set_progress_status=None,
         verbose_level: int = 0,
-        **bbwargs
+        **kwargs
     ) -> Optional[dict]:
         self._interrupt = False
         self._early_stop = False

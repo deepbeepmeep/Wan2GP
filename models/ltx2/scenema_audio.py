@@ -1037,7 +1037,6 @@ class ScenemaAudioPipeline(LTXAudioTTSPipelineBase):
     def generate(
         self,
         input_prompt: str,
-        model_mode: Optional[str] = None,
         audio_guide: Optional[str] = None,
         *,
         alt_prompt: Optional[str] = None,
@@ -1050,7 +1049,7 @@ class ScenemaAudioPipeline(LTXAudioTTSPipelineBase):
         custom_settings=None,
         duration_seconds: Optional[float] = None,
         set_progress_status=None,
-        **bbwargs,
+        **kwargs,
     ) -> Optional[dict]:
         self._interrupt = False
         self._early_stop = False

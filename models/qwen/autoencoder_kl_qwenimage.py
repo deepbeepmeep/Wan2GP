@@ -1130,8 +1130,9 @@ class AutoencoderKLQwenImage(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         full_width = int(latent_source.shape[-1]) * int(self.spatial_compression_ratio) * factor
         target_height = full_height if target_height is None else min(int(target_height), full_height)
         target_width = full_width if target_width is None else min(int(target_width), full_width)
+        output_channels = int(getattr(self.config, "input_channels", 3))
         if target_frames <= 0:
-            return torch.empty((latent_source.shape[0], 3, 0, target_height, target_width), dtype=torch.uint8, device="cpu")
+            return torch.empty((latent_source.shape[0], output_channels, 0, target_height, target_width), dtype=torch.uint8, device="cpu")
 
         tile_latent_min_height = int(latent_source.shape[-2])
         tile_latent_min_width = int(latent_source.shape[-1])
@@ -1156,7 +1157,7 @@ class AutoencoderKLQwenImage(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 blend_width = int(self.tile_sample_min_width) * factor - tile_sample_stride_width
 
         device = z.device
-        decoded = torch.empty((latent_source.shape[0], 3, target_frames, target_height, target_width), dtype=torch.uint8, device="cpu")
+        decoded = torch.empty((latent_source.shape[0], output_channels, target_frames, target_height, target_width), dtype=torch.uint8, device="cpu")
         previous_row_edges = []
         row_index = 0
         for latent_y in range(0, latent_source.shape[-2], tile_latent_stride_height):

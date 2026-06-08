@@ -5821,6 +5821,7 @@ def edit_video(
     video_extension = f".{video_container}"
 
     tmp_path = None
+    saved_video_duration = None
     any_change = False
     if sample != None:
         if source_is_image:
@@ -5839,6 +5840,7 @@ def edit_video(
             return
         video_path = get_available_filename(save_path, video_source, "_tmp", force_extension=video_extension) if any_mmaudio or has_already_audio else get_available_filename(save_path, video_source, "_post", force_extension=video_extension)
         video_path = save_video( tensor=sample[None], save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type= server_config.get("video_output_codec", None), container=server_config.get("video_container", "mp4"))
+        saved_video_duration = sample.shape[1] / output_fps
 
         if any_mmaudio or has_already_audio: tmp_path = video_path
         any_change = True
@@ -5915,7 +5917,7 @@ def edit_video(
                 )
                 cleanup_temp_audio_files(seedvc_temp_tracks)
             else:
-                combine_video_with_audio_tracks(video_path, audio_tracks, new_video_path, audio_metadata=audio_metadata, audio_codec_key=server_config.get("audio_output_codec", "aac_128"))
+                combine_video_with_audio_tracks(video_path, audio_tracks, new_video_path, audio_metadata=audio_metadata, audio_codec_key=server_config.get("audio_output_codec", "aac_128"), video_duration=saved_video_duration)
         else:
             new_video_path = video_path
         if tmp_path != None:

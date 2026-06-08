@@ -3445,7 +3445,7 @@ def download_requested_postprocessing_assets(send_cmd, *, postprocess_audio="", 
     if seedvc_voice_sample is not None:
         download_seedvc(send_cmd, "Downloading SeedVC model files...")
     if seedvc_voice_sample2 is not None or postprocess_audio == "seedvc2":
-        from shared.utils.download import download_speaker_separator
+        from preprocessing.speaker_separator.assets import download_speaker_separator
         download_speaker_separator(send_cmd, "Downloading speaker separator model files...")
 
 
@@ -5899,7 +5899,7 @@ def edit_video(
             if any_seedvc:
                 send_cmd("progress", [0, get_latest_status(state,"SeedVC Voice Replacement")])
                 if seedvc_speaker_count == 2:
-                    from shared.utils.download import download_speaker_separator
+                    from preprocessing.speaker_separator.assets import download_speaker_separator
                     download_speaker_separator(send_cmd, "Downloading speaker separator model files...")
                 seedvc_audio_tracks, seedvc_temp_tracks = seedvc_bridge.replace_audio_tracks(audio_tracks, seedvc_voice_sample, save_path, f"tmp_seed{seed}_{repeat_no}", process_files=process_files_def, profile_no=server_config.get("audio_profile", 4), verbose_level=verbose_level, init_pipe=init_pipe, voice_sample2_path=seedvc_voice_sample2, speaker_count=seedvc_speaker_count)
                 seedvc_sample_rate = resolve_mux_audio_sampling_rate(22050, audio_paths=seedvc_audio_tracks)
@@ -5978,7 +5978,7 @@ def edit_audio(send_cmd, state, audio_source, postprocess_audio, seedvc_voice_sa
             raise gr.Error("You must provide a second SeedVC Voice Sample")
         download_seedvc(send_cmd, "Downloading SeedVC model files...")
         if seedvc_speaker_count == 2:
-            from shared.utils.download import download_speaker_separator
+            from preprocessing.speaker_separator.assets import download_speaker_separator
             download_speaker_separator(send_cmd, "Downloading speaker separator model files...")
         send_cmd("progress", [0, get_latest_status(state, "SeedVC Voice Replacement")])
         new_audio_path = seedvc_bridge.replace_audio_file(
@@ -6947,7 +6947,7 @@ def generate_video(
         else:
             if "X" in audio_prompt_type: 
                 # dual speaker, voice separation
-                from preprocessing.speakers_separator import extract_dual_audio
+                from preprocessing.speaker_separator import extract_dual_audio
                 combination_type = "para"
                 if args.save_speakers:
                     audio_guide, audio_guide2  = "speaker1.wav", "speaker2.wav"

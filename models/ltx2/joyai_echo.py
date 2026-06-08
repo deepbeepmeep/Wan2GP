@@ -47,6 +47,21 @@ Control Video Memory positions can also be named. Use `2s, 5s` for automatic nam
 
 You can combine commands in one bracket, for example `[/duration=8s,/new_shot,/load_mem=man1,woman1]`.
 
+**Prompt Enhancer**
+
+The prompt enhancer works best when your source prompt already describes the story window by window. This gives the enhancer a plan to expand instead of letting it invent disconnected shots. Name the recurring characters and say what should happen in each window.
+
+Example source prompt:
+
+```text
+A warm comic story about a cautious widower who runs a tiny neighborhood restaurant and a confident sailor who fixes boats and hates fancy food.
+- Window 1: show the man alone in his restaurant before opening time, practicing a dinner speech and worrying that the soup is too dramatic.
+- Window 2: show the woman alone on her small boat, repairing a radio and joking that the sea is a terrible sous-chef.
+- Window 3: the man and woman meet in the restaurant during a sudden rainstorm; she brings a broken compass, he serves the dramatic soup, and they argue playfully.
+- Window 4: they travel together on the woman's boat, using the man's soup pot as an improvised compass holder while laughing about their terrible navigation.
+- Window 5: they reach a frozen northern harbor and hold a tiny wedding on the ice, with the soup pot as the ceremonial bell.
+```
+
 **Tips**
 
 - Reuse the same ID and repeat important visible and audio traits. Memory helps, but the prompt still guides identity.

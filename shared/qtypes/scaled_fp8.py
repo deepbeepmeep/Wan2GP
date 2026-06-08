@@ -371,14 +371,14 @@ class ScaledFP8WeightTensor(QTensor):
         return out.reshape(*input.shape[:-1], self._data.shape[0])
 
     def get_quantized_subtensors(self):
-        return [("scale", self._scale), ("data", self._data)]
+        return [("weight", self._data), ("scale", self._scale)]
 
     def set_quantized_subtensors(self, sub_tensors):
         if isinstance(sub_tensors, dict):
             sub_map = sub_tensors
         else:
             sub_map = {name: tensor for name, tensor in sub_tensors}
-        data = sub_map.get("data", None)
+        data = sub_map.get("weight", sub_map.get("data", None))
         if data is not None:
             self._data = data
         scale = sub_map.get("scale", None)

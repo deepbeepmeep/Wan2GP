@@ -545,7 +545,6 @@ class family_handler:
             extra_model_def.update(
                 {
                     "lock_inference_steps": True,
-                    "no_negative_prompt": bool(joy),
                 }
             )
         else:

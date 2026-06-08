@@ -10,6 +10,9 @@ from wgp_fastapi.models.flux_image import (
     TaskStatus,
     FluxImageTaskResponse,
 )
+from wgp_fastapi.models.magic_mask import (
+    MagicMaskResponse,
+)
 
 __all__ = [
     # Flux Image
@@ -19,5 +22,7 @@ __all__ = [
     # Task Status
     "TaskStatus",
     # Image to Video
-    "I2VVideoModel"
+    "I2VVideoModel",
+    # Magic Mask
+    "MagicMaskResponse",
 ]

@@ -36,6 +36,7 @@ from wgp_fastapi.models import (
     FluxImageResponse,
     TaskStatus,
     FluxImageModel,
+    MagicMaskResponse,
 )
 
 app = FastAPI(
@@ -529,6 +530,91 @@ async def get_flux_image_task(request: Request, task_id: str):
         task_id=task_id,
         progress=50,
     )
+
+
+@app.post(
+    "/api/v1/magic-mask",
+    response_model=MagicMaskResponse,
+    summary="Magic Mask Generation",
+    description="Generate a segmentation mask from an image using text prompts. Returns the masked image URL directly.",
+)
+async def magic_mask(
+    request: Request,
+    prompt: str = Form(...),
+    image: UploadFile = File(None),
+    no_hole: bool = Form(True),
+    negative_mask: bool = Form(False),
+) -> MagicMaskResponse:
+    """Generate a mask from an image using keyword prompts and return the mask image URL."""
+    from PIL import Image
+
+    if image is None:
+        raise HTTPException(status_code=400, detail="An image file is required.")
+
+    try:
+        # Save uploaded file and open as PIL Image
+        image_path = save_upload_file(image, suffix=".png")
+        pil_image = Image.open(image_path)
+
+        # Lazy import magic_mask to avoid loading order issues
+        from shared import magic_mask as mm
+
+        # Auto-download SAM3 model assets if missing
+        from shared.utils.download import process_files_def
+
+        process_files_def(**mm.query_download_def())
+
+        # Generate the mask
+        background, mask_image, keywords = mm.generate_image_mask(
+            pil_image,
+            prompt,
+            no_hole=no_hole,
+            negative_mask=negative_mask,
+        )
+
+        # Check if the mask is effectively blank — SAM3 couldn't find anything
+        if mask_image.getextrema()[1] <= 5:
+            keywords_label = ", ".join(keywords)
+            raise HTTPException(
+                status_code=422,
+                detail=f"SAM3 was unable to generate a mask for '{keywords_label}' on this image. "
+                "Try different keywords or a different image.",
+            )
+
+        # Save the mask to outputs dir with mask- prefix
+        import uuid
+
+        mask_filename = f"mask-{uuid.uuid4()}.png"
+        mask_path = os.path.join(output_dir, mask_filename)
+        os.makedirs(output_dir, exist_ok=True)
+        mask_image.save(mask_path, "PNG")
+
+        # Build the full URL
+        image_url = build_file_url(request, mask_path)
+
+        return MagicMaskResponse(
+            image_url=image_url,
+            keywords=keywords,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+
+        tb = traceback.format_exc()
+        print(f"[ERROR] magic-mask endpoint failed: {e}")
+        print(tb)
+        error_detail = {
+            "error": str(e),
+            "type": type(e).__name__,
+            "traceback": tb,
+            "context": {
+                "prompt": prompt,
+                "image_uploaded": image is not None,
+            },
+        }
+        raise HTTPException(status_code=500, detail=error_detail)
 
 
 @app.get(

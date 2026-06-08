@@ -4,7 +4,7 @@ import math
 import re
 
 
-WGP_SLASH_COMMANDS = {"duration", "overlap", "new_shot"}
+WGP_SLASH_COMMANDS = {"duration", "overlap", "new_shot", "loras_mult"}
 SLASH_BLOCK_RE = re.compile(r"\[\s*/\s*([^\]]+?)\s*\]", re.IGNORECASE)
 
 
@@ -117,6 +117,11 @@ def _parse_options(prompt: str, *, supported_model_commands: set[str], allow_new
                     continue
                 wgp_options["overlap_frames"] = 0
                 wgp_options["new_shot"] = True
+            elif key == "loras_mult":
+                if not separator or not value:
+                    error = "/loras_mult requires a value, e.g. [/loras_mult=1;3]."
+                    continue
+                wgp_options["loras_multipliers"] = value
             elif key in supported_model_commands:
                 model_options[key] = value if separator else True
             else:
@@ -145,6 +150,27 @@ def _window(prompt: str, output_frames: int, overlap_frames: int, discard_last_f
 
 def build_extension_window(prompt: str, *, window_size: int, overlap_frames: int, discard_last_frames: int = 0, minimum: int, step: int) -> dict:
     return _window(prompt, max(1, window_size - overlap_frames - discard_last_frames), overlap_frames, discard_last_frames, {}, minimum, step)
+
+
+def clone_loras_slists(slists):
+    return {key: value[:] if isinstance(value, list) else value for key, value in slists.items()} if slists is not None else None
+
+
+def prepare_loras_mult_windows(frame_scheduler: dict | None, activated_loras, num_inference_steps: int, guidance_phases: int, *, base_loras_slists=None, model_switch_phase: int = 1, store_slists: bool = False) -> str | None:
+    if frame_scheduler is None or not frame_scheduler.get("active", False):
+        return None
+    from shared.utils.loras_mutipliers import parse_loras_multipliers
+    for idx, window in enumerate(frame_scheduler["windows"], start=1):
+        window_loras_multipliers = window.get("loras_multipliers", "")
+        if len(window_loras_multipliers) > 0:
+            if len(activated_loras) == 0:
+                return f"Sliding window {idx} uses /loras_mult but no LoRA is selected."
+            _, window_loras_slists, errors = parse_loras_multipliers(window_loras_multipliers, len(activated_loras), num_inference_steps, nb_phases=guidance_phases, merge_slist=clone_loras_slists(base_loras_slists), model_switch_phase=model_switch_phase)
+            if len(errors) > 0:
+                return f"Error parsing /loras_mult for Sliding window {idx}: {errors}"
+            if store_slists:
+                window["loras_slists"] = window_loras_slists
+    return None
 
 
 def build_frame_scheduler(
@@ -196,6 +222,8 @@ def build_frame_scheduler(
                 return {}, f"Sliding window {idx} would generate no frame because previous windows already consume the requested frame count. Unable to start generation: please specify shorter /duration values for the previous sliding windows or increase the total number of frames."
             duration = min(remaining, max(1, window_size - overlap - discard_last_frames))
         window = _window(prompt, duration, overlap, discard_last_frames, model_options, minimum, step, new_shot=bool(wgp_options.get("new_shot", False)))
+        if "loras_multipliers" in wgp_options:
+            window["loras_multipliers"] = wgp_options["loras_multipliers"]
         windows.append(window)
         consumed += window["output_frames"]
 

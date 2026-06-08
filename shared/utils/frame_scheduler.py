@@ -118,9 +118,6 @@ def _parse_options(prompt: str, *, supported_model_commands: set[str], allow_new
                 wgp_options["overlap_frames"] = 0
                 wgp_options["new_shot"] = True
             elif key in supported_model_commands:
-                if separator and not value:
-                    error = f"/{key} value cannot be empty."
-                    continue
                 model_options[key] = value if separator else True
             else:
                 supported = sorted(WGP_SLASH_COMMANDS | supported_model_commands)

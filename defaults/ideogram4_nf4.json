@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "Ideogram 4 NF4",
+        "name": "Ideogram v4 NF4 9.3B",
         "architecture": "ideogram4",
         "description": "Ideogram v4 is a 9.3B open image model focused on typography, layout control, graphic design, and high-resolution text-to-image generation. This Bitsandbytes NF4-quantized version requires to install the NF4 kernels for fast performance. Prompt can be basic text, but you will get better results if you use the json format. So the Magic Prompt Enhancer is a must use. If you are unlucky you will get a 'Image Blocked by Safety Filter', no way to remove this right now.",
         "URLs": [

@@ -61,7 +61,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 - **JoyAI-Echo**: this new LTX-2.3 model is the closest thing to *SeeDance 2* that you may find in the open source world. It is an audio-video model for connected multi-window stories. JoyAI-Echo keeps compact memories between windows so later shots can reuse characters, voices, objects, and places. WanGP implementation of *JoyAI-Echo* goes well beyond the original implementation:
    - Use a *Control Video* to target audio/video segments in the *Joy memory positions* field and seed the first memories with characters and background.
    - With the new *Sliding Window commands* (see below), you can extend existing *Sliding Windows*, *Create New Shots*, or *Continue a Video*.
-   - The new memory command system (`[/store_mem]`, `[/no_mem]`, and `[/drop_mem]`) lets you pick which sliding windows can be reused for future memory and which ones should be ignored. Please check the JoyAI-Echo *Prompt help* for the full syntax.
+   - The new memory command system (`[/store_mem]`, `[/load_mem]`, and `[/drop_mem]`) lets you pick which sliding windows can be reused for future memory and which ones should no longer be used. Please check the JoyAI-Echo *Prompt help* for the full syntax.
 
 - **Sliding Window Commands**: thanks to new inline prompt commands (for instance `[/duration=...]`, `[/overlap=...]`, and `[/new_shot]`), you can now define a different duration, number of frames, or transition style on a per-window basis. See `docs/PROMPTS.md` for the full syntax and examples.
 

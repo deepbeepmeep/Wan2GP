@@ -192,12 +192,6 @@ class DistilledPipeline:
         video_latent = joyai_echo.get(f"video_latent{suffix}")
         audio_latent = joyai_echo.get(f"audio_latent{suffix}")
         audio_segment_lengths = joyai_echo.get(f"audio_segment_lengths{suffix}")
-        if joyai_echo.get("debug_memory", False):
-            stage = "stage2" if suffix == "_stage2" else "stage1"
-            video_slots = 0 if video_latent is None else video_latent.shape[2]
-            audio_slots = 0 if audio_segment_lengths is None else len(audio_segment_lengths[0])
-            labels = ", ".join(joyai_echo.get("memory_labels", [])) or "none"
-            print(f"[WAN2GP][JoyAI-Echo][memory] window={joyai_echo.get('window_no', 1)} injecting {stage} guiding memory: video_slots={video_slots} audio_slots={audio_slots} paired_audio={paired_audio} slots={labels}", flush=True)
         return paired_reference_conditionings_by_latents(
             video_latent=video_latent,
             audio_latent=audio_latent,

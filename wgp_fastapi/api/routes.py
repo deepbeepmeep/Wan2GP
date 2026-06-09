@@ -613,11 +613,23 @@ async def magic_mask(
         os.makedirs(output_dir, exist_ok=True)
         mask_image.save(mask_path, "PNG")
 
-        # Build the full URL
+        # Build the overlay: original image + white mask composited on top
+        base_rgba = background.convert("RGBA")
+        overlay = Image.new("RGBA", base_rgba.size, (255, 255, 255, 0))
+        overlay.putalpha(mask_image)
+        composited = Image.alpha_composite(base_rgba, overlay)
+
+        overlay_filename = f"mask-overlay-{uuid.uuid4()}.png"
+        overlay_path = os.path.join(output_dir, overlay_filename)
+        composited.save(overlay_path, "PNG")
+
+        # Build the full URLs
         image_url = build_file_url(request, mask_path)
+        overlay_url = build_file_url(request, overlay_path)
 
         return MagicMaskResponse(
             image_url=image_url,
+            maskOverlay=overlay_url,
             keywords=keywords,
         )
 

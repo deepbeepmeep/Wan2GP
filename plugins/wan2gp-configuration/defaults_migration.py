@@ -6,7 +6,7 @@ from shared.deepy.config import DEEPY_ENABLED_KEY
 
 LEGACY_EXTENSIONS_DEFAULTS_MIGRATED_KEY = "_extensions_defaults_migrated"
 EXTENSIONS_DEFAULTS_VERSION_KEY = "extensions_defaults_version"
-EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.11")
+EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.12")
 EXTENSIONS_DEFAULTS_TARGET_VERSION_TEXT = str(EXTENSIONS_DEFAULTS_TARGET_VERSION)
 
 MMAUDIO_MODE_CHOICES = [("Standard", 1), ("NSFW", 2)]
@@ -30,6 +30,8 @@ PROMPT_ENHANCER_HIGH_VRAM_DEFAULT_MODE = 3
 PROMPT_ENHANCER_DEFAULT_MODE = PROMPT_ENHANCER_HIGH_VRAM_DEFAULT_MODE
 PROMPT_ENHANCER_QWEN_MIN_VRAM_GB = 10
 DEEPY_DEFAULT_ENABLED = 1
+LEGACY_MEDIAFLOW_PLUGIN_IDS = {"wan2gp-process-full-video", "wan2gp-mediaflow"}
+MEDIAFLOW_PLUGIN_ID = "wan2gp-media-flow"
 
 
 def _to_int(value, default=0):
@@ -119,7 +121,7 @@ def migrate_extension_defaults(server_config, server_config_filename="") -> bool
             server_config[DEEPY_ENABLED_KEY] = DEEPY_DEFAULT_ENABLED
             changed = True
 
-    if version < EXTENSIONS_DEFAULTS_TARGET_VERSION:
+    if version < Decimal("1.11"):
         if server_config.get("seedvc_mode") != SEEDVC_DEFAULT_MODE:
             server_config["seedvc_mode"] = SEEDVC_DEFAULT_MODE
             changed = True
@@ -131,8 +133,34 @@ def migrate_extension_defaults(server_config, server_config_filename="") -> bool
     if server_config.get(EXTENSIONS_DEFAULTS_VERSION_KEY) != EXTENSIONS_DEFAULTS_TARGET_VERSION_TEXT:
         server_config[EXTENSIONS_DEFAULTS_VERSION_KEY] = EXTENSIONS_DEFAULTS_TARGET_VERSION_TEXT
         changed = True
+    changed = migrate_mediaflow_plugin_id(server_config) or changed
 
     if changed:
+        _write_config(server_config, server_config_filename)
+    return changed
+
+
+def migrate_mediaflow_plugin_id(server_config, server_config_filename="") -> bool:
+    if not isinstance(server_config, dict):
+        return False
+    enabled_plugins = server_config.get("enabled_plugins", [])
+    if not isinstance(enabled_plugins, list):
+        return False
+    changed = False
+    migrated = []
+    seen = set()
+    for plugin_id in enabled_plugins:
+        plugin_id = str(plugin_id or "").strip()
+        if plugin_id in LEGACY_MEDIAFLOW_PLUGIN_IDS:
+            plugin_id = MEDIAFLOW_PLUGIN_ID
+            changed = True
+        if not plugin_id or plugin_id in seen:
+            changed = True
+            continue
+        seen.add(plugin_id)
+        migrated.append(plugin_id)
+    if changed:
+        server_config["enabled_plugins"] = migrated
         _write_config(server_config, server_config_filename)
     return changed
 

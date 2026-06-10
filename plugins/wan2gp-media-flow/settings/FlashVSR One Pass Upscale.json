@@ -1,5 +1,6 @@
 {
   "model_type": "__system_flashvsr",
+  "model_label": "WanGP System Video Postprocessing",
   "system_handler": "flashvsr",
   "spatial_upsampling_method": "flashvsr",
   "target_ratio": "flashvsr2",

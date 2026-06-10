@@ -25,6 +25,13 @@ class ProcessLibrary:
     def model_type_label(self, model_type: str) -> str:
         if len(str(model_type or "").strip()) == 0:
             return "Unknown Model"
+        for process_definition in catalog.PROCESS_DEFINITIONS.values():
+            settings = process_definition.get("settings", {})
+            if str(settings.get("model_type") or "").strip() != str(model_type):
+                continue
+            model_label = str(settings.get("model_label") or "").strip()
+            if len(model_label) > 0:
+                return model_label
         handler = self.system_handler_for_model_type(str(model_type))
         if handler is not None:
             return str(getattr(handler, "model_label", str(model_type)))
@@ -64,7 +71,7 @@ class ProcessLibrary:
             if settings_path.suffix.lower() == ".zip":
                 payload, source_task_count = load_first_settings_from_queue_zip(settings_path, SETTINGS_BUNDLE_ATTACHMENT_KEYS)
                 if source_task_count > 1:
-                    print(f"[Process Full Video] Settings bundle {settings_path.name} contains {source_task_count} tasks; only the first task was extracted.")
+                    print(f"[MediaFlow] Settings bundle {settings_path.name} contains {source_task_count} tasks; only the first task was extracted.")
             else:
                 payload = json.loads(settings_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, zipfile.BadZipFile):
@@ -215,6 +222,22 @@ class ProcessLibrary:
         return str(settings.get("model_type") or "").strip() if isinstance(settings, dict) else ""
 
     @staticmethod
+    def process_definition_is_image(process_definition: dict | None) -> bool:
+        settings = process_definition.get("settings") if isinstance(process_definition, dict) else None
+        if not isinstance(settings, dict):
+            return False
+        try:
+            return int(settings.get("image_mode") or 0) == 1
+        except (TypeError, ValueError):
+            return False
+
+    def is_image_process(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:
+        return self.process_definition_is_image(self.process_definition(process_name, main_state, user_refs))
+
+    def media_kind_for_process(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> str:
+        return "image" if self.is_image_process(process_name, main_state, user_refs) else "video"
+
+    @staticmethod
     def system_handler_for_definition(process_definition: dict | None):
         settings = process_definition.get("settings") if isinstance(process_definition, dict) else None
         if not isinstance(settings, dict):
@@ -264,10 +287,14 @@ class ProcessLibrary:
         return 10.0
 
     def hides_sliding_window_overlap(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:
+        if self.is_image_process(process_name, main_state, user_refs):
+            return True
         handler = self.system_handler_for_process(process_name, main_state, user_refs)
         return bool(getattr(handler, "hide_sliding_window_overlap", False)) if handler is not None else False
 
     def hides_output_resolution(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:
+        if self.is_image_process(process_name, main_state, user_refs):
+            return True
         handler = self.system_handler_for_process(process_name, main_state, user_refs)
         return bool(getattr(handler, "hide_output_resolution", False)) if handler is not None else False
 

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import html
+import io
 from pathlib import Path
 
 import gradio as gr
+from PIL import Image
 
-from shared.gradio.local_file_picker import LocalFilePickerTextbox, VIDEO_FILE_EXTENSIONS
+from shared.gradio.local_file_picker import IMAGE_FILE_EXTENSIONS, LocalFilePickerTextbox, VIDEO_FILE_EXTENSIONS
 
 from . import common
 from . import constants as ui_constants
@@ -33,30 +35,79 @@ def create_config_ui(self, api_session):
     ratio_values = {value for _, value in ui_constants.RATIO_CHOICES}
 
     form_controller = ProcessFormController(library=library, get_model_def=get_model_def, output_resolution_values=output_resolution_values, source_audio_track_values=source_audio_track_values, ratio_values=ratio_values)
-    saved_ui_settings = catalog.load_saved_process_full_video_settings()
+    saved_ui_settings = catalog.load_saved_mediaflow_settings()
     initial_user_refs = catalog.get_saved_user_settings_refs(saved_ui_settings)
     initial_form = form_controller.build_initial_form(saved_ui_settings, self.state.value, initial_user_refs)
     default_model_type = initial_form.model_type
     default_process_choices = initial_form.process_choices
     default_process_name = initial_form.process_name
     default_state = initial_form.form_state
-    active_job = {"job": None, "running": False, "cancel_requested": False, "write_state": None}
+    default_batch_mode = "batch" if str(saved_ui_settings.get("batch_mode") or "single").strip() == "batch" else "single"
+    default_batch_name = str(saved_ui_settings.get("batch_name") or "").strip()
+    default_batch_source_path = str(saved_ui_settings.get("batch_source_path") or "").strip()
+    initial_image_process = library.is_image_process(default_process_name, self.state.value, initial_user_refs)
+    active_job = {"job": None, "running": False, "batch_running": False, "cancel_requested": False, "write_state": None}
     preview_state = {"image": None}
     ui_skip = object()
+    initial_status_html = status_ui.render_process_status_html("Idle", "Waiting to start...") if initial_image_process else status_ui.render_chunk_status_html(0, 0, 0, "Idle", "Waiting to start...")
+    initial_output_html = status_ui.render_output_file_html("")
+    last_html = {"status": initial_status_html, "batch_status": "", "output": initial_output_html}
+
+    def _copy_preview_image(image):
+        if image is None:
+            return None
+        if isinstance(image, dict):
+            image = image.get("path") or image.get("name") or image.get("value")
+        if isinstance(image, (str, Path)):
+            with Image.open(image) as preview:
+                image = preview.copy()
+        elif isinstance(image, Image.Image):
+            image = image.copy()
+        else:
+            return None
+        try:
+            image.filename = ""
+        except (AttributeError, TypeError):
+            pass
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        buffer.seek(0)
+        with Image.open(buffer) as preview:
+            return preview.copy()
 
     def refresh_preview(_refresh_id):
-        return preview_state["image"]
+        return _copy_preview_image(preview_state["image"])
 
     def _button_update(label: str, enabled: bool | None):
         return gr.skip() if enabled is None else gr.update(value=label, interactive=enabled)
 
-    def _ui_update(status=ui_skip, output=ui_skip, preview_refresh=ui_skip, *, start_enabled: bool | None = None, abort_enabled: bool | None = None):
-        status_update = gr.skip() if status is ui_skip else status
-        output_update = gr.skip() if output is ui_skip else status_ui.render_output_file_html(output)
+    def _html_value(value, fallback: str = "") -> str:
+        if isinstance(value, dict) and value.get("__type__") == "update":
+            value = value.get("value", fallback)
+        return str(value or fallback or "")
+
+    def _html_update(value, fallback: str = ""):
+        return gr.update(value=_html_value(value, fallback))
+
+    def _stopping_status_update():
+        last_html["status"] = status_ui.render_process_status_html("Stopping", "Stopping current processing job...")
+        return _html_update(last_html["status"])
+
+    def _ui_update(status=ui_skip, output=ui_skip, preview_refresh=ui_skip, *, batch_status=ui_skip, start_enabled: bool | None = None, abort_enabled: bool | None = None, batch_name_value=ui_skip):
+        if status is not ui_skip:
+            last_html["status"] = _html_value(status)
+        if batch_status is not ui_skip:
+            last_html["batch_status"] = _html_value(batch_status)
+        if output is not ui_skip:
+            last_html["output"] = status_ui.render_output_file_html(_html_value(output))
+        status_update = last_html["status"]
+        batch_status_update = last_html["batch_status"]
+        output_update = last_html["output"]
         preview_update = gr.skip() if preview_refresh is ui_skip else preview_refresh
         start_update = _button_update("Start Process", start_enabled)
         abort_update = _button_update("Stop", abort_enabled)
-        return status_update, output_update, preview_update, start_update, abort_update
+        batch_name_update = gr.skip() if batch_name_value is ui_skip else gr.update(value=batch_name_value)
+        return status_update, batch_status_update, output_update, preview_update, start_update, abort_update, batch_name_update
 
     def _info_exit(message: str, *, output=ui_skip, total_chunks: int = 1, completed_chunks: int = 0, current_chunk: int = 1, continued: bool = False):
         gr.Info(str(message or "").strip())
@@ -156,12 +207,12 @@ def create_config_ui(self, api_session):
             try:
                 job.cancel()
             except RuntimeError as exc:
-                print(f"[Process Full Video] Stop requested; WanGP abort bridge was not available: {exc}")
+                print(f"[MediaFlow] Stop requested; WanGP abort bridge was not available: {exc}")
             common.plugin_info("Stopping current processing job...")
-            return gr.update(value="Start Process", interactive=False), gr.update(value="Stop", interactive=False)
-        if active_job.get("running"):
-            return gr.update(value="Start Process", interactive=False), gr.update(value="Stop", interactive=False)
-        return gr.update(value="Start Process", interactive=True), gr.update(value="Stop", interactive=False)
+            return _stopping_status_update(), _html_update(last_html["batch_status"]), gr.update(value="Start Process", interactive=False), gr.update(value="Stop", interactive=False)
+        if active_job.get("running") or active_job.get("batch_running"):
+            return _stopping_status_update(), _html_update(last_html["batch_status"]), gr.update(value="Start Process", interactive=False), gr.update(value="Stop", interactive=False)
+        return _html_update(last_html["status"]), _html_update(last_html["batch_status"]), gr.update(value="Start Process", interactive=True), gr.update(value="Stop", interactive=False)
 
     def _form_values(source_path_value, process_strength_value, output_path_value, prompt_value, continue_value, source_audio_track_value, output_resolution_value, target_ratio_value, chunk_size_value, overlap_value, start_value, end_value):
         return FormComponentValues(source_path_value, process_strength_value, output_path_value, prompt_value, continue_value, source_audio_track_value, output_resolution_value, target_ratio_value, chunk_size_value, overlap_value, start_value, end_value)
@@ -182,6 +233,34 @@ def create_config_ui(self, api_session):
         values = _form_values(source_path_value, process_strength_value, output_path_value, prompt_value, continue_value, source_audio_track_value, output_resolution_value, target_ratio_value, chunk_size_value, overlap_value, start_value, end_value)
         return form_controller.refresh_from_main(refresh_id, memory_state, current_process_name, process_model_type_value, main_state, main_lset_name, refs, values)
 
+    def _batch_mode_updates(batch_mode_value):
+        is_batch = str(batch_mode_value or "").strip() == "batch"
+        return gr.update(visible=is_batch), gr.update(visible=is_batch), gr.update(value="", visible=False)
+
+    def _media_visibility_updates(process_name_value, main_state, refs, batch_mode_value):
+        image_process = library.is_image_process(process_name_value, main_state, refs)
+        is_batch = str(batch_mode_value or "").strip() == "batch"
+        return (
+            gr.update(visible=(not is_batch and not image_process)),
+            gr.update(visible=(not is_batch and image_process)),
+            gr.update(visible=(is_batch and not image_process)),
+            gr.update(visible=(is_batch and image_process)),
+            gr.update(visible=(not image_process or is_batch)),
+            gr.update(visible=not image_process),
+            gr.update(visible=not image_process),
+            gr.update(visible=not image_process),
+            gr.update(visible=not image_process),
+            gr.update(value=status_ui.render_process_status_html("Idle", "Waiting to start...") if image_process else status_ui.render_chunk_status_html(0, 0, 0, "Idle", "Waiting to start...")),
+        )
+
+    def _batch_mode_media_updates(process_name_value, main_state, refs, batch_mode_value):
+        is_batch = str(batch_mode_value or "").strip() == "batch"
+        return (
+            gr.update(visible=is_batch),
+            *_media_visibility_updates(process_name_value, main_state, refs, batch_mode_value),
+            "",
+        )
+
     process_form_memory = gr.State(initial_process_form_memory)
     active_process_name_state = gr.State(default_process_name)
     user_process_refs = gr.State(initial_user_refs)
@@ -189,7 +268,7 @@ def create_config_ui(self, api_session):
         gr.HTML(
             """
             <style>
-            #process-full-video-settings-actions {
+            #mediaflow-settings-actions {
                 align-self: flex-end !important;
                 margin-bottom: 1px;
                 padding-bottom: 4px !important;
@@ -198,13 +277,13 @@ def create_config_ui(self, api_session):
                 min-width: 34px !important;
                 max-width: 34px !important;
             }
-            #process-full-video-settings-actions > .form {
+            #mediaflow-settings-actions > .form {
                 padding: 0 !important;
                 border: 0 !important;
                 background: transparent !important;
                 box-shadow: none !important;
             }
-            #process-full-video-settings-actions button {
+            #mediaflow-settings-actions button {
                 width: 34px !important;
                 min-width: 34px !important;
                 max-width: 34px !important;
@@ -212,7 +291,7 @@ def create_config_ui(self, api_session):
                 min-height: 34px;
                 padding: 0 !important;
             }
-            #process-full-video-settings-actions .process-full-video-settings-action-placeholder {
+            #mediaflow-settings-actions .mediaflow-settings-action-placeholder {
                 display: none !important;
                 width: 0 !important;
                 min-width: 0 !important;
@@ -221,7 +300,7 @@ def create_config_ui(self, api_session):
                 min-height: 0 !important;
                 overflow: hidden !important;
             }
-            #process-full-video-user-settings-hint-row {
+            #mediaflow-user-settings-hint-row {
                 height: 12px !important;
                 min-height: 0 !important;
                 max-height: 12px !important;
@@ -230,7 +309,7 @@ def create_config_ui(self, api_session):
                 padding: 0 !important;
                 overflow: visible !important;
             }
-            #process-full-video-user-settings-hint-row > .form {
+            #mediaflow-user-settings-hint-row > .form {
                 padding: 0 !important;
                 border: 0 !important;
                 background: transparent !important;
@@ -238,9 +317,9 @@ def create_config_ui(self, api_session):
                 min-height: 0 !important;
                 overflow: visible !important;
             }
-            #process-full-video-user-settings-hint-row .block,
-            #process-full-video-user-settings-hint-row .html-container,
-            #process-full-video-user-settings-hint-row .prose {
+            #mediaflow-user-settings-hint-row .block,
+            #mediaflow-user-settings-hint-row .html-container,
+            #mediaflow-user-settings-hint-row .prose {
                 height: auto !important;
                 margin: 0 !important;
                 min-height: 0 !important;
@@ -250,33 +329,47 @@ def create_config_ui(self, api_session):
             </style>
             """
         )
+        with gr.Column():
+            gr.Markdown(
+                """Media Flow processes videos or images one item at a time or as a resumable batch:<BR>
+-Video processes can have unlimited duration and their original Audio is preserved without reencoding<BR>
+-Image processes can be applied on multiple files at same time"""
+            )
         with gr.Row():
-            gr.Markdown("This PlugIn is a *Super Sliding Windows* mode with *Low RAM requirements*, lossless Audio Copy and no risk to explode your Web Browser and the *Video Gallery* with huge files. You can stop a Process and Resume it later. You can define different prompts for different time range. However quite often the prompt should have little impact on the ouput.")
+            batch_mode = gr.Radio([("One item", "single"), ("Batch", "batch")], value=default_batch_mode, label="Process Mode")
+            batch_name = gr.Textbox(label="Batch Name", value=default_batch_name, visible=default_batch_mode == "batch")
         with gr.Row():
             process_model_type = gr.Dropdown(model_type_choices, value=default_model_type, label="Model", scale=1)
             process_name = gr.Dropdown(default_process_choices, value=default_process_name, label="Process", scale=3)
-            with gr.Column(scale=0, min_width=34, visible=default_model_type == ui_constants.ADD_USER_SETTINGS_MODEL_TYPE or catalog.is_user_process_value(default_process_name), elem_id="process-full-video-settings-actions") as settings_actions_column:
+            with gr.Column(scale=0, min_width=34, visible=default_model_type == ui_constants.ADD_USER_SETTINGS_MODEL_TYPE or catalog.is_user_process_value(default_process_name), elem_id="mediaflow-settings-actions") as settings_actions_column:
                 add_user_settings_btn = gr.Button("\u2795", size="sm", min_width=1, visible=default_model_type == ui_constants.ADD_USER_SETTINGS_MODEL_TYPE, elem_classes=["wangp-assistant-chat__template-tool-icon-btn"])
                 delete_user_settings_btn = gr.Button("\U0001F5D1\uFE0F", size="sm", min_width=1, visible=catalog.is_user_process_value(default_process_name), elem_classes=["wangp-assistant-chat__template-tool-icon-btn", "wangp-assistant-chat__template-tool-icon-btn--danger"])
-                settings_actions_placeholder = gr.HTML("<div class='process-full-video-settings-action-placeholder'></div>", visible=False)
-        with gr.Row(visible=library.process_choices_have_user_settings(default_process_choices), elem_id="process-full-video-user-settings-hint-row") as process_user_settings_hint_row:
+                settings_actions_placeholder = gr.HTML("<div class='mediaflow-settings-action-placeholder'></div>", visible=False)
+        with gr.Row(visible=library.process_choices_have_user_settings(default_process_choices), elem_id="mediaflow-user-settings-hint-row") as process_user_settings_hint_row:
             gr.HTML(value=ui_constants.USER_SETTINGS_HINT_HTML)
-        source_path = LocalFilePickerTextbox(label="Source Video Path File", value=default_state.source_path, file_extensions=VIDEO_FILE_EXTENSIONS, popup_title="Browse Local Source Video").mount()
+        with gr.Column(visible=default_batch_mode == "batch" and not initial_image_process) as batch_video_source_column:
+            batch_source_path = LocalFilePickerTextbox(label="Batch Source Video Paths (one per line, folders/wildcards accepted)", value=default_batch_source_path, file_extensions=VIDEO_FILE_EXTENSIONS, multiselect=True, popup_title="Browse Local Source Videos").mount()
+        with gr.Column(visible=default_batch_mode == "batch" and initial_image_process) as batch_image_source_column:
+            batch_image_source_path = LocalFilePickerTextbox(label="Batch Source Image Paths (one per line, folders/wildcards accepted)", value=default_batch_source_path, file_extensions=IMAGE_FILE_EXTENSIONS, multiselect=True, popup_title="Browse Local Source Images").mount()
+        with gr.Column(visible=default_batch_mode != "batch" and not initial_image_process) as source_video_column:
+            source_path = LocalFilePickerTextbox(label="Source Video Path File", value=default_state.source_path, file_extensions=VIDEO_FILE_EXTENSIONS, popup_title="Browse Local Source Video").mount()
+        with gr.Column(visible=default_batch_mode != "batch" and initial_image_process) as source_image_column:
+            source_image_path = LocalFilePickerTextbox(label="Source Image Path File", value=default_state.source_path, file_extensions=IMAGE_FILE_EXTENSIONS, popup_title="Browse Local Source Image").mount()
         with gr.Row():
             output_path = gr.Textbox(label="Output File Path File (None for auto, Full Name or Target Folder)", value=default_state.output_path, scale=3)
-            continue_enabled = gr.Checkbox(label="Continue", value=default_state.continue_enabled, elem_classes="cbx_bottom", scale=1)
+            continue_enabled = gr.Checkbox(label="Continue", value=default_state.continue_enabled, elem_classes="cbx_bottom", scale=1, visible=not initial_image_process or default_batch_mode == "batch")
         with gr.Row():
             output_resolution = gr.Dropdown(output_resolution_choices, value=default_state.output_resolution, label="Output Resolution", visible=initial_form.output_resolution_visible)
             default_process_strength = 1.0 if initial_form.target_ratio_visible else default_state.process_strength
             process_strength = gr.Slider(label="Process Strength (LoRA Multiplier)", minimum=min(0.0, default_process_strength), maximum=max(3.0, default_process_strength), step=0.01, value=default_process_strength, visible=initial_form.process_strength_visible)
         with gr.Row():
-            chunk_size_seconds = gr.Number(label="Chunk Size (seconds)", value=default_state.chunk_size_seconds, precision=2)
+            chunk_size_seconds = gr.Number(label="Chunk Size (seconds)", value=default_state.chunk_size_seconds, precision=2, visible=not initial_image_process)
             target_ratio = gr.Dropdown(initial_form.target_ratio_choices if initial_form.target_ratio_visible else ui_constants.RATIO_CHOICES_WITH_EMPTY, value=default_state.target_ratio if initial_form.target_ratio_visible else "", label=initial_form.target_ratio_label, visible=initial_form.target_ratio_visible)
             sliding_window_overlap = gr.Slider(label="Sliding Window Overlap", minimum=0 if not initial_form.overlap_visible else 1, maximum=initial_form.overlap_max, step=initial_form.overlap_step, value=default_state.sliding_window_overlap, visible=initial_form.overlap_visible)
         with gr.Row():
-            start_seconds = gr.Textbox(label="Start (s/MM:SS(.xx)/HH:MM:SS(.xx))", value=default_state.start_seconds, placeholder="seconds, MM:SS(.xx), or HH:MM:SS(.xx)")
-            end_seconds = gr.Textbox(label="End (s/MM:SS(.xx)/HH:MM:SS(.xx))", value=default_state.end_seconds, placeholder="seconds, MM:SS(.xx), or HH:MM:SS(.xx)")
-            source_audio_track = gr.Dropdown(source_audio_track_choices, value=default_state.source_audio_track, label="Source Audio Track")
+            start_seconds = gr.Textbox(label="Start (s/MM:SS(.xx)/HH:MM:SS(.xx))", value=default_state.start_seconds, placeholder="seconds, MM:SS(.xx), or HH:MM:SS(.xx)", visible=not initial_image_process)
+            end_seconds = gr.Textbox(label="End (s/MM:SS(.xx)/HH:MM:SS(.xx))", value=default_state.end_seconds, placeholder="seconds, MM:SS(.xx), or HH:MM:SS(.xx)", visible=not initial_image_process)
+            source_audio_track = gr.Dropdown(source_audio_track_choices, value=default_state.source_audio_track, label="Source Audio Track", visible=not initial_image_process)
         with gr.Row():
             prompt_text = gr.Textbox(
                 label="Prompt (timed blocks supported: MM:SS(.xx) / HH:MM:SS(.xx))",
@@ -288,9 +381,10 @@ def create_config_ui(self, api_session):
         with gr.Row():
             start_btn = gr.Button("Start Process")
             abort_btn = gr.Button("Stop", interactive=False)
-        status_html = gr.HTML(value=status_ui.render_chunk_status_html(0, 0, 0, "Idle", "Waiting to start..."))
+        batch_status_html = gr.HTML(value="")
+        status_html = gr.HTML(value=initial_status_html)
         preview_image = gr.Image(label="Last Frame Preview", type="pil")
-        output_file = gr.HTML(value=status_ui.render_output_file_html(""))
+        output_file = gr.HTML(value=initial_output_html)
         preview_refresh = gr.Textbox(value="", visible=False)
         tab_refresh_trigger = gr.Textbox(value="", visible=False)
 
@@ -310,6 +404,7 @@ def create_config_ui(self, api_session):
             sliding_window_overlap.change,
             start_seconds.change,
             end_seconds.change,
+            batch_mode.change,
         ],
         fn=_store_memory,
         inputs=[process_form_memory, active_process_name_state, self.state, user_process_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
@@ -317,53 +412,66 @@ def create_config_ui(self, api_session):
         queue=False,
         show_progress="hidden",
     )
-    process_model_type.change(
+    batch_mode.change(
+        fn=_batch_mode_media_updates,
+        inputs=[process_name, self.state, user_process_refs, batch_mode],
+        outputs=[batch_name, source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html, batch_status_html],
+        queue=False,
+        show_progress="hidden",
+    )
+    process_model_type_event = process_model_type.change(
         fn=_change_process_model_type,
         inputs=[process_form_memory, active_process_name_state, process_model_type, self.state, self.lset_name, user_process_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         outputs=[process_form_memory, active_process_name_state, process_name, process_user_settings_hint_row, settings_actions_column, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         queue=False,
         show_progress="hidden",
     )
-    process_name.change(
+    process_model_type_event.then(fn=_media_visibility_updates, inputs=[process_name, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], queue=False, show_progress="hidden")
+    process_name_event = process_name.change(
         fn=_change_process_name,
         inputs=[process_form_memory, active_process_name_state, process_name, process_model_type, self.state, user_process_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         outputs=[process_form_memory, active_process_name_state, settings_actions_column, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         queue=False,
         show_progress="hidden",
     )
-    add_user_settings_btn.click(
+    process_name_event.then(fn=_media_visibility_updates, inputs=[process_name, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], queue=False, show_progress="hidden")
+    add_user_settings_event = add_user_settings_btn.click(
         fn=_add_user_process_link,
         inputs=[process_name, self.state, self.lset_name, user_process_refs],
         outputs=[user_process_refs, process_model_type, process_name, process_user_settings_hint_row, active_process_name_state, settings_actions_column, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder],
         show_progress="hidden",
     )
-    delete_user_settings_btn.click(
+    add_user_settings_event.then(fn=_media_visibility_updates, inputs=[process_name, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], queue=False, show_progress="hidden")
+    delete_user_settings_event = delete_user_settings_btn.click(
         fn=_delete_user_process_link,
         inputs=[process_form_memory, process_name, self.state, user_process_refs, source_path],
         outputs=[user_process_refs, process_model_type, process_name, process_user_settings_hint_row, active_process_name_state, settings_actions_column, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         show_progress="hidden",
     )
-    self.refresh_form_trigger.change(
+    delete_user_settings_event.then(fn=_media_visibility_updates, inputs=[process_name, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], queue=False, show_progress="hidden")
+    refresh_form_event = self.refresh_form_trigger.change(
         fn=_refresh_from_main,
         inputs=[self.refresh_form_trigger, process_form_memory, active_process_name_state, process_model_type, self.state, self.lset_name, user_process_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         outputs=[process_model_type, process_name, process_user_settings_hint_row, process_form_memory, active_process_name_state, settings_actions_column, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         queue=False,
         show_progress="hidden",
     )
-    tab_refresh_trigger.change(
+    refresh_form_event.then(fn=_media_visibility_updates, inputs=[process_name, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], queue=False, show_progress="hidden")
+    tab_refresh_event = tab_refresh_trigger.change(
         fn=_refresh_from_main,
         inputs=[tab_refresh_trigger, process_form_memory, active_process_name_state, process_model_type, self.state, self.lset_name, user_process_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         outputs=[process_model_type, process_name, process_user_settings_hint_row, process_form_memory, active_process_name_state, settings_actions_column, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         queue=False,
         show_progress="hidden",
     )
+    tab_refresh_event.then(fn=_media_visibility_updates, inputs=[process_name, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], queue=False, show_progress="hidden")
     start_btn.click(
         fn=process_runner.start_process,
-        inputs=[self.state, process_name, user_process_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
-        outputs=[status_html, output_file, preview_refresh, start_btn, abort_btn],
+        inputs=[self.state, process_name, user_process_refs, source_path, source_image_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds, batch_mode, batch_name, batch_source_path, batch_image_source_path],
+        outputs=[status_html, batch_status_html, output_file, preview_refresh, start_btn, abort_btn, batch_name],
         queue=False,
         show_progress="hidden",
         show_progress_on=[],
     )
     preview_refresh.change(fn=refresh_preview, inputs=[preview_refresh], outputs=[preview_image], queue=False, show_progress="hidden")
-    abort_btn.click(fn=stop_process, outputs=[start_btn, abort_btn], queue=False, show_progress="hidden")
+    abort_btn.click(fn=stop_process, outputs=[status_html, batch_status_html, start_btn, abort_btn], queue=False, show_progress="hidden")

@@ -8,6 +8,20 @@ import gradio as gr
 from . import constants
 
 
+IMAGE_CODEC_EXTENSIONS = {
+    "jpeg_95": ".jpg",
+    "jpeg_85": ".jpg",
+    "jpeg_70": ".jpg",
+    "jpeg_50": ".jpg",
+    "png": ".png",
+    "webp_95": ".webp",
+    "webp_85": ".webp",
+    "webp_70": ".webp",
+    "webp_50": ".webp",
+    "webp_lossless": ".webp",
+}
+
+
 def choose_resolution(budget_label: str) -> str:
     resolutions = {"256p": "448x256", "320p": "576x320", "384p": "672x384", "480p": "832x480", "540p": "960x544", "720p": "1280x720", "900p": "1600x896", "1080p": "1920x1088"}
     try:
@@ -45,6 +59,10 @@ def _supported_suffix(preferred_suffix: str, default_container: str) -> str:
     return f".{fallback_container}" if fallback_container in constants.SUPPORTED_OUTPUT_CONTAINERS else ".mp4"
 
 
+def image_output_extension(image_output_codec: str | None) -> str:
+    return IMAGE_CODEC_EXTENSIONS.get(str(image_output_codec or "jpeg_95").strip().lower(), ".jpg")
+
+
 def build_auto_output_path(source_path: str, process_name: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None, output_dir: str | None = None, *, has_outpaint: bool = False, default_container: str = "mp4") -> str:
     source = Path(source_path)
     process_token = get_process_filename_token(process_name)
@@ -58,6 +76,14 @@ def build_auto_output_path(source_path: str, process_name: str, ratio_text: str,
         name_parts.append(str(ratio_text or "").replace(":", "x") or "ratio")
     name_parts.extend([resolution_suffix, start_suffix, end_suffix])
     return str(target_dir / f"{'_'.join(name_parts)}{output_suffix}")
+
+
+def build_auto_image_output_path(source_path: str, process_name: str, output_dir: str | None = None, *, default_extension: str = ".jpg") -> str:
+    source = Path(source_path)
+    process_token = get_process_filename_token(process_name)
+    target_dir = source.parent if not output_dir else Path(output_dir)
+    suffix = default_extension if str(default_extension or "").startswith(".") else f".{default_extension or 'jpg'}"
+    return str(target_dir / f"{source.stem}_{process_token}{suffix}")
 
 
 def make_output_variant(output: Path, *, notify: Callable[[str], None] | None = None) -> str:
@@ -127,6 +153,18 @@ def build_requested_output_path(source_path: str, output_path: str, process_name
     return output
 
 
+def build_requested_image_output_path(source_path: str, output_path: str, process_name: str, *, default_extension: str = ".jpg") -> Path:
+    output_text = str(output_path or "").strip()
+    if len(output_text) == 0:
+        output = Path(build_auto_image_output_path(source_path, process_name, default_extension=default_extension))
+    elif output_text.endswith(("\\", "/")) or Path(output_text).is_dir():
+        output = Path(build_auto_image_output_path(source_path, process_name, output_dir=output_text, default_extension=default_extension))
+    else:
+        output = Path(output_text)
+    suffix = default_extension if str(default_extension or "").startswith(".") else f".{default_extension or 'jpg'}"
+    return output.with_suffix(suffix)
+
+
 def resolve_output_path(source_path: str, output_path: str, process_name: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None, continue_enabled: bool, *, has_outpaint: bool = False, default_container: str = "mp4", notify: Callable[[str], None] | None = None) -> tuple[str, bool]:
     output = build_requested_output_path(source_path, output_path, process_name, ratio_text, output_resolution, start_seconds, end_seconds, has_outpaint=has_outpaint, default_container=default_container)
     if continue_enabled:
@@ -134,3 +172,10 @@ def resolve_output_path(source_path: str, output_path: str, process_name: str, r
     if output.exists():
         return make_output_variant(output, notify=notify), False
     return str(output), False
+
+
+def resolve_image_output_path(source_path: str, output_path: str, process_name: str, *, default_extension: str = ".jpg", notify: Callable[[str], None] | None = None) -> str:
+    output = build_requested_image_output_path(source_path, output_path, process_name, default_extension=default_extension)
+    if output.exists():
+        return make_output_variant(output, notify=notify)
+    return str(output)

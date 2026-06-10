@@ -10,7 +10,9 @@ PLUGIN_DIR = Path(__file__).resolve().parent
 APP_ROOT_DIR = PLUGIN_DIR.parent.parent
 APP_SETTINGS_DIR = APP_ROOT_DIR / "settings"
 PROCESS_SETTINGS_DIR = PLUGIN_DIR / "settings"
-PROCESS_FULL_VIDEO_SETTINGS_FILE = APP_SETTINGS_DIR / "process_full_video_settings.json"
+MEDIAFLOW_SETTINGS_FILE = APP_SETTINGS_DIR / "mediaflow_settings.json"
+LEGACY_PROCESS_FULL_VIDEO_SETTINGS_FILE = APP_SETTINGS_DIR / "process_full_video_settings.json"
+PROCESS_FULL_VIDEO_SETTINGS_FILE = MEDIAFLOW_SETTINGS_FILE
 LAUNCH_DEFAULT_PROCESS_NAME = "Outpaint Video - LTX 2.3 Distilled 1.1"
 USER_SETTINGS_STORAGE_KEY = "user_settings"
 USER_PROCESS_VALUE_PREFIX = "__user_settings__:"
@@ -45,20 +47,39 @@ DEFAULT_PROCESS_NAME = LAUNCH_DEFAULT_PROCESS_NAME if LAUNCH_DEFAULT_PROCESS_NAM
 DEFAULT_MODEL_TYPE = str(PROCESS_DEFINITIONS.get(DEFAULT_PROCESS_NAME, {}).get("settings", {}).get("model_type") or "")
 
 
-def load_saved_process_full_video_settings() -> dict:
-    if not PROCESS_FULL_VIDEO_SETTINGS_FILE.is_file():
+def load_saved_mediaflow_settings() -> dict:
+    if MEDIAFLOW_SETTINGS_FILE.is_file() and LEGACY_PROCESS_FULL_VIDEO_SETTINGS_FILE.is_file():
+        try:
+            LEGACY_PROCESS_FULL_VIDEO_SETTINGS_FILE.unlink()
+        except OSError:
+            pass
+    settings_file = MEDIAFLOW_SETTINGS_FILE if MEDIAFLOW_SETTINGS_FILE.is_file() else LEGACY_PROCESS_FULL_VIDEO_SETTINGS_FILE
+    if not settings_file.is_file():
         return {}
     try:
-        raw_settings = json.loads(PROCESS_FULL_VIDEO_SETTINGS_FILE.read_text(encoding="utf-8"))
+        raw_settings = json.loads(settings_file.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
-        print(f"[Process Full Video] Warning: unable to read saved UI settings from {PROCESS_FULL_VIDEO_SETTINGS_FILE}: {exc}")
+        print(f"[MediaFlow] Warning: unable to read saved UI settings from {settings_file}: {exc}")
         return {}
     return raw_settings if isinstance(raw_settings, dict) else {}
 
 
+def save_mediaflow_settings(settings: dict) -> None:
+    MEDIAFLOW_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    MEDIAFLOW_SETTINGS_FILE.write_text(json.dumps(settings, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    if LEGACY_PROCESS_FULL_VIDEO_SETTINGS_FILE.is_file():
+        try:
+            LEGACY_PROCESS_FULL_VIDEO_SETTINGS_FILE.unlink()
+        except OSError:
+            pass
+
+
+def load_saved_process_full_video_settings() -> dict:
+    return load_saved_mediaflow_settings()
+
+
 def save_process_full_video_settings(settings: dict) -> None:
-    PROCESS_FULL_VIDEO_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PROCESS_FULL_VIDEO_SETTINGS_FILE.write_text(json.dumps(settings, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    save_mediaflow_settings(settings)
 
 
 def normalize_user_settings_ref(value) -> str:
@@ -111,22 +132,30 @@ def get_saved_user_settings_refs(settings: dict | None) -> list[str]:
 
 
 def store_user_settings_refs(refs: list[str]) -> None:
-    saved_settings = load_saved_process_full_video_settings()
+    saved_settings = load_saved_mediaflow_settings()
     normalized_refs = get_saved_user_settings_refs({USER_SETTINGS_STORAGE_KEY: refs})
     saved_settings[USER_SETTINGS_STORAGE_KEY] = normalized_refs
-    save_process_full_video_settings(saved_settings)
+    save_mediaflow_settings(saved_settings)
 
 
-def save_process_full_video_ui_settings(settings: dict) -> None:
-    saved_settings = load_saved_process_full_video_settings()
+def save_mediaflow_ui_settings(settings: dict) -> None:
+    saved_settings = load_saved_mediaflow_settings()
     user_refs = get_saved_user_settings_refs(saved_settings)
     next_settings = dict(settings)
     next_settings[USER_SETTINGS_STORAGE_KEY] = user_refs
-    save_process_full_video_settings(next_settings)
+    save_mediaflow_settings(next_settings)
+
+
+def save_process_full_video_ui_settings(settings: dict) -> None:
+    save_mediaflow_ui_settings(settings)
+
+
+def save_mediaflow_selection(process_model_type: str, process_name: str) -> None:
+    saved_settings = load_saved_mediaflow_settings()
+    saved_settings["process_model_type"] = str(process_model_type or "").strip()
+    saved_settings["process_name"] = str(process_name or "").strip()
+    save_mediaflow_settings(saved_settings)
 
 
 def save_process_full_video_selection(process_model_type: str, process_name: str) -> None:
-    saved_settings = load_saved_process_full_video_settings()
-    saved_settings["process_model_type"] = str(process_model_type or "").strip()
-    saved_settings["process_name"] = str(process_name or "").strip()
-    save_process_full_video_settings(saved_settings)
+    save_mediaflow_selection(process_model_type, process_name)

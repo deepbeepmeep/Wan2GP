@@ -65,7 +65,7 @@ from shared.utils.virtual_media import get_virtual_image, get_virtual_media_entr
 from shared.utils.frame_scheduler import build_extension_window, build_frame_scheduler, has_slash_commands, prepare_loras_mult_windows
 from shared.match_archi import match_nvidia_architecture
 from shared.attention import get_attention_modes, get_supported_attention_modes, get_default_attention_mode
-from shared.utils.utils import truncate_for_filesystem, sanitize_file_name, process_images_multithread, get_default_workers
+from shared.utils.utils import truncate_for_filesystem, sanitize_file_name, process_images_multithread, get_default_workers, resize_lanczos_frames, expand_or_shrink_mask, prepare_binary_mask_frame
 from shared.utils.process_locks import (
     acquire_GPU_ressources,
     acquire_main_GPU_ressources,
@@ -139,14 +139,15 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "12.13"
+WanGP_version = "12.20"
 settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
 CUSTOM_SETTINGS_MAX = 5
 CUSTOM_SETTINGS_PER_ROW = 2
-CUSTOM_SETTING_TYPES = {"int", "float", "text"}
+CUSTOM_SETTING_DROPDOWN_MAX = 5
+CUSTOM_SETTING_TYPES = {"int", "float", "text", "dropdown"}
 lm_decoder_engine = ""
 enable_int8_kernels = 0
 theme_text_size = Size("8.1px", "9px", "10.8px", "12.6px", "14.4px", "19.8px", "23.4px", name="wangp_text_90")
@@ -178,6 +179,7 @@ _HANDLER_MODULES = [
     "shared.qtypes.bnb_nf4",
     "shared.qtypes.nunchaku_int4",
     "shared.qtypes.nunchaku_fp4",
+    "shared.qtypes.int8_convrot",
     "shared.qtypes.gguf",
 ]
 quant_router.unregister_handler(".fp8_quanto_bridge")
@@ -664,6 +666,9 @@ def get_custom_setting_key(index):
 def get_custom_setting_slider_key(index):
     return f"custom_setting_slider_{index + 1}"
 
+def get_custom_setting_dropdown_key(index):
+    return f"custom_setting_dropdown_{index + 1}"
+
 def _normalize_custom_setting_type(setting_type):
     parsed_type = str(setting_type or "text").strip().lower()
     return parsed_type if parsed_type in CUSTOM_SETTING_TYPES else "text"
@@ -684,6 +689,37 @@ def get_custom_setting_id(setting_def, setting_index):
             return normalized_name
     return get_custom_setting_key(setting_index)
 
+def get_custom_setting_dropdown_choices(setting_def):
+    if not isinstance(setting_def, dict) or setting_def.get("type") != "dropdown":
+        return None
+    choices = setting_def.get("choices", [])
+    if not isinstance(choices, list):
+        return None
+    normalized = []
+    for choice in choices:
+        if isinstance(choice, (list, tuple)) and len(choice) >= 2:
+            normalized.append((str(choice[0]), choice[1]))
+        else:
+            normalized.append((str(choice), choice))
+    return normalized if len(normalized) > 0 else None
+
+def get_custom_setting_dropdown_value(raw_value, choices):
+    if not choices:
+        return raw_value
+    values = [value for _, value in choices]
+    for value in values:
+        if raw_value == value or str(raw_value) == str(value):
+            return value
+    return values[0]
+
+def get_custom_setting_display_value(setting_def, raw_value):
+    choices = get_custom_setting_dropdown_choices(setting_def)
+    if choices is not None:
+        for label, value in choices:
+            if raw_value == value or str(raw_value) == str(value):
+                return label
+    return raw_value
+
 def get_model_custom_settings(model_def):
     if not isinstance(model_def, dict):
         return []
@@ -692,6 +728,7 @@ def get_model_custom_settings(model_def):
         return []
     normalized = []
     used_ids = set()
+    dropdown_count = 0
     for idx, setting in enumerate(custom_settings[:CUSTOM_SETTINGS_MAX]):
         if not isinstance(setting, dict):
             continue
@@ -699,6 +736,10 @@ def get_model_custom_settings(model_def):
         one["label"] = str(one.get("label", f"Custom Setting {idx + 1}"))
         one["name"] = str(one.get("name", f"Custom Setting {idx + 1}"))
         one["type"] = _normalize_custom_setting_type(one.get("type", "text"))
+        if one["type"] == "dropdown":
+            dropdown_count += 1
+            if dropdown_count > CUSTOM_SETTING_DROPDOWN_MAX or get_custom_setting_dropdown_choices(one) is None:
+                one["type"] = "text"
         setting_id = get_custom_setting_id(one, idx)
         if setting_id in used_ids:
             setting_id = get_custom_setting_key(idx)
@@ -756,11 +797,15 @@ def input_video_strength_visible(model_def, image_prompt_type, video_prompt_type
 def custom_setting_visible(setting_def, video_prompt_type="", audio_prompt_type=""):
     if not isinstance(setting_def, dict): return False
     vflags, aflags = str(setting_def.get("video_prompt_type", "") or ""), str(setting_def.get("audio_prompt_type", "") or "")
-    return not (vflags or aflags) or (vflags and any_letters(video_prompt_type or "", vflags)) or (aflags and any_letters(audio_prompt_type or "", aflags))
+    vflags_not, aflags_not = str(setting_def.get("video_prompt_type_not", "") or ""), str(setting_def.get("audio_prompt_type_not", "") or "")
+    if vflags_not and any_letters(video_prompt_type or "", vflags_not): return False
+    if aflags_not and any_letters(audio_prompt_type or "", aflags_not): return False
+    if not (vflags or aflags): return True
+    return bool(vflags and any_letters(video_prompt_type or "", vflags)) or bool(aflags and any_letters(audio_prompt_type or "", aflags))
 
 
 def custom_settings_visibility_trigger_update(state, old_video=None, new_video=None, old_audio=None, new_audio=None):
-    settings = [s for s in get_model_custom_settings(get_model_def(get_state_model_type(state))) if isinstance(s, dict) and ("video_prompt_type" in s or "audio_prompt_type" in s)]
+    settings = [s for s in get_model_custom_settings(get_model_def(get_state_model_type(state))) if isinstance(s, dict) and ("video_prompt_type" in s or "audio_prompt_type" in s or "video_prompt_type_not" in s or "audio_prompt_type_not" in s)]
     if not settings: return gr.update()
     old_video, new_video = (new_video if old_video is None else old_video), (old_video if new_video is None else new_video)
     old_audio, new_audio = (new_audio if old_audio is None else old_audio), (old_audio if new_audio is None else new_audio)
@@ -772,11 +817,14 @@ def refresh_custom_settings_visibility(state, video_prompt_type, audio_prompt_ty
     custom_settings = get_model_custom_settings(get_model_def(get_state_model_type(state)))
     defs = [custom_settings[i] if i < len(custom_settings) else None for i in range(CUSTOM_SETTINGS_MAX)]
     visible = [custom_setting_visible(setting, video_prompt_type, audio_prompt_type) for setting in defs]
-    sliders = [get_custom_setting_slider_bounds(setting) is not None for setting in defs]
-    return [gr.update(visible=v and not s) for v, s in zip(visible, sliders)] + [gr.update(visible=v and s) for v, s in zip(visible, sliders)]
+    slider_settings = [get_custom_setting_slider_bounds(setting) is not None for setting in defs]
+    dropdown_settings = [get_custom_setting_dropdown_choices(setting) is not None for setting in defs]
+    text_settings = [setting is not None and not slider_settings[idx] and not dropdown_settings[idx] for idx, setting in enumerate(defs)]
+    row_updates = [gr.update(visible=any(visible[row_idx * CUSTOM_SETTINGS_PER_ROW:min((row_idx + 1) * CUSTOM_SETTINGS_PER_ROW, CUSTOM_SETTINGS_MAX)])) for row_idx in range(math.ceil(CUSTOM_SETTINGS_MAX / CUSTOM_SETTINGS_PER_ROW))]
+    return row_updates + [gr.update(visible=visible[idx] and text_settings[idx]) for idx in range(CUSTOM_SETTINGS_MAX)] + [gr.update(visible=visible[idx] and slider_settings[idx]) for idx in range(CUSTOM_SETTINGS_MAX)] + [gr.update(visible=visible[idx] and dropdown_settings[idx]) for idx in range(CUSTOM_SETTINGS_MAX)]
 
 
-def parse_custom_setting_typed_value(raw_value, setting_type):
+def parse_custom_setting_typed_value(raw_value, setting_type, setting_def=None):
     if raw_value is None:
         return None, None
     if isinstance(raw_value, str):
@@ -784,6 +832,14 @@ def parse_custom_setting_typed_value(raw_value, setting_type):
         if len(raw_value) == 0:
             return None, None
     setting_type = _normalize_custom_setting_type(setting_type)
+    if setting_type == "dropdown":
+        choices = get_custom_setting_dropdown_choices(setting_def)
+        if choices is None:
+            return str(raw_value).strip(), None
+        for _, value in choices:
+            if raw_value == value or str(raw_value) == str(value):
+                return value, None
+        return None, "Expected one of the dropdown choices."
     if setting_type == "int":
         if isinstance(raw_value, bool):
             return None, "Expected an integer value."
@@ -827,11 +883,17 @@ def collect_custom_settings_from_inputs(model_def, inputs, strict=False):
     for idx, setting_def in enumerate(custom_settings):
         slot_key = get_custom_setting_key(idx)
         slider_key = get_custom_setting_slider_key(idx)
+        dropdown_key = get_custom_setting_dropdown_key(idx)
         setting_id = setting_def["id"]
-        raw_value = inputs.get(slider_key if get_custom_setting_slider_bounds(setting_def) is not None else slot_key, None)
+        if get_custom_setting_dropdown_choices(setting_def) is not None:
+            raw_value = inputs.get(dropdown_key, None)
+        elif get_custom_setting_slider_bounds(setting_def) is not None:
+            raw_value = inputs.get(slider_key, None)
+        else:
+            raw_value = inputs.get(slot_key, None)
         if raw_value is None and setting_id in existing_custom_settings:
             raw_value = existing_custom_settings.get(setting_id, None)
-        parsed_value, parse_error = parse_custom_setting_typed_value(raw_value, setting_def.get("type", "text"))
+        parsed_value, parse_error = parse_custom_setting_typed_value(raw_value, setting_def.get("type", "text"), setting_def)
         if parse_error is not None:
             if strict:
                 return None, f"{setting_def.get('label', slot_key)} {parse_error}"
@@ -848,6 +910,7 @@ def clear_custom_setting_slots(inputs):
     for idx in range(CUSTOM_SETTINGS_MAX):
         inputs.pop(get_custom_setting_key(idx), None)
         inputs.pop(get_custom_setting_slider_key(idx), None)
+        inputs.pop(get_custom_setting_dropdown_key(idx), None)
 
 def validate_settings(state, model_type, single_prompt, inputs, silent=False):
     def err(error=""):
@@ -1156,7 +1219,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
         image_refs = clean_image_list(image_refs)
         if image_refs == None :
             return err("A Reference Image should be an Image")
-        if model_def.get("one_image_ref_only", False) and not any_letters(video_prompt_type, "KF") and len(image_refs) > 1:
+        if model_def.get("one_image_ref_only", False) and (model_def.get("one_image_ref_only_with_background", False) or not any_letters(video_prompt_type, "KF")) and len(image_refs) > 1:
             return err("Only one Reference Image is supported by this model mode")
     else:
         image_refs = None
@@ -1602,6 +1665,7 @@ def _task_has_path_attachments(params):
 
 def _load_task_attachments(params, media_base_path, cache_dir=None, log_prefix="[load]"):
 
+    preserve_edit_video_source_path = str(params.get("mode", "") or "").startswith("edit_")
     for key in ATTACHMENT_KEYS:
         value = params.get(key)
         if value is None:
@@ -1642,7 +1706,10 @@ def _load_task_attachments(params, media_base_path, cache_dir=None, log_prefix="
                 final_path = source_path
 
             # Load images as PIL, keep videos/audio as paths
-            if has_image_file_extension(final_path):
+            if key == "video_source" and preserve_edit_video_source_path:
+                loaded_items.append(replace_virtual_media_source(filename, final_path) if virtual_spec is not None else final_path)
+                print(f"{log_prefix} Using path: {final_path}")
+            elif has_image_file_extension(final_path):
                 try:
                     with Image.open(final_path) as loaded_image:
                         loaded_items.append(loaded_image.copy())
@@ -4906,7 +4973,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                         continue
                     if isinstance(setting_value, str) and len(setting_value.strip()) == 0:
                         continue
-                    values += [setting_value]
+                    values += [get_custom_setting_display_value(setting_def, setting_value)]
                     labels += [setting_def.get("name", f"Custom Setting {idx + 1}")]
             if model_def.get("temperature", True) and video_temperature is not None:
                 values += [video_temperature]
@@ -5341,11 +5408,7 @@ def preprocess_video_with_mask(pre_video_guide, input_video_path, input_mask_pat
                 mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
             _, mask = cv2.threshold(mask, 127.5, 255, cv2.THRESH_BINARY)
             original_mask = mask.copy()
-            if expand_scale != 0:
-                kernel_size = abs(expand_scale)
-                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-                op_expand = cv2.dilate if expand_scale > 0 else cv2.erode
-                mask = op_expand(mask, kernel, iterations=3)
+            mask = expand_or_shrink_mask(mask, expand_scale)
 
             if to_bbox and np.sum(mask == 255) > 0 : #or True 
                 x0, y0, x1, y1 = mask_to_xyxy_box(mask)
@@ -5487,30 +5550,20 @@ def preprocess_video(height, width, video_in, max_frames, start_frame=0, fit_can
             frame_t = torch.nn.functional.interpolate(frame_t, size=(new_height, new_width), mode="bilinear", align_corners=False)
         return frame_t[0].permute(1, 2, 0).contiguous()
 
-    def resize_frame(frame):
-        if hdr_input:
+    if hdr_input:
+        def resize_frame(frame):
             return resize_hdr_frame(frame)
-        if torch.is_tensor(frame):
-            arr = frame.cpu().numpy()
-        else:
-            arr = np.asarray(frame)
-        if arr.dtype != np.uint8:
-            arr = np.clip(arr, 0, 255).astype(np.uint8)
-        img = Image.fromarray(arr)
-        if fit_crop:
-            img = rescale_and_crop(img, new_width, new_height)
-        else:
-            img = img.resize((new_width, new_height), resample=Image.Resampling.LANCZOS)
-        return torch.from_numpy(np.array(img))
 
-    frames_list = process_images_multithread(
-        resize_frame,
-        frames_list,
-        "upsample",
-        wrap_in_list=False,
-        max_workers=get_default_workers(),
-        in_place=True,
-    )
+        frames_list = process_images_multithread(
+            resize_frame,
+            frames_list,
+            "upsample",
+            wrap_in_list=False,
+            max_workers=get_default_workers(),
+            in_place=True,
+        )
+    else:
+        frames_list = resize_lanczos_frames(frames_list, new_height, new_width, crop=fit_crop, max_workers=get_default_workers())
 
     # from preprocessing.dwpose.pose import save_one_video
     # save_one_video("test.mp4", frames_list, fps=8, quality=8, macro_block_size=None)
@@ -6353,7 +6406,7 @@ def resolve_mux_audio_sampling_rate(default_rate, source_audio_metadata=None, au
             sample_rates.append(get_audio_file_sample_rate(audio_path))
     return max(sample_rates)
 
-def custom_preprocess_video_with_mask(model_handler, base_model_type, pre_video_guide, video_guide, video_mask, height, width, max_frames, start_frame, fit_canvas, fit_crop, target_fps,  block_size, expand_scale, video_prompt_type):
+def custom_preprocess_video_with_mask(model_handler, base_model_type, pre_video_guide, video_guide, video_mask, height, width, max_frames, start_frame, fit_canvas, fit_crop, target_fps, block_size, expand_scale, video_prompt_type, model_def=None, custom_settings=None):
     pad_frames = 0
     if start_frame < 0:
         pad_frames= -start_frame
@@ -6367,35 +6420,48 @@ def custom_preprocess_video_with_mask(model_handler, base_model_type, pre_video_
     video_guide = get_resampled_video(video_guide, start_frame, max_frames, target_fps).permute(-1, 0, 1, 2)
     video_guide = video_guide / 127.5 - 1.
     any_mask = video_mask is not None
+    model_def = model_def or {}
+    preserve_video_mask_colors = model_def.get("preserve_video_mask_colors", False)
+    mask_filter_video_guide = model_def.get("mask_filter_video_guide", True)
+    pose_mask = None
     if video_mask is not None:
-        video_mask = get_resampled_video(video_mask, start_frame, max_frames, target_fps).permute(-1, 0, 1, 2)
-        video_mask = video_mask[:1] / 255.
+        video_mask = get_resampled_video(video_mask, start_frame, max_frames, target_fps).permute(-1, 0, 1, 2).float()
+        if preserve_video_mask_colors:
+            video_mask = video_mask[:3] if video_mask.shape[0] >= 3 else video_mask[:1].expand(3, -1, -1, -1)
+            background_color = model_def.get("video_mask_background_color", None)
+            if background_color is not None:
+                object_colors = model_def.get("magic_mask_object_colors", [])
+                if object_colors:
+                    object_mask = torch.zeros_like(video_mask[:1], dtype=torch.bool)
+                    for object_color in object_colors:
+                        object_color = torch.tensor(object_color, dtype=video_mask.dtype, device=video_mask.device).view(3, 1, 1, 1)
+                        object_mask |= torch.where(object_color >= 128, video_mask > 127, video_mask < 128).all(dim=0, keepdim=True)
+                    empty_mask = ~object_mask
+                else:
+                    empty_mask = video_mask.max(dim=0, keepdim=True).values < 32
+                background_color = torch.tensor(background_color, dtype=video_mask.dtype, device=video_mask.device).view(3, 1, 1, 1)
+                video_mask = torch.where(empty_mask.expand_as(video_mask), background_color.expand_as(video_mask), video_mask)
+            pose_mask = video_mask.max(dim=0, keepdim=True).values / 255.
+            video_mask = video_mask / 127.5 - 1.
+        else:
+            video_mask = video_mask[:1] / 255.
+            pose_mask = video_mask
 
     # Mask filtering: resize, binarize, expand mask and keep only masked areas of video guide
-    if any_mask:
+    if any_mask and mask_filter_video_guide:
         invert_mask = "N" in video_prompt_type
-        import concurrent.futures
         tgt_h, tgt_w = video_guide.shape[2], video_guide.shape[3]
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (abs(expand_scale), abs(expand_scale))) if expand_scale != 0 else None
-        op = (cv2.dilate if expand_scale > 0 else cv2.erode) if expand_scale != 0 else None
         def process_mask(idx):
-            m = (video_mask[0, idx].numpy() * 255).astype(np.uint8)
-            if m.shape[0] != tgt_h or m.shape[1] != tgt_w:
-                m = cv2.resize(m, (tgt_w, tgt_h), interpolation=cv2.INTER_NEAREST)
-            _, m = cv2.threshold(m, 127, 255, cv2.THRESH_BINARY)  # binarize grey values
-            if op: m = op(m, kernel, iterations=3)
-            if invert_mask:
-                return torch.from_numpy((m <= 127).astype(np.float32))
-            else:
-                return torch.from_numpy((m > 127).astype(np.float32))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
-            video_mask = torch.stack([f.result() for f in [ex.submit(process_mask, i) for i in range(video_mask.shape[1])]]).unsqueeze(0)
-        video_guide = video_guide * video_mask + (-1) * (1-video_mask)
+            return torch.from_numpy(prepare_binary_mask_frame(pose_mask[0, idx] * 255, tgt_h, tgt_w, expand_scale=expand_scale, invert=invert_mask))
+        pose_mask = torch.stack(process_images_multithread(process_mask, list(range(pose_mask.shape[1])), "prephase", wrap_in_list=False, max_workers=max_workers, in_place=False)).unsqueeze(0)
+        video_guide = video_guide * pose_mask + (-1) * (1-pose_mask)
+        if not preserve_video_mask_colors:
+            video_mask = pose_mask
 
     if video_guide.shape[1] == 0 or any_mask and video_mask.shape[1] == 0:
         return None, None, None, None
     
-    video_guide_processed, video_guide_processed2, video_mask_processed, video_mask_processed2  = model_handler.custom_preprocess(base_model_type = base_model_type, pre_video_guide = pre_video_guide, video_guide = video_guide, video_mask = video_mask, height = height, width = width, fit_canvas = fit_canvas , fit_crop = fit_crop, target_fps = target_fps,  block_size = block_size, max_workers = max_workers, expand_scale = expand_scale, video_prompt_type=video_prompt_type)
+    video_guide_processed, video_guide_processed2, video_mask_processed, video_mask_processed2  = model_handler.custom_preprocess(base_model_type = base_model_type, pre_video_guide = pre_video_guide, video_guide = video_guide, video_mask = video_mask, pose_mask = pose_mask, height = height, width = width, fit_canvas = fit_canvas , fit_crop = fit_crop, target_fps = target_fps,  block_size = block_size, max_workers = max_workers, expand_scale = expand_scale, video_prompt_type=video_prompt_type, model_def=model_def, custom_settings=custom_settings)
 
     # if pad_frames > 0:
     #     masked_frames = masked_frames[0] * pad_frames + masked_frames
@@ -7260,7 +7326,7 @@ def generate_video(
                         frames_to_inject[pos] = image_refs[i] 
 
             video_guide_processed = video_mask_processed = video_guide_processed2 = video_mask_processed2 = sparse_video_image = None
-            skip_video_guide_preprocess = bool(model_def.get("joyai_echo", False) and "1" in (video_prompt_type or ""))
+            skip_video_guide_preprocess = bool(model_def.get("skip_video_guide_preprocess", False))
             if video_guide is not None and not skip_video_guide_preprocess:
                 keep_frames_parsed_full, error = parse_keep_frames_video_guide(keep_frames_video_guide, source_video_frames_count -source_video_overlap_frames_count + requested_frames_to_generate)
                 if len(error) > 0:
@@ -7303,7 +7369,7 @@ def generate_video(
                     if custom_preprocessor is not None:
                         status_info = custom_preprocessor
                         send_cmd("progress", [0, get_latest_status(state, status_info)])
-                        video_guide_processed, video_guide_processed2, video_mask_processed, video_mask_processed2 =  custom_preprocess_video_with_mask(model_handler, base_model_type, pre_video_guide, video_guide if sparse_video_image is None else sparse_video_image, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  block_size = block_size, expand_scale = mask_expand, video_prompt_type= video_prompt_type)
+                        video_guide_processed, video_guide_processed2, video_mask_processed, video_mask_processed2 =  custom_preprocess_video_with_mask(model_handler, base_model_type, pre_video_guide, video_guide if sparse_video_image is None else sparse_video_image, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  block_size = block_size, expand_scale = mask_expand, video_prompt_type= video_prompt_type, model_def=model_def, custom_settings=custom_settings)
                     else:
                         status_info = "Extracting " + processes_names[preprocess_type]
                         extra_process_list = ([] if preprocess_type2==None else [preprocess_type2]) + ([] if process_outside_mask==None or process_outside_mask == preprocess_type else [process_outside_mask])
@@ -7398,6 +7464,13 @@ def generate_video(
                                                                                         return_tensor= model_def.get("return_image_refs_tensor", False),
                                                                                         ignore_last_refs =model_def.get("no_processing_on_last_images_refs",0),
                                                                                         background_removal_color = model_def.get("background_removal_color", [255, 255, 255] ))
+            custom_postprocessor = model_def.get("custom_image_ref_postprocessor", None)
+            if window_no == 1 and repeat_no == 1 and custom_postprocessor is not None:
+                src_ref_images, src_ref_masks = custom_postprocessor(
+                    src_ref_images, src_ref_masks, image_size[1], image_size[0], image_start, image_prompt_type, image_end, video_prompt_type,
+                    send_cmd, model_def, custom_settings, image_start_tensor=image_start_tensor, pre_video_frame=pre_video_frame
+                )
+
             frames_to_inject_parsed = frames_to_inject[ window_start_frame if extract_guide_from_window_start else guide_start_frame: guide_end_frame]
             if (video_guide is not None and not skip_video_guide_preprocess) or len(frames_to_inject_parsed) > 0 and not custom_frames_injection or model_def.get("forced_guide_mask_inputs", False):
                 any_mask = video_mask is not None or model_def.get("forced_guide_mask_inputs", False)
@@ -7631,6 +7704,7 @@ def generate_video(
                     verbose_level=verbose_level,
                     gen_cache=gen_cache,
                     pid_upsampler=pid_upsampler_session,
+                    save_masks=args.save_masks,
                 )
                 if pid_upsampler_session is not None and not pid_persistent:
                     release_pid_models()
@@ -9235,7 +9309,7 @@ def image_to_ref_image_add(state, input_file_list, choice, target, target_name):
     model_def = get_model_def(model_type)    
     ui_settings = get_current_model_settings(state)
     video_prompt_type = ui_settings.get("video_prompt_type", "") or ""
-    one_image_ref_only = model_def.get("one_image_ref_only", False) and "I" in video_prompt_type and not any_letters(video_prompt_type, "KF")
+    one_image_ref_only = model_def.get("one_image_ref_only", False) and "I" in video_prompt_type and (model_def.get("one_image_ref_only_with_background", False) or not any_letters(video_prompt_type, "KF"))
     if model_def.get("one_image_ref_needed", False) or one_image_ref_only:
         gr.Info(f"Selected Image was set to {target_name}")
         target =[file_list[choice]]
@@ -9946,6 +10020,11 @@ def save_inputs(
             custom_setting_slider_3,
             custom_setting_slider_4,
             custom_setting_slider_5,
+            custom_setting_dropdown_1,
+            custom_setting_dropdown_2,
+            custom_setting_dropdown_3,
+            custom_setting_dropdown_4,
+            custom_setting_dropdown_5,
             top_p,
             top_k,
             self_refiner_setting,
@@ -10069,6 +10148,32 @@ def get_current_model_settings(state):
         ui_defaults = get_default_settings(model_type)
         set_model_settings(state, model_type, ui_defaults)
     return ui_defaults 
+
+def custom_setting_input_name(name):
+    return str(name).startswith("custom_setting_")
+
+def build_save_inputs(input_names, locals_dict, state_value, plugin_data_value, custom_setting_extra_inputs):
+    inputs = []
+    custom_settings_inserted = False
+    for key in input_names:
+        if custom_setting_input_name(key):
+            if not custom_settings_inserted:
+                inputs += custom_setting_extra_inputs
+                custom_settings_inserted = True
+            continue
+        inputs.append(state_value if key == "state" else locals_dict[key])
+    return inputs + [state_value, plugin_data_value]
+
+def build_form_refresh_outputs(input_names, locals_dict, state_value, plugin_data_value, extra_inputs):
+    extra_input_ids = {id(component) for component in extra_inputs}
+    outputs = []
+    for key in input_names:
+        if custom_setting_input_name(key):
+            continue
+        component = state_value if key == "state" else locals_dict[key]
+        if id(component) not in extra_input_ids:
+            outputs.append(component)
+    return outputs + [state_value, plugin_data_value] + extra_inputs
 
 def fill_inputs(state):
     ui_defaults = get_current_model_settings(state)
@@ -10289,6 +10394,7 @@ def refresh_image_prompt_type_endcheckbox(state, image_prompt_type, image_prompt
 def refresh_video_prompt_type_image_refs(state, video_prompt_type, video_prompt_type_image_refs, image_mode, image_prompt_type):
     model_type = get_state_model_type(state)
     model_def = get_model_def(model_type)
+    old_video_prompt_type = video_prompt_type
     image_ref_choices = model_def.get("image_ref_choices", None)
     if image_ref_choices is not None:
         video_prompt_type = del_in_sequence(video_prompt_type, image_ref_choices["letters_filter"])
@@ -10299,7 +10405,7 @@ def refresh_video_prompt_type_image_refs(state, video_prompt_type, video_prompt_
     any_outpainting= image_mode in model_def.get("video_guide_outpainting", [])
     rm_bg_visible= visible and not model_def.get("no_background_removal", False) 
     img_rel_size_visible = visible and model_def.get("any_image_refs_relative_size", False)
-    return video_prompt_type, gr.update(visible = visible),gr.update(visible = rm_bg_visible), gr.update(visible = img_rel_size_visible), gr.update(visible = visible and injected_frames_positions_visible(video_prompt_type_image_refs)), gr.update(visible= ("F" in video_prompt_type_image_refs or "K" in video_prompt_type_image_refs or "V" in video_prompt_type) and any_outpainting ), gr.update(visible = input_video_strength_visible(model_def, image_prompt_type, video_prompt_type))
+    return video_prompt_type, gr.update(visible = visible),gr.update(visible = rm_bg_visible), gr.update(visible = img_rel_size_visible), gr.update(visible = visible and injected_frames_positions_visible(video_prompt_type_image_refs)), gr.update(visible= ("F" in video_prompt_type_image_refs or "K" in video_prompt_type_image_refs or "V" in video_prompt_type) and any_outpainting ), gr.update(visible = input_video_strength_visible(model_def, image_prompt_type, video_prompt_type)), custom_settings_visibility_trigger_update(state, old_video=old_video_prompt_type, new_video=video_prompt_type)
 
 def update_image_mask_guide(state, image_mask_guide):
     img = image_mask_guide["background"]
@@ -10968,8 +11074,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
     state_dict["loras"] = loras
     state_dict["loras_presets"] = loras_presets
-    custom_setting_components_map = {}
-
     launch_prompt = ""
     launch_preset = ""
     launch_loras = []
@@ -11377,7 +11481,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 # image_mask = gr.Image(label= "Image Mask Area (for Inpainting, white = Control Area, black = Unchanged)", type ="pil", visible= image_mode_value==1 and "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value , height = gallery_height, value= ui_defaults.get("image_mask", None)) 
                 image_mask = gr.Image(label= "Image Mask Area (for Inpainting, white = Control Area, black = Unchanged)", type ="pil", visible= False, height = gallery_height, value= ui_defaults.get("image_mask", None)) 
                 with gr.Column(elem_classes=["wangp-magic-mask-anchor"]):
-                    video_mask = gr.Video(label= "Video Mask Area (for Inpainting, white = Control Area, black = Unchanged)", visible=(not image_outputs) and magic_mask_visible, height=gallery_height, value=ui_defaults.get("video_mask", None))
+                    video_mask = gr.Video(label=model_def.get("video_mask_label", "Video Mask Area (for Inpainting, white = Control Area, black = Unchanged)"), visible=(not image_outputs) and magic_mask_visible, height=gallery_height, value=ui_defaults.get("video_mask", None))
                     if not image_outputs:
                         magic_mask_ui = MagicMaskUI().render(visible=magic_mask_visible)
                         magic_mask_uis.append(magic_mask_ui)
@@ -11390,7 +11494,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 masking_strength = setting_slider("masking_strength", visible=(mask_strength_always_enabled or "G" in video_prompt_type_value) and "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value)
                 mask_expand = setting_slider("mask_expand", visible="V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value)
 
-                image_refs_single_image_mode = model_def.get("one_image_ref_needed", False) or ("I" in video_prompt_type_value and not any_letters(video_prompt_type_value, "KF") and model_def.get("one_image_ref_only", False))
+                image_refs_single_image_mode = model_def.get("one_image_ref_needed", False) or ("I" in video_prompt_type_value and (model_def.get("one_image_ref_only_with_background", False) or not any_letters(video_prompt_type_value, "KF")) and model_def.get("one_image_ref_only", False))
                 image_refs_label = "Start Image" if hunyuan_video_avatar else ("Reference Image" if image_refs_single_image_mode else "Reference Images")  + (" (each Image will be associated to a Sliding Window)" if infinitetalk else "")
                 image_refs_row, image_refs, image_refs_extra = get_image_gallery(label= image_refs_label, value = ui_defaults.get("image_refs", None), visible= "I" in video_prompt_type_value, single_image_mode=image_refs_single_image_mode)
 
@@ -11619,14 +11723,14 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             if not isinstance(custom_settings_values, dict):
                 custom_settings_values = {}
             custom_settings_rows = []
+            custom_setting_text_inputs, custom_setting_slider_inputs, custom_setting_dropdown_inputs = [], [], []
             custom_setting_rows_count = math.ceil(CUSTOM_SETTINGS_MAX / CUSTOM_SETTINGS_PER_ROW)
             for row_idx in range(custom_setting_rows_count):
                 row_start = row_idx * CUSTOM_SETTINGS_PER_ROW
                 row_end = min(row_start + CUSTOM_SETTINGS_PER_ROW, CUSTOM_SETTINGS_MAX)
-                row_visible = row_start < len(custom_settings)
+                row_visible = any(custom_setting_visible(custom_settings[i] if i < len(custom_settings) else None, video_prompt_type_value, audio_prompt_type_value) for i in range(row_start, row_end))
                 with gr.Row(visible=row_visible) as custom_settings_row:
                     for setting_index in range(row_start, row_end):
-                        setting_key = get_custom_setting_key(setting_index)
                         setting_def = custom_settings[setting_index] if setting_index < len(custom_settings) else None
                         setting_visible = custom_setting_visible(setting_def, video_prompt_type_value, audio_prompt_type_value)
                         setting_default = get_custom_setting_value_from_dict(custom_settings_values, setting_def, setting_index) if setting_def is not None else ""
@@ -11634,25 +11738,15 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             setting_default = ""
                         setting_label = setting_def.get("label", f"Custom Setting {setting_index + 1}") if setting_def is not None else f"Custom Setting {setting_index + 1}"
                         slider_bounds = get_custom_setting_slider_bounds(setting_def)
-                        slider_visible = setting_visible and slider_bounds is not None
-                        custom_setting_component = gr.Textbox(
-                            value=str(setting_default),
-                            label=setting_label,
-                            visible=setting_visible and not slider_visible,
-                            lines=1,
-                        )
-                        custom_setting_slider = gr.Slider(
-                            minimum=slider_bounds[0] if slider_bounds is not None else 0,
-                            maximum=slider_bounds[1] if slider_bounds is not None else 1,
-                            value=get_custom_setting_slider_value(setting_default, slider_bounds) if slider_bounds is not None else 0,
-                            step=slider_bounds[2] if slider_bounds is not None else 1,
-                            label=setting_label,
-                            visible=slider_visible,
-                            show_reset_button=False,
-                        )
-                        custom_setting_components_map[setting_key] = custom_setting_component
-                        custom_setting_components_map[get_custom_setting_slider_key(setting_index)] = custom_setting_slider
+                        dropdown_choices = get_custom_setting_dropdown_choices(setting_def)
+                        slider_setting = slider_bounds is not None
+                        dropdown_setting = dropdown_choices is not None
+                        text_setting = setting_def is not None and not slider_setting and not dropdown_setting
+                        custom_setting_text_inputs.append(gr.Textbox(value=str(setting_default) if text_setting else "", label=setting_label if text_setting else "", visible=setting_visible and text_setting, lines=1))
+                        custom_setting_slider_inputs.append(gr.Slider(minimum=slider_bounds[0] if slider_setting else 0, maximum=slider_bounds[1] if slider_setting else 1, value=get_custom_setting_slider_value(setting_default, slider_bounds) if slider_setting else 0, step=slider_bounds[2] if slider_setting else 1, label=setting_label if slider_setting else "", visible=setting_visible and slider_setting, show_reset_button=False))
+                        custom_setting_dropdown_inputs.append(gr.Dropdown(choices=dropdown_choices or [], value=get_custom_setting_dropdown_value(setting_default, dropdown_choices) if dropdown_setting else None, label=setting_label if dropdown_setting else "", visible=setting_visible and dropdown_setting))
                 custom_settings_rows.append(custom_settings_row)
+            custom_setting_extra_inputs = custom_setting_text_inputs + custom_setting_slider_inputs + custom_setting_dropdown_inputs
             custom_settings_visibility_trigger = gr.Text(visible=False)
 
 
@@ -12400,14 +12494,13 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       audio_buttons_row, deleted_audio_buttons_row, video_info_extract_audio_settings_btn, video_info_to_audio_guide_btn, video_info_to_audio_guide2_btn, video_info_to_audio_source_btn, video_info_audio_postprocessing_btn, video_info_eject_audio_btn, video_info_eject_audio2_btn,
                                       video_info_to_start_image_btn, video_info_to_end_image_btn, video_info_to_reference_image_btn, video_info_to_image_guide_btn, video_info_to_image_mask_btn,
                                       NAG_col, audio_options_row, remove_background_sound, continue_beyond_audio_end, normalize_audio_volumes, audio_prompt_type_custom_option, speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, prompt_enhancer_mode_dropdown, prompt_enhancer_think,
-                                      min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, spatial_upsampling_method, spatial_upsampling_ratio, temperature_row, *custom_settings_rows, top_pk_row, 
+                                      min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, spatial_upsampling_method, spatial_upsampling_ratio, temperature_row, *custom_settings_rows, *custom_setting_extra_inputs, top_pk_row,
                                       number_frames_row, negative_prompt_row,
                                       self_refiner_col, pause_row]+\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,
         if update_form:
             locals_dict = locals()
-            locals_dict.update(custom_setting_components_map)
-            gen_inputs = [state_dict if k=="state" else locals_dict[k]  for k in inputs_names] + [state_dict, plugin_data] + extra_inputs
+            gen_inputs = build_form_refresh_outputs(inputs_names, locals_dict, state_dict, plugin_data, extra_inputs)
             return gen_inputs
         else:
             target_state = gr.Text(value = "state", interactive= False, visible= False)
@@ -12434,10 +12527,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             prompt_enhancer_think.input(fn=build_prompt_enhancer_value, inputs=[prompt_enhancer_mode_dropdown, prompt_enhancer_think], outputs=[prompt_enhancer], show_progress="hidden")
             image_prompt_type_radio.change(fn=refresh_image_prompt_type_radio, inputs=[state, image_prompt_type, image_prompt_type_radio, video_prompt_type], outputs=[image_prompt_type, image_start_row, image_end_row, video_source, input_video_strength, keep_frames_video_source, image_prompt_type_endcheckbox], show_progress="hidden" ) 
             image_prompt_type_endcheckbox.change(fn=refresh_image_prompt_type_endcheckbox, inputs=[state, image_prompt_type, image_prompt_type_radio, image_prompt_type_endcheckbox, video_prompt_type], outputs=[image_prompt_type, image_end_row, input_video_strength] ) 
-            video_prompt_type_image_refs.input(fn=refresh_video_prompt_type_image_refs, inputs = [state, video_prompt_type, video_prompt_type_image_refs,image_mode, image_prompt_type], outputs = [video_prompt_type, image_refs_row, remove_background_images_ref,  image_refs_relative_size, frames_positions,video_guide_outpainting_col, input_video_strength], show_progress="hidden")
+            video_prompt_type_image_refs.input(fn=refresh_video_prompt_type_image_refs, inputs = [state, video_prompt_type, video_prompt_type_image_refs,image_mode, image_prompt_type], outputs = [video_prompt_type, image_refs_row, remove_background_images_ref,  image_refs_relative_size, frames_positions,video_guide_outpainting_col, input_video_strength, custom_settings_visibility_trigger], show_progress="hidden")
             video_prompt_type_video_guide.input(fn=refresh_video_prompt_type_video_guide,     inputs = [state, gr.State(""),   video_prompt_type, video_prompt_type_video_guide,     image_mode, image_mask_guide, image_guide, image_mask, image_prompt_type], outputs = [video_prompt_type, video_guide, image_guide, keep_frames_video_guide, denoising_strength, masking_strength,  video_guide_outpainting_col, video_prompt_type_video_mask, video_mask, image_mask, image_mask_guide, mask_expand, image_refs_row, frames_positions, video_prompt_type_video_custom_dropbox, video_prompt_type_video_custom_checkbox, input_video_strength, magic_mask_image_btn, magic_mask_video_btn, custom_settings_visibility_trigger], show_progress="hidden")
             video_prompt_type_video_guide_alt.input(fn=refresh_video_prompt_type_video_guide, inputs = [state, gr.State("alt"),video_prompt_type, video_prompt_type_video_guide_alt, image_mode, image_mask_guide, image_guide, image_mask, image_prompt_type], outputs = [video_prompt_type, video_guide, image_guide, keep_frames_video_guide, denoising_strength, masking_strength, video_guide_outpainting_col, video_prompt_type_video_mask, video_mask, image_mask, image_mask_guide, mask_expand, image_refs_row, frames_positions, video_prompt_type_video_custom_dropbox, video_prompt_type_video_custom_checkbox, input_video_strength, magic_mask_image_btn, magic_mask_video_btn, custom_settings_visibility_trigger], show_progress="hidden")
-            custom_settings_visibility_trigger.change(fn=refresh_custom_settings_visibility, inputs=[state, video_prompt_type, audio_prompt_type], outputs=[custom_setting_components_map[get_custom_setting_key(i)] for i in range(CUSTOM_SETTINGS_MAX)] + [custom_setting_components_map[get_custom_setting_slider_key(i)] for i in range(CUSTOM_SETTINGS_MAX)], show_progress="hidden")
+            custom_settings_visibility_trigger.change(fn=refresh_custom_settings_visibility, inputs=[state, video_prompt_type, audio_prompt_type], outputs=custom_settings_rows + custom_setting_extra_inputs, show_progress="hidden")
             # video_prompt_type_video_guide_alt.input(fn=refresh_video_prompt_type_video_guide_alt, inputs = [state, video_prompt_type, video_prompt_type_video_guide_alt, image_mode, image_mask_guide, image_guide, image_mask], outputs = [video_prompt_type, video_guide, image_guide, image_refs_row, denoising_strength, masking_strength, video_mask, mask_expand, image_mask_guide, image_guide, image_mask, keep_frames_video_guide ], show_progress="hidden")
             video_prompt_type_video_custom_dropbox.input(fn= refresh_video_prompt_type_video_custom_dropbox, inputs=[state, video_prompt_type, video_prompt_type_video_custom_dropbox], outputs = video_prompt_type)
             video_prompt_type_video_custom_checkbox.input(fn= refresh_video_prompt_type_video_custom_checkbox, inputs=[state, video_prompt_type, video_prompt_type_video_custom_checkbox], outputs = video_prompt_type)
@@ -12523,6 +12616,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     acquire_gpu=lambda state_value, process_id, process_name: acquire_GPU_ressources(state_value, process_id, process_name, gr=gr),
                     release_gpu=release_GPU_ressources,
                     get_model_settings=get_current_model_settings,
+                    get_model_def=lambda state_value: get_model_def(get_state_model_type(state_value)),
+                    model_def=model_def,
                 )
             pause_btn.click(pause_generation, [state], [ pause_btn, resume_btn] )
             resume_btn.click(resume_generation, [state] )
@@ -12534,8 +12629,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
             inputs_names= list(inspect.signature(save_inputs).parameters)[1:-2]
             locals_dict = locals()
-            locals_dict.update(custom_setting_components_map)
-            gen_inputs = [locals_dict[k] for k in inputs_names] + [state, plugin_data]
+            gen_inputs = build_save_inputs(inputs_names, locals_dict, state, plugin_data, custom_setting_extra_inputs)
+            refresh_outputs = build_form_refresh_outputs(inputs_names, locals_dict, state, plugin_data, extra_inputs)
             save_settings_btn.click( fn=validate_wizard_prompt, inputs =[state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] , outputs= [prompt]).then(
                 save_inputs, inputs =[target_settings] + gen_inputs, outputs = [])
 
@@ -12694,7 +12789,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     show_progress="hidden",
                 ).then(fn= fill_inputs, 
                     inputs=[state],
-                    outputs=gen_inputs + extra_inputs,
+                    outputs=refresh_outputs,
                     show_progress="full" if args.debug_gen_form else "hidden",
                 ).then(
                     fn=None, inputs=None, outputs=None, js=PROMPT_TOOLS_ATTACH_JS
@@ -12767,7 +12862,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
             refresh_form_trigger.change(fn= fill_inputs, 
                 inputs=[state],
-                outputs=gen_inputs + extra_inputs,
+                outputs=refresh_outputs,
                 show_progress= "full" if args.debug_gen_form else "hidden",
             ).then(
                 fn=None, inputs=None, outputs=None, js=PROMPT_TOOLS_ATTACH_JS
@@ -12926,9 +13021,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                  outputs=[current_gen_column, queue_accordion]
             )
     locals_dict = locals()
-    locals_dict.update(custom_setting_components_map)
     if update_form:
-        gen_inputs = [state_dict if k=="state" else locals_dict[k]  for k in inputs_names] + [state_dict, plugin_data] + extra_inputs
+        gen_inputs = build_form_refresh_outputs(inputs_names, locals_dict, state_dict, plugin_data, extra_inputs)
         return gen_inputs
     else:
         app.run_component_insertion(locals_dict)
@@ -13235,8 +13329,8 @@ def create_ui():
                 )
 
                 edit_inputs_names = inputs_names 
-                final_edit_inputs = [edit_tab_components[k] for k in edit_inputs_names if k != 'state'] + [edit_tab_components['state'], edit_tab_components['plugin_data']] 
-                edit_tab_inputs = final_edit_inputs  + edit_tab_components['extra_inputs']
+                final_edit_inputs = build_save_inputs(edit_inputs_names, edit_tab_components, edit_tab_components['state'], edit_tab_components['plugin_data'], edit_tab_components['custom_setting_extra_inputs'])
+                edit_tab_inputs = build_form_refresh_outputs(edit_inputs_names, edit_tab_components, edit_tab_components['state'], edit_tab_components['plugin_data'], edit_tab_components['extra_inputs'])
 
                 def fill_inputs_for_edit(state):
                     editing_task_id = state.get("editing_task_id", None)

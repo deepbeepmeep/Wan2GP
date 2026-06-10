@@ -9,7 +9,7 @@ from shared.utils.video_metadata import read_metadata_from_video, save_video_met
 from shared.utils.virtual_media import build_virtual_media_path
 
 
-PLUGIN_NAME = "Process Full Video"
+PLUGIN_NAME = "MediaFlow"
 PROCESS_FULL_VIDEO_METADATA_KEY = "fill_process_video"
 
 
@@ -84,7 +84,7 @@ def store_process_progress(output_path: str, *, written_unique_frames: int, merg
     metadata["frame_count"] = int(written_unique_frames)
     if save_video_metadata(output_path, metadata, allow_inplace_update=True, verbose_level=verbose_level):
         return True
-    print(f"[Process Full Video] Warning: failed to store process progress in {output_path}")
+    print(f"[MediaFlow] Warning: failed to store process progress in {output_path}")
     return False
 
 
@@ -157,12 +157,12 @@ def log_existing_output_metadata(output_path: str, verbose_level: int) -> None:
         return
     metadata = read_metadata_from_video(output_path)
     if not isinstance(metadata, dict) or len(metadata) == 0:
-        print(f"[Process Full Video] Existing output metadata not found in {output_path}")
+        print(f"[MediaFlow] Existing output metadata not found in {output_path}")
         return
     creation_date = str(metadata.get("creation_date") or "unknown")
     generation_time = metadata.get("generation_time")
     generation_time_text = "unknown" if generation_time in (None, "") else str(generation_time)
-    print(f"[Process Full Video] Existing output metadata found: creation_date={creation_date}, generation_time={generation_time_text}")
+    print(f"[MediaFlow] Existing output metadata found: creation_date={creation_date}, generation_time={generation_time_text}")
 
 
 def store_output_metadata(output_path: str, last_segment_path: str | None, *, source_path: str, process_name: str, source_start_seconds: float, start_frame: int, fps_float: float, selected_audio_track: int | None, total_generation_time: float, actual_frame_count: int, process_metadata: dict | None = None, verbose_level: int = 0) -> bool:
@@ -174,9 +174,9 @@ def store_output_metadata(output_path: str, last_segment_path: str | None, *, so
         if isinstance(loaded_metadata, dict) and len(loaded_metadata) > 0:
             metadata = loaded_metadata
         elif Path(last_segment_path).resolve() != Path(output_path).resolve():
-            print(f"[Process Full Video] Warning: failed to read WanGP metadata from {last_segment_path}")
+            print(f"[MediaFlow] Warning: failed to read WanGP metadata from {last_segment_path}")
     elif last_segment_path:
-        print(f"[Process Full Video] Warning: no segment metadata source was available for {output_path}")
+        print(f"[MediaFlow] Warning: no segment metadata source was available for {output_path}")
     final_metadata = metadata.copy()
     source_name = os.path.basename(source_path)
     end_frame = max(int(start_frame), int(start_frame) + max(0, int(actual_frame_count)) - 1)
@@ -205,7 +205,7 @@ def store_output_metadata(output_path: str, last_segment_path: str | None, *, so
     final_metadata["creation_timestamp"] = int(time.time())
     if save_video_metadata(output_path, final_metadata, allow_inplace_update=True, verbose_level=verbose_level):
         return True
-    print(f"[Process Full Video] Warning: failed to write metadata to {output_path}")
+        print(f"[MediaFlow] Warning: failed to write metadata to {output_path}")
     return False
 
 

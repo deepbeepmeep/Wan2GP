@@ -315,7 +315,7 @@ class ProcessFormController:
         updated_memory = self.store_memory(memory_state, current_process_name, main_state, refs, values)
         process_choices, next_process_name = self.library.process_choices(next_model_type, main_state, main_lset_name, refs)
         next_process_name = str(next_process_name or ui_constants.NO_USER_SETTINGS_VALUE).strip()
-        catalog.save_process_full_video_selection(next_model_type, next_process_name)
+        catalog.save_mediaflow_selection(next_model_type, next_process_name)
         return (
             updated_memory,
             next_process_name,
@@ -329,7 +329,7 @@ class ProcessFormController:
         refs = catalog.get_saved_user_settings_refs({catalog.USER_SETTINGS_STORAGE_KEY: user_refs})
         updated_memory = self.store_memory(memory_state, current_process_name, main_state, refs, values)
         next_process_name = str(next_process_name or "").strip()
-        catalog.save_process_full_video_selection(process_model_type_value, next_process_name)
+        catalog.save_mediaflow_selection(process_model_type_value, next_process_name)
         actions_update, _add_update, delete_update, placeholder_update = self.settings_action_updates(process_model_type_value, next_process_name)
         return (
             updated_memory,

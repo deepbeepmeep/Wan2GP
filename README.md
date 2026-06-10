@@ -55,6 +55,15 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
+### 10th of June 2026: WanGP v12.20, Go with the Flow
+- **Media Flow Plugin**: the *Full Video Process* is now named *Media Flow* because it can process *Images* as well as *Videos*. Even better, the new *Batch* mode can process any number of files: for instance, give *Media Flow* the path to the folder containing your collection of butterfly pictures and *all the corresponding images will be upsampled in one click*!
+
+- **Scail 2**: the sequel to one of the best video *Character Animators*, and a very good alternative to *Wan 2.2 Animate*. You can either *Animate* up to 5 people by providing a *Start Image* and a *Control Video* that contains the movement, or *Replace* one person in an existing Control Video. Animate mode preserves identity well thanks to the new *Reference Image* input and, best of all, it supports *Sliding Windows* for non-stop dancing!
+
+Please note that Scail 2 *Replace* and *Animate* modes require colored masks if more than two people are being replaced or animated. You can build them easily with *WanGP Magic Mask* (remember the magic wand icon). Also, for best results, I recommend using a *Reference Image* or a *Start Image* that is closely aligned to the first frame of the control video; you can use an *Image Model* generator for this.
+
+- **Int8 ConvRot Support**: model checkpoints saved in this quantized int8 format used by Comfy can now be loaded in WanGP.
+
 ### 7th of June 2026: WanGP v12.13, Prompt Control
 - **Ideogram 4 Prompt Helper**: the great thing about Ideogram 4 is that you can position every object or text exactly where you expect it in your output image. Ideogram 4 now has a *Visual Helper* to create and edit its JSON prompt format. Click the *Magic Wand* next to the prompt to draw or resize text/object boxes, tune the main prompt fields, and apply the final JSON back to the prompt. *Magic Prompt* can still create the first draft for you.
 
@@ -165,7 +174,7 @@ You first need to install *Triton* and optionally *SpargeAttention* for best qua
 FlashVSR is available in the following contexts:
 - a Postprocessing option in *Advanced Tab > Postprocessing*
 - a *Late Postprocessing* that can be applied on already generated videos
-- in Model *WanGP System Postprocessing* of the *Process Full Video* Plugin you can Upsample a few hours long Video !
+- in Model *WanGP System Video Postprocessing* of the *MediaFlow* Plugin you can Upsample a few hours long Video !
 
 Please note as FlashVSR is now natively supported by WanGP and highly optimized, you may no longer need the *FlashVSR Plugin* developed by @h4k4z3. In any case many thanks to @h4k4z3 for developing this plugin which was very useful.
 
@@ -190,13 +199,13 @@ It is highly recommended to apply the *Lightx2v 4 steps* lora profile. Also for 
 More nice goodies for **LTX-2**:
 - **HDR Control Video support**: you can now provide an HDR Control Video it will be automatically converted to SDR if model doesnt support HDR
 
-- **LTX 2.3 SDR to HDR**: thanks to a new HDR Ic lora, you can now convert SDR Videos to HDR using LTX 2.3. This feature is available as a new *Control Video process* and also in the *Process Full Video* plugin. Please note that the embedded Gradio Gallery video player converts automatically any HDR content to SDR, so if you want to enjoy the full HDR content you will need an external media player (for instance *MPC-BE*)
+- **LTX 2.3 SDR to HDR**: thanks to a new HDR Ic lora, you can now convert SDR Videos to HDR using LTX 2.3. This feature is available as a new *Control Video process* and also in the *MediaFlow* plugin. Please note that the embedded Gradio Gallery video player converts automatically any HDR content to SDR, so if you want to enjoy the full HDR content you will need an external media player (for instance *MPC-BE*)
 
 - **LTX 2.3 Control Video Injection in Phase 2**: up to now even if you picked 2 phases, the *Control Video* was only injected in Phase 1 (Phase 2 was only used for upsampling). Now if you have chosen for at least one Ic Lora, a non null mutiplier for phase 2, the control video will be injected also for phase 2. This will increase output quality with 2 phases but will require more VRAM for phase 2.
 
-- **Process Full Video Custom Settings**: you can now reuse your own presaved settings in the plugin. As you will  link the plugin to your settings any change to the saved settings  will be immediatly available in the plugin. If you find some great combination of loras / model / settings to be used with this Plugin please share them on the discord server so that I can add them in the official list.
+- **MediaFlow Custom Settings**: you can now reuse your own presaved settings in the plugin. As you will  link the plugin to your settings any change to the saved settings  will be immediatly available in the plugin. If you find some great combination of loras / model / settings to be used with this Plugin please share them on the discord server so that I can add them in the official list.
 
-*update 11.41*: added Process Full Video Custom Settings 
+*update 11.41*: added MediaFlow Custom Settings
 
 ### 21st of April 2026: WanGP v11.35, LTX-2 Mega Mix
 Lots of nice goodies for **LTX-2**:
@@ -221,7 +230,7 @@ Lots of nice goodies for **LTX-2**:
 
 - **Injected Frames & Sliding Windows**: injected frames were not properly injected starting from window no 2. This is now supported.
 
-- **Process Process Full Video Plugin**: this *bundled PlugIn* which needs to be enabled first in *the PlugIn tab*, right now supports only *Outpainting*. It relies on *LTX2 Lora outpainting*. It is more or less a *Super Sliding Windows* mode but without the *RAM restrictions* and no risk to explode the *Video Gallery* with huge files. If you are patient enough you can change the Aspect Ratio of a few hours movie (check out below the 1 min sample). Behold how *Sliding Windows transitions* are almost invisible !
+- **MediaFlow Plugin**: this *bundled PlugIn* which needs to be enabled first in *the PlugIn tab*, right now supports only *Outpainting*. It relies on *LTX2 Lora outpainting*. It is more or less a *Super Sliding Windows* mode but without the *RAM restrictions* and no risk to explode the *Video Gallery* with huge files. If you are patient enough you can change the Aspect Ratio of a few hours movie (check out below the 1 min sample). Behold how *Sliding Windows transitions* are almost invisible !
 
 - **NEW Processes for Full Video Plugin**: *Refocus* (remove blur), *Ungrade* (remove stylized color grading) and *Uncompress* (remove compression artifacts) have been added. Many thanks to *Oumoumad Mohamed* who created the Ic Loras (including the *Outpainting* lora ) that power these processes. If you have found some Ic Loras that are useful and dont cause glitches with Sliding Windows, let me know and I will add them.
 
@@ -230,10 +239,10 @@ Lots of nice goodies for **LTX-2**:
 - **New One Click Install / Update Scripts**: We have to thank **Tophness / @steve_Jabz** for that one. *Huge Kudos to him!* The scripts will not only install WanGP but also all the *Kernels* (among *Triton, Sage, Flash, GGuf, Lightx2v, Nunchaku*) supported by your GPU. Please have a look at the instructions further down. Dont't hesitate to share feedback or report any issue.
 
 *update 11.31*: fixed phase 1 forced incorrectly in some cases\
-*update 11.32*: bugs fixes, Process Full Video now supports Distilled 1.1 & accepts video without audio\
+*update 11.32*: bugs fixes, MediaFlow now supports Distilled 1.1 & accepts video without audio\
 *update 11.33*: Separated LTX2 & LTX2.3 loras in different folders, added easy loras multipliers override\
 *update 11.34*: Reverted split as not popular\
-*update 11.35*: added Aligned Pose Transfer, Injected Frames & Sliding Windows support, new processes for Process Full Video Plugin 
+*update 11.35*: added Aligned Pose Transfer, Injected Frames & Sliding Windows support, new processes for MediaFlow Plugin
 
 ### 11th of April 2026: WanGP v11.26, Now I Can See
 

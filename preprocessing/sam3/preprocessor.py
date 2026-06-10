@@ -20,6 +20,14 @@ _SAM3_BPE_NAME = "bpe_simple_vocab_16e6.txt.gz"
 KEEP_VIDEO_FRAMES_ON_CUDA = True
 _TEXT_ENCODER_CACHE = None
 _TEXT_ENCODER_CACHE_KEY = None
+DEFAULT_INSTANCE_PALETTE_RGB = np.array([
+    (0, 0, 255),
+    (255, 0, 0),
+    (0, 255, 0),
+    (255, 0, 255),
+    (0, 255, 255),
+    (255, 255, 0),
+], dtype=np.uint8)
 logger = get_logger(__name__)
 
 
@@ -95,12 +103,12 @@ def _to_numpy(value):
     return np.asarray(value)
 
 
-def _sam3_outputs_to_binary_mask(outputs, height: int, width: int):
+def _sam3_outputs_to_binary_mask(outputs, height: int, width: int, color_palette=None, object_color_map=None, max_colored_objects=None, fill_hole_area: int = 0):
     if outputs is None or "out_binary_masks" not in outputs:
-        return np.zeros((height, width), dtype=np.bool_)
+        return np.zeros((height, width, 3), dtype=np.uint8) if color_palette is not None else np.zeros((height, width), dtype=np.bool_)
     masks = _to_numpy(outputs["out_binary_masks"])
     if masks.size == 0:
-        return np.zeros((height, width), dtype=np.bool_)
+        return np.zeros((height, width, 3), dtype=np.uint8) if color_palette is not None else np.zeros((height, width), dtype=np.bool_)
     if masks.ndim == 2:
         masks = masks[None, :, :]
     elif masks.ndim == 4 and masks.shape[1] == 1:
@@ -109,7 +117,35 @@ def _sam3_outputs_to_binary_mask(outputs, height: int, width: int):
         masks = masks.reshape((-1, *masks.shape[-2:]))
     if masks.shape[-2:] != (height, width):
         masks = np.stack([np.asarray(Image.fromarray(mask.astype(np.uint8)).resize((width, height), resample=Image.Resampling.NEAREST)) for mask in masks], axis=0)
-    return masks.astype(bool).any(axis=0)
+    masks = masks.astype(bool, copy=False)
+    if color_palette is None and max_colored_objects is None:
+        return masks.any(axis=0)
+    obj_ids = _to_numpy(outputs.get("out_obj_ids", np.arange(masks.shape[0]))).reshape(-1)
+    if obj_ids.shape[0] != masks.shape[0]:
+        obj_ids = np.arange(masks.shape[0], dtype=np.int64)
+    object_color_map = object_color_map if object_color_map is not None else {}
+    obj_ids = obj_ids.astype(np.int64, copy=False)
+    max_colored_objects = len(color_palette) if color_palette is not None and max_colored_objects is None else max_colored_objects
+    if max_colored_objects <= 0:
+        return np.zeros((height, width, 3), dtype=np.uint8) if color_palette is not None else np.zeros((height, width), dtype=np.bool_)
+    new_indices = [i for i, obj_id in enumerate(obj_ids) if int(obj_id) not in object_color_map]
+    slots = max_colored_objects - len(object_color_map)
+    if slots > 0 and new_indices:
+        areas = masks.reshape(masks.shape[0], -1).sum(axis=1)
+        for idx in sorted(new_indices, key=lambda i: areas[i], reverse=True)[:slots]:
+            object_color_map[int(obj_ids[idx])] = color_palette[len(object_color_map)] if color_palette is not None else True
+    if color_palette is None:
+        selected_masks = [mask for obj_id, mask in zip(obj_ids, masks) if int(obj_id) in object_color_map]
+        return np.any(selected_masks, axis=0) if selected_masks else np.zeros((height, width), dtype=np.bool_)
+    colored_mask = np.zeros((height, width, 3), dtype=np.uint8)
+    for obj_id, mask in zip(obj_ids, masks):
+        obj_id = int(obj_id)
+        if obj_id not in object_color_map:
+            continue
+        if fill_hole_area > 0:
+            mask = fill_sam3_binary_mask_holes(mask, fill_hole_area)
+        colored_mask[mask] = object_color_map[obj_id]
+    return colored_mask
 
 
 def resolve_sam3_grounding_batch_size(batch_size=None) -> int:
@@ -259,11 +295,14 @@ def run_sam3_video(
     keep_video_frames_on_cuda: bool = KEEP_VIDEO_FRAMES_ON_CUDA,
     cache_frame_outputs: bool = False,
     fill_hole_area: int = 0,
+    colorize_objects: bool = False,
+    color_palette=None,
+    max_colored_objects=None,
     progress_callback=None,
 ):
     keywords = [str(keyword).strip() for keyword in keywords if str(keyword).strip()]
     if len(keywords) == 0:
-        return np.zeros(video.shape[:3], dtype=np.bool_)
+        return np.zeros((*video.shape[:3], 3), dtype=np.uint8) if colorize_objects else np.zeros(video.shape[:3], dtype=np.bool_)
 
     model_builder = _load_model_builder()
     checkpoint_path, version = _checkpoint_path()
@@ -274,6 +313,8 @@ def run_sam3_video(
         preencoded_prompts = _encode_keyword_prompts(model_builder, checkpoint_path, bpe_path, keywords)
     else:
         preencoded_prompts = None
+    video_predictor = None
+    video_pil = None
     video_predictor = _load_predictor(
         model_builder,
         checkpoint_path,
@@ -291,7 +332,22 @@ def run_sam3_video(
     session_id = None
     response = video_predictor.handle_request({"type": "start_session", "resource_path": video_pil, "offload_video_to_cpu": not keep_video_frames_on_cuda, "cache_frame_outputs": cache_frame_outputs})
     session_id = response["session_id"]
-    dynamic_mask = np.zeros((num_frames, height, width), dtype=np.bool_)
+    dynamic_mask = np.zeros((num_frames, height, width, 3), dtype=np.uint8) if colorize_objects else np.zeros((num_frames, height, width), dtype=np.bool_)
+    color_palette = np.asarray(DEFAULT_INSTANCE_PALETTE_RGB if color_palette is None else color_palette, dtype=np.uint8).reshape(-1, 3) if colorize_objects else None
+    if colorize_objects:
+        max_colored_objects = len(color_palette) if max_colored_objects is None else min(max(0, int(max_colored_objects)), len(color_palette))
+    elif max_colored_objects is not None:
+        max_colored_objects = max(0, int(max_colored_objects))
+    object_color_map = {}
+
+    def merge_outputs(frame_index, outputs):
+        frame_mask = _sam3_outputs_to_binary_mask(outputs, height, width, color_palette=color_palette, object_color_map=object_color_map, max_colored_objects=max_colored_objects, fill_hole_area=fill_hole_area)
+        if colorize_objects:
+            selector = frame_mask.any(axis=-1)
+            dynamic_mask[frame_index][selector] = frame_mask[selector]
+        else:
+            dynamic_mask[frame_index] |= frame_mask
+
     try:
         total_progress_steps = len(keywords) * num_frames
         for keyword_index, keyword in enumerate(keywords):
@@ -302,7 +358,7 @@ def run_sam3_video(
                 request["preencoded_text_outputs"] = _bf16_prompt_payload(preencoded_prompts[keyword])
             with _autocast_context():
                 result = video_predictor.handle_request(request)
-                dynamic_mask[0] |= _sam3_outputs_to_binary_mask(result.get("outputs") if isinstance(result, dict) else None, height, width)
+                merge_outputs(0, result.get("outputs") if isinstance(result, dict) else None)
                 if progress_callback is not None:
                     progress_callback(progress_base, total_progress_steps)
                 internal_progress_seen = False
@@ -327,13 +383,24 @@ def run_sam3_video(
                     if progress_callback is not None and not internal_progress_seen:
                         progress_callback(min(progress_base + propagated_frames, total_progress_steps), total_progress_steps)
                     outputs = result["outputs"]
-                    dynamic_mask[result["frame_index"]] |= _sam3_outputs_to_binary_mask(outputs, height, width)
+                    merge_outputs(result["frame_index"], outputs)
     finally:
-        if session_id is not None:
-            video_predictor.handle_request({"type": "close_session", "session_id": session_id})
-        video_predictor.shutdown()
-        del video_predictor
+        try:
+            if session_id is not None and video_predictor is not None:
+                try:
+                    video_predictor.handle_request({"type": "close_session", "session_id": session_id})
+                except Exception as exc:
+                    logger.warning("SAM3 close_session failed during cleanup: %s", exc)
+        finally:
+            if video_predictor is not None:
+                try:
+                    video_predictor.shutdown()
+                except Exception as exc:
+                    logger.warning("SAM3 predictor shutdown failed during cleanup: %s", exc)
+        video_predictor = None
+        preencoded_prompts = None
+        video_pil = None
         _cleanup()
-    if fill_hole_area > 0:
+    if fill_hole_area > 0 and not colorize_objects:
         dynamic_mask = np.stack([fill_sam3_binary_mask_holes(mask, fill_hole_area) for mask in dynamic_mask], axis=0)
     return dynamic_mask

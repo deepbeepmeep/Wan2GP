@@ -15,7 +15,7 @@ from shared.utils.virtual_media import build_virtual_media_path
 class FlashVSRProcessHandler:
     system_handler = "flashvsr"
     model_type = "__system_flashvsr"
-    model_label = "WanGP System Postprocessing"
+    model_label = "WanGP System Video Postprocessing"
     target_control_label = "Upsampling"
     target_control_choices = [(f"x{FlashVSRBridge.format_ratio_label(scale)}", FlashVSRBridge.upsampling_value(scale)) for scale in FlashVSRBridge.UPSAMPLING_RATIOS]
     default_target_control = FlashVSRBridge.upsampling_value(2.0)
@@ -74,6 +74,31 @@ class FlashVSRProcessHandler:
             "video_source": video_path,
             "video_length": int(frame_count),
             "keep_frames_video_source": str(int(frame_count)),
+            "temporal_upsampling": "",
+            "spatial_upsampling": target_control,
+            "film_grain_intensity": 0,
+            "film_grain_saturation": 0.5,
+            "postprocess_audio": "",
+            "repeat_generation": 1,
+            "batch_size": 1,
+            "seed": int(seed),
+            "_api": api_options,
+        })
+        return settings
+
+    def build_image_queue_settings(self, process_settings: dict, *, source_path: str, target_control: str, seed: int) -> dict:
+        target_control = self.normalize_target_control_for_process(target_control, process_settings)
+        api_options = dict(process_settings.get("_api", {})) if isinstance(process_settings.get("_api"), dict) else {}
+        api_options.update({"return_media": True, "suppress_source_audio": True, "suppress_metadata_images": True})
+        settings = dict(process_settings)
+        settings.update({
+            "mode": "edit_postprocessing",
+            "model_type": str(settings.get("model_type") or "__system_image_postprocessing"),
+            "prompt": str(settings.get("prompt") or "Image upsampling"),
+            "image_mode": 1,
+            "video_source": source_path,
+            "video_length": 1,
+            "keep_frames_video_source": "1",
             "temporal_upsampling": "",
             "spatial_upsampling": target_control,
             "film_grain_intensity": 0,

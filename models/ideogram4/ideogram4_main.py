@@ -21,6 +21,20 @@ from .sampler_configs import PRESETS
 from .scheduler import get_schedule_for_resolution, make_step_intervals
 
 _DEFAULT_PRESET = "V4_DEFAULT_20"
+_TRANSFORMER_WRAPPER_PREFIX = "model.diffusion_model."
+
+
+def _strip_transformer_wrapper(state_dict, quantization_map=None, tied_weights_map=None):
+    if not any(key.startswith(_TRANSFORMER_WRAPPER_PREFIX) for key in state_dict):
+        return state_dict, quantization_map, tied_weights_map
+
+    def strip_mapping(mapping):
+        if mapping is None:
+            return None
+        prefix_len = len(_TRANSFORMER_WRAPPER_PREFIX)
+        return {key[prefix_len:]: value for key, value in mapping.items() if key.startswith(_TRANSFORMER_WRAPPER_PREFIX)}
+
+    return strip_mapping(state_dict), strip_mapping(quantization_map), strip_mapping(tied_weights_map)
 
 
 def _load_transformer(filename: str, dtype: torch.dtype) -> Ideogram4Transformer:
@@ -29,7 +43,7 @@ def _load_transformer(filename: str, dtype: torch.dtype) -> Ideogram4Transformer
     with init_empty_weights(include_buffers=True):
         transformer = Ideogram4Transformer(config)
     transformer.rotary_emb.reset_inv_freq()
-    offload.load_model_data(transformer, filename, writable_tensors=False, default_dtype=dtype, fused_split_map=split_map)
+    offload.load_model_data(transformer, filename, writable_tensors=False, default_dtype=dtype, fused_split_map=split_map, preprocess_sd=_strip_transformer_wrapper)
     transformer.split_linear_modules_map = split_map
     transformer.eval().requires_grad_(False)
     return transformer

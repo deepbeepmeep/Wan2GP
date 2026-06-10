@@ -19,6 +19,10 @@ def validate_user_process_definition(process_definition: dict | None, get_model_
         return [common.get_error_message(exc) or "The selected model is not available."]
     problems: list[str] = []
     image_mode = common.coerce_int(settings.get("image_mode"), 0)
+    if image_mode == 1:
+        if bool(model_def.get("audio_only", False)):
+            problems.append("The selected settings must generate an image, not audio only.")
+        return problems
     if image_mode != 0 or bool(model_def.get("audio_only", False)) or bool(model_def.get("image_outputs", False)) or bool(settings.get("image_outputs", False)):
         problems.append("The selected settings must generate a video, not images or audio only.")
     video_prompt_type = str(settings.get("video_prompt_type") or "")
@@ -46,4 +50,4 @@ def format_user_process_validation_error(process_definition: dict | None, proble
     name = str((process_definition or {}).get("name") or "selected settings").strip()
     if len(problems) == 0:
         return ""
-    return f'Cannot add "{name}" as a full-video process:\n- ' + "\n- ".join(problems)
+    return f'Cannot add "{name}" as a Media Flow process:\n- ' + "\n- ".join(problems)

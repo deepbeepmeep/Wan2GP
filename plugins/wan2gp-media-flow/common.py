@@ -80,7 +80,7 @@ def plugin_info(message: str) -> None:
     text = str(message or "").strip()
     if len(text) == 0:
         return
-    print(f"[Process Full Video] {text}")
+    print(f"[MediaFlow] {text}")
     gr.Info(text)
 
 

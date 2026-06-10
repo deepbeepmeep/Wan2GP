@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import os
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import gradio as gr
+from PIL import Image
 
 from shared.utils.hdr import VIDEO_PROMPT_HDR_OUTPUT_FLAG
+from shared.utils.utils import has_image_file_extension
 
-from .chunk_executor import ChunkExecutor, ChunkProgress, ProcessContext
+from .chunk_executor import ChunkExecutor, ChunkProgress, ProcessContext, build_task_settings
+from . import batch_queue
 from . import common
+from . import constants as ui_constants
 from . import continuation_recovery
 from . import frame_planning as frames
 from . import media_io as media
@@ -80,6 +85,17 @@ class RunRequest:
         )
 
 
+@dataclass(frozen=True)
+class ProcessRunResult:
+    source_path: str = ""
+    output_path: str = ""
+    success: bool = False
+    stopped: bool = False
+    message: str = ""
+    chunks_completed: int = 0
+    chunks_total: int = 0
+
+
 class ProcessRunner:
     def __init__(self, *, plugin, api_session, library, get_model_def, active_job: dict, preview_state: dict, ui_skip, ui_update, info_exit, reset_live_chunk_status) -> None:
         self.plugin = plugin
@@ -93,25 +109,445 @@ class ProcessRunner:
         self.info_exit = info_exit
         self.reset_live_chunk_status = reset_live_chunk_status
 
-    def start_process(self, state=None, process_name="", user_refs=None, source_path="", process_strength=None, output_path="", prompt_text="", continue_enabled=True, source_audio_track="", output_resolution="720p", target_ratio="", chunk_size_seconds=10.0, sliding_window_overlap=1, start_seconds="", end_seconds=""):
-        if self.active_job.get("running"):
+    def _record_process_result(self, result: ProcessRunResult) -> ProcessRunResult:
+        self.active_job["last_process_result"] = result
+        return result
+
+    @staticmethod
+    def _batch_completed_count(state: dict) -> int:
+        return sum(1 for item in list(state.get("items") or []) if str(item.get("status") or "") in {"success", "failed"})
+
+    @staticmethod
+    def _batch_failed_count(state: dict) -> int:
+        return sum(1 for item in list(state.get("items") or []) if str(item.get("status") or "") == "failed")
+
+    @staticmethod
+    def _batch_resume_index(state: dict, total_items: int) -> int:
+        for index, item in enumerate(list(state.get("items") or [])[:total_items]):
+            if str(item.get("status") or "") not in {"success", "failed"}:
+                return index
+        return total_items
+
+    @staticmethod
+    def _process_is_image(process_definition: dict | None) -> bool:
+        settings = process_definition.get("settings") if isinstance(process_definition, dict) else None
+        if not isinstance(settings, dict):
+            return False
+        try:
+            return int(settings.get("image_mode") or 0) == 1
+        except (TypeError, ValueError):
+            return False
+
+    def _image_output_extension(self) -> str:
+        return output_paths.image_output_extension(self.plugin.server_config.get("image_output_codec", "jpeg_95"))
+
+    @staticmethod
+    def _image_result_path(result) -> str:
+        for path in list(getattr(result, "generated_files", []) or []):
+            if path and os.path.isfile(path):
+                return str(path)
+        for artifact in tuple(getattr(result, "artifacts", ()) or ()):
+            if str(getattr(artifact, "media_type", "") or "").strip() == "image" and getattr(artifact, "path", None) and os.path.isfile(artifact.path):
+                return str(artifact.path)
+        return ""
+
+    @staticmethod
+    def _map_source_image_settings(settings: dict, source_path: str) -> None:
+        video_prompt_type = str(settings.get("video_prompt_type") or "")
+        image_prompt_type = str(settings.get("image_prompt_type") or "")
+        if "V" in video_prompt_type:
+            settings["image_guide"] = source_path
+            settings.pop("video_guide", None)
+        elif "I" in video_prompt_type or settings.get("image_refs") is not None:
+            settings["image_refs"] = [source_path]
+        elif "S" in image_prompt_type or settings.get("image_start") is not None:
+            settings["image_start"] = source_path
+        else:
+            settings["video_prompt_type"] = "V"
+            settings["image_guide"] = source_path
+            settings.pop("video_guide", None)
+
+    def _build_image_task_settings(self, process_definition: dict, system_handler, *, source_path: str, prompt_text: str, process_strength: float, use_lora_strength_override: bool, system_target_control: str) -> dict:
+        process_settings = process_definition["settings"]
+        if system_handler is not None and callable(getattr(system_handler, "build_image_queue_settings", None)):
+            seed = int(time.time_ns() % 2_147_483_647)
+            settings = system_handler.build_image_queue_settings(process_settings, source_path=source_path, target_control=system_target_control, seed=seed)
+        else:
+            settings = build_task_settings(process_settings, is_user_process=process_definition.get("source") == "user")
+            settings["model_type"] = str(process_settings.get("model_type") or "")
+            settings["image_mode"] = 1
+            settings["repeat_generation"] = 1
+            settings["batch_size"] = 1
+            settings["prompt"] = prompt_text.strip() or str(process_settings.get("prompt") or "")
+            if use_lora_strength_override:
+                settings["loras_multipliers"] = str(process_strength)
+            self._map_source_image_settings(settings, source_path)
+        api_settings = settings.get("_api")
+        settings["_api"] = dict(api_settings) if isinstance(api_settings, dict) else {}
+        settings["_api"]["return_media"] = True
+        return settings
+
+    def _move_image_output(self, generated_path: str, target_path: str) -> str:
+        generated = Path(generated_path)
+        target = Path(target_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if generated.resolve() == target.resolve():
+            return str(target)
+        shutil.copy2(str(generated), str(target))
+        try:
+            os.remove(str(generated))
+        except OSError:
+            pass
+        return str(target)
+
+    def _start_image_process(self, request: RunRequest, process_definition: dict, system_handler, *, process_display_name: str, active_process_strength: float, use_lora_strength_override: bool, system_target_control: str, batch_internal: bool, batch_name: str, batch_source_path: str):
+        source_path = request.source_path
+        output_path = request.output_path
+        if not os.path.isfile(source_path):
+            message = f"Source image not found: {source_path}"
+            yield self.info_exit(message)
+            self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path, success=False, message=message))
+            return
+        if not has_image_file_extension(source_path):
+            message = "Source Image Path must use a supported image extension."
+            yield self.info_exit(message)
+            self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path, success=False, message=message))
+            return
+        target_output_path = output_paths.resolve_image_output_path(source_path, output_path, process_display_name, default_extension=self._image_output_extension(), notify=common.plugin_info)
+        if not batch_internal:
+            try:
+                catalog.save_mediaflow_ui_settings({
+                    "process_model_type": str(process_definition["settings"].get("model_type") or ""),
+                    "process_name": request.process_name,
+                    "source_path": source_path,
+                    "batch_source_path": str(batch_source_path or "").strip(),
+                    "batch_mode": "single",
+                    "batch_name": str(batch_name or "").strip(),
+                    "process_strength": active_process_strength,
+                    "output_path": output_path,
+                    "prompt": request.prompt_text,
+                    "continue_enabled": request.continue_enabled,
+                    "source_audio_track": request.source_audio_track,
+                    "output_resolution": request.output_resolution,
+                    "target_ratio": system_target_control if system_handler is not None else request.target_ratio,
+                    "chunk_size_seconds": request.chunk_size_seconds,
+                    "sliding_window_overlap": request.sliding_window_overlap,
+                    "start_seconds": request.start_seconds,
+                    "end_seconds": request.end_seconds,
+                })
+            except OSError as exc:
+                message = f"Unable to save plugin settings to {catalog.MEDIAFLOW_SETTINGS_FILE}: {exc}"
+                yield self.info_exit(message)
+                self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path, success=False, message=message))
+                return
+        callbacks = status_ui.ChunkCallbacks()
+        if not batch_internal:
+            self.preview_state["image"] = None
+        self.reset_live_chunk_status(request.state)
+        self.active_job["cancel_requested"] = False
+        self.active_job["running"] = True
+        run_started_at = time.time()
+        settings = self._build_image_task_settings(
+            process_definition,
+            system_handler,
+            source_path=source_path,
+            prompt_text=request.prompt_text,
+            process_strength=active_process_strength,
+            use_lora_strength_override=use_lora_strength_override,
+            system_target_control=system_target_control,
+        )
+        try:
+            yield self.ui_update(status_ui.render_process_status_html("Initializing", "Preparing image processing job..."), self.ui_skip, str(time.time_ns()) if not batch_internal else self.ui_skip, start_enabled=False, abort_enabled=False)
+            job = self.api_session.submit_task(settings, callbacks=callbacks)
+            self.active_job["job"] = job
+            yield self.ui_update(start_enabled=False, abort_enabled=True)
+            next_status_refresh_at = 0.0
+            stop_requested = False
+            while not job.done:
+                if self.active_job.get("cancel_requested") and not stop_requested:
+                    try:
+                        job.cancel()
+                    except RuntimeError as exc:
+                        print(f"[MediaFlow] Stop requested; WanGP abort bridge was not available: {exc}")
+                    stop_requested = True
+                now = time.monotonic()
+                if now >= next_status_refresh_at:
+                    elapsed_seconds = time.time() - run_started_at
+                    yield self.ui_update(
+                        status_ui.render_process_status_html(
+                            callbacks.phase_label,
+                            callbacks.status_text,
+                            phase_current_step=callbacks.current_step,
+                            phase_total_steps=callbacks.total_steps,
+                            elapsed_seconds=elapsed_seconds,
+                            prefer_status_phase=True,
+                        ),
+                        self.ui_skip,
+                        str(time.time_ns()),
+                        start_enabled=False,
+                        abort_enabled=True,
+                    )
+                    next_status_refresh_at = now + ui_constants.STATUS_REFRESH_INTERVAL_SECONDS
+                time.sleep(0.05)
+            result = job.result()
+            self.active_job["job"] = None
+            if result.cancelled or stop_requested:
+                message = "Stopped before image output was completed."
+                yield self.ui_update(status_ui.render_process_status_html("Stopped", message, elapsed_seconds=time.time() - run_started_at), self.ui_skip, self.ui_skip, start_enabled=True, abort_enabled=False)
+                self._record_process_result(ProcessRunResult(source_path=source_path, output_path=target_output_path, success=False, stopped=True, message=message, chunks_completed=0, chunks_total=1))
+                return
+            if not result.success:
+                message = "\n".join(str(error) for error in result.errors) or "Image processing failed."
+                raise gr.Error(message)
+            generated_path = self._image_result_path(result)
+            if not generated_path:
+                raise gr.Error("Image processing completed without creating an output image.")
+            final_output_path = self._move_image_output(generated_path, target_output_path)
+            image_preview = None
+            try:
+                with Image.open(final_output_path) as preview:
+                    image_preview = preview.copy()
+                    try:
+                        delattr(image_preview, "filename")
+                    except (AttributeError, TypeError):
+                        pass
+                    self.preview_state["image"] = image_preview
+            except Exception:
+                self.preview_state["image"] = None
+            message = "Completed image process."
+            yield self.ui_update(status_ui.render_process_status_html("Completed", message, elapsed_seconds=time.time() - run_started_at), final_output_path, str(time.time_ns()), start_enabled=True, abort_enabled=False)
+            self._record_process_result(ProcessRunResult(source_path=source_path, output_path=final_output_path, success=True, message=message, chunks_completed=1, chunks_total=1))
+        except gr.Error as exc:
+            self.active_job["job"] = None
+            message = common.get_error_message(exc) or "Image processing failed."
+            yield self.ui_update(status_ui.render_process_status_html("Error", message, elapsed_seconds=time.time() - run_started_at), target_output_path if os.path.isfile(target_output_path) else self.ui_skip, self.ui_skip, start_enabled=True, abort_enabled=False)
+            self._record_process_result(ProcessRunResult(source_path=source_path, output_path=target_output_path if os.path.isfile(target_output_path) else "", success=False, message=message, chunks_completed=0, chunks_total=1))
+            return
+        finally:
+            self.active_job["running"] = False
+
+    def start_batch_process(self, state=None, process_name="", user_refs=None, source_path="", process_strength=None, output_path="", prompt_text="", continue_enabled=True, source_audio_track="", output_resolution="720p", target_ratio="", chunk_size_seconds=10.0, sliding_window_overlap=1, start_seconds="", end_seconds="", batch_name="", batch_source_path=""):
+        if self.active_job.get("running") or self.active_job.get("batch_running"):
             yield self.info_exit("A process is already running.")
             return
+        batch_name = str(batch_name or "").strip()
+        if len(batch_name) == 0:
+            yield self.info_exit("Batch Name is required in batch mode.")
+            return
+        requested_batch_name = batch_name
         request = RunRequest.from_gradio(state, process_name, user_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds)
         process_definition = self.library.process_definition(request.process_name, request.state, request.user_refs)
         if process_definition is None:
             yield self.info_exit(f"Unsupported process: {request.process_name}")
             return
         system_handler = self.library.system_handler_for_definition(process_definition)
+        model_type = str((process_definition.get("settings") or {}).get("model_type") or "")
+        if len(model_type) == 0 and system_handler is None:
+            yield self.info_exit(f"Unsupported process: {request.process_name}")
+            return
+        media_kind = "image" if self._process_is_image(process_definition) else "video"
+        try:
+            items = batch_queue.expand_batch_items(batch_source_path, output_path, media_kind=media_kind)
+        except gr.Error as exc:
+            yield self.info_exit(common.get_error_message(exc) or "Invalid batch paths.")
+            return
+        if len(items) == 0:
+            yield self.info_exit(f"Batch has no source {media_kind}s to process.")
+            return
+        signature = batch_queue.build_signature(request, items, batch_name=batch_name, process_model_type=model_type, media_kind=media_kind)
+        signature_hash = batch_queue.signature_hash(signature)
+        files = batch_queue.resolve_batch_files(batch_name, items[0], signature_hash, bool(request.continue_enabled))
+        if files.renamed:
+            batch_name = files.batch_name
+            signature = batch_queue.build_signature(request, items, batch_name=batch_name, process_model_type=model_type, media_kind=media_kind)
+        elif files.batch_name:
+            batch_name = files.batch_name
+        batch_state = files.state if files.state is not None else batch_queue.make_state(batch_name, signature, items)
+        if files.renamed:
+            common.plugin_info(f'Batch name "{requested_batch_name}" already has a state file. Using "{batch_name}".')
+        try:
+            catalog.save_mediaflow_ui_settings({
+                "process_model_type": model_type,
+                "process_name": request.process_name,
+                "source_path": source_path,
+                "batch_source_path": str(batch_source_path or "").strip(),
+                "batch_mode": "batch",
+                "batch_name": batch_name,
+                "media_kind": media_kind,
+                "process_strength": request.process_strength,
+                "output_path": output_path,
+                "prompt": prompt_text,
+                "continue_enabled": request.continue_enabled,
+                "source_audio_track": source_audio_track,
+                "output_resolution": output_resolution,
+                "target_ratio": target_ratio,
+                "chunk_size_seconds": chunk_size_seconds,
+                "sliding_window_overlap": sliding_window_overlap,
+                "start_seconds": start_seconds,
+                "end_seconds": end_seconds,
+            })
+        except OSError as exc:
+            yield self.info_exit(f"Unable to save plugin settings to {catalog.MEDIAFLOW_SETTINGS_FILE}: {exc}")
+            return
+
+        if files.completed:
+            completed_files = self._batch_completed_count(batch_state)
+            failed_files = self._batch_failed_count(batch_state)
+            message = "Batch already completed. Nothing to do."
+            gr.Info(message)
+            yield self.ui_update(
+                status_ui.render_process_status_html("Batch Completed", message) if media_kind == "image" else status_ui.render_chunk_status_html(0, 0, 0, "Batch Completed", message),
+                self.ui_skip,
+                self.ui_skip,
+                batch_status=status_ui.render_batch_status_html(len(items), completed_files, len(items), "", message, failed_files),
+                start_enabled=True,
+                abort_enabled=False,
+            )
+            self._record_process_result(ProcessRunResult(success=True, message=message, chunks_completed=completed_files, chunks_total=len(items)))
+            return
+
+        batch_queue.write_state(files.state_path, batch_state)
+        batch_queue.append_log(files.log_path, "resumed" if files.resumed else "started", batch_name=batch_name, requested_batch_name=requested_batch_name, state_file=str(files.state_path), total_files=len(items), renamed=files.renamed)
+        self.active_job["batch_running"] = True
+        self.active_job["cancel_requested"] = False
+        start_index = self._batch_resume_index(batch_state, len(items))
+        completed_files = self._batch_completed_count(batch_state)
+        failed_files = self._batch_failed_count(batch_state)
+        yield self.ui_update(
+            status_ui.render_process_status_html("Batch", "Preparing batch queue...") if media_kind == "image" else status_ui.render_chunk_status_html(0, 0, 0, "Batch", "Preparing batch queue..."),
+            self.ui_skip,
+            str(time.time_ns()),
+            batch_status=status_ui.render_batch_status_html(len(items), completed_files, start_index + 1 if start_index < len(items) else len(items), Path(items[start_index].source_path).name if start_index < len(items) else "", "Resuming batch..." if files.resumed else "Starting batch...", failed_files),
+            start_enabled=False,
+            abort_enabled=False,
+            batch_name_value=batch_name if files.renamed else self.ui_skip,
+        )
+        try:
+            for index in range(start_index, len(items)):
+                if self.active_job.get("cancel_requested"):
+                    batch_state["status"] = "stopped"
+                    batch_state["next_index"] = index
+                    batch_queue.write_state(files.state_path, batch_state)
+                    batch_queue.append_log(files.log_path, "stopped", batch_name=batch_name, next_index=index)
+                    yield self.ui_update(batch_status=status_ui.render_batch_status_html(len(items), completed_files, index + 1, Path(items[index].source_path).name, "Stopped.", failed_files), start_enabled=True, abort_enabled=False)
+                    self._record_process_result(ProcessRunResult(success=False, stopped=True, message="Batch stopped.", chunks_completed=completed_files, chunks_total=len(items)))
+                    return
+                item = items[index]
+                item_output_path = batch_queue.output_path_for_process(item)
+                item_state = batch_state["items"][index]
+                item_state["status"] = "running"
+                item_state["started_at"] = batch_queue.now_iso()
+                item_state["ended_at"] = ""
+                item_state["error"] = ""
+                item_state["actual_output_path"] = ""
+                batch_state["status"] = "running"
+                batch_state["next_index"] = index
+                batch_queue.write_state(files.state_path, batch_state)
+                batch_queue.append_log(files.log_path, "file_started", batch_name=batch_name, index=index, source_path=item.source_path, output_path=item_output_path)
+                yield self.ui_update(batch_status=status_ui.render_batch_status_html(len(items), completed_files, index + 1, Path(item.source_path).name, "Processing file...", failed_files), start_enabled=False, abort_enabled=False)
+                file_started_at = time.time()
+                try:
+                    yield from self.start_process(
+                        state=request.state,
+                        process_name=request.process_name,
+                        user_refs=request.user_refs,
+                        source_path=item.source_path,
+                        process_strength=request.process_strength,
+                        output_path=item_output_path,
+                        prompt_text=request.prompt_text,
+                        continue_enabled=request.continue_enabled,
+                        source_audio_track=request.source_audio_track,
+                        output_resolution=request.output_resolution,
+                        target_ratio=request.target_ratio,
+                        chunk_size_seconds=request.chunk_size_seconds,
+                        sliding_window_overlap=request.sliding_window_overlap,
+                        start_seconds=request.start_seconds,
+                        end_seconds=request.end_seconds,
+                        batch_mode="single",
+                        batch_name=batch_name,
+                        batch_source_path=batch_source_path,
+                        batch_internal=True,
+                    )
+                    result = self.active_job.get("last_process_result")
+                    if not isinstance(result, ProcessRunResult):
+                        result = ProcessRunResult(source_path=item.source_path, output_path=item.output_path, success=False, message="Processing ended without a result.")
+                except Exception as exc:
+                    result = ProcessRunResult(source_path=item.source_path, output_path=item.output_path, success=False, message=common.get_error_message(exc) or str(exc))
+                elapsed_seconds = max(0.0, time.time() - file_started_at)
+                item_state["ended_at"] = batch_queue.now_iso()
+                item_state["elapsed_seconds"] = elapsed_seconds
+                item_state["actual_output_path"] = result.output_path
+                item_state["chunks_completed"] = int(result.chunks_completed)
+                item_state["chunks_total"] = int(result.chunks_total)
+                if result.stopped:
+                    item_state["status"] = "stopped"
+                    item_state["error"] = result.message
+                    batch_state["status"] = "stopped"
+                    batch_state["next_index"] = index
+                    batch_queue.write_state(files.state_path, batch_state)
+                    batch_queue.append_log(files.log_path, "file_stopped", batch_name=batch_name, index=index, source_path=item.source_path, output_path=result.output_path, started_at=item_state["started_at"], ended_at=item_state["ended_at"], elapsed_seconds=elapsed_seconds, chunks_completed=result.chunks_completed, chunks_total=result.chunks_total, message=result.message)
+                    batch_queue.append_log(files.log_path, "stopped", batch_name=batch_name, next_index=index)
+                    yield self.ui_update(batch_status=status_ui.render_batch_status_html(len(items), completed_files, index + 1, Path(item.source_path).name, "Stopped.", failed_files), start_enabled=True, abort_enabled=False)
+                    self._record_process_result(ProcessRunResult(success=False, stopped=True, message="Batch stopped.", chunks_completed=completed_files, chunks_total=len(items)))
+                    return
+                item_state["status"] = "success" if result.success else "failed"
+                item_state["error"] = "" if result.success else result.message
+                batch_state["next_index"] = index + 1
+                completed_files = self._batch_completed_count(batch_state)
+                failed_files = self._batch_failed_count(batch_state)
+                batch_queue.write_state(files.state_path, batch_state)
+                batch_queue.append_log(files.log_path, "file_finished", batch_name=batch_name, index=index, source_path=item.source_path, output_path=result.output_path, started_at=item_state["started_at"], ended_at=item_state["ended_at"], elapsed_seconds=elapsed_seconds, success=bool(result.success), chunks_completed=result.chunks_completed, chunks_total=result.chunks_total, error="" if result.success else result.message)
+                yield self.ui_update(batch_status=status_ui.render_batch_status_html(len(items), completed_files, index + 1, Path(item.source_path).name, "File completed." if result.success else "File failed and was skipped.", failed_files), start_enabled=False, abort_enabled=False)
+            batch_state["status"] = "completed"
+            batch_state["next_index"] = len(items)
+            batch_queue.write_state(files.state_path, batch_state)
+            batch_queue.append_log(files.log_path, "completed", batch_name=batch_name, total_files=len(items), completed_files=completed_files, failed_files=failed_files)
+            yield self.ui_update(
+                status_ui.render_process_status_html("Batch Completed", f"Batch completed. {completed_files} file(s) processed.") if media_kind == "image" else status_ui.render_chunk_status_html(0, 0, 0, "Batch Completed", f"Batch completed. {completed_files} file(s) processed."),
+                self.ui_skip,
+                self.ui_skip,
+                batch_status=status_ui.render_batch_status_html(len(items), completed_files, len(items), "", "Completed.", failed_files),
+                start_enabled=True,
+                abort_enabled=False,
+            )
+            self._record_process_result(ProcessRunResult(success=True, message="Batch completed.", chunks_completed=completed_files, chunks_total=len(items)))
+            return
+        finally:
+            self.active_job["batch_running"] = False
+
+    def start_process(self, state=None, process_name="", user_refs=None, source_path="", source_image_path=None, process_strength=None, output_path="", prompt_text="", continue_enabled=True, source_audio_track="", output_resolution="720p", target_ratio="", chunk_size_seconds=10.0, sliding_window_overlap=1, start_seconds="", end_seconds="", batch_mode="single", batch_name="", batch_source_path="", batch_image_source_path=None, batch_internal=False):
+        process_definition = self.library.process_definition(str(process_name or "").strip(), state, list(user_refs or []))
+        selected_source_path = source_path
+        selected_batch_source_path = batch_source_path
+        if process_definition is not None and self._process_is_image(process_definition):
+            selected_source_path = source_image_path if source_image_path is not None else source_path
+            selected_batch_source_path = batch_image_source_path if batch_image_source_path is not None else batch_source_path
+        if str(batch_mode or "").strip() == "batch" and not batch_internal:
+            yield from self.start_batch_process(state, process_name, user_refs, selected_source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds, batch_name, selected_batch_source_path)
+            return
+        if self.active_job.get("running") or (self.active_job.get("batch_running") and not batch_internal):
+            yield self.info_exit("A process is already running.")
+            self._record_process_result(ProcessRunResult(source_path=str(selected_source_path or ""), output_path=str(output_path or ""), success=False, message="A process is already running."))
+            return
+        self.active_job["last_process_result"] = None
+        request = RunRequest.from_gradio(state, process_name, user_refs, selected_source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds)
+        if process_definition is None:
+            yield self.info_exit(f"Unsupported process: {request.process_name}")
+            self._record_process_result(ProcessRunResult(source_path=selected_source_path, output_path=output_path, success=False, message=f"Unsupported process: {request.process_name}"))
+            return
+        system_handler = self.library.system_handler_for_definition(process_definition)
         if process_definition.get("source") == "user":
             problems = self.library.validate_user_process_definition(process_definition)
             if len(problems) > 0:
-                yield self.info_exit(self.library.format_user_process_validation_error(process_definition, problems))
+                message = self.library.format_user_process_validation_error(process_definition, problems)
+                yield self.info_exit(message)
+                self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path, success=False, message=message))
                 return
         process_settings = process_definition["settings"]
         model_type = str(process_settings.get("model_type") or "")
         if len(model_type) == 0 and system_handler is None:
             yield self.info_exit(f"Unsupported process: {request.process_name}")
+            self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path, success=False, message=f"Unsupported process: {request.process_name}"))
             return
         process_display_name = str(process_definition.get("name") or request.process_name or "").strip()
         process_is_hdr = False if system_handler is not None else VIDEO_PROMPT_HDR_OUTPUT_FLAG in str(process_settings.get("video_prompt_type") or "")
@@ -135,49 +571,76 @@ class ProcessRunner:
         else:
             system_target_control = system_handler.normalize_target_control(request.target_ratio) if system_handler is not None and hasattr(system_handler, "normalize_target_control") else ""
         system_supports_continue_cache = system_handler is not None and (not callable(getattr(system_handler, "supports_continue_cache_for_target", None)) or system_handler.supports_continue_cache_for_target(system_target_control))
+        if self._process_is_image(process_definition):
+            yield from self._start_image_process(
+                request,
+                process_definition,
+                system_handler,
+                process_display_name=process_display_name,
+                active_process_strength=active_process_strength,
+                use_lora_strength_override=use_lora_strength_override,
+                system_target_control=system_target_control,
+                batch_internal=batch_internal,
+                batch_name=batch_name,
+                batch_source_path=batch_source_path,
+            )
+            return
         try:
             chunk_size_seconds = common.require_float(request.chunk_size_seconds, "Chunk Size", minimum=0.1)
             sliding_window_overlap = int(getattr(system_handler, "overlap_frames", 0)) if system_handler is not None else common.require_int(request.sliding_window_overlap, "Sliding Window Overlap", minimum=1)
         except gr.Error as exc:
-            yield self.info_exit(common.get_error_message(exc) or "Invalid processing settings.")
+            message = common.get_error_message(exc) or "Invalid processing settings."
+            yield self.info_exit(message)
+            self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path, success=False, message=message))
             return
-        try:
-            catalog.save_process_full_video_ui_settings({
-                "process_model_type": model_type,
-                "process_name": request.process_name,
-                "source_path": source_path,
-                "process_strength": active_process_strength,
-                "output_path": output_path,
-                "prompt": prompt_text,
-                "continue_enabled": request.continue_enabled,
-                "source_audio_track": source_audio_track,
-                "output_resolution": output_resolution,
-                "target_ratio": system_target_control if system_handler is not None else target_ratio,
-                "chunk_size_seconds": chunk_size_seconds,
-                "sliding_window_overlap": sliding_window_overlap,
-                "start_seconds": start_seconds,
-                "end_seconds": end_seconds,
-            })
-        except OSError as exc:
-            yield self.info_exit(f"Unable to save plugin settings to {catalog.PROCESS_FULL_VIDEO_SETTINGS_FILE}: {exc}")
-            return
+        if not batch_internal:
+            try:
+                catalog.save_mediaflow_ui_settings({
+                    "process_model_type": model_type,
+                    "process_name": request.process_name,
+                    "source_path": source_path,
+                    "batch_source_path": str(batch_source_path or "").strip(),
+                    "batch_mode": "single",
+                    "batch_name": str(batch_name or "").strip(),
+                    "process_strength": active_process_strength,
+                    "output_path": output_path,
+                    "prompt": prompt_text,
+                    "continue_enabled": request.continue_enabled,
+                    "source_audio_track": source_audio_track,
+                    "output_resolution": output_resolution,
+                    "target_ratio": system_target_control if system_handler is not None else target_ratio,
+                    "chunk_size_seconds": chunk_size_seconds,
+                    "sliding_window_overlap": sliding_window_overlap,
+                    "start_seconds": start_seconds,
+                    "end_seconds": end_seconds,
+                })
+            except OSError as exc:
+                message = f"Unable to save plugin settings to {catalog.MEDIAFLOW_SETTINGS_FILE}: {exc}"
+                yield self.info_exit(message)
+                self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path, success=False, message=message))
+                return
         active_target_ratio = target_ratio if uses_builtin_outpaint_ui else ""
         default_prompt_text = str(process_settings.get("prompt") or "")
         if len(prompt_text.strip()) == 0:
             prompt_text = default_prompt_text
         if not os.path.isfile(source_path):
             yield self.info_exit(f"Source video not found: {source_path}")
+            self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path, success=False, message=f"Source video not found: {source_path}"))
             return
         try:
             start_seconds = prompts.parse_time_input(start_seconds, label="Start", allow_empty=False)
             end_seconds = prompts.parse_time_input(end_seconds, label="End", allow_empty=True)
         except gr.Error as exc:
-            yield self.info_exit(common.get_error_message(exc) or "Invalid start/end selection.")
+            message = common.get_error_message(exc) or "Invalid start/end selection."
+            yield self.info_exit(message)
+            self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path, success=False, message=message))
             return
         try:
             prompt_schedule = prompts.parse_prompt_schedule(prompt_text)
         except gr.Error as exc:
-            yield self.info_exit(common.get_error_message(exc) or f"Invalid prompt syntax.\n\nExample:\n{prompts.TIMED_PROMPT_EXAMPLE}")
+            message = common.get_error_message(exc) or f"Invalid prompt syntax.\n\nExample:\n{prompts.TIMED_PROMPT_EXAMPLE}"
+            yield self.info_exit(message)
+            self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path, success=False, message=message))
             return
         started_ui = False
         preflight_stage = True
@@ -236,9 +699,12 @@ class ProcessRunner:
                 merged_continuation_signatures = prepared_run.merged_continuation_signatures
             except ProcessInfoExit as exc:
                 yield self.info_exit(exc.message, output=exc.output_path or self.ui_skip)
+                self._record_process_result(ProcessRunResult(source_path=source_path, output_path=exc.output_path or output_path, success=False, message=exc.message))
                 return
             except gr.Error as exc:
-                yield self.info_exit(common.get_error_message(exc) or "Invalid process settings.", output=output_path if isinstance(output_path, str) and os.path.isfile(output_path) else self.ui_skip)
+                message = common.get_error_message(exc) or "Invalid process settings."
+                yield self.info_exit(message, output=output_path if isinstance(output_path, str) and os.path.isfile(output_path) else self.ui_skip)
+                self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path, success=False, message=message))
                 return
             preflight_stage = False
             if resume_existing_output:
@@ -266,6 +732,7 @@ class ProcessRunner:
                 if self.active_job.get("cancel_requested"):
                     write_state.stopped = True
                     yield self.ui_update(status_ui.render_chunk_status_html(len(full_plans) if len(full_plans) > 0 else 1, 0, 1, "Stopped", "Stopped before processing a new chunk."), output_path if os.path.isfile(output_path) else self.ui_skip, self.ui_skip, start_enabled=True, abort_enabled=False)
+                    self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path, success=False, stopped=True, message="Stopped before processing a new chunk.", chunks_completed=0, chunks_total=len(full_plans) if len(full_plans) > 0 else 1))
                     return
             last_frame_image = None
             last_segment_path = None
@@ -312,7 +779,7 @@ class ProcessRunner:
                 else:
                     common.plugin_info(f"Continuing existing output: {output_path}")
                     resolved_resolution, resolved_width, resolved_height = video.probe_existing_output_resolution(output_path)
-                    print(f"[Process Full Video] Continuing with locked output resolution {resolved_resolution}")
+                    print(f"[MediaFlow] Continuing with locked output resolution {resolved_resolution}")
                     completed_chunks, _ = (frames.count_completed_written_chunks if system_handler is not None else frames.count_completed_chunks)(full_plans, resumed_unique_frames)
                     exact_start_seconds = (start_frame + resumed_unique_frames) / fps_float
                     if resumed_unique_frames < requested_unique_frames:
@@ -341,7 +808,7 @@ class ProcessRunner:
                             exact_start_seconds = (start_frame + resumed_unique_frames) / fps_float
                             resume_overlap_frames = 0
                             if resumed_unique_frames < requested_unique_frames:
-                                print(f"[Process Full Video] Continuing system process from source frame {start_frame + resumed_unique_frames}" + (" using continue cache" if system_supports_continue_cache else ""))
+                                print(f"[MediaFlow] Continuing system process from source frame {start_frame + resumed_unique_frames}" + (" using continue cache" if system_supports_continue_cache else ""))
                         elif checked_unique_frames <= 0 or last_frame_image is None:
                             common.plugin_info(f"Unable to continue from existing output: {output_path}. {tail_reason or 'Starting a new file instead.'}")
                             output_path = output_paths.make_output_variant(Path(output_path), notify=common.plugin_info)
@@ -376,14 +843,14 @@ class ProcessRunner:
                             else:
                                 resume_overlap_frames = int(overlap_tensor.shape[1])
                                 video.set_process_full_video_overlap_buffer(overlap_tensor, processing_fps, hdr=process_is_hdr)
-                                print(f"[Process Full Video] Loaded overlap buffer from existing output: {frames.describe_frame_range(start_frame + resumed_unique_frames - resume_overlap_frames, resume_overlap_frames)}")
+                                print(f"[MediaFlow] Loaded overlap buffer from existing output: {frames.describe_frame_range(start_frame + resumed_unique_frames - resume_overlap_frames, resume_overlap_frames)}")
                     if resume_existing_output and resumed_unique_frames < requested_unique_frames:
                         if not continuation_recovery.USE_SOURCE_AUDIO_FOR_CONTINUATION_MERGE:
                             resume_audio_trim_seconds = media.probe_selected_audio_overhang(ffprobe_path, output_path, selected_audio_track, resumed_unique_frames / fps_float)
                         if continuation_recovery.USE_SOURCE_AUDIO_FOR_CONTINUATION_MERGE and selected_audio_track is not None:
-                            print(f"[Process Full Video] Final merge: rebuilding audio from source starting at {start_frame / fps_float:.6f}s")
+                            print(f"[MediaFlow] Final merge: rebuilding audio from source starting at {start_frame / fps_float:.6f}s")
                         elif resume_audio_trim_seconds > 0.0:
-                            print(f"[Process Full Video] Final merge: trimming {resume_audio_trim_seconds:.6f}s from continuation audio and clamping segment audio to visible video duration")
+                            print(f"[MediaFlow] Final merge: trimming {resume_audio_trim_seconds:.6f}s from continuation audio and clamping segment audio to visible video duration")
                         remaining_resume_unique_frames = frames.align_total_unique_frames(
                             end_frame_exclusive - (start_frame + resumed_unique_frames),
                             frame_step=frame_plan_rules.frame_step,
@@ -442,6 +909,7 @@ class ProcessRunner:
                 if system_handler is not None and callable(getattr(system_handler, "delete_continue_cache", None)):
                     system_handler.delete_continue_cache(output_path)
                 yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_display, completed_chunks, completed_chunks, "Completed", "Existing output already covers the requested range.", continued=continued_mode, **_timing_kwargs()), output_path, str(time.time_ns()), start_enabled=True, abort_enabled=False)
+                self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path, success=True, message="Existing output already covers the requested range.", chunks_completed=completed_chunks, chunks_total=total_chunks_display))
                 return
             planning_text = f"Resuming from {resumed_unique_frames} frame(s) already written." if resumed_unique_frames > 0 else f"Preparing {len(plans)} chunk(s)..."
             yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_display, completed_chunks, current_chunk_display, "Planning", planning_text, continued=continued_mode, **_timing_kwargs()), output_path, str(time.time_ns()))
@@ -513,10 +981,12 @@ class ProcessRunner:
                 if write_state.stopped and resumed_unique_frames > 0:
                     common.plugin_info(f"Processing was stopped before writing a new chunk. Kept existing output at {output_path}")
                     yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_display, completed_chunks, current_chunk_display, "Stopped", "Stopped before a new chunk was written. Existing output kept.", continued=continued_mode, **_timing_kwargs()), output_path, self.ui_skip, start_enabled=True, abort_enabled=False)
+                    self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path, success=False, stopped=True, message="Stopped before a new chunk was written. Existing output kept.", chunks_completed=completed_chunks, chunks_total=total_chunks_display))
                     return
                 if write_state.stopped:
                     common.plugin_info("Processing was stopped before any output chunk was written.")
                     yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_display, completed_chunks, current_chunk_display, "Stopped", "Stopped before any output chunk was written.", continued=continued_mode, **_timing_kwargs()), self.ui_skip, self.ui_skip, start_enabled=True, abort_enabled=False)
+                    self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path, success=False, stopped=True, message="Stopped before any output chunk was written.", chunks_completed=completed_chunks, chunks_total=total_chunks_display))
                     return
                 raise gr.Error("Processing completed without creating an output file.")
             if self.active_job.get("cancel_requested"):
@@ -571,6 +1041,7 @@ class ProcessRunner:
                     gr.Info(locked_message)
                     media.delete_file_if_exists(write_state.reserved_metadata_path, label="reserved metadata file")
                     yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_display, completed_chunks, current_chunk_display, "Merge Pending", locked_message, continued=continued_mode, **_timing_kwargs()), write_state.output_path_for_write, str(time.time_ns()), start_enabled=True, abort_enabled=False)
+                    self._record_process_result(ProcessRunResult(source_path=source_path, output_path=write_state.output_path_for_write, success=False, message=locked_message, chunks_completed=completed_chunks, chunks_total=total_chunks_display))
                     return
                 except Exception as exc:
                     raise gr.Error(f"Failed to finalize continued output. Existing output kept, and continuation was preserved at {continuation_output_path}. {exc}") from exc
@@ -641,8 +1112,10 @@ class ProcessRunner:
                     common.plugin_info(f"Processing was stopped. Kept partial output at {output_path}")
                     stop_message = f"Stopped after {total_written_unique_frames} frame(s). Partial output kept."
                 yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_display, completed_chunks, current_chunk_display, "Stopped", stop_message, continued=continued_mode, **_timing_kwargs()), stopped_output_path, self.ui_skip, start_enabled=True, abort_enabled=False)
+                self._record_process_result(ProcessRunResult(source_path=source_path, output_path=stopped_output_path, success=False, stopped=True, message=stop_message, chunks_completed=completed_chunks, chunks_total=total_chunks_display))
                 return
             yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_display, total_chunks_display, total_chunks_display, "Completed", f"Completed {total_chunks_display} chunk(s).", continued=continued_mode, **_timing_kwargs()), output_path, self.ui_skip, start_enabled=True, abort_enabled=False)
+            self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path, success=True, message=f"Completed {total_chunks_display} chunk(s).", chunks_completed=total_chunks_display, chunks_total=total_chunks_display))
             self.active_job["job"] = None
             write_state.cleanup_partial_outputs()
         except gr.Error as exc:
@@ -661,18 +1134,20 @@ class ProcessRunner:
                 if preflight_stage:
                     gr.Info(status_message)
                 yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_value, completed_value, current_value, "Info" if preflight_stage else "Error", status_message, continued=continued_value), output_value, self.ui_skip, start_enabled=True, abort_enabled=False)
+            self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path if isinstance(output_path, str) else "", success=False, message=status_message, chunks_completed=completed_chunks, chunks_total=total_chunks_display))
             return
         except BaseException as exc:
             self.active_job["job"] = None
             write_state.cleanup_partial_outputs()
+            status_message = common.get_error_message(exc) or exc.__class__.__name__
             if started_ui:
                 total_chunks_value = total_chunks_display
                 completed_value = completed_chunks
                 current_value = completed_chunks + 1 if completed_chunks < total_chunks_display else total_chunks_display
                 continued_value = resumed_unique_frames > 0
-                status_message = common.get_error_message(exc) or exc.__class__.__name__
                 output_value = output_path if isinstance(output_path, str) and os.path.isfile(output_path) else self.ui_skip
                 yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_value, completed_value, current_value, "Error", status_message, continued=continued_value), output_value, self.ui_skip, start_enabled=True, abort_enabled=False)
+            self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path if isinstance(output_path, str) else "", success=False, message=status_message, chunks_completed=completed_chunks, chunks_total=total_chunks_display))
             raise
         finally:
             self.active_job["running"] = False

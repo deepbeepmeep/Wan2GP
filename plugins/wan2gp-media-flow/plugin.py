@@ -6,8 +6,8 @@ from shared.utils.plugins import WAN2GPPlugin
 
 from .plugin_ui import create_config_ui as _create_config_ui
 
-PlugIn_Name = "Process Full Video"
-PlugIn_Id = "ProcessFullVideo"
+PlugIn_Name = "Media Flow"
+PlugIn_Id = "mediaflow"
 
 
 class ConfigTabPlugin(WAN2GPPlugin):

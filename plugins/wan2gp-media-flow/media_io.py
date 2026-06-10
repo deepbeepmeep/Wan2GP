@@ -432,7 +432,7 @@ def delete_file_if_exists(file_path: str | None, *, label: str) -> None:
     try:
         os.remove(file_path)
     except OSError as exc:
-        print(f"[Process Full Video] Warning: failed to delete {label} {file_path}: {exc}")
+        print(f"[MediaFlow] Warning: failed to delete {label} {file_path}: {exc}")
 
 
 def delete_released_chunk_outputs(state: dict, chunk_output_paths: list[str], *, preserve_paths: list[str] | None = None) -> list[str]:

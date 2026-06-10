@@ -111,6 +111,59 @@ def render_chunk_status_html(total_chunks: int, completed_chunks: int, current_c
     )
 
 
+def render_process_status_html(phase_label: str, status_text: str, *, phase_current_step=None, phase_total_steps=None, elapsed_seconds: float | None = None, eta_seconds: float | None = None, prefer_status_phase: bool = False) -> str:
+    raw_status_text = status_text.strip()
+    raw_phase_text = phase_label.strip()
+    if prefer_status_phase:
+        derived_phase = phase_label_from_status(raw_status_text)
+        if len(derived_phase) > 0:
+            raw_phase_text = derived_phase
+    phase_html = html.escape(raw_phase_text or "Queued in WanGP...")
+    status_html = html.escape(raw_status_text or raw_phase_text or "")
+    has_phase_progress = phase_current_step is not None and phase_total_steps is not None and phase_total_steps > 0
+    phase_ratio = float(phase_current_step) / float(phase_total_steps) if has_phase_progress else None
+    phase_width = f"{100.0 * phase_ratio:.2f}%" if phase_ratio is not None else "0%"
+    phase_suffix = f" ({phase_current_step} / {phase_total_steps})" if has_phase_progress else ""
+    elapsed_html = html.escape(_format_elapsed(elapsed_seconds))
+    eta_html = html.escape(_format_elapsed(eta_seconds))
+    normalized_phase = raw_phase_text.lower()
+    show_status_line = (not prefer_status_phase) and len(raw_status_text) > 0 and (len(normalized_phase) == 0 or normalized_phase not in raw_status_text.lower())
+    status_line_html = f"<div style='font-size:0.9em;color:#4b5563'>{status_html}</div>" if show_status_line else ""
+    return (
+        "<div style='display:flex;flex-direction:column;gap:8px'>"
+        f"<div style='font-size:0.95em'><b>Phase:</b> {phase_html}{phase_suffix}</div>"
+        "<div style='height:12px;border-radius:999px;background:#d7dce3;overflow:hidden'>"
+        f"<div style='height:100%;width:{phase_width};background:linear-gradient(90deg,#e37a2f,#ffb05d)'></div>"
+        "</div>"
+        f"<div style='font-size:0.9em;color:#4b5563'><b>Elapsed:</b> {elapsed_html} <span style='padding-left:12px'><b>ETA:</b> {eta_html}</span></div>"
+        f"{status_line_html}"
+        "</div>"
+    )
+
+
+def render_batch_status_html(total_files: int, completed_files: int, current_index: int, current_file: str, status_text: str, failed_files: int = 0) -> str:
+    total_files = max(0, int(total_files or 0))
+    completed_files = max(0, int(completed_files or 0))
+    failed_files = max(0, int(failed_files or 0))
+    current_index = max(0, int(current_index or 0))
+    ratio = float(completed_files) / float(total_files) if total_files > 0 else 0.0
+    width = f"{100.0 * ratio:.2f}%"
+    current_name = html.escape(str(current_file or ""))
+    status_html = html.escape(str(status_text or "").strip())
+    failures_text = f" ({failed_files} {'failure' if failed_files == 1 else 'failures'})" if failed_files > 0 else ""
+    current_line = f"<div style='font-size:0.9em;color:#4b5563'><b>Current:</b> {current_name}</div>" if current_name else ""
+    return (
+        "<div style='display:flex;flex-direction:column;gap:8px;margin-bottom:8px'>"
+        f"<div style='font-weight:600'>Batch Files Processed: {completed_files} / {total_files}{failures_text}</div>"
+        "<div style='height:12px;border-radius:999px;background:#d7dce3;overflow:hidden'>"
+        f"<div style='height:100%;width:{width};background:linear-gradient(90deg,#18a058,#60c878)'></div>"
+        "</div>"
+        f"<div style='font-size:0.95em'><b>Batch:</b> {status_html}</div>"
+        f"{current_line}"
+        "</div>"
+    )
+
+
 def render_output_file_html(output_path: str) -> str:
     value = html.escape(output_path, quote=False)
     return (

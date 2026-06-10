@@ -8,4 +8,7 @@ def get_system_handler(name: str | None) -> Any:
     if name == "flashvsr":
         from postprocessing.flashvsr.process_handler import HANDLER
         return HANDLER
+    if name == "pid":
+        from postprocessing.pid.process_handler import HANDLER
+        return HANDLER
     return None

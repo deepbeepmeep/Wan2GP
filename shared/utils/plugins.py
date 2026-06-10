@@ -202,7 +202,7 @@ SYSTEM_PLUGINS = [
 BUNDLED_PLUGINS = {
     "wan2gp-motion-designer",
     "wan2gp-sample",
-    "wan2gp-process-full-video",
+    "wan2gp-media-flow",
 }
 USER_PLUGIN_INSERT_POSITION = 1
 
@@ -1285,6 +1285,14 @@ class WAN2GPApplication:
             print("[PluginManager] ERROR: server_config not found in globals.")
             return
         self.plugin_manager.set_server_config(server_config, server_config_filename)
+        if not safe_mode:
+            try:
+                migration = importlib.import_module("wan2gp-configuration.defaults_migration")
+                migrate_mediaflow_plugin_id = getattr(migration, "migrate_mediaflow_plugin_id", None)
+                if callable(migrate_mediaflow_plugin_id):
+                    migrate_mediaflow_plugin_id(server_config, server_config_filename)
+            except Exception as e:
+                print(f"[PluginManager] Warning: failed to migrate MediaFlow plugin id: {e}")
         if not safe_mode and not server_config.get("motion_designer_bundled_migrated", 0):
             server_config["enabled_plugins"] = server_config.get("enabled_plugins", []) + ([] if "wan2gp-motion-designer" in server_config.get("enabled_plugins", []) else ["wan2gp-motion-designer"]); server_config["motion_designer_bundled_migrated"] = 1
             self.plugin_manager._save_server_config()

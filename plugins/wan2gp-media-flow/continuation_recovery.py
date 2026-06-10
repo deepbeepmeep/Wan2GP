@@ -70,9 +70,9 @@ def merge_residual_continuations(
         merged_duration_seconds = (float(completed_frames + continuation_frames) / fps_float) if completed_frames > 0 or continuation_frames > 0 else 0.0
         audio_trim_seconds = media.probe_selected_audio_overhang(ffprobe_path, output_path, selected_audio_track_no, completed_frames / fps_float) if completed_frames > 0 else 0.0
         if USE_SOURCE_AUDIO_FOR_CONTINUATION_MERGE:
-            print(f"[Process Full Video] Residual merge: rebuilding audio from source for {merged_duration_seconds:.6f}s starting at {float(source_audio_start_seconds or 0.0):.6f}s")
+            print(f"[MediaFlow] Residual merge: rebuilding audio from source for {merged_duration_seconds:.6f}s starting at {float(source_audio_start_seconds or 0.0):.6f}s")
         elif audio_trim_seconds > 0.0:
-            print(f"[Process Full Video] Residual merge: trimming {audio_trim_seconds:.6f}s from continuation audio and clamping merged segment audio to visible video duration")
+            print(f"[MediaFlow] Residual merge: trimming {audio_trim_seconds:.6f}s from continuation audio and clamping merged segment audio to visible video duration")
         committed_signatures = process_metadata.append_merged_continuation_signature(known_signatures, continuation_signature)
         media.concat_video_segments(
             ffmpeg_path,

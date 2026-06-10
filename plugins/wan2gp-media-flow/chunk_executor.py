@@ -133,7 +133,7 @@ class ChunkExecutor:
             model_video_length = plan_requested_frames if plan_overlap_frames <= 0 else plan_requested_frames - plan_overlap_frames + 1
             needs_video_source = context.continued_mode or plan_overlap_frames > 0
             print(
-                f"[Process Full Video] Chunk {chunk_index}: control video {frames.describe_frame_range(actual_control_start_frame, plan_requested_frames)}; "
+                f"[MediaFlow] Chunk {chunk_index}: control video {frames.describe_frame_range(actual_control_start_frame, plan_requested_frames)}; "
                 + (f"overlap buffer {frames.describe_frame_range(overlap_buffer_start_frame, plan_overlap_frames)}" if needs_video_source else "overlap buffer not used")
             )
             if context.system_handler is not None:
@@ -152,7 +152,7 @@ class ChunkExecutor:
                         try:
                             job.cancel()
                         except RuntimeError as exc:
-                            print(f"[Process Full Video] Stop requested; WanGP abort bridge was not available: {exc}")
+                            print(f"[MediaFlow] Stop requested; WanGP abort bridge was not available: {exc}")
                         progress.write_state.stopped = True
                         stop_requested = True
                     now = time.monotonic()
@@ -210,10 +210,10 @@ class ChunkExecutor:
                 settings = None
                 gc.collect()
                 returned_frame_count = int(video_tensor_uint8.shape[1])
-                print(f"[Process Full Video] Chunk {chunk_index}: returned video tensor has {returned_frame_count} frame(s); control video lasts {plan_requested_frames} frame(s)")
+                print(f"[MediaFlow] Chunk {chunk_index}: returned video tensor has {returned_frame_count} frame(s); control video lasts {plan_requested_frames} frame(s)")
                 chunk_width, chunk_height = video.get_video_tensor_resolution(video_tensor_uint8)
                 chunk_resolution = f"{chunk_width}x{chunk_height}"
-                print(f"[Process Full Video] Chunk {chunk_index}: generated chunk resolution {chunk_resolution}")
+                print(f"[MediaFlow] Chunk {chunk_index}: generated chunk resolution {chunk_resolution}")
                 if len(progress.resolved_resolution) == 0:
                     progress.resolved_resolution = chunk_resolution
                     progress.resolved_width = chunk_width
@@ -300,7 +300,7 @@ class ChunkExecutor:
                     try:
                         job.cancel()
                     except RuntimeError as exc:
-                        print(f"[Process Full Video] Stop requested; WanGP abort bridge was not available: {exc}")
+                        print(f"[MediaFlow] Stop requested; WanGP abort bridge was not available: {exc}")
                     progress.write_state.stopped = True
                     stop_requested = True
                 now = time.monotonic()
@@ -355,14 +355,14 @@ class ChunkExecutor:
                 if video_candidates:
                     decoded_tensor = video.load_video_tensor_from_file(video_candidates[0])
                     decoded_frame_count = int(decoded_tensor.shape[1])
-                    print(f"[Process Full Video] Chunk {chunk_index}: returned video tensor has {returned_frame_count} frame(s); decoded chunk file has {decoded_frame_count} frame(s)")
+                    print(f"[MediaFlow] Chunk {chunk_index}: returned video tensor has {returned_frame_count} frame(s); decoded chunk file has {decoded_frame_count} frame(s)")
                     if decoded_frame_count >= minimum_returned_frames:
                         video_tensor_uint8 = decoded_tensor
                         returned_frame_count = decoded_frame_count
-            print(f"[Process Full Video] Chunk {chunk_index}: returned video tensor has {returned_frame_count} frame(s); control video lasts {expected_frame_count} frame(s)")
+            print(f"[MediaFlow] Chunk {chunk_index}: returned video tensor has {returned_frame_count} frame(s); control video lasts {expected_frame_count} frame(s)")
             chunk_width, chunk_height = video.get_video_tensor_resolution(video_tensor_uint8)
             chunk_resolution = f"{chunk_width}x{chunk_height}"
-            print(f"[Process Full Video] Chunk {chunk_index}: generated chunk resolution {chunk_resolution}")
+            print(f"[MediaFlow] Chunk {chunk_index}: generated chunk resolution {chunk_resolution}")
             if len(progress.resolved_resolution) == 0:
                 progress.resolved_resolution = chunk_resolution
                 progress.resolved_width = chunk_width
@@ -405,7 +405,7 @@ class ChunkExecutor:
             if next_overlap_tensor is not None and int(next_overlap_tensor.shape[1]) > 0:
                 next_overlap_count = int(next_overlap_tensor.shape[1])
                 next_overlap_start_frame = context.start_frame + context.resumed_unique_frames + progress.written_unique_frames - next_overlap_count
-                print(f"[Process Full Video] Chunk {chunk_index}: next overlap buffer {frames.describe_frame_range(next_overlap_start_frame, next_overlap_count)}")
+                print(f"[MediaFlow] Chunk {chunk_index}: next overlap buffer {frames.describe_frame_range(next_overlap_start_frame, next_overlap_count)}")
 
             progress.completed_chunks += 1
             progress.chunk_output_paths = media.delete_released_chunk_outputs(context.state, progress.chunk_output_paths, preserve_paths=[progress.last_segment_path] if progress.last_segment_path else None)

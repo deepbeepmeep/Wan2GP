@@ -13,6 +13,7 @@ from shared.utils import files_locator as fl
 
 
 VIDEO_FILE_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".mpeg", ".mpg", ".ogv"}
+IMAGE_FILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"}
 CHECKPOINT_FILE_EXTENSIONS = {".safetensors", ".safetensor", ".sft", ".ckpt", ".bin", ".binn", ".pt", ".pth", ".gguf", ".onnx"}
 LAST_DIRECTORY_CONFIG_KEY = "local_file_picker_last_dir"
 _server_config: dict | None = None

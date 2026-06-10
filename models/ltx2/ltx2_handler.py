@@ -431,6 +431,7 @@ class family_handler:
                     "joyai_audio_memory_window_size": 96,
                     "prompt_slash_commands": ["no_mem", "store_mem", "load_mem", "drop_mem"],
                     "preserve_empty_prompt_lines": True,
+                    "skip_video_guide_preprocess": True,
                     "NAG": True,
                     "infos": model_def.get("infos", JOYAI_ECHO_INFOS),
                     "fps": 25,

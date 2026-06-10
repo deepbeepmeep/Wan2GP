@@ -48,6 +48,7 @@ from shared.utils.text_encoder_cache import TextEncoderCache
 from shared.utils.self_refiner import PnPHandler, create_self_refiner_handler
 from mmgp import safetensors2
 from shared.utils import files_locator as fl 
+from .scail2 import prepare_scail2_conditioning
 
 WAN_USE_FP32_ROPE_FREQS = True
 
@@ -495,6 +496,7 @@ class WanAny2V:
         self_refiner_f_uncertainty = 0.0,
         self_refiner_certain_percentage = 0.999,
         custom_settings=None,
+        save_masks=False,
         **bbargs
                 ):
         
@@ -612,6 +614,7 @@ class WanAny2V:
         steadydancer = model_type in ["steadydancer"]
         wanmove = model_type in ["wanmove"]
         scail = model_type in ["scail"] 
+        scail2 = model_def.get("scail2", False) or model_type in ["scail2_14B", "scail2_1.3B"]
         vista4d = model_type in ["vista4d"]
         svi_pro = model_def.get("svi2pro", False)
         svi_mode = 2 if svi_pro  else 0 
@@ -624,7 +627,7 @@ class WanAny2V:
         extended_overlapped_latents = clip_image_start = clip_image_end = image_mask_latents = latent_slice = freqs = post_freqs = None
         use_extended_overlapped_latents = True
         # SCAIL uses a fixed ref latent frame that should not be noised.
-        no_noise_latents_injection = infinitetalk or scail
+        no_noise_latents_injection = infinitetalk or scail or scail2
         timestep_injection = False
         ps_t, ps_h, ps_w = self.model.patch_size
 
@@ -632,7 +635,7 @@ class WanAny2V:
         extended_input_dim = 0
         ref_images_before = False            
         # image2video 
-        if model_def.get("i2v_class", False) and not (animate or scail):
+        if model_def.get("i2v_class", False) and not (animate or scail or scail2):
             any_end_frame = False
             if infinitetalk:
                 new_shot = "0" in video_prompt_type
@@ -888,6 +891,19 @@ class WanAny2V:
             ref_images_before = True
             ref_images_count = 1
             lat_frames = lat_t
+
+        # SCAIL-2 - reference-driven character animation with mask-token conditioning
+        if scail2:
+            scail2_conditioning = prepare_scail2_conditioning(self, input_frames=input_frames, input_masks=input_masks, input_ref_images=input_ref_images, input_ref_masks=input_ref_masks, input_video=input_video, pre_video_frame=pre_video_frame, prefix_frames_count=prefix_frames_count, overlapped_latents=overlapped_latents, height=height, width=width, VAE_tile_size=VAE_tile_size, enable_RIFLEx=enable_RIFLEx, video_prompt_type=video_prompt_type, custom_settings=custom_settings, model_def=model_def, ps_t=ps_t, ps_h=ps_h, ps_w=ps_w, save_masks=save_masks)
+            kwargs.update(scail2_conditioning["kwargs"])
+            freqs = scail2_conditioning["freqs"]
+            clip_image_start = scail2_conditioning["clip_image_start"]
+            extended_overlapped_latents = scail2_conditioning["extended_overlapped_latents"]
+            if scail2_conditioning["color_reference_frame"] is not None:
+                color_reference_frame = scail2_conditioning["color_reference_frame"]
+            ref_images_before = False
+            ref_images_count = 0
+            lat_frames = scail2_conditioning["lat_frames"]
 
         # Clip image
         if hasattr(self, "clip") and clip_image_start is not None:                                   

@@ -1,4 +1,5 @@
 import math
+import sys
 from dataclasses import dataclass, field
 
 import torch
@@ -302,15 +303,18 @@ class AutoencoderKLFlux2(nn.Module):
         )
 
     def normalize(self, z):
-        # Manual eval-mode BatchNorm2d to avoid MPS dtype mismatch.
-        # Calling self.bn(z) on MPS with mixed dtypes (bf16 input + f32 running stats,
-        # or vice versa) triggers mps.normalization type errors. This manual path
-        # operates entirely in float32 and avoids the MPS backend normalization op.
-        orig_dtype = z.dtype
-        z = z.float()
-        mean = self.bn.running_mean.float().view(1, -1, 1, 1)
-        var = self.bn.running_var.float().view(1, -1, 1, 1)
-        return ((z - mean) / torch.sqrt(var + self.bn_eps)).to(orig_dtype)
+        if sys.platform == 'darwin':
+            # Manual eval-mode BatchNorm2d to avoid MPS dtype mismatch.
+            # Calling self.bn(z) on MPS with mixed dtypes (bf16 input + f32 running stats,
+            # or vice versa) triggers mps.normalization type errors. This manual path
+            # operates entirely in float32 and avoids the MPS backend normalization op.
+            orig_dtype = z.dtype
+            z = z.float()
+            mean = self.bn.running_mean.float().view(1, -1, 1, 1)
+            var = self.bn.running_var.float().view(1, -1, 1, 1)
+            return ((z - mean) / torch.sqrt(var + self.bn_eps)).to(orig_dtype)
+        self.bn.eval()
+        return self.bn(z)
 
     def inv_normalize(self, z):
         self.bn.eval()

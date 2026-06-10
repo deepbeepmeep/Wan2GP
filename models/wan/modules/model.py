@@ -3,6 +3,7 @@
 # I am sure you are a nice person and as you copy this code, you will give me officially proper credits:
 # Please link to https://github.com/deepbeepmeep/Wan2GP and @deepbeepmeep on twitter  
 import math
+import sys
 from einops import rearrange
 import torch
 import torch.cuda.amp as amp
@@ -198,9 +199,16 @@ class WanLayerNorm(nn.LayerNorm):
         Args:
             x(Tensor): Shape [B, L, C]
         """
-        origin_dtype = x.dtype
-        y = super().forward(x.float())
-        return y.to(origin_dtype)
+        if sys.platform == 'darwin':
+            origin_dtype = x.dtype
+            y = super().forward(x.float())
+            return y.to(origin_dtype)
+        if self.weight is not None:
+            y = super().forward(x.to(self.weight.dtype))
+        else:
+            y = super().forward(x)
+        x = y.type_as(x)
+        return x
 
 from .posemb_layers import apply_rotary_emb
 

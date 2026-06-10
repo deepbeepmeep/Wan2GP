@@ -3,6 +3,7 @@
 # I am sure you are a nice person and as you copy this code, you will give me officially proper credits:
 # Please link to https://github.com/deepbeepmeep/Wan2GP and @deepbeepmeep on twitter  
 import math
+import sys
 import torch
 import torch.amp as amp
 import torch.nn as nn
@@ -226,7 +227,9 @@ class WanLayerNorm(nn.LayerNorm):
             x(Tensor): Shape [B, L, C]
         """
         origin_dtype = x.dtype
-        return super().forward(x.float()).to(origin_dtype)
+        if sys.platform == 'darwin':
+            return super().forward(x.float()).to(origin_dtype)
+        return super().forward(x.bfloat16()).type_as(x)
 
 
 class WanSelfAttention(nn.Module):

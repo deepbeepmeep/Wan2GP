@@ -1,3 +1,7 @@
+# FluxMotion Server
+
+This is an API wrapper that calls the logic in Wan2GP, and is meant to be easily interfaced with by the FluxMotion iOS/Android app.
+
 ## System Requirements
 
 At the moment, the server will download _all the image and video models_ it needs so that you can use the app immediately after setup.
@@ -24,12 +28,16 @@ Suggested to have at least 16GB of VRAM, to at least run `Ultra Speed` image gen
 1. If you downloaded the .zip, unzip it to a folder called `Wan2GP` on your fastest drive (to make sure models load quickly). SSD is recommended
 1. Double-click the `setup.bat` file to set up the python environment and all that you need to run the server. _Please be patient; there is a lot to install here_
 1. When that is done, double-click `run.bat` to start the server
+1. In the logs of the command line prompt, you should see `It will be accessible on your network at: http://<ip_address>:8888`. Please enter the ip address listed there into your FluxMotion app and tap on 'Connect'. You may need to allow for local network permissions on your device, and retry tapping 'Connect'.
+1. If it all worked, you'll see a green checkmark next to the 'Connect' button in the FluxMotion app. 
 
 ## Installation Instructions (macOS)
 1. Download the source code for this repo as a [.zip](https://github.com/Proryanator/Wan2GP/archive/refs/heads/main.zip) or clone the repo via git
 1. If you downloaded the .zip, unzip it to a folder called `Wan2GP` on your fastest drive (to make sure models load quickly). SSD is recommended
 1. Run the `setup.sh` file to set up the python environment and all that you need to run the server. _Please be patient; there is a lot to install here_
 1. If the server does not start on it's own, then run `run.sh` and you are good to go 
+1. In the logs of the terminal, you should see `It will be accessible on your network at: http://<ip_address>:8888`. Please enter the ip address listed there into your FluxMotion app and tap on 'Connect'. You may need to allow for local network permissions on your device, and retry tapping 'Connect'.
+1. If it all worked, you'll see a green checkmark next to the 'Connect' button in the FluxMotion app.
 
 ## Uninstallation (Windows)
 

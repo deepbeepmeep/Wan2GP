@@ -35,7 +35,8 @@ GOTO :parseArgs
 echo ======================================
 echo Starting Wan2GP API...
 echo It will be accessible on your network at:
-echo http://%LOCAL_IP%:8888
+echo http://%LOCAL_IP%:8000
+echo Enter %LOCAL_IP% into the FluxMotion app "IP Address" field and tap 'Connect'
 echo ======================================
 
 SET "SCRIPT_DIR=%~dp0"

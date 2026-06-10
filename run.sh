@@ -24,7 +24,8 @@ if [ "$RUN_FULL" -eq 1 ]; then
 else
     echo "Starting Wan2GP API..."
     echo "It will be accessible on your network at:"
-    echo "http://<your_mac_ip_address>:8888"
+    echo "http://<your_mac_ip_address>:8000"
+    echo "Enter the ip address of your mac (find this via Settings) into the 'IP Address' field of the FluxMotion app and tap 'Connect'."
 fi
 echo "======================================"
 

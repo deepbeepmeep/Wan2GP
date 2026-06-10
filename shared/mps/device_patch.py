@@ -223,6 +223,26 @@ def apply_mps_patch():
             return {key: _replace_cuda_device(value) for key, value in map_location.items()}
         return _replace_cuda_device(map_location)
 
+    # MPS-unsupported dtypes — primarily float8 types that Metal/MPS cannot handle
+    _MPS_UNSUPPORTED_DTYPES = frozenset({
+        _torch.float8_e4m3fn,
+        _torch.float8_e5m2,
+        getattr(_torch, 'float8_e4m3fnuz', None),
+        getattr(_torch, 'float8_e5m2fnuz', None),
+    })
+
+    # Helper: does the Tensor.to() call request a dtype change?
+    def _dtype_change_requested(self, args, kwargs):
+        if "dtype" in kwargs:
+            return kwargs["dtype"] not in (None, self.dtype)
+        for a in args:
+            if isinstance(a, _torch.dtype):
+                return a != self.dtype
+        # .to(device, dtype) as positional: check second arg
+        if len(args) >= 2 and isinstance(args[1], _torch.dtype):
+            return args[1] != self.dtype
+        return False
+
     # CRITICAL: Patch Tensor.to and Module.to to intercept cuda device strings.
     # This catches code that passes device="cuda" as a string to .to() calls.
     _orig_tensor_to = _torch.Tensor.to
@@ -232,6 +252,18 @@ def apply_mps_patch():
         # Handle keyword device arg
         if "device" in kwargs:
             kwargs["device"] = _replace_cuda_device(kwargs["device"])
+        # Handle float8 → supported dtype conversion on MPS.
+        # MPS/Metal has zero support for float8 dtypes — even reading float8 data
+        # to cast it to another dtype fails with:
+        #   "Trying to convert Float8_e4m3fn to the MPS backend but it does not
+        #    have support for that dtype."
+        # Fix: move to CPU, do the dtype conversion there, then move back.
+        if (self.device.type == "mps"
+                and self.dtype in _MPS_UNSUPPORTED_DTYPES
+                and _dtype_change_requested(self, args, kwargs)):
+            # Do conversion on CPU where float8 is natively supported
+            cpu_result = _orig_tensor_to(self.cpu(), *new_args, **kwargs)
+            return cpu_result.to(self.device)
         return _orig_tensor_to(self, *new_args, **kwargs)
     _torch.Tensor.to = _patched_tensor_to
 

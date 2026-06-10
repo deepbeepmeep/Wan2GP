@@ -225,7 +225,8 @@ class WanLayerNorm(nn.LayerNorm):
         Args:
             x(Tensor): Shape [B, L, C]
         """
-        return super().forward(x.bfloat16()).type_as(x)
+        origin_dtype = x.dtype
+        return super().forward(x.float()).to(origin_dtype)
 
 
 class WanSelfAttention(nn.Module):

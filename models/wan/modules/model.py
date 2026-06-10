@@ -198,16 +198,9 @@ class WanLayerNorm(nn.LayerNorm):
         Args:
             x(Tensor): Shape [B, L, C]
         """
-        # return F.layer_norm(
-        #     input, self.normalized_shape, self.weight, self.bias, self.eps
-        # )
-        if self.weight is not None:
-            y = super().forward(x.to(self.weight.dtype))
-        else:
-            y = super().forward(x)
-        x = y.type_as(x)
-        return x
-        # return super().forward(x).type_as(x)
+        origin_dtype = x.dtype
+        y = super().forward(x.float())
+        return y.to(origin_dtype)
 
 from .posemb_layers import apply_rotary_emb
 

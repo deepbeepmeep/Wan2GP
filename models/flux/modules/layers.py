@@ -100,6 +100,19 @@ class MLPEmbedder(nn.Module):
         return self.out_layer(self.silu(self.in_layer(x)))
 
 
+class LayerNorm(nn.LayerNorm):
+    """MPS-safe LayerNorm that casts input to float32 before normalization.
+
+    PyTorch's MPS backend computes mean/rstd in float32 internally, so passing
+    bf16 input to nn.LayerNorm causes a type mismatch in the Metal shader
+    (mps.normalization). This wrapper avoids the crash by normalizing in float32
+    and restoring the original dtype.
+    """
+    def forward(self, x):
+        origin_dtype = x.dtype
+        return super().forward(x.float()).to(origin_dtype)
+
+
 class RMSNorm(torch.nn.Module):
     def __init__(self, dim: int):
         super().__init__()
@@ -209,10 +222,10 @@ class DoubleStreamBlock(nn.Module):
         self.shared_modulation = shared_modulation
         if not shared_modulation:
             self.img_mod = Modulation(hidden_size, double=True, bias=mod_bias)
-        self.img_norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.img_norm1 = LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.img_attn = SelfAttention(dim=hidden_size, num_heads=num_heads, qkv_bias=qkv_bias, proj_bias=proj_bias)
 
-        self.img_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.img_norm2 = LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         if double_linear1_mlp_ratio is not None:
             self.img_mlp = nn.Sequential(
                 nn.Linear(hidden_size, lin1_mlp_dim, bias=mlp_bias),
@@ -228,10 +241,10 @@ class DoubleStreamBlock(nn.Module):
 
         if not shared_modulation:
             self.txt_mod = Modulation(hidden_size, double=True, bias=mod_bias)
-        self.txt_norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.txt_norm1 = LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.txt_attn = SelfAttention(dim=hidden_size, num_heads=num_heads, qkv_bias=qkv_bias, proj_bias=proj_bias)
 
-        self.txt_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.txt_norm2 = LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         if double_linear1_mlp_ratio is not None:
             self.txt_mlp = nn.Sequential(
                 nn.Linear(hidden_size, lin1_mlp_dim, bias=mlp_bias),
@@ -350,7 +363,7 @@ class SingleStreamBlock(nn.Module):
         self.norm = QKNorm(head_dim)
 
         self.hidden_size = hidden_size
-        self.pre_norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.pre_norm = LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
 
         self.mlp_act = SiLUActivation() if self.use_silu else nn.GELU(approximate="tanh")
         if not shared_modulation:
@@ -419,7 +432,7 @@ class LastLayer(nn.Module):
         super().__init__()
         self.chroma_modulation = chroma_modulation
         self.use_linear = use_linear
-        self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.norm_final = LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.linear = (
             nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=linear_bias)
             if use_linear
@@ -493,7 +506,7 @@ class SigLIPMultiFeatProjModel(torch.nn.Module):
             nn.SiLU()
         )
         self.high_layer_norm = (
-            nn.LayerNorm(siglip_token_dims) if context_layer_norm else nn.Identity()
+            LayerNorm(siglip_token_dims) if context_layer_norm else nn.Identity()
         )
         self.high_projection = nn.Linear(siglip_token_dims, hidden_size, bias=True)
         
@@ -503,7 +516,7 @@ class SigLIPMultiFeatProjModel(torch.nn.Module):
             nn.SiLU()
         )
         self.mid_layer_norm = (
-            nn.LayerNorm(siglip_token_dims) if context_layer_norm else nn.Identity()
+            LayerNorm(siglip_token_dims) if context_layer_norm else nn.Identity()
         )
         self.mid_projection = nn.Linear(siglip_token_dims, hidden_size, bias=True)
         
@@ -513,7 +526,7 @@ class SigLIPMultiFeatProjModel(torch.nn.Module):
             nn.SiLU()
         )
         self.low_layer_norm = (
-            nn.LayerNorm(siglip_token_dims) if context_layer_norm else nn.Identity()
+            LayerNorm(siglip_token_dims) if context_layer_norm else nn.Identity()
         )
         self.low_projection = nn.Linear(siglip_token_dims, hidden_size, bias=True)
 

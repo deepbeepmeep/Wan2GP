@@ -1,0 +1,24 @@
+{
+    "model": {
+        "name": "JoyAI-Echo 22B",
+        "architecture": "joyai_echo",
+        "description": "JoyAI-Echo is an LTX-2.3-based audio-video model for connected multi-window stories. WanGP keeps compact visual and audio memories so later windows can reuse characters, voices, objects, and places. Write clear story beats with stable IDs, repeated identity details, readable dialogue, and consistent sound design. A Control Video with audio can predefine memory before generation.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/JoyAI-Echo_diffusion_model_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/JoyAI-Echo_diffusion_model_quanto_bf16_int8.safetensors"
+        ]
+    },
+    "prompt": "[/duration=10s, /store_mem=man1,man2]ID_A is a charismatic retired stage magician in his late sixties with silver hair, a velvet burgundy jacket, expressive eyebrows, and a dry theatrical voice. He stands alone inside an abandoned seaside theater at night, lit by dusty gold footlights and moonlight through cracked windows. ID_A opens a small lacquered box, removes a glowing blue playing card, looks directly into the camera, and says, \"I retired from miracles because the miracles started freelancing.\" Keep his face and lip movement clearly visible in a stable medium close-up. The theater contains faded red seats, torn curtains, brass railings, and a faint ocean shimmer beyond the broken windows. Audible details include soft card handling, distant waves, old wood creaks, and his amused breath before speaking. No prominent music, only a playful mysterious room tone.\n\n[/duration=10s]ID_A is the same retired magician with the same silver hair, burgundy velvet jacket, theatrical voice, glowing blue playing card, and abandoned seaside theater. He moves across the stage with surprising elegance, flicks the glowing card into the air, and it becomes a tiny floating door made of light. ID_A grins, bows to the empty seats, and says, \"Ladies and gentlemen, please applaud responsibly. The door is shy.\" Preserve his clothing, face, voice, and the theater layout from the first shot. Use a wider stage composition that keeps his gestures, the floating card-door, and his readable lip movement in frame. Sounds include a crisp card flick, a soft magical hum, distant waves, and scattered dust falling from the rigging.\n\n[/duration=10s,/new_shot,/load_mem=,/store_mem=woman1,woman2]ID_B is an energetic young marine biologist in her thirties with shoulder-length blonde hair tucked under a yellow scarf, round glasses, a teal raincoat, and a quick bright voice. She stands alone on the moonlit beach outside the same abandoned theater, holding a waterproof notebook and a small brass telescope. ID_B looks toward the theater windows, notices the glow from inside, and says, \"That is either illegal plankton behavior or someone finally found the ridiculous door.\" Keep her face and lip movement clear in a medium shot. The background includes wet sand, tide pools, the dark theater silhouette, sea foam, and scattered bioluminescent blue sparks near the waterline. Audible details include waves, wind tugging at her raincoat, notebook pages fluttering, and a tiny metallic telescope click.\n\n[/duration=10s,/new_shot,/load_mem=man1,man2,woman1,woman2]ID_A and ID_B are together in the same moonlit seaside theater and beach setting, with ID_A still the same retired magician wearing his burgundy velvet jacket and holding the glowing blue playing card, and ID_B still the blonde marine biologist wearing her teal raincoat, yellow scarf, round glasses, and carrying the waterproof notebook. The glowing door now hovers between them on the theater stage, opening onto an impossible miniature ocean full of floating teacups and tiny lantern-lit boats. ID_A gestures grandly while ID_B steps closer, amused and suspicious, and they exchange a fast playful line: ID_A says, \"I told you the door was shy.\" ID_B replies, \"It just stole my tide chart.\" Keep both faces and lip movement readable, with the door and magical ocean visible between them. Use a lively two-shot that preserves their distinct clothing, voices, and personalities. Audible details include the door humming, tiny waves from the miniature ocean, ID_B's notebook snapping shut, ID_A's card tapping the air, and their overlapping laughter.",
+    "num_inference_steps": 8,
+    "video_length": 249,
+    "resolution": "1280x720",
+    "guidance_scale": 1.0,
+    "audio_guidance_scale": 1.0,
+    "alt_guidance_scale": 1.0,
+    "alt_scale": 0.0,
+    "guidance_phases": 1,
+    "custom_settings": {
+        "joyai_control_memory_positions": ""
+    },
+    "multi_prompts_gen_type": "PW"
+}

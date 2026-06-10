@@ -17,7 +17,7 @@ def test_class_i2v(base_model_type):
     return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate", "chrono_edit", "steadydancer", "wanmove", "scail", "i2v_2_2_svi2pro" ]
 
 def test_class_t2v(base_model_type):    
-    return base_model_type in ["t2v", "t2v_2_2", "alpha", "alpha2", "lynx", "vista4d"]
+    return base_model_type in ["t2v", "t2v_2_2", "alpha", "alpha2", "lynx", "vista4d", "bernini"]
 
 def test_oneframe_overlap(base_model_type):
     return test_class_i2v(base_model_type) and not (test_multitalk(base_model_type) or base_model_type in ["animate", "scail"] or test_svi2pro(base_model_type))  or test_wan_5B(base_model_type)
@@ -47,13 +47,16 @@ def test_i2v_2_2(base_model_type):
 def test_svi2pro(base_model_type):
     return base_model_type in ["i2v_2_2_svi2pro"]
 
+def test_bernini(base_model_type):
+    return base_model_type in ["bernini"]
+
 class family_handler():
     @staticmethod
     def query_supported_types():
         return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_14B_2_2", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B",
                     "t2v_1.3B", "standin", "lynx_lite", "lynx", "t2v", "t2v_2_2", "vace_1.3B", "vace_ditto_14B", "phantom_1.3B", "phantom_14B",
                     "recam_1.3B", "animate", "alpha", "alpha2", "alpha_lynx", "chrono_edit",
-                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "kiwi_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp", "mocha", "steadydancer", "wanmove", "scail", "vista4d", "i2v_2_2_svi2pro"]
+                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "kiwi_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp", "mocha", "steadydancer", "wanmove", "scail", "vista4d", "i2v_2_2_svi2pro", "bernini"]
 
 
     @staticmethod
@@ -206,6 +209,9 @@ class family_handler():
         extra_model_def["alpha_class"] = alpha = test_alpha(base_model_type)
         extra_model_def["wan_5B_class"] = wan_5B = test_wan_5B(base_model_type)        
         extra_model_def["vace_class"] = vace_class = test_vace(base_model_type)
+        extra_model_def["bernini_class"] = bernini = test_bernini(base_model_type)
+        if bernini:
+            extra_model_def["t2v_class"] = t2v = False
         extra_model_def["color_correction"] = True
         extra_model_def["svi2pro"] = svi2pro = test_svi2pro(base_model_type)
         extra_model_def["i2v_2_2"] = i2v_2_2 = test_i2v_2_2(base_model_type)
@@ -231,6 +237,7 @@ class family_handler():
             if multitalk:
                 extra_model_def["audio_prompt_choices"] = True                
             extra_model_def["any_audio_prompt"] = True
+            extra_model_def["returns_audio"] = True
 
         if base_model_type in ["vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B"]:
             extra_model_def["parent_model_type"] = "vace_14B"
@@ -239,7 +246,10 @@ class family_handler():
             extra_model_def["parent_model_type"] = "alpha"
 
         group = "wan"
-        if base_model_type in ["t2v_2_2", "vace_14B_2_2"] or test_i2v_2_2(base_model_type):
+        if bernini:
+            profiles_dir = ["wan_bernini", "wan_2_2"]
+            group = "wan2_2"
+        elif base_model_type in ["t2v_2_2", "vace_14B_2_2"] or test_i2v_2_2(base_model_type):
             profiles_dir = "wan_2_2"
             group = "wan2_2"
         elif i2v:
@@ -260,7 +270,7 @@ class family_handler():
             extra_model_def["vae_upsampler"] = [1,2]
         extra_model_def["vae_block_size"] = 32 if test_wan_5B(base_model_type) or base_model_type in ["scail"] else 16
 
-        extra_model_def["profiles_dir"] = [profiles_dir]
+        extra_model_def["profiles_dir"] = profiles_dir if isinstance(profiles_dir, list) else [profiles_dir]
         extra_model_def["group"] = group
 
         if base_model_type in ["animate"]:
@@ -357,6 +367,40 @@ class family_handler():
                     "visible": False
                 }
             extra_model_def["v2i_switch_supported"] = True
+
+        if bernini:
+            extra_model_def.update({
+                "guide_preprocessing": {
+                    "selection": ["", "V"],
+                    "labels": {"V": "Use Control Video"},
+                    "default": "V",
+                    "label": "Control Video Process",
+                },
+                "image_ref_choices": {
+                    "choices": [("None", ""), ("Reference Images", "I")],
+                    "letters_filter": "I",
+                },
+                "mask_preprocessing": {
+                    "selection": ["", "A"],
+                    "labels": {"": "Mask Not Used", "A": "Use Video Mask"},
+                    "label": "Control Video Mask",
+                },
+                "return_image_refs_tensor": True,
+                "no_background_removal": True,
+                "fit_into_canvas_image_refs": 0,
+                "control_video_trim": True,
+                "control_net_weight_name": "Video Guidance",
+                "control_net_weight_size": 1,
+                "alt_guidance": "Reference Guidance",
+                "sliding_window": False,
+                "v2i_switch_supported": True,
+                "tea_cache": False,
+                "mag_cache": False,
+                "self_refiner": False,
+                "NAG": False,
+                "cfg_star": False,
+                "cfg_zero": False,
+            })
 
         if base_model_type == "vista4d":
             extra_model_def.update({
@@ -728,7 +772,9 @@ class family_handler():
             extra_model_def["image_outputs"] = True
             extra_model_def["prompt_enhancer_choices_allowed"] = ["TI"]
 
-        if vace_class or base_model_type in ["animate", "t2v", "t2v_2_2", "lynx"] :
+        if bernini:
+            image_prompt_types_allowed = "T"
+        elif vace_class or base_model_type in ["animate", "t2v", "t2v_2_2", "lynx"] :
             image_prompt_types_allowed = "TVL"
         elif base_model_type in ["infinitetalk"]:
             image_prompt_types_allowed = "TSVL"
@@ -760,12 +806,12 @@ class family_handler():
             extra_model_def["background_removal_color"] = [128, 128, 128]  
         if base_model_type in ["fantasy"] or multitalk:
             extra_model_def["audio_guidance"] = True
-        extra_model_def["NAG"] = vace_class or t2v or i2v
+        extra_model_def["NAG"] = (vace_class or t2v or i2v) and not bernini
 
         if test_oneframe_overlap(base_model_type):
             extra_model_def["sliding_window_defaults"] = { "overlap_min" : 1, "overlap_max" : 1, "overlap_step": 0, "overlap_default": 1}
         elif svi2pro:
-            extra_model_def["sliding_window_defaults"] = { "overlap_min" : 4, "overlap_max" : 4, "overlap_step": 0, "overlap_default": 4}
+            extra_model_def["sliding_window_defaults"] = { "overlap_min" : 4, "overlap_max" : 4, "overlap_step": 0, "overlap_default": 4, "overlap_offset": 0}
 
         # if base_model_type in ["phantom_1.3B", "phantom_14B"]: 
         #     extra_model_def["one_image_ref_needed"] = True
@@ -1092,6 +1138,26 @@ class family_handler():
                 ui_defaults.update({
                     "video_prompt_type": "UVI" if model_def.get("kiwi_ref_embedder", True) else "UV", 
                 })
+
+        elif base_model_type in ["bernini"]:
+            ui_defaults.update({
+                "video_prompt_type": "VI",
+                "resolution": "832x480",
+                "video_length": 81,
+                "num_inference_steps": 40,
+                "flow_shift": 3,
+                "guidance_phases": 2,
+                "model_switch_phase": 1,
+                "switch_threshold": 875,
+                "guidance_scale": 4,
+                "guidance2_scale": 4,
+                "guidance3_scale": 1,
+                "control_net_weight": 1.25,
+                "alt_guidance_scale": 4.5,
+                "sample_solver": "unipc",
+                "remove_background_images_ref": 0,
+                "prompt_enhancer": "",
+            })
 
         if base_model_type in ["recam_1.3B", "lucy_edit"]: 
             ui_defaults.update({

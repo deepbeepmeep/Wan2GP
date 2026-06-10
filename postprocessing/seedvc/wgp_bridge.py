@@ -316,7 +316,7 @@ class SeedVCBridge:
 
     def _replace_two_speaker_audio_file(self, source_audio_path: str, voice_sample_path: str, output_path: str, *, voice_sample2_path: str, process_files: Callable[..., Any], profile_no=4, verbose_level: int = 1, init_pipe: Callable[..., int] | None = None, prefix: str = "seedvc") -> str:
         import numpy as np
-        from preprocessing.speakers_separator import extract_dual_audio
+        from preprocessing.speaker_separator import extract_dual_audio
         from shared.utils.audio_video import cleanup_temp_audio_files
 
         output_dir = os.path.dirname(os.path.abspath(output_path)) or "."

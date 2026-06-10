@@ -28,7 +28,8 @@ class TransformerArgs:
     cross_positional_embeddings: RopeCache | None
     cross_scale_shift_timestep: torch.Tensor | None
     cross_gate_timestep: torch.Tensor | None
-    enabled: bool
+    cross_attention_mask: torch.Tensor | None = None
+    enabled: bool = True
     nag: dict | None = None
     prompt_timestep: torch.Tensor | None = None
     self_attention_mask: torch.Tensor | None = None
@@ -385,6 +386,16 @@ class TransformerArgsPreprocessor:
             bias[positive] = torch.log(attention_mask[positive].clamp(min=eps)).to(x_dtype)
         return bias.unsqueeze(2)
 
+    def _prepare_cross_attention_mask(self, cross_attention_mask: torch.Tensor | None, x_dtype: torch.dtype) -> torch.Tensor | None:
+        if cross_attention_mask is None:
+            return None
+        mask = cross_attention_mask.to(x_dtype)
+        if mask.ndim == 2:
+            return (mask - 1).reshape((mask.shape[0], 1, 1, mask.shape[-1])) * torch.finfo(x_dtype).max
+        if mask.ndim == 3:
+            return (mask - 1).unsqueeze(2) * torch.finfo(x_dtype).max
+        raise ValueError(f"Expected cross_attention_mask shape (B, K) or (B, Q, K), got {tuple(mask.shape)}")
+
     def _prepare_positional_embeddings(
         self,
         positions: torch.Tensor,
@@ -500,6 +511,7 @@ class TransformerArgsPreprocessor:
             cross_positional_embeddings=None,
             cross_scale_shift_timestep=None,
             cross_gate_timestep=None,
+            cross_attention_mask=None,
             enabled=modality.enabled,
             nag=modality.nag,
             prompt_timestep=prompt_timestep,
@@ -601,6 +613,7 @@ class MultiModalTransformerArgsPreprocessor:
             frame_indices=modality.frame_indices,
             base_timestep=base_timestep,
         )
+        cross_attention_mask = self.simple_preprocessor._prepare_cross_attention_mask(modality.cross_attention_mask, modality.latent.dtype)
         return TransformerArgs(
             x=transformer_args.x,
             context=transformer_args.context,
@@ -611,6 +624,7 @@ class MultiModalTransformerArgsPreprocessor:
             cross_positional_embeddings=cross_pe,
             cross_scale_shift_timestep=cross_scale_shift_timestep,
             cross_gate_timestep=cross_gate_timestep,
+            cross_attention_mask=cross_attention_mask,
             enabled=transformer_args.enabled,
             nag=transformer_args.nag,
             prompt_timestep=transformer_args.prompt_timestep,

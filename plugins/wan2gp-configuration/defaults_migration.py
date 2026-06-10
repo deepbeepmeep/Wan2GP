@@ -109,6 +109,7 @@ def migrate_extension_defaults(server_config, server_config_filename="") -> bool
             server_config["flashvsr_mode"] = FLASHVSR_DEFAULT_MODE
             changed = True
         _set_missing_persistence(server_config, "flashvsr_persistence")
+        _set_missing_persistence(server_config, "pid_persistence")
 
         if _is_off(server_config.get("enhancer_enabled", 0)):
             server_config["enhancer_enabled"] = prompt_enhancer_default_mode
@@ -123,6 +124,7 @@ def migrate_extension_defaults(server_config, server_config_filename="") -> bool
             server_config["seedvc_mode"] = SEEDVC_DEFAULT_MODE
             changed = True
         _set_missing_persistence(server_config, "seedvc_persistence")
+        _set_missing_persistence(server_config, "pid_persistence")
 
     if server_config.pop(LEGACY_EXTENSIONS_DEFAULTS_MIGRATED_KEY, None) is not None:
         changed = True

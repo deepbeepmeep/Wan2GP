@@ -15,6 +15,18 @@ _GEMMA_FOLDER_URL = "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/gemm
 _GEMMA_FOLDER = "gemma-3-12b-it-qat-q4_0-unquantized"
 _GEMMA_FILENAME = f"{_GEMMA_FOLDER}.safetensors"
 _GEMMA_QUANTO_FILENAME = f"{_GEMMA_FOLDER}_quanto_bf16_int8.safetensors"
+_GEMMA_TOKENIZER_FILES = [
+    "added_tokens.json",
+    "chat_template.json",
+    "config_light.json",
+    "generation_config.json",
+    "preprocessor_config.json",
+    "processor_config.json",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer.model",
+    "tokenizer_config.json",
+]
 _LORAS_MIGRATED = False
 _LORA_SPEC_KEYS = ("distilled_lora", "distilled_1_1_lora", "union_control_lora", "id_lora", "outpaint_lora", "hdr_lora")
 _SYSTEM_LORA_SPEC_KEYS = {
@@ -80,13 +92,84 @@ _ARCH_SPECS = {
         "lora_dir": "ltx2",
     },
 }
-LTX2_22B_CLASS = {"ltx2_22B", "ltx2_22B_edit_anything"}
+LTX2_22B_CLASS = {"ltx2_22B", "ltx2_22B_edit_anything", "joyai_echo"}
 for model_type in LTX2_22B_CLASS:
-    if  model_type!= "ltx2_22B":
+    if model_type != "ltx2_22B" and model_type not in _ARCH_SPECS:
         _ARCH_SPECS[model_type]=_ARCH_SPECS["ltx2_22B"]
 
 def _get_arch_spec(base_model_type: str | None) -> dict:
     return _ARCH_SPECS.get(base_model_type or "", _ARCH_SPECS["ltx2_19B"])
+
+
+def _is_joyai_echo(base_model_type: str | None, model_def: dict | None = None) -> bool:
+    return base_model_type == "joyai_echo" or bool((model_def or {}).get("joyai_echo", False))
+
+
+def _joyai_prompt_types(video_prompt_type="", image_prompt_type=""):
+    return "V1" if "V" in (video_prompt_type or "") else "", "V" if "V" in (image_prompt_type or "") else "S" if "S" in (image_prompt_type or "") else ""
+
+
+def _joyai_settings(custom_settings=None, *, video_prompt_type="", image_prompt_type="", guidance_phases=2, runtime=False):
+    video_prompt_type, image_prompt_type = _joyai_prompt_types(video_prompt_type, image_prompt_type)
+    if not isinstance(custom_settings, dict):
+        custom_settings = {}
+    settings = {
+        "num_inference_steps": 8,
+        "guidance_scale": 1.0,
+        "audio_guidance_scale": 1.0,
+        "alt_guidance_scale": 1.0,
+        "alt_scale": 0.0,
+        "guidance_phases": max(1, min(2, int(guidance_phases or 2))),
+        "audio_prompt_type": "",
+        "video_prompt_type": video_prompt_type,
+        "image_prompt_type": image_prompt_type,
+        "custom_settings": custom_settings,
+        "multi_prompts_gen_type": "PW",
+    }
+    if runtime:
+        settings["audio_cfg_scale"] = 1.0
+    return settings
+
+
+def _validate_joyai_inputs(model_def, inputs):
+    from shared.utils.audio_video import extract_audio_tracks
+    from .joyai_echo import JOYAI_CONTROL_MEMORY_MAX_SECONDS, JOYAI_CONTROL_MEMORY_SETTING, parse_drop_mem_option, parse_load_mem_option, parse_store_mem_option, validate_control_memory_positions
+    custom_settings = inputs.get("custom_settings", None)
+    if not isinstance(custom_settings, dict):
+        custom_settings = {}
+    no_mem_notified = False
+    for window in (inputs.get("frame_scheduler", {}) or {}).get("windows", []):
+        model_options = window.get("model_options", {}) or {}
+        if "no_mem" in model_options and not no_mem_notified:
+            gr.Info("JoyAI-Echo /no_mem is deprecated because memories are no longer saved automatically. It will be ignored; use /store_mem=name only on windows you want to remember.")
+            no_mem_notified = True
+        store_mem = model_options.get("store_mem", None)
+        if store_mem is not None:
+            try:
+                parse_store_mem_option(store_mem)
+            except ValueError as exc:
+                return str(exc)
+        load_mem = model_options.get("load_mem", None)
+        if load_mem is not None:
+            try:
+                parse_load_mem_option(load_mem)
+            except ValueError as exc:
+                return str(exc)
+        drop_mem = model_options.get("drop_mem", None)
+        if drop_mem is not None:
+            try:
+                parse_drop_mem_option(drop_mem)
+            except ValueError as exc:
+                return str(exc)
+    memory_positions = str(custom_settings.get(JOYAI_CONTROL_MEMORY_SETTING, "") or "").strip()
+    video_prompt_type, _ = _joyai_prompt_types(inputs.get("video_prompt_type", ""), inputs.get("image_prompt_type", ""))
+    if not video_prompt_type:
+        return None
+    if inputs.get("video_guide") is None:
+        return "JoyAI-Echo Control Video Memory requires a Control Video."
+    if extract_audio_tracks(inputs.get("video_guide"), query_only=True) == 0:
+        return "JoyAI-Echo Control Video Memory requires a Control Video with an audio track."
+    return validate_control_memory_positions(memory_positions, float(model_def.get("fps", 25) or 25), max_seconds=JOYAI_CONTROL_MEMORY_MAX_SECONDS)
 
 
 def _get_system_lora_urls(spec: dict) -> dict:
@@ -241,7 +324,7 @@ class family_handler:
     @staticmethod
     def query_supported_types():
         _migrate_loras()
-        return ["ltx2_19B", "ltx2_22B", "ltx2_22B_edit_anything"]
+        return ["ltx2_19B", "ltx2_22B", "ltx2_22B_edit_anything", "joyai_echo"]
 
     @staticmethod
     def query_family_maps():
@@ -268,7 +351,7 @@ class family_handler:
     def query_model_def(base_model_type, model_def):
         preload_urls = model_def.get("preload_URLs")
         spec = _get_arch_spec(base_model_type)
-        from .prompt_enhancer import LTX2_PROMPT_INFOS, LTX2_RELAYED_IMAGE_PROMPT, LTX2_RELAYED_PROMPT
+        joy = _is_joyai_echo(base_model_type, model_def)
         if isinstance(preload_urls, list): 
             # migrate old finetunes
             lora_filenames = {spec[key] for key in _LORA_SPEC_KEYS if key in spec}
@@ -282,21 +365,9 @@ class family_handler:
             model_def["preload_URLs"] = [add_lora_dir_suffix(entry) for entry in preload_urls]
 
         editanything_ref = _is_editanything_model(model_def)
-        pipeline_kind = "distilled" if _is_distilled_model(model_def) else "two_stage"
+        pipeline_kind = "distilled" if joy or _is_distilled_model(model_def) else "two_stage"
 
         distilled = pipeline_kind == "distilled"
-        audio_prompt_selection = ["", "A", "K", "2", "A1OF"]
-        if editanything_ref and not distilled:
-            audio_prompt_selection = ["", "A", "K"]
-        audio_prompt_labels = {
-            "": "Generate Video & Soundtrack based on Text Prompt",
-            "A": "Generate Video based on Soundtrack and Text Prompt",
-            "K": "Generate Video based on Control Video + its Audio Track and Text Prompt",
-            "2": "Generate Audio based on Control Video and Text Prompt",
-            "A1OF": "Generate Video based on Reference Voice (ID-LoRA) and Text Prompt",
-        }
-
-
         extra_model_def = {
             "ltx2_22B_class": base_model_type in LTX2_22B_CLASS,
             "ltx2_edit_anything": editanything_ref,
@@ -311,50 +382,10 @@ class family_handler:
             "frames_minimum": 17,
             "frames_steps": 8,
             "sliding_window": True,
-            "image_prompt_types_allowed": "TSEVL",
-            "end_frames_always_enabled": True,
             "returns_audio": True,
-            "any_audio_prompt": True,
-            "audio_prompt_choices": True,
-            "one_speaker_only": True,
-            "audio_guide_label": "Audio Prompt (Soundtrack, leave blank to to use a Null Audio)",
-            "audio_scale_name": "Prompt Audio Strength",
-            "audio_prompt_type_sources": {
-                "selection": audio_prompt_selection,
-                "labels": audio_prompt_labels,
-                "custom_flags": {
-                    "1": "Reference Voice (ID-LoRA)",
-                    "2": "Generate Audio based on Control Video and Text Prompt",
-                },
-                "letters_filter": "A1OFK2",
-                "show_label": False,
-                "default": "K" if editanything_ref else "",
-            },
             "prompt_enhancer_button_label": "Write",
-            "prompt_infos": LTX2_PROMPT_INFOS,
-            "prompt_enhancer_def": {
-                "selection": ["T", "TI", "T1", "TI1"],
-                "labels": {
-                    "T": "An Enhanced Prompt using existing Text Prompt",
-                    "TI": "An Enhanced Prompt using existing Text Prompt and Start Image",
-                    "T1": "An Enhanced Relayed Prompt using existing Text Prompt",
-                    "TI1": "An Enhanced Relayed Prompt using existing Text Prompt and Start Image",
-                },
-                "default": "",
-            },
-            "text_prompt_enhancer_instructions1": LTX2_RELAYED_PROMPT,
-            "video_prompt_enhancer_instructions1": LTX2_RELAYED_IMAGE_PROMPT,
-            "image_prompt_enhancer_instructions1": LTX2_RELAYED_IMAGE_PROMPT,
-            "text_prompt_enhancer_max_tokens1": 1024,
-            "video_prompt_enhancer_max_tokens1": 1024,
-            "image_prompt_enhancer_max_tokens1": 1024,
             "auto_null_audio": True,
-            "audio_guide_window_slicing": True,
-            "video_length_not_limited_by_audio": True,
-            "output_audio_is_input_audio": True,
             "multimedia_generation": True,
-            "multiple_images_as_text_prompts": True,
-            "custom_denoising_strength": distilled,
             "profiles_dir": [spec["profiles_dir"]] + ([] if distilled else [spec["dev_profiles_dir"]]),
             "ltx2_spatial_upscaler_file": spec["spatial_upscaler"],
             "ltx2_hdr_lora_file": spec.get("hdr_lora", ""),
@@ -364,11 +395,14 @@ class family_handler:
             # "no_background_removal": True,
             "vae_block_size": 64,
             "keep_frames_video_guide_not_supported": True,
-            "NAG": True,
         }
         extra_model_def.update(_get_system_lora_urls(spec))
         if distilled:
             extra_model_def["ltx2_pipeline"] = "distilled"
+        else:
+            extra_model_def["finetune_custom_urls"] =  [ "ltx2_lora_distilled"]
+
+            
         if editanything_ref:
             extra_model_def.update(_EDITANYTHING_MODEL_DEF)
         
@@ -384,44 +418,119 @@ class family_handler:
             "label": "Start Image / Source Strength (lower values may create more motion)",
             "name": "Start Image / Source Strength",
         }
-        extra_model_def["denoising_strength"] = {
-            "label": "Control Video Strength (higher = closer to the Control Video)",
-            "name": "Control Video Strength",
-        }
-        extra_model_def["masking_strength"] = {
-            "label": "Masked Control Duration (higher = longer masked reinjection)",
-            "name": "Masked Control Duration",
-        }
-        
-        if base_model_type in ["ltx2_22B_edit_anything"]: 
-            control_choices = [("EditAnything Source Video", "VGI")]
-        else:
-            control_choices = [("No Video Process", "")]
-            control_choices += [ ("Transfer Human Motion", "PVG"), ("Transfer Human Motion With Pose Alignment", "OVG")  , ("Transfer Depth", "DVG") , ("Transfer Canny Edges", "EVG"), ("LTX2 Raw Format / Control Video for Ic Lora", "VG")]
-            # control_choices += [("Set Reference Frame (if supported by Ic Lora)", "I")]
-            if base_model_type == "ltx2_22B":
-                control_choices += [("Convert SDR to HDR (IC-LoRA)", f"V&G")]
-            control_choices +=   [("Inject Frames", "KFI")]
-        extra_model_def["guide_custom_choices"] = {
-            "choices": control_choices,
-            "letters_filter": f"OPDEVG&KFI",
-            "default": "VGI" if editanything_ref else "",
-            "label": "Control Video / Frames Injection",
-            "visible": not editanything_ref,
-        }
-        extra_model_def["custom_frames_injection"] = True
-        extra_model_def["one_image_ref_only"] = True
-        if editanything_ref:
-            extra_model_def["one_image_ref_needed"] = True
+        if joy:
+            from .joyai_echo import JOYAI_CONTROL_MEMORY_SETTING, JOYAI_ECHO_INFOS, JOYAI_ECHO_PROMPT_ENHANCER, JOYAI_ECHO_PROMPT_INFOS
 
-        if editanything_ref: 
-            extra_model_def["mask_preprocessing"] = {
-                "selection": [""], "visible": False,
-            }
+            extra_model_def.update(
+                {
+                    "joyai_echo": True,
+                    "joyai_audio_memory": True,
+                    "joyai_memory_max_size": 7,
+                    "joyai_memory_num_fix_frames": 3,
+                    "joyai_memory_downscale_factor": 1,
+                    "joyai_audio_memory_window_size": 96,
+                    "prompt_slash_commands": ["no_mem", "store_mem", "load_mem", "drop_mem"],
+                    "preserve_empty_prompt_lines": True,
+                    "NAG": True,
+                    "infos": model_def.get("infos", JOYAI_ECHO_INFOS),
+                    "fps": 25,
+                    "image_prompt_types_allowed": "TSV",
+                    "prompt_infos": JOYAI_ECHO_PROMPT_INFOS,
+                    "prompt_enhancer_def": {"selection": ["TM", "TIM"], "labels": {"TM": "A JoyAI-Echo multi-shot prompt using existing Text Prompt", "TIM": "A JoyAI-Echo multi-shot prompt using existing Text Prompt and Start Image"}, "default": ""},
+                    "text_prompt_enhancer_instructions1": JOYAI_ECHO_PROMPT_ENHANCER,
+                    "video_prompt_enhancer_instructions1": JOYAI_ECHO_PROMPT_ENHANCER,
+                    "image_prompt_enhancer_instructions1": JOYAI_ECHO_PROMPT_ENHANCER,
+                    "text_prompt_enhancer_max_tokens1": 1536,
+                    "video_prompt_enhancer_max_tokens1": 1536,
+                    "image_prompt_enhancer_max_tokens1": 1536,
+                    "guide_custom_choices": {"choices": [("No Control Video Memory", ""), ("JoyAI-Echo Control Video Memory", "V1")], "letters_filter": "V1", "default": "", "label": "Control Video Memory"},
+                    "custom_settings": [{"id": JOYAI_CONTROL_MEMORY_SETTING, "name": "Control Video Memory Positions", "label": "Joy Memory Positions from Control Video (frames or seconds, comma-separated)", "type": "text", "default": "", "video_prompt_type": "1"}],
+                }
+            )
         else:
-            extra_model_def["mask_preprocessing"] = {
-                "selection": ["", "A", "NA", "XA", "XNA"],
+            from .prompt_enhancer import LTX2_PROMPT_INFOS, LTX2_RELAYED_IMAGE_PROMPT, LTX2_RELAYED_PROMPT
+
+            audio_prompt_selection = ["", "A", "K"] if editanything_ref and not distilled else ["", "A", "K", "2", "A1OF"]
+            audio_prompt_labels = {
+                "": "Generate Video & Soundtrack based on Text Prompt",
+                "A": "Generate Video based on Soundtrack and Text Prompt",
+                "K": "Generate Video based on Control Video + its Audio Track and Text Prompt",
+                "2": "Generate Audio based on Control Video and Text Prompt",
+                "A1OF": "Generate Video based on Reference Voice (ID-LoRA) and Text Prompt",
             }
+            extra_model_def.update(
+                {
+                    "image_prompt_types_allowed": "TSEVL",
+                    "end_frames_always_enabled": True,
+                    "any_audio_prompt": True,
+                    "audio_prompt_choices": True,
+                    "one_speaker_only": True,
+                    "audio_guide_label": "Audio Prompt (Soundtrack, leave blank to to use a Null Audio)",
+                    "audio_scale_name": "Prompt Audio Strength",
+                    "audio_prompt_type_sources": {
+                        "selection": audio_prompt_selection,
+                        "labels": audio_prompt_labels,
+                        "custom_flags": {
+                            "1": "Reference Voice (ID-LoRA)",
+                            "2": "Generate Audio based on Control Video and Text Prompt",
+                        },
+                        "letters_filter": "A1OFK2",
+                        "show_label": False,
+                        "default": "K" if editanything_ref else "",
+                    },
+                    "prompt_infos": LTX2_PROMPT_INFOS,
+                    "prompt_enhancer_def": {
+                        "selection": ["T", "TI", "T1", "TI1"],
+                        "labels": {
+                            "T": "An Enhanced Prompt using existing Text Prompt",
+                            "TI": "An Enhanced Prompt using existing Text Prompt and Start Image",
+                            "T1": "An Enhanced Relayed Prompt using existing Text Prompt",
+                            "TI1": "An Enhanced Relayed Prompt using existing Text Prompt and Start Image",
+                        },
+                        "default": "",
+                    },
+                    "text_prompt_enhancer_instructions1": LTX2_RELAYED_PROMPT,
+                    "video_prompt_enhancer_instructions1": LTX2_RELAYED_IMAGE_PROMPT,
+                    "image_prompt_enhancer_instructions1": LTX2_RELAYED_IMAGE_PROMPT,
+                    "text_prompt_enhancer_max_tokens1": 1024,
+                    "video_prompt_enhancer_max_tokens1": 1024,
+                    "image_prompt_enhancer_max_tokens1": 1024,
+                    "audio_guide_window_slicing": True,
+                    "video_length_not_limited_by_audio": True,
+                    "output_audio_is_input_audio": True,
+                    "multiple_images_as_text_prompts": True,
+                    "custom_denoising_strength": distilled,
+                    "NAG": True,
+                }
+            )
+            extra_model_def["denoising_strength"] = {
+                "label": "Control Video Strength (higher = closer to the Control Video)",
+                "name": "Control Video Strength",
+            }
+            extra_model_def["masking_strength"] = {
+                "label": "Masked Control Duration (higher = longer masked reinjection)",
+                "name": "Masked Control Duration",
+            }
+            if base_model_type in ["ltx2_22B_edit_anything"]:
+                control_choices = [("EditAnything Source Video", "VGI")]
+            else:
+                control_choices = [("No Video Process", "")]
+                control_choices += [("Transfer Human Motion", "PVG"), ("Transfer Human Motion With Pose Alignment", "OVG"), ("Transfer Depth", "DVG"), ("Transfer Canny Edges", "EVG"), ("LTX2 Raw Format / Control Video for Ic Lora", "VG")]
+                if base_model_type == "ltx2_22B":
+                    control_choices += [("Convert SDR to HDR (IC-LoRA)", f"V&G")]
+                control_choices += [("Inject Frames", "KFI")]
+            extra_model_def["guide_custom_choices"] = {
+                "choices": control_choices,
+                "letters_filter": f"OPDEVG&KFI",
+                "default": "VGI" if editanything_ref else "",
+                "label": "Control Video / Frames Injection",
+                "visible": not editanything_ref,
+            }
+            extra_model_def["custom_frames_injection"] = True
+            extra_model_def["one_image_ref_only"] = True
+            if editanything_ref:
+                extra_model_def["one_image_ref_needed"] = True
+            extra_model_def["mask_preprocessing"] = {"selection": [""], "visible": False} if editanything_ref else {"selection": ["", "A", "NA", "XA", "XNA"]}
         extra_model_def["sliding_window_defaults"] = {
             "overlap_min": 1,
             "overlap_max": 97,
@@ -436,7 +545,6 @@ class family_handler:
             extra_model_def.update(
                 {
                     "lock_inference_steps": True,
-                    "no_negative_prompt": False,
                 }
             )
         else:
@@ -506,20 +614,8 @@ class family_handler:
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):
         spec = _get_arch_spec(base_model_type)
-        gemma_files = [
-            "added_tokens.json",
-            "chat_template.json",
-            "config_light.json",
-            "generation_config.json",
-            "preprocessor_config.json",
-            "processor_config.json",
-            "special_tokens_map.json",
-            "tokenizer.json",
-            "tokenizer.model",
-            "tokenizer_config.json",
-        ]
 
-        file_list = [spec["spatial_upscaler"], spec["temporal_upscaler"]]
+        file_list = [spec["spatial_upscaler"]] if _is_joyai_echo(base_model_type, model_def) else [spec["spatial_upscaler"], spec["temporal_upscaler"]]
         for name in _get_multi_file_names(model_def, base_model_type).values():
             if name not in file_list:
                 file_list.append(name)
@@ -533,13 +629,19 @@ class family_handler:
             {
                 "repoId": "DeepBeepMeep/LTX-2",
                 "sourceFolderList": [_GEMMA_FOLDER],
-                "fileList": [gemma_files],
+                "fileList": [_GEMMA_TOKENIZER_FILES],
             },
         ]
         return download_def
 
     def validate_generative_settings(base_model_type, model_def, inputs):
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
+        if _is_joyai_echo(base_model_type, model_def):
+            error = _validate_joyai_inputs(model_def, inputs)
+            if error:
+                return error
+            inputs.update(_joyai_settings(inputs.get("custom_settings"), video_prompt_type=inputs.get("video_prompt_type", ""), image_prompt_type=inputs.get("image_prompt_type", ""), guidance_phases=inputs.get("guidance_phases", 2), runtime=True))
+            return
         if pipeline_kind == "distilled":
             inputs.update(
                 {
@@ -699,6 +801,11 @@ class family_handler:
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
         default_perturbation_layers = _default_perturbation_layers(base_model_type)
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
+        if _is_joyai_echo(base_model_type, model_def):
+            ui_defaults.setdefault("resolution", "1280x720")
+            ui_defaults.setdefault("video_length", 129)
+            ui_defaults.update(_joyai_settings(ui_defaults.get("custom_settings"), video_prompt_type=ui_defaults.get("video_prompt_type", ""), image_prompt_type=ui_defaults.get("image_prompt_type", ""), guidance_phases=ui_defaults.get("guidance_phases", 2)))
+            return
         if pipeline_kind != "distilled" and ui_defaults.get("sample_solver", "") in {"", None}:
             ui_defaults["sample_solver"] = "euler"
 
@@ -769,8 +876,14 @@ class family_handler:
                     "remove_background_images_ref": 1,
                 }
             )
+        if _is_joyai_echo(base_model_type, model_def):
+            ui_defaults.update(_joyai_settings(ui_defaults.get("custom_settings")))
 
     @staticmethod
     def get_custom_prompt_enhancer_instructions(model_type, prompt_enhancer_mode, is_image, enhancer_kwargs):
+        if model_type == "joyai_echo":
+            from .joyai_echo import JOYAI_ECHO_PROMPT_ENHANCER
+
+            return JOYAI_ECHO_PROMPT_ENHANCER, 4096
         from .prompt_enhancer import  get_custom_prompt_enhancer_instructions
         return get_custom_prompt_enhancer_instructions(model_type, prompt_enhancer_mode, is_image, enhancer_kwargs)

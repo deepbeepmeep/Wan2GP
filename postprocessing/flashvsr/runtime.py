@@ -19,6 +19,7 @@ from tqdm import tqdm
 
 from mmgp import offload
 from models.wan.modules.vae import WanVAE
+from shared.attention import attention_config_shared_state
 from .attention_backend import log_sparse_backend, require_sparge_attention
 from .tcdecoder import build_tcdecoder
 from .utils import Causal_LQ4x_Proj
@@ -807,48 +808,50 @@ def upscale_video(
     topk_ratio: float = FLASHVSR_TOPK_RATIO,
     init_pipe,
     profile,
+    attention_mode: str | None = None,
     still_image: bool = False,
     two_pass: bool = False,
     abort_callback=None,
     progress_callback=None,
 ) -> tuple[torch.Tensor | None, dict[str, Any] | None]:
-    _report_progress(progress_callback, "Caching")
-    _RUNTIME.load(paths, variant, profile=profile, init_pipe=init_pipe)
-    try:
-        shift_correction = bool(
-            FLASHVSR_STILL_IMAGE_SHIFT_CORRECTION
-            and two_pass
-        )
-        if shift_correction:
-            shift_y, shift_x = FLASHVSR_STILL_IMAGE_SHIFT_CORRECTION_INPUT_SHIFT or (max(1, int(round(FLASHVSR_STILL_IMAGE_SHIFT_CORRECTION_PERIOD * 0.5 / scale))), 0)
-            out_shift_y, out_shift_x = int(round(shift_y * scale)), int(round(shift_x * scale))
-            print(f"[FlashVSR] x{scale:g} shifted two-pass blend: extra shifted pass ({shift_y}px input / {out_shift_y}px output), blend={FLASHVSR_STILL_IMAGE_SHIFT_BLEND:g}")
-            base, base_cache = _RUNTIME.upscale(sample, scale, seed=seed, continue_cache=continue_cache, return_continue_cache=return_continue_cache, persistent_models=True, vae_tile_size=vae_tile_size, topk_ratio=topk_ratio, still_image=still_image, abort_callback=abort_callback, progress_callback=progress_callback)
-            if base is None:
-                result = (None, None)
+    with attention_config_shared_state(attention_mode):
+        _report_progress(progress_callback, "Caching")
+        _RUNTIME.load(paths, variant, profile=profile, init_pipe=init_pipe)
+        try:
+            shift_correction = bool(
+                FLASHVSR_STILL_IMAGE_SHIFT_CORRECTION
+                and two_pass
+            )
+            if shift_correction:
+                shift_y, shift_x = FLASHVSR_STILL_IMAGE_SHIFT_CORRECTION_INPUT_SHIFT or (max(1, int(round(FLASHVSR_STILL_IMAGE_SHIFT_CORRECTION_PERIOD * 0.5 / scale))), 0)
+                out_shift_y, out_shift_x = int(round(shift_y * scale)), int(round(shift_x * scale))
+                print(f"[FlashVSR] x{scale:g} shifted two-pass blend: extra shifted pass ({shift_y}px input / {out_shift_y}px output), blend={FLASHVSR_STILL_IMAGE_SHIFT_BLEND:g}")
+                base, base_cache = _RUNTIME.upscale(sample, scale, seed=seed, continue_cache=continue_cache, return_continue_cache=return_continue_cache, persistent_models=True, vae_tile_size=vae_tile_size, topk_ratio=topk_ratio, still_image=still_image, abort_callback=abort_callback, progress_callback=progress_callback)
+                if base is None:
+                    result = (None, None)
+                else:
+                    shifted_sample = _shift_spatial_replicate(sample, shift_y, shift_x)
+                    shifted_continue_cache = _two_pass_shifted_continue_cache(continue_cache, out_shift_y, out_shift_x)
+                    shifted, shifted_cache = _RUNTIME.upscale(shifted_sample, scale, seed=seed, continue_cache=shifted_continue_cache, return_continue_cache=return_continue_cache, persistent_models=True, vae_tile_size=vae_tile_size, topk_ratio=topk_ratio, still_image=still_image, abort_callback=abort_callback, progress_callback=progress_callback)
+                    result = (None, None) if shifted is None else (_apply_still_image_shift_correction(base, _shift_spatial_replicate(shifted, -out_shift_y, -out_shift_x), scale), _make_two_pass_continue_cache(base_cache, shifted_cache, shift_y, shift_x, out_shift_y, out_shift_x))
+                    del shifted_sample, shifted
+                del base
+                if not persistent_models:
+                    _RUNTIME.release()
             else:
-                shifted_sample = _shift_spatial_replicate(sample, shift_y, shift_x)
-                shifted_continue_cache = _two_pass_shifted_continue_cache(continue_cache, out_shift_y, out_shift_x)
-                shifted, shifted_cache = _RUNTIME.upscale(shifted_sample, scale, seed=seed, continue_cache=shifted_continue_cache, return_continue_cache=return_continue_cache, persistent_models=True, vae_tile_size=vae_tile_size, topk_ratio=topk_ratio, still_image=still_image, abort_callback=abort_callback, progress_callback=progress_callback)
-                result = (None, None) if shifted is None else (_apply_still_image_shift_correction(base, _shift_spatial_replicate(shifted, -out_shift_y, -out_shift_x), scale), _make_two_pass_continue_cache(base_cache, shifted_cache, shift_y, shift_x, out_shift_y, out_shift_x))
-                del shifted_sample, shifted
-            del base
-            if not persistent_models:
-                _RUNTIME.release()
-        else:
-            result = _RUNTIME.upscale(sample, scale, seed=seed, continue_cache=continue_cache, return_continue_cache=return_continue_cache, persistent_models=persistent_models, vae_tile_size=vae_tile_size, topk_ratio=topk_ratio, still_image=still_image, abort_callback=abort_callback, progress_callback=progress_callback)
-        if result[0] is None:
+                result = _RUNTIME.upscale(sample, scale, seed=seed, continue_cache=continue_cache, return_continue_cache=return_continue_cache, persistent_models=persistent_models, vae_tile_size=vae_tile_size, topk_ratio=topk_ratio, still_image=still_image, abort_callback=abort_callback, progress_callback=progress_callback)
+            if result[0] is None:
+                if persistent_models:
+                    _RUNTIME._unload_mmgp()
+                else:
+                    _RUNTIME.release()
+            return result
+        except Exception:
             if persistent_models:
                 _RUNTIME._unload_mmgp()
             else:
                 _RUNTIME.release()
-        return result
-    except Exception:
-        if persistent_models:
-            _RUNTIME._unload_mmgp()
-        else:
-            _RUNTIME.release()
-        raise
+            raise
 
 
 def release_models() -> None:

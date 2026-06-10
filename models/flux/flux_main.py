@@ -83,7 +83,7 @@ class model_factory:
         save_quantized = False,
         dtype = torch.bfloat16,
         VAE_dtype = torch.float32,
-        mixed_precision_transformer = False
+        mixed_precision_transformer = False,
     ):
         self.device = torch.device(f"cuda")
         self._interrupt = False
@@ -140,7 +140,7 @@ class model_factory:
                 torch_device,
                 preprocess_sd=preprocess_flux_state_dict,
             )
-            self.model_def = model_def 
+            self.model_def = model_def
             self.vae = None if getattr(self.model, "radiance", False) else load_ae(self.name, device=torch_device)
 
         siglip_processor = siglip_model = feature_embedder = None
@@ -269,6 +269,7 @@ class model_factory:
             image_refs_relative_size = 100,
             denoising_strength = 1.,
             masking_strength = 1.,
+            pid_upsampler = None,
             **bbargs
     ):
             if self._interrupt:
@@ -276,6 +277,15 @@ class model_factory:
             device="cuda"
             flux2 = self.is_flux2
             model_mode = bbargs.get("model_mode", None)
+            set_progress_status = bbargs.get("set_progress_status", None)
+            def _pid_progress(_phase, current_step=None, total_steps=None):
+                if callable(set_progress_status):
+                    if current_step is None or total_steps is None:
+                        set_progress_status("PiD Spatial Upsampling in progress")
+                    else:
+                        total_steps = int(total_steps)
+                        step_no = min(int(current_step) + 1, total_steps)
+                        set_progress_status(f"PiD Spatial Upsampling in progress ({step_no}/{total_steps})")
             model_mode_int = None
             if model_mode is not None:
                 try:
@@ -520,24 +530,43 @@ class model_factory:
             )
             if x==None: return None
             # decode latents to pixel space
+            pid_lq_latent = torch.cat(scatter_ids(x, inp["img_ids"])).squeeze(2) if flux2 and pid_upsampler is not None else None
             x = unpack_latent(x)
             if self.vae is not None:
+                vae_latent = x
+                lq_latent = pid_lq_latent if pid_lq_latent is not None else vae_latent
                 with torch.autocast(device_type=device, dtype=torch.bfloat16):
-                    x = self.vae.decode(x)
+                    x = self.vae.decode(vae_latent)
 
-            img_msk_rebuilt = inp.get("img_msk_rebuilt") if isinstance(inp, dict) else None
-            if img_msk_rebuilt is not None and (lanpaint_enabled or (masking_strength == 1 and not flux2)):
-                img = None
-                if input_frames is not None:
-                    img = input_frames.squeeze(1).unsqueeze(0)
-                elif input_ref_images is not None and len(input_ref_images) > 0:
-                    img = convert_image_to_tensor(
-                        input_ref_images[0].resize((width, height), resample=Image.Resampling.LANCZOS)
-                    ).unsqueeze(0)
-                if img is not None:
-                    x = img * (1 - img_msk_rebuilt) + x.to(img) * img_msk_rebuilt
+                img_msk_rebuilt = inp.get("img_msk_rebuilt") if isinstance(inp, dict) else None
+                if img_msk_rebuilt is not None and (lanpaint_enabled or (masking_strength == 1 and not flux2)):
+                    img = None
+                    if input_frames is not None:
+                        img = input_frames.squeeze(1).unsqueeze(0)
+                    elif input_ref_images is not None and len(input_ref_images) > 0:
+                        img = convert_image_to_tensor(
+                            input_ref_images[0].resize((width, height), resample=Image.Resampling.LANCZOS)
+                        ).unsqueeze(0)
+                    if img is not None:
+                        x = img * (1 - img_msk_rebuilt) + x.to(img) * img_msk_rebuilt
 
-            x = x.clamp_(-1, 1).add_(1).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8)
+                if pid_upsampler is not None:
+                    _pid_progress(None)
+                    x_ref, lq_latent_ref = [x], [lq_latent]
+                    x = lq_latent = None
+                    x = pid_upsampler.decode_inputs(
+                        x_ref,
+                        lq_latent_ref,
+                        prompt=input_prompt,
+                        seed=seed,
+                        abort_callback=lambda: self._interrupt,
+                        progress_callback=_pid_progress,
+                    )
+                    if x is None:
+                        return None
+
+            if x.dtype != torch.uint8:
+                x = x.clamp_(-1, 1).add_(1).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8)
             x = x.transpose(0, 1)
             return x
 

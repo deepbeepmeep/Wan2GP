@@ -4,6 +4,7 @@ import math
 import os
 import re
 import types
+from contextlib import nullcontext
 from typing import Callable, Iterator
 
 import torch
@@ -445,7 +446,7 @@ def _normalize_temporal_overlap(overlap_frames: int, tile_frames: int) -> int:
     return overlap_frames
 
 
-def _build_tiling_config(tile_size: int | tuple | list | None, num_frames: int | None) -> TilingConfig | None:
+def _build_tiling_config(tile_size: int | tuple | list | None, fps: float | None) -> TilingConfig | None:
     temporal_tiling_divisor = 1
     spatial_config = None
     if isinstance(tile_size, (tuple, list)):
@@ -465,9 +466,9 @@ def _build_tiling_config(tile_size: int | tuple | list | None, num_frames: int |
             spatial_config = SpatialTilingConfig(tile_size_in_pixels=tile_size, tile_overlap_in_pixels=overlap)
 
     temporal_config = None
-    if num_frames is not None and num_frames > 241:
+    if fps is not None and fps > 0:
         temporal_tiling_divisor = max(1, temporal_tiling_divisor)
-        tile_frames = _normalize_temporal_tiling_size(int(math.ceil(232 / temporal_tiling_divisor)))
+        tile_frames = _normalize_temporal_tiling_size(int(math.ceil(float(fps) * 5.0 / temporal_tiling_divisor)))
         if tile_frames > 0:
             overlap_frames = int(round(tile_frames * 3 / 8))
             overlap_frames = _normalize_temporal_overlap(overlap_frames, tile_frames)
@@ -965,7 +966,6 @@ class LTX2:
         alt_guide_scale: float = 1.0,
         input_video=None,
         prefix_frames_count: int = 0,
-        conditioning_latents_size: int = 0,
         window_no: int = 1,
         input_frames=None,
         input_frames2=None,
@@ -999,11 +999,9 @@ class LTX2:
         loras_selected=None,
         text_connectors=None,
         input_ref_images=None,
-        input_ref_masks=None,
         input_waveform=None,
         input_waveform_sample_rate=None,
         audio_scale: float | None = None,
-        masking_source: dict | None = None,
         outpainting_dims: list[int] | None = None,
         frame_num: int = 121,
         height: int = 1024,
@@ -1014,16 +1012,30 @@ class LTX2:
         set_progress_status=None,
         VAE_tile_size=None,
         guide_phases= 1,
+        custom_settings=None,
+        video_guide=None,
+        frame_window_options=None,
+        gen_state=None,
+        input_video_is_hdr: bool = False,
+        lora_dir: str | None = None,
         **kwargs,
     ):
         if self._interrupt:
             return None
-
+        joyai_context = None
+        joyai_memory_bank = None
+        joyai_store_mem_selectors = []
+        if self.model_def.get("joyai_echo", False):
+            from .joyai_echo import prepare_joyai_echo_context
+            joyai_context, joyai_memory_bank, joyai_store_mem_selectors, clear_joyai_control_inputs = prepare_joyai_echo_context(self, gen_state, custom_settings, video_guide, frame_window_options, fps, video_prompt_type, height, width, guide_phases, VAE_tile_size, window_no)
+            if clear_joyai_control_inputs:
+                input_frames = input_frames2 = input_masks = input_masks2 = None
+                video_prompt_type = ""
         distill = self.model_def.get("ltx2_pipeline", "two_stage") == "distilled"
         editanything = _is_editanything_model(self.model_def)
         hdr_enabled = self.base_model_type == "ltx2_22B" and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type
-        input_video_is_hdr = bool(kwargs.get("input_video_is_hdr", False))
-        hdr_scene_context = self._load_hdr_scene_context(kwargs.get("lora_dir")) if hdr_enabled else None
+        input_video_is_hdr = bool(input_video_is_hdr)
+        hdr_scene_context = self._load_hdr_scene_context(lora_dir) if hdr_enabled else None
         if hdr_enabled:
             NAG_scale = 1.0
             audio_prompt_type = ""
@@ -1195,7 +1207,7 @@ class LTX2:
 
         _append_injected_ref_entries(guiding_images, guiding_images_stage2)
 
-        tiling_config = _build_tiling_config(VAE_tile_size, frame_num)
+        tiling_config = _build_tiling_config(VAE_tile_size, fps)
         interrupt_check = lambda: self._interrupt
         text_connectors = text_connectors or getattr(self, "_text_connectors", None)
         editanything_ref_images = input_ref_images if editanything else None
@@ -1334,8 +1346,13 @@ class LTX2:
             prompt_relay_frame_offset = max(0, int(prefix_frames_count or 0))
         ltx2_22B_class = self.model_def.get("ltx2_22B_class", False)
 
+        def run_ltx2_pipeline(**pipeline_kwargs):
+            pipeline_context = self.pipeline.joyai_echo_context(joyai_context) if joyai_context is not None else nullcontext()
+            with pipeline_context:
+                return self.pipeline(**pipeline_kwargs)
+
         if isinstance(self.pipeline, TI2VidTwoStagesPipeline):
-            pipeline_output = self.pipeline(
+            pipeline_output = run_ltx2_pipeline(
                 prompt=input_prompt,
                 negative_prompt=negative_prompt,
                 seed=int(seed),
@@ -1399,7 +1416,7 @@ class LTX2:
                         "NAG_alpha": float(NAG_alpha),
                     }
                 )
-            pipeline_output = self.pipeline(
+            pipeline_output = run_ltx2_pipeline(
                 prompt=input_prompt,
                 negative_prompt=negative_prompt,
                 seed=int(seed),
@@ -1449,7 +1466,10 @@ class LTX2:
             )
 
         latent_slice = None
-        if isinstance(pipeline_output, tuple) and len(pipeline_output) == 3:
+        memory_latents = None
+        if isinstance(pipeline_output, tuple) and len(pipeline_output) == 4:
+            video, audio, latent_slice, memory_latents = pipeline_output
+        elif isinstance(pipeline_output, tuple) and len(pipeline_output) == 3:
             video, audio, latent_slice = pipeline_output
         else:
             video, audio = pipeline_output
@@ -1496,4 +1516,9 @@ class LTX2:
             result["hdr_transform"] = LTX2_HDR_TRANSFORM
         if latent_slice is not None:
             result["latent_slice"] = latent_slice
+        if memory_latents is not None:
+            result["_memory_latents"] = memory_latents
+        if joyai_memory_bank is not None:
+            from .joyai_echo import record_joyai_echo_memory
+            result = record_joyai_echo_memory(self, result, joyai_memory_bank, joyai_store_mem_selectors, prefix_frames_count, frame_num, fps, window_no)
         return result

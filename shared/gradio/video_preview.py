@@ -21,8 +21,10 @@ _BROWSER_PLAYABLE_VIDEO_CODECS = {
     (".mp4", "h264"),
     (".mp4", "h265"),
     (".mp4", "hevc"),
+    (".mkv", "h264"),
     (".mkv", "h265"),
     (".mkv", "hevc"),
+    (".mov", "h264"),
     (".mov", "h265"),
     (".mov", "hevc"),
     (".webm", "vp9"),
@@ -33,7 +35,7 @@ _PREVIEW_SECONDS = 20
 _PREVIEW_MAX_WIDTH = 1280
 _PREVIEW_CRF = "24"
 _PREVIEW_PRESET = "veryfast"
-_PREVIEW_CACHE_VERSION = 5
+_PREVIEW_CACHE_VERSION = 6
 _CODEC_DISPLAY_NAMES = {
     "av1": "AV1",
     "dnxhd": "DNxHD",
@@ -156,6 +158,15 @@ def _format_codec_label(metadata):
     return codec_name.upper() if len(codec_name) > 0 else "Unknown Codec"
 
 
+def _format_preview_label(source_path, metadata):
+    codec_name = str((metadata or {}).get("codec_name") or "").strip().lower()
+    codec_label = _format_codec_label(metadata)
+    container_label = Path(source_path).suffix.lstrip(".").upper() or "Container"
+    if len(codec_name) > 0 and any(known_codec == codec_name for _, known_codec in _BROWSER_PLAYABLE_VIDEO_CODECS):
+        return f"Container {container_label} Not Supported for {codec_label}, Low Res Preview"
+    return f"Codec {codec_label} Not Supported, Low Res Preview"
+
+
 def _preview_video_filter(source_path):
     metadata = probe_video_stream_metadata(str(source_path)) or {}
     width = int(metadata.get("display_width") or metadata.get("width") or 0)
@@ -163,7 +174,7 @@ def _preview_video_filter(source_path):
         scale_filter = f"scale={_PREVIEW_MAX_WIDTH}:-2:flags=fast_bilinear"
     else:
         scale_filter = "scale=trunc(iw/2)*2:trunc(ih/2)*2:flags=fast_bilinear"
-    text = f"Codec {_format_codec_label(metadata)} Not Supported, Low Res Preview"
+    text = _format_preview_label(source_path, metadata)
     text = text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
     label_filter = f"drawtext=text='{text}':fontcolor=white@0.9:fontsize=max(11\\,h/44):box=1:boxcolor=black@0.45:boxborderw=6:x=w-tw-12:y=12"
     return f"{scale_filter},{label_filter}"

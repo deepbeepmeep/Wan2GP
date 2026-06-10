@@ -551,10 +551,15 @@ class WanAny2V:
             return None
         # Text Encoder
         kiwi_edit = model_type in ["kiwi_edit"]
+        bernini = model_def.get("bernini_class", False)
         if n_prompt == "":
             n_prompt = self.sample_neg_prompt
         text_len = self.model.text_len
+        bernini_omega_v = context_scale[0] if bernini and context_scale is not None and len(context_scale) > 0 else 1.0
+        bernini_omega_i = alt_guide_scale
         any_guidance_at_all = guide_scale > 1 or guide2_scale > 1 and guide_phases >=2 or guide3_scale > 1 and guide_phases >=3
+        if bernini:
+            any_guidance_at_all = any_guidance_at_all or "I" in video_prompt_type and bernini_omega_i != 1 or "V" in video_prompt_type and "I" in video_prompt_type and bernini_omega_v != 1
         context_null = context = None
         if input_video is not None: height, width = input_video.shape[-2:]
 
@@ -920,6 +925,24 @@ class WanAny2V:
             from .vista4d.preprocess import prepare_vista4d_condition
             kwargs.update(prepare_vista4d_condition(self, input_frames, input_custom, frame_num, height, width, VAE_tile_size, fps=bbargs.get("fps", model_def.get("fps", 16)), custom_settings=custom_settings, model_mode=model_mode))
             freqs = get_vista4d_rotary_pos_embed((lat_frames, height // self.vae_stride[1], width // self.vae_stride[2]))
+
+        bernini_sources_by_key = {"": []}
+        if bernini:
+            bernini_video_latents, bernini_image_latents = [], []
+            if input_frames is not None and "V" in video_prompt_type:
+                height, width = input_frames.shape[-2:]
+                color_reference_frame = input_frames[:, :1].clone()
+                video_latents = self.vae.encode([input_frames.to(self.device)], VAE_tile_size)[0].unsqueeze(0)
+                bernini_video_latents = [video_latents]
+                if prefix_frames_count > 0:
+                    overlapped_latents_frames_num = int(1 + (prefix_frames_count - 1) // self.vae_stride[0])
+                    extended_overlapped_latents = video_latents[:, :, :overlapped_latents_frames_num].clone()
+            if input_ref_images is not None and "I" in video_prompt_type:
+                bernini_image_latents = [self.vae.encode([u.to(self.device)], VAE_tile_size)[0].unsqueeze(0) for u in input_ref_images]
+            bernini_v_sources = [(source_latent, source_id + 1) for source_id, source_latent in enumerate(bernini_video_latents)]
+            bernini_i_sources = [(source_latent, source_id + 1) for source_id, source_latent in enumerate(bernini_image_latents)]
+            bernini_vi_sources = bernini_v_sources + [(source_latent, len(bernini_v_sources) + source_id + 1) for source_id, source_latent in enumerate(bernini_image_latents)]
+            bernini_sources_by_key.update({"V": bernini_v_sources, "I": bernini_i_sources, "VI": bernini_vi_sources})
 
         # Video 2 Video
         if "G" in video_prompt_type and input_frames != None:
@@ -1309,6 +1332,24 @@ class WanAny2V:
                         gen_args = {"x": [latent_model_input], "context": context}
                     else:
                         gen_args = {"x": [latent_model_input, latent_model_input], "context": context + context_null}
+                elif bernini:
+                    omega_v, omega_i, omega_ti = bernini_omega_v, bernini_omega_i, guide_scale
+                    if bernini_sources_by_key["V"] and bernini_sources_by_key["I"]:
+                        branch_defs = [(1 - omega_v, "", context_null), (omega_v - omega_i, "V", context_null), (omega_i - omega_ti, "VI", context_null), (omega_ti, "VI", context)]
+                    elif bernini_sources_by_key["V"]:
+                        branch_defs = [(1 - omega_ti, "V", context_null), (omega_ti, "V", context)]
+                    elif bernini_sources_by_key["I"]:
+                        branch_defs = [(1 - omega_i, "", context_null), (omega_i - omega_ti, "I", context_null), (omega_ti, "I", context)]
+                    else:
+                        branch_defs = [(1 - omega_ti, "", context_null), (omega_ti, "", context)]
+                    branch_defs = [branch_def for branch_def in branch_defs if branch_def[0] != 0]
+                    bernini_coeffs = [branch_def[0] for branch_def in branch_defs]
+                    gen_args = {
+                        "x": [latent_model_input] * len(branch_defs),
+                        "context": [branch_def[2] for branch_def in branch_defs],
+                        "bernini_sources": [bernini_sources_by_key[branch_def[1]] for branch_def in branch_defs],
+                    }
+                    any_guidance = len(gen_args["x"]) > 1
                 else:
                     gen_args = {
                         "x" : [latent_model_input, latent_model_input],
@@ -1328,7 +1369,11 @@ class WanAny2V:
                         if self._interrupt:
                             return clear()         
                     sub_gen_args = None
-                if not any_guidance:
+                if bernini:
+                    noise_pred = ret_values[0] if bernini_coeffs[0] == 1 else ret_values[0] * bernini_coeffs[0]
+                    for pred, coeff in zip(ret_values[1:], bernini_coeffs[1:]):
+                        noise_pred = noise_pred + pred if coeff == 1 else noise_pred + pred * coeff
+                elif not any_guidance:
                     noise_pred = ret_values[0]       
                 elif phantom:
                     guide_scale_img= 5.0

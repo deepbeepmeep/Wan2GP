@@ -1,0 +1,19 @@
+{
+    "model": {
+        "name": "TTS Stable Audio 3 Small Music",
+        "architecture": "stable_audio3_small",
+        "description": "Lightweight music-focused model for instrumentals, loops, grooves, and song-like ideas up to 120 seconds. Best when the prompt describes genre, tempo, instruments, mood, and musical structure.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/stable_audio3_small_music_bf16.safetensors"
+        ],
+        "stable_audio3_model_id": "small-music"
+    },
+    "prompt": "Lo-fi house loop with warm tape saturation, mellow bass, soft vinyl crackle, and a relaxed 120 BPM groove.",
+    "audio_prompt_type": "",
+    "duration_seconds": 30,
+    "num_inference_steps": 8,
+    "guidance_scale": 1.0,
+    "audio_scale": 0.9,
+    "negative_prompt": "poor quality, distorted, noisy",
+    "sample_solver": "pingpong"
+}

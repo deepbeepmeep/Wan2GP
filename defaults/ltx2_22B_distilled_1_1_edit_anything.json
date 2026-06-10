@@ -1,9 +1,9 @@
 {
     "model": {
-        "name": "LTX-2 2.3 EditAnything Ref V2V Distilled 1.0 22B",
+        "name": "LTX-2 2.3 EditAnything Ref V2V Distilled 1.1 22B",
         "architecture": "ltx2_22B_edit_anything",
-        "description": "Experimental EditAnything reference video-to-video workflow for LTX-2.3 Distilled 22B. Faster 8-step preset using a source/control video plus one reference image, with the standard EditAnything LoRA and its sidecar reference module loaded together.This version uses Distilled v1.1.",
-        "URLs": "ltx2_22B_distilled",
+        "description": "Experimental EditAnything reference video-to-video workflow for LTX-2.3 Distilled 1.1 22B. Faster 8-step preset using a source/control video plus one reference image, with the standard EditAnything LoRA and its sidecar reference module loaded together.This version uses Distilled v1.1.",
+        "URLs": "ltx2_22B_distilled_1_1",
         "modules": "ltx2_22B_edit_anything",
         "loras": "ltx2_22B_edit_anything",
         "loras_multipliers": "ltx2_22B_edit_anything",

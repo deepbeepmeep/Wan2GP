@@ -92,9 +92,13 @@ OMNIVOICE_AUDIO_PROMPT_TYPE_CUSTOM_OPTION = {
 OMNIVOICE_CUSTOM_SETTINGS = [
     {
         "id": OMNIVOICE_AUTO_SPLIT_SETTING_ID,
-        "label": "Auto Split Every s (5-90, optional), may reduce VRAM requirements for very long speeches.",
+        "label": "Auto Split s (0 = Auto, 5-90)",
         "name": "Auto Split Every s",
         "type": "float",
+        "default": 0.0,
+        "min": 0.0,
+        "max": OMNIVOICE_AUTO_SPLIT_MAX_SECONDS,
+        "inc": 1.0,
     },
 ]
 OMNIVOICE_PROMPT_SPECIAL_TAGS = [
@@ -441,6 +445,10 @@ class family_handler:
                 f"{int(OMNIVOICE_AUTO_SPLIT_MIN_SECONDS)} and {int(OMNIVOICE_AUTO_SPLIT_MAX_SECONDS)} seconds."
             )
 
+        if auto_split_seconds == 0.0:
+            custom_settings.pop(OMNIVOICE_AUTO_SPLIT_SETTING_ID, None)
+            inputs["custom_settings"] = custom_settings if len(custom_settings) > 0 else None
+            return None
         if auto_split_seconds < OMNIVOICE_AUTO_SPLIT_MIN_SECONDS or auto_split_seconds > OMNIVOICE_AUTO_SPLIT_MAX_SECONDS:
             return (
                 f"Auto Split Every s must be between "

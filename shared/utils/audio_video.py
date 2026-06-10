@@ -474,10 +474,9 @@ def combine_and_concatenate_video_with_audio_tracks(
            '-c:v', 'copy',
            '-c:a', audio_codec,
            '-ar', str(audio_sampling_rate),
-           '-ac', '1',
            '-shortest', save_path_tmp]
     if audio_bitrate:
-        cmd[-6:-6] = ['-b:a', audio_bitrate]
+        cmd[-4:-4] = ['-b:a', audio_bitrate]
 
     if verbose:
         print(f"ffmpeg command: {cmd}")
@@ -488,12 +487,14 @@ def combine_and_concatenate_video_with_audio_tracks(
 
 
 def combine_video_with_audio_tracks(target_video, audio_tracks, output_video,
-                                     audio_metadata=None, audio_codec_key="aac_128", verbose=False):
+                                     audio_metadata=None, audio_codec_key="aac_128", verbose=False, video_duration=None):
     if not audio_tracks:
         if verbose: print("No audio tracks to combine."); return False
 
-    dur = float(next(s for s in ffmpeg.probe(target_video, cmd=_ffprobe_binary())['streams']
-                     if s['codec_type'] == 'video')['duration'])
+    if video_duration is None:
+        video_duration = float(next(s for s in ffmpeg.probe(target_video, cmd=_ffprobe_binary())['streams']
+                               if s['codec_type'] == 'video')['duration'])
+    dur = video_duration
     if verbose: print(f"Video duration: {dur:.3f}s")
 
     cmd = [_ffmpeg_binary(), '-y', '-i', target_video]

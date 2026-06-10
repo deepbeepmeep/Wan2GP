@@ -481,6 +481,14 @@ def get_1d_rotary_pos_embed(
         )  # complex64     # [S, D/2]
         return freqs_cis
 
+def apply_rotary_source_id(freqs, source_id, head_dim=128):
+    if source_id in (None, 0):
+        return freqs
+    cos, sin = freqs
+    source_pos = torch.tensor([source_id], dtype=_rope_freqs_dtype(), device=cos.device)
+    source_cos, source_sin = get_1d_rotary_pos_embed(head_dim, source_pos, use_real=True)
+    return cos * source_cos - sin * source_sin, sin * source_cos + cos * source_sin
+
 def get_rotary_pos_embed(latents_size, enable_RIFLEx = False):
     target_ndim = 3
     ndim = 5 - 2

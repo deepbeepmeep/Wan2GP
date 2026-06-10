@@ -158,10 +158,11 @@ class AudioConditionByAppendedReferenceLatent(ConditioningItem):
     offset, matching DramaBox's reference conditioning recipe.
     """
 
-    def __init__(self, latent: torch.Tensor, strength: float = 1.0, position_offset: float = 0.5):
+    def __init__(self, latent: torch.Tensor, strength: float = 1.0, position_offset: float = 0.5, target_to_reference: bool = True):
         self.latent = latent
         self.strength = strength
         self.position_offset = position_offset
+        self.target_to_reference = bool(target_to_reference)
 
     def apply_to(self, latent_state: LatentState, latent_tools: LatentTools) -> LatentState:
         if not isinstance(latent_tools.target_shape, AudioLatentShape):
@@ -190,7 +191,8 @@ class AudioConditionByAppendedReferenceLatent(ConditioningItem):
             attention_mask[:, :target_tokens, :target_tokens] = latent_state.attention_mask
         else:
             attention_mask[:, :target_tokens, :target_tokens] = 1.0
-        attention_mask[:, :target_tokens, target_tokens:] = 1.0
+        if self.target_to_reference:
+            attention_mask[:, :target_tokens, target_tokens:] = 1.0
         attention_mask[:, target_tokens:, target_tokens:] = 1.0
 
         return LatentState(

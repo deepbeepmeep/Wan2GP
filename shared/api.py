@@ -455,6 +455,64 @@ class WanGPSession:
         self._ensure_runtime()
         return self
 
+    def list_model_defs(self, *, family: str | Sequence[str] | None = None, base_model_type: str | Sequence[str] | None = None, finetune: bool | str | None = None, model_type: str | Sequence[str] | None = None, main_output: str | Sequence[str] | None = None, inputs: str | Sequence[str] | None = None) -> list[dict[str, Any]]:
+        runtime = self._ensure_runtime()
+        with _pushd(runtime.root):
+            return runtime.module.list_model_defs(family=family, base_model_type=base_model_type, finetune=finetune, model_type=model_type, main_output=main_output, inputs=inputs)
+
+    def get_model_defs(self, **filters: Any) -> list[dict[str, Any]]:
+        return self.list_model_defs(**filters)
+
+    def list_model_metadata(self, **filters: Any) -> list[dict[str, Any]]:
+        metadata_records = []
+        for model_def in self.list_model_defs(**filters):
+            metadata = copy.deepcopy(model_def.get("metadata", {}))
+            metadata.setdefault("model_type", str(model_def.get("model_type") or ""))
+            metadata["name"] = model_def.get("name", metadata.get("model_type", ""))
+            metadata_records.append(metadata)
+        return metadata_records
+
+    def get_model_def(self, model_type: str) -> dict[str, Any] | None:
+        runtime = self._ensure_runtime()
+        with _pushd(runtime.root):
+            model_def = runtime.module.get_model_def(model_type)
+        if model_def is None:
+            return None
+        model_def = copy.deepcopy(model_def)
+        model_def["model_type"] = str(model_type)
+        return model_def
+
+    def get_model_metadata(self, model_type: str) -> dict[str, Any] | None:
+        model_def = self.get_model_def(model_type)
+        if model_def is None:
+            return None
+        metadata = copy.deepcopy(model_def.get("metadata", {}))
+        metadata.setdefault("model_type", str(model_type))
+        metadata["name"] = model_def.get("name", metadata.get("model_type", ""))
+        return metadata
+
+    def get_default_settings(self, model_type: str) -> dict[str, Any]:
+        if self.get_model_def(model_type) is None:
+            raise ValueError(f"Unknown model_type: {model_type}")
+        runtime = self._ensure_runtime()
+        with _pushd(runtime.root):
+            return copy.deepcopy(runtime.module.get_default_settings(model_type))
+
+    def get_model_schema(self, model_type: str) -> dict[str, Any] | None:
+        model_def = self.get_model_def(model_type)
+        if model_def is None:
+            return None
+        metadata = copy.deepcopy(model_def.get("metadata", {}))
+        metadata.setdefault("model_type", str(model_type))
+        return {
+            "model_type": str(model_type),
+            "name": model_def.get("name", str(model_type)),
+            "model_def": model_def,
+            "metadata": metadata,
+            "setting_values": copy.deepcopy(metadata.get("setting_values", {})),
+            "default_settings": self.get_default_settings(model_type),
+        }
+
     def submit(self, source: str | os.PathLike[str] | dict[str, Any] | list[dict[str, Any]], callbacks: object | None = None) -> SessionJob:
         tasks = self._normalize_source(source, caller_base_path=self._get_caller_base_path())
         return self._submit_tasks(tasks, callbacks=callbacks)

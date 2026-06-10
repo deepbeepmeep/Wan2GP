@@ -65,6 +65,12 @@ else:
   - Preferred single-task entrypoint.
 - `WanGPSession.submit_manifest(settings_list, callbacks=None) -> SessionJob`
   - Batch entrypoint for multiple tasks.
+- `WanGPSession.list_model_defs(...) -> list[dict]`
+  - Returns model definitions with inferred metadata and optional filters.
+- `WanGPSession.list_model_metadata(...) -> list[dict]`
+  - Returns compact inferred metadata records with the same filters.
+- `WanGPSession.get_model_schema(model_type) -> dict | None`
+  - Returns one model definition, inferred metadata, accepted setting values, and default settings.
 - `SessionJob.result() -> GenerationResult`
   - Waits for completion and returns a structured result object.
 - `SessionJob.cancel()`
@@ -218,6 +224,79 @@ def create_config_ui(self, api_session):
 
 In a plugin tab, callback methods like `on_status(...)` and `on_progress(...)` can safely update a local `gr.Progress(...)` while the job itself still runs through WanGP's main WebUI queue.
 
+## Model Metadata
+
+Use `session.list_model_defs(...)` to inspect available model definitions without starting a generation:
+
+```python
+image_models = session.list_model_defs(main_output="image")
+video_i2v_models = session.list_model_defs(main_output="video", inputs="image")
+ltx2_finetunes = session.list_model_defs(family="ltx2", finetune=True)
+one_model = session.list_model_defs(model_type="ltx2_22B_distilled")
+```
+
+Agents that only need discovery data should use the compact metadata calls:
+
+```python
+models = session.list_model_metadata(main_output=["image", "video"], inputs="image")
+metadata = session.get_model_metadata("ltx2_22B_distilled")
+defaults = session.get_default_settings("ltx2_22B_distilled")
+schema = session.get_model_schema("ltx2_22B_distilled")
+```
+
+Supported filters can be combined:
+
+- `family`
+- `base_model_type`
+- `finetune`
+- `model_type`
+- `main_output`
+- `inputs`
+
+`main_output` and `inputs` accept a single value or a list. Multiple `main_output` values are OR filters; multiple `inputs` values match any requested input modality. `main_output` filters the primary generation mode, while `metadata.outputs` lists every intrinsic media output the model can produce.
+
+Each returned model definition is a copy of WanGP's in-memory definition with `model_type` added at the top level and a `metadata` object:
+
+```python
+{
+    "model_type": "ltx2_22B_distilled",
+    "name": "LTX-2 2.3 Distilled 1.0 22B",
+    "architecture": "ltx2_22B",
+    "metadata": {
+        "model_type": "ltx2_22B_distilled",
+        "family": "ltx2",
+        "family_label": "LTX-2",
+        "base_model_type": "ltx2_22B",
+        "finetune": False,
+        "main_output": ["video"],
+        "outputs": ["video", "audio"],
+        "inputs": ["text", "image", "video", "audio"],
+        "media_inputs": {
+            "image": {
+                "start": True,
+                "end": True,
+                "reference": True,
+                "background": False,
+                "injected_frames": False,
+            },
+            "video": {"continue": True, "control": True},
+            "audio": {"prompt": True, "output": True},
+        },
+        "capabilities": {
+            "text_to_video": True,
+            "image_to_video": True,
+            "audio_output": True,
+        },
+        "setting_values": {
+            "image_prompt_type": {"allowed": "TVSE"},
+            "video_prompt_type": {"image_ref_choices": {"choices": []}},
+        },
+    },
+}
+```
+
+`session.get_model_schema(model_type)` returns the same `metadata`, the full `model_def`, the generated `default_settings`, and a top-level `setting_values` copy for convenient tool clients.
+
 Useful `SessionJob` handles for plugin authors:
 
 - `job.result(timeout=None) -> GenerationResult`
@@ -257,7 +336,47 @@ Useful `GeneratedArtifact` fields:
 - `artifact.fps`
   - Output FPS associated with `artifact.video_tensor_uint8` when present.
 
-### Getting Outputs In Memory
+## MCP Server
+
+WanGP also exposes the same reusable session through an MCP server. The preferred launch path is:
+
+```bash
+python wgp.py --mcp --config <config dir> --output-dir <output dir>
+```
+
+This preserves normal WanGP CLI/config arguments. MCP-specific launch options are prefixed:
+
+```bash
+python wgp.py --mcp --mcp-transport stdio
+python wgp.py --mcp --mcp-transport streamable_http --mcp-host 127.0.0.1 --mcp-port 7866
+```
+
+The lower-level adapter can still be launched directly:
+
+```bash
+python -m shared.mcp_server --root <WanGP repo> --output-dir <output dir>
+```
+
+The server keeps one warm `WanGPSession`, so agents can perform discovery and multiple generations in a row without starting a new WanGP process each time.
+
+Tools:
+
+- `wangp_list_models(...)`
+  - Compact metadata list with the same filters as `list_model_metadata(...)`.
+- `wangp_list_model_defs(...)`
+  - Full model definitions with metadata.
+- `wangp_get_model(model_type)`
+- `wangp_get_model_metadata(model_type)`
+- `wangp_get_default_settings(model_type)`
+- `wangp_get_model_schema(model_type)`
+- `wangp_generate(source, wait=False, timeout_s=None, event_limit=20)`
+  - Starts a job from a settings dict, task dict, manifest dict, or task list.
+- `wangp_get_job(job_id, event_limit=20)`
+  - Polls progress/events/result.
+- `wangp_cancel_job(job_id)`
+  - Requests cancellation.
+
+## Getting Outputs In Memory
 
 By default, the API gives you output file paths in `result.generated_files`.
 

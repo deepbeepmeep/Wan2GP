@@ -209,7 +209,7 @@ class WanLayerNorm(nn.LayerNorm):
         return x
         # return super().forward(x).type_as(x)
 
-from .posemb_layers import apply_rotary_emb
+from .posemb_layers import apply_rotary_emb, get_rotary_pos_embed, apply_rotary_source_id
 
 class WanSelfAttention(nn.Module):
 
@@ -1501,6 +1501,7 @@ class WanModel(ModelMixin, ConfigMixin):
         kiwi_source_condition = None,
         kiwi_ref_condition = None,
         kiwi_ref_pad_first = False,
+        bernini_sources = None,
         vista = None,
     ):
         # patch_dtype =  self.patch_embedding.weight.dtype
@@ -1521,7 +1522,7 @@ class WanModel(ModelMixin, ConfigMixin):
         output_slice = None
         output_grid_sizes = None
         joint_pass = len(x_list) > 1
-        is_source_x = [ x.data_ptr() == x_list[0].data_ptr() and i > 0 for i, x in enumerate(x_list) ]
+        is_source_x = [False] * len(x_list) if bernini_sources is not None else [ x.data_ptr() == x_list[0].data_ptr() and i > 0 for i, x in enumerate(x_list) ]
         last_x_idx  = 0
         steadydancer = steadydancer_condition is not None
         vista_enabled = isinstance(vista, dict) and vista.get("source_latents") is not None
@@ -1531,6 +1532,9 @@ class WanModel(ModelMixin, ConfigMixin):
             y_list = y
         else:
             y_list = [y] * len(x_list)
+        bernini_enabled = bernini_sources is not None
+        bernini_freqs_list = []
+        bernini_output_slices = []
 
         for i, (is_source, x, y) in enumerate(zip(is_source_x, x_list, y_list)):
             if is_source:
@@ -1544,7 +1548,27 @@ class WanModel(ModelMixin, ConfigMixin):
                     if bz > 1: y = y.expand(bz, -1, -1, -1, -1)
                     x = torch.cat([x, y], dim=1)
                 # embeddings
-                if not steadydancer:
+                if bernini_enabled:
+                    source_tokens, cos_parts, sin_parts = [], [], []
+                    for source_latent, source_id in bernini_sources[i]:
+                        source_latent = source_latent.to(device=device, dtype=self.patch_embedding.weight.dtype)
+                        source_tokens_i = self.patch_embedding(source_latent).to(modulation_dtype).flatten(2).transpose(1, 2)
+                        source_freqs = apply_rotary_source_id(get_rotary_pos_embed(tuple(source_latent.shape[2:])), source_id, self.dim // self.num_heads)
+                        source_freqs = (source_freqs[0].to(device), source_freqs[1].to(device))
+                        source_tokens.append(source_tokens_i)
+                        cos_parts.append(source_freqs[0])
+                        sin_parts.append(source_freqs[1])
+                    x = self.patch_embedding(x).to(modulation_dtype)
+                    grid_sizes = x.shape[2:]
+                    x = x.flatten(2).transpose(1, 2)
+                    target_freqs = freqs if freqs is not None else get_rotary_pos_embed(tuple(grid_sizes))
+                    target_freqs = (target_freqs[0].to(device), target_freqs[1].to(device))
+                    bernini_freqs_list.append((torch.cat([target_freqs[0]] + cos_parts, dim=0), torch.cat([target_freqs[1]] + sin_parts, dim=0)))
+                    bernini_output_slices.append(slice(0, x.shape[1]))
+                    if source_tokens:
+                        x = torch.cat([x] + source_tokens, dim=1)
+                    source_tokens = cos_parts = sin_parts = None
+                elif not steadydancer:
                     x = self.patch_embedding(x).to(modulation_dtype)
                     if kiwi_source_condition is not None:
                         source_cond = kiwi_source_condition.to(modulation_dtype)
@@ -1630,7 +1654,9 @@ class WanModel(ModelMixin, ConfigMixin):
                 if pose_latents is not None: 
                     x, motion_vec = after_patch_embedding(self, x, pose_latents, torch.zeros_like(face_pixel_values[0]) if one_face_pixel_values is None else one_face_pixel_values)
                 motion_vec_list.append(motion_vec)
-                if chipmunk:
+                if bernini_enabled:
+                    pass
+                elif chipmunk:
                     x = x.unsqueeze(-1)
                     x_og_shape = x.shape
                     x = voxel_chunk_no_padding(x, voxel_shape).squeeze(-1).transpose(1, 2)
@@ -1869,7 +1895,11 @@ class WanModel(ModelMixin, ConfigMixin):
                 else:
                     for i, (x, context, hints, audio_scale, multitalk_audio, multitalk_masks, should_calc, motion_vec, lynx_ip_embeds,lynx_ref_buffer) in enumerate(zip(x_list, context_list, hints_list, audio_scale_list, multitalk_audio_list, multitalk_masks_list, x_should_calc,motion_vec_list, lynx_ip_embeds_list,lynx_ref_buffer_list)):
                         if should_calc:
-                            x_list[i] = block(x, context = context, hints= hints, audio_scale= audio_scale, multitalk_audio = multitalk_audio, multitalk_masks =multitalk_masks, e= e0,  motion_vec = motion_vec, lynx_ip_embeds= lynx_ip_embeds, lynx_ref_buffer = lynx_ref_buffer, sub_x_no =i,  **kwargs)
+                            block_kwargs = kwargs
+                            if bernini_enabled:
+                                block_kwargs = dict(kwargs)
+                                block_kwargs["freqs"] = bernini_freqs_list[i]
+                            x_list[i] = block(x, context = context, hints= hints, audio_scale= audio_scale, multitalk_audio = multitalk_audio, multitalk_masks =multitalk_masks, e= e0,  motion_vec = motion_vec, lynx_ip_embeds= lynx_ip_embeds, lynx_ref_buffer = lynx_ref_buffer, sub_x_no =i,  **block_kwargs)
                             del x
                     context = hints = None
 
@@ -1903,7 +1933,9 @@ class WanModel(ModelMixin, ConfigMixin):
                 x = reverse_voxel_chunk_no_padding(x.transpose(1, 2).unsqueeze(-1), x_og_shape, voxel_shape).squeeze(-1)
                 x = x.flatten(2).transpose(1, 2)
 
-            if real_seq > 0:
+            if bernini_enabled:
+                x = x[:, bernini_output_slices[i]]
+            elif real_seq > 0:
                 x = x[:, :real_seq]
 
             # head

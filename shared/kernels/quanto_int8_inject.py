@@ -339,7 +339,7 @@ def _cache_recovered_triton_config(kind: str, device_index: int, m: int, k: int,
         return
     try:
         slot_id, _ = mod._resolve_autotune_slot(m, k, n)
-        mod._set_cached_config(device_index, kind, slot_id, cfg)
+        mod._set_cached_config(device_index, kind, slot_id, cfg, overwrite=False)
     except Exception:
         pass
 

@@ -1220,10 +1220,10 @@ class tools:
         text = str(raw_value or "").strip()
         return (text, None) if len(text) > 0 else (None, f"extra_settings['{label}'] must be a non-empty string.")
 
-    def _apply_extra_settings_overrides(self, tool_name: str, task: dict[str, Any], extra_settings: dict[str, Any] | None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-        if extra_settings is None:
+    def _apply_extra_settings_overrides(self, tool_name: str, task: dict[str, Any], extra_settings_overrides: dict[str, Any] | None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        if extra_settings_overrides is None:
             return task, None
-        if not isinstance(extra_settings, dict):
+        if not isinstance(extra_settings_overrides, dict):
             return None, {
                 "status": "error",
                 "client_id": str(task.get("client_id", "") or "").strip(),
@@ -1232,7 +1232,7 @@ class tools:
                 "resolution": str(task.get("resolution", "") or "").strip(),
                 "error": "extra_settings must be an object.",
             }
-        if len(extra_settings) == 0:
+        if len(extra_settings_overrides) == 0:
             return task, None
         settings_info = self._get_generation_extra_settings_info(task)
         if len(settings_info) == 0:
@@ -1248,7 +1248,7 @@ class tools:
         custom_settings = task.get("custom_settings", None)
         if not isinstance(custom_settings, dict):
             custom_settings = {}
-        for raw_label, raw_value in extra_settings.items():
+        for raw_label, raw_value in extra_settings_overrides.items():
             label_key = _normalize_extra_setting_lookup_label(raw_label)
             if len(label_key) == 0:
                 return None, {

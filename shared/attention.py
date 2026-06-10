@@ -1,5 +1,7 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import sys
+from contextlib import contextmanager
+
 import torch
 from importlib.metadata import version
 from mmgp import offload
@@ -12,6 +14,7 @@ _is_mps = sys.platform == 'darwin' and hasattr(torch.backends, 'mps') and torch.
 major, minor = (0, 0) if _is_mps else torch.cuda.get_device_capability(None)
 bfloat16_supported =  major >= 8
 _MASKED_ATTENTION_SDPA_WARNED = False
+_MISSING = object()
 
 try:
     import triton
@@ -85,11 +88,11 @@ def sageattn2_wrapper(
         attention_length,
         recycle_q = False,
         attention_mask = None,
+        causal = False,
     ):
     q,k, v = qkv_list
     q_dtype = q.dtype
     qkv_list = [q,k,v]
-    del q, k ,v
     if attention_mask is not None:
         if attention_mask.ndim == 4:
             attention_mask = attention_mask.transpose(1, 2)
@@ -97,12 +100,23 @@ def sageattn2_wrapper(
             attention_mask = attention_mask.unsqueeze(1)
         elif attention_mask.ndim == 2:
             attention_mask = attention_mask.unsqueeze(0).unsqueeze(0)
+        causal_mask = None
+        if causal:
+            lq, lk = q.shape[1], k.shape[1]
+            row = torch.arange(lq, device=q.device)[:, None]
+            col = torch.arange(lk, device=q.device)[None, :]
+            causal_mask = (col <= row).view(1, 1, lq, lk)
+            causal = False
         if torch.is_floating_point(attention_mask):
             attention_mask = attention_mask.to(dtype=q_dtype)
+            if causal_mask is not None:
+                attention_mask = attention_mask.masked_fill(~causal_mask, torch.finfo(attention_mask.dtype).min)
         elif attention_mask.dtype == torch.bool:
+            if causal_mask is not None:
+                attention_mask = attention_mask & causal_mask
             has_keys = attention_mask.any(dim=-1, keepdim=True)
             attention_mask = torch.where(has_keys, attention_mask, torch.ones_like(attention_mask))
-    o = sageattn2(qkv_list, tensor_layout="NHD", recycle_q=recycle_q, attn_mask=attention_mask)
+    o = sageattn2(qkv_list, tensor_layout="NHD", is_causal=causal, recycle_q=recycle_q, attn_mask=attention_mask)
     qkv_list.clear()
 
     return o
@@ -240,7 +254,68 @@ def get_supported_attention_modes():
 
     return ret
 
+
+def get_default_attention_mode():
+    for attn in ("sage2", "sage", "sdpa"):
+        if attn in get_supported_attention_modes():
+            return attn
+    return "sdpa"
+
+
+def get_current_cuda_architecture(device=None):
+    if _is_mps or not torch.cuda.is_available():
+        return None
+    major, minor = torch.cuda.get_device_capability(device)
+    return major * 10 + minor
+
+
+_SAGE_ATTENTION_MODES = {"sage", "sage2", "sage3", "radial"}
+
+
+def resolve_attention_mode(attention_mode=None, disable_sage_pre_ada=False):
+    attn = str(attention_mode or "auto").strip().lower()
+    attn = get_default_attention_mode() if attn == "auto" else attn
+    architecture = get_current_cuda_architecture() if disable_sage_pre_ada else None
+    if architecture is not None and architecture < 89 and attn in _SAGE_ATTENTION_MODES:
+        attn = "sdpa"
+    if attn not in get_supported_attention_modes():
+        raise ValueError(f"Attention mode '{attn}' is not installed or supported on this system.")
+    return attn
+
+
+@contextmanager
+def attention_shared_state(default_attention=None):
+    previous = offload.shared_state.get("_attention", _MISSING)
+    if previous is _MISSING or previous == "auto":
+        offload.shared_state["_attention"] = default_attention or get_default_attention_mode()
+    else:
+        offload.shared_state["_attention"] = previous
+    try:
+        yield
+    finally:
+        if previous is _MISSING:
+            offload.shared_state.pop("_attention", None)
+        else:
+            offload.shared_state["_attention"] = previous
+
+
+@contextmanager
+def attention_config_shared_state(attention_mode=None, resolver=resolve_attention_mode, **resolver_kwargs):
+    previous = offload.shared_state.get("_attention", _MISSING)
+    offload.shared_state["_attention"] = resolver(attention_mode, **resolver_kwargs)
+    try:
+        yield offload.shared_state["_attention"]
+    finally:
+        if previous is _MISSING:
+            offload.shared_state.pop("_attention", None)
+        else:
+            offload.shared_state["_attention"] = previous
+
 __all__ = [
+    'attention_config_shared_state',
+    'attention_shared_state',
+    'get_current_cuda_architecture',
+    'resolve_attention_mode',
     'pay_attention',
     'attention',
 ]
@@ -284,9 +359,9 @@ def pay_attention(
         support_reason = None
         if _is_mps:
             support_reason = "MPS uses SDPA for masked attention"
-        elif requested_attn == "sage2" and sageattn2 != None and not causal and q_lens == None and k_lens == None:
+        elif requested_attn == "sage2" and sageattn2 != None and q_lens == None and k_lens == None:
             support_reason = sageattn_attention_mask_support_reason(qkv_list, attention_mask, tensor_layout="NHD")
-        if requested_attn == "sage2" and support_reason is None and sageattn2 != None and not causal and q_lens == None and k_lens == None:
+        if requested_attn == "sage2" and support_reason is None and sageattn2 != None and q_lens == None and k_lens == None:
             force_attention = "sage2"
         else:
             force_attention = "sdpa"
@@ -409,7 +484,7 @@ def pay_attention(
     elif attn=="sage2":
         qkv_list = [q,k,v]
         del q,k,v
-        x = sageattn2_wrapper(qkv_list, lq, recycle_q=recycle_q, attention_mask=attention_mask)
+        x = sageattn2_wrapper(qkv_list, lq, recycle_q=recycle_q, attention_mask=attention_mask, causal=causal)
     elif attn=="sdpa":
         qkv_list = [q, k, v]
         del q ,k ,v

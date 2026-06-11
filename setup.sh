@@ -45,10 +45,6 @@ $CONDA run -n wan2gp pip install torch==2.10.0 torchvision torchaudio
 # slightly modified version for mac
 $CONDA run -n wan2gp pip install -r requirements.txt
 
-# Download models (flux2_klein_9b, flux2_klein_4b, pi_flux2, wan2.2 4 step distilled)
-echo "Downloading models..."
-$CONDA run -n wan2gp --live-stream python download_models.py
-
 # Download improved_klein.safetensors if it doesn't exist
 if [ ! -f "loras/flux2_klein_9b/improved_klein.safetensors" ]; then
     echo "Downloading improved_klein.safetensors..."

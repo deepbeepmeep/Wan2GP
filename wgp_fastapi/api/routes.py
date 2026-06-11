@@ -70,28 +70,36 @@ TASK_RUNNING = "running"
 TASK_SUCCESS = "success"
 TASK_FAILED = "failed"
 
+# Status tracking for /status endpoint
+_download_in_progress: bool = False  # Whether a model is currently being downloaded
+_model_loading: bool = False         # Whether a model is currently being loaded
+_model_load_message: str = ""        # Human-readable status message for model loading
+
 
 def get_wgp_session():
     """Get or create the WanGPSession instance."""
-    global _wgp_session
+    global _wgp_session, _model_loading, _model_load_message
 
     # Import here to avoid issues with module loading order
     from shared.api import WanGPSession
 
     if _wgp_session is None:
-        # Create session with console_output=True to show API logs
+        _model_loading = True
+        _model_load_message = "Initializing WanGP runtime..."
         _wgp_session = WanGPSession(
             root=str(project_root),
             console_output=True,
             console_isatty=False,
         ).ensure_ready()
+        _model_loading = False
+        _model_load_message = ""
 
     return _wgp_session
 
 
 def _process_queue_worker():
     """Background worker that processes the async queue one task at a time."""
-    global _current_task_id, _worker_running
+    global _current_task_id, _worker_running, _model_loading, _model_load_message
 
     with _worker_lock:
         if _worker_running:
@@ -115,6 +123,12 @@ def _process_queue_worker():
             # Mark as running
             task["status"] = TASK_RUNNING
 
+            # Set model loading state at task start; will be cleared once
+            # we receive first progress/preview event (loading → generating)
+            task_loading = True
+            _model_loading = True
+            _model_load_message = "Loading model..."
+
             try:
                 session = get_wgp_session()
                 print(
@@ -129,10 +143,23 @@ def _process_queue_worker():
                 while not job.done:
                     try:
                         event = job.events.get(timeout=0.1)
-                        if event and event.kind == "preview":
-                            task["latest_preview"] = event.data
-                        elif event and event.kind == "progress":
-                            task["latest_progress"] = event.data
+                        if event:
+                            if event.kind == "preview":
+                                task["latest_preview"] = event.data
+                                if task_loading:
+                                    task_loading = False
+                                    _model_loading = False
+                                    _model_load_message = ""
+                            elif event.kind == "progress":
+                                task["latest_progress"] = event.data
+                                if task_loading:
+                                    task_loading = False
+                                    _model_loading = False
+                                    _model_load_message = ""
+                            elif event.kind == "status":
+                                # Update model load message from generation status
+                                if task_loading and event.data:
+                                    _model_load_message = str(event.data)
                     except:
                         pass
 
@@ -160,9 +187,17 @@ def _process_queue_worker():
                     failed_tasks=1,
                 )
                 task["status"] = TASK_FAILED
+            finally:
+                # If the task errored before producing progress/preview, clear loading state
+                if task_loading:
+                    _model_loading = False
+                    _model_load_message = ""
     finally:
         with _worker_lock:
             _worker_running = False
+            _current_task_id = None
+            _model_loading = False
+            _model_load_message = ""
 
 
 def _queue_task(settings: dict) -> str:
@@ -298,6 +333,36 @@ async def shutdown_event():
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+@app.get("/status")
+async def server_status():
+    """Get the current server status, including whether the server is
+    downloading models, loading models, or idle/generating."""
+    from shared.utils.download import download_in_progress as shared_download_in_progress
+    global _download_in_progress, _model_loading, _model_load_message
+
+    # Check if models are being downloaded (either via magic_mask or via download_models/download_file)
+    any_download = _download_in_progress or shared_download_in_progress
+
+    # Determine the overall server status
+    if any_download:
+        status = "downloading"
+    elif _model_loading:
+        status = "loading"
+    elif _current_task_id is not None or _worker_running:
+        status = "generating"
+    else:
+        status = "idle"
+
+    return {
+        "status": status,
+        "download_in_progress": any_download,
+        "loading_in_progress": _model_loading,
+        "generation_in_progress": _current_task_id is not None or _worker_running,
+        "current_task_id": _current_task_id,
+        "message": _model_load_message or "",
+    }
 
 
 @app.post(
@@ -584,9 +649,15 @@ async def magic_mask(
         from shared import magic_mask as mm
 
         # Auto-download SAM3 model assets if missing
+        global _download_in_progress
+
         from shared.utils.download import process_files_def
 
-        process_files_def(**mm.query_download_def())
+        _download_in_progress = True
+        try:
+            process_files_def(**mm.query_download_def())
+        finally:
+            _download_in_progress = False
 
         # Generate the mask
         background, mask_image, keywords = mm.generate_image_mask(

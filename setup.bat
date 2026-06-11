@@ -39,10 +39,6 @@ conda create -y -n wan2gp python=3.11.14
 call conda run -n wan2gp --live-stream pip install torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 call conda run -n wan2gp --live-stream pip install -r requirements.txt
 
-:: Download models (flux2_klein_9b, flux2_klein_4b, pi_flux2, wan2.2 4 step distilled)
-echo Downloading models...
-call conda run -n wan2gp --live-stream python download_models.py
-
 :: Download improved_klein.safetensors if it doesn't exist (Dropbox link - may need manual download)
 if not exist "loras\flux2_klein_9b\improved_klein.safetensors" (
     echo Downloading improved_klein.safetensors...

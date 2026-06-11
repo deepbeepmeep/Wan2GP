@@ -4,15 +4,14 @@ This is an API wrapper that calls the logic in Wan2GP, and is meant to be easily
 
 ## System Requirements
 
-At the moment, the server will download _all the image and video models_ it needs so that you can use the app immediately after setup.
-
-This is upwards of `200GB` of model files. Please account for this. Support for use-only downloading is planned.
+The server will download models on-demand when you first use a feature, rather than downloading everything up front. This reduces the initial setup time and disk space requirements.
 
 ### Windows 10 or Windows 11
 You will get all the features of this app working out the box so long as you have:
 
 - an Nvidia GPU; any GPU (recommended to have at least 12GB of VRAM but may work with less) 1000-5000 series
 - System RAM: 32GB recommended, untested with 16GB
+- ~150GB of space available (models are downloaded when you use them, and they total up to 130GB or so of space) 
 
 ### macOS
 Currently, you are only able to do image generation when running the server on macOS (the video model throws errors).
@@ -59,9 +58,7 @@ It is possible that a combination of your GPU's VRAM or system RAM is not enough
 
 #### Not Enough Disk Space
 
-If you plan on using all models and modes, it requires about `200GB` of disk space to download them all. Right now the server downloads all the models up front so that you can freely swap between them depending on your needs,
-
-The full server logic (Wan2GP) supports on the fly downloading which is the direction that this server wrapper will go in the future so that this requirement is not as high.
+If you plan on using all models and modes, it requires about `130GB` of disk space. Models are now downloaded on-demand when you first use a feature.
 
 #### Any Other Issues
 

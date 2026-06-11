@@ -7,6 +7,10 @@ _last_downloaded = 0
 _speed_history = []
 _update_interval = 0.5  # Update speed every 0.5 seconds
 
+# Global flag to indicate whether a download is in progress.
+# Set by process_files_def() and download_file(). Read by the FastAPI /status endpoint.
+download_in_progress: bool = False
+
 def progress_hook(block_num, block_size, total_size, filename=None):
     """
     Simple progress bar hook for urlretrieve
@@ -109,6 +113,7 @@ def create_progress_hook(filename):
 
 
 def process_files_def(repoId=None, sourceFolderList=None, fileList=None, targetFolderList=None):
+    global download_in_progress
     from huggingface_hub import hf_hub_download, snapshot_download
     from shared.utils import files_locator as fl
 
@@ -121,16 +126,34 @@ def process_files_def(repoId=None, sourceFolderList=None, fileList=None, targetF
         targetRoot = fl.get_smart_download_root(explicit_target)
         local_dir = os.path.join(targetRoot, targetFolder) if targetFolder is not None else targetRoot
         if len(files) == 0:
-            if fl.locate_folder(sourceFolder if targetFolder is None else os.path.join(targetFolder, sourceFolder), error_if_none=False) is None:
-                snapshot_download(repo_id=repoId, allow_patterns=sourceFolder + "/*", local_dir=local_dir)
+            folder_path = sourceFolder if targetFolder is None else os.path.join(targetFolder, sourceFolder)
+            if fl.locate_folder(folder_path, error_if_none=False) is None:
+                print(f"[DOWNLOAD] snapshot_download: {repoId}/{sourceFolder} -> {local_dir}")
+                download_in_progress = True
+                try:
+                    snapshot_download(repo_id=repoId, allow_patterns=sourceFolder + "/*", local_dir=local_dir)
+                finally:
+                    download_in_progress = False
         else:
             for onefile in files:
                 if len(sourceFolder) > 0:
-                    if fl.locate_file((sourceFolder + "/" + onefile) if targetFolder is None else os.path.join(targetFolder, sourceFolder, onefile), error_if_none=False) is None:
-                        hf_hub_download(repo_id=repoId, filename=onefile, local_dir=local_dir, subfolder=sourceFolder)
+                    check_path = (sourceFolder + "/" + onefile) if targetFolder is None else os.path.join(targetFolder, sourceFolder, onefile)
+                    if fl.locate_file(check_path, error_if_none=False) is None:
+                        print(f"[DOWNLOAD] hf_hub_download: {repoId}/{sourceFolder}/{onefile} -> {local_dir}")
+                        download_in_progress = True
+                        try:
+                            hf_hub_download(repo_id=repoId, filename=onefile, local_dir=local_dir, subfolder=sourceFolder)
+                        finally:
+                            download_in_progress = False
                 else:
-                    if fl.locate_file(onefile if targetFolder is None else os.path.join(targetFolder, onefile), error_if_none=False) is None:
-                        hf_hub_download(repo_id=repoId, filename=onefile, local_dir=local_dir)
+                    check_path = onefile if targetFolder is None else os.path.join(targetFolder, onefile)
+                    if fl.locate_file(check_path, error_if_none=False) is None:
+                        print(f"[DOWNLOAD] hf_hub_download: {repoId}/{onefile} -> {local_dir}")
+                        download_in_progress = True
+                        try:
+                            hf_hub_download(repo_id=repoId, filename=onefile, local_dir=local_dir)
+                        finally:
+                            download_in_progress = False
 
 
 def _download_relpath(source_folder, filename, target_folder=None):
@@ -229,6 +252,7 @@ def process_download_defs(download_defs):
 
 
 def download_file(url, filename):
+    global download_in_progress
     from huggingface_hub import hf_hub_download
     from shared.utils import files_locator as fl
 
@@ -240,22 +264,32 @@ def download_file(url, filename):
         repoId = url_parts[0]
         onefile = os.path.basename(url_parts[-1])
         sourceFolder = os.path.dirname(url_parts[-1])
-        if len(sourceFolder) == 0:
-            hf_hub_download(repo_id=repoId, filename=onefile, local_dir=fl.get_download_location() if len(base_dir) == 0 else base_dir)
-        else:
-            tgt = fl.get_download_location() if len(base_dir) == 0 else base_dir
-            if not os.path.exists(tgt):
-                os.makedirs(tgt)
-            temp_dir_path = os.path.join(tgt, f"_temp{time.time()}")
-            temp_full_path = os.path.join(temp_dir_path, sourceFolder)
-            if not os.path.exists(temp_full_path):
-                os.makedirs(temp_full_path)
-            hf_hub_download(repo_id=repoId, filename=onefile, local_dir=temp_dir_path, subfolder=sourceFolder)
-            shutil.move(os.path.join(temp_full_path, onefile), tgt)
-            shutil.rmtree(temp_dir_path)
+        print(f"[DOWNLOAD] download_file: {repoId}/{sourceFolder}/{onefile}")
+        download_in_progress = True
+        try:
+            if len(sourceFolder) == 0:
+                hf_hub_download(repo_id=repoId, filename=onefile, local_dir=fl.get_download_location() if len(base_dir) == 0 else base_dir)
+            else:
+                tgt = fl.get_download_location() if len(base_dir) == 0 else base_dir
+                if not os.path.exists(tgt):
+                    os.makedirs(tgt)
+                temp_dir_path = os.path.join(tgt, f"_temp{time.time()}")
+                temp_full_path = os.path.join(temp_dir_path, sourceFolder)
+                if not os.path.exists(temp_full_path):
+                    os.makedirs(temp_full_path)
+                hf_hub_download(repo_id=repoId, filename=onefile, local_dir=temp_dir_path, subfolder=sourceFolder)
+                shutil.move(os.path.join(temp_full_path, onefile), tgt)
+                shutil.rmtree(temp_dir_path)
+        finally:
+            download_in_progress = False
     else:
         from urllib.request import urlretrieve
 
-        urlretrieve(url, filename, create_progress_hook(filename))
+        print(f"[DOWNLOAD] urlretrieve: {filename}")
+        download_in_progress = True
+        try:
+            urlretrieve(url, filename, create_progress_hook(filename))
+        finally:
+            download_in_progress = False
 
 

@@ -370,6 +370,11 @@ def install_logic(env_name, env_type, env_path, py_k, torch_k, triton_k, sage_k,
 
     pip = template["install"].format(dir=env_path)
 
+    # Upgrade pip in the freshly-created environment
+    if env_type in ["venv", "uv"]:
+        py_exec = template["run"].format(dir=env_path)
+        run_cmd(f"{py_exec} -m pip install --upgrade pip setuptools wheel")
+
     print(f"\n[2/3] Installing Torch: {config['components']['torch'][torch_k]['label']}...")
     torch_cmd = resolve_cmd(config['components']['torch'][torch_k]['cmd'])
     run_cmd(f"{pip} {torch_cmd}")

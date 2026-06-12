@@ -35,6 +35,36 @@ function() {
         if (closeButton) closeButton.click();
     };
 
+    window.WanGPDownloads = {
+        trigger(payload) {
+            if (!payload) {
+                console.log("[WanGP] No download payload received.");
+                return "";
+            }
+            let data = payload;
+            if (typeof payload === "string") {
+                try {
+                    data = JSON.parse(payload);
+                } catch (e) {
+                    console.error("[WanGP] Invalid download payload:", e);
+                    return "";
+                }
+            }
+            if (!data?.url) {
+                console.log("[WanGP] Download payload does not contain a URL.");
+                return "";
+            }
+            const a = document.createElement("a");
+            a.style.display = "none";
+            a.href = data.url;
+            a.download = data.filename || "";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            return "";
+        }
+    };
+
     let lastSelectedVideoTime = null;
     let selectedVideoTimeTimer = null;
 

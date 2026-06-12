@@ -22,5 +22,5 @@
     },
     "sliding_window_size": 81,
     "sliding_window_overlap": 5,
-    "sliding_window_color_correction_strength": 1
+    "sliding_window_color_correction_strength": 0
 }

@@ -1,6 +1,7 @@
 # Copyright 2024-2026 The Alibaba Wan Team Authors. All rights reserved.
 # SCAIL-2 helpers for WanGP.
 
+import concurrent.futures
 import logging
 import re
 from pathlib import Path
@@ -11,7 +12,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-from shared.utils.utils import convert_image_to_tensor, convert_tensor_to_image, to_rgb_tensor
+from shared.utils.utils import convert_image_to_tensor, convert_tensor_to_image, expand_or_shrink_mask, to_rgb_tensor
 from ..modules.posemb_layers import get_nd_rotary_pos_embed
 
 
@@ -170,6 +171,199 @@ def extract_and_compress_mask_to_latent(mask_cthw: torch.Tensor, additional_spat
     return padded.view(t_latent, temporal_compression_stride * 7, h_lat, w_lat).permute(1, 0, 2, 3)
 
 
+SCAIL2_COLOR_BITS = ((True, True, True), (True, False, False), (False, True, False), (False, False, True), (True, True, False), (True, False, True), (False, True, True))
+
+
+def _is_thwc_video(tensor):
+    return torch.is_tensor(tensor) and tensor.ndim == 4 and tensor.shape[-1] in (1, 3, 4)
+
+
+def _frame_count(tensor):
+    return tensor.shape[0] if _is_thwc_video(tensor) else tensor.shape[1]
+
+
+def _shared_frame_count(*tensors):
+    return min(_frame_count(tensor) for tensor in tensors if tensor is not None)
+
+
+def _video_hw(tensor):
+    return (tensor.shape[1], tensor.shape[2]) if _is_thwc_video(tensor) else tensor.shape[-2:]
+
+
+def _get_hwc_frame(tensor, frame_idx):
+    frame = tensor[frame_idx] if _is_thwc_video(tensor) else tensor[:, frame_idx].permute(1, 2, 0)
+    if frame.shape[-1] == 1:
+        frame = frame.expand(-1, -1, 3)
+    elif frame.shape[-1] > 3:
+        frame = frame[..., :3]
+    return frame
+
+
+def _frame_to_uint8_hwc(frame):
+    if torch.is_tensor(frame):
+        frame = frame.detach().cpu()
+        if frame.dtype == torch.uint8:
+            arr = frame.numpy()
+        else:
+            frame = frame.float()
+            frame = (frame + 1.0) * 127.5 if float(frame.min()) < 0 else frame * 255.0 if float(frame.max()) <= 1 else frame
+            arr = frame.clamp(0, 255).to(torch.uint8).numpy()
+    else:
+        arr = np.asarray(frame)
+    if arr.ndim == 2:
+        arr = arr[..., None]
+    if arr.shape[-1] == 1:
+        arr = np.repeat(arr, 3, axis=-1)
+    elif arr.shape[-1] > 3:
+        arr = arr[..., :3]
+    return np.ascontiguousarray(arr.astype(np.uint8, copy=False))
+
+
+def _resize_hwc_uint8(arr, target_h, target_w, crop=False, resample=Image.Resampling.LANCZOS):
+    if arr.shape[:2] == (target_h, target_w) and not crop:
+        return arr
+    img = Image.fromarray(arr, mode="RGB")
+    if crop:
+        ow, oh = img.size
+        if ow / oh > target_w / target_h:
+            nw = int(oh * target_w / target_h)
+            img = img.crop(((ow - nw) // 2, 0, (ow + nw) // 2, oh))
+        else:
+            nh = int(ow * target_h / target_w)
+            img = img.crop((0, (oh - nh) // 2, ow, (oh + nh) // 2))
+    img = img.resize((target_w, target_h), resample=resample)
+    return np.asarray(img, dtype=np.uint8)
+
+
+def _iter_frame_jobs(frame_count, worker, max_workers=1):
+    max_workers = max(1, int(max_workers or 1))
+    if max_workers == 1 or frame_count <= 1:
+        for frame_idx in range(frame_count):
+            yield worker(frame_idx)
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            next_frame, futures = 0, set()
+            while next_frame < frame_count and len(futures) < max_workers:
+                futures.add(executor.submit(worker, next_frame))
+                next_frame += 1
+            while futures:
+                done, futures = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                for future in done:
+                    yield future.result()
+                    if next_frame < frame_count:
+                        futures.add(executor.submit(worker, next_frame))
+                        next_frame += 1
+
+
+def _float_cthw_from_frames(tensor, frame_count, frame_processor, target_h, target_w, max_workers=1):
+    output = torch.empty((3, frame_count, target_h, target_w), dtype=torch.float32)
+
+    def process_frame(frame_idx):
+        arr = frame_processor(_frame_to_uint8_hwc(_get_hwc_frame(tensor, frame_idx)))
+        return frame_idx, torch.from_numpy(np.array(arr, copy=True)).permute(2, 0, 1).to(torch.float32).div_(127.5).sub_(1.0)
+
+    for frame_idx, frame in _iter_frame_jobs(frame_count, process_frame, max_workers=max_workers):
+        output[:, frame_idx].copy_(frame)
+    return output
+
+
+def _resize_video_cthw_float(tensor, target_h, target_w, crop=False, max_workers=1, frame_count=None):
+    frame_count = _frame_count(tensor) if frame_count is None else min(frame_count, _frame_count(tensor))
+    if not _is_thwc_video(tensor) and tensor.dtype != torch.uint8 and tensor.shape[-2:] == (target_h, target_w) and not crop:
+        return tensor if frame_count == tensor.shape[1] else tensor[:, :frame_count].contiguous()
+    return _float_cthw_from_frames(tensor, frame_count, lambda arr: _resize_hwc_uint8(arr, target_h, target_w, crop=crop, resample=Image.Resampling.LANCZOS), target_h, target_w, max_workers=max_workers)
+
+
+def _first_frame_to_image(tensor):
+    return Image.fromarray(_frame_to_uint8_hwc(_get_hwc_frame(tensor, 0)), mode="RGB") if _is_thwc_video(tensor) or tensor.dtype == torch.uint8 else convert_tensor_to_image(tensor[:, 0])
+
+
+def _color_selector(arr, color_idx):
+    r, g, b = arr[..., 0] > 225, arr[..., 1] > 225, arr[..., 2] > 225
+    nr, ng, nb = ~r, ~g, ~b
+    return (r & g & b, r & ng & nb, nr & g & nb, nr & ng & b, r & g & nb, r & ng & b, nr & g & b)[color_idx]
+
+
+def _color_presence(arr):
+    return np.asarray([_color_selector(arr, idx).any() for idx in range(len(SCAIL2_COLOR_BITS))], dtype=bool)
+
+
+def _analyze_single_color_mask(mask_cthw, object_colors, frame_count, max_workers=1):
+    if not object_colors:
+        return None
+    present = np.zeros(len(SCAIL2_COLOR_BITS), dtype=bool)
+    for frame_present in _iter_frame_jobs(frame_count, lambda frame_idx: _color_presence(_frame_to_uint8_hwc(_get_hwc_frame(mask_cthw, frame_idx))), max_workers=max_workers):
+        present |= frame_present
+    if int(present.sum()) != 1:
+        return None
+    target_bits = tuple(bool(v) for v in (np.asarray(object_colors[0]) >= 128).tolist())
+    target_idx = SCAIL2_COLOR_BITS.index(target_bits) if target_bits in SCAIL2_COLOR_BITS else -1
+    source_idx = int(np.flatnonzero(present)[0])
+    return None if source_idx == target_idx or target_idx < 0 else ("single", source_idx, np.asarray(object_colors[0], dtype=np.uint8))
+
+
+def _analyze_replace_mask(mask_cthw, object_colors, frame_count, target_h, target_w, crop, max_workers=1):
+    black_count, total = 0, 0
+    def process_frame(frame_idx):
+        arr = _resize_hwc_uint8(_frame_to_uint8_hwc(_get_hwc_frame(mask_cthw, frame_idx)), target_h, target_w, crop=crop, resample=Image.Resampling.NEAREST)
+        black = (arr[..., 0] < 30) & (arr[..., 1] < 30) & (arr[..., 2] < 30)
+        return int(black.sum()), black.size
+
+    for frame_black_count, frame_total in _iter_frame_jobs(frame_count, process_frame, max_workers=max_workers):
+        black_count += frame_black_count
+        total += frame_total
+    return None if total == 0 or black_count / total <= 0.33 else ("replace", np.asarray((object_colors or [(0, 0, 255)])[0], dtype=np.uint8))
+
+
+def _apply_mask_normalizer(arr, normalizer):
+    if normalizer is None:
+        return arr
+    if normalizer[0] == "single":
+        output = np.zeros_like(arr)
+        output[_color_selector(arr, normalizer[1])] = normalizer[2]
+        return output
+    output = arr.copy()
+    white = (arr[..., 0] > 225) & (arr[..., 1] > 225) & (arr[..., 2] > 225)
+    black = (arr[..., 0] < 30) & (arr[..., 1] < 30) & (arr[..., 2] < 30)
+    output[white] = normalizer[1]
+    output[black] = (255, 255, 255)
+    return output
+
+
+def _expand_colored_frame(arr, object_colors, expand_scale, background_color=None):
+    if int(expand_scale or 0) == 0 or not object_colors:
+        return arr
+    colors = np.asarray(object_colors, dtype=np.uint8).reshape(-1, 3)
+    background = np.asarray([0, 0, 0] if background_color is None else background_color, dtype=np.uint8).reshape(1, 1, 3)
+    output = np.broadcast_to(background, arr.shape).copy()
+    occupied = np.zeros(arr.shape[:2], dtype=bool)
+    for color in colors:
+        selector = np.where(color.reshape(1, 1, 3) >= 128, arr >= 128, arr < 128).all(axis=-1)
+        selector = expand_or_shrink_mask(selector.astype(np.uint8) * 255, expand_scale) > 127
+        selector &= ~occupied
+        output[selector] = color
+        occupied |= selector
+    return output
+
+
+def _prepare_scail2_mask_cthw(mask, target_h, target_w, model_def, replace_mode, expand_scale, crop=False, max_workers=1, frame_count=None, resize_first=False):
+    if mask is None:
+        return None
+    object_colors = (model_def or {}).get("magic_mask_object_colors", [])
+    frame_count = _frame_count(mask) if frame_count is None else min(frame_count, _frame_count(mask))
+    normalizer = _analyze_replace_mask(mask, object_colors, frame_count, target_h, target_w, crop, max_workers=max_workers) if replace_mode else _analyze_single_color_mask(mask, object_colors, frame_count, max_workers=max_workers)
+    background_color = (model_def or {}).get("video_mask_replace_background_color" if replace_mode else "video_mask_background_color", None)
+
+    def process_frame(arr):
+        if resize_first:
+            arr = _resize_hwc_uint8(arr, target_h, target_w, crop=crop, resample=Image.Resampling.NEAREST)
+        arr = _apply_mask_normalizer(arr, normalizer)
+        arr = _expand_colored_frame(arr, object_colors, expand_scale, background_color=background_color)
+        return arr if resize_first else _resize_hwc_uint8(arr, target_h, target_w, crop=crop, resample=Image.Resampling.NEAREST)
+
+    return _float_cthw_from_frames(mask, frame_count, process_frame, target_h, target_w, max_workers=max_workers)
+
+
 def normalize_single_color_mask(mask_cthw: torch.Tensor, model_def) -> torch.Tensor:
     if mask_cthw is None:
         return mask_cthw
@@ -244,41 +438,48 @@ def _extract_max_people(video_prompt_type):
     return int(m.group(1)) if (m := re.search(r'(?<!#)([1-5])(?!#)', video_prompt_type or "")) else 1
 
 
+def preprocess_all_scail2(video_prompt_type=None, custom_settings=None, **kwargs):
+    custom_settings = custom_settings if isinstance(custom_settings, dict) else {}
+    return not test_scail2_replace(video_prompt_type) and _extract_max_people(video_prompt_type) == 1 and custom_settings.get("scail2_animate_preprocessing", SCAIL2_ANIMATE_PREPROCESSING_RAW) == SCAIL2_ANIMATE_PREPROCESSING_POSE
+
+
 def custom_preprocess_scail2(video_guide, video_mask, pre_video_guide=None, max_workers=1, expand_scale=0, video_prompt_type=None, **kwargs):
-    from shared.utils.utils import calculate_new_dimensions, convert_tensor_to_image, expand_colored_mask_cthw, resize_lanczos_cthw
+    from shared.utils.utils import calculate_new_dimensions
 
     model_def = kwargs.get("model_def") or {}
     custom_settings = kwargs.get("custom_settings", {})
     if not isinstance(custom_settings, dict):
         custom_settings = {}
     replace_mode = test_scail2_replace(video_prompt_type) or pre_video_guide is None
-    ref_image = convert_tensor_to_image((video_guide if replace_mode else pre_video_guide)[:, 0])
+    ref_image = _first_frame_to_image(video_guide) if replace_mode else convert_tensor_to_image(pre_video_guide[:, 0])
     target_w, target_h = int(kwargs.get("width", ref_image.width)), int(kwargs.get("height", ref_image.height))
 
     if replace_mode:
         fit_crop = kwargs.get("fit_crop", False)
         fit_canvas = kwargs.get("fit_canvas", None)
+        source_h, source_w = _video_hw(video_guide)
         if fit_canvas is not None and not fit_crop:
-            target_h, target_w = calculate_new_dimensions(target_h, target_w, video_guide.shape[-2], video_guide.shape[-1], fit_canvas, kwargs.get("block_size", 16))
-        frames = resize_lanczos_cthw(video_guide, target_h, target_w, crop=fit_crop, max_workers=max_workers)
-        video_mask = _resize_mask_cthw(video_mask, target_h, target_w, crop=fit_crop)
-        frames, video_mask = _trim_to_shared_frame_count(frames, video_mask)
-        video_mask = normalize_driving_mask_for_mode(video_mask, model_def, replace_mode=True)
-        video_mask = expand_colored_mask_cthw(video_mask, model_def.get("magic_mask_object_colors", []), expand_scale, background_color=model_def.get("video_mask_replace_background_color", None), max_workers=max_workers)
+            target_h, target_w = calculate_new_dimensions(target_h, target_w, source_h, source_w, fit_canvas, kwargs.get("block_size", 16))
+        frame_count = _shared_frame_count(video_guide, video_mask)
+        frames = _resize_video_cthw_float(video_guide, target_h, target_w, crop=fit_crop, max_workers=max_workers, frame_count=frame_count)
+        video_guide = None
+        video_mask = _prepare_scail2_mask_cthw(video_mask, target_h, target_w, model_def, replace_mode=True, expand_scale=expand_scale, crop=fit_crop, max_workers=max_workers, frame_count=frame_count, resize_first=True)
         return frames, None, video_mask, None
 
-    video_guide, video_mask, pose_mask = _trim_to_shared_frame_count(video_guide, video_mask, kwargs.get("pose_mask", None))
-    video_mask = normalize_driving_mask_for_mode(video_mask, model_def, replace_mode=False)
-    video_mask = expand_colored_mask_cthw(video_mask, model_def.get("magic_mask_object_colors", []), expand_scale, background_color=model_def.get("video_mask_background_color", None), max_workers=max_workers)
+    pose_mask = kwargs.get("pose_mask", None)
+    frame_count = _shared_frame_count(video_guide, video_mask, pose_mask)
     animate_preprocessing = custom_settings.get("scail2_animate_preprocessing", SCAIL2_ANIMATE_PREPROCESSING_RAW)
     if animate_preprocessing != SCAIL2_ANIMATE_PREPROCESSING_POSE:
         fit_crop = kwargs.get("fit_crop", False)
-        frames = resize_lanczos_cthw(video_guide, target_h, target_w, crop=fit_crop, max_workers=max_workers)
-        video_mask = _resize_mask_cthw(video_mask, target_h, target_w, crop=fit_crop)
-        frames, video_mask = _trim_to_shared_frame_count(frames, video_mask)
+        frames = _resize_video_cthw_float(video_guide, target_h, target_w, crop=fit_crop, max_workers=max_workers, frame_count=frame_count)
+        video_guide = None
+        video_mask = _prepare_scail2_mask_cthw(video_mask, target_h, target_w, model_def, replace_mode=False, expand_scale=expand_scale, crop=fit_crop, max_workers=max_workers, frame_count=frame_count)
         return frames, None, video_mask, None
 
+    source_h, source_w = _video_hw(video_guide)
+    video_mask = _prepare_scail2_mask_cthw(video_mask, source_h, source_w, model_def, replace_mode=False, expand_scale=expand_scale, max_workers=max_workers, frame_count=frame_count)
     pose_mask = (video_mask + 1.0).mul(0.5).amax(dim=0, keepdim=True).clamp_(0, 1) if video_mask is not None else pose_mask
+    video_guide = _resize_video_cthw_float(video_guide, source_h, source_w, max_workers=max_workers, frame_count=frame_count)
     if ref_image.size != (target_w, target_h):
         from PIL import ImageOps
         ref_image = ImageOps.fit(ref_image, (target_w, target_h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
@@ -416,7 +617,7 @@ def custom_image_ref_postprocessor_scail2(
         raise ValueError("SCAIL-2 needs a Reference Image, Start Image, or Continue Video frame to build the image reference mask.")
 
     if send_cmd is not None:
-        send_cmd("progress", [0, "Preparing SCAIL-2 Image Reference"])
+        send_cmd("progress", [0, "Building SCAIL-2 Image Reference Mask"])
 
     image_ref = _tensor_or_image_to_cthw(ref_source, "cpu", torch.float32)
     if image_ref.shape[-2:] != (height, width):

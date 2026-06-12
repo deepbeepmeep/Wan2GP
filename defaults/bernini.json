@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "Bernini-R Wan2.2",
+        "name": "Wan2.2 Bernini-R 14B",
         "architecture": "bernini",
         "description": "This video model derived from Wan 2.2 can modify the content of an existing video or generate a new video with any number of References Images. v2v works quite well with Lora Accelerators such as Lightning 4 steps . But as soon as you include reference frames, you will have to go for at least 15 steps with guidance and no lora accelerator.",
         "URLs": [
@@ -19,7 +19,7 @@
     "video_length": 81,
     "num_inference_steps": 40,
     "sample_solver": "unipc",
-    "flow_shift": 3,
+    "flow_shift": 5,
     "guidance_phases": 2,
     "model_switch_phase": 1,
     "switch_threshold": 875,

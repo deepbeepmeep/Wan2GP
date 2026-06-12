@@ -10,6 +10,7 @@ class PiDProcessHandler:
     model_label = "WanGP System Image Postprocessing"
     target_control_label = "Upscaling"
     default_target_control = PID_FLUX_POST_UPSAMPLING_VALUE
+    hide_output_resolution = True
     hide_prompt = True
 
     def supported_upsampling_ratios(self, process_settings: dict | None = None) -> tuple[float, ...]:

@@ -369,11 +369,10 @@ class WanAny2V:
         context = torch.cat([context, context.new_zeros(self.model.text_len -context.size(0), context.size(1)) ]).unsqueeze(0) 
         clear_caches()
         get_cache("lynx_ref_buffer").update({ 0: {}, 1: {} })
-        _loras_active_adapters = None
-        if not enable_loras:
-            if hasattr(self.model, "_loras_active_adapters"):
-                _loras_active_adapters = self.model._loras_active_adapters
-                self.model._loras_active_adapters = []
+        loras_active_adapters = loras_scaling = None
+        if not enable_loras and getattr(self.model, "_loras_scaling", None) is not None:
+            loras_active_adapters, loras_scaling = self.model._loras_active_adapters, self.model._loras_scaling
+            offload.activate_loras(self.model, loras_active_adapters, [0.0] * len(loras_active_adapters))
         ref_buffer = self.model(
             pipeline =self,
             x = [vae_feat, vae_feat_uncond] if any_guidance else [vae_feat],
@@ -382,8 +381,8 @@ class WanAny2V:
             t=torch.stack([torch.tensor(0, dtype=torch.float)]).to(self.device),
             lynx_feature_extractor = True,
         )
-        if _loras_active_adapters is not None:
-            self.model._loras_active_adapters = _loras_active_adapters
+        if loras_scaling is not None:
+            offload.activate_loras(self.model, loras_active_adapters, [loras_scaling[adapter] for adapter in loras_active_adapters])
 
         clear_caches()
         return ref_buffer[0], (ref_buffer[1] if any_guidance else None)
@@ -1514,7 +1513,7 @@ class WanAny2V:
                 return torch.cat([video[:,-1:] for video in videos], dim=1) if len(videos) > 1 else videos[0][:,-1:]
             else:
                 return videos[0]
-        if image_outputs :
+        if image_outputs:
             x0 = [x[:,:1] for x in x0 ]
 
         any_vae2= self.vae2 is not None

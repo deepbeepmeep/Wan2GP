@@ -1004,6 +1004,7 @@ class LTX2:
         audio_scale: float | None = None,
         outpainting_dims: list[int] | None = None,
         frame_num: int = 121,
+        image_mode: int = 0,
         height: int = 1024,
         width: int = 1536,
         fps: float = 24.0,
@@ -1022,6 +1023,7 @@ class LTX2:
     ):
         if self._interrupt:
             return None
+        image_mode = int(image_mode or 0)
         joyai_context = None
         joyai_memory_bank = None
         joyai_store_mem_selectors = []
@@ -1077,6 +1079,9 @@ class LTX2:
             scale_factors = getattr(self.pipeline.pipeline_components, "video_scale_factors", None)
             if scale_factors is not None:
                 latent_stride = int(getattr(scale_factors, "time", scale_factors[0]))
+        if image_mode > 0 and "V" in video_prompt_type and any(letter in video_prompt_type for letter in "PODE") and ((int(frame_num) - 1) // latent_stride + 1) <= 1:
+            frame_num = latent_stride + 1
+            print(f"[WAN2GP][LTX2] Expanding image pose/depth/edge control from one latent to two latents ({frame_num} frames) to allow denoised image generation.")
 
         input_video_strength = max(0.0, min(1.0, input_video_strength))
         if requested_outpaint_gamma_roundtrip:
@@ -1098,6 +1103,9 @@ class LTX2:
         ic_lora_downscale_factor = None
         ic_lora_downscale_factor = _infer_ic_lora_downscale_factor(loras_selected)
         video_conditioning_downscale_factor = ic_lora_downscale_factor or 1
+        if video_conditioning_downscale_factor > 1 and ((int(frame_num) - 1) // latent_stride + 1) <= 1:
+            print("[WAN2GP][LTX2] Disabling downscaled control conditioning for single-latent-frame generation.")
+            video_conditioning_downscale_factor = 1
          # merge_conditioning_and_guide = False
         has_prefix_frames = input_video is not None 
         is_start_image_only = image_start is not None and (not has_prefix_frames or prefix_frames_count <= 1)
@@ -1500,7 +1508,9 @@ class LTX2:
             else:
                 corrected = video_tensor.to(dtype=torch.float32).add_(1.0).mul_(0.5).clamp_(0.0, 1.0).pow_(exponent)
                 video_tensor.copy_(corrected.mul_(2.0).sub_(1.0).to(dtype=video_tensor.dtype))
-        audio_np = None if hdr_enabled else audio.detach().float().cpu().numpy() if audio is not None else None
+        if image_mode > 0:
+            video_tensor = video_tensor[:, :1]
+        audio_np = None if image_mode > 0 or hdr_enabled else audio.detach().float().cpu().numpy() if audio is not None else None
         if audio_np is not None and audio_np.ndim == 2:
             if audio_np.shape[0] in (1, 2) and audio_np.shape[1] > audio_np.shape[0]:
                 audio_np = audio_np.T

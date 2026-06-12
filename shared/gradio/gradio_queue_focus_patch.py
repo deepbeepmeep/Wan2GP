@@ -29,7 +29,7 @@ def get_javascript() -> str:
     return;
   }}
 
-  const MAIN_TAB_ID = "video_gen";
+  const MAIN_TAB_ID = "media_gen";
   const OFFTAB_DELAY_MS = 25;
   const INTERACTION_KEEPALIVE_MS = 1500;
   const KEEPALIVE_CLASS = "wangp-main-tab-keepalive";

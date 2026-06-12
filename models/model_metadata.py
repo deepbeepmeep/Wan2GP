@@ -72,6 +72,8 @@ def _normalized_choices(choice_def):
             add_choice(label, value)
         else:
             add_choice(labels.get(choice, choice), choice)
+    for key, label in labels.items():
+        add_choice(label, key.replace("V", "").replace("P", ""))
     for value in choice_def.get("selection", []) or []:
         add_choice(labels.get(value, value), value)
     return choices

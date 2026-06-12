@@ -135,37 +135,42 @@ class ProcessFormController:
             return maximum
         return value
 
-    def build_initial_form(self, saved_ui_settings: dict, main_state: dict | None, initial_user_refs: list[str]) -> InitialFormPatch:
+    def build_initial_form(self, saved_ui_settings: dict, media_kind: str, main_state: dict | None, initial_user_refs: list[str]) -> InitialFormPatch:
+        media_kind = catalog.normalize_media_kind(media_kind)
         saved_process_name = str(saved_ui_settings.get("process_name") or "").strip()
         saved_model_type = str(saved_ui_settings.get("process_model_type") or "").strip()
         saved_process_definition = self.library.process_definition(saved_process_name, main_state, initial_user_refs)
-        if saved_process_definition is not None:
+        if saved_process_definition is not None and catalog.process_definition_media_kind(saved_process_definition) == media_kind:
             saved_model_type = self.library.process_definition_model_type(saved_process_definition) or saved_model_type
-        process_names_by_model_type = self.library.process_values_by_model_type(initial_user_refs)
+        else:
+            saved_process_name = ""
+        process_names_by_model_type = self.library.process_values_by_model_type(media_kind, initial_user_refs)
+        default_catalog_model_type = catalog.default_model_type(media_kind)
+        default_catalog_process_name = catalog.default_process_name(media_kind)
         default_model_type = (
             saved_model_type
             if saved_model_type in process_names_by_model_type
-            else catalog.DEFAULT_MODEL_TYPE
-            if catalog.DEFAULT_MODEL_TYPE in process_names_by_model_type
-            else next(iter(process_names_by_model_type), catalog.DEFAULT_MODEL_TYPE)
+            else default_catalog_model_type
+            if default_catalog_model_type in process_names_by_model_type
+            else next(iter(process_names_by_model_type), default_catalog_model_type)
         )
-        default_process_choices = self.library.normal_process_choices(default_model_type, initial_user_refs)
+        default_process_choices = self.library.normal_process_choices(media_kind, default_model_type, initial_user_refs)
         default_process_values = [value for _label, value in default_process_choices]
         default_process_name = (
             saved_process_name
             if saved_process_name in default_process_values
-            else catalog.DEFAULT_PROCESS_NAME
-            if catalog.DEFAULT_PROCESS_NAME in default_process_values
-            else (default_process_values[0] if default_process_values else catalog.DEFAULT_PROCESS_NAME)
+            else default_catalog_process_name
+            if default_catalog_process_name in default_process_values
+            else (default_process_values[0] if default_process_values else default_catalog_process_name)
         )
-        form_state = self.build_form_state(default_process_name, saved_ui_settings, main_state, initial_user_refs)
+        form_state = self.build_form_state(default_process_name, saved_ui_settings, main_state, initial_user_refs, media_kind)
         default_rules = self.library.process_frame_rules(default_process_name, main_state, initial_user_refs)
         target_control_choices = self.library.target_control_choices(default_process_name, main_state, initial_user_refs)
         has_target_control = len(target_control_choices) > 0
         overlap_visible = not self.library.hides_sliding_window_overlap(default_process_name, main_state, initial_user_refs)
         self.default_model_type = default_model_type
         return InitialFormPatch(
-            model_type_choices=self.library.model_type_choices(initial_user_refs),
+            model_type_choices=self.library.model_type_choices(media_kind, initial_user_refs),
             process_choices=default_process_choices,
             model_type=default_model_type,
             process_name=default_process_name,
@@ -232,8 +237,8 @@ class ProcessFormController:
         value = self._fit_overlap_slider_value(frames.normalize_overlap_frames(value, frame_step=step), maximum)
         return gr.update(minimum=1, maximum=maximum, step=step, value=value, visible=True)
 
-    def build_form_state(self, process_name: str, raw_state: dict | None = None, main_state: dict | None = None, user_refs: list[str] | None = None) -> ProcessFormState:
-        process_definition = self.library.process_definition_or_default(process_name, main_state, user_refs)
+    def build_form_state(self, process_name: str, raw_state: dict | None = None, main_state: dict | None = None, user_refs: list[str] | None = None, media_kind: str = catalog.DEFAULT_MEDIA_KIND) -> ProcessFormState:
+        process_definition = self.library.process_definition_or_default(process_name, main_state, user_refs, media_kind)
         process_settings = process_definition.get("settings", {})
         model_type = str(process_settings.get("model_type") or catalog.DEFAULT_MODEL_TYPE)
         frame_rules = self.library.process_frame_rules(process_name, main_state, user_refs)
@@ -279,21 +284,51 @@ class ProcessFormController:
             end_seconds="" if raw_state.get("end_seconds") in (None, "") else str(raw_state.get("end_seconds")),
         )
 
-    def build_state(self, process_name: str, raw_state: dict | None = None, main_state: dict | None = None, user_refs: list[str] | None = None) -> dict:
-        return self.build_form_state(process_name, raw_state, main_state, user_refs).to_dict()
+    def build_state(self, process_name: str, raw_state: dict | None = None, main_state: dict | None = None, user_refs: list[str] | None = None, media_kind: str = catalog.DEFAULT_MEDIA_KIND) -> dict:
+        return self.build_form_state(process_name, raw_state, main_state, user_refs, media_kind).to_dict()
 
-    def snapshot_state(self, process_name: str, main_state: dict | None, user_refs: list[str] | None, values: FormComponentValues) -> dict:
-        return self.build_state(process_name, values.to_raw_state(), main_state, user_refs)
+    def snapshot_state(self, process_name: str, main_state: dict | None, user_refs: list[str] | None, values: FormComponentValues, media_kind: str = catalog.DEFAULT_MEDIA_KIND) -> dict:
+        return self.build_state(process_name, values.to_raw_state(), main_state, user_refs, media_kind)
 
-    def store_memory(self, memory_state: dict | None, current_process_name: str, main_state: dict | None, user_refs: list[str] | None, values: FormComponentValues):
+    @staticmethod
+    def memory_key(process_name: str, media_kind: str = catalog.DEFAULT_MEDIA_KIND, batch_mode: str = catalog.DEFAULT_BATCH_MODE) -> str:
+        return f"{catalog.normalize_media_kind(media_kind)}/{catalog.normalize_batch_mode(batch_mode)}/{str(process_name or '').strip()}"
+
+    @staticmethod
+    def memory_selection_key(media_kind: str = catalog.DEFAULT_MEDIA_KIND, batch_mode: str = catalog.DEFAULT_BATCH_MODE) -> str:
+        return f"{catalog.normalize_media_kind(media_kind)}/{catalog.normalize_batch_mode(batch_mode)}/__selected_process__"
+
+    @classmethod
+    def select_memory_process(cls, memory_state: dict, process_name: str, media_kind: str = catalog.DEFAULT_MEDIA_KIND, batch_mode: str = catalog.DEFAULT_BATCH_MODE) -> dict:
+        memory_state[cls.memory_selection_key(media_kind, batch_mode)] = str(process_name or "").strip()
+        return memory_state
+
+    def remembered_process_name(self, memory_state: dict | None, media_kind: str, batch_mode: str, main_state: dict | None, user_refs: list[str] | None) -> str:
+        if not isinstance(memory_state, dict):
+            return ""
+        process_name = str(memory_state.get(self.memory_selection_key(media_kind, batch_mode)) or "").strip()
+        return process_name if self.library.process_definition(process_name, main_state, user_refs) is not None else ""
+
+    def _memory_state_for_process(self, memory_state: dict | None, process_name: str, media_kind: str, batch_mode: str) -> dict | None:
+        if not isinstance(memory_state, dict):
+            return None
+        key = self.memory_key(process_name, media_kind, batch_mode)
+        state = memory_state.get(key)
+        if isinstance(state, dict):
+            return state
+        state = memory_state.get(str(process_name or "").strip())
+        return state if isinstance(state, dict) else None
+
+    def store_memory(self, memory_state: dict | None, current_process_name: str, main_state: dict | None, user_refs: list[str] | None, values: FormComponentValues, media_kind: str = catalog.DEFAULT_MEDIA_KIND, batch_mode: str = catalog.DEFAULT_BATCH_MODE):
         updated_memory = dict(memory_state) if isinstance(memory_state, dict) else {}
         current_process_name = str(current_process_name or "").strip()
         if self.library.process_definition(current_process_name, main_state, user_refs) is not None:
-            updated_memory[current_process_name] = self.snapshot_state(current_process_name, main_state, user_refs, values)
+            updated_memory[self.memory_key(current_process_name, media_kind, batch_mode)] = self.snapshot_state(current_process_name, main_state, user_refs, values, media_kind)
+            self.select_memory_process(updated_memory, current_process_name, media_kind, batch_mode)
         return updated_memory
 
-    def restore_state(self, memory_state: dict | None, process_name: str, current_source_path: str, main_state: dict | None, user_refs: list[str] | None) -> tuple:
-        state = self.build_form_state(process_name, (memory_state or {}).get(process_name), main_state, user_refs)
+    def restore_state(self, memory_state: dict | None, process_name: str, current_source_path: str, main_state: dict | None, user_refs: list[str] | None, media_kind: str = catalog.DEFAULT_MEDIA_KIND, batch_mode: str = catalog.DEFAULT_BATCH_MODE) -> tuple:
+        state = self.build_form_state(process_name, self._memory_state_for_process(memory_state, process_name, media_kind, batch_mode), main_state, user_refs, media_kind)
         source_path_value = current_source_path.strip() or state.source_path
         return (
             source_path_value,
@@ -310,26 +345,30 @@ class ProcessFormController:
             state.end_seconds,
         )
 
-    def change_process_model_type(self, memory_state: dict | None, current_process_name: str, next_model_type: str, main_state: dict | None, main_lset_name: str | None, user_refs: list[str] | None, values: FormComponentValues) -> tuple:
+    def change_process_model_type(self, memory_state: dict | None, current_process_name: str, media_kind: str, batch_mode: str, next_model_type: str, main_state: dict | None, main_lset_name: str | None, user_refs: list[str] | None, values: FormComponentValues) -> tuple:
+        media_kind = catalog.normalize_media_kind(media_kind)
+        batch_mode = catalog.normalize_batch_mode(batch_mode)
         refs = catalog.get_saved_user_settings_refs({catalog.USER_SETTINGS_STORAGE_KEY: user_refs})
-        updated_memory = self.store_memory(memory_state, current_process_name, main_state, refs, values)
-        process_choices, next_process_name = self.library.process_choices(next_model_type, main_state, main_lset_name, refs)
+        updated_memory = self.store_memory(memory_state, current_process_name, main_state, refs, values, media_kind, batch_mode)
+        process_choices, next_process_name = self.library.process_choices(media_kind, next_model_type, main_state, main_lset_name, refs)
         next_process_name = str(next_process_name or ui_constants.NO_USER_SETTINGS_VALUE).strip()
-        catalog.save_mediaflow_selection(next_model_type, next_process_name)
+        self.select_memory_process(updated_memory, next_process_name, media_kind, batch_mode)
         return (
             updated_memory,
             next_process_name,
             gr.update(choices=process_choices, value=next_process_name),
             self.user_settings_hint_update(process_choices),
             *self.settings_action_updates(next_model_type, next_process_name),
-            *self.restore_state(updated_memory, next_process_name, values.source_path, main_state, refs),
+            *self.restore_state(updated_memory, next_process_name, values.source_path, main_state, refs, media_kind, batch_mode),
         )
 
-    def change_process_name(self, memory_state: dict | None, current_process_name: str, next_process_name: str, process_model_type_value: str, main_state: dict | None, user_refs: list[str] | None, values: FormComponentValues) -> tuple:
+    def change_process_name(self, memory_state: dict | None, current_process_name: str, media_kind: str, batch_mode: str, next_process_name: str, process_model_type_value: str, main_state: dict | None, user_refs: list[str] | None, values: FormComponentValues) -> tuple:
+        media_kind = catalog.normalize_media_kind(media_kind)
+        batch_mode = catalog.normalize_batch_mode(batch_mode)
         refs = catalog.get_saved_user_settings_refs({catalog.USER_SETTINGS_STORAGE_KEY: user_refs})
-        updated_memory = self.store_memory(memory_state, current_process_name, main_state, refs, values)
+        updated_memory = self.store_memory(memory_state, current_process_name, main_state, refs, values, media_kind, batch_mode)
         next_process_name = str(next_process_name or "").strip()
-        catalog.save_mediaflow_selection(process_model_type_value, next_process_name)
+        self.select_memory_process(updated_memory, next_process_name, media_kind, batch_mode)
         actions_update, _add_update, delete_update, placeholder_update = self.settings_action_updates(process_model_type_value, next_process_name)
         return (
             updated_memory,
@@ -337,16 +376,18 @@ class ProcessFormController:
             actions_update,
             delete_update,
             placeholder_update,
-            *self.restore_state(updated_memory, next_process_name, values.source_path, main_state, refs),
+            *self.restore_state(updated_memory, next_process_name, values.source_path, main_state, refs, media_kind, batch_mode),
         )
 
-    def refresh_from_main(self, _refresh_id, memory_state: dict | None, current_process_name: str, process_model_type_value: str, main_state: dict | None, main_lset_name: str | None, user_refs: list[str] | None, values: FormComponentValues) -> tuple:
+    def refresh_from_main(self, _refresh_id, memory_state: dict | None, current_process_name: str, media_kind: str, batch_mode: str, process_model_type_value: str, main_state: dict | None, main_lset_name: str | None, user_refs: list[str] | None, values: FormComponentValues) -> tuple:
+        media_kind = catalog.normalize_media_kind(media_kind)
+        batch_mode = catalog.normalize_batch_mode(batch_mode)
         refs = catalog.get_saved_user_settings_refs({catalog.USER_SETTINGS_STORAGE_KEY: user_refs})
-        model_choices = self.library.model_type_choices(refs)
+        model_choices = self.library.model_type_choices(media_kind, refs)
         process_model_type_value = str(process_model_type_value or "").strip()
         if process_model_type_value != ui_constants.ADD_USER_SETTINGS_MODEL_TYPE:
             valid_model_values = {value for _label, value in model_choices}
-            model_value = process_model_type_value if process_model_type_value in valid_model_values else self.default_model_type
+            model_value = process_model_type_value if process_model_type_value in valid_model_values else catalog.default_model_type(media_kind)
             return (
                 gr.update(choices=model_choices, value=model_value),
                 gr.update(),
@@ -356,8 +397,8 @@ class ProcessFormController:
                 *self.settings_action_updates(model_value, current_process_name),
                 *skipped_restored_form_outputs(),
             )
-        updated_memory = self.store_memory(memory_state, current_process_name, main_state, refs, values)
-        process_choices, next_process_name = self.library.current_user_settings_choices(main_state, main_lset_name)
+        updated_memory = self.store_memory(memory_state, current_process_name, main_state, refs, values, media_kind, batch_mode)
+        process_choices, next_process_name = self.library.current_user_settings_choices(media_kind, main_state, main_lset_name)
         return (
             gr.update(choices=model_choices, value=ui_constants.ADD_USER_SETTINGS_MODEL_TYPE),
             gr.update(choices=process_choices, value=next_process_name),
@@ -365,5 +406,5 @@ class ProcessFormController:
             updated_memory,
             next_process_name,
             *self.settings_action_updates(ui_constants.ADD_USER_SETTINGS_MODEL_TYPE, next_process_name),
-            *self.restore_state(updated_memory, next_process_name, values.source_path, main_state, refs),
+            *self.restore_state(updated_memory, next_process_name, values.source_path, main_state, refs, media_kind, batch_mode),
         )

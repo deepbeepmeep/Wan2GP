@@ -1003,6 +1003,12 @@ class WanModel(ModelMixin, ConfigMixin):
                 k = k.replace("lora_down","lora_A")
 
                 new_sd[k] = v
+            sd = new_sd
+        if base_model_type in ["scail2_14B", "scail2_1.3B"]:
+            new_sd = {}
+            for k, v in sd.items():
+                if "patch_embedding.diff" in k and torch.is_tensor(v) and v.ndim >= 2 and v.shape[1] != 20: continue
+                new_sd[k] = v
 
             sd = new_sd
         from wgp import test_class_i2v 

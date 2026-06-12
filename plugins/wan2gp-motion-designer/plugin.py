@@ -126,7 +126,7 @@ class MotionDesignerPlugin(WAN2GPPlugin):
             outputs=[self.refresh_form_trigger],
             show_progress="hidden",
         ).then(
-            fn=self.goto_video_tab,
+            fn=self.goto_media_tab,
             inputs=[self.state],
             outputs=[self.main_tabs],
         )
@@ -144,7 +144,7 @@ class MotionDesignerPlugin(WAN2GPPlugin):
             outputs=[self.refresh_form_trigger],
             show_progress="hidden",
         ).then(
-            fn=self.goto_video_tab,
+            fn=self.goto_media_tab,
             inputs=[self.state],
             outputs=[self.main_tabs],
         )
@@ -301,7 +301,7 @@ class MotionDesignerPlugin(WAN2GPPlugin):
         else:
             self.update_video_prompt_type(state, any_video_guide = True, any_video_mask = True, default_update="G")
 
-        gr.Info("Motion Designer data transferred to the Video Generator.")
+        gr.Info("Motion Designer data transferred to the Media Generator.")
         return time.time()
 
     def _apply_trajectory(

@@ -8,6 +8,7 @@ import cv2
 from PIL import Image
 from shared.utils.hf import build_hf_url
 from shared.utils import files_locator as fl
+from .bernini_prompt_infos import get_bernini_infos, get_bernini_prompt_infos
 from .kiwi.variant_config import get_kiwi_variant_model_def
 from .scail2 import (
     SCAIL2_ANIMATE_PREPROCESSING_POSE,
@@ -15,6 +16,7 @@ from .scail2 import (
     SCAIL2_INFOS,
     custom_image_ref_postprocessor_scail2,
     custom_preprocess_scail2,
+    preprocess_all_scail2,
     test_scail2,
     test_scail2_replace,
 )
@@ -26,13 +28,13 @@ def test_class_i2v(base_model_type):
     return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate", "chrono_edit", "steadydancer", "wanmove", "scail", "scail2_14B", "scail2_1.3B", "i2v_2_2_svi2pro" ]
 
 def test_class_t2v(base_model_type):    
-    return base_model_type in ["t2v", "t2v_2_2", "alpha", "alpha2", "lynx", "vista4d", "bernini"]
+    return base_model_type in ["t2v", "t2v_2_2", "alpha", "alpha2", "lynx", "vista4d", "bernini", "bernini_1.3B"]
 
 def test_oneframe_overlap(base_model_type):
     return test_class_i2v(base_model_type) and not (test_multitalk(base_model_type) or base_model_type in ["animate", "scail"] or test_scail2(base_model_type) or test_svi2pro(base_model_type))  or test_wan_5B(base_model_type)
 
 def test_class_1_3B(base_model_type):    
-    return base_model_type in [ "vace_1.3B", "t2v_1.3B", "recam_1.3B","phantom_1.3B","fun_inp_1.3B", "scail2_1.3B"]
+    return base_model_type in [ "vace_1.3B", "t2v_1.3B", "recam_1.3B","phantom_1.3B","fun_inp_1.3B", "scail2_1.3B", "bernini_1.3B"]
 
 def test_multitalk(base_model_type):
     return base_model_type in ["multitalk", "vace_multitalk_14B", "i2v_2_2_multitalk", "infinitetalk"]
@@ -57,7 +59,7 @@ def test_svi2pro(base_model_type):
     return base_model_type in ["i2v_2_2_svi2pro"]
 
 def test_bernini(base_model_type):
-    return base_model_type in ["bernini"]
+    return base_model_type in ["bernini", "bernini_1.3B"]
 
 class family_handler():
     @staticmethod
@@ -65,7 +67,7 @@ class family_handler():
         return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_14B_2_2", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B",
                     "t2v_1.3B", "standin", "lynx_lite", "lynx", "t2v", "t2v_2_2", "vace_1.3B", "vace_ditto_14B", "phantom_1.3B", "phantom_14B",
                     "recam_1.3B", "animate", "alpha", "alpha2", "alpha_lynx", "chrono_edit",
-                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "kiwi_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp", "mocha", "steadydancer", "wanmove", "scail", "scail2_14B", "scail2_1.3B", "vista4d", "i2v_2_2_svi2pro", "bernini"]
+                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "kiwi_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp", "mocha", "steadydancer", "wanmove", "scail", "scail2_14B", "scail2_1.3B", "vista4d", "i2v_2_2_svi2pro", "bernini", "bernini_1.3B"]
 
 
     @staticmethod
@@ -224,6 +226,10 @@ class family_handler():
         extra_model_def["scail2"] = scail2 = test_scail2(base_model_type)
         if bernini:
             extra_model_def["t2v_class"] = t2v = False
+            extra_model_def["prompt_infos"] = get_bernini_prompt_infos(base_model_type)
+            bernini_infos = get_bernini_infos(base_model_type)
+            if bernini_infos is not None:
+                extra_model_def["infos"] = bernini_infos
         extra_model_def["color_correction"] = True
         extra_model_def["svi2pro"] = svi2pro = test_svi2pro(base_model_type)
         extra_model_def["i2v_2_2"] = i2v_2_2 = test_i2v_2_2(base_model_type)
@@ -259,7 +265,7 @@ class family_handler():
 
         group = "wan"
         if bernini:
-            profiles_dir = ["wan_bernini", "wan_2_2"]
+            profiles_dir = ["wan_bernini_1.3B", "wan_1.3B"] if base_model_type == "bernini_1.3B" else ["wan_bernini", "wan_2_2"]
             group = "wan2_2"
         elif base_model_type in ["t2v_2_2", "vace_14B_2_2"] or test_i2v_2_2(base_model_type):
             profiles_dir = "wan_2_2"
@@ -521,7 +527,7 @@ class family_handler():
                 "show_label": True,
             }
 
-            extra_model_def["preprocess_all"] = True
+            extra_model_def["preprocess_all"] = preprocess_all_scail2 if scail2 else True
             extra_model_def["custom_preprocessor"] = "Preparing Scail2 Inputs" if scail2 else "Extracting 3D Pose (NLFPose)"
             extra_model_def["forced_guide_mask_inputs"] = True
             extra_model_def["keep_frames_video_guide_not_supported"] = True
@@ -574,8 +580,7 @@ class family_handler():
                 extra_model_def["one_image_ref_only_with_background"] = True
                 extra_model_def["magic_mask_object_colors"] = [(0, 0, 255), (255, 0, 0), (0, 255, 0), (255, 0, 255), (0, 255, 255), (255, 255, 0)]
                 extra_model_def["video_mask_label"] = "Video Mask, each Colored Mask corresponds to a person to Animate"
-                extra_model_def["preserve_video_mask_colors"] = True
-                extra_model_def["mask_filter_video_guide"] = False
+                extra_model_def["custom_preprocessor_raw_inputs"] = True
                 extra_model_def["video_mask_replace_background_color"] = [255, 255, 255]
                 extra_model_def["background_removal_color"] = [255, 255, 255]
                 extra_model_def["ref_matte_background_color"] = [0, 0, 0]
@@ -872,8 +877,6 @@ class family_handler():
 
         if test_oneframe_overlap(base_model_type):
             extra_model_def["sliding_window_defaults"] = { "overlap_min" : 1, "overlap_max" : 1, "overlap_step": 0, "overlap_default": 1}
-        elif scail2:
-            extra_model_def["sliding_window_defaults"] = { "overlap_min" : 5, "overlap_max" : 5, "overlap_step": 0, "overlap_default": 5}
         elif svi2pro:
             extra_model_def["sliding_window_defaults"] = { "overlap_min" : 4, "overlap_max" : 4, "overlap_step": 0, "overlap_default": 4, "overlap_offset": 0}
 
@@ -999,7 +1002,6 @@ class family_handler():
             cfg = WAN_CONFIGS['i2v-14B']
         else:
             cfg = WAN_CONFIGS['t2v-14B']
-            # cfg = WAN_CONFIGS['t2v-1.3B']    
         from . import WanAny2V
         wan_model = WanAny2V(
             config=cfg,
@@ -1212,25 +1214,25 @@ class family_handler():
                     "video_prompt_type": "UVI" if model_def.get("kiwi_ref_embedder", True) else "UV", 
                 })
 
-        elif base_model_type in ["bernini"]:
-            ui_defaults.update({
+        elif test_bernini(base_model_type):
+            bernini_defaults = {
                 "video_prompt_type": "VI",
                 "resolution": "832x480",
                 "video_length": 81,
                 "num_inference_steps": 40,
-                "flow_shift": 3,
-                "guidance_phases": 2,
-                "model_switch_phase": 1,
-                "switch_threshold": 875,
+                "flow_shift": 5,
                 "guidance_scale": 4,
-                "guidance2_scale": 4,
-                "guidance3_scale": 1,
                 "control_net_weight": 1.25,
                 "alt_guidance_scale": 4.5,
                 "sample_solver": "unipc",
                 "remove_background_images_ref": 0,
                 "prompt_enhancer": "",
-            })
+            }
+            if base_model_type == "bernini_1.3B":
+                bernini_defaults.update({"guidance_phases": 1, "switch_threshold": 0})
+            else:
+                bernini_defaults.update({"guidance_phases": 2, "model_switch_phase": 1, "switch_threshold": 875, "guidance2_scale": 4, "guidance3_scale": 1})
+            ui_defaults.update(bernini_defaults)
 
         if base_model_type in ["recam_1.3B", "lucy_edit"]: 
             ui_defaults.update({

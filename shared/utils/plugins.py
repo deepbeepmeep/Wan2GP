@@ -15,7 +15,7 @@ import shutil
 import stat
 import json
 import requests
-video_gen_label = "Video Generator"
+media_gen_label = "Media Generator"
 
 COMMUNITY_PLUGINS_URL = "https://github.com/deepbeepmeep/Wan2GP/raw/refs/heads/main/plugins.json"
 PLUGIN_CATALOG_FILENAME = "plugins.json"
@@ -1341,16 +1341,16 @@ class WAN2GPApplication:
 
         all_tabs_to_render = pre_user_tabs + sorted_user_tabs + post_user_tabs
 
-        def goto_video_tab(state):
+        def goto_media_tab(state):
             self._handle_tab_selection(state, None)
-            return  gr.Tabs(selected="video_gen")
+            return  gr.Tabs(selected="media_gen")
         
 
         for tab_info in all_tabs_to_render:
             with gr.Tab(tab_info['label'], id=f"plugin_{tab_info['id']}") as new_tab:
                 self.all_rendered_tabs.append(new_tab)
                 plugin = self.tab_to_plugin_map[new_tab.label]
-                plugin.goto_video_tab = goto_video_tab
+                plugin.goto_media_tab = goto_media_tab
                 constructor = tab_info['component_constructor']
                 if self._component_constructor_accepts_api(constructor):
                     if not hasattr(plugin, "_wangp_session") or getattr(plugin, "_wangp_session", None) is None:
@@ -1390,8 +1390,8 @@ class WAN2GPApplication:
 
             for tab in self.all_rendered_tabs:
                 # def test_tab(state_component, evt: gr.SelectData):
-                #     last_save_form = state_component.get("last_save_form", video_gen_label)
-                #     if last_save_form != video_gen_label :
+                #     last_save_form = state_component.get("last_save_form", media_gen_label)
+                #     if last_save_form != media_gen_label :
                 #         state_component["ignore_save_form"] = True
                 #     else:
                 #         state_component["last_save_form"] = evt.value
@@ -1412,9 +1412,9 @@ class WAN2GPApplication:
             
     def _handle_tab_selection(self, state: dict, evt: gr.SelectData):
         if not hasattr(self, 'previous_tab_id'):
-            self.previous_tab_id = video_gen_label
+            self.previous_tab_id = media_gen_label
         
-        new_tab_id = video_gen_label if evt is None else evt.value
+        new_tab_id = media_gen_label if evt is None else evt.value
         
         if self.previous_tab_id == new_tab_id:
             return

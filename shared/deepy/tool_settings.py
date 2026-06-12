@@ -43,7 +43,7 @@ DEFAULT_SPEECH_FROM_SAMPLE_VARIANT = DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE
 TOOL_DISPLAY_NAMES = {
     "gen_image": "Image Generator",
     "edit_image": "Image Editor",
-    "gen_video": "Video Generator",
+    "gen_video": "Media Generator",
     "gen_video_with_speech": "Video With Speech",
     "gen_speech_from_description": "Speech From Description",
     "gen_speech_from_sample": "Speech From Sample",

@@ -152,6 +152,14 @@ class ProcessRunner:
         return ""
 
     @staticmethod
+    def _image_preview_from_result(result):
+        for artifact in tuple(getattr(result, "artifacts", ()) or ()):
+            video_tensor_uint8 = getattr(artifact, "video_tensor_uint8", None)
+            if video_tensor_uint8 is not None and int(video_tensor_uint8.shape[1]) > 0:
+                return video.frame_to_image(video_tensor_uint8[:, -1].detach().cpu().contiguous())
+        return None
+
+    @staticmethod
     def _map_source_image_settings(settings: dict, source_path: str) -> None:
         video_prompt_type = str(settings.get("video_prompt_type") or "")
         image_prompt_type = str(settings.get("image_prompt_type") or "")
@@ -167,7 +175,11 @@ class ProcessRunner:
             settings["image_guide"] = source_path
             settings.pop("video_guide", None)
 
-    def _build_image_task_settings(self, process_definition: dict, system_handler, *, source_path: str, prompt_text: str, process_strength: float, use_lora_strength_override: bool, system_target_control: str) -> dict:
+    @staticmethod
+    def _is_spatial_upsampling_task(settings: dict) -> bool:
+        return len(str(settings.get("spatial_upsampling") or settings.get("spatial_upsampling_method") or "").strip()) > 0
+
+    def _build_image_task_settings(self, process_definition: dict, system_handler, *, source_path: str, prompt_text: str, process_strength: float, use_lora_strength_override: bool, system_target_control: str, target_ratio: str, output_resolution: str) -> dict:
         process_settings = process_definition["settings"]
         if system_handler is not None and callable(getattr(system_handler, "build_image_queue_settings", None)):
             seed = int(time.time_ns() % 2_147_483_647)
@@ -182,9 +194,15 @@ class ProcessRunner:
             if use_lora_strength_override:
                 settings["loras_multipliers"] = str(process_strength)
             self._map_source_image_settings(settings, source_path)
+            if "video_guide_outpainting" in settings:
+                settings["video_guide_outpainting_ratio"] = str(target_ratio or "").strip()
+        if not self._is_spatial_upsampling_task(settings):
+            settings["resolution"] = output_paths.choose_resolution(output_resolution)
         api_settings = settings.get("_api")
         settings["_api"] = dict(api_settings) if isinstance(api_settings, dict) else {}
-        settings["_api"]["return_media"] = True
+        for key in ("return_media", "return_video_uint8", "return_audio", "return_flashvsr_continue_cache", "flashvsr_continue_cache"):
+            settings["_api"].pop(key, None)
+        settings["_api"]["return_video_uint8"] = True
         return settings
 
     def _move_image_output(self, generated_path: str, target_path: str) -> str:
@@ -194,10 +212,6 @@ class ProcessRunner:
         if generated.resolve() == target.resolve():
             return str(target)
         shutil.copy2(str(generated), str(target))
-        try:
-            os.remove(str(generated))
-        except OSError:
-            pass
         return str(target)
 
     def _start_image_process(self, request: RunRequest, process_definition: dict, system_handler, *, process_display_name: str, active_process_strength: float, use_lora_strength_override: bool, system_target_control: str, batch_internal: bool, batch_name: str, batch_source_path: str):
@@ -222,6 +236,7 @@ class ProcessRunner:
                     "source_path": source_path,
                     "batch_source_path": str(batch_source_path or "").strip(),
                     "batch_mode": "single",
+                    "media_kind": "image",
                     "batch_name": str(batch_name or "").strip(),
                     "process_strength": active_process_strength,
                     "output_path": output_path,
@@ -234,7 +249,7 @@ class ProcessRunner:
                     "sliding_window_overlap": request.sliding_window_overlap,
                     "start_seconds": request.start_seconds,
                     "end_seconds": request.end_seconds,
-                })
+                }, "image", "single")
             except OSError as exc:
                 message = f"Unable to save plugin settings to {catalog.MEDIAFLOW_SETTINGS_FILE}: {exc}"
                 yield self.info_exit(message)
@@ -255,6 +270,8 @@ class ProcessRunner:
             process_strength=active_process_strength,
             use_lora_strength_override=use_lora_strength_override,
             system_target_control=system_target_control,
+            target_ratio=request.target_ratio,
+            output_resolution=request.output_resolution,
         )
         try:
             yield self.ui_update(status_ui.render_process_status_html("Initializing", "Preparing image processing job..."), self.ui_skip, str(time.time_ns()) if not batch_internal else self.ui_skip, start_enabled=False, abort_enabled=False)
@@ -303,10 +320,12 @@ class ProcessRunner:
             if not generated_path:
                 raise gr.Error("Image processing completed without creating an output image.")
             final_output_path = self._move_image_output(generated_path, target_output_path)
-            image_preview = None
+            image_preview = self._image_preview_from_result(result)
             try:
-                with Image.open(final_output_path) as preview:
-                    image_preview = preview.copy()
+                if image_preview is None:
+                    with Image.open(final_output_path) as preview:
+                        image_preview = preview.copy()
+                if image_preview is not None:
                     try:
                         delattr(image_preview, "filename")
                     except (AttributeError, TypeError):
@@ -385,7 +404,7 @@ class ProcessRunner:
                 "sliding_window_overlap": sliding_window_overlap,
                 "start_seconds": start_seconds,
                 "end_seconds": end_seconds,
-            })
+            }, media_kind, "batch")
         except OSError as exc:
             yield self.info_exit(f"Unable to save plugin settings to {catalog.MEDIAFLOW_SETTINGS_FILE}: {exc}")
             return
@@ -601,6 +620,7 @@ class ProcessRunner:
                     "source_path": source_path,
                     "batch_source_path": str(batch_source_path or "").strip(),
                     "batch_mode": "single",
+                    "media_kind": "video",
                     "batch_name": str(batch_name or "").strip(),
                     "process_strength": active_process_strength,
                     "output_path": output_path,
@@ -613,7 +633,7 @@ class ProcessRunner:
                     "sliding_window_overlap": sliding_window_overlap,
                     "start_seconds": start_seconds,
                     "end_seconds": end_seconds,
-                })
+                }, "video", "single")
             except OSError as exc:
                 message = f"Unable to save plugin settings to {catalog.MEDIAFLOW_SETTINGS_FILE}: {exc}"
                 yield self.info_exit(message)

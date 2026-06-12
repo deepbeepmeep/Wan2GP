@@ -484,24 +484,24 @@ class family_handler:
                         "selection": ["T", "TI", "T1", "TI1"],
                         "labels": {
                             "T": "An Enhanced Prompt using existing Text Prompt",
-                            "TI": "An Enhanced Prompt using existing Text Prompt and Start Image",
-                            "T1": "An Enhanced Relayed Prompt using existing Text Prompt",
-                            "TI1": "An Enhanced Relayed Prompt using existing Text Prompt and Start Image",
+                            "TIV": "An Enhanced Prompt using existing Text Prompt and Start Image",
+                            "T1V": "An Enhanced Relayed Prompt using existing Text Prompt",
+                            "TI1V": "An Enhanced Relayed Prompt using existing Text Prompt and Start Image",
                         },
                         "default": "",
                     },
                     "text_prompt_enhancer_instructions1": LTX2_RELAYED_PROMPT,
                     "video_prompt_enhancer_instructions1": LTX2_RELAYED_IMAGE_PROMPT,
-                    "image_prompt_enhancer_instructions1": LTX2_RELAYED_IMAGE_PROMPT,
                     "text_prompt_enhancer_max_tokens1": 1024,
                     "video_prompt_enhancer_max_tokens1": 1024,
-                    "image_prompt_enhancer_max_tokens1": 1024,
                     "audio_guide_window_slicing": True,
                     "video_length_not_limited_by_audio": True,
                     "output_audio_is_input_audio": True,
                     "multiple_images_as_text_prompts": True,
                     "custom_denoising_strength": distilled,
                     "NAG": True,
+                    "v2i_switch_supported": True,
+                    "image_batch_size_max": 1,
                 }
             )
             extra_model_def["denoising_strength"] = {
@@ -520,13 +520,16 @@ class family_handler:
                 if base_model_type == "ltx2_22B":
                     control_choices += [("Convert SDR to HDR (IC-LoRA)", f"V&G")]
                 control_choices += [("Inject Frames", "KFI")]
-            extra_model_def["guide_custom_choices"] = {
+            control_choices_image = [(label, value) for label, value in control_choices if value not in ("OVG", "KFI", "V&G")]
+            guide_custom_choices = {
                 "choices": control_choices,
                 "letters_filter": f"OPDEVG&KFI",
                 "default": "VGI" if editanything_ref else "",
                 "label": "Control Video / Frames Injection",
                 "visible": not editanything_ref,
             }
+            extra_model_def["guide_custom_choices"] = guide_custom_choices
+            extra_model_def["guide_custom_choices_image"] = {**guide_custom_choices, "choices": control_choices_image, "label": "Control Image"}
             extra_model_def["custom_frames_injection"] = True
             extra_model_def["one_image_ref_only"] = True
             if editanything_ref:

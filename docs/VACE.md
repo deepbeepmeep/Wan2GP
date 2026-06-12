@@ -80,7 +80,7 @@ There are two ways to do Spatial Outpainting:
 
 ### Example 1 : Replace a Person in one video by another one by keeping the Background
 1) In Vace, select *Control Video Process*=**Transfer human pose**, *Area processed*=**Masked area** 
-2) In *Matanyone Video Mask Creator*, load your source video and create a mask where you targetted a specific person 
+2) In *Mask Generator*, load your source video and create a mask where you targetted a specific person
 3) Click *Export to Control Video Input and Video Mask Input* to transfer both the original video that now becomes the *Control Video* and the black & white mask that now defines the *Video Mask Area*
 4) Back in Vace, in *Reference Image* select **Inject Landscapes / People / Objects** and upload one or several pictures of the new person
 5) Generate
@@ -90,7 +90,7 @@ This works also with several people at the same time (you just need to mask seve
 
 ### Example 2 : Change the Background behind some characters
 1) In Vace, select *Control Video Process*=**Inpainting**, *Area processed*=**Non Masked area** 
-2) In *Matanyone Video Mask Creator*, load your source video and create a mask where you targetted the people you want to keep 
+2) In *Mask Generator*, load your source video and create a mask where you targetted the people you want to keep
 3) Click *Export to Control Video Input and Video Mask Input* to transfer both the original video that now becomes the *Control Video* and the black & white mask that now defines the *Video Mask Area*
 4) Generate
 
@@ -211,4 +211,4 @@ WanGP includes automatic background removal options:
 3. **Proper Masking**: Take time to create precise masks with Matanyone
 4. **Iterative Approach**: Start with short videos, then extend successful results
 5. **Background Preparation**: Remove complex backgrounds from object/person reference images
-6. **Consistent Lighting**: Match lighting between reference images and intended scene 
+6. **Consistent Lighting**: Match lighting between reference images and intended scene

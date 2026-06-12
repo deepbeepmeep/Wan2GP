@@ -70,7 +70,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             release_GPU(state)
             return "42"
 
-        def generate_video(progress=gr.Progress(track_tqdm=False)):
+        def generate_media(progress=gr.Progress(track_tqdm=False)):
             class DemoCallbacks:
                 ratio = 0.0
 
@@ -143,8 +143,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         update_btn.click(fn=update_prompt, inputs=[state, sample_text], outputs=[self.refresh_form_trigger])
         process_btn.click(fn=big_process, inputs=[state], outputs=[process_output])
-        goto_btn.click(fn=self.goto_video_tab, inputs=[state], outputs=[self.main_tabs])
-        start_btn.click(fn=generate_video, outputs=[output_video], queue=False)
+        goto_btn.click(fn=self.goto_media_tab, inputs=[state], outputs=[self.main_tabs])
+        start_btn.click(fn=generate_media, outputs=[output_video], queue=False)
         abort_btn.click(fn=cancel_demo, queue=False)
         write_finetune_btn.click(fn=write_finetune)
 

@@ -2172,7 +2172,7 @@ class tools:
                     self._update_tool_progress("running", "Running", {"status": "running", "client_id": client_id, "prompt": prompt, "resolution": resolution})
                     break
                 if not queue_wait_suspend_logged and time.time() - queue_wait_started_at >= 10:
-                    print(f"Tool {activity_console_label} suspended while waiting than WanGP Video Generator gets in focus")
+                    print(f"Tool {activity_console_label} suspended while waiting than WanGP Media Generator gets in focus")
                     queue_wait_suspend_logged = True
                     queue_wait_suspended = True
                 time.sleep(0.25)

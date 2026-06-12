@@ -59,7 +59,7 @@ class GuidesPlugin(WAN2GPPlugin):
                     outputs=[self.model_choice_target],
                     show_progress="hidden"
                 ).then(
-                    fn=self.goto_video_tab,
+                    fn=self.goto_media_tab,
                     inputs=[self.state],
                     outputs=[self.main_tabs]
                 )

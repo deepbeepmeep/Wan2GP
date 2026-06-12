@@ -448,7 +448,7 @@
         }
         // Update Send button label for trajectory mode
         if (dom.sendToWangpBtn) {
-            dom.sendToWangpBtn.textContent = isTrajectory ? "Export Trajectories" : "Send to Video Generator";
+            dom.sendToWangpBtn.textContent = isTrajectory ? "Export Trajectories" : "Send to Media Generator";
         }
         // Update Preview button label for trajectory mode
         if (dom.previewModeBtn && !state.previewMode) {

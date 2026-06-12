@@ -545,8 +545,8 @@ class WebUIQueueProbe:
             return
         if self._submitted_at <= 0 or time.time() - self._submitted_at < self._QUEUE_ADMISSION_SUSPEND_NOTICE_SECONDS or self._queue_wait_suspended:
             return
-        print("WanGP API queue suspended while waiting for Video Generator to get browser focus")
-        self._publish("status", "Waiting for WanGP Video Generator to get browser focus...", "on_status")
+        print("WanGP API queue suspended while waiting for Media Generator to get browser focus")
+        self._publish("status", "Waiting for WanGP Media Generator to get browser focus...", "on_status")
         self._queue_wait_suspended = True
 
     def _finalize_cancelled_clients(self, queue_client_ids: list[str]) -> None:

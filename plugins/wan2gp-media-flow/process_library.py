@@ -98,11 +98,13 @@ class ProcessLibrary:
             "value": catalog.user_process_value(normalized_ref),
         }
 
-    def user_process_definitions(self, user_refs: list[str]) -> dict[str, dict]:
+    def user_process_definitions(self, user_refs: list[str], media_kind: str | None = None) -> dict[str, dict]:
         definitions: dict[str, dict] = {}
         for ref in catalog.get_saved_user_settings_refs({catalog.USER_SETTINGS_STORAGE_KEY: user_refs}):
             definition = self.build_user_process_definition(ref)
             if definition is None:
+                continue
+            if media_kind is not None and catalog.process_definition_media_kind(definition) != catalog.normalize_media_kind(media_kind):
                 continue
             value = str(definition.get("value") or "")
             if len(value) > 0:
@@ -223,19 +225,17 @@ class ProcessLibrary:
 
     @staticmethod
     def process_definition_is_image(process_definition: dict | None) -> bool:
-        settings = process_definition.get("settings") if isinstance(process_definition, dict) else None
-        if not isinstance(settings, dict):
-            return False
-        try:
-            return int(settings.get("image_mode") or 0) == 1
-        except (TypeError, ValueError):
-            return False
+        return catalog.process_definition_media_kind(process_definition) == "image"
 
     def is_image_process(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:
         return self.process_definition_is_image(self.process_definition(process_name, main_state, user_refs))
 
     def media_kind_for_process(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> str:
-        return "image" if self.is_image_process(process_name, main_state, user_refs) else "video"
+        return catalog.process_definition_media_kind(self.process_definition(process_name, main_state, user_refs))
+
+    def media_kind_for_user_ref(self, ref: str) -> str:
+        definition = self.build_user_process_definition(ref)
+        return catalog.process_definition_media_kind(definition) if definition is not None else ""
 
     @staticmethod
     def system_handler_for_definition(process_definition: dict | None):
@@ -293,8 +293,6 @@ class ProcessLibrary:
         return bool(getattr(handler, "hide_sliding_window_overlap", False)) if handler is not None else False
 
     def hides_output_resolution(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:
-        if self.is_image_process(process_name, main_state, user_refs):
-            return True
         handler = self.system_handler_for_process(process_name, main_state, user_refs)
         return bool(getattr(handler, "hide_output_resolution", False)) if handler is not None else False
 
@@ -310,31 +308,35 @@ class ProcessLibrary:
         model_type = self.process_definition_model_type(process_definition)
         return frames.get_frame_plan_rules(model_type, self.get_model_def)
 
-    def process_values_by_model_type(self, user_refs: list[str]) -> dict[str, list[str]]:
+    def process_values_by_model_type(self, media_kind: str, user_refs: list[str]) -> dict[str, list[str]]:
+        media_kind = catalog.normalize_media_kind(media_kind)
         values_by_model_type: dict[str, list[str]] = {}
         for process_name, process_definition in catalog.PROCESS_DEFINITIONS.items():
+            if catalog.process_definition_media_kind(process_definition) != media_kind:
+                continue
             model_type = str(process_definition.get("settings", {}).get("model_type") or "").strip()
             if len(model_type) > 0:
                 values_by_model_type.setdefault(model_type, []).append(process_name)
-        for value, definition in self.user_process_definitions(user_refs).items():
+        for value, definition in self.user_process_definitions(user_refs, media_kind).items():
             model_type = self.process_definition_model_type(definition)
             if len(model_type) > 0:
                 values_by_model_type.setdefault(model_type, []).append(value)
         return values_by_model_type
 
-    def model_type_choices(self, user_refs: list[str]) -> list[tuple[str, str]]:
-        model_types = sorted(self.process_values_by_model_type(user_refs), key=lambda item: self.model_type_label(item).casefold())
+    def model_type_choices(self, media_kind: str, user_refs: list[str]) -> list[tuple[str, str]]:
+        model_types = sorted(self.process_values_by_model_type(media_kind, user_refs), key=lambda item: self.model_type_label(item).casefold())
         choices = [(self.model_type_label(model_type), model_type) for model_type in model_types]
         choices.append((constants.ADD_USER_SETTINGS_LABEL, constants.ADD_USER_SETTINGS_MODEL_TYPE))
         return choices
 
-    def normal_process_choices(self, model_type: str, user_refs: list[str]) -> list[tuple[str, str]]:
+    def normal_process_choices(self, media_kind: str, model_type: str, user_refs: list[str]) -> list[tuple[str, str]]:
+        media_kind = catalog.normalize_media_kind(media_kind)
         model_type = str(model_type or "").strip()
         entries: list[tuple[str, str, str]] = []
         for process_name, process_definition in catalog.PROCESS_DEFINITIONS.items():
-            if str(process_definition.get("settings", {}).get("model_type") or "").strip() == model_type:
+            if catalog.process_definition_media_kind(process_definition) == media_kind and str(process_definition.get("settings", {}).get("model_type") or "").strip() == model_type:
                 entries.append((process_name, process_name, "system"))
-        for value, definition in self.user_process_definitions(user_refs).items():
+        for value, definition in self.user_process_definitions(user_refs, media_kind).items():
             if self.process_definition_model_type(definition) == model_type:
                 label_name = str(definition.get("name") or "").strip()
                 if len(label_name) == 0:
@@ -345,8 +347,14 @@ class ProcessLibrary:
         entries.sort(key=lambda item: (item[0].removesuffix(" *").casefold(), 0 if item[2] == "system" else 1))
         return [(label, value) for label, value, _source in entries]
 
-    def current_user_settings_choices(self, main_state: dict | None, main_lset_name: str | None) -> tuple[list[tuple[str, str]], str]:
+    def current_user_settings_choices(self, media_kind: str, main_state: dict | None, main_lset_name: str | None) -> tuple[list[tuple[str, str]], str]:
+        media_kind = catalog.normalize_media_kind(media_kind)
         filenames = self.current_user_settings_filenames(main_state)
+        filenames = [
+            filename
+            for filename in filenames
+            if catalog.process_definition_media_kind(self.build_candidate_user_process_definition(main_state, filename)) == media_kind
+        ]
         if len(filenames) == 0:
             return [(constants.NO_USER_SETTINGS_LABEL, constants.NO_USER_SETTINGS_VALUE)], constants.NO_USER_SETTINGS_VALUE
         choices = [(Path(filename).stem, filename) for filename in filenames]
@@ -354,28 +362,29 @@ class ProcessLibrary:
         value = selected if selected in filenames else filenames[0]
         return choices, value
 
-    def process_choices(self, process_model_type: str, main_state: dict | None, main_lset_name: str | None, user_refs: list[str]) -> tuple[list[tuple[str, str]], str | None]:
+    def process_choices(self, media_kind: str, process_model_type: str, main_state: dict | None, main_lset_name: str | None, user_refs: list[str]) -> tuple[list[tuple[str, str]], str | None]:
         if str(process_model_type or "").strip() == constants.ADD_USER_SETTINGS_MODEL_TYPE:
-            return self.current_user_settings_choices(main_state, main_lset_name)
-        choices = self.normal_process_choices(str(process_model_type or "").strip(), user_refs)
+            return self.current_user_settings_choices(media_kind, main_state, main_lset_name)
+        choices = self.normal_process_choices(media_kind, str(process_model_type or "").strip(), user_refs)
         return choices, choices[0][1] if len(choices) > 0 else None
 
     @staticmethod
     def process_choices_have_user_settings(process_choices: list[tuple[str, str]]) -> bool:
         return any(catalog.is_user_process_value(value) for _label, value in list(process_choices or []))
 
-    def default_process_definition(self) -> dict:
-        definition = self.system_process_definition(catalog.DEFAULT_PROCESS_NAME)
+    def default_process_definition(self, media_kind: str = catalog.DEFAULT_MEDIA_KIND) -> dict:
+        media_kind = catalog.normalize_media_kind(media_kind)
+        definition = self.system_process_definition(catalog.default_process_name(media_kind))
         if definition is not None:
             return definition
         for process_name in catalog.PROCESS_DEFINITIONS:
             definition = self.system_process_definition(process_name)
-            if definition is not None:
+            if definition is not None and catalog.process_definition_media_kind(definition) == media_kind:
                 return definition
         return {"settings": {}, "path": "", "source": "system", "name": "", "value": ""}
 
-    def process_definition_or_default(self, process_name: str, main_state: dict | None, user_refs: list[str] | None) -> dict:
-        return self.process_definition(process_name, main_state, user_refs) or self.default_process_definition()
+    def process_definition_or_default(self, process_name: str, main_state: dict | None, user_refs: list[str] | None, media_kind: str = catalog.DEFAULT_MEDIA_KIND) -> dict:
+        return self.process_definition(process_name, main_state, user_refs) or self.default_process_definition(media_kind)
 
     @staticmethod
     def uses_builtin_outpaint_ui(process_definition: dict | None) -> bool:
@@ -414,10 +423,11 @@ class ProcessLibrary:
     def format_user_process_validation_error(self, process_definition: dict | None, problems: list[str]) -> str:
         return process_validation.format_user_process_validation_error(process_definition, problems)
 
-    def select_after_user_process_delete(self, deleted_process_value: str, deleted_model_type: str, old_refs: list[str], new_refs: list[str]) -> tuple[str, str, list[tuple[str, str]]]:
-        old_choices = self.normal_process_choices(deleted_model_type, old_refs)
+    def select_after_user_process_delete(self, media_kind: str, deleted_process_value: str, deleted_model_type: str, old_refs: list[str], new_refs: list[str]) -> tuple[str, str, list[tuple[str, str]]]:
+        media_kind = catalog.normalize_media_kind(media_kind)
+        old_choices = self.normal_process_choices(media_kind, deleted_model_type, old_refs)
         deleted_index = next((index for index, (_label, value) in enumerate(old_choices) if value == deleted_process_value), -1)
-        new_choices = self.normal_process_choices(deleted_model_type, new_refs)
+        new_choices = self.normal_process_choices(media_kind, deleted_model_type, new_refs)
         new_values = {value for _label, value in new_choices}
         if deleted_index >= 0:
             for _label, value in old_choices[deleted_index + 1:]:
@@ -426,11 +436,13 @@ class ProcessLibrary:
         first_system_value = next((value for _label, value in new_choices if not catalog.is_user_process_value(value)), None)
         if first_system_value is not None:
             return deleted_model_type, first_system_value, new_choices
-        for model_type in sorted(self.process_values_by_model_type(new_refs), key=lambda item: self.model_type_label(item).casefold()):
-            choices = self.normal_process_choices(model_type, new_refs)
+        for model_type in sorted(self.process_values_by_model_type(media_kind, new_refs), key=lambda item: self.model_type_label(item).casefold()):
+            choices = self.normal_process_choices(media_kind, model_type, new_refs)
             first_system_value = next((value for _label, value in choices if not catalog.is_user_process_value(value)), None)
             if first_system_value is not None:
                 return model_type, first_system_value, choices
         if len(new_choices) > 0:
             return deleted_model_type, new_choices[0][1], new_choices
-        return catalog.DEFAULT_MODEL_TYPE, catalog.DEFAULT_PROCESS_NAME, self.normal_process_choices(catalog.DEFAULT_MODEL_TYPE, new_refs)
+        default_model_type = catalog.default_model_type(media_kind)
+        default_process_name = catalog.default_process_name(media_kind)
+        return default_model_type, default_process_name, self.normal_process_choices(media_kind, default_model_type, new_refs)

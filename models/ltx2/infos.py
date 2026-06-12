@@ -8,6 +8,14 @@ LTX2_INFOS = """
 - Control Video / Frames Injection: guide the new video with motion, structure, raw frames, HDR conversion, outpainting, or injected reference frames.
 - EditAnything variants: provide a source/control video plus one reference image to add or edit a subject in the video.
 
+## Text To Image Mode
+
+LTX2 image generation is implemented by generating a short video internally and keeping only the first frame.
+
+Image quality, reference identity, and control-image adherence can often be improved from the Quality tab with `Generate more frames to preserve Reference Image Identity / Control Image Information or improve`.
+
+Some IC-LoRAs, such as the union-control LoRA used by pose, depth, and canny control, need at least 9 frames so the model has more than one temporal latent. If image mode uses these controls and only one latent was requested, WanGP automatically expands the internal generation to 9 frames and still returns only the first frame.
+
 ## Control Video Processes
 
 - `No Video Process`: the Control Video is not used as a visual guide.

@@ -136,6 +136,13 @@ class FluxImageRequest(BaseModel):
                 if self.inpaint_reference_path and self.inpaint_reference_path != image_start_path:
                     refs.append(self.inpaint_reference_path)
                 settings["image_refs"] = refs
+
+            # set the masking strength based on whether you gave an image;
+            # users tend to want less side effects of non-masked areas if you give an image reference
+            if self.inpaint_reference_path:
+                settings["masking_strength"] = 0.5
+            else:
+                settings["masking_strength"] = 0.25
         else:
             # Default behaviour (no mask)
             if image_start_path:

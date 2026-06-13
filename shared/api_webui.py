@@ -213,6 +213,7 @@ class WebUIQueueProbe:
     _POLL_INTERVAL_SECONDS = 0.2
     _MISSING_OUTPUT_TIMEOUT_SECONDS = 5.0
     _QUEUE_ADMISSION_SUSPEND_NOTICE_SECONDS = 10.0
+    _QUEUE_ADMISSION_TIMEOUT_SECONDS = 120.0
     _INLINE_QUEUE_SLOT_TIMEOUT_SECONDS = 10.0
     _CANCEL_GRACE_SECONDS = 1.0
 
@@ -543,7 +544,28 @@ class WebUIQueueProbe:
         if self._gen.get("in_progress", False) or list(self._gen.get("queue", []) or []):
             self._submitted_at = time.time()
             return
-        if self._submitted_at <= 0 or time.time() - self._submitted_at < self._QUEUE_ADMISSION_SUSPEND_NOTICE_SECONDS or self._queue_wait_suspended:
+        if self._submitted_at <= 0:
+            return
+        waited = time.time() - self._submitted_at
+        if waited >= self._QUEUE_ADMISSION_TIMEOUT_SECONDS:
+            # The load_queue trigger round-trip never completed (e.g. the Media
+            # Generator tab/window lost browser focus and the browser throttled the
+            # socket), so the task was never admitted to the queue. No other code path
+            # errors an un-admitted task -- the missing-output timeout is gated behind
+            # admission -- so without this, run() loops forever and SessionJob.result()
+            # blocks its caller permanently with no output and no error. Fail the
+            # still-pending clients so run() can return with an actionable error.
+            print(f"WanGP API queue admission timed out after {waited:.0f}s client_ids={pending_client_ids}")
+            for client_id in pending_client_ids:
+                self._register_error(
+                    client_id,
+                    "WanGP never started this generation: the queue never admitted the "
+                    "task (the Media Generator likely lost browser focus). Give the "
+                    "Media Generator tab focus and try again.",
+                    stage="admission",
+                )
+            return
+        if waited < self._QUEUE_ADMISSION_SUSPEND_NOTICE_SECONDS or self._queue_wait_suspended:
             return
         print("WanGP API queue suspended while waiting for Media Generator to get browser focus")
         self._publish("status", "Waiting for WanGP Media Generator to get browser focus...", "on_status")

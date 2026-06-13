@@ -142,7 +142,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "12.21"
+WanGP_version = "12.22"
 settings_version = 2.61
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -2520,6 +2520,19 @@ if checkpoints_paths is None: checkpoints_paths = server_config["checkpoints_pat
 fl.set_checkpoints_paths(checkpoints_paths)
 three_levels_hierarchy = server_config.get("model_hierarchy_type", 1) == 1
 
+if app is None:
+    app = WAN2GPApplication()
+app.plugin_manager.set_server_config(server_config, server_config_filename)
+plugin_model_extensions = app.plugin_manager.discover_plugin_model_extensions(server_config.get("enabled_plugins", []))
+model_handler_sources = {path: {"profile_roots": ["profiles"], "plugin_id": ""} for path in family_handlers}
+model_definition_sources = [{"defaults_root": "defaults", "plugin_id": ""}]
+for extension in plugin_model_extensions:
+    model_definition_sources.append({"defaults_root": extension.defaults_root, "plugin_id": extension.plugin_id})
+    for handler_path in extension.model_handlers:
+        if handler_path not in family_handlers:
+            family_handlers.append(handler_path)
+        model_handler_sources[handler_path] = {"profile_roots": [extension.profiles_root, "profiles"], "plugin_id": extension.plugin_id}
+
 from postprocessing.seedvc.wgp_bridge import SeedVCBridge
 from postprocessing.mmaudio import MMAUDIO_ALTERNATE, MMAUDIO_MODE_V2, MMAUDIO_PERSIST_RAM, MMAUDIO_STANDARD, get_mmaudio_settings, normalize_mmaudio_config
 from shared.utils import offload_registry
@@ -2586,11 +2599,17 @@ def map_family_handlers(family_handlers):
     base_types_handlers, families_infos, models_eqv_map, models_comp_map = {}, {"unknown": (100, "Unknown")}, {}, {}
     for path in family_handlers:
         handler = importlib.import_module(path).family_handler
+        handler_source = model_handler_sources.get(path, {})
+        profile_roots = handler_source.get("profile_roots", ["profiles"])
+        plugin_id = handler_source.get("plugin_id", "")
         for model_type in handler.query_supported_types():
             if model_type in base_types_handlers:
                 prev = base_types_handlers[model_type].__name__
                 raise Exception(f"Model type {model_type} supported by {prev} and {handler.__name__}")
             base_types_handlers[model_type] = handler
+            model_profile_roots_by_architecture[model_type] = list(profile_roots)
+            if plugin_id:
+                model_plugin_ids_by_architecture[model_type] = plugin_id
         families_infos.update(handler.query_family_infos())
         eq_map, comp_map = handler.query_family_maps()
         models_eqv_map.update(eq_map); models_comp_map.update(comp_map)
@@ -2598,6 +2617,9 @@ def map_family_handlers(family_handlers):
 
 # models_eqv_map: bidirectional compatibility between base model types
 # models_comp_map : mono directional compatibility between base model types {"A" : {"B", "C"} } means B & C model types can accept A  model types (but not the other way). Said otherwise B & C are derived data types
+
+model_profile_roots_by_architecture = {}
+model_plugin_ids_by_architecture = {}
 
 model_types_handlers, families_infos,  models_eqv_map, models_comp_map = map_family_handlers(family_handlers)
 
@@ -3080,13 +3102,20 @@ def init_model_def(model_type, model_def):
     default_model_def = family_handler.query_model_def(base_model_type, model_def)
     if default_model_def is None: return model_def
     default_model_def.update(model_def)
+    default_model_def["_profile_roots"] = model_profile_roots_by_architecture.get(base_model_type, ["profiles"])
+    plugin_id = model_plugin_ids_by_architecture.get(base_model_type, "")
+    if plugin_id:
+        default_model_def["_plugin_id"] = plugin_id
     return _store_model_metadata(model_type, default_model_def)
 
 
 def refresh_model_defs():
     global models_def, model_types, displayed_model_types
     new_models_def, parse_errors, previous_models_def, old_model_types = {}, [], models_def.copy(), set()
-    defaults_paths = set(glob.glob(os.path.join("defaults", "*.json")))
+    defaults_paths = set()
+    for source in model_definition_sources:
+        defaults_root = source["defaults_root"]
+        defaults_paths.update(glob.glob(os.path.join(defaults_root, "*.json")))
     models_def_paths = sorted([*defaults_paths, *glob.glob(os.path.join("finetunes", "*.json"))])
     def warn(msg):
         print(msg)
@@ -8480,10 +8509,29 @@ def _normalize_builtin_lset_dirs(settings_dirs):
     return [str(dir) for dir in settings_dirs if isinstance(dir, str) and len(dir) > 0]
 
 
+def _normalize_model_profile_roots(model_type):
+    roots = get_model_recursive_prop(model_type, "_profile_roots", return_list=False)
+    if isinstance(roots, str):
+        roots = [roots]
+    elif not isinstance(roots, list):
+        roots = []
+    roots = [str(root) for root in roots if isinstance(root, str) and len(root) > 0]
+    return roots or ["profiles"]
+
+
+def _builtin_profile_choice_path(root, dir_name, file_path):
+    if os.path.isabs(root) or os.path.isabs(dir_name):
+        return file_path
+    return os.path.join(dir_name, os.path.basename(file_path))
+
+
+def _builtin_lset_file_path(lset_name):
+    return lset_name if os.path.isabs(lset_name) else os.path.join("profiles", lset_name)
+
+
 def _get_builtin_lset_groups(model_type):
     if model_type is None:
         return []
-    top_dir = "profiles"
     group_defs = [
         ("accelerator_profiles", "Accelerators Profiles", "profiles_dir"),
         ("preset_settings", "Presets", "preset_profiles_dir"),
@@ -8492,11 +8540,12 @@ def _get_builtin_lset_groups(model_type):
     for group_id, title, prop_name in group_defs:
         paths = []
         for dir_name in _normalize_builtin_lset_dirs(get_model_recursive_prop(model_type, prop_name, return_list=False)):
-            cur_path = os.path.join(top_dir, dir_name)
-            if not os.path.isdir(cur_path):
-                continue
-            cur_dir_presets = glob.glob(os.path.join(cur_path, "*.json"))
-            paths += [os.path.join(dir_name, os.path.basename(path)) for path in cur_dir_presets]
+            for root in _normalize_model_profile_roots(model_type):
+                cur_path = os.path.join(root, dir_name)
+                if not os.path.isdir(cur_path):
+                    continue
+                cur_dir_presets = glob.glob(os.path.join(cur_path, "*.json"))
+                paths += [_builtin_profile_choice_path(root, dir_name, path) for path in cur_dir_presets]
         paths = sorted(dict.fromkeys(paths), key=lambda n: os.path.basename(n).lower())
         if len(paths) > 0:
             builtin_groups.append((group_id, title, paths))
@@ -8764,7 +8813,7 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
             builtin_lset_type = _get_builtin_lset_type(current_model_type, lset_name)
             accelerator_profile = builtin_lset_type == "accelerator_profiles"
             builtin_preset_settings = builtin_lset_type == "preset_settings"
-            lset_path = os.path.join("profiles", lset_name) if builtin_lset_type is not None else os.path.join(get_lora_dir(current_model_type), lset_name)
+            lset_path = _builtin_lset_file_path(lset_name) if builtin_lset_type is not None else os.path.join(get_lora_dir(current_model_type), lset_name)
             merge_loras = "merge before" if accelerator_profile else "merge after"
             configs, _, _ = get_settings_from_file(state,lset_path , True, True, True, min_settings_version=2.38, merge_loras = merge_loras )
 
@@ -13289,7 +13338,8 @@ if __name__ == "__main__":
     if args.mcp:
         sys.exit(run_mcp_server())
 
-    app = WAN2GPApplication()
+    if app is None:
+        app = WAN2GPApplication()
 
     if args.ask_deepy:
         download_ffmpeg()

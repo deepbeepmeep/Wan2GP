@@ -1,7 +1,15 @@
 import gradio as gr
 import json
 import traceback
-from shared.utils.plugins import WAN2GPPlugin, compare_release_metadata, is_wangp_compatible, plugin_id_from_url
+from shared.utils.plugins import WAN2GPPlugin, compare_release_metadata, is_wangp_compatible, normalize_plugin_types, plugin_id_from_url
+
+DISCOVER_PLUGIN_TYPE_TABS = (
+    ("all", "All", None),
+    ("apps", "Apps", "app"),
+    ("extensions", "Extensions", "extension"),
+    ("upsamplers", "Upsamplers", "spatial_upsampler"),
+    ("models", "Models", "model"),
+)
 
 class PluginManagerUIPlugin(WAN2GPPlugin):
     def __init__(self):
@@ -186,7 +194,16 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
             self._community_plugins_cache = {}
             return {}
 
-    def _build_community_plugins_html(self):
+    def _build_community_plugins_html_outputs(self):
+        return [self._build_community_plugins_html(plugin_type) for _, _, plugin_type in DISCOVER_PLUGIN_TYPE_TABS]
+
+    def _empty_community_message(self, plugin_type):
+        if plugin_type is None:
+            return "All available community plugins are already installed."
+        label = next(label for _, label, tab_type in DISCOVER_PLUGIN_TYPE_TABS if tab_type == plugin_type)
+        return f"No available {label.lower()} plugins found."
+
+    def _build_community_plugins_html(self, plugin_type=None):
         try:
             installed_plugin_ids = {p['id'] for p in self.app.plugin_manager.get_plugins_info()}
             remote_plugins = self._get_community_plugins_info()
@@ -198,7 +215,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
             }
             community_plugins = [
                 p for plugin_id, p in remote_plugins.items()
-                if plugin_id not in installed_plugin_ids
+                if plugin_id not in installed_plugin_ids and (plugin_type is None or plugin_type in normalize_plugin_types(p.get('type')))
             ]
             community_plugins.sort(
                 key=lambda p: (
@@ -212,7 +229,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
             return "<p style='text-align:center; color: var(--color-accent-soft);'>Failed to load community plugins.</p>"
 
         if not community_plugins:
-            return "<p style='text-align:center; color: var(--text-color-secondary);'>All available community plugins are already installed.</p>"
+            return f"<p style='text-align:center; color: var(--text-color-secondary);'>{self._empty_community_message(plugin_type)}</p>"
 
         items_html = ""
         for plugin in community_plugins:
@@ -414,9 +431,12 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                         self.refresh_catalog_button = gr.Button("Check for Updates", variant="secondary", size="sm", scale=0, elem_classes="stylish-save-btn")
                 with gr.Column(scale=2, min_width=300):
                     gr.Markdown("### Discover & Install")
-                    
-                    self.community_plugins_html = gr.HTML()
-                    
+                    self.community_plugins_html_outputs = []
+                    with gr.Tabs(selected="all"):
+                        for tab_id, label, _ in DISCOVER_PLUGIN_TYPE_TABS:
+                            with gr.Tab(label, id=tab_id):
+                                self.community_plugins_html_outputs.append(gr.HTML())
+
                     with gr.Accordion("Install from URL", open=True):
                         with gr.Group():
                             self.plugin_url_textbox = gr.Textbox(label="GitHub URL", placeholder="https://github.com/user/wan2gp-plugin-repo")
@@ -432,7 +452,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         self.main_tabs.select(
             self._on_tab_select_refresh,
             None,
-            [self.plugins_html_display, self.community_plugins_html],
+            [self.plugins_html_display, *self.community_plugins_html_outputs],
             show_progress="hidden"
         )
         
@@ -441,7 +461,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         self.refresh_catalog_button.click(
             fn=self._refresh_catalog,
             inputs=[],
-            outputs=[self.plugins_html_display, self.community_plugins_html],
+            outputs=[self.plugins_html_display, *self.community_plugins_html_outputs],
             show_progress="full"
         )
 
@@ -454,14 +474,14 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         self.plugin_action_input.change(
             fn=self._handle_plugin_action_from_json,
             inputs=[self.plugin_action_input],
-            outputs=[self.plugins_html_display, self.community_plugins_html],
+            outputs=[self.plugins_html_display, *self.community_plugins_html_outputs],
             show_progress="full"
         )
 
         self.install_plugin_button.click(
             fn=self._install_plugin_and_refresh,
             inputs=[self.plugin_url_textbox],
-            outputs=[self.plugins_html_display, self.community_plugins_html, self.plugin_url_textbox],
+            outputs=[self.plugins_html_display, *self.community_plugins_html_outputs, self.plugin_url_textbox],
             show_progress="full"
         )
 
@@ -469,13 +489,13 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
 
     def _on_tab_select_refresh(self, evt: gr.SelectData):
         if evt.value != "Plugins":
-            return gr.update(), gr.update()
+            return (gr.update(), *[gr.update() for _ in DISCOVER_PLUGIN_TYPE_TABS])
         if hasattr(self, '_community_plugins_cache'):
             del self._community_plugins_cache
-            
+
         installed_html = self._build_plugins_html()
-        community_html = self._build_community_plugins_html()
-        return gr.update(value=installed_html), gr.update(value=community_html)
+        community_outputs = [gr.update(value=html) for html in self._build_community_plugins_html_outputs()]
+        return gr.update(value=installed_html), *community_outputs
 
     def _refresh_catalog(self, progress=gr.Progress()):
         self.app.plugin_manager.refresh_catalog(installed_only=True, use_remote=False)
@@ -488,7 +508,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
             gr.Info("One Plugin Update is available")
         else:
             gr.Info(f"{updates_available} Plugin Updates are available")
-        return self._build_plugins_html(), self._build_community_plugins_html()
+        return self._build_plugins_html(), *self._build_community_plugins_html_outputs()
 
     def _count_available_updates(self) -> int:
         try:
@@ -574,11 +594,11 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
             gr.Info(result_message)
         else:
             gr.Warning(result_message)
-        return self._build_plugins_html(), self._build_community_plugins_html(), ""
+        return self._build_plugins_html(), *self._build_community_plugins_html_outputs(), ""
 
     def _handle_plugin_action_from_json(self, payload_str: str, progress=gr.Progress()):
         if not payload_str:
-            return gr.update(), gr.update()
+            return (gr.update(), *[gr.update() for _ in DISCOVER_PLUGIN_TYPE_TABS])
         try:
             payload = json.loads(payload_str)
             action = payload.get("action")
@@ -623,4 +643,4 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         if hasattr(self, '_community_plugins_cache'):
             del self._community_plugins_cache
 
-        return self._build_plugins_html(), self._build_community_plugins_html()
+        return self._build_plugins_html(), *self._build_community_plugins_html_outputs()

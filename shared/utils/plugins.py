@@ -180,6 +180,19 @@ def normalize_plugin_types(value: Any) -> List[str]:
         cleaned.append(item)
     return cleaned or ["app"]
 
+def merge_plugin_types(primary: Any, secondary: Any) -> List[str]:
+    primary_types = normalize_plugin_types(primary)
+    secondary_types = normalize_plugin_types(secondary)
+    if primary_types == ["app"] and secondary_types != ["app"]:
+        return secondary_types
+    if secondary_types == ["app"]:
+        return primary_types
+    merged = []
+    for item in primary_types + secondary_types:
+        if item not in merged:
+            merged.append(item)
+    return merged or ["app"]
+
 def auto_install_and_enable_default_plugins(manager: 'PluginManager', wgp_globals: dict):
     server_config = wgp_globals.get("server_config")
     server_config_filename = wgp_globals.get("server_config_filename")
@@ -704,6 +717,9 @@ class PluginManager:
         if not secondary:
             return result
         for key, value in secondary.items():
+            if key == "type":
+                result[key] = merge_plugin_types(result.get(key), value)
+                continue
             if _has_value(result.get(key)):
                 continue
             if _has_value(value):
@@ -737,8 +753,10 @@ class PluginManager:
                 comparison = compare_release_metadata(local_entry, base_entry)
                 if comparison > 0:
                     merged_entry = dict(local_entry)
+                    merged_entry["type"] = merge_plugin_types(local_entry.get("type"), base_entry.get("type"))
                 else:
                     merged_entry = dict(base_entry)
+                    merged_entry["type"] = merge_plugin_types(base_entry.get("type"), local_entry.get("type"))
                     if _has_value(local_entry.get("last_check")):
                         merged_entry["last_check"] = local_entry.get("last_check")
                 merged[plugin_id] = merged_entry

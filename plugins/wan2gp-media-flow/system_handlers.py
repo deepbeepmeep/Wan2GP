@@ -11,4 +11,7 @@ def get_system_handler(name: str | None) -> Any:
     if name == "pid":
         from postprocessing.pid.process_handler import HANDLER
         return HANDLER
+    if name == "coz":
+        from postprocessing.chain_of_zoom.process_handler import HANDLER
+        return HANDLER
     return None

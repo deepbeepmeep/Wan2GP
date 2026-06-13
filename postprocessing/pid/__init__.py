@@ -1,8 +1,12 @@
 from .runtime import (
     PID_FLUX2_POST_UPSAMPLING_VALUE,
+    PID_FLUX2_POST_UPSAMPLING_METHOD,
     PID_FLUX2_VAE_UPSAMPLING_VALUE,
+    PID_FLUX2_VAE_UPSAMPLING_METHOD,
     PID_FLUX_POST_UPSAMPLING_VALUE,
+    PID_FLUX_POST_UPSAMPLING_METHOD,
     PID_FLUX_VAE_UPSAMPLING_VALUE,
+    PID_FLUX_VAE_UPSAMPLING_METHOD,
     PID_TILING_THRESHOLD_CHOICES,
     PID_TILING_THRESHOLD_DEFAULT,
     PiDUpsampler,
@@ -20,13 +24,18 @@ from .runtime import (
     pid_vae_upsampling_value,
     release_models,
     select_pid_checkpoint_type,
+    split_pid_upsampling,
 )
 
 __all__ = [
     "PID_FLUX2_POST_UPSAMPLING_VALUE",
+    "PID_FLUX2_POST_UPSAMPLING_METHOD",
     "PID_FLUX2_VAE_UPSAMPLING_VALUE",
+    "PID_FLUX2_VAE_UPSAMPLING_METHOD",
     "PID_FLUX_POST_UPSAMPLING_VALUE",
+    "PID_FLUX_POST_UPSAMPLING_METHOD",
     "PID_FLUX_VAE_UPSAMPLING_VALUE",
+    "PID_FLUX_VAE_UPSAMPLING_METHOD",
     "PID_TILING_THRESHOLD_CHOICES",
     "PID_TILING_THRESHOLD_DEFAULT",
     "PiDUpsampler",
@@ -44,4 +53,5 @@ __all__ = [
     "pid_vae_upsampling_value",
     "release_models",
     "select_pid_checkpoint_type",
+    "split_pid_upsampling",
 ]

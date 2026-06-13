@@ -228,7 +228,7 @@ class Ideogram4WanPipeline:
         latent_scale = self.latent_scale.to(z.device, z.dtype)
         return z * latent_scale + latent_shift
 
-    def _pack_pid_lq_latent(self, z: torch.Tensor, grid_h: int, grid_w: int) -> torch.Tensor:
+    def _pack_vae_upsampler_lq_latent(self, z: torch.Tensor, grid_h: int, grid_w: int) -> torch.Tensor:
         z = self._normalize_packed_latents(z)
         batch_size = z.shape[0]
         patch = self.patch_size
@@ -253,7 +253,7 @@ class Ideogram4WanPipeline:
         std: float = 1.75,
         seed: int | None = None,
         callback=None,
-        pid_upsampler=None,
+        vae_upsampler=None,
         set_progress_status=None,
     ) -> torch.Tensor | None:
         if isinstance(prompts, str):
@@ -337,28 +337,29 @@ class Ideogram4WanPipeline:
 
         if self._interrupt:
             return None
-        if pid_upsampler is None:
+        if vae_upsampler is None:
             return self._decode(z, grid_h=grid_h, grid_w=grid_w)
 
-        def _pid_progress(_phase, current_step=None, total_steps=None):
+        def _vae_upsampler_progress(_phase, current_step=None, total_steps=None):
             if callable(set_progress_status):
+                progress_label = getattr(vae_upsampler, "progress_label", "VAE Spatial Upsampling")
                 if current_step is None or total_steps is None:
-                    set_progress_status("PiD Spatial Upsampling in progress")
+                    set_progress_status(f"{progress_label} in progress")
                 else:
                     total_steps = int(total_steps)
                     step_no = min(int(current_step) + 1, total_steps)
-                    set_progress_status(f"PiD Spatial Upsampling in progress ({step_no}/{total_steps})")
+                    set_progress_status(f"{progress_label} in progress ({step_no}/{total_steps})")
 
-        _pid_progress(None)
+        _vae_upsampler_progress(None)
         lq_image_ref = [self._decode_image(z, grid_h=grid_h, grid_w=grid_w)]
-        lq_latent_ref = [self._pack_pid_lq_latent(z, grid_h, grid_w)]
-        image = pid_upsampler.decode_inputs(
+        lq_latent_ref = [self._pack_vae_upsampler_lq_latent(z, grid_h, grid_w)]
+        image = vae_upsampler.decode_inputs(
             lq_image_ref,
             lq_latent_ref,
             prompt=prompts,
             seed=seed,
             abort_callback=lambda: self._interrupt,
-            progress_callback=_pid_progress,
+            progress_callback=_vae_upsampler_progress,
         )
         if image is None:
             return None
@@ -427,7 +428,7 @@ class model_factory:
         guide_scale=7.0,
         batch_size=1,
         model_mode=_DEFAULT_PRESET,
-        pid_upsampler=None,
+        vae_upsampler=None,
         set_progress_status=None,
         callback=None,
         **kwargs,
@@ -451,7 +452,7 @@ class model_factory:
             std=std,
             seed=seed,
             callback=callback,
-            pid_upsampler=pid_upsampler,
+            vae_upsampler=vae_upsampler,
             set_progress_status=set_progress_status,
         )
 

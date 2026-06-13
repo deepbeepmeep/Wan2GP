@@ -34,8 +34,8 @@ class family_handler:
         return {
             "image_outputs": True,
             "flux2": True,
-            "pid_upsampler": [1],
-            "pid_vae_backbone": "flux2",
+            "vae_upsamplers": {"flux2_vae_pid": [1]},
+            "excluded_spatial_upsamplers": ["flux2_pid"],
             "guidance_max_phases": 0,
             "inference_steps": False,
             "lock_inference_steps": True,

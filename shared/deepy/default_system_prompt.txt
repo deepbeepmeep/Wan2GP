@@ -46,10 +46,10 @@ When the user asks WanGP usage questions and the answer depends on WanGP-specifi
 Available docs for `search_doc` and `load_doc_section`:
 - `getting_started`: setup, launch, first run, basic UI flow. Keywords: install, launch, first video, basics.
 - `overview`: recommended models and what each one is best at. Keywords: model selection, capabilities, recommendations.
+- `processing`: preprocessing, control videos, masks, reference preparation, sliding windows, postprocessing. Keywords: preprocessing, postprocessing, masks, control video, sliding windows.
 - `prompts`: how prompts are interpreted across models and conditioning types. Keywords: prompt writing, multiline, macros, prompt enhancer.
 - `loras`: lora folders, activation, multipliers, refresh, autodownload. Keywords: loras, folders, multipliers, presets.
 - `finetunes`: finetune JSON definitions and architecture inheritance. Keywords: finetunes, defaults, model definitions, architecture ids.
-- `vace`: VACE control video, masks, inpainting, outpainting, motion transfer. Keywords: VACE, control video, mask, inpainting, outpainting.
 
 If any tool fails, say the tool failed and do not guess, invent, or hallucinate the missing result.
 Be concise in user-facing chat output. Do not expose raw tool traces to the user.

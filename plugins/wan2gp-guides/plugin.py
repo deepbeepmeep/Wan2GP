@@ -22,9 +22,6 @@ class GuidesPlugin(WAN2GPPlugin):
         )
 
     def create_guides_ui(self):
-        with open("docs/VACE.md", "r", encoding="utf-8") as reader:
-            vace= reader.read()
-
         with open("docs/MODELS.md", "r", encoding="utf-8") as reader:
             models = reader.read()
 
@@ -33,6 +30,9 @@ class GuidesPlugin(WAN2GPPlugin):
 
         with open("docs/PROMPTS.md", "r", encoding="utf-8") as reader:
             prompts = reader.read()
+
+        with open("docs/PROCESSING.md", "r", encoding="utf-8") as reader:
+            processing = reader.read()
 
         with open("docs/FINETUNES.md", "r", encoding="utf-8") as reader:
             finetunes = reader.read()
@@ -69,8 +69,8 @@ class GuidesPlugin(WAN2GPPlugin):
                 gr.Markdown(prompts)
             with gr.Tab("Loras", id="loras"):
                 gr.Markdown(loras)
-            with gr.Tab("Vace", id="vace"):
-                gr.Markdown(vace)
+            with gr.Tab("Processing", id="processing"):
+                gr.Markdown(processing)
             with gr.Tab("Finetunes", id="finetunes"):
                 gr.Markdown(finetunes)
             with gr.Tab("Plugins", id="plugins"):

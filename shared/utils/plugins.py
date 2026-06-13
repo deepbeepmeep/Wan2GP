@@ -1,7 +1,6 @@
 import os
 import sys
 import importlib
-import importlib.util
 import inspect
 import re
 import datetime
@@ -15,12 +14,14 @@ import shutil
 import stat
 import json
 import requests
+from shared.utils.wgp_config_migration import migrate_mediaflow_plugin_id
 media_gen_label = "Media Generator"
 
 COMMUNITY_PLUGINS_URL = "https://github.com/deepbeepmeep/Wan2GP/raw/refs/heads/main/plugins.json"
 PLUGIN_CATALOG_FILENAME = "plugins.json"
 PLUGIN_LOCAL_CATALOG_FILENAME = "plugins_local.json"
 PLUGIN_METADATA_FILENAME = "plugin_info.json"
+PLUGIN_SPATIAL_UPSAMPLER_HANDLERS_KEY = "spatial_upsampler_handlers"
 PENDING_DELETIONS_KEY = "pending_plugin_deletions"
 
 def _has_value(value: Any) -> bool:
@@ -310,6 +311,7 @@ class PluginManager:
         self.local_catalog_path = os.path.join(self.repo_root, PLUGIN_LOCAL_CATALOG_FILENAME)
         self.server_config: Optional[Dict[str, Any]] = None
         self.server_config_filename: str = ""
+        self._plugin_metadata_cache: Dict[str, tuple[Optional[int], Optional[Dict[str, Any]]]] = {}
 
     def set_server_config(self, server_config: Optional[Dict[str, Any]], server_config_filename: str = "") -> None:
         self.server_config = server_config if isinstance(server_config, dict) else None
@@ -417,6 +419,22 @@ class PluginManager:
                 return False
         return default
 
+    def _coerce_string_list(self, value: Any) -> List[str]:
+        if isinstance(value, str):
+            values = [value]
+        elif isinstance(value, list):
+            values = value
+        else:
+            return []
+        cleaned = []
+        for item in values:
+            if not isinstance(item, str):
+                continue
+            text = item.strip()
+            if text:
+                cleaned.append(text)
+        return cleaned
+
     def _load_json_file(self, path: str) -> Optional[Any]:
         if not path or not os.path.isfile(path):
             return None
@@ -452,10 +470,26 @@ class PluginManager:
 
     def _load_plugin_metadata(self, plugin_path: str) -> Optional[Dict[str, Any]]:
         metadata_path = os.path.join(plugin_path, PLUGIN_METADATA_FILENAME)
+        try:
+            mtime_ns = os.stat(metadata_path).st_mtime_ns
+        except FileNotFoundError:
+            mtime_ns = None
+        except Exception as e:
+            print(f"[PluginManager] Failed to stat {metadata_path}: {e}")
+            mtime_ns = None
+        cached = self._plugin_metadata_cache.get(metadata_path)
+        if cached is not None and cached[0] == mtime_ns:
+            return dict(cached[1]) if cached[1] is not None else None
         payload = self._load_json_file(metadata_path)
         if not isinstance(payload, dict):
+            self._plugin_metadata_cache[metadata_path] = (mtime_ns, None)
             return None
-        return self._normalize_plugin_metadata(payload)
+        metadata = self._normalize_plugin_metadata(payload)
+        self._plugin_metadata_cache[metadata_path] = (mtime_ns, dict(metadata))
+        return dict(metadata)
+
+    def _invalidate_plugin_metadata_cache(self, plugin_path: str) -> None:
+        self._plugin_metadata_cache.pop(os.path.join(plugin_path, PLUGIN_METADATA_FILENAME), None)
 
     def _normalize_plugin_metadata(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         metadata = dict(payload)
@@ -473,6 +507,7 @@ class PluginManager:
         metadata.pop("wangp_version", None)
         metadata["url"] = ""
         metadata["uninstallable"] = self._coerce_bool(metadata.get("uninstallable"), default=True)
+        metadata[PLUGIN_SPATIAL_UPSAMPLER_HANDLERS_KEY] = self._coerce_string_list(metadata.get(PLUGIN_SPATIAL_UPSAMPLER_HANDLERS_KEY))
         return metadata
 
     def _apply_metadata_to_plugin(self, plugin: WAN2GPPlugin, metadata: Optional[Dict[str, Any]], is_system: bool) -> None:
@@ -489,6 +524,52 @@ class PluginManager:
             plugin.uninstallable = self._coerce_bool(metadata.get("uninstallable"), default=True)
         if is_system:
             plugin.uninstallable = False
+
+    def _resolve_plugin_class_path(self, plugin_id: str, handler_path: str) -> Optional[str]:
+        text = str(handler_path or "").strip()
+        if not text:
+            return None
+        is_relative = text.startswith(".")
+        if ":" in text:
+            module_path, class_name = text.rsplit(":", 1)
+        else:
+            if "." not in text:
+                print(f"[PluginManager] Invalid spatial upsampler handler path for plugin {plugin_id}: {handler_path}")
+                return None
+            module_path, class_name = text.rsplit(".", 1)
+        module_path = module_path.strip().replace("\\", "/")
+        if module_path.endswith(".py"):
+            module_path = module_path[:-3]
+        module_path = module_path.replace("/", ".")
+        if is_relative:
+            module_path = module_path.lstrip(".")
+        module_path = module_path.strip(".")
+        class_name = class_name.strip()
+        if not module_path or not class_name:
+            print(f"[PluginManager] Invalid spatial upsampler handler path for plugin {plugin_id}: {handler_path}")
+            return None
+        full_module_path = f"{plugin_id}.{module_path}" if is_relative else module_path
+        return f"{full_module_path}.{class_name}"
+
+    def _register_plugin_spatial_upsamplers(self, plugin_id: str, metadata: Optional[Dict[str, Any]], files_locator=None) -> None:
+        if not metadata:
+            return
+        handlers = metadata.get(PLUGIN_SPATIAL_UPSAMPLER_HANDLERS_KEY, [])
+        if not handlers:
+            return
+        handler_paths = []
+        for handler_path in handlers:
+            resolved_path = self._resolve_plugin_class_path(plugin_id, handler_path)
+            if resolved_path is not None:
+                handler_paths.append(resolved_path)
+        if not handler_paths:
+            return
+        try:
+            from postprocessing import upsamplers as upsampler_api
+            upsampler_api.register_spatial_upsamplers(self.server_config, files_locator, handler_paths)
+        except Exception as e:
+            print(f"[PluginManager] Error registering spatial upsamplers for plugin {plugin_id}: {e}")
+            traceback.print_exc()
 
     def _normalize_catalog_entry(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         entry = dict(payload)
@@ -1086,6 +1167,7 @@ class PluginManager:
             try:
                 with open(metadata_path, "w", encoding="utf-8") as writer:
                     json.dump(payload, writer, indent=2, ensure_ascii=True)
+                self._invalidate_plugin_metadata_cache(plugin_dir)
             except Exception as e:
                 print(f"[PluginManager] Failed to update {metadata_path}: {e}")
 
@@ -1097,7 +1179,7 @@ class PluginManager:
                 discovered.append(item)
         return sorted(discovered)
 
-    def load_plugins_from_directory(self, enabled_user_plugins: List[str], safe_mode: bool = False) -> None:
+    def load_plugins_from_directory(self, enabled_user_plugins: List[str], safe_mode: bool = False, files_locator=None) -> None:
         self.custom_js_snippets = []
         if safe_mode:
             print("[Safe Mode] User plugins are disabled. Only system plugins will be loaded.")
@@ -1128,6 +1210,7 @@ class PluginManager:
                             if hook_name not in self.data_hooks:
                                 self.data_hooks[hook_name] = []
                             self.data_hooks[hook_name].extend(callbacks)
+                        self._register_plugin_spatial_upsamplers(plugin_dir_name, metadata, files_locator=files_locator)
                         if plugin_dir_name not in SYSTEM_PLUGINS:
                             print(f"Loaded plugin: {plugin.name} (from {plugin_dir_name})")
                         break
@@ -1286,13 +1369,7 @@ class WAN2GPApplication:
             return
         self.plugin_manager.set_server_config(server_config, server_config_filename)
         if not safe_mode:
-            try:
-                migration = importlib.import_module("wan2gp-configuration.defaults_migration")
-                migrate_mediaflow_plugin_id = getattr(migration, "migrate_mediaflow_plugin_id", None)
-                if callable(migrate_mediaflow_plugin_id):
-                    migrate_mediaflow_plugin_id(server_config, server_config_filename)
-            except Exception as e:
-                print(f"[PluginManager] Warning: failed to migrate MediaFlow plugin id: {e}")
+            migrate_mediaflow_plugin_id(server_config, server_config_filename)
         if not safe_mode and not server_config.get("motion_designer_bundled_migrated", 0):
             server_config["enabled_plugins"] = server_config.get("enabled_plugins", []) + ([] if "wan2gp-motion-designer" in server_config.get("enabled_plugins", []) else ["wan2gp-motion-designer"]); server_config["motion_designer_bundled_migrated"] = 1
             self.plugin_manager._save_server_config()
@@ -1300,7 +1377,7 @@ class WAN2GPApplication:
 
         self.enabled_plugins = server_config.get("enabled_plugins", [])
 
-        self.plugin_manager.load_plugins_from_directory(self.enabled_plugins, safe_mode=safe_mode)
+        self.plugin_manager.load_plugins_from_directory(self.enabled_plugins, safe_mode=safe_mode, files_locator=wgp_globals.get("fl"))
         self.plugin_manager.inject_globals(wgp_globals)
 
     def setup_ui_tabs(self, main_tabs_component: gr.Tabs, state_component: gr.State, set_save_form_event):

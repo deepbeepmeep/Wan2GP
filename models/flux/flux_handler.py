@@ -159,8 +159,8 @@ class family_handler():
         elif not flux_schnell and not flux2_klein:
             extra_model_def["embedded_guidance"] = True
         if not flux_chroma_radiance:
-            extra_model_def["pid_upsampler"] = [1, 2]
-            extra_model_def["pid_vae_backbone"] = "flux2" if flux2 else "flux"
+            extra_model_def["vae_upsamplers"] = {"flux2_vae_pid" if flux2 else "flux_vae_pid": [1, 2]}
+            extra_model_def["excluded_spatial_upsamplers"] = ["flux2_pid" if flux2 else "flux_pid"]
         if flux_uso :
             extra_model_def["any_image_refs_relative_size"] = True
             extra_model_def["no_background_removal"] = True

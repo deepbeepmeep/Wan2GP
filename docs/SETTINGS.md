@@ -120,7 +120,6 @@ The baseline schema lives in `models/_settings.json`. Model defaults in `default
 | `skip_steps_start_step_perc` | integer | Percentage of denoising steps before cache skipping starts. |
 | `temporal_upsampling` | string | Temporal post-processing mode. Current core values include `rife2` and `rife4`. |
 | `spatial_upsampling` | string | Spatial post-processing mode. Empty disables; values include `vae1`, `vae2`, `lanczos<scale>`, and registered edit upsamplers such as FlashVSR. |
-| `flashvsr_topk_ratio` | number | FlashVSR top-k ratio when FlashVSR post-processing is active. |
 | `film_grain_intensity` | number | Film grain amount. `0` disables. |
 | `film_grain_saturation` | number | Saturation of generated film grain. |
 | `RIFLEx_setting` | integer | RIFLEx long-video policy. `0` auto, `1` always on, `2` always off. |

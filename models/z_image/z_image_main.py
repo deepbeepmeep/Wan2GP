@@ -189,7 +189,7 @@ class model_factory:
         NAG_tau: float = 3.5,
         NAG_alpha: float = 0.5,
         loras_slists=None,
-        pid_upsampler=None,
+        vae_upsampler=None,
         set_progress_status=None,
         **kwargs,
     ):
@@ -219,14 +219,15 @@ class model_factory:
         if self.model_def.get("guidance_max_phases", 0) < 1:
             guide_scale = 0
 
-        def _pid_progress(_phase, current_step=None, total_steps=None):
+        def _vae_upsampler_progress(_phase, current_step=None, total_steps=None):
             if callable(set_progress_status):
+                progress_label = getattr(vae_upsampler, "progress_label", "VAE Spatial Upsampling")
                 if current_step is None or total_steps is None:
-                    set_progress_status("PiD Spatial Upsampling in progress")
+                    set_progress_status(f"{progress_label} in progress")
                 else:
                     total_steps = int(total_steps)
                     step_no = min(int(current_step) + 1, total_steps)
-                    set_progress_status(f"PiD Spatial Upsampling in progress ({step_no}/{total_steps})")
+                    set_progress_status(f"{progress_label} in progress ({step_no}/{total_steps})")
 
         images = self.pipeline(
             prompt=input_prompt,
@@ -254,9 +255,9 @@ class model_factory:
             NAG_tau=NAG_tau,
             NAG_alpha=NAG_alpha,
             loras_slists=loras_slists,
-            pid_upsampler=pid_upsampler,
-            pid_seed=seed,
-            pid_progress_callback=_pid_progress,
+            vae_upsampler=vae_upsampler,
+            vae_upsampler_seed=seed,
+            vae_upsampler_progress_callback=_vae_upsampler_progress,
         )
 
         if images is None:

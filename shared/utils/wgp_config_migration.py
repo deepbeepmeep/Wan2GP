@@ -1,20 +1,16 @@
 import json
 from decimal import Decimal, InvalidOperation
 
+from postprocessing.mmaudio import MMAUDIO_DEFAULT_MODE
 from shared.deepy.config import DEEPY_ENABLED_KEY
 
 
 LEGACY_EXTENSIONS_DEFAULTS_MIGRATED_KEY = "_extensions_defaults_migrated"
 EXTENSIONS_DEFAULTS_VERSION_KEY = "extensions_defaults_version"
-EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.12")
+EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.13")
 EXTENSIONS_DEFAULTS_TARGET_VERSION_TEXT = str(EXTENSIONS_DEFAULTS_TARGET_VERSION)
 
-MMAUDIO_MODE_CHOICES = [("Standard", 1), ("NSFW", 2)]
 SEEDVC_MODE_CHOICES = [("v1.0 Speech", 1), ("v1.0 Singing / F0 44k", 2), ("v2 Speech", 3)]
-FLASHVSR_MODE_CHOICES = [
-    ("FlashVSR v1.1 Tiny (Slightly Lower Quality, Faster VAE Decoding, Needs Less RAM)", 1),
-    ("FlashVSR v1.1 Full (Best Quality, Slower VAE Decoding, Needs More RAM)", 2),
-]
 PROMPT_ENHANCER_CHOICES = [
     ("Florence 2 (image captioning) + LLama 3.2 3B (text generation)", 1),
     ("Florence 2 (image captioning) + Llama Joy 8B (uncensored, richer)", 2),
@@ -22,12 +18,9 @@ PROMPT_ENHANCER_CHOICES = [
     ("Qwen3.5VL Abliterated 9B (captioning + uncensored high end text enhancement, vllm accelerated if available)", 4),
 ]
 
-MMAUDIO_DEFAULT_MODE = MMAUDIO_MODE_CHOICES[0][1]
 SEEDVC_DEFAULT_MODE = 2
-FLASHVSR_DEFAULT_MODE = FLASHVSR_MODE_CHOICES[0][1]
 PROMPT_ENHANCER_LOW_VRAM_DEFAULT_MODE = PROMPT_ENHANCER_CHOICES[0][1]
 PROMPT_ENHANCER_HIGH_VRAM_DEFAULT_MODE = 3
-PROMPT_ENHANCER_DEFAULT_MODE = PROMPT_ENHANCER_HIGH_VRAM_DEFAULT_MODE
 PROMPT_ENHANCER_QWEN_MIN_VRAM_GB = 10
 DEEPY_DEFAULT_ENABLED = 1
 LEGACY_MEDIAFLOW_PLUGIN_IDS = {"wan2gp-process-full-video", "wan2gp-mediaflow"}
@@ -107,12 +100,6 @@ def migrate_extension_defaults(server_config, server_config_filename="") -> bool
             changed = True
         _set_missing_persistence(server_config, "seedvc_persistence")
 
-        if _is_off(server_config.get("flashvsr_mode", 0)):
-            server_config["flashvsr_mode"] = FLASHVSR_DEFAULT_MODE
-            changed = True
-        _set_missing_persistence(server_config, "flashvsr_persistence")
-        _set_missing_persistence(server_config, "pid_persistence")
-
         if _is_off(server_config.get("enhancer_enabled", 0)):
             server_config["enhancer_enabled"] = prompt_enhancer_default_mode
             changed = True
@@ -126,7 +113,11 @@ def migrate_extension_defaults(server_config, server_config_filename="") -> bool
             server_config["seedvc_mode"] = SEEDVC_DEFAULT_MODE
             changed = True
         _set_missing_persistence(server_config, "seedvc_persistence")
-        _set_missing_persistence(server_config, "pid_persistence")
+
+    if version < Decimal("1.13"):
+        from postprocessing import upsamplers as upsampler_api
+
+        changed = upsampler_api.migrate_upsampler_config(server_config, prefer_legacy=True, apply_pre_1_1_defaults=version < Decimal("1.1")) or changed
 
     if server_config.pop(LEGACY_EXTENSIONS_DEFAULTS_MIGRATED_KEY, None) is not None:
         changed = True

@@ -197,9 +197,9 @@ class NanoVllmTextEngine:
         self._last_failure_reason = ""
 
     @staticmethod
-    def _compute_runtime_hints(prompt_len: int, max_tokens: int, cfg_scale: float):
+    def _compute_runtime_hints(prompt_len: int, max_tokens: int, cfg_scale: float, num_seqs: int = 1):
         max_model_len = max(8, int(prompt_len) + int(max_tokens))
-        max_num_seqs = 2 if cfg_scale and cfg_scale > 1.0 else 1
+        max_num_seqs = max(1, int(num_seqs)) * (2 if cfg_scale and cfg_scale > 1.0 else 1)
         max_num_batched_tokens = max_model_len * max_num_seqs
         return max_model_len, max_num_seqs, max_num_batched_tokens
 
@@ -232,11 +232,12 @@ class NanoVllmTextEngine:
         self._max_num_batched_tokens_hint = max_num_batched_tokens
         self.close()
 
-    def reserve_runtime(self, prompt_len: int, max_tokens: int, cfg_scale: float):
+    def reserve_runtime(self, prompt_len: int, max_tokens: int, cfg_scale: float, num_seqs: int = 1):
         req_model_len, req_num_seqs, req_num_batched = self._compute_runtime_hints(
             prompt_len=prompt_len,
             max_tokens=max_tokens,
             cfg_scale=cfg_scale,
+            num_seqs=num_seqs,
         )
         req_model_len = max(req_model_len, self._get_min_model_len_hint())
         req_num_batched = max(req_num_batched, req_model_len * req_num_seqs)
@@ -289,6 +290,12 @@ class NanoVllmTextEngine:
             self._llm.reset_runtime_state()
         except Exception:
             pass
+
+    def runtime_cudagraph_enabled(self) -> bool:
+        llm = getattr(self, "_llm", None)
+        runner = getattr(llm, "model_runner", None) if llm is not None else None
+        enforce_eager = bool(getattr(runner, "enforce_eager", self.enforce_eager))
+        return not enforce_eager
 
     def close(self):
         llm = getattr(self, "_llm", None)
@@ -477,11 +484,50 @@ class NanoVllmTextEngine:
         release_vram_after: bool = True,
         ignore_eos: bool = False,
         position_offset: int = 0,
+        repetition_penalty: float = 1.0,
     ):
+        results = self.generate_embedded_batch(
+            [{"prompt_token_ids": prompt_token_ids, "prompt_embeds": prompt_embeds, "prompt_position_ids": prompt_position_ids, "position_offset": position_offset}],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            cfg_scale=cfg_scale,
+            seed=seed,
+            use_tqdm=use_tqdm,
+            release_vram_after=release_vram_after,
+            ignore_eos=ignore_eos,
+            repetition_penalty=repetition_penalty,
+        )
+        return None if not results else results[0]
+
+    def generate_embedded_batch(
+        self,
+        requests: list[dict],
+        *,
+        max_tokens: int,
+        temperature: Optional[float],
+        top_p: Optional[float],
+        top_k: Optional[int],
+        cfg_scale: float,
+        seed: Optional[int],
+        use_tqdm: bool = True,
+        release_vram_after: bool = True,
+        ignore_eos: bool = False,
+        repetition_penalty: float = 1.0,
+    ):
+        """Run several independent embedded prompts concurrently (batched prefill + decode).
+
+        Each request is a dict with `prompt_token_ids`, `prompt_embeds`, `prompt_position_ids`
+        and optional `position_offset`. Results are returned in request order.
+        """
+        if not requests:
+            return []
         req_model_len, req_num_seqs, req_num_batched = self._compute_runtime_hints(
-            prompt_len=len(prompt_token_ids),
+            prompt_len=max(len(request["prompt_token_ids"]) for request in requests),
             max_tokens=max_tokens,
             cfg_scale=cfg_scale,
+            num_seqs=len(requests),
         )
         self._ensure_runtime_capacity(req_model_len, req_num_seqs, req_num_batched)
         self._ensure_llm()
@@ -509,27 +555,28 @@ class NanoVllmTextEngine:
             top_k=top_k if top_k is not None and top_k > 0 else None,
             top_p=top_p if top_p is not None and 0.0 < top_p < 1.0 else None,
             ignore_eos=bool(ignore_eos),
+            repetition_penalty=float(repetition_penalty or 1.0),
             seed=seed_value,
         )
 
-        text = ""
-        token_ids: list[int] = []
+        results = []
         try:
             outputs = self._llm.generate_embedded(
-                prompts=[prompt_token_ids],
-                prompt_embeds=[prompt_embeds],
-                prompt_position_ids=[prompt_position_ids],
-                position_offsets=[int(position_offset)],
+                prompts=[request["prompt_token_ids"] for request in requests],
+                prompt_embeds=[request["prompt_embeds"] for request in requests],
+                prompt_position_ids=[request["prompt_position_ids"] for request in requests],
+                position_offsets=[int(request.get("position_offset", 0) or 0) for request in requests],
                 sampling_params=sampling_params,
                 use_tqdm=use_tqdm,
             )
-            if outputs:
-                text, token_ids = self._extract_text_and_tokens(outputs[0])
-            if (not text) and token_ids:
-                try:
-                    text = self.tokenizer.decode(token_ids, skip_special_tokens=False)
-                except Exception:
-                    text = ""
+            for output in outputs or []:
+                text, token_ids = self._extract_text_and_tokens(output)
+                if (not text) and token_ids:
+                    try:
+                        text = self.tokenizer.decode(token_ids, skip_special_tokens=False)
+                    except Exception:
+                        text = ""
+                results.append({"token_ids": token_ids, "text": text})
             self._last_failure_reason = ""
         except Exception as exc:
             self._last_failure_reason = str(exc)
@@ -538,4 +585,4 @@ class NanoVllmTextEngine:
             if release_vram_after:
                 self.release_runtime_allocations()
 
-        return {"token_ids": token_ids, "text": text}
+        return results

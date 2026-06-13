@@ -1,3 +1,4 @@
+VACE_INFOS = """
 # VACE ControlNet Guide
 
 VACE is a ControlNet-style Wan model for Video-to-Video and Reference-to-Video generation. It can inject images into output videos, animate characters, perform masked edits, continue existing videos, transfer motion, and preserve scene structure while changing style or content.
@@ -6,19 +7,19 @@ VACE is a ControlNet-style Wan model for Video-to-Video and Reference-to-Video g
 
 With VACE you can:
 
-- Inject people or objects into scenes
-- Animate characters from a motion or pose source
-- Perform video inpainting and outpainting
-- Continue existing videos
-- Transfer motion from one video to another
-- Change the style of scenes while preserving their structure
+- Inject people or objects into scenes.
+- Animate characters from a motion or pose source.
+- Perform video inpainting and outpainting.
+- Continue existing videos.
+- Transfer motion from one video to another.
+- Change the style of scenes while preserving their structure.
 
 ## Getting Started
 
 ### Model Selection
 
-1. Select a VACE model such as **Vace 1.3B**, **Vace 14B**, or a derived VACE model.
-2. VACE works best with short windows. For long videos, use sliding windows from the [Processing](PROCESSING.md) guide.
+1. Select a VACE model such as `Vace 1.3B`, `Vace 14B`, or a derived VACE model.
+2. VACE works best with short windows. For long videos, use sliding windows from the Processing guide.
 
 Derived VACE models, such as VACE FusioniX, can be combined with accelerator LoRAs such as Causvid when the model supports them.
 
@@ -33,7 +34,7 @@ You can build a VACE-formatted Control Video with the official VACE annotator to
 WanGP needs:
 
 - **Control Video:** the original source video, not already processed by an external annotator.
-- **Control Video Process:** the process to apply, such as **Transfer Human Motion**, **Depth**, **Inpainting**, or **Keep Unchanged**.
+- **Control Video Process:** the process to apply, such as `Transfer Human Motion`, `Depth`, `Inpainting`, or `Keep Unchanged`.
 - **Area Processed:** whether the process applies to the whole video, the masked area, or the non-masked area.
 
 If you target an area, provide a Video Mask. You can create masks with the embedded Mask Generator / Matanyone workflow.
@@ -44,7 +45,7 @@ WanGP previews the processed Control Video and Video Mask in the Generation Prev
 
 Reference Images let you inject people, objects, landscapes, or exact frames into a video. You can also force images to appear at specific frame numbers.
 
-Describe injected people or objects explicitly in the prompt so VACE can connect the references to the generated video. Reference-image preparation is covered in the [Processing](PROCESSING.md) guide.
+Describe injected people or objects explicitly in the prompt so VACE can connect the references to the generated video.
 
 ## VACE Control Video And Mask Format
 
@@ -64,32 +65,30 @@ There are more VACE representations. Refer to the official VACE documentation fo
 
 ## Example 1: Replace A Person While Keeping The Background
 
-1. Select **Control Video Process** = **Transfer human pose** and **Area processed** = **Masked area**.
+1. Select `Control Video Process` = `Transfer human pose` and `Area processed` = `Masked area`.
 2. In Mask Generator, load the source video and mask the person to replace.
-3. Click **Export to Control Video Input and Video Mask Input**.
-4. In VACE, set Reference Image to **Inject Landscapes / People / Objects** and upload one or more pictures of the new person.
+3. Click `Export to Control Video Input and Video Mask Input`.
+4. In VACE, set Reference Image to `Inject Landscapes / People / Objects` and upload one or more pictures of the new person.
 5. Generate.
 
-This also works with several people if you mask several targets. Use **Expand / Shrink Mask** when the replacement subject needs more or less room.
+This also works with several people if you mask several targets. Use `Expand / Shrink Mask` when the replacement subject needs more or less room.
 
 ## Example 2: Change The Background Behind Characters
 
-1. Select **Control Video Process** = **Inpainting** and **Area processed** = **Non Masked area**.
+1. Select `Control Video Process` = `Inpainting` and `Area processed` = `Non Masked area`.
 2. In Mask Generator, create a mask for the people you want to keep.
-3. Click **Export to Control Video Input and Video Mask Input**.
+3. Click `Export to Control Video Input and Video Mask Input`.
 4. Generate.
 
-If you use **Depth** instead of **Inpainting**, the new background can keep geometry closer to the original control video.
+If you use `Depth` instead of `Inpainting`, the new background can keep geometry closer to the original control video.
 
 ## Example 3: Outpaint A Video And Inject A Character
 
-1. Select **Control Video Process** = **Keep Unchanged**.
-2. In **Control Video Outpainting in Percentage**, enter the desired expansion amount, such as `40` for Left.
-3. In Reference Image, select **Inject Landscapes / People / Objects** and upload a person reference.
+1. Select `Control Video Process` = `Keep Unchanged`.
+2. In `Control Video Outpainting in Percentage`, enter the desired expansion amount, such as `40` for Left.
+3. In Reference Image, select `Inject Landscapes / People / Objects` and upload a person reference.
 4. Prompt the new action, such as `a person is coming from the left`.
 5. Generate.
-
-For more detail about temporal processing, spatial outpainting, reference preparation, and sliding windows, see the [Processing](PROCESSING.md) guide.
 
 ## Creating Face / Object Replacement Masks
 
@@ -97,9 +96,9 @@ Matanyone can generate the Video Mask that is combined with the Control Video.
 
 1. Load your video in Matanyone.
 2. Click the face or object in the first frame.
-3. Validate the mask with **Set Mask**.
-4. Generate a copy of the control video and a new mask video with **Generate Video Matting**.
-5. Export to VACE with **Export to Control Video Input and Video Mask Input**.
+3. Validate the mask with `Set Mask`.
+4. Generate a copy of the control video and a new mask video with `Generate Video Matting`.
+5. Export to VACE with `Export to Control Video Input and Video Mask Input`.
 
 Advanced tips:
 
@@ -140,3 +139,4 @@ Advanced tips:
 2. **Quality Reference Images:** use high-resolution, well-lit reference images.
 3. **Proper Masking:** take time to create precise masks with Matanyone.
 4. **Consistent Lighting:** match lighting between reference images and the intended scene.
+"""

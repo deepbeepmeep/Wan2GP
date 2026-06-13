@@ -9,6 +9,7 @@ from PIL import Image
 from shared.utils.hf import build_hf_url
 from shared.utils import files_locator as fl
 from .bernini_prompt_infos import get_bernini_infos, get_bernini_prompt_infos
+from .vace_infos import VACE_INFOS
 from .kiwi.variant_config import get_kiwi_variant_model_def
 from .scail2 import (
     SCAIL2_ANIMATE_PREPROCESSING_POSE,
@@ -224,6 +225,8 @@ class family_handler():
         extra_model_def["vace_class"] = vace_class = test_vace(base_model_type)
         extra_model_def["bernini_class"] = bernini = test_bernini(base_model_type)
         extra_model_def["scail2"] = scail2 = test_scail2(base_model_type)
+        if vace_class:
+            extra_model_def["infos"] = model_def.get("infos", VACE_INFOS)
         if bernini:
             extra_model_def["t2v_class"] = t2v = False
             extra_model_def["prompt_infos"] = get_bernini_prompt_infos(base_model_type)

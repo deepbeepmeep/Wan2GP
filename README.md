@@ -66,7 +66,7 @@ Version *update 12.21* introduces RAM optimisations when using many *sliding win
 
 - **Int8 ConvRot Support**: model checkpoints saved in this quantized int8 format used by Comfy can now be loaded in WanGP.
 
-- **LTX2 Image Generator (t2v)**: this one was always within grasp but required a little bit of packaging. Here we go we, just pick the *text to video* tab and use *LTX2* to use your favorite *Ic LoRAs* (outpainting, refiner, ...) on *images*. Best of all, the *LTX2 Image Processes* are available in the *Media Flow* Plugin.
+- **LTX2 Image Generator (t2i)**: this one was always within grasp but required a little bit of packaging. Here we go we, just pick the *text to image* tab and use *LTX2* to use your favorite *Ic LoRAs* (outpainting, refiner, ...) on *images*. Best of all, the *LTX2 Image Processes* are available in the *Media Flow* Plugin.
 
 - **Bernini 1.3B**: a much more gentle version (*lower VRAM requirements and faster*) for your GPU. Not as good as the 14GB version, but still produces some nice outputs.
 

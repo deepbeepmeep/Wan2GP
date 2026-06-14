@@ -1,5 +1,127 @@
 # WanGP
 
+## Start Here: RunPod Character & Environment Consistency Setup
+
+This fork adds a **WanGP Character & Environment Consistency Studio** workflow for building repeatable character videos with stable reference images, locked world details, and a cell-by-cell RunPod notebook.
+
+Use this first if you opened this GitHub repo and want to run the character/environment-consistent video workflow.
+
+### 1. Create A RunPod GPU Notebook
+
+1. Open RunPod and create a GPU pod with a PyTorch/CUDA Jupyter template.
+2. Recommended first test: 24 GB VRAM or higher.
+3. Lower VRAM users can try the `bernini_ingredients_1_3b` mode in the notebook.
+4. Open Jupyter from the RunPod pod.
+
+### 2. Clone This Repo In Jupyter
+
+Open a notebook terminal or a new notebook cell and run:
+
+```bash
+cd /workspace
+git clone https://github.com/SohailAwg/wan2gp_studio.git Wan2GP-main
+cd /workspace/Wan2GP-main
+```
+
+### 3. Add Secrets Without Committing Them
+
+Create `/workspace/secrets.txt` on the RunPod machine:
+
+```text
+HF_TOKEN=hf_your_hugging_face_token_here
+RUNPOD_API_KEY=your_runpod_api_key_here
+```
+
+`secrets.txt` is ignored by Git. Do not commit API keys.
+
+### 4. Open The Cell-By-Cell Notebook
+
+In Jupyter, open:
+
+```text
+/workspace/Wan2GP-main/notebooks/wan2gp_character_consistency_runpod.ipynb
+```
+
+Direct GitHub link:
+[notebooks/wan2gp_character_consistency_runpod.ipynb](notebooks/wan2gp_character_consistency_runpod.ipynb)
+
+### 5. Run The Notebook In Order
+
+Run cells from top to bottom.
+
+Only edit these cells for a normal run:
+
+- **Cell 2**: repo path, output path, install flag, attention mode, memory profile.
+- **Cell 8**: character name, mode, reference image paths, identity prompt, environment/world prompt, style prompt, negative prompt, and shot prompts.
+
+Start with:
+
+```python
+ATTENTION = "sdpa"
+PROFILE = "4"
+MODE = "bernini_ingredients"
+```
+
+If you run out of VRAM, change Cell 8 to:
+
+```python
+MODE = "bernini_ingredients_1_3b"
+RESOLUTION = "832x480"
+VIDEO_LENGTH = 81
+```
+
+### 6. Upload Character Reference Images
+
+Upload your reference images into:
+
+```text
+/workspace/refs
+```
+
+Recommended names:
+
+```text
+character_front.png
+character_body.png
+character_profile.png
+```
+
+Use clear, consistent references: same character, visible face, same outfit or signature style, and at least one full-body or upper-body image.
+
+### 7. Generate One Test Shot First
+
+Run **Cell 11** first. This generates only the first shot so you can verify identity, clothing, and style before spending time on the whole batch.
+
+If the first result looks good, run **Cell 13** to generate all shots.
+
+### 8. Where Outputs Are Saved
+
+By default, videos are written to:
+
+```text
+/workspace/wan2gp_outputs
+```
+
+Character manifests are saved under:
+
+```text
+/workspace/Wan2GP-main/character_packs
+```
+
+### 9. Character & Environment Consistency Notes
+
+The workflow is based on the same broad pattern used by tools like Google Flow, Higgsfield, and OpenArt:
+
+- Keep a locked identity description.
+- Keep a locked environment/world description.
+- Reuse strong multi-angle reference images.
+- Keep wardrobe, hair, age, body shape, colors, accessories, location details, props, and lighting stable.
+- Generate one shot first, then scale to a full shot list.
+- Use negative prompts to reject face drift, changed hairstyle, changed outfit, and age changes.
+
+More details are in:
+[docs/CHARACTER_CONSISTENCY.md](docs/CHARACTER_CONSISTENCY.md)
+
 -----
 <p align="center">
 <b>WanGP by DeepBeepMeep : The best Open Source Generative Models Accessible to the GPU Poor</b>
@@ -55,7 +177,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-### 14th of June 2026: WanGP v12.22, Go with the Flow
+### 10th of June 2026: WanGP v12.21, Go with the Flow
 - **Media Flow Plugin**: the *Full Video Process* is now named *Media Flow* because it can process *Images* as well as *Videos*. Even better, the new *Batch* mode can process any number of files: for instance, give *Media Flow* the path to the folder containing your collection of butterfly pictures and *all the corresponding images will be upsampled in one click*!
 
 - **Scail 2**: the sequel to one of the best video *Character Animators*, and a very good alternative to *Wan 2.2 Animate*. You can either *Animate* up to 5 people by providing a *Start Image* and a *Control Video* that contains the movement, or *Replace* one person in an existing Control Video. Animate mode preserves identity well thanks to the new *Reference Image* input and, best of all, it supports *Sliding Windows* for non-stop dancing!
@@ -66,20 +188,11 @@ Version *update 12.21* introduces RAM optimisations when using many *sliding win
 
 - **Int8 ConvRot Support**: model checkpoints saved in this quantized int8 format used by Comfy can now be loaded in WanGP.
 
-- **LTX2 Image Generator (t2i)**: this one was always within grasp but required a little bit of packaging. Here we go we, just pick the *text to image* tab and use *LTX2* to use your favorite *Ic LoRAs* (outpainting, refiner, ...) on *images*. Best of all, the *LTX2 Image Processes* are available in the *Media Flow* Plugin.
+- **LTX2 Image Generator (t2v)**: this one was always within grasp but required a little bit of packaging. Here we go we, just pick the *text to video* tab and use *LTX2* to use your favorite *Ic LoRAs* (outpainting, refiner, ...) on *images*. Best of all, the *LTX2 Image Processes* are available in the *Media Flow* Plugin.
 
 - **Bernini 1.3B**: a much more gentle version (*lower VRAM requirements and faster*) for your GPU. Not as good as the 14GB version, but still produces some nice outputs.
 
-- **Chain of Zoom Upsampler**: new upsampler that can magnify up to x16, quite good with hair and skin. However it expects low quality image so it may reinvent existing details. WanGP optimized: low VRAM and up to x4 times faster
-
-- **Upsampler & Model Plugins**: PlugIn developers can now create plugins that add new *Spatial Upsampler* or new *Models*
-
-As sample plugins, enjoy:
-   - **Stable Diffusion 1.4**: the father of all image generators !
-   - **Pixel Upsampler**: upsample by duplicating the same pixel for a grandiose Pixel Art effect !
-
-*update 12.21*: Scail 2 RAM optim + lightx2v support, added LTX2 t2v & Bernini 1.3B\
-*update 12.22*: Chain of Zoom Upsampler,  Upsampler & Model Plugins
+*update 12.21*: Scail 2 RAM optim + lightx2v support, added LTX2 t2v & Bernini 1.3B
 
 ### 7th of June 2026: WanGP v12.13, Prompt Control
 - **Ideogram 4 Prompt Helper**: the great thing about Ideogram 4 is that you can position every object or text exactly where you expect it in your output image. Ideogram 4 now has a *Visual Helper* to create and edit its JSON prompt format. Click the *Magic Wand* next to the prompt to draw or resize text/object boxes, tune the main prompt fields, and apply the final JSON back to the prompt. *Magic Prompt* can still create the first draft for you.
@@ -539,7 +652,6 @@ For detailed installation instructions for different GPU generations:
 - **[Loras Guide](docs/LORAS.md)** - Using and managing Loras for customization
 - **[Finetunes](docs/FINETUNES.md)** - Add manually new models to WanGP
 - **[VACE ControlNet](docs/VACE.md)** - Advanced video control and manipulation
-- **[Processing Guide](docs/PROCESSING.md)** - Preprocessing, masks, sliding windows, and postprocessing
 - **[Command Line Reference](docs/CLI.md)** - All available command line options
 
 ## 📚 Documentation

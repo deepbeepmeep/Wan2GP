@@ -1,0 +1,10 @@
+{
+  "name": "Character & Environment Consistency Studio",
+  "author": "WanGP local",
+  "version": "1.0.0",
+  "description": "Create reusable character and environment packs, export WanGP settings, and run reference-anchored consistent shots.",
+  "date": "2026-06-13",
+  "wan2gp_version": "",
+  "url": "",
+  "uninstallable": false
+}

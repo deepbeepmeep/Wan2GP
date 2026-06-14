@@ -240,6 +240,7 @@ SYSTEM_PLUGINS = [
     "wan2gp-about",
 ]
 BUNDLED_PLUGINS = {
+    "wan2gp-character-consistency",
     "wan2gp-motion-designer",
     "wan2gp-sample",
     "wan2gp-media-flow",
@@ -1507,6 +1508,9 @@ class WAN2GPApplication:
             migrate_mediaflow_plugin_id(server_config, server_config_filename)
         if not safe_mode and not server_config.get("motion_designer_bundled_migrated", 0):
             server_config["enabled_plugins"] = server_config.get("enabled_plugins", []) + ([] if "wan2gp-motion-designer" in server_config.get("enabled_plugins", []) else ["wan2gp-motion-designer"]); server_config["motion_designer_bundled_migrated"] = 1
+            self.plugin_manager._save_server_config()
+        if not safe_mode and not server_config.get("character_consistency_bundled_migrated", 0):
+            server_config["enabled_plugins"] = server_config.get("enabled_plugins", []) + ([] if "wan2gp-character-consistency" in server_config.get("enabled_plugins", []) else ["wan2gp-character-consistency"]); server_config["character_consistency_bundled_migrated"] = 1
             self.plugin_manager._save_server_config()
         self.plugin_manager.cleanup_pending_deletions()
 

@@ -12,10 +12,12 @@
 *.mkv
 *.log
 *.zip
+*.bin
 *.pt
 *.pth
 *.ckpt
 *.safetensors
+*.t7
 #*.json
 # *.txt
 *.backup
@@ -47,3 +49,4 @@ wgp_config.json
 plugins_local.json
 loras_url_cache.json
 loras_url_cache_v2.json
+secrets.txt

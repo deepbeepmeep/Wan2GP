@@ -893,47 +893,29 @@ class GradioWanGPSession:
             state.set_callback_context(bound_context)
             worker = threading.Thread(target=self._run_wrapped_click_worker, args=(call_id, fn, args, kwargs, bound_state, bound_context), daemon=True, name="wangp-plugin-click")
             worker.start()
-            deadline = time.time() + 0.5
-            while time.time() < deadline:
+            while True:
                 yielded_result = state.pop_yielded_result()
                 if yielded_result is not _NO_YIELDED_RESULT:
                     return [*self._normalize_callback_result(yielded_result, output_count), gr.skip(), gr.skip(), call_id]
                 load_queue_token = state.pop_primary_load_queue_token()
                 if load_queue_token:
                     return [*self._blank_outputs(output_count), load_queue_token, gr.skip(), call_id]
-                if state.job is not None:
+                if state.job is not None and not state.done.is_set():
                     state.job._webui_submission_ready.wait(timeout=0.05)
-                if state.done.wait(timeout=0.05):
-                    if state.error is not None:
-                        self._forget_wrapped_call(call_id)
-                        raise self._as_gradio_error(state.error)
-                    yielded_result = state.pop_yielded_result()
-                    if yielded_result is not _NO_YIELDED_RESULT:
-                        return [*self._normalize_callback_result(yielded_result, output_count), gr.skip(), gr.skip(), call_id]
-                    if not state.has_result:
-                        self._forget_wrapped_call(call_id)
-                        return [*self._blank_outputs(output_count), gr.skip(), gr.skip(), ""]
+                    continue
+                if not state.done.wait(timeout=0.05):
+                    continue
+                if state.error is not None:
                     self._forget_wrapped_call(call_id)
-                    return [*self._normalize_callback_result(state.result, output_count), gr.skip(), gr.skip(), ""]
-            if state.job is not None:
-                if not state.job._webui_submission_ready.wait(timeout=5):
+                    raise self._as_gradio_error(state.error)
+                yielded_result = state.pop_yielded_result()
+                if yielded_result is not _NO_YIELDED_RESULT:
+                    return [*self._normalize_callback_result(yielded_result, output_count), gr.skip(), gr.skip(), call_id]
+                if not state.has_result:
                     self._forget_wrapped_call(call_id)
-                    raise gr.Error("WanGP WebUI submission did not become ready in time.")
-                load_queue_token = state.pop_primary_load_queue_token()
-                if load_queue_token:
-                    return [*self._blank_outputs(output_count), load_queue_token, gr.skip(), call_id]
-            state.done.wait()
-            if state.error is not None:
+                    return [*self._blank_outputs(output_count), gr.skip(), gr.skip(), ""]
                 self._forget_wrapped_call(call_id)
-                raise self._as_gradio_error(state.error)
-            yielded_result = state.pop_yielded_result()
-            if yielded_result is not _NO_YIELDED_RESULT:
-                return [*self._normalize_callback_result(yielded_result, output_count), gr.skip(), gr.skip(), call_id]
-            if not state.has_result:
-                self._forget_wrapped_call(call_id)
-                return [*self._blank_outputs(output_count), gr.skip(), gr.skip(), ""]
-            self._forget_wrapped_call(call_id)
-            return [*self._normalize_callback_result(state.result, output_count), gr.skip(), gr.skip(), ""]
+                return [*self._normalize_callback_result(state.result, output_count), gr.skip(), gr.skip(), ""]
 
         wrapped.__signature__ = inspect.signature(fn)
         return wrapped
@@ -1074,28 +1056,49 @@ class GradioWanGPSession:
             self._wrapped_calls.pop(call_id, None)
 
     def _callback_uses_api_session(self, fn) -> bool:
-        candidates: list[Any] = []
+        candidates: list[Any] = [fn]
+        owner_candidates: list[Any] = [fn]
+        api_attr_names = {"_api", "_wangp_session"}
+        code = getattr(fn, "__code__", None)
+        referenced_names = set(getattr(code, "co_names", ())) | set(getattr(code, "co_freevars", ()))
         try:
             closure_vars = inspect.getclosurevars(fn)
         except Exception:
             closure_vars = None
         if closure_vars is not None:
             candidates.extend(closure_vars.nonlocals.values())
+            owner_candidates.extend(closure_vars.nonlocals.values())
             candidates.extend(closure_vars.globals.values())
         for values in (getattr(fn, "__defaults__", None) or (), (getattr(fn, "__kwdefaults__", None) or {}).values()):
             candidates.extend(values)
+            owner_candidates.extend(values)
         for cell in getattr(fn, "__closure__", ()) or ():
             try:
-                candidates.append(cell.cell_contents)
+                value = cell.cell_contents
             except ValueError:
                 continue
+            candidates.append(value)
+            owner_candidates.append(value)
         for candidate in candidates:
-            if candidate is self or candidate is self._session:
+            owner = candidate.__self__ if inspect.ismethod(candidate) else candidate
+            if owner is self or owner is self._session:
                 return True
-            if isinstance(candidate, (GradioWanGPSession, WanGPSession)):
+            if isinstance(owner, (GradioWanGPSession, WanGPSession)):
                 return True
-            if inspect.ismethod(candidate) and candidate.__self__ in (self, self._session):
-                return True
+        if not referenced_names.intersection(api_attr_names):
+            return False
+        if closure_vars is not None:
+            owner_candidates.extend(closure_vars.globals.values())
+        for candidate in owner_candidates:
+            owner = candidate.__self__ if inspect.ismethod(candidate) else candidate
+            try:
+                attrs = vars(owner)
+            except TypeError:
+                attrs = {}
+            for attr_name in ("_api", "_wangp_session"):
+                session = attrs.get(attr_name)
+                if session is self or session is self._session or isinstance(session, (GradioWanGPSession, WanGPSession)):
+                    return True
         return False
 
     def _wrap_callbacks_for_current_call(self, callbacks: object | None) -> object | None:

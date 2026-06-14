@@ -131,7 +131,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             gr.Markdown()
             process_btn = gr.Button("Use GPU To Do Something Important")
             process_output = gr.Text(label="Process Output", value="")
-            goto_btn = gr.Button("Goto Video Tab")
+            goto_btn = gr.Button("Goto Media Generator Tab")
             gr.Markdown("---")
             start_btn = gr.Button("Generate a LTX 2.3 Video")
             output_video = gr.Video(label="Output")

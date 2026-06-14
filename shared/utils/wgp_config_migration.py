@@ -7,8 +7,9 @@ from shared.deepy.config import DEEPY_ENABLED_KEY
 
 LEGACY_EXTENSIONS_DEFAULTS_MIGRATED_KEY = "_extensions_defaults_migrated"
 EXTENSIONS_DEFAULTS_VERSION_KEY = "extensions_defaults_version"
-EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.13")
+EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.15")
 EXTENSIONS_DEFAULTS_TARGET_VERSION_TEXT = str(EXTENSIONS_DEFAULTS_TARGET_VERSION)
+INSTALLED_REMOTE_PLUGINS_KEY = "installed_remote_plugins"
 
 SEEDVC_MODE_CHOICES = [("v1.0 Speech", 1), ("v1.0 Singing / F0 44k", 2), ("v2 Speech", 3)]
 PROMPT_ENHANCER_CHOICES = [
@@ -23,8 +24,38 @@ PROMPT_ENHANCER_LOW_VRAM_DEFAULT_MODE = PROMPT_ENHANCER_CHOICES[0][1]
 PROMPT_ENHANCER_HIGH_VRAM_DEFAULT_MODE = 3
 PROMPT_ENHANCER_QWEN_MIN_VRAM_GB = 10
 DEEPY_DEFAULT_ENABLED = 1
-LEGACY_MEDIAFLOW_PLUGIN_IDS = {"wan2gp-process-full-video", "wan2gp-mediaflow"}
-MEDIAFLOW_PLUGIN_ID = "wan2gp-media-flow"
+MEDIAFLOW_PLUGIN_ID = "media_flow"
+PLUGIN_ID_MIGRATIONS = {
+    "wan2gp-about": "about",
+    "wan2gp-configuration": "configuration",
+    "wan2gp-downloads": "downloads",
+    "wan2gp-guides": "guides",
+    "wan2gp-media-flow": MEDIAFLOW_PLUGIN_ID,
+    "wan2gp-mediaflow": MEDIAFLOW_PLUGIN_ID,
+    "media-flow": MEDIAFLOW_PLUGIN_ID,
+    "wan2gp-models-manager": "models_manager",
+    "models-manager": "models_manager",
+    "wan2gp-motion-designer": "motion_designer",
+    "motion-designer": "motion_designer",
+    "wan2gp-plugin-manager": "plugin_manager",
+    "plugin-manager": "plugin_manager",
+    "wan2gp-process-full-video": MEDIAFLOW_PLUGIN_ID,
+    "wan2gp-sample": "sample",
+    "wan2gp-video-mask-creator": "video_mask_creator",
+    "video-mask-creator": "video_mask_creator",
+}
+PROTECTED_PLUGIN_IDS = {
+    "about",
+    "configuration",
+    "downloads",
+    "guides",
+    "media_flow",
+    "models_manager",
+    "motion_designer",
+    "plugin_manager",
+    "sample",
+    "video_mask_creator",
+}
 
 
 def _to_int(value, default=0):
@@ -124,34 +155,57 @@ def migrate_extension_defaults(server_config, server_config_filename="") -> bool
     if server_config.get(EXTENSIONS_DEFAULTS_VERSION_KEY) != EXTENSIONS_DEFAULTS_TARGET_VERSION_TEXT:
         server_config[EXTENSIONS_DEFAULTS_VERSION_KEY] = EXTENSIONS_DEFAULTS_TARGET_VERSION_TEXT
         changed = True
-    changed = migrate_mediaflow_plugin_id(server_config) or changed
+    changed = migrate_bundled_plugin_ids(server_config) or changed
+    changed = migrate_installed_remote_plugins(server_config) or changed
 
     if changed:
         _write_config(server_config, server_config_filename)
     return changed
 
 
-def migrate_mediaflow_plugin_id(server_config, server_config_filename="") -> bool:
-    if not isinstance(server_config, dict):
-        return False
-    enabled_plugins = server_config.get("enabled_plugins", [])
-    if not isinstance(enabled_plugins, list):
+def _migrate_plugin_id_list(server_config, key) -> bool:
+    plugin_ids = server_config.get(key, [])
+    if not isinstance(plugin_ids, list):
         return False
     changed = False
     migrated = []
     seen = set()
-    for plugin_id in enabled_plugins:
+    for plugin_id in plugin_ids:
         plugin_id = str(plugin_id or "").strip()
-        if plugin_id in LEGACY_MEDIAFLOW_PLUGIN_IDS:
-            plugin_id = MEDIAFLOW_PLUGIN_ID
-            changed = True
+        plugin_id = PLUGIN_ID_MIGRATIONS.get(plugin_id, plugin_id)
         if not plugin_id or plugin_id in seen:
             changed = True
             continue
         seen.add(plugin_id)
         migrated.append(plugin_id)
+    if migrated != plugin_ids:
+        server_config[key] = migrated
+        changed = True
+    return changed
+
+
+def migrate_bundled_plugin_ids(server_config, server_config_filename="") -> bool:
+    if not isinstance(server_config, dict):
+        return False
+    changed = _migrate_plugin_id_list(server_config, "enabled_plugins")
+    changed = _migrate_plugin_id_list(server_config, "pending_plugin_deletions") or changed
     if changed:
-        server_config["enabled_plugins"] = migrated
+        _write_config(server_config, server_config_filename)
+    return changed
+
+
+def migrate_mediaflow_plugin_id(server_config, server_config_filename="") -> bool:
+    return migrate_bundled_plugin_ids(server_config, server_config_filename)
+
+
+def migrate_installed_remote_plugins(server_config, server_config_filename="") -> bool:
+    if not isinstance(server_config, dict):
+        return False
+    changed = _migrate_plugin_id_list(server_config, INSTALLED_REMOTE_PLUGINS_KEY)
+    if INSTALLED_REMOTE_PLUGINS_KEY not in server_config:
+        server_config[INSTALLED_REMOTE_PLUGINS_KEY] = [plugin_id for plugin_id in server_config.get("enabled_plugins", []) if plugin_id not in PROTECTED_PLUGIN_IDS]
+        changed = True
+    if changed:
         _write_config(server_config, server_config_filename)
     return changed
 

@@ -14,14 +14,14 @@ import shutil
 import stat
 import json
 import requests
-from shared.utils.wgp_config_migration import migrate_mediaflow_plugin_id
+from shared.utils.wgp_config_migration import INSTALLED_REMOTE_PLUGINS_KEY, migrate_bundled_plugin_ids
 media_gen_label = "Media Generator"
 
 COMMUNITY_PLUGINS_URL = "https://github.com/deepbeepmeep/Wan2GP/raw/refs/heads/main/plugins.json"
 PLUGIN_CATALOG_FILENAME = "plugins.json"
 PLUGIN_LOCAL_CATALOG_FILENAME = "plugins_local.json"
 PLUGIN_METADATA_FILENAME = "plugin_info.json"
-PLUGIN_TYPE_CHOICES = ("app", "extension", "spatial_upsampler", "model")
+PLUGIN_TYPE_CHOICES = ("app", "extension", "processor", "model")
 PLUGIN_SPATIAL_UPSAMPLER_HANDLERS_KEY = "spatial_upsampler_handlers"
 PLUGIN_MODEL_HANDLERS_KEY = "model_handlers"
 PLUGIN_MODEL_DEFAULTS_KEY = "defaults"
@@ -233,16 +233,18 @@ def auto_install_and_enable_default_plugins(manager: 'PluginManager', wgp_global
 
 
 SYSTEM_PLUGINS = [
-    "wan2gp-video-mask-creator",
-    "wan2gp-guides",
-    "wan2gp-configuration",
-    "wan2gp-plugin-manager",
-    "wan2gp-about",
+    "video_mask_creator",
+    "guides",
+    "configuration",
+    "plugin_manager",
+    "about",
 ]
 BUNDLED_PLUGINS = {
-    "wan2gp-motion-designer",
-    "wan2gp-sample",
-    "wan2gp-media-flow",
+    "downloads",
+    "media_flow",
+    "models_manager",
+    "motion_designer",
+    "sample",
 }
 USER_PLUGIN_INSERT_POSITION = 1
 
@@ -373,6 +375,30 @@ class PluginManager:
                 writer.write(json.dumps(self.server_config, indent=4))
         except Exception as e:
             print(f"[PluginManager] Failed to write config file '{self.server_config_filename}': {e}")
+
+    def record_remote_plugin_install(self, plugin_id: str) -> None:
+        if not self.server_config:
+            return
+        plugin_id = str(plugin_id or "").strip()
+        if not plugin_id or plugin_id in SYSTEM_PLUGINS or plugin_id in BUNDLED_PLUGINS:
+            return
+        installed = self.server_config.get(INSTALLED_REMOTE_PLUGINS_KEY, [])
+        if not isinstance(installed, list):
+            installed = []
+        if plugin_id not in installed:
+            installed.append(plugin_id)
+            self.server_config[INSTALLED_REMOTE_PLUGINS_KEY] = installed
+            self._save_server_config()
+
+    def clear_remote_plugin_install(self, plugin_id: str) -> None:
+        if not self.server_config:
+            return
+        plugin_id = str(plugin_id or "").strip()
+        installed = self.server_config.get(INSTALLED_REMOTE_PLUGINS_KEY, [])
+        if not plugin_id or not isinstance(installed, list) or plugin_id not in installed:
+            return
+        self.server_config[INSTALLED_REMOTE_PLUGINS_KEY] = [item for item in installed if item != plugin_id]
+        self._save_server_config()
 
     def _get_pending_deletions(self) -> List[str]:
         if not self.server_config:
@@ -541,7 +567,7 @@ class PluginManager:
 
     def _normalize_plugin_metadata(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         metadata = dict(payload)
-        for key in ("name", "version", "description", "author", "date", "wan2gp_version"):
+        for key in ("name", "version", "description", "author", "date", "wan2gp_version", "url"):
             value = metadata.get(key)
             if isinstance(value, str):
                 metadata[key] = value.strip()
@@ -553,7 +579,7 @@ class PluginManager:
         if not _has_value(metadata.get("wan2gp_version")) and _has_value(legacy_version):
             metadata["wan2gp_version"] = str(legacy_version).strip()
         metadata.pop("wangp_version", None)
-        metadata["url"] = ""
+        metadata["url"] = normalize_plugin_url(metadata.get("url", ""))
         metadata["type"] = normalize_plugin_types(metadata.get("type"))
         metadata["uninstallable"] = self._coerce_bool(metadata.get("uninstallable"), default=True)
         metadata[PLUGIN_SPATIAL_UPSAMPLER_HANDLERS_KEY] = self._coerce_string_list(metadata.get(PLUGIN_SPATIAL_UPSAMPLER_HANDLERS_KEY))
@@ -781,7 +807,7 @@ class PluginManager:
             payload = self._load_json_file(self.catalog_path)
             if isinstance(payload, list):
                 entries = [self._normalize_catalog_entry(entry) for entry in payload if isinstance(entry, dict)]
-        return entries
+        return entries or []
 
     def load_local_catalog_entries(self) -> List[Dict[str, Any]]:
         payload = self._load_json_file(self.local_catalog_path)
@@ -820,7 +846,7 @@ class PluginManager:
 
     def _metadata_to_catalog_entry(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         entry = {}
-        for key in ("name", "author", "version", "description", "type", "date", "wan2gp_version"):
+        for key in ("name", "author", "version", "description", "type", "date", "wan2gp_version", "url"):
             entry[key] = metadata.get(key, "")
         return self._normalize_catalog_entry(entry)
 
@@ -1111,6 +1137,7 @@ class PluginManager:
 
         try:
             shutil.rmtree(target_dir, onerror=self._remove_readonly)
+            self.clear_remote_plugin_install(plugin_id)
             return f"[Success] Plugin '{plugin_id}' uninstalled. Please restart WanGP."
         except Exception as e:
             return f"[Error] Failed to remove plugin '{plugin_id}': {e}"
@@ -1142,6 +1169,7 @@ class PluginManager:
                 return f"[Error] Update failed: could not resolve remote branch for '{plugin_id}'."
 
             if local_commit == remote_commit:
+                 self.record_plugin_metadata(plugin_id)
                  return f"[Info] Plugin '{plugin_id}' is already up to date."
 
             if progress is not None: progress(0.6, desc=f"Pulling updates for '{plugin_id}'...")
@@ -1153,6 +1181,7 @@ class PluginManager:
                 subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', requirements_path])
 
             if progress is not None: progress(1.0, desc="Update complete.")
+            self.record_plugin_metadata(plugin_id)
             return f"[Success] Plugin '{plugin_id}' updated. Please restart WanGP for changes to take effect."
         except git.exc.GitCommandError as e:
             traceback.print_exc()
@@ -1175,48 +1204,65 @@ class PluginManager:
         if not os.path.isdir(target_dir):
             return f"[Error] Plugin '{plugin_id}' not found."
 
-        git_url = None
-        if os.path.isdir(os.path.join(target_dir, '.git')):
-            try:
-                repo = git.Repo(target_dir)
-                git_url = repo.remotes.origin.url
-            except Exception as e:
-                traceback.print_exc()
-                return f"[Error] Could not get remote URL for '{plugin_id}': {e}"
-        
-        if not git_url:
-            return f"[Error] Could not determine remote URL for '{plugin_id}'. Cannot reinstall."
-
-        if progress is not None: progress(0, desc=f"Reinstalling '{plugin_id}'...")
-
-        backup_dir = f"{target_dir}.bak"
-        if os.path.exists(backup_dir):
-            try:
-                shutil.rmtree(backup_dir, onerror=self._remove_readonly)
-            except Exception as e:
-                return f"[Error] Could not remove old backup directory '{backup_dir}'. Please remove it manually and try again. Error: {e}"
-
-        try:
-            if progress is not None: progress(0.2, desc=f"Moving old version of '{plugin_id}' aside...")
-            os.rename(target_dir, backup_dir)
-        except OSError as e:
-            traceback.print_exc()
-            return f"[Error] Could not move the existing plugin directory for '{plugin_id}'. It may be in use by another process. Please close any file explorers or editors in that folder and try again. Error: {e}"
-        
-        install_msg = self.install_plugin_from_url(git_url, progress=progress)
-        
+        if progress is not None: progress(0, desc=f"Reinstalling '{plugin_id}' from local folder...")
+        install_msg = self.install_local_plugin(plugin_id, progress=progress)
         if "[Success]" in install_msg:
+            return f"[Success] Plugin '{plugin_id}' reinstalled from local folder. Please restart WanGP."
+        return f"[Error] Reinstallation failed from local folder: {install_msg}"
+
+    def install_local_plugin(self, plugin_id: str, progress=None):
+        plugin_id = str(plugin_id or "").strip()
+        if not plugin_id:
+            return "[Error] No plugin selected for installation."
+        target_dir = os.path.join(self.plugins_dir, plugin_id)
+        if not os.path.isdir(target_dir):
+            return f"[Error] Plugin '{plugin_id}' directory not found."
+        try:
+            return self._finalize_local_plugin_install(plugin_id, target_dir, progress=progress)
+        except Exception as e:
+            traceback.print_exc()
+            return f"[Error] An unexpected error occurred during installation of '{plugin_id}': {str(e)}"
+
+    def _finalize_local_plugin_install(self, plugin_id: str, target_dir: str, progress=None, remove_invalid: bool = False, source_url: str = ""):
+        plugin_entry = os.path.join(target_dir, "plugin.py")
+        metadata = self._load_plugin_metadata(target_dir)
+        metadata_handlers = []
+        if metadata:
+            metadata_handlers = metadata.get(PLUGIN_MODEL_HANDLERS_KEY, []) + metadata.get(PLUGIN_SPATIAL_UPSAMPLER_HANDLERS_KEY, [])
+        if not os.path.isfile(plugin_entry) and not metadata_handlers:
+            if remove_invalid:
+                shutil.rmtree(target_dir, onerror=self._remove_readonly)
+            return "[Error] Invalid Plugin."
+
+        requirements_path = os.path.join(target_dir, 'requirements.txt')
+        if os.path.exists(requirements_path):
+            if progress is not None: progress(0.5, desc=f"Installing dependencies for '{plugin_id}'...")
             try:
-                shutil.rmtree(backup_dir, onerror=self._remove_readonly)
-            except Exception:
+                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', requirements_path])
+            except subprocess.CalledProcessError as e:
+                traceback.print_exc()
+                return f"[Error] Failed to install dependencies for {plugin_id}. Check console for details. Error: {e}"
+
+        setup_path = os.path.join(target_dir, 'setup.py')
+        if os.path.exists(setup_path):
+            if progress is not None: progress(0.8, desc=f"Running setup for '{plugin_id}'...")
+            try:
+                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-e', target_dir])
+            except subprocess.CalledProcessError as e:
+                traceback.print_exc()
+                return f"[Error] Failed to run setup.py for {plugin_id}. Check console for details. Error: {e}"
+
+        init_path = os.path.join(target_dir, '__init__.py')
+        if not os.path.exists(init_path):
+            with open(init_path, 'w') as f:
                 pass
-            return f"[Success] Plugin '{plugin_id}' reinstalled. Please restart WanGP."
-        else:
-            try:
-                os.rename(backup_dir, target_dir)
-                return f"[Error] Reinstallation failed during install step: {install_msg}. The original plugin has been restored."
-            except Exception as restore_e:
-                return f"[CRITICAL ERROR] Reinstallation failed AND could not restore backup. Plugin '{plugin_id}' is now in a broken state. Please manually rename '{backup_dir}' back to '{target_dir}'. Original error: {install_msg}. Restore error: {restore_e}"
+
+        self._strip_uninstallable_flag(target_dir)
+        if progress is not None: progress(1.0, desc="Installation complete.")
+        self._clear_pending_deletion(plugin_id)
+        self.record_remote_plugin_install(plugin_id)
+        self.record_plugin_metadata(plugin_id, url=source_url)
+        return f"[Success] Plugin '{plugin_id}' installed. Please enable it in the list and restart WanGP."
 
     def install_plugin_from_url(self, git_url: str, progress=None):
         cleaned_url = normalize_plugin_url(git_url)
@@ -1235,43 +1281,7 @@ class PluginManager:
             if progress is not None: progress(0.1, desc=f"Cloning '{repo_name}'...")
             git.Repo.clone_from(cleaned_url, target_dir)
 
-            plugin_entry = os.path.join(target_dir, "plugin.py")
-            metadata = self._load_plugin_metadata(target_dir)
-            metadata_handlers = []
-            if metadata:
-                metadata_handlers = metadata.get(PLUGIN_MODEL_HANDLERS_KEY, []) + metadata.get(PLUGIN_SPATIAL_UPSAMPLER_HANDLERS_KEY, [])
-            if not os.path.isfile(plugin_entry) and not metadata_handlers:
-                shutil.rmtree(target_dir, onerror=self._remove_readonly)
-                return "[Error] Invalid Plugin."
-
-            requirements_path = os.path.join(target_dir, 'requirements.txt')
-            if os.path.exists(requirements_path):
-                if progress is not None: progress(0.5, desc=f"Installing dependencies for '{repo_name}'...")
-                try:
-                    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', requirements_path])
-                except subprocess.CalledProcessError as e:
-                    traceback.print_exc()
-                    return f"[Error] Failed to install dependencies for {repo_name}. Check console for details. Error: {e}"
-
-            setup_path = os.path.join(target_dir, 'setup.py')
-            if os.path.exists(setup_path):
-                if progress is not None: progress(0.8, desc=f"Running setup for '{repo_name}'...")
-                try:
-                    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-e', target_dir])
-                except subprocess.CalledProcessError as e:
-                    traceback.print_exc()
-                    return f"[Error] Failed to run setup.py for {repo_name}. Check console for details. Error: {e}"
-            
-            init_path = os.path.join(target_dir, '__init__.py')
-            if not os.path.exists(init_path):
-                with open(init_path, 'w') as f:
-                    pass
-
-            self._strip_uninstallable_flag(target_dir)
-            
-            if progress is not None: progress(1.0, desc="Installation complete.")
-            self._clear_pending_deletion(repo_name)
-            return f"[Success] Plugin '{repo_name}' installed. Please enable it in the list and restart WanGP."
+            return self._finalize_local_plugin_install(repo_name, target_dir, progress=progress, remove_invalid=True, source_url=cleaned_url)
 
         except git.exc.GitCommandError as e:
             traceback.print_exc()
@@ -1305,8 +1315,10 @@ class PluginManager:
     def discover_plugins(self) -> List[str]:
         discovered = []
         for item in os.listdir(self.plugins_dir):
+            if item.endswith(".bak"):
+                continue
             path = os.path.join(self.plugins_dir, item)
-            if os.path.isdir(path) and os.path.exists(os.path.join(path, '__init__.py')):
+            if os.path.isdir(path) and (os.path.exists(os.path.join(path, '__init__.py')) or os.path.exists(os.path.join(path, 'plugin.py'))):
                 discovered.append(item)
         return sorted(discovered)
 
@@ -1504,9 +1516,9 @@ class WAN2GPApplication:
             return
         self.plugin_manager.set_server_config(server_config, server_config_filename)
         if not safe_mode:
-            migrate_mediaflow_plugin_id(server_config, server_config_filename)
+            migrate_bundled_plugin_ids(server_config, server_config_filename)
         if not safe_mode and not server_config.get("motion_designer_bundled_migrated", 0):
-            server_config["enabled_plugins"] = server_config.get("enabled_plugins", []) + ([] if "wan2gp-motion-designer" in server_config.get("enabled_plugins", []) else ["wan2gp-motion-designer"]); server_config["motion_designer_bundled_migrated"] = 1
+            server_config["enabled_plugins"] = server_config.get("enabled_plugins", []) + ([] if "motion_designer" in server_config.get("enabled_plugins", []) else ["motion_designer"]); server_config["motion_designer_bundled_migrated"] = 1
             self.plugin_manager._save_server_config()
         self.plugin_manager.cleanup_pending_deletions()
 

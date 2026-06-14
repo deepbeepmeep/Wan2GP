@@ -37,7 +37,7 @@ Community plugin folder names should use the `wan2gp-` prefix, for example `wan2
 Plugins may also include `plugin_info.json` for Plugin Manager metadata. Its optional `type` property can be a string or a list of strings. Missing `type` values default to `"app"`. Supported values are:
 *   `"app"`: an application plugin, usually with its own tab.
 *   `"extension"`: a feature plugin that does not add its own tab.
-*   `"spatial_upsampler"`: a plugin that provides one or more spatial upsamplers.
+*   `"processor"`: a processing plugin, such as a spatial upsampler today or future preprocessors/audio postprocessors.
 *   `"model"`: a plugin that provides model integrations.
 
 Model plugins declare their model integration in `plugin_info.json`. They may omit `plugin.py` when they only provide handlers and metadata. Use:

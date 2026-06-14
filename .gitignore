@@ -21,6 +21,7 @@
 *.backup
 *.pkl
 *.html
+!plugins/motion_designer/assets/motion_designer_iframe_template.html
 *.pdf
 *.whl
 *.exe

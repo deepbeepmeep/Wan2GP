@@ -396,13 +396,17 @@ async def image_to_video(
     guidance_scale: float,
     fps: int,
     image: UploadFile = File(None),
+    image_end: UploadFile = File(None),
 ):
     image_path = None
+    image_end_path = None
 
     try:
-        # Handle image upload
+        # Handle image uploads
         if image is not None:
             image_path = save_upload_file(image, suffix=".png")
+        if image_end is not None:
+            image_end_path = save_upload_file(image_end, suffix=".png")
 
         # Create request object
         from wgp_fastapi.models.i2v import I2VVideoModel
@@ -423,7 +427,10 @@ async def image_to_video(
         )
 
         # Convert request to WanGP settings
-        settings = request_obj.to_wgp_settings(image_start_path=image_path)
+        settings = request_obj.to_wgp_settings(
+            image_start_path=image_path,
+            image_end_path=image_end_path,
+        )
 
         # Is this not being setup correctly?
         print(f"Settings: {settings}")

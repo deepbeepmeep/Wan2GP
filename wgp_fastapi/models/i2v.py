@@ -41,7 +41,11 @@ class ImageToVideoRequest(BaseModel):
     guidance_scale: Optional[float]
     fps: int
 
-    def to_wgp_settings(self, image_start_path: str | None = None) -> dict:
+    def to_wgp_settings(
+        self,
+        image_start_path: str | None = None,
+        image_end_path: str | None = None,
+    ) -> dict:
         """Convert to WanGP task settings dict."""
         settings = {
             "prompt": self.prompt,
@@ -67,10 +71,17 @@ class ImageToVideoRequest(BaseModel):
             settings["switch_threshold"] = 900
             settings["overlap_size"] = 5
 
-
+        # Build image prompt type based on which images are provided
+        image_prompt_chars = ""
         if image_start_path:
             settings["image_start"] = image_start_path
-            settings["image_prompt_type"] = "S"  # Use start image
+            image_prompt_chars += "S"
+        if image_end_path:
+            settings["image_end"] = image_end_path
+            image_prompt_chars += "E"
+        if image_prompt_chars:
+            settings["image_prompt_type"] = image_prompt_chars
+
         return settings
 
 

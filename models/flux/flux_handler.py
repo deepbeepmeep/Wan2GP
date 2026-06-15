@@ -444,7 +444,9 @@ class family_handler():
                 "remove_background_images_ref" : 0,
             })
             if flux2_klein:
-                ui_defaults["num_inference_steps"] = 4
+                # Only force 4 steps for distilled models; base/non-distilled keep their own default
+                if ui_defaults.get("num_inference_steps", 4) <= 4:
+                    ui_defaults["num_inference_steps"] = 4
 
         if flux_kontext or flux_uso or flux_kontext_dreamomni2:
             ui_defaults.update({

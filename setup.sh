@@ -56,6 +56,17 @@ else
     echo "improved_klein.safetensors already exists, skipping."
 fi
 
+# Download Flux2-Klein-9B-consistency-V2.safetensors if it doesn't exist
+if [ ! -f "loras/flux2_klein_9b/Flux2-Klein-9B-consistency-V2.safetensors" ]; then
+    echo "Downloading Flux2-Klein-9B-consistency-V2.safetensors..."
+    mkdir -p "loras/flux2_klein_9b"
+    curl -L -o "loras/flux2_klein_9b/Flux2-Klein-9B-consistency-V2.safetensors" \
+        "https://huggingface.co/dx8152/Flux2-Klein-9B-Consistency/resolve/main/Flux2-Klein-9B-consistency-V2.safetensors"
+    echo "Download complete."
+else
+    echo "Flux2-Klein-9B-consistency-V2.safetensors already exists, skipping."
+fi
+
 # run the run.sh shell script
 echo ""
 echo "NOTE: If you get a macOS firewall prompt asking about Python accepting"

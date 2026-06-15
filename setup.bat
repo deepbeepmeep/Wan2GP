@@ -49,6 +49,16 @@ if not exist "loras\flux2_klein_9b\improved_klein.safetensors" (
     echo improved_klein.safetensors already exists, skipping.
 )
 
+:: Download Flux2-Klein-9B-consistency-V2.safetensors if it doesn't exist
+if not exist "loras\flux2_klein_9b\Flux2-Klein-9B-consistency-V2.safetensors" (
+    echo Downloading Flux2-Klein-9B-consistency-V2.safetensors...
+    if not exist "loras\flux2_klein_9b" mkdir "loras\flux2_klein_9b"
+    powershell -NoProfile -Command "& { $ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri 'https://huggingface.co/dx8152/Flux2-Klein-9B-Consistency/resolve/main/Flux2-Klein-9B-consistency-V2.safetensors' -OutFile 'loras\flux2_klein_9b\Flux2-Klein-9B-consistency-V2.safetensors' }"
+    echo Download complete.
+) else (
+    echo Flux2-Klein-9B-consistency-V2.safetensors already exists, skipping.
+)
+
 :: Now setup the FastAPI server wrapper
 pushd "wgp_fastapi"
 call conda run -n wan2gp --live-stream uv sync

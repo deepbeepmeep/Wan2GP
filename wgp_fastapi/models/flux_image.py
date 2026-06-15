@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 # Mapping from API model IDs to WanGP model_type strings
 FLUX_IMAGE_MODEL_TYPE_MAP = {
     "flux_2_klein": "flux2_klein_9b",
+    "flux_2_klein_base_9b": "flux2_klein_base_9b",
     "flux_2_klein_4b": "flux2_klein_4b",
     "pi_flux2": "pi_flux2",
 }
@@ -22,6 +23,7 @@ class FluxImageModel(str, Enum):
     """Supported models for flux-image generation."""
 
     FLUX_2_KLEIN = "flux_2_klein"
+    FLUX_2_KLEIN_BASE_9B = "flux_2_klein_base_9b"
     FLUX_2_KLEIN_4B = "flux_2_klein_4b"
     PI_FLUX2 = "pi_flux2"
 
@@ -64,7 +66,7 @@ class FluxImageRequest(BaseModel):
     )
     model: FluxImageModel = Field(
         default=FluxImageModel.FLUX_2_KLEIN,
-        description="Model to use (only flux_2_klein supported)",
+        description="Model to use: flux_2_klein (distilled, default), flux_2_klein_base_9b (non-distilled), flux_2_klein_4b, pi_flux2",
     )
 
     # Image prompt type
@@ -92,10 +94,11 @@ class FluxImageRequest(BaseModel):
     def to_wgp_settings(self, image_start_path: str | None = None) -> dict:
         """Convert to WanGP task settings dict."""
 
-        # Default LoRAs for flux2_klein_9b; not supported for ultra speed
+        # Default LoRAs for distilled flux2_klein_9b; not for base/non-distilled
         if self.model == FluxImageModel.FLUX_2_KLEIN:
             loras_list = [
-                "improved_klein.safetensors"
+                "improved_klein.safetensors",
+                "Flux2-Klein-9B-consistency-V2.safetensors",
             ]
         else:
             loras_list = []
@@ -117,6 +120,10 @@ class FluxImageRequest(BaseModel):
             # LoRA settings - WanGP expects activated_loras
             "activated_loras": loras_list,
         }
+
+        # Set LoRA multipliers: improved_klein at 1.0, consistency V2 at 0.5
+        if loras_list:
+            settings["loras_multipliers"] = ["1.0", "0.5"]
 
         # Handle mask inpainting
         if self.mask_path:

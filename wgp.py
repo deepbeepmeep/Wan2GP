@@ -4774,7 +4774,7 @@ def select_media(state, current_gallery_tab, input_file_list, file_selected, aud
                     video_guidance_scale = f"{video_guidance_scale}, {video_guidance2_scale} & {video_guidance3_scale} with Switch at Noise Levels {video_switch_threshold} & {video_switch_threshold2}"
                     if multiple_submodels:
                         video_guidance_scale += f" + Model Switch at {video_switch_threshold if video_model_switch_phase ==1 else video_switch_threshold2}"
-             video_phases_label = "Phases"
+            video_phases_label = "Phases"
             video_phases_value = None
             if video_guidance_phases != visible_phases :
                 video_phases_value = str(video_guidance_phases)
@@ -11741,10 +11741,10 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 choices= (["none", 0] if guidance_phases_value == 0 else []) + [("One Phase", 1),("Two Phases", 2)] + ([("Three Phases", 3)] if guidance_max_phases >=3 else []),
                                 value= guidance_phases_value,
                                 label="Guidance Phases" if visible_phases>=2 else "Phases",
-                                visible= guidance_max_phases >=2 and visible_phases >= 2,
+                                visible= guidance_max_phases >=2,
                                 interactive = not model_def.get("lock_guidance_phases", False)
                             )
-                        with gr.Row(visible = get_container_def("guidance_phases_row").visible and guidance_phases_value >= 2 and visible_phases >= 2) as guidance_phases_row:
+                        with gr.Row(visible = get_container_def("guidance_phases_row").visible and guidance_phases_value >= 2) as guidance_phases_row:
                             multiple_submodels = model_def.get("multiple_submodels", False)
                             model_switch_phase = gr.Dropdown(
                                 choices=[
@@ -11752,14 +11752,14 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                     ("Phase 2-3 transition", 2)],
                                 value=ui_get("model_switch_phase"),
                                 label="Model Switch",
-                                visible= model_def.get("multiple_submodels", False) and guidance_phases_value >= 3 and visible_phases >= 3 and multiple_submodels
+                                visible= model_def.get("multiple_submodels", False) and guidance_phases_value >= 3 and multiple_submodels
                             )
                             switch_threshold = setting_slider("switch_threshold", setting_context={"guidance_phases": guidance_phases_value})
-                            switch_threshold2 = setting_slider("switch_threshold2", visible=guidance_phases_value >= 3 and visible_phases >= 3)
+                            switch_threshold2 = setting_slider("switch_threshold2", visible=guidance_phases_value >= 3)
                         with gr.Row(visible = get_container_def("guidance_row").visible ) as guidance_row:
                             guidance_scale = setting_slider("guidance_scale", setting_context={"guidance_phases": guidance_phases_value})
-                            guidance2_scale = setting_slider("guidance2_scale", setting_context={"guidance_phases": guidance_phases_value}, visible=guidance_phases_value >= 2 and visible_phases >= 2)
-                            guidance3_scale = setting_slider("guidance3_scale", setting_context={"guidance_phases": guidance_phases_value}, visible=guidance_phases_value >= 3 and visible_phases >= 3)
+                            guidance2_scale = setting_slider("guidance2_scale", setting_context={"guidance_phases": guidance_phases_value}, visible=guidance_phases_value >= 2)
+                            guidance3_scale = setting_slider("guidance3_scale", setting_context={"guidance_phases": guidance_phases_value}, visible=guidance_phases_value >= 3)
 
                         any_audio_guidance = model_def.get("audio_guidance", False) 
                         any_embedded_guidance = model_def.get("embedded_guidance", False)

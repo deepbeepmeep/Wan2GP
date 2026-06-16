@@ -1,5 +1,17 @@
 [
   {
+    "name": "wan2gp-blender-upsampler",
+    "author": "DeepBeepMeep",
+    "version": "0.1.0",
+    "description": "Template temporal upsampler plugin that creates x2 intermediate frames by blending neighboring frames.",
+    "type": [
+      "processor"
+    ],
+    "date": "",
+    "wan2gp_version": "",
+    "url": "https://github.com/deepbeepmeep/wan2gp-blender-upsampler"
+  },
+  {
     "name": "File Gallery",
     "author": "Tophness and Neires",
     "version": "2.0.3",

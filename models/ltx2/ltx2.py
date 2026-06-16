@@ -409,6 +409,52 @@ def _duplicate_ref_image_as_video(ref_image, frame_count: int = 9):
     return np.repeat(frame[None, ...], frame_count, axis=0)
 
 
+def _msr_ref_image_to_frame(ref_image, width: int, height: int):
+    import numpy as np
+    from PIL import Image
+
+    if isinstance(ref_image, str):
+        with Image.open(ref_image) as image:
+            pil_image = image.convert("RGB")
+    elif torch.is_tensor(ref_image):
+        image = ref_image.detach().cpu()
+        if image.ndim == 4:
+            image = image[0]
+        if image.ndim == 3 and image.shape[0] in (1, 3, 4):
+            image = image.permute(1, 2, 0)
+        frame = image.numpy()
+        if frame.dtype != np.uint8:
+            if frame.max() <= 1.0:
+                frame = frame * 255.0
+            frame = frame.clip(0, 255).astype(np.uint8)
+        pil_image = Image.fromarray(frame[..., :3]).convert("RGB")
+    else:
+        frame = np.array(ref_image)
+        if frame.dtype != np.uint8:
+            if frame.max() <= 1.0:
+                frame = frame * 255.0
+            frame = frame.clip(0, 255).astype(np.uint8)
+        pil_image = Image.fromarray(frame[..., :3]).convert("RGB")
+    return np.array(pil_image.resize((int(width), int(height)), Image.Resampling.LANCZOS))
+
+
+def _build_msr_reference_video(ref_images, frame_count: int, width: int, height: int):
+    import numpy as np
+
+    ref_images = list(ref_images) if isinstance(ref_images, (list, tuple)) else [ref_images]
+    if not 2 <= len(ref_images) <= 5:
+        raise ValueError("LTX2 MSR requires 2 to 5 reference images, with the background image first.")
+    # WanGP uses the first K+I reference as the ratio/background anchor; MSR expects it last in the pseudo-video.
+    ref_images = ref_images[1:] + ref_images[:1]
+    frames = [_msr_ref_image_to_frame(ref_image, width, height) for ref_image in ref_images]
+    base_count = frame_count // len(frames)
+    remainder = frame_count % len(frames)
+    video_frames = []
+    for index, frame in enumerate(frames):
+        video_frames.extend([frame] * (base_count + (1 if index < remainder else 0)))
+    return np.stack(video_frames, axis=0)
+
+
 def _to_latent_index(frame_idx: int, stride: int) -> int:
     frame_idx = int(frame_idx)
     stride = int(stride)
@@ -1035,6 +1081,7 @@ class LTX2:
                 video_prompt_type = ""
         distill = self.model_def.get("ltx2_pipeline", "two_stage") == "distilled"
         editanything = _is_editanything_model(self.model_def)
+        msr = self.model_def.get("ltx2_msr", False)
         hdr_enabled = self.base_model_type == "ltx2_22B" and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type
         input_video_is_hdr = bool(input_video_is_hdr)
         hdr_scene_context = self._load_hdr_scene_context(lora_dir) if hdr_enabled else None
@@ -1166,7 +1213,14 @@ class LTX2:
                             "start_frame": control_start_frame,
                         }
 
-        if not editanything and "I" in video_prompt_type and "F" not in video_prompt_type and "K" not in video_prompt_type and input_ref_images is not None:
+        msr_video_conditioning = False
+        if msr and "I" in video_prompt_type and input_ref_images is not None:
+            ref_video = _build_msr_reference_video(input_ref_images, int(self.model_def["ltx2_msr_frame_count"]), int(width), int(height))
+            if video_conditioning is None:
+                video_conditioning = []
+            video_conditioning.append((ref_video, 0, control_strength))
+            msr_video_conditioning = True
+        elif not editanything and "I" in video_prompt_type and "F" not in video_prompt_type and "K" not in video_prompt_type and input_ref_images is not None:
             ref_frame_count = self.model_def.get("ltx2_ic_lora_ref_video_frames", 1)
             ref_video = _duplicate_ref_image_as_video(input_ref_images, ref_frame_count)
             if ref_video is not None:
@@ -1340,7 +1394,7 @@ class LTX2:
         negative_prompt = n_prompt if n_prompt else DEFAULT_NEGATIVE_PROMPT
         skip_stage_2 = guide_phases <= 1
         phase2_ic_lora = phase2_ic_lora_name(loras_selected, loras_slists, force_phase2_control=editanything, force_name="EditAnything") if video_conditioning else None
-        if video_conditioning and phase2_ic_lora is not None:
+        if video_conditioning and (phase2_ic_lora is not None or (msr_video_conditioning and not skip_stage_2)):
             video_conditioning_stage2 = video_conditioning
         if audio_cfg_scale is None:
             effective_audio_cfg_scale = LTX2_ID_LORA_AUDIO_CFG_SCALE if "1" in audio_prompt_type else float(guide_scale)

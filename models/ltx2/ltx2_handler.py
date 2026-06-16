@@ -558,10 +558,9 @@ class family_handler:
                 extra_model_def.update(
                     {
                         "ltx2_msr": True,
-                        "fps": 50,
                         "image_prompt_types_allowed": "TE",
                         "image_ref_choices": {
-                            "choices": [("Background + Up to 4 Subjects", "KI")],
+                            "choices": [("Background + Up to 4 Subjects", "KI"), ("Subjects / Objects only", "I")],
                             "letters_filter": "KI",
                             "default": "KI",
                             "label": "MSR Reference Images",
@@ -735,8 +734,11 @@ class family_handler:
             if any(letter in audio_prompt_type for letter in "K2"):
                 return "LTX2 MSR does not support Control Video audio options."
             image_refs = inputs.get("image_refs") or []
-            if not 2 <= len(image_refs) <= 5:
-                return "LTX2 MSR requires 2 to 5 reference images, with the background image first."
+            if "K" in video_prompt_type:
+                if not 2 <= len(image_refs) <= 5:
+                    return "LTX2 MSR Background + Subjects mode requires 2 to 5 reference images, with the background image first."
+            elif not 1 <= len(image_refs) <= 4:
+                return "LTX2 MSR Subjects / Objects only mode requires 1 to 4 reference images."
         from shared.utils.utils import get_outpainting_dims 
         any_outpainting = get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio) is not None        
         if "2" in audio_prompt_type:

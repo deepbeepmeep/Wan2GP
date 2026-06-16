@@ -3,6 +3,7 @@ from safetensors.torch import load_file
 from torch import nn, Tensor, einsum, IntTensor, FloatTensor, BoolTensor
 #from torchcubicspline import natural_cubic_spline_coeffs, NaturalCubicSpline
 from torch.nn.utils import remove_weight_norm
+from torch.nn.utils import parametrize
 
 def load_ckpt_state_dict(ckpt_path, prefix=None):
     if ckpt_path.endswith(".safetensors"):
@@ -17,7 +18,10 @@ def load_ckpt_state_dict(ckpt_path, prefix=None):
 
 def remove_weight_norm_from_model(model):
     for module in model.modules():
-        if hasattr(module, "weight"):
+        if parametrize.is_parametrized(module, "weight"):
+            print(f"Removing weight norm from {module}")
+            parametrize.remove_parametrizations(module, "weight", leave_parametrized=True)
+        elif hasattr(module, "weight_g") and hasattr(module, "weight_v"):
             print(f"Removing weight norm from {module}")
             remove_weight_norm(module)
 

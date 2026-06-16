@@ -438,14 +438,17 @@ def _msr_ref_image_to_frame(ref_image, width: int, height: int):
     return np.array(pil_image.resize((int(width), int(height)), Image.Resampling.LANCZOS))
 
 
-def _build_msr_reference_video(ref_images, frame_count: int, width: int, height: int):
+def _build_msr_reference_video(ref_images, frame_count: int, width: int, height: int, background_first: bool):
     import numpy as np
 
     ref_images = list(ref_images) if isinstance(ref_images, (list, tuple)) else [ref_images]
-    if not 2 <= len(ref_images) <= 5:
-        raise ValueError("LTX2 MSR requires 2 to 5 reference images, with the background image first.")
-    # WanGP uses the first K+I reference as the ratio/background anchor; MSR expects it last in the pseudo-video.
-    ref_images = ref_images[1:] + ref_images[:1]
+    if background_first:
+        if not 2 <= len(ref_images) <= 5:
+            raise ValueError("LTX2 MSR Background + Subjects mode requires 2 to 5 reference images, with the background image first.")
+        # WanGP uses the first K+I reference as the ratio/background anchor; MSR expects it last in the pseudo-video.
+        ref_images = ref_images[1:] + ref_images[:1]
+    elif not 1 <= len(ref_images) <= 4:
+        raise ValueError("LTX2 MSR Subjects / Objects only mode requires 1 to 4 reference images.")
     frames = [_msr_ref_image_to_frame(ref_image, width, height) for ref_image in ref_images]
     base_count = frame_count // len(frames)
     remainder = frame_count % len(frames)
@@ -1215,7 +1218,7 @@ class LTX2:
 
         msr_video_conditioning = False
         if msr and "I" in video_prompt_type and input_ref_images is not None:
-            ref_video = _build_msr_reference_video(input_ref_images, int(self.model_def["ltx2_msr_frame_count"]), int(width), int(height))
+            ref_video = _build_msr_reference_video(input_ref_images, int(self.model_def["ltx2_msr_frame_count"]), int(width), int(height), "K" in video_prompt_type)
             if video_conditioning is None:
                 video_conditioning = []
             video_conditioning.append((ref_video, 0, control_strength))

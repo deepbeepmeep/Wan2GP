@@ -48,10 +48,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib
+import sys
 from typing import Any
 
 from shared.attention import attention_shared_state
 from shared.utils import offload_registry
+
+# Backward compatibility for external plugins written against the old module name.
+sys.modules.setdefault("postprocessing.upsamplers", sys.modules[__name__])
 
 UPSAMPLER_TYPE_POSTPROCESSING = "postprocessing"
 UPSAMPLER_TYPE_VAE = "vae"

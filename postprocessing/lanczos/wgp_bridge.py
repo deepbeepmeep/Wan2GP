@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from postprocessing.upsamplers import SimpleScaleSuffixMixin, UPSAMPLER_PROFILE_VIDEO, UPSAMPLER_TYPE_POSTPROCESSING
+from postprocessing.spatial_upsamplers import SimpleScaleSuffixMixin, UPSAMPLER_PROFILE_VIDEO, UPSAMPLER_TYPE_POSTPROCESSING
 from shared.utils.utils import get_default_workers, process_images_multithread, resize_lanczos
 
 

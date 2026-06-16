@@ -154,6 +154,8 @@ def _run_tasks_worker(session, wgp, tasks: list[dict[str, Any]], stream: AsyncSt
         task_settings = validated_settings.copy()
         task_settings["state"] = session._state
         filtered_params = {key: value for key, value in task_settings.items() if key in expected_args}
+        if wgp._is_edit_task_params(task_settings):
+            filtered_params.setdefault("model_type", "")
         plugin_data = task.get("plugin_data", {})
         try:
             success = wgp.generate_media(task, send_cmd, plugin_data=plugin_data, **filtered_params)

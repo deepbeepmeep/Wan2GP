@@ -65,7 +65,7 @@ spatial_upsampler_handlers = [
     "postprocessing.flashvsr.wgp_bridge.FlashVSRBridge",
     "postprocessing.pid.wgp_bridge.PiDBridge",
     "postprocessing.chain_of_zoom.wgp_bridge.ChainOfZoomBridge",
-    "postprocessing.upsamplers.WanVaeUpsampler",
+    "postprocessing.spatial_upsamplers.WanVaeUpsampler",
 ]
 _upsampler_handlers: list[Any] = []
 _registered_upsampler_handler_paths: set[str] = set()
@@ -224,6 +224,19 @@ def upscale_postprocessing(handler, sample, spatial_upsampling, *, main_offloado
                 offload_registry.unload_vram([name])
             else:
                 offload_registry.release_all([name])
+
+
+def validate_postprocessing_spatial_upsampling(spatial_upsampling, image_mode: int) -> str:
+    if is_vae_upsampling(spatial_upsampling):
+        return "VAE Spatial Upsampling is only available during generation"
+    edit_upsampler = find_postprocessing_upsampler(spatial_upsampling)
+    if len(spatial_upsampling) > 0 and edit_upsampler is None:
+        return f"No spatial upsampler registered for '{spatial_upsampling}'"
+    if edit_upsampler is not None:
+        error = edit_upsampler.validate_upsampling(spatial_upsampling, image_mode)
+        if error:
+            return error
+    return ""
 
 
 def _handler_supports_model_vae_method(handler, method: str, model_type, model_def, image_mode: int) -> bool:
@@ -401,10 +414,12 @@ def query_postprocessing_method_choices(image_outputs: bool = False, late_postpr
         if "lanczos" not in method_keys and not (late_postprocessing or handler_enabled(handler)):
             continue
         media = handler_def.get("media", (UPSAMPLER_PROFILE_VIDEO, UPSAMPLER_PROFILE_IMAGE))
+        if (UPSAMPLER_PROFILE_IMAGE if image_outputs else UPSAMPLER_PROFILE_VIDEO) not in media:
+            continue
         choices = [(_method_pos(handler_def, method), str(label or "").casefold(), str(method or ""), label, method) for label, method in handler_def.get("methods", [])]
         if UPSAMPLER_PROFILE_VIDEO in media:
             video_post_choices += choices
-        elif image_outputs or late_postprocessing:
+        else:
             image_post_choices += choices
     return [(label, method) for _, _, _, label, method in sorted(video_post_choices)], [(label, method) for _, _, _, label, method in sorted(image_post_choices)]
 
@@ -419,6 +434,31 @@ def dropdown_state(spatial_upsampling, *, image_outputs: bool = False, late_post
         method = ""
     ratio_choices, scale, value = normalize_upsampling_state(method, scale)
     return {"method": method, "scale": scale, "value": value, "method_choices": method_choices, "ratio_choices": ratio_choices}
+
+
+def create_generation_spatial_ui(gr, spatial_upsampling, *, image_outputs: bool = False, late_postprocessing: bool = False, vae_choices: list[tuple[str, str]] | None = None, excluded_methods: set[str] | None = None, exclude_method_fn=None, elem_classes=None, update_form: bool = False, field_help=None) -> dict[str, Any]:
+    method, scale = split_upsampling_value(spatial_upsampling) or ("", 2.0)
+    state = dropdown_state(build_upsampling_value(method, scale) or "", image_outputs=image_outputs, late_postprocessing=late_postprocessing, vae_choices=vae_choices, excluded_methods=excluded_methods, exclude_method_fn=exclude_method_fn)
+    with gr.Row():
+        method_component = gr.Dropdown(choices=state["method_choices"], value=state["method"], visible=True, scale=3, label="Spatial Upsampling", elem_classes=elem_classes)
+        if field_help is not None:
+            field_help.bind(method_component, "spatial_upsampling")
+        ratio_component = gr.Dropdown(choices=state["ratio_choices"], value=state["scale"], visible=state["method"] != "", scale=1, label="Scale", elem_classes=elem_classes)
+    value_component = gr.Textbox(value=state["value"], visible=False, elem_classes=elem_classes)
+
+    def refresh_method(method, value):
+        ratio_choices, scale, value = normalize_upsampling_value_for_method(method, value)
+        return gr.update(choices=ratio_choices, value=scale, visible=bool(method)), value
+
+    def refresh_ratio(method, scale):
+        _, scale, value = normalize_upsampling_state(method, scale)
+        return gr.update(value=scale, visible=bool(method)), value
+
+    if not update_form:
+        outputs = [ratio_component, value_component]
+        gr.on(triggers=[method_component.change], fn=refresh_method, inputs=[method_component, value_component], outputs=outputs, show_progress="hidden")
+        gr.on(triggers=[ratio_component.change], fn=refresh_ratio, inputs=[method_component, ratio_component], outputs=outputs, show_progress="hidden")
+    return {"value": value_component, "method": method_component, "ratio": ratio_component}
 
 
 def query_postprocessing_upsampling_choices(include_name: bool = True, enabled_only: bool = False, image_outputs: bool | None = None) -> list[tuple[str, str]]:

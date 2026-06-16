@@ -64,6 +64,8 @@ Reference plugins:
 
 Specialized plugin APIs:
 *   Spatial upsamplers are documented in [Spatial Upsampler Plugin API](SPATIAL_UPSAMPLERS.md). Use this guide for post-processing upsamplers, VAE upsampler capability declarations, plugin-discovered `spatial_upsampler_handlers`, and extension offload object registration.
+*   Temporal upsamplers are documented in [Temporal Upsampler Plugin API](TEMPORAL_UPSAMPLERS.md). Use this guide for frame interpolation handlers, plugin-discovered `temporal_upsampler_handlers`, and temporal upsampler config sections.
+*   Audio processors are documented in [Audio Processor Plugin API](AUDIO_PROCESSORS.md). Use this guide for soundtrack, voice replacement, standalone audio edit handlers, plugin-discovered `audio_processors`, and audio processor config sections.
 
 A complete plugin folder typically looks like this:
 

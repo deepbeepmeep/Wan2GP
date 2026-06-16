@@ -67,7 +67,7 @@ class PiDBridge:
         return normalized
 
     def config(self) -> dict[str, Any]:
-        from postprocessing import upsamplers as upsampler_api
+        from postprocessing import spatial_upsamplers as upsampler_api
 
         return upsampler_api.read_config_section(self.server_config, self)
 

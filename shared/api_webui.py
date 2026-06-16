@@ -777,6 +777,27 @@ class GradioWanGPSession:
         self._capture_job_for_current_call(job)
         return job
 
+    def submit_media_postprocessing(self, media_source, *, callbacks: object | None = None, **kwargs: Any) -> SessionJob:
+        session = self._ensure_session()
+        self._bind_gradio_context(session)
+        job = session.submit_media_postprocessing(media_source, callbacks=self._wrap_callbacks_for_current_call(callbacks), **kwargs)
+        self._capture_job_for_current_call(job)
+        return job
+
+    def submit_audio_remux(self, video_source, *, callbacks: object | None = None, **kwargs: Any) -> SessionJob:
+        session = self._ensure_session()
+        self._bind_gradio_context(session)
+        job = session.submit_audio_remux(video_source, callbacks=self._wrap_callbacks_for_current_call(callbacks), **kwargs)
+        self._capture_job_for_current_call(job)
+        return job
+
+    def submit_audio_postprocessing(self, audio_source, *, callbacks: object | None = None, **kwargs: Any) -> SessionJob:
+        session = self._ensure_session()
+        self._bind_gradio_context(session)
+        job = session.submit_audio_postprocessing(audio_source, callbacks=self._wrap_callbacks_for_current_call(callbacks), **kwargs)
+        self._capture_job_for_current_call(job)
+        return job
+
     def submit_manifest(self, settings_list: list[dict[str, Any]], callbacks: object | None = None) -> SessionJob:
         session = self._ensure_session()
         self._bind_gradio_context(session)
@@ -793,6 +814,15 @@ class GradioWanGPSession:
         session = self._ensure_session()
         self._bind_gradio_context(session)
         return session.run_task(settings, callbacks=self._wrap_callbacks_for_current_call(callbacks))
+
+    def run_media_postprocessing(self, media_source, **kwargs: Any) -> GenerationResult:
+        return self.submit_media_postprocessing(media_source, **kwargs).result()
+
+    def run_audio_remux(self, video_source, **kwargs: Any) -> GenerationResult:
+        return self.submit_audio_remux(video_source, **kwargs).result()
+
+    def run_audio_postprocessing(self, audio_source, **kwargs: Any) -> GenerationResult:
+        return self.submit_audio_postprocessing(audio_source, **kwargs).result()
 
     def run_manifest(self, settings_list: list[dict[str, Any]], callbacks: object | None = None) -> GenerationResult:
         session = self._ensure_session()

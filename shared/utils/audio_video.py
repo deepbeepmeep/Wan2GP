@@ -101,6 +101,107 @@ def create_silent_wav_file(output_dir=None, duration_seconds=0.0, sample_rate=16
     return write_wav_file(path, np.zeros(num_samples, dtype=np.float32), sample_rate)
 
 
+def truncate_audio(generated_audio, trim_video_frames_beginning, trim_video_frames_end, video_fps, audio_sampling_rate):
+    samples_per_frame = audio_sampling_rate / video_fps
+    start = int(trim_video_frames_beginning * samples_per_frame)
+    end = generated_audio.shape[0] - int(trim_video_frames_end * samples_per_frame)
+    return generated_audio[start:end if end > 0 else None]
+
+
+def shift_audio_trim_ranges(trim_ranges, offset_frames):
+    shifted = []
+    for start_frame, frame_count in trim_ranges:
+        start_frame -= offset_frames
+        end_frame = start_frame + frame_count
+        if end_frame <= 0:
+            continue
+        start_frame = max(0, start_frame)
+        shifted.append((start_frame, end_frame - start_frame))
+    return shifted
+
+
+def trim_audio_ranges(audio_data, trim_ranges, video_fps, audio_sampling_rate):
+    if len(trim_ranges) == 0:
+        return audio_data
+    audio_data = np.asarray(audio_data, dtype=np.float32)
+    samples_per_frame = audio_sampling_rate / video_fps
+    pieces = []
+    cursor = 0
+    total_samples = audio_data.shape[0]
+    removed_frames = 0
+    for start_frame, frame_count in sorted(trim_ranges):
+        source_start_frame = start_frame + removed_frames
+        source_end_frame = source_start_frame + frame_count
+        start = max(cursor, min(total_samples, int(source_start_frame * samples_per_frame)))
+        end = max(start, min(total_samples, int(source_end_frame * samples_per_frame)))
+        if start > cursor:
+            pieces.append(audio_data[cursor:start])
+        cursor = end
+        removed_frames += frame_count
+    if cursor < total_samples:
+        pieces.append(audio_data[cursor:])
+    return np.concatenate(pieces, axis=0) if len(pieces) > 0 else audio_data[:0]
+
+
+def trim_audio_file_ranges(audio_path, trim_ranges, video_fps, output_path):
+    if len(trim_ranges) == 0:
+        return audio_path
+    audio_data, audio_sampling_rate = sf.read(audio_path, dtype="float32")
+    trimmed_audio = trim_audio_ranges(audio_data, trim_ranges, video_fps, audio_sampling_rate)
+    return write_wav_file(output_path, trimmed_audio, audio_sampling_rate)
+
+
+def slice_audio_window(audio_path, start_frame, num_frames, fps, output_dir=None, suffix="", pad_head=True, pad_tail=True):
+    start_sec = float(start_frame) / float(fps)
+    duration_sec = float(num_frames) / float(fps)
+
+    with sf.SoundFile(audio_path) as audio_file:
+        sample_rate = audio_file.samplerate
+        channels = audio_file.channels
+        total_frames = len(audio_file)
+        start_sample = int(round(start_sec * sample_rate))
+        pad_start = 0
+        if start_sample < 0 and pad_head:
+            pad_start = -start_sample
+        if start_sample < 0:
+            start_sample = 0
+        frames_to_read = int(round(duration_sec * sample_rate))
+        if start_sample > total_frames:
+            data = np.zeros((0, channels), dtype=np.float32)
+        else:
+            audio_file.seek(min(start_sample, total_frames))
+            data = audio_file.read(frames_to_read, dtype="float32", always_2d=True)
+
+    if pad_head and pad_start > 0:
+        data = np.concatenate([np.zeros((pad_start, channels), dtype=np.float32), data], axis=0)
+    if pad_tail:
+        target_frames = (pad_start if pad_head else 0) + frames_to_read
+        if data.shape[0] < target_frames:
+            pad_end = target_frames - data.shape[0]
+            data = np.concatenate([data, np.zeros((pad_end, channels), dtype=np.float32)], axis=0)
+    return data, sample_rate
+
+
+def get_audio_file_sample_rate(audio_path):
+    probe = ffmpeg.probe(os.fspath(audio_path), cmd=_ffprobe_binary())
+    audio_stream = next((stream for stream in probe["streams"] if stream.get("codec_type") == "audio"), None)
+    if audio_stream is None or not audio_stream.get("sample_rate"):
+        raise ValueError(f"Unable to read audio sample rate from {audio_path}")
+    return int(audio_stream["sample_rate"])
+
+
+def resolve_mux_audio_sampling_rate(default_rate, source_audio_metadata=None, audio_paths=None):
+    sample_rates = [int(default_rate)]
+    for meta in source_audio_metadata or []:
+        sample_rate = int(meta.get("sample_rate", 0) or 0)
+        if sample_rate > 0:
+            sample_rates.append(sample_rate)
+    for audio_path in audio_paths or []:
+        if audio_path:
+            sample_rates.append(get_audio_file_sample_rate(audio_path))
+    return max(sample_rates)
+
+
 def _compute_active_abs_amplitude(audio_data, active_mask=None):
     audio_data = np.asarray(audio_data, dtype=np.float32)
     if active_mask is not None:

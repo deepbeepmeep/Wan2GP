@@ -5,7 +5,7 @@ from typing import Any, Callable
 
 import torch
 
-from postprocessing.upsamplers import SimpleScaleSuffixMixin, UPSAMPLER_TYPE_POSTPROCESSING
+from postprocessing.spatial_upsamplers import SimpleScaleSuffixMixin, UPSAMPLER_TYPE_POSTPROCESSING
 
 
 class ChainOfZoomBridge(SimpleScaleSuffixMixin):
@@ -86,7 +86,7 @@ class ChainOfZoomBridge(SimpleScaleSuffixMixin):
         return normalized
 
     def config(self) -> dict[str, Any]:
-        from postprocessing import upsamplers as upsampler_api
+        from postprocessing import spatial_upsamplers as upsampler_api
 
         return upsampler_api.read_config_section(self.server_config, self)
 

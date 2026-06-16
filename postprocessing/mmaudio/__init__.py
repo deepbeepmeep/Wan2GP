@@ -9,17 +9,25 @@ MMAUDIO_MODE_CHOICES = [("Standard", MMAUDIO_MODE_V2), ("NSFW", MMAUDIO_MODE_NEW
 MMAUDIO_DEFAULT_MODE = MMAUDIO_MODE_CHOICES[0][1]
 
 
+def validate_mmaudio_remux(config, video_source) -> str:
+    if not get_mmaudio_settings(config)[0]:
+        return "MMAudio is disabled in Configuration > Extensions"
+    from shared.utils.utils import get_video_info
+    fps, _, _, frames_count = get_video_info(video_source)
+    return "" if frames_count >= round(fps) else "MMAudio can generate an Audio track only if the Video is at least 1s long"
+
+
 def normalize_mmaudio_config(config):
     mode = config.get("mmaudio_mode", None)
     persistence = config.get("mmaudio_persistence", None)
     if mode is None:
         old = config.get("mmaudio_enabled", 0)
-        mode = MMAUDIO_MODE_OFF if old == 0 else MMAUDIO_MODE_V2
+        mode = MMAUDIO_DEFAULT_MODE if old == 0 else MMAUDIO_MODE_V2
     if persistence is None:
         old = config.get("mmaudio_enabled", 0)
         persistence = MMAUDIO_PERSIST_RAM if old == MMAUDIO_PERSIST_RAM else MMAUDIO_PERSIST_UNLOAD
-    if mode not in (MMAUDIO_MODE_OFF, MMAUDIO_MODE_V2, MMAUDIO_MODE_NEW):
-        mode = MMAUDIO_MODE_OFF
+    if mode not in (MMAUDIO_MODE_V2, MMAUDIO_MODE_NEW):
+        mode = MMAUDIO_DEFAULT_MODE
     if persistence not in (MMAUDIO_PERSIST_UNLOAD, MMAUDIO_PERSIST_RAM):
         persistence = MMAUDIO_PERSIST_UNLOAD
     config["mmaudio_mode"] = mode

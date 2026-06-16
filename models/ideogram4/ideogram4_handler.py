@@ -17,6 +17,97 @@ _PRESET_CHOICES = [
     ("Turbo 12", "V4_TURBO_12"),
 ]
 _DEFAULT_PRESET = "V4_DEFAULT_20"
+_DEFAULT_SAMPLE_SOLVER = "euler"
+_DEFAULT_FLOW_SHIFT = 1.0
+_SAMPLE_SOLVERS = [
+    ("Euler", "euler"),
+    ("RES 2M", "res_2m"),
+    ("RES 2S", "res_2s"),
+]
+_SAMPLE_SOLVER_IDS = {value for _, value in _SAMPLE_SOLVERS}
+_CUSTOM_SETTINGS = [
+    {"id": "ideogram_mu", "label": "Scheduler Mu", "name": "Scheduler Mu", "type": "float", "default": 0.0, "min": -10.0, "max": 10.0, "inc": 0.05},
+    {"id": "ideogram_std", "label": "Scheduler Std", "name": "Scheduler Std", "type": "float", "default": 1.75, "min": 0.1, "max": 5.0, "inc": 0.05},
+]
+IDEOGRAM4_INFOS = """## Ideogram 4
+
+Ideogram 4 is an image model specialized for prompt-following, text rendering, layout, logos, posters, typography, and graphic design.
+
+It can take a plain text prompt, but it is designed to work especially well with structured JSON prompts. In WanGP, Magic Prompt can convert a normal text prompt into Ideogram's JSON-style caption format. For best prompt adherence, use the JSON format when possible.
+
+
+## Guidance phases
+
+Ideogram 4 uses WanGP guidance phases for CFG switching.
+
+Phase 1 uses Guidance during the high-noise part of denoising. Phase 2 uses Guidance2 after the first switch threshold. If Three Phases is enabled, phase 3 uses Guidance3 after the second switch threshold.
+
+The official presets use two phases: most steps at CFG 7, then final low-noise polish at CFG 3.
+
+
+## Scheduler custom settings
+
+Scheduler Mu and Scheduler Std control the Ideogram logit-normal sampling schedule.
+
+Mu shifts where denoising samples concentrate along the noise schedule. Std controls how wide that distribution is.
+
+The official presets set these values for you. Change them mainly when matching a Comfy workflow or experimenting with a different schedule.
+
+
+## LoRA multipliers
+
+Ideogram 4 has two parallel transformers: the conditional transformer and the unconditional transformer.
+
+A plain LoRA multiplier applies to both branches.
+
+To set different values per branch, use ':' as conditional:unconditional. For example, 0.9:0.4 applies 0.9 to the conditional transformer and 0.4 to the unconditional transformer.
+
+Guidance phases still use ';'. For example, 1:1.2;0.8:1.0 means phase 1 cond/uncond = 1/1.2 and phase 2 cond/uncond = 0.8/1.0."""
+_PRESET_SETTINGS = {
+    "V4_QUALITY_48": {"num_inference_steps": 48, "mu": 0.0, "std": 1.5, "switch_threshold": 184},
+    "V4_DEFAULT_20": {"num_inference_steps": 20, "mu": 0.0, "std": 1.75, "switch_threshold": 211},
+    "V4_TURBO_12": {"num_inference_steps": 12, "mu": 0.5, "std": 1.75, "switch_threshold": 302},
+}
+_LEGACY_CFG_OVERRIDE_KEYS = (
+    "ideogram_cfg_override_enabled",
+    "ideogram_cfg_override_start_percent",
+    "ideogram_cfg_override_end_percent",
+)
+
+
+def _time_snr_shift(shift, sigma):
+    return shift * sigma / (1.0 + (shift - 1.0) * sigma)
+
+
+def _percent_to_switch_threshold(percent, shift=1.0):
+    return int(round(_time_snr_shift(float(shift), 1.0 - float(percent)) * 1000.0))
+
+
+def _drop_legacy_cfg_override_settings(custom_settings):
+    for key in _LEGACY_CFG_OVERRIDE_KEYS:
+        custom_settings.pop(key, None)
+
+
+def _apply_preset_settings(ui_defaults, preset_name):
+    preset = _PRESET_SETTINGS[preset_name]
+    custom_settings = ui_defaults.get("custom_settings", None)
+    if not isinstance(custom_settings, dict):
+        custom_settings = {}
+    custom_settings.update({
+        "ideogram_mu": preset["mu"],
+        "ideogram_std": preset["std"],
+    })
+    _drop_legacy_cfg_override_settings(custom_settings)
+    ui_defaults.update({
+        "num_inference_steps": preset["num_inference_steps"],
+        "guidance_phases": 2,
+        "guidance_scale": 7.0,
+        "guidance2_scale": 3.0,
+        "switch_threshold": preset["switch_threshold"],
+        "sample_solver": _DEFAULT_SAMPLE_SOLVER,
+        "flow_shift": _DEFAULT_FLOW_SHIFT,
+        "custom_settings": custom_settings,
+    })
 
 
 def _model_uses_nf4(model_def):
@@ -36,11 +127,16 @@ class family_handler:
             "flux2": True,
             "vae_upsamplers": {"flux2_vae_pid": [1]},
             "excluded_spatial_upsamplers": ["flux2_pid"],
-            "guidance_max_phases": 0,
-            "inference_steps": False,
-            "lock_inference_steps": True,
+            "guidance_max_phases": 3,
+            "lora_multiplier_branches": ["cond", "uncond"],
+            "inference_steps": True,
             "fit_into_canvas_image_refs": 0,
             "profiles_dir": [base_model_type],
+            "preset_profiles_dir": ["ideogram4_presets"],
+            "sample_solvers": _SAMPLE_SOLVERS,
+            "flow_shift": True,
+            "custom_settings": [one.copy() for one in _CUSTOM_SETTINGS],
+            "infos": IDEOGRAM4_INFOS,
             "no_negative_prompt": True,
             "no_background_removal": True,
             "skip_prompt_template": True,
@@ -57,12 +153,6 @@ class family_handler:
             "image_prompt_enhancer_instructions": IDEOGRAM4_PROMPT_ENHANCER,
             "text_prompt_enhancer_max_tokens": 2048,
             "image_prompt_enhancer_max_tokens": 2048,
-            "model_modes": {
-                "choices": _PRESET_CHOICES,
-                "default": _DEFAULT_PRESET,
-                "label": "Preset",
-                "image_modes": [1],
-            },
             "text_encoder_folder": _TEXT_ENCODER_FOLDER,
             "text_encoder_URLs": [
                 build_hf_url(_PROJECT_REPO, _TEXT_ENCODER_FOLDER, text_encoder_filename),
@@ -83,7 +173,7 @@ class family_handler:
 
     @staticmethod
     def query_family_infos():
-        return {"ideogram4": (140, "Ideogram")}
+        return {"ideogram4": (1140, "Ideogram")}
 
     @staticmethod
     def render_prompt_helper(model_type, model_def, prompt_id, popup_id, prompt_elem_id, resolution_elem_id):
@@ -186,15 +276,34 @@ class family_handler:
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
-        ui_defaults.update({
-            "image_mode": 1,
-            "model_mode": _DEFAULT_PRESET,
-            "batch_size": 1,
-        })
+        ui_defaults.update({"image_mode": 1, "model_mode": None, "batch_size": 1})
+        _apply_preset_settings(ui_defaults, _DEFAULT_PRESET)
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
-        if ui_defaults.get("model_mode", None) not in {value for _, value in _PRESET_CHOICES}:
-            old_solver = ui_defaults.get("sample_solver", None)
-            ui_defaults["model_mode"] = old_solver if old_solver in {value for _, value in _PRESET_CHOICES} else _DEFAULT_PRESET
+        old_mode = ui_defaults.get("model_mode", None)
+        if old_mode in _PRESET_SETTINGS:
+            _apply_preset_settings(ui_defaults, old_mode)
+        elif ui_defaults.get("sample_solver", None) in _PRESET_SETTINGS:
+            _apply_preset_settings(ui_defaults, ui_defaults["sample_solver"])
+        else:
+            custom_settings = ui_defaults.get("custom_settings", None)
+            if not isinstance(custom_settings, dict):
+                custom_settings = {}
+            defaults = _PRESET_SETTINGS[_DEFAULT_PRESET]
+            if custom_settings.get("ideogram_cfg_override_enabled", None) not in (None, 0, "0", False) and "ideogram_cfg_override_start_percent" in custom_settings:
+                ui_defaults["switch_threshold"] = _percent_to_switch_threshold(custom_settings["ideogram_cfg_override_start_percent"], ui_defaults.get("flow_shift", _DEFAULT_FLOW_SHIFT))
+            _drop_legacy_cfg_override_settings(custom_settings)
+            custom_settings.setdefault("ideogram_mu", defaults["mu"])
+            custom_settings.setdefault("ideogram_std", defaults["std"])
+            ui_defaults["custom_settings"] = custom_settings
+            ui_defaults.setdefault("num_inference_steps", defaults["num_inference_steps"])
+            ui_defaults.setdefault("guidance_scale", 7.0)
+            ui_defaults.setdefault("guidance2_scale", 3.0)
+            ui_defaults.setdefault("switch_threshold", defaults["switch_threshold"])
+            if ui_defaults.get("sample_solver", "") not in _SAMPLE_SOLVER_IDS:
+                ui_defaults["sample_solver"] = _DEFAULT_SAMPLE_SOLVER
+            ui_defaults.setdefault("flow_shift", _DEFAULT_FLOW_SHIFT)
+            ui_defaults.setdefault("guidance_phases", 2)
+        ui_defaults["model_mode"] = None
         ui_defaults.setdefault("image_mode", 1)

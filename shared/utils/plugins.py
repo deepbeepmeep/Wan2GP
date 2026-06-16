@@ -23,6 +23,8 @@ PLUGIN_LOCAL_CATALOG_FILENAME = "plugins_local.json"
 PLUGIN_METADATA_FILENAME = "plugin_info.json"
 PLUGIN_TYPE_CHOICES = ("app", "extension", "processor", "model")
 PLUGIN_SPATIAL_UPSAMPLER_HANDLERS_KEY = "spatial_upsampler_handlers"
+PLUGIN_TEMPORAL_UPSAMPLER_HANDLERS_KEY = "temporal_upsampler_handlers"
+PLUGIN_AUDIO_PROCESSORS_KEY = "audio_processors"
 PLUGIN_MODEL_HANDLERS_KEY = "model_handlers"
 PLUGIN_MODEL_DEFAULTS_KEY = "defaults"
 PLUGIN_MODEL_PROFILES_KEY = "profiles"
@@ -583,6 +585,8 @@ class PluginManager:
         metadata["type"] = normalize_plugin_types(metadata.get("type"))
         metadata["uninstallable"] = self._coerce_bool(metadata.get("uninstallable"), default=True)
         metadata[PLUGIN_SPATIAL_UPSAMPLER_HANDLERS_KEY] = self._coerce_string_list(metadata.get(PLUGIN_SPATIAL_UPSAMPLER_HANDLERS_KEY))
+        metadata[PLUGIN_TEMPORAL_UPSAMPLER_HANDLERS_KEY] = self._coerce_string_list(metadata.get(PLUGIN_TEMPORAL_UPSAMPLER_HANDLERS_KEY))
+        metadata[PLUGIN_AUDIO_PROCESSORS_KEY] = self._coerce_string_list(metadata.get(PLUGIN_AUDIO_PROCESSORS_KEY))
         metadata[PLUGIN_MODEL_HANDLERS_KEY] = self._coerce_string_list(metadata.get(PLUGIN_MODEL_HANDLERS_KEY))
         for key in (PLUGIN_MODEL_DEFAULTS_KEY, PLUGIN_MODEL_PROFILES_KEY):
             value = metadata.get(key)
@@ -707,10 +711,50 @@ class PluginManager:
         if not handler_paths:
             return
         try:
-            from postprocessing import upsamplers as upsampler_api
+            from postprocessing import spatial_upsamplers as upsampler_api
             upsampler_api.register_spatial_upsamplers(self.server_config, files_locator, handler_paths)
         except Exception as e:
             print(f"[PluginManager] Error registering spatial upsamplers for plugin {plugin_id}: {e}")
+            traceback.print_exc()
+
+    def _register_plugin_temporal_upsamplers(self, plugin_id: str, metadata: Optional[Dict[str, Any]], files_locator=None) -> None:
+        if not metadata:
+            return
+        handlers = metadata.get(PLUGIN_TEMPORAL_UPSAMPLER_HANDLERS_KEY, [])
+        if not handlers:
+            return
+        handler_paths = []
+        for handler_path in handlers:
+            resolved_path = self._resolve_plugin_class_path(plugin_id, handler_path, label="temporal upsampler handler")
+            if resolved_path is not None:
+                handler_paths.append(resolved_path)
+        if not handler_paths:
+            return
+        try:
+            from postprocessing import temporal_upsamplers as temporal_upsampler_api
+            temporal_upsampler_api.register_temporal_upsamplers(self.server_config, files_locator, handler_paths)
+        except Exception as e:
+            print(f"[PluginManager] Error registering temporal upsamplers for plugin {plugin_id}: {e}")
+            traceback.print_exc()
+
+    def _register_plugin_audio_processors(self, plugin_id: str, metadata: Optional[Dict[str, Any]], files_locator=None) -> None:
+        if not metadata:
+            return
+        handlers = metadata.get(PLUGIN_AUDIO_PROCESSORS_KEY, [])
+        if not handlers:
+            return
+        handler_paths = []
+        for handler_path in handlers:
+            resolved_path = self._resolve_plugin_class_path(plugin_id, handler_path, label="audio processor")
+            if resolved_path is not None:
+                handler_paths.append(resolved_path)
+        if not handler_paths:
+            return
+        try:
+            from postprocessing import audio_processors as audio_processor_api
+            audio_processor_api.register_audio_processors(self.server_config, files_locator, handler_paths)
+        except Exception as e:
+            print(f"[PluginManager] Error registering audio processors for plugin {plugin_id}: {e}")
             traceback.print_exc()
 
     def _normalize_catalog_entry(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -1228,7 +1272,7 @@ class PluginManager:
         metadata = self._load_plugin_metadata(target_dir)
         metadata_handlers = []
         if metadata:
-            metadata_handlers = metadata.get(PLUGIN_MODEL_HANDLERS_KEY, []) + metadata.get(PLUGIN_SPATIAL_UPSAMPLER_HANDLERS_KEY, [])
+            metadata_handlers = metadata.get(PLUGIN_MODEL_HANDLERS_KEY, []) + metadata.get(PLUGIN_SPATIAL_UPSAMPLER_HANDLERS_KEY, []) + metadata.get(PLUGIN_TEMPORAL_UPSAMPLER_HANDLERS_KEY, []) + metadata.get(PLUGIN_AUDIO_PROCESSORS_KEY, [])
         if not os.path.isfile(plugin_entry) and not metadata_handlers:
             if remove_invalid:
                 shutil.rmtree(target_dir, onerror=self._remove_readonly)
@@ -1339,6 +1383,8 @@ class PluginManager:
                 is_bundled = plugin_dir_name in BUNDLED_PLUGINS
                 if not os.path.isfile(os.path.join(plugin_path, "plugin.py")):
                     self._register_plugin_spatial_upsamplers(plugin_dir_name, metadata, files_locator=files_locator)
+                    self._register_plugin_temporal_upsamplers(plugin_dir_name, metadata, files_locator=files_locator)
+                    self._register_plugin_audio_processors(plugin_dir_name, metadata, files_locator=files_locator)
                     continue
 
                 module = importlib.import_module(f"{plugin_dir_name}.plugin")
@@ -1358,6 +1404,8 @@ class PluginManager:
                                 self.data_hooks[hook_name] = []
                             self.data_hooks[hook_name].extend(callbacks)
                         self._register_plugin_spatial_upsamplers(plugin_dir_name, metadata, files_locator=files_locator)
+                        self._register_plugin_temporal_upsamplers(plugin_dir_name, metadata, files_locator=files_locator)
+                        self._register_plugin_audio_processors(plugin_dir_name, metadata, files_locator=files_locator)
                         if plugin_dir_name not in SYSTEM_PLUGINS:
                             print(f"Loaded plugin: {plugin.name} (from {plugin_dir_name})")
                         break

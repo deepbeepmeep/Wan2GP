@@ -81,7 +81,7 @@ class family_handler:
 
     @staticmethod
     def query_family_infos():
-        return {"z_image": (120, "Z-Image") }
+        return {"z_image": (1120, "Z-Image") }
 
     @staticmethod
     def register_lora_cli_args(parser, lora_root):

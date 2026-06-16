@@ -517,6 +517,7 @@ _add_setting("sliding_window_overlap", "Windows Frames Overlap (needed to mainta
 _add_setting("sliding_window_color_correction_strength", "Color Correction Strength (match colors of new window with previous one, 0 = disabled)", "number", min=0.0, max=1.0, step=0.01, visible=_show_if_flag("color_correction"))
 _add_setting("sliding_window_overlap_noise", "Noise to be added to overlapped frames to reduce blur effect", "integer", min=0, max=150, step=1, visible=_sliding_window_overlap_noise_visible)
 _add_setting("sliding_window_discard_last_frames", "Discard Last Frames of a Window (that may have bad quality)", "integer", min=0, max=20, step=4, visible=_sliding_window_discard_last_frames_visible)
+_add_setting("sliding_window_trim_first_frames", "Trim First Frames in First Window or if there is no Overlap Frames", "integer", min=0, max=10, step=1, visible=_show_if(_sliding_window_visible))
 _add_setting("temperature", "Temperature", "number", min=0.1, max=1.5, step=0.01, visible=_show_if(_temperature_visible), containers=("temperature_row",))
 _add_setting("top_p", "Top-p", "number", min=0.0, max=1.0, step=0.01, visible=_show_if_flag("top_p_slider"), containers=("top_pk_row",))
 _add_setting("top_k", "Top-k (0 = disabled)", "integer", min=0, max=100, step=1, visible=_show_if_flag("top_k_slider"), containers=("top_pk_row",))

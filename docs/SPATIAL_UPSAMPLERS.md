@@ -1,7 +1,7 @@
 # Spatial Upsampler Plugin API
 
 Spatial upsamplers (Lanczos, FlashVSR, PiD, Chain-of-Zoom, VAE upscalers, ...) are
-registered in `postprocessing/upsamplers.py`. Each upsampler declares itself and its
+registered in `postprocessing/spatial_upsamplers.py`. Each upsampler declares itself and its
 capabilities through a handler object; the registry owns dropdown state, value
 parsing, validation helpers, config nesting, downloads and dispatch.
 
@@ -74,7 +74,7 @@ can define a default `pos` and override individual methods with `method_pos`.
 Position is independent of multiplier; expanded choices such as `myup2` and
 `myup4` share the `myup` method position.
 
-Registration is owned by `postprocessing/upsamplers.py`. Add the handler class path
+Registration is owned by `postprocessing/spatial_upsamplers.py`. Add the handler class path
 to `spatial_upsampler_handlers`:
 
 ```python
@@ -145,4 +145,3 @@ offload_registry.unregister_offloadobj("MyUpsampler", offloadobj)  # in release_
 This lets WanGP track every extension offload object and release all extension
 resources centrally: the toolbar "Unload Models" tool (and the Configuration plugin
 release button) calls `offload_registry.release_all()`.
-

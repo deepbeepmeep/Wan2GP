@@ -106,12 +106,12 @@ class FlashVSRBridge:
         return False
 
     def config(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
-        from postprocessing import upsamplers as upsampler_api
+        from postprocessing import spatial_upsamplers as upsampler_api
 
         return upsampler_api.read_config_section(self.server_config if config is None else config, self)
 
     def normalize_config(self, config: dict[str, Any] | None = None) -> tuple[int, int]:
-        from postprocessing import upsamplers as upsampler_api
+        from postprocessing import spatial_upsamplers as upsampler_api
 
         config = self.server_config if config is None else config
         section = upsampler_api.write_config_section(config, self, self.config(config))

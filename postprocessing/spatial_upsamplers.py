@@ -456,8 +456,8 @@ def create_generation_spatial_ui(gr, spatial_upsampling, *, image_outputs: bool 
 
     if not update_form:
         outputs = [ratio_component, value_component]
-        gr.on(triggers=[method_component.change], fn=refresh_method, inputs=[method_component, value_component], outputs=outputs, show_progress="hidden")
-        gr.on(triggers=[ratio_component.change], fn=refresh_ratio, inputs=[method_component, ratio_component], outputs=outputs, show_progress="hidden")
+        gr.on(triggers=[method_component.input], fn=refresh_method, inputs=[method_component, value_component], outputs=outputs, show_progress="hidden")
+        gr.on(triggers=[ratio_component.input], fn=refresh_ratio, inputs=[method_component, ratio_component], outputs=outputs, show_progress="hidden")
     return {"value": value_component, "method": method_component, "ratio": ratio_component}
 
 

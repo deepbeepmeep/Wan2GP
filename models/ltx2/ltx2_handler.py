@@ -540,15 +540,16 @@ class family_handler:
                     control_choices += [("Convert SDR to HDR (IC-LoRA)", f"V&G")]
                 control_choices += [("Inject Frames", "KFI")]
             control_choices_image = [(label, value) for label, value in control_choices if value not in ("OVG", "KFI", "V&G")]
-            guide_custom_choices = {
-                "choices": control_choices,
-                "letters_filter": f"OPDEVG&KFI",
-                "default": "VGI" if editanything_ref else "",
-                "label": "Control Video / Frames Injection",
-                "visible": not editanything_ref and not msr,
-            }
-            extra_model_def["guide_custom_choices"] = guide_custom_choices
-            extra_model_def["guide_custom_choices_image"] = {**guide_custom_choices, "choices": control_choices_image, "label": "Control Image"}
+            if not msr:
+                guide_custom_choices = {
+                    "choices": control_choices,
+                    "letters_filter": f"OPDEVG&KFI",
+                    "default": "VGI" if editanything_ref else "",
+                    "label": "Control Video / Frames Injection",
+                    "visible":  not editanything_ref  ,
+                }
+                extra_model_def["guide_custom_choices"] = guide_custom_choices
+                extra_model_def["guide_custom_choices_image"] = {**guide_custom_choices, "choices": control_choices_image, "label": "Control Image"}
             extra_model_def["custom_frames_injection"] = True
             extra_model_def["one_image_ref_only"] = True
             if editanything_ref:
@@ -558,10 +559,9 @@ class family_handler:
                 extra_model_def.update(
                     {
                         "ltx2_msr": True,
-                        "fps": 50,
                         "image_prompt_types_allowed": "TE",
                         "image_ref_choices": {
-                            "choices": [("Background + Up to 4 Subjects", "KI")],
+                            "choices": [("Up to 5 Subjects / Objects", "I"), ("Background + Up to 4 Subjects", "KI")],
                             "letters_filter": "KI",
                             "default": "KI",
                             "label": "MSR Reference Images",
@@ -735,8 +735,11 @@ class family_handler:
             if any(letter in audio_prompt_type for letter in "K2"):
                 return "LTX2 MSR does not support Control Video audio options."
             image_refs = inputs.get("image_refs") or []
-            if not 2 <= len(image_refs) <= 5:
-                return "LTX2 MSR requires 2 to 5 reference images, with the background image first."
+            if "K" in video_prompt_type:
+                if not 2 <= len(image_refs) <= 5:
+                    return "LTX2 MSR Background + Subjects mode requires 2 to 5 reference images, with the background image first."
+            elif not 1 <= len(image_refs) <= 4:
+                return "LTX2 MSR Subjects / Objects only mode requires 1 to 4 reference images."
         from shared.utils.utils import get_outpainting_dims 
         any_outpainting = get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio) is not None        
         if "2" in audio_prompt_type:

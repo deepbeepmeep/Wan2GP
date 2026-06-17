@@ -274,8 +274,8 @@ def create_generation_temporal_ui(gr, temporal_upsampling, *, visible: bool = Tr
 
     if not update_form:
         outputs = [multiplier, value]
-        gr.on(triggers=[method.change], fn=refresh_method, inputs=[method, value], outputs=outputs, show_progress="hidden")
-        gr.on(triggers=[multiplier.change], fn=refresh_multiplier, inputs=[method, multiplier], outputs=outputs, show_progress="hidden")
+        gr.on(triggers=[method.input], fn=refresh_method, inputs=[method, value], outputs=outputs, show_progress="hidden")
+        gr.on(triggers=[multiplier.input], fn=refresh_multiplier, inputs=[method, multiplier], outputs=outputs, show_progress="hidden")
     return {"value": value, "method": method, "multiplier": multiplier}
 
 

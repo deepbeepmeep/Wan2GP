@@ -30,6 +30,15 @@ _VENDOR_DIR = os.path.join(os.path.dirname(__file__), "vendor")
 _PRISMAUDIO_DIR = os.path.join(_VENDOR_DIR, "PrismAudio")
 _MODEL_CONFIG_PATH = os.path.join(_PRISMAUDIO_DIR, "configs", "model_configs", "prismaudio.json")
 
+
+def _install_vendor_path() -> None:
+    if _VENDOR_DIR not in sys.path:
+        sys.path.insert(0, _VENDOR_DIR)
+    os.environ.setdefault("USE_TF", "0")
+    os.environ.setdefault("USE_FLAX", "0")
+    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+
+
 _REQUIRED_MODULES = {
     "einshape": "einshape",
     "jax": "jax",
@@ -49,18 +58,11 @@ class PrismAudioPaths:
 
 
 def requirement_message() -> str | None:
+    _install_vendor_path()
     missing = [package for module, package in _REQUIRED_MODULES.items() if importlib.util.find_spec(module) is None]
     if missing:
         return "PrismAudio Python dependencies are missing. Run pip install -r requirements.txt to install: " + ", ".join(missing)
     return None
-
-
-def _install_vendor_path() -> None:
-    if _VENDOR_DIR not in sys.path:
-        sys.path.insert(0, _VENDOR_DIR)
-    os.environ.setdefault("USE_TF", "0")
-    os.environ.setdefault("USE_FLAX", "0")
-    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 
 def _abort_requested(abort_callback) -> bool:

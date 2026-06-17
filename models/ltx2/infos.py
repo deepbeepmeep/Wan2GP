@@ -105,12 +105,12 @@ This model is configured for the LiconStudio Multiple Subject Reference LoRA. It
 
 ## Reference Image Order
 
-Upload 2 to 5 images in `MSR Reference Images` mode:
+Use one of the `MSR Reference Images` modes:
 
-- Image 1: the background or scene reference. WanGP keeps this first so the normal `K` + `I` reference workflow can use it to determine the target aspect ratio.
-- Images 2 to 5: the subject or object references to preserve.
+- `Background + Up to 4 Subjects`: upload 2 to 5 images. Image 1 is the background or scene reference; images 2 to 5 are the subject or object references to preserve.
+- `Subjects / Objects only`: upload 1 to 4 subject or object references on a plain white or neutral background.
 
-WanGP internally reorders the references before denoising so the MSR LoRA receives the subject references first and the background reference last, matching the upstream MSR convention.
+In `Background + Up to 4 Subjects` mode, WanGP internally reorders the references before denoising so the MSR LoRA receives the subject references first and the background reference last, matching the upstream MSR convention. In `Subjects / Objects only` mode, WanGP keeps the uploaded reference order unchanged.
 
 ## Reference Image Preparation
 

@@ -256,7 +256,7 @@ def _iter_frame_jobs(frame_count, worker, max_workers=1):
 
 
 def _float_cthw_from_frames(tensor, frame_count, frame_processor, target_h, target_w, max_workers=1):
-    output = torch.empty((3, frame_count, target_h, target_w), dtype=torch.float32)
+    output = torch.empty((3, frame_count, target_h, target_w), dtype=torch.float32, device="cpu")
 
     def process_frame(frame_idx):
         arr = frame_processor(_frame_to_uint8_hwc(_get_hwc_frame(tensor, frame_idx)))

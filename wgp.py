@@ -4523,7 +4523,9 @@ def update_video_prompt_type(state, any_video_guide = False, any_video_mask = Fa
     settings["video_prompt_type"] = video_prompt_type 
 
 
-def select_media(state, current_gallery_tab, input_file_list, file_selected, audio_files_paths, audio_file_selected, source, current_spatial_upsampling="", event_data: gr.EventData = None):
+# Keep event_data required: on Python 3.10, `event_data: gr.EventData = None` becomes Optional[EventData],
+# and Gradio 5.29 stops injecting the gallery selection index, breaking the selected media choice.
+def select_media(state, current_gallery_tab, input_file_list, file_selected, audio_files_paths, audio_file_selected, source, current_spatial_upsampling, event_data: gr.EventData):
     gen = get_gen_info(state)
     model_def = None
     if source=="video":

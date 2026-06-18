@@ -6,6 +6,7 @@ from pathlib import Path
 
 import gradio as gr
 
+from shared.utils.utils import get_outpainting_dims
 from shared.utils.settings_bundle import SETTINGS_BUNDLE_ATTACHMENT_KEYS, WAN_GP_SETTINGS_SUFFIXES, is_wangp_settings_filename, load_first_settings_from_queue_zip
 
 from . import common
@@ -387,9 +388,31 @@ class ProcessLibrary:
         return self.process_definition(process_name, main_state, user_refs) or self.default_process_definition(media_kind)
 
     @staticmethod
-    def uses_builtin_outpaint_ui(process_definition: dict | None) -> bool:
+    def settings_enable_outpaint(settings: dict | None) -> bool:
+        if not isinstance(settings, dict) or "video_guide_outpainting" not in settings:
+            return False
+        return get_outpainting_dims(settings.get("video_guide_outpainting"), str(settings.get("video_guide_outpainting_ratio") or "").strip()) is not None
+
+    @staticmethod
+    def default_outpaint_target_ratio(settings: dict | None) -> str:
+        value = str((settings or {}).get("video_guide_outpainting_ratio") or constants.DEFAULT_TARGET_RATIO).strip()
+        values = {choice_value for _label, choice_value in constants.RATIO_CHOICES}
+        return value if value in values else constants.DEFAULT_TARGET_RATIO
+
+    @classmethod
+    def normalize_outpaint_target_ratio(cls, settings: dict | None, target_ratio: str | None) -> str:
+        value = str(target_ratio or "").strip()
+        values = {choice_value for _label, choice_value in constants.RATIO_CHOICES}
+        return value if value in values else cls.default_outpaint_target_ratio(settings)
+
+    @classmethod
+    def uses_builtin_outpaint_ui(cls, process_definition: dict | None) -> bool:
         settings = process_definition.get("settings") if isinstance(process_definition, dict) else None
-        return isinstance(process_definition, dict) and process_definition.get("source") != "user" and isinstance(settings, dict) and "video_guide_outpainting" in settings
+        if not isinstance(process_definition, dict) or not isinstance(settings, dict):
+            return False
+        if process_definition.get("source") != "user":
+            return "video_guide_outpainting" in settings
+        return cls.settings_enable_outpaint(settings)
 
     def has_process_outpaint(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:
         if self.has_target_control(process_name, main_state, user_refs):

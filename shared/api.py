@@ -242,6 +242,15 @@ class SessionStream:
         self._closed.set()
         self._queue.put(self._sentinel)
 
+    def clear(self) -> None:
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+        if self._closed.is_set():
+            self._queue.put(self._sentinel)
+
     def get(self, timeout: float | None = None) -> SessionEvent | None:
         try:
             item = self._queue.get(timeout=timeout)
@@ -362,6 +371,10 @@ class SessionJob:
 
     def release_input_payload(self) -> None:
         self._webui_manifest = []
+
+    def release_output_payload(self) -> None:
+        self._result = None
+        self.events.clear()
 
     def _mark_webui_submission_ready(self) -> None:
         self._webui_submission_ready.set()

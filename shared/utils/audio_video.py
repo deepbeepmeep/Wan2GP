@@ -315,6 +315,16 @@ def _validate_video_save_settings(codec_type, container, tensor):
         raise RuntimeError(error)
 
 
+def _video_frame_tensor_to_uint8(frame, normalize=True, value_range=(-1, 1)):
+    if frame.dtype == torch.uint8:
+        return frame.detach().cpu().contiguous().numpy()
+    frame = frame.detach().to(dtype=torch.float32, copy=True)
+    if normalize:
+        value_min, value_max = min(value_range), max(value_range)
+        frame.clamp_(value_min, value_max).sub_(value_min).div_(value_max - value_min)
+    return frame.mul_(255.0).round_().clamp_(0, 255).to(torch.uint8).cpu().contiguous().numpy()
+
+
 def _crf_from_video_codec(codec_key: str | None, default: str = "18") -> str:
     codec_key = str(codec_key or "").strip().lower()
     if re.fullmatch(r"\d+", codec_key):
@@ -712,7 +722,7 @@ def save_video(tensor,
                             else:
                                 frames = chunk.permute(1, 2, 3, 0)
                             for frame in frames:
-                                writer.append_data(frame.cpu().numpy())
+                                writer.append_data(_video_frame_tensor_to_uint8(frame, normalize=normalize, value_range=value_range))
                         else:
                             writer.append_data(chunk)
                 else:

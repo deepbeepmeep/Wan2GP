@@ -17,6 +17,7 @@ from shared.utils.virtual_media import build_virtual_media_path
 from . import constants as ui_constants
 from . import frame_planning as frames
 from . import media_io as media
+from . import process_catalog as catalog
 from . import prompt_schedule as prompts
 from . import status_ui
 from . import video_buffers as video
@@ -120,6 +121,18 @@ class ChunkExecutor:
         self.ui_skip = ui_skip
         self.reset_live_chunk_status = reset_live_chunk_status
 
+    def _remember_result_artifacts(self, result) -> None:
+        media.remember_generated_artifacts(self.active_job, media.result_generated_artifact_paths(result))
+
+    def _preview_enabled(self) -> bool:
+        return catalog.normalize_preview_enabled(self.active_job.get(catalog.PREVIEW_OUTPUT_STORAGE_KEY))
+
+    def _prune_generated_artifacts(self, state: dict, chunk_output_paths: list[str], *, preserve_paths: list[str] | None = None) -> tuple[list[str], object]:
+        kept_artifact_paths, gallery_changed = media.prune_active_job_artifacts(self.plugin, self.active_job, state, preserve_paths=preserve_paths)
+        kept_artifact_set = set(kept_artifact_paths)
+        kept_chunk_output_paths = [path for path in chunk_output_paths if str(Path(path).resolve()) in kept_artifact_set]
+        return kept_chunk_output_paths, str(time.time_ns()) if gallery_changed else self.ui_skip
+
     def run(self, context: ProcessContext, progress: ChunkProgress):
         for chunk_index, plan in enumerate(context.plans, start=1):
             callbacks = status_ui.ChunkCallbacks()
@@ -194,6 +207,7 @@ class ChunkExecutor:
                     for path in result.generated_files
                     if isinstance(path, str) and len(path.strip()) > 0 and str(Path(path).resolve()) not in progress.chunk_output_paths
                 )
+                self._remember_result_artifacts(result)
                 progress.last_segment_path = media.get_last_generated_video_path(list(result.generated_files)) or progress.last_segment_path
                 returned_video_item = next((item for item in result.artifacts if item.video_tensor_uint8 is not None), None)
                 video_tensor_uint8 = None if returned_video_item is None else returned_video_item.video_tensor_uint8
@@ -252,18 +266,24 @@ class ChunkExecutor:
                     context.system_handler.move_continue_cache(context.output_path, progress.write_state.output_path_for_write)
                 last_frame_tensor = progress.write_state.write_chunk(process_is_hdr=False, video_tensor_hdr=None, video_tensor_uint8=video_tensor_uint8, start_frame=write_start, frame_count=frames_to_write)
                 progress.written_unique_frames += frames_to_write
-                self.preview_state["image"] = video.frame_to_image(last_frame_tensor)
+                if self._preview_enabled():
+                    self.preview_state["image"] = video.frame_to_image(last_frame_tensor)
                 if progress.continue_cache is not None and hasattr(context.system_handler, "save_continue_cache"):
                     context.system_handler.save_continue_cache(progress.continue_cache, progress.write_state.output_path_for_write, metadata={"written_unique_frames": int(context.resumed_unique_frames + progress.written_unique_frames), "chunk": int(chunk_index)})
-                video_tensor_uint8 = None
+                release_output_payload = getattr(job, "release_output_payload", None)
+                if callable(release_output_payload):
+                    release_output_payload()
+                video_tensor_uint8 = returned_video_item = result = job = None
+                gc.collect()
 
                 progress.completed_chunks += 1
+                progress.chunk_output_paths, gallery_refresh = self._prune_generated_artifacts(context.state, progress.chunk_output_paths, preserve_paths=[progress.last_segment_path] if progress.last_segment_path else None)
                 if chunk_index < len(context.plans):
                     progress.current_chunk_display = progress.completed_chunks + 1
-                    yield self.ui_update(status_ui.render_chunk_status_html(context.total_chunks_display, progress.completed_chunks, progress.current_chunk_display, "Starting new Chunk", f"Chunk {progress.completed_chunks} finished with {frames_to_write} written frame(s). Preparing next chunk...", continued=context.continued_mode, **context.timing_kwargs(progress.completed_chunks)), self.ui_skip, str(time.time_ns()))
+                    yield self.ui_update(status_ui.render_chunk_status_html(context.total_chunks_display, progress.completed_chunks, progress.current_chunk_display, "Starting new Chunk", f"Chunk {progress.completed_chunks} finished with {frames_to_write} written frame(s). Preparing next chunk...", continued=context.continued_mode, **context.timing_kwargs(progress.completed_chunks)), self.ui_skip, str(time.time_ns()), gallery_refresh=gallery_refresh)
                 else:
                     progress.current_chunk_display = progress.completed_chunks
-                    yield self.ui_update(status_ui.render_chunk_status_html(context.total_chunks_display, progress.completed_chunks, progress.current_chunk_display, "Chunk Completed", f"Chunk {progress.completed_chunks} finished with {frames_to_write} written frame(s).", continued=context.continued_mode, **context.timing_kwargs(progress.completed_chunks)), self.ui_skip, str(time.time_ns()))
+                    yield self.ui_update(status_ui.render_chunk_status_html(context.total_chunks_display, progress.completed_chunks, progress.current_chunk_display, "Chunk Completed", f"Chunk {progress.completed_chunks} finished with {frames_to_write} written frame(s).", continued=context.continued_mode, **context.timing_kwargs(progress.completed_chunks)), self.ui_skip, str(time.time_ns()), gallery_refresh=gallery_refresh)
                 continue
 
             settings = build_task_settings(context.process_settings, is_user_process=context.is_user_process)
@@ -340,6 +360,7 @@ class ChunkExecutor:
                 for path in result.generated_files
                 if isinstance(path, str) and len(path.strip()) > 0 and str(Path(path).resolve()) not in progress.chunk_output_paths
             )
+            self._remember_result_artifacts(result)
             progress.last_segment_path = media.get_last_generated_video_path(list(result.generated_files)) or progress.last_segment_path
             returned_video_item = next((item for item in result.artifacts if item.video_tensor_hdr is not None), None) if context.process_is_hdr else next((item for item in result.artifacts if item.video_tensor_uint8 is not None), None)
             returned_tensor = None if returned_video_item is None else (returned_video_item.video_tensor_hdr if context.process_is_hdr else returned_video_item.video_tensor_uint8)
@@ -399,22 +420,31 @@ class ChunkExecutor:
             )
             last_frame_tensor = progress.write_state.write_chunk(process_is_hdr=context.process_is_hdr, video_tensor_hdr=video_tensor_hdr, video_tensor_uint8=video_tensor_uint8, start_frame=skip_frames, frame_count=frames_to_write)
             progress.written_unique_frames += frames_to_write
-            self.preview_state["image"] = video.frame_to_image(last_frame_tensor)
+            if self._preview_enabled():
+                self.preview_state["image"] = video.frame_to_image(last_frame_tensor)
             overlap_source_tensor = video_tensor_hdr if context.process_is_hdr and video_tensor_hdr is not None else video_tensor_uint8
             next_overlap_tensor = video.update_process_full_video_overlap_buffer(overlap_source_tensor[:, skip_frames:skip_frames + frames_to_write], context.overlap_frames, context.processing_fps, hdr=context.process_is_hdr)
             if next_overlap_tensor is not None and int(next_overlap_tensor.shape[1]) > 0:
                 next_overlap_count = int(next_overlap_tensor.shape[1])
                 next_overlap_start_frame = context.start_frame + context.resumed_unique_frames + progress.written_unique_frames - next_overlap_count
                 print(f"[MediaFlow] Chunk {chunk_index}: next overlap buffer {frames.describe_frame_range(next_overlap_start_frame, next_overlap_count)}")
+            release_input_payload = getattr(job, "release_input_payload", None)
+            if callable(release_input_payload):
+                release_input_payload()
+            release_output_payload = getattr(job, "release_output_payload", None)
+            if callable(release_output_payload):
+                release_output_payload()
+            result = returned_video_item = returned_tensor = decoded_tensor = video_tensor_hdr = video_tensor_uint8 = overlap_source_tensor = next_overlap_tensor = job = None
+            gc.collect()
 
             progress.completed_chunks += 1
-            progress.chunk_output_paths = media.delete_released_chunk_outputs(context.state, progress.chunk_output_paths, preserve_paths=[progress.last_segment_path] if progress.last_segment_path else None)
+            progress.chunk_output_paths, gallery_refresh = self._prune_generated_artifacts(context.state, progress.chunk_output_paths, preserve_paths=[progress.last_segment_path] if progress.last_segment_path else None)
             if chunk_index < len(context.plans):
                 progress.current_chunk_display = progress.completed_chunks + 1
-                yield self.ui_update(status_ui.render_chunk_status_html(context.total_chunks_display, progress.completed_chunks, progress.current_chunk_display, "Starting new Chunk", f"Chunk {progress.completed_chunks} finished with {frames_to_write} written frame(s). Preparing next chunk...", continued=context.continued_mode, **context.timing_kwargs(progress.completed_chunks)), self.ui_skip, str(time.time_ns()))
+                yield self.ui_update(status_ui.render_chunk_status_html(context.total_chunks_display, progress.completed_chunks, progress.current_chunk_display, "Starting new Chunk", f"Chunk {progress.completed_chunks} finished with {frames_to_write} written frame(s). Preparing next chunk...", continued=context.continued_mode, **context.timing_kwargs(progress.completed_chunks)), self.ui_skip, str(time.time_ns()), gallery_refresh=gallery_refresh)
             else:
                 progress.current_chunk_display = progress.completed_chunks
-                yield self.ui_update(status_ui.render_chunk_status_html(context.total_chunks_display, progress.completed_chunks, progress.current_chunk_display, "Chunk Completed", f"Chunk {progress.completed_chunks} finished with {frames_to_write} written frame(s).", continued=context.continued_mode, **context.timing_kwargs(progress.completed_chunks)), self.ui_skip, str(time.time_ns()))
+                yield self.ui_update(status_ui.render_chunk_status_html(context.total_chunks_display, progress.completed_chunks, progress.current_chunk_display, "Chunk Completed", f"Chunk {progress.completed_chunks} finished with {frames_to_write} written frame(s).", continued=context.continued_mode, **context.timing_kwargs(progress.completed_chunks)), self.ui_skip, str(time.time_ns()), gallery_refresh=gallery_refresh)
 
         return ChunkExecutionResult(
             written_unique_frames=progress.written_unique_frames,

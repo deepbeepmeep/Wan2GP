@@ -197,6 +197,8 @@ class ProcessFormController:
         return gr.update(visible=actions_visible), gr.update(visible=add_visible), gr.update(visible=delete_visible), gr.update(visible=False)
 
     def target_ratio_update(self, process_name: str, main_state: dict | None, user_refs: list[str] | None, target_ratio: str | None = None):
+        process_definition = self.library.process_definition_or_default(process_name, main_state, user_refs)
+        process_settings = process_definition.get("settings", {})
         target_control_choices = self.library.target_control_choices(process_name, main_state, user_refs)
         if len(target_control_choices) > 0:
             values = {value for _label, value in target_control_choices}
@@ -205,7 +207,8 @@ class ProcessFormController:
                 value = self.library.target_control_default(process_name, main_state, user_refs)
             return gr.update(label=self.library.target_control_label(process_name, main_state, user_refs), value=value, visible=True, choices=target_control_choices)
         visible = self.library.has_process_outpaint(process_name, main_state, user_refs)
-        return gr.update(label="Target Ratio", value=target_ratio if visible else "", visible=visible, choices=ui_constants.RATIO_CHOICES if visible else ui_constants.RATIO_CHOICES_WITH_EMPTY)
+        value = self.library.normalize_outpaint_target_ratio(process_settings, target_ratio) if visible else ""
+        return gr.update(label="Target Ratio", value=value, visible=visible, choices=ui_constants.RATIO_CHOICES if visible else ui_constants.RATIO_CHOICES_WITH_EMPTY)
 
     def process_strength_update(self, process_name: str, main_state: dict | None, user_refs: list[str] | None, process_strength: float | None = None):
         process_definition = self.library.process_definition(process_name, main_state, user_refs)
@@ -258,7 +261,7 @@ class ProcessFormController:
             if target_ratio not in target_values:
                 target_ratio = self.library.target_control_default(process_name, main_state, user_refs)
         else:
-            target_ratio = str(raw_state.get("target_ratio") or "4:3").strip()
+            target_ratio = self.library.normalize_outpaint_target_ratio(process_settings, raw_state.get("target_ratio"))
         if self.library.hides_sliding_window_overlap(process_name, main_state, user_refs):
             sliding_window_overlap = 0
         else:
@@ -277,7 +280,7 @@ class ProcessFormController:
             continue_enabled=common.coerce_bool(raw_state.get("continue_enabled"), True),
             source_audio_track=source_audio_track if source_audio_track in self.source_audio_track_values else "",
             output_resolution=output_resolution if output_resolution in self.output_resolution_values else "720p",
-            target_ratio=target_ratio if len(target_control_choices) > 0 or target_ratio in self.ratio_values else "4:3",
+            target_ratio=target_ratio if len(target_control_choices) > 0 or target_ratio in self.ratio_values else ui_constants.DEFAULT_TARGET_RATIO,
             chunk_size_seconds=common.coerce_float(raw_state.get("chunk_size_seconds"), default_chunk_size_seconds, minimum=0.1),
             sliding_window_overlap=sliding_window_overlap,
             start_seconds="" if raw_state.get("start_seconds") in (None, "") else str(raw_state.get("start_seconds")),

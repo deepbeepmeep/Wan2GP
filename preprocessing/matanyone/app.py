@@ -5,7 +5,6 @@ import json
 import re
 import gc
 import time
-import psutil
 from contextlib import nullcontext
 # import ffmpeg
 import imageio
@@ -546,20 +545,25 @@ def get_frames_from_video(state, video_input, video_state, new_dim):
     # print(f'audio_path: {audio_path}')
     audio_path = ""     
     # extract frames
+    expected_frame_count = 0
+    cap = None
     try:
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
+        expected_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         while cap.isOpened():
             ret, frame = cap.read()
             if ret == True:
-                current_memory_usage = psutil.virtual_memory().percent
                 frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                if current_memory_usage > 90:
-                    break
             else:
                 break
     except (OSError, TypeError, ValueError, KeyError, SyntaxError) as e:
         print("read_frame_source:{} error. {}\n".format(video_path, str(e)))
+    finally:
+        if cap is not None:
+            cap.release()
+    if expected_frame_count > 0 and len(frames) < expected_frame_count:
+        print(f"MatAnyone: only loaded {len(frames)} of {expected_frame_count} frames from {video_path}.")
     image_size = (frames[0].shape[0],frames[0].shape[1]) 
 
     if len(new_dim) > 0:

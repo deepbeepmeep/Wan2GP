@@ -4,6 +4,7 @@ from shared.utils.video_codecs import SUPPORTED_VIDEO_CONTAINERS
 
 RATIO_CHOICES = [("1:1", "1:1"), ("4:3", "4:3"), ("3:4", "3:4"), ("16:9", "16:9"), ("9:16", "9:16"), ("21:9", "21:9"), ("9:21", "9:21")]
 RATIO_CHOICES_WITH_EMPTY = [("", "")] + RATIO_CHOICES
+DEFAULT_TARGET_RATIO = "4:3"
 DEFAULT_SOURCE_PATH = ""
 DEFAULT_OUTPUT_PATH = ""
 ADD_USER_SETTINGS_MODEL_TYPE = "__add_user_settings__"

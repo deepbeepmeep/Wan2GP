@@ -84,7 +84,7 @@ def _max_objects_limit(value, object_count=None):
 
 
 def _max_object_choices():
-    return [(str(index), index) for index in range(1, MAX_MAGIC_MASK_OBJECTS + 1)] + [("All", "all")]
+    return [("All", "all")] + [(str(index), index) for index in range(1, MAX_MAGIC_MASK_OBJECTS + 1)]
 
 
 def _max_time_seconds(value):
@@ -333,6 +333,7 @@ class MagicMaskUI:
     abort_token: gr.State | None = None
     pending_image_mask_guide: gr.State | None = None
     pending_image_mask: gr.State | None = None
+    title: gr.HTML | None = None
 
     @staticmethod
     def hidden_trigger():
@@ -1110,7 +1111,7 @@ WMM.scheduleMount();
         with gr.Column(visible=False, elem_classes=["wangp-magic-mask-panel", "wangp-model-info-popup"]) as self.panel:
             with gr.Column(elem_classes=["wangp-magic-mask-card", "wangp-model-info-card"]):
                 with gr.Row(elem_classes=["wangp-model-info-titlebar", "wangp-magic-mask-titlebar"]):
-                    gr.HTML("<div class='wangp-model-info-heading'>Magic Mask</div>", elem_classes=["wangp-magic-mask-heading"])
+                    self.title = gr.HTML("<div class='wangp-model-info-heading'>Magic Mask</div>", elem_classes=["wangp-magic-mask-heading"])
                     self.close_btn = gr.Button("x", elem_classes=["wangp-model-info-close", "wangp-magic-mask-close"], min_width=26, scale=0)
                 with gr.Column(elem_classes=["wangp-magic-mask-body"]):
                     gr.HTML("<div class='wangp-magic-mask-intro'>Enter the list of Object or Persons to track and that will be used to build the Mask. Each object / person should be separated by a \",\". For example: \"blue car, woman to the right\"</div>")
@@ -1119,7 +1120,7 @@ WMM.scheduleMount();
                         with gr.Group(elem_classes=["wangp-magic-mask-negative"]):
                             self.negative_mask = gr.Checkbox(label="Negative Mask", value=False, container=False, min_width=1, elem_classes=["wangp-magic-mask-negative-checkbox"])
                     with gr.Row(elem_classes=["wangp-magic-mask-options-row"]):
-                        self.max_objects = gr.Dropdown(choices=[("All", "all")], value="all", label="Max Objects", scale=1, visible=False, elem_classes=["wangp-magic-mask-max-objects"])
+                        self.max_objects = gr.Dropdown(choices=_max_object_choices(), value="all", label="Max Objects", scale=1, visible=False, elem_classes=["wangp-magic-mask-max-objects"])
                         self.max_time = gr.Textbox(value="", label="Max Time (s)", placeholder="", lines=1, scale=1, elem_classes=["wangp-magic-mask-max-time"])
                 self.status = gr.HTML("")
                 self.progress_html = gr.HTML("")
@@ -1148,9 +1149,10 @@ WMM.scheduleMount();
         model_def: dict | None = None,
     ):
         def model_def_resolver(state_value):
-            return model_def if isinstance(model_def, dict) else get_model_def(state_value) if callable(get_model_def) else {}
+            return get_model_def(state_value) if callable(get_model_def) else model_def if isinstance(model_def, dict) else {}
 
         def open_panel(state_value, image_mode_value, max_objects_value):
+            current_model_def = model_def_resolver(state_value)
             is_image_mask = int(image_mode_value or 0) > 0
             max_time_update = gr.update(visible=not is_image_mask)
             if max_objects_value != "all":
@@ -1158,12 +1160,14 @@ WMM.scheduleMount();
                     max_objects_value = _max_objects_limit(max_objects_value)
                 except (TypeError, ValueError):
                     max_objects_value = "all"
-            return (*_open_panel(), gr.update(choices=_max_object_choices(), value=max_objects_value, visible=True), max_time_update)
+            title = "Colored Magic Mask" if _magic_mask_object_colors(current_model_def) else "Magic Mask"
+            title_update = gr.update(value=f"<div class='wangp-model-info-heading'>{html.escape(title)}</div>")
+            return (*_open_panel(), title_update, gr.update(choices=_max_object_choices(), value=max_objects_value, visible=True), max_time_update)
 
         def close_panel():
             return (*_close_panel(), gr.update(), gr.update())
 
-        open_event = self.trigger.click(fn=open_panel, inputs=[state, image_mode, self.max_objects], outputs=[self.panel, self.status, self.progress_html, self.cancel_btn, self.abort_btn, self.pending_image_mask_guide, self.pending_image_mask, self.max_objects, self.max_time], show_progress="hidden")
+        open_event = self.trigger.click(fn=open_panel, inputs=[state, image_mode, self.max_objects], outputs=[self.panel, self.status, self.progress_html, self.cancel_btn, self.abort_btn, self.pending_image_mask_guide, self.pending_image_mask, self.title, self.max_objects, self.max_time], show_progress="hidden")
         open_event.then(fn=None, inputs=[], outputs=[], js=MagicMaskUI.position_popup_javascript())
         close_outputs = [self.panel, self.status, self.progress_html, self.abort_btn, self.pending_image_mask_guide, self.pending_image_mask, self.max_objects, self.max_time]
         self.close_btn.click(fn=close_panel, inputs=[], outputs=close_outputs, show_progress="hidden")

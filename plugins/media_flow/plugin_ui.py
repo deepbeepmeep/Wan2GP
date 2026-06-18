@@ -54,8 +54,10 @@ def create_config_ui(self, api_session):
     default_state = initial_form.form_state
     default_batch_name = str(saved_ui_settings.get("batch_name") or "").strip()
     default_batch_source_path = str(saved_ui_settings.get("batch_source_path") or "").strip()
+    default_preserve_artifact_count = catalog.normalize_preserve_artifact_count(saved_ui_settings.get(catalog.PRESERVE_ARTIFACTS_STORAGE_KEY))
+    default_preview_enabled = catalog.normalize_preview_enabled(saved_ui_settings.get(catalog.PREVIEW_OUTPUT_STORAGE_KEY))
     initial_image_process = default_media_kind == "image"
-    active_job = {"job": None, "running": False, "batch_running": False, "cancel_requested": False, "write_state": None}
+    active_job = {"job": None, "running": False, "batch_running": False, "cancel_requested": False, "write_state": None, catalog.PRESERVE_ARTIFACTS_STORAGE_KEY: default_preserve_artifact_count, catalog.PREVIEW_OUTPUT_STORAGE_KEY: default_preview_enabled, "generated_artifact_paths": []}
     preview_state = {"image": None}
     ui_skip = object()
     initial_status_html = status_ui.render_process_status_html("Idle", "Waiting to start...") if initial_image_process else status_ui.render_chunk_status_html(0, 0, 0, "Idle", "Waiting to start...")
@@ -85,6 +87,8 @@ def create_config_ui(self, api_session):
             return preview.copy()
 
     def refresh_preview(_refresh_id):
+        if not catalog.normalize_preview_enabled(active_job.get(catalog.PREVIEW_OUTPUT_STORAGE_KEY)):
+            return None
         return _copy_preview_image(preview_state["image"])
 
     def _button_update(label: str, enabled: bool | None):
@@ -102,7 +106,7 @@ def create_config_ui(self, api_session):
         last_html["status"] = status_ui.render_process_status_html("Stopping", "Stopping current processing job...")
         return _html_update(last_html["status"])
 
-    def _ui_update(status=ui_skip, output=ui_skip, preview_refresh=ui_skip, *, batch_status=ui_skip, start_enabled: bool | None = None, abort_enabled: bool | None = None, batch_name_value=ui_skip):
+    def _ui_update(status=ui_skip, output=ui_skip, preview_refresh=ui_skip, *, batch_status=ui_skip, start_enabled: bool | None = None, abort_enabled: bool | None = None, batch_name_value=ui_skip, gallery_refresh=ui_skip):
         if status is not ui_skip:
             last_html["status"] = _html_value(status)
         if batch_status is not ui_skip:
@@ -112,11 +116,12 @@ def create_config_ui(self, api_session):
         status_update = last_html["status"]
         batch_status_update = last_html["batch_status"]
         output_update = last_html["output"]
-        preview_update = gr.skip() if preview_refresh is ui_skip else preview_refresh
+        preview_update = gr.skip() if preview_refresh is ui_skip or not catalog.normalize_preview_enabled(active_job.get(catalog.PREVIEW_OUTPUT_STORAGE_KEY)) else preview_refresh
         start_update = _button_update("Start Process", start_enabled)
         abort_update = _button_update("Stop", abort_enabled)
         batch_name_update = gr.skip() if batch_name_value is ui_skip else gr.update(value=batch_name_value)
-        return status_update, batch_status_update, output_update, preview_update, start_update, abort_update, batch_name_update
+        gallery_refresh_update = gr.skip() if gallery_refresh is ui_skip else gallery_refresh
+        return status_update, batch_status_update, output_update, preview_update, start_update, abort_update, batch_name_update, gallery_refresh_update
 
     def _info_exit(message: str, *, output=ui_skip, total_chunks: int = 1, completed_chunks: int = 0, current_chunk: int = 1, continued: bool = False):
         gr.Info(str(message or "").strip())
@@ -236,6 +241,18 @@ def create_config_ui(self, api_session):
         if active_job.get("running") or active_job.get("batch_running"):
             return _stopping_status_update(), _html_update(last_html["batch_status"]), gr.update(value="Start Process", interactive=False), gr.update(value="Stop", interactive=False)
         return _html_update(last_html["status"]), _html_update(last_html["batch_status"]), gr.update(value="Start Process", interactive=True), gr.update(value="Stop", interactive=False)
+
+    def _set_preserve_artifact_count(value):
+        normalized = catalog.normalize_preserve_artifact_count(value)
+        active_job[catalog.PRESERVE_ARTIFACTS_STORAGE_KEY] = normalized
+        return gr.update(value=normalized)
+
+    def _set_preview_enabled(value):
+        enabled = catalog.normalize_preview_enabled(value)
+        active_job[catalog.PREVIEW_OUTPUT_STORAGE_KEY] = enabled
+        if not enabled:
+            preview_state["image"] = None
+        return gr.update(value=enabled), gr.update(visible=enabled, value=None) if not enabled else gr.update(visible=True)
 
     def _active_source_value(media_kind, batch_mode_value, source_path_value, source_image_path_value, batch_source_path_value, batch_image_source_path_value):
         media_kind = catalog.normalize_media_kind(media_kind)
@@ -440,6 +457,40 @@ def create_config_ui(self, api_session):
                 padding: 0 !important;
                 overflow: hidden !important;
             }
+            #mediaflow-output-row {
+                align-items: flex-start !important;
+            }
+            #mediaflow-output-file-column,
+            #mediaflow-preserve-artifacts-column {
+                gap: 0 !important;
+            }
+            #mediaflow-output-file-html .block,
+            #mediaflow-output-file-html .html-container,
+            #mediaflow-output-file-html .prose {
+                height: auto !important;
+                margin: 0 !important;
+                min-height: 0 !important;
+                padding: 0 !important;
+            }
+            #mediaflow-preserve-artifacts-dropdown {
+                margin: 0 !important;
+                min-width: 280px !important;
+            }
+            #mediaflow-preserve-artifacts-column {
+                gap: 6px !important;
+                min-width: 320px !important;
+            }
+            #mediaflow-preserve-artifacts-label .block,
+            #mediaflow-preserve-artifacts-label .html-container,
+            #mediaflow-preserve-artifacts-label .prose {
+                height: auto !important;
+                margin: 0 !important;
+                min-height: 0 !important;
+                padding: 0 !important;
+            }
+            #mediaflow-preserve-artifacts-label div {
+                white-space: nowrap;
+            }
             </style>
             """
         )
@@ -478,6 +529,7 @@ def create_config_ui(self, api_session):
         with gr.Row():
             output_path = gr.Textbox(label="Output File Path File (None for auto, Full Name or Target Folder)", value=default_state.output_path, scale=3)
             continue_enabled = gr.Checkbox(label="Continue", value=default_state.continue_enabled, elem_classes="cbx_bottom", scale=1, visible=not initial_image_process or default_batch_mode == "batch")
+            preview_enabled = gr.Checkbox(label="Preview", value=default_preview_enabled, elem_classes="cbx_bottom", scale=1)
         with gr.Row():
             output_resolution = gr.Dropdown(output_resolution_choices, value=default_state.output_resolution, label="Output Resolution", visible=initial_form.output_resolution_visible)
             default_process_strength = 1.0 if initial_form.target_ratio_visible else default_state.process_strength
@@ -503,12 +555,42 @@ def create_config_ui(self, api_session):
             abort_btn = gr.Button("Stop", interactive=False)
         batch_status_html = gr.HTML(value="")
         status_html = gr.HTML(value=initial_status_html)
-        preview_image = gr.Image(label="Last Frame Preview", type="pil")
-        output_file = gr.HTML(value=initial_output_html)
+        preview_image = gr.Image(label="Last Frame Preview", type="pil", visible=default_preview_enabled)
+        with gr.Row(elem_id="mediaflow-output-row"):
+            with gr.Column(scale=3, elem_id="mediaflow-output-file-column"):
+                output_file = gr.HTML(value=initial_output_html, elem_id="mediaflow-output-file-html")
+            with gr.Column(scale=1, min_width=280, elem_id="mediaflow-preserve-artifacts-column"):
+                gr.HTML(
+                    "<div style='font-size:var(--block-label-text-size);font-weight:var(--block-label-text-weight);line-height:var(--line-sm)'>Keep in Galleries &amp; Output Folders</div>",
+                    elem_id="mediaflow-preserve-artifacts-label",
+                )
+                preserve_artifact_count = gr.Dropdown(
+                    [(f"The Last {count} Artifacts", count) for count in range(catalog.PRESERVE_ARTIFACTS_MIN, catalog.PRESERVE_ARTIFACTS_MAX + 1)],
+                    value=default_preserve_artifact_count,
+                    label=None,
+                    show_label=False,
+                    container=False,
+                    elem_id="mediaflow-preserve-artifacts-dropdown",
+                )
         preview_refresh = gr.Textbox(value="", visible=False)
         tab_refresh_trigger = gr.Textbox(value="", visible=False)
 
     self.on_tab_outputs = [tab_refresh_trigger]
+
+    preserve_artifact_count.change(
+        fn=_set_preserve_artifact_count,
+        inputs=[preserve_artifact_count],
+        outputs=[preserve_artifact_count],
+        queue=False,
+        show_progress="hidden",
+    )
+    preview_enabled.change(
+        fn=_set_preview_enabled,
+        inputs=[preview_enabled],
+        outputs=[preview_enabled, preview_image],
+        queue=False,
+        show_progress="hidden",
+    )
 
     gr.on(
         [
@@ -599,8 +681,8 @@ def create_config_ui(self, api_session):
     tab_refresh_event.then(fn=_media_visibility_updates, inputs=[process_name, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], queue=False, show_progress="hidden")
     start_btn.click(
         fn=process_runner.start_process,
-        inputs=[self.state, process_name, user_process_refs, source_path, source_image_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds, batch_mode, batch_name, batch_source_path, batch_image_source_path],
-        outputs=[status_html, batch_status_html, output_file, preview_refresh, start_btn, abort_btn, batch_name],
+        inputs=[self.state, process_name, user_process_refs, source_path, source_image_path, process_strength, output_path, prompt_text, continue_enabled, preview_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds, batch_mode, batch_name, batch_source_path, batch_image_source_path],
+        outputs=[status_html, batch_status_html, output_file, preview_refresh, start_btn, abort_btn, batch_name, self.output_trigger],
         queue=False,
         show_progress="hidden",
         show_progress_on=[],

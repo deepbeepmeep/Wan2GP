@@ -331,6 +331,7 @@ class family_handler():
                             ("flowmatch causvid", "causvid"),
                             ("lcm + ltx", "lcm"), ]
         })
+        extra_model_def["sub_parallel_windows"] = scail2
 
         extra_model_def["self_refiner"] = True
 

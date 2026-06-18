@@ -145,7 +145,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "12.24"
+WanGP_version = "12.25"
 settings_version = 2.64
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -5753,6 +5753,7 @@ def edit_media(
     tmp_path = None
     saved_video_duration = None
     any_change = False
+    api_video_tensor = None
     if sample != None:
         if source_is_image:
             image_path = get_available_filename(image_save_path, video_source, "_post")
@@ -5771,6 +5772,10 @@ def edit_media(
         video_path = get_available_filename(save_path, video_source, "_tmp", force_extension=video_extension) if any_soundtrack_processor or has_already_audio else get_available_filename(save_path, video_source, "_post", force_extension=video_extension)
         video_path = save_video( tensor=sample[None], save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type= server_config.get("video_output_codec", None), container=server_config.get("video_container", "mp4"))
         saved_video_duration = sample.shape[1] / output_fps
+        api_video_tensor = sample if api_return_video_uint8 else None
+        if api_video_tensor is None:
+            sample = None
+            gc.collect()
 
         if any_soundtrack_processor or has_already_audio: tmp_path = video_path
         any_change = True
@@ -5901,7 +5906,7 @@ def edit_media(
                     client_id,
                     new_video_path,
                     "video",
-                    sample if api_return_video_uint8 and sample is not None else None,
+                    api_video_tensor,
                     None,
                     None,
                     output_fps,
@@ -6398,6 +6403,8 @@ def generate_media(
     speakers_locations,
     sliding_window_size,
     sliding_window_overlap,
+    sub_parallel_window_size,
+    sub_parallel_window_overlap,
     sliding_window_color_correction_strength,
     sliding_window_overlap_noise,
     sliding_window_discard_last_frames,
@@ -6681,6 +6688,10 @@ def generate_media(
         if sliding_window_defaults.get("overlap_default", 0) != sliding_window_overlap:
             overlap_offset = sliding_window_defaults.get("overlap_offset", 1)
             sliding_window_overlap = sliding_window_overlap // latent_size * latent_size if overlap_offset == 0 else (sliding_window_overlap - overlap_offset) // latent_size * latent_size + overlap_offset
+    sub_parallel_window_size = max(0, int(sub_parallel_window_size or 0))
+    if sub_parallel_window_size !=0:
+        sub_parallel_window_size += 1
+    sub_parallel_window_overlap = max(0, int(sub_parallel_window_overlap or 0))
     if sliding_window_discard_last_frames !=0:
         sliding_window_discard_last_frames = sliding_window_discard_last_frames // latent_size * latent_size 
 
@@ -7485,6 +7496,8 @@ def generate_media(
                     return_latent_slice= return_latent_slice,
                     overlap_noise = sliding_window_overlap_noise,
                     overlap_size = reuse_frames,
+                    sub_parallel_window_size=sub_parallel_window_size,
+                    sub_parallel_window_overlap=sub_parallel_window_overlap,
                     color_correction_strength = sliding_window_color_correction_strength,
                     conditioning_latents_size = conditioning_latents_size,
                     input_video_is_hdr=input_video_is_hdr,
@@ -9141,7 +9154,9 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         pop += ["keep_frames_video_source"]
 
     if not test_any_sliding_window( base_model_type):
-        pop += ["sliding_window_size", "sliding_window_overlap", "sliding_window_overlap_noise", "sliding_window_discard_last_frames", "sliding_window_trim_first_frames", "sliding_window_color_correction_strength"]
+        pop += ["sliding_window_size", "sliding_window_overlap", "sub_parallel_window_size", "sub_parallel_window_overlap", "sliding_window_overlap_noise", "sliding_window_discard_last_frames", "sliding_window_trim_first_frames", "sliding_window_color_correction_strength"]
+    elif not model_def.get("sub_parallel_windows", False):
+        pop += ["sub_parallel_window_size", "sub_parallel_window_overlap"]
 
     if not model_def.get("audio_guidance", False):
         pop += ["audio_guidance_scale", "speakers_locations"]
@@ -9932,6 +9947,8 @@ def save_inputs(
             speakers_locations,
             sliding_window_size,
             sliding_window_overlap,
+            sub_parallel_window_size,
+            sub_parallel_window_overlap,
             sliding_window_color_correction_strength,
             sliding_window_overlap_noise,
             sliding_window_discard_last_frames,
@@ -10917,6 +10934,16 @@ def get_processed_queue(gen):
         audio_file_list = gen.get("audio_file_list", [])
         audio_file_settings_list = gen.get("audio_file_settings_list", [])
     return file_list, file_settings_list, audio_file_list, audio_file_settings_list
+
+def get_current_video_gallery(state):
+    gen = get_gen_info(state)
+    with lock:
+        return gen.setdefault("file_list", []), gen.setdefault("file_settings_list", [])
+
+def get_current_audio_gallery(state):
+    gen = get_gen_info(state)
+    with lock:
+        return gen.setdefault("audio_file_list", []), gen.setdefault("audio_file_settings_list", [])
 
 
 _deepy = deepy_controller.create_controller(
@@ -12069,6 +12096,9 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             sliding_window_color_correction_strength = setting_slider("sliding_window_color_correction_strength")
                             sliding_window_overlap_noise = setting_slider("sliding_window_overlap_noise", value=ui_get("sliding_window_overlap_noise",20 if vace else 0))
                             sliding_window_discard_last_frames = setting_slider("sliding_window_discard_last_frames")
+                        with gr.Row(visible=model_def.get("sub_parallel_windows", False)) as sub_parallel_window_row:
+                            sub_parallel_window_size = setting_slider("sub_parallel_window_size", value=ui_get("sub_parallel_window_size", 0))
+                            sub_parallel_window_overlap = setting_slider("sub_parallel_window_overlap", value=ui_get("sub_parallel_window_overlap", 17))
                         sliding_window_trim_first_frames = setting_slider("sliding_window_trim_first_frames", value=ui_get("sliding_window_trim_first_frames", 0))
 
                         video_prompt_type_alignment = gr.Dropdown(
@@ -12317,7 +12347,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
 
         extra_inputs = prompt_vars + [wizard_prompt, wizard_variables_var, wizard_prompt_activated_var, prompt_info_label, wizard_prompt_info_label, video_prompt_column, image_prompt_column, image_prompt_type_group, image_prompt_type_radio, image_prompt_type_endcheckbox,
                                       prompt_column_advanced, prompt_column_wizard_vars, prompt_column_wizard, alt_prompt_row, lset_name, save_lset_prompt_drop, advanced_row, speed_tab, audio_tab, postprocess_audio_prompt_col, quality_tab,
-                                      sliding_window_tab, misc_tab, prompt_enhancer_row, inference_steps_row, perturbation_row, audio_guide_row, custom_guide_row, RIFLEx_setting_col,
+                                      sliding_window_tab, sub_parallel_window_row, misc_tab, prompt_enhancer_row, inference_steps_row, perturbation_row, audio_guide_row, custom_guide_row, RIFLEx_setting_col,
                                       video_prompt_type_video_guide, video_prompt_type_video_guide_alt, video_prompt_type_video_mask, video_prompt_type_image_refs, video_prompt_type_video_custom_dropbox, video_prompt_type_video_custom_checkbox,
                                       apg_col, audio_prompt_type_sources, postprocess_audio_control_col, postprocess_audio_source_col, replace_voice_col, replace_voice_method, replace_voice_sample_row, replace_voice_sample2_row, force_fps_col,
                                       video_guide_outpainting_col,video_guide_outpainting_top, video_guide_outpainting_bottom, video_guide_outpainting_left, video_guide_outpainting_right,
@@ -12908,6 +12938,9 @@ def _get_finetune_editor_deps():
         set_model_settings=set_model_settings,
         get_default_settings=get_default_settings,
         get_settings_file_name=get_settings_file_name,
+        get_lora_dir=get_lora_dir,
+        get_lora_URL=get_lora_URL,
+        update_loras_url_cache=update_loras_url_cache,
         refresh_model_defs=refresh_model_defs,
         refresh_model_dropdowns=refresh_model_dropdowns,
         change_model=change_model,

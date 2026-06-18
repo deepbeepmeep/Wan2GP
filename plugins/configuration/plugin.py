@@ -280,7 +280,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         self.matanyone_version_choice = gr.Dropdown(
                             choices=[("MatAnyone v1 (original, default)", "v1"), ("MatAnyone v2", "v2"), ("SAM3 (no Alpha / Grey level support but better Temporal Stability & Auto Mask Selection by Keyword)", "sam3")],
                             value=self.server_config.get("matanyone_version", "v1"),
-                            label="Video Mask Model",
+                            label="Mask Generator Engine",
                             interactive=not self.args.lock_config
                         )
 

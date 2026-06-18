@@ -11,6 +11,7 @@ _PROJECT_FOLDER = "ideogram4"
 _TEXT_ENCODER_FOLDER = "Qwen3-VL-8B-Instruct"
 _VAE_REPO = "DeepBeepMeep/Flux2"
 _VAE_FILENAME = "flux2_vae.safetensors"
+_TURBOTIME_MODEL_TYPE = "ideogram4_turbotime"
 _PRESET_CHOICES = [
     ("Quality 48", "V4_QUALITY_48"),
     ("Default 20", "V4_DEFAULT_20"),
@@ -63,6 +64,11 @@ A plain LoRA multiplier applies to both branches.
 To set different values per branch, use ':' as conditional:unconditional. For example, 0.9:0.4 applies 0.9 to the conditional transformer and 0.4 to the unconditional transformer.
 
 Guidance phases still use ';'. For example, 1:1.2;0.8:1.0 means phase 1 cond/uncond = 1/1.2 and phase 2 cond/uncond = 0.8/1.0."""
+IDEOGRAM4_TURBOTIME_INFOS = """## Ideogram 4 TurboTime
+
+Ideogram 4 TurboTime uses the Ideogram 4 conditional transformer with the TurboTime LoRA applied. It is designed for a few denoising steps with no CFG and no unconditional transformer branch.
+
+LoRA multipliers apply to the conditional transformer only."""
 _PRESET_SETTINGS = {
     "V4_QUALITY_48": {"num_inference_steps": 48, "mu": 0.0, "std": 1.5, "switch_threshold": 184},
     "V4_DEFAULT_20": {"num_inference_steps": 20, "mu": 0.0, "std": 1.75, "switch_threshold": 211},
@@ -73,6 +79,21 @@ _LEGACY_CFG_OVERRIDE_KEYS = (
     "ideogram_cfg_override_start_percent",
     "ideogram_cfg_override_end_percent",
 )
+_TURBOTIME_SETTINGS = {
+    "num_inference_steps": 8,
+    "guidance_phases": 0,
+    "guidance_scale": 0,
+    "guidance2_scale": 0,
+    "guidance3_scale": 0,
+    "switch_threshold": 0,
+    "switch_threshold2": 0,
+    "sample_solver": _DEFAULT_SAMPLE_SOLVER,
+    "flow_shift": _DEFAULT_FLOW_SHIFT,
+}
+_TURBOTIME_CUSTOM_SETTINGS = {
+    "ideogram_mu": 0.5,
+    "ideogram_std": 1.75,
+}
 
 
 def _time_snr_shift(shift, sigma):
@@ -86,6 +107,25 @@ def _percent_to_switch_threshold(percent, shift=1.0):
 def _drop_legacy_cfg_override_settings(custom_settings):
     for key in _LEGACY_CFG_OVERRIDE_KEYS:
         custom_settings.pop(key, None)
+
+
+def _apply_turbotime_settings(ui_defaults, preserve_user_values=False):
+    custom_settings = ui_defaults.get("custom_settings", None)
+    if not isinstance(custom_settings, dict):
+        custom_settings = {}
+    _drop_legacy_cfg_override_settings(custom_settings)
+    for key, value in _TURBOTIME_CUSTOM_SETTINGS.items():
+        if preserve_user_values:
+            custom_settings.setdefault(key, value)
+        else:
+            custom_settings[key] = value
+    for key, value in _TURBOTIME_SETTINGS.items():
+        if preserve_user_values and key not in {"guidance_phases", "guidance_scale", "guidance2_scale", "guidance3_scale", "switch_threshold", "switch_threshold2"}:
+            ui_defaults.setdefault(key, value)
+        else:
+            ui_defaults[key] = value
+    ui_defaults["custom_settings"] = custom_settings
+    ui_defaults["model_mode"] = None
 
 
 def _apply_preset_settings(ui_defaults, preset_name):
@@ -118,11 +158,16 @@ def _model_uses_nf4(model_def):
     return any("_nf4" in str(url).lower() for url in urls)
 
 
+def _conditional_transformer_only(base_model_type, model_def=None):
+    return base_model_type == _TURBOTIME_MODEL_TYPE or bool((model_def or {}).get("conditional_transformer_only", False))
+
+
 class family_handler:
     @staticmethod
     def query_model_def(base_model_type, model_def):
+        conditional_only = _conditional_transformer_only(base_model_type, model_def)
         text_encoder_filename = "Qwen3-VL-8B-Instruct_nf4.safetensors" if _model_uses_nf4(model_def) else "Qwen3-VL-8B-Instruct_fp8.safetensors"
-        return {
+        model_def_update = {
             "image_outputs": True,
             "flux2": True,
             "vae_upsamplers": {"flux2_vae_pid": [1]},
@@ -158,10 +203,20 @@ class family_handler:
                 build_hf_url(_PROJECT_REPO, _TEXT_ENCODER_FOLDER, text_encoder_filename),
             ],
         }
+        if conditional_only:
+            model_def_update.update({
+                "conditional_transformer_only": True,
+                "guidance_max_phases": 0,
+                "lora_multiplier_phases": 1,
+                "preset_profiles_dir": [],
+                "infos": IDEOGRAM4_TURBOTIME_INFOS,
+            })
+            model_def_update.pop("lora_multiplier_branches", None)
+        return model_def_update
 
     @staticmethod
     def query_supported_types():
-        return ["ideogram4"]
+        return ["ideogram4", _TURBOTIME_MODEL_TYPE]
 
     @staticmethod
     def query_family_maps():
@@ -214,6 +269,9 @@ class family_handler:
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):
+        transformer_configs = ["ideogram4_transformer_config.json"]
+        if not _conditional_transformer_only(base_model_type, model_def):
+            transformer_configs.append("ideogram4_unconditional_transformer_config.json")
         return [
             {
                 "repoId": _VAE_REPO,
@@ -224,7 +282,7 @@ class family_handler:
                 "repoId": _PROJECT_REPO,
                 "sourceFolderList": [_PROJECT_FOLDER, _TEXT_ENCODER_FOLDER],
                 "fileList": [
-                    ["ideogram4_transformer_config.json", "ideogram4_unconditional_transformer_config.json"],
+                    transformer_configs,
                     ["config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja"],
                 ],
             }
@@ -261,26 +319,35 @@ class family_handler:
         )
         pipe = {
             "transformer": pipe_processor.conditional_transformer,
-            "transformer2": pipe_processor.unconditional_transformer,
             "text_encoder": pipe_processor.text_encoder,
             "vae": pipe_processor.autoencoder,
         }
-        pipe = {
-            "pipe": pipe,
-            "coTenantsMap": {
+        co_tenants_map = {}
+        if pipe_processor.unconditional_transformer is not None:
+            pipe["transformer2"] = pipe_processor.unconditional_transformer
+            co_tenants_map = {
                 "transformer": ["transformer2"],
                 "transformer2": ["transformer"],
-            },
+            }
+        pipe = {
+            "pipe": pipe,
+            "coTenantsMap": co_tenants_map,
         }
         return pipe_processor, pipe
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update({"image_mode": 1, "model_mode": None, "batch_size": 1})
+        if _conditional_transformer_only(base_model_type, model_def):
+            _apply_turbotime_settings(ui_defaults)
+            return
         _apply_preset_settings(ui_defaults, _DEFAULT_PRESET)
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
+        if _conditional_transformer_only(base_model_type, model_def):
+            _apply_turbotime_settings(ui_defaults, preserve_user_values=True)
+            return
         old_mode = ui_defaults.get("model_mode", None)
         if old_mode in _PRESET_SETTINGS:
             _apply_preset_settings(ui_defaults, old_mode)

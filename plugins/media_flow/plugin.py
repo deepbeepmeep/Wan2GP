@@ -17,9 +17,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("get_base_model_type")
         self.request_global("server_config")
         self.request_global("flashvsr")
+        self.request_global("get_current_video_gallery")
+        self.request_global("get_current_audio_gallery")
         self.request_component("state")
         self.request_component("lset_name")
         self.request_component("refresh_form_trigger")
+        self.request_component("output_trigger")
         self.add_tab(tab_id=PlugIn_Id, label=PlugIn_Name, component_constructor=self.create_config_ui)
 
     def on_tab_select(self, state: dict) -> str:

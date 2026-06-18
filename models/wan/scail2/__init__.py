@@ -56,6 +56,10 @@ Required inputs:
 
 Replacement uses the Control Video as the source frames. The mask says which people are replaced.
 
+## Experimental Subwindows
+
+SCAIL-2 can use experimental subwindow sampling inside each sliding-window generation. When `Sub Parallel Window Size` is nonzero, WanGP denoises several overlapping temporal subwindows sequentially at every denoising step, blends their noise predictions over `Sub Parallel Window Overlap`, then applies one scheduler step to the full latent window. This can reduce peak VRAM for long SCAIL-2 windows, but it may introduce motion or identity discontinuities at subwindow boundaries. Keep it disabled unless you are testing longer windows or need the VRAM reduction.
+
 ## Colored Masks
 
 SCAIL-2 relies on mask colors. Each person should keep one stable color for the whole video. For multiple people, use one color per person. Do not use a single gray/white mask when you need to distinguish several characters.
@@ -256,7 +260,7 @@ def _iter_frame_jobs(frame_count, worker, max_workers=1):
 
 
 def _float_cthw_from_frames(tensor, frame_count, frame_processor, target_h, target_w, max_workers=1):
-    output = torch.empty((3, frame_count, target_h, target_w), dtype=torch.float32)
+    output = torch.empty((3, frame_count, target_h, target_w), dtype=torch.float32, device="cpu")
 
     def process_frame(frame_idx):
         arr = frame_processor(_frame_to_uint8_hwc(_get_hwc_frame(tensor, frame_idx)))

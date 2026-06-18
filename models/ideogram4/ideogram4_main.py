@@ -91,8 +91,9 @@ def _apply_ideogram_lora_branches(conditional_transformer, unconditional_transfo
         return
     from shared.utils.loras_mutipliers import update_loras_slists
 
-    update_loras_slists(conditional_transformer, loras_slists["cond"], num_steps, phase_switch_step=phase_switch_step, phase_switch_step2=phase_switch_step2)
-    update_loras_slists(unconditional_transformer, loras_slists["uncond"], num_steps, phase_switch_step=phase_switch_step, phase_switch_step2=phase_switch_step2)
+    update_loras_slists(conditional_transformer, loras_slists.get("cond", loras_slists), num_steps, phase_switch_step=phase_switch_step, phase_switch_step2=phase_switch_step2)
+    if unconditional_transformer is not None:
+        update_loras_slists(unconditional_transformer, loras_slists.get("uncond", loras_slists), num_steps, phase_switch_step=phase_switch_step, phase_switch_step2=phase_switch_step2)
 
 
 def _strip_transformer_wrapper(state_dict, quantization_map=None, tied_weights_map=None):
@@ -386,10 +387,11 @@ class Ideogram4WanPipeline:
         if llm_features is None or self._interrupt:
             return None
 
-        neg_position_ids = inputs["position_ids"][:, max_text_tokens:]
-        neg_segment_ids = inputs["segment_ids"][:, max_text_tokens:]
-        neg_indicator = inputs["indicator"][:, max_text_tokens:]
-        neg_llm_features = llm_features.new_empty(batch_size, 0, llm_features.shape[-1])
+        if self.unconditional_transformer is not None:
+            neg_position_ids = inputs["position_ids"][:, max_text_tokens:]
+            neg_segment_ids = inputs["segment_ids"][:, max_text_tokens:]
+            neg_indicator = inputs["indicator"][:, max_text_tokens:]
+            neg_llm_features = llm_features.new_empty(batch_size, 0, llm_features.shape[-1])
 
         generator = torch.Generator(device=device)
         if seed is not None and seed >= 0:
@@ -416,6 +418,8 @@ class Ideogram4WanPipeline:
             if pos_out is None:
                 return None
             pos_v = pos_out[:, max_text_tokens:]
+            if self.unconditional_transformer is None:
+                return pos_v
 
             neg_v = self.unconditional_transformer(
                 llm_features=neg_llm_features,
@@ -512,8 +516,10 @@ class model_factory:
         **kwargs,
     ):
         model_def = model_def or {}
-        if not isinstance(model_filename, (list, tuple)) or len(model_filename) < 2:
-            raise ValueError("Ideogram 4 requires conditional and unconditional transformer files.")
+        conditional_only = bool(model_def.get("conditional_transformer_only", False))
+        min_transformers = 1 if conditional_only else 2
+        if not isinstance(model_filename, (list, tuple)) or len(model_filename) < min_transformers:
+            raise ValueError("Ideogram 4 requires a conditional transformer file." if conditional_only else "Ideogram 4 requires conditional and unconditional transformer files.")
         if text_encoder_filename is None:
             raise ValueError("Ideogram 4 requires a Qwen3-VL text encoder file.")
 
@@ -528,15 +534,17 @@ class model_factory:
         vae_filename = fl.locate_file("flux2_vae.safetensors")
 
         self.conditional_transformer = _load_transformer(model_filename[0], dtype)
-        self.unconditional_transformer = _load_transformer(model_filename[1], dtype)
+        self.unconditional_transformer = None if conditional_only else _load_transformer(model_filename[1], dtype)
         self.transformer = self.conditional_transformer
-        self.transformer2 = self.unconditional_transformer
         self.model = self.conditional_transformer
-        self.model2 = self.unconditional_transformer
+        if self.unconditional_transformer is not None:
+            self.transformer2 = self.unconditional_transformer
+            self.model2 = self.unconditional_transformer
         if save_quantized:
             from wgp import save_quantized_model
             save_quantized_model(self.conditional_transformer, model_type, model_filename[0], dtype, None)
-            save_quantized_model(self.unconditional_transformer, model_type, model_filename[1], dtype, None, submodel_no=2)
+            if self.unconditional_transformer is not None:
+                save_quantized_model(self.unconditional_transformer, model_type, model_filename[1], dtype, None, submodel_no=2)
         self.text_encoder = _load_text_encoder(text_encoder_filename, text_config_path, dtype)
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, extra_special_tokens={})
         self.autoencoder = _load_autoencoder(vae_filename, VAE_dtype)
@@ -615,6 +623,7 @@ class model_factory:
         if hasattr(self, "pipeline"):
             self.pipeline._interrupt = bool(value)
             self.conditional_transformer._interrupt = bool(value)
-            self.unconditional_transformer._interrupt = bool(value)
+            if self.unconditional_transformer is not None:
+                self.unconditional_transformer._interrupt = bool(value)
             if hasattr(self.text_encoder, "language_model"):
                 self.text_encoder.language_model._interrupt = bool(value)

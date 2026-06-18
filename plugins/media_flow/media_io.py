@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 import gradio as gr
@@ -435,34 +436,116 @@ def delete_file_if_exists(file_path: str | None, *, label: str) -> None:
         print(f"[MediaFlow] Warning: failed to delete {label} {file_path}: {exc}")
 
 
-def delete_released_chunk_outputs(state: dict, chunk_output_paths: list[str], *, preserve_paths: list[str] | None = None) -> list[str]:
-    if not isinstance(state, dict):
-        return chunk_output_paths
+def _normalize_artifact_paths(paths) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for path in list(paths or []):
+        if not isinstance(path, str) or len(path.strip()) == 0:
+            continue
+        resolved = str(Path(path).resolve())
+        if resolved in seen:
+            continue
+        normalized.append(resolved)
+        seen.add(resolved)
+    return normalized
+
+
+def result_generated_artifact_paths(result) -> list[str]:
+    paths = list(getattr(result, "generated_files", []) or [])
+    for artifact in tuple(getattr(result, "artifacts", ()) or ()):
+        artifact_path = getattr(artifact, "path", None)
+        if isinstance(artifact_path, str) and len(artifact_path.strip()) > 0:
+            paths.append(artifact_path)
+    return _normalize_artifact_paths(paths)
+
+
+def remember_generated_artifacts(active_job: dict, paths) -> None:
+    active_job["generated_artifact_paths"] = _normalize_artifact_paths(list(active_job.get("generated_artifact_paths", []) or []) + list(paths or []))
+
+
+def _remove_paths_from_gallery(file_list: list, file_settings_list: list, deleted_paths: set[str]) -> bool:
+    if len(deleted_paths) == 0:
+        return False
+    kept_files = []
+    kept_settings = []
+    changed = False
+    for index, file_path in enumerate(list(file_list or [])):
+        resolved = str(Path(file_path).resolve()) if isinstance(file_path, str) and len(file_path.strip()) > 0 else ""
+        if resolved in deleted_paths:
+            changed = True
+            continue
+        kept_files.append(file_path)
+        kept_settings.append(file_settings_list[index] if index < len(file_settings_list) else None)
+    if changed:
+        file_list[:] = kept_files
+        file_settings_list[:] = kept_settings
+    return changed
+
+
+def _clamp_gallery_selection(state: dict, *, video_changed: bool, audio_changed: bool) -> None:
     gen = state.get("gen", {})
     if not isinstance(gen, dict):
-        return chunk_output_paths
-    referenced_paths = {
-        str(Path(path).resolve())
-        for path in list(gen.get("file_list", []) or []) + list(gen.get("audio_file_list", []) or [])
-        if isinstance(path, str) and len(path.strip()) > 0
-    }
-    referenced_paths.update(
-        str(Path(path).resolve())
-        for path in list(preserve_paths or [])
-        if isinstance(path, str) and len(path.strip()) > 0
-    )
+        return
+    if video_changed:
+        gen["selected"] = min(max(int(gen.get("selected", 0) or 0), 0), max(len(gen.get("file_list", []) or []) - 1, 0))
+    if audio_changed:
+        gen["audio_selected"] = min(max(int(gen.get("audio_selected", -1) or -1), -1), max(len(gen.get("audio_file_list", []) or []) - 1, -1))
+
+
+def prune_generated_artifacts(
+    state: dict,
+    artifact_paths: list[str],
+    preserve_count: int,
+    *,
+    preserve_paths: list[str] | None = None,
+    get_video_gallery: Callable,
+    get_audio_gallery: Callable,
+) -> tuple[list[str], bool]:
+    normalized_paths = _normalize_artifact_paths(artifact_paths)
+    preserve_count = max(1, int(preserve_count))
+    protected_paths = set(normalized_paths[-preserve_count:])
+    protected_paths.update(_normalize_artifact_paths(preserve_paths))
+    deleted_paths: set[str] = set()
     kept_paths: list[str] = []
-    for path in chunk_output_paths:
-        resolved = str(Path(path).resolve())
-        if resolved in referenced_paths:
-            kept_paths.append(resolved)
+    for path in normalized_paths:
+        if path in protected_paths:
+            kept_paths.append(path)
             continue
-        if os.path.isfile(resolved):
+        if os.path.isfile(path):
             try:
-                os.remove(resolved)
-            except OSError:
-                kept_paths.append(resolved)
-    return kept_paths
+                os.remove(path)
+            except OSError as exc:
+                print(f"[MediaFlow] Warning: failed to delete old generated artifact {path}: {exc}")
+                kept_paths.append(path)
+                continue
+        deleted_paths.add(path)
+    if len(deleted_paths) == 0:
+        return kept_paths, False
+    video_file_list, video_file_settings_list = get_video_gallery(state)
+    audio_file_list, audio_file_settings_list = get_audio_gallery(state)
+    video_changed = _remove_paths_from_gallery(video_file_list, video_file_settings_list, deleted_paths)
+    audio_changed = _remove_paths_from_gallery(audio_file_list, audio_file_settings_list, deleted_paths)
+    _clamp_gallery_selection(state, video_changed=video_changed, audio_changed=audio_changed)
+    return kept_paths, video_changed or audio_changed
+
+
+def prune_active_job_artifacts(plugin, active_job: dict, state: dict, *, preserve_paths: list[str] | None = None) -> tuple[list[str], bool]:
+    from . import process_catalog as catalog
+
+    kept_paths, gallery_changed = prune_generated_artifacts(
+        state,
+        list(active_job.get("generated_artifact_paths", []) or []),
+        catalog.normalize_preserve_artifact_count(active_job.get(catalog.PRESERVE_ARTIFACTS_STORAGE_KEY)),
+        preserve_paths=preserve_paths,
+        get_video_gallery=plugin.get_current_video_gallery,
+        get_audio_gallery=plugin.get_current_audio_gallery,
+    )
+    active_job["generated_artifact_paths"] = kept_paths
+    return kept_paths, gallery_changed
+
+
+def delete_released_chunk_outputs(state: dict, chunk_output_paths: list[str], *, preserve_paths: list[str] | None = None) -> list[str]:
+    return _normalize_artifact_paths(chunk_output_paths)
 
 
 def get_last_generated_video_path(paths: list[str]) -> str | None:

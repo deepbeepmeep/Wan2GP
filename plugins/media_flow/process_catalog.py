@@ -20,6 +20,12 @@ MEDIA_KIND_STORAGE_KEY = "media_kind"
 BATCH_MODE_STORAGE_KEY = "batch_mode"
 LAST_SETTINGS_STORAGE_KEY = "last_settings"
 USER_SETTINGS_STORAGE_KEY = "user_settings"
+PRESERVE_ARTIFACTS_STORAGE_KEY = "preserve_media_generator_artifacts"
+PRESERVE_ARTIFACTS_DEFAULT = 10
+PRESERVE_ARTIFACTS_MIN = 1
+PRESERVE_ARTIFACTS_MAX = 20
+PREVIEW_OUTPUT_STORAGE_KEY = "preview_media_generator_output"
+PREVIEW_OUTPUT_DEFAULT = True
 DEFAULT_MEDIA_KIND = "video"
 DEFAULT_BATCH_MODE = "single"
 VALID_MEDIA_KINDS = ("video", "image")
@@ -63,6 +69,26 @@ def normalize_batch_mode(value, default: str = DEFAULT_BATCH_MODE) -> str:
     if text in VALID_BATCH_MODES:
         return text
     return default if default in VALID_BATCH_MODES or default == "" else DEFAULT_BATCH_MODE
+
+
+def normalize_preserve_artifact_count(value) -> int:
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        count = PRESERVE_ARTIFACTS_DEFAULT
+    return min(PRESERVE_ARTIFACTS_MAX, max(PRESERVE_ARTIFACTS_MIN, count))
+
+
+def normalize_preview_enabled(value) -> bool:
+    if value is None:
+        return PREVIEW_OUTPUT_DEFAULT
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"0", "false", "no", "off"}:
+            return False
+        if text in {"1", "true", "yes", "on"}:
+            return True
+    return bool(value)
 
 
 def last_settings_key(media_kind: str, batch_mode: str) -> str:
@@ -225,11 +251,13 @@ def _normalize_user_settings_by_media(raw_user_settings, selected_media_kind: st
 
 def _normalize_settings_slot(slot: dict | None, media_kind: str, batch_mode: str) -> dict:
     if not isinstance(slot, dict):
-        return {}
+        slot = {}
     excluded = {METADATA_VERSION_KEY, USER_SETTINGS_STORAGE_KEY, LAST_SETTINGS_STORAGE_KEY}
     normalized = {key: value for key, value in slot.items() if key not in excluded}
     normalized[MEDIA_KIND_STORAGE_KEY] = normalize_media_kind(normalized.get(MEDIA_KIND_STORAGE_KEY) or media_kind)
     normalized[BATCH_MODE_STORAGE_KEY] = normalize_batch_mode(normalized.get(BATCH_MODE_STORAGE_KEY) or batch_mode)
+    normalized[PRESERVE_ARTIFACTS_STORAGE_KEY] = normalize_preserve_artifact_count(normalized.get(PRESERVE_ARTIFACTS_STORAGE_KEY))
+    normalized[PREVIEW_OUTPUT_STORAGE_KEY] = normalize_preview_enabled(normalized.get(PREVIEW_OUTPUT_STORAGE_KEY))
     return normalized
 
 

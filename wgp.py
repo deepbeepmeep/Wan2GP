@@ -3539,7 +3539,7 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
 
     model_loras = get_model_recursive_prop(model_type, "loras", return_list= True)
     for url in model_loras:
-        filename = os.path.join(lora_dir, url.split("/")[-1])
+        filename = get_lora_local_path(lora_dir, url)
         if not os.path.isfile(filename ): 
             if not url.startswith("http"):
                 raise Exception(f"Lora '{filename}' was not found in the Loras Folder and no URL was provided to download it. Please add an URL in the model definition file.")
@@ -12916,6 +12916,7 @@ def _get_dropdown_deps():
         get_model_filename=get_model_filename,
         get_local_model_filename=fl.get_local_model_filename,
         get_lora_dir=get_lora_dir,
+        get_lora_local_path=get_lora_local_path,
         get_parent_model_type=get_parent_model_type,
         get_base_model_type=get_base_model_type,
         get_model_family=get_model_family,

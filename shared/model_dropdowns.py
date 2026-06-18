@@ -31,6 +31,7 @@ class DropdownDeps:
     get_model_filename: callable
     get_local_model_filename: callable
     get_lora_dir: callable
+    get_lora_local_path: callable
     get_parent_model_type: callable
     get_base_model_type: callable
     get_model_family: callable
@@ -218,10 +219,7 @@ def get_expected_secondary_file_entries_for_status(deps, model_type):
     for url in model_loras:
         if not isinstance(url, str) or len(url) == 0:
             continue
-        basename = os.path.basename(url.split("|", 1)[0])
-        if len(basename) == 0:
-            continue
-        _append_expected_local_path_entry(entries, seen, os.path.join(lora_dir, basename))
+        _append_expected_local_path_entry(entries, seen, deps.get_lora_local_path(lora_dir, url))
 
     return entries
 
@@ -263,7 +261,7 @@ def has_secondary_model_files_for_status(deps, model_type, quantization, dtype_p
     for url in model_loras:
         if not isinstance(url, str) or len(url) == 0:
             continue
-        if not os.path.isfile(os.path.join(lora_dir, os.path.basename(url.split("|", 1)[0]))):
+        if not os.path.isfile(deps.get_lora_local_path(lora_dir, url)):
             return False
 
     module_files = _get_module_files_for_status(deps, model_type, quantization, dtype_policy)

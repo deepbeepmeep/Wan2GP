@@ -54,6 +54,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
         self.request_global("get_model_recursive_prop")
         self.request_global("get_model_filename")
         self.request_global("get_lora_dir")
+        self.request_global("get_lora_local_path")
         self.request_global("compact_name")
         self.request_global("create_models_hierarchy")
         self.request_global("families_infos")
@@ -771,6 +772,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
             get_model_filename=self.get_model_filename,
             get_local_model_filename=self._get_local_model_filename,
             get_lora_dir=self.get_lora_dir,
+            get_lora_local_path=self.get_lora_local_path,
             get_parent_model_type=self.get_parent_model_type,
             get_base_model_type=self.get_base_model_type,
             get_model_family=self.get_model_family,
@@ -1582,10 +1584,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
             if len(basename) == 0:
                 continue
             files = set()
-            if entry.startswith("http") and "|" in entry:
-                self._add_file(files, entry, lora_dir=lora_dir)
-            else:
-                self._add_file(files, os.path.join(lora_dir, basename))
+            self._add_file(files, self.get_lora_local_path(lora_dir, entry))
             if not files:
                 continue
             resolved_path = next(iter(files))

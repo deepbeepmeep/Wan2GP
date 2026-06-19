@@ -131,11 +131,20 @@ def _process_queue_worker():
 
             try:
                 session = get_wgp_session()
+
+                # Replace -1 seed with an actual random seed so task status
+                # returns the real seed used, not -1
+                settings = task["settings"]
+                if settings.get("seed", -1) == -1:
+                    import random
+
+                    settings["seed"] = random.randint(0, 999999999)
+
                 print(
-                    f"[QUEUE WORKER] Submitting task {task_id} with settings: {task['settings']}"
+                    f"[QUEUE WORKER] Submitting task {task_id} with settings: {settings}"
                 )
                 # Submit and store job reference for status polling
-                job = session.submit_task(task["settings"])
+                job = session.submit_task(settings)
                 print(f"[QUEUE WORKER] Got job: {job}, job.done: {job.done}")
                 task["job"] = job
 

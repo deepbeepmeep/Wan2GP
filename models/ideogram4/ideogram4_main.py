@@ -526,7 +526,8 @@ class model_factory:
         self.model_type = model_type
         self.base_model_type = base_model_type
         self.model_def = model_def
-        self.dtype = torch.bfloat16
+        dtype = torch.bfloat16
+        self.dtype = dtype
 
         text_encoder_folder = model_def.get("text_encoder_folder", "Qwen3-VL-8B-Instruct")
         tokenizer_path = os.path.dirname(fl.locate_file(os.path.join(text_encoder_folder, "tokenizer_config.json")))

@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 from mmgp import offload
 from models.wan.modules.vae import WanVAE
-from shared.attention import attention_config_shared_state
+from shared.utils import offload_registry
 from .attention_backend import log_sparse_backend, require_sparge_attention
 from .tcdecoder import build_tcdecoder
 from .utils import Causal_LQ4x_Proj
@@ -203,11 +203,27 @@ def _select_still_image_frame(frames: torch.Tensor, frame_index: int) -> torch.T
 
 def _decoded_frames_to_cpu(frames: torch.Tensor, frame_count: int, height: int, width: int) -> torch.Tensor:
     frames = frames.detach()[0, :, :frame_count, :height, :width]
-    if frames.device.type == "cpu" and frames.dtype == torch.float32 and frames.is_contiguous():
+    if frames.device.type == "cpu" and frames.dtype in (torch.float32, torch.uint8) and frames.is_contiguous():
         return frames
+    if frames.dtype == torch.uint8:
+        return frames.cpu().contiguous()
     frames_cpu = torch.empty(tuple(frames.shape), dtype=torch.float32, device="cpu")
     frames_cpu.copy_(frames)
     return frames_cpu
+
+
+def _normalized_video_to_cpu_uint8(frames: torch.Tensor) -> torch.Tensor:
+    if frames.dtype == torch.uint8:
+        return frames.detach().cpu().contiguous()
+    return frames.detach().cpu().float().clamp_(-1.0, 1.0).add_(1.0).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8).contiguous()
+
+
+def _drop_module_tensors(module: torch.nn.Module | None) -> None:
+    if module is None:
+        return
+    for submodule in module.modules():
+        submodule._parameters.clear()
+        submodule._buffers.clear()
 
 
 def _save_still_image_debug_video(frames: torch.Tensor) -> None:
@@ -453,7 +469,9 @@ class FlashVSRRuntime:
             pipe["vae"] = self.vae.model
         kwargs = {"coTenantsMap": FLASHVSR_COTENANTS_MAP}
         profile_no = init_pipe(pipe, kwargs, profile)
+        kwargs["pinnedMemory"] = False
         self.offloadobj = offload.profile(pipe, profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=self.dtype, verboseLevel=-1, **kwargs)
+        offload_registry.register_offloadobj("FlashVSR", self.offloadobj, self.release)
         log_sparse_backend()
 
     def _prepare_run_state(self) -> None:
@@ -496,7 +514,7 @@ class FlashVSRRuntime:
             frames = self.tcdecoder.decode_video(latents.transpose(1, 2), parallel=False, show_progress_bar=False, cond=cur_lq).transpose(1, 2).mul_(2).sub_(1)
             del cur_lq
             _report_progress(progress_callback, "TCDecoder Decoding", progress_step + 1 if progress_step is not None else None, progress_total)
-            return frames, tile_mems
+            return _normalized_video_to_cpu_uint8(frames), tile_mems
 
         halo = _tcdecoder_mem_halo_latents(self.tcdecoder)
         latent_tile = max(1, tile_size // 8)
@@ -534,8 +552,8 @@ class FlashVSRRuntime:
                 self.tcdecoder.clean_mem()
                 tile_frames = tile_frames[:, :, :, crop_y0:crop_y0 + latent_y1 * 8 - latent_y0 * 8, crop_x0:crop_x0 + latent_x1 * 8 - latent_x0 * 8]
                 if frames_out is None:
-                    frames_out = torch.empty((tile_frames.shape[0], tile_frames.shape[1], tile_frames.shape[2], output_height, output_width), dtype=torch.float32, device="cpu")
-                tile_cpu = tile_frames[:, :, :, :write_y1 - write_y0, :write_x1 - write_x0].detach().cpu().float()
+                    frames_out = torch.empty((tile_frames.shape[0], tile_frames.shape[1], tile_frames.shape[2], output_height, output_width), dtype=torch.uint8, device="cpu")
+                tile_cpu = _normalized_video_to_cpu_uint8(tile_frames[:, :, :, :write_y1 - write_y0, :write_x1 - write_x0])
                 frames_out[:, :, :, write_y0:write_y1, write_x0:write_x1].copy_(tile_cpu)
                 del cur_lq_tile, cur_latents, tile_frames, tile_cpu
         del cur_lq
@@ -545,8 +563,13 @@ class FlashVSRRuntime:
     def release(self) -> None:
         self._clear_runtime_caches()
         if self.offloadobj is not None:
+            offload_registry.unregister_offloadobj("FlashVSR", self.offloadobj)
             self.offloadobj.release()
             self.offloadobj = None
+        _drop_module_tensors(self.dit)
+        _drop_module_tensors(self.lq_proj)
+        _drop_module_tensors(self.tcdecoder)
+        _drop_module_tensors(self.vae.model if self.vae is not None else None)
         self.dit = None
         self.lq_proj = None
         self.tcdecoder = None
@@ -570,7 +593,29 @@ class FlashVSRRuntime:
         seed: int = 0,
         continue_cache: Any = None,
         return_continue_cache: bool = False,
-        persistent_models: bool = False,
+        vae_tile_size: int | None = None,
+        topk_ratio: float = FLASHVSR_TOPK_RATIO,
+        still_image: bool = False,
+        abort_callback=None,
+        progress_callback=None,
+    ) -> tuple[torch.Tensor | None, dict[str, Any] | None]:
+        try:
+            return self._upscale_impl(sample, scale, seed=seed, continue_cache=continue_cache, return_continue_cache=return_continue_cache, vae_tile_size=vae_tile_size, topk_ratio=topk_ratio, still_image=still_image, abort_callback=abort_callback, progress_callback=progress_callback)
+        finally:
+            self._clear_runtime_caches()
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    @torch.inference_mode()
+    def _upscale_impl(
+        self,
+        sample: torch.Tensor,
+        scale: float,
+        *,
+        seed: int = 0,
+        continue_cache: Any = None,
+        return_continue_cache: bool = False,
         vae_tile_size: int | None = None,
         topk_ratio: float = FLASHVSR_TOPK_RATIO,
         still_image: bool = False,
@@ -580,9 +625,6 @@ class FlashVSRRuntime:
         if self.dit is None or self.lq_proj is None:
             raise RuntimeError("FlashVSR models are not loaded.")
         def abort_result():
-            self._unload_mmgp()
-            if not persistent_models:
-                self.release()
             return None, None
 
         input_frames = sample.shape[1]
@@ -696,9 +738,11 @@ class FlashVSRRuntime:
                 copy_frames = min(int(cur_frames.shape[2]), input_frames - frames_cursor)
                 if copy_frames > 0:
                     if frames_out is None:
-                        frames_out = torch.empty((cur_frames.shape[0], cur_frames.shape[1], input_frames, output_height, output_width), dtype=torch.float32, device="cpu")
-                    frames_out[:, :, frames_cursor:frames_cursor + copy_frames].copy_(cur_frames[:, :, :copy_frames].float())
+                        frames_out = torch.empty((cur_frames.shape[0], cur_frames.shape[1], input_frames, output_height, output_width), dtype=torch.uint8, device="cpu")
+                    frames_chunk = _normalized_video_to_cpu_uint8(cur_frames[:, :, :copy_frames])
+                    frames_out[:, :, frames_cursor:frames_cursor + copy_frames].copy_(frames_chunk)
                     frames_cursor += copy_frames
+                    del frames_chunk
                 lq_pre_idx = lq_cur_idx
                 del cur_frames
             else:
@@ -742,9 +786,11 @@ class FlashVSRRuntime:
                     copy_frames = min(int(cur_frames.shape[2]), input_frames - frames_cursor)
                     if copy_frames > 0:
                         if frames_out is None:
-                            frames_out = torch.empty((cur_frames.shape[0], cur_frames.shape[1], input_frames, output_height, output_width), dtype=torch.float32, device="cpu")
-                        frames_out[:, :, frames_cursor:frames_cursor + copy_frames].copy_(cur_frames[:, :, :copy_frames].float())
+                            frames_out = torch.empty((cur_frames.shape[0], cur_frames.shape[1], input_frames, output_height, output_width), dtype=torch.uint8, device="cpu")
+                        frames_chunk = _normalized_video_to_cpu_uint8(cur_frames[:, :, :copy_frames])
+                        frames_out[:, :, frames_cursor:frames_cursor + copy_frames].copy_(frames_chunk)
                         frames_cursor += copy_frames
+                        del frames_chunk
                     lq_pre_idx = lq_cur_idx
                     del cur_latents, cur_frames
                 frames = frames_out
@@ -785,73 +831,54 @@ class FlashVSRRuntime:
         frames = _apply_continue_cache(frames, continue_cache)
         cache = _make_continue_cache(frames, scale, self.variant) if return_continue_cache else None
         sample = None
-        self._unload_mmgp()
-        if not persistent_models:
-            self.release()
         return frames, cache
 
 
 _RUNTIME = FlashVSRRuntime()
 
 
+def load_models(paths: FlashVSRPaths, variant: str = FLASHVSR_VARIANT_TINY_LONG, *, init_pipe, profile, progress_callback=None) -> None:
+    _report_progress(progress_callback, "Caching")
+    _RUNTIME.load(paths, variant, profile=profile, init_pipe=init_pipe)
+
+
 def upscale_video(
     sample: torch.Tensor,
     scale: float,
-    paths: FlashVSRPaths,
     *,
-    variant: str = FLASHVSR_VARIANT_TINY_LONG,
     seed: int = 0,
     continue_cache: Any = None,
     return_continue_cache: bool = False,
-    persistent_models: bool = False,
     vae_tile_size: int | None = None,
     topk_ratio: float = FLASHVSR_TOPK_RATIO,
-    init_pipe,
-    profile,
-    attention_mode: str | None = None,
     still_image: bool = False,
     two_pass: bool = False,
     abort_callback=None,
     progress_callback=None,
 ) -> tuple[torch.Tensor | None, dict[str, Any] | None]:
-    with attention_config_shared_state(attention_mode):
-        _report_progress(progress_callback, "Caching")
-        _RUNTIME.load(paths, variant, profile=profile, init_pipe=init_pipe)
+    shift_correction = bool(
+        FLASHVSR_STILL_IMAGE_SHIFT_CORRECTION
+        and two_pass
+    )
+    if shift_correction:
+        shift_y, shift_x = FLASHVSR_STILL_IMAGE_SHIFT_CORRECTION_INPUT_SHIFT or (max(1, int(round(FLASHVSR_STILL_IMAGE_SHIFT_CORRECTION_PERIOD * 0.5 / scale))), 0)
+        out_shift_y, out_shift_x = int(round(shift_y * scale)), int(round(shift_x * scale))
+        print(f"[FlashVSR] x{scale:g} shifted two-pass blend: extra shifted pass ({shift_y}px input / {out_shift_y}px output), blend={FLASHVSR_STILL_IMAGE_SHIFT_BLEND:g}")
+        base = base_cache = shifted_sample = shifted_continue_cache = shifted = shifted_cache = None
         try:
-            shift_correction = bool(
-                FLASHVSR_STILL_IMAGE_SHIFT_CORRECTION
-                and two_pass
-            )
-            if shift_correction:
-                shift_y, shift_x = FLASHVSR_STILL_IMAGE_SHIFT_CORRECTION_INPUT_SHIFT or (max(1, int(round(FLASHVSR_STILL_IMAGE_SHIFT_CORRECTION_PERIOD * 0.5 / scale))), 0)
-                out_shift_y, out_shift_x = int(round(shift_y * scale)), int(round(shift_x * scale))
-                print(f"[FlashVSR] x{scale:g} shifted two-pass blend: extra shifted pass ({shift_y}px input / {out_shift_y}px output), blend={FLASHVSR_STILL_IMAGE_SHIFT_BLEND:g}")
-                base, base_cache = _RUNTIME.upscale(sample, scale, seed=seed, continue_cache=continue_cache, return_continue_cache=return_continue_cache, persistent_models=True, vae_tile_size=vae_tile_size, topk_ratio=topk_ratio, still_image=still_image, abort_callback=abort_callback, progress_callback=progress_callback)
-                if base is None:
-                    result = (None, None)
-                else:
-                    shifted_sample = _shift_spatial_replicate(sample, shift_y, shift_x)
-                    shifted_continue_cache = _two_pass_shifted_continue_cache(continue_cache, out_shift_y, out_shift_x)
-                    shifted, shifted_cache = _RUNTIME.upscale(shifted_sample, scale, seed=seed, continue_cache=shifted_continue_cache, return_continue_cache=return_continue_cache, persistent_models=True, vae_tile_size=vae_tile_size, topk_ratio=topk_ratio, still_image=still_image, abort_callback=abort_callback, progress_callback=progress_callback)
-                    result = (None, None) if shifted is None else (_apply_still_image_shift_correction(base, _shift_spatial_replicate(shifted, -out_shift_y, -out_shift_x), scale), _make_two_pass_continue_cache(base_cache, shifted_cache, shift_y, shift_x, out_shift_y, out_shift_x))
-                    del shifted_sample, shifted
-                del base
-                if not persistent_models:
-                    _RUNTIME.release()
+            base, base_cache = _RUNTIME.upscale(sample, scale, seed=seed, continue_cache=continue_cache, return_continue_cache=return_continue_cache, vae_tile_size=vae_tile_size, topk_ratio=topk_ratio, still_image=still_image, abort_callback=abort_callback, progress_callback=progress_callback)
+            if base is None:
+                result = (None, None)
             else:
-                result = _RUNTIME.upscale(sample, scale, seed=seed, continue_cache=continue_cache, return_continue_cache=return_continue_cache, persistent_models=persistent_models, vae_tile_size=vae_tile_size, topk_ratio=topk_ratio, still_image=still_image, abort_callback=abort_callback, progress_callback=progress_callback)
-            if result[0] is None:
-                if persistent_models:
-                    _RUNTIME._unload_mmgp()
-                else:
-                    _RUNTIME.release()
-            return result
-        except Exception:
-            if persistent_models:
-                _RUNTIME._unload_mmgp()
-            else:
-                _RUNTIME.release()
-            raise
+                shifted_sample = _shift_spatial_replicate(sample, shift_y, shift_x)
+                shifted_continue_cache = _two_pass_shifted_continue_cache(continue_cache, out_shift_y, out_shift_x)
+                shifted, shifted_cache = _RUNTIME.upscale(shifted_sample, scale, seed=seed, continue_cache=shifted_continue_cache, return_continue_cache=return_continue_cache, vae_tile_size=vae_tile_size, topk_ratio=topk_ratio, still_image=still_image, abort_callback=abort_callback, progress_callback=progress_callback)
+                result = (None, None) if shifted is None else (_apply_still_image_shift_correction(base, _shift_spatial_replicate(shifted, -out_shift_y, -out_shift_x), scale), _make_two_pass_continue_cache(base_cache, shifted_cache, shift_y, shift_x, out_shift_y, out_shift_x))
+        finally:
+            base = base_cache = shifted_sample = shifted_continue_cache = shifted = shifted_cache = None
+    else:
+        result = _RUNTIME.upscale(sample, scale, seed=seed, continue_cache=continue_cache, return_continue_cache=return_continue_cache, vae_tile_size=vae_tile_size, topk_ratio=topk_ratio, still_image=still_image, abort_callback=abort_callback, progress_callback=progress_callback)
+    return result
 
 
 def release_models() -> None:

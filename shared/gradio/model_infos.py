@@ -271,12 +271,12 @@ def get_css() -> str:
     padding: 10px 14px 9px 16px;
     background: var(--button-primary-background-fill, linear-gradient(180deg, rgba(16, 86, 121, 0.98) 0%, rgba(10, 59, 84, 0.98) 100%));
     color: var(--button-primary-text-color, #f3fbff);
-    cursor: grab;
+    cursor: move;
     user-select: none;
     touch-action: none;
 }
 .wangp-model-info-titlebar:active {
-    cursor: grabbing;
+    cursor: move;
 }
 .wangp-model-info-heading {
     color: var(--button-primary-text-color, #f3fbff) !important;
@@ -311,6 +311,8 @@ def get_css() -> str:
     min-width: 360px;
     min-height: 320px;
     padding: 0 8px 8px 0;
+    border-radius: 18px;
+    filter: drop-shadow(0 20px 34px rgba(7, 31, 48, 0.24)) drop-shadow(0 3px 10px rgba(7, 31, 48, 0.14));
     overflow: hidden;
     pointer-events: auto;
     resize: both;
@@ -322,6 +324,7 @@ def get_css() -> str:
     height: 100%;
     max-width: calc(100vw - 24px);
     max-height: 100%;
+    box-shadow: none;
     resize: none;
 }
 .wangp-prompt-helper-popup .wangp-model-info-content {

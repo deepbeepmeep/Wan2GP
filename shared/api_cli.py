@@ -118,7 +118,7 @@ def run_cli_job(session, job: SessionJob, tasks: list[dict[str, Any]]) -> None:
 
 
 def _run_tasks_worker(session, wgp, tasks: list[dict[str, Any]], stream: AsyncStream, job: SessionJob, task_summary: dict[str, Any]) -> None:
-    expected_args = set(inspect.signature(wgp.generate_video).parameters.keys())
+    expected_args = set(inspect.signature(wgp.generate_media).parameters.keys())
     total_tasks = len(tasks)
 
     for task_index, task in enumerate(tasks, start=1):
@@ -154,9 +154,11 @@ def _run_tasks_worker(session, wgp, tasks: list[dict[str, Any]], stream: AsyncSt
         task_settings = validated_settings.copy()
         task_settings["state"] = session._state
         filtered_params = {key: value for key, value in task_settings.items() if key in expected_args}
+        if wgp._is_edit_task_params(task_settings):
+            filtered_params.setdefault("model_type", "")
         plugin_data = task.get("plugin_data", {})
         try:
-            success = wgp.generate_video(task, send_cmd, plugin_data=plugin_data, **filtered_params)
+            success = wgp.generate_media(task, send_cmd, plugin_data=plugin_data, **filtered_params)
         except BaseException as exc:
             if not task_errors:
                 task_errors.append(session._make_generation_error(exc, task_index=task_index, task_id=task_id, stage="generation"))

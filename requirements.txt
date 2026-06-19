@@ -30,6 +30,10 @@ audio-separator==0.36.1
 pyannote.audio==3.3.2
 sherpa-onnx==1.13.2
 torchcodec==0.10.0
+einshape==1.0
+jax
+# Flax/Linen micro-subset is vendored under postprocessing/prismaudio/vendor/flax
+# for PrismAudio VideoPrism; keeping it out of pip avoids orbax-checkpoint.
 
 # UI & interaction
 gradio==5.29.0

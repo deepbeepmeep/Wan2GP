@@ -13,8 +13,8 @@ class family_handler:
             "guidance_max_phases": guidance_max_phases,
             "fit_into_canvas_image_refs": 0,
             "profiles_dir": [],
-            "pid_upsampler": [1, 2],
-            "pid_vae_backbone": "flux",
+            "vae_upsamplers": {"flux_vae_pid": [1, 2]},
+            "excluded_spatial_upsamplers": ["flux_pid"],
         }
         text_encoder_folder = "Qwen3"
         extra_model_def["text_encoder_URLs"] = [
@@ -81,7 +81,7 @@ class family_handler:
 
     @staticmethod
     def query_family_infos():
-        return {"z_image": (120, "Z-Image") }
+        return {"z_image": (1120, "Z-Image") }
 
     @staticmethod
     def register_lora_cli_args(parser, lora_root):

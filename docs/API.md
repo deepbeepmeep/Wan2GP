@@ -65,12 +65,25 @@ else:
   - Preferred single-task entrypoint.
 - `WanGPSession.submit_manifest(settings_list, callbacks=None) -> SessionJob`
   - Batch entrypoint for multiple tasks.
+- `WanGPSession.submit_media_postprocessing(media_source, ...) -> SessionJob`
+  - Late postprocess an existing image/video with spatial upsampling, temporal upsampling, or film grain.
+- `WanGPSession.submit_audio_remux(video_source, postprocess_audio=..., ...) -> SessionJob`
+  - Late remux an existing video with a registered soundtrack or voice-replacement audio processor.
+- `WanGPSession.submit_audio_postprocessing(audio_source, postprocess_audio=..., ...) -> SessionJob`
+  - Late postprocess an existing audio file.
 - `WanGPSession.list_model_defs(...) -> list[dict]`
   - Returns model definitions with inferred metadata and optional filters.
 - `WanGPSession.list_model_metadata(...) -> list[dict]`
   - Returns compact inferred metadata records with the same filters.
+  - Pass `include_availability=True` to add local file availability; this performs the same filesystem scan as the UI status squares.
+- `WanGPSession.get_default_settings(model_type) -> dict`
+  - Returns generated default settings with `model_type` included.
 - `WanGPSession.get_model_schema(model_type) -> dict | None`
   - Returns one model definition, inferred metadata, accepted setting values, and default settings.
+- `WanGPSession.get_model_availability(model_type) -> dict`
+  - Returns local file availability for one model using the same status as the UI selector.
+- `WanGPSession.list_model_availability(...) -> list[dict]`
+  - Returns availability records with the same filters as `list_model_metadata(...)`.
 - `SessionJob.result() -> GenerationResult`
   - Waits for completion and returns a structured result object.
 - `SessionJob.cancel()`
@@ -348,8 +361,10 @@ This preserves normal WanGP CLI/config arguments. MCP-specific launch options ar
 
 ```bash
 python wgp.py --mcp --mcp-transport stdio
-python wgp.py --mcp --mcp-transport streamable_http --mcp-host 127.0.0.1 --mcp-port 7866
+python wgp.py --mcp --mcp-transport streamable-http --mcp-host 127.0.0.1 --mcp-port 7866
 ```
+
+For Streamable HTTP, connect MCP clients to `http://<host>:<port>/mcp`. Use `--mcp-host 0.0.0.0` only on a trusted network or behind an authenticated reverse proxy.
 
 The lower-level adapter can still be launched directly:
 
@@ -361,12 +376,17 @@ The server keeps one warm `WanGPSession`, so agents can perform discovery and mu
 
 Tools:
 
-- `wangp_list_models(...)`
+- `wangp_list_models(..., include_availability=False)`
   - Compact metadata list with the same filters as `list_model_metadata(...)`.
+  - Set `include_availability=True` to include the optional `availability` field.
 - `wangp_list_model_defs(...)`
   - Full model definitions with metadata.
 - `wangp_get_model(model_type)`
-- `wangp_get_model_metadata(model_type)`
+- `wangp_get_model_metadata(model_type, include_availability=False)`
+- `wangp_get_model_availability(model_type)`
+  - Local file availability for one model using the same status as the UI selector: `available` (blue), `partial` (yellow), or `missing` (black).
+- `wangp_list_model_availability(...)`
+  - Availability records with the same filters as `wangp_list_models(...)`.
 - `wangp_get_default_settings(model_type)`
 - `wangp_get_model_schema(model_type)`
 - `wangp_generate(source, wait=False, timeout_s=None, event_limit=20)`
@@ -493,6 +513,117 @@ result = job.result()
 artifact = result.artifacts[0]
 video_tensor = artifact.video_tensor_uint8
 ```
+
+### Late Postprocessing And Media Editing
+
+The API can submit WanGP late postprocessing jobs through the same queue, manifest, and MCP paths as generation jobs. These tasks set `mode` explicitly and do not need a normal generation `model_type`; `generate_media(...)` routes them to `edit_media(...)` or `edit_audio(...)`.
+
+Convenience helpers are available for the common edit task shapes:
+
+- `session.submit_media_postprocessing(media_source, ...)` for image/video postprocessing.
+- `session.submit_audio_remux(video_source, ...)` for replacing or generating a video soundtrack.
+- `session.submit_audio_postprocessing(audio_source, ...)` for standalone audio edits.
+
+#### Image And Video Postprocessing
+
+`submit_media_postprocessing(...)` accepts one media source plus any combination of temporal upsampling, spatial upsampling, and film grain:
+
+```python
+job = session.submit_media_postprocessing(
+    r"C:\media\input.mp4",
+    temporal_upsampling="rife2",
+    spatial_upsampling="flashvsr2",
+    film_grain_intensity=0.15,
+    return_media=True,
+)
+
+result = job.result()
+print(result.generated_files)
+```
+
+Postprocessing values use the registered postprocessor value strings:
+
+- `temporal_upsampling`: registered temporal upsamplers such as `rife2` or `rife4`. Temporal upsampling is video-only.
+- `spatial_upsampling`: registered postprocessing spatial upsamplers such as `lanczos2`, `flashvsr2`, `flashvsr2pass2`, `coz4`, `flux_pid4`, or `flux2_pid4`. VAE upsamplers are model-pipeline features and are not accepted for late postprocessing.
+- `film_grain_intensity` / `film_grain_saturation`: late film grain settings. Film grain is active when intensity is greater than `0`.
+
+At least one postprocessing operation must be selected.
+
+#### Video Audio Remuxing
+
+`submit_audio_remux(...)` edits a video audio track. `postprocess_audio` is a registered audio processor method:
+
+```python
+job = session.submit_audio_remux(
+    r"C:\media\input.mp4",
+    postprocess_audio="custom",
+    audio_source=r"C:\media\soundtrack.wav",
+    return_media=True,
+)
+
+result = job.result()
+print(result.generated_files)
+```
+
+Common built-in remux methods:
+
+| Method | Use | Main inputs |
+| --- | --- | --- |
+| `custom` | Replace soundtrack with an existing audio file | `audio_source` |
+| `mmaudio` | Generate soundtrack from video content | `postprocess_audio_prompt`, `postprocess_audio_neg_prompt`, `seed`, `repeat_generation` |
+| `prismaudio` | Generate soundtrack from video content | `postprocess_audio_prompt`, `postprocess_audio_neg_prompt`, `seed`, `repeat_generation` |
+| `seedvc_one_speaker` | Replace one voice track | `replace_voice_sample` |
+| `seedvc_two_speakers` | Replace two voice tracks | `replace_voice_sample`, `replace_voice_sample2` |
+
+Model-backed processors must be enabled/configured before use. Voice replacement methods require source audio in the video. Legacy `seedvc` and `seedvc2` values are normalized for compatibility, but new callers should use `seedvc_one_speaker` and `seedvc_two_speakers`.
+
+#### Standalone Audio Postprocessing
+
+`submit_audio_postprocessing(...)` edits an audio file without a video container:
+
+```python
+job = session.submit_audio_postprocessing(
+    r"C:\media\dialog.wav",
+    postprocess_audio="remove_background",
+    return_media=True,
+)
+
+result = job.result()
+artifact = result.artifacts[0]
+print(artifact.path, artifact.audio_sampling_rate)
+```
+
+Common built-in standalone audio methods:
+
+| Method | Use | Main inputs |
+| --- | --- | --- |
+| `remove_background` | Remove music/background noise | `audio_source` from the helper's first argument |
+| `seedvc_one_speaker` | Replace one speaker in an audio file | `replace_voice_sample` |
+| `seedvc_two_speakers` | Replace two speakers in an audio file | `replace_voice_sample`, `replace_voice_sample2` |
+
+#### Raw Edit Tasks
+
+All helper calls build normal task settings, so plugins, Deepy, saved queues, manifests, and MCP clients can submit edit tasks directly through `submit_task(...)`, `submit_manifest(...)`, or `wangp_generate(...)`.
+
+```python
+settings = {
+    "mode": "edit_postprocessing",
+    "video_source": r"C:\media\input.mp4",
+    "temporal_upsampling": "rife4",
+    "spatial_upsampling": "lanczos2",
+    "_api": {"return_media": True},
+}
+
+job = session.submit_task(settings)
+```
+
+Raw task modes:
+
+| Mode | Source field | Processor fields |
+| --- | --- | --- |
+| `edit_postprocessing` | `video_source` | `temporal_upsampling`, `spatial_upsampling`, `film_grain_intensity`, `film_grain_saturation` |
+| `edit_remux` | `video_source` | `postprocess_audio`, `audio_source`, `postprocess_audio_prompt`, `postprocess_audio_neg_prompt`, `replace_voice_sample`, `replace_voice_sample2` |
+| `edit_audio` | `audio_source` | `postprocess_audio`, `replace_voice_sample`, `replace_voice_sample2` |
 
 ### Single Task
 

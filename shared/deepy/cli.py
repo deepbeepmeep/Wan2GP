@@ -58,8 +58,8 @@ _TOOL_ALIASES = {
     "image_edit": "edit_image",
     "gen_video": "gen_video",
     "video": "gen_video",
-    "video_gen": "gen_video",
-    "generate_video": "gen_video",
+    "media_gen": "gen_video",
+    "generate_media": "gen_video",
     "gen_video_with_speech": "gen_video_with_speech",
     "video_with_speech": "gen_video_with_speech",
     "talking_video": "gen_video_with_speech",
@@ -112,7 +112,7 @@ class DeepyCliDeps:
     get_settings_from_file: Callable[[dict[str, Any], str, bool, bool, bool], tuple[Any, bool, bool]]
     load_queue_action: Callable[[Any, dict[str, Any], Any], Any]
     validate_task: Callable[[dict[str, Any], dict[str, Any]], tuple[dict[str, Any] | None, str]]
-    generate_video: Callable[..., Any]
+    generate_media: Callable[..., Any]
     default_model_type: str
     callbacks: DeepyCliCallbacks = field(default_factory=DeepyCliCallbacks)
 
@@ -724,11 +724,11 @@ class DeepyCliSession:
 
             def worker():
                 try:
-                    expected_args = set(inspect.signature(self._deps.generate_video).parameters.keys())
+                    expected_args = set(inspect.signature(self._deps.generate_media).parameters.keys())
                     filtered_params = {key: value for key, value in params.items() if key in expected_args}
                     filtered_params.setdefault("client_id", "")
                     plugin_data = task.get("plugin_data", {}) if isinstance(task, dict) else {}
-                    self._deps.generate_video(task, task_stream.output_queue.push, plugin_data=plugin_data, **filtered_params)
+                    self._deps.generate_media(task, task_stream.output_queue.push, plugin_data=plugin_data, **filtered_params)
                 except Exception as exc:
                     traceback.print_exc()
                     task_stream.output_queue.push("error", str(exc))

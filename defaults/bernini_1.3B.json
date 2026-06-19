@@ -1,0 +1,25 @@
+{
+    "model": {
+        "name": "Wan2.2 Bernini-R 1.3B",
+        "architecture": "bernini_1.3B",
+        "description": " Bernini-R renderer derived fromWan 2.2 can modify the content of an existing video or generate a new video with any number of References Images. v2v works quite well with Lora Accelerators such as Causvid 4 steps . But as soon as you include reference frames, you will have to go for at least 15 steps with guidance and no lora accelerator.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/bernini_r_wan2.2_1.3B_mbf16.safetensors"
+        ],
+        "group": "wan2_2"
+    },
+    "prompt": "Replace the person's outer shirt with the shirt from the reference image while preserving the original motion, camera framing, lighting, background, and body pose.",
+    "video_prompt_type": "VI",
+    "resolution": "832x480",
+    "video_length": 81,
+    "num_inference_steps": 40,
+    "sample_solver": "unipc",
+    "flow_shift": 5,
+    "guidance_phases": 1,
+    "switch_threshold": 0,
+    "guidance_scale": 4,
+    "control_net_weight": 1.25,
+    "alt_guidance_scale": 4.5,
+    "remove_background_images_ref": 0,
+    "prompt_enhancer": ""
+}

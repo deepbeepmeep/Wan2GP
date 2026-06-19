@@ -242,6 +242,15 @@ class SessionStream:
         self._closed.set()
         self._queue.put(self._sentinel)
 
+    def clear(self) -> None:
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+        if self._closed.is_set():
+            self._queue.put(self._sentinel)
+
     def get(self, timeout: float | None = None) -> SessionEvent | None:
         try:
             item = self._queue.get(timeout=timeout)
@@ -363,6 +372,10 @@ class SessionJob:
     def release_input_payload(self) -> None:
         self._webui_manifest = []
 
+    def release_output_payload(self) -> None:
+        self._result = None
+        self.events.clear()
+
     def _mark_webui_submission_ready(self) -> None:
         self._webui_submission_ready.set()
 
@@ -463,13 +476,15 @@ class WanGPSession:
     def get_model_defs(self, **filters: Any) -> list[dict[str, Any]]:
         return self.list_model_defs(**filters)
 
-    def list_model_metadata(self, **filters: Any) -> list[dict[str, Any]]:
+    def list_model_metadata(self, include_availability: bool = False, **filters: Any) -> list[dict[str, Any]]:
         metadata_records = []
         for model_def in self.list_model_defs(**filters):
             metadata = copy.deepcopy(model_def.get("metadata", {}))
             metadata.setdefault("model_type", str(model_def.get("model_type") or ""))
             metadata["name"] = model_def.get("name", metadata.get("model_type", ""))
             metadata_records.append(metadata)
+        if include_availability:
+            self._add_availability_to_metadata(metadata_records)
         return metadata_records
 
     def get_model_def(self, model_type: str) -> dict[str, Any] | None:
@@ -482,13 +497,15 @@ class WanGPSession:
         model_def["model_type"] = str(model_type)
         return model_def
 
-    def get_model_metadata(self, model_type: str) -> dict[str, Any] | None:
+    def get_model_metadata(self, model_type: str, include_availability: bool = False) -> dict[str, Any] | None:
         model_def = self.get_model_def(model_type)
         if model_def is None:
             return None
         metadata = copy.deepcopy(model_def.get("metadata", {}))
         metadata.setdefault("model_type", str(model_type))
         metadata["name"] = model_def.get("name", metadata.get("model_type", ""))
+        if include_availability:
+            metadata["availability"] = self.get_model_availability(model_type)
         return metadata
 
     def get_default_settings(self, model_type: str) -> dict[str, Any]:
@@ -496,7 +513,32 @@ class WanGPSession:
             raise ValueError(f"Unknown model_type: {model_type}")
         runtime = self._ensure_runtime()
         with _pushd(runtime.root):
-            return copy.deepcopy(runtime.module.get_default_settings(model_type))
+            settings = copy.deepcopy(runtime.module.get_default_settings(model_type))
+        settings["model_type"] = str(model_type)
+        return settings
+
+    def get_model_availability(self, model_type: str) -> dict[str, Any]:
+        if self.get_model_def(model_type) is None:
+            raise ValueError(f"Unknown model_type: {model_type}")
+        return self._get_model_availability_records([model_type])[0]
+
+    def _get_model_availability_records(self, model_types: Sequence[str]) -> list[dict[str, Any]]:
+        runtime = self._ensure_runtime()
+        with _pushd(runtime.root):
+            dropdown_deps = runtime.module._get_dropdown_deps()
+            return [
+                _model_availability_to_dict(model_type, runtime.module.model_dropdowns.get_model_download_status(dropdown_deps, model_type))
+                for model_type in model_types
+            ]
+
+    def list_model_availability(self, **filters: Any) -> list[dict[str, Any]]:
+        return self._get_model_availability_records([record["model_type"] for record in self.list_model_metadata(**filters)])
+
+    def _add_availability_to_metadata(self, metadata_records: list[dict[str, Any]]) -> None:
+        availability_records = self._get_model_availability_records([record["model_type"] for record in metadata_records])
+        availability_by_type = {record["model_type"]: record for record in availability_records}
+        for record in metadata_records:
+            record["availability"] = availability_by_type[record["model_type"]]
 
     def get_model_schema(self, model_type: str) -> dict[str, Any] | None:
         model_def = self.get_model_def(model_type)
@@ -522,6 +564,18 @@ class WanGPSession:
         task = self._normalize_task(settings, task_index=1)
         return self._submit_tasks([self._absolutize_task_paths(task, caller_base_path)], callbacks=callbacks)
 
+    def submit_media_postprocessing(self, media_source: str | os.PathLike[str], *, temporal_upsampling: str = "", spatial_upsampling: str = "", film_grain_intensity: float = 0, film_grain_saturation: float = 0.5, seed: int = -1, api_options: dict[str, Any] | None = None, return_media: bool = False, callbacks: object | None = None, **settings_overrides: Any) -> SessionJob:
+        settings = build_media_postprocessing_settings(media_source, temporal_upsampling=temporal_upsampling, spatial_upsampling=spatial_upsampling, film_grain_intensity=film_grain_intensity, film_grain_saturation=film_grain_saturation, seed=seed, api_options=api_options, return_media=return_media, **settings_overrides)
+        return self.submit_task(settings, callbacks=callbacks)
+
+    def submit_audio_remux(self, video_source: str | os.PathLike[str], *, postprocess_audio: str, audio_source: str | os.PathLike[str] | None = None, postprocess_audio_prompt: str = "", postprocess_audio_neg_prompt: str = "", seed: int = -1, repeat_generation: int = 1, replace_voice_sample: str | os.PathLike[str] | None = None, replace_voice_sample2: str | os.PathLike[str] | None = None, api_options: dict[str, Any] | None = None, return_media: bool = False, callbacks: object | None = None, **settings_overrides: Any) -> SessionJob:
+        settings = build_audio_remux_settings(video_source, postprocess_audio=postprocess_audio, audio_source=audio_source, postprocess_audio_prompt=postprocess_audio_prompt, postprocess_audio_neg_prompt=postprocess_audio_neg_prompt, seed=seed, repeat_generation=repeat_generation, replace_voice_sample=replace_voice_sample, replace_voice_sample2=replace_voice_sample2, api_options=api_options, return_media=return_media, **settings_overrides)
+        return self.submit_task(settings, callbacks=callbacks)
+
+    def submit_audio_postprocessing(self, audio_source: str | os.PathLike[str], *, postprocess_audio: str, replace_voice_sample: str | os.PathLike[str] | None = None, replace_voice_sample2: str | os.PathLike[str] | None = None, api_options: dict[str, Any] | None = None, return_media: bool = False, callbacks: object | None = None, **settings_overrides: Any) -> SessionJob:
+        settings = build_audio_postprocessing_settings(audio_source, postprocess_audio=postprocess_audio, replace_voice_sample=replace_voice_sample, replace_voice_sample2=replace_voice_sample2, api_options=api_options, return_media=return_media, **settings_overrides)
+        return self.submit_task(settings, callbacks=callbacks)
+
     def submit_manifest(self, settings_list: list[dict[str, Any]], callbacks: object | None = None) -> SessionJob:
         caller_base_path = self._get_caller_base_path()
         tasks = [
@@ -539,6 +593,15 @@ class WanGPSession:
     def run_manifest(self, settings_list: list[dict[str, Any]], callbacks: object | None = None) -> GenerationResult:
         return self.submit_manifest(settings_list, callbacks=callbacks).result()
 
+    def run_media_postprocessing(self, media_source: str | os.PathLike[str], **kwargs: Any) -> GenerationResult:
+        return self.submit_media_postprocessing(media_source, **kwargs).result()
+
+    def run_audio_remux(self, video_source: str | os.PathLike[str], **kwargs: Any) -> GenerationResult:
+        return self.submit_audio_remux(video_source, **kwargs).result()
+
+    def run_audio_postprocessing(self, audio_source: str | os.PathLike[str], **kwargs: Any) -> GenerationResult:
+        return self.submit_audio_postprocessing(audio_source, **kwargs).result()
+
     def close(self) -> None:
         if self._use_webui_queue:
             return
@@ -555,6 +618,8 @@ class WanGPSession:
     @staticmethod
     def _create_headless_state() -> dict[str, Any]:
         return {
+            "model_type": "",
+            "edit_model_type": "",
             "gen": {
                 "queue": [],
                 "in_progress": False,
@@ -1028,7 +1093,7 @@ class WanGPSession:
                 config_path=self._config_path,
                 cli_args=self._cli_args,
             )
-            _print_banner_once(module, enabled=not self._use_webui_queue)
+            _print_banner_once(module, enabled=not self._use_webui_queue and self._console_output)
             return _RUNTIME
 
     @staticmethod
@@ -1094,6 +1159,97 @@ class WanGPSession:
         if phase == "cancelled":
             return 0
         return min(90, 20 + int(ratio * 65))
+
+
+def build_media_postprocessing_settings(media_source: str | os.PathLike[str], *, temporal_upsampling: str = "", spatial_upsampling: str = "", film_grain_intensity: float = 0, film_grain_saturation: float = 0.5, seed: int = -1, api_options: dict[str, Any] | None = None, return_media: bool = False, **settings_overrides: Any) -> dict[str, Any]:
+    settings = {
+        "mode": "edit_postprocessing",
+        "prompt": "Media postprocessing",
+        "image_mode": 0,
+        "video_source": os.fspath(media_source),
+        "temporal_upsampling": temporal_upsampling or "",
+        "spatial_upsampling": spatial_upsampling or "",
+        "film_grain_intensity": film_grain_intensity,
+        "film_grain_saturation": film_grain_saturation,
+        "postprocess_audio": "",
+        "repeat_generation": 1,
+        "batch_size": 1,
+        "seed": int(seed),
+    }
+    _apply_edit_settings_overrides(settings, settings_overrides, api_options, return_media)
+    return settings
+
+
+def build_audio_remux_settings(video_source: str | os.PathLike[str], *, postprocess_audio: str, audio_source: str | os.PathLike[str] | None = None, postprocess_audio_prompt: str = "", postprocess_audio_neg_prompt: str = "", seed: int = -1, repeat_generation: int = 1, replace_voice_sample: str | os.PathLike[str] | None = None, replace_voice_sample2: str | os.PathLike[str] | None = None, api_options: dict[str, Any] | None = None, return_media: bool = False, **settings_overrides: Any) -> dict[str, Any]:
+    settings = {
+        "mode": "edit_remux",
+        "prompt": "Audio remuxing",
+        "image_mode": 0,
+        "video_source": os.fspath(video_source),
+        "postprocess_audio": postprocess_audio or "",
+        "postprocess_audio_prompt": postprocess_audio_prompt or "",
+        "postprocess_audio_neg_prompt": postprocess_audio_neg_prompt or "",
+        "seed": int(seed),
+        "repeat_generation": int(repeat_generation),
+        "audio_source": None if audio_source is None else os.fspath(audio_source),
+        "replace_voice_sample": None if replace_voice_sample is None else os.fspath(replace_voice_sample),
+        "replace_voice_sample2": None if replace_voice_sample2 is None else os.fspath(replace_voice_sample2),
+        "temporal_upsampling": "",
+        "spatial_upsampling": "",
+        "film_grain_intensity": 0,
+        "film_grain_saturation": 0.5,
+        "batch_size": 1,
+    }
+    _apply_edit_settings_overrides(settings, settings_overrides, api_options, return_media)
+    return settings
+
+
+def build_audio_postprocessing_settings(audio_source: str | os.PathLike[str], *, postprocess_audio: str, replace_voice_sample: str | os.PathLike[str] | None = None, replace_voice_sample2: str | os.PathLike[str] | None = None, api_options: dict[str, Any] | None = None, return_media: bool = False, **settings_overrides: Any) -> dict[str, Any]:
+    settings = {
+        "mode": "edit_audio",
+        "prompt": "Audio postprocessing",
+        "image_mode": 0,
+        "audio_source": os.fspath(audio_source),
+        "postprocess_audio": postprocess_audio or "",
+        "replace_voice_sample": None if replace_voice_sample is None else os.fspath(replace_voice_sample),
+        "replace_voice_sample2": None if replace_voice_sample2 is None else os.fspath(replace_voice_sample2),
+        "repeat_generation": 1,
+        "batch_size": 1,
+    }
+    _apply_edit_settings_overrides(settings, settings_overrides, api_options, return_media)
+    return settings
+
+
+def _apply_edit_settings_overrides(settings: dict[str, Any], settings_overrides: dict[str, Any], api_options: dict[str, Any] | None, return_media: bool) -> None:
+    override_api_options = settings_overrides.pop("_api", None)
+    settings.update(settings_overrides)
+    settings.pop("model_type", None)
+    settings.pop("base_model_type", None)
+    options = copy.deepcopy(api_options if api_options is not None else override_api_options)
+    if not isinstance(options, dict):
+        options = {}
+    if return_media:
+        options["return_media"] = True
+    if options:
+        settings["_api"] = options
+
+
+def _model_availability_to_dict(model_type: str, status: int) -> dict[str, Any]:
+    from shared import model_dropdowns
+
+    if status == model_dropdowns.MODEL_FILE_STATUS_EXPECTED:
+        label, indicator = "available", "blue_square"
+    elif status == model_dropdowns.MODEL_FILE_STATUS_PARTIAL:
+        label, indicator = "partial", "yellow_square"
+    else:
+        label, indicator = "missing", "black_square"
+    return {
+        "model_type": str(model_type),
+        "status": label,
+        "status_code": int(status),
+        "indicator": indicator,
+        "available": status == 2,
+    }
 
 
 def init(

@@ -48,6 +48,7 @@ from shared.utils.text_encoder_cache import TextEncoderCache
 from shared.utils.self_refiner import PnPHandler, create_self_refiner_handler
 from mmgp import safetensors2
 from shared.utils import files_locator as fl 
+from .scail2 import prepare_scail2_conditioning, test_scail2_replace
 
 WAN_USE_FP32_ROPE_FREQS = True
 
@@ -368,11 +369,10 @@ class WanAny2V:
         context = torch.cat([context, context.new_zeros(self.model.text_len -context.size(0), context.size(1)) ]).unsqueeze(0) 
         clear_caches()
         get_cache("lynx_ref_buffer").update({ 0: {}, 1: {} })
-        _loras_active_adapters = None
-        if not enable_loras:
-            if hasattr(self.model, "_loras_active_adapters"):
-                _loras_active_adapters = self.model._loras_active_adapters
-                self.model._loras_active_adapters = []
+        loras_active_adapters = loras_scaling = None
+        if not enable_loras and getattr(self.model, "_loras_scaling", None) is not None:
+            loras_active_adapters, loras_scaling = self.model._loras_active_adapters, self.model._loras_scaling
+            offload.activate_loras(self.model, loras_active_adapters, [0.0] * len(loras_active_adapters))
         ref_buffer = self.model(
             pipeline =self,
             x = [vae_feat, vae_feat_uncond] if any_guidance else [vae_feat],
@@ -381,8 +381,8 @@ class WanAny2V:
             t=torch.stack([torch.tensor(0, dtype=torch.float)]).to(self.device),
             lynx_feature_extractor = True,
         )
-        if _loras_active_adapters is not None:
-            self.model._loras_active_adapters = _loras_active_adapters
+        if loras_scaling is not None:
+            offload.activate_loras(self.model, loras_active_adapters, [loras_scaling[adapter] for adapter in loras_active_adapters])
 
         clear_caches()
         return ref_buffer[0], (ref_buffer[1] if any_guidance else None)
@@ -466,6 +466,8 @@ class WanAny2V:
         return_latent_slice = None,
         overlap_noise = 0,
         overlap_size = 0,
+        sub_parallel_window_size=0,
+        sub_parallel_window_overlap=0,
         conditioning_latents_size = 0,
         keep_frames_parsed = [],
         model_type = None,
@@ -495,6 +497,7 @@ class WanAny2V:
         self_refiner_f_uncertainty = 0.0,
         self_refiner_certain_percentage = 0.999,
         custom_settings=None,
+        save_masks=False,
         **bbargs
                 ):
         
@@ -612,6 +615,7 @@ class WanAny2V:
         steadydancer = model_type in ["steadydancer"]
         wanmove = model_type in ["wanmove"]
         scail = model_type in ["scail"] 
+        scail2 = model_def.get("scail2", False) or model_type in ["scail2_14B", "scail2_1.3B"]
         vista4d = model_type in ["vista4d"]
         svi_pro = model_def.get("svi2pro", False)
         svi_mode = 2 if svi_pro  else 0 
@@ -624,7 +628,7 @@ class WanAny2V:
         extended_overlapped_latents = clip_image_start = clip_image_end = image_mask_latents = latent_slice = freqs = post_freqs = None
         use_extended_overlapped_latents = True
         # SCAIL uses a fixed ref latent frame that should not be noised.
-        no_noise_latents_injection = infinitetalk or scail
+        no_noise_latents_injection = infinitetalk or scail or scail2
         timestep_injection = False
         ps_t, ps_h, ps_w = self.model.patch_size
 
@@ -632,7 +636,7 @@ class WanAny2V:
         extended_input_dim = 0
         ref_images_before = False            
         # image2video 
-        if model_def.get("i2v_class", False) and not (animate or scail):
+        if model_def.get("i2v_class", False) and not (animate or scail or scail2):
             any_end_frame = False
             if infinitetalk:
                 new_shot = "0" in video_prompt_type
@@ -889,6 +893,19 @@ class WanAny2V:
             ref_images_count = 1
             lat_frames = lat_t
 
+        # SCAIL-2 - reference-driven character animation with mask-token conditioning
+        if scail2:
+            scail2_conditioning = prepare_scail2_conditioning(self, input_frames=input_frames, input_masks=input_masks, input_ref_images=input_ref_images, input_ref_masks=input_ref_masks, input_video=input_video, pre_video_frame=pre_video_frame, prefix_frames_count=prefix_frames_count, overlapped_latents=overlapped_latents, height=height, width=width, VAE_tile_size=VAE_tile_size, enable_RIFLEx=enable_RIFLEx, video_prompt_type=video_prompt_type, custom_settings=custom_settings, model_def=model_def, ps_t=ps_t, ps_h=ps_h, ps_w=ps_w, save_masks=save_masks)
+            kwargs.update(scail2_conditioning["kwargs"])
+            freqs = scail2_conditioning["freqs"]
+            clip_image_start = scail2_conditioning["clip_image_start"]
+            extended_overlapped_latents = scail2_conditioning["extended_overlapped_latents"]
+            if scail2_conditioning["color_reference_frame"] is not None:
+                color_reference_frame = scail2_conditioning["color_reference_frame"]
+            ref_images_before = False
+            ref_images_count = 0
+            lat_frames = scail2_conditioning["lat_frames"]
+
         # Clip image
         if hasattr(self, "clip") and clip_image_start is not None:                                   
             clip_image_size = self.clip.model.image_size
@@ -1136,8 +1153,203 @@ class WanAny2V:
 
         kwargs["freqs"] = freqs
 
+        def _build_sub_parallel_windows(total, size, overlap):
+            if size <= 0 or size >= total:
+                return None
+            overlap = min(max(0, overlap), size - 1)
+            windows, step, start = [], size - overlap, 0
+            while True:
+                end = start + size
+                if end >= total:
+                    start = max(0, total - size)
+                    if len(windows) == 0 or windows[-1][0] != start:
+                        windows.append((start, total))
+                    break
+                windows.append((start, end))
+                start += step
+            return windows
+
+        sub_parallel_window_size = max(0, int(sub_parallel_window_size or 0))
+        sub_parallel_window_overlap = max(0, int(sub_parallel_window_overlap or 0))
+        sub_parallel_window_latents = min(lat_frames, max(1, int((sub_parallel_window_size - 1) // self.vae_stride[0]) + 1)) if sub_parallel_window_size > 0 else 0
+        sub_parallel_overlap_latents = max(0, int((sub_parallel_window_overlap - 1) // self.vae_stride[0]) + 1) if sub_parallel_window_overlap > 0 else 0
+        if sub_parallel_window_latents > 0:
+            sub_parallel_overlap_latents = min(sub_parallel_overlap_latents, sub_parallel_window_latents - 1)
+        sub_parallel_windows = _build_sub_parallel_windows(lat_frames, sub_parallel_window_latents, sub_parallel_overlap_latents)
+        sub_parallel_prefix_latents = ref_images_count if ref_images_before and ref_images_count > 0 else 0
+        sub_parallel_history_latents = extended_overlapped_latents.shape[2] if scail2 and extended_overlapped_latents is not None else 0
+
+        def _sub_parallel_select(tensor, dim, indices):
+            return tensor.index_select(dim, indices.to(device=tensor.device))
+
+        def _sub_parallel_narrow(tensor, dim, start, end):
+            return tensor.narrow(dim, start, end - start)
+
+        def _sub_parallel_output_indices(start, end, device):
+            return torch.arange(start, end, device=device, dtype=torch.long)
+
+        def _sub_parallel_model_indices(start, end, device):
+            indices = torch.arange(sub_parallel_prefix_latents + start, sub_parallel_prefix_latents + end, device=device, dtype=torch.long)
+            if sub_parallel_prefix_latents > 0:
+                indices = torch.cat([torch.arange(sub_parallel_prefix_latents, device=device, dtype=torch.long), indices])
+            return indices
+
+        def _sub_parallel_slice_time(tensor, dim, start, end, include_prefix=False, history_latents=0):
+            if not torch.is_tensor(tensor) or tensor.ndim <= dim:
+                return tensor
+            if include_prefix and tensor.shape[dim] == target_shape[1]:
+                if sub_parallel_prefix_latents > 0:
+                    sliced = torch.cat([tensor.narrow(dim, 0, sub_parallel_prefix_latents), _sub_parallel_narrow(tensor, dim, sub_parallel_prefix_latents + start, sub_parallel_prefix_latents + end)], dim=dim)
+                else:
+                    sliced = _sub_parallel_narrow(tensor, dim, start, end)
+            elif tensor.shape[dim] == lat_frames:
+                sliced = _sub_parallel_narrow(tensor, dim, start, end)
+            else:
+                sliced = tensor
+            if history_latents > 0 and sliced is not tensor:
+                history = tensor.narrow(dim, 0, history_latents).to(device=sliced.device, dtype=sliced.dtype)
+                sliced = torch.cat([history, sliced], dim=dim)
+            return sliced
+
+        def _sub_parallel_token_indices(frames, tokens_per_frame, offset=0):
+            token_offsets = torch.arange(tokens_per_frame, device=frames.device, dtype=torch.long)
+            return (frames[:, None] * tokens_per_frame + token_offsets).reshape(-1) + offset
+
+        def _sub_parallel_scail2_freqs(start, end, history_latents=0):
+            main_len = history_latents + end - start
+            pose_len = main_len
+            main_grid_h, main_grid_w = target_shape[2] // ps_h, target_shape[3] // ps_w
+            if test_scail2_replace(video_prompt_type):
+                ref_freqs_cos, ref_freqs_sin = get_nd_rotary_pos_embed((0, 120, 0), (1, 120 + main_grid_h, main_grid_w), (1, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
+                video_freqs_cos, video_freqs_sin = get_nd_rotary_pos_embed((0, 0, 0), (main_len, main_grid_h, main_grid_w), (main_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
+                main_freqs_cos, main_freqs_sin = torch.cat([ref_freqs_cos, video_freqs_cos]), torch.cat([ref_freqs_sin, video_freqs_sin])
+                pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((0, 0, 120), (pose_len, main_grid_h, 120 + main_grid_w), (pose_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
+            else:
+                main_freqs_cos, main_freqs_sin = get_nd_rotary_pos_embed((0, 0, 0), (1 + main_len, main_grid_h, main_grid_w), (1 + main_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
+                pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((1, 0, 120), (1 + pose_len, main_grid_h, 120 + main_grid_w), (pose_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
+            head_dim = pose_freqs_cos.shape[1]
+            pose_freqs_cos = F.avg_pool2d(pose_freqs_cos.view(pose_len, main_grid_h, main_grid_w, head_dim).permute(0, 3, 1, 2), kernel_size=2, stride=2).permute(0, 2, 3, 1).reshape(-1, head_dim)
+            pose_freqs_sin = F.avg_pool2d(pose_freqs_sin.view(pose_len, main_grid_h, main_grid_w, head_dim).permute(0, 3, 1, 2), kernel_size=2, stride=2).permute(0, 2, 3, 1).reshape(-1, head_dim)
+            return torch.cat([main_freqs_cos, pose_freqs_cos]), torch.cat([main_freqs_sin, pose_freqs_sin])
+
+        def _sub_parallel_slice_freqs(freqs, start, end, history_latents=0):
+            if not isinstance(freqs, tuple):
+                return freqs
+            if scail2:
+                return _sub_parallel_scail2_freqs(start, end, history_latents)
+            cos, sin = freqs
+            main_tokens = (target_shape[2] // ps_h) * (target_shape[3] // ps_w)
+            if vista4d:
+                main_count = lat_frames * main_tokens
+                frames = _sub_parallel_output_indices(start, end, cos.device)
+                indices = torch.cat([_sub_parallel_token_indices(frames, main_tokens, main_count * group) for group in range(3)])
+            else:
+                main_count = target_shape[1] * main_tokens
+                indices = [_sub_parallel_token_indices(_sub_parallel_model_indices(start, end, cos.device), main_tokens)]
+                pose_tokens = (target_shape[2] // ps_h // 2) * (target_shape[3] // ps_w // 2)
+                if scail and cos.shape[0] > main_count and pose_tokens > 0:
+                    indices.append(_sub_parallel_token_indices(_sub_parallel_output_indices(start, end, cos.device), pose_tokens, main_count))
+                elif cos.shape[0] > main_count:
+                    indices.append(torch.arange(main_count, cos.shape[0], device=cos.device, dtype=torch.long))
+                indices = torch.cat(indices)
+            return _sub_parallel_select(cos, 0, indices), _sub_parallel_select(sin, 0, indices)
+
+        def _sub_parallel_kwargs(start, end, history_latents=0):
+            sub_kwargs = {"freqs": _sub_parallel_slice_freqs(kwargs["freqs"], start, end, history_latents)}
+            if "t" in kwargs:
+                sub_kwargs["t"] = _sub_parallel_slice_time(kwargs["t"], 0, start, end, True, history_latents)
+            if "y" in kwargs:
+                sub_kwargs["y"] = _sub_parallel_slice_time(kwargs["y"], 1, start, end, True, history_latents)
+            for key in ("pose_latents", "scail_pose_latents"):
+                if key in kwargs:
+                    sub_kwargs[key] = _sub_parallel_slice_time(kwargs[key], 2, start, end, history_latents=history_latents)
+            for key in ("scail2_pose_latents", "scail2_driving_masks"):
+                if key in kwargs:
+                    sub_kwargs[key] = _sub_parallel_slice_time(kwargs[key], 2, start, end, history_latents=history_latents)
+            if "scail2_ref_masks" in kwargs:
+                sub_kwargs["scail2_ref_masks"] = kwargs["scail2_ref_masks"][:, :, :history_latents + end - start + 1]
+            if "vace_context" in kwargs:
+                sub_kwargs["vace_context"] = [_sub_parallel_slice_time(u, 1, start, end, True) for u in kwargs["vace_context"]]
+            for key in ("kiwi_source_condition", "kiwi_ref_condition"):
+                if key in kwargs:
+                    sub_kwargs[key] = _sub_parallel_slice_time(kwargs[key], 2, start, end, True)
+            if "vista" in kwargs:
+                sub_kwargs["vista"] = {key: _sub_parallel_slice_time(value, 2, start, end) if torch.is_tensor(value) and value.ndim == 5 else value for key, value in kwargs["vista"].items()}
+            return sub_kwargs
+
+        def _sub_parallel_weight(start, end, dtype, device):
+            weight = torch.ones(end - start, dtype=dtype, device=device)
+            ramp = min(sub_parallel_overlap_latents, end - start)
+            if ramp > 0 and start > 0:
+                weight[:ramp] = torch.linspace(1e-6, 1, ramp, dtype=dtype, device=device)
+            if ramp > 0 and end < lat_frames:
+                weight[-ramp:] = torch.linspace(1, 1e-6, ramp, dtype=dtype, device=device)
+            return weight.view(1, 1, -1, 1, 1)
+
+        def _sub_parallel_denoise(latents, denoise_fn):
+            nonlocal extended_latents, y_cond, y_uncond, conditions, conditions_null
+            noise_pred = torch.zeros_like(latents)
+            weight_sum = torch.zeros(1, 1, latents.shape[2], 1, 1, dtype=latents.dtype, device=latents.device)
+            for start, end in sub_parallel_windows:
+                anchor_latents = 1 if start > 0 else 0
+                context_start = start - anchor_latents
+                history_latents = sub_parallel_history_latents if context_start > 0 else 0
+                latent_window = latents[:, :, sub_parallel_prefix_latents + context_start:sub_parallel_prefix_latents + end]
+                if history_latents > 0:
+                    latent_window = torch.cat([latents[:, :, :history_latents], latent_window], dim=2)
+                if sub_parallel_prefix_latents > 0:
+                    latent_window = torch.cat([latents[:, :, :sub_parallel_prefix_latents], latent_window], dim=2)
+                saved_kwargs, saved_extended_latents = dict(kwargs), extended_latents if extended_input_dim > 0 else None
+                if wanmove:
+                    saved_y_cond, saved_y_uncond = y_cond, y_uncond
+                if steadydancer:
+                    saved_conditions, saved_conditions_null = conditions, conditions_null
+                try:
+                    kwargs.update(_sub_parallel_kwargs(context_start, end, history_latents))
+                    if extended_input_dim > 0:
+                        extended_latents = _sub_parallel_slice_time(extended_latents, 2, context_start, end, True)
+                    if wanmove:
+                        y_cond, y_uncond = _sub_parallel_slice_time(y_cond, 1, context_start, end), _sub_parallel_slice_time(y_uncond, 1, context_start, end)
+                    if steadydancer:
+                        conditions = [_sub_parallel_slice_time(u, 2, context_start, end) for u in conditions]
+                        conditions_null = [_sub_parallel_slice_time(u, 2, context_start, end) for u in conditions_null]
+                    pred = denoise_fn(latent_window)
+                finally:
+                    kwargs.clear()
+                    kwargs.update(saved_kwargs)
+                    if extended_input_dim > 0:
+                        extended_latents = saved_extended_latents
+                    if wanmove:
+                        y_cond, y_uncond = saved_y_cond, saved_y_uncond
+                    if steadydancer:
+                        conditions, conditions_null = saved_conditions, saved_conditions_null
+                if pred is None:
+                    return None
+                pred_start = sub_parallel_prefix_latents if sub_parallel_prefix_latents > 0 and pred.shape[2] == sub_parallel_prefix_latents + history_latents + end - context_start else 0
+                if pred_start > 0:
+                    noise_pred[:, :, :sub_parallel_prefix_latents] += pred[:, :, :sub_parallel_prefix_latents]
+                    weight_sum[:, :, :sub_parallel_prefix_latents] += 1
+                weight = _sub_parallel_weight(start, end, pred.dtype, pred.device)
+                pred_start += history_latents + anchor_latents
+                pred_slice = pred[:, :, pred_start:pred_start + end - start]
+                pred_slice.mul_(weight)
+                noise_pred[:, :, sub_parallel_prefix_latents + start:sub_parallel_prefix_latents + end] += pred_slice
+                weight_sum[:, :, sub_parallel_prefix_latents + start:sub_parallel_prefix_latents + end] += weight
+                pred = pred_slice = latent_window = weight = None
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            noise_pred.div_(weight_sum.clamp_min_(1e-6))
+            return noise_pred
+
 
         # Steps Skipping
+        sub_parallel_cache = sub_parallel_cache2 = None
+        if sub_parallel_windows is not None:
+            sub_parallel_cache = self.model.cache
+            self.model.cache = None
+            if self.model2 is not None:
+                sub_parallel_cache2 = self.model2.cache
+                self.model2.cache = None
         skip_steps_cache = self.model.cache
         if skip_steps_cache != None:
             cache_type = skip_steps_cache.cache_type
@@ -1189,6 +1401,16 @@ class WanAny2V:
         callback(-1, None, True, override_num_inference_steps = updated_num_steps, denoising_extra = denoising_extra)
 
         def clear():
+            if sub_parallel_windows is not None:
+                if sub_parallel_cache is not None:
+                    sub_parallel_cache.previous_residual = None
+                    sub_parallel_cache.previous_modulated_input = None
+                self.model.cache = sub_parallel_cache
+                if self.model2 is not None:
+                    if sub_parallel_cache2 is not None:
+                        sub_parallel_cache2.previous_residual = None
+                        sub_parallel_cache2.previous_modulated_input = None
+                    self.model2.cache = sub_parallel_cache2
             clear_caches()
             gc.collect()
             torch.cuda.empty_cache()
@@ -1447,13 +1669,15 @@ class WanAny2V:
                 ret_values = noise_pred_uncond = noise_pred_cond = noise_pred_text = neg  = None
                 return noise_pred
 
-            noise_pred = denoise_with_cfg_fn(latents) 
+            denoise_fn = partial(_sub_parallel_denoise, denoise_fn=denoise_with_cfg_fn) if sub_parallel_windows is not None else denoise_with_cfg_fn
+            noise_pred = denoise_fn(latents)
             if noise_pred is None: return clear()
             if self_refiner_handler:
-                latents, sample_scheduler = self_refiner_handler.step(i, latents, noise_pred, t, timesteps, target_shape, seed_g, sample_scheduler, scheduler_kwargs, denoise_with_cfg_fn)
+                latents, sample_scheduler = self_refiner_handler.step(i, latents, noise_pred, t, timesteps, target_shape, seed_g, sample_scheduler, scheduler_kwargs, denoise_fn)
                 if latents is None: return clear()
             else:
                 latents = sample_scheduler.step( noise_pred[:, :, :target_shape[1]], t, latents, **scheduler_kwargs)[0]
+            noise_pred = denoise_fn = None
 
 
             if image_mask_latents is not None and i< masked_steps:
@@ -1498,7 +1722,7 @@ class WanAny2V:
                 return torch.cat([video[:,-1:] for video in videos], dim=1) if len(videos) > 1 else videos[0][:,-1:]
             else:
                 return videos[0]
-        if image_outputs :
+        if image_outputs:
             x0 = [x[:,:1] for x in x0 ]
 
         any_vae2= self.vae2 is not None

@@ -18,7 +18,7 @@ This guide covers:
 ## General Guidelines
 Once enabled (see below), Deepy becomes accessible by opening Deepy chat window when you click on the left dock `Ask Deepy`
 
-Deepy is capable to generate image, video & audio, and then combine them to produce new media. All content produced by Deepy will be found in the `Image / Video Gallery` and the `Audio Gallery` at the top right of the WanGP `Video Generator` tab.
+Deepy is capable to generate image, video & audio, and then combine them to produce new media. All content produced by Deepy will be found in the `Image / Video Gallery` and the `Audio Gallery` at the top right of the WanGP `Media Generator` tab.
 
 Deepy can also work with User Imported Media:
 1) Expand the section  `Media Info / Late Post Processing / Import Media`
@@ -95,7 +95,7 @@ Inference steps, FPS, LoRAs, and other model-specific values remain template-dri
 
 Deepy has 6 generation-tool template selectors:
 
-- `Video Generator`
+- `Media Generator`
 - `Video With Speech`
 - `Image Generator`
 - `Image Editor`

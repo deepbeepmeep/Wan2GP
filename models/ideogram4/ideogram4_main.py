@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 
 import torch
@@ -21,6 +22,91 @@ from .sampler_configs import PRESETS
 from .scheduler import get_schedule_for_resolution, make_step_intervals
 
 _DEFAULT_PRESET = "V4_DEFAULT_20"
+_TRANSFORMER_WRAPPER_PREFIX = "model.diffusion_model."
+_SAMPLE_SOLVERS = {"euler", "res_2m", "res_2s"}
+
+
+def _res_phi(order: int, neg_h: float) -> float:
+    if order == 1:
+        return 1.0 + neg_h * (0.5 + neg_h * (1.0 / 6.0 + neg_h / 24.0)) if abs(neg_h) < 1e-4 else math.expm1(neg_h) / neg_h
+    if order == 2:
+        return 0.5 + neg_h * (1.0 / 6.0 + neg_h * (1.0 / 24.0 + neg_h / 120.0)) if abs(neg_h) < 1e-3 else (math.expm1(neg_h) - neg_h) / (neg_h * neg_h)
+    raise ValueError(f"Unsupported RES phi order {order}")
+
+
+def _res_2s_coefficients(h: float, c2: float = 0.5) -> tuple[float, float, float]:
+    f1 = _res_phi(1, -h)
+    f2 = _res_phi(2, -h)
+    a21 = c2 * _res_phi(1, -h * c2)
+    b2 = f2 / c2
+    return a21, f1 - b2, b2
+
+
+def _res_2m_coefficients(h: float, h_prev: float) -> tuple[float, float]:
+    c2 = -h_prev / h
+    f1 = _res_phi(1, -h)
+    f2 = _res_phi(2, -h)
+    b2 = f2 / c2
+    return f1 - b2, b2
+
+
+def _phase_label(step_idx: int, guide_phases: int, phase_switch_step: int, phase_switch_step2: int) -> str:
+    if guide_phases <= 1:
+        return ""
+    phase_no = 3 if guide_phases >= 3 and step_idx >= phase_switch_step2 else 2 if guide_phases >= 2 and step_idx >= phase_switch_step else 1
+    return f"Phase {phase_no}/{guide_phases}"
+
+
+def _phase_steps_description(num_steps: int, guide_phases: int, phase_switch_step: int, phase_switch_step2: int) -> str:
+    if guide_phases <= 1:
+        return ""
+    phase_switch_step = min(max(int(phase_switch_step), 0), num_steps)
+    phase_switch_step2 = min(max(int(phase_switch_step2), phase_switch_step), num_steps)
+    description = "Denoising Steps:"
+    description += " Phase 1 = None" if phase_switch_step == 0 else f" Phase 1 = 1:{phase_switch_step}"
+    if guide_phases >= 2:
+        description += ", Phase 2 = None" if phase_switch_step == phase_switch_step2 else f", Phase 2 = {phase_switch_step + 1}:{phase_switch_step2}"
+    if guide_phases >= 3 and phase_switch_step2 < num_steps:
+        description += f", Phase 3 = {phase_switch_step2 + 1}:{num_steps}"
+    return description
+
+
+def _time_snr_shift(shift: float, t: float) -> float:
+    if shift == 1.0:
+        return t
+    return shift * t / (1.0 + (shift - 1.0) * t)
+
+
+def _flow_model_timestep(t: float, shift: float) -> float:
+    return 1.0 - _time_snr_shift(shift, 1.0 - t)
+
+
+def _custom_float(custom_settings: dict, key: str, default: float) -> float:
+    value = custom_settings.get(key, default)
+    return float(value)
+
+
+def _apply_ideogram_lora_branches(conditional_transformer, unconditional_transformer, loras_slists, num_steps: int, phase_switch_step: int, phase_switch_step2: int) -> None:
+    if loras_slists is None:
+        return
+    from shared.utils.loras_mutipliers import update_loras_slists
+
+    update_loras_slists(conditional_transformer, loras_slists.get("cond", loras_slists), num_steps, phase_switch_step=phase_switch_step, phase_switch_step2=phase_switch_step2)
+    if unconditional_transformer is not None:
+        update_loras_slists(unconditional_transformer, loras_slists.get("uncond", loras_slists), num_steps, phase_switch_step=phase_switch_step, phase_switch_step2=phase_switch_step2)
+
+
+def _strip_transformer_wrapper(state_dict, quantization_map=None, tied_weights_map=None):
+    if not any(key.startswith(_TRANSFORMER_WRAPPER_PREFIX) for key in state_dict):
+        return state_dict, quantization_map, tied_weights_map
+
+    def strip_mapping(mapping):
+        if mapping is None:
+            return None
+        prefix_len = len(_TRANSFORMER_WRAPPER_PREFIX)
+        return {key[prefix_len:]: value for key, value in mapping.items() if key.startswith(_TRANSFORMER_WRAPPER_PREFIX)}
+
+    return strip_mapping(state_dict), strip_mapping(quantization_map), strip_mapping(tied_weights_map)
 
 
 def _load_transformer(filename: str, dtype: torch.dtype) -> Ideogram4Transformer:
@@ -29,7 +115,7 @@ def _load_transformer(filename: str, dtype: torch.dtype) -> Ideogram4Transformer
     with init_empty_weights(include_buffers=True):
         transformer = Ideogram4Transformer(config)
     transformer.rotary_emb.reset_inv_freq()
-    offload.load_model_data(transformer, filename, writable_tensors=False, default_dtype=dtype, fused_split_map=split_map)
+    offload.load_model_data(transformer, filename, writable_tensors=False, default_dtype=dtype, fused_split_map=split_map, preprocess_sd=_strip_transformer_wrapper)
     transformer.split_linear_modules_map = split_map
     transformer.eval().requires_grad_(False)
     return transformer
@@ -214,7 +300,7 @@ class Ideogram4WanPipeline:
         latent_scale = self.latent_scale.to(z.device, z.dtype)
         return z * latent_scale + latent_shift
 
-    def _pack_pid_lq_latent(self, z: torch.Tensor, grid_h: int, grid_w: int) -> torch.Tensor:
+    def _pack_vae_upsampler_lq_latent(self, z: torch.Tensor, grid_h: int, grid_w: int) -> torch.Tensor:
         z = self._normalize_packed_latents(z)
         batch_size = z.shape[0]
         patch = self.patch_size
@@ -234,23 +320,54 @@ class Ideogram4WanPipeline:
         width: int = 1024,
         num_steps: int = 20,
         guidance_scale: float = 7.0,
+        guidance2_scale: float = 3.0,
+        guidance3_scale: float = 3.0,
         guidance_schedule=None,
         mu: float = 0.0,
         std: float = 1.75,
+        sample_solver: str = "euler",
+        flow_shift: float = 1.0,
+        guide_phases: int = 1,
+        switch_threshold: int = 0,
+        switch2_threshold: int = 0,
+        loras_slists=None,
         seed: int | None = None,
         callback=None,
-        pid_upsampler=None,
+        vae_upsampler=None,
         set_progress_status=None,
+        set_header_text=None,
     ) -> torch.Tensor | None:
         if isinstance(prompts, str):
             prompts = [prompts]
+        sample_solver = (sample_solver or "euler").lower()
+        if sample_solver not in _SAMPLE_SOLVERS:
+            raise ValueError(f"Unsupported Ideogram 4 sampler '{sample_solver}'.")
         device = self.runtime_device
         schedule = get_schedule_for_resolution((height, width), known_mean=mu, std=std)
         step_intervals = make_step_intervals(num_steps).to(device)
+        time_points = schedule(step_intervals).to(device)
+        sigma_points = 1.0 - time_points
+        phase_switch_step = num_steps
+        phase_switch_step2 = num_steps
         if guidance_schedule is not None:
             gw_per_step = torch.as_tensor(guidance_schedule, dtype=torch.float32, device=device)
         else:
             gw_per_step = torch.full((num_steps,), float(guidance_scale), dtype=torch.float32, device=device)
+            if int(guide_phases) >= 2 and int(switch_threshold) > 0:
+                switch_sigma = float(switch_threshold) / 1000.0
+                phase_switch_step = int((sigma_points[1:] > switch_sigma).sum().item())
+                override_mask = sigma_points[1:] <= switch_sigma
+                gw_per_step = torch.where(override_mask, torch.full_like(gw_per_step, float(guidance2_scale)), gw_per_step)
+            if int(guide_phases) >= 3 and int(switch2_threshold) > 0:
+                switch2_sigma = float(switch2_threshold) / 1000.0
+                phase_switch_step2 = int((sigma_points[1:] > switch2_sigma).sum().item())
+                override2_mask = sigma_points[1:] <= switch2_sigma
+                gw_per_step = torch.where(override2_mask, torch.full_like(gw_per_step, float(guidance3_scale)), gw_per_step)
+
+        _apply_ideogram_lora_branches(self.conditional_transformer, self.unconditional_transformer, loras_slists, num_steps, phase_switch_step, phase_switch_step2)
+        phase_description = _phase_steps_description(num_steps, int(guide_phases), phase_switch_step, phase_switch_step2)
+        if len(phase_description) > 0 and callable(set_header_text):
+            set_header_text(phase_description)
 
         inputs = self._build_inputs(prompts, height=height, width=width)
         if self._interrupt:
@@ -270,10 +387,11 @@ class Ideogram4WanPipeline:
         if llm_features is None or self._interrupt:
             return None
 
-        neg_position_ids = inputs["position_ids"][:, max_text_tokens:]
-        neg_segment_ids = inputs["segment_ids"][:, max_text_tokens:]
-        neg_indicator = inputs["indicator"][:, max_text_tokens:]
-        neg_llm_features = llm_features.new_empty(batch_size, 0, llm_features.shape[-1])
+        if self.unconditional_transformer is not None:
+            neg_position_ids = inputs["position_ids"][:, max_text_tokens:]
+            neg_segment_ids = inputs["segment_ids"][:, max_text_tokens:]
+            neg_indicator = inputs["indicator"][:, max_text_tokens:]
+            neg_llm_features = llm_features.new_empty(batch_size, 0, llm_features.shape[-1])
 
         generator = torch.Generator(device=device)
         if seed is not None and seed >= 0:
@@ -283,16 +401,12 @@ class Ideogram4WanPipeline:
         pos_z[:, :max_text_tokens].zero_()
 
         if callback is not None:
-            callback(-1, None, True, override_num_inference_steps=num_steps)
+            callback(-1, None, True, override_num_inference_steps=num_steps, denoising_extra=_phase_label(0, int(guide_phases), phase_switch_step, phase_switch_step2))
 
-        for step_idx, i in enumerate(tqdm(range(num_steps - 1, -1, -1), total=num_steps, desc="Denoising")):
-            if self._interrupt:
-                return None
-            t_val = float(schedule(step_intervals[i + 1].unsqueeze(0)).item())
-            s_val = float(schedule(step_intervals[i].unsqueeze(0)).item())
-            t = torch.full((batch_size,), t_val, dtype=torch.float32, device=device)
-
-            pos_z[:, max_text_tokens:].copy_(z)
+        def predict_velocity(current_z: torch.Tensor, t_val: float, guidance: torch.Tensor) -> torch.Tensor | None:
+            model_t_val = _flow_model_timestep(t_val, float(flow_shift))
+            t = torch.full((batch_size,), model_t_val, dtype=torch.float32, device=device)
+            pos_z[:, max_text_tokens:].copy_(current_z)
             pos_out = self.conditional_transformer(
                 llm_features=llm_features,
                 x=pos_z,
@@ -304,10 +418,12 @@ class Ideogram4WanPipeline:
             if pos_out is None:
                 return None
             pos_v = pos_out[:, max_text_tokens:]
+            if self.unconditional_transformer is None:
+                return pos_v
 
             neg_v = self.unconditional_transformer(
                 llm_features=neg_llm_features,
-                x=z,
+                x=current_z,
                 t=t,
                 position_ids=neg_position_ids,
                 segment_ids=neg_segment_ids,
@@ -315,36 +431,70 @@ class Ideogram4WanPipeline:
             )
             if neg_v is None:
                 return None
+            return guidance * pos_v + (1.0 - guidance) * neg_v
 
-            z = z + (gw_per_step[i] * pos_v + (1.0 - gw_per_step[i]) * neg_v) * (s_val - t_val)
+        prev_denoised = None
+        prev_sigma = None
+        for step_idx, i in enumerate(tqdm(range(num_steps - 1, -1, -1), total=num_steps, desc="Denoising")):
+            if self._interrupt:
+                return None
+            t_val = float(time_points[i + 1].item())
+            s_val = float(time_points[i].item())
+            sigma = float(sigma_points[i + 1].item())
+            sigma_down = float(sigma_points[i].item())
+            guidance = gw_per_step[i]
+            denoising_extra = _phase_label(step_idx, int(guide_phases), phase_switch_step, phase_switch_step2)
+            v = predict_velocity(z, t_val, guidance)
+            if v is None:
+                return None
+
+            h = -math.log(sigma_down / sigma) if sigma_down > 0.0 else 0.0
+            denoised = z + v * sigma
+            if sample_solver == "res_2m" and prev_denoised is not None and sigma_down > 0.0 and h < 1.0:
+                b1, b2 = _res_2m_coefficients(h, -math.log(sigma / prev_sigma))
+                z = z + h * (b1 * (denoised - z) + b2 * (prev_denoised - z))
+            elif sample_solver in {"res_2s", "res_2m"} and sigma_down > 0.0 and (sample_solver == "res_2s" or sigma >= 0.1):
+                a21, b1, b2 = _res_2s_coefficients(h)
+                sub_sigma = sigma * math.exp(-0.5 * h)
+                sub_z = z + h * a21 * (denoised - z)
+                sub_v = predict_velocity(sub_z, 1.0 - sub_sigma, guidance)
+                if sub_v is None:
+                    return None
+                sub_denoised = sub_z + sub_v * sub_sigma
+                z = z + h * (b1 * (denoised - z) + b2 * (sub_denoised - z))
+            else:
+                z = z + v * (s_val - t_val)
+            prev_denoised = denoised
+            prev_sigma = sigma
             if callback is not None:
                 preview = self._unpack_vae_latents(z[:1], grid_h, grid_w)[0].unsqueeze(1)
-                callback(step_idx, preview, False)
+                callback(step_idx, preview, False, denoising_extra=denoising_extra)
 
         if self._interrupt:
             return None
-        if pid_upsampler is None:
+        if vae_upsampler is None:
             return self._decode(z, grid_h=grid_h, grid_w=grid_w)
 
-        def _pid_progress(_phase, current_step=None, total_steps=None):
+        def _vae_upsampler_progress(_phase, current_step=None, total_steps=None):
             if callable(set_progress_status):
+                progress_label = getattr(vae_upsampler, "progress_label", "VAE Spatial Upsampling")
                 if current_step is None or total_steps is None:
-                    set_progress_status("PiD Spatial Upsampling in progress")
+                    set_progress_status(f"{progress_label} in progress")
                 else:
                     total_steps = int(total_steps)
                     step_no = min(int(current_step) + 1, total_steps)
-                    set_progress_status(f"PiD Spatial Upsampling in progress ({step_no}/{total_steps})")
+                    set_progress_status(f"{progress_label} in progress ({step_no}/{total_steps})")
 
-        _pid_progress(None)
+        _vae_upsampler_progress(None)
         lq_image_ref = [self._decode_image(z, grid_h=grid_h, grid_w=grid_w)]
-        lq_latent_ref = [self._pack_pid_lq_latent(z, grid_h, grid_w)]
-        image = pid_upsampler.decode_inputs(
+        lq_latent_ref = [self._pack_vae_upsampler_lq_latent(z, grid_h, grid_w)]
+        image = vae_upsampler.decode_inputs(
             lq_image_ref,
             lq_latent_ref,
             prompt=prompts,
             seed=seed,
             abort_callback=lambda: self._interrupt,
-            progress_callback=_pid_progress,
+            progress_callback=_vae_upsampler_progress,
         )
         if image is None:
             return None
@@ -366,8 +516,10 @@ class model_factory:
         **kwargs,
     ):
         model_def = model_def or {}
-        if not isinstance(model_filename, (list, tuple)) or len(model_filename) < 2:
-            raise ValueError("Ideogram 4 requires conditional and unconditional transformer files.")
+        conditional_only = bool(model_def.get("conditional_transformer_only", False))
+        min_transformers = 1 if conditional_only else 2
+        if not isinstance(model_filename, (list, tuple)) or len(model_filename) < min_transformers:
+            raise ValueError("Ideogram 4 requires a conditional transformer file." if conditional_only else "Ideogram 4 requires conditional and unconditional transformer files.")
         if text_encoder_filename is None:
             raise ValueError("Ideogram 4 requires a Qwen3-VL text encoder file.")
 
@@ -382,15 +534,17 @@ class model_factory:
         vae_filename = fl.locate_file("flux2_vae.safetensors")
 
         self.conditional_transformer = _load_transformer(model_filename[0], dtype)
-        self.unconditional_transformer = _load_transformer(model_filename[1], dtype)
+        self.unconditional_transformer = None if conditional_only else _load_transformer(model_filename[1], dtype)
         self.transformer = self.conditional_transformer
-        self.transformer2 = self.unconditional_transformer
         self.model = self.conditional_transformer
-        self.model2 = self.unconditional_transformer
+        if self.unconditional_transformer is not None:
+            self.transformer2 = self.unconditional_transformer
+            self.model2 = self.unconditional_transformer
         if save_quantized:
             from wgp import save_quantized_model
             save_quantized_model(self.conditional_transformer, model_type, model_filename[0], dtype, None)
-            save_quantized_model(self.unconditional_transformer, model_type, model_filename[1], dtype, None, submodel_no=2)
+            if self.unconditional_transformer is not None:
+                save_quantized_model(self.unconditional_transformer, model_type, model_filename[1], dtype, None, submodel_no=2)
         self.text_encoder = _load_text_encoder(text_encoder_filename, text_config_path, dtype)
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, extra_special_tokens={})
         self.autoencoder = _load_autoencoder(vae_filename, VAE_dtype)
@@ -407,23 +561,33 @@ class model_factory:
         self,
         seed=None,
         input_prompt="",
-        sample_solver="",
+        sample_solver="euler",
         width=1024,
         height=1024,
+        sampling_steps=20,
         guide_scale=7.0,
+        guide2_scale=3.0,
+        guide3_scale=3.0,
+        shift=1.0,
+        switch_threshold=0,
+        switch2_threshold=0,
+        guide_phases=1,
         batch_size=1,
-        model_mode=_DEFAULT_PRESET,
-        pid_upsampler=None,
+        model_mode=None,
+        custom_settings=None,
+        loras_slists=None,
+        vae_upsampler=None,
         set_progress_status=None,
+        set_header_text=None,
         callback=None,
         **kwargs,
     ):
-        preset_name = model_mode if model_mode in PRESETS else sample_solver if sample_solver in PRESETS else _DEFAULT_PRESET
-        preset = PRESETS[preset_name]
-        num_steps = preset.num_steps
-        guidance_schedule = preset.guidance_schedule
-        mu = preset.mu
-        std = preset.std
+        preset = PRESETS.get(model_mode)
+        custom_settings = custom_settings if isinstance(custom_settings, dict) else {}
+        num_steps = int(preset.num_steps if preset is not None else sampling_steps)
+        mu = _custom_float(custom_settings, "ideogram_mu", preset.mu if preset is not None else 0.0)
+        std = _custom_float(custom_settings, "ideogram_std", preset.std if preset is not None else 1.75)
+        guidance_schedule = preset.guidance_schedule if preset is not None and len(custom_settings) == 0 else None
 
         prompts = [input_prompt] * int(batch_size)
         return self.pipeline(
@@ -432,13 +596,22 @@ class model_factory:
             width=width,
             num_steps=num_steps,
             guidance_scale=guide_scale,
+            guidance2_scale=guide2_scale,
+            guidance3_scale=guide3_scale,
             guidance_schedule=guidance_schedule,
             mu=mu,
             std=std,
+            sample_solver=sample_solver,
+            flow_shift=float(shift),
+            guide_phases=guide_phases,
+            switch_threshold=switch_threshold,
+            switch2_threshold=switch2_threshold,
+            loras_slists=loras_slists,
             seed=seed,
             callback=callback,
-            pid_upsampler=pid_upsampler,
+            vae_upsampler=vae_upsampler,
             set_progress_status=set_progress_status,
+            set_header_text=set_header_text,
         )
 
     @property
@@ -450,6 +623,7 @@ class model_factory:
         if hasattr(self, "pipeline"):
             self.pipeline._interrupt = bool(value)
             self.conditional_transformer._interrupt = bool(value)
-            self.unconditional_transformer._interrupt = bool(value)
+            if self.unconditional_transformer is not None:
+                self.unconditional_transformer._interrupt = bool(value)
             if hasattr(self.text_encoder, "language_model"):
                 self.text_encoder.language_model._interrupt = bool(value)

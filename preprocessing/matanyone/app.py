@@ -5,7 +5,6 @@ import json
 import re
 import gc
 import time
-import psutil
 from contextlib import nullcontext
 # import ffmpeg
 import imageio
@@ -546,20 +545,25 @@ def get_frames_from_video(state, video_input, video_state, new_dim):
     # print(f'audio_path: {audio_path}')
     audio_path = ""     
     # extract frames
+    expected_frame_count = 0
+    cap = None
     try:
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
+        expected_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         while cap.isOpened():
             ret, frame = cap.read()
             if ret == True:
-                current_memory_usage = psutil.virtual_memory().percent
                 frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                if current_memory_usage > 90:
-                    break
             else:
                 break
     except (OSError, TypeError, ValueError, KeyError, SyntaxError) as e:
         print("read_frame_source:{} error. {}\n".format(video_path, str(e)))
+    finally:
+        if cap is not None:
+            cap.release()
+    if expected_frame_count > 0 and len(frames) < expected_frame_count:
+        print(f"MatAnyone: only loaded {len(frames)} of {expected_frame_count} frames from {video_path}.")
     image_size = (frames[0].shape[0],frames[0].shape[1]) 
 
     if len(new_dim) > 0:
@@ -1249,7 +1253,7 @@ def load_unload_models(state = None, selected = True, force = False):
         model_loaded = False
 
 
-def get_vmc_event_handler():
+def get_mask_generator_event_handler():
     return load_unload_models
 
 
@@ -1289,8 +1293,8 @@ def export_to_current_video_engine(state, foreground_video_output, alpha_video_o
     return time.time()
 
 
-def teleport_to_video_tab(tab_state, state):
-    return PlugIn.goto_video_tab(state)
+def teleport_to_media_tab(tab_state, state):
+    return PlugIn.goto_media_tab(state)
 
 
 def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_current_model_settings_fn): #,  vace_video_input, vace_image_input, vace_video_mask, vace_image_mask, vace_image_refs):
@@ -1476,7 +1480,7 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                                 export_to_current_video_engine_btn = gr.Button("Export to Control Video Input and Video Mask Input", visible= False)
                                     
                 export_to_current_video_engine_btn.click(  fn=export_to_current_video_engine, inputs= [state, foreground_video_output, alpha_video_output], outputs= [refresh_form_trigger]).then( #video_prompt_video_guide_trigger, 
-                    fn=teleport_to_video_tab, inputs= [tab_state, state], outputs= [tabs])
+                    fn=teleport_to_media_tab, inputs= [tab_state, state], outputs= [tabs])
                 refresh_form_trigger.change(fn=_matanyone_mask_output_button_update, inputs=[], outputs=[export_image_mask_btn], show_progress="hidden")
 
 
@@ -1694,9 +1698,9 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                         bbox_info = gr.Text(label ="Mask BBox Info (Left:Top:Right:Bottom)", visible = False, interactive= False)
 
                 export_image_btn.click(  fn=export_image, inputs= [state, foreground_image_output], outputs= [refresh_form_trigger]).then( #video_prompt_video_guide_trigger, 
-                    fn=teleport_to_video_tab, inputs= [tab_state, state], outputs= [tabs])
+                    fn=teleport_to_media_tab, inputs= [tab_state, state], outputs= [tabs])
                 export_image_mask_btn.click(  fn=export_image_mask, inputs= [state, control_image_output, alpha_image_output], outputs= [refresh_form_trigger]).then( #video_prompt_video_guide_trigger, 
-                    fn=teleport_to_video_tab, inputs= [tab_state, state], outputs= [tabs]).then(fn=None, inputs=None, outputs=None, js=click_brush_js)
+                    fn=teleport_to_media_tab, inputs= [tab_state, state], outputs= [tabs]).then(fn=None, inputs=None, outputs=None, js=click_brush_js)
 
                 # first step: get the image information 
                 extract_frames_button.click(

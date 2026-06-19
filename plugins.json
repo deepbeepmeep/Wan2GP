@@ -1,9 +1,24 @@
 [
   {
+    "name": "wan2gp-blender-upsampler",
+    "author": "DeepBeepMeep",
+    "version": "0.1.0",
+    "description": "Template temporal upsampler plugin that creates x2 intermediate frames by blending neighboring frames.",
+    "type": [
+      "processor"
+    ],
+    "date": "",
+    "wan2gp_version": "",
+    "url": "https://github.com/deepbeepmeep/wan2gp-blender-upsampler"
+  },
+  {
     "name": "File Gallery",
     "author": "Tophness and Neires",
     "version": "2.0.3",
     "description": "Adds a Gallery tab that allows you to view metadata of all files in your output folders, join video frames with a single click, and more",
+    "type": [
+      "app"
+    ],
     "date": "",
     "wan2gp_version": "",
     "url": "https://github.com/Tophness/wan2gp-gallery"
@@ -13,15 +28,45 @@
     "author": "MrKuenning",
     "version": "1.0.0",
     "description": "A plugin for WAN2GP to allow toggling UI elements.",
+    "type": [
+      "extension"
+    ],
     "url": "https://github.com/MrKuenning/Wan2GP-HideUI",
     "date": "",
     "wan2gp_version": ""
+  },
+  {
+    "name": "Image Suite",
+    "author": "saintorphan",
+    "version": "0.2.1",
+    "description": "Three-in-one image workbench: Txt2Img, Img2Img and MultiCanvas (layered draw / mask / inpaint) sub-tabs for Flux, Z-Image and the SDXL lineup (Pony, Illustrious). Save any result to the other pages, Img2Vid, the Prompt Library, or disk.",
+    "type": [
+      "app"
+    ],
+    "date": "2026-06-13",
+    "wan2gp_version": "11.90",
+    "url": "https://github.com/saintorphan/ImageSuite-Wan2GP"
+  },
+  {
+    "name": "LTX Director",
+    "author": "The-ShadowWalker (WhatDreamsCost, ported to Wan2GP)",
+    "version": "1.0.15",
+    "description": "Timeline editor: zoom fix, sliding-window bands + WanGP relay (PW/FG prompt modes), real waveforms with audio playback, deduplicated zip sessions.",
+    "type": [
+      "app"
+    ],
+    "date": "",
+    "wan2gp_version": "",
+    "url": "https://github.com/The-ShadowWalker/LTX-Director"
   },
   {
     "name": "LoRA Manager",
     "author": "Tophness",
     "version": "2.5.5",
     "description": "Manage local LoRAs with lset support and granular prompt/file injection.",
+    "type": [
+      "app"
+    ],
     "date": "",
     "wan2gp_version": "",
     "url": "https://github.com/Tophness/wan2gp-lora-manager"
@@ -31,6 +76,9 @@
     "author": "Tophness",
     "version": "1.1.0",
     "description": "Advanced LoRA Merger with granular block control and drift visualization.",
+    "type": [
+      "app"
+    ],
     "date": "",
     "wan2gp_version": "",
     "url": "https://github.com/Tophness/wan2gp-lora-merger"
@@ -40,6 +88,9 @@
     "author": "Tophness",
     "version": "1.0.9",
     "description": "Dynamically set lora multipliers with a fast, JavaScript-powered UI.",
+    "type": [
+      "extension"
+    ],
     "date": "",
     "wan2gp_version": "",
     "url": "https://github.com/Tophness/wan2gp-lora-multipliers-ui"
@@ -49,6 +100,9 @@
     "author": "ppc2017",
     "version": "1.11",
     "description": "Lora Organizer adds a UI to the lora tab, letting you organize loras into groups and subgroups, store metadata, and activate loras with their trigger words and strength in one click.",
+    "type": [
+      "app"
+    ],
     "date": "",
     "wan2gp_version": "",
     "url": "https://github.com/ppc2017/wan2gp-lora-organizer"
@@ -58,17 +112,59 @@
     "author": "CodeBarrie",
     "version": "2.2.0",
     "description": "3D orbit gizmo + prompt helper for multi-angle camera control. Drag to set azimuth, elevation, and distance with visual feedback.",
+    "type": [
+      "app"
+    ],
     "date": "",
     "wan2gp_version": "",
     "url": "https://github.com/CodeBarrie/wan2gp-multiangle-prompt-helper"
+  },
+  {
+    "name": "Pixel Upsampler Template",
+    "author": "DeepBeepMeep",
+    "version": "0.1.0",
+    "description": "Template spatial upsampler plugin that duplicates pixels and documents the WanGP upsampler API for plugin developers.",
+    "type": [
+      "processor"
+    ],
+    "date": "",
+    "wan2gp_version": "",
+    "url": "https://github.com/deepbeepmeep/wan2gp-pixel-upsampler"
+  },
+  {
+    "name": "Pulsebar",
+    "author": "Javier-bat",
+    "version": "0.1.0",
+    "description": "Windows floating always-on-top progress bar for Wan2GP generations.",
+    "type": [
+      "app"
+    ],
+    "date": "",
+    "wan2gp_version": "",
+    "url": "https://github.com/Javier-bat/wan2gp-pulsebar"
   },
   {
     "name": "Queue Editor",
     "author": "Tophness",
     "version": "1.1.0",
     "description": "Perform advanced/bulk queue.zip operations offline without affecting your main generator queue.",
+    "type": [
+      "app"
+    ],
     "date": "",
     "wan2gp_version": "",
     "url": "https://github.com/Tophness/wan2gp-queue-editor"
+  },
+  {
+    "name": "Stable Diffusion 1.4 Model Plugin",
+    "author": "DeepBeepMeep",
+    "version": "0.1.0",
+    "description": "Template model plugin that adds Stable Diffusion 1.4 through WanGP's model-plugin discovery path.",
+    "type": [
+      "model"
+    ],
+    "date": "",
+    "wan2gp_version": "",
+    "url": "https://github.com/deepbeepmeep/wan2gp-stable-diffusion-1-4"
   }
 ]

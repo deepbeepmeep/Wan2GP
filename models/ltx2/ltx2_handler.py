@@ -8,7 +8,7 @@ from shared.utils.loras_mutipliers import parse_loras_multipliers
 import gradio as gr
 from pathlib import Path
 
-from .infos import LTX2_INFOS
+from .infos import LTX2_INFOS, LTX2_MSR_INFOS
 from .lora_utils import control_video_phase2_message
 
 _GEMMA_FOLDER_URL = "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/gemma-3-12b-it-qat-q4_0-unquantized/"
@@ -46,7 +46,6 @@ _EDITANYTHING_MODEL_DEF = {
     "ltx2_edit_anything_ref_token_scale": 0.25,
     "ltx2_edit_anything_adaln_scale": 2.0,
 }
-
 _ARCH_SPECS = {
     "ltx2_19B": {
         "repo_id": "DeepBeepMeep/LTX-2",
@@ -92,7 +91,14 @@ _ARCH_SPECS = {
         "lora_dir": "ltx2",
     },
 }
-LTX2_22B_CLASS = {"ltx2_22B", "ltx2_22B_edit_anything", "joyai_echo"}
+_ARCH_SPECS["ltx2_22B_msr"] = {
+    **_ARCH_SPECS["ltx2_22B"],
+    "profiles_dir": "ltx2_msr",
+    "dev_profiles_dir": "ltx2_msr_dev_accelerators",
+    "preset_profiles_dir": "ltx2_msr_presets",
+    "distilled_preset_profiles_dir": "ltx2_msr_distilled_presets",
+}
+LTX2_22B_CLASS = {"ltx2_22B", "ltx2_22B_edit_anything", "ltx2_22B_msr", "joyai_echo"}
 for model_type in LTX2_22B_CLASS:
     if model_type != "ltx2_22B" and model_type not in _ARCH_SPECS:
         _ARCH_SPECS[model_type]=_ARCH_SPECS["ltx2_22B"]
@@ -224,6 +230,10 @@ def _is_editanything_model(model_def) -> bool:
     return model_def.get("ltx2_edit_anything", False) or model_def.get("architecture","")=="ltx2_22B_edit_anything"
 
 
+def _is_msr_model(base_model_type, model_def) -> bool:
+    return base_model_type == "ltx2_22B_msr" or model_def.get("ltx2_msr", False)
+
+
 def _is_distilled_model(model_def) -> bool:
     return model_def.get("ltx2_pipeline", "") == "distilled"
 
@@ -324,7 +334,7 @@ class family_handler:
     @staticmethod
     def query_supported_types():
         _migrate_loras()
-        return ["ltx2_19B", "ltx2_22B", "ltx2_22B_edit_anything", "joyai_echo"]
+        return ["ltx2_19B", "ltx2_22B", "ltx2_22B_edit_anything", "ltx2_22B_msr", "joyai_echo"]
 
     @staticmethod
     def query_family_maps():
@@ -332,10 +342,11 @@ class family_handler:
         models_eqv_map = {
             "ltx2_19B" : "ltx2_22B",
             "ltx2_22B_edit_anything" : "ltx2_22B",
+            "ltx2_22B_msr" : "ltx2_22B",
         }
 
         models_comp_map = { 
-                    "ltx2_19B" : [ "ltx2_22B", "ltx2_22B_edit_anything"],
+                    "ltx2_19B" : [ "ltx2_22B", "ltx2_22B_edit_anything", "ltx2_22B_msr"],
                     }
         return models_eqv_map, models_comp_map
 
@@ -352,6 +363,7 @@ class family_handler:
         preload_urls = model_def.get("preload_URLs")
         spec = _get_arch_spec(base_model_type)
         joy = _is_joyai_echo(base_model_type, model_def)
+        msr = _is_msr_model(base_model_type, model_def)
         if isinstance(preload_urls, list): 
             # migrate old finetunes
             lora_filenames = {spec[key] for key in _LORA_SPEC_KEYS if key in spec}
@@ -371,7 +383,7 @@ class family_handler:
         extra_model_def = {
             "ltx2_22B_class": base_model_type in LTX2_22B_CLASS,
             "ltx2_edit_anything": editanything_ref,
-            "infos": model_def.get("infos", LTX2_INFOS),
+            "infos": model_def.get("infos", LTX2_MSR_INFOS if msr else LTX2_INFOS),
             "text_encoder_folder": _GEMMA_FOLDER,
             "text_encoder_URLs": [
                 build_hf_url("DeepBeepMeep/LTX-2", _GEMMA_FOLDER, _GEMMA_FILENAME),
@@ -381,7 +393,7 @@ class family_handler:
             "fps": 24,
             "frames_minimum": 17,
             "frames_steps": 8,
-            "sliding_window": True,
+            "sliding_window": not msr,
             "returns_audio": True,
             "prompt_enhancer_button_label": "Write",
             "auto_null_audio": True,
@@ -431,6 +443,7 @@ class family_handler:
                     "joyai_audio_memory_window_size": 96,
                     "prompt_slash_commands": ["no_mem", "store_mem", "load_mem", "drop_mem"],
                     "preserve_empty_prompt_lines": True,
+                    "skip_video_guide_preprocess": True,
                     "NAG": True,
                     "infos": model_def.get("infos", JOYAI_ECHO_INFOS),
                     "fps": 25,
@@ -450,7 +463,12 @@ class family_handler:
         else:
             from .prompt_enhancer import LTX2_PROMPT_INFOS, LTX2_RELAYED_IMAGE_PROMPT, LTX2_RELAYED_PROMPT
 
-            audio_prompt_selection = ["", "A", "K"] if editanything_ref and not distilled else ["", "A", "K", "2", "A1OF"]
+            if msr:
+                audio_prompt_selection = ["", "A"]
+            elif editanything_ref and not distilled:
+                audio_prompt_selection = ["", "A", "K"]
+            else:
+                audio_prompt_selection = ["", "A", "K", "2", "A1OF"]
             audio_prompt_labels = {
                 "": "Generate Video & Soundtrack based on Text Prompt",
                 "A": "Generate Video based on Soundtrack and Text Prompt",
@@ -483,24 +501,24 @@ class family_handler:
                         "selection": ["T", "TI", "T1", "TI1"],
                         "labels": {
                             "T": "An Enhanced Prompt using existing Text Prompt",
-                            "TI": "An Enhanced Prompt using existing Text Prompt and Start Image",
-                            "T1": "An Enhanced Relayed Prompt using existing Text Prompt",
-                            "TI1": "An Enhanced Relayed Prompt using existing Text Prompt and Start Image",
+                            "TIV": "An Enhanced Prompt using existing Text Prompt and Start Image",
+                            "T1V": "An Enhanced Relayed Prompt using existing Text Prompt",
+                            "TI1V": "An Enhanced Relayed Prompt using existing Text Prompt and Start Image",
                         },
                         "default": "",
                     },
                     "text_prompt_enhancer_instructions1": LTX2_RELAYED_PROMPT,
                     "video_prompt_enhancer_instructions1": LTX2_RELAYED_IMAGE_PROMPT,
-                    "image_prompt_enhancer_instructions1": LTX2_RELAYED_IMAGE_PROMPT,
                     "text_prompt_enhancer_max_tokens1": 1024,
                     "video_prompt_enhancer_max_tokens1": 1024,
-                    "image_prompt_enhancer_max_tokens1": 1024,
                     "audio_guide_window_slicing": True,
                     "video_length_not_limited_by_audio": True,
                     "output_audio_is_input_audio": True,
                     "multiple_images_as_text_prompts": True,
                     "custom_denoising_strength": distilled,
                     "NAG": True,
+                    "v2i_switch_supported": True,
+                    "image_batch_size_max": 1,
                 }
             )
             extra_model_def["denoising_strength"] = {
@@ -511,7 +529,9 @@ class family_handler:
                 "label": "Masked Control Duration (higher = longer masked reinjection)",
                 "name": "Masked Control Duration",
             }
-            if base_model_type in ["ltx2_22B_edit_anything"]:
+            if msr:
+                control_choices = [("No Control Video", "")]
+            elif base_model_type in ["ltx2_22B_edit_anything"]:
                 control_choices = [("EditAnything Source Video", "VGI")]
             else:
                 control_choices = [("No Video Process", "")]
@@ -519,18 +539,44 @@ class family_handler:
                 if base_model_type == "ltx2_22B":
                     control_choices += [("Convert SDR to HDR (IC-LoRA)", f"V&G")]
                 control_choices += [("Inject Frames", "KFI")]
-            extra_model_def["guide_custom_choices"] = {
-                "choices": control_choices,
-                "letters_filter": f"OPDEVG&KFI",
-                "default": "VGI" if editanything_ref else "",
-                "label": "Control Video / Frames Injection",
-                "visible": not editanything_ref,
-            }
+            control_choices_image = [(label, value) for label, value in control_choices if value not in ("OVG", "KFI", "V&G")]
+            if not msr:
+                guide_custom_choices = {
+                    "choices": control_choices,
+                    "letters_filter": f"OPDEVG&KFI",
+                    "default": "VGI" if editanything_ref else "",
+                    "label": "Control Video / Frames Injection",
+                    "visible":  not editanything_ref  ,
+                }
+                extra_model_def["guide_custom_choices"] = guide_custom_choices
+                extra_model_def["guide_custom_choices_image"] = {**guide_custom_choices, "choices": control_choices_image, "label": "Control Image"}
             extra_model_def["custom_frames_injection"] = True
             extra_model_def["one_image_ref_only"] = True
             if editanything_ref:
                 extra_model_def["one_image_ref_needed"] = True
-            extra_model_def["mask_preprocessing"] = {"selection": [""], "visible": False} if editanything_ref else {"selection": ["", "A", "NA", "XA", "XNA"]}
+            extra_model_def["mask_preprocessing"] = {"selection": [""], "visible": False} if editanything_ref or msr else {"selection": ["", "A", "NA", "XA", "XNA"]}
+            if msr:
+                extra_model_def.update(
+                    {
+                        "ltx2_msr": True,
+                        "image_prompt_types_allowed": "TE",
+                        "image_ref_choices": {
+                            "choices": [("Up to 5 Subjects / Objects", "I"), ("Background + Up to 4 Subjects", "KI")],
+                            "letters_filter": "KI",
+                            "default": "KI",
+                            "label": "MSR Reference Images",
+                            "show_label": True,
+                        },
+                        "one_image_ref_only": False,
+                        "at_least_one_image_ref_needed": True,
+                        "custom_frames_injection": False,
+                        "all_image_refs_are_background_ref": False,
+                        "fit_into_canvas_image_refs": 1,
+                        "background_removal_label": "Remove Background behind MSR Subjects / Objects",
+                        "multiple_images_as_text_prompts": False,
+                        "ltx2_msr_frame_count": int(model_def.get("ltx2_msr_frame_count", 41)),
+                    }
+                )
         extra_model_def["sliding_window_defaults"] = {
             "overlap_min": 1,
             "overlap_max": 97,
@@ -656,7 +702,7 @@ class family_handler:
             if inputs.get("perturbation",0) == 2:
                 inputs["perturbation"] = 0
         else:
-            sample_solver = inputs.get("sample_solver", "euler" if base_model_type == "ltx2_22B" else "").lower()
+            sample_solver = inputs.get("sample_solver", "euler" if base_model_type in LTX2_22B_CLASS else "").lower()
             if base_model_type in LTX2_22B_CLASS:
                 if sample_solver not in {"distilled_8_steps", "euler", "res2s"}:
                     return f"Unsupported LTX2 sampler '{sample_solver}'."
@@ -677,7 +723,23 @@ class family_handler:
         video_guide_outpainting = inputs.get("video_guide_outpainting", None) 
         video_guide_outpainting_ratio = inputs.get("video_guide_outpainting_ratio", "") 
         video_prompt_type = inputs.get("video_prompt_type", "") or ""
+        image_prompt_type = inputs.get("image_prompt_type", "") or ""
         audio_prompt_type = inputs.get("audio_prompt_type", "") or ""
+        if _is_msr_model(base_model_type, model_def):
+            if any(letter in image_prompt_type for letter in "SVL"):
+                return "LTX2 MSR does not support Start Image, Continue Video, or Continue Last Video."
+            if "I" not in video_prompt_type:
+                return "LTX2 MSR requires the MSR Reference Images mode."
+            if any(letter in video_prompt_type for letter in "OPDEVG&FA"):
+                return "LTX2 MSR supports only MSR reference images for video conditioning."
+            if any(letter in audio_prompt_type for letter in "K2"):
+                return "LTX2 MSR does not support Control Video audio options."
+            image_refs = inputs.get("image_refs") or []
+            if "K" in video_prompt_type:
+                if not 2 <= len(image_refs) <= 5:
+                    return "LTX2 MSR Background + Subjects mode requires 2 to 5 reference images, with the background image first."
+            elif not 1 <= len(image_refs) <= 4:
+                return "LTX2 MSR Subjects / Objects only mode requires 1 to 4 reference images."
         from shared.utils.utils import get_outpainting_dims 
         any_outpainting = get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio) is not None        
         if "2" in audio_prompt_type:
@@ -878,6 +940,18 @@ class family_handler:
             )
         if _is_joyai_echo(base_model_type, model_def):
             ui_defaults.update(_joyai_settings(ui_defaults.get("custom_settings")))
+        if _is_msr_model(base_model_type, model_def):
+            ui_defaults.update(
+                {
+                    "video_prompt_type": "KI",
+                    "audio_prompt_type": "",
+                    "video_length": 145,
+                    "resolution": "1280x720",
+                    "force_fps": "",
+                    "remove_background_images_ref": 1,
+                    "guidance_phases": 2,
+                }
+            )
 
     @staticmethod
     def get_custom_prompt_enhancer_instructions(model_type, prompt_enhancer_mode, is_image, enhancer_kwargs):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from threading import RLock
 from typing import Any
 
@@ -66,6 +67,14 @@ def parse_virtual_media_path(value: Any) -> VirtualMediaSpec | None:
 def strip_virtual_media_suffix(value: Any) -> Any:
     spec = parse_virtual_media_path(value)
     return spec.source_path if spec is not None else value
+
+
+def media_source_exists(value: Any) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    if get_virtual_media_vsource(value) is not None:
+        return get_virtual_media_entry(value) is not None
+    return os.path.isfile(strip_virtual_media_suffix(value))
 
 
 def build_virtual_media_path(

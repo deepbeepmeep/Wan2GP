@@ -68,8 +68,8 @@ _DEEPY_DOCS = {
     "getting_started": {"title": "Getting Started", "path": _DOCS_DIR / "GETTING_STARTED.md"},
     "loras": {"title": "Loras", "path": _DOCS_DIR / "LORAS.md"},
     "overview": {"title": "Overview", "path": _DOCS_DIR / "OVERVIEW.md"},
+    "processing": {"title": "Processing", "path": _DOCS_DIR / "PROCESSING.md"},
     "prompts": {"title": "Prompts", "path": _DOCS_DIR / "PROMPTS.md"},
-    "vace": {"title": "VACE", "path": _DOCS_DIR / "VACE.md"},
 }
 _DOC_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _DOC_TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -2172,7 +2172,7 @@ class tools:
                     self._update_tool_progress("running", "Running", {"status": "running", "client_id": client_id, "prompt": prompt, "resolution": resolution})
                     break
                 if not queue_wait_suspend_logged and time.time() - queue_wait_started_at >= 10:
-                    print(f"Tool {activity_console_label} suspended while waiting than WanGP Video Generator gets in focus")
+                    print(f"Tool {activity_console_label} suspended while waiting than WanGP Media Generator gets in focus")
                     queue_wait_suspend_logged = True
                     queue_wait_suspended = True
                 time.sleep(0.25)
@@ -3751,7 +3751,7 @@ class tools:
             },
             "doc_id": {
                 "type": "string",
-                "description": "Optional documentation id to limit the search to: finetunes, getting_started, loras, overview, prompts, or vace.",
+                "description": "Optional documentation id to limit the search to: finetunes, getting_started, loras, overview, processing, or prompts.",
                 "required": False,
             },
         },
@@ -3818,7 +3818,7 @@ class tools:
         parameters={
             "doc_id": {
                 "type": "string",
-                "description": "Documentation id: finetunes, getting_started, loras, overview, prompts, or vace.",
+                "description": "Documentation id: finetunes, getting_started, loras, overview, processing, or prompts.",
             },
             "section": {
                 "type": "string",

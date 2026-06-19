@@ -13,6 +13,7 @@ from shared.utils import files_locator as fl
 
 
 VIDEO_FILE_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".mpeg", ".mpg", ".ogv"}
+IMAGE_FILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"}
 CHECKPOINT_FILE_EXTENSIONS = {".safetensors", ".safetensor", ".sft", ".ckpt", ".bin", ".binn", ".pt", ".pth", ".gguf", ".onnx"}
 LAST_DIRECTORY_CONFIG_KEY = "local_file_picker_last_dir"
 _server_config: dict | None = None
@@ -161,6 +162,10 @@ class LocalFilePickerTextbox:
         textbox_scale: int = 8,
         button_min_width: int = 34,
         browser_height: int = 320,
+        default_dir: str | Path | None = None,
+        default_dir_input=None,
+        compress_root: str | Path | None = None,
+        compress_root_input=None,
     ) -> None:
         self.label = label
         self.value = value
@@ -174,9 +179,13 @@ class LocalFilePickerTextbox:
         self.textbox_scale = textbox_scale
         self.button_min_width = button_min_width
         self.browser_height = browser_height
+        self.default_dir_input = default_dir_input
+        self.compress_root_input = compress_root_input
         self.roots = _available_roots()
-        paths = self._parse_text(value)
-        self.default_dir = self._start_dir_for_paths(paths) or self._remembered_dir() or self.roots[0][1]
+        self.static_default_dir = self._resolve_existing_dir(default_dir)
+        self.static_compress_root = self._resolve_existing_dir(compress_root)
+        paths = self._parse_text(value, self.static_compress_root)
+        self.default_dir = self._start_dir_for_paths(paths) or self.static_default_dir or self._remembered_dir() or self.roots[0][1]
         self.default_root = self._root_for_paths(paths) or self._root_for_directory(self.default_dir) or self.roots[0][1]
         self.textbox: gr.Textbox | None = None
         self.browse_button: gr.Button | None = None
@@ -215,7 +224,7 @@ class LocalFilePickerTextbox:
                         self.drive = gr.Dropdown(self.roots, value=self.default_root, show_label=False, container=False, scale=1, min_width=90, elem_classes=["wangp-local-file-picker-drive"])
                         self.current_dir = gr.Text(show_label=False, value=self._display_dir(self.default_root, self.default_dir), placeholder="Folder", interactive=True, container=False, scale=8, min_width=240, elem_classes=["wangp-local-file-picker-folder-input"])
                         self.up_button = gr.Button("Up", min_width=58, elem_classes=["wangp-local-file-picker-up-btn"])
-                    self.browser = _FilteredFileExplorer(value=self._browser_value(self.default_dir, self._parse_text(self.value)), file_extensions=self.file_extensions, glob="**/*.*", show_label=False, root_dir=self.default_dir, file_count="multiple" if self.multiselect else "single", height=self.browser_height, interactive=True)
+                    self.browser = _FilteredFileExplorer(value=self._browser_value(self.default_dir, self._parse_text(self.value, self.static_compress_root)), file_extensions=self.file_extensions, glob="**/*.*", show_label=False, root_dir=self.default_dir, file_count="multiple" if self.multiselect else "single", height=self.browser_height, interactive=True)
                     self.exit_button = gr.Button("Exit", visible=self.multiselect, elem_classes=["wangp-local-file-picker-exit-btn"], min_width=72)
 
     def _wire_events(self) -> None:
@@ -229,36 +238,48 @@ class LocalFilePickerTextbox:
         assert self.exit_button is not None
         assert self.browser is not None
 
-        self.browse_button.click(fn=self._open_popup, inputs=[self.textbox], outputs=[self.popup, self.drive, self.current_dir, self.browser], queue=False, show_progress="hidden")
-        self.drive.change(fn=self._change_drive, inputs=[self.drive, self.textbox], outputs=[self.current_dir, self.browser], queue=False, show_progress="hidden")
-        self.current_dir.blur(fn=self._change_folder, inputs=[self.drive, self.current_dir, self.textbox], outputs=[self.drive, self.current_dir, self.browser], queue=False, show_progress="hidden")
-        self.current_dir.submit(fn=self._change_folder, inputs=[self.drive, self.current_dir, self.textbox], outputs=[self.drive, self.current_dir, self.browser], queue=False, show_progress="hidden")
-        self.up_button.click(fn=self._go_up, inputs=[self.drive, self.current_dir, self.textbox], outputs=[self.drive, self.current_dir, self.browser], queue=False, show_progress="hidden")
+        self.browse_button.click(fn=self._open_popup, inputs=self._event_inputs([self.textbox], default_dir=True, compress_root=True), outputs=[self.popup, self.drive, self.current_dir, self.browser], queue=False, show_progress="hidden")
+        self.drive.change(fn=self._change_drive, inputs=self._event_inputs([self.drive, self.textbox], compress_root=True), outputs=[self.current_dir, self.browser], queue=False, show_progress="hidden")
+        self.current_dir.blur(fn=self._change_folder, inputs=self._event_inputs([self.drive, self.current_dir, self.textbox], compress_root=True), outputs=[self.drive, self.current_dir, self.browser], queue=False, show_progress="hidden")
+        self.current_dir.submit(fn=self._change_folder, inputs=self._event_inputs([self.drive, self.current_dir, self.textbox], compress_root=True), outputs=[self.drive, self.current_dir, self.browser], queue=False, show_progress="hidden")
+        self.up_button.click(fn=self._go_up, inputs=self._event_inputs([self.drive, self.current_dir, self.textbox], compress_root=True), outputs=[self.drive, self.current_dir, self.browser], queue=False, show_progress="hidden")
         self.close_button.click(fn=lambda: gr.update(visible=False), outputs=[self.popup], queue=False, show_progress="hidden")
         self.exit_button.click(fn=lambda: gr.update(visible=False), outputs=[self.popup], queue=False, show_progress="hidden")
-        self.browser.change(fn=self._select_files, inputs=[self.browser, self.textbox, self.drive, self.current_dir], outputs=[self.textbox, self.popup], queue=False, show_progress="hidden")
+        self.browser.change(fn=self._select_files, inputs=self._event_inputs([self.browser, self.textbox, self.drive, self.current_dir], compress_root=True), outputs=[self.textbox, self.popup], queue=False, show_progress="hidden")
 
-    def _open_popup(self, current_text: str):
-        paths = self._parse_text(current_text)
-        current_dir = self._start_dir_for_paths(paths) or self._remembered_dir() or self.default_dir
+    def _event_inputs(self, inputs: list, *, default_dir: bool = False, compress_root: bool = False) -> list:
+        result = list(inputs)
+        if default_dir and self.default_dir_input is not None:
+            result.append(self.default_dir_input)
+        if compress_root and self.compress_root_input is not None:
+            result.append(self.compress_root_input)
+        return result
+
+    def _open_popup(self, current_text: str, dynamic_default_dir=None, compress_root=None):
+        compress_root = self._active_compress_root(compress_root)
+        paths = self._parse_text(current_text, compress_root)
+        current_dir = self._start_dir_for_paths(paths) or self._resolve_existing_dir(dynamic_default_dir) or self._remembered_dir() or self.default_dir
         selected_root = self._root_for_directory(current_dir) or self.default_root
         self._remember_dir(current_dir)
         return gr.update(visible=True), gr.update(value=selected_root), gr.update(value=self._display_dir(selected_root, current_dir)), self._browser_update(current_dir, paths)
 
-    def _change_drive(self, selected_root: str, current_text: str):
+    def _change_drive(self, selected_root: str, current_text: str, compress_root=None):
+        compress_root = self._active_compress_root(compress_root)
         current_dir = str(selected_root or self.default_root)
         self._remember_dir(current_dir)
-        return gr.update(value=""), self._browser_update(current_dir, self._parse_text(current_text))
+        return gr.update(value=""), self._browser_update(current_dir, self._parse_text(current_text, compress_root))
 
-    def _change_folder(self, selected_root: str, displayed_dir: str, current_text: str):
+    def _change_folder(self, selected_root: str, displayed_dir: str, current_text: str, compress_root=None):
+        compress_root = self._active_compress_root(compress_root)
         current_dir = self._resolve_dir_for_root(selected_root, displayed_dir)
         if not os.path.isdir(current_dir):
             return gr.skip(), gr.skip(), gr.skip()
         selected_root = self._root_for_directory(current_dir) or selected_root or self.default_root
         self._remember_dir(current_dir)
-        return gr.update(value=selected_root), gr.update(value=self._display_dir(selected_root, current_dir)), self._browser_update(current_dir, self._parse_text(current_text))
+        return gr.update(value=selected_root), gr.update(value=self._display_dir(selected_root, current_dir)), self._browser_update(current_dir, self._parse_text(current_text, compress_root))
 
-    def _go_up(self, selected_root: str, displayed_dir: str, current_text: str):
+    def _go_up(self, selected_root: str, displayed_dir: str, current_text: str, compress_root=None):
+        compress_root = self._active_compress_root(compress_root)
         current_dir = self._resolve_dir_for_root(selected_root, displayed_dir)
         current_root = self._root_for_directory(current_dir)
         if current_root and os.path.abspath(os.path.normpath(current_root)).casefold() == current_dir.casefold():
@@ -267,19 +288,20 @@ class LocalFilePickerTextbox:
             parent_dir = os.path.dirname(current_dir) or current_root or current_dir
         selected_root = self._root_for_directory(parent_dir) or self.default_root
         self._remember_dir(parent_dir)
-        return gr.update(value=selected_root), gr.update(value=self._display_dir(selected_root, parent_dir)), self._browser_update(parent_dir, self._parse_text(current_text))
+        return gr.update(value=selected_root), gr.update(value=self._display_dir(selected_root, parent_dir)), self._browser_update(parent_dir, self._parse_text(current_text, compress_root))
 
-    def _select_files(self, selected_paths, current_text: str, selected_root: str, displayed_dir: str):
+    def _select_files(self, selected_paths, current_text: str, selected_root: str, displayed_dir: str, compress_root=None):
+        compress_root = self._active_compress_root(compress_root)
         current_dir = self._resolve_dir_for_root(selected_root, displayed_dir)
         selected = self._coerce_selected_paths(selected_paths)
         if self.multiselect:
-            current_paths = self._current_entries_outside_dir(current_text, current_dir)
+            current_paths = self._current_entries_outside_dir(current_text, current_dir, compress_root)
             current_paths.extend(selected)
-            return self._format_paths(current_paths), gr.update()
-        selected_text = self._format_paths(selected)
+            return self._format_paths(current_paths, compress_root), gr.update()
+        selected_text = self._format_paths(selected, compress_root)
         if not selected_text:
             return gr.skip(), gr.update(visible=True)
-        current_text = self._format_paths(self._parse_text(current_text))
+        current_text = self._format_paths(self._parse_text(current_text, compress_root), compress_root)
         return selected_text, gr.update(visible=selected_text == current_text and bool(selected_text))
 
     def _browser_update(self, current_dir: str, paths: list[str]):
@@ -337,7 +359,8 @@ class LocalFilePickerTextbox:
         if _server_config is not None and directory and os.path.isdir(directory):
             _server_config[LAST_DIRECTORY_CONFIG_KEY] = os.path.abspath(os.path.normpath(directory))
 
-    def _parse_text(self, value: str | None) -> list[str]:
+    def _parse_text(self, value: str | None, compress_root: str | None = None) -> list[str]:
+        compress_root = self._active_compress_root(compress_root)
         chunks = str(value or "").splitlines() if self.multiselect else [str(value or "")]
         paths = []
         seen = set()
@@ -347,7 +370,11 @@ class LocalFilePickerTextbox:
                 continue
             if _is_non_local_entry(path):
                 continue
-            path = os.path.abspath(os.path.normpath(fl.uncompress_path(path)))
+            if compress_root and not os.path.isabs(path):
+                path = os.path.join(compress_root, path)
+            else:
+                path = fl.uncompress_path(path)
+            path = os.path.abspath(os.path.normpath(path))
             key = path.casefold()
             if key not in seen:
                 paths.append(path)
@@ -360,12 +387,22 @@ class LocalFilePickerTextbox:
         paths = selected_paths if isinstance(selected_paths, list) else [selected_paths]
         return [path for path in self._parse_text("\n".join(str(path) for path in paths)) if self._path_is_allowed(path)]
 
-    def _format_paths(self, paths: list[str]) -> str:
+    def _format_paths(self, paths: list[str], compress_root: str | None = None) -> str:
+        compress_root = self._active_compress_root(compress_root)
         if self.multiselect:
-            return "\n".join(fl.compress_path(path) for path in paths)
-        return fl.compress_path(paths[0]) if paths else ""
+            return "\n".join(self._format_path(path, compress_root) for path in paths)
+        return self._format_path(paths[0], compress_root) if paths else ""
 
-    def _current_entries_outside_dir(self, current_text: str, current_dir: str) -> list[str]:
+    def _format_path(self, path: str, compress_root: str | None = None) -> str:
+        path = str(path)
+        if _is_non_local_entry(path):
+            return path
+        if compress_root and os.path.isabs(path) and _is_under_root(path, compress_root):
+            return os.path.relpath(path, compress_root).replace("\\", "/")
+        return fl.compress_path(path)
+
+    def _current_entries_outside_dir(self, current_text: str, current_dir: str, compress_root: str | None = None) -> list[str]:
+        compress_root = self._active_compress_root(compress_root)
         entries = []
         seen = set()
         for chunk in str(current_text or "").splitlines():
@@ -375,7 +412,11 @@ class LocalFilePickerTextbox:
             if _is_non_local_entry(entry):
                 normalized = entry
             else:
-                path = os.path.abspath(os.path.normpath(fl.uncompress_path(entry)))
+                if compress_root and not os.path.isabs(entry):
+                    path = os.path.join(compress_root, entry)
+                else:
+                    path = fl.uncompress_path(entry)
+                path = os.path.abspath(os.path.normpath(path))
                 if _is_under_root(path, current_dir):
                     continue
                 normalized = path
@@ -389,6 +430,16 @@ class LocalFilePickerTextbox:
         if not os.path.isfile(path):
             return False
         return not self.file_extensions or Path(path).suffix.lower() in self.file_extensions
+
+    def _active_compress_root(self, value=None) -> str | None:
+        return self._resolve_existing_dir(value) or self.static_compress_root
+
+    def _resolve_existing_dir(self, value=None) -> str | None:
+        value = str(value or "").strip()
+        if not value:
+            return None
+        directory = os.path.abspath(os.path.normpath(os.path.expanduser(value)))
+        return directory if os.path.isdir(directory) else None
 
     @staticmethod
     def get_css() -> str:

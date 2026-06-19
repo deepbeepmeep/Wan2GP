@@ -136,6 +136,101 @@ def _summarize_kernel_error(exc_or_text: Exception | str, max_chars: int = 480) 
     return summary
 
 
+def _tensor_debug_summary(name: str, tensor: torch.Tensor) -> str:
+    try:
+        ptr = tensor.data_ptr() if tensor.device.type in ("cpu", "cuda") else 0
+        return (
+            f"{name}: shape={tuple(tensor.shape)}, dtype={tensor.dtype}, device={tensor.device}, "
+            f"stride={tuple(tensor.stride())}, contiguous={tensor.is_contiguous()}, "
+            f"storage_offset={tensor.storage_offset()}, data_ptr_mod128={ptr % 128}"
+        )
+    except Exception as exc:
+        return f"{name}: <debug summary failed: {exc}>"
+
+
+def _cuda_debug_summary(device: torch.device) -> str:
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return "cuda: unavailable"
+    try:
+        index = device.index if device.index is not None else torch.cuda.current_device()
+        return (
+            f"cuda: index={index}, capturing={torch.cuda.is_current_stream_capturing()}, "
+            f"allocated={torch.cuda.memory_allocated(index)}, reserved={torch.cuda.memory_reserved(index)}"
+        )
+    except Exception as exc:
+        return f"cuda: <debug summary failed: {exc}>"
+
+
+def _debug_fused_recovery_trigger(
+    x2d: torch.Tensor,
+    qweight: torch.Tensor,
+    qweight_scale: torch.Tensor,
+    out: torch.Tensor,
+    selected_cfg: tuple[int, int, int, int, int],
+    grid: tuple[int, int],
+    exc: Exception,
+) -> None:
+    mod = _TRITON_MODULE
+    m, k = x2d.shape
+    n = qweight.shape[0]
+    slot = "unknown"
+    if mod is not None:
+        try:
+            slot, _ = mod._resolve_autotune_slot(int(m), int(k), int(n))
+        except Exception:
+            pass
+    _debug(
+        "Fused int8 recovery trigger\n"
+        f"  shape=({int(m)},{int(k)},{int(n)}), slot={slot}, selected_cfg={selected_cfg}, grid={grid}\n"
+        f"  {_tensor_debug_summary('x2d', x2d)}\n"
+        f"  {_tensor_debug_summary('qweight', qweight)}\n"
+        f"  {_tensor_debug_summary('qweight_scale', qweight_scale)}\n"
+        f"  {_tensor_debug_summary('out', out)}\n"
+        f"  {_cuda_debug_summary(x2d.device)}\n"
+        f"  error={_summarize_kernel_error(exc)}"
+    )
+
+
+def _debug_scaled_recovery_trigger(
+    a_int8: torch.Tensor,
+    b_int8: torch.Tensor,
+    a_scale: torch.Tensor,
+    b_scale: torch.Tensor,
+    out: torch.Tensor,
+    selected_cfg: tuple[int, int, int, int, int],
+    grid: tuple[int, int],
+    exc: Exception,
+) -> None:
+    mod = _TRITON_MODULE
+    m, k = a_int8.shape
+    n = b_int8.shape[0]
+    slot = "unknown"
+    if mod is not None:
+        try:
+            slot, _ = mod._resolve_autotune_slot(int(m), int(k), int(n))
+        except Exception:
+            pass
+    _debug(
+        "Scaled int8 recovery trigger\n"
+        f"  shape=({int(m)},{int(k)},{int(n)}), slot={slot}, selected_cfg={selected_cfg}, grid={grid}\n"
+        f"  {_tensor_debug_summary('a_int8', a_int8)}\n"
+        f"  {_tensor_debug_summary('b_int8', b_int8)}\n"
+        f"  {_tensor_debug_summary('a_scale', a_scale)}\n"
+        f"  {_tensor_debug_summary('b_scale', b_scale)}\n"
+        f"  {_tensor_debug_summary('out', out)}\n"
+        f"  {_cuda_debug_summary(a_int8.device)}\n"
+        f"  error={_summarize_kernel_error(exc)}"
+    )
+
+
+def _runtime_recovery_reason(selected_cfg: tuple[int, int, int, int, int], exc: Exception) -> str:
+    block_m, block_n, block_k, num_warps, num_stages = selected_cfg
+    return (
+        f"selected runtime config tile=({block_m},{block_n},{block_k}), "
+        f"warps={num_warps}, stages={num_stages} failed: {_summarize_kernel_error(exc)}"
+    )
+
+
 def set_kernel_debug(enabled: Optional[bool] = None) -> None:
     global _DEBUG_OVERRIDE
     _DEBUG_OVERRIDE = None if enabled is None else bool(enabled)
@@ -535,6 +630,8 @@ def _fused_quant_scaled_mm_direct_call(x2d: torch.Tensor, qweight: torch.Tensor,
             num_stages=num_stages,
         )
     except Exception as exc:
+        recovery_reason = _runtime_recovery_reason(selected_cfg, exc)
+        _debug_fused_recovery_trigger(x2d, qweight, qweight_scale, out, selected_cfg, (grid_m, grid_n), exc)
         recovery_errors = []
         device_index = int(x2d.device.index if x2d.device.type == "cuda" else -1)
         for candidate in _compile_recovery_candidates("fused", selected_cfg, m, k, n):
@@ -569,10 +666,10 @@ def _fused_quant_scaled_mm_direct_call(x2d: torch.Tensor, qweight: torch.Tensor,
                 key = (device_index, m, k, n)
                 _replace_launch_params(_FUSED_LAUNCH_CACHE, _FUSED_LAUNCH_CACHE_FIFO, _FUSED_LAUNCH_CACHE_MAX, key, params)
                 _cache_recovered_triton_config("fused", device_index, m, k, n, candidate)
-                _debug(f"Recovered fused int8 kernel config for shape=({m},{k},{n}): {selected_cfg} -> {candidate}")
+                _debug(f"Recovered fused int8 kernel config for shape=({m},{k},{n}): {selected_cfg} -> {candidate}. Reason: {recovery_reason}")
                 return recovered_out
             except Exception as recovery_exc:
-                recovery_errors.append(f"{candidate}: {recovery_exc}")
+                recovery_errors.append(f"{candidate}: {_summarize_kernel_error(recovery_exc)}")
         raise RuntimeError(
             "Triton fused int8 kernel launch failed "
             f"(shape m={m}, k={k}, n={n}; tile=({selected_cfg[0]},{selected_cfg[1]},{selected_cfg[2]}); "
@@ -626,6 +723,8 @@ def _scaled_int8_mm_direct_call(
             num_stages=num_stages,
         )
     except Exception as exc:
+        recovery_reason = _runtime_recovery_reason(selected_cfg, exc)
+        _debug_scaled_recovery_trigger(a_int8, b_int8, a_scale, b_scale, out, selected_cfg, (grid_m, grid_n), exc)
         recovery_errors = []
         device_index = int(a_int8.device.index if a_int8.device.type == "cuda" else -1)
         for candidate in _compile_recovery_candidates("scaled", selected_cfg, m, k, n):
@@ -661,10 +760,10 @@ def _scaled_int8_mm_direct_call(
                 key = (device_index, m, k, n)
                 _replace_launch_params(_SCALED_LAUNCH_CACHE, _SCALED_LAUNCH_CACHE_FIFO, _SCALED_LAUNCH_CACHE_MAX, key, params)
                 _cache_recovered_triton_config("scaled", device_index, m, k, n, candidate)
-                _debug(f"Recovered scaled int8 kernel config for shape=({m},{k},{n}): {selected_cfg} -> {candidate}")
+                _debug(f"Recovered scaled int8 kernel config for shape=({m},{k},{n}): {selected_cfg} -> {candidate}. Reason: {recovery_reason}")
                 return recovered_out
             except Exception as recovery_exc:
-                recovery_errors.append(f"{candidate}: {recovery_exc}")
+                recovery_errors.append(f"{candidate}: {_summarize_kernel_error(recovery_exc)}")
         raise RuntimeError(
             "Triton scaled int8 kernel launch failed "
             f"(shape m={m}, k={k}, n={n}; tile=({selected_cfg[0]},{selected_cfg[1]},{selected_cfg[2]}); "

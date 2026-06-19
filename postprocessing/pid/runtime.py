@@ -5,16 +5,26 @@ from contextlib import nullcontext
 import torch
 from accelerate import init_empty_weights
 
-from shared.attention import attention_config_shared_state
+from mmgp import offload
+from shared.attention import resolve_attention_mode
+from shared.utils import offload_registry
 from postprocessing.pid.networks import PidNet
 from postprocessing.pid.networks.pixeldit_official import get_pid_linear_split_map
 
 
+PID_LEGACY_UPSAMPLING_METHOD = "pid"
+PID_FLUX_VAE_UPSAMPLING_METHOD = "flux_vae_pid"
+PID_FLUX2_VAE_UPSAMPLING_METHOD = "flux2_vae_pid"
+PID_FLUX_POST_UPSAMPLING_METHOD = "flux_pid"
+PID_FLUX2_POST_UPSAMPLING_METHOD = "flux2_pid"
 PID_LEGACY_UPSAMPLING_VALUE = "pid4"
-PID_FLUX_VAE_UPSAMPLING_VALUE = "flux_vae_pid4"
-PID_FLUX2_VAE_UPSAMPLING_VALUE = "flux2_vae_pid4"
-PID_FLUX_POST_UPSAMPLING_VALUE = "flux_pid4"
-PID_FLUX2_POST_UPSAMPLING_VALUE = "flux2_pid4"
+PID_FLUX_VAE_UPSAMPLING_VALUE = f"{PID_FLUX_VAE_UPSAMPLING_METHOD}4"
+PID_FLUX2_VAE_UPSAMPLING_VALUE = f"{PID_FLUX2_VAE_UPSAMPLING_METHOD}4"
+PID_FLUX_POST_UPSAMPLING_VALUE = f"{PID_FLUX_POST_UPSAMPLING_METHOD}4"
+PID_FLUX2_POST_UPSAMPLING_VALUE = f"{PID_FLUX2_POST_UPSAMPLING_METHOD}4"
+PID_VAE_UPSAMPLING_METHODS = (PID_FLUX_VAE_UPSAMPLING_METHOD, PID_FLUX2_VAE_UPSAMPLING_METHOD, PID_LEGACY_UPSAMPLING_METHOD)
+PID_POST_UPSAMPLING_METHODS = (PID_FLUX_POST_UPSAMPLING_METHOD, PID_FLUX2_POST_UPSAMPLING_METHOD)
+PID_UPSAMPLING_METHODS = PID_VAE_UPSAMPLING_METHODS + PID_POST_UPSAMPLING_METHODS
 PID_VAE_UPSAMPLING_VALUES = (PID_FLUX_VAE_UPSAMPLING_VALUE, PID_FLUX2_VAE_UPSAMPLING_VALUE, PID_LEGACY_UPSAMPLING_VALUE)
 PID_POST_UPSAMPLING_VALUES = (PID_FLUX_POST_UPSAMPLING_VALUE, PID_FLUX2_POST_UPSAMPLING_VALUE)
 PID_UPSAMPLING_VALUES = PID_VAE_UPSAMPLING_VALUES + PID_POST_UPSAMPLING_VALUES
@@ -60,16 +70,32 @@ _CHI_PROMPT = [
 ]
 
 
+def split_pid_upsampling(spatial_upsampling):
+    text = str(spatial_upsampling or "").strip().lower()
+    for method in sorted(PID_UPSAMPLING_METHODS, key=len, reverse=True):
+        if text == method:
+            return method, 4.0
+        if text.startswith(method):
+            try:
+                scale = float(text[len(method):] or 4.0)
+            except ValueError:
+                return None
+            return (method, scale) if scale == 4.0 else None
+    return None
+
+
 def is_pid_upsampling(spatial_upsampling):
-    return str(spatial_upsampling or "").strip().lower() in PID_UPSAMPLING_VALUES
+    return split_pid_upsampling(spatial_upsampling) is not None
 
 
 def is_pid_vae_upsampling(spatial_upsampling):
-    return str(spatial_upsampling or "").strip().lower() in PID_VAE_UPSAMPLING_VALUES
+    split = split_pid_upsampling(spatial_upsampling)
+    return split is not None and split[0] in PID_VAE_UPSAMPLING_METHODS
 
 
 def is_pid_post_upsampling(spatial_upsampling):
-    return str(spatial_upsampling or "").strip().lower() in PID_POST_UPSAMPLING_VALUES
+    split = split_pid_upsampling(spatial_upsampling)
+    return split is not None and split[0] in PID_POST_UPSAMPLING_METHODS
 
 
 def normalize_pid_backbone(backbone):
@@ -82,10 +108,11 @@ def normalize_pid_backbone(backbone):
 
 
 def pid_backbone_for_upsampling(spatial_upsampling, default="flux"):
-    text = str(spatial_upsampling or "").strip().lower()
-    if text in (PID_FLUX2_VAE_UPSAMPLING_VALUE, PID_FLUX2_POST_UPSAMPLING_VALUE):
+    split = split_pid_upsampling(spatial_upsampling)
+    method = "" if split is None else split[0]
+    if method in (PID_FLUX2_VAE_UPSAMPLING_METHOD, PID_FLUX2_POST_UPSAMPLING_METHOD):
         return "flux2"
-    if text in (PID_FLUX_VAE_UPSAMPLING_VALUE, PID_FLUX_POST_UPSAMPLING_VALUE):
+    if method in (PID_FLUX_VAE_UPSAMPLING_METHOD, PID_FLUX_POST_UPSAMPLING_METHOD):
         return "flux"
     return normalize_pid_backbone(default)
 
@@ -95,14 +122,14 @@ def pid_vae_upsampling_value(backbone):
 
 
 def pid_vae_upsampling_choice(backbone):
-    return ("Flux2 VAE PiD Upsampler", PID_FLUX2_VAE_UPSAMPLING_VALUE) if normalize_pid_backbone(backbone) == "flux2" else ("Flux VAE PiD Upsampler", PID_FLUX_VAE_UPSAMPLING_VALUE)
+    return ("Flux2 VAE PiD Upsampler", PID_FLUX2_VAE_UPSAMPLING_METHOD) if normalize_pid_backbone(backbone) == "flux2" else ("Flux VAE PiD Upsampler", PID_FLUX_VAE_UPSAMPLING_METHOD)
 
 
 def pid_post_upsampling_choices(include_name=True):
     prefix = "" if include_name else ""
     return [
-        (f"{prefix}Flux PiD Upsampler", PID_FLUX_POST_UPSAMPLING_VALUE),
-        (f"{prefix}Flux2 PiD Upsampler", PID_FLUX2_POST_UPSAMPLING_VALUE),
+        (f"{prefix}Flux PiD Upsampler", PID_FLUX_POST_UPSAMPLING_METHOD),
+        (f"{prefix}Flux2 PiD Upsampler", PID_FLUX2_POST_UPSAMPLING_METHOD),
     ]
 
 
@@ -638,7 +665,6 @@ class PiDUpsamplerSession:
         *,
         init_pipe,
         profile,
-        main_offloadobj=None,
         persistent_models=False,
         dtype=torch.bfloat16,
         tiling_threshold=PID_TILING_THRESHOLD_DEFAULT,
@@ -651,7 +677,6 @@ class PiDUpsamplerSession:
         self.ckpt_type = ckpt_type if ckpt_type in self.ckpt_types else None
         self.init_pipe = init_pipe
         self.profile = profile
-        self.main_offloadobj = main_offloadobj
         self.dtype = dtype
         self.persistent_models = bool(persistent_models)
         self.attention_mode = attention_mode
@@ -661,10 +686,6 @@ class PiDUpsamplerSession:
 
     def unload_vram(self):
         self._runtime._unload_mmgp()
-
-    def unload_main_model_vram(self):
-        if self.main_offloadobj is not None:
-            self.main_offloadobj.unload_all()
 
     def __getattr__(self, name):
         self.ensure_loaded()
@@ -677,8 +698,7 @@ class PiDUpsamplerSession:
         lq_latent_ref.clear()
         return self.decode(lq_image, lq_latent, **kwargs)
 
-    def decode(self, *args, **kwargs):
-        self.unload_main_model_vram()
+    def decode(self, *args, cleanup=True, **kwargs):
         self.ensure_loaded()
         return self._runtime.decode(
             *args,
@@ -686,6 +706,7 @@ class PiDUpsamplerSession:
             persistent_models=self.persistent_models,
             tiling_threshold=self.tiling_threshold,
             attention_mode=self.attention_mode,
+            cleanup=cleanup,
             **kwargs,
         )
 
@@ -715,19 +736,19 @@ class PiDRuntime:
         _apply_pid_offload_budgets(pipe, kwargs)
         kwargs["pinnedMemory"] = False
         self.offloadobj = offload.profile(pipe, profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=dtype, verboseLevel=-1, **kwargs)
+        offload_registry.register_offloadobj("PiD", self.offloadobj, self.release)
         self.backbone = backbone
         self.profile = profile
         self.ckpt_types = ckpt_types
         self.dtype = dtype
 
-    def session(self, backbone, ckpt_type, *, init_pipe, profile, main_offloadobj=None, persistent_models=False, dtype=torch.bfloat16, tiling_threshold=PID_TILING_THRESHOLD_DEFAULT, attention_mode=None):
+    def session(self, backbone, ckpt_type, *, init_pipe, profile, persistent_models=False, dtype=torch.bfloat16, tiling_threshold=PID_TILING_THRESHOLD_DEFAULT, attention_mode=None):
         return PiDUpsamplerSession(
             self,
             backbone,
             ckpt_type,
             init_pipe=init_pipe,
             profile=profile,
-            main_offloadobj=main_offloadobj,
             persistent_models=persistent_models,
             dtype=dtype,
             tiling_threshold=tiling_threshold,
@@ -742,6 +763,7 @@ class PiDRuntime:
 
     def release(self):
         if self.offloadobj is not None:
+            offload_registry.unregister_offloadobj("PiD", self.offloadobj)
             self.offloadobj.release()
             self.offloadobj = None
         self.upsampler = None
@@ -752,29 +774,29 @@ class PiDRuntime:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def decode(self, *args, persistent_models=False, attention_mode=None, **kwargs):
+    def decode(self, *args, persistent_models=False, attention_mode=None, cleanup=True, **kwargs):
         if self.upsampler is None:
             raise RuntimeError("PiD upsampler is not loaded.")
         try:
-            with attention_config_shared_state(attention_mode, disable_sage_pre_ada=True):
-                return self.upsampler.decode(*args, **kwargs)
+            offload.shared_state["_attention"] = resolve_attention_mode(attention_mode, disable_sage_pre_ada=True)
+            return self.upsampler.decode(*args, **kwargs)
         finally:
-            if persistent_models:
-                self._unload_mmgp()
-            else:
-                self.release()
+            if cleanup:
+                if persistent_models:
+                    self._unload_mmgp()
+                else:
+                    self.release()
 
 
 _RUNTIME = PiDRuntime()
 
 
-def get_pid_upsampler(backbone, ckpt_type, *, init_pipe, profile, main_offloadobj=None, persistent_models=False, dtype=torch.bfloat16, tiling_threshold=PID_TILING_THRESHOLD_DEFAULT, attention_mode=None):
+def get_pid_upsampler(backbone, ckpt_type, *, init_pipe, profile, persistent_models=False, dtype=torch.bfloat16, tiling_threshold=PID_TILING_THRESHOLD_DEFAULT, attention_mode=None):
     return _RUNTIME.session(
         backbone,
         ckpt_type,
         init_pipe=init_pipe,
         profile=profile,
-        main_offloadobj=main_offloadobj,
         persistent_models=persistent_models,
         dtype=dtype,
         tiling_threshold=tiling_threshold,

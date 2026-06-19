@@ -108,8 +108,8 @@ The baseline schema lives in `models/_settings.json`. Model defaults in `default
 | `audio_guide2` | audio | Secondary audio reference for two-speaker, emotion, or timbre modes. |
 | `audio_source` | audio | External audio used by post-processing mode `custom`. |
 | `speakers_locations` | string | Speaker ranges for multi-speaker audio/video models, for example `0:45 55:100`. |
-| `seedvc_voice_sample` | audio | Reference voice for one-speaker SeedVC voice replacement. |
-| `seedvc_voice_sample2` | audio | Second reference voice for two-speaker SeedVC voice replacement. |
+| `replace_voice_sample` | audio | Primary reference voice for a voice-replacement audio processor. |
+| `replace_voice_sample2` | audio | Secondary reference voice for two-speaker voice-replacement processors. |
 
 ## Acceleration And Cache
 
@@ -118,9 +118,8 @@ The baseline schema lives in `models/_settings.json`. Model defaults in `default
 | `skip_steps_cache_type` | string | Step-skipping cache type. Empty disables. Known values are `tea` and `mag` when the model exposes TeaCache or MagCache. |
 | `skip_steps_multiplier` | number | Cache speed/skip multiplier. The meaning is model/cache dependent. |
 | `skip_steps_start_step_perc` | integer | Percentage of denoising steps before cache skipping starts. |
-| `temporal_upsampling` | string | Temporal post-processing mode. Current core values include `rife2` and `rife4`. |
+| `temporal_upsampling` | string | Combined temporal post-processing method and multiplier. Built-in values include `rife2` and `rife4`; plugins may register more temporal upsamplers. |
 | `spatial_upsampling` | string | Spatial post-processing mode. Empty disables; values include `vae1`, `vae2`, `lanczos<scale>`, and registered edit upsamplers such as FlashVSR. |
-| `flashvsr_topk_ratio` | number | FlashVSR top-k ratio when FlashVSR post-processing is active. |
 | `film_grain_intensity` | number | Film grain amount. `0` disables. |
 | `film_grain_saturation` | number | Saturation of generated film grain. |
 | `RIFLEx_setting` | integer | RIFLEx long-video policy. `0` auto, `1` always on, `2` always off. |
@@ -131,9 +130,10 @@ The baseline schema lives in `models/_settings.json`. Model defaults in `default
 
 | Setting | Type | Meaning |
 | --- | --- | --- |
-| `postprocess_audio` | string | Audio post-processing mode. Empty disables. Known values are `custom`, `mmaudio`, `control`, `seedvc`, `seedvc2`, and for audio edit tasks `remove_background`. |
-| `MMAudio_prompt` | string | Positive prompt for MMAudio soundtrack generation. |
-| `MMAudio_neg_prompt` | string | Negative prompt for MMAudio soundtrack generation. |
+| `postprocess_audio` | string | Audio post-processing method. Empty disables. Built-ins include `custom`, `mmaudio`, `control`, `seedvc_one_speaker`, `seedvc_two_speakers`, and for audio edit tasks `remove_background`; plugins may register more methods. |
+| `postprocess_audio_prompt` | string | Positive prompt for audio processors that request a prompt. |
+| `postprocess_audio_neg_prompt` | string | Negative prompt for audio processors that request a negative prompt. |
+| `replace_voice_method` | string | Voice-replacement processor used after generated or remuxed audio. Empty disables. |
 
 ## Advanced Sampling
 
@@ -164,6 +164,7 @@ The baseline schema lives in `models/_settings.json`. Model defaults in `default
 | `sliding_window_color_correction_strength` | number | Color matching strength between windows. |
 | `sliding_window_overlap_noise` | integer | Noise injected in overlap frames to reduce blur. |
 | `sliding_window_discard_last_frames` | integer | Discarded tail frames per window. |
+| `sliding_window_trim_first_frames` | integer | Leading frames trimmed when a sliding window has no overlap frames. |
 | `keep_intermediate_sliding_windows` | integer | Saved in server config, but exported settings may include it for traceability. Controls whether intermediate windows are retained. |
 
 ## LoRAs
@@ -253,8 +254,6 @@ Shared option flags can be appended:
 | `V` | Remove or ignore background music/noise for the audio prompt. |
 | `L` | Allow video length to continue beyond the audio end when the model supports it. |
 | `N` | Normalize audio volumes. Usually meaningful when both `A` and `B` are present. |
-| `Y` | SeedVC one-speaker voice replacement option. |
-| `Z` | SeedVC two-speaker voice replacement option. |
 | custom | A one-letter model-defined option from `audio_prompt_type_custom_option`, when present. |
 
 ### `prompt_enhancer`

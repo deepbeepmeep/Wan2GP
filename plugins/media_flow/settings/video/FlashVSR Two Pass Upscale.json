@@ -1,0 +1,10 @@
+{
+  "model_type": "__system_flashvsr",
+  "model_label": "WanGP System Video Postprocessing",
+  "system_handler": "flashvsr",
+  "spatial_upsampling_method": "flashvsr2pass",
+  "target_ratio": "flashvsr2pass2",
+  "chunk_size_seconds": 3.0,
+  "sliding_window_overlap": 0,
+  "prompt": ""
+}

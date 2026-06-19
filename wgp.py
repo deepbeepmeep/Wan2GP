@@ -7821,7 +7821,7 @@ def generate_media(
                                 send_cmd("progress", [(int(current_step), int(total_steps)), status_msg, int(total_steps)])
                             else:
                                 send_cmd("progress", [0, status_msg])
-                        output_new_audio_filepath = output_new_audio_temp_filepath = get_available_filename(save_path, f"tmp{time_flag}.wav" )
+                        requested_audio_path = get_available_filename(save_path, f"tmp{time_flag}.wav" )
                         output_new_audio_filepath = audio_processor_api.generate_soundtrack(
                             postprocess_audio,
                             video_path=save_path_tmp,
@@ -7830,7 +7830,7 @@ def generate_media(
                             negative_prompt=postprocess_audio_neg_prompt,
                             seed=seed,
                             duration=output_frame_count / fps,
-                            output_path=output_new_audio_filepath,
+                            output_path=requested_audio_path,
                             send_cmd=send_cmd,
                             status_callback=lambda status: send_cmd("progress", [0, get_latest_status(state, status)]),
                             verbose_level=verbose_level,
@@ -7844,6 +7844,7 @@ def generate_media(
                         if gen.get("abort", False) or output_new_audio_filepath is None:
                             abort = True
                             break
+                        if os.path.abspath(str(output_new_audio_filepath)) == os.path.abspath(str(requested_audio_path)): output_new_audio_temp_filepath = requested_audio_path
                         new_audio_added_from_audio_start = postprocess_audio_meta["needs_audio_source"]
                     elif audio_source is not None:
                         output_new_audio_filepath = audio_source

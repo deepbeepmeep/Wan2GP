@@ -354,11 +354,15 @@ def _attach_lora_preprocessor(transformer: torch.nn.Module) -> None:
                 continue
             if module_name not in module_names:
                 prefixed_name = f"velocity_model.{module_name}"
-                if prefixed_name in module_names:
+                if module_name.endswith(".to_out") and f"{prefixed_name}.0" in module_names:
+                    module_name = f"{prefixed_name}.0"
+                elif prefixed_name in module_names:
                     module_name = prefixed_name
                 else:
                     dropped_keys.append(original_key)
                     continue
+            elif module_name.endswith(".to_out") and f"{module_name}.0" in module_names:
+                module_name = f"{module_name}.0"
             new_sd[f"{module_name}{suffix}"] = value
         if dropped_keys:
             sample = ", ".join(dropped_keys[:8])

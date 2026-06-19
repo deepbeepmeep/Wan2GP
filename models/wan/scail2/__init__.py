@@ -75,6 +75,12 @@ Use the Magic Mask tool on the Video Mask input:
 - For multiple people, make sure each person gets a separate color and keeps it across frames.
 - If the wrong object is selected, adjust the keyword or edit the mask before generating.
 
+## Troubleshooting
+
+### Image Reference Mask Extraction Fails
+
+If WanGP shows `SCAIL-2 could not extract the image reference mask. Check Image Ref Keyword content.`, fill `Image Ref Keyword content` with a keyword that describes what is visible in the reference frame, usually `person`, `woman`, or `man`. SCAIL-2 uses this keyword to guide SAM 3 reference mask extraction.
+
 ## Tips
 
 - Review the Image References preview before generation. SCAIL-2 shows the prepared reference image and the reference mask there.

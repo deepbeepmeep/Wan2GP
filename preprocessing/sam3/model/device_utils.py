@@ -10,8 +10,7 @@ def mps_is_available() -> bool:
 def get_accelerator_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
-    if mps_is_available():
-        return torch.device("mps")
+    # MPS is not supported by SAM3 — fall back to CPU on macOS
     return torch.device("cpu")
 
 

@@ -21,6 +21,7 @@ from torchvision.ops.roi_align import RoIAlign
 
 from .act_ckpt_utils import activation_ckpt_wrapper
 from .box_ops import box_cxcywh_to_xyxy
+from .device_utils import get_accelerator_device
 from .model_misc import (
     chunked_ffn_forward,
     gen_sineembed_for_position,
@@ -284,7 +285,7 @@ class TransformerDecoder(nn.Module):
             if resolution is not None and stride is not None:
                 feat_size = resolution // stride
                 coords_h, coords_w = self._get_coords(
-                    feat_size, feat_size, device="cuda"
+                    feat_size, feat_size, device=get_accelerator_device()
                 )
                 self.compilable_cord_cache = (coords_h, coords_w)
                 self.compilable_stored_size = (feat_size, feat_size)

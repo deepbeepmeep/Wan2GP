@@ -2234,8 +2234,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         suppress_by_unmatch = (
             (trk_keep_alive <= 0)
             & torch.tensor(not self.suppress_unmatched_only_within_hotstart, device="cpu")
-            .pin_memory()
-            .to(device=device, non_blocking=True)
+            .to(device=device)
             & ~removed_mask
             & ~remove_by_unmatch
         )
@@ -2499,8 +2498,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
             if self.is_multiplex and self.tracker.is_multiplex_dynamic:
                 local_idx = (
                     torch.tensor(object_idx_assignment[state_i], device="cpu")
-                    .pin_memory()
-                    .to(device=high_res_masks.device, non_blocking=True)
+                    .to(device=high_res_masks.device)
                 )
                 local_high_res_masks = high_res_masks[local_idx]
                 local_object_score_logits = object_score_logits[local_idx]

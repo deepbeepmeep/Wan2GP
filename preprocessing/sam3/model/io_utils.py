@@ -12,6 +12,7 @@ import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from PIL import Image
 from ..logger import get_logger
+from ..model.device_utils import get_accelerator_device
 from tqdm import tqdm
 
 logger = get_logger(__name__)
@@ -60,7 +61,7 @@ def load_resource_as_video_frames(
             images.append(img)
         images = torch.stack(images)
         if not offload_video_to_cpu:
-            images = images.cuda()
+            images = images.to(device=get_accelerator_device())
         return images, orig_height, orig_width
 
     is_image = (
@@ -101,9 +102,10 @@ def load_image_as_single_frame_video(
     img_mean = torch.tensor(img_mean, dtype=torch.float16, device="cpu")[:, None, None]
     img_std = torch.tensor(img_std, dtype=torch.float16, device="cpu")[:, None, None]
     if not offload_video_to_cpu:
-        images = images.cuda()
-        img_mean = img_mean.cuda()
-        img_std = img_std.cuda()
+        device = get_accelerator_device()
+        images = images.to(device=device)
+        img_mean = img_mean.to(device=device)
+        img_std = img_std.to(device=device)
     # normalize by mean and std
     images -= img_mean
     images /= img_std
@@ -221,9 +223,10 @@ def load_video_frames_from_image_folder(
     ):
         images[n], video_height, video_width = _load_img_as_tensor(img_path, image_size)
     if not offload_video_to_cpu:
-        images = images.cuda()
-        img_mean = img_mean.cuda()
-        img_std = img_std.cuda()
+        device = get_accelerator_device()
+        images = images.to(device=device)
+        img_mean = img_mean.to(device=device)
+        img_std = img_std.to(device=device)
     # normalize by mean and std
     images -= img_mean
     images /= img_std
@@ -290,9 +293,10 @@ def load_video_frames_from_video_file_using_ffmpeg(
     img_mean = torch.tensor(img_mean, dtype=torch.float16).view(1, 3, 1, 1)
     img_std = torch.tensor(img_std, dtype=torch.float16).view(1, 3, 1, 1)
     if not offload_video_to_cpu:
-        video_tensor = video_tensor.cuda()
-        img_mean = img_mean.cuda()
-        img_std = img_std.cuda()
+        device = get_accelerator_device()
+        video_tensor = video_tensor.to(device=device)
+        img_mean = img_mean.to(device=device)
+        img_std = img_std.to(device=device)
     video_tensor -= img_mean
     video_tensor /= img_std
     return video_tensor, metadata["display_height"], metadata["display_width"]
@@ -359,9 +363,10 @@ def load_video_frames_from_video_file_using_cv2(
     img_mean = torch.tensor(img_mean, dtype=torch.float16).view(1, 3, 1, 1)
     img_std = torch.tensor(img_std, dtype=torch.float16).view(1, 3, 1, 1)
     if not offload_video_to_cpu:
-        video_tensor = video_tensor.cuda()
-        img_mean = img_mean.cuda()
-        img_std = img_std.cuda()
+        device = get_accelerator_device()
+        video_tensor = video_tensor.to(device=device)
+        img_mean = img_mean.to(device=device)
+        img_std = img_std.to(device=device)
     # normalize by mean and std
     video_tensor -= img_mean
     video_tensor /= img_std
@@ -378,7 +383,7 @@ def load_dummy_video(image_size, offload_video_to_cpu, num_frames=60, do_zeros=F
     else:
         images = torch.zeros(num_frames, 3, image_size, image_size, dtype=torch.float16)
     if not offload_video_to_cpu:
-        images = images.cuda()
+        images = images.to(device=get_accelerator_device())
     return images, video_height, video_width
 
 
@@ -447,7 +452,7 @@ class AsyncImageFrameLoader:
         img -= self.img_mean
         img /= self.img_std
         if not self.offload_video_to_cpu:
-            img = img.cuda()
+            img = img.to(device=get_accelerator_device())
         self.images[index] = img
         return img
 

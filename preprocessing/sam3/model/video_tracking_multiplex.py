@@ -534,7 +534,7 @@ class VideoTrackingMultiplex(nn.Module):
 
         t_diff_max = max_abs_pos - 1 if max_abs_pos is not None else 1
         pos_enc = (
-            torch.tensor(rel_pos_list, device="cpu").pin_memory().to(device=device, non_blocking=True)
+            torch.tensor(rel_pos_list, device="cpu").to(device=device)
             / t_diff_max
         )
         if self.sincos_tpos_enc:

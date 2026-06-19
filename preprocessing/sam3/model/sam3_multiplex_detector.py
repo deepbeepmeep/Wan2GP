@@ -545,8 +545,11 @@ class Sam3MultiplexDetector(Sam3MultiplexImageBase):
                 assert all(x.mask is None for x in inte_feats["backbone_fpn"])
                 # cast the SAM2 backbone features to bfloat16 for all-gather (this is usually
                 # a no-op, SAM2 backbone features are likely already in bfloat16 due to AMP)
+                # On CPU (macOS without CUDA), skip the cast to avoid introducing bf16
+                # into a float32 pipeline.
+                inte_fpn_dtype = torch.bfloat16 if torch.cuda.is_available() else inte_feats["backbone_fpn"][0].tensors.dtype
                 inte_backbone_fpn_bf16 = [
-                    x.to(torch.bfloat16) for x in inte_feats["backbone_fpn"]
+                    x.to(inte_fpn_dtype) for x in inte_feats["backbone_fpn"]
                 ]
                 inte_fpn0, inte_fpn_handle0 = self._gather_tensor(
                     inte_backbone_fpn_bf16[0].tensors
@@ -566,7 +569,9 @@ class Sam3MultiplexDetector(Sam3MultiplexImageBase):
             assert all(x.mask is None for x in feats["backbone_fpn"])
             # cast the SAM2 backbone features to bfloat16 for all-gather (this is usually
             # a no-op, SAM2 backbone features are likely already in bfloat16 due to AMP)
-            backbone_fpn_bf16 = [x.to(torch.bfloat16) for x in feats["backbone_fpn"]]
+            # On CPU (macOS without CUDA), skip the cast to preserve float32 pipeline.
+            fpn_dtype = torch.bfloat16 if torch.cuda.is_available() else feats["backbone_fpn"][0].tensors.dtype
+            backbone_fpn_bf16 = [x.to(fpn_dtype) for x in feats["backbone_fpn"]]
             fpn0, fpn_handle0 = self._gather_tensor(backbone_fpn_bf16[0].tensors)
             fpn1, fpn_handle1 = self._gather_tensor(backbone_fpn_bf16[1].tensors)
             fpn2, fpn_handle2 = self._gather_tensor(backbone_fpn_bf16[2].tensors)

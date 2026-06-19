@@ -17,7 +17,7 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent
 _SAM3_FOLDER = "sam3"
 _SAM3_CHECKPOINT_NAME = "sam3.1_multiplex_bf16.safetensors"
 _SAM3_BPE_NAME = "bpe_simple_vocab_16e6.txt.gz"
-KEEP_VIDEO_FRAMES_ON_CUDA = True
+KEEP_VIDEO_FRAMES_ON_CUDA = torch.cuda.is_available()
 _TEXT_ENCODER_CACHE = None
 _TEXT_ENCODER_CACHE_KEY = None
 logger = get_logger(__name__)
@@ -215,7 +215,15 @@ def _load_predictor(
     checkpoint_path, version = (checkpoint_path, version) if checkpoint_path is not None and version is not None else _checkpoint_path()
     bpe_path = bpe_path or _bpe_path()
     grounding_batch_size = resolve_sam3_grounding_batch_size(batched_grounding_batch_size)
-    return model_builder.build_sam3_predictor(checkpoint_path=checkpoint_path, bpe_path=bpe_path, version=version, use_fa3=False, use_rope_real=True, compile=False, warm_up=False, include_text_encoder=include_text_encoder, postprocess_batch_size=postprocess_batch_size, use_batched_grounding=use_batched_grounding, batched_grounding_batch_size=grounding_batch_size, trim_past_non_cond_mem_for_eval=trim_past_non_cond_mem_for_eval, fill_hole_area=fill_hole_area, manual_model_loading=manual_model_loading)
+    # On macOS (no CUDA), keep model on CPU since MPS has compatibility issues with SAM3
+    if not torch.cuda.is_available():
+        manual_model_loading = True
+    predictor = model_builder.build_sam3_predictor(checkpoint_path=checkpoint_path, bpe_path=bpe_path, version=version, use_fa3=False, use_rope_real=True, compile=False, warm_up=False, include_text_encoder=include_text_encoder, postprocess_batch_size=postprocess_batch_size, use_batched_grounding=use_batched_grounding, batched_grounding_batch_size=grounding_batch_size, trim_past_non_cond_mem_for_eval=trim_past_non_cond_mem_for_eval, fill_hole_area=fill_hole_area, manual_model_loading=manual_model_loading)
+    # Convert model to float32 on CPU since bf16 weights from checkpoint don't match
+    # float32 inputs on CPU (Conv2d requires uniform dtype)
+    if not torch.cuda.is_available():
+        predictor.model = predictor.model.to(dtype=torch.float32)
+    return predictor
 
 
 def load_sam3_mask_predictor(

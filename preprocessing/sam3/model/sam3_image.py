@@ -150,7 +150,8 @@ class Sam3Image(torch.nn.Module):
         else:
             image = torch.stack([img_batch[i] for i in unique_ids.tolist()])
         # `img_batch` might be fp16 and offloaded to CPU
-        image = image.to(dtype=torch.float32, device=self.device)
+        model_dtype = next(self.parameters()).dtype
+        image = image.to(dtype=model_dtype, device=self.device)
         # Next time we call this function, we want to remember which indices we computed
         id_mapping = torch.full(
             (len(img_batch),), -1, dtype=torch.long, device=self.device
@@ -864,7 +865,9 @@ class Sam3ImageOnVideoMultiGPU(Sam3Image):
             assert len(feats["backbone_fpn"]) == 3  # SAM2 backbone always have 3 levels
             # cast the SAM2 backbone features to bfloat16 for all-gather (this is usually
             # a no-op, SAM2 backbone features are likely already in bfloat16 due to AMP)
-            backbone_fpn_bf16 = [x.to(torch.bfloat16) for x in feats["backbone_fpn"]]
+            # On CPU (macOS without CUDA), skip the cast to preserve float32 pipeline.
+            fpn_dtype = torch.bfloat16 if torch.cuda.is_available() else feats["backbone_fpn"][0].dtype
+            backbone_fpn_bf16 = [x.to(fpn_dtype) for x in feats["backbone_fpn"]]
             fpn0, fpn_handle0 = self._gather_tensor(backbone_fpn_bf16[0])
             fpn1, fpn_handle1 = self._gather_tensor(backbone_fpn_bf16[1])
             fpn2, fpn_handle2 = self._gather_tensor(backbone_fpn_bf16[2])

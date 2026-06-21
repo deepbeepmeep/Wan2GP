@@ -6,6 +6,8 @@ LTX2_INFOS = """
 - Text to video with soundtrack: write a cinematic prompt and LTX2 generates both the video and an audio track.
 - Image or video continuation: provide a Start Image, End Image, or Video to Continue to keep identity, framing, or motion continuity.
 - Control Video / Frames Injection: guide the new video with motion, structure, raw frames, HDR conversion, outpainting, or injected reference frames.
+- Inpainting: 22B can regenerate masked regions of a Control Video while preserving the unmasked video context.
+- Ingredients Reference Sheet: 22B can use one composite reference-sheet image with the Ingredients IC-LoRA to keep characters, props, and location consistent.
 - EditAnything variants: provide a source/control video plus one reference image to add or edit a subject in the video.
 
 ## Text To Image Mode
@@ -24,6 +26,8 @@ Some IC-LoRAs, such as the union-control LoRA used by pose, depth, and canny con
 - `Transfer Depth`: follows the depth and scene layout of the Control Video.
 - `Transfer Canny Edges`: follows strong edges and outlines from the Control Video.
 - `LTX2 Raw Format / Control Video for Ic Lora`: uses the Control Video frames directly. Use this for IC-LoRA style control, to provide the video to be outpainted, and for `Generate Audio based on Control Video`.
+- `Inpaint Masked Area`: 22B only. Uses the Control Video plus a Video Mask to regenerate the masked area. This mode requires `Control Video Strength` set to `1` and `Unmasked Area Strength` set to `0`; the unmasked area is preserved by the inpainting workflow.
+- `Ingredients Reference Sheet`: 22B only. Duplicates one uploaded reference-sheet image as the IC-LoRA guide video; use a clean composite sheet on a white background, with black separator lines between individual pieces and without text.
 - `Convert SDR to HDR (IC-LoRA)`: 22B only. Converts an SDR Control Video toward HDR output.
 - `Inject Frames`: places selected Reference Images at exact frame positions. In `Positions of Injected Frames`, `1` means the first frame and `L` means the last frame of a sliding-window segment.
 
@@ -36,10 +40,13 @@ Some IC-LoRAs, such as the union-control LoRA used by pose, depth, and canny con
 - `Generate Video based on Reference Voice (ID-LoRA) and Text Prompt`: available when the ID-LoRA option is listed. Provide a reference voice/audio sample and describe the on-camera speaker and speech in the prompt.
 - `Prompt Audio Strength`: controls how strongly the uploaded soundtrack/audio prompt affects the generated result.
 - `Ignore Background Music`: removes or reduces background music/noise from the audio prompt before using it for conditioning.
-- `Video Length not Limited by Audio`: lets the video continue after the supplied audio ends. Without it, the requested video length is limited by the audio duration.
 - `Postprocess Remux Audio`: after generation, you can replace or reuse the final soundtrack with a Custom Soundtrack, MMAudio, or the Control Video audio track.
 
-## Soundtrack Timing With Video Continuation
+## New Content Generation
+
+If the Control Video or Control Audio has a shorter duration than the number of frames to generate, LTX2 will complete with new video and audio content.
+
+## Control Video & Audio Timing With Video Continuation
 
 When you use an Audio Prompt or the Control Video audio track, WanGP slices the audio per sliding window so each window receives the matching part of the soundtrack.
 
@@ -65,7 +72,9 @@ Recognized system LoRA signatures:
 - `distilled-lora`: distilled stage LoRA used by dev models for two-phase, Distilled 8 Steps, HQ/res2s, and some ID-LoRA cases.
 - `union-control`: IC-LoRA used by Pose, Pose Alignment, Depth, and Canny control.
 - `ic-lora-hdr`: HDR IC-LoRA used by 22B HDR output.
-- `outpaint`: outpainting IC-LoRA used by 22B spatial outpainting.
+- `ic-lora-outpaint`: outpainting IC-LoRA used by 22B legacy spatial outpainting.
+- `in-outpainting`: inpainting/outpainting IC-LoRA used by 22B mask-based inpainting and new outpainting.
+- `ic-lora-ingredients`: Ingredients IC-LoRA used by the 22B Ingredients Reference Sheet process.
 - `id-lora-celebvhq`: ID-LoRA used by the reference voice workflow.
 
 Examples:
@@ -77,9 +86,9 @@ Result: Pose/Depth/Canny control uses your manual phase weights instead of the a
 ```
 
 ```text
-Select: my-outpaint-experiment.safetensors
+Select: my-ic-lora-outpaint-experiment.safetensors
 Multiplier: 0.8
-Filename rule: it contains "outpaint"
+Filename rule: it contains "ic-lora-outpaint"
 Result: 22B outpainting uses your outpaint LoRA instead of the built-in one.
 ```
 

@@ -368,6 +368,27 @@ def convert_tensor_to_image(t, frame_no = 0, mask_levels = False):
     else:
         return Image.fromarray(t.clone().add_(1.).mul_(127.5).permute(1,2,0).to(torch.uint8).cpu().numpy())
 
+def convert_video_tensor_to_uint8_chunked(video, value_range=(-1, 1), max_buffer_mb=256):
+    if video.dtype == torch.uint8:
+        return video
+    min_val, max_val = value_range
+    scale = 255.0 / (max_val - min_val)
+    output = torch.empty(video.shape, dtype=torch.uint8, device=video.device)
+    time_dim = 2 if video.ndim == 5 else 1 if video.ndim >= 4 else 0
+    frames = video.shape[time_dim]
+    frame_elems = max(1, video.numel() // max(1, frames))
+    chunk_frames = max(1, min(frames, int(max_buffer_mb * 1024 * 1024) // max(1, frame_elems * 2)))
+    buffer_shape = list(video.shape)
+    buffer_shape[time_dim] = chunk_frames
+    buffer = torch.empty(buffer_shape, dtype=torch.float16, device=video.device)
+    for start in range(0, frames, chunk_frames):
+        size = min(chunk_frames, frames - start)
+        work = buffer.narrow(time_dim, 0, size)
+        work.copy_(video.narrow(time_dim, start, size))
+        work.sub_(min_val).mul_(scale).clamp_(0, 255)
+        output.narrow(time_dim, start, size).copy_(work)
+    return output
+
 def save_image(tensor_image, name, frame_no = -1):
     convert_tensor_to_image(tensor_image, frame_no).save(name)
 

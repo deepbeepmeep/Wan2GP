@@ -530,7 +530,8 @@ class family_handler():
                 "scale": 3,
                 "show_label": True,
             }
-
+            extra_model_def["fake_start_image"] = True
+            extra_model_def["fit_into_canvas_image_refs"] = 0            
             extra_model_def["preprocess_all"] = preprocess_all_scail2 if scail2 else True
             extra_model_def["custom_preprocessor"] = "Preparing Scail2 Inputs" if scail2 else "Extracting 3D Pose (NLFPose)"
             extra_model_def["forced_guide_mask_inputs"] = True

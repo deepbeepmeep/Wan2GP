@@ -55,11 +55,17 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-### 18th of June 2026: WanGP v12.25, Let's Experiment!
+### 20th of June 2026: WanGP v12.26, Let's Experiment!
 
 - **LTX-2.3 Multiple Subject Reference**: Here comes another way to add *Reference Images* when using LTX 2.3. This finetune combines Distilled 1.1 and a new LoRA from *LiconStudio*. Just provide 2 to 5 reference images; background first, then subjects and objects. Please note that the embedded lora is quite fond of character sheets with white background.
 
 I added an experimental support for text to image, not sure it works as MSR doesnt seem to be made for that. 
+
+- **LTX 2.3 Inpainting**: you will find this new *Inpainting* capability for LTX2 in the *Process List*. It is based on the set of *LoRAs* just released by the LTX Team. If you see glitches dont hesitate to expand the mask.
+
+- **LTX 2.3 Ingredients**: part of the same new LoRAs collection the *Ingredients* process allows you to inject a character defined in a character sheet, preferably on a white background with black separator lines between individual pieces. Dont expect miracles with slidings windows or start frames.
+
+- **Easy Frames Cap based on Control Video/Audio**: for supported models (*LTX2*, *Vace*) if you provide a control video or source audio you can ask WanGP either to stop when the control video / audio is done or continue until all the requested frames have been produced.
 
 - **Ideograms v4 unlocked**: most hidden settings are now exposed (*mu*, *std*), you can change guidance half way, use a different scheduler. I added  resolutions used by Ideograms. Also please note that Ideograms runs two transformers in parallel *cond* and *uncond*. If you want to apply different *loras multipliers* to each transformer, use the new ":" separator, for instance with *1:1.2*, 1 will be applied to cond and 1.2 to uncond.
 
@@ -67,13 +73,16 @@ I added an experimental support for text to image, not sure it works as MSR does
 
 - **Experimental Scail 2 Parallel Subwindows**: in order to reduce image degradations with long videos, I am experimenting a new concept: *Parallel Subwindows*, the idea is to work on a much larger Sliding Windows than usual (>200 frames) and to generate multiple sub windows (of 80 frames of so) in parallel. It is experimental, may end up a big fail and removed in next version, let me know...
 
+- **Scail 2 Start Frame Fix**: you should no longer see a few bad frames at the beginning of the video in *Animate* mode. Many thanks to @pauldps that gave me part of the solution.
+
 - **PrismAudio**: this a *video to audio* processor, an alternative to *MMaudio*, quite good to add sound to an existing video. It requires a prompt. It is not made to generate spoken words.
 
 - **More Plugins Types: Temporal Upsamplers / Audio Processors**: you can now add your own Temporal Upsampler (*Rife* alternative) or *Audio Processor* (*MMAudio* alternative). As a reminder the previous version allowed already to add a custom *Spatial Upsampler*.
 
 - **API+, MCP+.**: I have improved the API capabilties (please check *docs/API.md*), and widened *MCP* support. Feel free to share feedback on Discord
 
-*Update 12.25*:  Ideograms v4 Turbo Time, MSR t2i, Scail2 parallel subwindows
+*Update 12.25*: Ideograms v4 Turbo Time, MSR t2i, Scail2 parallel subwindows\
+*Update 12.26*: LTX2 inpainting & ingredients, Easy cap, Scail2 fix
 
 ### 14th of June 2026: WanGP v12.22, Go with the Flow
 - **Media Flow Plugin**: the *Full Video Process* is now named *Media Flow* because it can process *Images* as well as *Videos*. Even better, the new *Batch* mode can process any number of files: for instance, give *Media Flow* the path to the folder containing your collection of butterfly pictures and *all the corresponding images will be upsampled in one click*!

@@ -12,7 +12,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-from shared.utils.utils import convert_image_to_tensor, convert_tensor_to_image, expand_or_shrink_mask, to_rgb_tensor
+from shared.utils.utils import calculate_new_dimensions, convert_image_to_tensor, convert_tensor_to_image, expand_or_shrink_mask, to_rgb_tensor
 from ..modules.posemb_layers import get_nd_rotary_pos_embed
 
 
@@ -454,8 +454,6 @@ def preprocess_all_scail2(video_prompt_type=None, custom_settings=None, **kwargs
 
 
 def custom_preprocess_scail2(video_guide, video_mask, pre_video_guide=None, max_workers=1, expand_scale=0, video_prompt_type=None, **kwargs):
-    from shared.utils.utils import calculate_new_dimensions
-
     model_def = kwargs.get("model_def") or {}
     custom_settings = kwargs.get("custom_settings", {})
     if not isinstance(custom_settings, dict):
@@ -538,6 +536,27 @@ def _tensor_or_image_to_cthw(image, device, dtype):
     return convert_image_to_tensor(image).unsqueeze(1).to(device=device, dtype=dtype)
 
 
+def _resize_ref_image(image_ref, height, width):
+    if image_ref.shape[-2:] == (height, width):
+        return image_ref.clone()
+    return F.interpolate(image_ref.permute(1, 0, 2, 3), size=(height, width), mode="bilinear", align_corners=False).permute(1, 0, 2, 3)
+
+
+def _resize_ref_image_for_mode(image_ref, height, width, video_prompt_type, model_def):
+    ref_h, ref_w = image_ref.shape[-2:]
+    if test_scail2_replace(video_prompt_type):
+        scale = min(height / ref_h, width / ref_w)
+        new_h, new_w = max(1, int(ref_h * scale)), max(1, int(ref_w * scale))
+        resized = _resize_ref_image(image_ref, new_h, new_w)
+        color = to_rgb_tensor((model_def or {}).get("background_removal_color", [255, 255, 255]), device=image_ref.device, dtype=image_ref.dtype).view(3, 1, 1, 1) / 127.5 - 1.0
+        canvas = color.expand(3, image_ref.shape[1], height, width).clone()
+        top, left = (height - new_h) // 2, (width - new_w) // 2
+        canvas[:, :, top:top + new_h, left:left + new_w] = resized
+        return canvas
+    new_h, new_w = calculate_new_dimensions(height, width, ref_h, ref_w, 0)
+    return _resize_ref_image(image_ref, new_h, new_w)
+
+
 def _save_debug_ref_mask(ref_mask, save_masks=False):
     if not save_masks:
         return
@@ -614,6 +633,15 @@ def _matte_ref_image(image_ref, ref_mask, model_def):
     return torch.where(foreground.expand_as(image_ref), image_ref, background.expand_as(image_ref))
 
 
+def _set_black_mask_background(mask_cthw, color):
+    mask = mask_cthw if mask_cthw.shape[0] == 3 else mask_cthw[:1].expand(3, -1, -1, -1)
+    off_threshold = (30.0 - 127.5) / 127.5
+    rgb = mask.float().permute(1, 0, 2, 3)
+    background = (rgb[:, 0:1] < off_threshold) & (rgb[:, 1:2] < off_threshold) & (rgb[:, 2:3] < off_threshold)
+    color = to_rgb_tensor(color, device=mask.device, dtype=mask.dtype).view(3, 1, 1, 1) / 127.5 - 1.0
+    return torch.where(background.permute(1, 0, 2, 3).expand_as(mask), color.expand_as(mask), mask)
+
+
 def custom_image_ref_postprocessor_scail2(
     src_ref_images, src_ref_masks, width, height, image_start, image_prompt_type, image_end, video_prompt_type,
     send_cmd, model_def, custom_settings, image_start_tensor=None, pre_video_frame=None,
@@ -629,19 +657,21 @@ def custom_image_ref_postprocessor_scail2(
     if send_cmd is not None:
         send_cmd("progress", [0, "Building SCAIL-2 Image Reference Mask"])
 
-    image_ref = _tensor_or_image_to_cthw(ref_source, "cpu", torch.float32)
-    if image_ref.shape[-2:] != (height, width):
-        image_ref = F.interpolate(image_ref.permute(1, 0, 2, 3), size=(height, width), mode="bilinear", align_corners=False).permute(1, 0, 2, 3)
+    image_ref = _resize_ref_image_for_mode(_tensor_or_image_to_cthw(ref_source, "cpu", torch.float32), height, width, video_prompt_type, model_def)
+    ref_h, ref_w = image_ref.shape[-2:]
 
     ref_mask = _auto_ref_mask(
-        image_ref, custom_settings, model_def, height, width, image_ref.device, image_ref.dtype,
+        image_ref, custom_settings, model_def, ref_h, ref_w, image_ref.device, image_ref.dtype,
         max_people=_extract_max_people(video_prompt_type),
     )
     if ref_mask is None or float(ref_mask.max()) <= 0:
         raise ValueError("SCAIL-2 could not extract the image reference mask. Check Image Ref Keyword content.")
 
     ref_mask = normalize_single_color_mask(ref_mask, model_def)
-    image_ref = _matte_ref_image(image_ref, ref_mask, model_def)
+    if test_scail2_replace(video_prompt_type):
+        image_ref = _matte_ref_image(image_ref, ref_mask, model_def)
+    else:
+        ref_mask = _set_black_mask_background(ref_mask, [255, 255, 255])
     return [image_ref, ref_mask], None
 
 

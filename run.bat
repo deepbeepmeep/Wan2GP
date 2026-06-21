@@ -42,6 +42,11 @@ echo ======================================
 SET "SCRIPT_DIR=%~dp0"
 SET "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 
+:: Disable vLLM for prompt enhancer (uses mmgp offload + CUDA graphs which
+:: can cause device-mismatch errors on some GPU setups). Falls back to the
+:: legacy PyTorch runner instead.
+set WGP_QWEN35_PROMPT_ENHANCER_VLLM=0
+
 :: Just runs the server; please run setup.bat if you have not already
 IF "%RUN_FULL%"=="1" (
     conda run -n wan2gp python wgp.py --listen

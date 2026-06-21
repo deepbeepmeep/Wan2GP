@@ -37,6 +37,9 @@ from wgp_fastapi.models import (
     TaskStatus,
     FluxImageModel,
     MagicMaskResponse,
+    PromptEnhancerModel,
+    PromptEnhanceRequest,
+    PromptEnhanceResponse,
 )
 
 app = FastAPI(
@@ -735,6 +738,99 @@ async def magic_mask(
             "context": {
                 "prompt": prompt,
                 "image_uploaded": image is not None,
+            },
+        }
+        raise HTTPException(status_code=500, detail=error_detail)
+
+
+@app.post(
+    "/api/v1/prompt-enhance",
+    response_model=PromptEnhanceResponse,
+    summary="Prompt Enhancement",
+    description="Enhance a text prompt using the prompt enhancer model. "
+    "Optionally accepts an image for image-guided enhancement.",
+)
+async def prompt_enhance(
+    prompt: str = Form(
+        ...,
+        description="The text prompt to enhance",
+    ),
+    image: UploadFile = File(
+        None,
+        description="Optional image for image-guided prompt enhancement",
+    ),
+    model: PromptEnhancerModel = Form(
+        default=PromptEnhancerModel.FLORENCE2_LLAMA32,
+        description="Prompt enhancer model to use",
+    ),
+    max_new_tokens: int = Form(
+        default=512,
+        ge=64,
+        le=2048,
+        description="Maximum tokens for generation",
+    ),
+    temperature: float = Form(
+        default=0.6,
+        ge=0.0,
+        le=2.0,
+        description="Sampling temperature",
+    ),
+    top_p: float = Form(
+        default=0.9,
+        ge=0.0,
+        le=1.0,
+        description="Top-p sampling parameter",
+    ),
+    seed: int = Form(
+        default=-1,
+        description="Random seed (-1 for random)",
+    ),
+) -> PromptEnhanceResponse:
+    """Enhance a text prompt, optionally guided by an image."""
+    try:
+        image_bytes = None
+        if image is not None:
+            image_bytes = image.file.read()
+
+        # Call the service
+        from wgp_fastapi.services.prompt_enhance import enhance_prompt
+
+        enhanced = enhance_prompt(
+            prompt=prompt,
+            model=model,
+            image_bytes=image_bytes,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            seed=seed if seed >= 0 else None,
+        )
+
+        return PromptEnhanceResponse(
+            enhanced_prompt=enhanced,
+            model_used=model.display_name,
+            seed_used=seed if seed >= 0 else None,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+
+        tb = traceback.format_exc()
+        print(f"[ERROR] prompt-enhance endpoint failed: {e}")
+        print(tb)
+        error_detail = {
+            "error": str(e),
+            "type": type(e).__name__,
+            "traceback": tb,
+            "context": {
+                "prompt": prompt,
+                "model": model,
+                "image_uploaded": image is not None,
+                "max_new_tokens": max_new_tokens,
+                "temperature": temperature,
+                "top_p": top_p,
+                "seed": seed,
             },
         }
         raise HTTPException(status_code=500, detail=error_detail)

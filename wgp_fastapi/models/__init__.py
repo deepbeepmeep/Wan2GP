@@ -13,6 +13,11 @@ from wgp_fastapi.models.flux_image import (
 from wgp_fastapi.models.magic_mask import (
     MagicMaskResponse,
 )
+from wgp_fastapi.models.prompt_enhance import (
+    PromptEnhancerModel,
+    PromptEnhanceRequest,
+    PromptEnhanceResponse,
+)
 
 __all__ = [
     # Flux Image
@@ -25,4 +30,8 @@ __all__ = [
     "I2VVideoModel",
     # Magic Mask
     "MagicMaskResponse",
+    # Prompt Enhancement
+    "PromptEnhancerModel",
+    "PromptEnhanceRequest",
+    "PromptEnhanceResponse",
 ]

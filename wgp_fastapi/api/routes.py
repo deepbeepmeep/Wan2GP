@@ -347,6 +347,16 @@ async def health_check():
     return {"status": "healthy"}
 
 
+@app.get("/api/v1/version")
+async def get_version():
+    """Get the FluxMotion API version from flux_motion.txt."""
+    version_path = project_root / "flux_motion.txt"
+    if not version_path.exists():
+        raise HTTPException(status_code=404, detail="Version file not found")
+    version = version_path.read_text().strip()
+    return {"version": version, "file": "flux_motion.txt"}
+
+
 @app.get("/status")
 async def server_status():
     """Get the current server status, including whether the server is

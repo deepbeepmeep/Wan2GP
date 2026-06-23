@@ -135,8 +135,12 @@ class FluxImageRequest(BaseModel):
             # Output - auto-generate uuid filename
             "output_filename": f"{uuid.uuid4()}.png",
             # LoRA settings - WanGP expects activated_loras
-            "activated_loras": loras_list,
+            "activated_loras": loras_list
         }
+
+        # apply guidance scale fix for qwen edit models
+        if self.model.is_image_edit:
+            settings["guidance_scale"] = 1
 
         # Set LoRA multipliers: improved_klein at 1.0, consistency V2 at 0.5
         if loras_list:

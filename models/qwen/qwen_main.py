@@ -156,6 +156,30 @@ class model_factory():
         outpainting_dims = None,
         **bbargs
     ):
+        print(f"\n--- Generation Settings ---")
+        print(f"Seed: {seed}")
+        print(f"Input Prompt: {input_prompt}")
+        print(f"N Prompt: {n_prompt}")
+        print(f"Sampling Steps: {sampling_steps}")
+        print(f"Width: {width}, Height: {height}")
+        print(f"Guide Scale: {guide_scale}")
+        print(f"Batch Size: {batch_size}")
+        print(f"Video Prompt Type: '{video_prompt_type}'")
+        print(f"Denoising Strength: {denoising_strength}")
+        print(f"Masking Strength: {masking_strength}")
+        print(f"Model Mode: {model_mode}")
+        print(f"Sample Solver: {sample_solver}")
+        print(f"Joint Pass: {joint_pass}")
+        print(f"Fit Into Canvas: {fit_into_canvas}")
+        print(f"Image Ref Images Count: {len(input_ref_images) if isinstance(input_ref_images, list) else (1 if input_ref_images is not None else 0)}")
+        print(f"Input Frames: {'Yes' if input_frames is not None else 'No'}")
+        print(f"Input Masks: {'Yes' if input_masks is not None else 'No'}")
+        print(f"VAE Tile Size: {VAE_tile_size}")
+        print(f"Outpainting Dims: {outpainting_dims}")
+        print(f"BBArgs: {bbargs}")
+        print(f"Loras: {loras_slists}")
+        print(f"---------------------------\n")
+
         # Generate with different aspect ratios
         aspect_ratios = {
         "1:1": (1328, 1328),

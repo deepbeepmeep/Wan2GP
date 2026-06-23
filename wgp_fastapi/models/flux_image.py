@@ -16,8 +16,11 @@ FLUX_IMAGE_MODEL_TYPE_MAP = {
     "flux_2_klein_base_9b": "flux2_klein_base_9b",
     "flux_2_klein_4b": "flux2_klein_4b",
     "pi_flux2": "pi_flux2",
+    "image_edit_plus_2509_nunchaku_fp4": "qwen_image_edit_plus_20B_nunchaku_r128_fp4",
+    "image_edit_plus_2511": "qwen_image_edit_plus2_20B",
 }
 
+IMAGE_EDIT_MODELS = {"image_edit_plus_2509_nunchaku_fp4", "image_edit_plus_2511"}
 
 class FluxImageModel(str, Enum):
     """Supported models for flux-image generation."""
@@ -26,11 +29,18 @@ class FluxImageModel(str, Enum):
     FLUX_2_KLEIN_BASE_9B = "flux_2_klein_base_9b"
     FLUX_2_KLEIN_4B = "flux_2_klein_4b"
     PI_FLUX2 = "pi_flux2"
+    IMAGE_EDIT_PLUS_2509_NUNCHAKU_FP4 = "image_edit_plus_2509_nunchaku_fp4"
+    IMAGE_EDIT_PLUS_2511 = "image_edit_plus_2511"
 
     @property
     def model_type(self) -> str:
         """Get the WanGP model_type string for this model."""
         return FLUX_IMAGE_MODEL_TYPE_MAP.get(self.value, self.value)
+
+    @property
+    def is_image_edit(self) -> bool:
+        """Whether this model is an image edit model (vs flux generation)."""
+        return self.value in IMAGE_EDIT_MODELS
 
 
 class FluxImageTaskResponse(BaseModel):
@@ -104,6 +114,13 @@ class FluxImageRequest(BaseModel):
             loras_list = []
 
 
+        # flux uses "I" for image inputs
+        image_prompt_type = "I"
+
+        # qwen needs "KI" to keep background
+        if self.model.is_image_edit:
+            image_prompt_type = "KI"
+
         settings = {
             # Core parameters
             "prompt": self.prompt,
@@ -114,7 +131,7 @@ class FluxImageRequest(BaseModel):
             "model_type": self.model.model_type,
             "image_mode": 1,  # Image generation mode
             # Image parameters
-            "image_prompt_type": self.image_prompt_type,
+            "image_prompt_type": image_prompt_type,
             # Output - auto-generate uuid filename
             "output_filename": f"{uuid.uuid4()}.png",
             # LoRA settings - WanGP expects activated_loras
@@ -153,7 +170,7 @@ class FluxImageRequest(BaseModel):
         else:
             # Default behaviour (no mask)
             if image_start_path:
-                settings["video_prompt_type"] = "I"
+                settings["video_prompt_type"] = image_prompt_type
                 settings["image_refs"] = [image_start_path]
 
         return settings

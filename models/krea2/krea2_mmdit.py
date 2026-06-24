@@ -11,12 +11,12 @@ from shared.attention import pay_attention
 
 
 def rope(pos: Tensor, dim: int, theta: float = 1e4, ntk: float = 1.0) -> Tensor:
-    scale = torch.arange(0, dim, 2, dtype=torch.float32, device=pos.device) / dim
+    scale = torch.arange(0, dim, 2, dtype=torch.float64, device=pos.device) / dim
     omega = 1.0 / ((theta * ntk) ** scale)
-    out = torch.einsum("...n,d->...nd", pos.float(), omega)
+    out = torch.einsum("...n,d->...nd", pos, omega)
     out = torch.stack([torch.cos(out), -torch.sin(out), torch.sin(out), torch.cos(out)], dim=-1)
     out = rearrange(out, "b n d (i j) -> b n d i j", i=2, j=2)
-    return out
+    return out.float()
 
 
 def _apply_rope_inplace(x: Tensor, freqs: Tensor) -> Tensor:
@@ -31,7 +31,16 @@ def _apply_rope_inplace(x: Tensor, freqs: Tensor) -> Tensor:
     return x
 
 
-def ropeapply(xq: Tensor, xk: Tensor, freqs: Tensor) -> tuple[Tensor, Tensor]:
+def _apply_rope_reference(x: Tensor, freqs: Tensor) -> Tensor:
+    x_ = x.float().reshape(*x.shape[:-1], -1, 1, 2)
+    freqs = freqs[:, None, :, :, :]
+    x_ = freqs[..., 0] * x_[..., 0] + freqs[..., 1] * x_[..., 1]
+    return x_.reshape(*x.shape).to(x.dtype)
+
+
+def ropeapply(xq: Tensor, xk: Tensor, freqs: Tensor, reference: bool = False) -> tuple[Tensor, Tensor]:
+    if reference:
+        return _apply_rope_reference(xq, freqs), _apply_rope_reference(xk, freqs)
     return _apply_rope_inplace(xq, freqs), _apply_rope_inplace(xk, freqs)
 
 
@@ -246,7 +255,7 @@ class Attention(nn.Module):
         q = k = v = None
         q, k, v = self.qknorm(qkv_list)
         if freqs is not None:
-            q, k = ropeapply(q, k, freqs)
+            q, k = ropeapply(q, k, freqs, reference=self.experimental_patch)
         qkv_list = [q, k, v]
         q = k = v = None
         out = attention(qkv_list, mask=mask, gqa=self.gqa, experimental_patch=self.experimental_patch)
@@ -336,8 +345,10 @@ class SingleStreamDiT(nn.Module):
         self.txtmlp = nn.Sequential(RMSNorm(config.txtdim), nn.Linear(config.txtdim, config.features), nn.GELU(approximate="tanh"), nn.Linear(config.features, config.features))
         self.last = LastLayer(config.features, config.patch, config.channels)
         self.tproj = nn.Sequential(nn.GELU(approximate="tanh"), nn.Linear(config.features, config.features * 6))
+        self.experimental_patch = False
 
     def set_experimental_patch(self, enabled: bool):
+        self.experimental_patch = enabled
         for module in self.modules():
             if isinstance(module, Attention):
                 module.experimental_patch = enabled
@@ -364,7 +375,9 @@ class SingleStreamDiT(nn.Module):
             pos = F.pad(pos, (0, 0, 0, padlen))
         mask = key_padding_mask(mask)
         if freqs is None:
-            freqs = self.posemb(pos).to(combined.dtype)
+            freqs = self.posemb(pos)
+            if not self.experimental_patch:
+                freqs = freqs.to(combined.dtype)
         return combined, txtlen, imglen, freqs, mask
 
     def forward(self, img: Tensor, context: Tensor, t: Tensor, pos: Tensor, mask: Tensor | None = None) -> Tensor:

@@ -1,9 +1,3 @@
-"""
-Pydantic models for image-to-video generation endpoints.
-
-Currently only supports: LTX 2 Video
-"""
-
 from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field

@@ -1,7 +1,3 @@
-"""
-FastAPI application with routes for text-to-image, image-to-image, and image-to-video generation.
-"""
-
 import glob
 import os
 import tempfile
@@ -43,9 +39,9 @@ from wgp_fastapi.models import (
 )
 
 app = FastAPI(
-    title="Wan2GP API",
-    description="FastAPI wrapper for Wan2GP - Text-to-Image, Image-to-Image, and Image-to-Video generation",
-    version="0.1.0",
+    title="FluxMotion FastAPI",
+    description="FastAPI wrapper for Wan2GP - Facilitates communication with the FluxMotion mobile app",
+    version="1.0.0",
 )
 
 # Add CORS middleware
@@ -79,7 +75,7 @@ _model_loading: bool = False         # Whether a model is currently being loaded
 _model_load_message: str = ""        # Human-readable status message for model loading
 
 
-def get_wgp_session():
+def _get_wgp_session():
     """Get or create the WanGPSession instance."""
     global _wgp_session, _model_loading, _model_load_message
 
@@ -133,7 +129,7 @@ def _process_queue_worker():
             _model_load_message = "Loading model..."
 
             try:
-                session = get_wgp_session()
+                session = _get_wgp_session()
 
                 # Replace -1 seed with an actual random seed so task status
                 # returns the real seed used, not -1
@@ -255,9 +251,9 @@ def _queue_flux_task(
     )
 
 
-def get_save_path() -> str:
+def _get_save_path() -> str:
     """Get the save path from the session."""
-    session = get_wgp_session()
+    session = _get_wgp_session()
     # Try to get the actual save_path from the runtime module
     try:
         runtime = session._ensure_runtime()
@@ -275,10 +271,10 @@ def get_save_path() -> str:
     return str(project_root / "output")
 
 
-def build_file_url(request: Request, file_path: str) -> str:
+def _build_file_url(request: Request, file_path: str) -> str:
     """Build a full URL for a generated file."""
     base_url = str(request.base_url).rstrip("/")
-    save_path = get_save_path()
+    save_path = _get_save_path()
 
     # Use pathlib for cross-platform path handling
     from pathlib import Path
@@ -299,7 +295,7 @@ def build_file_url(request: Request, file_path: str) -> str:
     return f"{base_url}/files/{rel_path.replace(os.sep, '/')}"
 
 
-def save_upload_file(upload_file: UploadFile, suffix: str = ".png") -> str:
+def _save_upload_file(upload_file: UploadFile, suffix: str = ".png") -> str:
     """Save an uploaded file to a temp directory and return the path.
 
     Automatically converts non-JPEG images (HEIC, HEIF, etc.) to JPEG using Pillow.
@@ -396,7 +392,7 @@ async def upscale(scale: int, image: UploadFile = File(None)):
     from PIL import Image
 
     # save the image to a temporary path
-    image_path = save_upload_file(image, suffix=".png")
+    image_path = _save_upload_file(image, suffix=".png")
 
     return Response(upscaler.upscale(image_path, scale))
 
@@ -426,9 +422,9 @@ async def image_to_video(
     try:
         # Handle image uploads
         if image is not None:
-            image_path = save_upload_file(image, suffix=".png")
+            image_path = _save_upload_file(image, suffix=".png")
         if image_end is not None:
-            image_end_path = save_upload_file(image_end, suffix=".png")
+            image_end_path = _save_upload_file(image_end, suffix=".png")
 
         # Create request object
         from wgp_fastapi.models.i2v import I2VVideoModel
@@ -474,7 +470,7 @@ async def serve_file(file_path: str):
     """Serve generated files."""
     from pathlib import Path
 
-    save_path = get_save_path()
+    save_path = _get_save_path()
     save_path_p = Path(save_path)
 
     # Try multiple possible locations
@@ -542,21 +538,21 @@ async def flux_image(
         try:
             # Handle image upload
             if image is not None:
-                image_path = save_upload_file(image, suffix=".png")
+                image_path = _save_upload_file(image, suffix=".png")
         except Exception as e:
             print(f"Unable to process the image: {e}")
 
         try:
             # Handle mask upload
             if mask is not None:
-                mask_path = save_upload_file(mask, suffix=".png")
+                mask_path = _save_upload_file(mask, suffix=".png")
         except Exception as e:
             print(f"Unable to process the mask: {e}")
 
         try:
             # Handle inpaint-reference upload
             if inpaint_reference is not None:
-                inpaint_reference_path = save_upload_file(inpaint_reference, suffix=".png")
+                inpaint_reference_path = _save_upload_file(inpaint_reference, suffix=".png")
         except Exception as e:
             print(f"Unable to process the inpaint-reference: {e}")
 
@@ -601,55 +597,6 @@ async def flux_image(
         raise HTTPException(status_code=500, detail=error_detail)
 
 
-@app.get(
-    "/api/v1/flux-image/{task_id}",
-    response_model=FluxImageResponse,
-    summary="Get task status",
-    description="Get the status of an async flux-image generation task.",
-)
-async def get_flux_image_task(request: Request, task_id: str):
-    """Get the status of an async flux-image task."""
-    from shared.api import GenerationResult
-
-    if task_id not in _tasks:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    task = _tasks[task_id]
-    status = task["status"]
-
-    # Task still running
-    if status == TASK_PENDING:
-        return FluxImageResponse(
-            status=TASK_PENDING,
-            task_id=task_id,
-            progress=0,
-        )
-
-    if status == TASK_RUNNING:
-        # Estimate progress - check the job
-        job = task.get("job")
-        if job and hasattr(job, "done") and not job.done:
-            # Job in progress - can't get detailed progress easily
-            # Could add more detailed progress tracking here
-            return FluxImageResponse(
-                status=TASK_RUNNING,
-                task_id=task_id,
-                progress=50,  # Middle of generation
-            )
-        return FluxImageResponse(
-            status=TASK_RUNNING,
-            task_id=task_id,
-            progress=50,
-        )
-
-    # Task not found or still pending/running
-    return FluxImageResponse(
-        status=TASK_RUNNING,
-        task_id=task_id,
-        progress=50,
-    )
-
-
 @app.post(
     "/api/v1/magic-mask",
     response_model=MagicMaskResponse,
@@ -671,7 +618,7 @@ async def magic_mask(
 
     try:
         # Save uploaded file and open as PIL Image
-        image_path = save_upload_file(image, suffix=".png")
+        image_path = _save_upload_file(image, suffix=".png")
         pil_image = Image.open(image_path)
 
         # Lazy import magic_mask to avoid loading order issues
@@ -724,8 +671,8 @@ async def magic_mask(
         composited.save(overlay_path, "PNG")
 
         # Build the full URLs
-        image_url = build_file_url(request, mask_path)
-        overlay_url = build_file_url(request, overlay_path)
+        image_url = _build_file_url(request, mask_path)
+        overlay_url = _build_file_url(request, overlay_path)
 
         return MagicMaskResponse(
             image_url=image_url,
@@ -847,20 +794,6 @@ async def prompt_enhance(
 
 
 @app.get(
-    "/api/v1/queue",
-    summary="Get queue info",
-    description="Get the current queue information.",
-)
-async def get_queue():
-    """Get current queue info including all queued task IDs."""
-    return {
-        "current_task_id": _current_task_id,
-        "queue": list(_async_queue),
-        "queue_size": len(_async_queue),
-    }
-
-
-@app.get(
     "/api/v1/tasks/{task_id}",
     response_model=TaskStatus,
     summary="Get task status",
@@ -944,7 +877,7 @@ async def get_task_status(request: Request, task_id: str) -> TaskStatus:
 
     if result and result.success and result.generated_files:
         # Use first generated file as finished_image URL
-        finished_file_url = build_file_url(request, result.generated_files[0])
+        finished_file_url = _build_file_url(request, result.generated_files[0])
         return TaskStatus(
             progress=100,
             preview_image=None,
@@ -1003,7 +936,7 @@ async def cancel_task(task_id: str):
 
     # Running task — cancel via session
     if status == TASK_RUNNING:
-        session = get_wgp_session()
+        session = _get_wgp_session()
         session.cancel()
         return JSONResponse(
             content={"status": "cancelling", "task_id": task_id},

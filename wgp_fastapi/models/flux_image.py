@@ -148,29 +148,55 @@ class FluxImageRequest(BaseModel):
 
         # Handle mask inpainting
         if self.mask_path:
-            # For inpainting: V=control guide, I=image refs, A=mask
-            settings["video_prompt_type"] = "VIA"
             settings["image_mask"] = [self.mask_path]
 
-            # The input image (or inpaint-reference if provided) serves as the control guide
-            guide_path = self.inpaint_reference_path or image_start_path
-            if guide_path:
-                settings["image_guide"] = [guide_path]
+            if self.model.is_image_edit:
+                # Qwen Image Edit Plus — inpaint mode with reference support
+                # inpaint_video_prompt_type = "VAGIK": V=control, A=mask, G=masking_strength,
+                #   I=image refs, K=keep first ref's background (prevents background removal)
+                settings["image_mode"] = 2
+                settings["video_prompt_type"] = "VAGIK"
+                settings["model_mode"] = 0  # Masked Denoising
 
-            # Build image_refs: input image still passed in as before
-            if image_start_path:
-                refs = [image_start_path]
-                # Add inpaint-reference as an additional reference for inpainting context
-                if self.inpaint_reference_path and self.inpaint_reference_path != image_start_path:
-                    refs.append(self.inpaint_reference_path)
-                settings["image_refs"] = refs
+                # The input image being edited serves as the control guide
+                if image_start_path:
+                    settings["image_guide"] = [image_start_path]
 
-            # set the masking strength based on whether you gave an image;
-            # users tend to want less side effects of non-masked areas if you give an image reference
-            if self.inpaint_reference_path:
+                # Image refs: input image + optional inpaint-reference as extra context
+                if image_start_path:
+                    refs = [image_start_path]
+                    if self.inpaint_reference_path and self.inpaint_reference_path != image_start_path:
+                        refs.append(self.inpaint_reference_path)
+                    settings["image_refs"] = refs
+                elif self.inpaint_reference_path:
+                    settings["image_guide"] = [self.inpaint_reference_path]
+
+                # Masking strength: milder with a reference image, stronger without
                 settings["masking_strength"] = 0.5
             else:
-                settings["masking_strength"] = 0.25
+                # Flux — existing inpainting behavior
+                # For inpainting: V=control guide, I=image refs, A=mask
+                settings["video_prompt_type"] = "VIA"
+
+                # The input image (or inpaint-reference if provided) serves as the control guide
+                guide_path = self.inpaint_reference_path or image_start_path
+                if guide_path:
+                    settings["image_guide"] = [guide_path]
+
+                # Build image_refs: input image still passed in as before
+                if image_start_path:
+                    refs = [image_start_path]
+                    # Add inpaint-reference as an additional reference for inpainting context
+                    if self.inpaint_reference_path and self.inpaint_reference_path != image_start_path:
+                        refs.append(self.inpaint_reference_path)
+                    settings["image_refs"] = refs
+
+                # set the masking strength based on whether you gave an image;
+                # users tend to want less side effects of non-masked areas if you give an image reference
+                if self.inpaint_reference_path:
+                    settings["masking_strength"] = 0.5
+                else:
+                    settings["masking_strength"] = 0.25
         else:
             # Default behaviour (no mask)
             if image_start_path:

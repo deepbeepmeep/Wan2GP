@@ -35,7 +35,7 @@ def ropeapply(xq: Tensor, xk: Tensor, freqs: Tensor) -> tuple[Tensor, Tensor]:
     return _apply_rope_inplace(xq, freqs), _apply_rope_inplace(xk, freqs)
 
 
-def attention(qkv_list: list[Tensor], mask: Tensor | None = None, scale: float | None = None, gqa: bool = False) -> Tensor:
+def attention(qkv_list: list[Tensor], mask: Tensor | None = None, scale: float | None = None, gqa: bool = False, experimental_patch: bool = False) -> Tensor:
     q, k, v = qkv_list
     qkv_list.clear()
     q = rearrange(q, "B H L D -> B L H D")
@@ -47,20 +47,28 @@ def attention(qkv_list: list[Tensor], mask: Tensor | None = None, scale: float |
         batch = q.shape[0]
         groups = k.shape[2]
         repeat = q.shape[2] // groups
-        q = rearrange(q, "B L (G R) D -> (B G R) L 1 D", G=groups, R=repeat).contiguous()
-        k = rearrange(k, "B L G D -> B G 1 L D").repeat_interleave(repeat, dim=2)
-        v = rearrange(v, "B L G D -> B G 1 L D").repeat_interleave(repeat, dim=2)
-        k = rearrange(k, "B G R L D -> (B G R) L 1 D").contiguous()
-        v = rearrange(v, "B G R L D -> (B G R) L 1 D").contiguous()
+        q = rearrange(q, "B L (G R) D -> (B G R) L 1 D", G=groups, R=repeat)
+        if experimental_patch:
+            q = q.contiguous()
+            k = rearrange(k, "B L G D -> B G 1 L D").repeat_interleave(repeat, dim=2)
+            v = rearrange(v, "B L G D -> B G 1 L D").repeat_interleave(repeat, dim=2)
+        else:
+            k = rearrange(k, "B L G D -> B G 1 L D").expand(batch, groups, repeat, -1, -1)
+            v = rearrange(v, "B L G D -> B G 1 L D").expand(batch, groups, repeat, -1, -1)
+        k = rearrange(k, "B G R L D -> (B G R) L 1 D")
+        v = rearrange(v, "B G R L D -> (B G R) L 1 D")
+        if experimental_patch:
+            k = k.contiguous()
+            v = v.contiguous()
         if mask is not None:
-            mask = mask.repeat_interleave(groups * repeat, dim=0).contiguous()
+            mask = mask.repeat_interleave(groups * repeat, dim=0).contiguous() if experimental_patch or batch > 1 else mask.expand(groups * repeat, -1, -1, -1)
         qkv_list = [q, k, v]
         q = k = v = None
-        out = pay_attention(qkv_list, attention_mask=mask, softmax_scale=scale, recycle_q=False)
+        out = pay_attention(qkv_list, attention_mask=mask, softmax_scale=scale, recycle_q=not experimental_patch)
         return rearrange(out, "(B G R) L 1 D -> B L (G R D)", B=batch, G=groups, R=repeat)
     qkv_list = [q, k, v]
     q = k = v = None
-    return rearrange(pay_attention(qkv_list, attention_mask=mask, softmax_scale=scale, recycle_q=False), "B L H D -> B L (H D)")
+    return rearrange(pay_attention(qkv_list, attention_mask=mask, softmax_scale=scale, recycle_q=not experimental_patch), "B L H D -> B L (H D)")
 
 
 def key_padding_mask(mask: Tensor) -> Tensor:
@@ -226,6 +234,7 @@ class Attention(nn.Module):
         self.gate = nn.Linear(dim, dim, bias=bias)
         self.qknorm = QKNorm(self.headdim)
         self.gqa = self.heads != self.kvheads
+        self.experimental_patch = False
         self.wo = nn.Linear(dim, dim, bias=bias)
 
     def forward(self, qkv: Tensor, freqs: Tensor | None = None, mask: Tensor | None = None) -> Tensor:
@@ -240,7 +249,7 @@ class Attention(nn.Module):
             q, k = ropeapply(q, k, freqs)
         qkv_list = [q, k, v]
         q = k = v = None
-        out = attention(qkv_list, mask=mask, gqa=self.gqa)
+        out = attention(qkv_list, mask=mask, gqa=self.gqa, experimental_patch=self.experimental_patch)
         gate = F.sigmoid(self.gate(qkv))
         out.mul_(gate)
         del gate
@@ -327,6 +336,11 @@ class SingleStreamDiT(nn.Module):
         self.txtmlp = nn.Sequential(RMSNorm(config.txtdim), nn.Linear(config.txtdim, config.features), nn.GELU(approximate="tanh"), nn.Linear(config.features, config.features))
         self.last = LastLayer(config.features, config.patch, config.channels)
         self.tproj = nn.Sequential(nn.GELU(approximate="tanh"), nn.Linear(config.features, config.features * 6))
+
+    def set_experimental_patch(self, enabled: bool):
+        for module in self.modules():
+            if isinstance(module, Attention):
+                module.experimental_patch = enabled
 
     def _embed_context(self, context: Tensor, mask: Tensor) -> Tensor | None:
         self.txtfusion._interrupt = getattr(self, "_interrupt", False)

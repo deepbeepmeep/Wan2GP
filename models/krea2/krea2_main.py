@@ -136,9 +136,10 @@ class Krea2Pipeline:
         return self.vae.decode_to_cpu_uint8(latents)[:, :, 0]
 
     @torch.inference_mode()
-    def __call__(self, prompts, negative_prompts=None, width=1024, height=1024, steps=28, guidance=4.5, seed=0, y1=0.5, y2=1.15, mu=None, callback=None, loras_slists=None):
+    def __call__(self, prompts, negative_prompts=None, width=1024, height=1024, steps=28, guidance=4.5, seed=0, y1=0.5, y2=1.15, mu=None, callback=None, loras_slists=None, experimental_patch=False):
         patch = self.transformer.config.patch
         align = self.compression * patch
+        self.transformer.set_experimental_patch(bool(experimental_patch))
         width, height = int(width), int(height)
         if width % align != 0 or height % align != 0:
             raise ValueError(f"Krea 2 width and height must be divisible by {align}; got {width}x{height}.")
@@ -288,6 +289,7 @@ class model_factory:
         callback=None,
         VAE_tile_size=None,
         loras_slists=None,
+        custom_settings=None,
         **kwargs,
     ):
         if VAE_tile_size is not None and hasattr(self.vae, "use_tiling"):
@@ -309,7 +311,9 @@ class model_factory:
             kwargs_mu = None
         generator_seed = seed if seed is not None and seed >= 0 else torch.seed()
         prompts = [input_prompt] * int(batch_size)
-        images = self.pipeline(prompts, negative_prompts=[n_prompt or _DEFAULT_NEGATIVE_PROMPT] * len(prompts), width=width, height=height, steps=sampling_steps, guidance=guide_scale, seed=generator_seed, mu=kwargs_mu, callback=callback, loras_slists=loras_slists)
+        raw_experimental_patch = custom_settings.get("experimental_patch", False) if isinstance(custom_settings, dict) else False
+        experimental_patch = raw_experimental_patch.strip().lower() in {"1", "true", "yes", "on"} if isinstance(raw_experimental_patch, str) else bool(raw_experimental_patch)
+        images = self.pipeline(prompts, negative_prompts=[n_prompt or _DEFAULT_NEGATIVE_PROMPT] * len(prompts), width=width, height=height, steps=sampling_steps, guidance=guide_scale, seed=generator_seed, mu=kwargs_mu, callback=callback, loras_slists=loras_slists, experimental_patch=experimental_patch)
         if images is None:
             return None
         return images.transpose(0, 1)

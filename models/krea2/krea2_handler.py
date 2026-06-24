@@ -29,6 +29,9 @@ class family_handler:
             "no_negative_prompt": base_model_type == _TURBO_MODEL_TYPE,
             "no_background_removal": True,
             "vae_block_size": 16,
+            "custom_settings": [
+                {"id": "experimental_patch", "label": "Experimental Patch", "type": "dropdown", "choices": [("Disabled", False), ("Enabled", True)], "default": False},
+            ],
         }
 
     @staticmethod
@@ -106,6 +109,9 @@ class family_handler:
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update({"image_mode": 1, "batch_size": 1})
+        custom_settings = dict(ui_defaults.get("custom_settings") or {})
+        custom_settings["experimental_patch"] = False
+        ui_defaults["custom_settings"] = custom_settings
         if base_model_type == _TURBO_MODEL_TYPE:
             ui_defaults.update({"num_inference_steps": 8, "guidance_scale": 0, "resolution": "1024x1024"})
         else:

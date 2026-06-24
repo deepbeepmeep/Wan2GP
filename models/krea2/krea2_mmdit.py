@@ -47,20 +47,20 @@ def attention(qkv_list: list[Tensor], mask: Tensor | None = None, scale: float |
         batch = q.shape[0]
         groups = k.shape[2]
         repeat = q.shape[2] // groups
-        q = rearrange(q, "B L (G R) D -> (B G R) L 1 D", G=groups, R=repeat)
-        k = rearrange(k, "B L G D -> B G 1 L D").expand(batch, groups, repeat, -1, -1)
-        v = rearrange(v, "B L G D -> B G 1 L D").expand(batch, groups, repeat, -1, -1)
-        k = rearrange(k, "B G R L D -> (B G R) L 1 D")
-        v = rearrange(v, "B G R L D -> (B G R) L 1 D")
+        q = rearrange(q, "B L (G R) D -> (B G R) L 1 D", G=groups, R=repeat).contiguous()
+        k = rearrange(k, "B L G D -> B G 1 L D").repeat_interleave(repeat, dim=2)
+        v = rearrange(v, "B L G D -> B G 1 L D").repeat_interleave(repeat, dim=2)
+        k = rearrange(k, "B G R L D -> (B G R) L 1 D").contiguous()
+        v = rearrange(v, "B G R L D -> (B G R) L 1 D").contiguous()
         if mask is not None:
-            mask = mask.expand(groups * repeat, -1, -1, -1) if batch == 1 else mask.repeat_interleave(groups * repeat, dim=0)
+            mask = mask.repeat_interleave(groups * repeat, dim=0).contiguous()
         qkv_list = [q, k, v]
         q = k = v = None
-        out = pay_attention(qkv_list, attention_mask=mask, softmax_scale=scale, recycle_q=True)
+        out = pay_attention(qkv_list, attention_mask=mask, softmax_scale=scale, recycle_q=False)
         return rearrange(out, "(B G R) L 1 D -> B L (G R D)", B=batch, G=groups, R=repeat)
     qkv_list = [q, k, v]
     q = k = v = None
-    return rearrange(pay_attention(qkv_list, attention_mask=mask, softmax_scale=scale, recycle_q=True), "B L H D -> B L (H D)")
+    return rearrange(pay_attention(qkv_list, attention_mask=mask, softmax_scale=scale, recycle_q=False), "B L H D -> B L (H D)")
 
 
 def key_padding_mask(mask: Tensor) -> Tensor:

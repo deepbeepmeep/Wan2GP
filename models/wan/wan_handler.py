@@ -573,16 +573,14 @@ class family_handler():
                 extra_model_def["image_ref_choices"] = {
                     "choices": [
                         ("None", ""),
-                        ("Reference Image", "I"),
+                        ("Reference Images", "I"),
                     ],
                     "default": "",
-                    "label": "Reference Image",
+                    "label": "Reference Images",
                     "letters_filter": "KI",
                     "visible": True,
                 }
                 extra_model_def["no_background_removal"] = True
-                extra_model_def["one_image_ref_only"] = True
-                extra_model_def["one_image_ref_only_with_background"] = True
                 extra_model_def["magic_mask_object_colors"] = [(0, 0, 255), (255, 0, 0), (0, 255, 0), (255, 0, 255), (0, 255, 255), (255, 255, 0)]
                 extra_model_def["video_mask_label"] = "Video Mask, each Colored Mask corresponds to a person to Animate"
                 extra_model_def["custom_preprocessor_raw_inputs"] = True

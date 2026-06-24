@@ -85,6 +85,7 @@ If WanGP shows `SCAIL-2 could not extract the image reference mask. Check Image 
 
 - Review the Image References preview before generation. SCAIL-2 shows the prepared reference image and the reference mask there.
 - For best results, use a Reference Image or a Start Image that is closely aligned to the first frame of the control video. You can use an Image Model generator for this.
+- Extra Reference Images are experimental. The first image stays the primary reference; later images are fit into the output canvas and auto-masked with the same Image Ref Keyword content.
 - If Animate looks too close to the original control video person, try `Extract 3D Pose information`.
 - If pose mode loses important visual details, switch back to `Use Raw Control Video Content`.
 - Keep the number of selected people in `Type of Process` aligned with the number of colored people in the mask.
@@ -542,17 +543,22 @@ def _resize_ref_image(image_ref, height, width):
     return F.interpolate(image_ref.permute(1, 0, 2, 3), size=(height, width), mode="bilinear", align_corners=False).permute(1, 0, 2, 3)
 
 
+def _fit_ref_image_into_canvas(image_ref, height, width, model_def):
+    ref_h, ref_w = image_ref.shape[-2:]
+    scale = min(height / ref_h, width / ref_w)
+    new_h, new_w = max(1, int(ref_h * scale)), max(1, int(ref_w * scale))
+    resized = _resize_ref_image(image_ref, new_h, new_w)
+    color = to_rgb_tensor((model_def or {}).get("background_removal_color", [255, 255, 255]), device=image_ref.device, dtype=image_ref.dtype).view(3, 1, 1, 1) / 127.5 - 1.0
+    canvas = color.expand(3, image_ref.shape[1], height, width).clone()
+    top, left = (height - new_h) // 2, (width - new_w) // 2
+    canvas[:, :, top:top + new_h, left:left + new_w] = resized
+    return canvas
+
+
 def _resize_ref_image_for_mode(image_ref, height, width, video_prompt_type, model_def):
     ref_h, ref_w = image_ref.shape[-2:]
     if test_scail2_replace(video_prompt_type):
-        scale = min(height / ref_h, width / ref_w)
-        new_h, new_w = max(1, int(ref_h * scale)), max(1, int(ref_w * scale))
-        resized = _resize_ref_image(image_ref, new_h, new_w)
-        color = to_rgb_tensor((model_def or {}).get("background_removal_color", [255, 255, 255]), device=image_ref.device, dtype=image_ref.dtype).view(3, 1, 1, 1) / 127.5 - 1.0
-        canvas = color.expand(3, image_ref.shape[1], height, width).clone()
-        top, left = (height - new_h) // 2, (width - new_w) // 2
-        canvas[:, :, top:top + new_h, left:left + new_w] = resized
-        return canvas
+        return _fit_ref_image_into_canvas(image_ref, height, width, model_def)
     new_h, new_w = calculate_new_dimensions(height, width, ref_h, ref_w, 0)
     return _resize_ref_image(image_ref, new_h, new_w)
 
@@ -646,7 +652,9 @@ def custom_image_ref_postprocessor_scail2(
     src_ref_images, src_ref_masks, width, height, image_start, image_prompt_type, image_end, video_prompt_type,
     send_cmd, model_def, custom_settings, image_start_tensor=None, pre_video_frame=None,
 ):
-    ref_source = src_ref_images[0] if src_ref_images is not None and len(src_ref_images) > 0 else image_start_tensor
+    ref_sources = [] if src_ref_images is None else src_ref_images
+    ref_source = ref_sources[0] if len(ref_sources) > 0 else image_start_tensor
+    additional_ref_sources = ref_sources[1:]
     if ref_source is None:
         ref_source = pre_video_frame
     if ref_source is None:
@@ -655,7 +663,7 @@ def custom_image_ref_postprocessor_scail2(
         raise ValueError("SCAIL-2 needs a Reference Image, Start Image, or Continue Video frame to build the image reference mask.")
 
     if send_cmd is not None:
-        send_cmd("progress", [0, "Building SCAIL-2 Image Reference Mask"])
+        send_cmd("progress", [0, "Building SCAIL-2 Image Reference Masks" if additional_ref_sources else "Building SCAIL-2 Image Reference Mask"])
 
     image_ref = _resize_ref_image_for_mode(_tensor_or_image_to_cthw(ref_source, "cpu", torch.float32), height, width, video_prompt_type, model_def)
     ref_h, ref_w = image_ref.shape[-2:]
@@ -672,7 +680,22 @@ def custom_image_ref_postprocessor_scail2(
         image_ref = _matte_ref_image(image_ref, ref_mask, model_def)
     else:
         ref_mask = _set_black_mask_background(ref_mask, [255, 255, 255])
-    return [image_ref, ref_mask], None
+
+    prepared_refs = [image_ref, ref_mask]
+    for idx, additional_ref_source in enumerate(additional_ref_sources):
+        additional_ref = _fit_ref_image_into_canvas(_tensor_or_image_to_cthw(additional_ref_source, "cpu", torch.float32), height, width, model_def)
+        additional_h, additional_w = additional_ref.shape[-2:]
+        additional_mask = _auto_ref_mask(
+            additional_ref, custom_settings, model_def, additional_h, additional_w, additional_ref.device, additional_ref.dtype,
+            max_people=_extract_max_people(video_prompt_type),
+        )
+        if additional_mask is None or float(additional_mask.max()) <= 0:
+            raise ValueError(f"SCAIL-2 could not extract additional image reference mask #{idx + 1}. Check Image Ref Keyword content.")
+        additional_mask = normalize_single_color_mask(additional_mask, model_def)
+        if test_scail2_replace(video_prompt_type):
+            additional_ref = _matte_ref_image(additional_ref, additional_mask, model_def)
+        prepared_refs += [additional_ref, additional_mask]
+    return prepared_refs, None
 
 
 def prepare_scail2_conditioning(
@@ -704,6 +727,9 @@ def prepare_scail2_conditioning(
         raise ValueError("SCAIL-2 expected the prepared image reference and its colored mask as the first two image references.")
     image_ref = _tensor_or_image_to_cthw(input_ref_images[0], pipeline.device, pipeline.VAE_dtype)
     ref_mask = _tensor_or_image_to_cthw(input_ref_images[1], pipeline.device, pipeline.VAE_dtype)
+    additional_ref_pairs = input_ref_images[2:]
+    if len(additional_ref_pairs) % 2 != 0:
+        raise ValueError("SCAIL-2 expected additional image references to be prepared as image/mask pairs.")
 
     lat_h, lat_w = height // pipeline.vae_stride[1], width // pipeline.vae_stride[2]
     pose_frames = pose_pixels.shape[1]
@@ -716,6 +742,19 @@ def prepare_scail2_conditioning(
     _save_debug_ref_image(image_ref, SCAIL2_DEBUG_MATTED_REF_PATH, save_masks=save_masks)
 
     ref_latents = pipeline.vae.encode([image_ref], VAE_tile_size)[0].unsqueeze(0)
+    additional_ref_count = 0
+    additional_ref_latents = []
+    additional_ref_mask_latents = []
+    for idx in range(0, len(additional_ref_pairs), 2):
+        additional_ref = _tensor_or_image_to_cthw(additional_ref_pairs[idx], pipeline.device, pipeline.VAE_dtype)
+        additional_mask = _tensor_or_image_to_cthw(additional_ref_pairs[idx + 1], pipeline.device, pipeline.VAE_dtype)
+        additional_mask = prepare_scail2_mask(additional_mask, 1, height, width, pipeline.device, pipeline.VAE_dtype)
+        additional_mask = normalize_single_color_mask(additional_mask, model_def)
+        additional_ref_latents.append(pipeline.vae.encode([additional_ref], VAE_tile_size)[0])
+        additional_ref_mask_latents.append(extract_and_compress_mask_to_latent(additional_mask, additional_spatial_downsample=1, label=f"additional ref mask {idx // 2 + 1}").to(device=pipeline.device, dtype=pipeline.VAE_dtype))
+    if additional_ref_latents:
+        additional_ref_count = sum(latent.shape[1] for latent in additional_ref_latents)
+        ref_latents = torch.cat(additional_ref_latents + [ref_latents[0]], dim=1).unsqueeze(0)
 
     history_latents = None
     expected_history_lat_t = int((prefix_frames_count - 1) // pipeline.vae_stride[0]) + 1 if prefix_frames_count > 0 else 0
@@ -745,21 +784,34 @@ def prepare_scail2_conditioning(
     driving_masks = extract_and_compress_mask_to_latent(driving_mask_video, additional_spatial_downsample=1, label="driving mask").to(device=pipeline.device, dtype=pipeline.VAE_dtype).unsqueeze(0)
 
     ref_mask_latent_28ch = extract_and_compress_mask_to_latent(ref_mask, additional_spatial_downsample=1, label="ref mask").to(device=pipeline.device, dtype=pipeline.VAE_dtype)
-    null_noisy_mask = torch.zeros(ref_mask_latent_28ch.shape[0], lat_t, lat_h, lat_w, device=pipeline.device, dtype=ref_mask_latent_28ch.dtype)
-    ref_masks = torch.cat([ref_mask_latent_28ch, null_noisy_mask], dim=1).unsqueeze(0)
+    ref_mask_latents = torch.cat(additional_ref_mask_latents + [ref_mask_latent_28ch], dim=1) if additional_ref_mask_latents else ref_mask_latent_28ch
+    null_noisy_mask = torch.zeros(ref_mask_latents.shape[0], lat_t, lat_h, lat_w, device=pipeline.device, dtype=ref_mask_latents.dtype)
+    ref_masks = torch.cat([ref_mask_latents, null_noisy_mask], dim=1).unsqueeze(0)
 
-    main_grid_t = 1 + lat_t
     main_grid_h = lat_h // ps_h
     main_grid_w = lat_w // ps_w
     pose_grid_t = pose_latents.shape[2] // ps_t
-    if test_scail2_replace(video_prompt_type):
-        ref_freqs_cos, ref_freqs_sin = get_nd_rotary_pos_embed((0, 120, 0), (1, 120 + main_grid_h, main_grid_w), (1, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
-        video_freqs_cos, video_freqs_sin = get_nd_rotary_pos_embed((0, 0, 0), (lat_t, main_grid_h, main_grid_w), (lat_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
-        main_freqs_cos, main_freqs_sin = torch.cat([ref_freqs_cos, video_freqs_cos]), torch.cat([ref_freqs_sin, video_freqs_sin])
-        pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((0, 0, 120), (pose_grid_t, main_grid_h, 120 + main_grid_w), (pose_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
+    if additional_ref_count:
+        if test_scail2_replace(video_prompt_type):
+            ref_freqs_cos, ref_freqs_sin = get_nd_rotary_pos_embed((0, 120, 0), (additional_ref_count + 1, 120 + main_grid_h, main_grid_w), (additional_ref_count + 1, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
+            video_freqs_cos, video_freqs_sin = get_nd_rotary_pos_embed((additional_ref_count, 0, 0), (additional_ref_count + lat_t, main_grid_h, main_grid_w), (lat_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
+            main_freqs_cos, main_freqs_sin = torch.cat([ref_freqs_cos, video_freqs_cos]), torch.cat([ref_freqs_sin, video_freqs_sin])
+            pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((additional_ref_count, 0, 120), (additional_ref_count + pose_grid_t, main_grid_h, 120 + main_grid_w), (pose_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
+        else:
+            main_grid_t = additional_ref_count + 1 + lat_t
+            pose_start_t = additional_ref_count + 1
+            main_freqs_cos, main_freqs_sin = get_nd_rotary_pos_embed((0, 0, 0), (main_grid_t, main_grid_h, main_grid_w), (main_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
+            pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((pose_start_t, 0, 120), (pose_start_t + pose_grid_t, main_grid_h, 120 + main_grid_w), (pose_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
     else:
-        main_freqs_cos, main_freqs_sin = get_nd_rotary_pos_embed((0, 0, 0), (main_grid_t, main_grid_h, main_grid_w), (main_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
-        pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((1, 0, 120), (1 + pose_grid_t, main_grid_h, 120 + main_grid_w), (pose_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
+        main_grid_t = 1 + lat_t
+        if test_scail2_replace(video_prompt_type):
+            ref_freqs_cos, ref_freqs_sin = get_nd_rotary_pos_embed((0, 120, 0), (1, 120 + main_grid_h, main_grid_w), (1, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
+            video_freqs_cos, video_freqs_sin = get_nd_rotary_pos_embed((0, 0, 0), (lat_t, main_grid_h, main_grid_w), (lat_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
+            main_freqs_cos, main_freqs_sin = torch.cat([ref_freqs_cos, video_freqs_cos]), torch.cat([ref_freqs_sin, video_freqs_sin])
+            pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((0, 0, 120), (pose_grid_t, main_grid_h, 120 + main_grid_w), (pose_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
+        else:
+            main_freqs_cos, main_freqs_sin = get_nd_rotary_pos_embed((0, 0, 0), (main_grid_t, main_grid_h, main_grid_w), (main_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
+            pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((1, 0, 120), (1 + pose_grid_t, main_grid_h, 120 + main_grid_w), (pose_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
     pose_freqs_cos, pose_freqs_sin = _downsample_pose_freqs(pose_freqs_cos, pose_freqs_sin, pose_grid_t, main_grid_h, main_grid_w)
 
     return {

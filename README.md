@@ -55,7 +55,8 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-### 20th of June 2026: WanGP v12.26, Let's Experiment!
+### 20th of June 2026: WanGP v12.27, Let's Experiment!
+- **KREA-2** : new Image Generator model that claims to be the most aesthetic open-source image model available.
 
 - **LTX-2.3 Multiple Subject Reference**: Here comes another way to add *Reference Images* when using LTX 2.3. This finetune combines Distilled 1.1 and a new LoRA from *LiconStudio*. Just provide 2 to 5 reference images; background first, then subjects and objects. Please note that the embedded lora is quite fond of character sheets with white background.
 
@@ -75,6 +76,8 @@ I added an experimental support for text to image, not sure it works as MSR does
 
 - **Scail 2 Start Frame Fix**: you should no longer see a few bad frames at the beginning of the video in *Animate* mode. Many thanks to @pauldps that gave me part of the solution.
 
+- **Scail 2 Experimental Multi References**: you can now provide different point of view of your character. This is an official feature but experimental.
+
 - **PrismAudio**: this a *video to audio* processor, an alternative to *MMaudio*, quite good to add sound to an existing video. It requires a prompt. It is not made to generate spoken words.
 
 - **More Plugins Types: Temporal Upsamplers / Audio Processors**: you can now add your own Temporal Upsampler (*Rife* alternative) or *Audio Processor* (*MMAudio* alternative). As a reminder the previous version allowed already to add a custom *Spatial Upsampler*.
@@ -82,7 +85,9 @@ I added an experimental support for text to image, not sure it works as MSR does
 - **API+, MCP+.**: I have improved the API capabilties (please check *docs/API.md*), and widened *MCP* support. Feel free to share feedback on Discord
 
 *Update 12.25*: Ideograms v4 Turbo Time, MSR t2i, Scail2 parallel subwindows\
-*Update 12.26*: LTX2 inpainting & ingredients, Easy cap, Scail2 fix
+*Update 12.26*: LTX2 inpainting & ingredients, Easy cap, Scail2 fix\
+*Update 12.27*: KREA2, Scail2 multiref
+
 
 ### 14th of June 2026: WanGP v12.22, Go with the Flow
 - **Media Flow Plugin**: the *Full Video Process* is now named *Media Flow* because it can process *Images* as well as *Videos*. Even better, the new *Batch* mode can process any number of files: for instance, give *Media Flow* the path to the folder containing your collection of butterfly pictures and *all the corresponding images will be upsampled in one click*!

@@ -16,9 +16,9 @@ import os
 import tempfile
 import time
 from functools import lru_cache
+from . import files_locator as fl
 from .video_decode import probe_video_stream_metadata, decode_video_frames_ffmpeg, get_video_summary_extras
 from .virtual_media import get_virtual_image, parse_virtual_media_path, strip_virtual_media_suffix
-os.environ["U2NET_HOME"] = os.path.join(os.getcwd(), "ckpts", "rembg")
 
 
 from PIL import Image
@@ -345,9 +345,19 @@ def resize_lanczos(img, h, w, method = None):
     img = img.div(127.5).sub_(1)
     return img
 
+def resolve_rembg_home():
+    rembg_home = fl.locate_folder("rembg", error_if_none=False)
+    if rembg_home is None:
+        rembg_home = fl.get_smart_download_location(force_path="rembg")
+    return os.path.abspath(rembg_home)
+
+def new_rembg_session(*args, **kwargs):
+    os.environ["U2NET_HOME"] = resolve_rembg_home()
+    return new_session(*args, **kwargs)
+
 def remove_background(img, session=None):
     if session ==None:
-        session = new_session() 
+        session = new_rembg_session() 
     img = Image.fromarray(np.clip(255. * img.movedim(0, -1).cpu().numpy(), 0, 255).astype(np.uint8))
     img = remove(img, session=session, alpha_matting = True, bgcolor=[255, 255, 255, 0]).convert('RGB')
     return torch.from_numpy(np.array(img).astype(np.float32) / 255.0).movedim(-1, 0)
@@ -599,7 +609,7 @@ def calculate_dimensions_and_resize_image(image, canvas_height, canvas_width, fi
 
 def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, outpainting_ratio = "", background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0, background_removal_color =  [255, 255, 255] ):
     if rm_background:
-        session = new_session() 
+        session = new_rembg_session() 
 
     output_list =[]
     output_mask_list =[]

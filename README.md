@@ -55,7 +55,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-### 20th of June 2026: WanGP v12.27, Let's Experiment!
+### 24th of June 2026: WanGP v12.27, Let's Experiment!
 - **KREA-2** : new Image Generator model that claims to be the most aesthetic open-source image model available.
 
 - **LTX-2.3 Multiple Subject Reference**: Here comes another way to add *Reference Images* when using LTX 2.3. This finetune combines Distilled 1.1 and a new LoRA from *LiconStudio*. Just provide 2 to 5 reference images; background first, then subjects and objects. Please note that the embedded lora is quite fond of character sheets with white background.

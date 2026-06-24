@@ -249,6 +249,7 @@ class model_factory:
         save_quantized=False,
         **kwargs,
     ):
+        dtype = torch.bfloat16
         self.base_model_type = base_model_type
         self.model_def = model_def
         transformer_filename = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename

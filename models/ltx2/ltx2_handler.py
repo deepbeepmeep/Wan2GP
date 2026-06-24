@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .infos import LTX2_INFOS, LTX2_MSR_INFOS
 from .lora_utils import control_video_phase2_message
+from .ltx2_runtime import LTX2_OUTPAINTING_METHOD
 
 _GEMMA_FOLDER_URL = "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/gemma-3-12b-it-qat-q4_0-unquantized/"
 _GEMMA_FOLDER = "gemma-3-12b-it-qat-q4_0-unquantized"
@@ -28,13 +29,15 @@ _GEMMA_TOKENIZER_FILES = [
     "tokenizer_config.json",
 ]
 _LORAS_MIGRATED = False
-_LORA_SPEC_KEYS = ("distilled_lora", "distilled_1_1_lora", "union_control_lora", "id_lora", "outpaint_lora", "hdr_lora")
+_LORA_SPEC_KEYS = ("distilled_lora", "distilled_1_1_lora", "union_control_lora", "id_lora", "outpaint_lora", "inpaint_lora", "ingredients_lora", "hdr_lora")
 _SYSTEM_LORA_SPEC_KEYS = {
     "distilled": "distilled_lora",
     "distilled_1_1": "distilled_1_1_lora",
     "union_control": "union_control_lora",
     "id": "id_lora",
     "outpaint": "outpaint_lora",
+    "inpaint": "inpaint_lora",
+    "ingredients": "ingredients_lora",
     "hdr": "hdr_lora",
 }
 _EDITANYTHING_MODEL_DEF = {
@@ -77,6 +80,8 @@ _ARCH_SPECS = {
         "union_control_lora": "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",
         "id_lora": "id-lora-celebvhq-ltx2.3.safetensors",
         "outpaint_lora": "ltx-2.3-22b-ic-lora-outpaint.safetensors",
+        "inpaint_lora": "ltx-2.3-22b-ic-lora-in-outpainting-0.9.safetensors",
+        "ingredients_lora": "ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors",
         "hdr_lora": "ltx-2.3-22b-ic-lora-hdr-0.9.safetensors",
         "hdr_scene_embeddings": "ltx-2.3-22b-ic-lora-hdr-scene-emb.safetensors",
         "video_vae": "ltx-2.3-22b_vae.safetensors",
@@ -105,6 +110,20 @@ for model_type in LTX2_22B_CLASS:
 
 def _get_arch_spec(base_model_type: str | None) -> dict:
     return _ARCH_SPECS.get(base_model_type or "", _ARCH_SPECS["ltx2_19B"])
+
+
+def _ltx2_outpainting_method() -> int:
+    return LTX2_OUTPAINTING_METHOD
+
+
+def ltx2_guide_inpaint_color(video_prompt_type, any_outpainting, extra_settings):
+    if "M" in (video_prompt_type or "") or (any_outpainting and LTX2_OUTPAINTING_METHOD == 2):
+        return "66FF00"
+    return 0
+
+
+def ltx2_background_removal_color(video_prompt_type, extra_settings, **kwargs):
+    return [255, 255, 255]
 
 
 def _is_joyai_echo(base_model_type: str | None, model_def: dict | None = None) -> bool:
@@ -309,10 +328,13 @@ def _notify_control_video_phase2(base_model_type, model_def, inputs, any_outpain
     lora_dir = wgp.get_lora_dir(base_model_type) if wgp is not None and hasattr(wgp, "get_lora_dir") else None
     selected = {os.path.basename(lora).lower() for lora in inputs.get("activated_loras", []) or []}
     spec = _get_arch_spec(base_model_type)
+    outpainting_method = _ltx2_outpainting_method()
+    new_outpainting = any_outpainting and outpainting_method == 2
     builtins = [
         spec.get("hdr_lora") if base_model_type == "ltx2_22B" and "&" in video_prompt_type else None,
         spec.get("union_control_lora") if any(letter in video_prompt_type for letter in "OPDE") else None,
-        spec.get("outpaint_lora") if base_model_type == "ltx2_22B" and any_outpainting else None,
+        spec.get("outpaint_lora") if base_model_type == "ltx2_22B" and any_outpainting and outpainting_method == 1 else None,
+        spec.get("inpaint_lora") if base_model_type == "ltx2_22B" and ("M" in video_prompt_type and "A" in video_prompt_type or new_outpainting) else None,
     ]
     extra_loras = [os.path.join(lora_dir, name) if lora_dir else name for name in builtins if name and name.lower() not in selected]
     extra_mults = [1.0] * len(extra_loras)
@@ -419,9 +441,11 @@ class family_handler:
             extra_model_def.update(_EDITANYTHING_MODEL_DEF)
         
         if base_model_type in ["ltx2_22B"]:
+
             extra_model_def["video_guide_outpainting"] = [0,1]
-            extra_model_def["video_guide_outpainting_label"] = "Enable Spatial Outpainting on Control Video using Ic Lora Outpaint"
-            extra_model_def["guide_inpaint_color"] = 0
+            extra_model_def["video_guide_outpainting_label"] = "Enable Spatial Outpainting on Control Video using LTX2 Inpainting IC-LoRA"
+            extra_model_def["guide_inpaint_color"] = ltx2_guide_inpaint_color
+            extra_model_def["background_removal_color"] = ltx2_background_removal_color
 
         extra_model_def["preset_profiles_dir"] = [spec.get("distilled_preset_profiles_dir") if distilled else spec.get("preset_profiles_dir")]
         extra_model_def["extra_control_frames"] = 1
@@ -526,8 +550,8 @@ class family_handler:
                 "name": "Control Video Strength",
             }
             extra_model_def["masking_strength"] = {
-                "label": "Masked Control Duration (higher = longer masked reinjection)",
-                "name": "Masked Control Duration",
+                "label": "Unmasked Area Strength (higher = unmasked area closer to control video)",
+                "name": "Unmasked Area Strength",
             }
             if msr:
                 control_choices = [("No Control Video", "")]
@@ -537,13 +561,13 @@ class family_handler:
                 control_choices = [("No Video Process", "")]
                 control_choices += [("Transfer Human Motion", "PVG"), ("Transfer Human Motion With Pose Alignment", "OVG"), ("Transfer Depth", "DVG"), ("Transfer Canny Edges", "EVG"), ("LTX2 Raw Format / Control Video for Ic Lora", "VG")]
                 if base_model_type == "ltx2_22B":
-                    control_choices += [("Convert SDR to HDR (IC-LoRA)", f"V&G")]
+                    control_choices += [("Inpaint Masked Area", "MVG"), ("Ingredients Reference Sheet", "I"), ("Convert SDR to HDR (IC-LoRA)", f"V&G")]
                 control_choices += [("Inject Frames", "KFI")]
-            control_choices_image = [(label, value) for label, value in control_choices if value not in ("OVG", "KFI", "V&G")]
+            control_choices_image = [(label, value) for label, value in control_choices if value not in ("OVG", "MVG", "I", "KFI", "V&G")]
             if not msr:
                 guide_custom_choices = {
                     "choices": control_choices,
-                    "letters_filter": f"OPDEVG&KFI",
+                    "letters_filter": f"OPDEMVG&KFI",
                     "default": "VGI" if editanything_ref else "",
                     "label": "Control Video / Frames Injection",
                     "visible":  not editanything_ref  ,
@@ -725,6 +749,9 @@ class family_handler:
         video_prompt_type = inputs.get("video_prompt_type", "") or ""
         image_prompt_type = inputs.get("image_prompt_type", "") or ""
         audio_prompt_type = inputs.get("audio_prompt_type", "") or ""
+        from shared.utils.utils import get_outpainting_dims
+
+        any_outpainting = get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio) is not None
         if _is_msr_model(base_model_type, model_def):
             if any(letter in image_prompt_type for letter in "SVL"):
                 return "LTX2 MSR does not support Start Image, Continue Video, or Continue Last Video."
@@ -740,8 +767,6 @@ class family_handler:
                     return "LTX2 MSR Background + Subjects mode requires 2 to 5 reference images, with the background image first."
             elif not 1 <= len(image_refs) <= 4:
                 return "LTX2 MSR Subjects / Objects only mode requires 1 to 4 reference images."
-        from shared.utils.utils import get_outpainting_dims 
-        any_outpainting = get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio) is not None        
         if "2" in audio_prompt_type:
             if any(letter in audio_prompt_type for letter in "AK"):
                 return "LTX2 audio generation from Control Video must use the dedicated audio option, without an Audio Source or Control Video Audio Track prompt."
@@ -758,6 +783,15 @@ class family_handler:
                 return "LTX2 HDR IC-LoRA is not compatible with Pose/Depth/Canny/Outpaint control modes."
             if "F" in video_prompt_type:
                 return "LTX2 HDR IC-LoRA is not yet compatible with Inject Frames."
+        if "M" in video_prompt_type:
+            if base_model_type != "ltx2_22B":
+                return "LTX2 inpainting IC-LoRA is supported only with LTX-2.3 22B."
+            if "A" not in video_prompt_type:
+                return "LTX2 inpainting requires a Video Mask."
+            if float(inputs.get("masking_strength", 0)) != 0.0:
+                return "LTX2 inpainting IC-LoRA requires Unmasked Area Strength to be 0 as Unmasked Area is managed also by Inpainting."
+            if float(inputs.get("denoising_strength", 1)) != 1.0:
+                return "LTX2 inpainting IC-LoRA requires Control Video Strength to be 1."
         if any_outpainting:
             if "V" in video_prompt_type :
                 if any(letter in video_prompt_type for letter in "OPDE"):
@@ -766,11 +800,11 @@ class family_handler:
                     return "LTX2 outpainting on Control Video is not compatible with the ID-LoRA option."
                 if "F" in video_prompt_type :
                     return "LTX2 outpainting is not yet compatible with Inject Frames."
-                if "A" in video_prompt_type :
+                if "A" in video_prompt_type and _ltx2_outpainting_method() == 1:
                     return "LTX2 outpainting doesnt support Video Mask."
 
         guide_phases = inputs.get("guidance_phases", 1)
-        if guide_phases !=1 and "V" in video_prompt_type and any_outpainting:
+        if guide_phases !=1 and "V" in video_prompt_type and any_outpainting and _ltx2_outpainting_method() == 1:
             inputs["guidance_phases"]=  1            
             gr.Info("Number of Phases has been set to 1 as Outpainting is enabled")
         if "2" not in audio_prompt_type:
@@ -911,6 +945,14 @@ class family_handler:
 
         if settings_version < 2.58 and pipeline_kind == "distilled":
             ui_defaults["guidance_phases"]=2
+
+        if settings_version < 2.65: 
+            audio_prompt_type = ui_defaults.get("audio_prompt_type", None)
+            if audio_prompt_type is not None and "L" in audio_prompt_type:
+                audio_prompt_type =audio_prompt_type.replace("L", "")
+                ui_defaults["audio_prompt_type"] = audio_prompt_type
+
+            
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         default_perturbation_layers = _default_perturbation_layers(base_model_type)

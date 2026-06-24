@@ -16,9 +16,9 @@ import os
 import tempfile
 import time
 from functools import lru_cache
+from . import files_locator as fl
 from .video_decode import probe_video_stream_metadata, decode_video_frames_ffmpeg, get_video_summary_extras
 from .virtual_media import get_virtual_image, parse_virtual_media_path, strip_virtual_media_suffix
-os.environ["U2NET_HOME"] = os.path.join(os.getcwd(), "ckpts", "rembg")
 
 
 from PIL import Image
@@ -345,9 +345,19 @@ def resize_lanczos(img, h, w, method = None):
     img = img.div(127.5).sub_(1)
     return img
 
+def resolve_rembg_home():
+    rembg_home = fl.locate_folder("rembg", error_if_none=False)
+    if rembg_home is None:
+        rembg_home = fl.get_smart_download_location(force_path="rembg")
+    return os.path.abspath(rembg_home)
+
+def new_rembg_session(*args, **kwargs):
+    os.environ["U2NET_HOME"] = resolve_rembg_home()
+    return new_session(*args, **kwargs)
+
 def remove_background(img, session=None):
     if session ==None:
-        session = new_session() 
+        session = new_rembg_session() 
     img = Image.fromarray(np.clip(255. * img.movedim(0, -1).cpu().numpy(), 0, 255).astype(np.uint8))
     img = remove(img, session=session, alpha_matting = True, bgcolor=[255, 255, 255, 0]).convert('RGB')
     return torch.from_numpy(np.array(img).astype(np.float32) / 255.0).movedim(-1, 0)
@@ -367,6 +377,27 @@ def convert_tensor_to_image(t, frame_no = 0, mask_levels = False):
         return Image.fromarray(t.clone().mul_(255).permute(1,2,0).to(torch.uint8).cpu().numpy())
     else:
         return Image.fromarray(t.clone().add_(1.).mul_(127.5).permute(1,2,0).to(torch.uint8).cpu().numpy())
+
+def convert_video_tensor_to_uint8_chunked(video, value_range=(-1, 1), max_buffer_mb=256):
+    if video.dtype == torch.uint8:
+        return video
+    min_val, max_val = value_range
+    scale = 255.0 / (max_val - min_val)
+    output = torch.empty(video.shape, dtype=torch.uint8, device=video.device)
+    time_dim = 2 if video.ndim == 5 else 1 if video.ndim >= 4 else 0
+    frames = video.shape[time_dim]
+    frame_elems = max(1, video.numel() // max(1, frames))
+    chunk_frames = max(1, min(frames, int(max_buffer_mb * 1024 * 1024) // max(1, frame_elems * 2)))
+    buffer_shape = list(video.shape)
+    buffer_shape[time_dim] = chunk_frames
+    buffer = torch.empty(buffer_shape, dtype=torch.float16, device=video.device)
+    for start in range(0, frames, chunk_frames):
+        size = min(chunk_frames, frames - start)
+        work = buffer.narrow(time_dim, 0, size)
+        work.copy_(video.narrow(time_dim, start, size))
+        work.sub_(min_val).mul_(scale).clamp_(0, 255)
+        output.narrow(time_dim, start, size).copy_(work)
+    return output
 
 def save_image(tensor_image, name, frame_no = -1):
     convert_tensor_to_image(tensor_image, frame_no).save(name)
@@ -578,7 +609,7 @@ def calculate_dimensions_and_resize_image(image, canvas_height, canvas_width, fi
 
 def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, outpainting_ratio = "", background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0, background_removal_color =  [255, 255, 255] ):
     if rm_background:
-        session = new_session() 
+        session = new_rembg_session() 
 
     output_list =[]
     output_mask_list =[]

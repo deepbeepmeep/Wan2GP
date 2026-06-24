@@ -38,7 +38,27 @@ from .ltx_core.text_encoders.gemma import (
 from .ltx_core.text_encoders.gemma.feature_extractor import GemmaFeaturesExtractorProjLinear
 from .ltx_core.model.video_vae import SpatialTilingConfig, TemporalTilingConfig, TilingConfig
 from .ltx_core.types import AudioLatentShape, VideoPixelShape
+from .inpainting import (
+    _apply_ltx2_mask_blend,
+    _apply_ltx2_inpaint_preprocess_dilation,
+    _build_outpainting_mask_cthw,
+    _get_outpainting_inner_rect,
+    _ltx2_inpainting_enabled,
+    _merge_ltx2_masks,
+    _normalize_outpainting_dims,
+    _pad_ltx2_masked_control_video_tail,
+)
 from .lora_utils import is_ic_lora_filename, phase2_ic_lora_name
+from .ltx2_runtime import (
+    LTX2_INPAINTING_LAPLACIAN_BLEND,
+    LTX2_INPAINTING_LAPLACIAN_MASK_LOW_RES_DILATION,
+    LTX2_INPAINTING_PREPROCESS_MASK_DILATION,
+    LTX2_INPAINTING_SANITIZE_LAPLACIAN_SOURCE,
+    LTX2_OUTPAINTING_LAPLACIAN_BLEND,
+    LTX2_OUTPAINTING_LAPLACIAN_MASK_LOW_RES_DILATION,
+    LTX2_OUTPAINTING_METHOD,
+    LTX2_PAD_MASKED_CONTROL_VIDEO_TAIL,
+)
 from .ltx_pipelines.distilled import DistilledPipeline
 from .ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline
 from .ltx_pipelines.utils.constants import AUDIO_SAMPLE_RATE, DEFAULT_NEGATIVE_PROMPT
@@ -63,6 +83,11 @@ LTX2_EMBEDDING_LORA_PREFIXES = (
     "video_embeddings_connector.",
     "audio_embeddings_connector.",
 )
+
+
+def _ltx2_main_ingredients_enabled(base_model_type: str | None, video_prompt_type: str) -> bool:
+    video_prompt_type = video_prompt_type or ""
+    return base_model_type == "ltx2_22B" and "I" in video_prompt_type and not any(letter in video_prompt_type for letter in "KFVOPDEMA&")
 
 
 def _normalize_config(config_value):
@@ -641,34 +666,6 @@ def _build_frozen_control_video(
     return frozen_video[:, :target_frames]
 
 
-def _normalize_outpainting_dims(outpainting_dims) -> list[float] | None:
-    if outpainting_dims is None:
-        return None
-    if isinstance(outpainting_dims, str):
-        outpainting_dims = outpainting_dims.strip()
-        if not outpainting_dims or outpainting_dims.startswith("#"):
-            return None
-        outpainting_dims = outpainting_dims.split()
-    if not isinstance(outpainting_dims, (list, tuple)) or len(outpainting_dims) != 4:
-        return None
-    dims = [max(0.0, float(v)) for v in outpainting_dims]
-    return dims if any(dims) else None
-
-
-def _get_outpainting_inner_rect(height: int, width: int, outpainting_dims) -> tuple[int, int, int, int] | None:
-    dims = _normalize_outpainting_dims(outpainting_dims)
-    if dims is None or height <= 0 or width <= 0:
-        return None
-    from shared.utils.utils import get_outpainting_frame_location
-
-    inner_height, inner_width, margin_top, margin_left = get_outpainting_frame_location(int(height), int(width), dims, 1)
-    top = max(0, min(int(margin_top), int(height)))
-    left = max(0, min(int(margin_left), int(width)))
-    bottom = max(top, min(top + int(inner_height), int(height)))
-    right = max(left, min(left + int(inner_width), int(width)))
-    return (top, bottom, left, right) if bottom > top and right > left else None
-
-
 def _apply_gamma_to_media(media_tensor: torch.Tensor | None, gamma: float) -> bool:
     if media_tensor is None or not torch.is_tensor(media_tensor) or media_tensor.dim() < 2 or gamma <= 0 or media_tensor.numel() == 0:
         return False
@@ -1003,8 +1000,13 @@ class LTX2:
             _append_system_lora("hdr", 1.0, "ic-lora-hdr")
         if any(letter in video_prompt_type for letter in control_map):
             _append_system_lora("union_control", 1.0, "union-control")
-        if resolved_base_model_type == "ltx2_22B" and get_outpainting_dims(outpainting_setting, outpainting_ratio) is not None:
-            _append_system_lora("outpaint", 1.0, "outpaint")
+        any_outpainting = get_outpainting_dims(outpainting_setting, outpainting_ratio) is not None
+        if resolved_base_model_type == "ltx2_22B" and any_outpainting and LTX2_OUTPAINTING_METHOD == 1:
+            _append_system_lora("outpaint", 1.0, "ic-lora-outpaint")
+        if resolved_base_model_type == "ltx2_22B" and (_ltx2_inpainting_enabled(video_prompt_type) or any_outpainting and LTX2_OUTPAINTING_METHOD == 2):
+            _append_system_lora("inpaint", 1.0, "in-outpainting")
+        if _ltx2_main_ingredients_enabled(resolved_base_model_type, video_prompt_type):
+            _append_system_lora("ingredients", 1.4, "ic-lora-ingredients")
         if "1" in audio_prompt_type:
             _append_system_lora("id", 1.0 if guidance_phases == 1 else "1;0", "id-lora-celebvhq")
         return loras, loras_mult
@@ -1089,6 +1091,7 @@ class LTX2:
         distill = self.model_def.get("ltx2_pipeline", "two_stage") == "distilled"
         editanything = _is_editanything_model(self.model_def)
         msr = self.model_def.get("ltx2_msr", False)
+        main_ingredients = _ltx2_main_ingredients_enabled(self.base_model_type, video_prompt_type)
         output_frame_num = frame_num
         if msr and "I" in video_prompt_type and input_ref_images is not None:
             frame_num = max(frame_num, self.model_def.get("ltx2_msr_frame_count", 0))
@@ -1125,12 +1128,20 @@ class LTX2:
 
         outpainting_dims = _normalize_outpainting_dims(outpainting_dims)
         any_outpainting = outpainting_dims is not None and "V" in video_prompt_type
+        ltx2_inpainting = _ltx2_inpainting_enabled(video_prompt_type)
+        new_outpainting = any_outpainting and LTX2_OUTPAINTING_METHOD == 2
         self_refiner_max_plans = self.model_def.get("self_refiner_max_plans", 1)
-        requested_outpaint_gamma_roundtrip = self.base_model_type == "ltx2_22B" and any_outpainting 
+        requested_outpaint_gamma_roundtrip = self.base_model_type == "ltx2_22B" and any_outpainting and LTX2_OUTPAINTING_METHOD == 1
         if hdr_enabled:
             requested_outpaint_gamma_roundtrip = False
-        if any_outpainting:
+        if any_outpainting and LTX2_OUTPAINTING_METHOD == 1:
             guide_phases = 1
+        if new_outpainting:
+            input_masks = _merge_ltx2_masks(input_masks, _build_outpainting_mask_cthw(input_frames, outpainting_dims))
+            input_masks2 = _merge_ltx2_masks(input_masks2, _build_outpainting_mask_cthw(input_frames2, outpainting_dims))
+        if ltx2_inpainting:
+            input_frames, input_masks = _apply_ltx2_inpaint_preprocess_dilation(input_frames, input_masks, LTX2_INPAINTING_PREPROCESS_MASK_DILATION)
+            input_frames2, input_masks2 = _apply_ltx2_inpaint_preprocess_dilation(input_frames2, input_masks2, LTX2_INPAINTING_PREPROCESS_MASK_DILATION)
         use_outpaint_gamma_roundtrip = False
         latent_stride = 8
         if hasattr(self.pipeline, "pipeline_components"):
@@ -1154,6 +1165,8 @@ class LTX2:
                 use_outpaint_gamma_roundtrip = True
         if "G" not in video_prompt_type:
             denoising_strength = 1.0
+            masking_strength = 0.0
+        if ltx2_inpainting or new_outpainting:
             masking_strength = 0.0
         if hdr_enabled and input_video_is_hdr and torch.is_tensor(input_video):
             input_video = hdr_linear_to_vae_range(input_video, transform=LTX2_HDR_TRANSFORM).to(dtype=input_video.dtype)
@@ -1191,8 +1204,12 @@ class LTX2:
                 if merge_conditioning_and_guide or continuous_conditioning_and_guide:
                     if prefix_frames_count == 1:
                         input_frames[:, 0] = input_video[:, 0]
+                        if new_outpainting and input_masks is not None:
+                            input_masks[:, 0] = 0
                     else:
                         input_frames = torch.concat( [input_video[:, :prefix_frames_count],  input_frames[:, 1:]], dim=1)
+                        if new_outpainting and input_masks is not None:
+                            input_masks = torch.concat([torch.zeros_like(input_video[:1, :prefix_frames_count], dtype=input_masks.dtype, device=input_masks.device), input_masks[:, 1:]], dim=1)
                     if continuous_conditioning_and_guide:
                         control_start_frame = -prefix_frames_count
                     else:
@@ -1202,6 +1219,10 @@ class LTX2:
                 elif skip_first_guide_latent:
                     control_start_frame = -prefix_frames_count
 
+                if LTX2_PAD_MASKED_CONTROL_VIDEO_TAIL and new_outpainting:
+                    target_control_frames = int(frame_num) - int(control_start_frame) if control_start_frame > 0 else int(frame_num)
+                    input_frames, input_masks = _pad_ltx2_masked_control_video_tail(input_frames, input_masks, target_control_frames)
+                    input_frames2, input_masks2 = _pad_ltx2_masked_control_video_tail(input_frames2, input_masks2, target_control_frames)
 
                 conditioning_entries = []
                 if input_frames is not None:
@@ -1224,13 +1245,21 @@ class LTX2:
                             "start_frame": control_start_frame,
                         }
 
-        msr_video_conditioning = False
+        force_stage2_ref_video_conditioning = False
         if msr and "I" in video_prompt_type and input_ref_images is not None:
             ref_video = _build_msr_reference_video(input_ref_images, int(self.model_def["ltx2_msr_frame_count"]), int(width), int(height), "K" in video_prompt_type)
             if video_conditioning is None:
                 video_conditioning = []
             video_conditioning.append((ref_video, 0, control_strength))
-            msr_video_conditioning = True
+            force_stage2_ref_video_conditioning = True
+        elif main_ingredients and "I" in video_prompt_type and input_ref_images is not None:
+            ref_frame_count = int(frame_num)
+            ref_video = _duplicate_ref_image_as_video(input_ref_images, ref_frame_count)
+            if ref_video is not None:
+                if video_conditioning is None:
+                    video_conditioning = []
+                video_conditioning.append((ref_video, 0, control_strength))
+                force_stage2_ref_video_conditioning = True
         elif not editanything and "I" in video_prompt_type and "F" not in video_prompt_type and "K" not in video_prompt_type and input_ref_images is not None:
             ref_frame_count = self.model_def.get("ltx2_ic_lora_ref_video_frames", 1)
             ref_video = _duplicate_ref_image_as_video(input_ref_images, ref_frame_count)
@@ -1405,7 +1434,7 @@ class LTX2:
         negative_prompt = n_prompt if n_prompt else DEFAULT_NEGATIVE_PROMPT
         skip_stage_2 = guide_phases <= 1
         phase2_ic_lora = phase2_ic_lora_name(loras_selected, loras_slists, force_phase2_control=editanything, force_name="EditAnything") if video_conditioning else None
-        if video_conditioning and (phase2_ic_lora is not None or (msr_video_conditioning and not skip_stage_2)):
+        if video_conditioning and (phase2_ic_lora is not None or (force_stage2_ref_video_conditioning and not skip_stage_2)):
             video_conditioning_stage2 = video_conditioning
         if audio_cfg_scale is None:
             effective_audio_cfg_scale = LTX2_ID_LORA_AUDIO_CFG_SCALE if "1" in audio_prompt_type else float(guide_scale)
@@ -1573,6 +1602,13 @@ class LTX2:
             else:
                 corrected = video_tensor.to(dtype=torch.float32).add_(1.0).mul_(0.5).clamp_(0.0, 1.0).pow_(exponent)
                 video_tensor.copy_(corrected.mul_(2.0).sub_(1.0).to(dtype=video_tensor.dtype))
+        blend_inpainting = ltx2_inpainting and LTX2_INPAINTING_LAPLACIAN_BLEND
+        blend_outpainting = new_outpainting and LTX2_OUTPAINTING_LAPLACIAN_BLEND
+        if blend_inpainting or blend_outpainting:
+            blend_source = input_frames if input_frames is not None else input_frames2
+            blend_mask = input_masks if input_masks is not None else input_masks2
+            mask_low_res_dilation = LTX2_OUTPAINTING_LAPLACIAN_MASK_LOW_RES_DILATION if blend_outpainting else LTX2_INPAINTING_LAPLACIAN_MASK_LOW_RES_DILATION
+            video_tensor = _apply_ltx2_mask_blend(video_tensor, blend_source, blend_mask, output_frame_num, height, width, mask_low_res_dilation=mask_low_res_dilation, sanitize_masked_source=blend_inpainting and LTX2_INPAINTING_SANITIZE_LAPLACIAN_SOURCE)
         if image_mode > 0:
             video_tensor = video_tensor[:, :1]
         audio_np = None if image_mode > 0 or hdr_enabled else audio.detach().float().cpu().numpy() if audio is not None else None

@@ -530,7 +530,8 @@ class family_handler():
                 "scale": 3,
                 "show_label": True,
             }
-
+            extra_model_def["fake_start_image"] = True
+            extra_model_def["fit_into_canvas_image_refs"] = 0            
             extra_model_def["preprocess_all"] = preprocess_all_scail2 if scail2 else True
             extra_model_def["custom_preprocessor"] = "Preparing Scail2 Inputs" if scail2 else "Extracting 3D Pose (NLFPose)"
             extra_model_def["forced_guide_mask_inputs"] = True
@@ -572,16 +573,14 @@ class family_handler():
                 extra_model_def["image_ref_choices"] = {
                     "choices": [
                         ("None", ""),
-                        ("Reference Image", "I"),
+                        ("Reference Images", "I"),
                     ],
                     "default": "",
-                    "label": "Reference Image",
+                    "label": "Reference Images",
                     "letters_filter": "KI",
                     "visible": True,
                 }
                 extra_model_def["no_background_removal"] = True
-                extra_model_def["one_image_ref_only"] = True
-                extra_model_def["one_image_ref_only_with_background"] = True
                 extra_model_def["magic_mask_object_colors"] = [(0, 0, 255), (255, 0, 0), (0, 255, 0), (255, 0, 255), (0, 255, 255), (255, 255, 0)]
                 extra_model_def["video_mask_label"] = "Video Mask, each Colored Mask corresponds to a person to Animate"
                 extra_model_def["custom_preprocessor_raw_inputs"] = True

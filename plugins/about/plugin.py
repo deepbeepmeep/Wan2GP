@@ -23,6 +23,7 @@ class AboutPlugin(WAN2GPPlugin):
         gr.Markdown("- <B>Tencent</B> for the impressive Hunyuan Video models (https://github.com/Tencent-Hunyuan/HunyuanVideo, https://github.com/Tencent-Hunyuan/HunyuanVideo-1.5)")
         gr.Markdown("- <B>Blackforest Labs</B> for the innovative Flux image generators (https://github.com/black-forest-labs/flux)")
         gr.Markdown("- <B>Alibaba Qwen Team</B> for their state of the art Qwen Image generators (https://github.com/QwenLM/Qwen-Image)")
+        gr.Markdown("- <B>Krea AI</B> for the Krea 2 RAW and Turbo image generators (https://github.com/krea-ai/krea-2, https://huggingface.co/krea/Krea-2-Raw, https://huggingface.co/krea/Krea-2-Turbo, https://www.krea.ai/blog/krea-2-technical-report)")
         gr.Markdown("- <B>Lightricks</B> for their super fast LTX Video models and LTX-2 audio-video model (https://github.com/Lightricks/LTX-Video, https://github.com/Lightricks/LTX-2)")
         gr.Markdown("- <B>Echo Team @ Joy Future Academy, JD</B> for JoyAI-Echo (https://github.com/jd-opensource/JoyAI-Echo, https://huggingface.co/jdopensource/JoyAI-Echo)")
         gr.Markdown("- <B>Eyeline Labs</B>, <B>Netflix</B> and collaborators for Vista4D (https://github.com/Eyeline-Labs/Vista4D)")

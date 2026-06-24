@@ -7,7 +7,6 @@ from shared.utils.hf import build_hf_url
 
 _PROJECT_REPO = "DeepBeepMeep/krea-2"
 _QWEN_IMAGE_REPO = "DeepBeepMeep/Qwen_image"
-_PROJECT_FOLDER = "krea2"
 _TEXT_ENCODER_FOLDER = "Qwen3-VL-4B-Instruct"
 _RAW_MODEL_TYPE = "krea2_raw"
 _TURBO_MODEL_TYPE = "krea2_turbo"
@@ -61,9 +60,8 @@ class family_handler:
         return [
             {
                 "repoId": _PROJECT_REPO,
-                "sourceFolderList": [_PROJECT_FOLDER, _TEXT_ENCODER_FOLDER],
+                "sourceFolderList": [_TEXT_ENCODER_FOLDER],
                 "fileList": [
-                    ["krea2_transformer_config.json"],
                     ["config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja"],
                 ],
             },

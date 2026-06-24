@@ -20,6 +20,7 @@ from .krea2_mmdit import SingleStreamDiT, config_from_diffusers
 
 _TEXT_ENCODER_SELECT_LAYERS = (2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35)
 _DEFAULT_NEGATIVE_PROMPT = ""
+_TRANSFORMER_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "configs", "krea2_transformer_config.json")
 
 
 def _load_json(path):
@@ -253,7 +254,7 @@ class model_factory:
         self.base_model_type = base_model_type
         self.model_def = model_def
         transformer_filename = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename
-        config_path = fl.locate_file(os.path.join("krea2", "krea2_transformer_config.json"))
+        config_path = _TRANSFORMER_CONFIG_PATH
         transformer = _load_transformer(transformer_filename, config_path, dtype)
         if save_quantized:
             from wgp import save_quantized_model

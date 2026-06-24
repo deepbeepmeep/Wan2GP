@@ -414,9 +414,9 @@ def bind_editor(
         outputs=delete_outputs,
         show_progress="hidden",
     )
-    model_choice.change(
-        fn=lambda model_type_value: toolbar_button_updates(deps_factory(), model_type_value),
-        inputs=[model_choice],
+    model_choice_target.change(
+        fn=lambda model_target_value: toolbar_button_updates(deps_factory(), str(model_target_value or "").split("|", 1)[0].strip()),
+        inputs=[model_choice_target],
         outputs=[toolbar_button],
         show_progress="hidden",
     )

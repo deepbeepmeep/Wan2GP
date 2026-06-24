@@ -121,7 +121,7 @@ from shared.ffmpeg_setup import download_ffmpeg
 from shared.api import get_api_output_options, store_api_output_artifact
 from shared.utils.plugins import PluginManager, WAN2GPApplication, SYSTEM_PLUGINS
 from shared.llm_engines.nanovllm.vllm_support import resolve_lm_decoder_engine
-from shared.gradio import assistant_chat, field_help, finetune_editor, local_file_picker, model_infos, model_selector_toolbar
+from shared.gradio import assistant_chat, field_help, finetune_editor, local_file_picker, model_infos, model_output_filter, model_selector_toolbar
 from shared.gradio.magic_mask import MagicMaskUI
 from shared import model_dropdowns
 from postprocessing import audio_processors as audio_processor_api
@@ -9861,19 +9861,37 @@ def _model_choice_target_model_type(model_type):
 
 def _model_choice_target_value(model_type):
     model_type = _model_choice_target_model_type(model_type)
+    caller = inspect.currentframe().f_back.f_code.co_name
+    model_dropdowns.debug_model_selector_event("target.write", source=caller, target=model_type)
     return gr.update() if len(model_type) == 0 else f"{model_type}|{time.time()}"
 
 def goto_model_type(state, model_type):
     model_type = _model_choice_target_model_type(model_type)
     if len(model_type) == 0:
         return gr.update(), gr.update(), gr.update(), gr.update()
-    return *generate_dropdown_model_list(model_type), gr.update()
+    dropdowns = generate_dropdown_model_list(model_type, state)
+    model_dropdowns.debug_model_selector_event("target.render", target=model_type, filter=model_dropdowns.get_model_output_filter(_get_dropdown_deps(), state), dropdown_value=dropdowns[2].constructor_args.get("value"))
+    return *dropdowns, gr.update()
+
+def goto_model_type_with_filter(state, model_type):
+    model_type = _model_choice_target_model_type(model_type)
+    if len(model_type) == 0:
+        return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+    filter_update = model_output_filter.refresh_for_model_target(_get_dropdown_deps(), state, model_type)
+    dropdowns = generate_dropdown_model_list(model_type, state)
+    model_dropdowns.debug_model_selector_event("target.render_with_filter", target=model_type, filter=model_dropdowns.get_model_output_filter(_get_dropdown_deps(), state), dropdown_value=dropdowns[2].constructor_args.get("value"), filter_update=filter_update)
+    return *dropdowns, gr.update(), filter_update
 
 def change_model_from_target(state, model_type):
-    return change_model(state, _model_choice_target_model_type(model_type))
+    model_type = _model_choice_target_model_type(model_type)
+    model_dropdowns.debug_model_selector_event("target.apply", target=model_type, state_filter=model_dropdowns.get_model_output_filter(_get_dropdown_deps(), state))
+    return change_model(state, model_type)
 
 def refresh_model_dropdowns(state):
-    return *generate_dropdown_model_list(get_state_model_type(state)), gr.update()
+    model_type = get_state_model_type(state)
+    dropdowns = generate_dropdown_model_list(model_type, state)
+    model_dropdowns.debug_model_selector_event("dropdowns.refresh", state_model=model_type, filter=model_dropdowns.get_model_output_filter(_get_dropdown_deps(), state), dropdown_value=dropdowns[2].constructor_args.get("value"))
+    return *dropdowns, gr.update()
 
 def reset_settings(state):
     model_type = get_state_model_type(state)
@@ -10107,6 +10125,8 @@ def change_model(state, model_choice):
     server_config["last_model_per_type"] = last_model_per_type
 
     server_config["last_model_type"] = model_choice
+    model_dropdowns.store_model_output_filter(server_config, state, model_choice)
+    model_dropdowns.debug_model_selector_event("model.saved", model=model_choice, filter=model_dropdowns.get_model_output_filter(_get_dropdown_deps(), state), family=get_model_family(model_choice, for_ui=True), base=get_parent_model_type(model_choice))
 
     with open(server_config_filename, "w", encoding="utf-8") as writer:
         writer.write(json.dumps(server_config, indent=4))
@@ -11009,7 +11029,7 @@ _deepy = deepy_controller.create_controller(
 release_deepy_vram = _deepy.release_vram
 
 
-def generate_media_tab(update_form = False, state_dict = None, ui_defaults = None, model_family = None, model_base_type_choice = None, model_choice = None, model_description = None, header = None, main = None, main_tabs= None, tab_id='generate', edit_tab=None, default_state=None, model_toolbar=None):
+def generate_media_tab(update_form = False, state_dict = None, ui_defaults = None, model_family = None, model_base_type_choice = None, model_choice = None, model_description = None, header = None, main = None, main_tabs= None, tab_id='generate', edit_tab=None, default_state=None, model_toolbar=None, model_filter=None):
     global inputs_names #, advanced
     plugin_data = gr.State({})
     edit_mode = tab_id=='edit'
@@ -11026,6 +11046,8 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
         state_dict["advanced"] = advanced_ui
         state_dict["last_model_per_family"] = server_config.get("last_model_per_family", {})
         state_dict["last_model_per_type"] = server_config.get("last_model_per_type", {})
+        state_dict[model_dropdowns.LAST_MODEL_PER_OUTPUT_FILTER_CONFIG_KEY] = server_config.get(model_dropdowns.LAST_MODEL_PER_OUTPUT_FILTER_CONFIG_KEY, {})
+        state_dict[model_dropdowns.MODEL_OUTPUT_FILTER_CONFIG_KEY] = model_dropdowns.get_model_output_filter(_get_dropdown_deps())
         state_dict["last_resolution_per_group"] = server_config.get("last_resolution_per_group", {})
         gen = dict()
         gen["queue"] = []
@@ -12277,7 +12299,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 fill_wizard_prompt_trigger = gr.Text(interactive= False, visible=False)
                 save_form_trigger = gr.Text(interactive= False, visible=False)
                 gallery_source = gr.Text(interactive= False, visible=False)
-                model_choice_target = gr.Text(interactive= False, visible=False)
+                model_choice_target = gr.Text(interactive= False, visible=False, elem_id="wangp_model_choice_target" if tab_id == "generate" else None)
 
 
             with gr.Accordion("Media Info / Late Post Processing / Import Media", open=False) as video_info_accordion:
@@ -12688,15 +12710,18 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
 
 
             if tab_id == 'generate':
+                goto_model_type_fn = goto_model_type_with_filter if model_filter is not None else goto_model_type
+                goto_model_type_outputs = [model_family, model_base_type_choice, model_choice, refresh_form_trigger, model_filter.refresh_trigger] if model_filter is not None else [model_family, model_base_type_choice, model_choice, refresh_form_trigger]
                 model_choice_target.change(fn=validate_wizard_prompt,
                     inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
                     outputs= [prompt],
+                    trigger_mode="always_last",
                     show_progress="hidden",
                 ).then(fn=save_inputs,
                     inputs =[target_state] + gen_inputs,
                     outputs= None,
                     show_progress="hidden",
-                ).then(fn=goto_model_type, inputs =[state, model_choice_target] , outputs= [model_family, model_base_type_choice, model_choice, refresh_form_trigger],
+                ).then(fn=goto_model_type_fn, inputs =[state, model_choice_target] , outputs= goto_model_type_outputs,
                     show_progress="hidden",
                 ).then(fn= change_model_from_target,
                     inputs=[state, model_choice_target],
@@ -12787,11 +12812,13 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
 
             if tab_id == 'generate':
                 # main_tabs.select(fn=detect_auto_save_form, inputs= [state], outputs= save_form_trigger, trigger_mode="multiple")
-                model_family.input(fn=change_model_family_target, inputs=[state, model_family], outputs= [model_choice_target], show_progress="hidden", queue=False)
-                model_base_type_choice.input(fn=change_model_base_types_target, inputs=[state, model_family, model_base_type_choice], outputs= [model_choice_target], show_progress="hidden", queue=False)
+                model_family.select(fn=change_model_family_target, inputs=[state], outputs=[model_choice_target], show_progress="hidden", queue=False)
+                model_base_type_choice.select(fn=change_model_base_types_target, inputs=[state], outputs=[model_choice_target], show_progress="hidden", queue=False)
+                if model_filter is not None:
+                    model_output_filter.bind_filter(model_filter, deps_factory=_get_dropdown_deps, state=state, model_choice_target=model_choice_target, current_model_type_getter=get_state_model_type)
                 refresh_models_trigger.change(fn=refresh_model_dropdowns, inputs=[state], outputs=[model_family, model_base_type_choice, model_choice, refresh_form_trigger], show_progress="hidden")
 
-                model_choice.input(fn=_model_choice_target_value, inputs=[model_choice], outputs=[model_choice_target], show_progress="hidden", queue=False)
+                model_choice.select(fn=change_model_choice_target, outputs=[model_choice_target], show_progress="hidden", queue=False)
             
                 generate_btn.click(fn = init_generate, inputs = [state, output, last_choice, audio_files_paths, audio_file_selected], outputs=[generate_trigger, mode])
                 add_to_queue_btn.click(fn = lambda : (get_unique_id(), ""), inputs = None, outputs=[add_to_queue_trigger, mode])
@@ -12972,6 +12999,7 @@ def _get_dropdown_deps():
         get_model_family=get_model_family,
         get_model_name=get_model_name,
         get_transformer_dtype=get_transformer_dtype,
+        list_model_defs=list_model_defs,
     )
 
 def _get_finetune_editor_deps():
@@ -13009,16 +13037,27 @@ def create_models_selector_hierarchy(dropdown_types=None):
 def get_sorted_dropdown(dropdown_types, current_model_family, current_model_type, three_levels = True):
     return model_dropdowns.get_sorted_dropdown(_get_dropdown_deps(), dropdown_types, current_model_family, current_model_type, three_levels)
 
-def generate_dropdown_model_list(current_model_type):
-    return model_dropdowns.generate_dropdown_model_list(_get_dropdown_deps(), current_model_type)
+def generate_dropdown_model_list(current_model_type, state=None):
+    return model_dropdowns.generate_dropdown_model_list(_get_dropdown_deps(), current_model_type, state)
 
-def change_model_family_target(state, current_model_family):
+def change_model_family_target(state, evt: gr.SelectData):
+    current_model_family = evt.value
     _, model_choice_update = model_dropdowns.change_model_family(_get_dropdown_deps(), state, current_model_family)
-    return _model_choice_target_value(model_choice_update.constructor_args["value"])
+    target = model_choice_update.constructor_args["value"]
+    model_dropdowns.debug_model_selector_event("selector.family.select", family=current_model_family, target=target, filter=model_dropdowns.get_model_output_filter(_get_dropdown_deps(), state))
+    return _model_choice_target_value(target)
 
-def change_model_base_types_target(state, current_model_family, model_base_type_choice):
+def change_model_base_types_target(state, evt: gr.SelectData):
+    model_base_type_choice = evt.value
+    current_model_family = _get_dropdown_deps().get_model_family(model_base_type_choice, for_ui=True)
     _, model_choice_update = model_dropdowns.change_model_base_types(_get_dropdown_deps(), state, current_model_family, model_base_type_choice)
-    return _model_choice_target_value(model_choice_update.constructor_args["value"])
+    target = model_choice_update.constructor_args["value"]
+    model_dropdowns.debug_model_selector_event("selector.base.select", family=current_model_family, base=model_base_type_choice, target=target, filter=model_dropdowns.get_model_output_filter(_get_dropdown_deps(), state))
+    return _model_choice_target_value(target)
+
+def change_model_choice_target(evt: gr.SelectData):
+    model_dropdowns.debug_model_selector_event("selector.model.select", target=evt.value)
+    return _model_choice_target_value(evt.value)
 
 def get_js():
     start_quit_timer_js = """
@@ -13086,6 +13125,9 @@ def get_js():
     return start_quit_timer_js, cancel_quit_timer_js, trigger_zip_download_js, trigger_settings_download_js, click_brush_js
 
 def create_ui():
+    global transformer_type
+    if not args.lock_model:
+        transformer_type = model_dropdowns.select_model_for_output_filter(_get_dropdown_deps(), server_config, transformer_type)
     gradio_downloads.install_routes()
     # Load CSS from external file
     css_path = os.path.join(os.path.dirname(__file__), "shared", "gradio", "ui_styles.css")
@@ -13096,6 +13138,7 @@ def create_ui():
     css += "\n" + model_infos.get_css()
     css += "\n" + field_help.get_css()
     css += "\n" + collect_prompt_helper_assets("get_prompt_helper_css")
+    css += "\n" + model_output_filter.get_css()
     css += "\n" + model_selector_toolbar.get_css()
     css += "\n" + finetune_editor.get_css()
     local_file_picker.configure_last_directory_store(server_config)
@@ -13116,6 +13159,7 @@ def create_ui():
     js += model_infos.get_javascript()
     js += field_help.get_javascript()
     js += collect_prompt_helper_assets("get_prompt_helper_javascript")
+    js += model_output_filter.get_javascript()
     js += model_selector_toolbar.get_javascript()
     js += finetune_editor.get_javascript()
     AudioGallery.install_gradio_upload_mtime_patch()
@@ -13145,13 +13189,14 @@ def create_ui():
             # JS keepalive patch targets the Gradio tab id "media_gen".
             with gr.Tab("Media Generator", id="media_gen") as media_generator_tab:
                 model_toolbar = None
+                model_filter = None
                 with gr.Row():
                     if args.lock_model:    
                         gr.Markdown("<div class='title-with-lines'><div class=line></div><h2>" + get_model_name(transformer_type) + "</h2><div class=line></div>")
                         model_family = gr.Dropdown(visible=False, value= "")
                         model_choice = gr.Dropdown(visible=False, value= transformer_type, choices= [transformer_type])
                     else:
-                        gr.Markdown("<div class='title-with-lines'><div class=line width=100%></div></div>")                        
+                        model_filter = model_output_filter.create_filter(model_dropdowns.get_model_output_filter(_get_dropdown_deps()))
                         model_family, model_base_type_choice, model_choice = generate_dropdown_model_list(transformer_type)
                         model_toolbar = model_selector_toolbar.create_toolbar(is_finetune_editor=finetune_editor.is_finetune_model(_get_finetune_editor_deps(), transformer_type))
                 if model_toolbar is not None:
@@ -13176,6 +13221,7 @@ def create_ui():
                         main_tabs=main_tabs,
                         tab_id='generate',
                         model_toolbar=model_toolbar,
+                        model_filter=model_filter,
                     )
                     (state, loras_choices, lset_name, resolution, refresh_form_trigger, save_form_trigger) = generator_tab_components['state'], generator_tab_components['loras_choices'], generator_tab_components['lset_name'], generator_tab_components['resolution'], generator_tab_components['refresh_form_trigger'], generator_tab_components['save_form_trigger']
             with gr.Tab("Edit", id="edit", visible=False) as edit_tab:
@@ -13271,12 +13317,7 @@ def create_ui():
                 show_progress="hidden"
             )
 
-            media_generator_tab.select(lambda state: state.update({"active_form": "add"}), inputs=state).then(
-                fn=refresh_model_dropdowns,
-                inputs=[state],
-                outputs=[model_family, model_base_type_choice, model_choice, refresh_form_trigger],
-                show_progress="hidden",
-            )
+            media_generator_tab.select(lambda state: state.update({"active_form": "add"}), inputs=state)
             edit_tab.select(lambda state: state.update({"active_form": "edit"}), inputs=state)
             app.setup_ui_tabs(main_tabs, state, generator_tab_components["set_save_form_event"])
         if stats_app is not None:

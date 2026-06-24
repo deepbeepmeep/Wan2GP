@@ -430,16 +430,6 @@ def get_css():
         box-shadow: none !important;
         padding: 0 !important;
     }
-    .wangp-model-selector-tools::before {
-        content: "";
-        position: absolute;
-        left: 0;
-        right: 0;
-        top: calc(50% - 0.5px);
-        height: 1px;
-        background: #333;
-        opacity: 1;
-    }
     .wangp-model-selector-tool-row {
         position: relative;
         z-index: 2;

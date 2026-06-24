@@ -112,15 +112,21 @@ def _attention_mask_for_pay_attention(attention_mask, q_len, num_heads):
     if attention_mask.dim() == 4:
         if attention_mask.shape[1] == num_heads and attention_mask.shape[2] == q_len:
             return attention_mask.transpose(1, 2)
-        if attention_mask.shape[2] == num_heads and attention_mask.shape[1] == q_len:
+        if attention_mask.shape[2] in (1, num_heads) and attention_mask.shape[1] == q_len:
             return attention_mask
         if attention_mask.shape[1] == 1 and attention_mask.shape[2] == q_len:
-            return attention_mask.transpose(1, 2).expand(-1, -1, num_heads, -1)
+            return attention_mask.transpose(1, 2)
     if attention_mask.dim() == 3:
-        return attention_mask[:, :, None, :].expand(-1, -1, num_heads, -1)
+        return attention_mask[:, :, None, :]
     if attention_mask.dim() == 2:
-        return attention_mask[:, None, None, :].expand(-1, q_len, num_heads, -1)
+        return attention_mask[:, None, None, :]
     return attention_mask
+
+
+def _build_explicit_text_mask(attention_mask, query_length, device):
+    causal = torch.ones(query_length, query_length, dtype=torch.bool, device=device).tril().view(1, query_length, 1, query_length)
+    key_mask = attention_mask[:, None, None, :query_length].to(device=device, dtype=torch.bool)
+    return causal & key_mask
 
 
 def _repeat_kv_for_pay_attention(hidden_states, n_rep):
@@ -580,8 +586,9 @@ class Qwen3VLTextAttention(nn.Module):
         if token_types is not None:
             attn_output = _pay_attention_token_types(qkv_list, token_types, self.scaling)
         else:
+            causal = attention_mask is None
             attention_mask = _attention_mask_for_pay_attention(attention_mask, input_shape[-1], self.config.num_attention_heads)
-            attn_output = pay_attention(qkv_list, attention_mask=attention_mask, softmax_scale=self.scaling, causal=False, recycle_q=True)
+            attn_output = pay_attention(qkv_list, attention_mask=attention_mask, softmax_scale=self.scaling, causal=causal, recycle_q=True)
 
         attn_weights = None
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
@@ -1154,14 +1161,18 @@ class Qwen3VLTextModel(Qwen3VLPreTrainedModel):
             text_position_ids = position_ids[0]
 
         if token_types is None:
-            attention_mask = create_causal_mask(
-                config=self.config,
-                input_embeds=inputs_embeds,
-                attention_mask=attention_mask,
-                cache_position=cache_position,
-                past_key_values=past_key_values,
-                position_ids=text_position_ids,
-            )
+            if past_key_values is None:
+                if attention_mask is not None:
+                    attention_mask = _build_explicit_text_mask(attention_mask, inputs_embeds.shape[1], inputs_embeds.device)
+            else:
+                attention_mask = create_causal_mask(
+                    config=self.config,
+                    input_embeds=inputs_embeds,
+                    attention_mask=attention_mask,
+                    cache_position=cache_position,
+                    past_key_values=past_key_values,
+                    position_ids=text_position_ids,
+                )
         else:
             token_types = token_types.to(inputs_embeds.device)
             attention_mask = None

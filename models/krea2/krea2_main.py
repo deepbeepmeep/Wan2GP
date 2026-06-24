@@ -10,6 +10,7 @@ from transformers import AutoTokenizer, Qwen2TokenizerFast
 
 from mmgp import offload
 from shared.utils import files_locator as fl
+from shared.utils.text_encoder_cache import TextEncoderCache
 
 from models.ideogram4.qwen3_vl_configuration import Qwen3VLConfig, register_qwen3_vl_config
 from models.ideogram4.qwen3_vl_transformers import Qwen3VLTextModel
@@ -97,8 +98,10 @@ class Qwen3VLConditioner(torch.nn.Module):
         ).to(self.device, non_blocking=True)
         input_ids = torch.cat([inputs["input_ids"], suffix_ids], dim=1)
         mask = torch.cat([inputs["attention_mask"].bool(), suffix_mask], dim=1)
+        position_ids = mask.long().cumsum(-1) - 1
+        position_ids.masked_fill_(mask == 0, 1)
         selected_layers = [layer_idx - 1 for layer_idx in self.select_layers]
-        states = self.qwen.language_model(input_ids=input_ids, attention_mask=mask, use_cache=False, return_mid_results_layers=selected_layers)
+        states = self.qwen.language_model(input_ids=input_ids, attention_mask=mask, position_ids=position_ids, use_cache=False, return_mid_results_layers=selected_layers)
         if states.last_hidden_state is None:
             return None, None
         mid_results = states.mid_results
@@ -110,11 +113,16 @@ class Qwen3VLConditioner(torch.nn.Module):
         return hiddens, mask
 
 
+class _TextEncodingInterrupted(Exception):
+    pass
+
+
 class Krea2Pipeline:
     def __init__(self, transformer, vae, encoder, dtype=torch.bfloat16):
         self.transformer = transformer
         self.vae = vae
         self.encoder = encoder
+        self.text_encoder_cache = TextEncoderCache()
         self.dtype = dtype
         self.compression = 8
         self.channels = 16
@@ -135,11 +143,29 @@ class Krea2Pipeline:
         latents = (latents * latents_std) + latents_mean
         return self.vae.decode_to_cpu_uint8(latents)[:, :, 0]
 
+    def _encode_prompts(self, prompts, device, dtype):
+        self.encoder._interrupt = self._interrupt
+        self.encoder.qwen.language_model._interrupt = self._interrupt
+
+        def encode_fn(prompt_batch):
+            hiddens, masks = self.encoder(prompt_batch)
+            if hiddens is None:
+                raise _TextEncodingInterrupted
+            return [(hiddens[i], masks[i]) for i in range(len(prompt_batch))]
+
+        cache_keys = [(self.encoder.max_length, tuple(self.encoder.select_layers), prompt) for prompt in prompts]
+        try:
+            encoded = self.text_encoder_cache.encode(encode_fn, prompts, device=device, cache_keys=cache_keys)
+        except _TextEncodingInterrupted:
+            return None, None
+        hiddens = torch.stack([item[0] for item in encoded], dim=0).to(device=device, dtype=dtype, non_blocking=True)
+        masks = torch.stack([item[1] for item in encoded], dim=0).to(device=device, non_blocking=True)
+        return hiddens, masks
+
     @torch.inference_mode()
-    def __call__(self, prompts, negative_prompts=None, width=1024, height=1024, steps=28, guidance=4.5, seed=0, y1=0.5, y2=1.15, mu=None, callback=None, loras_slists=None, experimental_patch=False):
+    def __call__(self, prompts, negative_prompts=None, width=1024, height=1024, steps=28, guidance=4.5, seed=0, y1=0.5, y2=1.15, mu=None, callback=None, loras_slists=None):
         patch = self.transformer.config.patch
         align = self.compression * patch
-        self.transformer.set_experimental_patch(bool(experimental_patch))
         width, height = int(width), int(height)
         if width % align != 0 or height % align != 0:
             raise ValueError(f"Krea 2 width and height must be divisible by {align}; got {width}x{height}.")
@@ -151,23 +177,15 @@ class Krea2Pipeline:
         noise = torch.empty(batch_size, self.channels, height // self.compression, width // self.compression, device=device, dtype=dtype)
         for i in range(batch_size):
             noise[i].copy_(torch.randn(self.channels, height // self.compression, width // self.compression, device=device, dtype=dtype, generator=torch.Generator(device=device).manual_seed(int(seed) + i)))
-        self.encoder._interrupt = self._interrupt
-        self.encoder.qwen.language_model._interrupt = self._interrupt
-        txt, txtmask = self.encoder(prompts)
+        txt, txtmask = self._encode_prompts(prompts, device, dtype)
         if txt is None:
             return None
-        txt = txt.to(device=device, dtype=dtype, non_blocking=True)
-        txtmask = txtmask.to(device=device, non_blocking=True)
         x, pos, mask = _prepare(noise, txt.shape[1], patch, txtmask)
         cfg = guidance > 0
         if cfg:
-            self.encoder._interrupt = self._interrupt
-            self.encoder.qwen.language_model._interrupt = self._interrupt
-            untxt, untxtmask = self.encoder(negative_prompts)
+            untxt, untxtmask = self._encode_prompts(negative_prompts, device, dtype)
             if untxt is None:
                 return None
-            untxt = untxt.to(device=device, dtype=dtype, non_blocking=True)
-            untxtmask = untxtmask.to(device=device, non_blocking=True)
             _, unpos, unmask = _prepare(noise, untxt.shape[1], patch, untxtmask)
         x1 = (256 // align) ** 2
         x2 = (1280 // align) ** 2
@@ -289,7 +307,6 @@ class model_factory:
         callback=None,
         VAE_tile_size=None,
         loras_slists=None,
-        custom_settings=None,
         **kwargs,
     ):
         if VAE_tile_size is not None and hasattr(self.vae, "use_tiling"):
@@ -311,9 +328,7 @@ class model_factory:
             kwargs_mu = None
         generator_seed = seed if seed is not None and seed >= 0 else torch.seed()
         prompts = [input_prompt] * int(batch_size)
-        raw_experimental_patch = custom_settings.get("experimental_patch", False) if isinstance(custom_settings, dict) else False
-        experimental_patch = raw_experimental_patch.strip().lower() in {"1", "true", "yes", "on"} if isinstance(raw_experimental_patch, str) else bool(raw_experimental_patch)
-        images = self.pipeline(prompts, negative_prompts=[n_prompt or _DEFAULT_NEGATIVE_PROMPT] * len(prompts), width=width, height=height, steps=sampling_steps, guidance=guide_scale, seed=generator_seed, mu=kwargs_mu, callback=callback, loras_slists=loras_slists, experimental_patch=experimental_patch)
+        images = self.pipeline(prompts, negative_prompts=[n_prompt or _DEFAULT_NEGATIVE_PROMPT] * len(prompts), width=width, height=height, steps=sampling_steps, guidance=guide_scale, seed=generator_seed, mu=kwargs_mu, callback=callback, loras_slists=loras_slists)
         if images is None:
             return None
         return images.transpose(0, 1)

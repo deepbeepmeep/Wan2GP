@@ -12,9 +12,6 @@
         }
     },
     "prompt": "a fox walking in fresh snow at golden hour, natural light, detailed fur",
-    "custom_settings": {
-        "experimental_patch": false
-    },
     "batch_size": 1,
     "num_inference_steps": 8,
     "guidance_scale": 0

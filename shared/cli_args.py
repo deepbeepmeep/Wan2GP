@@ -30,7 +30,6 @@ def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default
 
     add("--save-masks", action="store_true", help="save proprocessed masks for debugging or editing")
     add("--save-speakers", action="store_true", help="save proprocessed audio track with extract speakers for debugging or editing")
-    add("--debug", action="store_true", help="write model-specific debug artifacts during generation")
     add("--debug-gen-form", action="store_true", help="View form generation / refresh time")
     add("--betatest", action="store_true", help="test unreleased features")
     add("--vram-safety-coefficient", type=float, default=0.8, help="max VRAM (between 0 and 1) that should be allocated to preloaded models")

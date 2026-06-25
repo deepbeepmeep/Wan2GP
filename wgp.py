@@ -145,7 +145,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "12.285"
+WanGP_version = "12.286"
 settings_version = 2.65
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -7551,8 +7551,6 @@ def generate_media(
                     gen_cache=gen_cache,
                     vae_upsampler=vae_upsampler_session,
                     save_masks=args.save_masks,
-                    debug=args.debug,
-                    debug_dir=args.output_dir.strip() or save_path,
                 )
                 upsampler_api.release_vae_upsampler(vae_upsampler_handler, vae_upsampler_session)
                 vae_upsampler_session = None

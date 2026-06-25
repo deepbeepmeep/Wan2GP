@@ -6,10 +6,7 @@
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/krea-2/resolve/main/Krea2Turbo_bf16.safetensors",
             "https://huggingface.co/DeepBeepMeep/krea-2/resolve/main/Krea2Turbo_quanto_bf16_int8.safetensors"
-        ],
-        "xattention": {
-            "<89": "sdpa"
-        }
+        ]
     },
     "prompt": "a fox walking in fresh snow at golden hour, natural light, detailed fur",
     "batch_size": 1,

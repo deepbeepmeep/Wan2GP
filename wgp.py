@@ -145,7 +145,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "12.281"
+WanGP_version = "12.282"
 settings_version = 2.65
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -8870,14 +8870,15 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
             configs["lset_name"] = lset_name
             if settings_bundle_task_count > 1:
                 gr.Info(f"Settings bundle contains {settings_bundle_task_count} tasks; only the first task has been extracted.")
-            if accelerator_profile:
+            help = configs.get("help", None)
+            if help is not None: 
+                gr.Info(help)
+            elif accelerator_profile:
                 gr.Info(f"Accelerator Profile '{os.path.splitext(os.path.basename(lset_name))[0]}' has been applied")
             elif builtin_preset_settings:
                 gr.Info(f"Preset Settings '{os.path.splitext(os.path.basename(lset_name))[0]}' have been applied")
             else:
                 gr.Info(f"Settings File '{os.path.basename(lset_name)}' has been applied")
-            help = configs.get("help", None)
-            if help is not None: gr.Info(help)
             if model_type == current_model_type:
                 set_model_settings(state, current_model_type, configs)        
                 return *[gr.update()] * 4, gr.update(), get_unique_id(), gr.update()

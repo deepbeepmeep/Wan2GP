@@ -10,7 +10,8 @@ _QWEN_IMAGE_REPO = "DeepBeepMeep/Qwen_image"
 _TEXT_ENCODER_FOLDER = "Qwen3-VL-4B-Instruct"
 _RAW_MODEL_TYPE = "krea2_raw"
 _TURBO_MODEL_TYPE = "krea2_turbo"
-
+_PROFILE_DIR = "krea2"
+_PRESET_PROFILE_DIR = "krea2_presets"
 
 class family_handler:
     @staticmethod
@@ -20,7 +21,8 @@ class family_handler:
             "guidance_max_phases": 1 if base_model_type == _RAW_MODEL_TYPE else 0,
             "inference_steps": True,
             "fit_into_canvas_image_refs": 0,
-            "profiles_dir": [base_model_type],
+            "preset_profiles_dir": [_PRESET_PROFILE_DIR],
+            "profiles_dir": [_PROFILE_DIR],
             "text_encoder_folder": _TEXT_ENCODER_FOLDER,
             "text_encoder_URLs": [
                 build_hf_url(_PROJECT_REPO, _TEXT_ENCODER_FOLDER, "Qwen3-VL-4B-Instruct_bf16.safetensors"),

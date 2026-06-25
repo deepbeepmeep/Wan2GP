@@ -1,3 +1,4 @@
+import datetime
 import json
 import math
 import os
@@ -22,6 +23,19 @@ from .krea2_mmdit import SingleStreamDiT, config_from_diffusers
 _TEXT_ENCODER_SELECT_LAYERS = (2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35)
 _DEFAULT_NEGATIVE_PROMPT = ""
 _TRANSFORMER_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "configs", "krea2_transformer_config.json")
+
+
+def _tensor_stats(tensor):
+    values = tensor.float()
+    return {
+        "shape": tuple(tensor.shape),
+        "dtype": str(tensor.dtype),
+        "finite": bool(torch.isfinite(values).all().item()),
+        "mean": float(values.mean().item()),
+        "std": float(values.std().item()),
+        "min": float(values.min().item()),
+        "max": float(values.max().item()),
+    }
 
 
 def _load_json(path):
@@ -127,6 +141,7 @@ class Krea2Pipeline:
         self.compression = 8
         self.channels = 16
         self._interrupt = False
+        self._debug_dump_index = 0
         self.transformer._interrupt = False
         self.transformer.txtfusion._interrupt = False
         self.encoder._interrupt = False
@@ -143,7 +158,29 @@ class Krea2Pipeline:
         latents = (latents * latents_std) + latents_mean
         return self.vae.decode_to_cpu_uint8(latents)[:, :, 0]
 
-    def _encode_prompts(self, prompts, device, dtype):
+    def _dump_text_encoding_debug(self, label, prompts, hiddens, masks, debug_dir):
+        if not debug_dir:
+            return
+        os.makedirs(debug_dir, exist_ok=True)
+        self._debug_dump_index += 1
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        path = os.path.join(debug_dir, f"krea2_text_encoding_{stamp}_{self._debug_dump_index:02d}_{label}.pt")
+        hiddens_cpu = hiddens.detach().cpu()
+        masks_cpu = masks.detach().cpu()
+        torch.save({
+            "kind": label,
+            "prompts": list(prompts),
+            "max_length": self.encoder.max_length,
+            "select_layers": tuple(self.encoder.select_layers),
+            "hiddens": hiddens_cpu,
+            "mask": masks_cpu,
+            "hiddens_stats": _tensor_stats(hiddens_cpu),
+            "mask_true_count": int(masks_cpu.sum().item()),
+            "mask_shape": tuple(masks_cpu.shape),
+        }, path)
+        print(f"[Krea2 debug] Saved text encoding dump: {path}")
+
+    def _encode_prompts(self, prompts, device, dtype, debug_dir=None, debug_label="prompt"):
         self.encoder._interrupt = self._interrupt
         self.encoder.qwen.language_model._interrupt = self._interrupt
 
@@ -160,10 +197,11 @@ class Krea2Pipeline:
             return None, None
         hiddens = torch.stack([item[0] for item in encoded], dim=0).to(device=device, dtype=dtype, non_blocking=True)
         masks = torch.stack([item[1] for item in encoded], dim=0).to(device=device, non_blocking=True)
+        self._dump_text_encoding_debug(debug_label, prompts, hiddens, masks, debug_dir)
         return hiddens, masks
 
     @torch.inference_mode()
-    def __call__(self, prompts, negative_prompts=None, width=1024, height=1024, steps=28, guidance=4.5, seed=0, y1=0.5, y2=1.15, mu=None, callback=None, loras_slists=None):
+    def __call__(self, prompts, negative_prompts=None, width=1024, height=1024, steps=28, guidance=4.5, seed=0, y1=0.5, y2=1.15, mu=None, callback=None, loras_slists=None, debug_dir=None):
         patch = self.transformer.config.patch
         align = self.compression * patch
         width, height = int(width), int(height)
@@ -177,13 +215,13 @@ class Krea2Pipeline:
         noise = torch.empty(batch_size, self.channels, height // self.compression, width // self.compression, device=device, dtype=dtype)
         for i in range(batch_size):
             noise[i].copy_(torch.randn(self.channels, height // self.compression, width // self.compression, device=device, dtype=dtype, generator=torch.Generator(device=device).manual_seed(int(seed) + i)))
-        txt, txtmask = self._encode_prompts(prompts, device, dtype)
+        txt, txtmask = self._encode_prompts(prompts, device, dtype, debug_dir=debug_dir, debug_label="positive")
         if txt is None:
             return None
         x, pos, mask = _prepare(noise, txt.shape[1], patch, txtmask)
         cfg = guidance > 0
         if cfg:
-            untxt, untxtmask = self._encode_prompts(negative_prompts, device, dtype)
+            untxt, untxtmask = self._encode_prompts(negative_prompts, device, dtype, debug_dir=debug_dir, debug_label="negative")
             if untxt is None:
                 return None
             _, unpos, unmask = _prepare(noise, untxt.shape[1], patch, untxtmask)
@@ -307,6 +345,8 @@ class model_factory:
         callback=None,
         VAE_tile_size=None,
         loras_slists=None,
+        debug=False,
+        debug_dir=None,
         **kwargs,
     ):
         if VAE_tile_size is not None and hasattr(self.vae, "use_tiling"):
@@ -328,7 +368,7 @@ class model_factory:
             kwargs_mu = None
         generator_seed = seed if seed is not None and seed >= 0 else torch.seed()
         prompts = [input_prompt] * int(batch_size)
-        images = self.pipeline(prompts, negative_prompts=[n_prompt or _DEFAULT_NEGATIVE_PROMPT] * len(prompts), width=width, height=height, steps=sampling_steps, guidance=guide_scale, seed=generator_seed, mu=kwargs_mu, callback=callback, loras_slists=loras_slists)
+        images = self.pipeline(prompts, negative_prompts=[n_prompt or _DEFAULT_NEGATIVE_PROMPT] * len(prompts), width=width, height=height, steps=sampling_steps, guidance=guide_scale, seed=generator_seed, mu=kwargs_mu, callback=callback, loras_slists=loras_slists, debug_dir=debug_dir if debug else None)
         if images is None:
             return None
         return images.transpose(0, 1)

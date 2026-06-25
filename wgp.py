@@ -7551,6 +7551,8 @@ def generate_media(
                     gen_cache=gen_cache,
                     vae_upsampler=vae_upsampler_session,
                     save_masks=args.save_masks,
+                    debug=args.debug,
+                    debug_dir=args.output_dir.strip() or save_path,
                 )
                 upsampler_api.release_vae_upsampler(vae_upsampler_handler, vae_upsampler_session)
                 vae_upsampler_session = None

@@ -376,6 +376,10 @@ class SingleStreamDiT(nn.Module):
             return None
         return self.txtmlp(context)
 
+    def prepare_timestep(self, t: Tensor) -> tuple[Tensor, Tensor]:
+        t = self.tmlp(temb(t, self.config.tdim, device=t.device, dtype=t.dtype))
+        return t, self.tproj(t)
+
     def _build_stream(self, img: Tensor, context: Tensor, pos: Tensor, mask: Tensor, freqs: Tensor | None = None):
         txtlen, imglen = context.shape[1], img.shape[1]
         combined = img.new_empty(img.shape[0], txtlen + imglen, img.shape[-1])
@@ -394,10 +398,8 @@ class SingleStreamDiT(nn.Module):
             freqs = freqs.to(combined.dtype)
         return combined, txtlen, imglen, freqs, mask
 
-    def forward(self, img: Tensor, context: Tensor, t: Tensor, pos: Tensor, mask: Tensor | None = None) -> Tensor:
+    def forward(self, img: Tensor, context: Tensor, t: Tensor, tvec: Tensor, pos: Tensor, mask: Tensor | None = None) -> Tensor:
         img = self.first(img)
-        t = self.tmlp(temb(t, self.config.tdim, device=img.device, dtype=img.dtype))
-        tvec = self.tproj(t)
         combined, txtlen, imglen, freqs, mask = self._build_stream(img, context, pos, mask)
         del img, context, pos
         for block in self.blocks:
@@ -407,10 +409,8 @@ class SingleStreamDiT(nn.Module):
             self.txtfusion._interrupt = getattr(self, "_interrupt", False)
         return self.last([combined[:, txtlen : txtlen + imglen]], t)
 
-    def forward_cfg(self, img: Tensor, context: Tensor, uncond_context: Tensor, t: Tensor, pos: Tensor, uncond_pos: Tensor, mask: Tensor, uncond_mask: Tensor) -> tuple[Tensor | None, Tensor | None]:
+    def forward_cfg(self, img: Tensor, context: Tensor, uncond_context: Tensor, t: Tensor, tvec: Tensor, pos: Tensor, uncond_pos: Tensor, mask: Tensor, uncond_mask: Tensor) -> tuple[Tensor | None, Tensor | None]:
         img = self.first(img)
-        t = self.tmlp(temb(t, self.config.tdim, device=img.device, dtype=img.dtype))
-        tvec = self.tproj(t)
         share_freqs = pos.shape == uncond_pos.shape
         combined, txtlen, imglen, freqs, mask = self._build_stream(img, context, pos, mask)
         uncond_combined, uncond_txtlen, uncond_imglen, uncond_freqs, uncond_mask = self._build_stream(img, uncond_context, uncond_pos, uncond_mask, freqs=freqs if share_freqs else None)

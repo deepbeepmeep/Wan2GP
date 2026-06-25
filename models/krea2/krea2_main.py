@@ -121,12 +121,18 @@ class _TextEncodingInterrupted(Exception):
     pass
 
 
-def _lora_schedules_are_static(model):
+def _lora_schedules_are_static_for_modules(model, prefixes):
     scaling = getattr(model, "_loras_scaling", None)
     if not scaling:
         return True
-    for values in scaling.values():
-        if isinstance(values, list) and any(value != values[0] for value in values[1:]):
+    dynamic_adapters = {name for name, values in scaling.items() if isinstance(values, list) and any(value != values[0] for value in values[1:])}
+    if not dynamic_adapters:
+        return True
+    shortcuts = getattr(model, "_loras_model_shortcuts", None)
+    if not shortcuts:
+        return True
+    for module_name, loras_data in shortcuts.items():
+        if module_name.startswith(prefixes) and any(adapter in loras_data for adapter in dynamic_adapters):
             return False
     return True
 
@@ -210,7 +216,8 @@ class Krea2Pipeline:
             callback(-1, None, True, override_num_inference_steps=steps)
         from shared.utils.loras_mutipliers import update_loras_slists
         update_loras_slists(self.transformer, loras_slists, steps)
-        context_static = _lora_schedules_are_static(self.transformer)
+        context_static = _lora_schedules_are_static_for_modules(self.transformer, ("txtfusion.", "txtmlp."))
+        timestep_static = _lora_schedules_are_static_for_modules(self.transformer, ("tmlp.", "tproj."))
         if context_static:
             offload.set_step_no_for_lora(self.transformer, 0)
             self.transformer._interrupt = self._interrupt
@@ -225,18 +232,29 @@ class Krea2Pipeline:
                 untxt = self.transformer.prepare_context(untxt_list, unmask)
                 if untxt is None:
                     return None
+        t_values = torch.tensor(ts[:-1], dtype=img.dtype, device=img.device)
+        if timestep_static:
+            offload.set_step_no_for_lora(self.transformer, 0)
+            t_all, tvec_all = self.transformer.prepare_timestep(t_values)
+            step_tensors = tuple((t_all[i : i + 1], tvec_all[i : i + 1]) for i in range(steps))
+        else:
+            step_tensors = []
+            for step_no, tcurr in enumerate(t_values):
+                offload.set_step_no_for_lora(self.transformer, step_no)
+                step_tensors.append(self.transformer.prepare_timestep(tcurr[None]))
+        torch.cuda.empty_cache()
         for i, (tcurr, tprev) in enumerate(tqdm(list(zip(ts[:-1], ts[1:])), total=steps)):
             offload.set_step_no_for_lora(self.transformer, i)
             self.transformer._interrupt = self._interrupt
             if self._interrupt:
                 return None
-            t = torch.full((len(img),), tcurr, dtype=img.dtype, device=img.device)
+            t, tvec = step_tensors[i]
             if cfg:
                 step_txt = txt if context_static else self.transformer.prepare_context(txt, mask)
                 step_untxt = untxt if context_static else self.transformer.prepare_context(untxt, unmask)
                 if step_txt is None or step_untxt is None:
                     return None
-                cond, uncond = self.transformer.forward_cfg(img=img, context=step_txt, uncond_context=step_untxt, t=t, pos=pos, uncond_pos=unpos, mask=mask, uncond_mask=unmask)
+                cond, uncond = self.transformer.forward_cfg(img=img, context=step_txt, uncond_context=step_untxt, t=t, tvec=tvec, pos=pos, uncond_pos=unpos, mask=mask, uncond_mask=unmask)
                 if cond is None or uncond is None:
                     return None
                 v = cond + guidance * (cond - uncond)
@@ -245,7 +263,7 @@ class Krea2Pipeline:
                 step_txt = txt if context_static else self.transformer.prepare_context(txt, mask)
                 if step_txt is None:
                     return None
-                cond = self.transformer(img=img, context=step_txt, t=t, pos=pos, mask=mask)
+                cond = self.transformer(img=img, context=step_txt, t=t, tvec=tvec, pos=pos, mask=mask)
                 if cond is None:
                     return None
                 v = cond

@@ -145,7 +145,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "12.286"
+WanGP_version = "12.287"
 settings_version = 2.65
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -236,6 +236,7 @@ def release_model():
         offloadobj = None
     offload.flush_torch_caches()
     gc.collect()
+    torch.cuda.empty_cache()
     reload_needed = True
 def get_unique_id():
     global unique_id  

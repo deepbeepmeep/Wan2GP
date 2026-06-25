@@ -140,10 +140,6 @@ class Qwen3VLConditioner(torch.nn.Module):
         self.prompt_template_encode_start_idx = 34
         self.prompt_template_encode_suffix_start_idx = 5
 
-    @property
-    def device(self):
-        return next(self.qwen.parameters()).device
-
     def _tokenizer_debug_metadata(self):
         try:
             first_param = next(self.qwen.language_model.parameters())
@@ -165,22 +161,26 @@ class Qwen3VLConditioner(torch.nn.Module):
             "special_tokens_map": dict(getattr(self.tokenizer, "special_tokens_map", {}) or {}),
         }
 
-    def _tokenize(self, text: list[str], return_debug=False):
+    def _tokenize(self, text: list[str], device, return_debug=False):
         prefix_idx = self.prompt_template_encode_start_idx
+        target_device = torch.device(device)
         prefixed_text = [self.prompt_template_encode_prefix + item for item in text]
         suffix_text = [self.prompt_template_encode_suffix] * len(text)
-        suffix_inputs = self.processor(text=suffix_text, return_tensors="pt").to(self.device, non_blocking=True)
+        # Tokenizers create PyTorch tensors via the global default device; pin that choice here so MMGP
+        # offload state cannot make token tensors bounce through CPU with an unsafe async copy.
+        with torch.device(target_device):
+            suffix_inputs = self.processor(text=suffix_text, return_tensors="pt").to(target_device)
+            inputs = self.tokenizer(
+                prefixed_text,
+                truncation=True,
+                return_length=False,
+                return_overflowing_tokens=False,
+                padding="max_length",
+                max_length=self.max_length + prefix_idx - self.prompt_template_encode_suffix_start_idx,
+                return_tensors="pt",
+            ).to(target_device)
         suffix_ids = suffix_inputs["input_ids"]
         suffix_mask = suffix_inputs["attention_mask"].bool()
-        inputs = self.tokenizer(
-            prefixed_text,
-            truncation=True,
-            return_length=False,
-            return_overflowing_tokens=False,
-            padding="max_length",
-            max_length=self.max_length + prefix_idx - self.prompt_template_encode_suffix_start_idx,
-            return_tensors="pt",
-        ).to(self.device, non_blocking=True)
         input_ids = torch.cat([inputs["input_ids"], suffix_ids], dim=1)
         mask = torch.cat([inputs["attention_mask"].bool(), suffix_mask], dim=1)
         position_ids = mask.long().cumsum(-1) - 1
@@ -213,18 +213,18 @@ class Qwen3VLConditioner(torch.nn.Module):
         return input_ids, mask, position_ids, prefix_idx, debug
 
     @torch.inference_mode()
-    def tokenize_debug(self, text: list[str]):
-        _, _, _, _, debug = self._tokenize(text, return_debug=True)
+    def tokenize_debug(self, text: list[str], device):
+        _, _, _, _, debug = self._tokenize(text, device=device, return_debug=True)
         return debug
 
     @torch.inference_mode()
-    def forward(self, text: list[str], return_debug=False):
+    def forward(self, text: list[str], device, return_debug=False):
         self.qwen.language_model._interrupt = getattr(self, "_interrupt", False)
         if getattr(self, "_interrupt", False):
             if return_debug:
                 return None, None, None
             return None, None
-        input_ids, mask, position_ids, prefix_idx, debug = self._tokenize(text, return_debug=return_debug)
+        input_ids, mask, position_ids, prefix_idx, debug = self._tokenize(text, device=device, return_debug=return_debug)
         mask_before_model = mask.detach().clone() if return_debug else None
         selected_layers = [layer_idx - 1 for layer_idx in self.select_layers]
         states = self.qwen.language_model(input_ids=input_ids, attention_mask=mask, position_ids=position_ids, use_cache=False, return_mid_results_layers=selected_layers)
@@ -373,10 +373,10 @@ class Krea2Pipeline:
 
         def encode_fn(prompt_batch):
             if debug_enabled:
-                hiddens, masks, debug = self.encoder(prompt_batch, return_debug=True)
+                hiddens, masks, debug = self.encoder(prompt_batch, device=device, return_debug=True)
                 encoder_debug.append(debug)
             else:
-                hiddens, masks = self.encoder(prompt_batch)
+                hiddens, masks = self.encoder(prompt_batch, device=device)
             if hiddens is None:
                 raise _TextEncodingInterrupted
             return [(hiddens[i], masks[i]) for i in range(len(prompt_batch))]
@@ -392,7 +392,7 @@ class Krea2Pipeline:
                 "entry_count_before": len(entries),
                 "size_bytes_before": int(getattr(self.text_encoder_cache, "_size_bytes", 0)),
             }
-            tokenizer_debug = self.encoder.tokenize_debug(prompts)
+            tokenizer_debug = self.encoder.tokenize_debug(prompts, device=device)
         try:
             encoded = self.text_encoder_cache.encode(encode_fn, prompts, device=device, cache_keys=cache_keys)
         except _TextEncodingInterrupted:

@@ -67,6 +67,11 @@ def key_padding_mask(mask: Tensor) -> Tensor:
     return mask.unsqueeze(1).unsqueeze(2)
 
 
+def modulate_inplace(x_list: list[Tensor], scale: Tensor, shift: Tensor):
+    x = x_list[0]
+    x.mul_(scale.add_(1)).add_(shift)
+
+
 def temb(t: Tensor, dim: int, period: float = 1e4, tfactor: float = 1e3, device: torch.device = None, dtype: torch.dtype = None) -> Tensor:
     half = dim // 2
     freqs = torch.exp(-math.log(period) * torch.arange(half, dtype=torch.float32, device=device) / half)
@@ -192,12 +197,17 @@ class SwiGLU(nn.Module):
         self.features = features
         self.mlpdim = mlpdim
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor | list[Tensor]) -> Tensor:
+        if isinstance(x, list):
+            x_ = x[0]
+            x.clear()
+            x = x_
         seq_len = x.shape[-2]
         chunk_size = 0 if seq_len <= 1024 else max(128, min(seq_len, seq_len * self.features // max(2 * self.mlpdim, 1)))
         if chunk_size == 0:
             gate = F.silu(self.gate(x))
             up = self.up(x)
+            del x
             gate.mul_(up)
             del up
             return self.down(gate)
@@ -211,6 +221,7 @@ class SwiGLU(nn.Module):
             chunk_out = self.down(gate)
             out.narrow(-2, start, chunk_out.shape[-2]).copy_(chunk_out)
             del chunk, gate, chunk_out
+        del x
         return out
 
 
@@ -228,7 +239,11 @@ class Attention(nn.Module):
         self.gqa = self.heads != self.kvheads
         self.wo = nn.Linear(dim, dim, bias=bias)
 
-    def forward(self, qkv: Tensor, freqs: Tensor | None = None, mask: Tensor | None = None) -> Tensor:
+    def forward(self, qkv: Tensor | list[Tensor], freqs: Tensor | None = None, mask: Tensor | None = None) -> Tensor:
+        if isinstance(qkv, list):
+            qkv_ = qkv[0]
+            qkv.clear()
+            qkv = qkv_
         q, k, v = self.wq(qkv), self.wk(qkv), self.wv(qkv)
         q = rearrange(q, "B L (H D) -> B H L D", H=self.heads)
         k = rearrange(k, "B L (H D) -> B H L D", H=self.kvheads)
@@ -242,6 +257,7 @@ class Attention(nn.Module):
         q = k = v = None
         out = attention(qkv_list, mask=mask, gqa=self.gqa)
         gate = F.sigmoid(self.gate(qkv))
+        del qkv
         out.mul_(gate)
         del gate
         return self.wo(out)
@@ -254,10 +270,12 @@ class LastLayer(nn.Module):
         self.linear = nn.Linear(features, patch * patch * channels, bias=True)
         self.modulation = SimpleModulation(features)
 
-    def forward(self, x: Tensor, tvec: Tensor) -> Tensor:
+    def forward(self, x: Tensor | list[Tensor], tvec: Tensor) -> Tensor:
         scale, shift = self.modulation(tvec)
-        x = (1 + scale) * self.norm(x) + shift
-        return self.linear(x)
+        x_list = x if isinstance(x, list) else [x]
+        x_list = [self.norm.forward_list(x_list)]
+        modulate_inplace(x_list, scale, shift)
+        return self.linear(x_list.pop())
 
 
 class TextFusionBlock(nn.Module):
@@ -269,8 +287,14 @@ class TextFusionBlock(nn.Module):
         self.mlp = SwiGLU(features, multiplier, bias)
 
     def forward(self, x: Tensor, mask: Tensor | None = None) -> Tensor:
-        x = x + self.attn(self.prenorm(x), mask=mask)
-        x = x + self.mlp(self.postnorm(x))
+        x_list = [self.prenorm(x)]
+        attn_out = self.attn(x_list, mask=mask)
+        x.add_(attn_out)
+        del attn_out
+        x_list = [self.postnorm(x)]
+        mlp_out = self.mlp(x_list)
+        x.add_(mlp_out)
+        del mlp_out
         return x
 
 
@@ -308,8 +332,18 @@ class SingleStreamBlock(nn.Module):
 
     def forward(self, x: Tensor, vec: Tensor, freqs: Tensor, mask: Tensor | None = None) -> Tensor:
         prescale, preshift, pregate, postscale, postshift, postgate = self.mod(vec)
-        x = x + pregate * self.attn((1 + prescale) * self.prenorm(x) + preshift, freqs, mask)
-        x = x + postgate * self.mlp((1 + postscale) * self.postnorm(x) + postshift)
+        x_list = [self.prenorm(x)]
+        modulate_inplace(x_list, prescale, preshift)
+        attn_out = self.attn(x_list, freqs, mask)
+        attn_out.mul_(pregate)
+        x.add_(attn_out)
+        del attn_out
+        x_list = [self.postnorm(x)]
+        modulate_inplace(x_list, postscale, postshift)
+        mlp_out = self.mlp(x_list)
+        mlp_out.mul_(postgate)
+        x.add_(mlp_out)
+        del mlp_out
         return x
 
 
@@ -328,8 +362,14 @@ class SingleStreamDiT(nn.Module):
         self.last = LastLayer(config.features, config.patch, config.channels)
         self.tproj = nn.Sequential(nn.GELU(approximate="tanh"), nn.Linear(config.features, config.features * 6))
 
-    def _embed_context(self, context: Tensor, mask: Tensor) -> Tensor | None:
+    def prepare_context(self, context: Tensor | list[Tensor], mask: Tensor) -> Tensor | None:
         self.txtfusion._interrupt = getattr(self, "_interrupt", False)
+        if isinstance(context, list):
+            context_ = context[0]
+            context.clear()
+            context = context_
+        else:
+            context = context.clone()
         txtmask = key_padding_mask(mask[:, : context.shape[1]])
         context = self.txtfusion(context, mask=txtmask)
         if context is None:
@@ -358,9 +398,6 @@ class SingleStreamDiT(nn.Module):
         img = self.first(img)
         t = self.tmlp(temb(t, self.config.tdim, device=img.device, dtype=img.dtype))
         tvec = self.tproj(t)
-        context = self._embed_context(context, mask)
-        if context is None:
-            return None
         combined, txtlen, imglen, freqs, mask = self._build_stream(img, context, pos, mask)
         del img, context, pos
         for block in self.blocks:
@@ -368,19 +405,12 @@ class SingleStreamDiT(nn.Module):
             if getattr(self, "_interrupt", False):
                 return None
             self.txtfusion._interrupt = getattr(self, "_interrupt", False)
-        image_tokens = combined[:, txtlen : txtlen + imglen]
-        return self.last(image_tokens, t)
+        return self.last([combined[:, txtlen : txtlen + imglen]], t)
 
     def forward_cfg(self, img: Tensor, context: Tensor, uncond_context: Tensor, t: Tensor, pos: Tensor, uncond_pos: Tensor, mask: Tensor, uncond_mask: Tensor) -> tuple[Tensor | None, Tensor | None]:
         img = self.first(img)
         t = self.tmlp(temb(t, self.config.tdim, device=img.device, dtype=img.dtype))
         tvec = self.tproj(t)
-        context = self._embed_context(context, mask)
-        if context is None:
-            return None, None
-        uncond_context = self._embed_context(uncond_context, uncond_mask)
-        if uncond_context is None:
-            return None, None
         share_freqs = pos.shape == uncond_pos.shape
         combined, txtlen, imglen, freqs, mask = self._build_stream(img, context, pos, mask)
         uncond_combined, uncond_txtlen, uncond_imglen, uncond_freqs, uncond_mask = self._build_stream(img, uncond_context, uncond_pos, uncond_mask, freqs=freqs if share_freqs else None)
@@ -392,4 +422,4 @@ class SingleStreamDiT(nn.Module):
             uncond_combined = block(uncond_combined, tvec, uncond_freqs, uncond_mask)
             if getattr(self, "_interrupt", False):
                 return None, None
-        return self.last(combined[:, txtlen : txtlen + imglen], t), self.last(uncond_combined[:, uncond_txtlen : uncond_txtlen + uncond_imglen], t)
+        return self.last([combined[:, txtlen : txtlen + imglen]], t), self.last([uncond_combined[:, uncond_txtlen : uncond_txtlen + uncond_imglen]], t)

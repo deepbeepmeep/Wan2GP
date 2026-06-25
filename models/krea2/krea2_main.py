@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import json
 import math
 import os
@@ -26,16 +27,69 @@ _TRANSFORMER_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "configs", "k
 
 
 def _tensor_stats(tensor):
+    if tensor.numel() == 0:
+        return {
+            "shape": tuple(tensor.shape),
+            "dtype": str(tensor.dtype),
+            "device": str(tensor.device),
+            "numel": 0,
+        }
     values = tensor.float()
     return {
         "shape": tuple(tensor.shape),
         "dtype": str(tensor.dtype),
+        "device": str(tensor.device),
+        "numel": int(tensor.numel()),
         "finite": bool(torch.isfinite(values).all().item()),
         "mean": float(values.mean().item()),
-        "std": float(values.std().item()),
+        "std": float(values.std(unbiased=False).item()),
         "min": float(values.min().item()),
         "max": float(values.max().item()),
     }
+
+
+def _mask_runs(mask):
+    mask_cpu = mask.detach().bool().cpu()
+    out = []
+    for row in mask_cpu:
+        values = row.tolist()
+        if not values:
+            out.append([])
+            continue
+        runs = []
+        start = 0
+        current = values[0]
+        for idx, value in enumerate(values[1:], 1):
+            if value != current:
+                runs.append((start, idx - 1, bool(current), idx - start))
+                start = idx
+                current = value
+        runs.append((start, len(values) - 1, bool(current), len(values) - start))
+        out.append(runs)
+    return out
+
+
+def _tensor_sample_sha256(tensor, max_items=4096):
+    tensor = tensor.detach()
+    if tensor.numel() == 0:
+        return None
+    flat = tensor.reshape(-1)
+    if flat.numel() <= max_items * 3:
+        sample = flat
+    else:
+        first = torch.arange(max_items, device=flat.device)
+        middle_start = max((flat.numel() // 2) - (max_items // 2), 0)
+        middle = torch.arange(middle_start, middle_start + max_items, device=flat.device)
+        last = torch.arange(flat.numel() - max_items, flat.numel(), device=flat.device)
+        sample = flat[torch.cat((first, middle, last))]
+    sample = sample.detach().cpu().contiguous()
+    return hashlib.sha256(sample.view(torch.uint8).numpy().tobytes()).hexdigest()
+
+
+def _tensor_fingerprint(tensor, max_items=4096):
+    payload = _tensor_stats(tensor.detach())
+    payload["sample_sha256"] = _tensor_sample_sha256(tensor, max_items=max_items)
+    return payload
 
 
 def _load_json(path):
@@ -90,19 +144,36 @@ class Qwen3VLConditioner(torch.nn.Module):
     def device(self):
         return next(self.qwen.parameters()).device
 
-    @torch.inference_mode()
-    def forward(self, text: list[str]):
-        self.qwen.language_model._interrupt = getattr(self, "_interrupt", False)
-        if getattr(self, "_interrupt", False):
-            return None, None
+    def _tokenizer_debug_metadata(self):
+        try:
+            first_param = next(self.qwen.language_model.parameters())
+            first_param_info = {"dtype": str(first_param.dtype), "device": str(first_param.device)}
+        except StopIteration:
+            first_param_info = None
+        return {
+            "tokenizer_class": type(self.tokenizer).__module__ + "." + type(self.tokenizer).__name__,
+            "processor_class": type(self.processor).__module__ + "." + type(self.processor).__name__,
+            "language_model_class": type(self.qwen.language_model).__module__ + "." + type(self.qwen.language_model).__name__,
+            "language_model_first_parameter": first_param_info,
+            "tokenizer_model_max_length": getattr(self.tokenizer, "model_max_length", None),
+            "processor_model_max_length": getattr(self.processor, "model_max_length", None),
+            "tokenizer_padding_side": getattr(self.tokenizer, "padding_side", None),
+            "tokenizer_truncation_side": getattr(self.tokenizer, "truncation_side", None),
+            "pad_token_id": getattr(self.tokenizer, "pad_token_id", None),
+            "eos_token_id": getattr(self.tokenizer, "eos_token_id", None),
+            "bos_token_id": getattr(self.tokenizer, "bos_token_id", None),
+            "special_tokens_map": dict(getattr(self.tokenizer, "special_tokens_map", {}) or {}),
+        }
+
+    def _tokenize(self, text: list[str], return_debug=False):
         prefix_idx = self.prompt_template_encode_start_idx
-        text = [self.prompt_template_encode_prefix + item for item in text]
+        prefixed_text = [self.prompt_template_encode_prefix + item for item in text]
         suffix_text = [self.prompt_template_encode_suffix] * len(text)
         suffix_inputs = self.processor(text=suffix_text, return_tensors="pt").to(self.device, non_blocking=True)
         suffix_ids = suffix_inputs["input_ids"]
         suffix_mask = suffix_inputs["attention_mask"].bool()
         inputs = self.tokenizer(
-            text,
+            prefixed_text,
             truncation=True,
             return_length=False,
             return_overflowing_tokens=False,
@@ -114,21 +185,114 @@ class Qwen3VLConditioner(torch.nn.Module):
         mask = torch.cat([inputs["attention_mask"].bool(), suffix_mask], dim=1)
         position_ids = mask.long().cumsum(-1) - 1
         position_ids.masked_fill_(mask == 0, 1)
+        debug = None
+        if return_debug:
+            sliced_mask = mask[:, prefix_idx:]
+            debug = {
+                "metadata": self._tokenizer_debug_metadata(),
+                "prompts": list(text),
+                "prompt_char_lengths": [len(item) for item in text],
+                "max_length": self.max_length,
+                "prefix_idx": prefix_idx,
+                "suffix_start_idx": self.prompt_template_encode_suffix_start_idx,
+                "combined_length": int(input_ids.shape[1]),
+                "sliced_length": int(sliced_mask.shape[1]),
+                "tokenizer_input_ids": inputs["input_ids"].detach().cpu(),
+                "tokenizer_attention_mask": inputs["attention_mask"].detach().bool().cpu(),
+                "suffix_input_ids": suffix_ids.detach().cpu(),
+                "suffix_attention_mask": suffix_mask.detach().cpu(),
+                "combined_input_ids": input_ids.detach().cpu(),
+                "combined_attention_mask_before_model": mask.detach().cpu(),
+                "combined_position_ids": position_ids.detach().cpu(),
+                "sliced_attention_mask_before_model": sliced_mask.detach().cpu(),
+                "combined_mask_true_count": int(mask.sum().item()),
+                "sliced_mask_true_count": int(sliced_mask.sum().item()),
+                "combined_mask_runs": _mask_runs(mask),
+                "sliced_mask_runs": _mask_runs(sliced_mask),
+            }
+        return input_ids, mask, position_ids, prefix_idx, debug
+
+    @torch.inference_mode()
+    def tokenize_debug(self, text: list[str]):
+        _, _, _, _, debug = self._tokenize(text, return_debug=True)
+        return debug
+
+    @torch.inference_mode()
+    def forward(self, text: list[str], return_debug=False):
+        self.qwen.language_model._interrupt = getattr(self, "_interrupt", False)
+        if getattr(self, "_interrupt", False):
+            if return_debug:
+                return None, None, None
+            return None, None
+        input_ids, mask, position_ids, prefix_idx, debug = self._tokenize(text, return_debug=return_debug)
+        mask_before_model = mask.detach().clone() if return_debug else None
         selected_layers = [layer_idx - 1 for layer_idx in self.select_layers]
         states = self.qwen.language_model(input_ids=input_ids, attention_mask=mask, position_ids=position_ids, use_cache=False, return_mid_results_layers=selected_layers)
         if states.last_hidden_state is None:
+            if return_debug:
+                return None, None, debug
             return None, None
         mid_results = states.mid_results
+        if return_debug:
+            debug["mask_mutated_by_language_model"] = not torch.equal(mask, mask_before_model)
+            debug["combined_attention_mask_after_model"] = mask.detach().cpu()
+            debug["sliced_attention_mask_after_model"] = mask[:, prefix_idx:].detach().cpu()
+            debug["sliced_mask_after_model_true_count"] = int(mask[:, prefix_idx:].sum().item())
+            debug["selected_layers"] = tuple(self.select_layers)
+            debug["selected_internal_layers"] = tuple(selected_layers)
+            debug["mid_result_stats"] = [_tensor_fingerprint(item.detach()) for item in mid_results]
+            debug["last_hidden_state_stats"] = _tensor_fingerprint(states.last_hidden_state.detach())
         hiddens = torch.stack(mid_results, dim=2)
         states.mid_results = None
         del mid_results, states
         hiddens = hiddens[:, prefix_idx:]
         mask = mask[:, prefix_idx:]
+        if return_debug:
+            debug["hiddens_after_slice_stats"] = _tensor_fingerprint(hiddens.detach())
+            debug["final_mask_true_count"] = int(mask.sum().item())
+            debug["final_mask_runs"] = _mask_runs(mask)
+            return hiddens, mask, debug
         return hiddens, mask
 
 
 class _TextEncodingInterrupted(Exception):
     pass
+
+
+def _lora_schedules_are_static(model):
+    scaling = getattr(model, "_loras_scaling", None)
+    if not scaling:
+        return True
+    for values in scaling.values():
+        if isinstance(values, list) and any(value != values[0] for value in values[1:]):
+            return False
+    return True
+
+
+def _token_row_debug(hiddens, mask):
+    hiddens = hiddens.detach().cpu()
+    mask = mask.detach().bool().cpu()
+    flat = hiddens.float().flatten(2)
+    rows = []
+    for batch_idx in range(flat.shape[0]):
+        row = flat[batch_idx]
+        diff_first = (row - row[0]).abs().max(dim=1).values if row.shape[0] > 0 else torch.empty(0)
+        diff_prev = (row[1:] - row[:-1]).abs().max(dim=1).values if row.shape[0] > 1 else torch.empty(0)
+        real = mask[batch_idx]
+        payload = {
+            "exact_rows_equal_first": int((diff_first == 0).sum().item()) if diff_first.numel() > 0 else 0,
+            "exact_consecutive_equal": int((diff_prev == 0).sum().item()) if diff_prev.numel() > 0 else 0,
+            "diff_first_stats": _tensor_stats(diff_first),
+            "diff_previous_stats": _tensor_stats(diff_prev),
+            "real_token_count": int(real.sum().item()),
+        }
+        if real.any():
+            real_rows = row[real]
+            real_diff_first = (real_rows - real_rows[0]).abs().max(dim=1).values
+            payload["real_exact_rows_equal_first"] = int((real_diff_first == 0).sum().item())
+            payload["real_diff_first_stats"] = _tensor_stats(real_diff_first)
+        rows.append(payload)
+    return rows
 
 
 class Krea2Pipeline:
@@ -158,7 +322,7 @@ class Krea2Pipeline:
         latents = (latents * latents_std) + latents_mean
         return self.vae.decode_to_cpu_uint8(latents)[:, :, 0]
 
-    def _dump_text_encoding_debug(self, label, prompts, hiddens, masks, debug_dir):
+    def _dump_text_encoding_debug(self, label, prompts, hiddens, masks, debug_dir, cache_debug=None, tokenizer_debug=None, encoder_debug=None):
         if not debug_dir:
             return
         os.makedirs(debug_dir, exist_ok=True)
@@ -167,6 +331,21 @@ class Krea2Pipeline:
         path = os.path.join(debug_dir, f"krea2_text_encoding_{stamp}_{self._debug_dump_index:02d}_{label}.pt")
         hiddens_cpu = hiddens.detach().cpu()
         masks_cpu = masks.detach().cpu()
+        mask_comparison = None
+        if isinstance(tokenizer_debug, dict) and "sliced_attention_mask_before_model" in tokenizer_debug:
+            expected_mask = tokenizer_debug["sliced_attention_mask_before_model"].bool()
+            if expected_mask.shape == masks_cpu.shape:
+                mask_comparison = {
+                    "matches_tokenizer_sliced_mask": bool(torch.equal(masks_cpu.bool(), expected_mask)),
+                    "different_entries": int((masks_cpu.bool() != expected_mask).sum().item()),
+                    "tokenizer_true_count": int(expected_mask.sum().item()),
+                    "final_true_count": int(masks_cpu.bool().sum().item()),
+                }
+            else:
+                mask_comparison = {
+                    "matches_tokenizer_sliced_mask": False,
+                    "shape_mismatch": (tuple(masks_cpu.shape), tuple(expected_mask.shape)),
+                }
         torch.save({
             "kind": label,
             "prompts": list(prompts),
@@ -177,27 +356,58 @@ class Krea2Pipeline:
             "hiddens_stats": _tensor_stats(hiddens_cpu),
             "mask_true_count": int(masks_cpu.sum().item()),
             "mask_shape": tuple(masks_cpu.shape),
+            "mask_runs": _mask_runs(masks_cpu),
+            "token_row_debug": _token_row_debug(hiddens_cpu, masks_cpu),
+            "mask_comparison": mask_comparison,
+            "cache_debug": cache_debug,
+            "tokenizer_debug": tokenizer_debug,
+            "encoder_debug": encoder_debug,
         }, path)
         print(f"[Krea2 debug] Saved text encoding dump: {path}")
 
     def _encode_prompts(self, prompts, device, dtype, debug_dir=None, debug_label="prompt"):
         self.encoder._interrupt = self._interrupt
         self.encoder.qwen.language_model._interrupt = self._interrupt
+        debug_enabled = bool(debug_dir)
+        encoder_debug = []
 
         def encode_fn(prompt_batch):
-            hiddens, masks = self.encoder(prompt_batch)
+            if debug_enabled:
+                hiddens, masks, debug = self.encoder(prompt_batch, return_debug=True)
+                encoder_debug.append(debug)
+            else:
+                hiddens, masks = self.encoder(prompt_batch)
             if hiddens is None:
                 raise _TextEncodingInterrupted
             return [(hiddens[i], masks[i]) for i in range(len(prompt_batch))]
 
         cache_keys = [(self.encoder.max_length, tuple(self.encoder.select_layers), prompt) for prompt in prompts]
+        cache_debug = None
+        tokenizer_debug = None
+        if debug_enabled:
+            entries = getattr(self.text_encoder_cache, "_entries", {})
+            cache_debug = {
+                "keys": [repr(key) for key in cache_keys],
+                "pre_hit": [key in entries for key in cache_keys],
+                "entry_count_before": len(entries),
+                "size_bytes_before": int(getattr(self.text_encoder_cache, "_size_bytes", 0)),
+            }
+            tokenizer_debug = self.encoder.tokenize_debug(prompts)
         try:
             encoded = self.text_encoder_cache.encode(encode_fn, prompts, device=device, cache_keys=cache_keys)
         except _TextEncodingInterrupted:
             return None, None
+        if debug_enabled:
+            entries = getattr(self.text_encoder_cache, "_entries", {})
+            cache_debug.update({
+                "post_hit": [key in entries for key in cache_keys],
+                "entry_count_after": len(entries),
+                "size_bytes_after": int(getattr(self.text_encoder_cache, "_size_bytes", 0)),
+                "fresh_encoder_batches": len(encoder_debug),
+            })
         hiddens = torch.stack([item[0] for item in encoded], dim=0).to(device=device, dtype=dtype, non_blocking=True)
         masks = torch.stack([item[1] for item in encoded], dim=0).to(device=device, non_blocking=True)
-        self._dump_text_encoding_debug(debug_label, prompts, hiddens, masks, debug_dir)
+        self._dump_text_encoding_debug(debug_label, prompts, hiddens, masks, debug_dir, cache_debug=cache_debug, tokenizer_debug=tokenizer_debug, encoder_debug=encoder_debug)
         return hiddens, masks
 
     @torch.inference_mode()
@@ -214,7 +424,7 @@ class Krea2Pipeline:
         batch_size = len(prompts)
         noise = torch.empty(batch_size, self.channels, height // self.compression, width // self.compression, device=device, dtype=dtype)
         for i in range(batch_size):
-            noise[i].copy_(torch.randn(self.channels, height // self.compression, width // self.compression, device=device, dtype=dtype, generator=torch.Generator(device=device).manual_seed(int(seed) + i)))
+            noise[i]= torch.randn(self.channels, height // self.compression, width // self.compression, device=device, dtype=dtype, generator=torch.Generator(device=device).manual_seed(int(seed) + i))
         txt, txtmask = self._encode_prompts(prompts, device, dtype, debug_dir=debug_dir, debug_label="positive")
         if txt is None:
             return None
@@ -234,6 +444,21 @@ class Krea2Pipeline:
             callback(-1, None, True, override_num_inference_steps=steps)
         from shared.utils.loras_mutipliers import update_loras_slists
         update_loras_slists(self.transformer, loras_slists, steps)
+        context_static = _lora_schedules_are_static(self.transformer)
+        if context_static:
+            offload.set_step_no_for_lora(self.transformer, 0)
+            self.transformer._interrupt = self._interrupt
+            txt_list = [txt]
+            txt = None
+            txt = self.transformer.prepare_context(txt_list, mask)
+            if txt is None:
+                return None
+            if cfg:
+                untxt_list = [untxt]
+                untxt = None
+                untxt = self.transformer.prepare_context(untxt_list, unmask)
+                if untxt is None:
+                    return None
         for i, (tcurr, tprev) in enumerate(tqdm(list(zip(ts[:-1], ts[1:])), total=steps)):
             offload.set_step_no_for_lora(self.transformer, i)
             self.transformer._interrupt = self._interrupt
@@ -241,13 +466,20 @@ class Krea2Pipeline:
                 return None
             t = torch.full((len(img),), tcurr, dtype=img.dtype, device=img.device)
             if cfg:
-                cond, uncond = self.transformer.forward_cfg(img=img, context=txt, uncond_context=untxt, t=t, pos=pos, uncond_pos=unpos, mask=mask, uncond_mask=unmask)
+                step_txt = txt if context_static else self.transformer.prepare_context(txt, mask)
+                step_untxt = untxt if context_static else self.transformer.prepare_context(untxt, unmask)
+                if step_txt is None or step_untxt is None:
+                    return None
+                cond, uncond = self.transformer.forward_cfg(img=img, context=step_txt, uncond_context=step_untxt, t=t, pos=pos, uncond_pos=unpos, mask=mask, uncond_mask=unmask)
                 if cond is None or uncond is None:
                     return None
                 v = cond + guidance * (cond - uncond)
                 del uncond
             else:
-                cond = self.transformer(img=img, context=txt, t=t, pos=pos, mask=mask)
+                step_txt = txt if context_static else self.transformer.prepare_context(txt, mask)
+                if step_txt is None:
+                    return None
+                cond = self.transformer(img=img, context=step_txt, t=t, pos=pos, mask=mask)
                 if cond is None:
                     return None
                 v = cond

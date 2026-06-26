@@ -89,6 +89,7 @@ from shared.deepy import controller as deepy_controller
 from shared.deepy import cli as deepy_cli
 from shared.deepy import gradio_ui as deepy_gradio_ui
 from shared import extra_settings
+from shared import resolutions as resolution_utils
 import torch
 import gc
 import traceback
@@ -2508,6 +2509,7 @@ if not Path(config_load_filename).is_file():
         "enable_int8_kernels": 1,
         "clear_file_list" : 5,
         "keep_intermediate_sliding_windows": 1,
+        "keep_resolution_on_model_switch": True,
         "enable_4k_resolutions": 0,
         "max_reserved_loras": -1,
         "vae_config": 0,
@@ -3247,6 +3249,7 @@ if not "video_output_codec" in server_config: server_config["video_output_codec"
 if not "hdr_video_crf" in server_config: server_config["hdr_video_crf"] = 8
 if not "video_container" in server_config: server_config["video_container"]= "mp4"
 if not "embed_source_images" in server_config: server_config["embed_source_images"]= False
+if not "keep_resolution_on_model_switch" in server_config: server_config["keep_resolution_on_model_switch"]= True
 if not "enable_4k_resolutions" in server_config: server_config["enable_4k_resolutions"]= 0
 if not "max_reserved_loras" in server_config: server_config["max_reserved_loras"]= -1
 if not "image_output_codec" in server_config: server_config["image_output_codec"]= "jpeg_95"
@@ -8886,6 +8889,7 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
             else:
                 set_model_settings(state, model_type, configs)        
                 state["ignore_save_form"] = True
+                state["skip_resolution_transfer_on_model_switch"] = model_type
                 return *[gr.update()] * 5, gr.update(), _model_choice_target_value(model_type)
 
 def extract_prompt_from_wizard(state, variables_names, prompt, wizard_prompt, allow_null_values, *args):
@@ -9644,6 +9648,7 @@ def use_video_settings(state, input_file_list, choice, source):
                 return str(time.time()), gr.update()
             else:
                 state["ignore_save_form"] = True
+                state["skip_resolution_transfer_on_model_switch"] = model_type
                 return gr.update(), _model_choice_target_value(model_type)
     else:
         gr.Info(f"Please Select a File")
@@ -9856,6 +9861,7 @@ def load_settings_from_file(state, file_path):
     else:
         set_model_settings(state, model_type, configs)        
         state["ignore_save_form"] = True
+        state["skip_resolution_transfer_on_model_switch"] = model_type
         return gr.update(), _model_choice_target_value(model_type), None
 
 def _model_choice_target_model_type(model_type):
@@ -9901,6 +9907,23 @@ def reset_settings(state):
     set_model_settings(state, model_type, ui_defaults)
     gr.Info(f"Default Settings have been Restored")
     return str(time.time())
+
+def transfer_current_resolution_to_model(state, source_model_type, target_model_type):
+    if not resolution_utils.keep_resolution_on_model_switch_enabled(server_config.get("keep_resolution_on_model_switch", True)):
+        return
+    source_settings = get_model_settings(state, source_model_type)
+    source_resolution = source_settings.get("resolution") if source_settings is not None else server_config.get("last_resolution_choice", None)
+    target_model_def = get_model_def(target_model_type)
+    target_resolution = resolution_utils.resolve_model_switch_resolution(source_resolution, target_model_def, server_config.get("enable_4k_resolutions", 0) == 1, target_model_def.get("vae_block_size", 16))
+    if target_resolution is None:
+        return
+    target_settings = get_model_settings(state, target_model_type)
+    target_settings = get_default_settings(target_model_type) if target_settings is None else target_settings.copy()
+
+    target_settings["resolution"] = target_resolution
+    set_model_settings(state, target_model_type, target_settings)
+    server_config["last_resolution_choice"] = target_resolution
+    server_config["last_resolution_per_group"] = resolution_utils.remember_last_resolution(state["last_resolution_per_group"], target_resolution)
 
 def save_inputs(
             target,
@@ -10117,6 +10140,7 @@ def handle_queue_action(state, action_string):
 def change_model(state, model_choice):
     if model_choice == None:
         return
+    previous_model_type = get_state_model_type(state)
     model_filename = get_model_filename(model_choice, transformer_quantization, transformer_dtype_policy)
     last_model_per_family = state["last_model_per_family"] 
     last_model_per_family[get_model_family(model_choice, for_ui= True)] = model_choice
@@ -10129,6 +10153,9 @@ def change_model(state, model_choice):
     server_config["last_model_type"] = model_choice
     model_dropdowns.store_model_output_filter(server_config, state, model_choice)
     model_dropdowns.debug_model_selector_event("model.saved", model=model_choice, filter=model_dropdowns.get_model_output_filter(_get_dropdown_deps(), state), family=get_model_family(model_choice, for_ui=True), base=get_parent_model_type(model_choice))
+    skip_resolution_transfer = state.pop("skip_resolution_transfer_on_model_switch", None) == model_choice
+    if previous_model_type != model_choice and not skip_resolution_transfer:
+        transfer_current_resolution_to_model(state, previous_model_type, model_choice)
 
     with open(server_config_filename, "w", encoding="utf-8") as writer:
         writer.write(json.dumps(server_config, indent=4))
@@ -10663,171 +10690,20 @@ def refresh_video_guide_outpainting_labels(video_guide_outpainting_ratio):
     suffix = "%" if len((video_guide_outpainting_ratio or "").strip()) == 0 else "x"
     return gr.update(label=f"Top {suffix}"), gr.update(label=f"Bottom {suffix}"), gr.update(label=f"Left {suffix}"), gr.update(label=f"Right {suffix}")
 
-custom_resolutions = None
-def get_resolution_choices(current_resolution_choice, model_resolutions= None):
-    global custom_resolutions
-
-
-    resolution_file = "resolutions.json"
-    if model_resolutions is not None:
-        resolution_choices = model_resolutions
-    elif custom_resolutions == None and os.path.isfile(resolution_file) :
-        with open(resolution_file, 'r', encoding='utf-8') as f:
-            try:
-                resolution_choices = json.load(f)
-            except Exception as e:
-                print(f'Invalid "{resolution_file}" : {e}')
-                resolution_choices = None
-        if resolution_choices ==  None:
-            pass 
-        elif not isinstance(resolution_choices, list):
-            print(f'"{resolution_file}" should be a list of 2 elements lists ["Label","WxH"]')
-            resolution_choices == None
-        else:
-            for tup in resolution_choices:
-                if not isinstance(tup, list) or len(tup) != 2 or not isinstance(tup[0], str) or not isinstance(tup[1], str):
-                    print(f'"{resolution_file}" contains an invalid list of two elements: {tup}')
-                    resolution_choices == None
-                    break
-                res_list = tup[1].split("x")
-                if len(res_list) != 2 or not is_integer(res_list[0])  or not is_integer(res_list[1]):
-                    print(f'"{resolution_file}" contains a resolution value that is not in the format "WxH": {tup[1]}')
-                    resolution_choices == None
-                    break
-        custom_resolutions = resolution_choices
-    else:
-        resolution_choices = custom_resolutions
-    if resolution_choices == None:
-        resolution_choices=[]
-        if server_config.get("enable_4k_resolutions", 0) == 1:
-            resolution_choices=[
-                # 4K
-                ("3840x2176 (16:9)", "3840x2176"),
-                ("2176x3840 (9:16)", "2176x3840"),
-                ("3840x1664 (21:9)", "3840x1664"),
-                ("1664x3840 (9:21)", "1664x3840"),
-                ("2048x2048 (1:1)", "2048x2048"),
-                # 1440p
-                ("2560x1440 (16:9)", "2560x1440"),
-                ("1440x2560 (9:16)", "1440x2560"),
-                ("1920x1440 (4:3)", "1920x1440"),
-                ("1440x1920 (3:4)", "1440x1920"),
-                ("2160x1440 (3:2)", "2160x1440"),
-                ("1440x2160 (2:3)", "1440x2160"),
-                ("1440x1440 (1:1)", "1440x1440"),
-                ("2688x1152 (21:9)", "2688x1152"),
-                ("1152x2688 (9:21)", "1152x2688"),]
-        resolution_choices += [# 1080p
-            ("1920x1088 (16:9)", "1920x1088"),
-            ("1088x1920 (9:16)", "1088x1920"),
-            ("1536x1024 (3:2)", "1536x1024"),
-            ("1024x1536 (2:3)", "1024x1536"),
-            ("1920x832 (21:9)", "1920x832"),
-            ("832x1920 (9:21)", "832x1920"),
-            ("2048x768 (8:3)", "2048x768"),
-            ("1024x1792 (4:7)", "1024x1792"),
-            # 720p
-            ("1024x1024 (1:1)", "1024x1024"),
-            ("1280x720 (16:9)", "1280x720"),
-            ("720x1280 (9:16)", "720x1280"), 
-            ("1600x400 (4:1)", "1600x400"),
-            ("1280x544 (21:9)", "1280x544"),
-            ("544x1280 (9:21)", "544x1280"),
-            ("1104x832 (4:3)", "1104x832"),
-            ("832x1104 (3:4)", "832x1104"),
-            ("960x960 (1:1)", "960x960"),
-            # 540p
-            ("960x544 (16:9)", "960x544"),
-            ("544x960 (9:16)", "544x960"),
-            # 480p
-            ("832x624 (4:3)", "832x624"), 
-            ("624x832 (3:4)", "624x832"),
-            ("720x720 (1:1)", "720x720"),
-            ("832x480 (16:9)", "832x480"),
-            ("480x832 (9:16)", "480x832"),
-            # 384p
-            ("672x384 (16:9)", "672x384"),
-            ("384x672 (9:16)", "384x672"),
-            ("512x512 (1:1)", "512x512"),
-            # 320p
-            ("576x320 (16:9)", "576x320"),
-            ("320x576 (9:16)", "320x576"),
-            ("448x448 (1:1)", "448x448"),
-            # 256p
-            ("448x256 (7:4)", "448x256"),
-            ("256x448 (4:7)", "256x448"),
-            ("320x320 (1:1)", "320x320"),
-        ]
-
-
-    if current_resolution_choice is not None:
-        found = False
-        for label, res in resolution_choices:
-            if current_resolution_choice == res:
-                found = True
-                break
-        if not found:
-            if model_resolutions is None:
-                resolution_choices.append( (current_resolution_choice, current_resolution_choice ))
-            else:
-                if len(resolution_choices) > 0:
-                    current_resolution_choice = resolution_choices[0][1]
-
-    return resolution_choices, current_resolution_choice
-
-group_thresholds = {
-    "256p": 448 * 256,
-    "320p": 448 * 448,
-    "384p": 512 * 512,
-    "480p": 832 * 624,     
-    "540p": 960 * 544,   
-    "720p": 1024 * 1024,  
-    "1080p": 1920 * 1088,         
-    "1440p": 2560 * 1440,
-    "2160p": 3840 * 2176,
-}
-    
-def categorize_resolution(resolution_str):
-    width, height = map(int, resolution_str.split('x'))
-    pixel_count = width * height
-    
-    for group in group_thresholds.keys():
-        if pixel_count <= group_thresholds[group]:
-            return group
-    return next(reversed(group_thresholds))
-
-def group_resolutions(model_def, resolutions, selected_resolution):
-
-    model_resolutions = model_def.get("resolutions", None)
-    if model_resolutions is not None:
-        selected_group ="Locked"
-        available_groups = [selected_group ]
-        selected_group_resolutions = model_resolutions
-    else:
-        grouped_resolutions = {}
-        for resolution in resolutions:
-            group = categorize_resolution(resolution[1])
-            if group not in grouped_resolutions:
-                grouped_resolutions[group] = []
-            grouped_resolutions[group].append(resolution)
-        
-        available_groups = [group for group in group_thresholds if group in grouped_resolutions]
-    
-        selected_group = categorize_resolution(selected_resolution)
-        selected_group_resolutions = grouped_resolutions.get(selected_group, [])
-        available_groups.reverse()
-    return available_groups, selected_group_resolutions, selected_group
+def get_resolution_choices(current_resolution_choice, model_def=None):
+    if model_def is None:
+        model_def = {}
+    elif isinstance(model_def, list):
+        model_def = {"resolutions": model_def}
+    return resolution_utils.resolve_resolution_choices(current_resolution_choice, model_def, server_config.get("enable_4k_resolutions", 0) == 1, model_def.get("vae_block_size", 16))
 
 def change_resolution_group(state, selected_group):
     model_type = get_state_model_type(state)
     model_def = get_model_def(model_type)
-    model_resolutions = model_def.get("resolutions", None)
-    resolution_choices, _ = get_resolution_choices(None, model_resolutions)   
-    if model_resolutions is None:
-        group_resolution_choices = [ resolution for resolution in resolution_choices if categorize_resolution(resolution[1]) == selected_group ]
-    else:
-        last_resolution = group_resolution_choices[0][1]
-        return gr.update(choices= group_resolution_choices, value= last_resolution) 
+    resolution_choices, _ = get_resolution_choices(None, model_def)
+    group_resolution_choices = resolution_utils.group_choices(resolution_choices, selected_group)
+    if len(group_resolution_choices) == 0:
+        return gr.update(choices=[], value=None)
 
     last_resolution_per_group = state["last_resolution_per_group"]
     last_resolution = last_resolution_per_group.get(selected_group, "")
@@ -10839,15 +10715,10 @@ def change_resolution_group(state, selected_group):
 
 def record_last_resolution(state, resolution):
 
-    model_type = get_state_model_type(state)
-    model_def = get_model_def(model_type)
-    model_resolutions = model_def.get("resolutions", None)
-    if model_resolutions is not None: return
+    if not resolution_utils.is_resolution_value(resolution or ""):
+        return
     server_config["last_resolution_choice"] = resolution
-    selected_group = categorize_resolution(resolution)
-    last_resolution_per_group = state["last_resolution_per_group"]
-    last_resolution_per_group[selected_group ] = resolution
-    server_config["last_resolution_per_group"] = last_resolution_per_group
+    server_config["last_resolution_per_group"] = resolution_utils.remember_last_resolution(state["last_resolution_per_group"], resolution)
     with open(server_config_filename, "w", encoding="utf-8") as writer:
         writer.write(json.dumps(server_config, indent=4))
 
@@ -11780,9 +11651,13 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 else:
                     label = "Resolution Budget (Pixels will be reallocated to preserve Inputs W/H ratio)" 
                 current_resolution_choice = ui_get("resolution") if update_form or last_resolution is None else last_resolution
-                model_resolutions = model_def.get("resolutions", None)
-                resolution_choices, current_resolution_choice = get_resolution_choices(current_resolution_choice, model_resolutions)
-                available_groups, selected_group_resolutions, selected_group = group_resolutions(model_def,resolution_choices, current_resolution_choice)
+                if audio_only:
+                    selected_group = resolution_utils.categorize_resolution(current_resolution_choice)
+                    available_groups = [selected_group]
+                    selected_group_resolutions = [(current_resolution_choice, current_resolution_choice)]
+                else:
+                    resolution_choices, current_resolution_choice = get_resolution_choices(current_resolution_choice, model_def)
+                    available_groups, selected_group_resolutions, selected_group = resolution_utils.group_resolution_choices(resolution_choices, current_resolution_choice)
                 resolution_group = gr.Dropdown(
                 choices = available_groups,
                     value= selected_group,

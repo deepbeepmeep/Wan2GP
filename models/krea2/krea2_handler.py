@@ -30,6 +30,7 @@ class family_handler:
             ],
             "no_negative_prompt": base_model_type == _TURBO_MODEL_TYPE,
             "no_background_removal": True,
+            "resolutions_categories": [">=720&<=2k"],
             "vae_block_size": 16,
         }
 

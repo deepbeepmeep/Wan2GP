@@ -55,7 +55,8 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-### 24th of June 2026: WanGP v12.27, Let's Experiment!
+### 26th of June 2026: WanGP v12.278, Let's Experiment!
+
 - **KREA-2** : new Image Generator model that claims to be the most aesthetic open-source image model available.
 
 - **LTX-2.3 Multiple Subject Reference**: Here comes another way to add *Reference Images* when using LTX 2.3. This finetune combines Distilled 1.1 and a new LoRA from *LiconStudio*. Just provide 2 to 5 reference images; background first, then subjects and objects. Please note that the embedded lora is quite fond of character sheets with white background.
@@ -83,6 +84,8 @@ I added an experimental support for text to image, not sure it works as MSR does
 - **More Plugins Types: Temporal Upsamplers / Audio Processors**: you can now add your own Temporal Upsampler (*Rife* alternative) or *Audio Processor* (*MMAudio* alternative). As a reminder the previous version allowed already to add a custom *Spatial Upsampler*.
 
 - **API+, MCP+.**: I have improved the API capabilties (please check *docs/API.md*), and widened *MCP* support. Feel free to share feedback on Discord
+
+- **Finetune Resolutions**: define custom resolutions directly in finetunes
 
 *Update 12.25*: Ideograms v4 Turbo Time, MSR t2i, Scail2 parallel subwindows\
 *Update 12.26*: LTX2 inpainting & ingredients, Easy cap, Scail2 fix\

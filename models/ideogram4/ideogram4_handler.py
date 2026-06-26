@@ -185,6 +185,7 @@ class family_handler:
             "no_negative_prompt": True,
             "no_background_removal": True,
             "skip_prompt_template": True,
+            "resolutions_categories": [">=720&<=2k"],
             "vae_block_size": 16,
             "prompt_enhancer_button_label": "Magic Prompt",
             "prompt_infos": IDEOGRAM4_PROMPT_INFOS,

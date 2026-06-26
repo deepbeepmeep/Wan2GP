@@ -22,11 +22,19 @@ from .krea2_mmdit import SingleStreamDiT, config_from_diffusers
 _TEXT_ENCODER_SELECT_LAYERS = (2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35)
 _DEFAULT_NEGATIVE_PROMPT = ""
 _TRANSFORMER_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "configs", "krea2_transformer_config.json")
+_TRANSFORMER_STATE_DICT_PREFIX = "model.diffusion_model."
 
 
 def _load_json(path):
     with open(path, "r", encoding="utf-8") as reader:
         return json.load(reader)
+
+
+def preprocess_sd(state_dict):
+    if not any(key.startswith(_TRANSFORMER_STATE_DICT_PREFIX) for key in state_dict):
+        return state_dict
+    prefix_len = len(_TRANSFORMER_STATE_DICT_PREFIX)
+    return {key[prefix_len:] if key.startswith(_TRANSFORMER_STATE_DICT_PREFIX) else key: value for key, value in state_dict.items()}
 
 
 def _timesteps(seq_len, steps, x1, x2, y1=0.5, y2=1.15, sigma=1.0, mu=None):
@@ -282,7 +290,7 @@ def _load_transformer(model_filename, config_path, dtype):
     config = config_from_diffusers(_load_json(config_path))
     with init_empty_weights(include_buffers=True):
         transformer = SingleStreamDiT(config)
-    offload.load_model_data(transformer, model_filename, writable_tensors=False, default_dtype=dtype)
+    offload.load_model_data(transformer, model_filename, writable_tensors=False, preprocess_sd=preprocess_sd, default_dtype=dtype)
     transformer.eval().requires_grad_(False)
     return transformer
 

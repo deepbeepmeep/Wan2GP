@@ -158,16 +158,15 @@ class RMSNorm(nn.Module):
         self.eps = eps
         self.scale = nn.Parameter(torch.zeros(features, device=device, dtype=torch.float32))
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x_list: Tensor) -> Tensor:
+        if isinstance(x_list,list):
+            x = x_list[0]
+            x_list.clear()
+        else:
+            x = x_list
+            del x_list
         dtype = x.dtype
-        return self.forward_list([x], dtype)
-
-    def forward_list(self, x_list: list[Tensor], dtype: torch.dtype | None = None) -> Tensor:
-        x = x_list[0]
-        x_list.clear()
-        dtype = x.dtype if dtype is None else dtype
-        x = x.float()
-        out = F.rms_norm(x, (self.features,), eps=self.eps, weight=(self.scale.float() + 1.0))
+        out = F.rms_norm(x, (self.features,), eps=self.eps, weight=(self.scale + 1.0))
         del x
         return out.to(dtype)
 
@@ -183,7 +182,7 @@ class QKNorm(nn.Module):
         k_list = [qkv_list[1]]
         v = qkv_list[2]
         qkv_list.clear()
-        return self.qnorm.forward_list(q_list), self.knorm.forward_list(k_list), v
+        return self.qnorm.forward(q_list), self.knorm.forward(k_list), v
 
 
 class SwiGLU(nn.Module):
@@ -273,7 +272,7 @@ class LastLayer(nn.Module):
     def forward(self, x: Tensor | list[Tensor], tvec: Tensor) -> Tensor:
         scale, shift = self.modulation(tvec)
         x_list = x if isinstance(x, list) else [x]
-        x_list = [self.norm.forward_list(x_list)]
+        x_list = [self.norm.forward(x_list)]
         modulate_inplace(x_list, scale, shift)
         return self.linear(x_list.pop())
 

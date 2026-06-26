@@ -61,6 +61,7 @@ def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default
     add("--server-name", type=str, default="", help="Server name")
     add("--gpu", type=str, default="", help="Default GPU Device")
     add("--open-browser", action="store_true", help="open browser")
+    add("--run-as-chrome-app", type=str, default="", help="open as app using provided chrome exe location")
     add("--t2v", action="store_true", help="text to video mode")
     add("--i2v", action="store_true", help="image to video mode")
     add("--t2v-14B", action="store_true", help="text to video mode 14B model")

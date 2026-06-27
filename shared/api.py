@@ -1007,6 +1007,12 @@ class WanGPSession:
             return path.resolve()
         return (caller_base_path / path).resolve()
 
+    # wgp.py loads image_refs/image_start/image_end from path strings, but it only
+    # honors image_guide/image_mask when they are ALREADY PIL Images. On the API
+    # path these arrive as path strings, so the control image / mask gets silently
+    # dropped. Load them here to match the Gradio UI behaviour.
+    _IMAGE_LOAD_KEYS = ("image_guide", "image_mask")
+
     def _absolutize_task_paths(self, task: dict[str, Any], caller_base_path: Path) -> dict[str, Any]:
         normalized = copy.deepcopy(task)
         settings = normalized.get("params")
@@ -1016,7 +1022,26 @@ class WanGPSession:
             if key not in settings:
                 continue
             settings[key] = self._absolutize_setting_path(settings[key], caller_base_path)
+            if key in self._IMAGE_LOAD_KEYS:
+                settings[key] = self._load_image_attachment(settings[key])
         return normalized
+
+    def _load_image_attachment(self, value: Any) -> Any:
+        if value is None or isinstance(value, Image.Image):
+            return value
+        if isinstance(value, list):
+            return [self._load_image_attachment(item) for item in value]
+        if isinstance(value, os.PathLike):
+            value = os.fspath(value)
+        if not isinstance(value, str) or not value.strip():
+            return value
+        if parse_virtual_media_path(value) is not None:
+            return value
+        module = self._ensure_runtime().module
+        img = module._open_image_input(value)
+        if img is None:
+            raise ValueError(f"image attachment could not be opened: {value!r}")
+        return module.convert_image(img)
 
     def _get_attachment_keys(self) -> tuple[str, ...]:
         if self._attachment_keys is None:

@@ -3,6 +3,7 @@ import os, io, tempfile, mimetypes, urllib.parse
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, Literal
 
 import gradio as gr
+from shared import i18n
 import PIL
 import time
 from PIL import Image as PILImage
@@ -427,10 +428,10 @@ class AdvancedMediaGallery:
                     size="sm",
                     min_width=1,
                 )
-                self.btn_remove = gr.Button(" Remove ", size="sm", min_width=1)
-                self.btn_left   = gr.Button("◀ Left",  size="sm", visible=not self._initial_state["single"], min_width=1)
-                self.btn_right  = gr.Button("Right ▶", size="sm", visible=not self._initial_state["single"], min_width=1)
-                self.btn_clear  = gr.Button(" Clear ",   variant="secondary", size="sm", visible=not self._initial_state["single"], min_width=1)
+                self.btn_remove = gr.Button(i18n.tr(" Remove "), size="sm", min_width=1)
+                self.btn_left   = gr.Button(i18n.tr("◀ Left"),  size="sm", visible=not self._initial_state["single"], min_width=1)
+                self.btn_right  = gr.Button(i18n.tr("Right ▶"), size="sm", visible=not self._initial_state["single"], min_width=1)
+                self.btn_clear  = gr.Button(i18n.tr(" Clear "),   variant="secondary", size="sm", visible=not self._initial_state["single"], min_width=1)
 
         return col
 

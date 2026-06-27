@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import gradio as gr
+from shared import i18n
 
 from . import common
 from . import media_io as media
@@ -29,7 +30,7 @@ def _promote_system_continue_cache(system_handler, source_path: str, target_path
         return
     source_sidecar = system_handler.cache_sidecar_path(source_path)
     if not os.path.isfile(source_sidecar):
-        raise gr.Error(f"Continuation cache is missing for recovered system output: {source_sidecar}")
+        raise gr.Error(i18n.tr("Continuation cache is missing for recovered system output: {source_sidecar}", source_sidecar=source_sidecar))
     target_sidecar = system_handler.cache_sidecar_path(target_path)
     Path(target_sidecar).parent.mkdir(parents=True, exist_ok=True)
     os.replace(source_sidecar, target_sidecar)
@@ -241,6 +242,6 @@ def recover_residual_continuations(
         yield ui_update(status_ui.render_chunk_status_html(total_chunks_display, 0, 1, "Merge Pending", locked_message), output_path, str(time.time_ns()), start_enabled=True, abort_enabled=False)
         return ContinuationRecoveryResult(merged_signatures, blocked=True)
     except Exception as exc:
-        raise gr.Error(f"Failed to merge the residual continuation file(s) before resuming. Please close any player using {output_path} and retry. {exc}") from exc
+        raise gr.Error(i18n.tr("Failed to merge the residual continuation file(s) before resuming. Please close any player using {output_path} and retry. {exc}", output_path=output_path, exc=exc)) from exc
 
     return ContinuationRecoveryResult(merged_signatures)

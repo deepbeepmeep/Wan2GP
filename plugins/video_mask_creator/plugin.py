@@ -1,4 +1,5 @@
 import gradio as gr
+from shared import i18n
 from shared.utils.plugins import WAN2GPPlugin
 from preprocessing.matanyone import app as matanyone_app
 
@@ -23,7 +24,7 @@ class MaskGeneratorPlugin(WAN2GPPlugin):
         
         self.add_tab(
             tab_id="mask_generator",
-            label="Mask Generator",
+            label=i18n.tr("Mask Generator"),
             component_constructor=self.create_mask_generator_ui,
         )
 

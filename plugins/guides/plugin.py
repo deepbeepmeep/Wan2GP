@@ -1,4 +1,5 @@
 import gradio as gr
+from shared import i18n
 from shared.utils.plugins import WAN2GPPlugin
 
 class GuidesPlugin(WAN2GPPlugin):
@@ -17,7 +18,7 @@ class GuidesPlugin(WAN2GPPlugin):
         self.add_custom_js(self._script_block())
         self.add_tab(
             tab_id="info",
-            label="Guides",
+            label=i18n.tr("Guides"),
             component_constructor=self.create_guides_ui,
         )
 
@@ -47,12 +48,12 @@ class GuidesPlugin(WAN2GPPlugin):
             deepy = reader.read()
 
         with gr.Tabs():
-            with gr.Tab("Overview", id="overview"):
+            with gr.Tab(i18n.tr("Overview"), id="overview"):
                 gr.Markdown(overview, elem_id="guides_overview_markdown")
                 gr.HTML("<style>.guides-hidden-controls{display:none !important;}</style>")
                 with gr.Row(elem_classes="guides-hidden-controls"):
-                    model_selection = gr.Text(value="", label="", elem_id="guides_overview_target")
-                    apply_btn = gr.Button("Apply Selection", elem_id="guides_overview_trigger")
+                    model_selection = gr.Text(value="", label=i18n.tr(""), elem_id="guides_overview_target")
+                    apply_btn = gr.Button(i18n.tr("Apply Selection"), elem_id="guides_overview_trigger")
                 apply_btn.click(
                     fn=self._apply_overview_selection,
                     inputs=[self.state, model_selection],
@@ -63,17 +64,17 @@ class GuidesPlugin(WAN2GPPlugin):
                     inputs=[self.state],
                     outputs=[self.main_tabs]
                 )
-            with gr.Tab("Deepy", id="deepy"):
+            with gr.Tab(i18n.tr("Deepy"), id="deepy"):
                 gr.Markdown(deepy)
-            with gr.Tab("Prompts", id="prompts"):
+            with gr.Tab(i18n.tr("Prompts"), id="prompts"):
                 gr.Markdown(prompts)
-            with gr.Tab("Loras", id="loras"):
+            with gr.Tab(i18n.tr("Loras"), id="loras"):
                 gr.Markdown(loras)
-            with gr.Tab("Processing", id="processing"):
+            with gr.Tab(i18n.tr("Processing"), id="processing"):
                 gr.Markdown(processing)
-            with gr.Tab("Finetunes", id="finetunes"):
+            with gr.Tab(i18n.tr("Finetunes"), id="finetunes"):
                 gr.Markdown(finetunes)
-            with gr.Tab("Plugins", id="plugins"):
+            with gr.Tab(i18n.tr("Plugins"), id="plugins"):
                 gr.Markdown(plugins)
 
     def _apply_overview_selection(self, state, model_type):

@@ -4,6 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import gradio as gr
+from shared import i18n
 
 from . import constants
 
@@ -27,7 +28,7 @@ def choose_resolution(budget_label: str) -> str:
     try:
         return resolutions[str(budget_label)]
     except KeyError as exc:
-        raise gr.Error(f"Unsupported Output Resolution: {budget_label}") from exc
+        raise gr.Error(i18n.tr("Unsupported Output Resolution: {budget_label}", budget_label=budget_label)) from exc
 
 
 def format_time_token(seconds: float | None) -> str:
@@ -93,7 +94,7 @@ def make_output_variant(output: Path, *, notify: Callable[[str], None] | None = 
             if notify is not None:
                 notify(f"Output file already exists. Using {candidate}")
             return str(candidate)
-    raise gr.Error(f"Unable to find a free output filename for {output}")
+    raise gr.Error(i18n.tr("Unable to find a free output filename for {output}", output=output))
 
 
 def list_continuation_output_paths(output_path: str) -> list[str]:
@@ -134,7 +135,7 @@ def make_continuation_output_path(output_path: str) -> str:
         variant = output.with_name(f"{output.stem}_continue_{index}{output.suffix}")
         if not variant.exists():
             return str(variant)
-    raise gr.Error(f"Unable to find a free continuation filename for {output}")
+    raise gr.Error(i18n.tr("Unable to find a free continuation filename for {output}", output=output))
 
 
 def build_requested_output_path(source_path: str, output_path: str, process_name: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None, *, has_outpaint: bool = False, default_container: str = "mp4") -> Path:
@@ -149,7 +150,7 @@ def build_requested_output_path(source_path: str, output_path: str, process_name
         output = output.with_suffix(_supported_suffix("", default_container))
     elif output.suffix.lstrip(".").lower() not in constants.SUPPORTED_OUTPUT_CONTAINERS:
         supported_text = ", ".join(f".{container}" for container in sorted(constants.SUPPORTED_OUTPUT_CONTAINERS))
-        raise gr.Error(f"Output File must use one of these container extensions: {supported_text}.")
+        raise gr.Error(i18n.tr("Output File must use one of these container extensions: {supported_text}.", supported_text=supported_text))
     return output
 
 

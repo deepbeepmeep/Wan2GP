@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import gradio as gr
+from shared import i18n
 
 from . import common
 from . import constants as ui_constants
@@ -208,7 +209,7 @@ class ProcessFormController:
             return gr.update(label=self.library.target_control_label(process_name, main_state, user_refs), value=value, visible=True, choices=target_control_choices)
         visible = self.library.has_process_outpaint(process_name, main_state, user_refs)
         value = self.library.normalize_outpaint_target_ratio(process_settings, target_ratio) if visible else ""
-        return gr.update(label="Target Ratio", value=value, visible=visible, choices=ui_constants.RATIO_CHOICES if visible else ui_constants.RATIO_CHOICES_WITH_EMPTY)
+        return gr.update(label=i18n.tr("Target Ratio"), value=value, visible=visible, choices=ui_constants.RATIO_CHOICES if visible else ui_constants.RATIO_CHOICES_WITH_EMPTY)
 
     def process_strength_update(self, process_name: str, main_state: dict | None, user_refs: list[str] | None, process_strength: float | None = None):
         process_definition = self.library.process_definition(process_name, main_state, user_refs)

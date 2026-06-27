@@ -1,4 +1,5 @@
 import time
+from shared import i18n
 import threading
 import torch
 
@@ -182,7 +183,7 @@ def acquire_GPU_ressources(state, process_id, process_name, gr = None, custom_pa
             if round(total_wait,2) >= 5 and gr is not None and not wait_msg_displayed:
                 wait_msg_displayed = True
                 if custom_wait_msg is None:
-                    gr.Info(f"Process {process_name} is Suspended while waiting that GPU Ressources become available")
+                    gr.Info(i18n.tr("Process {process_name} is Suspended while waiting that GPU Ressources become available", process_name=process_name))
                 else:
                     gr.Info(custom_wait_msg)
 

@@ -1,6 +1,7 @@
 import os
 import torch
 import gradio as gr
+from shared import i18n
 from PIL import Image
 from shared.utils import files_locator as fl
 from shared.utils.hf import build_hf_url
@@ -474,7 +475,7 @@ class family_handler():
             denoising_strength = inputs.get("denoising_strength", 1)
             masking_strength = inputs.get("masking_strength", 1)
             if denoising_strength != 1 or masking_strength != 1:
-                gr.Info("LanPaint forces Denoising Strength and Masking Strength to 1; non-1 values will be ignored.")
+                gr.Info(i18n.tr("LanPaint forces Denoising Strength and Masking Strength to 1; non-1 values will be ignored."))
 
 
     @staticmethod

@@ -6,6 +6,7 @@ from shared.utils import files_locator as fl
 from shared.utils.hf import build_hf_url
 from shared.utils.loras_mutipliers import parse_loras_multipliers
 import gradio as gr
+from shared import i18n
 from pathlib import Path
 
 from .infos import LTX2_INFOS, LTX2_MSR_INFOS
@@ -166,7 +167,7 @@ def _validate_joyai_inputs(model_def, inputs):
     for window in (inputs.get("frame_scheduler", {}) or {}).get("windows", []):
         model_options = window.get("model_options", {}) or {}
         if "no_mem" in model_options and not no_mem_notified:
-            gr.Info("JoyAI-Echo /no_mem is deprecated because memories are no longer saved automatically. It will be ignored; use /store_mem=name only on windows you want to remember.")
+            gr.Info(i18n.tr("JoyAI-Echo /no_mem is deprecated because memories are no longer saved automatically. It will be ignored; use /store_mem=name only on windows you want to remember."))
             no_mem_notified = True
         store_mem = model_options.get("store_mem", None)
         if store_mem is not None:
@@ -806,7 +807,7 @@ class family_handler:
         guide_phases = inputs.get("guidance_phases", 1)
         if guide_phases !=1 and "V" in video_prompt_type and any_outpainting and _ltx2_outpainting_method() == 1:
             inputs["guidance_phases"]=  1            
-            gr.Info("Number of Phases has been set to 1 as Outpainting is enabled")
+            gr.Info(i18n.tr("Number of Phases has been set to 1 as Outpainting is enabled"))
         if "2" not in audio_prompt_type:
             error = _notify_control_video_phase2(base_model_type, model_def, inputs, any_outpainting)
             if error:

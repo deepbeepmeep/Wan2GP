@@ -1,4 +1,5 @@
 import gradio as gr
+from shared import i18n
 from shared.utils.plugins import WAN2GPPlugin
 import os
 import shutil
@@ -21,7 +22,7 @@ class DownloadsPlugin(WAN2GPPlugin):
 
         self.add_tab(
             tab_id="downloads",
-            label="Downloads",
+            label=i18n.tr("Downloads"),
             component_constructor=self.create_downloads_ui,
         )
 
@@ -30,7 +31,7 @@ class DownloadsPlugin(WAN2GPPlugin):
             with gr.Row(scale=2):
                 gr.Markdown("<I>WanGP's Lora Festival ! Press the following button to download i2v <B>Remade_AI</B> Loras collection (and bonuses Loras).")
             with gr.Row(scale=1):
-                self.download_loras_btn = gr.Button("---> Let the Lora's Festival Start !", scale=1)
+                self.download_loras_btn = gr.Button(i18n.tr("---> Let the Lora's Festival Start !"), scale=1)
             with gr.Row(scale=1):
                 gr.Markdown("")
         self.download_status = gr.Markdown()

@@ -1,4 +1,5 @@
 import gradio as gr
+from shared import i18n
 import os
 import json
 import html
@@ -72,7 +73,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
 
         self.add_tab(
             tab_id="model_manager",
-            label="Models Manager",
+            label=i18n.tr("Models Manager"),
             component_constructor=self.create_model_ui,
         )
 
@@ -84,17 +85,17 @@ class modelsManagerPlugin(WAN2GPPlugin):
             )
             with gr.Row():
                 self.filter_input = gr.Textbox(
-                    label="Filter Finetunes",
+                    label=i18n.tr("Filter Finetunes"),
                     show_label=False,
-                    placeholder="Type at least 3 characters from a model name",
+                    placeholder=i18n.tr("Type at least 3 characters from a model name"),
                     lines=1,
                     scale=5,
                     visible=False,
                     elem_id="ckpt_filter_input",
                 )
-                self.filter_button = gr.Button("Filter", variant="primary", scale=1, visible=False, elem_id="ckpt_filter_btn", elem_classes="btn_centered")
+                self.filter_button = gr.Button(i18n.tr("Filter"), variant="primary", scale=1, visible=False, elem_id="ckpt_filter_btn", elem_classes="btn_centered")
                 self.refresh_button = gr.Button(
-                    "Refresh", variant="secondary", elem_id="ckpt_refresh_btn", scale=1, elem_classes="btn_centered"
+                    i18n.tr("Refresh"), variant="secondary", elem_id="ckpt_refresh_btn", scale=1, elem_classes="btn_centered"
                 )
             with gr.Row():
                 with gr.Column(scale=3, min_width=550):
@@ -592,7 +593,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
     def _build_filtered_tree(self, filter_text):
         text = str(filter_text or "").strip()
         if len(text) < 3:
-            gr.Info("Please enter at least 3 characters to filter finetunes.")
+            gr.Info(i18n.tr("Please enter at least 3 characters to filter finetunes."))
             return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
         self._build_cache()

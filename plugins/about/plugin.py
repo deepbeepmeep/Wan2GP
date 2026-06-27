@@ -1,4 +1,5 @@
 import gradio as gr
+from shared import i18n
 from shared.utils.plugins import WAN2GPPlugin
 
 class AboutPlugin(WAN2GPPlugin):
@@ -11,7 +12,7 @@ class AboutPlugin(WAN2GPPlugin):
     def setup_ui(self):
         self.add_tab(
             tab_id="about_tab",
-            label="About",
+            label=i18n.tr("About"),
             component_constructor=self.create_about_ui,
         )
 

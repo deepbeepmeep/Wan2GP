@@ -7,6 +7,7 @@ from pathlib import Path
 
 import ffmpeg
 import gradio as gr
+from shared import i18n
 import numpy as np
 from PIL import Image, ImageOps
 
@@ -34,7 +35,7 @@ class MotionDesignerPlugin(WAN2GPPlugin):
         self.add_custom_js(self._js_bridge())
         self.add_tab(
             tab_id="motion_designer",
-            label="Motion Designer",
+            label=i18n.tr("Motion Designer"),
             component_constructor=self._build_ui,
         )
 
@@ -59,58 +60,58 @@ class MotionDesignerPlugin(WAN2GPPlugin):
                 min_height=None,
             )
             mask_payload = gr.Textbox(
-                label="Mask Payload",
+                label=i18n.tr("Mask Payload"),
                 visible=False,
                 elem_id="motion_designer_mask_payload",
             )
             metadata_payload = gr.Textbox(
-                label="Mask Metadata",
+                label=i18n.tr("Mask Metadata"),
                 visible=False,
                 elem_id="motion_designer_meta_payload",
             )
             background_payload = gr.Textbox(
-                label="Background Payload",
+                label=i18n.tr("Background Payload"),
                 visible=False,
                 elem_id="motion_designer_background_payload",
             )
             guide_payload = gr.Textbox(
-                label="Guide Payload",
+                label=i18n.tr("Guide Payload"),
                 visible=False,
                 elem_id="motion_designer_guide_payload",
             )
             guide_metadata_payload = gr.Textbox(
-                label="Guide Metadata",
+                label=i18n.tr("Guide Metadata"),
                 visible=False,
                 elem_id="motion_designer_guide_meta_payload",
             )
             mode_sync = gr.Textbox(
-                label="Mode Sync",
+                label=i18n.tr("Mode Sync"),
                 value="cut_drag",
                 visible=False,
                 elem_id="motion_designer_mode_sync",
             )
             trajectory_payload = gr.Textbox(
-                label="Trajectory Payload",
+                label=i18n.tr("Trajectory Payload"),
                 visible=False,
                 elem_id="motion_designer_trajectory_payload",
             )
             trajectory_metadata = gr.Textbox(
-                label="Trajectory Metadata",
+                label=i18n.tr("Trajectory Metadata"),
                 visible=False,
                 elem_id="motion_designer_trajectory_meta",
             )
             trajectory_background = gr.Textbox(
-                label="Trajectory Background",
+                label=i18n.tr("Trajectory Background"),
                 visible=False,
                 elem_id="motion_designer_trajectory_background",
             )
             trigger = gr.Button(
-                "Apply Motion Designer data",
+                i18n.tr("Apply Motion Designer data"),
                 visible=False,
                 elem_id="motion_designer_apply_trigger",
             )
             trajectory_trigger = gr.Button(
-                "Apply Trajectory data",
+                i18n.tr("Apply Trajectory data"),
                 visible=False,
                 elem_id="motion_designer_trajectory_trigger",
             )
@@ -195,13 +196,13 @@ class MotionDesignerPlugin(WAN2GPPlugin):
         guide_metadata_json: str | None,
     ):
         if not encoded_video:
-            raise gr.Error("No mask video received from Motion Designer.")
+            raise gr.Error(i18n.tr("No mask video received from Motion Designer."))
 
         encoded_video = encoded_video.strip()
         try:
             video_bytes = base64.b64decode(encoded_video)
         except Exception as exc:
-            raise gr.Error("Unable to decode the mask video payload.") from exc
+            raise gr.Error(i18n.tr("Unable to decode the mask video payload.")) from exc
 
         metadata: dict[str, object] = {}
         if metadata_json:
@@ -301,7 +302,7 @@ class MotionDesignerPlugin(WAN2GPPlugin):
         else:
             self.update_video_prompt_type(state, any_video_guide = True, any_video_mask = True, default_update="G")
 
-        gr.Info("Motion Designer data transferred to the Media Generator.")
+        gr.Info(i18n.tr("Motion Designer data transferred to the Media Generator."))
         return time.time()
 
     def _apply_trajectory(
@@ -312,14 +313,14 @@ class MotionDesignerPlugin(WAN2GPPlugin):
         background_data_url: str | None,
     ):
         if not trajectory_json:
-            raise gr.Error("No trajectory data received from Motion Designer.")
+            raise gr.Error(i18n.tr("No trajectory data received from Motion Designer."))
 
         try:
             trajectories = json.loads(trajectory_json)
             if not isinstance(trajectories, list) or len(trajectories) == 0:
-                raise gr.Error("Invalid trajectory data: expected non-empty array.")
+                raise gr.Error(i18n.tr("Invalid trajectory data: expected non-empty array."))
         except json.JSONDecodeError as exc:
-            raise gr.Error("Unable to parse trajectory data.") from exc
+            raise gr.Error(i18n.tr("Unable to parse trajectory data.")) from exc
 
         metadata: dict[str, object] = {}
         if metadata_json:

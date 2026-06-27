@@ -1,5 +1,6 @@
 import gradio as gr
 from shared.utils.plugins import WAN2GPPlugin
+from shared import i18n
 import copy
 import json
 from shared.deepy.engine import get_or_create_assistant_session
@@ -101,7 +102,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         self.add_tab(
             tab_id="configuration",
-            label="Configuration",
+            label=i18n.tr("Configuration"),
             component_constructor=self.create_config_ui,
         )
 
@@ -111,12 +112,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
         prompt_enhancer_default_mode = get_prompt_enhancer_default_mode()
         with gr.Column():
             with gr.Tabs():
-                with gr.Tab("General"):
+                with gr.Tab(i18n.tr("General")):
                     self.transformer_types_choices = HierarchySelector(
                         hierarchy=self.create_models_selector_hierarchy(self.displayed_model_types),
                         value=self.transformer_types,
                         height=0,
-                        label="Selectable Generative Models (leave empty for all)",
+                        label=i18n.tr("Selectable Generative Models (leave empty for all)"),
                         display_mode="breadcrumb",
                         sort_hierarchy=False,
                         search_empty_label="No matching models",
@@ -128,7 +129,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             ("Three Levels: Model Family > Models > Finetunes", 1),
                         ],
                         value=self.server_config.get("model_hierarchy_type", 1),
-                        label="Models Hierarchy In User Interface",
+                        label=i18n.tr("Models Hierarchy In User Interface"),
                         interactive=not self.args.lock_config
                     )
                     self.fit_canvas_choice = gr.Dropdown(
@@ -138,68 +139,74 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             ("Dimensions are Exact Output (crops input to fit exact dimensions)", 2),
                         ],
                         value=self.server_config.get("fit_canvas", 0),
-                        label="Input Image/Video Sizing Behavior",
+                        label=i18n.tr("Input Image/Video Sizing Behavior"),
                         interactive=not self.args.lock_config
                     )
 
                     self.attention_choice = gr.Dropdown(
                         choices=self.attention_modes_choices,
-                        value=self.attention_mode, label="Attention Type", interactive=not self.args.lock_config
+                        value=self.attention_mode, label=i18n.tr("Attention Type"), interactive=not self.args.lock_config
                     )
                     self.preload_model_policy_choice = gr.CheckboxGroup(
                         [("Preload Model on App Launch","P"), ("Preload Model on Switch", "S"), ("Unload Model when Queue is Done", "U")],
-                        value=self.preload_model_policy, label="Model Loading/Unloading Policy"
+                        value=self.preload_model_policy, label=i18n.tr("Model Loading/Unloading Policy")
                     )
                     self.clear_file_list_choice = gr.Dropdown(
                         choices=[("None", 0), ("Keep last video", 1), ("Keep last 5 videos", 5), ("Keep last 10", 10), ("Keep last 20", 20), ("Keep last 30", 30)],
-                        value=self.server_config.get("clear_file_list", 5), label="Keep Previous Generations in Gallery"
+                        value=self.server_config.get("clear_file_list", 5), label=i18n.tr("Keep Previous Generations in Gallery")
                     )
                     self.multi_prompts_gen_type_choice = gr.Dropdown(
                         choices=prompt_parser.get_multi_prompts_gen_choices("Video"),
                         value=prompt_parser.normalize_multi_prompts_mode(self.server_config.get("multi_prompts_gen_type", prompt_parser.DEFAULT_MULTI_PROMPTS_MODE), default=prompt_parser.DEFAULT_MULTI_PROMPTS_MODE),
-                        label="How to Process each Line of the Text Prompt (First Time Model SDefault)",
+                        label=i18n.tr("How to Process each Line of the Text Prompt (First Time Model SDefault)"),
                     )
                     self.display_stats_choice = gr.Dropdown(
                         choices=[("Disabled", 0), ("Enabled", 1)],
-                        value=self.server_config.get("display_stats", 0), label="Display real-time RAM/VRAM stats (requires restart)"
+                        value=self.server_config.get("display_stats", 0), label=i18n.tr("Display real-time RAM/VRAM stats (requires restart)")
                     )
                     self.max_frames_multiplier_choice = gr.Dropdown(
                         choices=[("Default", 1), ("x2", 2), ("x3", 3), ("x4", 4), ("x5", 5), ("x6", 6), ("x7", 7)],
-                        value=self.server_config.get("max_frames_multiplier", 1), label="Max Frames / Duration Multiplier (requires restart)"
+                        value=self.server_config.get("max_frames_multiplier", 1), label=i18n.tr("Max Frames / Duration Multiplier (requires restart)")
                     )
                     with gr.Row():
                         self.keep_resolution_on_model_switch_choice = gr.Dropdown(
                             choices=[("Yes", True), ("No", False)],
                             value=self.server_config.get("keep_resolution_on_model_switch", True),
-                            label="Try to Keep Resolution when Switching Model",
+                            label=i18n.tr("Try to Keep Resolution when Switching Model"),
                         )
                         self.enable_4k_resolutions_choice = gr.Dropdown(
                             choices=[("Off", 0), ("On", 1)],
                             value=self.server_config.get("enable_4k_resolutions", 0),
-                            label="3K/4K Resolutions are available for all models"
+                            label=i18n.tr("3K/4K Resolutions are available for all models")
                         )
                     default_paths = self.fl.default_checkpoints_paths
                     checkpoints_paths_text = "\n".join(self.server_config.get("checkpoints_paths", default_paths))
                     self.checkpoints_paths_choice = gr.Textbox(
-                        label="Model Checkpoint Folders (One Path per Line. First is Default Download Path)",
+                        label=i18n.tr("Model Checkpoint Folders (One Path per Line. First is Default Download Path)"),
                         value=checkpoints_paths_text,
                         lines=3,
                         interactive=not self.args.lock_config
                     )
                     self.loras_root_choice = gr.Textbox(
-                        label="Loras Root Folder",
+                        label=i18n.tr("Loras Root Folder"),
                         value=self.server_config.get("loras_root", "loras"),
                         interactive=not self.args.lock_config
                     )
                     self.save_queue_if_crash_choice = gr.Dropdown(
                         choices=[("Disabled", 0), ("Overwrite Last Error Queue", 1), ("Create a New Error Queue File", 2)],
                         value=self.server_config.get("save_queue_if_crash", 1),
-                        label="Save Queue if Crash during Generation",
+                        label=i18n.tr("Save Queue if Crash during Generation"),
                         interactive=not self.args.lock_config
                     )
                     self.UI_theme_choice = gr.Dropdown(
                         choices=[("Blue Sky (Default)", "default"), ("Classic Gradio", "gradio")],
-                        value=self.server_config.get("UI_theme", "default"), label="UI Theme (requires restart)"
+                        value=self.server_config.get("UI_theme", "default"), label=i18n.tr("UI Theme (requires restart)")
+                    )
+                    self.language_choice = gr.Dropdown(
+                        choices=i18n.list_languages(),
+                        value=self.server_config.get("language", "en"),
+                        label=i18n.tr("Language (requires restart)"),
+                        info=i18n.tr("Translates the interface and messages. Other languages can be added as locales/<code>.json. Requires restarting the app to take effect."),
                     )
                     self.queue_color_scheme_choice = gr.Dropdown(
                         choices=[
@@ -207,20 +214,20 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             ("Alternating Grey Shades", "alternating_grey"),
                         ],
                         value=self.server_config.get("queue_color_scheme", "pastel"),
-                        label="Queue Color Scheme"
+                        label=i18n.tr("Queue Color Scheme")
                     )
                     self.process_queues_when_browser_unfocused_choice = gr.Dropdown(
                         choices=[("Yes", 1), ("No", 0)],
                         value=self.server_config.get(gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY, 1),
-                        label="Process Queues when Browser is not in focus (may drain more energy)",
+                        label=i18n.tr("Process Queues when Browser is not in focus (may drain more energy)"),
                         interactive=not self.args.lock_config
                     )
 
-                with gr.Tab("Performance"):
-                    self.quantization_choice = gr.Dropdown(choices=[("Scaled Int8 (recommended)", "int8"), ("Scaled Fp8", "fp8"), ("16-bit (no quantization)", "bf16")], value=self.transformer_quantization, label="Transformer Model Quantization (if available otherwise get the closest available)")
-                    self.transformer_dtype_policy_choice = gr.Dropdown(choices=[("Auto (Best for Hardware)", ""), ("FP16", "fp16"), ("BF16", "bf16")], value=self.transformer_dtype_policy, label="Transformer Data Type (if available)")
-                    self.mixed_precision_choice = gr.Dropdown(choices=[("16-bit only (less VRAM)", "0"), ("Mixed 16/32-bit (better quality)", "1")], value=self.server_config.get("mixed_precision", "0"), label="Transformer Engine Precision")
-                    self.text_encoder_quantization_choice = gr.Dropdown(choices=[("16-bit (more RAM, better quality)", "bf16"), ("8-bit (less RAM, slightly lower quality)", "int8")], value=self.text_encoder_quantization, label="Text Encoder Quantization")
+                with gr.Tab(i18n.tr("Performance")):
+                    self.quantization_choice = gr.Dropdown(choices=[("Scaled Int8 (recommended)", "int8"), ("Scaled Fp8", "fp8"), ("16-bit (no quantization)", "bf16")], value=self.transformer_quantization, label=i18n.tr("Transformer Model Quantization (if available otherwise get the closest available)"))
+                    self.transformer_dtype_policy_choice = gr.Dropdown(choices=[("Auto (Best for Hardware)", ""), ("FP16", "fp16"), ("BF16", "bf16")], value=self.transformer_dtype_policy, label=i18n.tr("Transformer Data Type (if available)"))
+                    self.mixed_precision_choice = gr.Dropdown(choices=[("16-bit only (less VRAM)", "0"), ("Mixed 16/32-bit (better quality)", "1")], value=self.server_config.get("mixed_precision", "0"), label=i18n.tr("Transformer Engine Precision"))
+                    self.text_encoder_quantization_choice = gr.Dropdown(choices=[("16-bit (more RAM, better quality)", "bf16"), ("8-bit (less RAM, slightly lower quality)", "int8")], value=self.text_encoder_quantization, label=i18n.tr("Text Encoder Quantization"))
                     self.lm_decoder_engine_choice = gr.Dropdown(
                         choices=[
                             ("Auto", ""),
@@ -229,10 +236,10 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             ("vllm: up to x10 faster, whole LM will be loaded in VRAM, requires Triton & Flash Attention 2", "vllm"),
                         ],
                         value=self.server_config.get("lm_decoder_engine", ""),
-                        label="Language Models Decoder Engine (when available for a model)",
+                        label=i18n.tr("Language Models Decoder Engine (when available for a model)"),
                     )
-                    self.VAE_precision_choice = gr.Dropdown(choices=[("16-bit (faster, less VRAM)", "16"), ("32-bit (slower, better for sliding window)", "32")], value=self.server_config.get("vae_precision", "16"), label="VAE Encoding/Decoding Precision")
-                    self.compile_choice = gr.Dropdown(choices=[("On (up to 20% faster, requires Triton)", "transformer"), ("Off", "")], value=self.compile, label="Compile Transformer Model (slight speed again, but first generation is slower and potential compatibility issues with some GPUs/Models)", interactive=not self.args.lock_config)
+                    self.VAE_precision_choice = gr.Dropdown(choices=[("16-bit (faster, less VRAM)", "16"), ("32-bit (slower, better for sliding window)", "32")], value=self.server_config.get("vae_precision", "16"), label=i18n.tr("VAE Encoding/Decoding Precision"))
+                    self.compile_choice = gr.Dropdown(choices=[("On (up to 20% faster, requires Triton)", "transformer"), ("Off", "")], value=self.compile, label=i18n.tr("Compile Transformer Model (slight speed again, but first generation is slower and potential compatibility issues with some GPUs/Models)"), interactive=not self.args.lock_config)
                     vae_config_value = self.vae_config if self.vae_config in [0, 1, 2, 3] else 0
                     self.vae_config_choice = gr.Dropdown(
                         choices=[
@@ -242,36 +249,36 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             ("Spatial / Temporal Tiling Preset for 6GB+", 3),
                         ],
                         value=vae_config_value,
-                        label="VAE Tiling (higher presets use less VRAM and may increase artifacts like banding)",
+                        label=i18n.tr("VAE Tiling (higher presets use less VRAM and may increase artifacts like banding)"),
                     )
-                    self.boost_choice = gr.Dropdown(choices=[("ON", 1), ("OFF", 2)], value=self.boost, label="Boost (~10% speedup for ~1GB VRAM)")
-                    self.enable_int8_kernels_choice = gr.Dropdown(choices=[("Disabled", 0), ("Enabled if Triton available", 1)], value=self.server_config.get("enable_int8_kernels", 1), label="Int8 Kernels (Experimental, 10% faster with INT8 quantized checkpoints, requires Triton)")
+                    self.boost_choice = gr.Dropdown(choices=[("ON", 1), ("OFF", 2)], value=self.boost, label=i18n.tr("Boost (~10% speedup for ~1GB VRAM)"))
+                    self.enable_int8_kernels_choice = gr.Dropdown(choices=[("Disabled", 0), ("Enabled if Triton available", 1)], value=self.server_config.get("enable_int8_kernels", 1), label=i18n.tr("Int8 Kernels (Experimental, 10% faster with INT8 quantized checkpoints, requires Triton)"))
                     self.video_profile_choice = gr.Dropdown(
                         choices=self.memory_profile_choices,
                         value=self.default_profile_video,
-                        label="Default Memory Profile (Video)",
+                        label=i18n.tr("Default Memory Profile (Video)"),
                     )
                     self.image_profile_choice = gr.Dropdown(
                         choices=self.memory_profile_choices,
                         value=self.default_profile_image,
-                        label="Default Memory Profile (Image)",
+                        label=i18n.tr("Default Memory Profile (Image)"),
                     )
                     self.audio_profile_choice = gr.Dropdown(
                         choices=self.memory_profile_choices,
                         value=self.default_profile_audio,
-                        label="Default Memory Profile (Audio)",
+                        label=i18n.tr("Default Memory Profile (Audio)"),
                     )
-                    self.preload_in_VRAM_choice = gr.Slider(0, 40000, value=self.server_config.get("preload_in_VRAM", 0), step=100, label="VRAM (MB) for Preloaded Models (0=profile default)")
+                    self.preload_in_VRAM_choice = gr.Slider(0, 40000, value=self.server_config.get("preload_in_VRAM", 0), step=100, label=i18n.tr("VRAM (MB) for Preloaded Models (0=profile default)"))
                     self.max_reserved_loras_choice = gr.Slider(
                         -1,
                         10000,
                         value=self.server_config.get("max_reserved_loras", -1),
                         step=1,
-                        label="Max Amount of Loras (in MB) to be Pinned To Reserved Memory (set it to 0-500MB if Out of Memory when starting Gen, -1= No limit)"
+                        label=i18n.tr("Max Amount of Loras (in MB) to be Pinned To Reserved Memory (set it to 0-500MB if Out of Memory when starting Gen, -1= No limit)")
                     )
-                    self.release_RAM_btn = gr.Button("Force Unload Models from RAM")
+                    self.release_RAM_btn = gr.Button(i18n.tr("Force Unload Models from RAM"))
 
-                with gr.Tab("Extensions"):
+                with gr.Tab(i18n.tr("Extensions")):
                     gr.Markdown("**Audio Postprocessors**")
                     self.audio_processor_config_bindings = audio_processor_api.create_config_ui(gr, self.server_config, lock_config=self.args.lock_config)
                     self.audio_processor_config_components = audio_processor_api.config_components(self.audio_processor_config_bindings)
@@ -286,34 +293,34 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         self.matanyone_version_choice = gr.Dropdown(
                             choices=[("MatAnyone v1 (original, default)", "v1"), ("MatAnyone v2", "v2"), ("SAM3 (no Alpha / Grey level support but better Temporal Stability & Auto Mask Selection by Keyword)", "sam3")],
                             value=self.server_config.get("matanyone_version", "v1"),
-                            label="Mask Generator Engine",
+                            label=i18n.tr("Mask Generator Engine"),
                             interactive=not self.args.lock_config
                         )
 
                     with gr.Group():
-                        self.depth_anything_v2_variant_choice = gr.Dropdown(choices=[("Depth Anything 2 Large (more precise, slower)", "vitl"), ("Depth Anything 2 Big (less precise, faster)", "vitb"), ("Depth Anything 3 Metric Large (better temporal stability ?)", "da3_metric_large")], value=self.server_config.get("depth_anything_v2_variant", "vitl"), label="Depth Anything Preprocessor")
+                        self.depth_anything_v2_variant_choice = gr.Dropdown(choices=[("Depth Anything 2 Large (more precise, slower)", "vitl"), ("Depth Anything 2 Big (less precise, faster)", "vitb"), ("Depth Anything 3 Metric Large (better temporal stability ?)", "da3_metric_large")], value=self.server_config.get("depth_anything_v2_variant", "vitl"), label=i18n.tr("Depth Anything Preprocessor"))
 
 
-                with gr.Tab("Prompt Enhancer / Deepy"):
+                with gr.Tab(i18n.tr("Prompt Enhancer / Deepy")):
                     with gr.Group():
                         self.enhancer_enabled_choice = gr.Dropdown(
                             choices=PROMPT_ENHANCER_CHOICES,
                             value=enabled_choice_value(self.server_config.get("enhancer_enabled", prompt_enhancer_default_mode), PROMPT_ENHANCER_CHOICES, prompt_enhancer_default_mode),
-                            label="Prompt Enhancer (requires extra model files)"
+                            label=i18n.tr("Prompt Enhancer (requires extra model files)")
                         )
                         self.enhancer_quantization_choice = gr.Dropdown(
                             choices=[("Quanto Int8 (recommended, better quality)", "quanto_int8"), ("GGUF Q4 (less VRAM/RAM & faster if kernels are installed, but worse quality)", "gguf")],
                             value=self.server_config.get("prompt_enhancer_quantization", "quanto_int8"),
-                            label="Qwen3.5 LLM Quantization",
+                            label=i18n.tr("Qwen3.5 LLM Quantization"),
                         )
-                        self.enhancer_mode_choice = gr.Dropdown(choices=[("On-Demand Button Only", 1),("Automatic on Generation", 0)], value=self.server_config.get("enhancer_mode", 1), label="Prompt Enhancer Usage")
+                        self.enhancer_mode_choice = gr.Dropdown(choices=[("On-Demand Button Only", 1),("Automatic on Generation", 0)], value=self.server_config.get("enhancer_mode", 1), label=i18n.tr("Prompt Enhancer Usage"))
                     with gr.Row():
                         self.prompt_enhancer_temperature_choice = gr.Slider(
                             0.1,
                             1.5,
                             value=self.server_config.get("prompt_enhancer_temperature", 0.6),
                             step=0.01,
-                            label="Prompt Enhancer Temperature (High = More Creativity)",
+                            label=i18n.tr("Prompt Enhancer Temperature (High = More Creativity)"),
                             interactive=not self.args.lock_config,
                         )
                         self.prompt_enhancer_top_p_choice = gr.Slider(
@@ -321,18 +328,18 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             1.0,
                             value=self.server_config.get("prompt_enhancer_top_p", 0.9),
                             step=0.01,
-                            label="Prompt Enhancer Top-p (High = More Variety)",
+                            label=i18n.tr("Prompt Enhancer Top-p (High = More Variety)"),
                             interactive=not self.args.lock_config,
                         )
                     self.prompt_enhancer_randomize_seed_choice = gr.Checkbox(
                         value=self.server_config.get("prompt_enhancer_randomize_seed", True),
-                        label="Randomize Prompt Enhancer Seed",
+                        label=i18n.tr("Randomize Prompt Enhancer Seed"),
                         interactive=not self.args.lock_config,
                     )
                     self.deepy_enabled_choice = gr.Dropdown(
                         choices=[("Off", 0), ("On", 1)],
                         value=normalize_deepy_enabled(self.server_config.get(DEEPY_ENABLED_KEY, 0)),
-                        label="Enable Deepy",
+                        label=i18n.tr("Enable Deepy"),
                     )
                     self.deepy_vram_mode_choice = gr.Dropdown(
                         choices=[
@@ -341,7 +348,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             ("Always loaded in VRAM", DEEPY_VRAM_MODE_ALWAYS_LOADED),
                         ],
                         value=normalize_deepy_vram_mode(self.server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_MODE_UNLOAD)),
-                        label="Deepy VRAM Loading Mode (the longer Deepy stays in VRAM, the faster Deeper is    )",
+                        label=i18n.tr("Deepy VRAM Loading Mode (the longer Deepy stays in VRAM, the faster Deeper is    )"),
                     )
                     deepy_context_tokens_default = normalize_deepy_context_tokens(self.server_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
                     self.deepy_context_tokens_choice = gr.Slider(
@@ -354,14 +361,14 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.deepy_custom_system_prompt_choice = gr.Textbox(
                         value=normalize_deepy_custom_system_prompt(self.server_config.get(DEEPY_CUSTOM_SYSTEM_PROMPT_KEY, "")),
                         lines=6,
-                        label="Custom System Prompt",
-                        info="Added after the built-in Deepy system prompt on the next user interaction.",
+                        label=i18n.tr("Custom System Prompt"),
+                        info=i18n.tr("Added after the built-in Deepy system prompt on the next user interaction."),
                     )
                     self.deepy_requirement_md = gr.Markdown(value=deepy_requirement_message(self.server_config))
 
-                with gr.Tab("Outputs"):
-                    self.video_container_choice = gr.Dropdown(choices=VIDEO_CONTAINER_CHOICES, value=self.server_config.get("video_container", "mp4"), label="Video Container")
-                    self.video_output_codec_choice = gr.Dropdown(choices=SDR_VIDEO_CODEC_CHOICES, value=self.server_config.get("video_output_codec", "libx264_8"), label="SDR Video Codec")
+                with gr.Tab(i18n.tr("Outputs")):
+                    self.video_container_choice = gr.Dropdown(choices=VIDEO_CONTAINER_CHOICES, value=self.server_config.get("video_container", "mp4"), label=i18n.tr("Video Container"))
+                    self.video_output_codec_choice = gr.Dropdown(choices=SDR_VIDEO_CODEC_CHOICES, value=self.server_config.get("video_output_codec", "libx264_8"), label=i18n.tr("SDR Video Codec"))
                     self.hdr_video_crf_choice = gr.Dropdown(
                         choices=[
                             ("Low (x265 CRF 14)", 14),
@@ -369,9 +376,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             ("High (x265 CRF 4)", 4),
                         ],
                         value=self.server_config.get("hdr_video_crf", 8),
-                        label="HDR Video Codec",
+                        label=i18n.tr("HDR Video Codec"),
                     )
-                    self.image_output_codec_choice = gr.Dropdown(choices=[("JPEG Q85", 'jpeg_85'), ("WEBP Q85", 'webp_85'), ("JPEG Q95", 'jpeg_95'), ("WEBP Q95", 'webp_95'), ("WEBP Lossless", 'webp_lossless'), ("PNG Lossless", 'png')], value=self.server_config.get("image_output_codec", "jpeg_95"), label="Image Codec")
+                    self.image_output_codec_choice = gr.Dropdown(choices=[("JPEG Q85", 'jpeg_85'), ("WEBP Q85", 'webp_85'), ("JPEG Q95", 'jpeg_95'), ("WEBP Q95", 'webp_95'), ("WEBP Lossless", 'webp_lossless'), ("PNG Lossless", 'png')], value=self.server_config.get("image_output_codec", "jpeg_95"), label=i18n.tr("Image Codec"))
                     self.audio_output_codec_choice = gr.Dropdown(
                         choices=[
                             ("AAC 128 kbps", "aac_128"),
@@ -382,7 +389,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         ],
                         value=self.server_config.get("audio_output_codec", "aac_128"),
                         visible=True,
-                        label="Audio Codec to use for MP4/MOV/MKV container",
+                        label=i18n.tr("Audio Codec to use for MP4/MOV/MKV container"),
                     )
                     audio_standalone_default = self.server_config.get("audio_stand_alone_output_codec", "wav")
                     if audio_standalone_default == "mp3":
@@ -396,33 +403,33 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         ],
                         value=audio_standalone_default,
                         visible=True,
-                        label="Audio Codec to use for standalone audio files",
+                        label=i18n.tr("Audio Codec to use for standalone audio files"),
                     )
                     self.metadata_choice = gr.Dropdown(
                         choices=[("Export JSON files", "json"), ("Embed metadata in file (Exif/tag)", "metadata"), ("None", "none")],
-                        value=self.server_config.get("metadata_type", "metadata"), label="Metadata Handling"
+                        value=self.server_config.get("metadata_type", "metadata"), label=i18n.tr("Metadata Handling")
                     )
                     self.keep_intermediate_sliding_windows_choice = gr.Dropdown(
                         choices=[("Yes", 1), ("No", 0)],
                         value=self.server_config.get("keep_intermediate_sliding_windows", 1),
-                        label="Keep Intermediate Sliding Windows"
+                        label=i18n.tr("Keep Intermediate Sliding Windows")
                     )
                     self.embed_source_images_choice = gr.Checkbox(
                         value=self.server_config.get("embed_source_images", False),
-                        label="Embed Source Images",
-                        info="Saves i2v source images inside MP4/MOV/MKV files"
+                        label=i18n.tr("Embed Source Images"),
+                        info=i18n.tr("Saves i2v source images inside MP4/MOV/MKV files")
                     )
-                    self.video_save_path_choice = gr.Textbox(label="Video Output Folder (requires restart)", value=self.save_path)
-                    self.image_save_path_choice = gr.Textbox(label="Image Output Folder (requires restart)", value=self.image_save_path)
-                    self.audio_save_path_choice = gr.Textbox(label="Audio Output Folder (requires restart)", value=self.audio_save_path)
+                    self.video_save_path_choice = gr.Textbox(label=i18n.tr("Video Output Folder (requires restart)"), value=self.save_path)
+                    self.image_save_path_choice = gr.Textbox(label=i18n.tr("Image Output Folder (requires restart)"), value=self.image_save_path)
+                    self.audio_save_path_choice = gr.Textbox(label=i18n.tr("Audio Output Folder (requires restart)"), value=self.audio_save_path)
 
-                with gr.Tab("Notifications"):
-                    self.notification_sound_enabled_choice = gr.Dropdown(choices=[("On", 1), ("Off", 0)], value=self.server_config.get("notification_sound_enabled", 0), label="Notification Sound")
-                    self.notification_sound_volume_choice = gr.Slider(0, 100, value=self.server_config.get("notification_sound_volume", 50), step=5, label="Notification Volume")
+                with gr.Tab(i18n.tr("Notifications")):
+                    self.notification_sound_enabled_choice = gr.Dropdown(choices=[("On", 1), ("Off", 0)], value=self.server_config.get("notification_sound_enabled", 0), label=i18n.tr("Notification Sound"))
+                    self.notification_sound_volume_choice = gr.Slider(0, 100, value=self.server_config.get("notification_sound_volume", 50), step=5, label=i18n.tr("Notification Volume"))
 
             self.msg = gr.Markdown()
             with gr.Row():
-                self.apply_btn = gr.Button("Save Settings")
+                self.apply_btn = gr.Button(i18n.tr("Save Settings"))
 
         def update_deepy_requirement(enhancer_enabled_choice):
             runtime_config = dict(self.server_config)
@@ -449,6 +456,21 @@ class ConfigTabPlugin(WAN2GPPlugin):
             queue=False,
             show_progress="hidden",
         )
+        def apply_language_choice(language_choice):
+            self.server_config["language"] = language_choice
+            try:
+                with open(self.server_config_filename, "r", encoding="utf-8") as reader:
+                    persisted = json.load(reader)
+                if isinstance(persisted, dict):
+                    persisted["language"] = language_choice
+                    with open(self.server_config_filename, "w", encoding="utf-8") as writer:
+                        writer.write(json.dumps(persisted, indent=4))
+            except Exception:
+                pass
+            i18n.set_language(language_choice)
+            gr.Info(i18n.tr("Language changed — restart the app to apply."))
+
+        self.language_choice.change(fn=apply_language_choice, inputs=[self.language_choice], outputs=None, show_progress="hidden")
 
         inputs = [
             self.state,
@@ -456,6 +478,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.attention_choice, self.preload_model_policy_choice, self.clear_file_list_choice, self.multi_prompts_gen_type_choice, self.keep_intermediate_sliding_windows_choice,
             self.display_stats_choice, self.max_frames_multiplier_choice, self.keep_resolution_on_model_switch_choice, self.enable_4k_resolutions_choice, self.checkpoints_paths_choice, self.loras_root_choice, self.save_queue_if_crash_choice,
             self.UI_theme_choice, self.queue_color_scheme_choice, self.process_queues_when_browser_unfocused_choice,
+            self.language_choice,
             self.quantization_choice, self.transformer_dtype_policy_choice, self.mixed_precision_choice,
             self.text_encoder_quantization_choice, self.lm_decoder_engine_choice, self.VAE_precision_choice, self.compile_choice,
             self.depth_anything_v2_variant_choice,
@@ -537,6 +560,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             attention_choice, preload_model_policy_choice, clear_file_list_choice, multi_prompts_gen_type_choice, keep_intermediate_sliding_windows_choice,
             display_stats_choice, max_frames_multiplier_choice, keep_resolution_on_model_switch_choice, enable_4k_resolutions_choice, checkpoints_paths_choice, loras_root_choice, save_queue_if_crash_choice,
             UI_theme_choice, queue_color_scheme_choice, process_queues_when_browser_unfocused_choice,
+            language_choice,
             quantization_choice, transformer_dtype_policy_choice, mixed_precision_choice,
             text_encoder_quantization_choice, lm_decoder_engine_choice, VAE_precision_choice, compile_choice,
             depth_anything_v2_variant_choice,
@@ -562,7 +586,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         video_output_error = validate_video_output_settings(video_output_codec_choice, video_container_choice, audio_output_codec_choice)
         if video_output_error is not None:
-            gr.Info(f"Configuration was not saved: {video_output_error}")
+            gr.Info(i18n.tr("Configuration was not saved: {video_output_error}", video_output_error=video_output_error))
             return f"<div style='color:red; text-align:center;'>Configuration was not saved: {video_output_error}</div>", *[gr.update()]*8
 
         self.fl.set_checkpoints_paths(checkpoints_paths)
@@ -592,6 +616,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "multi_prompts_gen_type": prompt_parser.normalize_multi_prompts_mode(multi_prompts_gen_type_choice, default=prompt_parser.DEFAULT_MULTI_PROMPTS_MODE),
             "keep_intermediate_sliding_windows": keep_intermediate_sliding_windows_choice,
             "preload_model_policy": preload_model_policy_choice, "UI_theme": UI_theme_choice,
+            "language": language_choice,
             "fit_canvas": fit_canvas_choice, "enhancer_enabled": enhancer_enabled_choice,
             "prompt_enhancer_quantization": enhancer_quantization_choice,
             "enhancer_mode": enhancer_mode_choice,
@@ -652,7 +677,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             DEEPY_ENABLED_KEY, DEEPY_VRAM_MODE_KEY, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CUSTOM_SYSTEM_PROMPT_KEY,
             "max_frames_multiplier", "display_stats", "keep_resolution_on_model_switch", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "hdr_video_crf", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "audio_stand_alone_output_codec", "checkpoints_paths", "loras_root", "save_queue_if_crash",
-            "model_hierarchy_type", "UI_theme", "queue_color_scheme", gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY
+            "model_hierarchy_type", "UI_theme", "language", "queue_color_scheme", gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY
         ]
 
         needs_reload = not all(change in no_reload_keys for change in changes)

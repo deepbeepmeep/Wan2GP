@@ -90,6 +90,7 @@ from shared.deepy import cli as deepy_cli
 from shared.deepy import gradio_ui as deepy_gradio_ui
 from shared import extra_settings
 from shared import resolutions as resolution_utils
+from shared import i18n
 import torch
 import gc
 import traceback
@@ -375,9 +376,9 @@ def cancel_edit(state):
     state["editing_task_id"] = None
     if gen.get("queue_paused_for_edit"):
         gen["queue_paused_for_edit"] = False
-        gr.Info("Edit cancelled. Resuming queue processing.")
+        gr.Info(i18n.tr("Edit cancelled. Resuming queue processing."))
     else:
-        gr.Info("Edit cancelled.")
+        gr.Info(i18n.tr("Edit cancelled."))
     return gr.Tabs(selected="media_gen"), gr.update(visible=False)
 
 def validate_edit(state):
@@ -403,7 +404,7 @@ def edit_task_in_queue( state ):
     new_inputs = state.pop("edit_state", None)
 
     if editing_task_id is None or new_inputs is None:
-        gr.Warning("No task selected for editing.")
+        gr.Warning(i18n.tr("No task selected for editing."))
         return None, gr.Tabs(selected="media_gen"), gr.update(visible=False), gr.update()
 
     if state.get("validate_edit_success", 0) == 0:
@@ -415,7 +416,7 @@ def edit_task_in_queue( state ):
         task_to_edit_index = next((i for i, task in enumerate(queue) if task['id'] == editing_task_id), -1)
 
     if task_to_edit_index == -1:
-        gr.Warning("Task not found in queue. It might have been processed or deleted.")
+        gr.Warning(i18n.tr("Task not found in queue. It might have been processed or deleted."))
         state["editing_task_id"] = None
         gen["queue_paused_for_edit"] = False
         return None, gr.Tabs(selected="media_gen"), gr.update(visible=False), gr.update()
@@ -436,7 +437,7 @@ def edit_task_in_queue( state ):
 
     state["editing_task_id"] = None
     if gen.get("queue_paused_for_edit"):
-        gr.Info("Resuming queue processing.")
+        gr.Info(i18n.tr("Resuming queue processing."))
         gen["queue_paused_for_edit"] = False
 
     return task_to_edit_index -1, gr.Tabs(selected="media_gen"), gr.update(visible=False), update_queue_data(queue)
@@ -458,13 +459,13 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
     inputs = get_model_settings(state, model_type)
 
     if model_choice != model_type or inputs ==None:
-        raise gr.Error("Webform can not be used as the App has been restarted since the form was displayed. Please refresh the page")
+        raise gr.Error(i18n.tr("Webform can not be used as the App has been restarted since the form was displayed. Please refresh the page"))
     
     inputs["state"] =  state
     inputs["model_type"] = model_type
     inputs.pop("lset_name", None)
     if inputs == None:
-        gr.Warning("Internal state error: Could not retrieve inputs for the model.")
+        gr.Warning(i18n.tr("Internal state error: Could not retrieve inputs for the model."))
         queue = gen.get("queue", [])
         return ret()
     
@@ -473,7 +474,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         edit_audio_source = gen.get("edit_audio_source", None)
         edit_overrides = gen.get("edit_overrides", None)
         if edit_audio_source is None or edit_overrides is None:
-            gr.Info("You must select an Audio file")
+            gr.Info(i18n.tr("You must select an Audio file"))
             return ret()
         for prop in ["state", "model_type", "mode"]:
             edit_overrides[prop] = inputs[prop]
@@ -514,11 +515,11 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         edit_media_source =gen.get("edit_media_source", None)
         edit_overrides =gen.get("edit_overrides", None)
         if edit_media_source is None or edit_overrides is None:
-            gr.Info("You must select a Video or Image file")
+            gr.Info(i18n.tr("You must select a Video or Image file"))
             return ret()
         frames_count = 1 if has_image_file_extension(edit_media_source) else get_video_info(edit_media_source)[3]
         if frames_count > max_source_video_frames:
-            gr.Info(f"Post processing is not supported on videos longer than {max_source_video_frames} frames. Output Video will be truncated")
+            gr.Info(i18n.tr("Post processing is not supported on videos longer than {max_source_video_frames} frames. Output Video will be truncated", max_source_video_frames=max_source_video_frames))
             # return
         for prop in ["state", "model_type", "mode"]:
             edit_overrides[prop] = inputs[prop]
@@ -603,12 +604,12 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
                 inputs["audio_source"] = audio_source
                 repeat_generation = 1
             else:
-                gr.Info(f"Unsupported remux method: {postprocess_audio}")
+                gr.Info(i18n.tr("Unsupported remux method: {postprocess_audio}", postprocess_audio=postprocess_audio))
                 return ret()
             seed = inputs.get("seed",None)
         inputs["repeat_generation"] = repeat_generation
         if len(prompt) == 0:
-            gr.Info("No edit action selected")
+            gr.Info(i18n.tr("No edit action selected"))
             return ret()
         inputs["prompt"] = ", ".join(prompt)
         add_video_task(**inputs)
@@ -643,7 +644,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
             else:
                 if len(prompts) >= len(image_slots):
                     if len(prompts) % len(image_slots) != 0:
-                        gr.Info("If there are more text prompts than input images the number of text prompts should be dividable by the number of images")
+                        gr.Info(i18n.tr("If there are more text prompts than input images the number of text prompts should be dividable by the number of images"))
                         return ret()
                     rep = len(prompts) // len(image_slots)
                     new_image_start = []
@@ -657,7 +658,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
                     image_end = new_image_end if image_end != None else None
                 else: 
                     if len(image_slots) % len(prompts)  !=0:
-                        gr.Info("If there are more input images than text prompts the number of images should be dividable by the number of text prompts")
+                        gr.Info(i18n.tr("If there are more input images than text prompts the number of images should be dividable by the number of text prompts"))
                         return ret()
                     rep = len(image_slots) // len(prompts)
                     new_prompts = []
@@ -1103,7 +1104,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
             video_prompt_type = del_in_sequence(video_prompt_type, guide_custom_choices["letters_filter"])
             inputs["video_prompt_type"] = video_prompt_type
     if server_config.get("fit_canvas", 0) == 2 and outpainting_dims is not None and any_letters(video_prompt_type, "VKF"):
-        gr.Info("Output Resolution Cropping will be not used for this Generation as it is not compatible with Video Outpainting")
+        gr.Info(i18n.tr("Output Resolution Cropping will be not used for this Generation as it is not compatible with Video Outpainting"))
     if self_refiner_setting != 0:
         from shared.utils.self_refiner import normalize_self_refiner_plan, convert_refiner_list_to_string
         if isinstance(self_refiner_plan, list):
@@ -1247,7 +1248,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
         audio_prompt_type = del_in_sequence(audio_prompt_type, "N")
     if model_type in ["vace_multitalk_14B"] and ("B" in audio_prompt_type or "X" in audio_prompt_type):
         if not "I" in video_prompt_type and not not "V" in video_prompt_type:
-            gr.Info("To get good results with Multitalk and two people speaking, it is recommended to set a Reference Frame or a Control Video (potentially truncated) that contains the two people one on each side")
+            gr.Info(i18n.tr("To get good results with Multitalk and two people speaking, it is recommended to set a Reference Frame or a Control Video (potentially truncated) that contains the two people one on each side"))
 
     if model_def.get("one_image_ref_needed", False):
         if image_refs is None:
@@ -1378,7 +1379,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
             full_video_length = video_length if video_source is None else video_length +  sliding_window_overlap -1
             extra = "" if full_video_length == video_length else f" including {sliding_window_overlap} added for Video Continuation"
             no_windows = compute_sliding_window_no(full_video_length, sliding_window_size, sliding_window_discard_last_frames, sliding_window_overlap)
-            gr.Info(f"The Number of Frames to generate ({video_length}{extra}) is greater than the Sliding Window Size ({sliding_window_size}), {no_windows} Windows will be generated")
+            gr.Info(i18n.tr("The Number of Frames to generate ({video_length}{extra}) is greater than the Sliding Window Size ({sliding_window_size}), {no_windows} Windows will be generated", video_length=video_length, extra=extra, sliding_window_size=sliding_window_size, no_windows=no_windows))
     if "recam" in model_filename:
         if video_guide == None:
             return err("You must provide a Control Video")
@@ -1664,7 +1665,7 @@ def save_queue_action(state):
     queue = gen.get("queue", [])
 
     if not queue or len(queue) == 0:
-        gr.Info("Queue is empty. Nothing to save.")
+        gr.Info(i18n.tr("Queue is empty. Nothing to save."))
         return ""
 
     queue = queue[:]
@@ -2165,16 +2166,16 @@ def clear_queue_action(state):
                 print(f"Clear Queue: Deleted autosave file '{AUTOSAVE_PATH}'.")
         except OSError as e:
             print(f"Clear Queue: Error deleting autosave file '{AUTOSAVE_PATH}': {e}")
-            gr.Warning(f"Could not delete the autosave file '{AUTOSAVE_PATH}'. You may need to remove it manually.")
+            gr.Warning(i18n.tr("Could not delete the autosave file '{AUTOSAVE_PATH}'. You may need to remove it manually.", AUTOSAVE_PATH=AUTOSAVE_PATH))
 
     if aborted_current and cleared_pending:
-        gr.Info("Queue cleared and current generation aborted.")
+        gr.Info(i18n.tr("Queue cleared and current generation aborted."))
     elif aborted_current:
-        gr.Info("Current generation aborted.")
+        gr.Info(i18n.tr("Current generation aborted."))
     elif cleared_pending:
-        gr.Info("Queue cleared.")
+        gr.Info(i18n.tr("Queue cleared."))
     else:
-        gr.Info("Queue is already empty or only contains the active task (which wasn't aborted now).")
+        gr.Info(i18n.tr("Queue is already empty or only contains the active task (which wasn't aborted now)."))
 
     return update_queue_data([])
 def quit_application():
@@ -2201,7 +2202,7 @@ def cancel_quit_process():
 
 def show_countdown_info_from_state(current_value: int):
     if current_value > 0:
-        gr.Info(f"Quitting in {current_value}...")
+        gr.Info(i18n.tr("Quitting in {current_value}...", current_value=current_value))
         return current_value - 1
     return current_value
 quitting_app = False
@@ -2535,6 +2536,7 @@ if not Path(config_load_filename).is_file():
         "prompt_enhancer_top_p": 0.9,
         "prompt_enhancer_randomize_seed": True,
         "audio_save_path": "outputs",
+        "language": "en",
     }
 
     with open(server_config_filename, "w", encoding="utf-8") as writer:
@@ -2545,6 +2547,8 @@ else:
     server_config = json.loads(text)
 
 server_config.setdefault("prompt_enhancer_quantization", "quanto_int8")
+server_config.setdefault("language", "en")
+i18n.set_language(server_config.get("language", "en"))
 server_config["multi_prompts_gen_type"] = prompt_parser.normalize_multi_prompts_mode(
     server_config.get("multi_prompts_gen_type", prompt_parser.DEFAULT_MULTI_PROMPTS_MODE),
     default=prompt_parser.DEFAULT_MULTI_PROMPTS_MODE,
@@ -3854,7 +3858,7 @@ def ensure_prompt_enhancer_loaded(override_profile=None, progress=None, send_cmd
                 enhancer_offloadobj = offload.profile(pipe, profile_no=mmgp_profile, **kwargs)
 
     if prompt_enhancer_llm_model is None or prompt_enhancer_llm_tokenizer is None:
-        raise gr.Error("Prompt enhancer text runtime is not available.")
+        raise gr.Error(i18n.tr("Prompt enhancer text runtime is not available."))
     return prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer
 
 def load_models(model_type, override_profile = -1, output_type="video", **model_kwargs):
@@ -4043,10 +4047,10 @@ def generate_header(model_type, compile, attention_mode):
 
 def release_RAM():
     if gen_in_progress:
-        gr.Info("Unable to release RAM when a Generation is in Progress")
+        gr.Info(i18n.tr("Unable to release RAM when a Generation is in Progress"))
     else:
         release_model()
-        gr.Info("Models stored in RAM have been released")
+        gr.Info(i18n.tr("Models stored in RAM have been released"))
 
 def get_gen_info(state):
     cache = state.get("gen", None)
@@ -4173,7 +4177,7 @@ def pause_generation(state):
     process_id = "pause"
     GPU_process_running = any_GPU_process_running(state, process_id, ignore_main= True )
     if GPU_process_running:
-        gr.Info("Unable to pause, a PlugIn is using the GPU")
+        gr.Info(i18n.tr("Unable to pause, a PlugIn is using the GPU"))
         yield gr.update(), gr.update()
         return
     gen["resume"] = False
@@ -4237,7 +4241,7 @@ def early_stop_generation(state):
         model_type = queue[0].get("params", {}).get("model_type") if queue else None
         model_def = get_model_def(model_type) if model_type else None
         if not model_def or not model_def.get("supports_early_stop", False):
-            gr.Info("Early Stop is not supported for this model.")
+            gr.Info(i18n.tr("Early Stop is not supported for this model."))
             return gr.Button(interactive=True)
         if gen.get("early_stop", False):
             return gr.Button(interactive=False)
@@ -6211,11 +6215,11 @@ def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, multi_
             image_start = image_start * num_prompts
         else:
             if multi_images_gen_type !=1:
-                gr.Info("On Demand Prompt Enhancer with multiple Start Images requires that option 'Match images and text prompts' is set")
+                gr.Info(i18n.tr("On Demand Prompt Enhancer with multiple Start Images requires that option 'Match images and text prompts' is set"))
                 return gr.update(), gr.update()
 
             if len(image_start) != num_prompts:
-                gr.Info("On Demand Prompt Enhancer supports only mutiple Start Images if their number matches the number of Text Prompts")
+                gr.Info(i18n.tr("On Demand Prompt Enhancer supports only mutiple Start Images if their number matches the number of Text Prompts"))
                 return gr.update(), gr.update()
 
     original_image_refs = inputs["image_refs"] if "I" in video_prompt_type else None
@@ -6236,7 +6240,7 @@ def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, multi_
 
     prompt = prompt_parser.serialize_prompt_blocks_with_prefix(output_prompts, original_prompts)
     if num_prompts > 1:
-        gr.Info(f'{num_prompts} Prompts have been Enhanced')
+        gr.Info(i18n.tr("{num_prompts} Prompts have been Enhanced", num_prompts=num_prompts))
     else:
         gr.Info(f'Prompt "{original_prompts[0][:100]}" has been enhanced')
     return prompt, prompt
@@ -6728,7 +6732,7 @@ def generate_media(
     frame_scheduler = None
     scheduler_supported = frame_scheduler_supported(model_type, model_def, image_mode)
     if not scheduler_supported and has_slash_commands(prompts):
-        raise gr.Error("Prompt slash window commands require a video model with Sliding Window support.")
+        raise gr.Error(i18n.tr("Prompt slash window commands require a video model with Sliding Window support."))
     if scheduler_supported:
         frame_scheduler, frame_scheduler_error = build_frame_scheduler(
             prompts,
@@ -7172,7 +7176,7 @@ def generate_media(
             if video_guide is not None and not skip_video_guide_preprocess:
                 keep_frames_parsed_full, error = parse_keep_frames_video_guide(keep_frames_video_guide, source_video_frames_count -source_video_overlap_frames_count + requested_frames_to_generate)
                 if len(error) > 0:
-                    raise gr.Error(f"invalid keep frames {keep_frames_video_guide}")
+                    raise gr.Error(i18n.tr("invalid keep frames {keep_frames_video_guide}", keep_frames_video_guide=keep_frames_video_guide))
                 guide_frames_extract_start = aligned_window_start_frame if extract_guide_from_window_start else aligned_guide_start_frame
                 extra_control_frames = model_def.get("extra_control_frames", 0)
                 if extra_control_frames > 0 and aligned_guide_start_frame >= extra_control_frames: guide_frames_extract_start -= extra_control_frames
@@ -7594,7 +7598,7 @@ def generate_media(
                 elif crash_type == "RAM":
                     new_error = "The generation of the video has encountered an error: it is likely that you have unsufficient RAM and / or Reserved RAM allocation should be reduced using 'perc_reserved_mem_max' or using a different Profile."
                 else:
-                    new_error =  gr.Error(f"The generation of the video has encountered an error, please check your terminal for more information. '{s}'")
+                    new_error =  gr.Error(i18n.tr("The generation of the video has encountered an error, please check your terminal for more information. '{s}'", s=s))
                 tb = traceback.format_exc().split('\n')[:-1] 
                 print('\n'.join(tb))
                 send_cmd("error", new_error)
@@ -8197,7 +8201,7 @@ def process_tasks(state):
                     error_filename = AUTOSAVE_ERROR_FILENAME if save_queue_if_crash == 1 else get_available_filename("", AUTOSAVE_ERROR_FILENAME, f"_{datetime.now():%Y%m%d_%H%M%S}")
                     if _save_queue_to_zip(global_queue_ref, error_filename):
                         print(f"Error Queue autosaved successfully to {error_filename}")
-                        gr.Info(f"Error Queue autosaved successfully to {error_filename}")
+                        gr.Info(i18n.tr("Error Queue autosaved successfully to {error_filename}", error_filename=error_filename))
                     else:
                         print("Autosave Error Queue failed.")
             except Exception as e:
@@ -8524,7 +8528,7 @@ def one_more_sample(state):
     total_generation = gen.get("total_generation", 0) + extra_orders
     gen["progress_status"] = get_latest_status(state)
     gen["refresh"] = get_new_refresh_id()
-    gr.Info(f"An extra sample generation is planned for a total of {total_generation} samples for this prompt")
+    gr.Info(i18n.tr("An extra sample generation is planned for a total of {total_generation} samples for this prompt", total_generation=total_generation))
 
     return state 
 
@@ -8539,7 +8543,7 @@ def one_more_window(state):
     total_windows = gen.get("total_windows", 0) + extra_windows
     gen["progress_status"] = get_latest_status(state)
     gen["refresh"] = get_new_refresh_id()
-    gr.Info(f"An extra window generation is planned for a total of {total_windows} videos for this sample")
+    gr.Info(i18n.tr("An extra window generation is planned for a total of {total_windows} videos for this sample", total_windows=total_windows))
 
     return state 
 
@@ -8649,10 +8653,10 @@ def get_lset_name(state, lset_name):
 def validate_delete_lset(state, lset_name):
     lset_name = get_lset_name(state, lset_name)
     if len(lset_name) == 0 :
-        gr.Info(f"Choose a Preset to delete")
+        gr.Info(i18n.tr("Choose a Preset to delete"))
         return  gr.Button(visible= True), gr.Checkbox(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Button(visible= False) 
     elif "/" in lset_name or "\\" in lset_name:
-        gr.Info(f"You can't delete a built-in profile or preset")
+        gr.Info(i18n.tr("You can't delete a built-in profile or preset"))
         return  gr.Button(visible= True), gr.Checkbox(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Button(visible= False) 
     else:
         return  gr.Button(visible= False), gr.Checkbox(visible= False), gr.Button(visible= False), gr.Button(visible= False), gr.Button(visible= True), gr.Button(visible= True) 
@@ -8660,10 +8664,10 @@ def validate_delete_lset(state, lset_name):
 def validate_save_lset(state, lset_name):
     lset_name = get_lset_name(state, lset_name)
     if len(lset_name) == 0:
-        gr.Info("Please enter a name for the preset")
+        gr.Info(i18n.tr("Please enter a name for the preset"))
         return  gr.Button(visible= True), gr.Checkbox(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Button(visible= False),gr.Checkbox(visible= False) 
     elif "/" in lset_name or "\\" in lset_name:
-        gr.Info(f"You can't edit a built-in profile or preset")
+        gr.Info(i18n.tr("You can't edit a built-in profile or preset"))
         return  gr.Button(visible= True), gr.Checkbox(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Button(visible= False),gr.Checkbox(visible= False) 
     else:
         return  gr.Button(visible= False), gr.Button(visible= False), gr.Button(visible= False), gr.Button(visible= False), gr.Button(visible= True), gr.Button(visible= True),gr.Checkbox(visible= True)
@@ -8682,7 +8686,7 @@ def save_lset(state, lset_name, loras_choices, loras_mult_choices, prompt, save_
         pass
     lset_name = get_lset_name(state, lset_name)
     if len(lset_name) == 0:
-        gr.Info("Please enter a name for the preset / settings file")
+        gr.Info(i18n.tr("Please enter a name for the preset / settings file"))
         lset_choices =[("Please enter a name for a Lora Preset / Settings file","")]
     else:
         lset_name = sanitize_file_name(lset_name)
@@ -8723,7 +8727,7 @@ def save_lset(state, lset_name, loras_choices, loras_mult_choices, prompt, save_
 
         if extension == ".zip":
             if not _save_queue_to_zip([{"id": 1, "params": lset}], full_lset_name_filename):
-                gr.Warning(f"Failed to save Settings File '{lset_name}'")
+                gr.Warning(i18n.tr("Failed to save Settings File '{lset_name}'", lset_name=lset_name))
                 lset_choices = compute_lset_choices(model_type, loras_presets)
                 lset_choices.append((get_new_preset_msg(), ""))
                 return gr.Dropdown(choices=lset_choices, value=""), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Button(visible= False), gr.Checkbox(visible= False)
@@ -8733,18 +8737,18 @@ def save_lset(state, lset_name, loras_choices, loras_mult_choices, prompt, save_
 
         if len(old_lset_name) > 0 :
             if save_lset_prompt_cbox in (2, 3):
-                gr.Info(f"Settings File '{lset_name}' has been updated")
+                gr.Info(i18n.tr("Settings File '{lset_name}' has been updated", lset_name=lset_name))
             else:
-                gr.Info(f"Lora Preset '{lset_name}' has been updated")
+                gr.Info(i18n.tr("Lora Preset '{lset_name}' has been updated", lset_name=lset_name))
             if old_lset_name != lset_name:
                 pos = loras_presets.index(old_lset_name)
                 loras_presets[pos] = lset_name 
                 shutil.move( os.path.join(lora_dir, old_lset_name),  get_available_filename(lora_dir, old_lset_name + ".bkp" ) ) 
         else:
             if save_lset_prompt_cbox in (2, 3):
-                gr.Info(f"Settings File '{lset_name}' has been created")
+                gr.Info(i18n.tr("Settings File '{lset_name}' has been created", lset_name=lset_name))
             else:
-                gr.Info(f"Lora Preset '{lset_name}' has been created")
+                gr.Info(i18n.tr("Lora Preset '{lset_name}' has been created", lset_name=lset_name))
             loras_presets.append(lset_name)
         state["loras_presets"] = loras_presets
 
@@ -8759,16 +8763,16 @@ def delete_lset(state, lset_name):
     if len(lset_name) > 0:
         lset_name_filename = os.path.join( get_lora_dir(model_type), sanitize_file_name(lset_name))
         if not os.path.isfile(lset_name_filename):
-            gr.Info(f"Preset '{lset_name}' not found ")
+            gr.Info(i18n.tr("Preset '{lset_name}' not found ", lset_name=lset_name))
             return [gr.update()]*7 
         os.remove(lset_name_filename)
         lset_choices = compute_lset_choices(None, loras_presets)
         pos = next( (i for i, item in enumerate(lset_choices) if item[1]==lset_name ), -1)
-        gr.Info(f"Lora Preset '{lset_name}' has been deleted")
+        gr.Info(i18n.tr("Lora Preset '{lset_name}' has been deleted", lset_name=lset_name))
         loras_presets.remove(lset_name)
     else:
         pos = -1
-        gr.Info(f"Choose a Preset / Settings File to delete")
+        gr.Info(i18n.tr("Choose a Preset / Settings File to delete"))
 
     state["loras_presets"] = loras_presets
 
@@ -8814,7 +8818,7 @@ def refresh_lora_list(state, lset_name, loras_choices):
             error_files = [path for path, _ in errors]
             gr.Info("Error while refreshing Lora List, invalid Lora files: " + ", ".join(error_files))
         else:
-            gr.Info("Lora List has been refreshed")
+            gr.Info(i18n.tr("Lora List has been refreshed"))
 
 
     return gr.Dropdown(choices=lset_choices, value= lset_name), gr.update(hierarchy=new_loras_hierarchy, value=loras_choices) 
@@ -8834,7 +8838,7 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
 
     lset_name = get_lset_name(state, lset_name)
     if len(lset_name) == 0:
-        gr.Info("Please choose a Lora Preset or Setting File in the list or create one")
+        gr.Info(i18n.tr("Please choose a Lora Preset or Setting File in the list or create one"))
         return wizard_prompt_activated, loras_choices, loras_mult_choices, prompt, gr.update(), gr.update(), gr.update()
     else:
         current_model_type = get_state_model_type(state)
@@ -8853,7 +8857,7 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
             lora_dir = get_lora_dir(current_model_type)
             loras_choices, loras_mult_choices = merge_loras_settings(old_activated_loras, old_loras_multipliers, loras_choices, loras_mult_choices, "merge after")
             loras_choices = update_loras_url_cache(lora_dir, loras_choices)
-            gr.Info(f"Lora Preset '{lset_name}' has been applied")
+            gr.Info(i18n.tr("Lora Preset '{lset_name}' has been applied", lset_name=lset_name))
             state["apply_success"] = 1
             wizard_prompt_activated = "on"
 
@@ -8873,7 +8877,7 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
             model_type = configs["model_type"]
             configs["lset_name"] = lset_name
             if settings_bundle_task_count > 1:
-                gr.Info(f"Settings bundle contains {settings_bundle_task_count} tasks; only the first task has been extracted.")
+                gr.Info(i18n.tr("Settings bundle contains {settings_bundle_task_count} tasks; only the first task has been extracted.", settings_bundle_task_count=settings_bundle_task_count))
             help = configs.get("help", None)
             if help is not None: 
                 gr.Info(help)
@@ -9266,13 +9270,13 @@ def init_generate(state, input_file_list, last_choice, audio_files_paths, audio_
 def video_to_control_video(state, input_file_list, choice):
     file_list, file_settings_list = get_file_list(state, input_file_list)
     if len(file_list) == 0 or choice == None or choice < 0 or choice > len(file_list): return gr.update()
-    gr.Info("Selected Video was copied to Control Video input")
+    gr.Info(i18n.tr("Selected Video was copied to Control Video input"))
     return file_list[choice]
 
 def video_to_source_video(state, input_file_list, choice):
     file_list, file_settings_list = get_file_list(state, input_file_list)
     if len(file_list) == 0 or choice == None or choice < 0 or choice > len(file_list): return gr.update()
-    gr.Info("Selected Video was copied to Source Video input")    
+    gr.Info(i18n.tr("Selected Video was copied to Source Video input"))    
     return file_list[choice]
 
 def image_to_ref_image_add(state, input_file_list, choice, target, target_name):
@@ -9284,10 +9288,10 @@ def image_to_ref_image_add(state, input_file_list, choice, target, target_name):
     video_prompt_type = ui_settings.get("video_prompt_type", "") or ""
     one_image_ref_only = model_def.get("one_image_ref_only", False) and "I" in video_prompt_type and (model_def.get("one_image_ref_only_with_background", False) or not any_letters(video_prompt_type, "KF"))
     if model_def.get("one_image_ref_needed", False) or one_image_ref_only:
-        gr.Info(f"Selected Image was set to {target_name}")
+        gr.Info(i18n.tr("Selected Image was set to {target_name}", target_name=target_name))
         target =[file_list[choice]]
     else:
-        gr.Info(f"Selected Image was added to {target_name}")
+        gr.Info(i18n.tr("Selected Image was added to {target_name}", target_name=target_name))
         if target == None:
             target =[]
         target.append( file_list[choice])
@@ -9296,14 +9300,14 @@ def image_to_ref_image_add(state, input_file_list, choice, target, target_name):
 def image_to_ref_image_set(state, input_file_list, choice, target, target_name):
     file_list, file_settings_list = get_file_list(state, input_file_list)
     if len(file_list) == 0 or choice == None or choice < 0 or choice > len(file_list): return gr.update()
-    gr.Info(f"Selected Image was copied to {target_name}")
+    gr.Info(i18n.tr("Selected Image was copied to {target_name}", target_name=target_name))
     return file_list[choice]
 
 def image_to_ref_image_guide(state, input_file_list, choice):
     file_list, file_settings_list = get_file_list(state, input_file_list)
     if len(file_list) == 0 or choice == None or choice < 0 or choice > len(file_list): return gr.update(), gr.update()
     ui_settings = get_current_model_settings(state)
-    gr.Info(f"Selected Image was copied to Control Image")
+    gr.Info(i18n.tr("Selected Image was copied to Control Image"))
     new_image = file_list[choice]
     if ui_settings["image_mode"]==2 or True:
         return new_image, new_image
@@ -9313,7 +9317,7 @@ def image_to_ref_image_guide(state, input_file_list, choice):
 def audio_to_source_set(state, input_file_list, choice, target_name):
     file_list, file_settings_list = get_file_list(state, unpack_audio_list(input_file_list), audio_files=True)
     if len(file_list) == 0 or choice == None or choice < 0 or choice > len(file_list): return gr.update()
-    gr.Info(f"Selected Audio File was copied to {target_name}")
+    gr.Info(i18n.tr("Selected Audio File was copied to {target_name}", target_name=target_name))
     return file_list[choice]
 
 
@@ -9485,7 +9489,7 @@ def add_videos_to_gallery(state, input_file_list, choice, audio_files_paths, aud
     # print(f"add:{time.time()}")
     gen = get_gen_info(state)
     if files_to_load == None:
-        gr.Info("Please Select a File To Import")
+        gr.Info(i18n.tr("Please Select a File To Import"))
         return [gr.update()]*9
     new_audio= False
     new_video= False
@@ -9525,7 +9529,7 @@ def add_videos_to_gallery(state, input_file_list, choice, audio_files_paths, aud
             valid_files_count +=1
 
     if valid_files_count== 0 and invalid_files_count ==0:
-        gr.Info("No Valid Media to Import")
+        gr.Info(i18n.tr("No Valid Media to Import"))
         return [gr.update()] * 9
     else:
         txt = ""
@@ -9615,9 +9619,9 @@ def use_video_settings(state, input_file_list, choice, source):
         configs = file_settings_list[choice]
         file_name= file_list[choice]
         if configs == None:
-            gr.Info("No Settings to Extract")
+            gr.Info(i18n.tr("No Settings to Extract"))
         elif is_deepy_display_metadata(configs):
-            gr.Info("Deepy helper metadata is display-only and cannot be loaded as WanGP settings")
+            gr.Info(i18n.tr("Deepy helper metadata is display-only and cannot be loaded as WanGP settings"))
         else:
             current_model_type = get_state_model_type(state)
             model_type = configs["model_type"] 
@@ -9651,7 +9655,7 @@ def use_video_settings(state, input_file_list, choice, source):
                 state["skip_resolution_transfer_on_model_switch"] = model_type
                 return gr.update(), _model_choice_target_value(model_type)
     else:
-        gr.Info(f"Please Select a File")
+        gr.Info(i18n.tr("Please Select a File"))
 
     return gr.update(), gr.update()
 def update_loras_url_cache(lora_dir, loras_selected, return_URLs = False):
@@ -9829,7 +9833,7 @@ def load_settings_from_file(state, file_path):
         gr.Info("File not supported" + (f": {state.get('_last_settings_file_error')}" if state.get("_last_settings_file_error") else ""))
         return gr.update(), gr.update(), None
     if is_deepy_display_metadata(configs):
-        gr.Info("Deepy helper metadata is display-only and cannot be loaded as WanGP settings")
+        gr.Info(i18n.tr("Deepy helper metadata is display-only and cannot be loaded as WanGP settings"))
         return gr.update(), gr.update(), None
 
     current_model_type = get_state_model_type(state)
@@ -9844,7 +9848,7 @@ def load_settings_from_file(state, file_path):
     if file_path_text.lower().endswith((".mkv", ".mov", ".mp4")):
         extracted_images = extract_and_apply_source_images(file_path_text, configs)
     if settings_bundle_task_count > 1:
-        gr.Info(f"Settings bundle contains {settings_bundle_task_count} tasks; only the first task has been extracted.")
+        gr.Info(i18n.tr("Settings bundle contains {settings_bundle_task_count} tasks; only the first task has been extracted.", settings_bundle_task_count=settings_bundle_task_count))
     if any_audio:
         gr.Info(f"Settings Loaded from Audio file with prompt '{prompt[:100]}'")
     elif any_video_or_image_file:    
@@ -9905,7 +9909,7 @@ def reset_settings(state):
     model_type = get_state_model_type(state)
     ui_defaults = get_default_settings(model_type)
     set_model_settings(state, model_type, ui_defaults)
-    gr.Info(f"Default Settings have been Restored")
+    gr.Info(i18n.tr("Default Settings have been Restored"))
     return str(time.time())
 
 def transfer_current_resolution_to_model(state, source_model_type, target_model_type):
@@ -10078,7 +10082,7 @@ def save_inputs(
         with open(defaults_filename, "w", encoding="utf-8") as f:
             json.dump(cleaned_inputs, f, indent=4)
 
-        gr.Info("New Default Settings saved")
+        gr.Info(i18n.tr("New Default Settings saved"))
     elif target == "state":
         set_model_settings(state, model_type, cleaned_inputs)        
     elif target == "edit_state":
@@ -10108,20 +10112,20 @@ def handle_queue_action(state, action_string):
         if task_index != -1:
             task_data = queue[task_index]
             if _is_edit_task_params(task_data.get("params", {})):
-                if action == "edit": gr.Info("Post-processing tasks cannot be edited.")
+                if action == "edit": gr.Info(i18n.tr("Post-processing tasks cannot be edited."))
                 return update_queue_data(queue), gr.Tabs(), gr.update(), gr.update()
 
             state["editing_task_id"] = task_id
 
             if task_index == 1:
                 gen["queue_paused_for_edit"] = True
-                gr.Info("Queue processing will pause after the current generation, as you are editing the next item to generate.")
+                gr.Info(i18n.tr("Queue processing will pause after the current generation, as you are editing the next item to generate."))
 
             if action == "edit":
                 gr.Info(f"Loading task ID {task_id} ('{task_data['prompt'][:50]}...') for editing.")
             return update_queue_data(queue), gr.Tabs(selected="edit"), gr.update(visible=True), get_unique_id()
         else:
-            gr.Warning("Task ID not found. It may have already been processed.")
+            gr.Warning(i18n.tr("Task ID not found. It may have already been processed."))
             return update_queue_data(queue), gr.Tabs(), gr.update(), gr.update()
             
     elif action == "move" and len(params) == 3 and params[1] == "to":
@@ -10688,7 +10692,7 @@ def refresh_video_guide_outpainting_row(video_guide_outpainting_checkbox, video_
 
 def refresh_video_guide_outpainting_labels(video_guide_outpainting_ratio):
     suffix = "%" if len((video_guide_outpainting_ratio or "").strip()) == 0 else "x"
-    return gr.update(label=f"Top {suffix}"), gr.update(label=f"Bottom {suffix}"), gr.update(label=f"Left {suffix}"), gr.update(label=f"Right {suffix}")
+    return gr.update(label=i18n.tr("Top {suffix}", suffix=suffix)), gr.update(label=i18n.tr("Bottom {suffix}", suffix=suffix)), gr.update(label=i18n.tr("Left {suffix}", suffix=suffix)), gr.update(label=i18n.tr("Right {suffix}", suffix=suffix))
 
 def get_resolution_choices(current_resolution_choice, model_def=None):
     if model_def is None:
@@ -10825,7 +10829,7 @@ def get_default_value(choices, current_value, default_value = None):
 
 def download_lora(state, lora_url, progress=gr.Progress(track_tqdm=True),):
     if lora_url is None or not lora_url.startswith("http"):
-        gr.Info("Please provide a URL for a Lora to Download")
+        gr.Info(i18n.tr("Please provide a URL for a Lora to Download"))
         return gr.update()
     model_type = get_state_model_type(state)
     lora_short_name = os.path.basename(lora_url)
@@ -10834,10 +10838,10 @@ def download_lora(state, lora_url, progress=gr.Progress(track_tqdm=True),):
     try:
         download_file(lora_url, local_path)
     except Exception as e:
-        gr.Info(f"Error downloading Lora {lora_short_name}: {e}")
+        gr.Info(i18n.tr("Error downloading Lora {lora_short_name}: {e}", lora_short_name=lora_short_name, e=e))
         return gr.update()
     update_loras_url_cache(lora_dir, [lora_url])
-    gr.Info(f"Lora {lora_short_name} has been succesfully downloaded")
+    gr.Info(i18n.tr("Lora {lora_short_name} has been succesfully downloaded", lora_short_name=lora_short_name))
     return ""
     
 
@@ -10998,8 +11002,8 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     lset_name = gr.Dropdown(show_label=False, allow_custom_value= True, scale=6, filterable=True, choices= lset_choices, value=launch_preset)
                 with gr.Column(scale=1):
                     with gr.Row(height=17): 
-                        apply_lset_btn = gr.Button("Apply", size="sm", min_width= 1)
-                        refresh_lora_btn = gr.Button("Refresh", size="sm", min_width= 1, visible=advanced_ui or not only_allow_edit_in_advanced)
+                        apply_lset_btn = gr.Button(i18n.tr("Apply"), size="sm", min_width= 1)
+                        refresh_lora_btn = gr.Button(i18n.tr("Refresh"), size="sm", min_width= 1, visible=advanced_ui or not only_allow_edit_in_advanced)
                         if len(launch_preset) == 0 : 
                             lset_type = 2   
                         else:
@@ -11013,14 +11017,14 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             ],  show_label= False, container=False, value = lset_type, visible= False
                         ) 
                     with gr.Row(height=17, visible=False) as refresh2_row:
-                        refresh_lora_btn2 = gr.Button("Refresh", size="sm", min_width= 1)
+                        refresh_lora_btn2 = gr.Button(i18n.tr("Refresh"), size="sm", min_width= 1)
 
                     with gr.Row(height=17, visible=advanced_ui or not only_allow_edit_in_advanced) as preset_buttons_rows:
-                        confirm_save_lset_btn = gr.Button("Go Ahead Save it !", size="sm", min_width= 1, visible=False) 
-                        confirm_delete_lset_btn = gr.Button("Go Ahead Delete it !", size="sm", min_width= 1, visible=False) 
-                        save_lset_btn = gr.Button("Save", size="sm", min_width= 1, visible = True)
-                        delete_lset_btn = gr.Button("Delete", size="sm", min_width= 1, visible = True)
-                        cancel_lset_btn = gr.Button("Don't do it !", size="sm", min_width= 1 , visible=False)  
+                        confirm_save_lset_btn = gr.Button(i18n.tr("Go Ahead Save it !"), size="sm", min_width= 1, visible=False) 
+                        confirm_delete_lset_btn = gr.Button(i18n.tr("Go Ahead Delete it !"), size="sm", min_width= 1, visible=False) 
+                        save_lset_btn = gr.Button(i18n.tr("Save"), size="sm", min_width= 1, visible = True)
+                        delete_lset_btn = gr.Button(i18n.tr("Delete"), size="sm", min_width= 1, visible = True)
+                        cancel_lset_btn = gr.Button(i18n.tr("Don't do it !"), size="sm", min_width= 1 , visible=False)  
                         #confirm_save_lset_btn, confirm_delete_lset_btn, save_lset_btn, delete_lset_btn, cancel_lset_btn
             t2v =  test_class_t2v(base_model_type) 
             base_model_family = get_model_family(base_model_type)
@@ -11068,11 +11072,11 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             image_mode = gr.Number(value =image_mode_value, visible = False)
             image_mode_tab_selected= "t2i" if image_mode_value == 1 else ("inpaint" if image_mode_value == 2 else "t2v") 
             with gr.Tabs(visible = v2i_switch_supported or inpaint_support, selected= image_mode_tab_selected ) as image_mode_tabs:
-                with gr.Tab("Text to Video", id = "t2v", elem_classes="compact_tab", visible = v2i_switch_supported) as tab_t2v:
+                with gr.Tab(i18n.tr("Text to Video"), id = "t2v", elem_classes="compact_tab", visible = v2i_switch_supported) as tab_t2v:
                     pass
-                with gr.Tab("Text to Image", id = "t2i", elem_classes="compact_tab"):
+                with gr.Tab(i18n.tr("Text to Image"), id = "t2i", elem_classes="compact_tab"):
                     pass
-                with gr.Tab("Image Inpainting", id = "inpaint", elem_classes="compact_tab", visible=inpaint_support) as tab_inpaint:
+                with gr.Tab(i18n.tr("Image Inpainting"), id = "inpaint", elem_classes="compact_tab", visible=inpaint_support) as tab_inpaint:
                     pass
 
             if audio_only:
@@ -11109,11 +11113,11 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         image_prompt_type_radio_allowed_values= filter_letters(image_prompt_types_allowed, "SVL")
                         image_prompt_type_radio_value = filter_letters(image_prompt_type_value, image_prompt_type_radio_allowed_values,  image_prompt_type_choices[0][1] if len(image_prompt_type_choices) > 0 else "")
                         if len(image_prompt_type_choices) > 0:
-                            image_prompt_type_radio = gr.Radio( image_prompt_type_choices, value = image_prompt_type_radio_value, label="Location", show_label= False, visible= len(image_prompt_types_allowed)>1, scale= 5)
+                            image_prompt_type_radio = gr.Radio( image_prompt_type_choices, value = image_prompt_type_radio_value, label=i18n.tr("Location"), show_label= False, visible= len(image_prompt_types_allowed)>1, scale= 5)
                         else:
                             image_prompt_type_radio = gr.Radio(choices=[("", "")], value="", visible= False)
                         if "E" in image_prompt_types_allowed:
-                            image_prompt_type_endcheckbox = gr.Checkbox( value ="E" in image_prompt_type_value, label="End Image(s)", show_label= False, visible=end_option_visible, scale= 1, elem_classes="cbx_centered")
+                            image_prompt_type_endcheckbox = gr.Checkbox( value ="E" in image_prompt_type_value, label=i18n.tr("End Image(s)"), show_label= False, visible=end_option_visible, scale= 1, elem_classes="cbx_centered")
                             any_end_image = True
                         else:
                             image_prompt_type_endcheckbox = gr.Checkbox( value =False, show_label= False, visible= False , scale= 1)
@@ -11123,11 +11127,11 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 video_source = gr.Video(label= video_input_label_with_info(video_source_label, video_source_value), height = gallery_height, visible= "V" in image_prompt_type_value, value= video_source_value, elem_id="video_input")
                 image_end_row, image_end, image_end_extra = get_image_gallery(label=get_image_end_label(multi_prompts_gen_type_value), value = ui_defaults.get("image_end", None), visible=end_option_visible and "E" in image_prompt_type_value)
                 if model_mode_choices is None:
-                    model_mode = gr.Dropdown(value=None, label="model mode", visible=False)
+                    model_mode = gr.Dropdown(value=None, label=i18n.tr("model mode"), visible=False)
                 else:
                     model_mode_value = ui_defaults["model_mode"] = get_default_value(model_mode_choices["choices"], ui_get("model_mode", None), model_mode_choices["default"] )
                     model_mode = gr.Dropdown(choices=model_mode_choices["choices"], value=model_mode_value, label=model_mode_choices["label"],  visible=image_mode_value in model_modes_visibility)                        
-                keep_frames_video_source = gr.Text(value=ui_get("keep_frames_video_source") , visible= len(filter_letters(image_prompt_type_value, "VL"))>0 , scale = 2, label= "Truncate Video beyond this number of resampled Frames (empty=Keep All, negative truncates from End)" ) 
+                keep_frames_video_source = gr.Text(value=ui_get("keep_frames_video_source") , visible= len(filter_letters(image_prompt_type_value, "VL"))>0 , scale = 2, label= i18n.tr("Truncate Video beyond this number of resampled Frames (empty=Keep All, negative truncates from End)") ) 
 
             any_control_video = any_control_image = False
             if image_mode_value ==2:
@@ -11161,7 +11165,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 with gr.Row(visible=guide_selection_visible) as guide_selection_row:
                     # Control Video Preprocessing
                     if guide_preprocessing is None:
-                        video_prompt_type_video_guide = gr.Dropdown(choices=[("","")], value="", label="Control Video", scale = 2, visible= False, show_label= True, )
+                        video_prompt_type_video_guide = gr.Dropdown(choices=[("","")], value="", label=i18n.tr("Control Video"), scale = 2, visible= False, show_label= True, )
                     else:
                         pose_label = "Pose" if image_outputs else "Motion" 
                         guide_preprocessing_labels_all = {
@@ -11203,7 +11207,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
 
                     # Alternate Control Video Preprocessing / Options
                     if guide_custom_choices is None:
-                        video_prompt_type_video_guide_alt = gr.Dropdown(choices=[("","")], value="", label="Control Video", visible= False, scale = 1 )
+                        video_prompt_type_video_guide_alt = gr.Dropdown(choices=[("","")], value="", label=i18n.tr("Control Video"), visible= False, scale = 1 )
                     else:
                         video_prompt_type_video_guide_alt_label = guide_custom_choices.get("label", "Control Video Process")
                         if image_outputs: video_prompt_type_video_guide_alt_label = video_prompt_type_video_guide_alt_label.replace("Video", "Image")
@@ -11224,8 +11228,8 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     # Custom dropdown box & checkbox
                     custom_checkbox= False 
                     if custom_video_selection is None:
-                        video_prompt_type_video_custom_dropbox = gr.Dropdown(choices=[("","")], value="", label="Custom Dropdown", scale = 1, visible= False, show_label= True, )
-                        video_prompt_type_video_custom_checkbox = gr.Checkbox(value=False, label="Custom Checkbbox", scale = 1, visible= False, show_label= True, )
+                        video_prompt_type_video_custom_dropbox = gr.Dropdown(choices=[("","")], value="", label=i18n.tr("Custom Dropdown"), scale = 1, visible= False, show_label= True, )
+                        video_prompt_type_video_custom_checkbox = gr.Checkbox(value=False, label=i18n.tr("Custom Checkbbox"), scale = 1, visible= False, show_label= True, )
 
                     else:
                         custom_video_choices = custom_video_selection["choices"]
@@ -11243,7 +11247,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
 
                     # Control Mask Preprocessing
                     if mask_preprocessing is None:
-                        video_prompt_type_video_mask = gr.Dropdown(choices=[("","")], value="", label="Video Mask", scale = 1, visible= False, show_label= True, )
+                        video_prompt_type_video_mask = gr.Dropdown(choices=[("","")], value="", label=i18n.tr("Video Mask"), scale = 1, visible= False, show_label= True, )
                         any_image_mask = image_outputs
                     else:
                         mask_preprocessing_labels_all = {
@@ -11290,7 +11294,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             choices=[ ("None", ""),],
                             value=filter_letters(video_prompt_type_value, ""),
                             visible = False,
-                            label="Start / Reference Images", scale = 1
+                            label=i18n.tr("Start / Reference Images"), scale = 1
                         )
                     else:
                         any_reference_image = True
@@ -11305,7 +11309,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             label=image_ref_choices.get("label", "Inject Reference Images"), show_label= image_ref_choices.get("show_label", True), scale = 1
                         )
 
-                image_guide = gr.Image(label= "Control Image", height = 800, type ="pil", visible= image_mode_value==1 and "V" in video_prompt_type_value and ("U" in video_prompt_type_value or "A" not in video_prompt_type_value ) , value= ui_defaults.get("image_guide", None))
+                image_guide = gr.Image(label= i18n.tr("Control Image"), height = 800, type ="pil", visible= image_mode_value==1 and "V" in video_prompt_type_value and ("U" in video_prompt_type_value or "A" not in video_prompt_type_value ) , value= ui_defaults.get("image_guide", None))
                 video_guide_label = "Control Video"
                 video_guide_value = ui_defaults.get("video_guide", None)
                 video_guide = gr.Video(label= video_input_label_with_info(video_guide_label, video_guide_value), height = gallery_height, visible= (not image_outputs) and "V" in video_prompt_type_value, value= video_guide_value, elem_id="video_input")
@@ -11351,7 +11355,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
 
                 denoising_strength = setting_slider("denoising_strength", visible="G" in video_prompt_type_value)
                 keep_frames_video_guide_visible = not image_outputs and  "V" in video_prompt_type_value and not model_def.get("keep_frames_video_guide_not_supported", False)
-                keep_frames_video_guide = gr.Text(value=ui_get("keep_frames_video_guide") , visible= keep_frames_video_guide_visible  , scale = 2, label= "Frames to keep in Control Video (empty=All, 1=first, a:b for a range, space to separate values)" ) #, -1=last
+                keep_frames_video_guide = gr.Text(value=ui_get("keep_frames_video_guide") , visible= keep_frames_video_guide_visible  , scale = 2, label= i18n.tr("Frames to keep in Control Video (empty=All, 1=first, a:b for a range, space to separate values)") ) #, -1=last
                 video_guide_outpainting_modes = model_def.get("video_guide_outpainting", [])
                 with gr.Column(visible= ("V" in video_prompt_type_value  or "K" in video_prompt_type_value  or "F" in video_prompt_type_value) and image_mode_value in video_guide_outpainting_modes) as video_guide_outpainting_col:
                     video_guide_outpainting_value = ui_get("video_guide_outpainting")
@@ -11366,12 +11370,12 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         with gr.Row(visible = not video_guide_outpainting_value.startswith("#")) as video_guide_outpainting_row:
                             video_guide_outpainting_value = video_guide_outpainting_value[1:] if video_guide_outpainting_value.startswith("#") else video_guide_outpainting_value
                             video_guide_outpainting_list = [0] * 4 if len(video_guide_outpainting_value) == 0 else [int(v) for v in video_guide_outpainting_value.split(" ")]
-                            video_guide_outpainting_top= gr.Slider(0, 100, value= video_guide_outpainting_list[0], step=5, label=f"Top {outpainting_label_suffix}", show_reset_button= False)
-                            video_guide_outpainting_bottom = gr.Slider(0, 100, value= video_guide_outpainting_list[1], step=5, label=f"Bottom {outpainting_label_suffix}", show_reset_button= False)
-                            video_guide_outpainting_left = gr.Slider(0, 100, value= video_guide_outpainting_list[2], step=5, label=f"Left {outpainting_label_suffix}", show_reset_button= False)
-                            video_guide_outpainting_right = gr.Slider(0, 100, value= video_guide_outpainting_list[3], step=5, label=f"Right {outpainting_label_suffix}", show_reset_button= False)
+                            video_guide_outpainting_top= gr.Slider(0, 100, value= video_guide_outpainting_list[0], step=5, label=i18n.tr("Top {outpainting_label_suffix}", outpainting_label_suffix=outpainting_label_suffix), show_reset_button= False)
+                            video_guide_outpainting_bottom = gr.Slider(0, 100, value= video_guide_outpainting_list[1], step=5, label=i18n.tr("Bottom {outpainting_label_suffix}", outpainting_label_suffix=outpainting_label_suffix), show_reset_button= False)
+                            video_guide_outpainting_left = gr.Slider(0, 100, value= video_guide_outpainting_list[2], step=5, label=i18n.tr("Left {outpainting_label_suffix}", outpainting_label_suffix=outpainting_label_suffix), show_reset_button= False)
+                            video_guide_outpainting_right = gr.Slider(0, 100, value= video_guide_outpainting_list[3], step=5, label=i18n.tr("Right {outpainting_label_suffix}", outpainting_label_suffix=outpainting_label_suffix), show_reset_button= False)
                 # image_mask = gr.Image(label= "Image Mask Area (for Inpainting, white = Control Area, black = Unchanged)", type ="pil", visible= image_mode_value==1 and "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value , height = gallery_height, value= ui_defaults.get("image_mask", None)) 
-                image_mask = gr.Image(label= "Image Mask Area (for Inpainting, white = Control Area, black = Unchanged)", type ="pil", visible= False, height = gallery_height, value= ui_defaults.get("image_mask", None)) 
+                image_mask = gr.Image(label= i18n.tr("Image Mask Area (for Inpainting, white = Control Area, black = Unchanged)"), type ="pil", visible= False, height = gallery_height, value= ui_defaults.get("image_mask", None)) 
                 with gr.Column(elem_classes=["wangp-magic-mask-anchor"]):
                     video_mask_label = model_def.get("video_mask_label", "Video Mask Area (for Inpainting, white = Control Area, black = Unchanged)")
                     video_mask_value = ui_defaults.get("video_mask", None)
@@ -11392,7 +11396,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 image_refs_label = "Start Image" if hunyuan_video_avatar else ("Reference Image" if image_refs_single_image_mode else "Reference Images")  + (" (each Image will be associated to a Sliding Window)" if infinitetalk else "")
                 image_refs_row, image_refs, image_refs_extra = get_image_gallery(label= image_refs_label, value = ui_defaults.get("image_refs", None), visible= "I" in video_prompt_type_value, single_image_mode=image_refs_single_image_mode)
 
-                frames_positions = gr.Text(value=ui_get("frames_positions") , visible= "F" in video_prompt_type_value, scale = 2, label= "Positions of Injected Frames (1=first, L=last of a window) no position for other Image Refs)" ) 
+                frames_positions = gr.Text(value=ui_get("frames_positions") , visible= "F" in video_prompt_type_value, scale = 2, label= i18n.tr("Positions of Injected Frames (1=first, L=last of a window) no position for other Image Refs)") ) 
                 image_refs_relative_size = setting_slider("image_refs_relative_size", visible=image_outputs)
 
                 no_background_removal = model_def.get("no_background_removal", False) #or image_ref_choices is None
@@ -11404,7 +11408,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         (background_removal_label, 1),
                     ],
                     value=0 if no_background_removal else ui_get("remove_background_images_ref"),
-                    label="Automatic Removal of Background behind People or Objects in Reference Images", scale = 3, visible= "I" in video_prompt_type_value and not no_background_removal
+                    label=i18n.tr("Automatic Removal of Background behind People or Objects in Reference Images"), scale = 3, visible= "I" in video_prompt_type_value and not no_background_removal
                 )
 
             input_video_strength = setting_slider("input_video_strength", value=ui_get("input_video_strength", 1.0), visible=input_video_strength_visible(model_def, image_prompt_type_value, video_prompt_type_value))
@@ -11471,7 +11475,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             any_custom_guide= custom_guide_def is not None
             with gr.Row(visible = any_custom_guide) as custom_guide_row:
                 if custom_guide_def is None:
-                    custom_guide = gr.File(value= None, type="filepath", label= "Custom Guide", height=41, visible= False )
+                    custom_guide = gr.File(value= None, type="filepath", label= i18n.tr("Custom Guide"), height=41, visible= False )
                 else:
                     custom_guide = gr.File(value= ui_defaults.get("custom_guide", None), type="filepath", label= custom_guide_def.get("label","Custom Guide"), height=41, visible= True, file_types = custom_guide_def.get("file_types", ["*.*"]) )
             remove_background_visible = any_audio_prompt and any_letters(audio_prompt_type_value, "ABXK") and not image_outputs
@@ -11480,10 +11484,10 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             custom_audio_option_visible = any_audio_prompt and len(custom_audio_option_flag) > 0 and not image_outputs
             with gr.Row(visible=remove_background_visible or normalize_audio_visible or custom_audio_option_visible) as audio_options_row:
                 remove_background_sound = gr.Checkbox(label="Remove Background Music / Noise" if audio_only else "Ignore Background Music (for better LipSync)", value="V" in audio_prompt_type_value, visible=remove_background_visible)
-                normalize_audio_volumes = gr.Checkbox(label="Normalize Audio Volumes", value="N" in audio_prompt_type_value, visible=normalize_audio_visible)
+                normalize_audio_volumes = gr.Checkbox(label=i18n.tr("Normalize Audio Volumes"), value="N" in audio_prompt_type_value, visible=normalize_audio_visible)
                 audio_prompt_type_custom_option = gr.Checkbox(label=custom_audio_option_label, value=custom_audio_option_flag in audio_prompt_type_value, visible=custom_audio_option_visible)
             with gr.Row(visible = any_audio_prompt and any_multi_speakers and ("B" in audio_prompt_type_value or "X" in audio_prompt_type_value) and not image_outputs ) as speakers_locations_row:
-                speakers_locations = gr.Text( ui_get("speakers_locations"), label="Speakers Locations separated by a Space. Each Location = Left:Right or a BBox Left:Top:Right:Bottom", visible= True)
+                speakers_locations = gr.Text( ui_get("speakers_locations"), label=i18n.tr("Speakers Locations separated by a Space. Each Location = Left:Right or a BBox Left:Top:Right:Bottom"), visible= True)
 
             advanced_prompt = advanced_ui
             prompt_vars=[]
@@ -11555,7 +11559,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     label=model_def.get("prompt_enhancer_button_label", "Enhance Prompt using a LLM") , scale = 5,
                     visible= True, show_label= not on_demand_prompt_enhancer,
                 )
-                prompt_enhancer_think = gr.Checkbox(label="Think", value=prompt_enhancer_think_value, visible=prompt_enhancer_think_visible, scale=1, elem_classes=prompt_enhancer_think_classes)
+                prompt_enhancer_think = gr.Checkbox(label=i18n.tr("Think"), value=prompt_enhancer_think_value, visible=prompt_enhancer_think_visible, scale=1, elem_classes=prompt_enhancer_think_classes)
             alt_prompt_def = model_def.get("alt_prompt", None)
             alt_prompt_label = None
             alt_prompt_placeholder = ""
@@ -11661,7 +11665,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 resolution_group = gr.Dropdown(
                 choices = available_groups,
                     value= selected_group,
-                    label= "Category" 
+                    label= i18n.tr("Category") 
                 )
                 resolution = gr.Dropdown(
                 choices = selected_group_resolutions,
@@ -11676,7 +11680,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 batch_size_value = min(batch_size_max, max(1, int(ui_get("batch_size") or 1)))
                 batch_size = gr.Slider(1, batch_size_max, value=batch_size_value, step=1, label=batch_label, visible = image_outputs, show_reset_button= False)
                 if image_outputs:
-                    video_length = gr.Slider(1, 9999, value=ui_get("video_length"), step=1, label="Number of frames", visible = False, show_reset_button= False)
+                    video_length = gr.Slider(1, 9999, value=ui_get("video_length"), step=1, label=i18n.tr("Number of frames"), visible = False, show_reset_button= False)
                 else:
                     video_length_locked = model_def.get("video_length_locked", None)
                     min_frames, frames_step, _ = get_model_min_frames_and_step(base_model_type)
@@ -11692,22 +11696,22 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         ("Nothing", 0),
                         ("Control Length", 1)],
                     value=1 if "|" in video_prompt_type_value else 0,
-                    label="Capped By",
+                    label=i18n.tr("Capped By"),
                     visible=force_control_video_trim_visible(model_def, image_mode_value, video_prompt_type_value, audio_prompt_type_value)
                 )
 
             with gr.Row(visible = not lock_inference_steps) as inference_steps_row:                                       
-                num_inference_steps = gr.Slider(0 if audio_only else 1, 100, value=ui_get("num_inference_steps"), step=1, label="Number of Inference Steps", visible = True, show_reset_button= False)
+                num_inference_steps = gr.Slider(0 if audio_only else 1, 100, value=ui_get("num_inference_steps"), step=1, label=i18n.tr("Number of Inference Steps"), visible = True, show_reset_button= False)
 
 
-            show_advanced = gr.Checkbox(label="Advanced Mode", value=advanced_ui)
+            show_advanced = gr.Checkbox(label=i18n.tr("Advanced Mode"), value=advanced_ui)
             with gr.Tabs(visible=advanced_ui) as advanced_row:
                 guidance_max_phases = model_def.get("guidance_max_phases", 0)
                 no_negative_prompt = model_def.get("no_negative_prompt", False)
-                with gr.Tab("General"):
+                with gr.Tab(i18n.tr("General")):
                     with gr.Column():
                         with gr.Row():                        
-                            seed = gr.Slider(-1, 999999999, value=ui_get("seed"), step=1, label="Seed (-1 for random)", scale=2, show_reset_button= False) 
+                            seed = gr.Slider(-1, 999999999, value=ui_get("seed"), step=1, label=i18n.tr("Seed (-1 for random)"), scale=2, show_reset_button= False) 
                             if model_def.get("lock_guidance_phases", False):
                                 guidance_phases_value = model_def.get("guidance_max_phases", 0)
                             else:
@@ -11727,7 +11731,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                     ("Phase 1-2 transition", 1),
                                     ("Phase 2-3 transition", 2)],
                                 value=ui_get("model_switch_phase"),
-                                label="Model Switch",
+                                label=i18n.tr("Model Switch"),
                                 visible= model_def.get("multiple_submodels", False) and guidance_phases_value >= 3 and multiple_submodels
                             )
                             switch_threshold = setting_slider("switch_threshold", setting_context={"guidance_phases": guidance_phases_value})
@@ -11750,7 +11754,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             alt_scale = setting_slider("alt_scale")
 
                         with gr.Row(visible=model_def.get("pause_between_sentences", False)) as pause_row:
-                            pause_seconds = gr.Slider(minimum=0.0, maximum=2.0,  value=ui_get("pause_seconds"), step=0.05, label="Pause between Multi Speakers sentences (seconds)", show_reset_button=False,)
+                            pause_seconds = gr.Slider(minimum=0.0, maximum=2.0,  value=ui_get("pause_seconds"), step=0.05, label=i18n.tr("Pause between Multi Speakers sentences (seconds)"), show_reset_button=False,)
 
                         with gr.Row(visible=get_container_def("temperature_row").visible) as temperature_row:
                             temperature = setting_slider("temperature")
@@ -11761,10 +11765,10 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         sample_solver_choices = model_def.get("sample_solvers", None)
                         with gr.Row(visible = get_container_def("sample_solver_row").visible ) as sample_solver_row:
                             if sample_solver_choices is None:
-                                sample_solver = gr.Dropdown( value="",  choices=[ ("", ""), ], visible= False, label= "Sampler Solver / Scheduler" )
+                                sample_solver = gr.Dropdown( value="",  choices=[ ("", ""), ], visible= False, label= i18n.tr("Sampler Solver / Scheduler") )
                             else:
                                 sample_solver = gr.Dropdown( value=ui_get("sample_solver", sample_solver_choices[0][1]), 
-                                    choices= sample_solver_choices, visible= True, label= "Sampler Solver / Scheduler"
+                                    choices= sample_solver_choices, visible= True, label= i18n.tr("Sampler Solver / Scheduler")
                                 )
                             flow_shift = setting_slider("flow_shift") 
                         with gr.Row(visible=get_container_def("control_net_weights_row").visible) as control_net_weights_row:
@@ -11787,7 +11791,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 choices=[
                                     ("Generate every combination of images and texts", 0),
                                     ("Match images and text prompts", 1),
-                                ], visible=multiple_images_as_text_prompts and not edit_mode, label= "Multiple Images as Texts Prompts"
+                                ], visible=multiple_images_as_text_prompts and not edit_mode, label= i18n.tr("Multiple Images as Texts Prompts")
                             )
                         with gr.Row():
                             multi_prompts_gen_choices = prompt_parser.get_multi_prompts_gen_choices(medium, include_sliding_window=sliding_window_enabled)
@@ -11797,10 +11801,10 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 value=multi_prompts_gen_type_value,
                                 visible=not edit_mode,
                                 scale = 1,
-                                label= "How to Process each Line of the Text Prompt"
+                                label= i18n.tr("How to Process each Line of the Text Prompt")
                             )
 
-                with gr.Tab("LoRAs", visible= not audio_only or model_def.get("enabled_audio_lora", False)) as loras_tab:
+                with gr.Tab(i18n.tr("LoRAs"), visible= not audio_only or model_def.get("enabled_audio_lora", False)) as loras_tab:
                     with gr.Column(visible = True): #as loras_column:
                         gr.Markdown("<B>LoRAs can be used to create special effects on the video by mentioning a trigger word in the Prompt. You can save Loras combinations in presets.</B>")
                         loras, loras_hierarchy = get_updated_loras_dropdown(loras, launch_loras)
@@ -11809,11 +11813,11 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             hierarchy=loras_hierarchy,
                             value= launch_loras,
                             height=0,
-                            label="Activated LoRAs",
+                            label=i18n.tr("Activated LoRAs"),
                             search_empty_label="No matching LoRAs",
                         )
-                        loras_multipliers = gr.Textbox(label="LoRAs Multipliers (1.0 by default) separated by Space chars or CR, lines that start with # are ignored", value=launch_multis_str)
-                with gr.Tab("Steps Skipping", visible = any_tea_cache or any_mag_cache) as speed_tab:
+                        loras_multipliers = gr.Textbox(label=i18n.tr("LoRAs Multipliers (1.0 by default) separated by Space chars or CR, lines that start with # are ignored"), value=launch_multis_str)
+                with gr.Tab(i18n.tr("Steps Skipping"), visible = any_tea_cache or any_mag_cache) as speed_tab:
                     with gr.Column():
                         gr.Markdown("<B>Tea Cache and Mag Cache accelerate the Video Generation by skipping intelligently some steps, the more steps are skipped the lower the quality of the video.</B>")
                         gr.Markdown("<B>Steps Skipping  consumes also VRAM. It is recommended not to skip at least the first 10% steps.</B>")
@@ -11824,7 +11828,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             choices= steps_skipping_choices,
                             value="" if not (any_tea_cache or any_mag_cache) else ui_get("skip_steps_cache_type"),
                             visible=True,
-                            label="Skip Steps Cache Type"
+                            label=i18n.tr("Skip Steps Cache Type")
                         )
  
                         skip_steps_multiplier = gr.Dropdown(
@@ -11837,11 +11841,11 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             ],
                             value=float(ui_get("skip_steps_multiplier")),
                             visible=True,
-                            label="Skip Steps Cache Global Acceleration"
+                            label=i18n.tr("Skip Steps Cache Global Acceleration")
                         )
-                        skip_steps_start_step_perc = gr.Slider(0, 100, value=ui_get("skip_steps_start_step_perc"), step=1, label="Skip Steps starting moment in % of generation", show_reset_button= False) 
+                        skip_steps_start_step_perc = gr.Slider(0, 100, value=ui_get("skip_steps_start_step_perc"), step=1, label=i18n.tr("Skip Steps starting moment in % of generation"), show_reset_button= False) 
 
-                with gr.Tab("Post Processing", visible = not audio_only) as post_processing_tab:
+                with gr.Tab(i18n.tr("Post Processing"), visible = not audio_only) as post_processing_tab:
                     
 
                     with gr.Column():
@@ -11865,13 +11869,13 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             spatial_upsampling_ratio = spatial_ui["ratio"]
 
                             with gr.Row():
-                                film_grain_intensity = gr.Slider(0, 1, value=film_grain_intensity, step=0.01, label="Film Grain Intensity (0 = disabled)", show_reset_button= False) 
-                                film_grain_saturation = gr.Slider(0.0, 1, value=film_grain_saturation, step=0.01, label="Film Grain Saturation", show_reset_button= False) 
+                                film_grain_intensity = gr.Slider(0, 1, value=film_grain_intensity, step=0.01, label=i18n.tr("Film Grain Intensity (0 = disabled)"), show_reset_button= False) 
+                                film_grain_saturation = gr.Slider(0.0, 1, value=film_grain_saturation, step=0.01, label=i18n.tr("Film Grain Saturation"), show_reset_button= False) 
 
                             return temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, temporal_upsampling_method, temporal_upsampling_multiplier, spatial_upsampling_method, spatial_upsampling_ratio
                         temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, temporal_upsampling_method, temporal_upsampling_multiplier, spatial_upsampling_method, spatial_upsampling_ratio = gen_upsampling_dropdowns(ui_get("temporal_upsampling"), ui_get("spatial_upsampling"), ui_get("film_grain_intensity"), ui_get("film_grain_saturation"), image_outputs= image_outputs)
 
-                with gr.Tab("Audio", visible = not (image_outputs or audio_only)) as audio_tab:
+                with gr.Tab(i18n.tr("Audio"), visible = not (image_outputs or audio_only)) as audio_tab:
                     audio_processor_ui = audio_processor_api.create_generation_audio_ui(gr, ui_get, ui_defaults, any_control_video=any_control_video, update_form=update_form)
                     postprocess_audio = audio_processor_ui["postprocess_audio"]
                     postprocess_audio_prompt_col = audio_processor_ui["postprocess_audio_prompt_col"]
@@ -11894,7 +11898,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 any_motion_amplitude = model_def.get("motion_amplitude", False) and not image_outputs
                 any_pnp = True # Enable PnP for all supported models (or restriction logic here)
 
-                with gr.Tab("Quality", visible = (vace and image_outputs or any_perturbation or any_cfg_zero or any_cfg_star or any_apg or any_motion_amplitude or any_pnp) and not audio_only ) as quality_tab:
+                with gr.Tab(i18n.tr("Quality"), visible = (vace and image_outputs or any_perturbation or any_cfg_zero or any_cfg_star or any_apg or any_motion_amplitude or any_pnp) and not audio_only ) as quality_tab:
                         with gr.Column(visible = any_perturbation ) as perturbation_row:
                             gr.Markdown("<B>Perturbation (improves video quality, requires guidance > 1)</B>")
                             perturbation_choices = model_def.get("perturbation_choices", [("OFF", 0), ("Skip Layer Guidance", 1)])
@@ -11906,7 +11910,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                     value=perturbation_value,
                                     visible=True,
                                     scale = 1,
-                                    label="Perturbation"
+                                    label=i18n.tr("Perturbation")
                                 )
                                 perturbation_layers = gr.Dropdown(
                                     choices=[
@@ -11914,12 +11918,12 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                     ],
                                     value=ui_get("perturbation_layers"),
                                     multiselect= True,
-                                    label="Perturbation Layers",
+                                    label=i18n.tr("Perturbation Layers"),
                                     scale= 3
                                 )
                             with gr.Row():
-                                perturbation_start_perc = gr.Slider(0, 100, value=ui_get("perturbation_start_perc"), step=1, label="Denoising Steps % start", show_reset_button= False)
-                                perturbation_end_perc = gr.Slider(0, 100, value=ui_get("perturbation_end_perc"), step=1, label="Denoising Steps % end", show_reset_button= False)
+                                perturbation_start_perc = gr.Slider(0, 100, value=ui_get("perturbation_start_perc"), step=1, label=i18n.tr("Denoising Steps % start"), show_reset_button= False)
+                                perturbation_end_perc = gr.Slider(0, 100, value=ui_get("perturbation_end_perc"), step=1, label=i18n.tr("Denoising Steps % end"), show_reset_button= False)
 
                         with gr.Column(visible= any_apg ) as apg_col:
                             gr.Markdown("<B>Correct Progressive Color Saturation during long Video Generations")
@@ -11944,10 +11948,10 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 value=ui_get("cfg_star_switch"),
                                 visible=True,
                                 scale = 1,
-                                label="Classifier-Free Guidance Star (requires Guidance > 1)"
+                                label=i18n.tr("Classifier-Free Guidance Star (requires Guidance > 1)")
                             )
                             with gr.Row():
-                                cfg_zero_step = gr.Slider(-1, 39, value=ui_get("cfg_zero_step"), step=1, label="CFG Zero below this Layer (Extra Process)", visible = any_cfg_zero, show_reset_button= False) 
+                                cfg_zero_step = gr.Slider(-1, 39, value=ui_get("cfg_zero_step"), step=1, label=i18n.tr("CFG Zero below this Layer (Extra Process)"), visible = any_cfg_zero, show_reset_button= False) 
 
                         with gr.Column(visible = v2i_switch_supported and image_outputs) as min_frames_if_references_col:
                             gr.Markdown("<B>Generating a single Frame alone may not be sufficient to preserve Reference Image Identity / Control Image Information or simply to get a good Image Quality. A workaround is to generate a short Video and keep the First Frame.")
@@ -11966,7 +11970,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 value=min_frames_if_references_value,
                                 visible=True,
                                 scale = 1,
-                                label="Generate more frames to preserve Reference Image Identity / Control Image Information or improve"
+                                label=i18n.tr("Generate more frames to preserve Reference Image Identity / Control Image Information or improve")
                             )
 
                         with gr.Column(visible = get_container_def("motion_amplitude_col").visible and not image_outputs) as motion_amplitude_col:
@@ -11975,7 +11979,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
 
                         with gr.Column(visible = model_def.get("self_refiner", False)) as self_refiner_col:
                             gr.Markdown("<B>Self-Refining Video Sampling (PnP) - should improve quality of Motion</B>")
-                            self_refiner_setting = gr.Dropdown(choices=[("Disabled", 0),("Enabled with P1-Norm", 1), ("Enabled with P2-Norm", 2)], value=ui_get("self_refiner_setting", 0), scale=1, label="Self Refiner")
+                            self_refiner_setting = gr.Dropdown(choices=[("Disabled", 0),("Enabled with P1-Norm", 1), ("Enabled with P2-Norm", 2)], value=ui_get("self_refiner_setting", 0), scale=1, label=i18n.tr("Self Refiner"))
                             
                             refiner_val = ensure_refiner_list(ui_get("self_refiner_plan", []))
                             self_refiner_plan = refiner_val if update_form else gr.State(value=refiner_val)
@@ -11985,11 +11989,11 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 
                                 with gr.Row(elem_id="refiner-input-row"):
                                     if RangeSlider is not None:
-                                        refiner_range = RangeSlider(minimum=1, maximum=100, value=(1, 10), step=1, label="Step Range", info="Start - End", scale=3)
+                                        refiner_range = RangeSlider(minimum=1, maximum=100, value=(1, 10), step=1, label=i18n.tr("Step Range"), info=i18n.tr("Start - End"), scale=3)
                                     else:
-                                        refiner_range = gr.Textbox(value="1-10", label="Step Range", info="Start-End", scale=3)
-                                    refiner_mult = gr.Slider(label="Iterations", value=3, minimum=1, maximum=5, step=1, scale=2)
-                                    refiner_add_btn = gr.Button("➕ Add", variant="primary", scale=0, min_width=100)
+                                        refiner_range = gr.Textbox(value="1-10", label=i18n.tr("Step Range"), info=i18n.tr("Start-End"), scale=3)
+                                    refiner_mult = gr.Slider(label=i18n.tr("Iterations"), value=3, minimum=1, maximum=5, step=1, scale=2)
+                                    refiner_add_btn = gr.Button(i18n.tr("➕ Add"), variant="primary", scale=0, min_width=100)
                                 
                                 if not update_form:
                                     refiner_add_btn.click(fn=add_refiner_rule, inputs=[self_refiner_plan, refiner_range, refiner_mult], outputs=[self_refiner_plan])
@@ -12004,24 +12008,24 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                             with gr.Row(elem_classes="rule-row"):
                                                 text_display = f"Steps **{rule['start']} - {rule['end']}** : **{rule['steps']}x** iterations"
                                                 gr.Markdown(text_display, elem_classes="rule-card")
-                                                gr.Button("✖", variant="stop", scale=0, elem_classes="delete-btn").click(
+                                                gr.Button(i18n.tr("✖"), variant="stop", scale=0, elem_classes="delete-btn").click(
                                                     fn=remove_refiner_rule, 
                                                     inputs=[self_refiner_plan, gr.State(i)], 
                                                     outputs=[self_refiner_plan]
                                                 )
                                                 
                             with gr.Row():
-                                self_refiner_f_uncertainty = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_f_uncertainty", 0.0), step=0.01, label="Uncertainty Threshold", show_reset_button= False)
-                                self_refiner_certain_percentage = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_certain_percentage", 0.999), step=0.001, label="Certainty Percentage Skip", show_reset_button= False)
+                                self_refiner_f_uncertainty = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_f_uncertainty", 0.0), step=0.01, label=i18n.tr("Uncertainty Threshold"), show_reset_button= False)
+                                self_refiner_certain_percentage = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_certain_percentage", 0.999), step=0.001, label=i18n.tr("Certainty Percentage Skip"), show_reset_button= False)
                             
 
-                with gr.Tab("Sliding Window", visible= sliding_window_enabled and not image_outputs and not audio_only) as sliding_window_tab:
+                with gr.Tab(i18n.tr("Sliding Window"), visible= sliding_window_enabled and not image_outputs and not audio_only) as sliding_window_tab:
 
                     with gr.Column():  
                         gr.Markdown("<B>A Sliding Window allows you to generate video with a duration not limited by the Model</B>")
                         gr.Markdown("<B>It is automatically turned on if the number of frames to generate is higher than the Window Size</B>")
                         if diffusion_forcing:
-                            sliding_window_size = setting_slider("sliding_window_size", minimum=37, maximum=get_max_frames(257), value=ui_defaults.get("sliding_window_size", 129), step=20, label="  (recommended to keep it at 97)", visible=True, respect_setting_visibility=False)
+                            sliding_window_size = setting_slider("sliding_window_size", minimum=37, maximum=get_max_frames(257), value=ui_defaults.get("sliding_window_size", 129), step=20, label=i18n.tr("  (recommended to keep it at 97)"), visible=True, respect_setting_visibility=False)
                             sliding_window_overlap = setting_slider("sliding_window_overlap", minimum=17, maximum=97, value=ui_defaults.get("sliding_window_overlap", 17), step=20, visible=True, respect_setting_visibility=False)
                             sliding_window_color_correction_strength = setting_slider("sliding_window_color_correction_strength", value=0, visible=False)
                             sliding_window_overlap_noise = setting_slider("sliding_window_overlap_noise", value=ui_defaults.get("sliding_window_overlap_noise", 20), maximum=100, visible=True)
@@ -12056,12 +12060,12 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 ("Aligned to the beginning of the First Window of the new Video Sample", "T"),
                             ],
                             value=filter_letters(video_prompt_type_value, "T"),
-                            label="Control Video / Control Audio / Positioned Frames Temporal Alignment when any Video to continue",
+                            label=i18n.tr("Control Video / Control Audio / Positioned Frames Temporal Alignment when any Video to continue"),
                             visible = any_control_image or any_control_video or any_audio_guide or any_audio_guide2 or any_custom_guide 
                         )
 
                         
-                with gr.Tab("Misc.") as misc_tab:
+                with gr.Tab(i18n.tr("Misc.")) as misc_tab:
                     with gr.Column(visible = not (recammaster or ltxv or diffusion_forcing or audio_only or image_outputs)) as RIFLEx_setting_col:
                         gr.Markdown("<B>With Riflex you can generate videos longer than 5s which is the default duration of videos used to train the model</B>")
                         RIFLEx_setting = gr.Dropdown(
@@ -12071,7 +12075,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 ("Always OFF", 2), 
                             ],
                             value=ui_get("RIFLEx_setting"),
-                            label="RIFLEx positional embedding to generate long video",
+                            label=i18n.tr("RIFLEx positional embedding to generate long video"),
                             visible = True
                         )
                     with gr.Column(visible = not (audio_only or image_outputs)) as force_fps_col:
@@ -12101,7 +12105,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         force_fps = gr.Dropdown(
                             choices=force_fps_choices,
                             value=ui_get("force_fps"),
-                            label=f"Override Frames Per Second (model default={fps} fps)"
+                            label=i18n.tr("Override Frames Per Second (model default={fps} fps)", fps=fps)
                         )
 
                     profile_type = get_profile_type_for_model(base_model_type, image_mode_value)
@@ -12110,38 +12114,38 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     override_profile = gr.Dropdown(
                         choices=[(f"Default {profile_type} Memory Profile", -1)] + memory_profile_choices,
                         value=ui_get("override_profile"),
-                        label=f"Override Memory Profile"
+                        label=i18n.tr("Override Memory Profile")
                     )
 
                     gr.Markdown("<B>You can set a different Attention Mode to improve the quality / compatibility<B>")
                     override_attention = gr.Dropdown(
                         choices=[("Default Attention Mode", "")] + attention_modes_choices,
                         value=ui_get("override_attention"),
-                        label=f"Override Attention Mode"
+                        label=i18n.tr("Override Attention Mode")
                     )
 
                     with gr.Column():
                         gr.Markdown('<B>Customize the Output Filename using Settings Values (<I>date, seed, resolution, num_inference_steps, prompt, flow_shift, video_length, guidance_scale</I>). For Instance:<BR>"<I>{date(YYYY-MM-DD_HH-mm-ss)}_{seed}_{prompt(50)}, {num_inference_steps}</I>"</B>')
-                        output_filename = gr.Text( label= " Output Filename ( Leave Blank for Auto Naming)", value= ui_get("output_filename"))
+                        output_filename = gr.Text( label= i18n.tr(" Output Filename ( Leave Blank for Auto Naming)"), value= ui_get("output_filename"))
 
             if not update_form:
                 with gr.Row(visible=(tab_id == 'edit')):
-                    edit_btn = gr.Button("Apply Edits", elem_id="edit_tab_apply_button")
-                    cancel_btn = gr.Button("Cancel", elem_id="edit_tab_cancel_button")
-                    silent_cancel_btn = gr.Button("Silent Cancel", elem_id="silent_edit_tab_cancel_button", visible=False)
+                    edit_btn = gr.Button(i18n.tr("Apply Edits"), elem_id="edit_tab_apply_button")
+                    cancel_btn = gr.Button(i18n.tr("Cancel"), elem_id="edit_tab_cancel_button")
+                    silent_cancel_btn = gr.Button(i18n.tr("Silent Cancel"), elem_id="silent_edit_tab_cancel_button", visible=False)
             with gr.Column(visible= not edit_mode):
                 with gr.Row():
-                    save_settings_btn = gr.Button("Set Settings as Default", visible = not args.lock_config)
-                    export_settings_from_file_btn = gr.Button("Export Settings to File")
-                    export_settings_include_media = gr.Checkbox(label="Include Media", value=False)
-                    reset_settings_btn = gr.Button("Reset Settings")
+                    save_settings_btn = gr.Button(i18n.tr("Set Settings as Default"), visible = not args.lock_config)
+                    export_settings_from_file_btn = gr.Button(i18n.tr("Export Settings to File"))
+                    export_settings_include_media = gr.Checkbox(label=i18n.tr("Include Media"), value=False)
+                    reset_settings_btn = gr.Button(i18n.tr("Reset Settings"))
                 with gr.Row():
-                    settings_file = gr.File(height=41,label="Load Settings From Media File / Json / Zip")
+                    settings_file = gr.File(height=41,label=i18n.tr("Load Settings From Media File / Json / Zip"))
                     settings_download_payload = gr.Text(interactive=False, visible=False, value="")
                 with gr.Group():
                     with gr.Row():
-                        lora_url = gr.Text(label ="Lora URL", placeholder= "Enter Lora URL", scale=4, show_label=False, elem_classes="compact_text" )
-                        download_lora_btn = gr.Button("Download Lora", scale=1, min_width=10)
+                        lora_url = gr.Text(label =i18n.tr("Lora URL"), placeholder= i18n.tr("Enter Lora URL"), scale=4, show_label=False, elem_classes="compact_text" )
+                        download_lora_btn = gr.Button(i18n.tr("Download Lora"), scale=1, min_width=10)
 
                 assistant_ui = None
                 assistant_launcher_host = None
@@ -12156,7 +12160,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
         with gr.Column(visible=(tab_id == 'generate')):
             if not update_form:
                 state = default_state if default_state is not None else gr.State(state_dict)
-                gen_status = gr.Text(interactive=False, label="Status", lines=1, max_lines=1, autoscroll=False)
+                gen_status = gr.Text(interactive=False, label=i18n.tr("Status"), lines=1, max_lines=1, autoscroll=False)
                 main_bridge_elem_ids = tab_id == 'generate'
                 status_trigger = gr.Text(interactive= False, visible=False, elem_id="wangp_main_status_trigger" if main_bridge_elem_ids else None)
                 load_queue_trigger = gr.Text(interactive= False, visible=False, elem_id="wangp_main_load_queue_trigger" if main_bridge_elem_ids else None)
@@ -12164,9 +12168,9 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 default_files = []
                 current_gallery_tab = gr.Number(0, visible=False)
                 with gr.Tabs() as gallery_tabs:
-                    with gr.Tab("Video / Images Gallery", id="video_images"):
-                        output = gr.Gallery(value =default_files, label="Generated videos", preview= True, show_label=False, elem_id="gallery" , columns=[3], rows=[1], object_fit="contain", height=450, selected_index=0, interactive= False)
-                    with gr.Tab("Audio Files Gallery", id="audio"):
+                    with gr.Tab(i18n.tr("Video / Images Gallery"), id="video_images"):
+                        output = gr.Gallery(value =default_files, label=i18n.tr("Generated videos"), preview= True, show_label=False, elem_id="gallery" , columns=[3], rows=[1], object_fit="contain", height=450, selected_index=0, interactive= False)
+                    with gr.Tab(i18n.tr("Audio Files Gallery"), id="audio"):
                         output_audio = AudioGallery(audio_paths=[], max_thumbnails=999, height=40, update_only=update_form)
                         audio_files_paths, audio_file_selected, audio_gallery_refresh_trigger = output_audio.get_state()
                 output_trigger = gr.Text(interactive= False, visible=False, elem_id="wangp_main_output_trigger" if main_bridge_elem_ids else None)
@@ -12179,39 +12183,39 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 model_choice_target = gr.Text(interactive= False, visible=False, elem_id="wangp_model_choice_target" if tab_id == "generate" else None)
 
 
-            with gr.Accordion("Media Info / Late Post Processing / Import Media", open=False) as video_info_accordion:
+            with gr.Accordion(i18n.tr("Media Info / Late Post Processing / Import Media"), open=False) as video_info_accordion:
                 late_audio_postprocessing_visible, late_video_postprocessing_visible, late_audio_remuxing_visible = get_selected_late_processing_tabs_visibility(state_dict)
                 video_info_tab = gr.Text(value="video_info", interactive=False, visible=False)
                 with gr.Tabs() as video_info_tabs:
                     default_visibility_false = {} if update_form else {"visible" : False}                        
                     default_visibility_true = {} if update_form else {"visible" : True}                        
 
-                    with gr.Tab("Information", id="video_info"):
+                    with gr.Tab(i18n.tr("Information"), id="video_info"):
                         video_info = gr.HTML(visible=True, min_height=100, value=get_default_video_info()) 
                         with gr.Row(**default_visibility_false) as audio_buttons_row:
-                            video_info_extract_audio_settings_btn = gr.Button("Extract Settings", min_width= 1, size ="sm")
-                            video_info_to_audio_guide_btn = gr.Button("To Audio Source", min_width= 1, size ="sm", visible = any_audio_guide)
-                            video_info_to_audio_guide2_btn = gr.Button("To Audio Source 2", min_width= 1, size ="sm", visible = any_audio_guide2 )
-                            video_info_to_audio_source_btn = gr.Button("To Soundtrack", min_width= 1, size ="sm", visible=audio_processor_api.has_audio_source_soundtrack())
-                            video_info_eject_audio_btn = gr.Button("Eject Audio File", min_width= 1, size ="sm")
+                            video_info_extract_audio_settings_btn = gr.Button(i18n.tr("Extract Settings"), min_width= 1, size ="sm")
+                            video_info_to_audio_guide_btn = gr.Button(i18n.tr("To Audio Source"), min_width= 1, size ="sm", visible = any_audio_guide)
+                            video_info_to_audio_guide2_btn = gr.Button(i18n.tr("To Audio Source 2"), min_width= 1, size ="sm", visible = any_audio_guide2 )
+                            video_info_to_audio_source_btn = gr.Button(i18n.tr("To Soundtrack"), min_width= 1, size ="sm", visible=audio_processor_api.has_audio_source_soundtrack())
+                            video_info_eject_audio_btn = gr.Button(i18n.tr("Eject Audio File"), min_width= 1, size ="sm")
                         with gr.Row(**default_visibility_false) as deleted_audio_buttons_row:
-                            video_info_eject_deleted_audio_btn = gr.Button("Eject Deleted File", min_width= 1, size ="sm")
+                            video_info_eject_deleted_audio_btn = gr.Button(i18n.tr("Eject Deleted File"), min_width= 1, size ="sm")
                         with gr.Row(**default_visibility_false) as video_buttons_row:
-                            video_info_extract_settings_btn = gr.Button("Extract Settings", min_width= 1, size ="sm")
-                            video_info_to_video_source_btn = gr.Button("To Video Source", min_width= 1, size ="sm", visible = any_video_source)
-                            video_info_to_control_video_btn = gr.Button("To Control Video", min_width= 1, size ="sm", visible = any_control_video )
-                            video_info_eject_video_btn = gr.Button("Eject Video", min_width= 1, size ="sm")
+                            video_info_extract_settings_btn = gr.Button(i18n.tr("Extract Settings"), min_width= 1, size ="sm")
+                            video_info_to_video_source_btn = gr.Button(i18n.tr("To Video Source"), min_width= 1, size ="sm", visible = any_video_source)
+                            video_info_to_control_video_btn = gr.Button(i18n.tr("To Control Video"), min_width= 1, size ="sm", visible = any_control_video )
+                            video_info_eject_video_btn = gr.Button(i18n.tr("Eject Video"), min_width= 1, size ="sm")
                         with gr.Row(**default_visibility_false) as deleted_video_buttons_row:
-                            video_info_eject_deleted_video_btn = gr.Button("Eject Deleted File", min_width= 1, size ="sm")
+                            video_info_eject_deleted_video_btn = gr.Button(i18n.tr("Eject Deleted File"), min_width= 1, size ="sm")
                         with gr.Row(**default_visibility_false) as image_buttons_row:
-                            video_info_extract_image_settings_btn = gr.Button("Extract Settings", min_width= 1, size ="sm")
-                            video_info_to_start_image_btn = gr.Button("To Start Image", size ="sm", min_width= 1, visible = any_start_image )
-                            video_info_to_end_image_btn = gr.Button("To End Image", size ="sm", min_width= 1, visible = any_end_image)
-                            video_info_to_image_mask_btn = gr.Button("To Mask Image", min_width= 1, size ="sm", visible = any_image_mask and False)
-                            video_info_to_reference_image_btn = gr.Button("To Reference Image", min_width= 1, size ="sm", visible = any_reference_image)
-                            video_info_to_image_guide_btn = gr.Button("To Control Image", min_width= 1, size ="sm", visible = any_control_image )
-                            video_info_eject_image_btn = gr.Button("Eject Image", min_width= 1, size ="sm")
-                    with gr.Tab("Post Processing", id="audio_postprocessing", visible=late_audio_postprocessing_visible) as audio_postprocessing_tab:
+                            video_info_extract_image_settings_btn = gr.Button(i18n.tr("Extract Settings"), min_width= 1, size ="sm")
+                            video_info_to_start_image_btn = gr.Button(i18n.tr("To Start Image"), size ="sm", min_width= 1, visible = any_start_image )
+                            video_info_to_end_image_btn = gr.Button(i18n.tr("To End Image"), size ="sm", min_width= 1, visible = any_end_image)
+                            video_info_to_image_mask_btn = gr.Button(i18n.tr("To Mask Image"), min_width= 1, size ="sm", visible = any_image_mask and False)
+                            video_info_to_reference_image_btn = gr.Button(i18n.tr("To Reference Image"), min_width= 1, size ="sm", visible = any_reference_image)
+                            video_info_to_image_guide_btn = gr.Button(i18n.tr("To Control Image"), min_width= 1, size ="sm", visible = any_control_image )
+                            video_info_eject_image_btn = gr.Button(i18n.tr("Eject Image"), min_width= 1, size ="sm")
+                    with gr.Tab(i18n.tr("Post Processing"), id="audio_postprocessing", visible=late_audio_postprocessing_visible) as audio_postprocessing_tab:
                         with gr.Group(elem_classes="postprocess"):
                             late_audio_ui = audio_processor_api.create_late_audio_edit_ui(gr, default_visibility_false=default_visibility_false, update_form=update_form)
                             PP_late_audio_postprocess = late_audio_ui["postprocess_audio"]
@@ -12220,16 +12224,16 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             PP_late_audio_replace_voice_sample2_row = late_audio_ui["replace_voice_sample2_row"]
                             PP_late_audio_replace_voice_sample2 = late_audio_ui["replace_voice_sample2"]
                         with gr.Row():
-                            video_info_audio_postprocessing_btn = gr.Button("Apply Audio Postprocessing", size="sm", visible=True)
-                            video_info_eject_audio2_btn = gr.Button("Eject Audio", size="sm", visible=True)
-                    with gr.Tab("Post Processing", id= "post_processing", visible = late_video_postprocessing_visible) as video_postprocessing_tab:
+                            video_info_audio_postprocessing_btn = gr.Button(i18n.tr("Apply Audio Postprocessing"), size="sm", visible=True)
+                            video_info_eject_audio2_btn = gr.Button(i18n.tr("Eject Audio"), size="sm", visible=True)
+                    with gr.Tab(i18n.tr("Post Processing"), id= "post_processing", visible = late_video_postprocessing_visible) as video_postprocessing_tab:
                         with gr.Group(elem_classes= "postprocess"):
                             with gr.Column():
                                 PP_temporal_upsampling, PP_spatial_upsampling, PP_film_grain_intensity, PP_film_grain_saturation, PP_temporal_upsampling_method, PP_temporal_upsampling_multiplier, PP_spatial_upsampling_method, PP_spatial_upsampling_ratio = gen_upsampling_dropdowns("",  "", 0, 0.5, element_class ="postprocess", image_outputs = False, late_postprocessing=True)
                         with gr.Row():
-                            video_info_postprocessing_btn = gr.Button("Apply Postprocessing", size ="sm", visible=True)
-                            video_info_eject_video2_btn = gr.Button("Eject Media", size ="sm", visible=True)
-                    with gr.Tab("Audio Remuxing", id= "audio_remuxing", visible = late_audio_remuxing_visible) as audio_remuxing_tab:
+                            video_info_postprocessing_btn = gr.Button(i18n.tr("Apply Postprocessing"), size ="sm", visible=True)
+                            video_info_eject_video2_btn = gr.Button(i18n.tr("Eject Media"), size ="sm", visible=True)
+                    with gr.Tab(i18n.tr("Audio Remuxing"), id= "audio_remuxing", visible = late_audio_remuxing_visible) as audio_remuxing_tab:
 
                         with gr.Group(elem_classes= "postprocess"):
                             late_remux_ui = audio_processor_api.create_late_remux_ui(gr, update_form=update_form, default_visibility_false=default_visibility_false)
@@ -12247,33 +12251,33 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             PP_replace_voice_sample2_row = late_remux_ui["replace_voice_sample2_row"]
                             PP_replace_voice_sample2 = late_remux_ui["replace_voice_sample2"]
                         with gr.Row():
-                            video_info_remux_audio_btn = gr.Button("Remux Audio", size ="sm", visible=True)
-                            video_info_eject_video3_btn = gr.Button("Eject Video", size ="sm", visible=True)
-                    with gr.Tab("Import Media to Galleries", id= "video_add"):
-                        files_to_load = gr.Files(label= "Media to Import in Galleries", height=120)
+                            video_info_remux_audio_btn = gr.Button(i18n.tr("Remux Audio"), size ="sm", visible=True)
+                            video_info_eject_video3_btn = gr.Button(i18n.tr("Eject Video"), size ="sm", visible=True)
+                    with gr.Tab(i18n.tr("Import Media to Galleries"), id= "video_add"):
+                        files_to_load = gr.Files(label= i18n.tr("Media to Import in Galleries"), height=120)
                         with gr.Row():
-                            video_info_add_videos_btn = gr.Button("Import Videos / Images / Audio Files", size ="sm")
+                            video_info_add_videos_btn = gr.Button(i18n.tr("Import Videos / Images / Audio Files"), size ="sm")
  
             if not update_form:
-                generate_btn = gr.Button("Generate")
-                add_to_queue_btn = gr.Button("Add New Prompt To Queue", visible=False)
+                generate_btn = gr.Button(i18n.tr("Generate"))
+                add_to_queue_btn = gr.Button(i18n.tr("Add New Prompt To Queue"), visible=False)
                 generate_trigger = gr.Text(visible = False) 
                 add_to_queue_trigger = gr.Text(visible = False)
                 js_trigger_index = gr.Text(visible=False, elem_id="js_trigger_for_edit_refresh")
 
                 with gr.Column(visible= False) as current_gen_column:
-                    with gr.Accordion("Preview", open=False):
-                        preview = gr.HTML(label="Preview", show_label= False)
+                    with gr.Accordion(i18n.tr("Preview"), open=False):
+                        preview = gr.HTML(label=i18n.tr("Preview"), show_label= False)
                         preview_trigger = gr.Text(visible= False)
                     gen_info = gr.HTML(visible=False, min_height=1) 
                     with gr.Row() as current_gen_buttons_row:
-                        onemoresample_btn = gr.Button("One More Sample", visible = True, size='md', min_width=1)
-                        onemorewindow_btn = gr.Button("Extend this Sample", visible = False, size='md', min_width=1)
-                        pause_btn = gr.Button("Pause", visible = True, size='md', min_width=1)
-                        resume_btn = gr.Button("Resume", visible = False, size='md', min_width=1)
-                        abort_btn = gr.Button("Abort", visible = True, size='md', min_width=1)
-                        earlystop_btn = gr.Button("Early Stop", visible = True, size='md', min_width=1)
-                with gr.Accordion("Queue Management", open=False) as queue_accordion:
+                        onemoresample_btn = gr.Button(i18n.tr("One More Sample"), visible = True, size='md', min_width=1)
+                        onemorewindow_btn = gr.Button(i18n.tr("Extend this Sample"), visible = False, size='md', min_width=1)
+                        pause_btn = gr.Button(i18n.tr("Pause"), visible = True, size='md', min_width=1)
+                        resume_btn = gr.Button(i18n.tr("Resume"), visible = False, size='md', min_width=1)
+                        abort_btn = gr.Button(i18n.tr("Abort"), visible = True, size='md', min_width=1)
+                        earlystop_btn = gr.Button(i18n.tr("Early Stop"), visible = True, size='md', min_width=1)
+                with gr.Accordion(i18n.tr("Queue Management"), open=False) as queue_accordion:
                     with gr.Row():
                         queue_html = gr.HTML(
                             value=generate_queue_html(state_dict["gen"]["queue"]),
@@ -12285,14 +12289,14 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         queue_zip_download_payload = gr.Text(visible=False)
                         save_queue_btn = gr.DownloadButton("Save Queue", size="sm")
                         load_queue_btn = gr.UploadButton("Load Queue", file_types=[".zip", ".json"], size="sm")
-                        clear_queue_btn = gr.Button("Clear Queue", size="sm", variant="stop")
-                        quit_button = gr.Button("Save and Quit", size="sm", variant="secondary")
+                        clear_queue_btn = gr.Button(i18n.tr("Clear Queue"), size="sm", variant="stop")
+                        quit_button = gr.Button(i18n.tr("Save and Quit"), size="sm", variant="secondary")
                         with gr.Row(visible=False) as quit_confirmation_row:
-                            confirm_quit_button = gr.Button("Confirm", elem_id="comfirm_quit_btn_hidden", size="sm", variant="stop")
-                            cancel_quit_button = gr.Button("Cancel", size="sm", variant="secondary")
-                        hidden_force_quit_trigger = gr.Button("force_quit", visible=False, elem_id="force_quit_btn_hidden")
+                            confirm_quit_button = gr.Button(i18n.tr("Confirm"), elem_id="comfirm_quit_btn_hidden", size="sm", variant="stop")
+                            cancel_quit_button = gr.Button(i18n.tr("Cancel"), size="sm", variant="secondary")
+                        hidden_force_quit_trigger = gr.Button(i18n.tr("force_quit"), visible=False, elem_id="force_quit_btn_hidden")
                         hidden_countdown_state = gr.Number(value=-1, visible=False, elem_id="hidden_countdown_state_num")
-                        single_hidden_trigger_btn = gr.Button("trigger_countdown", visible=False, elem_id="trigger_info_single_btn")
+                        single_hidden_trigger_btn = gr.Button(i18n.tr("trigger_countdown"), visible=False, elem_id="trigger_info_single_btn")
 
         extra_inputs = prompt_vars + [wizard_prompt, wizard_variables_var, wizard_prompt_activated_var, prompt_info_label, wizard_prompt_info_label, video_prompt_column, image_prompt_column, image_prompt_type_group, image_prompt_type_radio, image_prompt_type_endcheckbox,
                                       prompt_column_advanced, prompt_column_wizard_vars, prompt_column_wizard, alt_prompt_row, lset_name, save_lset_prompt_drop, advanced_row, speed_tab, audio_tab, postprocess_audio_prompt_col, quality_tab,
@@ -13055,7 +13059,7 @@ def create_ui():
     else:
         stats_app = None
 
-    with gr.Blocks(css=css, js=js, theme=theme, title="WanGP", fill_width=True) as main:
+    with gr.Blocks(css=css, js=js, theme=theme, title=i18n.tr("WanGP"), fill_width=True) as main:
         gr.Markdown(f"<div align=center><H1>Wan<SUP>GP</SUP> v{WanGP_version} <FONT SIZE=4>by <I>DeepBeepMeep</I></FONT> <FONT SIZE=3>") # (<A HREF='https://github.com/deepbeepmeep/Wan2GP'>Updates</A>)</FONT SIZE=3></H1></div>")
         global model_list
 
@@ -13064,7 +13068,7 @@ def create_ui():
         edit_queue_trigger = gr.Text(value='', interactive= False, visible=False)
         with gr.Tabs(selected="media_gen", ) as main_tabs:
             # JS keepalive patch targets the Gradio tab id "media_gen".
-            with gr.Tab("Media Generator", id="media_gen") as media_generator_tab:
+            with gr.Tab(i18n.tr("Media Generator"), id="media_gen") as media_generator_tab:
                 model_toolbar = None
                 model_filter = None
                 with gr.Row():
@@ -13101,7 +13105,7 @@ def create_ui():
                         model_filter=model_filter,
                     )
                     (state, loras_choices, lset_name, resolution, refresh_form_trigger, save_form_trigger) = generator_tab_components['state'], generator_tab_components['loras_choices'], generator_tab_components['lset_name'], generator_tab_components['resolution'], generator_tab_components['refresh_form_trigger'], generator_tab_components['save_form_trigger']
-            with gr.Tab("Edit", id="edit", visible=False) as edit_tab:
+            with gr.Tab(i18n.tr("Edit"), id="edit", visible=False) as edit_tab:
                 edit_title_md = gr.Markdown()
                 edit_tab_components = generate_media_tab(
                     update_form=False,
@@ -13135,11 +13139,11 @@ def create_ui():
                     task = next((t for t in queue if t.get('id') == editing_task_id), None)
 
                     if task is None:
-                        gr.Warning("Task to edit not found in queue. It might have been processed or deleted.")
+                        gr.Warning(i18n.tr("Task to edit not found in queue. It might have been processed or deleted."))
                         state["editing_task_id"] = None
                         return default_return
                     if _is_edit_task_params(task.get("params", {})):
-                        gr.Info("Post-processing tasks cannot be edited.")
+                        gr.Info(i18n.tr("Post-processing tasks cannot be edited."))
                         state["editing_task_id"] = None
                         return default_return
 

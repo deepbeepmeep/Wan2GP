@@ -1,4 +1,5 @@
 from __future__ import annotations
+from shared import i18n
 
 import os
 from dataclasses import dataclass
@@ -69,7 +70,7 @@ class MuxSession:
             except Exception:
                 pass
         if self.owns_output_path_for_write and self.mux_process is not None and not self.stopped and self.mux_process.returncode not in (0, None) and os.path.isfile(self.output_path_for_write):
-            media.delete_file_if_exists(self.output_path_for_write, label="continuation output")
+            media.delete_file_if_exists(self.output_path_for_write, label=i18n.tr("continuation output"))
         if self.owns_video_only_output:
-            media.delete_file_if_exists(self.video_only_output_path, label="video-only output")
-        media.delete_file_if_exists(self.reserved_metadata_path, label="reserved metadata file")
+            media.delete_file_if_exists(self.video_only_output_path, label=i18n.tr("video-only output"))
+        media.delete_file_if_exists(self.reserved_metadata_path, label=i18n.tr("reserved metadata file"))

@@ -13,6 +13,7 @@ import torch.nn.functional as F
 from PIL import Image
 
 from shared.utils.utils import calculate_new_dimensions, convert_image_to_tensor, convert_tensor_to_image, expand_or_shrink_mask, to_rgb_tensor
+from shared import i18n
 from ..modules.posemb_layers import get_nd_rotary_pos_embed
 
 
@@ -500,7 +501,7 @@ def custom_preprocess_scail2(video_guide, video_mask, pre_video_guide=None, max_
     video_guide_processed = processor.extract_and_render(video_guide, ref_image=ref_image, mask_frames=pose_mask, align_pose=True)
     if video_guide_processed.numel() == 0:
         import gradio as gr
-        gr.Info("Unable to detect a Person")
+        gr.Info(i18n.tr("Unable to detect a Person"))
         return None, None, None, None
     return video_guide_processed, None, video_mask, None
 

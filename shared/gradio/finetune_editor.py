@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 import gradio as gr
+from shared import i18n
 
 from shared.gradio.local_file_picker import CHECKPOINT_FILE_EXTENSIONS, LocalFilePickerTextbox
 from shared import resolutions as resolution_utils
@@ -137,7 +138,7 @@ def create_editor() -> FinetuneEditorUI:
         with gr.Column(elem_classes=["wangp-model-info-card", "wangp-finetune-editor-card"]):
             with gr.Row(elem_classes=["wangp-assistant-chat__template-modal-titlebar", "wangp-finetune-editor-titlebar"]):
                 title = gr.HTML("<div class='wangp-assistant-chat__template-modal-heading'>Finetune Creator</div>")
-                close_button = gr.Button("x", elem_id="wangp_finetune_editor_close", elem_classes=["wangp-model-info-close"], min_width=1, scale=0)
+                close_button = gr.Button(i18n.tr("x"), elem_id="wangp_finetune_editor_close", elem_classes=["wangp-model-info-close"], min_width=1, scale=0)
             with gr.Column(elem_classes=["wangp-finetune-editor-content"]):
                 gr.HTML(
                     "<div class='wangp-finetune-editor-intro'>A finetune is a lightweight model definition derived from an existing WanGP model. "
@@ -155,74 +156,74 @@ def create_editor() -> FinetuneEditorUI:
                 create_new_save_trigger = gr.Textbox(value="", visible=False)
                 save_apply_trigger = gr.Textbox(value="", visible=False)
                 save_save_trigger = gr.Textbox(value="", visible=False)
-                creator_source_mode = gr.Radio(label="Create New Finetune", choices=[("Using Current Model", "current"), ("By importing a File", "import")], value="current", visible=False)
+                creator_source_mode = gr.Radio(label=i18n.tr("Create New Finetune"), choices=[("Using Current Model", "current"), ("By importing a File", "import")], value="current", visible=False)
                 with gr.Column(elem_classes=["wangp-finetune-editor-fields"]) as form_fields:
-                    source_info = gr.Textbox(label="Source Model", value="", lines=1, max_lines=1, autoscroll=False, interactive=False, elem_classes=["wangp-finetune-editor-readonly"])
+                    source_info = gr.Textbox(label=i18n.tr("Source Model"), value="", lines=1, max_lines=1, autoscroll=False, interactive=False, elem_classes=["wangp-finetune-editor-readonly"])
                     with gr.Row(elem_classes=["wangp-finetune-editor-id-row"]):
-                        id_text = gr.Textbox(label="Id", value="", scale=7)
-                        auto_id = gr.Checkbox(label="auto", value=True, scale=1, min_width=80, elem_classes="cbx_bottom")
-                    name_text = gr.Textbox(label="Name", value="")
-                    description_text = gr.Textbox(label="Description", value="", lines=3)
+                        id_text = gr.Textbox(label=i18n.tr("Id"), value="", scale=7)
+                        auto_id = gr.Checkbox(label=i18n.tr("auto"), value=True, scale=1, min_width=80, elem_classes="cbx_bottom")
+                    name_text = gr.Textbox(label=i18n.tr("Name"), value="")
+                    description_text = gr.Textbox(label=i18n.tr("Description"), value="", lines=3)
                     with gr.Tabs(elem_classes=["wangp-finetune-editor-tabs"]):
-                        with gr.Tab("URLs"):
+                        with gr.Tab(i18n.tr("URLs")):
                             with gr.Column(visible=False, elem_classes=["wangp-finetune-editor-field-group"]) as urls_group:
-                                urls_text = LocalFilePickerTextbox(label="Main Checkpoints", file_extensions=CHECKPOINT_FILE_EXTENSIONS, multiselect=True, popup_title="Select Local Checkpoint Files").mount()
+                                urls_text = LocalFilePickerTextbox(label=i18n.tr("Main Checkpoints"), file_extensions=CHECKPOINT_FILE_EXTENSIONS, multiselect=True, popup_title="Select Local Checkpoint Files").mount()
                             with gr.Column(visible=False, elem_classes=["wangp-finetune-editor-field-group"]) as urls2_group:
-                                urls2_text = LocalFilePickerTextbox(label="Secondary Checkpoints", file_extensions=CHECKPOINT_FILE_EXTENSIONS, multiselect=True, popup_title="Select Local Checkpoint Files").mount()
+                                urls2_text = LocalFilePickerTextbox(label=i18n.tr("Secondary Checkpoints"), file_extensions=CHECKPOINT_FILE_EXTENSIONS, multiselect=True, popup_title="Select Local Checkpoint Files").mount()
                             with gr.Column(visible=False, elem_classes=["wangp-finetune-editor-field-group"]) as text_encoder_group:
-                                text_encoder_text = LocalFilePickerTextbox(label="Text Encoder Checkpoints", file_extensions=CHECKPOINT_FILE_EXTENSIONS, multiselect=True, popup_title="Select Local Text Encoder Checkpoints").mount()
+                                text_encoder_text = LocalFilePickerTextbox(label=i18n.tr("Text Encoder Checkpoints"), file_extensions=CHECKPOINT_FILE_EXTENSIONS, multiselect=True, popup_title="Select Local Text Encoder Checkpoints").mount()
                             with gr.Column(visible=False, elem_classes=["wangp-finetune-editor-field-group"]) as custom_url_1_group:
-                                custom_url_1_text = LocalFilePickerTextbox(label="custom_url_1", file_extensions=CHECKPOINT_FILE_EXTENSIONS, multiselect=False, popup_title="Select Local Checkpoint File").mount()
+                                custom_url_1_text = LocalFilePickerTextbox(label=i18n.tr("custom_url_1"), file_extensions=CHECKPOINT_FILE_EXTENSIONS, multiselect=False, popup_title="Select Local Checkpoint File").mount()
                             with gr.Column(visible=False, elem_classes=["wangp-finetune-editor-field-group"]) as custom_url_2_group:
-                                custom_url_2_text = LocalFilePickerTextbox(label="custom_url_2", file_extensions=CHECKPOINT_FILE_EXTENSIONS, multiselect=False, popup_title="Select Local Checkpoint File").mount()
+                                custom_url_2_text = LocalFilePickerTextbox(label=i18n.tr("custom_url_2"), file_extensions=CHECKPOINT_FILE_EXTENSIONS, multiselect=False, popup_title="Select Local Checkpoint File").mount()
                             with gr.Column(visible=False, elem_classes=["wangp-finetune-editor-field-group"]) as custom_url_3_group:
-                                custom_url_3_text = LocalFilePickerTextbox(label="custom_url_3", file_extensions=CHECKPOINT_FILE_EXTENSIONS, multiselect=False, popup_title="Select Local Checkpoint File").mount()
-                        with gr.Tab("LoRAs"):
+                                custom_url_3_text = LocalFilePickerTextbox(label=i18n.tr("custom_url_3"), file_extensions=CHECKPOINT_FILE_EXTENSIONS, multiselect=False, popup_title="Select Local Checkpoint File").mount()
+                        with gr.Tab(i18n.tr("LoRAs")):
                             with gr.Column(visible=True, elem_classes=["wangp-finetune-editor-field-group"]) as loras_group:
                                 loras_root_text = gr.Textbox(value="", visible=False)
-                                loras_text = LocalFilePickerTextbox(label="Always Loaded LoRAs", file_extensions=LORA_FILE_EXTENSIONS, multiselect=True, popup_title="Select LoRA Files", default_dir_input=loras_root_text, compress_root_input=loras_root_text).mount()
-                                loras_multipliers_text = gr.Textbox(label="LoRAs Multipliers", value="", lines=1, max_lines=4)
-                        with gr.Tab("Resolutions"):
-                            resolution_categories_editor = gr.Textbox(label="Resolution Categories Conditions (OR operator between lines)", value="", lines=6, max_lines=10, placeholder=">=720&<=1440")
+                                loras_text = LocalFilePickerTextbox(label=i18n.tr("Always Loaded LoRAs"), file_extensions=LORA_FILE_EXTENSIONS, multiselect=True, popup_title="Select LoRA Files", default_dir_input=loras_root_text, compress_root_input=loras_root_text).mount()
+                                loras_multipliers_text = gr.Textbox(label=i18n.tr("LoRAs Multipliers"), value="", lines=1, max_lines=4)
+                        with gr.Tab(i18n.tr("Resolutions")):
+                            resolution_categories_editor = gr.Textbox(label=i18n.tr("Resolution Categories Conditions (OR operator between lines)"), value="", lines=6, max_lines=10, placeholder=i18n.tr(">=720&<=1440"))
                             gr.HTML("<div class='wangp-finetune-editor-hint'>Example: <code>&gt;=720&amp;&lt;=1440</code> keeps only categories from 720p through 1440p. Separate lines are OR conditions.</div>", padding=False, container=False)
-                            resolutions_editor = gr.Textbox(label="Custom Resolutions (one WxH value per line)", value="", lines=6, max_lines=10, placeholder="1024x2048")
+                            resolutions_editor = gr.Textbox(label=i18n.tr("Custom Resolutions (one WxH value per line)"), value="", lines=6, max_lines=10, placeholder=i18n.tr("1024x2048"))
                             gr.HTML("<div class='wangp-finetune-editor-hint'>Example: <code>1024x2048</code> is saved as <code>1024x2048 (1:2)</code>.</div>", padding=False, container=False)
-                        with gr.Tab("Help"):
+                        with gr.Tab(i18n.tr("Help")):
                             infos_editor = _markdown_editor("Model Infos")
                             prompt_infos_editor = _markdown_editor("Prompt Help")
-                        with gr.Tab("Prompt Enhancer"):
+                        with gr.Tab(i18n.tr("Prompt Enhancer")):
                             with gr.Column(visible=False, elem_classes=["wangp-finetune-editor-field-group"]) as enhancer_system_1_group:
                                 enhancer_system_1_default = gr.State(value="")
                                 with gr.Column(elem_classes=["wangp-finetune-editor-enhancer-field"]):
-                                    enhancer_system_1_editor = gr.Textbox(label="System Prompt", value="", lines=6)
-                                    enhancer_system_1_default_button = gr.Button("👁", visible=False, min_width=1, scale=0, elem_classes=["wangp-finetune-editor-enhancer-default-btn"])
-                                enhancer_system_1_tokens = gr.Textbox(label="Max Tokens (empty = auto)", value="", lines=1, max_lines=1)
+                                    enhancer_system_1_editor = gr.Textbox(label=i18n.tr("System Prompt"), value="", lines=6)
+                                    enhancer_system_1_default_button = gr.Button(i18n.tr("👁"), visible=False, min_width=1, scale=0, elem_classes=["wangp-finetune-editor-enhancer-default-btn"])
+                                enhancer_system_1_tokens = gr.Textbox(label=i18n.tr("Max Tokens (empty = auto)"), value="", lines=1, max_lines=1)
                             with gr.Column(visible=False, elem_classes=["wangp-finetune-editor-field-group"]) as enhancer_system_2_group:
                                 enhancer_system_2_default = gr.State(value="")
                                 with gr.Column(elem_classes=["wangp-finetune-editor-enhancer-field"]):
-                                    enhancer_system_2_editor = gr.Textbox(label="System Prompt", value="", lines=6)
-                                    enhancer_system_2_default_button = gr.Button("👁", visible=False, min_width=1, scale=0, elem_classes=["wangp-finetune-editor-enhancer-default-btn"])
-                                enhancer_system_2_tokens = gr.Textbox(label="Max Tokens (empty = auto)", value="", lines=1, max_lines=1)
+                                    enhancer_system_2_editor = gr.Textbox(label=i18n.tr("System Prompt"), value="", lines=6)
+                                    enhancer_system_2_default_button = gr.Button(i18n.tr("👁"), visible=False, min_width=1, scale=0, elem_classes=["wangp-finetune-editor-enhancer-default-btn"])
+                                enhancer_system_2_tokens = gr.Textbox(label=i18n.tr("Max Tokens (empty = auto)"), value="", lines=1, max_lines=1)
                             with gr.Column(visible=False, elem_classes=["wangp-finetune-editor-field-group"]) as enhancer_system_3_group:
                                 enhancer_system_3_default = gr.State(value="")
                                 with gr.Column(elem_classes=["wangp-finetune-editor-enhancer-field"]):
-                                    enhancer_system_3_editor = gr.Textbox(label="System Prompt", value="", lines=6)
-                                    enhancer_system_3_default_button = gr.Button("👁", visible=False, min_width=1, scale=0, elem_classes=["wangp-finetune-editor-enhancer-default-btn"])
-                                enhancer_system_3_tokens = gr.Textbox(label="Max Tokens (empty = auto)", value="", lines=1, max_lines=1)
-                import_file = gr.File(label="Import Finetune JSON", file_types=[".json"], type="filepath", visible=False)
+                                    enhancer_system_3_editor = gr.Textbox(label=i18n.tr("System Prompt"), value="", lines=6)
+                                    enhancer_system_3_default_button = gr.Button(i18n.tr("👁"), visible=False, min_width=1, scale=0, elem_classes=["wangp-finetune-editor-enhancer-default-btn"])
+                                enhancer_system_3_tokens = gr.Textbox(label=i18n.tr("Max Tokens (empty = auto)"), value="", lines=1, max_lines=1)
+                import_file = gr.File(label=i18n.tr("Import Finetune JSON"), file_types=[".json"], type="filepath", visible=False)
             with gr.Column(elem_classes=["wangp-finetune-editor-footer"]):
-                use_current_settings = gr.Checkbox(label="Use Current Model Settings as Default Settings", value=False)
+                use_current_settings = gr.Checkbox(label=i18n.tr("Use Current Model Settings as Default Settings"), value=False)
                 with gr.Row(elem_classes=["wangp-finetune-editor-actions"]) as creator_actions:
-                    create_button = gr.Button("Create", variant="primary", size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn", "wangp-assistant-chat__template-modal-btn--primary"])
-                    create_new_button = gr.Button("Create & New", size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn"])
-                    cancel_button = gr.Button("Cancel", size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn"])
+                    create_button = gr.Button(i18n.tr("Create"), variant="primary", size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn", "wangp-assistant-chat__template-modal-btn--primary"])
+                    create_new_button = gr.Button(i18n.tr("Create & New"), size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn"])
+                    cancel_button = gr.Button(i18n.tr("Cancel"), size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn"])
                 with gr.Row(visible=False, elem_classes=["wangp-finetune-editor-actions"]) as editor_actions:
-                    save_button = gr.Button("Save", variant="primary", size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn", "wangp-assistant-chat__template-modal-btn--primary"])
+                    save_button = gr.Button(i18n.tr("Save"), variant="primary", size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn", "wangp-assistant-chat__template-modal-btn--primary"])
                     export_button = gr.DownloadButton("Export", value=None, size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn"])
-                    delete_button = gr.Button("Delete", variant="stop", size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn"])
+                    delete_button = gr.Button(i18n.tr("Delete"), variant="stop", size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn"])
                 with gr.Row(visible=False, elem_classes=["wangp-finetune-editor-actions", "wangp-finetune-editor-delete-confirm"]) as delete_confirm:
-                    confirm_delete_button = gr.Button("Confirm Delete", variant="stop", size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn"])
-                    cancel_delete_button = gr.Button("Cancel", size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn"])
+                    confirm_delete_button = gr.Button(i18n.tr("Confirm Delete"), variant="stop", size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn"])
+                    cancel_delete_button = gr.Button(i18n.tr("Cancel"), size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn"])
     ui = FinetuneEditorUI(
         popup=popup,
         title=title,
@@ -639,18 +640,18 @@ def save_finetune(deps: FinetuneEditorDeps, state, mode, original_id, source_mod
     source_model_type = str(source_model_type or "").strip()
     if mode == "creator" and str(creator_source_mode or "") == "import":
         if create_new:
-            gr.Info("Create & New is not available when importing a finetune JSON.")
+            gr.Info(i18n.tr("Create & New is not available when importing a finetune JSON."))
             return _no_create_new_action_updates(create_new_output_count)
         return import_finetune(deps, state, import_file, skip_redirect_save=skip_redirect_save)
     if not source_model_type or deps.get_model_def(source_model_type) is None:
-        gr.Info("Unable to identify the source model for this finetune.")
+        gr.Info(i18n.tr("Unable to identify the source model for this finetune."))
         return _no_create_new_action_updates(create_new_output_count) if create_new else _no_action_updates()
 
     raw_source, _ = _load_model_json(deps, source_model_type)
     raw_existing = None
     if mode == "editor":
         if not is_finetune_model(deps, original_id):
-            gr.Info("This model is not a finetune and cannot be edited.")
+            gr.Info(i18n.tr("This model is not a finetune and cannot be edited."))
             return _no_action_updates()
         raw_existing, _ = _load_model_json(deps, original_id)
 
@@ -702,7 +703,7 @@ def save_finetune(deps: FinetuneEditorDeps, state, mode, original_id, source_mod
     _warn_parse_errors(parse_errors)
     finetune_label = _finetune_label(model_id, name)
     if create_new and mode == "creator":
-        gr.Info(f"Finetune '{finetune_label}' created.")
+        gr.Info(i18n.tr("Finetune '{finetune_label}' created.", finetune_label=finetune_label))
         return _create_new_updates(deps, state, source_model_type)
     if skip_redirect_save:
         state["ignore_save_form"] = True
@@ -713,26 +714,26 @@ def save_finetune(deps: FinetuneEditorDeps, state, mode, original_id, source_mod
 def import_finetune(deps: FinetuneEditorDeps, state, import_file, skip_redirect_save=False):
     import_path = _uploaded_file_path(import_file)
     if not import_path or not os.path.isfile(import_path):
-        gr.Info("Please select a finetune JSON file to import.")
+        gr.Info(i18n.tr("Please select a finetune JSON file to import."))
         return _no_action_updates()
     try:
         with open(import_path, "r", encoding="utf-8") as reader:
             raw_output = json.load(reader)
     except Exception as exc:
-        gr.Info(f"Unable to import finetune JSON: {exc}")
+        gr.Info(i18n.tr("Unable to import finetune JSON: {exc}", exc=exc))
         return _no_action_updates()
     if not isinstance(raw_output, dict) or not isinstance(raw_output.get("model"), dict):
-        gr.Info("Finetune not imported: JSON must contain a 'model' object.")
+        gr.Info(i18n.tr("Finetune not imported: JSON must contain a 'model' object."))
         return _no_action_updates()
     architecture = str(raw_output["model"].get("architecture") or "").strip()
     if not architecture:
-        gr.Info("Finetune not imported: model.architecture is required.")
+        gr.Info(i18n.tr("Finetune not imported: model.architecture is required."))
         return _no_action_updates()
     source_model_type = str(raw_output["model"].get(FINETUNE_SOURCE_MODEL_KEY) or architecture).strip()
     _compress_model_path_fields(raw_output["model"], [*FINETUNE_URL_FIELDS, "loras", *_custom_url_keys(deps, source_model_type)])
     model_id = _sanitize_model_id(Path(import_path).stem)
     if not model_id:
-        gr.Info("Finetune not imported: file name cannot be used as a model id.")
+        gr.Info(i18n.tr("Finetune not imported: file name cannot be used as a model id."))
         return _no_action_updates()
     if _model_id_exists(deps, model_id):
         gr.Info(f"Finetune not imported: '{_finetune_label(model_id, raw_output.get('model', {}).get('name', ''))}' already exists.")
@@ -753,7 +754,7 @@ def delete_finetune(deps: FinetuneEditorDeps, state, original_id, source_model_t
     original_id = str(original_id or "").strip()
     source_model_type = str(source_model_type or "").strip() or _source_model_type(deps, original_id)
     if not original_id or not is_finetune_model(deps, original_id):
-        gr.Info("This model is not a finetune and cannot be deleted.")
+        gr.Info(i18n.tr("This model is not a finetune and cannot be deleted."))
         return _no_delete_action_updates()
     json_path = _finetune_json_path(original_id)
     finetune_label = _finetune_label(original_id, name)
@@ -768,7 +769,7 @@ def delete_finetune(deps: FinetuneEditorDeps, state, original_id, source_model_t
     _warn_parse_errors(parse_errors)
     target_model_type = source_model_type if deps.get_model_def(source_model_type) is not None else next(iter(deps.displayed_model_types), "")
     state["ignore_save_form"] = True
-    gr.Info(f"Finetune '{finetune_label}' deleted.")
+    gr.Info(i18n.tr("Finetune '{finetune_label}' deleted.", finetune_label=finetune_label))
     return state, *_redirect_to_model_updates(deps, target_model_type)
 
 

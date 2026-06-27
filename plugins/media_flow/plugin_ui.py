@@ -5,6 +5,7 @@ import io
 from pathlib import Path
 
 import gradio as gr
+from shared import i18n
 from PIL import Image
 
 from shared.gradio.local_file_picker import IMAGE_FILE_EXTENSIONS, LocalFilePickerTextbox, VIDEO_FILE_EXTENSIONS
@@ -141,19 +142,19 @@ def create_config_ui(self, api_session):
     def _add_user_process_link(process_value: str, media_kind: str, main_state: dict | None, main_lset_name: str | None, user_refs: list[str] | None):
         media_kind = catalog.normalize_media_kind(media_kind)
         if str(process_value or "").strip() == ui_constants.NO_USER_SETTINGS_VALUE:
-            raise gr.Error("No user settings are available to add.")
+            raise gr.Error(i18n.tr("No user settings are available to add."))
         process_definition = library.process_definition(process_value, main_state, user_refs)
         if process_definition is None:
-            raise gr.Error("The selected user settings file could not be found.")
+            raise gr.Error(i18n.tr("The selected user settings file could not be found."))
         if catalog.process_definition_media_kind(process_definition) != media_kind:
-            raise gr.Error(f"The selected user settings file is not a {media_kind} process.")
+            raise gr.Error(i18n.tr("The selected user settings file is not a {media_kind} process.", media_kind=media_kind))
         problems = library.validate_user_process_definition(process_definition)
         if len(problems) > 0:
             gr.Info(library.format_user_process_validation_error(process_definition, problems))
             return (gr.skip(),) * 9
         ref = catalog.normalize_user_settings_ref(process_definition.get("ref"))
         if len(ref) == 0:
-            raise gr.Error("The selected user settings file could not be linked.")
+            raise gr.Error(i18n.tr("The selected user settings file could not be linked."))
         refs = catalog.get_saved_user_settings_refs({catalog.USER_SETTINGS_STORAGE_KEY: user_refs}, media_kind)
         model_label = library.model_type_label(library.process_definition_model_type(process_definition))
         if ref.casefold() not in {item.casefold() for item in refs}:
@@ -180,7 +181,7 @@ def create_config_ui(self, api_session):
         process_value = str(process_value or "").strip()
         ref = catalog.user_process_ref_from_value(process_value)
         if len(ref) == 0:
-            raise gr.Error("Choose a linked user settings process to remove.")
+            raise gr.Error(i18n.tr("Choose a linked user settings process to remove."))
         old_refs = catalog.get_saved_user_settings_refs({catalog.USER_SETTINGS_STORAGE_KEY: user_refs}, media_kind)
         deleted_definition = library.build_user_process_definition(ref)
         deleted_model_type = library.process_definition_model_type(deleted_definition)
@@ -501,61 +502,61 @@ def create_config_ui(self, api_session):
 -Image processes can be applied on multiple files at same time"""
             )
         with gr.Tabs(selected=default_batch_mode, elem_id="mediaflow-process-mode-tabs") as process_mode_tabs:
-            with gr.Tab("One item", id="single", elem_classes="compact_tab"):
+            with gr.Tab(i18n.tr("One item"), id="single", elem_classes="compact_tab"):
                 pass
-            with gr.Tab("Batch", id="batch", elem_classes="compact_tab"):
+            with gr.Tab(i18n.tr("Batch"), id="batch", elem_classes="compact_tab"):
                 pass
         batch_mode = gr.State(default_batch_mode)
         with gr.Row(visible=default_batch_mode == "batch") as batch_name_row:
-            batch_name = gr.Textbox(label="Batch Name", value=default_batch_name)
+            batch_name = gr.Textbox(label=i18n.tr("Batch Name"), value=default_batch_name)
         with gr.Row():
-            process_media_kind = gr.Radio([("Video", "video"), ("Image", "image")], value=default_media_kind, label="Process Type", scale=1)
-            process_model_type = gr.Dropdown(model_type_choices, value=default_model_type, label="Model", scale=1)
-            process_name = gr.Dropdown(default_process_choices, value=default_process_name, label="Process", scale=3)
+            process_media_kind = gr.Radio([("Video", "video"), ("Image", "image")], value=default_media_kind, label=i18n.tr("Process Type"), scale=1)
+            process_model_type = gr.Dropdown(model_type_choices, value=default_model_type, label=i18n.tr("Model"), scale=1)
+            process_name = gr.Dropdown(default_process_choices, value=default_process_name, label=i18n.tr("Process"), scale=3)
             with gr.Column(scale=0, min_width=34, visible=default_model_type == ui_constants.ADD_USER_SETTINGS_MODEL_TYPE or catalog.is_user_process_value(default_process_name), elem_id="mediaflow-settings-actions") as settings_actions_column:
-                add_user_settings_btn = gr.Button("\u2795", size="sm", min_width=1, visible=default_model_type == ui_constants.ADD_USER_SETTINGS_MODEL_TYPE, elem_classes=["wangp-assistant-chat__template-tool-icon-btn"])
-                delete_user_settings_btn = gr.Button("\U0001F5D1\uFE0F", size="sm", min_width=1, visible=catalog.is_user_process_value(default_process_name), elem_classes=["wangp-assistant-chat__template-tool-icon-btn", "wangp-assistant-chat__template-tool-icon-btn--danger"])
+                add_user_settings_btn = gr.Button(i18n.tr("➕"), size="sm", min_width=1, visible=default_model_type == ui_constants.ADD_USER_SETTINGS_MODEL_TYPE, elem_classes=["wangp-assistant-chat__template-tool-icon-btn"])
+                delete_user_settings_btn = gr.Button(i18n.tr("🗑️"), size="sm", min_width=1, visible=catalog.is_user_process_value(default_process_name), elem_classes=["wangp-assistant-chat__template-tool-icon-btn", "wangp-assistant-chat__template-tool-icon-btn--danger"])
                 settings_actions_placeholder = gr.HTML("<div class='mediaflow-settings-action-placeholder'></div>", visible=False)
         with gr.Row(visible=library.process_choices_have_user_settings(default_process_choices), elem_id="mediaflow-user-settings-hint-row") as process_user_settings_hint_row:
             gr.HTML(value=ui_constants.USER_SETTINGS_HINT_HTML)
         with gr.Column(visible=default_batch_mode == "batch" and not initial_image_process) as batch_video_source_column:
-            batch_source_path = LocalFilePickerTextbox(label="Batch Source Video Paths (one per line, folders/wildcards accepted)", value=default_batch_source_path, file_extensions=VIDEO_FILE_EXTENSIONS, multiselect=True, popup_title="Browse Local Source Videos").mount()
+            batch_source_path = LocalFilePickerTextbox(label=i18n.tr("Batch Source Video Paths (one per line, folders/wildcards accepted)"), value=default_batch_source_path, file_extensions=VIDEO_FILE_EXTENSIONS, multiselect=True, popup_title="Browse Local Source Videos").mount()
         with gr.Column(visible=default_batch_mode == "batch" and initial_image_process) as batch_image_source_column:
-            batch_image_source_path = LocalFilePickerTextbox(label="Batch Source Image Paths (one per line, folders/wildcards accepted)", value=default_batch_source_path, file_extensions=IMAGE_FILE_EXTENSIONS, multiselect=True, popup_title="Browse Local Source Images").mount()
+            batch_image_source_path = LocalFilePickerTextbox(label=i18n.tr("Batch Source Image Paths (one per line, folders/wildcards accepted)"), value=default_batch_source_path, file_extensions=IMAGE_FILE_EXTENSIONS, multiselect=True, popup_title="Browse Local Source Images").mount()
         with gr.Column(visible=default_batch_mode != "batch" and not initial_image_process) as source_video_column:
-            source_path = LocalFilePickerTextbox(label="Source Video Path File", value=default_state.source_path, file_extensions=VIDEO_FILE_EXTENSIONS, popup_title="Browse Local Source Video").mount()
+            source_path = LocalFilePickerTextbox(label=i18n.tr("Source Video Path File"), value=default_state.source_path, file_extensions=VIDEO_FILE_EXTENSIONS, popup_title="Browse Local Source Video").mount()
         with gr.Column(visible=default_batch_mode != "batch" and initial_image_process) as source_image_column:
-            source_image_path = LocalFilePickerTextbox(label="Source Image Path File", value=default_state.source_path, file_extensions=IMAGE_FILE_EXTENSIONS, popup_title="Browse Local Source Image").mount()
+            source_image_path = LocalFilePickerTextbox(label=i18n.tr("Source Image Path File"), value=default_state.source_path, file_extensions=IMAGE_FILE_EXTENSIONS, popup_title="Browse Local Source Image").mount()
         with gr.Row():
-            output_path = gr.Textbox(label="Output File Path File (None for auto, Full Name or Target Folder)", value=default_state.output_path, scale=3)
-            continue_enabled = gr.Checkbox(label="Continue", value=default_state.continue_enabled, elem_classes="cbx_bottom", scale=1, visible=not initial_image_process or default_batch_mode == "batch")
-            preview_enabled = gr.Checkbox(label="Preview", value=default_preview_enabled, elem_classes="cbx_bottom", scale=1)
+            output_path = gr.Textbox(label=i18n.tr("Output File Path File (None for auto, Full Name or Target Folder)"), value=default_state.output_path, scale=3)
+            continue_enabled = gr.Checkbox(label=i18n.tr("Continue"), value=default_state.continue_enabled, elem_classes="cbx_bottom", scale=1, visible=not initial_image_process or default_batch_mode == "batch")
+            preview_enabled = gr.Checkbox(label=i18n.tr("Preview"), value=default_preview_enabled, elem_classes="cbx_bottom", scale=1)
         with gr.Row():
-            output_resolution = gr.Dropdown(output_resolution_choices, value=default_state.output_resolution, label="Output Resolution", visible=initial_form.output_resolution_visible)
+            output_resolution = gr.Dropdown(output_resolution_choices, value=default_state.output_resolution, label=i18n.tr("Output Resolution"), visible=initial_form.output_resolution_visible)
             default_process_strength = 1.0 if initial_form.target_ratio_visible else default_state.process_strength
-            process_strength = gr.Slider(label="Process Strength (LoRA Multiplier)", minimum=min(0.0, default_process_strength), maximum=max(3.0, default_process_strength), step=0.01, value=default_process_strength, visible=initial_form.process_strength_visible)
+            process_strength = gr.Slider(label=i18n.tr("Process Strength (LoRA Multiplier)"), minimum=min(0.0, default_process_strength), maximum=max(3.0, default_process_strength), step=0.01, value=default_process_strength, visible=initial_form.process_strength_visible)
         with gr.Row():
-            chunk_size_seconds = gr.Number(label="Chunk Size (seconds)", value=default_state.chunk_size_seconds, precision=2, visible=not initial_image_process)
+            chunk_size_seconds = gr.Number(label=i18n.tr("Chunk Size (seconds)"), value=default_state.chunk_size_seconds, precision=2, visible=not initial_image_process)
             target_ratio = gr.Dropdown(initial_form.target_ratio_choices if initial_form.target_ratio_visible else ui_constants.RATIO_CHOICES_WITH_EMPTY, value=default_state.target_ratio if initial_form.target_ratio_visible else "", label=initial_form.target_ratio_label, visible=initial_form.target_ratio_visible)
-            sliding_window_overlap = gr.Slider(label="Sliding Window Overlap", minimum=0 if not initial_form.overlap_visible else 1, maximum=initial_form.overlap_max, step=initial_form.overlap_step, value=default_state.sliding_window_overlap, visible=initial_form.overlap_visible)
+            sliding_window_overlap = gr.Slider(label=i18n.tr("Sliding Window Overlap"), minimum=0 if not initial_form.overlap_visible else 1, maximum=initial_form.overlap_max, step=initial_form.overlap_step, value=default_state.sliding_window_overlap, visible=initial_form.overlap_visible)
         with gr.Row():
-            start_seconds = gr.Textbox(label="Start (s/MM:SS(.xx)/HH:MM:SS(.xx))", value=default_state.start_seconds, placeholder="seconds, MM:SS(.xx), or HH:MM:SS(.xx)", visible=not initial_image_process)
-            end_seconds = gr.Textbox(label="End (s/MM:SS(.xx)/HH:MM:SS(.xx))", value=default_state.end_seconds, placeholder="seconds, MM:SS(.xx), or HH:MM:SS(.xx)", visible=not initial_image_process)
-            source_audio_track = gr.Dropdown(source_audio_track_choices, value=default_state.source_audio_track, label="Source Audio Track", visible=not initial_image_process)
+            start_seconds = gr.Textbox(label=i18n.tr("Start (s/MM:SS(.xx)/HH:MM:SS(.xx))"), value=default_state.start_seconds, placeholder=i18n.tr("seconds, MM:SS(.xx), or HH:MM:SS(.xx)"), visible=not initial_image_process)
+            end_seconds = gr.Textbox(label=i18n.tr("End (s/MM:SS(.xx)/HH:MM:SS(.xx))"), value=default_state.end_seconds, placeholder=i18n.tr("seconds, MM:SS(.xx), or HH:MM:SS(.xx)"), visible=not initial_image_process)
+            source_audio_track = gr.Dropdown(source_audio_track_choices, value=default_state.source_audio_track, label=i18n.tr("Source Audio Track"), visible=not initial_image_process)
         with gr.Row():
             prompt_text = gr.Textbox(
-                label="Prompt (timed blocks supported: MM:SS(.xx) / HH:MM:SS(.xx))",
+                label=i18n.tr("Prompt (timed blocks supported: MM:SS(.xx) / HH:MM:SS(.xx))"),
                 value=default_state.prompt,
                 lines=1,
                 placeholder=prompts.TIMED_PROMPT_EXAMPLE,
                 visible=initial_form.prompt_visible,
             )
         with gr.Row():
-            start_btn = gr.Button("Start Process")
-            abort_btn = gr.Button("Stop", interactive=False)
+            start_btn = gr.Button(i18n.tr("Start Process"))
+            abort_btn = gr.Button(i18n.tr("Stop"), interactive=False)
         batch_status_html = gr.HTML(value="")
         status_html = gr.HTML(value=initial_status_html)
-        preview_image = gr.Image(label="Last Frame Preview", type="pil", visible=default_preview_enabled)
+        preview_image = gr.Image(label=i18n.tr("Last Frame Preview"), type="pil", visible=default_preview_enabled)
         with gr.Row(elem_id="mediaflow-output-row"):
             with gr.Column(scale=3, elem_id="mediaflow-output-file-column"):
                 output_file = gr.HTML(value=initial_output_html, elem_id="mediaflow-output-file-html")

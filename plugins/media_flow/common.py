@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 import gradio as gr
+from shared import i18n
 
 from shared.utils.loras_mutipliers import parse_loras_multipliers, preparse_loras_multipliers
 
@@ -50,11 +51,11 @@ def require_float(value, label: str, *, minimum: float | None = None) -> float:
     try:
         result = float(value)
     except (TypeError, ValueError) as exc:
-        raise gr.Error(f"{label} must be a number.") from exc
+        raise gr.Error(i18n.tr("{label} must be a number.", label=label)) from exc
     if not math.isfinite(result):
-        raise gr.Error(f"{label} must be a number.")
+        raise gr.Error(i18n.tr("{label} must be a number.", label=label))
     if minimum is not None and result < minimum:
-        raise gr.Error(f"{label} must be at least {minimum:g}.")
+        raise gr.Error(i18n.tr("{label} must be at least {minimum:g}.", label=label, minimum=minimum))
     return result
 
 
@@ -65,9 +66,9 @@ def require_int(value, label: str, *, minimum: int | None = None) -> int:
             raise ValueError
         result = int(round(float_value))
     except (TypeError, ValueError, OverflowError) as exc:
-        raise gr.Error(f"{label} must be a number.") from exc
+        raise gr.Error(i18n.tr("{label} must be a number.", label=label)) from exc
     if minimum is not None and result < minimum:
-        raise gr.Error(f"{label} must be at least {minimum}.")
+        raise gr.Error(i18n.tr("{label} must be at least {minimum}.", label=label, minimum=minimum))
     return result
 
 

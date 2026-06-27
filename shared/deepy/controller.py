@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import gradio as gr
+from shared import i18n
 
 from shared.deepy.config import (
     DEEPY_ENABLED_KEY,
@@ -112,7 +113,7 @@ class DeepyController:
         if len(server_config_filename) > 0:
             with open(server_config_filename, "w", encoding="utf-8") as writer:
                 writer.write(json.dumps(server_config, indent=4))
-        gr.Info("New Deepy Setting Saved")
+        gr.Info(i18n.tr("New Deepy Setting Saved"))
 
     def _reset_foreign_active_session(self, session) -> bool:
         active_session = self._active_assistant_session
@@ -171,7 +172,7 @@ class DeepyController:
         image_caption_model = self._deps.get_image_caption_model()
         image_caption_processor = self._deps.get_image_caption_processor()
         if image_caption_model is None or image_caption_processor is None:
-            raise gr.Error("Prompt enhancer vision runtime is not available.")
+            raise gr.Error(i18n.tr("Prompt enhancer vision runtime is not available."))
         return image_caption_model, image_caption_processor
 
     def _unload_weights(self) -> None:
@@ -396,7 +397,7 @@ class DeepyController:
         if not deepy_requirement_met(server_config):
             raise gr.Error(_DEEPY_REQUIREMENT_TEXT)
         if send_cmd is None or tools is None:
-            raise gr.Error("Assistant mode requires a command stream and a tool registry.")
+            raise gr.Error(i18n.tr("Assistant mode requires a command stream and a tool registry."))
         enhancer_temperature = server_config.get("prompt_enhancer_temperature", 0.6)
         enhancer_top_p = server_config.get("prompt_enhancer_top_p", 0.9)
         randomize_seed = server_config.get("prompt_enhancer_randomize_seed", True)

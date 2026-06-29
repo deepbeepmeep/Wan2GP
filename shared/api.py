@@ -546,7 +546,7 @@ class WanGPSession:
             return None
         metadata = copy.deepcopy(model_def.get("metadata", {}))
         metadata.setdefault("model_type", str(model_type))
-        return {
+        result = {
             "model_type": str(model_type),
             "name": model_def.get("name", str(model_type)),
             "model_def": model_def,
@@ -554,6 +554,7 @@ class WanGPSession:
             "setting_values": copy.deepcopy(metadata.get("setting_values", {})),
             "default_settings": self.get_default_settings(model_type),
         }
+        return _json_safe(result)
 
     def submit(self, source: str | os.PathLike[str] | dict[str, Any] | list[dict[str, Any]], callbacks: object | None = None) -> SessionJob:
         tasks = self._normalize_source(source, caller_base_path=self._get_caller_base_path())
@@ -1232,6 +1233,22 @@ def _apply_edit_settings_overrides(settings: dict[str, Any], settings_overrides:
         options["return_media"] = True
     if options:
         settings["_api"] = options
+
+
+def _json_safe(obj: Any) -> Any:
+    """Recursively strip non-JSON-serializable values (e.g. callables injected into
+    model_def by handlers) so a schema response can be JSON-encoded by the MCP layer.
+
+    Callable keys are dropped entirely: they are runtime-only generation hooks and
+    carry no descriptive value for schema clients. The live model_def used during
+    generation is unaffected because get_model_def returns a deepcopy."""
+    if callable(obj):
+        return None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items() if not callable(v)}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj if not callable(v)]
+    return obj
 
 
 def _model_availability_to_dict(model_type: str, status: int) -> dict[str, Any]:

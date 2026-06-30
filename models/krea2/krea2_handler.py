@@ -60,7 +60,7 @@ class family_handler:
             ],
             "no_negative_prompt": False,
             "no_background_removal": True,
-            "resolutions_categories": [">=720&<=2k"],
+            "resolutions_categories": ["<=2k"],
             "vae_block_size": 16,
         }
 

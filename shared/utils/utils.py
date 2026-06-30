@@ -1,4 +1,5 @@
 import argparse
+import math
 import os
 import os.path as osp
 import torchvision.transforms.functional as TF
@@ -479,7 +480,24 @@ def rgb_bw_to_rgba_mask(img, thresh=127):
     return Image.fromarray(rgba, 'RGBA')
 
 
-def  get_outpainting_frame_location(final_height, final_width,  outpainting_dims, block_size = 8, outpainting_ratio = "", source_height = None, source_width = None):
+def _quantize_outpainting_axis(before, inner, total, quantum):
+    quantum = int(quantum or 0)
+    if quantum <= 1:
+        return inner, before
+    after = total - before - inner
+    before = max(0, int(round(before / quantum) * quantum))
+    after = max(0, int(round(after / quantum) * quantum))
+    min_inner = quantum if total >= quantum else 1
+    overflow = before + after + min_inner - total
+    if overflow > 0:
+        if after >= before:
+            after = max(0, after - int(math.ceil(overflow / quantum) * quantum))
+        else:
+            before = max(0, before - int(math.ceil(overflow / quantum) * quantum))
+    inner = total - before - after
+    return inner, before
+
+def  get_outpainting_frame_location(final_height, final_width,  outpainting_dims, block_size = 8, outpainting_ratio = "", source_height = None, source_width = None, quantize_margins = 0):
     if source_height is not None and source_width is not None:
         outpainting_dims = resolve_outpainting_dims(source_height, source_width, outpainting_dims, outpainting_ratio)
     outpainting_top, outpainting_bottom, outpainting_left, outpainting_right= outpainting_dims
@@ -498,6 +516,9 @@ def  get_outpainting_frame_location(final_height, final_width,  outpainting_dims
     if extra_width != 0 and (outpainting_left + outpainting_right) != 0:
         margin_left += int(outpainting_left / (outpainting_left + outpainting_right) * extra_width)
     if (margin_left + width) > final_width or outpainting_right == 0: margin_left = final_width - width
+    if quantize_margins:
+        height, margin_top = _quantize_outpainting_axis(margin_top, height, final_height, quantize_margins)
+        width, margin_left = _quantize_outpainting_axis(margin_left, width, final_width, quantize_margins)
     return height, width, margin_top, margin_left
 
 def rescale_and_crop(img, w, h):
@@ -607,7 +628,7 @@ def calculate_dimensions_and_resize_image(image, canvas_height, canvas_width, fi
         image = image.resize((new_width, new_height), resample=Image.Resampling.LANCZOS) 
     return image, new_height, new_width
 
-def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, outpainting_ratio = "", background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0, background_removal_color =  [255, 255, 255] ):
+def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, outpainting_ratio = "", background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0, background_removal_color =  [255, 255, 255], outpainting_quantize_margins = 0):
     if rm_background:
         session = new_rembg_session() 
 
@@ -618,7 +639,7 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
         resized_mask = None
         if any_background_ref == 1 and i==0 or any_background_ref == 2:
             if outpainting_dims is not None and background_ref_outpainted:
-                resized_image, resized_mask = fit_image_into_canvas(img, (budget_height, budget_width), inpaint_color, full_frame = True, outpainting_dims = outpainting_dims, outpainting_ratio = outpainting_ratio, return_mask= True, return_image= True)
+                resized_image, resized_mask = fit_image_into_canvas(img, (budget_height, budget_width), inpaint_color, full_frame = True, outpainting_dims = outpainting_dims, outpainting_ratio = outpainting_ratio, return_mask= True, return_image= True, outpainting_quantize_margins = outpainting_quantize_margins)
             elif img.size != (budget_width, budget_height):
                 resized_image= img.resize((budget_width, budget_height), resample=Image.Resampling.LANCZOS) 
             else:
@@ -654,7 +675,7 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
 
     return output_list, output_mask_list
 
-def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu", full_frame = False, outpainting_dims = None, outpainting_ratio = "", return_mask = False, return_image = False):
+def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu", full_frame = False, outpainting_dims = None, outpainting_ratio = "", return_mask = False, return_image = False, outpainting_quantize_margins = 0):
     inpaint_color = to_rgb_tensor(canvas_tf_bg, device=device, dtype=torch.float) / 127.5 - 1
     inpaint_color = inpaint_color.unsqueeze(1)
 
@@ -665,7 +686,7 @@ def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu
     else:
         if outpainting_dims != None:
             final_height, final_width = image_size
-            canvas_height, canvas_width, margin_top, margin_left = get_outpainting_frame_location(final_height, final_width, outpainting_dims, 1, outpainting_ratio, ref_height, ref_width)
+            canvas_height, canvas_width, margin_top, margin_left = get_outpainting_frame_location(final_height, final_width, outpainting_dims, 1, outpainting_ratio, ref_height, ref_width, quantize_margins=outpainting_quantize_margins)
         else:
             canvas_height, canvas_width = image_size
         if full_frame:
@@ -705,7 +726,7 @@ def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu
 
     return ref_img.to(device), canvas
 
-def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, image_size, current_video_length = 81, latent_size = 4, any_mask = False, any_guide_padding = False, guide_inpaint_color = 127.5, keep_video_guide_frames = [],  inject_frames = [], outpainting_dims = None, outpainting_ratio = "", device ="cpu"):
+def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, image_size, current_video_length = 81, latent_size = 4, any_mask = False, any_guide_padding = False, guide_inpaint_color = 127.5, keep_video_guide_frames = [],  inject_frames = [], outpainting_dims = None, outpainting_ratio = "", device ="cpu", outpainting_quantize_margins = 0):
     src_videos, src_masks = [], []
     inpaint_color_compressed = to_rgb_tensor(guide_inpaint_color, device=device, dtype=torch.float) / 127.5 - 1
     inpaint_color_compressed = inpaint_color_compressed.unsqueeze(1)
@@ -747,7 +768,7 @@ def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, im
             for k, frame in enumerate(inject_frames):
                 if frame != None:
                     pos = prepend_count + k
-                    src_video[:, pos:pos+1], msk = fit_image_into_canvas(frame, image_size, guide_inpaint_color, device, True, outpainting_dims, outpainting_ratio, return_mask= any_mask)
+                    src_video[:, pos:pos+1], msk = fit_image_into_canvas(frame, image_size, guide_inpaint_color, device, True, outpainting_dims, outpainting_ratio, return_mask= any_mask, outpainting_quantize_margins=outpainting_quantize_margins)
                     if any_mask: src_mask[:, pos:pos+1] = msk
         src_videos.append(src_video)
         src_masks.append(src_mask)

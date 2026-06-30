@@ -2,9 +2,11 @@ import json
 import math
 import os
 
+import numpy as np
 import torch
 from accelerate import init_empty_weights
 from einops import rearrange, repeat
+from PIL import Image
 from tqdm import tqdm
 from transformers import AutoTokenizer, Qwen2TokenizerFast
 
@@ -59,6 +61,10 @@ def _prepare(img, txtlen, patch, txtmask):
     mask = torch.cat((txtmask, imgmask), dim=1)
     pos = torch.cat((txtpos, imgpos), dim=1)
     return img, pos, mask
+
+
+def _pack_image_latents(latents, patch):
+    return rearrange(latents, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=patch, pw=patch)
 
 
 class Krea2TextEncoder(torch.nn.Module):
@@ -171,6 +177,34 @@ class Krea2Pipeline:
         latents = (latents * latents_std) + latents_mean
         return self.vae.decode_to_cpu_uint8(latents)[:, :, 0]
 
+    def _encode_image_to_latents(self, image, width, height, device, dtype):
+        from shared.utils.utils import convert_image_to_tensor
+
+        image = image.convert("RGB").resize((width, height), resample=Image.Resampling.LANCZOS)
+        tensor = convert_image_to_tensor(image).unsqueeze(0).unsqueeze(2).to(device=device, dtype=self.vae.dtype)
+        latents = self.vae.encode(tensor).latent_dist.mode()
+        latents_mean = torch.tensor(self.vae.config.latents_mean).view(1, self.channels, 1, 1, 1).to(latents.device, latents.dtype)
+        latents_std = torch.tensor(self.vae.config.latents_std).view(1, self.channels, 1, 1, 1).to(latents.device, latents.dtype)
+        latents = (latents - latents_mean) / latents_std
+        return latents[:, :, 0].to(device=device, dtype=dtype)
+
+    def _build_inpaint_mask(self, image_mask, width, height, align, device):
+        def mask_tensor(size):
+            mask_array = np.array(image_mask.convert("RGBA").resize(size, resample=Image.Resampling.NEAREST))
+            alpha = mask_array[..., 3]
+            channel = alpha if alpha.min() < 255 else mask_array[..., 0]
+            return torch.from_numpy(channel.astype(np.float32)).div_(255.0).ge_(0.5).to(torch.float32)
+
+        mask = mask_tensor((width // align, height // align)).unsqueeze(0)
+        mask_rebuilt = mask_tensor((width, height)).unsqueeze(0).unsqueeze(0)
+        return mask.reshape(1, -1, 1).to(device), mask_rebuilt
+
+    def _image_to_cpu_uint8(self, image, width, height):
+        from shared.utils.utils import convert_image_to_tensor
+
+        image = image.convert("RGB").resize((width, height), resample=Image.Resampling.LANCZOS)
+        return convert_image_to_tensor(image).add(1).mul(127.5).round().clamp(0, 255).to(torch.uint8).unsqueeze(0)
+
     def _encode_prompts(self, prompts, device, dtype):
         self.encoder._interrupt = self._interrupt
         self.encoder.qwen.language_model._interrupt = self._interrupt
@@ -191,7 +225,29 @@ class Krea2Pipeline:
         return hiddens, masks
 
     @torch.inference_mode()
-    def __call__(self, prompts, negative_prompts=None, width=1024, height=1024, steps=28, guidance=4.5, seed=0, y1=0.5, y2=1.15, mu=None, callback=None, loras_slists=None):
+    def __call__(
+        self,
+        prompts,
+        negative_prompts=None,
+        width=1024,
+        height=1024,
+        steps=28,
+        guidance=4.5,
+        seed=0,
+        y1=0.5,
+        y2=1.15,
+        mu=None,
+        callback=None,
+        loras_slists=None,
+        source_image=None,
+        image_mask=None,
+        denoising_strength=1.0,
+        masking_strength=1.0,
+        model_mode=None,
+        NAG_scale: float = 1.0,
+        NAG_tau: float = 3.5,
+        NAG_alpha: float = 0.5,
+    ):
         patch = self.transformer.config.patch
         align = self.compression * patch
         width, height = int(width), int(height)
@@ -208,8 +264,18 @@ class Krea2Pipeline:
         txt, txtmask = self._encode_prompts(prompts, device, dtype)
         if txt is None:
             return None
-        x, pos, mask = _prepare(noise, txt.shape[1], patch, txtmask)
         cfg = guidance > 0
+        true_cfg_scale = guidance + 1.0 if cfg else 1.0
+        NAG = None
+        nagtxt = nagtxtmask = None
+        if float(NAG_scale) > 1.0 and not cfg:
+            nagtxt, nagtxtmask = self._encode_prompts(negative_prompts, device, dtype)
+            if nagtxt is None:
+                return None
+            if nagtxt.shape[1] != txt.shape[1]:
+                raise ValueError(f"Krea 2 NAG requires matching positive/negative text lengths, got {txt.shape[1]} and {nagtxt.shape[1]}.")
+            NAG = {"scale": float(NAG_scale), "tau": float(NAG_tau), "alpha": float(NAG_alpha), "cap_embed_len": txt.shape[1], "prefix_len": 0}
+        x, pos, mask = _prepare(noise, txt.shape[1], patch, txtmask)
         if cfg:
             untxt, untxtmask = self._encode_prompts(negative_prompts, device, dtype)
             if untxt is None:
@@ -220,8 +286,40 @@ class Krea2Pipeline:
         ts = _timesteps(x.shape[1], steps, x1, x2, y1=y1, y2=y2, mu=mu)
         img = x
         self.transformer._interrupt = self._interrupt
+        model_mode_int = None
+        if model_mode is not None:
+            try:
+                model_mode_int = int(model_mode)
+            except (TypeError, ValueError):
+                model_mode_int = None
+        lanpaint_proc = None
+        original_image_latents = None
+        image_mask_latents = None
+        image_mask_rebuilt = None
+        first_step = 0
+        if source_image is not None and image_mask is not None:
+            source_latents = self._encode_image_to_latents(source_image, width, height, device, dtype)
+            if source_latents.shape[0] == 1 and batch_size > 1:
+                source_latents = source_latents.expand(batch_size, -1, -1, -1).contiguous()
+            original_image_latents = _pack_image_latents(source_latents, patch)
+            image_mask_latents, image_mask_rebuilt = self._build_inpaint_mask(image_mask, width, height, align, device)
+            randn = x.clone()
+            if model_mode_int in (2, 3, 4, 5):
+                from shared.inpainting.lanpaint import LanPaint
+
+                lanpaint_steps = {2: 2, 3: 5, 4: 10, 5: 15}.get(model_mode_int, 5)
+                lanpaint_proc = LanPaint(NSteps=lanpaint_steps, Lambda=16.0, StepSize=0.2, Beta=1.0, Friction=15.0, IS_FLUX=False, IS_FLOW=True, overdamped_fallback=True)
+                denoising_strength = 1.0
+                masking_strength = 1.0
+            if denoising_strength < 1.0:
+                first_step = int(len(ts[:-1]) * (1.0 - denoising_strength))
+            masked_steps = math.ceil(len(ts[:-1]) * masking_strength)
+            latent_noise_factor = ts[first_step]
+            img = original_image_latents * (1.0 - latent_noise_factor) + randn * latent_noise_factor
+            ts = ts[first_step:]
+        updated_steps = len(ts) - 1
         if callback is not None:
-            callback(-1, None, True, override_num_inference_steps=steps)
+            callback(-1, None, True, override_num_inference_steps=updated_steps)
         from shared.utils.loras_mutipliers import update_loras_slists
         update_loras_slists(self.transformer, loras_slists, steps)
         context_static = _lora_schedules_are_static_for_modules(self.transformer, ("txtfusion.", "txtmlp."))
@@ -234,6 +332,12 @@ class Krea2Pipeline:
             txt = self.transformer.prepare_context(txt_list, mask)
             if txt is None:
                 return None
+            if NAG is not None:
+                nagtxt_list = [nagtxt]
+                nagtxt = None
+                nagtxt = self.transformer.prepare_context(nagtxt_list, nagtxtmask)
+                if nagtxt is None:
+                    return None
             if cfg:
                 untxt_list = [untxt]
                 untxt = None
@@ -244,46 +348,81 @@ class Krea2Pipeline:
         if timestep_static:
             offload.set_step_no_for_lora(self.transformer, 0)
             t_all, tvec_all = self.transformer.prepare_timestep(t_values)
-            step_tensors = tuple((t_all[i : i + 1], tvec_all[i : i + 1]) for i in range(steps))
+            step_tensors = tuple((t_all[i : i + 1], tvec_all[i : i + 1]) for i in range(updated_steps))
         else:
             step_tensors = []
             for step_no, tcurr in enumerate(t_values):
-                offload.set_step_no_for_lora(self.transformer, step_no)
+                offload.set_step_no_for_lora(self.transformer, first_step + step_no)
                 step_tensors.append(self.transformer.prepare_timestep(tcurr[None]))
         torch.cuda.empty_cache()
-        for i, (tcurr, tprev) in enumerate(tqdm(list(zip(ts[:-1], ts[1:])), total=steps)):
-            offload.set_step_no_for_lora(self.transformer, i)
+        for i, (tcurr, tprev) in enumerate(tqdm(list(zip(ts[:-1], ts[1:])), total=updated_steps)):
+            offload.set_step_no_for_lora(self.transformer, first_step + i)
             self.transformer._interrupt = self._interrupt
             if self._interrupt:
                 return None
             t, tvec = step_tensors[i]
-            if cfg:
-                step_txt = txt if context_static else self.transformer.prepare_context(txt, mask)
-                step_untxt = untxt if context_static else self.transformer.prepare_context(untxt, unmask)
-                if step_txt is None or step_untxt is None:
-                    return None
-                cond, uncond = self.transformer.forward_cfg(img=img, context=step_txt, uncond_context=step_untxt, t=t, tvec=tvec, pos=pos, uncond_pos=unpos, mask=mask, uncond_mask=unmask)
-                if cond is None or uncond is None:
-                    return None
-                v = cond + guidance * (cond - uncond)
-                del uncond
-            else:
+
+            def run_model(latents, cfg_scale):
                 step_txt = txt if context_static else self.transformer.prepare_context(txt, mask)
                 if step_txt is None:
-                    return None
-                cond = self.transformer(img=img, context=step_txt, t=t, tvec=tvec, pos=pos, mask=mask)
+                    return None, None
+                step_nagtxt = None
+                if NAG is not None:
+                    step_nagtxt = nagtxt if context_static else self.transformer.prepare_context(nagtxt, nagtxtmask)
+                    if step_nagtxt is None:
+                        return None, None
+                if cfg and cfg_scale > 1.0:
+                    step_untxt = untxt if context_static else self.transformer.prepare_context(untxt, unmask)
+                    if step_untxt is None:
+                        return None, None
+                    cond, uncond = self.transformer.forward_cfg(img=latents, context=step_txt, uncond_context=step_untxt, t=t, tvec=tvec, pos=pos, uncond_pos=unpos, mask=mask, uncond_mask=unmask)
+                    if cond is None or uncond is None:
+                        return None, None
+                    return cond, uncond
+                cond = self.transformer(img=latents, context=step_txt, t=t, tvec=tvec, pos=pos, mask=mask, NAG=NAG, neg_context=step_nagtxt, neg_mask=nagtxtmask)
                 if cond is None:
+                    return None, None
+                return cond, None
+
+            def cfg_predictions(cond, uncond, cfg_scale, _t):
+                if cfg and cfg_scale > 1.0:
+                    return uncond + cfg_scale * (cond - uncond)
+                return cond
+
+            if lanpaint_proc is not None and i < updated_steps - 1:
+                lanpaint_mask = image_mask_latents.expand_as(img).contiguous()
+                sigma = torch.full((img.shape[0],), tcurr, dtype=img.dtype, device=img.device)
+                img = lanpaint_proc(run_model, cfg_predictions, true_cfg_scale, true_cfg_scale, img, original_image_latents, randn, sigma, lanpaint_mask, height=height, width=width, vae_scale_factor=self.compression)
+                if img is None:
                     return None
-                v = cond
+
+            cond, uncond = run_model(img, true_cfg_scale)
+            if cond is None:
+                return None
+            v = cfg_predictions(cond, uncond, true_cfg_scale, t)
             img = img + (tprev - tcurr) * v
-            del cond, v
+            del cond, uncond, v
+            if image_mask_latents is not None and i < masked_steps:
+                latent_noise_factor = tprev
+                noisy_image = original_image_latents * (1.0 - latent_noise_factor) + randn * latent_noise_factor
+                img = noisy_image * (1 - image_mask_latents) + image_mask_latents * img
             if callback is not None:
                 preview = rearrange(img, "b (h w) (c ph pw) -> b c (h ph) (w pw)", ph=patch, pw=patch, h=height // align, w=width // align)
                 callback(i, preview.transpose(0, 1), False, preview_meta=None)
         if self._interrupt:
             return None
         latents = rearrange(img, "b (h w) (c ph pw) -> b c (h ph) (w pw)", ph=patch, pw=patch, h=height // align, w=width // align)
-        return self._decode_latents_to_cpu_uint8(latents)
+        decoded = self._decode_latents_to_cpu_uint8(latents)
+        if image_mask_rebuilt is not None and (lanpaint_proc is not None or masking_strength == 1):
+            source_pixels = self._image_to_cpu_uint8(source_image, width, height).to(decoded.device, torch.float32)
+            mask_pixels = image_mask_rebuilt.to(decoded.device, torch.float32)
+            if lanpaint_proc is not None:
+                from shared.inpainting.lanpaint import blend_images_with_mask
+
+                decoded = blend_images_with_mask(source_pixels, decoded, mask_pixels, blend_overlap=9).round().clamp(0, 255).to(torch.uint8)
+            else:
+                decoded = (source_pixels * (1 - mask_pixels) + decoded.to(torch.float32) * mask_pixels).round().clamp(0, 255).to(torch.uint8)
+        return decoded
 
 
 def _load_transformer(model_filename, config_path, dtype):
@@ -366,6 +505,14 @@ class model_factory:
         height: int = 1024,
         guide_scale: float = 4.5,
         batch_size: int = 1,
+        input_frames=None,
+        input_masks=None,
+        denoising_strength=1.0,
+        masking_strength=1.0,
+        model_mode=None,
+        NAG_scale: float = 1.0,
+        NAG_tau: float = 3.5,
+        NAG_alpha: float = 0.5,
         callback=None,
         VAE_tile_size=None,
         loras_slists=None,
@@ -390,7 +537,32 @@ class model_factory:
             kwargs_mu = None
         generator_seed = seed if seed is not None and seed >= 0 else torch.seed()
         prompts = [input_prompt] * int(batch_size)
-        images = self.pipeline(prompts, negative_prompts=[n_prompt or _DEFAULT_NEGATIVE_PROMPT] * len(prompts), width=width, height=height, steps=sampling_steps, guidance=guide_scale, seed=generator_seed, mu=kwargs_mu, callback=callback, loras_slists=loras_slists)
+        source_image = image_mask = None
+        if input_frames is not None and input_masks is not None:
+            from shared.utils.utils import convert_tensor_to_image
+
+            source_image = convert_tensor_to_image(input_frames) if torch.is_tensor(input_frames) else input_frames
+            image_mask = convert_tensor_to_image(input_masks, mask_levels=True) if torch.is_tensor(input_masks) else input_masks
+        images = self.pipeline(
+            prompts,
+            negative_prompts=[n_prompt or _DEFAULT_NEGATIVE_PROMPT] * len(prompts),
+            width=width,
+            height=height,
+            steps=sampling_steps,
+            guidance=guide_scale,
+            seed=generator_seed,
+            mu=kwargs_mu,
+            callback=callback,
+            loras_slists=loras_slists,
+            source_image=source_image,
+            image_mask=image_mask,
+            denoising_strength=denoising_strength,
+            masking_strength=masking_strength,
+            model_mode=model_mode,
+            NAG_scale=NAG_scale,
+            NAG_tau=NAG_tau,
+            NAG_alpha=NAG_alpha,
+        )
         if images is None:
             return None
         return images.transpose(0, 1)

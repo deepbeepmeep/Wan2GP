@@ -35,14 +35,7 @@ def ropeapply(xq: Tensor, xk: Tensor, freqs: Tensor) -> tuple[Tensor, Tensor]:
     return _apply_rope_inplace(xq, freqs), _apply_rope_inplace(xk, freqs)
 
 
-def attention(qkv_list: list[Tensor], mask: Tensor | None = None, scale: float | None = None, gqa: bool = False) -> Tensor:
-    q, k, v = qkv_list
-    qkv_list.clear()
-    q = rearrange(q, "B H L D -> B L H D")
-    k = rearrange(k, "B H L D -> B L H D")
-    v = rearrange(v, "B H L D -> B L H D")
-    if mask is not None:
-        mask = mask.transpose(1, 2)
+def _attention_from_blh(q: Tensor, k: Tensor, v: Tensor, mask: Tensor | None = None, scale: float | None = None, gqa: bool = False) -> Tensor:
     if gqa:
         batch = q.shape[0]
         groups = k.shape[2]
@@ -61,6 +54,66 @@ def attention(qkv_list: list[Tensor], mask: Tensor | None = None, scale: float |
     qkv_list = [q, k, v]
     q = k = v = None
     return rearrange(pay_attention(qkv_list, attention_mask=mask, softmax_scale=scale, recycle_q=True), "B L H D -> B L (H D)")
+
+
+def attention(
+    qkv_list: list[Tensor],
+    mask: Tensor | None = None,
+    scale: float | None = None,
+    gqa: bool = False,
+    txt_len: int | None = None,
+    NAG: dict | None = None,
+    neg_k: Tensor | None = None,
+    neg_v: Tensor | None = None,
+    neg_mask: Tensor | None = None,
+) -> Tensor:
+    q, k, v = qkv_list
+    qkv_list.clear()
+    q = rearrange(q, "B H L D -> B L H D")
+    k = rearrange(k, "B H L D -> B L H D")
+    v = rearrange(v, "B H L D -> B L H D")
+    if mask is not None:
+        mask = mask.transpose(1, 2)
+    if NAG is not None:
+        if txt_len is None or neg_k is None or neg_v is None or neg_mask is None:
+            raise ValueError("Krea 2 NAG requires positive stream tokens plus negative text K/V side inputs.")
+        cap_len = int(NAG.get("cap_embed_len", 0) or 0)
+        if cap_len <= 0 or cap_len != txt_len or neg_k.shape[2] != cap_len:
+            raise ValueError("Krea 2 NAG expected matching positive and negative text lengths.")
+        neg_k = rearrange(neg_k, "B H L D -> B L H D")
+        neg_v = rearrange(neg_v, "B H L D -> B L H D")
+        neg_mask = neg_mask[:, None, None, :]
+        x_pos = _attention_from_blh(q, k, v, mask=mask, scale=scale, gqa=gqa)
+        img_start = txt_len
+        neg_full_mask = None if mask is None else torch.cat((neg_mask, mask[..., img_start:]), dim=-1)
+        k_neg = torch.cat((neg_k, k[:, img_start:]), dim=1)
+        v_neg = torch.cat((neg_v, v[:, img_start:]), dim=1)
+        x_guidance = _attention_from_blh(q[:, img_start:], k_neg, v_neg, mask=neg_full_mask, scale=scale, gqa=gqa)
+        q = k = v = neg_k = neg_v = k_neg = v_neg = neg_mask = neg_full_mask = None
+
+        x_pos_img = x_pos[:, img_start:]
+        nag_scale = float(NAG["scale"])
+        nag_alpha = float(NAG["alpha"])
+        nag_tau = float(NAG["tau"])
+        dtype = x_pos_img.dtype
+        x_guidance.mul_(1 - nag_scale)
+        x_guidance.add_(x_pos_img, alpha=nag_scale)
+        norm_positive = torch.norm(x_pos_img, p=1, dim=-1, keepdim=True)
+        norm_guidance = torch.norm(x_guidance, p=1, dim=-1, keepdim=True)
+        norm_scale = norm_guidance / norm_positive
+        torch.nan_to_num(norm_scale, nan=10.0, posinf=10.0, neginf=10.0, out=norm_scale)
+        factor = (norm_positive * nag_tau) / (norm_guidance + 1e-7)
+        x_guidance = torch.where(norm_scale > nag_tau, x_guidance * factor, x_guidance).to(dtype)
+        del norm_positive, norm_guidance, norm_scale, factor
+
+        x_guidance.mul_(nag_alpha)
+        x_guidance.add_(x_pos_img, alpha=1 - nag_alpha)
+        x_pos_img.copy_(x_guidance)
+        x_guidance = x_pos_img = None
+        return x_pos
+    out = _attention_from_blh(q, k, v, mask=mask, scale=scale, gqa=gqa)
+    q = k = v = None
+    return out
 
 
 def key_padding_mask(mask: Tensor) -> Tensor:
@@ -238,11 +291,31 @@ class Attention(nn.Module):
         self.gqa = self.heads != self.kvheads
         self.wo = nn.Linear(dim, dim, bias=bias)
 
-    def forward(self, qkv: Tensor | list[Tensor], freqs: Tensor | None = None, mask: Tensor | None = None) -> Tensor:
+    def forward(
+        self,
+        qkv: Tensor | list[Tensor],
+        freqs: Tensor | None = None,
+        mask: Tensor | None = None,
+        txt_len: int | None = None,
+        NAG: dict | None = None,
+        neg_context: Tensor | None = None,
+        neg_mask: Tensor | None = None,
+    ) -> Tensor:
         if isinstance(qkv, list):
             qkv_ = qkv[0]
             qkv.clear()
             qkv = qkv_
+        neg_k = neg_v = None
+        if NAG is not None:
+            if neg_context is None or neg_mask is None:
+                raise ValueError("Krea 2 NAG requires negative text context and mask.")
+            neg_k, neg_v = self.wk(neg_context), self.wv(neg_context)
+            neg_k = rearrange(neg_k, "B L (H D) -> B H L D", H=self.kvheads)
+            neg_v = rearrange(neg_v, "B L (H D) -> B H L D", H=self.kvheads)
+            neg_k = self.qknorm.knorm.forward([neg_k])
+            if freqs is not None:
+                neg_k = _apply_rope_inplace(neg_k, freqs[:, : neg_context.shape[1]])
+            neg_context = None
         q, k, v = self.wq(qkv), self.wk(qkv), self.wv(qkv)
         q = rearrange(q, "B L (H D) -> B H L D", H=self.heads)
         k = rearrange(k, "B L (H D) -> B H L D", H=self.kvheads)
@@ -254,7 +327,8 @@ class Attention(nn.Module):
             q, k = ropeapply(q, k, freqs)
         qkv_list = [q, k, v]
         q = k = v = None
-        out = attention(qkv_list, mask=mask, gqa=self.gqa)
+        out = attention(qkv_list, mask=mask, gqa=self.gqa, txt_len=txt_len, NAG=NAG, neg_k=neg_k, neg_v=neg_v, neg_mask=neg_mask)
+        neg_k = neg_v = neg_mask = None
         gate = F.sigmoid(self.gate(qkv))
         del qkv
         out.mul_(gate)
@@ -329,11 +403,25 @@ class SingleStreamBlock(nn.Module):
         self.attn = Attention(dim=features, heads=heads, bias=bias, kvheads=kvheads)
         self.mlp = SwiGLU(features, multiplier, bias)
 
-    def forward(self, x: Tensor, vec: Tensor, freqs: Tensor, mask: Tensor | None = None) -> Tensor:
+    def forward(
+        self,
+        x: Tensor,
+        vec: Tensor,
+        freqs: Tensor,
+        mask: Tensor | None = None,
+        txt_len: int | None = None,
+        NAG: dict | None = None,
+        neg_context: Tensor | None = None,
+        neg_mask: Tensor | None = None,
+    ) -> Tensor:
         prescale, preshift, pregate, postscale, postshift, postgate = self.mod(vec)
         x_list = [self.prenorm(x)]
         modulate_inplace(x_list, prescale, preshift)
-        attn_out = self.attn(x_list, freqs, mask)
+        if NAG is not None:
+            neg_context = self.prenorm(neg_context)
+            neg_context.mul_(prescale).add_(preshift)
+        attn_out = self.attn(x_list, freqs, mask, txt_len=txt_len, NAG=NAG, neg_context=neg_context, neg_mask=neg_mask)
+        neg_context = neg_mask = None
         attn_out.mul_(pregate)
         x.add_(attn_out)
         del attn_out
@@ -397,12 +485,23 @@ class SingleStreamDiT(nn.Module):
             freqs = freqs.to(combined.dtype)
         return combined, txtlen, imglen, freqs, mask
 
-    def forward(self, img: Tensor, context: Tensor, t: Tensor, tvec: Tensor, pos: Tensor, mask: Tensor | None = None) -> Tensor:
+    def forward(
+        self,
+        img: Tensor,
+        context: Tensor,
+        t: Tensor,
+        tvec: Tensor,
+        pos: Tensor,
+        mask: Tensor | None = None,
+        NAG: dict | None = None,
+        neg_context: Tensor | None = None,
+        neg_mask: Tensor | None = None,
+    ) -> Tensor:
         img = self.first(img)
         combined, txtlen, imglen, freqs, mask = self._build_stream(img, context, pos, mask)
         del img, context, pos
         for block in self.blocks:
-            combined = block(combined, tvec, freqs, mask)
+            combined = block(combined, tvec, freqs, mask, txt_len=txtlen, NAG=NAG, neg_context=neg_context, neg_mask=neg_mask)
             if getattr(self, "_interrupt", False):
                 return None
             self.txtfusion._interrupt = getattr(self, "_interrupt", False)

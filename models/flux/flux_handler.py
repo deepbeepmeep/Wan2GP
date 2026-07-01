@@ -158,6 +158,9 @@ class family_handler():
             extra_model_def["radiance"] = True
         elif not flux_schnell and not flux2_klein:
             extra_model_def["embedded_guidance"] = True
+        if not flux_chroma_radiance:
+            extra_model_def["vae_upsamplers"] = {"flux2_vae_pid" if flux2 else "flux_vae_pid": [1, 2]}
+            extra_model_def["excluded_spatial_upsamplers"] = ["flux2_pid" if flux2 else "flux_pid"]
         if flux_uso :
             extra_model_def["any_image_refs_relative_size"] = True
             extra_model_def["no_background_removal"] = True
@@ -260,7 +263,7 @@ class family_handler():
 
     @staticmethod
     def query_family_infos():
-        return {"flux":(100, "Flux 1"), "flux2":(101, "Flux 2")}
+        return {"flux":(1100, "Flux 1"), "flux2":(1101, "Flux 2")}
 
     @staticmethod
     def register_lora_cli_args(parser, lora_root):
@@ -388,7 +391,7 @@ class family_handler():
             dtype = dtype,
             VAE_dtype = VAE_dtype, 
             mixed_precision_transformer = mixed_precision_transformer,
-            save_quantized = save_quantized
+            save_quantized = save_quantized,
         )
 
         pipe = { "transformer": flux_model.model, "vae" : flux_model.vae}

@@ -1,5 +1,5 @@
 --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ort-cuda-13-nightly/pypi/simple/
-mmgp==3.7.6
+mmgp==3.7.9
 # Core AI stack
 diffusers==0.36.0
 transformers==4.54.0 #4.53.1
@@ -30,6 +30,10 @@ audio-separator==0.36.1
 pyannote.audio==3.3.2
 sherpa-onnx==1.13.2
 torchcodec==0.10.0
+einshape==1.0
+jax
+# Flax/Linen micro-subset is vendored under postprocessing/prismaudio/vendor/flax
+# for PrismAudio VideoPrism; keeping it out of pip avoids orbax-checkpoint.
 
 # UI & interaction
 gradio==5.29.0
@@ -74,6 +78,7 @@ omegaconf
 hydra-core
 easydict
 pydantic==2.10.6
+mcp==1.10.1
 
 # Math & modeling
 torchdiffeq>=0.2.5

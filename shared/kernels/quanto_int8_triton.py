@@ -93,9 +93,11 @@ _AUTOTUNE_SLOT_REPS = {
     "tiny_default": ((2, 4096, 1536), (4, 4096, 1536)),
     "mid_default": ((32, 2048, 4096), (32, 3072, 3072), (32, 4096, 4096)),
     "large_n_ge_2048": ((512, 4096, 4096), (3840, 3840, 4096)),
+    "large_index_gt_2g": ((512, 4096, 4096), (3840, 3840, 4096)),
     "large_default": ((128, 4096, 1024), (192, 3072, 1536)),
 }
 _RUNTIME_PROBE_MAX_N = 4096
+_INT32_LINEAR_INDEX_LIMIT = 2**31
 
 
 def _env_flag(name: str, default: str = "1") -> bool:
@@ -241,6 +243,9 @@ def _resolve_autotune_slot(m: int, k: int, n: int) -> tuple[str, tuple[tuple[int
     elif m < 64:
         slot_id = "mid_default"
         reps = _AUTOTUNE_SLOT_REPS[slot_id]
+    elif max(m * k, n * k, m * n) > _INT32_LINEAR_INDEX_LIMIT:
+        slot_id = "large_index_gt_2g"
+        reps = _AUTOTUNE_SLOT_REPS[slot_id]
     elif m >= 256 and (k, n) in _TRITON_LARGE_M_SHAPE_CONFIGS:
         slot_id = f"large_hot_pair|k={k}|n={n}"
         reps = ((512, k, n), (3840, k, n))
@@ -352,15 +357,20 @@ def _get_cached_config(device_index: int, kernel_kind: str, slot_id: str, m: int
     return legacy_cfg
 
 
-def _set_cached_config(device_index: int, kernel_kind: str, slot_id: str, cfg: tuple[int, int, int, int, int]) -> None:
+def _set_cached_config(device_index: int, kernel_kind: str, slot_id: str, cfg: tuple[int, int, int, int, int], *, overwrite: bool = True) -> bool:
     global _AUTOTUNE_CACHE_DIRTY
     _load_autotune_cache()
     key = _autotune_slot_cache_key(device_index, kernel_kind, slot_id)
-    if _AUTOTUNE_CONFIG_CACHE.get(key) == cfg:
-        return
+    existing = _AUTOTUNE_CONFIG_CACHE.get(key)
+    if existing == cfg:
+        return True
+    if existing is not None and not overwrite:
+        _autotune_debug(f"keeping cached config {existing} for {kernel_kind} slot={slot_id}; refusing recovery overwrite with {cfg}")
+        return False
     _AUTOTUNE_CONFIG_CACHE[key] = cfg
     _AUTOTUNE_CACHE_DIRTY = True
     _save_autotune_cache()
+    return True
 
 
 def _drop_cached_config(device_index: int, kernel_kind: str, slot_id: str, m: int, k: int, n: int) -> None:

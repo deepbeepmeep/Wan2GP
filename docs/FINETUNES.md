@@ -4,17 +4,19 @@ A Finetuned model is model that shares the same architecture of one specific mod
 
 As there are potentially an infinite number of finetunes, specific finetuned models are not known by default by WanGP. However you can create a finetuned model definition that will tell WanGP about the existence of this finetuned model and WanGP will do as usual all the work for you: autodownload the model and build the user interface.
 
+You can create a WanGP finetune definition in two ways:
+- **With the Finetune Creator / Editor** in the model toolbar. This is the recommended path when you want to create a finetune from the currently selected model, edit an existing finetune, import a shared finetune JSON file, or keep the current model settings as the finetune defaults.
+- **Manually**, by writing or editing a JSON definition in the **finetunes/** subfolder. This remains useful for advanced definitions, bulk editing, sharing files outside the UI, or when you want to review the exact JSON structure.
+
 WanGP finetune system can be also used to tweak default models : for instance you can add on top of an existing model some loras that will be always applied transparently.
 
 Finetune models definitions are light json files that can be easily shared. You can find some of them on the WanGP *discord* server https://discord.gg/g7efUW9jGV
 
 All the finetunes definitions files should be stored in the *finetunes/* subfolder.
 
-Finetuned models have been tested so far with Wan2.1 text2video, Wan2.1 image2video,  Hunyuan Video text2video. There isn't currently any support for LTX Video finetunes.
 
 
-
-## Create a new Finetune Model Definition
+## Create a new Finetune Model Definition Manually
 All the finetune models definitions are json files stored in the **finetunes/** sub folder. All the corresponding finetune model weights when they are downloaded will be stored in the *ckpts/* subfolder and will sit next to the base models.
 
 All the models used by WanGP are also described using the finetunes json format and can be found in the **defaults/** subfolder. Please don’t modify any file in the **defaults/** folder.
@@ -31,7 +33,7 @@ Here are steps:
 1) Create a *settings file*
 2) Add a **model** subtree with the finetune description
 3) Save this file in the subfolder **finetunes**. The name used for the file will be used as its id. It is a good practise to prefix the name of this file with the base model. For instance for a finetune named **Fast*** based on  Hunyuan Text 2 Video model *hunyuan_t2v_fast.json*. In this example the Id is *hunyuan_t2v_fast*.
-4) Restart WanGP
+4) Use **Refresh Model List** in the model toolbar, or restart WanGP if you edited files while the UI was not active.
 
 ## Architecture Models Ids
 A finetune is derived from a base model and will inherit all the user interface and corresponding model capabilities, here are some Architecture Ids:
@@ -53,6 +55,7 @@ For instance if one adds a module *vace_14B* on top of a model with architecture
 ## The Model Subtree
 - *name* : name of the finetune used to select
 - *architecture* : architecture Id of the base model of the finetune (see previous section)
+- *finetune_source_model*: optional source model id used by the Finetune Editor when the source model id differs from *architecture*. If omitted, WanGP uses *architecture* as the source model.
 - *description*: description of the finetune that will appear at the top
 - *infos*: optional Markdown shown from the small information button next to the model description. Use it for model-level notes: what the finetune is, recommended resolutions or settings, known limitations, license/source notes, or what makes this finetune different from the base model.
 - *prompt_infos*: optional Markdown shown from the small information button next to the prompt label. Use it for prompt-writing guidance: expected prompt syntax, examples, special tags, speaker formats, Prompt Relay syntax, or any model-specific wording rules. If your text explains how to write the prompt, prefer *prompt_infos* over *infos*.
@@ -62,9 +65,8 @@ For instance if one adds a module *vace_14B* on top of a model with architecture
 - *VAE_URLs* : URL of a VAE (in a list), if specified will override the default VAE (supported so far only with Wan & LTX2 models)
 - *modules*: this a list of modules to be combined with the models referenced by the URLs. A module is a model extension that is merged with a model to expand its capabilities. Supported models so far are : *vace_14B* and *multitalk*. For instance the full Vace model is the fusion of a Wan text 2 video and the Vace module.
 - *preload_URLs* : URLs of files to download no matter what (used to load quantization maps for instance)
-- *loras* : URLs of Loras that will applied before any other Lora specified by the user. These loras will be quite often Loras accelerators. For instance if you specify here the FusioniX Lora you will be able to reduce the number of generation steps to 10
-be able to reduce the number of generation steps to 10
-- *loras_multipliers* : a list of float numbers or strings that defines the weight of each Lora mentioned in *Loras*. The string syntax is used if you want your lora multiplier to change over the steps (please check the Loras doc) or if you want a multiplier to be applied on a specific High Noise phase or Low Noise phase of a Wan 2.2 model. For instance, here the multiplier will be only applied during the High Noise phase and for half of the steps of this phase the multiplier will be 1 and for the other half 1.1.
+- *loras* : URLs or file paths of LoRAs that will be applied before any LoRA selected by the user. These LoRAs will often be accelerators. For instance if you specify here a FusioniX LoRA you will be able to reduce the number of generation steps to 10.
+- *loras_multipliers* : a list of float numbers or strings that defines the weight of each LoRA mentioned in *loras*. The order must match the order of *loras*. The string syntax is used if you want your LoRA multiplier to change over the steps (please check the [LoRAs guide](LORAS.md)) or if you want a multiplier to be applied on a specific High Noise phase or Low Noise phase of a Wan 2.2 model. For instance, here the multiplier will be only applied during the High Noise phase and for half of the steps of this phase the multiplier will be 1 and for the other half 1.1.
 ```
 "loras" : [ "my_lora.safetensors"],
 "loras_multipliers" : [ "1,1.1;0"]
@@ -73,6 +75,8 @@ be able to reduce the number of generation steps to 10
 - *auto_quantize*: if set to True and no quantized model URL is provided, WanGP will perform on the fly quantization if the user expects a quantized model
 - *visible* : by default assumed to be true. If set to false the model will no longer be visible. This can be useful if you create a finetune to override a default model and hide it.
 - *image_outputs* : turn any model that generates a video into a model that generates images. In fact it will adapt the user interface for image generation and ask the model to generate a video with a single frame.
+- *resolutions*: optional explicit list of resolutions for this model. Each entry is a label/value pair such as `["1024x2048 (1:2)", "1024x2048"]`. In the Finetune Editor you can enter one `WxH` value per line and WanGP will generate these labels automatically. If *resolutions_categories* is also set, both lists are added together. Displayed and stored resolution values are adjusted to the model `vae_block_size`; any ratio text already present in the label is kept as written.
+- *resolutions_categories*: optional list of resolution category conditions. When set, WanGP builds the resolution list from the global built-in/custom resolutions that match these categories, overriding the global 3K/4K availability switch for this model. Conditions use the same operators as CUDA architecture rules: exact values such as *720p* or *2k*, comparisons such as *>=720* or *<=1080*, AND with *&*, and OR with *+*. Multiple list entries are also OR conditions. Supported aliases include *2k* for *1440p* and *4k* for *2160p*.
 - *text_prompt_enhancer_instructions* : this allows you override the system prompt used by the Prompt Enhancer if only a Prompt about a text is requested
 - *video_prompt_enhancer_instructions* : this allows you override the system prompt used by the Prompt Enhancer when generating a Video with this finetune
 - *image_prompt_enhancer_instructions* : this allows you override the system prompt used by the Prompt Enhancer when generating an Image with this finetune
@@ -86,12 +90,13 @@ Example:
   "name": "My Cinematic Finetune",
   "architecture": "ltx2",
   "description": "A stylized LTX2 finetune for noir dialogue scenes.",
+  "resolutions": [["1024x2048 (1:2)", "1024x2048"]],
   "infos": "## Model Notes\nWorks best at 1216x704 with 30 to 40 steps. Use moderate guidance for stable faces.",
   "prompt_infos": "## Prompt Format\nWrite one paragraph per shot. Put spoken words in double quotes. Keep character names consistent across the whole prompt."
 }
 ```
 
-In order to favor reusability the properties of *URLs*, *modules*, *loras* and  *preload_URLs* can contain instead of a list of URLs a single text which corresponds to the id of a finetune or default model to reuse. Instead of:
+In order to favor reusability the properties of *URLs*, *modules*, *loRAs* and  *preload_URLs* can contain instead of a list of URLs a single text which corresponds to the id of a finetune or default model to reuse. Instead of:
 ```
     "URLs": [
       "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_text2video_14B_high_mbf16.safetensors",
@@ -151,3 +156,28 @@ If you launch the app with the *--save-quantized* switch, WanGP will create a qu
 You need to create a quantized model specifically for *bf16* or *fp16* as they can not converted on the fly. However there is no need for a non quantized model as they can be converted on the fly while being loaded.
 
 Wan models supports both *fp16* and *bf16* data types albeit *fp16* delivers in theory better quality. On the contrary Hunyuan and LTXV supports only *bf16*.
+
+## Using the Finetune Creator / Editor
+
+The model toolbar contains a finetune tool. When the currently selected model is a base model, the tool opens the **Finetune Creator**. When the selected model is already a finetune, the tool opens the **Finetune Editor**. Both modes use the same shortcut.
+
+In **Creator** mode:
+1) Select the base model you want to derive from.
+2) Open the finetune tool from the model toolbar.
+3) Choose **Using Current Model** to create a new finetune from the selected model, or **By importing a File** to import an existing finetune JSON.
+4) Fill **Id**, **Name**, and **Description**. If **auto** is enabled, WanGP generates the id from the source model and the finetune name.
+5) In the **URLs** tab, set checkpoint files or URLs. Use the folder icon next to each field to pick local files from the server machine. Multiple checkpoint fields accept one entry per line.
+6) In the **LoRAs** tab, optionally add always-loaded LoRAs and matching multipliers. Use one LoRA per line; multipliers are ordered the same way as the LoRA list.
+7) In the **Resolutions** tab, optionally add resolution category conditions, one per line, or custom resolutions, one `WxH` value per line. Category lines use OR between lines, for example `720p`, `1080p`, and `2k`. A range can be written on one line, for example `>=720&<=1440`. Custom resolution lines such as `1024x2048` are saved with an automatically generated label such as `1024x2048 (1:2)`. WanGP validates these fields before saving.
+8) In the **Help** tab, optionally customize **Model Infos** and **Prompt Help** markdown.
+9) In the **Prompt Enhancer** tab, optionally override the source model prompt enhancer instructions. If an eye icon is shown, it copies the source model system prompt into the field.
+10) Enable **Use Current Model Settings as Default Settings** if you want the current UI settings to become the finetune defaults.
+11) Click **Create** to create and switch to the new finetune, or **Create & New** to create it and immediately start another finetune.
+
+In **Editor** mode:
+1) Select the finetune in the model hierarchy. Finetunes are marked with a `*` in the third level of the selector.
+2) Open the finetune tool from the toolbar.
+3) Edit the same fields as in Creator mode. Changing the **Id** renames the finetune JSON file; WanGP also renames the matching settings file when one exists.
+4) Click **Save** to update the finetune, **Export** to download/share its JSON definition, or **Delete** to remove it. Delete shows a confirmation row in place of the editor action buttons.
+
+After creation, import, save, or delete, WanGP refreshes the model list automatically.

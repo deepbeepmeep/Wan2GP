@@ -4,6 +4,7 @@ This system allows you to extend and customize the Wan2GP user interface and fun
 
 ## Table of Contents
 1.  [Plugin Structure](#plugin-structure)
+    *   [Reference Plugins and Specialized APIs](#reference-plugins-and-specialized-apis)
 2.  [Getting Started: Creating a Plugin](#getting-started-creating-a-plugin)
 3.  [Plugin Distribution and Installation](#plugin-distribution-and-installation)
 4.  [Plugin API Reference](#plugin-api-reference)
@@ -31,6 +32,40 @@ A valid plugin folder must contain at a minimum:
 *   `__init__.py`: An empty file that tells Python to treat the directory as a package.
 *   `plugin.py`: The main file containing your class that inherits from `WAN2GPPlugin`.
 
+Community plugin folder names should use the `wan2gp-` prefix, for example `wan2gp-stable-diffusion-1-4`.
+
+Plugins may also include `plugin_info.json` for Plugin Manager metadata. Its optional `type` property can be a string or a list of strings. Missing `type` values default to `"app"`. Supported values are:
+*   `"app"`: an application plugin, usually with its own tab.
+*   `"extension"`: a feature plugin that does not add its own tab.
+*   `"processor"`: a processing plugin, such as a spatial upsampler today or future preprocessors/audio postprocessors.
+*   `"model"`: a plugin that provides model integrations.
+
+Model plugins declare their model integration in `plugin_info.json`. They may omit `plugin.py` when they only provide handlers and metadata. Use:
+*   `model_handlers`: a string or list of model handler module paths. Paths beginning with `.` or `./` are relative to the plugin package root; absolute import paths are also supported. Each module must expose a `family_handler` object, matching WanGP's built-in model handlers.
+*   `defaults`: the root folder containing model definition JSON files, equivalent to WanGP's built-in `defaults/`. Paths beginning with `.` are relative to the plugin root.
+*   `profiles`: the root folder containing built-in profile JSON folders, equivalent to WanGP's built-in `profiles/`. Paths beginning with `.` are relative to the plugin root.
+
+Example:
+```json
+{
+  "name": "My Model Pack",
+  "type": "model",
+  "model_handlers": [".models.my_family_handler"],
+  "defaults": "./defaults",
+  "profiles": "./profiles"
+}
+```
+
+### Reference Plugins and Specialized APIs
+
+Reference plugins:
+*   [Stable Diffusion 1.4 Model Plugin](https://github.com/deepbeepmeep/wan2gp-stable-diffusion-1-4): compact model plugin template that adds Stable Diffusion 1.4 using MMGP-managed UNet, text encoder, and VAE components.
+*   [Pixel Upsampler Template](https://github.com/deepbeepmeep/wan2gp-pixel-upsampler): compact spatial upsampler template that duplicates pixels and documents the upsampler handler contract.
+
+Specialized plugin APIs:
+*   Spatial upsamplers are documented in [Spatial Upsampler Plugin API](SPATIAL_UPSAMPLERS.md). Use this guide for post-processing upsamplers, VAE upsampler capability declarations, plugin-discovered `spatial_upsampler_handlers`, and extension offload object registration.
+*   Temporal upsamplers are documented in [Temporal Upsampler Plugin API](TEMPORAL_UPSAMPLERS.md). Use this guide for frame interpolation handlers, plugin-discovered `temporal_upsampler_handlers`, and temporal upsampler config sections.
+*   Audio processors are documented in [Audio Processor Plugin API](AUDIO_PROCESSORS.md). Use this guide for soundtrack, voice replacement, standalone audio edit handlers, plugin-discovered `audio_processors`, and audio processor config sections.
 
 A complete plugin folder typically looks like this:
 

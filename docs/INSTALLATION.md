@@ -196,3 +196,10 @@ These kernels will offer optimized INT4 / FP4 dequantization.
   pip install https://github.com/deepbeepmeep/kernels/releases/download/v1.2.0_Nunchaku/nunchaku-1.2.0+torch2.7-cp310-cp310-linux_x86_64.whl
    ```
 
+
+### Bitsandbytes NF4 Kernels for Python 3.11 / Pytorch 2.10 / Cuda 13
+
+These kernels accelerate bitsandbytes 4-bit / NF4 checkpoints. Install them after Pytorch; pip will pick the matching Windows or Linux wheel automatically.
+```
+pip install bitsandbytes==0.49.2
+```

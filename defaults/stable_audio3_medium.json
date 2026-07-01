@@ -1,0 +1,19 @@
+{
+    "model": {
+        "name": "Music Stable Audio 3 Medium",
+        "architecture": "stable_audio3_medium",
+        "description": "Higher-capacity general audio model for longer music, cinematic beds, evolving textures, and detailed sound design up to 380 seconds. Stronger than the Small variants for fidelity, long-range structure, and mixed music/SFX prompts. This Medimum version requires Flash Attention 2 to work.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/stable_audio3_medium_bf16.safetensors"
+        ],
+        "stable_audio3_model_id": "medium"
+    },
+    "prompt": "A polished cinematic electronic track with shimmering arpeggios, deep sub bass, wide drums, and evolving atmospheric pads.",
+    "audio_prompt_type": "",
+    "duration_seconds": 60,
+    "num_inference_steps": 8,
+    "guidance_scale": 1.0,
+    "audio_scale": 0.9,
+    "negative_prompt": "poor quality, distorted, noisy",
+    "sample_solver": "pingpong"
+}

@@ -1,0 +1,21 @@
+{
+    "model": {
+        "name": "LTX-2 2.3 MSR Ref Distilled 1.1 22B",
+        "architecture": "ltx2_22B_msr",
+        "description": "LTX-2.3 distilled 1.1 checkpoint (22B) configured for the LiconStudio Multiple Subject Reference LoRA. Provide 2 to 5 reference images; background first, then subjects and objects.",
+        "URLs": "ltx2_22B_distilled_1_1",
+        "loras": [
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/loras/LTX-2.3-Licon-MSR-V1.safetensors"
+        ],
+        "loras_multipliers": [1],
+        "ltx2_pipeline": "distilled",
+        "ltx2_msr": true,
+        "ltx2_msr_frame_count": 41
+    },
+    "prompt": "A cinematic tracking shot of the referenced subjects standing together in the referenced environment, natural motion, detailed clothing, consistent identities, realistic lighting.",
+    "video_prompt_type": "KI",
+    "num_inference_steps": 8,
+    "video_length": 145,
+    "resolution": "1280x720",
+    "remove_background_images_ref": 1
+}

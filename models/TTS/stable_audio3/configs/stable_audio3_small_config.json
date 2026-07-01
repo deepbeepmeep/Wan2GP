@@ -1,0 +1,309 @@
+{
+    "model_type": "diffusion_cond_inpaint",
+    "sample_size": 5292032,
+    "sample_rate": 44100,
+    "audio_channels": 2,
+    "model": {
+        "pretransform": {
+            "type": "autoencoder",
+            "iterate_batch": false,
+            "chunked": true,
+            "enable_grad": false,
+            "config": {
+                "pretransform": {
+                    "type": "patched",
+                    "enable_grad": false,
+                    "config": {
+                        "patch_size": 256,
+                        "channels": 2
+                    }
+                },
+                "encoder": {
+                    "type": "taae_v2",
+                    "requires_grad": false,
+                    "config": {
+                        "in_channels": 512,
+                        "channels": 128,
+                        "c_mults": [
+                            6
+                        ],
+                        "strides": [
+                            16
+                        ],
+                        "latent_dim": 256,
+                        "transformer_depths": [
+                            6
+                        ],
+                        "checkpointing": false,
+                        "differential": true,
+                        "mapping_style": "none",
+                        "dim_heads": 64,
+                        "variable_stride": true,
+                        "use_flash": true,
+                        "dyt": true,
+                        "chunk_size": 32,
+                        "chunk_midpoint_shift": true,
+                        "conv_mapping": false,
+                        "mask_noise": 0.0
+                    }
+                },
+                "decoder": {
+                    "type": "taae_v2",
+                    "requires_grad": false,
+                    "config": {
+                        "out_channels": 512,
+                        "channels": 128,
+                        "c_mults": [
+                            6
+                        ],
+                        "strides": [
+                            16
+                        ],
+                        "latent_dim": 256,
+                        "transformer_depths": [
+                            6
+                        ],
+                        "sinusoidal_blocks": [
+                            0
+                        ],
+                        "checkpointing": false,
+                        "differential": true,
+                        "mapping_style": "none",
+                        "dim_heads": 64,
+                        "variable_stride": true,
+                        "use_flash": true,
+                        "dyt": true,
+                        "chunk_size": 32,
+                        "conv_mapping": true,
+                        "chunk_midpoint_shift": true,
+                        "freeze_backbone": false,
+                        "mask_noise": 0.01
+                    }
+                },
+                "bottleneck": {
+                    "type": "softnorm",
+                    "requires_grad": false,
+                    "config": {
+                        "dim": 256,
+                        "noise_augment_dim": 0,
+                        "noise_regularize": true,
+                        "auto_scale": true,
+                        "freeze": true
+                    }
+                },
+                "latent_dim": 256,
+                "downsampling_ratio": 4096,
+                "io_channels": 2
+            }
+        },
+        "conditioning": {
+            "configs": [
+                {
+                    "id": "prompt",
+                    "type": "t5gemma",
+                    "config": {
+                        "max_length": 256,
+                        "padding_mode": "learned",
+                        "repo_id": "stabilityai/stable-audio-3-small-music",
+                        "subfolder": "t5gemma-b-b-ul2"
+                    }
+                },
+                {
+                    "id": "seconds_total",
+                    "type": "number",
+                    "config": {
+                        "min_val": 0,
+                        "max_val": 384,
+                        "fourier_features_type": "expo"
+                    }
+                }
+            ],
+            "cond_dim": 768
+        },
+        "diffusion": {
+            "cross_attention_cond_ids": [
+                "prompt",
+                "seconds_total"
+            ],
+            "local_add_cond_ids": [
+                "inpaint_mask",
+                "inpaint_masked_input"
+            ],
+            "global_cond_ids": [
+                "seconds_total"
+            ],
+            "type": "dit",
+            "diffusion_objective": "rf_denoiser",
+            "use_effective_length_for_schedule": true,
+            "mask_padding_attention": true,
+            "distribution_shift_options": {
+                "type": "full",
+                "min_length": 256,
+                "max_length": 4096
+            },
+            "config": {
+                "io_channels": 256,
+                "embed_dim": 1024,
+                "depth": 20,
+                "num_heads": 16,
+                "cond_token_dim": 768,
+                "global_cond_dim": 768,
+                "local_add_cond_dim": 257,
+                "global_cond_type": "adaLN",
+                "timestep_features_type": "expo",
+                "timestep_features_logsnr": false,
+                "attn_kwargs": {
+                    "qk_norm": "rms",
+                    "differential": false
+                },
+                "norm_type": "rms_norm",
+                "norm_kwargs": {
+                    "force_fp32": true
+                },
+                "ff_kwargs": {
+                    "mult": 4.0
+                },
+                "num_memory_tokens": 64
+            }
+        },
+        "io_channels": 256
+    },
+    "training": {
+        "use_ema": true,
+        "log_loss_info": false,
+        "pre_encoded": true,
+        "silence_extension_scale_seconds": 4.0,
+        "cfg_dropout_prob": 0.1,
+        "mask_loss_weight": 0.2,
+        "timestep_sampler": "trunc_logit_normal",
+        "inpainting": {
+            "mask_kwargs": {
+                "mask_type_probabilities": [
+                    0.1,
+                    0.8,
+                    0.1
+                ]
+            }
+        },
+        "log_every_n_steps": 100,
+        "arc": {
+            "noise_dist": {
+                "generator": "trunc_logit_normal",
+                "discriminator": "logit_normal"
+            },
+            "use_model_as_discriminator": true,
+            "discriminator_base_ckpt": "/path/to/base/ckpt.pt",
+            "disc_update_interval": 2,
+            "discriminator": {
+                "type": "dilated_conv",
+                "freeze_backbone": false,
+                "dit_hidden_layer": [
+                    14
+                ],
+                "weights": {
+                    "generator": 1.0,
+                    "discriminator": 1.0
+                },
+                "loss_type": "relativistic",
+                "config": {
+                    "dilations": [
+                        1,
+                        1,
+                        1,
+                        1,
+                        1
+                    ],
+                    "hidden_dim": 1024
+                },
+                "disc_hinge_loss": false,
+                "contrastive": true,
+                "include_grad_penalties": false
+            }
+        },
+        "optimizer_configs": {
+            "diffusion": {
+                "optimizer": {
+                    "type": "MuonAdamW",
+                    "config": {
+                        "muon_lr": 1e-05,
+                        "muon_momentum": 0.95,
+                        "fused_layer_patterns": [
+                            "*.to_qkv.*",
+                            "*.to_kv.*",
+                            "*.to_q.*",
+                            "*.ff.*.proj.*"
+                        ],
+                        "adam_lr": 1e-06,
+                        "adam_betas": [
+                            0.9,
+                            0.95
+                        ],
+                        "adam_weight_decay": 0.01
+                    }
+                },
+                "scheduler": {
+                    "type": "InverseLR",
+                    "config": {
+                        "inv_gamma": 1000000,
+                        "power": 0.5,
+                        "warmup": 0.9
+                    }
+                }
+            },
+            "discriminator": {
+                "optimizer": {
+                    "type": "MuonAdamW",
+                    "config": {
+                        "muon_lr": 1e-05,
+                        "muon_momentum": 0.95,
+                        "fused_layer_patterns": [
+                            "*.to_qkv.*",
+                            "*.to_kv.*",
+                            "*.to_q.*",
+                            "*.ff.*.proj.*"
+                        ],
+                        "adam_lr": 1e-06,
+                        "adam_betas": [
+                            0.9,
+                            0.95
+                        ],
+                        "adam_weight_decay": 0.01
+                    }
+                },
+                "scheduler": {
+                    "type": "InverseLR",
+                    "config": {
+                        "inv_gamma": 1000000,
+                        "power": 0.5,
+                        "warmup": 0.9
+                    }
+                }
+            }
+        },
+        "demo": {
+            "demo_every": 1000,
+            "demo_steps": 8,
+            "demo_cfg_scales": [
+                1
+            ],
+            "demo_cond": [
+                {
+                    "prompt": "A beautiful piano arpeggio grows into a grand cinematic climax",
+                    "seconds_total": 119
+                },
+                {
+                    "prompt": "Elegant and sophisticated Latin jazz piece with a Cuban base",
+                    "seconds_total": 100
+                },
+                {
+                    "prompt": "Amen break 174 BPM",
+                    "seconds_total": 9
+                },
+                {
+                    "prompt": "lofi house loop",
+                    "seconds_total": 35
+                }
+            ]
+        }
+    }
+}

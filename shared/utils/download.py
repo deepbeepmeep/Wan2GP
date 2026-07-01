@@ -223,25 +223,6 @@ def download_audio_background_replacement(send_cmd=None, status_text="Downloadin
     return process_files_def_if_needed(query_audio_background_replacement_download_def(), send_cmd=send_cmd, status_text=status_text)
 
 
-def query_speaker_separator_download_def():
-    return [
-        {
-            "repoId": "DeepBeepMeep/Wan2.1",
-            "sourceFolderList": ["pyannote"],
-            "fileList": [["pyannote_model_wespeaker-voxceleb-resnet34-LM.bin", "pytorch_model_segmentation-3.0.bin"]],
-        },
-        {
-            "repoId": "DeepBeepMeep/LTX-2",
-            "sourceFolderList": ["sherpa"],
-            "fileList": [["sherpa-onnx-pyannote-segmentation-3-0/model.onnx", "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"]],
-        },
-    ]
-
-
-def download_speaker_separator(send_cmd=None, status_text="Downloading speaker separator model files..."):
-    return process_files_def_if_needed(query_speaker_separator_download_def(), send_cmd=send_cmd, status_text=status_text)
-
-
 def process_download_defs(download_defs):
     if isinstance(download_defs, dict):
         process_files_def(**download_defs)
@@ -271,12 +252,10 @@ def download_file(url, filename):
                 hf_hub_download(repo_id=repoId, filename=onefile, local_dir=fl.get_download_location() if len(base_dir) == 0 else base_dir)
             else:
                 tgt = fl.get_download_location() if len(base_dir) == 0 else base_dir
-                if not os.path.exists(tgt):
-                    os.makedirs(tgt)
+                os.makedirs(tgt, exist_ok=True)
                 temp_dir_path = os.path.join(tgt, f"_temp{time.time()}")
                 temp_full_path = os.path.join(temp_dir_path, sourceFolder)
-                if not os.path.exists(temp_full_path):
-                    os.makedirs(temp_full_path)
+                os.makedirs(temp_full_path, exist_ok=True)
                 hf_hub_download(repo_id=repoId, filename=onefile, local_dir=temp_dir_path, subfolder=sourceFolder)
                 shutil.move(os.path.join(temp_full_path, onefile), tgt)
                 shutil.rmtree(temp_dir_path)
@@ -291,5 +270,4 @@ def download_file(url, filename):
             urlretrieve(url, filename, create_progress_hook(filename))
         finally:
             download_in_progress = False
-
 

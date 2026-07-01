@@ -5,6 +5,9 @@ import os
 import sys
 from pathlib import Path
 
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("USE_FLAX", "0")
+
 _PRELOADED_LIBSTDCXX: str | None = None
 
 

@@ -28,6 +28,8 @@ def set_main_generation_running(state, running):
 def any_GPU_process_running(state, process_id, ignore_main = False):
     gen = get_gen_info(state)
 #"process:" + process_id
+    if gen_lock.locked():
+        return True
     with gen_lock:
         process_status = gen.get("process_status", None)
         if process_status == "process:main" and not _main_generation_active_locked(gen):

@@ -69,7 +69,7 @@ class family_handler:
 
     @staticmethod
     def query_family_infos():
-        return {"hidream": (130, "HiDream")}
+        return {"hidream": (1130, "HiDream")}
 
     @staticmethod
     def register_lora_cli_args(parser, lora_root):

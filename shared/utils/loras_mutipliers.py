@@ -35,7 +35,16 @@ def expand_slist(slists_dict, mult_no, num_inference_steps, model_switch_step, m
         if isinstance(phase1, float) and isinstance(phase2, float) and isinstance(phase3, float) and phase1 == phase2 and phase2 == phase3: return phase1 
         return expand_one(phase1, model_switch_step) + expand_one(phase2, model_switch_step2 - model_switch_step) + expand_one(phase3, num_inference_steps - model_switch_step2)
 
-def parse_loras_multipliers(loras_multipliers, nb_loras, num_inference_steps, merge_slist = None, nb_phases = 2, model_switch_step = None, model_switch_step2 = None, model_switch_phase = 1):
+def _new_slists_dict(nb_loras):
+    return {
+        "phase1": [1.] * nb_loras,
+        "phase2": [1.] * nb_loras,
+        "phase3": [1.] * nb_loras,
+        "shared": [False] * nb_loras,
+    }
+
+
+def parse_loras_multipliers(loras_multipliers, nb_loras, num_inference_steps, merge_slist = None, nb_phases = 2, model_switch_step = None, model_switch_step2 = None, model_switch_phase = 1, lora_multiplier_branches = None):
     if "|" in loras_multipliers: 
         pos = loras_multipliers.find("|")
         if "|" in  loras_multipliers[pos+1:]: return "", "", "There can be only one '|' character in Loras Multipliers Sequence"
@@ -52,18 +61,35 @@ def parse_loras_multipliers(loras_multipliers, nb_loras, num_inference_steps, me
             return True
         except ValueError:
             return False
-    loras_list_mult_choices_nums = []
-    slists_dict = { "model_switch_step": model_switch_step}
-    slists_dict = { "model_switch_step2": model_switch_step2}
-    slists_dict["phase1"] = phase1 = [1.] * nb_loras
-    slists_dict["phase2"] = phase2 = [1.] * nb_loras
-    slists_dict["phase3"] = phase3 = [1.] * nb_loras
-    slists_dict["shared"] = shared = [False] * nb_loras
+    def parse_slist(mult, lora_no, phase_no):
+        if "," in mult:
+            multlist = mult.split(",")
+            slist = []
+            for smult in multlist:
+                if not is_float(smult):
+                    return None, f"Lora sub value no {lora_no + 1} ({smult}) in Multiplier definition '{multlist}' is invalid in Phase {phase_no + 1}"
+                slist.append(float(smult))
+            return slist, ""
+        if not is_float(mult):
+            return None, f"Lora Multiplier no {lora_no + 1} ({mult}) is invalid"
+        return float(mult), ""
+
+    def set_phase_slist(target_slists, lora_no, phase_no, slist, shared_phases):
+        if shared_phases:
+            target_slists["phase1"][lora_no] = target_slists["phase2"][lora_no] = target_slists["phase3"][lora_no] = slist
+            target_slists["shared"][lora_no] = True
+        else:
+            target_slists[f"phase{phase_no + 1}"][lora_no] = slist
+
+    branches = [str(branch).strip() for branch in (lora_multiplier_branches or []) if str(branch).strip()]
+    base_slists = _new_slists_dict(nb_loras)
+    slists_dict = {"model_switch_step": model_switch_step, "model_switch_step2": model_switch_step2, **base_slists}
+    for branch in branches:
+        slists_dict[branch] = _new_slists_dict(nb_loras)
 
     if isinstance(loras_multipliers, list) or len(loras_multipliers) > 0:
         list_mult_choices_list = preparse_loras_multipliers(loras_multipliers)[:nb_loras]
         for i, mult in enumerate(list_mult_choices_list):
-            current_phase = phase1
             if isinstance(mult, str):
                 mult = mult.strip()
                 phase_mult = mult.split(";")
@@ -73,36 +99,42 @@ def parse_loras_multipliers(loras_multipliers, nb_loras, num_inference_steps, me
                         return "", "", f"if the ';' syntax is used for one Lora multiplier, there should be at most {nb_phases} phases for this multiplier"
                     phase_mult = (phase_mult[:1] + phase_mult) if model_switch_phase == 2 else (phase_mult + phase_mult[-1:])
                 for phase_no, mult in enumerate(phase_mult):
-                    if phase_no == 1: 
-                        current_phase = phase2
-                    elif phase_no == 2: 
-                        current_phase = phase3
-                    if "," in mult:
-                        multlist = mult.split(",")
-                        slist = []
-                        for smult in multlist:
-                            if not is_float(smult):                
-                                return "", "", f"Lora sub value no {i+1} ({smult}) in Multiplier definition '{multlist}' is invalid in Phase {phase_no+1}"
-                            slist.append(float(smult))
+                    if len(branches) > 0 and ":" in mult:
+                        branch_mults = mult.split(":")
+                        if len(branch_mults) != len(branches):
+                            return "", "", f"Lora Multiplier no {i + 1} ({mult}) should define {len(branches)} branch values separated by ':'"
+                        for branch, branch_mult in zip(branches, branch_mults):
+                            slist, error = parse_slist(branch_mult, i, phase_no)
+                            if len(error) > 0:
+                                return "", "", error
+                            set_phase_slist(slists_dict[branch], i, phase_no, slist, shared_phases)
                     else:
-                        if not is_float(mult):                
-                            return "", "", f"Lora Multiplier no {i+1} ({mult}) is invalid"
-                        slist = float(mult)
-                    if shared_phases:
-                        phase1[i] = phase2[i] = phase3[i] = slist
-                        shared[i] = True
-                    else:
-                        current_phase[i] = slist
+                        slist, error = parse_slist(mult, i, phase_no)
+                        if len(error) > 0:
+                            return "", "", error
+                        for target_slists in ([slists_dict[branch] for branch in branches] if branches else [slists_dict]):
+                            set_phase_slist(target_slists, i, phase_no, slist, shared_phases)
             else:
-                phase1[i] = phase2[i] = phase3[i] = float(mult)
-                shared[i] = True
+                for target_slists in ([slists_dict[branch] for branch in branches] if branches else [slists_dict]):
+                    set_phase_slist(target_slists, i, 0, float(mult), True)
 
     if merge_slist is not None:
-        slists_dict["phase1"] = phase1 = merge_slist["phase1"] + phase1
-        slists_dict["phase2"] = phase2 = merge_slist["phase2"] + phase2
-        slists_dict["phase3"] = phase3 = merge_slist["phase3"] + phase3
-        slists_dict["shared"] = shared = merge_slist["shared"] + shared
+        if branches:
+            for branch in branches:
+                branch_slists = slists_dict[branch]
+                merge_branch = merge_slist[branch]
+                for key in ("phase1", "phase2", "phase3", "shared"):
+                    branch_slists[key] = merge_branch[key] + branch_slists[key]
+        else:
+            for key in ("phase1", "phase2", "phase3", "shared"):
+                slists_dict[key] = merge_slist[key] + slists_dict[key]
 
+    if branches:
+        first_branch = slists_dict[branches[0]]
+        for key in ("phase1", "phase2", "phase3", "shared"):
+            slists_dict[key] = first_branch[key]
+
+    phase1 = slists_dict["phase1"]
     loras_list_mult_choices_nums = [ expand_slist(slists_dict, i, num_inference_steps, model_switch_step, model_switch_step2 )  for i in range(len(phase1)) ]
     loras_list_mult_choices_nums = [ slist[0] if isinstance(slist, list) else slist for slist in loras_list_mult_choices_nums ]
     

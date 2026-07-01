@@ -1,0 +1,273 @@
+from __future__ import annotations
+
+from typing import Any, Callable
+
+import torch
+
+from postprocessing.pid.runtime import (
+    PID_TEXT_ENCODER_FILES,
+    PID_TEXT_ENCODER_FOLDER,
+    PID_TILING_THRESHOLD_CHOICES,
+    PID_TILING_THRESHOLD_DEFAULT,
+    PID_FLUX_VAE_UPSAMPLING_METHOD,
+    PID_FLUX2_VAE_UPSAMPLING_METHOD,
+    PID_FLUX_POST_UPSAMPLING_METHOD,
+    PID_FLUX2_POST_UPSAMPLING_METHOD,
+    PID_VAE_UPSAMPLING_METHODS,
+    get_pid_download_def,
+    get_pid_upsampler,
+    is_pid_upsampling,
+    pid_checkpoint_types_for_tiling_threshold,
+    pid_backbone_for_upsampling,
+    pid_checkpoint_filename,
+    pid_post_upsampling_choices,
+    pid_vae_filename,
+    normalize_pid_tiling_threshold,
+    split_pid_upsampling,
+)
+
+
+class PiDBridge:
+    PERSIST_UNLOAD = 1
+    PERSIST_RAM = 2
+    UPSAMPLING_RATIOS = (4.0,)
+    UPSAMPLING_METHODS = (PID_FLUX_POST_UPSAMPLING_METHOD, PID_FLUX2_POST_UPSAMPLING_METHOD, PID_FLUX_VAE_UPSAMPLING_METHOD, PID_FLUX2_VAE_UPSAMPLING_METHOD)
+    batch_image_inputs = True
+    uses_image_profile = True
+    PERSISTENCE_CHOICES = [("Unload after use", PERSIST_UNLOAD), ("Persistent in RAM", PERSIST_RAM)]
+
+    def __init__(self, server_config: dict[str, Any], files_locator):
+        self.server_config = server_config
+        self.files_locator = files_locator
+        self._session = None
+
+    @classmethod
+    def default_config(cls) -> dict[str, Any]:
+        return {"tiling_threshold": PID_TILING_THRESHOLD_DEFAULT, "persistence": cls.PERSIST_UNLOAD}
+
+    @classmethod
+    def legacy_config_keys(cls) -> tuple[str, ...]:
+        return ("pid_tiling_threshold", "pid_persistence")
+
+    @classmethod
+    def legacy_config(cls, config: dict[str, Any]) -> dict[str, Any]:
+        return {"tiling_threshold": config.get("pid_tiling_threshold", PID_TILING_THRESHOLD_DEFAULT), "persistence": config.get("pid_persistence", cls.PERSIST_UNLOAD)}
+
+    @classmethod
+    def normalize_config_section(cls, config: dict[str, Any]) -> dict[str, Any]:
+        normalized = cls.default_config()
+        normalized.update(config or {})
+        normalized["tiling_threshold"] = normalize_pid_tiling_threshold(normalized.get("tiling_threshold", PID_TILING_THRESHOLD_DEFAULT))
+        try:
+            normalized["persistence"] = int(normalized.get("persistence", cls.PERSIST_UNLOAD))
+        except (TypeError, ValueError):
+            normalized["persistence"] = cls.PERSIST_UNLOAD
+        if normalized["persistence"] not in (cls.PERSIST_UNLOAD, cls.PERSIST_RAM):
+            normalized["persistence"] = cls.PERSIST_UNLOAD
+        return normalized
+
+    def config(self) -> dict[str, Any]:
+        from postprocessing import spatial_upsamplers as upsampler_api
+
+        return upsampler_api.read_config_section(self.server_config, self)
+
+    def persistent_models(self) -> bool:
+        return int(self.config()["persistence"] or self.PERSIST_UNLOAD) == self.PERSIST_RAM
+
+    @classmethod
+    def query_upsampler_def(cls) -> dict[str, Any]:
+        return {
+            "name": "PiD",
+            "upsampler_types": ("postprocessing", "vae"),
+            "media": ("image",),
+            "profile": "image",
+            "config_key": "pid",
+            "pos": 40,
+            "method_pos": {
+                PID_FLUX_POST_UPSAMPLING_METHOD: 40,
+                PID_FLUX2_POST_UPSAMPLING_METHOD: 41,
+                PID_FLUX_VAE_UPSAMPLING_METHOD: 40,
+                PID_FLUX2_VAE_UPSAMPLING_METHOD: 41,
+            },
+            "methods": pid_post_upsampling_choices(),
+            "vae_methods": [("Flux VAE PiD Upsampler", PID_FLUX_VAE_UPSAMPLING_METHOD), ("Flux2 VAE PiD Upsampler", PID_FLUX2_VAE_UPSAMPLING_METHOD)],
+            "multipliers": {method: cls.UPSAMPLING_RATIOS for method in cls.UPSAMPLING_METHODS},
+            "default_spatial_upsampling": "flux_pid4",
+        }
+
+    def is_upsampling(self, spatial_upsampling) -> bool:
+        return is_pid_upsampling(spatial_upsampling)
+
+    @classmethod
+    def split_value(cls, value) -> tuple[str, float] | None:
+        return split_pid_upsampling(value)
+
+    @classmethod
+    def build_value(cls, method, scale) -> str | None:
+        method = str(method or "").strip().lower()
+        scale = float(scale or 4.0)
+        return f"{method}{scale:g}" if method in cls.UPSAMPLING_METHODS and scale == 4.0 else None
+
+    def validate_upsampling(self, spatial_upsampling, image_mode: int) -> str:
+        if not self.is_upsampling(spatial_upsampling):
+            return ""
+        if image_mode == 0:
+            return "PiD Spatial Upsampling is only available for Images"
+        return ""
+
+    @classmethod
+    def _model_vae_methods(cls, model_def: dict[str, Any]) -> dict[str, tuple[int, ...]]:
+        methods = model_def.get("vae_upsamplers", {})
+        out = {}
+        for method, modes in methods.items() if isinstance(methods, dict) else ():
+            if method not in PID_VAE_UPSAMPLING_METHODS:
+                continue
+            if isinstance(modes, dict):
+                modes = modes.get("image_modes", ())
+            elif isinstance(modes, int):
+                modes = (modes,)
+            out[method] = tuple(int(mode) for mode in modes)
+        return out
+
+    def supports_model_vae_method(self, method, model_type, model_def, image_mode: int) -> bool:
+        return int(image_mode) in self._model_vae_methods(model_def).get(str(method or "").strip().lower(), ())
+
+    def validate_model_vae_upsampling(self, spatial_upsampling, image_mode: int, model_type, model_def, medium: str) -> str:
+        split = self.split_value(spatial_upsampling)
+        method = "" if split is None else split[0]
+        if method not in PID_VAE_UPSAMPLING_METHODS:
+            return f"Unknown PiD upsampling mode: {spatial_upsampling}"
+        model_methods = self._model_vae_methods(model_def)
+        if method not in model_methods:
+            return "This model does not support the selected VAE PiD Upsampler"
+        return "" if int(image_mode) in model_methods[method] else f"VAE PiD Upsampler is not available for {medium}"
+
+    def create_config_ui(self, gr, config: dict[str, Any], *, lock_config: bool = False):
+        with gr.Group():
+            with gr.Row():
+                tiling_threshold = gr.Dropdown(choices=PID_TILING_THRESHOLD_CHOICES, value=config["tiling_threshold"], label="PiD Tiling Threshold", interactive=not lock_config)
+                persistence = gr.Dropdown(choices=self.PERSISTENCE_CHOICES, value=config["persistence"], label="PiD Model Persistence", interactive=not lock_config)
+        return [("tiling_threshold", tiling_threshold), ("persistence", persistence)]
+
+    def validate_config_section(self, config: dict[str, Any]):
+        return ""
+
+    def config_requires_release(self, old_config: dict[str, Any], new_config: dict[str, Any], changed_keys: set[str]) -> bool:
+        return old_config != new_config or bool({"image_profile", "attention_mode"} & changed_keys)
+
+    def _required_files(self, backbone):
+        ckpt_types = pid_checkpoint_types_for_tiling_threshold(self.config()["tiling_threshold"])
+        required = [pid_checkpoint_filename(backbone, ckpt_type) for ckpt_type in ckpt_types]
+        required.append(pid_vae_filename(backbone))
+        required.extend([f"{PID_TEXT_ENCODER_FOLDER}/{filename}" for filename in PID_TEXT_ENCODER_FILES])
+        return required
+
+    def download(self, process_files: Callable[..., Any], send_cmd=None, status_text: str | None = None, spatial_upsampling=None) -> bool:
+        backbone = pid_backbone_for_upsampling(spatial_upsampling)
+        if all(self.files_locator.locate_file(path, error_if_none=False) is not None for path in self._required_files(backbone)):
+            return False
+        from shared.utils.download import send_download_status
+
+        send_download_status(send_cmd, status_text)
+        ckpt_types = pid_checkpoint_types_for_tiling_threshold(self.config()["tiling_threshold"])
+        for download_def in get_pid_download_def(backbone, ckpt_type=ckpt_types, include_vae=True):
+            process_files(**download_def)
+        return True
+
+    def _prepare_sample(self, sample, device, dtype):
+        frames = sample.transpose(0, 1).contiguous().to(device=device)
+        if frames.dtype == torch.uint8:
+            frames = frames.to(dtype=dtype).div_(127.5).sub_(1.0)
+        else:
+            frames = frames.to(dtype=dtype)
+        return frames
+
+    def load_upsampler(
+        self,
+        spatial_upsampling,
+        *,
+        process_files: Callable[..., Any],
+        init_pipe: Callable[..., int],
+        profile,
+        **kwargs,
+    ):
+        if not self.is_upsampling(spatial_upsampling):
+            raise ValueError(f"Unknown PiD upsampling mode: {spatial_upsampling}")
+        self.download(process_files, spatial_upsampling=spatial_upsampling)
+        backbone = pid_backbone_for_upsampling(spatial_upsampling)
+        config = self.config()
+        self._session = get_pid_upsampler(
+            backbone,
+            None,
+            init_pipe=init_pipe,
+            profile=profile,
+            tiling_threshold=config["tiling_threshold"],
+            attention_mode=self.server_config.get("attention_mode"),
+        )
+        self._session.ensure_loaded()
+
+    def prepare_vae_upsampler(
+        self,
+        spatial_upsampling,
+        *,
+        send_cmd,
+        process_files: Callable[..., Any],
+        init_pipe: Callable[..., int],
+        profile,
+        attention_mode=None,
+        **kwargs,
+    ):
+        if not self.is_upsampling(spatial_upsampling):
+            raise ValueError(f"Unknown PiD upsampling mode: {spatial_upsampling}")
+        self.download(process_files, send_cmd=send_cmd, status_text="Downloading PiD upsampler model files...", spatial_upsampling=spatial_upsampling)
+        config = self.config()
+        self._session = get_pid_upsampler(
+            pid_backbone_for_upsampling(spatial_upsampling),
+            None,
+            init_pipe=init_pipe,
+            profile=profile,
+            persistent_models=self.persistent_models(),
+            tiling_threshold=config["tiling_threshold"],
+            attention_mode=attention_mode,
+        )
+        self._session.progress_label = "PiD Spatial Upsampling"
+        return self._session
+
+    def upscale(
+        self,
+        sample,
+        spatial_upsampling,
+        *,
+        seed=0,
+        abort_callback=None,
+        progress_callback=None,
+        **kwargs,
+    ):
+        if not self.is_upsampling(spatial_upsampling):
+            raise ValueError(f"Unknown PiD upsampling mode: {spatial_upsampling}")
+        session = self._session
+        if session is None:
+            raise RuntimeError("PiD upsampler is not loaded.")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        images = self._prepare_sample(sample, device, session.dtype)
+        output = session.decode(
+            images,
+            None,
+            prompt="",
+            seed=seed,
+            vae_encode=True,
+            abort_callback=abort_callback,
+            progress_callback=progress_callback,
+            cleanup=False,
+        )
+        images = None
+        if output is None:
+            return None, None
+        output = output.to("cpu").transpose(0, 1).contiguous()
+        return output, None
+
+    def release_vram(self) -> None:
+        from postprocessing.pid.runtime import release_models
+
+        self._session = None
+        release_models()

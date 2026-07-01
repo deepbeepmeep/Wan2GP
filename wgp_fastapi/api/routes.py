@@ -36,6 +36,9 @@ from wgp_fastapi.models import (
     PromptEnhancerModel,
     PromptEnhanceRequest,
     PromptEnhanceResponse,
+    KreaImageRequest,
+    KreaImageResponse,
+    KreaImageModel,
 )
 
 app = FastAPI(
@@ -592,6 +595,82 @@ async def flux_image(
                 "image_uploaded": image is not None,
                 "mask_uploaded": mask is not None,
                 "inpaint_reference_uploaded": inpaint_reference is not None,
+            }
+        }
+        raise HTTPException(status_code=500, detail=error_detail)
+
+
+@app.post(
+    "/api/v1/krea-image",
+    response_model=KreaImageResponse,
+    summary="KREA Text-to-Image Generation",
+    description="Generate images using KREA2 Turbo or RAW models. Pure text-to-image — no mask or image inputs. Returns task_id immediately — poll /api/v1/tasks/{task_id} for status.",
+)
+async def krea_image(
+    prompt: str = Form(...),
+    seed: int = Form(default=-1),
+    num_inference_steps: int = Form(default=8),
+    width: int = Form(default=1024),
+    height: int = Form(default=1024),
+    batch_size: int = Form(default=1),
+    model: KreaImageModel = Form(default=KreaImageModel.KREA2_TURBO),
+    guidance_scale: Optional[float] = Form(default=None),
+) -> KreaImageResponse:
+    """Queue a KREA text-to-image generation task."""
+    try:
+        # Build request object
+        krea_request = KreaImageRequest(
+            prompt=prompt,
+            seed=seed,
+            num_inference_steps=num_inference_steps,
+            width=width,
+            height=height,
+            batch_size=1,  # batch_size internally used for queueing >1 request
+            model=model,
+            guidance_scale=guidance_scale,
+        )
+
+        # Convert to WanGP settings
+        settings = krea_request.to_wgp_settings()
+
+        # Queue first task
+        task_id = _queue_task(settings)
+
+        # Queue additional copies if batch_size > 1
+        for _ in range(1, batch_size - 1):
+            _queue_task(KreaImageRequest(
+                prompt=prompt,
+                seed=seed,
+                num_inference_steps=num_inference_steps,
+                width=width,
+                height=height,
+                batch_size=1,
+                model=model,
+                guidance_scale=guidance_scale,
+            ).to_wgp_settings())
+
+        # Return task_id immediately
+        return JSONResponse(content={"task_id": task_id})
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        print(f"[ERROR] krea-image endpoint failed: {e}")
+        print(tb)
+        error_detail = {
+            "error": str(e),
+            "type": type(e).__name__,
+            "traceback": tb,
+            "context": {
+                "prompt": prompt,
+                "model": model,
+                "seed": seed,
+                "num_inference_steps": num_inference_steps,
+                "width": width,
+                "height": height,
+                "batch_size": batch_size,
             }
         }
         raise HTTPException(status_code=500, detail=error_detail)

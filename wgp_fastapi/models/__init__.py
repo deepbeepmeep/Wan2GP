@@ -18,6 +18,12 @@ from wgp_fastapi.models.prompt_enhance import (
     PromptEnhanceRequest,
     PromptEnhanceResponse,
 )
+from wgp_fastapi.models.krea_image import (
+    KreaImageRequest,
+    KreaImageResponse,
+    KreaImageModel,
+    KreaImageTaskResponse,
+)
 
 __all__ = [
     "ImageToVideoRequest",
@@ -30,4 +36,8 @@ __all__ = [
     "PromptEnhancerModel",
     "PromptEnhanceRequest",
     "PromptEnhanceResponse",
+    "KreaImageRequest",
+    "KreaImageResponse",
+    "KreaImageModel",
+    "KreaImageTaskResponse",
 ]

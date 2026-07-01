@@ -53,7 +53,7 @@ import importlib
 from models import model_metadata
 from shared.utils import notification_sound
 from shared.utils.loras_mutipliers import preparse_loras_multipliers, parse_loras_multipliers
-from shared.utils.utils import convert_tensor_to_image, convert_video_tensor_to_uint8_chunked, save_image, get_video_info, get_file_creation_date, convert_image_to_video, calculate_new_dimensions, convert_image_to_tensor, calculate_dimensions_and_resize_image, rescale_and_crop, get_video_frame, resize_and_remove_background, rgb_bw_to_rgba_mask, to_rgb_tensor, get_resampled_video_transparent, get_video_summary_extras
+from shared.utils.utils import convert_tensor_to_image, convert_video_tensor_to_uint8_chunked, save_image, get_video_info, get_file_creation_date, convert_image_to_video, calculate_new_dimensions, convert_image_to_tensor, calculate_dimensions_and_resize_image, rescale_and_crop, get_video_frame, resize_and_remove_background, rgb_bw_to_rgba_mask, image_editor_layer_to_rgb_mask, to_rgb_tensor, get_resampled_video_transparent, get_video_summary_extras
 from shared.utils.utils import calculate_new_dimensions, get_outpainting_dims, get_outpainting_frame_location, get_outpainting_full_area_dimensions, resolve_outpainting_dims
 from shared.utils.utils import has_video_file_extension, has_image_file_extension, has_audio_file_extension
 from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files, normalize_audio_pair_volumes_to_temp_files, save_video, save_hdr_video, save_image
@@ -146,7 +146,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.9"
-WanGP_version = "12.288"
+WanGP_version = "12.30"
 settings_version = 2.66
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -467,7 +467,8 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         gr.Warning("Internal state error: Could not retrieve inputs for the model.")
         queue = gen.get("queue", [])
         return ret()
-    
+    if "mode" not in inputs:
+        pass
     mode = inputs["mode"]
     if mode == "edit_audio":
         edit_audio_source = gen.get("edit_audio_source", None)
@@ -6524,9 +6525,12 @@ def generate_media(
         batch_size = 1
     temp_filenames_list = []
 
-    if image_guide is not None and isinstance(image_guide, Image.Image):
-        video_guide = image_guide
-        image_guide = None
+    if image_guide is not None:
+        if isinstance(image_guide, str): 
+            image_guide = Image.open(image_guide)
+        if isinstance(image_guide, Image.Image):
+            video_guide = image_guide
+            image_guide = None
 
     if image_mask is not None and isinstance(image_mask, Image.Image):
         video_mask = image_mask
@@ -9927,6 +9931,7 @@ def reset_settings(state):
     gr.Info(f"Default Settings have been Restored")
     return str(time.time())
 
+
 def transfer_current_resolution_to_model(state, source_model_type, target_model_type):
     if not resolution_utils.keep_resolution_on_model_switch_enabled(server_config.get("keep_resolution_on_model_switch", True)):
         return
@@ -10085,7 +10090,7 @@ def save_inputs(
         if "background" in image_mask_guide: 
             image_guide = image_mask_guide["background"]
         if "layers" in image_mask_guide and len(image_mask_guide["layers"])>0: 
-            image_mask = image_mask_guide["layers"][0] 
+            image_mask = image_editor_layer_to_rgb_mask(image_mask_guide["layers"][0])
         image_mask_guide = None
     inputs = get_function_arguments(save_inputs, locals())
     inputs.pop("target")

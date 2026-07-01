@@ -42,7 +42,7 @@ gradio_outputs/
 ckpts/
 loras/
 loras_i2v/
-
+tmp/
 /settings/
 
 wgp_config.json

@@ -474,10 +474,18 @@ def get_outpainting_full_area_dimensions(frame_height,frame_width, outpainting_d
     return frame_height, frame_width  
 
 def rgb_bw_to_rgba_mask(img, thresh=127):
+    if img.mode=="RGBA": return img 
     arr = np.array(img.convert('L'))
     alpha = (arr > thresh).astype(np.uint8) * 255
     rgba = np.dstack([np.full_like(alpha, 255)] * 3 + [alpha])
     return Image.fromarray(rgba, 'RGBA')
+
+
+def image_editor_layer_to_rgb_mask(layer):
+    if isinstance(layer, Image.Image) and layer.mode == "RGBA":
+        alpha = layer.getchannel("A")
+        return Image.merge("RGB", (alpha, alpha, alpha))
+    return layer
 
 
 def _quantize_outpainting_axis(before, inner, total, quantum):

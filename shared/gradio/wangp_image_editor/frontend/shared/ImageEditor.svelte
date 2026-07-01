@@ -85,12 +85,51 @@
 	}
 
 	export let has_drawn = false;
+	let background_dirty = false;
+	let layers_dirty = false;
+
+	export function get_dirty_state(): { background: boolean; layers: boolean; composite: boolean } {
+		return {
+			background: background_dirty,
+			layers: layers_dirty,
+			composite: false
+		};
+	}
+
+	export function mark_value_clean(): void {
+		background_dirty = false;
+		layers_dirty = false;
+		editor.wangp_value_dirty = false;
+		crop.wangp_value_dirty = false;
+	}
 
 	/**
 	 * Gets the image blobs from the editor
 	 * @returns {Promise<ImageBlobs>} Object containing background, layers, and composite image blobs
 	 */
-	export async function get_blobs(): Promise<ImageBlobs> {
+	function canvas_blob(canvas: HTMLCanvasElement): Promise<Blob> {
+		return new Promise((resolve, reject) => {
+			canvas.toBlob((blob) => {
+				if (blob) resolve(blob);
+				else reject(new Error("Could not export empty image editor mask."));
+			}, "image/png");
+		});
+	}
+
+	async function empty_mask_blob(width: number, height: number): Promise<Blob> {
+		const canvas = document.createElement("canvas");
+		canvas.width = Math.max(1, Math.round(width));
+		canvas.height = Math.max(1, Math.round(height));
+		const ctx = canvas.getContext("2d");
+		if (!ctx) throw new Error("Could not create 2D canvas context for empty image editor mask.");
+		ctx.fillStyle = "#000";
+		ctx.fillRect(0, 0, canvas.width, canvas.height);
+		return canvas_blob(canvas);
+	}
+
+	type DirtyState = { background: boolean; layers: boolean; composite: boolean };
+
+	export async function get_blobs(dirty: DirtyState = { background: true, layers: true, composite: true }): Promise<ImageBlobs> {
 		if (!editor) return { background: null, layers: [], composite: null };
 		if (is_empty())
 			return { background: null, layers: [], composite: null };
@@ -103,9 +142,18 @@
 			background_image &&
 			!has_drawn
 		) {
-			return { background: source_image, layers: [], composite: source_image };
+			const next_layers = dirty.layers
+				? layers?.length
+					? (await editor.get_blobs({ background: false, layers: true, composite: false })).layers
+					: [await empty_mask_blob(editor.width, editor.height)]
+				: [];
+			return {
+				background: dirty.background ? source_image : null,
+				layers: next_layers,
+				composite: dirty.composite ? source_image : null
+			};
 		}
-		const blobs = await editor.get_blobs();
+		const blobs = await editor.get_blobs(dirty);
 		return blobs;
 	}
 
@@ -118,10 +166,15 @@
 	}
 
 	let editor: ImageEditor;
-	let clearing_value = false;
+	let clearing_value: Promise<void> | null = null;
 
-	export async function clear_value(force = false, notify = false): Promise<void> {
-		if (!editor || !crop || !ready || clearing_value) return;
+	export async function clear_value(
+		force = false,
+		notify = false,
+		is_current = () => true
+	): Promise<void> {
+		if (clearing_value) await clearing_value;
+		if (!editor || !crop || !ready || !is_current()) return;
 		if (
 			!force &&
 			editor.wangp_editor_empty &&
@@ -133,19 +186,27 @@
 			crop.wangp_value_dirty = false;
 			return;
 		}
-		clearing_value = true;
-		try {
+		const clear = (async () => {
 			await editor.reset_canvas(notify);
+			if (!is_current()) return;
 			await crop.reset_canvas(notify);
+			if (!is_current()) return;
 			editor.wangp_set_empty(true);
 			crop.wangp_set_empty(true);
 			handle_tool_change({ tool: "image" });
 			background_image = false;
 			has_drawn = false;
+			released_value_key = null;
+			background_dirty = false;
+			layers_dirty = false;
 			editor.wangp_value_dirty = false;
 			crop.wangp_value_dirty = false;
+		})();
+		clearing_value = clear;
+		try {
+			await clear;
 		} finally {
-			clearing_value = false;
+			if (clearing_value === clear) clearing_value = null;
 		}
 	}
 
@@ -155,6 +216,9 @@
 	 */
 	export function add_image(image: Blob | File): void {
 		synced_value_key = "";
+		released_value_key = null;
+		background_dirty = true;
+		layers_dirty = true;
 		editor.wangp_set_empty(false);
 		editor.add_image({ image });
 	}
@@ -253,6 +317,15 @@
 		}
 	}
 
+	async function clear_mask_layers(is_current = () => true): Promise<void> {
+		await editor.add_layers_from_url([], is_current, false);
+		if (!is_current()) return;
+		synced_value_key = "";
+		released_value_key = null;
+		has_drawn = false;
+		layers_dirty = true;
+	}
+
 	let brush: BrushTool;
 	let zoom: ZoomTool;
 	let zoom_level = 1;
@@ -293,7 +366,20 @@
 					height: current_dimensions.height
 				};
 			}
+			if (released_value_key === current_value_key) {
+				await sync_value_from_props(
+					current_value_key,
+					background,
+					layers || [],
+					composite,
+					false,
+					true
+				);
+			}
 		} else {
+			if (!editor.wangp_editor_empty && synced_value_key) {
+				released_value_key = synced_value_key;
+			}
 			editor.wangp_release_surface();
 			crop?.wangp_release_surface();
 			if (current_subtool === "crop") {
@@ -366,7 +452,9 @@
 		brush.on("change", () => {
 			if (!clearing_value && !editor.wangp_editor_empty) {
 				synced_value_key = "";
+				released_value_key = null;
 				has_drawn = true;
+				layers_dirty = true;
 			}
 		});
 
@@ -409,7 +497,10 @@
 			crop.set_subtool("crop");
 		});
 
-		editor.on("change", () => {
+		editor.on("change", async () => {
+			if (current_tool === "image" && current_subtool === "size") {
+				await clear_mask_layers();
+			}
 			dispatch("change");
 		});
 
@@ -442,42 +533,57 @@
 
 	function release_surfaces_if_hidden(): void {
 		if (pixi_target?.offsetParent === null) {
+			if (!editor.wangp_editor_empty && synced_value_key) {
+				released_value_key = synced_value_key;
+			}
 			editor.wangp_release_surface();
 			crop.wangp_release_surface();
 		}
 	}
 
 	let synced_value_key = "";
+	let released_value_key: string | null = null;
 	let value_sync_serial = 0;
 	async function sync_value_from_props(
 		next_key: string,
 		next_background: FileData | null,
 		next_layers: FileData[],
 		next_composite: FileData | null,
-		force_empty = false
+		force_empty = false,
+		force_restore = false
 	): Promise<void> {
 		const is_empty_value = empty_value(next_background, next_layers, next_composite);
-		if (next_key === synced_value_key && !(force_empty && is_empty_value)) return;
+		if (
+			!force_restore &&
+			next_key === synced_value_key &&
+			!(force_empty && is_empty_value)
+		) return;
 
 		const sync_id = ++value_sync_serial;
 		const is_current = () => sync_id === value_sync_serial;
 
 		if (is_empty_value) {
-			await clear_value(true, false);
+			await tick();
+			if (!is_current()) return;
+			await clear_value(true, false, is_current);
 			if (!is_current()) return;
 			synced_value_key = next_key;
+			released_value_key = null;
 			return;
 		}
 
-		await clear_value(true, false);
+		await clear_value(true, false, is_current);
 		if (!is_current()) return;
-		await add_image_from_url(next_composite || next_background, false, is_current);
+		await add_image_from_url(next_background || next_composite, false, is_current);
 		if (!is_current()) return;
 		await add_layers_from_url(next_layers, false, is_current);
 		if (!is_current()) return;
 		editor.wangp_value_dirty = false;
 		crop.wangp_value_dirty = false;
+		background_dirty = false;
+		layers_dirty = false;
 		synced_value_key = next_key;
+		released_value_key = null;
 		handle_tool_change({ tool: "draw" });
 		release_surfaces_if_hidden();
 	}
@@ -519,6 +625,9 @@
 		if (files == null) return;
 		if (!sources.includes("upload")) return;
 		const _file = Array.isArray(files) ? files[0] : files;
+		background_dirty = true;
+		layers_dirty = true;
+		released_value_key = null;
 		editor.wangp_set_empty(false);
 		crop.wangp_set_empty(false);
 		editor.wangp_resize_to_element();
@@ -741,7 +850,11 @@
 			image,
 			resize: false
 		});
+		await clear_mask_layers();
 		synced_value_key = "";
+		released_value_key = null;
+		background_dirty = true;
+		layers_dirty = true;
 		handle_subtool_change({ tool: "image", subtool: null });
 		dispatch("change");
 		dispatch("input");

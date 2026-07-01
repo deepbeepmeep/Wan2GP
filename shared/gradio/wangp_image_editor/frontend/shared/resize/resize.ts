@@ -1253,6 +1253,7 @@ export class ResizeTool implements Tool {
 	 */
 	private handle_pointer_up(): void {
 		if (this.current_subtool !== "size") return;
+		const changed = this.is_dragging || this.is_moving || this.selected_handle !== null;
 
 		// Reset all state variables
 		this.is_dragging = false;
@@ -1264,7 +1265,7 @@ export class ResizeTool implements Tool {
 
 		// Update the resize UI without applying constraints
 		this.update_resize_ui();
-		this.notify("change");
+		if (changed) this.notify("change");
 	}
 
 	/**

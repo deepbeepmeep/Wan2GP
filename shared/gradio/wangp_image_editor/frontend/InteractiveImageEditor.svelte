@@ -1,11 +1,13 @@
 <script lang="ts" context="module">
 	export interface EditorData {
+		id?: string | null;
 		background: FileData | null;
 		layers: FileData[] | null;
 		composite: FileData | null;
 	}
 
 	export interface ImageBlobs {
+		id?: string | null;
 		background: FileData | null;
 		layers: FileData[];
 		composite: FileData | null;
@@ -15,7 +17,7 @@
 <script lang="ts">
 	import { createEventDispatcher } from "svelte";
 	import { type I18nFormatter } from "@gradio/utils";
-	import { prepare_files, type FileData, type Client } from "@gradio/client";
+	import { type FileData, type Client } from "@gradio/client";
 	import { type CommandNode } from "./shared/utils/commands";
 	import ImageEditor from "./shared/ImageEditor.svelte";
 	// import Layers from "./layers/Layers.svelte";
@@ -48,9 +50,11 @@
 	export let layers: FileData[];
 	export let composite: FileData | null;
 	export let background: FileData | null;
+	export let value_id: string | null = null;
 
 	export let layer_options: LayerOptions;
 	export let transforms: Transform[];
+	export let accept_blobs: (a: any) => Promise<void>;
 
 	export let canvas_size: [number, number];
 	export let fixed_canvas = false;
@@ -73,37 +77,37 @@
 	let editor: ImageEditor;
 	let has_drawn = false;
 	let last_data: ImageBlobs = empty_data();
+	let last_value_id: string | null = null;
+	const instance_id = Math.random().toString(36).substring(2);
 
 	function empty_data(): ImageBlobs {
-		return { background: null, layers: [], composite: null };
+		return { id: null, background: null, layers: [], composite: null };
 	}
 
 	function is_not_null(o: Blob | null): o is Blob {
 		return !!o && o.size > 0;
 	}
 
-	function is_file_data(o: null | FileData): o is FileData {
-		return !!o;
-	}
-
 	$: if (background_image) dispatch("upload");
 
 	function data_from_props(
+		next_id: string | null,
 		next_background: FileData | null,
 		next_layers: FileData[] | null,
 		next_composite: FileData | null
 	): ImageBlobs {
 		const layer_list = next_layers || [];
 		return {
+			id: next_id,
 			background: next_background,
 			layers: layer_list,
 			composite: next_composite
 		};
 	}
 
-	let get_data_inflight: Promise<ImageBlobs> | null = null;
+	let get_data_inflight: Promise<ImageBlobs | { id: string }> | null = null;
 
-	export async function get_data(): Promise<ImageBlobs> {
+	export async function get_data(): Promise<ImageBlobs | { id: string }> {
 		while (get_data_inflight) {
 			try {
 				await get_data_inflight;
@@ -122,61 +126,71 @@
 		}
 	}
 
-	async function read_data(): Promise<ImageBlobs> {
+	function blob_file(blob: Blob, name: string): File {
+		return new File([blob], name, { type: blob.type || "image/png" });
+	}
+
+	type DirtyState = { background: boolean; layers: boolean; composite: boolean; base_id?: string | null };
+
+	async function store_blob(id: string, type: string, blob: Blob, index: number | null): Promise<void> {
+		await accept_blobs({
+			binary: true,
+			data: { file: blob_file(blob, `${type}.png`), id, type, index, instance_id }
+		});
+	}
+
+	async function store_meta(id: string, dirty: DirtyState): Promise<void> {
+		await store_blob(
+			id,
+			"wangp_meta",
+			new Blob([JSON.stringify({ ...dirty, base_id: last_value_id })], { type: "application/json" }),
+			null
+		);
+	}
+
+	async function store_blobs(blobs: { background: Blob | null; layers: (Blob | null)[]; composite: Blob | null }, dirty: DirtyState): Promise<{ id: string }> {
+		const id = Math.random().toString(36).substring(2);
+		const uploads: Promise<void>[] = [store_meta(id, dirty)];
+		if (dirty.background && blobs.background) uploads.push(store_blob(id, "background", blobs.background, null));
+		if (dirty.layers) uploads.push(...blobs.layers.filter(is_not_null).map((layer, i) => store_blob(id, "layer", layer, i)));
+		if (dirty.composite && blobs.composite) uploads.push(store_blob(id, "composite", blobs.composite, null));
+		await Promise.all(uploads);
+		return { id };
+	}
+
+	async function read_data(): Promise<ImageBlobs | { id: string }> {
 		if (editor?.is_empty?.()) {
 			last_data = empty_data();
+			last_value_id = null;
 			return last_data;
 		}
 		if (editor?.is_export_deferred?.()) return last_data;
+		const dirty = editor.get_dirty_state();
+		if (!dirty.background && !dirty.layers && !dirty.composite) {
+			if (last_value_id) return { id: last_value_id };
+			const id = Math.random().toString(36).substring(2);
+			await store_meta(id, dirty);
+			return { id };
+		}
 		let blobs;
 		try {
-			blobs = await editor.get_blobs();
+			blobs = await editor.get_blobs(dirty);
 		} catch (e) {
 			last_data = empty_data();
 			return last_data;
 		}
-
-		const bg = blobs.background
-			? upload(
-					await prepare_files([new File([blobs.background], "background.png")]),
-					root
-				)
-			: Promise.resolve(null);
-
-		const layers = blobs.layers
-			.filter(is_not_null)
-			.map(async (blob, i) =>
-				upload(await prepare_files([new File([blob], `layer_${i}.png`)]), root)
-			);
-
-		const composite = blobs.composite
-			? upload(
-					await prepare_files([new File([blobs.composite], "composite.png")]),
-					root
-				)
-			: Promise.resolve(null);
-
-		const [background, composite_, ...layers_] = await Promise.all([
-			bg,
-			composite,
-			...layers
-		]);
-
-		const data = data_from_props(
-			Array.isArray(background) ? background[0] : background,
-			layers_
-				.flatMap((layer) => (Array.isArray(layer) ? layer : [layer]))
-				.filter(is_file_data),
-			Array.isArray(composite_) ? composite_[0] : composite_
-		);
-		last_data = data;
+		const data = await store_blobs(blobs, dirty);
+		editor.mark_value_clean();
+		last_value_id = data.id;
 		return data;
 	}
 	$: last_data = data_from_props(
+		value_id,
 		background,
 		layers || [],
 		composite
 	);
+	$: last_value_id = last_data.background || last_data.layers.length || last_data.composite ? last_data.id || null : null;
 
 	let background_image = false;
 	let history = false;

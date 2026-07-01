@@ -29,6 +29,8 @@ import { get_canvas_blob } from "../utils/pixi";
 import type { BrushTool } from "../brush/brush";
 import type { CropTool } from "../crop/crop";
 
+type DirtyState = { background: boolean; layers: boolean; composite: boolean };
+
 async function fetch_image_blob(url: string): Promise<Blob | null> {
 	try {
 		const response = await fetch(url);
@@ -406,9 +408,10 @@ export class LayerManager {
 	 */
 	async add_layer_from_url(
 		url: string,
+		width: number,
+		height: number,
 		is_current = () => true
 	): Promise<string> {
-		const { width, height } = this.image_container.getLocalBounds();
 		let texture: Texture | null = null;
 		let layer: Container | null = null;
 		let layerId = "";
@@ -493,10 +496,11 @@ export class LayerManager {
 				sprite.position.set(posX, posY);
 			}
 
+			this.app.renderer.clear({ target: drawTexture, clearColor: [0, 0, 0, 0] });
 			this.app.renderer.render({
 				container: sprite,
 				target: drawTexture,
-				clear: true
+				clear: false
 			});
 			sprite.destroy();
 			texture.destroy(true);
@@ -914,37 +918,44 @@ export class LayerManager {
 		return newLayer;
 	}
 
-	async get_blobs(width: number, height: number): Promise<ImageBlobs> {
+	async get_blobs(
+		width: number,
+		height: number,
+		dirty: DirtyState = { background: true, layers: true, composite: true }
+	): Promise<ImageBlobs> {
 		const blobs = {
-			background: await get_canvas_blob(
-				this.app.renderer,
-				this.background_layer,
-				{
-					width,
-					height,
-					x: 0,
-					y: 0
-				}
-			),
-			layers: await Promise.all(
-				this.layers.map(async (layer) => {
-					const blob = await get_canvas_blob(
-						this.app.renderer,
-						layer.container,
-						{
-							width,
-							height,
-							x: 0,
-							y: 0
-						}
-					);
-					if (blob) {
-						return blob;
-					}
-					return null;
-				})
-			),
-			composite: await get_canvas_blob(this.app.renderer, this.image_container)
+			background: dirty.background
+				? await get_canvas_blob(this.app.renderer, this.background_layer, {
+						width,
+						height,
+						x: 0,
+						y: 0
+					})
+				: null,
+			layers: dirty.layers
+				? await Promise.all(
+						this.layers.map(async (layer) => {
+							const blob = await get_canvas_blob(this.app.renderer, layer.container, {
+								width,
+								height,
+								x: 0,
+								y: 0
+							});
+							if (blob) {
+								return blob;
+							}
+							return null;
+						})
+					)
+				: [],
+			composite: dirty.composite
+				? await get_canvas_blob(this.app.renderer, this.image_container, {
+						width,
+						height,
+						x: 0,
+						y: 0
+					})
+				: null
 		};
 
 		return blobs;
@@ -1915,14 +1926,15 @@ export class ImageEditor {
 				width: this.width,
 				height: this.height,
 				layer_name: undefined,
-				user_created: false
+				user_created: false,
+				make_active: true
 			});
 			return;
 		}
 
 		for await (const url of layer_urls) {
 			if (!is_current()) return;
-			await this.layer_manager.add_layer_from_url(url, is_current);
+			await this.layer_manager.add_layer_from_url(url, this.width, this.height, is_current);
 		}
 
 		const layers = this.layer_manager.get_layers();
@@ -2004,10 +2016,10 @@ export class ImageEditor {
 		this.notify("change");
 	}
 
-	async get_blobs(): Promise<ImageBlobs> {
+	async get_blobs(dirty: DirtyState = { background: true, layers: true, composite: true }): Promise<ImageBlobs> {
 		this.wangp_begin_export();
 		try {
-			const blobs = await this.layer_manager.get_blobs(this.width, this.height);
+			const blobs = await this.layer_manager.get_blobs(this.width, this.height, dirty);
 			return blobs;
 		} finally {
 			this.wangp_end_export();

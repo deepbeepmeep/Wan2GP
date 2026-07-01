@@ -52,6 +52,7 @@
 	export let layers: LayerOptions;
 	export let attached_events: string[] = [];
 	export let server: {
+		accept_blobs: (a: any) => Promise<void>;
 	};
 	export let canvas_size: [number, number];
 	export let fixed_canvas = false;
@@ -75,7 +76,7 @@
 	export let theme_mode: "dark" | "light";
 
 	let editor_instance: InteractiveImageEditor;
-	const patch_id = "wangp-image-editor-20260629-export-lock-14";
+	const patch_id = "wangp-image-editor-20260701-mask-clear-active-layer-29";
 
 	if (typeof window !== "undefined") {
 		(window as any).__WANGP_IMAGE_EDITOR_VENDOR_PATCH = {
@@ -97,16 +98,28 @@
 			refits_after_released_surface_restore: true,
 			export_defers_surface_release: true,
 			get_data_serializes_exports: true,
-			clean_source_bypasses_webgl_export: true
+			clean_source_bypasses_webgl_export: true,
+			clean_source_keeps_empty_mask: true,
+			memory_value_transport: true,
+			dirty_meta_sends_base_id: true,
+			restores_released_value_on_show: false,
+			preserves_editor_state_on_hidden_show: true,
+			ignores_output_value_echo: true,
+			cancels_stale_empty_value_sync: true,
+			reuses_server_value_cache_ids: true,
+			imported_layers_clear_transparent: true,
+			imported_layers_use_logical_size: true,
+			clears_mask_on_crop_resize: true,
+			empty_mask_layer_keeps_active_layer: true
 		};
 	}
 
-	export async function get_value(): Promise<ImageBlobs> {
+	export async function get_value(): Promise<ImageBlobs | { id: string }> {
 		return editor_instance.get_data();
 	}
 
 	let is_dragging: boolean;
-	$: value && handle_change();
+	$: value && handle_change(value_is_output);
 	const is_browser = typeof window !== "undefined";
 	const raf = is_browser
 		? window.requestAnimationFrame
@@ -118,8 +131,9 @@
 		});
 	}
 
-	async function handle_change(): Promise<void> {
+	async function handle_change(from_output: boolean): Promise<void> {
 		await wait_for_next_frame();
+		if (from_output) return;
 
 		if (
 			value &&
@@ -233,6 +247,7 @@
 			layers={normalised_layers}
 			composite={normalised_composite}
 			background={normalised_background}
+			value_id={value?.id || null}
 			bind:this={editor_instance}
 			{root}
 			{sources}
@@ -259,6 +274,7 @@
 			i18n={gradio.i18n}
 			{transforms}
 			layer_options={layers}
+			accept_blobs={server.accept_blobs}
 			upload={(...args) => gradio.client.upload(...args)}
 			{placeholder}
 			{full_history}

@@ -1,0 +1,9 @@
+{
+  "name": "Media Flow",
+  "author": "DeepBeepMeep",
+  "version": "1.2.0",
+  "description": "Replacement for the Full Video Process plugin: batch outpainting, deblurring, and compression artifact removal for videos and images. Optimized for long videos with low RAM requirements.",
+  "date": "",
+  "wan2gp_version": "",
+  "uninstallable": false
+}

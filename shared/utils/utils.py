@@ -16,9 +16,9 @@ import os
 import tempfile
 import time
 from functools import lru_cache
+from . import files_locator as fl
 from .video_decode import probe_video_stream_metadata, decode_video_frames_ffmpeg, get_video_summary_extras
 from .virtual_media import get_virtual_image, parse_virtual_media_path, strip_virtual_media_suffix
-os.environ["U2NET_HOME"] = os.path.join(os.getcwd(), "ckpts", "rembg")
 
 
 from PIL import Image
@@ -345,9 +345,19 @@ def resize_lanczos(img, h, w, method = None):
     img = img.div(127.5).sub_(1)
     return img
 
+def resolve_rembg_home():
+    rembg_home = fl.locate_folder("rembg", error_if_none=False)
+    if rembg_home is None:
+        rembg_home = fl.get_smart_download_location(force_path="rembg")
+    return os.path.abspath(rembg_home)
+
+def new_rembg_session(*args, **kwargs):
+    os.environ["U2NET_HOME"] = resolve_rembg_home()
+    return new_session(*args, **kwargs)
+
 def remove_background(img, session=None):
     if session ==None:
-        session = new_session() 
+        session = new_rembg_session() 
     img = Image.fromarray(np.clip(255. * img.movedim(0, -1).cpu().numpy(), 0, 255).astype(np.uint8))
     img = remove(img, session=session, alpha_matting = True, bgcolor=[255, 255, 255, 0]).convert('RGB')
     return torch.from_numpy(np.array(img).astype(np.float32) / 255.0).movedim(-1, 0)
@@ -367,6 +377,27 @@ def convert_tensor_to_image(t, frame_no = 0, mask_levels = False):
         return Image.fromarray(t.clone().mul_(255).permute(1,2,0).to(torch.uint8).cpu().numpy())
     else:
         return Image.fromarray(t.clone().add_(1.).mul_(127.5).permute(1,2,0).to(torch.uint8).cpu().numpy())
+
+def convert_video_tensor_to_uint8_chunked(video, value_range=(-1, 1), max_buffer_mb=256):
+    if video.dtype == torch.uint8:
+        return video
+    min_val, max_val = value_range
+    scale = 255.0 / (max_val - min_val)
+    output = torch.empty(video.shape, dtype=torch.uint8, device=video.device)
+    time_dim = 2 if video.ndim == 5 else 1 if video.ndim >= 4 else 0
+    frames = video.shape[time_dim]
+    frame_elems = max(1, video.numel() // max(1, frames))
+    chunk_frames = max(1, min(frames, int(max_buffer_mb * 1024 * 1024) // max(1, frame_elems * 2)))
+    buffer_shape = list(video.shape)
+    buffer_shape[time_dim] = chunk_frames
+    buffer = torch.empty(buffer_shape, dtype=torch.float16, device=video.device)
+    for start in range(0, frames, chunk_frames):
+        size = min(chunk_frames, frames - start)
+        work = buffer.narrow(time_dim, 0, size)
+        work.copy_(video.narrow(time_dim, start, size))
+        work.sub_(min_val).mul_(scale).clamp_(0, 255)
+        output.narrow(time_dim, start, size).copy_(work)
+    return output
 
 def save_image(tensor_image, name, frame_no = -1):
     convert_tensor_to_image(tensor_image, frame_no).save(name)
@@ -485,6 +516,72 @@ def rescale_and_crop(img, w, h):
     
     return img.resize((w, h), Image.LANCZOS)
 
+def resize_lanczos_frames(frames, target_h, target_w, crop=False, max_workers=None, in_place=True):
+    frames = list(frames)
+
+    def resize_frame(frame):
+        arr = frame.detach().cpu().numpy() if torch.is_tensor(frame) else np.asarray(frame)
+        if arr.dtype != np.uint8:
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
+        img = Image.fromarray(arr)
+        img = rescale_and_crop(img, target_w, target_h) if crop else img.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
+        return torch.from_numpy(np.array(img, copy=True))
+
+    return process_images_multithread(resize_frame, frames, "upsample", wrap_in_list=False, max_workers=max(1, int(max_workers or get_default_workers())), in_place=in_place)
+
+def resize_lanczos_cthw(tensor, target_h, target_w, crop=False, max_workers=None):
+    if tensor is None or tensor.shape[-2:] == (target_h, target_w):
+        return tensor
+    device, dtype = tensor.device, tensor.dtype
+    frames = [((frame.permute(1, 2, 0) + 1.0) * 127.5).clamp(0, 255).to(torch.uint8) for frame in tensor.permute(1, 0, 2, 3).detach().cpu()]
+    frames = resize_lanczos_frames(frames, target_h, target_w, crop=crop, max_workers=max_workers)
+    frames = [frame.to(torch.float32).permute(2, 0, 1).div_(127.5).sub_(1.0) for frame in frames]
+    return torch.stack(frames, dim=1).to(device=device, dtype=dtype).contiguous()
+
+def expand_or_shrink_mask(mask, expand_scale, iterations=3):
+    expand_scale = int(expand_scale or 0)
+    if expand_scale == 0:
+        return mask
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (abs(expand_scale), abs(expand_scale)))
+    return (cv2.dilate if expand_scale > 0 else cv2.erode)(mask, kernel, iterations=iterations)
+
+def prepare_binary_mask_frame(mask, target_h=None, target_w=None, expand_scale=0, invert=False, threshold=127):
+    mask = mask.detach().cpu().numpy() if torch.is_tensor(mask) else np.asarray(mask)
+    if mask.ndim == 3 and mask.shape[-1] == 3:
+        mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+    if target_h is not None and target_w is not None and mask.shape[:2] != (target_h, target_w):
+        mask = cv2.resize(mask, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+    _, mask = cv2.threshold(mask.astype(np.uint8, copy=False), threshold, 255, cv2.THRESH_BINARY)
+    mask = expand_or_shrink_mask(mask, expand_scale)
+    return (mask <= threshold if invert else mask > threshold).astype(np.float32)
+
+def expand_colored_mask_cthw(mask, object_colors, expand_scale, background_color=None, max_workers=None):
+    if mask is None or int(expand_scale or 0) == 0 or not object_colors:
+        return mask
+    device, dtype = mask.device, mask.dtype
+    was_negative = float(mask.min()) < 0
+    mask_u8 = ((mask.detach().cpu().float() + 1.0) * 127.5 if was_negative else mask.detach().cpu().float()).clamp(0, 255).to(torch.uint8)
+    colors = np.asarray(object_colors, dtype=np.uint8).reshape(-1, 3)
+    background = np.asarray([0, 0, 0] if background_color is None else background_color, dtype=np.uint8).reshape(1, 1, 3)
+
+    def expand_frame(frame):
+        frame = frame.permute(1, 2, 0).numpy()
+        output = np.broadcast_to(background, frame.shape).copy()
+        occupied = np.zeros(frame.shape[:2], dtype=bool)
+        for color in colors:
+            selector = np.where(color.reshape(1, 1, 3) >= 128, frame >= 128, frame < 128).all(axis=-1)
+            selector = expand_or_shrink_mask(selector.astype(np.uint8) * 255, expand_scale) > 127
+            selector &= ~occupied
+            output[selector] = color
+            occupied |= selector
+        return torch.from_numpy(output)
+
+    frames = process_images_multithread(expand_frame, [mask_u8[:, i] for i in range(mask_u8.shape[1])], "upsample", wrap_in_list=False, max_workers=max(1, int(max_workers or get_default_workers())), in_place=True)
+    out = torch.stack(frames, dim=0).permute(3, 0, 1, 2).to(torch.float32)
+    if was_negative:
+        out = out.div_(127.5).sub_(1.0)
+    return out.to(device=device, dtype=dtype).contiguous()
+
 def calculate_new_dimensions(canvas_height, canvas_width, image_height, image_width, fit_into_canvas,  block_size = 16):
     if fit_into_canvas == None or fit_into_canvas == 2:
         # return image_height, image_width
@@ -512,7 +609,7 @@ def calculate_dimensions_and_resize_image(image, canvas_height, canvas_width, fi
 
 def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, outpainting_ratio = "", background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0, background_removal_color =  [255, 255, 255] ):
     if rm_background:
-        session = new_session() 
+        session = new_rembg_session() 
 
     output_list =[]
     output_mask_list =[]
@@ -527,15 +624,16 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
             else:
                 resized_image =img
         elif fit_into_canvas == 1:
-            white_canvas = np.ones((budget_height, budget_width, 3), dtype=np.uint8) * 255 
+            canvas_color = to_rgb_tensor(background_removal_color, device="cpu", dtype=torch.uint8).view(1, 1, 3).numpy()
+            canvas = np.broadcast_to(canvas_color, (budget_height, budget_width, 3)).copy()
             scale = min(budget_height / height, budget_width / width)
             new_height = int(height * scale)
             new_width = int(width * scale)
             resized_image= img.resize((new_width,new_height), resample=Image.Resampling.LANCZOS) 
             top = (budget_height - new_height) // 2
             left = (budget_width - new_width) // 2
-            white_canvas[top:top + new_height, left:left + new_width] = np.array(resized_image)            
-            resized_image = Image.fromarray(white_canvas)  
+            canvas[top:top + new_height, left:left + new_width] = np.array(resized_image)
+            resized_image = Image.fromarray(canvas)
         else:
             scale = (budget_height * budget_width / (height * width))**(1/2)
             new_height = int( round(height * scale / block_size) * block_size)

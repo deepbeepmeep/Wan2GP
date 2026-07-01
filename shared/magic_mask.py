@@ -61,7 +61,7 @@ def _media_path(path):
     return path
 
 
-def _video_to_numpy(video_path):
+def _video_to_numpy(video_path, max_time_seconds=None):
     video_path = _media_path(video_path)
     if not video_path:
         raise ValueError("Magic Mask needs a control video.")
@@ -74,6 +74,8 @@ def _video_to_numpy(video_path):
     width = int(details.get("display_width") or details.get("width") or 0)
     height = int(details.get("display_height") or details.get("height") or 0)
     frame_count = int(details.get("frame_count") or 1)
+    if max_time_seconds is not None:
+        frame_count = min(frame_count, max(1, int(round(float(fps) * float(max_time_seconds)))))
     frames = get_resampled_video_transparent(video_path, 0, frame_count, fps, bridge="torch")
     if torch.is_tensor(frames):
         frames = frames.detach().cpu().numpy()
@@ -92,7 +94,7 @@ def _video_to_numpy(video_path):
     return frames.astype(np.uint8, copy=False), fps, width, height
 
 
-def _run_sam3(video: np.ndarray, keywords: list[str], batch_size, no_hole, progress_callback=None) -> np.ndarray:
+def _run_sam3(video: np.ndarray, keywords: list[str], batch_size, no_hole, progress_callback=None, colorize_objects=False, color_palette=None, max_colored_objects=None) -> np.ndarray:
     from preprocessing.sam3.preprocessor import run_sam3_video
 
     with torch.inference_mode():
@@ -102,7 +104,11 @@ def _run_sam3(video: np.ndarray, keywords: list[str], batch_size, no_hole, progr
             batched_grounding_batch_size=batch_size,
             postprocess_batch_size=DEFAULT_POSTPROCESS_BATCH_SIZE,
             use_batched_grounding=True,
+            keep_video_frames_on_cuda=False,
             fill_hole_area=_fill_hole_area(no_hole),
+            colorize_objects=colorize_objects,
+            color_palette=color_palette,
+            max_colored_objects=max_colored_objects,
             progress_callback=progress_callback,
         )
 
@@ -112,33 +118,46 @@ def prepare_image_mask_input(image) -> tuple[Image.Image, np.ndarray]:
     return image, np.asarray(image, dtype=np.uint8)[None]
 
 
-def prepare_video_mask_input(video_path) -> tuple[str, np.ndarray, int]:
+def prepare_video_mask_input(video_path, max_time_seconds=None) -> tuple[str, np.ndarray, int]:
     video_path = _media_path(video_path)
     if not video_path:
         raise ValueError("Magic Mask needs a control video.")
-    video, fps, _, _ = _video_to_numpy(video_path)
+    video, fps, _, _ = _video_to_numpy(video_path, max_time_seconds=max_time_seconds)
     return video_path, video, fps
 
 
-def generate_keyword_masks(video: np.ndarray, keyword_text: str | Iterable[str], *, batch_size=None, no_hole=True, progress_callback=None) -> np.ndarray:
+def generate_keyword_masks(video: np.ndarray, keyword_text: str | Iterable[str], *, batch_size=None, no_hole=True, progress_callback=None, colorize_objects=False, color_palette=None, max_colored_objects=None) -> np.ndarray:
     keywords = parse_keywords(keyword_text)
     if len(keywords) == 0:
-        return np.zeros(video.shape[:3], dtype=np.bool_)
-    return _run_sam3(video, keywords, batch_size, no_hole, progress_callback=progress_callback)
+        return np.zeros((*video.shape[:3], 3), dtype=np.uint8) if colorize_objects else np.zeros(video.shape[:3], dtype=np.bool_)
+    return _run_sam3(video, keywords, batch_size, no_hole, progress_callback=progress_callback, colorize_objects=colorize_objects, color_palette=color_palette, max_colored_objects=max_colored_objects)
 
 
 def merge_keyword_masks(current_mask: np.ndarray | None, keyword_mask: np.ndarray) -> np.ndarray:
+    if keyword_mask.ndim == 4 and keyword_mask.shape[-1] == 3:
+        if current_mask is None:
+            return keyword_mask.copy()
+        merged = current_mask.copy()
+        selector = keyword_mask.any(axis=-1)
+        merged[selector] = keyword_mask[selector]
+        return merged
     keyword_mask = keyword_mask.astype(bool, copy=False)
     return keyword_mask.copy() if current_mask is None else (current_mask | keyword_mask)
 
 
 def finalize_masks(mask: np.ndarray, *, negative_mask=False) -> np.ndarray:
+    if mask.ndim >= 3 and mask.shape[-1] == 3:
+        if negative_mask:
+            return ~mask.any(axis=-1)
+        return mask.astype(np.uint8, copy=False)
     if negative_mask:
         mask = ~mask
     return mask
 
 
 def mask_to_image(mask: np.ndarray) -> Image.Image:
+    if mask.ndim == 3 and mask.shape[-1] == 3:
+        return Image.fromarray(mask.astype(np.uint8, copy=False), mode="RGB")
     return Image.fromarray(mask.astype(np.uint8) * 255, mode="L")
 
 
@@ -150,10 +169,15 @@ def _magic_mask_video_codec_params():
     return params
 
 
-def save_mask_video(video_path: str, masks: np.ndarray, fps: float, keywords: list[str], *, codec_type=None, output_dir=OUTPUT_DIR, abort_callback=None) -> str:
+def save_mask_video(video_path: str, masks: np.ndarray, fps: float, keywords: list[str], *, codec_type=None, output_dir=OUTPUT_DIR, abort_callback=None, background_color=None) -> str:
     # codec_type is kept for compatibility; Magic Mask outputs are always MP4 libx264_10.
-    masks = masks.astype(np.uint8) * 255
-    mask_frames = np.repeat(masks[..., None], 3, axis=-1)
+    if masks.ndim == 4 and masks.shape[-1] == 3:
+        mask_frames = masks.astype(np.uint8, copy=True)
+        if background_color is not None:
+            mask_frames[~mask_frames.any(axis=-1)] = np.asarray(background_color, dtype=np.uint8)
+    else:
+        masks = masks.astype(np.uint8) * 255
+        mask_frames = np.repeat(masks[..., None], 3, axis=-1)
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     stem = Path(strip_virtual_media_suffix(video_path)).stem
     keywords_suffix = truncate_keywords_for_path(keywords)
@@ -170,23 +194,23 @@ def save_mask_video(video_path: str, masks: np.ndarray, fps: float, keywords: li
     return output_path
 
 
-def generate_image_mask(image, keyword_text, *, batch_size=None, no_hole=True, negative_mask=False) -> tuple[Image.Image, Image.Image, list[str]]:
+def generate_image_mask(image, keyword_text, *, batch_size=None, no_hole=True, negative_mask=False, colorize_objects=False, color_palette=None, max_colored_objects=None) -> tuple[Image.Image, Image.Image, list[str]]:
     keywords = parse_keywords(keyword_text)
     if len(keywords) == 0:
         raise ValueError("Enter at least one keyword.")
     image, video = prepare_image_mask_input(image)
-    mask = finalize_masks(_run_sam3(video, keywords, batch_size, no_hole)[0], negative_mask=negative_mask)
+    mask = finalize_masks(_run_sam3(video, keywords, batch_size, no_hole, colorize_objects=colorize_objects, color_palette=color_palette, max_colored_objects=max_colored_objects)[0], negative_mask=negative_mask)
     mask_image = mask_to_image(mask)
     return image, mask_image, keywords
 
 
-def generate_video_mask(video_path, keyword_text, *, batch_size=None, no_hole=True, negative_mask=False, codec_type=None, output_dir=OUTPUT_DIR) -> tuple[str, list[str]]:
+def generate_video_mask(video_path, keyword_text, *, batch_size=None, no_hole=True, negative_mask=False, codec_type=None, output_dir=OUTPUT_DIR, colorize_objects=False, color_palette=None, max_colored_objects=None, background_color=None, max_time_seconds=None) -> tuple[str, list[str]]:
     keywords = parse_keywords(keyword_text)
     if len(keywords) == 0:
         raise ValueError("Enter at least one keyword.")
-    video_path, video, fps = prepare_video_mask_input(video_path)
-    masks = finalize_masks(_run_sam3(video, keywords, batch_size, no_hole), negative_mask=negative_mask)
-    return save_mask_video(video_path, masks, fps, keywords, output_dir=output_dir), keywords
+    video_path, video, fps = prepare_video_mask_input(video_path, max_time_seconds=max_time_seconds)
+    masks = finalize_masks(_run_sam3(video, keywords, batch_size, no_hole, colorize_objects=colorize_objects, color_palette=color_palette, max_colored_objects=max_colored_objects), negative_mask=negative_mask)
+    return save_mask_video(video_path, masks, fps, keywords, output_dir=output_dir, background_color=background_color), keywords
 
 
 def truncate_keywords_for_path(keywords: list[str]) -> str:
@@ -194,5 +218,13 @@ def truncate_keywords_for_path(keywords: list[str]) -> str:
     return suffix[:40] or "mask"
 
 
+def mask_image_to_rgba_layer(mask_image: Image.Image):
+    if mask_image.mode == "RGB":
+        rgb = np.asarray(mask_image, dtype=np.uint8)
+        alpha = (rgb.any(axis=-1).astype(np.uint8) * 255)
+        return Image.fromarray(np.dstack([rgb, alpha]), mode="RGBA")
+    return rgb_bw_to_rgba_mask(mask_image)
+
+
 def build_image_editor_value(background: Image.Image, mask_image: Image.Image):
-    return {"background": background, "composite": None, "layers": [rgb_bw_to_rgba_mask(mask_image)]}
+    return {"background": background, "composite": None, "layers": [mask_image_to_rgba_layer(mask_image)]}

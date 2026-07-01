@@ -35,11 +35,7 @@ _FALLBACK_SUPPORTED_LANGUAGES = {
 }
 
 def _get_supported_languages() -> dict:
-    try:
-        from .chatterbox.mtl_tts import SUPPORTED_LANGUAGES
-    except Exception:
-        return _FALLBACK_SUPPORTED_LANGUAGES
-    return SUPPORTED_LANGUAGES
+    return _FALLBACK_SUPPORTED_LANGUAGES
 
 
 def _get_language_choices() -> list[tuple[str, str]]:
@@ -126,7 +122,7 @@ class family_handler:
 
     @staticmethod
     def query_family_infos():
-        return {"tts": (200, "TTS")}
+        return {"tts": (2200, "TTS")}
 
     @staticmethod
     def register_lora_cli_args(parser, lora_root):

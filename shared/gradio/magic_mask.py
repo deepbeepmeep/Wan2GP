@@ -12,6 +12,7 @@ from shared import magic_mask
 
 
 MAGIC_WAND_LABEL = "\U0001FA84"
+MAX_MAGIC_MASK_OBJECTS = 5
 _ABORT_EVENTS: dict[str, threading.Event] = {}
 _ORIGINAL_IMAGE_EDITOR = None
 
@@ -70,6 +71,32 @@ def _close_panel():
     )
 
 
+def _magic_mask_object_colors(model_def):
+    colors = model_def.get("magic_mask_object_colors", []) if isinstance(model_def, dict) else []
+    return colors if isinstance(colors, (list, tuple)) and len(colors) > 0 else []
+
+
+def _max_objects_limit(value, object_count=None):
+    if value in (None, "", "all"):
+        return None
+    limit = MAX_MAGIC_MASK_OBJECTS if object_count is None else min(int(object_count), MAX_MAGIC_MASK_OBJECTS)
+    return min(max(1, int(value)), limit)
+
+
+def _max_object_choices():
+    return [("All", "all")] + [(str(index), index) for index in range(1, MAX_MAGIC_MASK_OBJECTS + 1)]
+
+
+def _max_time_seconds(value):
+    text = str(value or "").strip().replace(",", ".")
+    if not text:
+        return None
+    seconds = float(text)
+    if seconds <= 0:
+        raise ValueError("Max Time must be greater than 0 seconds.")
+    return seconds
+
+
 def _abort_magic_mask(abort_token):
     _abort_event(abort_token).set()
     return _status_html("Aborting Magic Mask..."), gr.update(visible=True, interactive=False)
@@ -121,7 +148,7 @@ def _current_keyword_progress(keywords, done, total):
     return keywords[current_index], keyword_done, keyword_steps
 
 
-def _run_keyword_mask(video, keywords, abort_event):
+def _run_keyword_mask(video, keywords, abort_event, colorize_objects=False, color_palette=None, max_colored_objects=None):
     progress_events = queue.Queue()
 
     def progress_callback(done, total):
@@ -133,7 +160,7 @@ def _run_keyword_mask(video, keywords, abort_event):
         try:
             if abort_event.is_set():
                 raise MagicMaskAbort()
-            progress_events.put(("done", magic_mask.generate_keyword_masks(video, keywords, progress_callback=progress_callback)))
+            progress_events.put(("done", magic_mask.generate_keyword_masks(video, keywords, progress_callback=progress_callback, colorize_objects=colorize_objects, color_palette=color_palette, max_colored_objects=max_colored_objects)))
         except MagicMaskAbort as exc:
             progress_events.put(("abort", exc))
         except Exception as exc:
@@ -179,11 +206,14 @@ def _generate_magic_mask(
     image_mask_guide,
     image_guide,
     abort_token,
+    max_objects,
+    max_time,
     *,
     download_assets: Callable[[dict[str, Any]], Any],
     acquire_gpu: Callable[[Any, str, str], Any],
     release_gpu: Callable[[Any, str], Any],
     get_model_settings: Callable[[Any], dict],
+    get_model_def: Callable[[Any], dict] | None = None,
 ):
     source_image = None
     if image_mode > 0:
@@ -199,6 +229,11 @@ def _generate_magic_mask(
     if len(keywords) == 0:
         yield gr.update(), gr.update(), gr.update(), _status_html("Enter at least one keyword.", "error"), gr.update(visible=True), "", _exit_button_idle(), _abort_button_idle(), None, None
         return
+    try:
+        max_time = _max_time_seconds(max_time) if image_mode <= 0 else None
+    except ValueError as exc:
+        yield gr.update(), gr.update(), gr.update(), _status_html(exc, "error"), gr.update(visible=True), "", _exit_button_idle(), _abort_button_idle(), None, None
+        return
     keywords_label = ", ".join(keywords)
     abort_event = _abort_event(abort_token)
     abort_event.clear()
@@ -212,11 +247,15 @@ def _generate_magic_mask(
         _raise_if_aborted(abort_event)
         acquired = True
         ui_settings = get_model_settings(state)
+        model_def = get_model_def(state) if callable(get_model_def) else {}
+        object_colors = _magic_mask_object_colors(model_def)
+        colorize_objects = len(object_colors) > 0
+        max_colored_objects = _max_objects_limit(max_objects, len(object_colors) if colorize_objects else None)
         if image_mode > 0:
             _raise_if_aborted(abort_event)
             background, video = magic_mask.prepare_image_mask_input(source_image)
             total = len(keywords)
-            mask_generator = _run_keyword_mask(video, keywords, abort_event)
+            mask_generator = _run_keyword_mask(video, keywords, abort_event, colorize_objects=colorize_objects, color_palette=object_colors, max_colored_objects=max_colored_objects)
             progress_started = False
             try:
                 while True:
@@ -243,9 +282,9 @@ def _generate_magic_mask(
             yield gr.update(value=image_mask_guide_value), gr.update(value=mask_image), gr.update(), "", gr.update(visible=False), "", _exit_button_idle(), _abort_button_idle(), None, None
             return
         _raise_if_aborted(abort_event)
-        video_path, video, fps = magic_mask.prepare_video_mask_input(video_guide)
+        video_path, video, fps = magic_mask.prepare_video_mask_input(video_guide, max_time_seconds=max_time)
         total = len(keywords)
-        mask_generator = _run_keyword_mask(video, keywords, abort_event)
+        mask_generator = _run_keyword_mask(video, keywords, abort_event, colorize_objects=colorize_objects, color_palette=object_colors, max_colored_objects=max_colored_objects)
         progress_started = False
         try:
             while True:
@@ -262,7 +301,8 @@ def _generate_magic_mask(
             yield gr.update(), gr.update(), gr.update(), _keywords_processed_html(0, total), gr.update(visible=True), _mask_progress_html(keywords[0], 1, 1), _exit_button_running(), _abort_button_running(), None, None
         yield gr.update(), gr.update(), gr.update(), _keywords_processed_html(total, total), gr.update(visible=True), _mask_progress_html(keywords[-1], 1, 1), _exit_button_running(), _abort_button_running(), None, None
         yield gr.update(), gr.update(), gr.update(), _status_html("Saving Video Mask..."), gr.update(visible=True), "", _exit_button_running(), _abort_button_running(), None, None
-        mask_path = magic_mask.save_mask_video(video_path, magic_mask.finalize_masks(merged_mask, negative_mask=negative_mask), fps, keywords, abort_callback=lambda: _raise_if_aborted(abort_event))
+        background_color = model_def.get("video_mask_background_color", None)
+        mask_path = magic_mask.save_mask_video(video_path, magic_mask.finalize_masks(merged_mask, negative_mask=negative_mask), fps, keywords, abort_callback=lambda: _raise_if_aborted(abort_event), background_color=background_color)
         if isinstance(ui_settings, dict):
             ui_settings["video_mask"] = mask_path
         gr.Info(f"Magic Mask generated {'a negative ' if negative_mask else 'a '}video mask for: {keywords_label}.")
@@ -285,11 +325,15 @@ class MagicMaskUI:
     status: gr.HTML | None = None
     progress_html: gr.HTML | None = None
     cancel_btn: gr.Button | None = None
+    close_btn: gr.Button | None = None
     abort_btn: gr.Button | None = None
     generate_btn: gr.Button | None = None
+    max_objects: gr.Dropdown | None = None
+    max_time: gr.Textbox | None = None
     abort_token: gr.State | None = None
     pending_image_mask_guide: gr.State | None = None
     pending_image_mask: gr.State | None = None
+    title: gr.HTML | None = None
 
     @staticmethod
     def hidden_trigger():
@@ -353,11 +397,11 @@ class MagicMaskUI:
     height: 34px;
     min-height: 34px;
     padding: 0 !important;
-    border: 1px solid rgba(17, 84, 118, 0.14);
-    border-radius: 12px;
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(236, 244, 249, 0.99) 100%);
-    color: #155574;
-    box-shadow: 0 10px 18px rgba(11, 44, 63, 0.08);
+    border: 1px solid var(--button-secondary-border-color, rgba(17, 84, 118, 0.14)) !important;
+    border-radius: 12px !important;
+    background: var(--button-secondary-background-fill, linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(236, 244, 249, 0.99) 100%)) !important;
+    color: var(--button-secondary-text-color, #155574) !important;
+    box-shadow: var(--shadow-drop, 0 10px 18px rgba(11, 44, 63, 0.08)) !important;
     font-weight: 700;
     line-height: 1;
 }
@@ -450,40 +494,36 @@ class MagicMaskUI:
     display: none !important;
 }
 
-.wangp-magic-mask-panel:not(.hide) {
-    position: absolute !important;
-    inset: 0;
-    z-index: 40;
-    display: flex !important;
-    align-items: stretch;
-    justify-content: stretch;
-    margin: 0 !important;
+.wangp-magic-mask-panel.wangp-model-info-popup:not(.hide) {
+    display: block !important;
+    position: fixed !important;
+    left: 12px !important;
+    top: 96px !important;
+    right: auto !important;
+    width: min(680px, calc(100vw - 24px)) !important;
+    height: min(496px, calc(100vh - 24px)) !important;
+    max-height: calc(100vh - 24px) !important;
+    z-index: 2147483000 !important;
     padding: 0 !important;
-    border: 0 !important;
-    background: #ffffff !important;
-    box-shadow: none !important;
-    overflow: hidden !important;
-    pointer-events: auto;
-    box-sizing: border-box;
+    overflow: visible !important;
+    pointer-events: auto !important;
+    resize: none !important;
 }
 
-.wangp-magic-mask-anchor--image-editor .wangp-magic-mask-panel:not(.hide) {
-    padding-left: 20px !important;
-    padding-right: 20px !important;
-}
-
-.wangp-magic-mask-panel:not(.hide),
-.wangp-magic-mask-panel:not(.hide) *,
+.wangp-magic-mask-panel,
+.wangp-magic-mask-panel *,
 .wangp-magic-mask-card,
 .wangp-magic-mask-card * {
     box-sizing: border-box;
-    scrollbar-width: none;
 }
 
-.wangp-magic-mask-panel:not(.hide)::-webkit-scrollbar,
-.wangp-magic-mask-panel:not(.hide) *::-webkit-scrollbar {
-    width: 0 !important;
-    height: 0 !important;
+.wangp-magic-mask-panel > .form,
+.wangp-magic-mask-panel > .styler,
+.wangp-magic-mask-card {
+    resize: none !important;
+}
+
+.wangp-magic-mask-panel::-webkit-resizer {
     display: none !important;
 }
 
@@ -491,6 +531,7 @@ class MagicMaskUI:
 .wangp-magic-mask-panel > .styler {
     width: 100% !important;
     height: 100% !important;
+    min-height: 0 !important;
     display: flex !important;
     align-items: stretch !important;
     justify-content: stretch !important;
@@ -498,10 +539,10 @@ class MagicMaskUI:
     border: 0 !important;
     background: transparent !important;
     box-shadow: none !important;
-    overflow: hidden !important;
+    overflow: visible !important;
 }
 
-.wangp-magic-mask-card {
+.wangp-magic-mask-card.wangp-model-info-card {
     display: flex !important;
     flex-direction: column !important;
     width: 100% !important;
@@ -511,11 +552,7 @@ class MagicMaskUI:
     margin: 0 !important;
     padding: 0 !important;
     gap: 0 !important;
-    border: 0 !important;
-    border-radius: 0 !important;
-    background: #ffffff !important;
-    box-shadow: none !important;
-    overflow: hidden !important;
+    background: var(--block-background-fill, var(--background-fill-primary, #ffffff)) !important;
 }
 
 .wangp-magic-mask-card > .form {
@@ -531,7 +568,6 @@ class MagicMaskUI:
     overflow: hidden !important;
 }
 
-.wangp-magic-mask-card .block,
 .wangp-magic-mask-card .html-container,
 .wangp-magic-mask-card .prose {
     max-width: 100% !important;
@@ -539,34 +575,60 @@ class MagicMaskUI:
 }
 
 .wangp-magic-mask-titlebar {
-    padding: 10px 16px 9px;
-    background: linear-gradient(180deg, rgba(16, 86, 121, 0.98) 0%, rgba(10, 59, 84, 0.98) 100%);
-    color: #f3fbff;
+    flex: 0 0 auto;
+    margin: 0 !important;
 }
 
-.wangp-magic-mask-heading {
-    font-size: calc(0.95rem * var(--wangp-ui-scale));
-    font-weight: 800;
-    letter-spacing: 0;
-    color: #f3fbff !important;
+.wangp-magic-mask-titlebar > .form {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    gap: 14px !important;
+    width: 100% !important;
+    border: 0 !important;
+    padding: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+.wangp-magic-mask-heading,
+.wangp-magic-mask-heading > .html-container {
+    min-height: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+.wangp-magic-mask-close {
+    flex: 0 0 26px !important;
+}
+
+.wangp-magic-mask-close button,
+.wangp-magic-mask-close {
+    width: 26px !important;
+    height: 26px !important;
+    min-width: 26px !important;
+    min-height: 26px !important;
+    padding: 0 !important;
 }
 
 .wangp-magic-mask-body {
     flex: 0 0 auto !important;
     padding: 14px 18px 0;
-    overflow: hidden !important;
 }
 
-.wangp-magic-mask-body .block,
-.wangp-magic-mask-body .form,
-.wangp-magic-mask-body .wrap {
+.wangp-magic-mask-body > .form {
     margin: 0 !important;
-    overflow: hidden !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
 }
 
 .wangp-magic-mask-intro {
     margin: 0 0 12px;
-    color: #164f70;
+    color: var(--body-text-color, #164f70);
     font-size: calc(0.88rem * var(--wangp-ui-scale));
     line-height: 1.45;
 }
@@ -576,7 +638,66 @@ class MagicMaskUI:
 }
 
 .wangp-magic-mask-keyword-row > .form {
+    display: flex !important;
     align-items: center;
+    gap: 10px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    overflow: visible !important;
+}
+
+.wangp-magic-mask-options-row {
+    align-items: center;
+    margin-top: 8px;
+}
+
+.wangp-magic-mask-options-row > .form {
+    display: flex !important;
+    align-items: center;
+    gap: 10px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    overflow: visible !important;
+}
+
+.wangp-magic-mask-options-row > .form > .block {
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+.wangp-magic-mask-keywords {
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+.wangp-magic-mask-max-objects,
+.wangp-magic-mask-max-time,
+.wangp-magic-mask-max-objects > .form,
+.wangp-magic-mask-max-time > .form,
+.wangp-magic-mask-max-objects > .styler,
+.wangp-magic-mask-max-time > .styler {
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+.wangp-magic-mask-max-objects label,
+.wangp-magic-mask-max-time label {
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+.wangp-magic-mask-max-time textarea {
+    resize: none !important;
 }
 
 .wangp-magic-mask-keywords textarea {
@@ -589,24 +710,24 @@ class MagicMaskUI:
 .wangp-magic-mask-negative {
     flex: 0 0 150px !important;
     min-width: 150px !important;
-    padding: 0 !important;
-    border: 0 !important;
 }
 
 .wangp-magic-mask-negative,
 .wangp-magic-mask-negative > .form,
-.wangp-magic-mask-negative > .styler,
-.wangp-magic-mask-negative .block,
-.wangp-magic-mask-negative .wrap,
-.wangp-magic-mask-negative .checkbox-wrap,
-.wangp-magic-mask-negative-checkbox,
-.wangp-magic-mask-negative-checkbox label,
-.wangp-magic-mask-negative label {
-    background: transparent !important;
-    background-color: transparent !important;
-    box-shadow: none !important;
-    border-color: transparent !important;
+.wangp-magic-mask-negative > .styler {
     padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+.wangp-magic-mask-negative .block,
+.wangp-magic-mask-negative .form,
+.wangp-magic-mask-negative .styler,
+.wangp-magic-mask-negative label {
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
 }
 
 .wangp-magic-mask-negative label {
@@ -616,14 +737,14 @@ class MagicMaskUI:
 .wangp-magic-mask-message {
     flex: 0 0 auto !important;
     margin: 12px 18px 0;
-    color: #164f70;
+    color: var(--body-text-color, #164f70);
     font-size: calc(0.9rem * var(--wangp-ui-scale));
     line-height: 1.5;
     font-weight: 600;
 }
 
 .wangp-magic-mask-message.is-error {
-    color: #b33434;
+    color: var(--error-text-color, #b33434);
 }
 
 .wangp-magic-mask-progress {
@@ -633,7 +754,7 @@ class MagicMaskUI:
 
 .wangp-magic-mask-progress-label {
     margin-bottom: 6px;
-    color: #164f70;
+    color: var(--body-text-color, #164f70);
     font-size: calc(0.82rem * var(--wangp-ui-scale));
     font-weight: 700;
 }
@@ -643,7 +764,7 @@ class MagicMaskUI:
     height: 8px;
     overflow: hidden;
     border-radius: 999px;
-    background: rgba(19, 91, 126, 0.14);
+    background: var(--background-fill-secondary, rgba(19, 91, 126, 0.14));
 }
 
 .wangp-magic-mask-progress-bar {
@@ -674,8 +795,14 @@ class MagicMaskUI:
 }
 
 .wangp-magic-mask-actions > .form {
+    display: flex !important;
     justify-content: flex-end !important;
     align-items: flex-end !important;
+    gap: 10px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
     overflow: hidden !important;
 }
 
@@ -685,18 +812,18 @@ class MagicMaskUI:
     height: 40px;
     min-height: 40px;
     border-radius: 14px;
-    border: 1px solid rgba(17, 84, 118, 0.14);
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(237, 245, 250, 0.99) 100%);
-    color: #155574;
-    box-shadow: 0 10px 18px rgba(11, 44, 63, 0.08);
+    border: 1px solid var(--button-secondary-border-color, rgba(17, 84, 118, 0.14));
+    background: var(--button-secondary-background-fill, linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(237, 245, 250, 0.99) 100%));
+    color: var(--button-secondary-text-color, #155574);
+    box-shadow: var(--shadow-drop, 0 10px 18px rgba(11, 44, 63, 0.08));
     font-weight: 700;
 }
 
 .wangp-magic-mask-btn--primary,
 .wangp-magic-mask-btn--primary button {
-    color: #f4fbff;
-    border-color: rgba(10, 59, 84, 0.12);
-    background: linear-gradient(180deg, rgba(16, 86, 121, 0.98) 0%, rgba(10, 59, 84, 0.98) 100%);
+    color: var(--button-primary-text-color, #f4fbff);
+    border-color: var(--button-primary-border-color, rgba(10, 59, 84, 0.12));
+    background: var(--button-primary-background-fill, linear-gradient(180deg, rgba(16, 86, 121, 0.98) 0%, rgba(10, 59, 84, 0.98) 100%));
 }
 
 .wangp-magic-mask-btn--danger,
@@ -714,33 +841,8 @@ class MagicMaskUI:
 }
 
 @media (prefers-color-scheme: dark) {
-    .wangp-magic-mask-trigger,
-    .wangp-magic-mask-trigger button,
-    .wangp-magic-mask-btn,
-    .wangp-magic-mask-btn button {
-        color: #ecf4f9;
-        border-color: rgba(103, 132, 151, 0.22);
-        background: linear-gradient(180deg, rgba(10, 10, 10, 0.99) 0%, rgba(21, 21, 21, 0.99) 100%);
-        box-shadow: 0 10px 18px rgba(0, 0, 0, 0.22);
-    }
-
-    .wangp-magic-mask-panel:not(.hide),
-    .wangp-magic-mask-card {
-        background: #000000 !important;
-    }
-
-    .wangp-magic-mask-intro,
-    .wangp-magic-mask-message,
-    .wangp-magic-mask-progress-label {
-        color: #ecf4f9;
-    }
-
     .wangp-magic-mask-message.is-error {
         color: #ff9e9e;
-    }
-
-    .wangp-magic-mask-progress-track {
-        background: rgba(236, 244, 249, 0.18);
     }
 }
 """
@@ -873,7 +975,35 @@ WMM.openMagicMaskPanelInAnchor = function (anchor) {
     panel.hidden = false;
     panel.classList.remove('hide');
     panel.style.display = '';
+    WMM.positionMagicMaskPopup(panel);
     return true;
+};
+
+WMM.positionMagicMaskPopup = function (panel) {
+    if (!panel || !WMM.isVisible(panel)) return false;
+    const anchor = panel.closest('.wangp-magic-mask-anchor');
+    const rect = anchor?.getBoundingClientRect?.();
+    const viewportW = Math.max(320, window.innerWidth || document.documentElement.clientWidth || 0);
+    const viewportH = Math.max(320, window.innerHeight || document.documentElement.clientHeight || 0);
+    const width = Math.min(Math.max(rect?.width || 0, 420), viewportW - 24, 780);
+    const height = Math.min(496, viewportH - 24);
+    const left = Math.min(Math.max(12, rect?.left || 12), Math.max(12, viewportW - width - 12));
+    const top = Math.min(Math.max(12, rect?.top || 96), Math.max(12, viewportH - height - 12));
+    panel.style.setProperty('left', `${Math.round(left)}px`, 'important');
+    panel.style.setProperty('top', `${Math.round(top)}px`, 'important');
+    panel.style.setProperty('right', 'auto', 'important');
+    panel.style.setProperty('width', `${Math.round(width)}px`, 'important');
+    panel.style.setProperty('height', `${Math.round(height)}px`, 'important');
+    return true;
+};
+
+WMM.positionOpenMagicMaskPopups = function () {
+    document.querySelectorAll('.wangp-magic-mask-panel:not(.hide)').forEach((panel) => WMM.positionMagicMaskPopup(panel));
+};
+
+WMM.decoratePopupShells = function () {
+    document.querySelectorAll('.wangp-magic-mask-titlebar').forEach((titlebar) => titlebar.setAttribute('data-wangp-model-info-drag', ''));
+    document.querySelectorAll('.wangp-magic-mask-close').forEach((closeButton) => closeButton.setAttribute('data-wangp-model-info-close', ''));
 };
 
 WMM.installOverlayTriggerPatch = function () {
@@ -908,6 +1038,7 @@ WMM.findImageEditorForTrigger = function (trigger) {
 };
 
 WMM.mountImageEditorTriggers = function () {
+    WMM.decoratePopupShells();
     WMM.installOverlayTriggerPatch();
     document.querySelectorAll('.wangp-magic-mask-trigger--editor').forEach((trigger) => {
         const anchor = trigger.closest('.wangp-magic-mask-anchor--image-editor') || trigger.parentElement || document.body;
@@ -968,25 +1099,34 @@ WMM.scheduleMount();
     def focus_image_editor_javascript():
         return "() => { window.__wangpMagicMaskNS?.refocusImageEditorAfterMagicMask?.(); }"
 
+    @staticmethod
+    def position_popup_javascript():
+        return "() => { window.__wangpMagicMaskNS?.positionOpenMagicMaskPopups?.(); }"
+
     def render(self, visible=False, trigger_mode="overlay"):
         self.abort_token = gr.State(str(uuid.uuid4()))
         self.pending_image_mask_guide = gr.State(None)
         self.pending_image_mask = gr.State(None)
         self.trigger = gr.Button(MAGIC_WAND_LABEL, size="sm", min_width=1, visible=visible, elem_classes=["wangp-magic-mask-trigger", f"wangp-magic-mask-trigger--{trigger_mode}"])
-        with gr.Group(visible=False, elem_classes=["wangp-magic-mask-panel"]) as self.panel:
-            with gr.Column(elem_classes=["wangp-magic-mask-card"]):
-                gr.HTML("<div class='wangp-magic-mask-titlebar'><div class='wangp-magic-mask-heading'>Magic Mask</div></div>")
+        with gr.Column(visible=False, elem_classes=["wangp-magic-mask-panel", "wangp-model-info-popup"]) as self.panel:
+            with gr.Column(elem_classes=["wangp-magic-mask-card", "wangp-model-info-card"]):
+                with gr.Row(elem_classes=["wangp-model-info-titlebar", "wangp-magic-mask-titlebar"]):
+                    self.title = gr.HTML("<div class='wangp-model-info-heading'>Magic Mask</div>", elem_classes=["wangp-magic-mask-heading"])
+                    self.close_btn = gr.Button("x", elem_classes=["wangp-model-info-close", "wangp-magic-mask-close"], min_width=26, scale=0)
                 with gr.Column(elem_classes=["wangp-magic-mask-body"]):
                     gr.HTML("<div class='wangp-magic-mask-intro'>Enter the list of Object or Persons to track and that will be used to build the Mask. Each object / person should be separated by a \",\". For example: \"blue car, woman to the right\"</div>")
                     with gr.Row(elem_classes=["wangp-magic-mask-keyword-row"]):
-                        self.keywords = gr.Textbox(show_label=False, placeholder="person, car, sky", lines=1, scale=4, elem_classes=["wangp-magic-mask-keywords"])
+                        self.keywords = gr.Textbox(show_label=False, placeholder="person, car, sky", lines=1, scale=6, elem_classes=["wangp-magic-mask-keywords"])
                         with gr.Group(elem_classes=["wangp-magic-mask-negative"]):
                             self.negative_mask = gr.Checkbox(label="Negative Mask", value=False, container=False, min_width=1, elem_classes=["wangp-magic-mask-negative-checkbox"])
+                    with gr.Row(elem_classes=["wangp-magic-mask-options-row"]):
+                        self.max_objects = gr.Dropdown(choices=_max_object_choices(), value="all", label="Max Objects", scale=1, visible=False, elem_classes=["wangp-magic-mask-max-objects"])
+                        self.max_time = gr.Textbox(value="", label="Max Time (s)", placeholder="", lines=1, scale=1, elem_classes=["wangp-magic-mask-max-time"])
                 self.status = gr.HTML("")
                 self.progress_html = gr.HTML("")
                 gr.HTML("", elem_classes=["wangp-magic-mask-spacer"], padding=False)
                 with gr.Row(elem_classes=["wangp-magic-mask-actions"]):
-                    self.cancel_btn = gr.Button("Exit", size="sm", elem_classes=["wangp-magic-mask-btn"])
+                    self.cancel_btn = gr.Button("Exit", size="sm", elem_classes=["wangp-magic-mask-btn", "wangp-magic-mask-exit-btn"])
                     self.abort_btn = gr.Button("Abort", size="sm", visible=False, elem_classes=["wangp-magic-mask-btn", "wangp-magic-mask-btn--danger"])
                     self.generate_btn = gr.Button("Generate", size="sm", elem_classes=["wangp-magic-mask-btn", "wangp-magic-mask-btn--primary"])
         return self
@@ -1005,17 +1145,36 @@ WMM.scheduleMount();
         acquire_gpu: Callable[[Any, str, str], Any],
         release_gpu: Callable[[Any, str], Any],
         get_model_settings: Callable[[Any], dict],
+        get_model_def: Callable[[Any], dict] | None = None,
+        model_def: dict | None = None,
     ):
-        self.trigger.click(fn=_open_panel, inputs=[], outputs=[self.panel, self.status, self.progress_html, self.cancel_btn, self.abort_btn, self.pending_image_mask_guide, self.pending_image_mask], show_progress="hidden")
-        self.cancel_btn.click(
-            fn=_close_panel,
-            inputs=[],
-            outputs=[self.panel, self.status, self.progress_html, self.abort_btn, self.pending_image_mask_guide, self.pending_image_mask],
-            show_progress="hidden",
-        )
+        def model_def_resolver(state_value):
+            return get_model_def(state_value) if callable(get_model_def) else model_def if isinstance(model_def, dict) else {}
+
+        def open_panel(state_value, image_mode_value, max_objects_value):
+            current_model_def = model_def_resolver(state_value)
+            is_image_mask = int(image_mode_value or 0) > 0
+            max_time_update = gr.update(visible=not is_image_mask)
+            if max_objects_value != "all":
+                try:
+                    max_objects_value = _max_objects_limit(max_objects_value)
+                except (TypeError, ValueError):
+                    max_objects_value = "all"
+            title = "Colored Magic Mask" if _magic_mask_object_colors(current_model_def) else "Magic Mask"
+            title_update = gr.update(value=f"<div class='wangp-model-info-heading'>{html.escape(title)}</div>")
+            return (*_open_panel(), title_update, gr.update(choices=_max_object_choices(), value=max_objects_value, visible=True), max_time_update)
+
+        def close_panel():
+            return (*_close_panel(), gr.update(), gr.update())
+
+        open_event = self.trigger.click(fn=open_panel, inputs=[state, image_mode, self.max_objects], outputs=[self.panel, self.status, self.progress_html, self.cancel_btn, self.abort_btn, self.pending_image_mask_guide, self.pending_image_mask, self.title, self.max_objects, self.max_time], show_progress="hidden")
+        open_event.then(fn=None, inputs=[], outputs=[], js=MagicMaskUI.position_popup_javascript())
+        close_outputs = [self.panel, self.status, self.progress_html, self.abort_btn, self.pending_image_mask_guide, self.pending_image_mask, self.max_objects, self.max_time]
+        self.close_btn.click(fn=close_panel, inputs=[], outputs=close_outputs, show_progress="hidden")
+        self.cancel_btn.click(fn=close_panel, inputs=[], outputs=close_outputs, show_progress="hidden")
         self.abort_btn.click(fn=_abort_magic_mask, inputs=[self.abort_token], outputs=[self.status, self.abort_btn], show_progress="hidden")
 
-        def generate(state_value, keywords_text, negative_mask_value, image_mode_value, video_guide_value, image_mask_guide_value, image_guide_value, abort_token_value):
+        def generate(state_value, keywords_text, negative_mask_value, image_mode_value, video_guide_value, image_mask_guide_value, image_guide_value, abort_token_value, max_objects_value, max_time_value):
             yield from _generate_magic_mask(
                 state_value,
                 keywords_text,
@@ -1025,15 +1184,18 @@ WMM.scheduleMount();
                 image_mask_guide_value,
                 image_guide_value,
                 abort_token_value,
+                max_objects_value,
+                max_time_value,
                 download_assets=download_assets,
                 acquire_gpu=acquire_gpu,
                 release_gpu=release_gpu,
                 get_model_settings=get_model_settings,
+                get_model_def=model_def_resolver,
             )
 
         generate_event = self.generate_btn.click(
             fn=generate,
-            inputs=[state, self.keywords, self.negative_mask, image_mode, video_guide, image_mask_guide, image_guide, self.abort_token],
+            inputs=[state, self.keywords, self.negative_mask, image_mode, video_guide, image_mask_guide, image_guide, self.abort_token, self.max_objects, self.max_time],
             outputs=[image_mask_guide, image_mask, video_mask, self.status, self.panel, self.progress_html, self.cancel_btn, self.abort_btn, self.pending_image_mask_guide, self.pending_image_mask],
             show_progress="hidden",
         )

@@ -116,7 +116,7 @@ class family_handler():
 
     @staticmethod
     def query_family_infos():
-        return {"qwen":(110, "Qwen")}
+        return {"qwen":(1110, "Qwen")}
 
     @staticmethod
     def register_lora_cli_args(parser, lora_root):

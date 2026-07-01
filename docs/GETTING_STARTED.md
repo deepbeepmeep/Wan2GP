@@ -161,6 +161,7 @@ Once you're comfortable with basic generation:
 1. **Explore Advanced Features**:
    - [Loras Guide](LORAS.md) - Customize styles and characters
    - [VACE ControlNet](VACE.md) - Advanced video control
+   - [Processing Guide](PROCESSING.md) - Prepare inputs and refine outputs
    - [Command Line Options](CLI.md) - Optimize performance
 
 2. **Improve Performance**:

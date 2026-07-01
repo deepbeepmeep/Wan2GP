@@ -559,7 +559,7 @@ def load_gguf_state_dict(
             from mmgp import safetensors2
             safetensors2.verboseLevel = verboseLevel
             tracker = safetensors2.MmapTracker(file_path)
-            tracker.register(mmap_data, 0, 0, int(mmap-_data.nbytes))
+            tracker.register(mmap_data, 0, 0, int(mmap_data.nbytes))
         except Exception:
             tracker = None
     tensor_names = [tensor.name for tensor in parsed.tensor_infos]
@@ -671,6 +671,27 @@ class GGUFSourceTensor(torch.Tensor):
         detached.tensor_type = getattr(self, "tensor_type", None)
         detached.tensor_shape = getattr(self, "tensor_shape", detached.shape)
         return detached
+
+    @classmethod
+    def __torch_function__(cls, func, types, args=(), kwargs=None):
+        kwargs = kwargs or {}
+        if func is torch.split:
+            src = args[0]
+            dim = args[2] if len(args) > 2 else kwargs.get("dim", 0)
+            with torch._C.DisableTorchFunctionSubclass():
+                chunks = func(*args, **kwargs)
+            tensor_type = getattr(src, "tensor_type", None)
+            tensor_shape = getattr(src, "tensor_shape", None)
+            if tensor_type is None or tensor_shape is None:
+                return chunks
+            out = []
+            for chunk in chunks:
+                new_shape = list(tensor_shape)
+                if dim < len(new_shape) and src.shape[dim] == tensor_shape[dim]:
+                    new_shape[dim] = chunk.shape[dim]
+                out.append(GGUFSourceTensor.wrap(chunk, tensor_type=tensor_type, tensor_shape=tuple(new_shape)))
+            return tuple(out)
+        return super().__torch_function__(func, types, args, kwargs)
 
     def get_quantized_subtensors(self):
         return [("data", self)]
@@ -1240,15 +1261,22 @@ class GGUFWeightTensor(QTensor):
         return torch.nn.functional.linear(input, weight, bias)
 
     def get_quantized_subtensors(self):
-        return [("data", self._data)]
+        raw = GGUFSourceTensor.wrap(self._data, tensor_type=self._tensor_type, tensor_shape=self._tensor_shape)
+        return [("raw_tensor", raw)]
 
     def set_quantized_subtensors(self, sub_tensors):
         if isinstance(sub_tensors, dict):
             sub_map = sub_tensors
         else:
             sub_map = {name: tensor for name, tensor in sub_tensors}
-        data = sub_map.get("data", None)
+        data = sub_map.get("raw_tensor", sub_map.get("data", None))
         if data is not None:
+            tensor_type = getattr(data, "tensor_type", None)
+            if tensor_type is not None:
+                self._tensor_type = tensor_type
+            tensor_shape = getattr(data, "tensor_shape", None)
+            if tensor_shape is not None:
+                self._tensor_shape = torch.Size(tensor_shape)
             old_data = self._data
             if torch.is_tensor(old_data):
                 try:

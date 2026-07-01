@@ -1,0 +1,10 @@
+{
+  "model_type": "__system_image_postprocessing",
+  "model_label": "WanGP System Image Postprocessing",
+  "system_handler": "flashvsr",
+  "media_type": "image",
+  "image_mode": 1,
+  "spatial_upsampling_method": "flashvsr",
+  "target_ratio": "flashvsr2",
+  "prompt": ""
+}

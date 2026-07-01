@@ -65,6 +65,25 @@ else:
   - Preferred single-task entrypoint.
 - `WanGPSession.submit_manifest(settings_list, callbacks=None) -> SessionJob`
   - Batch entrypoint for multiple tasks.
+- `WanGPSession.submit_media_postprocessing(media_source, ...) -> SessionJob`
+  - Late postprocess an existing image/video with spatial upsampling, temporal upsampling, or film grain.
+- `WanGPSession.submit_audio_remux(video_source, postprocess_audio=..., ...) -> SessionJob`
+  - Late remux an existing video with a registered soundtrack or voice-replacement audio processor.
+- `WanGPSession.submit_audio_postprocessing(audio_source, postprocess_audio=..., ...) -> SessionJob`
+  - Late postprocess an existing audio file.
+- `WanGPSession.list_model_defs(...) -> list[dict]`
+  - Returns model definitions with inferred metadata and optional filters.
+- `WanGPSession.list_model_metadata(...) -> list[dict]`
+  - Returns compact inferred metadata records with the same filters.
+  - Pass `include_availability=True` to add local file availability; this performs the same filesystem scan as the UI status squares.
+- `WanGPSession.get_default_settings(model_type) -> dict`
+  - Returns generated default settings with `model_type` included.
+- `WanGPSession.get_model_schema(model_type) -> dict | None`
+  - Returns one model definition, inferred metadata, accepted setting values, and default settings.
+- `WanGPSession.get_model_availability(model_type) -> dict`
+  - Returns local file availability for one model using the same status as the UI selector.
+- `WanGPSession.list_model_availability(...) -> list[dict]`
+  - Returns availability records with the same filters as `list_model_metadata(...)`.
 - `SessionJob.result() -> GenerationResult`
   - Waits for completion and returns a structured result object.
 - `SessionJob.cancel()`
@@ -218,6 +237,79 @@ def create_config_ui(self, api_session):
 
 In a plugin tab, callback methods like `on_status(...)` and `on_progress(...)` can safely update a local `gr.Progress(...)` while the job itself still runs through WanGP's main WebUI queue.
 
+## Model Metadata
+
+Use `session.list_model_defs(...)` to inspect available model definitions without starting a generation:
+
+```python
+image_models = session.list_model_defs(main_output="image")
+video_i2v_models = session.list_model_defs(main_output="video", inputs="image")
+ltx2_finetunes = session.list_model_defs(family="ltx2", finetune=True)
+one_model = session.list_model_defs(model_type="ltx2_22B_distilled")
+```
+
+Agents that only need discovery data should use the compact metadata calls:
+
+```python
+models = session.list_model_metadata(main_output=["image", "video"], inputs="image")
+metadata = session.get_model_metadata("ltx2_22B_distilled")
+defaults = session.get_default_settings("ltx2_22B_distilled")
+schema = session.get_model_schema("ltx2_22B_distilled")
+```
+
+Supported filters can be combined:
+
+- `family`
+- `base_model_type`
+- `finetune`
+- `model_type`
+- `main_output`
+- `inputs`
+
+`main_output` and `inputs` accept a single value or a list. Multiple `main_output` values are OR filters; multiple `inputs` values match any requested input modality. `main_output` filters the primary generation mode, while `metadata.outputs` lists every intrinsic media output the model can produce.
+
+Each returned model definition is a copy of WanGP's in-memory definition with `model_type` added at the top level and a `metadata` object:
+
+```python
+{
+    "model_type": "ltx2_22B_distilled",
+    "name": "LTX-2 2.3 Distilled 1.0 22B",
+    "architecture": "ltx2_22B",
+    "metadata": {
+        "model_type": "ltx2_22B_distilled",
+        "family": "ltx2",
+        "family_label": "LTX-2",
+        "base_model_type": "ltx2_22B",
+        "finetune": False,
+        "main_output": ["video"],
+        "outputs": ["video", "audio"],
+        "inputs": ["text", "image", "video", "audio"],
+        "media_inputs": {
+            "image": {
+                "start": True,
+                "end": True,
+                "reference": True,
+                "background": False,
+                "injected_frames": False,
+            },
+            "video": {"continue": True, "control": True},
+            "audio": {"prompt": True, "output": True},
+        },
+        "capabilities": {
+            "text_to_video": True,
+            "image_to_video": True,
+            "audio_output": True,
+        },
+        "setting_values": {
+            "image_prompt_type": {"allowed": "TVSE"},
+            "video_prompt_type": {"image_ref_choices": {"choices": []}},
+        },
+    },
+}
+```
+
+`session.get_model_schema(model_type)` returns the same `metadata`, the full `model_def`, the generated `default_settings`, and a top-level `setting_values` copy for convenient tool clients.
+
 Useful `SessionJob` handles for plugin authors:
 
 - `job.result(timeout=None) -> GenerationResult`
@@ -257,7 +349,54 @@ Useful `GeneratedArtifact` fields:
 - `artifact.fps`
   - Output FPS associated with `artifact.video_tensor_uint8` when present.
 
-### Getting Outputs In Memory
+## MCP Server
+
+WanGP also exposes the same reusable session through an MCP server. The preferred launch path is:
+
+```bash
+python wgp.py --mcp --config <config dir> --output-dir <output dir>
+```
+
+This preserves normal WanGP CLI/config arguments. MCP-specific launch options are prefixed:
+
+```bash
+python wgp.py --mcp --mcp-transport stdio
+python wgp.py --mcp --mcp-transport streamable-http --mcp-host 127.0.0.1 --mcp-port 7866
+```
+
+For Streamable HTTP, connect MCP clients to `http://<host>:<port>/mcp`. Use `--mcp-host 0.0.0.0` only on a trusted network or behind an authenticated reverse proxy.
+
+The lower-level adapter can still be launched directly:
+
+```bash
+python -m shared.mcp_server --root <WanGP repo> --output-dir <output dir>
+```
+
+The server keeps one warm `WanGPSession`, so agents can perform discovery and multiple generations in a row without starting a new WanGP process each time.
+
+Tools:
+
+- `wangp_list_models(..., include_availability=False)`
+  - Compact metadata list with the same filters as `list_model_metadata(...)`.
+  - Set `include_availability=True` to include the optional `availability` field.
+- `wangp_list_model_defs(...)`
+  - Full model definitions with metadata.
+- `wangp_get_model(model_type)`
+- `wangp_get_model_metadata(model_type, include_availability=False)`
+- `wangp_get_model_availability(model_type)`
+  - Local file availability for one model using the same status as the UI selector: `available` (blue), `partial` (yellow), or `missing` (black).
+- `wangp_list_model_availability(...)`
+  - Availability records with the same filters as `wangp_list_models(...)`.
+- `wangp_get_default_settings(model_type)`
+- `wangp_get_model_schema(model_type)`
+- `wangp_generate(source, wait=False, timeout_s=None, event_limit=20)`
+  - Starts a job from a settings dict, task dict, manifest dict, or task list.
+- `wangp_get_job(job_id, event_limit=20)`
+  - Polls progress/events/result.
+- `wangp_cancel_job(job_id)`
+  - Requests cancellation.
+
+## Getting Outputs In Memory
 
 By default, the API gives you output file paths in `result.generated_files`.
 
@@ -374,6 +513,117 @@ result = job.result()
 artifact = result.artifacts[0]
 video_tensor = artifact.video_tensor_uint8
 ```
+
+### Late Postprocessing And Media Editing
+
+The API can submit WanGP late postprocessing jobs through the same queue, manifest, and MCP paths as generation jobs. These tasks set `mode` explicitly and do not need a normal generation `model_type`; `generate_media(...)` routes them to `edit_media(...)` or `edit_audio(...)`.
+
+Convenience helpers are available for the common edit task shapes:
+
+- `session.submit_media_postprocessing(media_source, ...)` for image/video postprocessing.
+- `session.submit_audio_remux(video_source, ...)` for replacing or generating a video soundtrack.
+- `session.submit_audio_postprocessing(audio_source, ...)` for standalone audio edits.
+
+#### Image And Video Postprocessing
+
+`submit_media_postprocessing(...)` accepts one media source plus any combination of temporal upsampling, spatial upsampling, and film grain:
+
+```python
+job = session.submit_media_postprocessing(
+    r"C:\media\input.mp4",
+    temporal_upsampling="rife2",
+    spatial_upsampling="flashvsr2",
+    film_grain_intensity=0.15,
+    return_media=True,
+)
+
+result = job.result()
+print(result.generated_files)
+```
+
+Postprocessing values use the registered postprocessor value strings:
+
+- `temporal_upsampling`: registered temporal upsamplers such as `rife2` or `rife4`. Temporal upsampling is video-only.
+- `spatial_upsampling`: registered postprocessing spatial upsamplers such as `lanczos2`, `flashvsr2`, `flashvsr2pass2`, `coz4`, `flux_pid4`, or `flux2_pid4`. VAE upsamplers are model-pipeline features and are not accepted for late postprocessing.
+- `film_grain_intensity` / `film_grain_saturation`: late film grain settings. Film grain is active when intensity is greater than `0`.
+
+At least one postprocessing operation must be selected.
+
+#### Video Audio Remuxing
+
+`submit_audio_remux(...)` edits a video audio track. `postprocess_audio` is a registered audio processor method:
+
+```python
+job = session.submit_audio_remux(
+    r"C:\media\input.mp4",
+    postprocess_audio="custom",
+    audio_source=r"C:\media\soundtrack.wav",
+    return_media=True,
+)
+
+result = job.result()
+print(result.generated_files)
+```
+
+Common built-in remux methods:
+
+| Method | Use | Main inputs |
+| --- | --- | --- |
+| `custom` | Replace soundtrack with an existing audio file | `audio_source` |
+| `mmaudio` | Generate soundtrack from video content | `postprocess_audio_prompt`, `postprocess_audio_neg_prompt`, `seed`, `repeat_generation` |
+| `prismaudio` | Generate soundtrack from video content | `postprocess_audio_prompt`, `postprocess_audio_neg_prompt`, `seed`, `repeat_generation` |
+| `seedvc_one_speaker` | Replace one voice track | `replace_voice_sample` |
+| `seedvc_two_speakers` | Replace two voice tracks | `replace_voice_sample`, `replace_voice_sample2` |
+
+Model-backed processors must be enabled/configured before use. Voice replacement methods require source audio in the video. Legacy `seedvc` and `seedvc2` values are normalized for compatibility, but new callers should use `seedvc_one_speaker` and `seedvc_two_speakers`.
+
+#### Standalone Audio Postprocessing
+
+`submit_audio_postprocessing(...)` edits an audio file without a video container:
+
+```python
+job = session.submit_audio_postprocessing(
+    r"C:\media\dialog.wav",
+    postprocess_audio="remove_background",
+    return_media=True,
+)
+
+result = job.result()
+artifact = result.artifacts[0]
+print(artifact.path, artifact.audio_sampling_rate)
+```
+
+Common built-in standalone audio methods:
+
+| Method | Use | Main inputs |
+| --- | --- | --- |
+| `remove_background` | Remove music/background noise | `audio_source` from the helper's first argument |
+| `seedvc_one_speaker` | Replace one speaker in an audio file | `replace_voice_sample` |
+| `seedvc_two_speakers` | Replace two speakers in an audio file | `replace_voice_sample`, `replace_voice_sample2` |
+
+#### Raw Edit Tasks
+
+All helper calls build normal task settings, so plugins, Deepy, saved queues, manifests, and MCP clients can submit edit tasks directly through `submit_task(...)`, `submit_manifest(...)`, or `wangp_generate(...)`.
+
+```python
+settings = {
+    "mode": "edit_postprocessing",
+    "video_source": r"C:\media\input.mp4",
+    "temporal_upsampling": "rife4",
+    "spatial_upsampling": "lanczos2",
+    "_api": {"return_media": True},
+}
+
+job = session.submit_task(settings)
+```
+
+Raw task modes:
+
+| Mode | Source field | Processor fields |
+| --- | --- | --- |
+| `edit_postprocessing` | `video_source` | `temporal_upsampling`, `spatial_upsampling`, `film_grain_intensity`, `film_grain_saturation` |
+| `edit_remux` | `video_source` | `postprocess_audio`, `audio_source`, `postprocess_audio_prompt`, `postprocess_audio_neg_prompt`, `replace_voice_sample`, `replace_voice_sample2` |
+| `edit_audio` | `audio_source` | `postprocess_audio`, `replace_voice_sample`, `replace_voice_sample2` |
 
 ### Single Task
 

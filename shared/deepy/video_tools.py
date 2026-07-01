@@ -14,6 +14,7 @@ from PIL import Image
 
 from shared.ffmpeg_setup import download_ffmpeg
 from shared.utils.audio_video import get_mp4_audio_codec_settings
+from shared.utils.video_codecs import get_video_container_extension, get_video_encode_args
 from shared.utils.utils import get_video_frame, get_video_info
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".avi"}
 _THUMB_DATA_URL_CACHE: OrderedDict[str, str] = OrderedDict()
@@ -56,34 +57,11 @@ def _resolve_segment_args(start_time: float | int | None = None, end_time: float
     return start_str, end_str if duration_str is None else duration_str
 
 
-def get_video_container_extension(container: str | None) -> str:
-    container = str(container or "mp4").strip().lower() or "mp4"
-    return ".mkv" if container == "mkv" else ".mp4"
-
-
 def get_audio_standalone_extension(codec_key: str | None) -> str:
     codec_key = str(codec_key or "wav").strip().lower() or "wav"
     if codec_key == "mp3":
         codec_key = "mp3_192"
     return ".wav" if codec_key == "wav" else ".mp3"
-
-
-def _get_video_encode_args(codec_key: str | None, container: str | None) -> list[str]:
-    codec_key = str(codec_key or "libx264_8").strip().lower() or "libx264_8"
-    container = str(container or "mp4").strip().lower() or "mp4"
-    if codec_key == "libx264_8":
-        return ["-c:v", "libx264", "-crf", "23", "-pix_fmt", "yuv420p"]
-    if codec_key == "libx264_10":
-        return ["-c:v", "libx264", "-crf", "21", "-pix_fmt", "yuv420p"]
-    if codec_key == "libx265_28":
-        return ["-c:v", "libx265", "-crf", "28", "-pix_fmt", "yuv420p", "-x265-params", "log-level=none"]
-    if codec_key == "libx265_8":
-        return ["-c:v", "libx265", "-crf", "8", "-pix_fmt", "yuv420p", "-x265-params", "log-level=none"]
-    if codec_key == "libx264_lossless":
-        if container == "mkv":
-            return ["-c:v", "ffv1", "-pix_fmt", "rgb24"]
-        return ["-c:v", "libx264", "-crf", "0", "-pix_fmt", "yuv444p"]
-    return ["-c:v", "libx264", "-crf", "23", "-pix_fmt", "yuv420p"]
 
 
 def _get_mp4_audio_encode_args(codec_key: str | None) -> list[str]:
@@ -179,7 +157,7 @@ def merge_videos(first_video: str, second_video: str, output_path: str | None = 
         "-filter_complex",
         ";".join(filters),
         *maps,
-        *_get_video_encode_args(video_codec, video_container),
+        *get_video_encode_args(video_codec, video_container),
         *(["-movflags", "+faststart"] if str(video_container or "mp4").strip().lower() == "mp4" else []),
         output_path,
     ]
@@ -203,7 +181,7 @@ def extract_video(source_path: str, output_path: str, start_time: float | int = 
     elif end_time is not None:
         cmd += ["-to", end_or_duration_str]
     cmd += ["-map", "0:v:0", "-map", "0:a?"]
-    cmd += _get_video_encode_args(video_codec, video_container)
+    cmd += get_video_encode_args(video_codec, video_container)
     cmd += _get_mp4_audio_encode_args(audio_codec)
     if str(video_container or "mp4").strip().lower() == "mp4":
         cmd += ["-movflags", "+faststart"]
@@ -402,7 +380,7 @@ def resize_crop_video(source_path: str, output_path: str, *, width: int | None =
         filters.append(f"scale={scale_w}:{scale_h}")
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     cmd = ["-i", source_path, "-vf", ",".join(filters), "-map", "0:v:0", "-map", "0:a?"]
-    cmd += _get_video_encode_args(video_codec, video_container)
+    cmd += get_video_encode_args(video_codec, video_container)
     cmd += _get_mp4_audio_encode_args(audio_codec)
     if str(video_container or "mp4").strip().lower() == "mp4":
         cmd += ["-movflags", "+faststart"]

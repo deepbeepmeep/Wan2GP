@@ -1,0 +1,26 @@
+{
+    "model": {
+        "name": "SCAIL-2 14B",
+        "architecture": "scail2_14B",
+        "description": "SCAIL-2: Wan 2.1 character animation with end-to-end reference, pose, and mask conditioning.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/scail2_14B_mbf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/scail2_14B_quanto_mbf16_int8.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/scail2_14B_quanto_mfp16_int8.safetensors"
+        ]
+    },
+    "prompt": "The character is dancing naturally with expressive body movement.",
+    "negative_prompt": "",
+    "video_length": 81,
+    "resolution": "832x480",
+    "num_inference_steps": 40,
+    "flow_shift": 3,
+    "guidance_scale": 5.0,
+    "custom_settings": {
+        "scail2_animate_preprocessing": "raw",
+        "image_ref_keyword_content": "human character"
+    },
+    "sliding_window_size": 81,
+    "sliding_window_overlap": 5,
+    "sliding_window_color_correction_strength": 0
+}

@@ -17,6 +17,22 @@ persistent_offloadobj = None
 persistent_model_id = None
 
 
+def release_models():
+    global persistent_offloadobj, persistent_net, persistent_features_utils, persistent_seq_cfg, persistent_model_id
+
+    if persistent_offloadobj is not None:
+        from shared.utils import offload_registry
+
+        offload_registry.unregister_offloadobj("MMAudio", persistent_offloadobj)
+        persistent_offloadobj.unload_all()
+        persistent_offloadobj.release()
+    persistent_offloadobj = None
+    persistent_net = None
+    persistent_features_utils = None
+    persistent_seq_cfg = None
+    persistent_model_id = None
+
+
 def _processing_device():
     if torch.cuda.is_available():
         return "cuda"
@@ -93,13 +109,7 @@ def get_model(persistent_models = False, verboseLevel = 1, model_name = None, mo
     model_id = (model_name, os.path.normcase(str(resolved_model_path)))
 
     if persistent_offloadobj is not None and persistent_model_id != model_id:
-        persistent_offloadobj.unload_all()
-        persistent_offloadobj.release()
-        persistent_offloadobj = None
-        persistent_net = None
-        persistent_features_utils = None
-        persistent_seq_cfg = None
-        persistent_model_id = None
+        release_models()
 
     if persistent_offloadobj == None:
         from accelerate import init_empty_weights
@@ -121,11 +131,14 @@ def get_model(persistent_models = False, verboseLevel = 1, model_name = None, mo
         from mmgp import offload
         offloadobj = offload.profile(pipe, profile_no=4, verboseLevel=2)
         if persistent_models:
+            from shared.utils import offload_registry
+
             persistent_offloadobj = offloadobj
             persistent_net = net
             persistent_features_utils = feature_utils
             persistent_seq_cfg = seq_cfg
             persistent_model_id = model_id
+            offload_registry.register_offloadobj("MMAudio", offloadobj, release_models)
 
     else:
         offloadobj = persistent_offloadobj  
@@ -144,7 +157,7 @@ def get_model(persistent_models = False, verboseLevel = 1, model_name = None, mo
 
 @torch.inference_mode()
 def video_to_audio(video, prompt: str, negative_prompt: str, seed: int, num_steps: int,
-                   cfg_strength: float, duration: float, save_path , persistent_models = False, audio_file_only = False, verboseLevel = 1, model_name = None, model_path = None):
+                   cfg_strength: float, duration: float, save_path , persistent_models = False, audio_file_only = False, verboseLevel = 1, model_name = None, model_path = None, audio_codec_key = "aac_128"):
 
     global device
 
@@ -182,7 +195,7 @@ def video_to_audio(video, prompt: str, negative_prompt: str, seed: int, num_step
     if audio_file_only:
         write_wav_file(save_path, audio, seq_cfg.sampling_rate)
     else:
-        make_video(video, video_info, save_path, audio, sampling_rate=seq_cfg.sampling_rate)
+        make_video(video, video_info, save_path, audio, sampling_rate=seq_cfg.sampling_rate, audio_codec_key=audio_codec_key)
 
     offloadobj.unload_all()
     if not persistent_models:

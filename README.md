@@ -55,7 +55,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-### 1st of July 2026: WanGP v12.30, The VRAM Digger
+### 1st of July 2026: WanGP v12.3, The VRAM Digger
 
 - **Krea2 Lanpaint**: Krea2 can now do *inpainting* thanks to *Lanpaint*. To get the best results you will need to adjust the prompt and increase the number of Lanpaint steps.
 

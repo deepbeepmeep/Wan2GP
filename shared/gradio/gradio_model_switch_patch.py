@@ -7,10 +7,11 @@ import copy
 from pathlib import Path
 
 ENABLE_GRADIO_MODEL_SWITCH_MONKEYPATCH = False
+_OUTPUT_PROP_HISTORY_ATTR = "_wangp_output_prop_history"
 
 _ORIGINAL_OUTPUT_UPDATER = 'async function pl(S,J){const K=u.find(de=>de.id===J);if(!K)return;const pe=K.outputs,R=S?.map((de,he)=>({id:pe[he],prop:"value_is_output",value:!0}));T(R),await Rn();const oe=[];S?.forEach((de,he)=>{if(typeof de=="object"&&de!==null&&de.__type__==="update")for(const[bt,Qt]of Object.entries(de))bt!=="__type__"&&oe.push({id:pe[he],prop:bt,value:Qt});else oe.push({id:pe[he],prop:"value",value:de})}),T(oe),await Rn()}'
-_PATCHED_OUTPUT_UPDATER = 'async function pl(S,J){const K=u.find(de=>de.id===J);if(!K)return;const pe=K.outputs,R=[],oe=[],lt=K.wangp_skip_value_output_mark===!0;S?.forEach((de,he)=>{if(typeof de=="object"&&de!==null&&de.__type__==="update"){if("value"in de&&!lt)R.push({id:pe[he],prop:"value_is_output",value:!0});for(const[bt,Qt]of Object.entries(de))bt!=="__type__"&&oe.push({id:pe[he],prop:bt,value:Qt})}else lt||R.push({id:pe[he],prop:"value_is_output",value:!0}),oe.push({id:pe[he],prop:"value",value:de})});if(R.length){T(R);await Rn()}if(oe.length){T(oe);await Rn()}}'
-_DEBUG_OUTPUT_UPDATER = 'async function pl(S,J){const nt=performance.now(),K=u.find(de=>de.id===J);if(!K)return;const pe=K.outputs,R=[],oe=[],lt=K.wangp_skip_value_output_mark===!0;S?.forEach((de,he)=>{if(typeof de=="object"&&de!==null&&de.__type__==="update"){if("value"in de&&!lt)R.push({id:pe[he],prop:"value_is_output",value:!0});for(const[bt,Qt]of Object.entries(de))bt!=="__type__"&&oe.push({id:pe[he],prop:bt,value:Qt})}else lt||R.push({id:pe[he],prop:"value_is_output",value:!0}),oe.push({id:pe[he],prop:"value",value:de})});if(R.length){T(R);await Rn()}const rt=performance.now();if(oe.length){T(oe);await Rn()}const et=Math.round((performance.now()-nt)*10)/10,ot=Math.round((rt-nt)*10)/10;if((S?.length||0)>50||et>20)console.info("[WanGP ui-perf] gradio.output_update fn="+J+" outputs="+(S?.length||0)+" value_marks="+R.length+" prop_updates="+oe.length+" mark_ms="+ot+" total_ms="+et+" skip_value_mark="+lt)}'
+_PATCHED_OUTPUT_UPDATER = 'async function pl(S,J){const K=u.find(de=>de.id===J);if(!K)return;const pe=K.outputs,R=[],oe=[];S?.forEach((de,he)=>{if(typeof de=="object"&&de!==null&&de.__type__==="update"){if("value"in de)R.push({id:pe[he],prop:"value_is_output",value:!0});for(const[bt,Qt]of Object.entries(de))bt!=="__type__"&&oe.push({id:pe[he],prop:bt,value:Qt})}else R.push({id:pe[he],prop:"value_is_output",value:!0}),oe.push({id:pe[he],prop:"value",value:de})});if(R.length){T(R);await Rn()}if(oe.length){T(oe);await Rn()}}'
+_DEBUG_OUTPUT_UPDATER = 'async function pl(S,J){const nt=performance.now(),K=u.find(de=>de.id===J);if(!K)return;const pe=K.outputs,R=[],oe=[];S?.forEach((de,he)=>{if(typeof de=="object"&&de!==null&&de.__type__==="update"){if("value"in de)R.push({id:pe[he],prop:"value_is_output",value:!0});for(const[bt,Qt]of Object.entries(de))bt!=="__type__"&&oe.push({id:pe[he],prop:bt,value:Qt})}else R.push({id:pe[he],prop:"value_is_output",value:!0}),oe.push({id:pe[he],prop:"value",value:de})});if(R.length){T(R);await Rn()}const rt=performance.now();if(oe.length){T(oe);await Rn()}const et=Math.round((performance.now()-nt)*10)/10,ot=Math.round((rt-nt)*10)/10;if((S?.length||0)>50||et>20)console.info("[WanGP ui-perf] gradio.output_update fn="+J+" outputs="+(S?.length||0)+" value_marks="+R.length+" prop_updates="+oe.length+" mark_ms="+ot+" total_ms="+et)}'
 _ORIGINAL_WAIT_THEN_TRIGGER = 'function Jt(S,J=null,K=null){let pe=()=>{};function R(){pe()}i?pe=Se.subscribe(oe=>{oe||Rn().then(()=>{is(S,J,K),R()})}):is(S,J,K)}'
 _PATCHED_WAIT_THEN_TRIGGER = 'function Jt(S,J=null,K=null){let pe=()=>{};function R(){pe()}const oe=u.find(de=>de.id===S),de=()=>{is(S,J,K)};if(oe?.wangp_fast_chain&&oe.queue===!1){Promise.resolve().then(()=>de());return}i?pe=Se.subscribe(he=>{he||Rn().then(()=>{de(),R()})}):de()}'
 _ORIGINAL_EVENT_TRIGGER = 's[pe]?.[R]?.forEach(he=>{requestAnimationFrame(()=>{Jt(he,pe,oe)})})'
@@ -74,16 +75,23 @@ def _snapshot_value(value):
     return value
 
 
-def _capture_output_props(block_fn, state):
-    props_by_id = {}
-    for block in getattr(block_fn, "outputs", []):
-        if getattr(block, "stateful", False):
+def _get_output_prop_history(state):
+    history = getattr(state, _OUTPUT_PROP_HISTORY_ATTR, None)
+    if history is None:
+        history = {}
+        setattr(state, _OUTPUT_PROP_HISTORY_ATTR, history)
+    return history
+
+
+def _record_output_props(block_fn, output, props_by_id):
+    for index, value in enumerate(output):
+        if not (isinstance(value, dict) and value.get("__type__") == "update"):
             continue
-        state_block = state[block._id] if block._id in state else block
-        constructor_args = getattr(state_block, "constructor_args", None)
-        if isinstance(constructor_args, dict):
-            props_by_id[block._id] = {key: _snapshot_value(value) for key, value in constructor_args.items()}
-    return props_by_id
+        block = block_fn.outputs[index]
+        block_props = props_by_id.setdefault(block._id, {})
+        for key, prop_value in value.items():
+            if key != "__type__":
+                block_props[key] = _snapshot_value(prop_value)
 
 
 def _prune_unchanged_output_props(block_fn, output, props_by_id):
@@ -117,14 +125,17 @@ def _install_postprocess_prune_patch() -> bool:
 
     async def patched_postprocess_data(self, block_fn, predictions, state):
         session_state = state or gradio_blocks.SessionState(self)
-        props_by_id = _capture_output_props(block_fn, session_state)
+        props_by_id = _get_output_prop_history(session_state)
         start_time = time.perf_counter()
         output = await original_postprocess_data(self, block_fn, predictions, session_state)
         if isinstance(output, list) and props_by_id:
             props_before, props_after, pruned = _prune_unchanged_output_props(block_fn, output, props_by_id)
+            _record_output_props(block_fn, output, props_by_id)
             if _verbose and (pruned > 0 or props_before > 200):
                 elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
                 print(f"[WanGP ui-perf] gradio.postprocess_prune fn={getattr(block_fn, 'name', '')} outputs={len(output)} props_before={props_before} props_after={props_after} pruned={pruned} elapsed_ms={elapsed_ms}", flush=True)
+        elif isinstance(output, list):
+            _record_output_props(block_fn, output, props_by_id)
         return output
 
     patched_postprocess_data._wangp_model_switch_patch_installed = True
@@ -173,8 +184,6 @@ def _install_large_progress_patch() -> bool:
                 _direct_queue_logged.add(self._id)
                 print(f"[WanGP ui-perf] gradio.direct_queue fn={name} id={self._id} outputs={len(config.get('outputs') or [])}", flush=True)
         outputs = config.get("outputs") or []
-        if name.startswith("fill_inputs") and len(outputs) > 64:
-            config["wangp_skip_value_output_mark"] = True
         if config.get("show_progress") == "full" and config.get("show_progress_on") is None and len(outputs) > 64:
             config["show_progress_on"] = outputs[:1]
             if _verbose and self._id not in _progress_cap_logged:

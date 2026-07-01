@@ -61,7 +61,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 - **Krea2 NAG**: WanGP exclusivity, *NAG* will allow you to define *Negative Prompts* with distilled models such as *Krea2 Turbo*
 
-- **Gradio Optimizations**: thanks to numerous exclusive otpimizations, Gradio UI should be faster (especially using the *Image Editor*) 
+- **Gradio Optimizations**: thanks to numerous exclusive optimizations, Gradio UI should be faster (especially using the *Image Editor*) 
 
 - **Chrome CPU Only Scripts**: you probably noticed that you Web Browser takes away VRAM just to display the UI. If you disable GPU Usage in Chrome for instance **you could save between 1GB of VRAM and 5GB of VRAM !!!**. The more VRAM capacity your GPU has the greater the gain (as Chrome tends to be greedier). I have added in the *Scripts* folder two scripts to disable GPU when using Chrome. WanGP has been optimized to still offer decent UI speed even if the web browser uses only the CPU. 
 

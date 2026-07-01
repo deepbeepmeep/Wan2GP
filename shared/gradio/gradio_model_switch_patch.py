@@ -6,7 +6,7 @@ import time
 import copy
 from pathlib import Path
 
-ENABLE_GRADIO_MODEL_SWITCH_MONKEYPATCH = True
+ENABLE_GRADIO_MODEL_SWITCH_MONKEYPATCH = False
 
 _ORIGINAL_OUTPUT_UPDATER = 'async function pl(S,J){const K=u.find(de=>de.id===J);if(!K)return;const pe=K.outputs,R=S?.map((de,he)=>({id:pe[he],prop:"value_is_output",value:!0}));T(R),await Rn();const oe=[];S?.forEach((de,he)=>{if(typeof de=="object"&&de!==null&&de.__type__==="update")for(const[bt,Qt]of Object.entries(de))bt!=="__type__"&&oe.push({id:pe[he],prop:bt,value:Qt});else oe.push({id:pe[he],prop:"value",value:de})}),T(oe),await Rn()}'
 _PATCHED_OUTPUT_UPDATER = 'async function pl(S,J){const K=u.find(de=>de.id===J);if(!K)return;const pe=K.outputs,R=[],oe=[],lt=K.wangp_skip_value_output_mark===!0;S?.forEach((de,he)=>{if(typeof de=="object"&&de!==null&&de.__type__==="update"){if("value"in de&&!lt)R.push({id:pe[he],prop:"value_is_output",value:!0});for(const[bt,Qt]of Object.entries(de))bt!=="__type__"&&oe.push({id:pe[he],prop:bt,value:Qt})}else lt||R.push({id:pe[he],prop:"value_is_output",value:!0}),oe.push({id:pe[he],prop:"value",value:de})});if(R.length){T(R);await Rn()}if(oe.length){T(oe);await Rn()}}'

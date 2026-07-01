@@ -78,6 +78,7 @@
 	let has_drawn = false;
 	let last_data: ImageBlobs = empty_data();
 	let last_value_id: string | null = null;
+	let last_value_server_seen_at = 0;
 	const instance_id = Math.random().toString(36).substring(2);
 
 	function empty_data(): ImageBlobs {
@@ -155,31 +156,42 @@
 		if (dirty.layers) uploads.push(...blobs.layers.filter(is_not_null).map((layer, i) => store_blob(id, "layer", layer, i)));
 		if (dirty.composite && blobs.composite) uploads.push(store_blob(id, "composite", blobs.composite, null));
 		await Promise.all(uploads);
+		last_value_server_seen_at = Date.now();
 		return { id };
+	}
+
+	function cached_value_survived_connection(): boolean {
+		const connection_lost_at = typeof window === "undefined" ? 0 : (window as any).__wangp_gradio_connection_lost_at || 0;
+		return !connection_lost_at || last_value_server_seen_at > connection_lost_at;
 	}
 
 	async function read_data(): Promise<ImageBlobs | { id: string }> {
 		if (editor?.is_empty?.()) {
 			last_data = empty_data();
 			last_value_id = null;
+			last_value_server_seen_at = 0;
 			return last_data;
 		}
 		if (editor?.is_export_deferred?.()) return last_data;
 		const dirty = editor.get_dirty_state();
-		if (!dirty.background && !dirty.layers && !dirty.composite) {
+		const force_full_value = Boolean(last_value_id) && !dirty.background && !dirty.layers && !dirty.composite && !cached_value_survived_connection();
+		if (!dirty.background && !dirty.layers && !dirty.composite && !force_full_value) {
 			if (last_value_id) return { id: last_value_id };
 			const id = Math.random().toString(36).substring(2);
 			await store_meta(id, dirty);
+			last_value_server_seen_at = Date.now();
 			return { id };
 		}
+		if (force_full_value) console.warn("WanGPImageEditor reconnect detected; get_value will return a full image/mask payload.");
+		const export_dirty = force_full_value ? { background: true, layers: true, composite: false } : dirty;
 		let blobs;
 		try {
-			blobs = await editor.get_blobs(dirty);
+			blobs = await editor.get_blobs(export_dirty);
 		} catch (e) {
 			last_data = empty_data();
 			return last_data;
 		}
-		const data = await store_blobs(blobs, dirty);
+		const data = await store_blobs(blobs, export_dirty);
 		editor.mark_value_clean();
 		last_value_id = data.id;
 		return data;
@@ -190,7 +202,9 @@
 		layers || [],
 		composite
 	);
-	$: last_value_id = last_data.background || last_data.layers.length || last_data.composite ? last_data.id || null : null;
+	$: {
+		last_value_id = last_data.background || last_data.layers.length || last_data.composite ? last_data.id || null : null;
+	}
 
 	let background_image = false;
 	let history = false;

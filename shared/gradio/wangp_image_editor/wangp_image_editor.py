@@ -28,7 +28,7 @@ _wangp_last_value_by_instance = {}
 class WanGPImageEditor(ImageEditor):
     TEMPLATE_DIR = "templates/"
     FRONTEND_DIR = "frontend/"
-    WANGP_FRONTEND_BUILD_ID = "20260701-mask-clear-active-layer-31"
+    WANGP_FRONTEND_BUILD_ID = "20260701-connection-loss-export-log-34"
     _wangp_magic_mask_patch_enabled = True
 
     @classmethod

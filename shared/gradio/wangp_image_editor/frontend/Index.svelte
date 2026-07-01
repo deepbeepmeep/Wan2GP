@@ -76,7 +76,61 @@
 	export let theme_mode: "dark" | "light";
 
 	let editor_instance: InteractiveImageEditor;
-	const patch_id = "wangp-image-editor-20260701-mask-clear-active-layer-29";
+	const patch_id = "wangp-image-editor-20260701-connection-loss-export-log-32";
+	const connection_lost_at_key = "__wangp_gradio_connection_lost_at";
+	const connection_lost_logged_key = "__wangp_gradio_connection_lost_logged";
+
+	function mark_gradio_connection_lost(event?: any): void {
+		if (event?.name === "AbortError") return;
+		(window as any)[connection_lost_at_key] = Date.now();
+		if (!(window as any)[connection_lost_logged_key]) {
+			(window as any)[connection_lost_logged_key] = true;
+			console.warn("WanGPImageEditor reconnect detected; get_value will return a full image/mask payload when needed.");
+		}
+	}
+
+	function wrap_stream_errors(stream: any): any {
+		if (!stream || stream.__wangp_connection_loss_patched) return stream;
+		stream.__wangp_connection_loss_patched = true;
+		try {
+			stream.addEventListener("error", mark_gradio_connection_lost);
+		} catch {}
+		let onerror = stream.onerror;
+		try {
+			Object.defineProperty(stream, "onerror", {
+				configurable: true,
+				get() {
+					return onerror;
+				},
+				set(handler) {
+					onerror = typeof handler === "function"
+						? function (this: any, event: any) {
+								mark_gradio_connection_lost(event);
+								return handler.call(this, event);
+							}
+						: handler;
+				}
+			});
+			stream.onerror = onerror || mark_gradio_connection_lost;
+		} catch {
+			stream.onerror = function (this: any, event: any) {
+				mark_gradio_connection_lost(event);
+				return onerror?.call(this, event);
+			};
+		}
+		return stream;
+	}
+
+	function install_gradio_connection_loss_patch(client: any): void {
+		if (!client || client.__wangp_connection_loss_patch_installed || typeof client.stream !== "function") return;
+		const stream = client.stream;
+		client.stream = function (this: any, ...args: any[]) {
+			return wrap_stream_errors(stream.apply(this, args));
+		};
+		client.__wangp_connection_loss_patch_installed = true;
+		wrap_stream_errors(client.heartbeat_event);
+		wrap_stream_errors(client.stream_instance);
+	}
 
 	if (typeof window !== "undefined") {
 		(window as any).__WANGP_IMAGE_EDITOR_VENDOR_PATCH = {
@@ -110,9 +164,12 @@
 			imported_layers_clear_transparent: true,
 			imported_layers_use_logical_size: true,
 			clears_mask_on_crop_resize: true,
-			empty_mask_layer_keeps_active_layer: true
+			empty_mask_layer_keeps_active_layer: true,
+			records_gradio_connection_loss_timestamp: true
 		};
 	}
+
+	$: install_gradio_connection_loss_patch(gradio?.client);
 
 	export async function get_value(): Promise<ImageBlobs | { id: string }> {
 		return editor_instance.get_data();

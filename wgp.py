@@ -6532,9 +6532,12 @@ def generate_media(
             video_guide = image_guide
             image_guide = None
 
-    if image_mask is not None and isinstance(image_mask, Image.Image):
-        video_mask = image_mask
-        image_mask = None
+    if image_mask is not None:
+        if isinstance(image_mask, str):
+            image_mask = Image.open(image_mask)
+        if isinstance(image_mask, Image.Image):
+            video_mask = image_mask
+            image_mask = None
 
     if model_def.get("no_background_removal", False): remove_background_images_ref = 0
     

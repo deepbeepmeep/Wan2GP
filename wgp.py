@@ -9896,6 +9896,9 @@ def _model_choice_target_value(model_type):
     model_dropdowns.debug_model_selector_event("target.write", source=caller, target=model_type)
     return gr.update() if len(model_type) == 0 else f"{model_type}|{time.time()}"
 
+def switch_to_model(model_type, open_media_tab=False):
+    return _model_choice_target_value(model_type), gr.Tabs(selected="media_gen") if open_media_tab else gr.update()
+
 def goto_model_type(state, model_type):
     model_type = _model_choice_target_model_type(model_type)
     if len(model_type) == 0:

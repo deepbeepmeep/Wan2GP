@@ -443,7 +443,7 @@ class family_handler:
         if base_model_type in ["ltx2_22B"]:
 
             extra_model_def["video_guide_outpainting"] = [0,1]
-            extra_model_def["video_guide_outpainting_label"] = "Enable Spatial Outpainting on Control Video using LTX2 Inpainting IC-LoRA"
+            extra_model_def["video_guide_outpainting_label"] = "Enable Spatial Outpainting on Control Video using LTX2 Outpainting IC-LoRA"
             extra_model_def["guide_inpaint_color"] = ltx2_guide_inpaint_color
             extra_model_def["background_removal_color"] = ltx2_background_removal_color
 

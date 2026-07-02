@@ -1,0 +1,10 @@
+{
+  "source": "gradio._frontend_code.imageeditor",
+  "gradio_version": "5.29.0",
+  "component_package": "@gradio/imageeditor",
+  "component_version": "0.14.5",
+  "notes": [
+    "Generated once from the installed Gradio source tree.",
+    "Unchanged @gradio/* dependencies are resolved from the installed Gradio frontend source during local builds."
+  ]
+}

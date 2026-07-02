@@ -353,6 +353,8 @@ def pay_attention(
     # format : torch.Size([batches, tokens, heads, head_features])
     # assume if q_lens is non null, each q is padded up to lq (one q out of two will need to be discarded or ignored)
     # assume if k_lens is non null, each k is padded up to lk (one k out of two will need to be discarded or ignored)
+    if attention_mask is not None and causal:
+        raise ValueError("pay_attention received both attention_mask and causal=True; build a combined mask once and pass causal=False.")
     if attention_mask != None:
         requested_attn = offload.shared_state["_attention"] if force_attention == None else force_attention
         requested_attn = "sage2" if requested_attn == "radial" else requested_attn

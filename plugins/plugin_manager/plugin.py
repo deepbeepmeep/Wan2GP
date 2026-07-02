@@ -1,4 +1,5 @@
 import gradio as gr
+from shared import i18n
 import json
 import os
 import traceback
@@ -35,7 +36,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         
         self.add_tab(
             tab_id="plugin_manager_tab",
-            label="Plugins",
+            label=i18n.tr("Plugins"),
             component_constructor=self.create_plugin_manager_ui,
         )
 
@@ -258,7 +259,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
             community_plugins.sort(key=lambda p: (p.get('name') or plugin_id_from_url(p.get('url', '')) or '').lower())
 
         except Exception as e:
-            gr.Warning(f"Could not process community plugins list: {e}")
+            gr.Warning(i18n.tr("Could not process community plugins list: {e}", e=e))
             return "<p style='text-align:center; color: var(--color-accent-soft);'>Failed to load community plugins.</p>"
 
         if not community_plugins:
@@ -533,28 +534,28 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                     gr.Markdown("### Installed Plugins")
                     self.plugins_html_display = gr.HTML()
                     with gr.Row(elem_classes="save-buttons-container"):
-                        self.restart_button = gr.Button("Restart", variant="primary", size="sm", scale=0, elem_classes="stylish-save-btn")
-                        self.refresh_catalog_button = gr.Button("Check for Updates", variant="secondary", size="sm", scale=0, elem_classes="stylish-save-btn")
+                        self.restart_button = gr.Button(i18n.tr("Restart"), variant="primary", size="sm", scale=0, elem_classes="stylish-save-btn")
+                        self.refresh_catalog_button = gr.Button(i18n.tr("Check for Updates"), variant="secondary", size="sm", scale=0, elem_classes="stylish-save-btn")
                 with gr.Column(scale=2, min_width=300):
                     gr.Markdown("### Available Plugins")
                     self.local_available_plugins_html_outputs = []
                     self.community_plugins_html_outputs = []
                     with gr.Tabs(selected=self._default_available_tab()):
-                        with gr.Tab("Available Locally", id="available_locally"):
+                        with gr.Tab(i18n.tr("Available Locally"), id="available_locally"):
                             with gr.Tabs(selected="local_all"):
                                 for tab_id, label, _ in DISCOVER_PLUGIN_TYPE_TABS:
                                     with gr.Tab(label, id=f"local_{tab_id}"):
                                         self.local_available_plugins_html_outputs.append(gr.HTML())
-                        with gr.Tab("Downloadable", id="downloadable"):
+                        with gr.Tab(i18n.tr("Downloadable"), id="downloadable"):
                             with gr.Tabs(selected="downloadable_all"):
                                 for tab_id, label, _ in DISCOVER_PLUGIN_TYPE_TABS:
                                     with gr.Tab(label, id=f"downloadable_{tab_id}"):
                                         self.community_plugins_html_outputs.append(gr.HTML())
 
-                    with gr.Accordion("Install from URL", open=True):
+                    with gr.Accordion(i18n.tr("Install from URL"), open=True):
                         with gr.Group():
-                            self.plugin_url_textbox = gr.Textbox(label="GitHub URL", placeholder="https://github.com/user/wan2gp-plugin-repo")
-                            self.install_plugin_button = gr.Button("Download and Install from URL")
+                            self.plugin_url_textbox = gr.Textbox(label=i18n.tr("GitHub URL"), placeholder=i18n.tr("https://github.com/user/wan2gp-plugin-repo"))
+                            self.install_plugin_button = gr.Button(i18n.tr("Download and Install from URL"))
 
             with gr.Column(visible=False):
                 self.plugin_action_input = gr.Textbox(elem_id="plugin_action_input")
@@ -616,11 +617,11 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
             del self._community_plugins_cache
         updates_available = self._count_available_updates()
         if updates_available <= 0:
-            gr.Info("No Plugin Update is available")
+            gr.Info(i18n.tr("No Plugin Update is available"))
         elif updates_available == 1:
-            gr.Info("One Plugin Update is available")
+            gr.Info(i18n.tr("One Plugin Update is available"))
         else:
-            gr.Info(f"{updates_available} Plugin Updates are available")
+            gr.Info(i18n.tr("{updates_available} Plugin Updates are available", updates_available=updates_available))
         return self._build_plugins_html(), *self._build_available_plugins_html_outputs()
 
     def _count_available_updates(self) -> int:
@@ -661,7 +662,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         try:
             return self._enable_plugin_id(plugin_id)
         except Exception as e:
-            gr.Warning(f"Failed to auto-enable plugin {plugin_id}: {e}")
+            gr.Warning(i18n.tr("Failed to auto-enable plugin {plugin_id}: {e}", plugin_id=plugin_id, e=e))
         return False
 
     def _finish_install_from_url(self, url: str, result_message: str):
@@ -683,18 +684,18 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         self._write_server_config()
         self.restart_required = True
         if not silent:
-            gr.Info("Plugin settings saved. Please restart WanGP for changes to take effect.")
+            gr.Info(i18n.tr("Plugin settings saved. Please restart WanGP for changes to take effect."))
         return self._build_plugins_html(), *self._build_available_plugins_html_outputs()
 
     def _save_and_restart(self, enabled_plugins: list):
         self.server_config["enabled_plugins"] = enabled_plugins
         self._write_server_config()
-        gr.Info("Settings saved. Restarting application...")
+        gr.Info(i18n.tr("Settings saved. Restarting application..."))
         if callable(getattr(self, "restart_application", None)):
             self.restart_application()
             return
         elif callable(getattr(self, "quit_application", None)):            
-            gr.Warning("Restart hook is unavailable. WAN2GP will now quit. Please start WAN2GP again manually.")
+            gr.Warning(i18n.tr("Restart hook is unavailable. WAN2GP will now quit. Please start WAN2GP again manually."))
             self.quit_application()
             return
 
@@ -712,7 +713,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
             else:
                 return self._save_plugin_settings(enabled_plugins, silent=payload.get("silent", False))
         except (json.JSONDecodeError, TypeError):
-            gr.Warning("Could not process save action due to invalid data.")
+            gr.Warning(i18n.tr("Could not process save action due to invalid data."))
             return gr.update(value=self._build_plugins_html()), *[gr.update() for _ in range(self._available_outputs_count())]
 
     def _install_plugin_and_refresh(self, url, progress=gr.Progress()):
@@ -787,10 +788,10 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
             else:
                 gr.Info(result_message)
         except (json.JSONDecodeError, ValueError) as e:
-            gr.Warning(f"Could not perform plugin action: {e}")
+            gr.Warning(i18n.tr("Could not perform plugin action: {e}", e=e))
             traceback.print_exc()
         except Exception as e:
-            gr.Warning(f"Plugin action failed: {e}")
+            gr.Warning(i18n.tr("Plugin action failed: {e}", e=e))
             traceback.print_exc()
 
         if hasattr(self, '_community_plugins_cache'):

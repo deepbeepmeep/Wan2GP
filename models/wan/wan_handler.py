@@ -4,6 +4,7 @@ import re
 import torch
 import numpy as np
 import gradio as gr
+from shared import i18n
 import cv2
 from PIL import Image
 from shared.utils.hf import build_hf_url
@@ -982,7 +983,7 @@ class family_handler():
                 align_pose=True
             )
             if video_guide_processed.numel() == 0:
-                gr.Info("Unable to detect a Person")
+                gr.Info(i18n.tr("Unable to detect a Person"))
                 return None, None, None, None
             return video_guide_processed, None, video_mask, None
         else:
@@ -1353,7 +1354,7 @@ class family_handler():
             image_refs = inputs["image_refs"]
             video_prompt_type = inputs["video_prompt_type"]
             if image_refs is not None and len(image_refs) == 1 and "K" in video_prompt_type:
-                gr.Info("Warning, Ref Image that contains the Face to transfer is Missing: if 'Landscape and then People or Objects' is selected beside the Landscape Image Ref there should be another Image Ref that contains a Face.")
+                gr.Info(i18n.tr("Warning, Ref Image that contains the Face to transfer is Missing: if 'Landscape and then People or Objects' is selected beside the Landscape Image Ref there should be another Image Ref that contains a Face."))
                     
 
         elif base_model_type in ["chrono_edit"]:

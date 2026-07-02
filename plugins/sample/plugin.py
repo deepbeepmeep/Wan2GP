@@ -2,6 +2,7 @@ from datetime import datetime
 import time
 import json
 import gradio as gr
+from shared import i18n
 
 from shared.utils.plugins import WAN2GPPlugin
 from shared.utils.process_locks import acquire_GPU_ressources, any_GPU_process_running, release_GPU_ressources
@@ -13,7 +14,7 @@ PlugIn_Id = "SamplePlugin"
 def acquire_GPU(state):
     GPU_process_running = any_GPU_process_running(state, PlugIn_Id)
     if GPU_process_running:
-        gr.Error("Another PlugIn is using the GPU")
+        gr.Error(i18n.tr("Another PlugIn is using the GPU"))
     acquire_GPU_ressources(state, PlugIn_Id, PlugIn_Name, gr=gr)
 
 
@@ -65,7 +66,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         def big_process(state):
             acquire_GPU(state)
-            gr.Info("Doing something important that Requires Full VRAM & GPU available")
+            gr.Info(i18n.tr("Doing something important that Requires Full VRAM & GPU available"))
             time.sleep(30)
             release_GPU(state)
             return "42"
@@ -118,7 +119,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             with open(f"finetunes/to_be_deleted{the_time}.json", "w", encoding="utf-8") as writer:
                 writer.write(json.dumps(finetune_def, indent=4))
             self.refresh_model_defs()
-            gr.Info(f"finetune {the_time} had been created")
+            gr.Info(i18n.tr("finetune {the_time} had been created", the_time=the_time))
 
 
         with gr.Column():
@@ -126,18 +127,18 @@ class ConfigTabPlugin(WAN2GPPlugin):
             settings = self.get_current_model_settings(state.value)
             prompt = settings["prompt"]
             gr.HTML("<B><B>Sample Plugin that illustrates</B>:<BR>-How to get Settings from Main Form and then Modify them<BR>-How to suspend the Video Gen (and release VRAM) to execute your own GPU intensive process.<BR>-How to switch back automatically to the Main Tab<BR>-How to trigger a Video Gen from a plugin an track its progress<BR>-Add a new finetune on the fly")
-            sample_text = gr.Text(label="Prompt Copy", value=prompt, lines=5)
-            update_btn = gr.Button("Update Prompt On Main Page")
+            sample_text = gr.Text(label=i18n.tr("Prompt Copy"), value=prompt, lines=5)
+            update_btn = gr.Button(i18n.tr("Update Prompt On Main Page"))
             gr.Markdown()
-            process_btn = gr.Button("Use GPU To Do Something Important")
-            process_output = gr.Text(label="Process Output", value="")
-            goto_btn = gr.Button("Goto Media Generator Tab")
+            process_btn = gr.Button(i18n.tr("Use GPU To Do Something Important"))
+            process_output = gr.Text(label=i18n.tr("Process Output"), value="")
+            goto_btn = gr.Button(i18n.tr("Goto Media Generator Tab"))
             gr.Markdown("---")
-            start_btn = gr.Button("Generate a LTX 2.3 Video")
-            output_video = gr.Video(label="Output")
-            abort_btn = gr.Button("Abort Generation")
+            start_btn = gr.Button(i18n.tr("Generate a LTX 2.3 Video"))
+            output_video = gr.Video(label=i18n.tr("Output"))
+            abort_btn = gr.Button(i18n.tr("Abort Generation"))
 
-            write_finetune_btn = gr.Button("Generate a Random LTX 2 Finetune")
+            write_finetune_btn = gr.Button(i18n.tr("Generate a Random LTX 2 Finetune"))
 
         self.on_tab_outputs = [sample_text]
 

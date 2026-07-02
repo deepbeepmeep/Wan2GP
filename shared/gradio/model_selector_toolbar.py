@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 import gradio as gr
+from shared import i18n
 
 from shared import model_dropdowns
 from shared.deepy.config import deepy_available
@@ -33,13 +34,13 @@ class ModelSelectorToolbar:
 def create_toolbar(is_finetune_editor=False):
     with gr.Column(scale=2, min_width=210, elem_classes=["wangp-model-selector-tools"]):
         with gr.Row(elem_classes=["wangp-model-selector-tool-row"]) as tool_row:
-            search_button = gr.Button("⌕", elem_id="wangp_model_tool_search", elem_classes=["wangp-model-selector-tool", "wangp-model-selector-tool-search"], size="sm", scale=0)
+            search_button = gr.Button(i18n.tr("⌕"), elem_id="wangp_model_tool_search", elem_classes=["wangp-model-selector-tool", "wangp-model-selector-tool-search"], size="sm", scale=0)
             finetune_button = gr.Button("✎" if is_finetune_editor else "+", elem_id="wangp_model_tool_finetune", elem_classes=["wangp-model-selector-tool", "wangp-model-selector-tool-finetune"], size="sm", scale=0)
-            refresh_button = gr.Button("↻", elem_id="wangp_model_tool_refresh", elem_classes=["wangp-model-selector-tool", "wangp-model-selector-tool-refresh"], size="sm", scale=0)
-            unload_button = gr.Button("⏏", elem_id="wangp_model_tool_unload", elem_classes=["wangp-model-selector-tool", "wangp-model-selector-tool-unload"], size="sm", scale=0)
+            refresh_button = gr.Button(i18n.tr("↻"), elem_id="wangp_model_tool_refresh", elem_classes=["wangp-model-selector-tool", "wangp-model-selector-tool-refresh"], size="sm", scale=0)
+            unload_button = gr.Button(i18n.tr("⏏"), elem_id="wangp_model_tool_unload", elem_classes=["wangp-model-selector-tool", "wangp-model-selector-tool-unload"], size="sm", scale=0)
         with gr.Row(visible=False, elem_classes=["wangp-model-selector-search-row"]) as search_row:
             with gr.Column(scale=1, min_width=0, elem_classes=["wangp-model-selector-search-box"]):
-                search_query = gr.Textbox(value="", show_label=False, placeholder="Search models", elem_id="wangp_model_search_query", elem_classes=["wangp-model-selector-search-input"])
+                search_query = gr.Textbox(value="", show_label=False, placeholder=i18n.tr("Search models"), elem_id="wangp_model_search_query", elem_classes=["wangp-model-selector-search-input"])
                 search_results = gr.HTML(value="", visible=False, elem_id="wangp_model_search_results")
     return ModelSelectorToolbar(search_button, refresh_button, unload_button, finetune_button=finetune_button, tool_row=tool_row, search_row=search_row, search_query=search_query, search_results=search_results)
 
@@ -47,8 +48,8 @@ def create_toolbar(is_finetune_editor=False):
 def create_search_panel(toolbar: ModelSelectorToolbar):
     with gr.Row(visible=False, elem_classes=["wangp-model-selector-hidden-controls"]):
         toolbar.search_target = gr.Textbox(value="", show_label=False, elem_id="wangp_model_search_target")
-        toolbar.search_apply_button = gr.Button("Apply model search", elem_id="wangp_model_search_apply")
-        toolbar.search_close_button = gr.Button("Close model search", elem_id="wangp_model_search_close")
+        toolbar.search_apply_button = gr.Button(i18n.tr("Apply model search"), elem_id="wangp_model_search_apply")
+        toolbar.search_close_button = gr.Button(i18n.tr("Close model search"), elem_id="wangp_model_search_close")
     return toolbar
 
 
@@ -177,7 +178,7 @@ def refresh_models_with_info(refresh_model_defs, refresh_model_dropdowns, state,
     try:
         parse_errors = refresh_model_defs() or []
     except Exception as e:
-        gr.Info(f"Unable to refresh model list: {e}")
+        gr.Info(i18n.tr("Unable to refresh model list: {e}", e=e))
         return refresh_model_dropdowns(state)
     pruned_count = _prune_orphan_model_settings(state, deps_factory())
     prune_text = f" Removed {pruned_count} orphan model setting{'s' if pruned_count > 1 else ''}." if pruned_count > 0 else ""
@@ -192,7 +193,7 @@ def unload_models_from_ram(state, *, server_config, any_GPU_process_running, rel
     with model_unload_guard():
         unload_targets = _unload_targets_text(server_config)
         if any_GPU_process_running(state, "configuration"):
-            gr.Info(f"Unable to unload {unload_targets} while GPU resources are allocated.")
+            gr.Info(i18n.tr("Unable to unload {unload_targets} while GPU resources are allocated.", unload_targets=unload_targets))
             return
         if deepy_available(server_config):
             release_deepy_vram(state, clear_session_state=False, discard_runtime_snapshot=True)
@@ -201,7 +202,7 @@ def unload_models_from_ram(state, *, server_config, any_GPU_process_running, rel
             reset_prompt_enhancer_if_requested()
         release_extensions()
         release_model()
-    gr.Info(f"{unload_targets} unloaded from RAM.")
+    gr.Info(i18n.tr("{unload_targets} unloaded from RAM.", unload_targets=unload_targets))
 
 
 def _unload_targets_text(server_config):

@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass
 
 import gradio as gr
+from shared import i18n
 
 
 @dataclass(frozen=True)
@@ -26,7 +27,7 @@ class FramePlanningError(RuntimeError):
 def require_model_def(model_type: str, get_model_def) -> dict:
     model_def = get_model_def(str(model_type))
     if not isinstance(model_def, dict):
-        raise gr.Error(f"Unsupported model type: {model_type}")
+        raise gr.Error(i18n.tr("Unsupported model type: {model_type}", model_type=model_type))
     return model_def
 
 

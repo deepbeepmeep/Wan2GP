@@ -1,6 +1,7 @@
 import os
 import torch
 import gradio as gr
+from shared import i18n
 from shared.utils.hf import build_hf_url
 
 class family_handler():
@@ -222,9 +223,9 @@ class family_handler():
 
             if model_mode_int in (2, 3, 4, 5):
                 if denoising_strength != 1 or masking_strength != 1:
-                    gr.Info("LanPaint forces Denoising Strength and Masking Strength to 1; non-1 values will be ignored.")
+                    gr.Info(i18n.tr("LanPaint forces Denoising Strength and Masking Strength to 1; non-1 values will be ignored."))
             elif denoising_strength < 1 and model_mode_int != 0:
-                gr.Info("Denoising Strength will be ignored if Masked Denoising is not used")
+                gr.Info(i18n.tr("Denoising Strength will be ignored if Masked Denoising is not used"))
 
         if base_model_type in ["qwen_image_layered_20B"]:
             if inputs.get("image_guide") is None:

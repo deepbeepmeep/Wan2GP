@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 import gradio as gr
+from shared import i18n
 
 from shared import model_dropdowns
 
@@ -80,7 +81,7 @@ def create_filter(selected_filter):
         filter_html = gr.HTML(value=render_filter(selected_filter), elem_id="wangp_model_output_filter")
         with gr.Row(visible=False, elem_classes=["wangp-model-output-filter-hidden-controls"]):
             target = gr.Textbox(value="", show_label=False, elem_id="wangp_model_output_filter_target")
-            apply_button = gr.Button("Apply model output filter", elem_id="wangp_model_output_filter_apply")
+            apply_button = gr.Button(i18n.tr("Apply model output filter"), elem_id="wangp_model_output_filter_apply")
             refresh_trigger = gr.Textbox(value="", show_label=False, elem_id="wangp_model_output_filter_refresh")
     return ModelOutputFilterControls(filter_html, target, apply_button, refresh_trigger)
 

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import gradio as gr
+from shared import i18n
 
 from shared import magic_mask
 
@@ -1109,23 +1110,23 @@ WMM.scheduleMount();
             with gr.Column(elem_classes=["wangp-magic-mask-card", "wangp-model-info-card"]):
                 with gr.Row(elem_classes=["wangp-model-info-titlebar", "wangp-magic-mask-titlebar"]):
                     self.title = gr.HTML("<div class='wangp-model-info-heading'>Magic Mask</div>", elem_classes=["wangp-magic-mask-heading"])
-                    self.close_btn = gr.Button("x", elem_classes=["wangp-model-info-close", "wangp-magic-mask-close"], min_width=26, scale=0)
+                    self.close_btn = gr.Button(i18n.tr("x"), elem_classes=["wangp-model-info-close", "wangp-magic-mask-close"], min_width=26, scale=0)
                 with gr.Column(elem_classes=["wangp-magic-mask-body"]):
                     gr.HTML("<div class='wangp-magic-mask-intro'>Enter the list of Object or Persons to track and that will be used to build the Mask. Each object / person should be separated by a \",\". For example: \"blue car, woman to the right\"</div>")
                     with gr.Row(elem_classes=["wangp-magic-mask-keyword-row"]):
-                        self.keywords = gr.Textbox(show_label=False, placeholder="person, car, sky", lines=1, scale=6, elem_classes=["wangp-magic-mask-keywords"])
+                        self.keywords = gr.Textbox(show_label=False, placeholder=i18n.tr("person, car, sky"), lines=1, scale=6, elem_classes=["wangp-magic-mask-keywords"])
                         with gr.Group(elem_classes=["wangp-magic-mask-negative"]):
-                            self.negative_mask = gr.Checkbox(label="Negative Mask", value=False, container=False, min_width=1, elem_classes=["wangp-magic-mask-negative-checkbox"])
+                            self.negative_mask = gr.Checkbox(label=i18n.tr("Negative Mask"), value=False, container=False, min_width=1, elem_classes=["wangp-magic-mask-negative-checkbox"])
                     with gr.Row(elem_classes=["wangp-magic-mask-options-row"]):
-                        self.max_objects = gr.Dropdown(choices=_max_object_choices(), value="all", label="Max Objects", scale=1, visible=False, elem_classes=["wangp-magic-mask-max-objects"])
-                        self.max_time = gr.Textbox(value="", label="Max Time (s)", placeholder="", lines=1, scale=1, elem_classes=["wangp-magic-mask-max-time"])
+                        self.max_objects = gr.Dropdown(choices=_max_object_choices(), value="all", label=i18n.tr("Max Objects"), scale=1, visible=False, elem_classes=["wangp-magic-mask-max-objects"])
+                        self.max_time = gr.Textbox(value="", label=i18n.tr("Max Time (s)"), placeholder=i18n.tr(""), lines=1, scale=1, elem_classes=["wangp-magic-mask-max-time"])
                 self.status = gr.HTML("")
                 self.progress_html = gr.HTML("")
                 gr.HTML("", elem_classes=["wangp-magic-mask-spacer"], padding=False)
                 with gr.Row(elem_classes=["wangp-magic-mask-actions"]):
-                    self.cancel_btn = gr.Button("Exit", size="sm", elem_classes=["wangp-magic-mask-btn", "wangp-magic-mask-exit-btn"])
-                    self.abort_btn = gr.Button("Abort", size="sm", visible=False, elem_classes=["wangp-magic-mask-btn", "wangp-magic-mask-btn--danger"])
-                    self.generate_btn = gr.Button("Generate", size="sm", elem_classes=["wangp-magic-mask-btn", "wangp-magic-mask-btn--primary"])
+                    self.cancel_btn = gr.Button(i18n.tr("Exit"), size="sm", elem_classes=["wangp-magic-mask-btn", "wangp-magic-mask-exit-btn"])
+                    self.abort_btn = gr.Button(i18n.tr("Abort"), size="sm", visible=False, elem_classes=["wangp-magic-mask-btn", "wangp-magic-mask-btn--danger"])
+                    self.generate_btn = gr.Button(i18n.tr("Generate"), size="sm", elem_classes=["wangp-magic-mask-btn", "wangp-magic-mask-btn--primary"])
         return self
 
     def mount(

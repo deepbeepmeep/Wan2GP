@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import gradio as gr
+from shared import i18n
 import gradio.component_meta as gradio_component_meta
 from gradio.components.base import server
 
@@ -218,14 +219,14 @@ class LocalFilePickerTextbox:
             with gr.Column(elem_classes=["wangp-model-info-card", "wangp-local-file-picker-card"]):
                 with gr.Row(elem_classes=["wangp-model-info-titlebar", "wangp-local-file-picker-titlebar"]):
                     gr.HTML(f"<div class='wangp-model-info-heading'>{self.popup_title}</div>", elem_classes=["wangp-local-file-picker-heading"])
-                    self.close_button = gr.Button("x", elem_classes=["wangp-model-info-close", "wangp-local-file-picker-close"], min_width=26, scale=0)
+                    self.close_button = gr.Button(i18n.tr("x"), elem_classes=["wangp-model-info-close", "wangp-local-file-picker-close"], min_width=26, scale=0)
                 with gr.Column(elem_classes=["wangp-model-info-content", "wangp-local-file-picker-content"]):
                     with gr.Row(elem_classes=["wangp-local-file-picker-location-row"]):
                         self.drive = gr.Dropdown(self.roots, value=self.default_root, show_label=False, container=False, scale=1, min_width=90, elem_classes=["wangp-local-file-picker-drive"])
-                        self.current_dir = gr.Text(show_label=False, value=self._display_dir(self.default_root, self.default_dir), placeholder="Folder", interactive=True, container=False, scale=8, min_width=240, elem_classes=["wangp-local-file-picker-folder-input"])
-                        self.up_button = gr.Button("Up", min_width=58, elem_classes=["wangp-local-file-picker-up-btn"])
+                        self.current_dir = gr.Text(show_label=False, value=self._display_dir(self.default_root, self.default_dir), placeholder=i18n.tr("Folder"), interactive=True, container=False, scale=8, min_width=240, elem_classes=["wangp-local-file-picker-folder-input"])
+                        self.up_button = gr.Button(i18n.tr("Up"), min_width=58, elem_classes=["wangp-local-file-picker-up-btn"])
                     self.browser = _FilteredFileExplorer(value=self._browser_value(self.default_dir, self._parse_text(self.value, self.static_compress_root)), file_extensions=self.file_extensions, glob="**/*.*", show_label=False, root_dir=self.default_dir, file_count="multiple" if self.multiselect else "single", height=self.browser_height, interactive=True)
-                    self.exit_button = gr.Button("Exit", visible=self.multiselect, elem_classes=["wangp-local-file-picker-exit-btn"], min_width=72)
+                    self.exit_button = gr.Button(i18n.tr("Exit"), visible=self.multiselect, elem_classes=["wangp-local-file-picker-exit-btn"], min_width=72)
 
     def _wire_events(self) -> None:
         assert self.textbox is not None

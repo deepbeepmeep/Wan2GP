@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import gradio as gr
+from shared import i18n
 
 from shared.gradio.local_file_picker import IMAGE_FILE_EXTENSIONS, VIDEO_FILE_EXTENSIONS
 
@@ -89,13 +90,13 @@ def _expand_source_line(line: str, media_kind: str) -> list[tuple[str, tuple[str
             paths = sorted(dict.fromkeys(paths), key=str.casefold)
             if len(paths) == 0:
                 supported_text = ", ".join(sorted(_extensions_for_media(media_kind)))
-                raise gr.Error(f"Source folder contains no supported {media_label}s ({supported_text}): {pattern}")
+                raise gr.Error(i18n.tr("Source folder contains no supported {media_label}s ({supported_text}): {pattern}", media_label=media_label, supported_text=supported_text, pattern=pattern))
             return [(path, ()) for path in paths]
         if not os.path.isfile(pattern):
-            raise gr.Error(f"Source {media_label} not found: {pattern}")
+            raise gr.Error(i18n.tr("Source {media_label} not found: {pattern}", media_label=media_label, pattern=pattern))
         if not _is_supported_source(pattern, media_kind):
             supported_text = ", ".join(sorted(_extensions_for_media(media_kind)))
-            raise gr.Error(f"Source {media_label} must use one of these extensions: {supported_text}.")
+            raise gr.Error(i18n.tr("Source {media_label} must use one of these extensions: {supported_text}.", media_label=media_label, supported_text=supported_text))
         return [(pattern, ())]
     paths = [
         _normalize_local_path(path)
@@ -104,13 +105,13 @@ def _expand_source_line(line: str, media_kind: str) -> list[tuple[str, tuple[str
     ]
     paths = sorted(dict.fromkeys(paths), key=str.casefold)
     if len(paths) == 0:
-        raise gr.Error(f"No supported source {media_label}s matched: {line}")
+        raise gr.Error(i18n.tr("No supported source {media_label}s matched: {line}", media_label=media_label, line=line))
     return [(path, _capture_wildcards(pattern, path)) for path in paths]
 
 
 def _fill_output_pattern(pattern: str, captures: tuple[str, ...], media_kind: str) -> str:
     if pattern.count("*") != len(captures):
-        raise gr.Error("Input and output wildcard patterns must contain the same number of * tokens.")
+        raise gr.Error(i18n.tr("Input and output wildcard patterns must contain the same number of * tokens."))
     parts = pattern.split("*")
     output = []
     for index, part in enumerate(parts):
@@ -136,7 +137,7 @@ def _validate_output_path(path: str, media_kind: str = "video") -> str:
     suffix = Path(path).suffix.lower().lstrip(".")
     if suffix and suffix not in constants.SUPPORTED_OUTPUT_CONTAINERS:
         supported_text = ", ".join(f".{container}" for container in sorted(constants.SUPPORTED_OUTPUT_CONTAINERS))
-        raise gr.Error(f"Batch output files must use one of these container extensions: {supported_text}.")
+        raise gr.Error(i18n.tr("Batch output files must use one of these container extensions: {supported_text}.", supported_text=supported_text))
     return path
 
 
@@ -158,7 +159,7 @@ def expand_batch_items(source_text: str, output_text: str, *, media_kind: str = 
             items.extend(BatchItem(source_path=source_path, output_path=output_dir, output_is_directory=True) for source_path, _captures in source_group)
         return items
     if len(output_lines) != len(source_lines):
-        raise gr.Error("Batch output paths must be empty, a single output folder, or have one line for each source path line.")
+        raise gr.Error(i18n.tr("Batch output paths must be empty, a single output folder, or have one line for each source path line."))
 
     for source_line, source_group, output_line in zip(source_lines, expanded_by_line, output_lines):
         output_line = output_line.strip()
@@ -169,14 +170,14 @@ def expand_batch_items(source_text: str, output_text: str, *, media_kind: str = 
                 items.extend(BatchItem(source_path=source_path, output_path=output_dir, output_is_directory=True) for source_path, _captures in source_group)
                 continue
             if not _has_wildcards(output_line):
-                raise gr.Error("A wildcard source line needs a matching wildcard output line, an output folder, or an empty output field.")
+                raise gr.Error(i18n.tr("A wildcard source line needs a matching wildcard output line, an output folder, or an empty output field."))
             for source_path, captures in source_group:
                 items.append(BatchItem(source_path=source_path, output_path=_fill_output_pattern(output_line, captures, media_kind)))
             continue
         if _has_wildcards(output_line):
-            raise gr.Error("Wildcard output paths require a wildcard source path on the same line.")
+            raise gr.Error(i18n.tr("Wildcard output paths require a wildcard source path on the same line."))
         if len(source_group) > 1 and not _is_output_directory_line(output_line):
-            raise gr.Error("A source folder needs an empty output field or an output folder.")
+            raise gr.Error(i18n.tr("A source folder needs an empty output field or an output folder."))
         output_is_directory = _is_output_directory_line(output_line)
         output_path = _normalize_local_path(output_line) if output_is_directory else _validate_output_path(_normalize_local_path(output_line), media_kind)
         for source_path, _captures in source_group:

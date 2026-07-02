@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 
 import gradio as gr
+from shared import i18n
 import torch
 from PIL import Image
 
@@ -77,13 +78,13 @@ def load_process_full_video_hdr_overlap_buffer(output_path: str, overlap_frames:
 def _extract_exact_frame_image(video_path: str, frame_no: int) -> Image.Image:
     ffmpeg_path = resolve_media_binary("ffmpeg")
     if ffmpeg_path is None or not os.path.isfile(video_path) or int(frame_no) < 0:
-        raise gr.Error(f"Unable to decode frame {frame_no} from {video_path}")
+        raise gr.Error(i18n.tr("Unable to decode frame {frame_no} from {video_path}", frame_no=frame_no, video_path=video_path))
     with tempfile.TemporaryDirectory(prefix="wangp_tail_frame_") as temp_dir:
         output_path = os.path.join(temp_dir, "frame.png")
         command = [ffmpeg_path, "-v", "error", "-y", "-i", video_path, "-an", "-sn", "-vf", f"select=eq(n\\,{int(frame_no)})", "-frames:v", "1", output_path]
         result = subprocess.run(command, capture_output=True, text=True)
         if result.returncode != 0 or not os.path.isfile(output_path):
-            raise gr.Error(f"Unable to decode frame {frame_no} from {video_path}")
+            raise gr.Error(i18n.tr("Unable to decode frame {frame_no} from {video_path}", frame_no=frame_no, video_path=video_path))
         with Image.open(output_path) as frame_image:
             return frame_image.convert("RGB").copy()
 
@@ -110,13 +111,13 @@ def probe_existing_output_resolution(output_path: str) -> tuple[str, int, int]:
     width = int(metadata.get("display_width") or metadata.get("width") or 0)
     height = int(metadata.get("display_height") or metadata.get("height") or 0)
     if width <= 0 or height <= 0:
-        raise gr.Error(f"Unable to read the resolution of existing output: {output_path}")
+        raise gr.Error(i18n.tr("Unable to read the resolution of existing output: {output_path}", output_path=output_path))
     return f"{width}x{height}", width, height
 
 
 def get_video_tensor_resolution(video_tensor_uint8: torch.Tensor) -> tuple[int, int]:
     if not torch.is_tensor(video_tensor_uint8) or video_tensor_uint8.ndim != 4:
-        raise gr.Error("WanGP API returned an invalid video tensor.")
+        raise gr.Error(i18n.tr("WanGP API returned an invalid video tensor."))
     return int(video_tensor_uint8.shape[3]), int(video_tensor_uint8.shape[2])
 
 
@@ -124,10 +125,10 @@ def load_video_tensor_from_file(video_path: str) -> torch.Tensor:
     metadata = get_video_info_details(video_path)
     frame_count = int(metadata.get("frame_count") or 0)
     if frame_count <= 0:
-        raise gr.Error(f"Unable to read the frame count of generated chunk: {video_path}")
+        raise gr.Error(i18n.tr("Unable to read the frame count of generated chunk: {video_path}", video_path=video_path))
     frames = decode_video_frames_ffmpeg(video_path, 0, frame_count, target_fps=None, bridge="torch")
     if frames.shape[0] <= 0:
-        raise gr.Error(f"Unable to decode generated chunk: {video_path}")
+        raise gr.Error(i18n.tr("Unable to decode generated chunk: {video_path}", video_path=video_path))
     return frames.permute(3, 0, 1, 2).contiguous()
 
 
@@ -174,7 +175,7 @@ def compute_selected_frame_range(metadata: dict, start_seconds: float | None, en
     fps_float = float(metadata.get("fps_float") or metadata.get("fps") or 0.0)
     total_frames = int(metadata.get("frame_count") or 0)
     if fps_float <= 0 or total_frames <= 0:
-        raise gr.Error("Unable to read the source video FPS or frame count.")
+        raise gr.Error(i18n.tr("Unable to read the source video FPS or frame count."))
     start_frame = int(round(float(start_seconds or 0.0) * fps_float))
     if start_frame < 0:
         start_frame = 0
@@ -189,7 +190,7 @@ def compute_selected_frame_range(metadata: dict, start_seconds: float | None, en
         if end_frame_exclusive > total_frames:
             end_frame_exclusive = total_frames
     if end_frame_exclusive <= start_frame:
-        raise gr.Error("End must be greater than Start.")
+        raise gr.Error(i18n.tr("End must be greater than Start."))
     return start_frame, end_frame_exclusive, fps_float, total_frames
 
 

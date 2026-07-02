@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import gradio as gr
+from shared import i18n
 import torch
 from safetensors.torch import save_file
 
@@ -165,7 +166,7 @@ class FlashVSRProcessHandler:
     def load_continue_cache(self, output_filename: str) -> Any:
         sidecar_path = self.cache_sidecar_path(output_filename)
         if not Path(sidecar_path).is_file():
-            raise gr.Error(f"FlashVSR continuation cache is missing: {sidecar_path}")
+            raise gr.Error(i18n.tr("FlashVSR continuation cache is missing: {sidecar_path}", sidecar_path=sidecar_path))
         from safetensors import safe_open
         with safe_open(sidecar_path, framework="pt", device="cpu") as handle:
             metadata = dict(handle.metadata() or {})
@@ -202,7 +203,7 @@ def _cache_tail_to_uint8(tail: Any) -> torch.Tensor | None:
 def _load_tail_tensor(handle, key: str, sidecar_path: str) -> torch.Tensor:
     tail = handle.get_tensor(key)
     if not torch.is_tensor(tail) or tail.ndim != 4:
-        raise gr.Error(f"FlashVSR continuation cache is invalid: {sidecar_path}")
+        raise gr.Error(i18n.tr("FlashVSR continuation cache is invalid: {sidecar_path}", sidecar_path=sidecar_path))
     return tail.clone().contiguous() if tail.dtype == torch.uint8 else tail.float().clamp_(-1.0, 1.0).contiguous()
 
 

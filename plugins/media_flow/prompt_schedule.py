@@ -4,6 +4,7 @@ import math
 import re
 
 import gradio as gr
+from shared import i18n
 
 TIMED_PROMPT_EXAMPLE = "00:00\nA calm cinematic opening shot.\n\n00:30\nThe mood becomes tense and dramatic."
 TIMED_PROMPT_TIMESTAMP_RE = re.compile(r"^\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?$")
@@ -14,7 +15,7 @@ def parse_time_input(value, *, label: str, allow_empty: bool) -> float | None:
         return None if allow_empty else 0.0
     if isinstance(value, (int, float)):
         if not math.isfinite(float(value)):
-            raise gr.Error(f"{label} must be a finite time value.")
+            raise gr.Error(i18n.tr("{label} must be a finite time value.", label=label))
         return max(0.0, float(value))
     text = str(value).strip()
     if len(text) == 0:
@@ -26,10 +27,10 @@ def parse_time_input(value, *, label: str, allow_empty: bool) -> float | None:
                 raise ValueError
             return max(0.0, seconds)
         except ValueError as exc:
-            raise gr.Error(f"{label} must be a number of seconds, MM:SS(.xx), or HH:MM:SS(.xx).") from exc
+            raise gr.Error(i18n.tr("{label} must be a number of seconds, MM:SS(.xx), or HH:MM:SS(.xx).", label=label)) from exc
     parts = text.split(":")
     if len(parts) not in (2, 3):
-        raise gr.Error(f"{label} must be a number of seconds, MM:SS(.xx), or HH:MM:SS(.xx).")
+        raise gr.Error(i18n.tr("{label} must be a number of seconds, MM:SS(.xx), or HH:MM:SS(.xx).", label=label))
     try:
         if len(parts) == 2:
             minutes = int(parts[0])
@@ -44,7 +45,7 @@ def parse_time_input(value, *, label: str, allow_empty: bool) -> float | None:
             raise ValueError
         return max(0.0, hours * 3600.0 + minutes * 60.0 + seconds)
     except ValueError as exc:
-        raise gr.Error(f"{label} must be a number of seconds, MM:SS(.xx), or HH:MM:SS(.xx).") from exc
+        raise gr.Error(i18n.tr("{label} must be a number of seconds, MM:SS(.xx), or HH:MM:SS(.xx).", label=label)) from exc
 
 
 def parse_prompt_schedule(prompt_text: str) -> list[tuple[float, str]]:
@@ -61,16 +62,14 @@ def parse_prompt_schedule(prompt_text: str) -> list[tuple[float, str]]:
         timestamp_line = lines[0].strip()
         if not TIMED_PROMPT_TIMESTAMP_RE.fullmatch(timestamp_line):
             raise gr.Error(
-                "Timed prompts must be separated by blank lines, and each block must start with a timestamp like MM:SS(.xx) or HH:MM:SS(.xx).\n\n"
-                f"Example:\n{TIMED_PROMPT_EXAMPLE}"
+                i18n.tr("Timed prompts must be separated by blank lines, and each block must start with a timestamp like MM:SS(.xx) or HH:MM:SS(.xx).\n\nExample:\n{TIMED_PROMPT_EXAMPLE}", TIMED_PROMPT_EXAMPLE=TIMED_PROMPT_EXAMPLE)
             )
         prompt_body = "\n".join(lines[1:]).strip()
         if len(prompt_body) == 0:
             raise gr.Error(
-                "Each timed prompt block must contain prompt text after its timestamp.\n\n"
-                f"Example:\n{TIMED_PROMPT_EXAMPLE}"
+                i18n.tr("Each timed prompt block must contain prompt text after its timestamp.\n\nExample:\n{TIMED_PROMPT_EXAMPLE}", TIMED_PROMPT_EXAMPLE=TIMED_PROMPT_EXAMPLE)
             )
-        schedule.append((float(parse_time_input(timestamp_line, label="Timed prompt timestamp", allow_empty=False) or 0.0), prompt_body))
+        schedule.append((float(parse_time_input(timestamp_line, label=i18n.tr("Timed prompt timestamp"), allow_empty=False) or 0.0), prompt_body))
     return sorted(schedule, key=lambda item: item[0])
 
 

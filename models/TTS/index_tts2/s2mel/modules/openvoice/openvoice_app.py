@@ -2,6 +2,7 @@ import os
 import torch
 import argparse
 import gradio as gr
+from shared import i18n
 from zipfile import ZipFile
 import langid
 from . import se_extractor
@@ -40,7 +41,7 @@ def predict(prompt, style, audio_file_pth, agree):
     # agree with the terms
     if agree == False:
         text_hint += '[ERROR] Please accept the Terms & Condition!\n'
-        gr.Warning("Please accept the Terms & Condition!")
+        gr.Warning(i18n.tr("Please accept the Terms & Condition!"))
         return (
             text_hint,
             None,
@@ -54,7 +55,7 @@ def predict(prompt, style, audio_file_pth, agree):
     if language_predicted not in supported_languages:
         text_hint += f"[ERROR] The detected language {language_predicted} for your input text is not in our Supported Languages: {supported_languages}\n"
         gr.Warning(
-            f"The detected language {language_predicted} for your input text is not in our Supported Languages: {supported_languages}"
+            i18n.tr("The detected language {language_predicted} for your input text is not in our Supported Languages: {supported_languages}", language_predicted=language_predicted, supported_languages=supported_languages)
         )
 
         return (
@@ -69,7 +70,7 @@ def predict(prompt, style, audio_file_pth, agree):
         language = 'Chinese'
         if style not in ['default']:
             text_hint += f"[ERROR] The style {style} is not supported for Chinese, which should be in ['default']\n"
-            gr.Warning(f"The style {style} is not supported for Chinese, which should be in ['default']")
+            gr.Warning(i18n.tr("The style {style} is not supported for Chinese, which should be in ['default']", style=style))
             return (
                 text_hint,
                 None,
@@ -85,7 +86,7 @@ def predict(prompt, style, audio_file_pth, agree):
         language = 'English'
         if style not in ['default', 'whispering', 'shouting', 'excited', 'cheerful', 'terrified', 'angry', 'sad', 'friendly']:
             text_hint += f"[ERROR] The style {style} is not supported for English, which should be in ['default', 'whispering', 'shouting', 'excited', 'cheerful', 'terrified', 'angry', 'sad', 'friendly']\n"
-            gr.Warning(f"The style {style} is not supported for English, which should be in ['default', 'whispering', 'shouting', 'excited', 'cheerful', 'terrified', 'angry', 'sad', 'friendly']")
+            gr.Warning(i18n.tr("The style {style} is not supported for English, which should be in ['default', 'whispering', 'shouting', 'excited', 'cheerful', 'terrified', 'angry', 'sad', 'friendly']", style=style))
             return (
                 text_hint,
                 None,
@@ -96,7 +97,7 @@ def predict(prompt, style, audio_file_pth, agree):
 
     if len(prompt) < 2:
         text_hint += f"[ERROR] Please give a longer prompt text \n"
-        gr.Warning("Please give a longer prompt text")
+        gr.Warning(i18n.tr("Please give a longer prompt text"))
         return (
             text_hint,
             None,
@@ -105,7 +106,7 @@ def predict(prompt, style, audio_file_pth, agree):
     if len(prompt) > 200:
         text_hint += f"[ERROR] Text length limited to 200 characters for this demo, please try shorter text. You can clone our open-source repo and try for your usage \n"
         gr.Warning(
-            "Text length limited to 200 characters for this demo, please try shorter text. You can clone our open-source repo for your usage"
+            i18n.tr("Text length limited to 200 characters for this demo, please try shorter text. You can clone our open-source repo for your usage")
         )
         return (
             text_hint,
@@ -119,7 +120,7 @@ def predict(prompt, style, audio_file_pth, agree):
     except Exception as e:
         text_hint += f"[ERROR] Get target tone color error {str(e)} \n"
         gr.Warning(
-            "[ERROR] Get target tone color error {str(e)} \n"
+            i18n.tr("[ERROR] Get target tone color error {str(e)} \n")
         )
         return (
             text_hint,

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import gradio as gr
+from shared import i18n
 from PIL import Image
 
 from shared.utils.hdr import VIDEO_PROMPT_HDR_OUTPUT_FLAG
@@ -334,7 +335,7 @@ class ProcessRunner:
                 raise gr.Error(message)
             generated_path = self._image_result_path(result)
             if not generated_path:
-                raise gr.Error("Image processing completed without creating an output image.")
+                raise gr.Error(i18n.tr("Image processing completed without creating an output image."))
             final_output_path = self._move_image_output(generated_path, target_output_path)
             media.remember_generated_artifacts(self.active_job, media.result_generated_artifact_paths(result))
             _kept_artifact_paths, gallery_refresh = self._prune_generated_artifacts(request.state, preserve_paths=[final_output_path])
@@ -684,8 +685,8 @@ class ProcessRunner:
             self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path, success=False, message=f"Source video not found: {source_path}"))
             return
         try:
-            start_seconds = prompts.parse_time_input(start_seconds, label="Start", allow_empty=False)
-            end_seconds = prompts.parse_time_input(end_seconds, label="End", allow_empty=True)
+            start_seconds = prompts.parse_time_input(start_seconds, label=i18n.tr("Start"), allow_empty=False)
+            end_seconds = prompts.parse_time_input(end_seconds, label=i18n.tr("End"), allow_empty=True)
         except gr.Error as exc:
             message = common.get_error_message(exc) or "Invalid start/end selection."
             yield self.info_exit(message)
@@ -1045,7 +1046,7 @@ class ProcessRunner:
                     yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_display, completed_chunks, current_chunk_display, "Stopped", "Stopped before any output chunk was written.", continued=continued_mode, **_timing_kwargs()), self.ui_skip, self.ui_skip, start_enabled=True, abort_enabled=False)
                     self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path, success=False, stopped=True, message="Stopped before any output chunk was written.", chunks_completed=completed_chunks, chunks_total=total_chunks_display))
                     return
-                raise gr.Error("Processing completed without creating an output file.")
+                raise gr.Error(i18n.tr("Processing completed without creating an output file."))
             if self.active_job.get("cancel_requested"):
                 write_state.stopped = True
             finalizing_message = "Finalizing written output before merge..." if continuation_output_path and os.path.isfile(write_state.output_path_for_write) else "Finalizing written output..."
@@ -1054,12 +1055,12 @@ class ProcessRunner:
             if self.active_job.get("cancel_requested"):
                 write_state.stopped = True
             if forced_termination:
-                raise gr.Error("ffmpeg did not finalize the partial output in time.")
+                raise gr.Error(i18n.tr("ffmpeg did not finalize the partial output in time."))
             if return_code != 0 and not (write_state.stopped and os.path.isfile(write_state.output_path_for_write if use_live_av_mux else write_state.video_only_output_path)):
                 raise gr.Error(stderr or "ffmpeg failed while assembling the processed video.")
             if use_live_av_mux and os.path.isfile(write_state.output_path_for_write) and os.path.getsize(write_state.output_path_for_write) <= 0:
-                media.delete_file_if_exists(write_state.output_path_for_write, label="continuation output")
-                raise gr.Error("ffmpeg created an empty continuation file.")
+                media.delete_file_if_exists(write_state.output_path_for_write, label=i18n.tr("continuation output"))
+                raise gr.Error(i18n.tr("ffmpeg created an empty continuation file."))
             if not use_live_av_mux and os.path.isfile(write_state.video_only_output_path):
                 try:
                     os.replace(write_state.video_only_output_path, write_state.output_path_for_write)
@@ -1096,12 +1097,12 @@ class ProcessRunner:
                 except media.ContinuationMergeOutputLockedError:
                     locked_message = f"{Path(output_path).name} is open, so the continuation merge could not replace it. Existing output was kept and {Path(write_state.output_path_for_write).name} was preserved. Release the base file and start a process again."
                     gr.Info(locked_message)
-                    media.delete_file_if_exists(write_state.reserved_metadata_path, label="reserved metadata file")
+                    media.delete_file_if_exists(write_state.reserved_metadata_path, label=i18n.tr("reserved metadata file"))
                     yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_display, completed_chunks, current_chunk_display, "Merge Pending", locked_message, continued=continued_mode, **_timing_kwargs()), write_state.output_path_for_write, str(time.time_ns()), start_enabled=True, abort_enabled=False)
                     self._record_process_result(ProcessRunResult(source_path=source_path, output_path=write_state.output_path_for_write, success=False, message=locked_message, chunks_completed=completed_chunks, chunks_total=total_chunks_display))
                     return
                 except Exception as exc:
-                    raise gr.Error(f"Failed to finalize continued output. Existing output kept, and continuation was preserved at {continuation_output_path}. {exc}") from exc
+                    raise gr.Error(i18n.tr("Failed to finalize continued output. Existing output kept, and continuation was preserved at {continuation_output_path}. {exc}", continuation_output_path=continuation_output_path, exc=exc)) from exc
                 if os.path.isfile(write_state.output_path_for_write):
                     try:
                         os.remove(write_state.output_path_for_write)
@@ -1112,24 +1113,24 @@ class ProcessRunner:
                         common.plugin_info(f"Merged continuation progress into {Path(output_path).name}, but {Path(write_state.output_path_for_write).name} could not be deleted because it is still open. Delete it manually when released.")
             else:
                 existing_output_generation_time = 0.0
-            media.delete_file_if_exists(write_state.reserved_metadata_path, label="reserved metadata file")
+            media.delete_file_if_exists(write_state.reserved_metadata_path, label=i18n.tr("reserved metadata file"))
             total_written_unique_frames = resumed_unique_frames + written_unique_frames
             if not write_state.stopped and total_written_unique_frames < requested_unique_frames:
-                raise gr.Error(f"Processing wrote {total_written_unique_frames} frame(s), but {requested_unique_frames} frame(s) were required.")
+                raise gr.Error(i18n.tr("Processing wrote {total_written_unique_frames} frame(s), but {requested_unique_frames} frame(s) were required.", total_written_unique_frames=total_written_unique_frames, requested_unique_frames=requested_unique_frames))
             metadata_target_path = output_path if merged_continuation or not continuation_output_path else write_state.output_path_for_write
             yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_display, completed_chunks, current_chunk_display, "Writing Metadata", "Writing final output metadata...", continued=continued_mode, **_timing_kwargs()), metadata_target_path if os.path.isfile(metadata_target_path) else output_path, str(time.time_ns()), start_enabled=False, abort_enabled=False)
             metadata_source_path = last_segment_path or media.get_last_generated_video_path(chunk_output_paths) or metadata_target_path
             actual_output_frames = media.probe_resume_frame_count(ffprobe_path, metadata_target_path, fps_float)[0] if os.path.isfile(metadata_target_path) else 0
             if actual_output_frames <= 0:
                 if metadata_target_path != output_path or not resume_existing_output:
-                    media.delete_file_if_exists(metadata_target_path, label="invalid output")
-                raise gr.Error("Final output does not contain a readable video frame.")
+                    media.delete_file_if_exists(metadata_target_path, label=i18n.tr("invalid output"))
+                raise gr.Error(i18n.tr("Final output does not contain a readable video frame."))
             if actual_output_frames < total_written_unique_frames:
                 if write_state.stopped:
                     common.plugin_info(f"Stopped output contains {actual_output_frames} readable frame(s), lower than the {total_written_unique_frames} frame(s) attempted. Recording the probed frame count.")
                     total_written_unique_frames = actual_output_frames
                 else:
-                    raise gr.Error(f"Final output contains {actual_output_frames} readable frame(s), but {total_written_unique_frames} frame(s) were written.")
+                    raise gr.Error(i18n.tr("Final output contains {actual_output_frames} readable frame(s), but {total_written_unique_frames} frame(s) were written.", actual_output_frames=actual_output_frames, total_written_unique_frames=total_written_unique_frames))
             total_generation_time = existing_output_generation_time + process_metadata.read_metadata_generation_time(metadata_source_path) if merged_continuation else process_metadata.read_metadata_generation_time(metadata_source_path)
             output_process_metadata = {
                 "process": process_display_name,
@@ -1154,7 +1155,7 @@ class ProcessRunner:
             elif system_handler is not None and continue_cache is not None and hasattr(system_handler, "save_continue_cache"):
                 system_handler.save_continue_cache(continue_cache, metadata_target_path, metadata=output_process_metadata)
             if not metadata_written:
-                raise gr.Error(f"Failed to write WanGP metadata to {metadata_target_path}. The partial output was kept, but continuation may require the sidecar cache.")
+                raise gr.Error(i18n.tr("Failed to write WanGP metadata to {metadata_target_path}. The partial output was kept, but continuation may require the sidecar cache.", metadata_target_path=metadata_target_path))
             kept_artifact_paths, gallery_refresh = self._prune_generated_artifacts(request.state)
             kept_artifact_set = set(kept_artifact_paths)
             chunk_output_paths = [path for path in chunk_output_paths if str(Path(path).resolve()) in kept_artifact_set]

@@ -1,6 +1,7 @@
 import os
 import torch
 import gradio as gr
+from shared import i18n
 
 from shared.mps import mps_device_or
 from shared.utils import files_locator as fl
@@ -233,6 +234,5 @@ class family_handler:
     def validate_generative_prompt(base_model_type, model_def, inputs, one_prompt):
         if len(one_prompt) > 300:
             gr.Info(
-                "It is recommended to use a prompt that has less than 300 characters,"
-                " otherwise you may get unexpected results."
+                i18n.tr("It is recommended to use a prompt that has less than 300 characters, otherwise you may get unexpected results.")
             )

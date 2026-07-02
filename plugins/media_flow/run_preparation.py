@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import gradio as gr
+from shared import i18n
 
 from shared.utils.audio_video import extract_audio_tracks
 from shared.utils.utils import get_video_info_details
@@ -83,24 +84,24 @@ def prepare_run(
     try:
         metadata = get_video_info_details(source_path)
     except Exception as exc:
-        raise gr.Error(f"Unable to read source video metadata: {source_path}") from exc
+        raise gr.Error(i18n.tr("Unable to read source video metadata: {source_path}", source_path=source_path)) from exc
     start_frame, end_frame_exclusive, fps_float, total_source_frames = video.compute_selected_frame_range(metadata, start_seconds, end_seconds)
     processing_fps = video.get_processing_fps(fps_float)
     try:
         audio_track_count = int(extract_audio_tracks(source_path, query_only=True))
     except Exception as exc:
-        raise gr.Error(f"Unable to inspect source audio tracks in: {source_path}") from exc
+        raise gr.Error(i18n.tr("Unable to inspect source audio tracks in: {source_path}", source_path=source_path)) from exc
     selected_audio_track = None
     if len(source_audio_track) > 0:
         if not source_audio_track.isdigit() or int(source_audio_track) <= 0:
-            raise gr.Error("Source Audio must be Auto or a whole track number.")
+            raise gr.Error(i18n.tr("Source Audio must be Auto or a whole track number."))
         if audio_track_count <= 0:
-            raise gr.Error("Source video contains no audio track. Leave Source Audio empty.")
+            raise gr.Error(i18n.tr("Source video contains no audio track. Leave Source Audio empty."))
         selected_audio_track = int(source_audio_track)
     elif audio_track_count > 0:
         selected_audio_track = 1
     if selected_audio_track is not None and (selected_audio_track <= 0 or selected_audio_track > audio_track_count):
-            raise gr.Error(f"Source Audio must be between 1 and {audio_track_count}.")
+            raise gr.Error(i18n.tr("Source Audio must be between 1 and {audio_track_count}.", audio_track_count=audio_track_count))
     if system_handler is None:
         frame_plan_rules = frames.get_frame_plan_rules(model_type, get_model_def)
         budget_resolution = output_paths.choose_resolution(output_resolution)
@@ -119,7 +120,7 @@ def prepare_run(
     except frames.FramePlanningError as exc:
         raise gr.Error(str(exc)) from exc
     if overlap_frames >= chunk_frames:
-        raise gr.Error(f"Sliding Window Overlap must stay below the computed chunk size ({chunk_frames} frame(s)).")
+        raise gr.Error(i18n.tr("Sliding Window Overlap must stay below the computed chunk size ({chunk_frames} frame(s)).", chunk_frames=chunk_frames))
     selected_unique_frames = end_frame_exclusive - start_frame
     try:
         full_plans = frames.build_chunk_plan(
@@ -150,16 +151,16 @@ def prepare_run(
     try:
         Path(resolved_output_path).parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise gr.Error(f"Unable to create the output folder for: {resolved_output_path}") from exc
+        raise gr.Error(i18n.tr("Unable to create the output folder for: {resolved_output_path}", resolved_output_path=resolved_output_path)) from exc
     dropped_tail_frames = selected_unique_frames - requested_unique_frames
     if dropped_tail_frames > 0:
         common.plugin_info(f"Dropping the last {dropped_tail_frames} source frame(s) so the selected range fits the current model chunk shape.")
     ffmpeg_path = resolve_media_binary("ffmpeg")
     if ffmpeg_path is None:
-        raise gr.Error("ffmpeg binary not found.")
+        raise gr.Error(i18n.tr("ffmpeg binary not found."))
     ffprobe_path = resolve_media_binary("ffprobe")
     if ffprobe_path is None:
-        raise gr.Error("ffprobe binary not found.")
+        raise gr.Error(i18n.tr("ffprobe binary not found."))
     output_container = media.normalize_container_name(Path(resolved_output_path).suffix.lstrip(".") or plugin.server_config.get("video_container", "mp4"))
     output_video_codec = "libx265_8" if process_is_hdr else plugin.server_config.get("video_output_codec", "libx264_8")
     media.validate_output_codec_container(output_video_codec, output_container, output_path=resolved_output_path)

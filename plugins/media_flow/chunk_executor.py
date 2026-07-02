@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import gradio as gr
+from shared import i18n
 import torch
 
 from shared.utils.hdr import tonemap_hdr_tensor_to_uint8
@@ -212,7 +213,7 @@ class ChunkExecutor:
                 returned_video_item = next((item for item in result.artifacts if item.video_tensor_uint8 is not None), None)
                 video_tensor_uint8 = None if returned_video_item is None else returned_video_item.video_tensor_uint8
                 if not torch.is_tensor(video_tensor_uint8):
-                    raise gr.Error(f"Chunk {chunk_index} completed without returned video tensor data.")
+                    raise gr.Error(i18n.tr("Chunk {chunk_index} completed without returned video tensor data.", chunk_index=chunk_index))
                 video_tensor_uint8 = video_tensor_uint8.detach().cpu().contiguous()
                 api_settings = settings.get("_api")
                 if isinstance(api_settings, dict):
@@ -241,11 +242,11 @@ class ChunkExecutor:
                 write_end = plan_requested_frames - next_overlap_frames
                 frames_to_write = write_end - write_start
                 if frames_to_write <= 0:
-                    raise gr.Error(f"Chunk {chunk_index} has no new frame to write after keeping {next_overlap_frames} lookahead frame(s).")
+                    raise gr.Error(i18n.tr("Chunk {chunk_index} has no new frame to write after keeping {next_overlap_frames} lookahead frame(s).", chunk_index=chunk_index, next_overlap_frames=next_overlap_frames))
                 if frames_to_write > remaining_unique_frames:
-                    raise gr.Error(f"Chunk {chunk_index} would write {frames_to_write} frame(s), but only {remaining_unique_frames} frame(s) remain.")
+                    raise gr.Error(i18n.tr("Chunk {chunk_index} would write {frames_to_write} frame(s), but only {remaining_unique_frames} frame(s) remain.", chunk_index=chunk_index, frames_to_write=frames_to_write, remaining_unique_frames=remaining_unique_frames))
                 if returned_frame_count < write_end:
-                    raise gr.Error(f"Chunk {chunk_index} returned {returned_frame_count} frame(s), but {write_end} frame(s) were required.")
+                    raise gr.Error(i18n.tr("Chunk {chunk_index} returned {returned_frame_count} frame(s), but {write_end} frame(s) were required.", chunk_index=chunk_index, returned_frame_count=returned_frame_count, write_end=write_end))
 
                 source_audio_duration_seconds = float(frames.count_planned_unique_frames(context.plans)) / float(context.fps_float) if context.use_live_av_mux else None
                 progress.write_state.ensure_started(
@@ -365,7 +366,7 @@ class ChunkExecutor:
             returned_video_item = next((item for item in result.artifacts if item.video_tensor_hdr is not None), None) if context.process_is_hdr else next((item for item in result.artifacts if item.video_tensor_uint8 is not None), None)
             returned_tensor = None if returned_video_item is None else (returned_video_item.video_tensor_hdr if context.process_is_hdr else returned_video_item.video_tensor_uint8)
             if returned_video_item is None or not torch.is_tensor(returned_tensor):
-                raise gr.Error(f"Chunk {chunk_index} completed without returned video tensor data.")
+                raise gr.Error(i18n.tr("Chunk {chunk_index} completed without returned video tensor data.", chunk_index=chunk_index))
             video_tensor_hdr = returned_tensor.detach().cpu() if context.process_is_hdr else None
             video_tensor_uint8 = tonemap_hdr_tensor_to_uint8(video_tensor_hdr) if context.process_is_hdr else returned_tensor.detach().cpu()
             returned_frame_count = int(video_tensor_uint8.shape[1])
@@ -395,12 +396,12 @@ class ChunkExecutor:
             remaining_unique_frames = context.requested_unique_frames - (context.resumed_unique_frames + progress.written_unique_frames)
             expected_unique_frames = plan_requested_frames - skip_frames
             if expected_unique_frames <= 0:
-                raise gr.Error(f"Chunk {chunk_index} has no writable frame in the computed plan.")
+                raise gr.Error(i18n.tr("Chunk {chunk_index} has no writable frame in the computed plan.", chunk_index=chunk_index))
             if expected_unique_frames > remaining_unique_frames:
-                raise gr.Error(f"Chunk {chunk_index} would write {expected_unique_frames} frame(s), but only {remaining_unique_frames} frame(s) remain.")
+                raise gr.Error(i18n.tr("Chunk {chunk_index} would write {expected_unique_frames} frame(s), but only {remaining_unique_frames} frame(s) remain.", chunk_index=chunk_index, expected_unique_frames=expected_unique_frames, remaining_unique_frames=remaining_unique_frames))
             writable_frame_count = int(video_tensor_uint8.shape[1]) - skip_frames
             if writable_frame_count < expected_unique_frames:
-                raise gr.Error(f"Chunk {chunk_index} returned {writable_frame_count} writable frame(s), but {expected_unique_frames} frame(s) were required.")
+                raise gr.Error(i18n.tr("Chunk {chunk_index} returned {writable_frame_count} writable frame(s), but {expected_unique_frames} frame(s) were required.", chunk_index=chunk_index, writable_frame_count=writable_frame_count, expected_unique_frames=expected_unique_frames))
             frames_to_write = expected_unique_frames
 
             source_audio_duration_seconds = float(frames.count_planned_unique_frames(context.plans)) / float(context.fps_float) if context.use_live_av_mux else None

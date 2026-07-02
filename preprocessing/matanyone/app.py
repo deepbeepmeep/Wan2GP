@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import gradio as gr
+from shared import i18n
 from datetime import datetime
 from .tools.painter import mask_painter, point_painter
 from .tools.interact_tools import SamControler
@@ -469,7 +470,7 @@ def get_frames_from_image(state, image_input, image_state, new_dim):
     """
 
     if image_input is None:
-       gr.Info("Please select an Image file")
+       gr.Info(i18n.tr("Please select an Image file"))
        return [gr.update()] * 20
 
 
@@ -527,7 +528,7 @@ def get_frames_from_video(state, video_input, video_state, new_dim):
         [[0:nearest_frame], [nearest_frame:], nearest_frame]
     """
     if video_input is None:
-       gr.Info("Please select a Video file")
+       gr.Info(i18n.tr("Please select a Video file"))
        return [gr.update()] * 19
      
         
@@ -712,10 +713,10 @@ def sam_refine(state, video_state, point_prompt, click_state, interactive_state,
 def add_multi_mask(video_state, interactive_state, mask_dropdown):
     masks = video_state["masks"]
     if video_state["masks"] is None:
-        gr.Info("Matanyone Session Lost. Please reload a Video")
+        gr.Info(i18n.tr("Matanyone Session Lost. Please reload a Video"))
         return [gr.update()]*4
     if is_sam3_selected() and interactive_state.get("sam3_current_prompt") is None:
-        gr.Info("Please click the reference frame or add keywords before adding a SAM3 mask.")
+        gr.Info(i18n.tr("Please click the reference frame or add keywords before adding a SAM3 mask."))
         return interactive_state, gr.update(choices=interactive_state["multi_mask"]["mask_names"], value=mask_dropdown), video_state["origin_images"][video_state["select_frame_number"]], [[],[]]
     mask = masks[video_state["select_frame_number"]]
     interactive_state["multi_mask"]["masks"].append(mask)
@@ -732,7 +733,7 @@ def add_multi_mask(video_state, interactive_state, mask_dropdown):
 def clear_click(video_state, click_state):
     masks = video_state["masks"]
     if video_state["masks"] is None:
-        gr.Info("Matanyone Session Lost. Please reload a Video")
+        gr.Info(i18n.tr("Matanyone Session Lost. Please reload a Video"))
         return [gr.update()]*2
 
     if is_sam3_selected():
@@ -754,14 +755,14 @@ def remove_multi_mask(interactive_state, mask_dropdown):
 
 def add_sam3_keyword_masks(state, video_state, interactive_state, keyword_text, mask_dropdown):
     if video_state["masks"] is None:
-        gr.Info("SAM3 session lost. Please reload the media")
+        gr.Info(i18n.tr("SAM3 session lost. Please reload the media"))
         return [gr.update()] * 3
     if not is_sam3_selected():
         return interactive_state, gr.update(choices=interactive_state["multi_mask"]["mask_names"], value=mask_dropdown), show_mask(video_state, interactive_state, mask_dropdown)
 
     keywords = _parse_sam3_keywords(keyword_text)
     if len(keywords) == 0:
-        gr.Info("Please enter at least one keyword.")
+        gr.Info(i18n.tr("Please enter at least one keyword."))
         return interactive_state, gr.update(choices=interactive_state["multi_mask"]["mask_names"], value=mask_dropdown), show_mask(video_state, interactive_state, mask_dropdown)
 
     frame_idx = video_state["select_frame_number"]
@@ -825,7 +826,7 @@ def get_dim_file_suffix(new_dim):
 # image matting
 def image_matting(state, video_state, interactive_state, mask_type, matting_type, new_new_dim, mask_dropdown, erode_kernel_size, dilate_kernel_size, refine_iter):
     if video_state["masks"] is None:
-        gr.Info("Matanyone Session Lost. Please reload an Image")
+        gr.Info(i18n.tr("Matanyone Session Lost. Please reload an Image"))
         return [gr.update(visible=False)]*12
     if is_sam3_selected() and mask_type == "alpha":
         mask_type = "wangp"
@@ -929,7 +930,7 @@ def image_matting(state, video_state, interactive_state, mask_type, matting_type
 # video matting
 def video_matting(state, video_state, mask_type, video_input, end_slider, matting_type, new_new_dim, interactive_state, mask_dropdown, erode_kernel_size, dilate_kernel_size):
     if video_state["masks"] is None:
-        gr.Info("Matanyone Session Lost. Please reload a Video")
+        gr.Info(i18n.tr("Matanyone Session Lost. Please reload a Video"))
         return [gr.update(visible=False)]*6
     if is_sam3_selected() and mask_type == "alpha":
         mask_type = "wangp"
@@ -960,7 +961,7 @@ def video_matting(state, video_state, mask_type, video_input, end_slider, mattin
     if is_sam3_selected():
         prompts = _selected_sam3_prompts(interactive_state, mask_dropdown)
         if len(prompts) == 0:
-            gr.Info("Please add at least one SAM3 mask before generating video matting.")
+            gr.Info(i18n.tr("Please add at least one SAM3 mask before generating video matting."))
             return [gr.update(visible=False)]*6
         acquire_GPU(state)
         try:
@@ -1272,7 +1273,7 @@ def export_image(state, image_output):
         image_refs =[]
     image_refs.append( image_output)
     ui_settings["image_refs"] = image_refs 
-    gr.Info("Masked Image transferred to Current Image Generator")
+    gr.Info(i18n.tr("Masked Image transferred to Current Image Generator"))
     return time.time()
 
 def export_image_mask(state, image_input, image_mask):
@@ -1280,7 +1281,7 @@ def export_image_mask(state, image_input, image_mask):
     ui_settings["image_guide"] = image_input
     ui_settings["image_mask"] = image_mask
 
-    gr.Info("Input Image & Mask transferred to Current Image Generator")
+    gr.Info(i18n.tr("Input Image & Mask transferred to Current Image Generator"))
     return time.time()
 
 
@@ -1289,7 +1290,7 @@ def export_to_current_video_engine(state, foreground_video_output, alpha_video_o
     ui_settings["video_guide"] = foreground_video_output
     ui_settings["video_mask"] = alpha_video_output
 
-    gr.Info("Original Video and Full Mask have been transferred")
+    gr.Info(i18n.tr("Original Video and Full Mask have been transferred"))
     return time.time()
 
 

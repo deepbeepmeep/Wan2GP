@@ -10,6 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import gradio as gr
+from shared import i18n
 
 from shared.utils.audio_video import get_hdr_video_encode_args, get_video_encode_args
 from shared.utils.video_codecs import normalize_video_container, validate_video_output_settings
@@ -209,7 +210,7 @@ def _probe_audio_stream_codecs(ffprobe_path: str, media_path: str) -> list[str]:
     try:
         streams = list((json.loads(result.stdout) or {}).get("streams") or [])
     except json.JSONDecodeError as exc:
-        raise gr.Error(f"Unable to read audio codecs for {media_path}") from exc
+        raise gr.Error(i18n.tr("Unable to read audio codecs for {media_path}", media_path=media_path)) from exc
     return [str(stream.get("codec_name") or "").strip().lower() for stream in streams]
 
 
@@ -236,7 +237,7 @@ def validate_output_codec_container(video_codec: str, video_container: str, audi
     if error is None:
         return
     suffix = Path(output_path).suffix if output_path else f".{normalize_container_name(video_container)}"
-    raise gr.Error(f"Output file extension '{suffix}' is incompatible with the current video codec/container settings. {error} Choose a compatible output extension or update the Configuration plugin settings.")
+    raise gr.Error(i18n.tr("Output file extension '{suffix}' is incompatible with the current video codec/container settings. {error} Choose a compatible output extension or update the Configuration plugin settings.", suffix=suffix, error=error))
 
 
 def start_video_mux_process(ffmpeg_path: str, output_path: str, width: int, height: int, fps_float: float, video_codec: str, video_container: str, reserved_metadata_path: str | None = None) -> subprocess.Popen:
@@ -564,7 +565,7 @@ def _probe_media_stream_layout(ffprobe_path: str, media_path: str) -> tuple[int,
     try:
         streams = list((json.loads(result.stdout) or {}).get("streams") or [])
     except json.JSONDecodeError as exc:
-        raise gr.Error(f"Unable to read media stream layout for {media_path}") from exc
+        raise gr.Error(i18n.tr("Unable to read media stream layout for {media_path}", media_path=media_path)) from exc
     video_count = sum(1 for stream in streams if str(stream.get("codec_type") or "").lower() == "video")
     audio_count = sum(1 for stream in streams if str(stream.get("codec_type") or "").lower() == "audio")
     return video_count, audio_count
@@ -579,7 +580,7 @@ def _probe_primary_video_codec(ffprobe_path: str, media_path: str) -> str:
     except (TypeError, ValueError, json.JSONDecodeError, IndexError):
         codec_name = ""
     if len(codec_name) == 0:
-        raise gr.Error(f"Unable to detect the video codec of {media_path}")
+        raise gr.Error(i18n.tr("Unable to detect the video codec of {media_path}", media_path=media_path))
     return codec_name
 
 
@@ -734,11 +735,11 @@ def concat_video_segments(
     for path in segment_paths:
         segment_path = str(Path(str(path).strip()).resolve())
         if len(segment_path) == 0 or not os.path.isfile(segment_path):
-            raise gr.Error(f"Output segment is missing and cannot be merged: {path}")
+            raise gr.Error(i18n.tr("Output segment is missing and cannot be merged: {path}", path=path))
         normalized_segment_paths.append(segment_path)
     segment_paths = normalized_segment_paths
     if len(segment_paths) == 0:
-        raise gr.Error("No output segments available to merge.")
+        raise gr.Error(i18n.tr("No output segments available to merge."))
     if len(segment_paths) == 1:
         if str(Path(segment_paths[0]).resolve()) != str(Path(output_path).resolve()):
             try:
@@ -749,14 +750,14 @@ def concat_video_segments(
     ffprobe_path = resolve_media_binary("ffprobe")
     layouts = [_probe_media_stream_layout(ffprobe_path, path) for path in segment_paths]
     if any(video_count != 1 for video_count, _ in layouts):
-        raise gr.Error("All continuation segments must contain exactly one video stream.")
+        raise gr.Error(i18n.tr("All continuation segments must contain exactly one video stream."))
     use_source_audio_merge = isinstance(source_audio_path, str) and len(str(source_audio_path).strip()) > 0
     if use_source_audio_merge:
         validate_audio_copy_container(ffprobe_path, str(source_audio_path), video_container, source_audio_track_no)
     audio_stream_counts = [audio_count for _, audio_count in layouts]
     has_audio = use_source_audio_merge or any(audio_count > 0 for audio_count in audio_stream_counts)
     if not use_source_audio_merge and has_audio and any(audio_count <= 0 for audio_count in audio_stream_counts):
-        raise gr.Error("All continuation segments must expose an audio stream.")
+        raise gr.Error(i18n.tr("All continuation segments must expose an audio stream."))
     fps_value = float(fps_float or 0.0)
     concat_dir = _make_output_temp_dir(output_path, "wangp_process_full_video_concat_")
     merged_video_path = os.path.join(concat_dir, "merged_video.mkv")
@@ -765,7 +766,7 @@ def concat_video_segments(
         video_codec_name = _probe_primary_video_codec(ffprobe_path, segment_paths[0])
         video_bsf = "h264_mp4toannexb" if video_codec_name == "h264" else "hevc_mp4toannexb" if video_codec_name in ("hevc", "h265") else ""
         if len(video_bsf) == 0:
-            raise gr.Error(f"Unsupported continuation video codec for no-reencode merge: {video_codec_name}")
+            raise gr.Error(i18n.tr("Unsupported continuation video codec for no-reencode merge: {video_codec_name}", video_codec_name=video_codec_name))
         reconstructed_video_bsf = f"{_build_video_reconstruct_bsf(fps_value)},{video_bsf}"
         if use_source_audio_merge:
             command = [ffmpeg_path, "-y", "-v", "error", "-f", "mpegts", "-i", "pipe:0", "-ss", f"{max(0.0, float(source_audio_start_seconds or 0.0)):.12g}", "-t", f"{max(0.0, float(source_audio_duration_seconds or 0.0)):.12g}", "-i", str(source_audio_path)]
@@ -785,12 +786,12 @@ def concat_video_segments(
             mux_process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, bufsize=0)
             try:
                 if mux_process.stdin is None:
-                    raise gr.Error("ffmpeg source-audio merge did not expose a writable video pipe.")
+                    raise gr.Error(i18n.tr("ffmpeg source-audio merge did not expose a writable video pipe."))
                 for segment_path in segment_paths:
                     segment_process = subprocess.Popen([ffmpeg_path, "-v", "error", "-i", segment_path, "-map", "0:v:0", "-c", "copy", "-bsf:v", reconstructed_video_bsf, "-f", "mpegts", "-"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
                     try:
                         if segment_process.stdout is None:
-                            raise gr.Error(f"ffmpeg failed to expose the TS stream for {segment_path}.")
+                            raise gr.Error(i18n.tr("ffmpeg failed to expose the TS stream for {segment_path}.", segment_path=segment_path))
                         shutil.copyfileobj(segment_process.stdout, mux_process.stdin, length=1024 * 1024)
                     except Exception:
                         segment_process.kill()
@@ -866,7 +867,7 @@ def concat_video_segments(
         timeline_gap = _probe_video_frame_gap(ffprobe_path, temp_output_path, fps_value, near_time=_probe_media_duration(ffprobe_path, segment_paths[0]))
         if timeline_gap is not None:
             gap_start, gap_end, gap_seconds = timeline_gap
-            raise gr.Error(f"Merged video timeline contains a {gap_seconds:.6f}s gap near {gap_start:.3f}s -> {gap_end:.3f}s.")
+            raise gr.Error(i18n.tr("Merged video timeline contains a {gap_seconds:.6f}s gap near {gap_start:.3f}s -> {gap_end:.3f}s.", gap_seconds=gap_seconds, gap_start=gap_start, gap_end=gap_end))
         try:
             os.replace(temp_output_path, output_path)
         except OSError as exc:

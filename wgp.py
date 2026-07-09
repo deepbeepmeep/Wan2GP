@@ -11169,7 +11169,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             guide_custom_choices = get_guide_custom_choices(model_def, image_mode_value)
             image_ref_choices = model_def.get("image_ref_choices", None)
 
-            with gr.Column(visible= guide_preprocessing is not None and guide_preprocessing.get("visible", True) or mask_preprocessing is not None and mask_preprocessing.get("visible", True) or guide_custom_choices is not None and guide_custom_choices.get("visible", True) or image_ref_choices is not None and image_ref_choices.get("visible", True)) as video_prompt_column: 
+            with gr.Column(visible= guide_preprocessing is not None or mask_preprocessing is not None or guide_custom_choices is not None or image_ref_choices is not None  ) as video_prompt_column: 
                 video_prompt_type_value= ui_get("video_prompt_type")
                 video_prompt_type = gr.Text(value= video_prompt_type_value, visible= False)
                 dropdown_selectable = True

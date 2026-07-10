@@ -3233,6 +3233,7 @@ default_profile_image = force_profile_no if force_profile_no >= 0 else server_co
 default_profile_audio = force_profile_no if force_profile_no >= 0 else server_config["audio_profile"]
 default_profile = default_profile_video
 loaded_profile = force_profile_no = -1
+loaded_compile = None
 compile = server_config.get("compile", "")
 if args.compile:
     compile="transformer"
@@ -3861,8 +3862,8 @@ def ensure_prompt_enhancer_loaded(override_profile=None, progress=None, send_cmd
         raise gr.Error("Prompt enhancer text runtime is not available.")
     return prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer
 
-def load_models(model_type, override_profile = -1, output_type="video", **model_kwargs):
-    global transformer_type, loaded_profile
+def load_models(model_type, override_profile = -1, override_compile = "", output_type="video", **model_kwargs):
+    global transformer_type, loaded_profile, loaded_compile
     def _load_models_info(message):
         if int(verbose_level) > 0:
             print(message)
@@ -3974,10 +3975,11 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
             loras_transformer += ["transformer"]
         if "transformer2" in pipe:
             loras_transformer += ["transformer2"]
-        if len(compile) > 0 and hasattr(wan_model, "custom_compile"):
+        effective_compile = compile if len(override_compile) == 0 else ("transformer" if override_compile == "on" else "")
+        if len(effective_compile) > 0 and hasattr(wan_model, "custom_compile"):
             wan_model.custom_compile(backend= "inductor", mode ="default")
-        compile_modules = model_def.get("compile", compile) if len(compile) > 0 else False
-        if compile_modules == False and len(compile):
+        compile_modules = model_def.get("compile", effective_compile) if len(effective_compile) > 0 else False
+        if compile_modules == False and len(effective_compile):
             _load_models_info("Pytorch compilation is not supported for this Model")
         # kwargs["pinnedMemory"] = "text_encoder"
         offloadobj = offload.profile(pipe, profile_no= mmgp_profile, compile = compile_modules, quantizeTransformer = False, loras = loras_transformer, perc_reserved_mem_max = perc_reserved_mem_max , vram_safety_coefficient = vram_safety_coefficient , convertWeightsFloatTo = transformer_dtype, **kwargs)
@@ -3985,7 +3987,8 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
         torch.set_default_device(args.gpu)
     transformer_type = model_type
     loaded_profile = profile
-    return wan_model, offloadobj 
+    loaded_compile = override_compile
+    return wan_model, offloadobj
 
 if not "P" in preload_model_policy:
     wan_model, offloadobj, transformer = None, None, None
@@ -6458,6 +6461,7 @@ def generate_media(
     state,
     model_type,
     mode,
+    override_compile="",
     plugin_data=None,
 ):
     wait_for_model_unload()
@@ -6558,12 +6562,13 @@ def generate_media(
         model_kwargs.update(upsampler_api.model_load_kwargs_for_vae_upsampling(spatial_upsampling, base_model_type, model_def, image_mode))
     output_type = get_profile_type_for_model(model_type, image_mode)
     profile = compute_profile(override_profile, output_type)
-    if model_type != transformer_type or reload_needed or profile != loaded_profile:
+    if model_type != transformer_type or reload_needed or profile != loaded_profile or override_compile != loaded_compile:
         release_model()
         send_cmd("status", f"Loading model {get_model_name(model_type)}...")
         wan_model, offloadobj = load_models(
             model_type,
             override_profile,
+            override_compile=override_compile,
             output_type=output_type,
             **model_kwargs,
         )
@@ -10058,7 +10063,8 @@ def save_inputs(
             prompt_enhancer,
             min_frames_if_references,
             override_profile,
-            override_attention,            
+            override_attention,
+            override_compile,
             temperature,
             custom_setting_1,
             custom_setting_2,
@@ -12141,6 +12147,13 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         choices=[(f"Default {profile_type} Memory Profile", -1)] + memory_profile_choices,
                         value=ui_get("override_profile"),
                         label=f"Override Memory Profile"
+                    )
+
+                    gr.Markdown("<B>You can turn Pytorch Compilation On or Off for this Model (up to 20% faster if supported)<B>")
+                    override_compile = gr.Dropdown(
+                        choices=[("Default Compilation Setting", ""), ("On", "on"), ("Off", "off")],
+                        value=ui_get("override_compile", ""),
+                        label=f"Override Compile Transformer Model"
                     )
 
                     gr.Markdown("<B>You can set a different Attention Mode to improve the quality / compatibility<B>")

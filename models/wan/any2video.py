@@ -1216,17 +1216,18 @@ class WanAny2V:
             return (frames[:, None] * tokens_per_frame + token_offsets).reshape(-1) + offset
 
         def _sub_parallel_scail2_freqs(start, end, history_latents=0):
+            ref_latent_count = kwargs["scail2_ref_latents"].shape[2]
             main_len = history_latents + end - start
             pose_len = main_len
             main_grid_h, main_grid_w = target_shape[2] // ps_h, target_shape[3] // ps_w
             if test_scail2_replace(video_prompt_type):
-                ref_freqs_cos, ref_freqs_sin = get_nd_rotary_pos_embed((0, 120, 0), (1, 120 + main_grid_h, main_grid_w), (1, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
-                video_freqs_cos, video_freqs_sin = get_nd_rotary_pos_embed((0, 0, 0), (main_len, main_grid_h, main_grid_w), (main_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
+                ref_freqs_cos, ref_freqs_sin = get_nd_rotary_pos_embed((0, 120, 0), (ref_latent_count, 120 + main_grid_h, main_grid_w), (ref_latent_count, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
+                video_freqs_cos, video_freqs_sin = get_nd_rotary_pos_embed((ref_latent_count - 1, 0, 0), (ref_latent_count - 1 + main_len, main_grid_h, main_grid_w), (main_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
                 main_freqs_cos, main_freqs_sin = torch.cat([ref_freqs_cos, video_freqs_cos]), torch.cat([ref_freqs_sin, video_freqs_sin])
-                pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((0, 0, 120), (pose_len, main_grid_h, 120 + main_grid_w), (pose_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
+                pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((ref_latent_count - 1, 0, 120), (ref_latent_count - 1 + pose_len, main_grid_h, 120 + main_grid_w), (pose_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
             else:
-                main_freqs_cos, main_freqs_sin = get_nd_rotary_pos_embed((0, 0, 0), (1 + main_len, main_grid_h, main_grid_w), (1 + main_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
-                pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((1, 0, 120), (1 + pose_len, main_grid_h, 120 + main_grid_w), (pose_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
+                main_freqs_cos, main_freqs_sin = get_nd_rotary_pos_embed((0, 0, 0), (ref_latent_count + main_len, main_grid_h, main_grid_w), (ref_latent_count + main_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
+                pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((ref_latent_count, 0, 120), (ref_latent_count + pose_len, main_grid_h, 120 + main_grid_w), (pose_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
             head_dim = pose_freqs_cos.shape[1]
             pose_freqs_cos = F.avg_pool2d(pose_freqs_cos.view(pose_len, main_grid_h, main_grid_w, head_dim).permute(0, 3, 1, 2), kernel_size=2, stride=2).permute(0, 2, 3, 1).reshape(-1, head_dim)
             pose_freqs_sin = F.avg_pool2d(pose_freqs_sin.view(pose_len, main_grid_h, main_grid_w, head_dim).permute(0, 3, 1, 2), kernel_size=2, stride=2).permute(0, 2, 3, 1).reshape(-1, head_dim)
@@ -1267,7 +1268,8 @@ class WanAny2V:
                 if key in kwargs:
                     sub_kwargs[key] = _sub_parallel_slice_time(kwargs[key], 2, start, end, history_latents=history_latents)
             if "scail2_ref_masks" in kwargs:
-                sub_kwargs["scail2_ref_masks"] = kwargs["scail2_ref_masks"][:, :, :history_latents + end - start + 1]
+                ref_latent_count = kwargs["scail2_ref_latents"].shape[2]
+                sub_kwargs["scail2_ref_masks"] = kwargs["scail2_ref_masks"][:, :, :ref_latent_count + history_latents + end - start]
             if "vace_context" in kwargs:
                 sub_kwargs["vace_context"] = [_sub_parallel_slice_time(u, 1, start, end, True) for u in kwargs["vace_context"]]
             for key in ("kiwi_source_condition", "kiwi_ref_condition"):

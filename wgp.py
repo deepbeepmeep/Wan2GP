@@ -44,7 +44,7 @@ from pathlib import Path
 from datetime import datetime
 import gradio as gr
 from shared.gradio import downloads as gradio_downloads
-from shared.gradio import gradio_queue_focus_patch, video_preview
+from shared.gradio import gradio_model_switch_patch, gradio_queue_focus_patch, video_preview
 from gradio.themes.utils.sizes import Size
 import random
 import json
@@ -53,7 +53,7 @@ import importlib
 from models import model_metadata
 from shared.utils import notification_sound
 from shared.utils.loras_mutipliers import preparse_loras_multipliers, parse_loras_multipliers
-from shared.utils.utils import convert_tensor_to_image, convert_video_tensor_to_uint8_chunked, save_image, get_video_info, get_file_creation_date, convert_image_to_video, calculate_new_dimensions, convert_image_to_tensor, calculate_dimensions_and_resize_image, rescale_and_crop, get_video_frame, resize_and_remove_background, rgb_bw_to_rgba_mask, to_rgb_tensor, get_resampled_video_transparent, get_video_summary_extras
+from shared.utils.utils import convert_tensor_to_image, convert_video_tensor_to_uint8_chunked, save_image, get_video_info, get_file_creation_date, convert_image_to_video, calculate_new_dimensions, convert_image_to_tensor, calculate_dimensions_and_resize_image, rescale_and_crop, get_video_frame, resize_and_remove_background, rgb_bw_to_rgba_mask, image_editor_layer_to_rgb_mask, to_rgb_tensor, get_resampled_video_transparent, get_video_summary_extras
 from shared.utils.utils import calculate_new_dimensions, get_outpainting_dims, get_outpainting_frame_location, get_outpainting_full_area_dimensions, resolve_outpainting_dims
 from shared.utils.utils import has_video_file_extension, has_image_file_extension, has_audio_file_extension
 from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files, normalize_audio_pair_volumes_to_temp_files, save_video, save_hdr_video, save_image
@@ -145,9 +145,9 @@ AUTOSAVE_ERROR_FILENAME = "error_queue.zip"
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-target_mmgp_version = "3.7.8"
-WanGP_version = "12.288"
-settings_version = 2.65
+target_mmgp_version = "3.7.9"
+WanGP_version = "12.3"
+settings_version = 2.66
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -318,7 +318,7 @@ def _open_image_input(image):
     if not isinstance(image, str):
         return image
     virtual_image = get_virtual_image(image)
-    return virtual_image if virtual_image is not None else Image.open(image)
+    return virtual_image if virtual_image is not None else Image.open(strip_virtual_media_suffix(image))
 
 def is_integer(n):
     try:
@@ -467,7 +467,8 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         gr.Warning("Internal state error: Could not retrieve inputs for the model.")
         queue = gen.get("queue", [])
         return ret()
-    
+    if "mode" not in inputs:
+        pass
     mode = inputs["mode"]
     if mode == "edit_audio":
         edit_audio_source = gen.get("edit_audio_source", None)
@@ -1830,7 +1831,7 @@ def _extract_model_type(params, state, log_prefix="[load]"):
     return model_type, None
 
 
-def _parse_task_manifest(manifest, state, media_base_path, cache_dir=None, log_prefix="[load]", verbose_output = True):
+def _parse_task_manifest(manifest, state, media_base_path, cache_dir=None, log_prefix="[load]", verbose_output = True, skip_validate_settings=False):
     global task_id
     newly_loaded_queue = []
     first_error = None
@@ -1857,7 +1858,7 @@ def _parse_task_manifest(manifest, state, media_base_path, cache_dir=None, log_p
         if media_base_path is not None or _task_has_path_attachments(params):
             _load_task_attachments(params, media_base_path or os.path.dirname(os.path.abspath(__file__)), cache_dir, log_prefix)
 
-        params, error = validate_task(task_data, state)
+        params, error = validate_task(task_data, state, skip_validate_settings=skip_validate_settings)
         if error:
             if first_error is None:
                 first_error = error
@@ -1880,7 +1881,7 @@ def _parse_task_manifest(manifest, state, media_base_path, cache_dir=None, log_p
     return newly_loaded_queue, None if len(newly_loaded_queue) > 0 else first_error or "No valid task could be unpacked."
 
 
-def _parse_queue_zip_tasks(filename, state, task_limit=None, log_prefix="[load_queue]"):
+def _parse_queue_zip_tasks(filename, state, task_limit=None, log_prefix="[load_queue]", skip_validate_settings=False):
     """Parse queue ZIP file. Returns (queue_list, error_msg or None, source_task_count)."""
     save_path_base = server_config.get("save_path", "outputs")
     cache_dir = os.path.join(save_path_base, "_loaded_queue_cache")
@@ -1904,7 +1905,7 @@ def _parse_queue_zip_tasks(filename, state, task_limit=None, log_prefix="[load_q
             if task_limit is not None:
                 manifest = manifest[:task_limit]
 
-            queue, error = _parse_task_manifest(manifest, state, tmpdir, cache_dir, log_prefix)
+            queue, error = _parse_task_manifest(manifest, state, tmpdir, cache_dir, log_prefix, skip_validate_settings=skip_validate_settings)
             return queue, error, source_task_count
 
     except Exception as e:
@@ -1918,9 +1919,9 @@ def _parse_queue_zip(filename, state):
     return queue, error
 
 
-def _parse_settings_zip(filename, state):
+def _parse_settings_zip(filename, state, skip_validate_settings=False):
     """Parse a settings ZIP file and extract only the first task."""
-    return _parse_queue_zip_tasks(filename, state, task_limit=1, log_prefix="[load_settings]")
+    return _parse_queue_zip_tasks(filename, state, task_limit=1, log_prefix="[load_settings]", skip_validate_settings=skip_validate_settings)
 
 
 def _parse_settings_json(filename, state):
@@ -2448,6 +2449,8 @@ lock_ui_compile = False
 force_profile_no = float(args.profile)
 verbose_level = int(args.verbose)
 check_loras = args.check_loras ==1
+ui_perf_debug = bool(args.debug_gen_form or os.getenv("WANGP_DEBUG_UI", "").strip().lower() in {"1", "true", "yes", "on"})
+model_dropdowns.MODEL_SELECTOR_DEBUG = ui_perf_debug
 
 with open("models/_settings.json", "r", encoding="utf-8") as f:
     primary_settings = json.load(f)
@@ -2553,6 +2556,7 @@ primary_settings["multi_prompts_gen_type"] = server_config["multi_prompts_gen_ty
 server_config.setdefault(gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY, 1)
 gradio_queue_focus_patch.BACKGROUND_SCHEDULER_DEFAULT_ENABLED = bool(server_config.get(gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY, 1))
 gradio_queue_focus_patch.install()
+gradio_model_switch_patch.install(verbose=ui_perf_debug)
 
 checkpoints_paths = server_config.get("checkpoints_paths", None)
 if checkpoints_paths is None: checkpoints_paths = server_config["checkpoints_paths"] = fl.default_checkpoints_paths
@@ -4601,6 +4605,11 @@ def select_media(state, current_gallery_tab, input_file_list, file_selected, aud
             if "-" in video_model_name: video_model_name =  video_model_name[video_model_name.find("-")+2:] 
             misc_values += [video_model_name]
             misc_labels += ["Model"]
+            metadata_model_def = get_model_def(configs.get("model_type", None))
+            model_modes_def = metadata_model_def.get("model_modes", None) if metadata_model_def is not None else None
+            if model_modes_def is not None and "model_mode" in configs and configs.get("image_mode", 0) in model_modes_def.get("image_modes", [0, 1, 2]):
+                misc_values += [next((label for label, value in model_modes_def["choices"] if value == configs["model_mode"]), configs["model_mode"])]
+                misc_labels += [model_modes_def["label"]]
             video_temporal_upsampling = temporal_upsampler_api.format_temporal_upsampling_label(configs.get("temporal_upsampling", ""))
             video_spatial_upsampling = upsampler_api.format_upsampling_label(configs.get("spatial_upsampling", ""))
             video_film_grain_intensity = configs.get("film_grain_intensity", 0)
@@ -4744,7 +4753,9 @@ def select_media(state, current_gallery_tab, input_file_list, file_selected, aud
                     video_length_label = "Video Length"
                     if video_length != frames_count: video_length_summary += f"real: {frames_count} frames, "
                     video_length_summary += f"{frames_count/fps:.1f}s, {round(fps)} fps)"
-                video_resolution = configs.get("resolution", "") + f" (real: {width}x{height})"
+                video_resolution = configs.get("resolution", "")
+                real_video_resolution = f"{width}x{height}"
+                if video_resolution !=  real_video_resolution: video_resolution +=  f" (real: {real_video_resolution})"
                 video_num_inference_steps = configs.get("num_inference_steps", 0)
 
             video_guidance_scale = configs.get("guidance_scale", None)
@@ -5234,7 +5245,7 @@ def extract_faces_from_video_with_mask(input_video_path, input_mask_path, max_fr
     return face_tensor
 
 
-def preprocess_video_with_mask(pre_video_guide, input_video_path, input_mask_path, height, width,  max_frames, start_frame=0, fit_canvas = None, fit_crop = False, target_fps = 16, block_size= 16, expand_scale = 2, process_type = "inpaint", process_type2 = None, to_bbox = False, RGB_Mask = False, negate_mask = False, process_outside_mask = None, inpaint_color = 127, outpainting_dims = None, outpainting_ratio = "", proc_no = 1):
+def preprocess_video_with_mask(pre_video_guide, input_video_path, input_mask_path, height, width,  max_frames, start_frame=0, fit_canvas = None, fit_crop = False, target_fps = 16, block_size= 16, expand_scale = 2, process_type = "inpaint", process_type2 = None, to_bbox = False, RGB_Mask = False, negate_mask = False, process_outside_mask = None, inpaint_color = 127, outpainting_dims = None, outpainting_ratio = "", proc_no = 1, outpainting_quantize_margins = 0):
 
     def mask_to_xyxy_box(mask):
         rows, cols = np.where(mask == 255)
@@ -5303,7 +5314,7 @@ def preprocess_video_with_mask(pre_video_guide, input_video_path, input_mask_pat
 
     if outpainting_dims != None:
         final_height, final_width = height, width
-        height, width, margin_top, margin_left = get_outpainting_frame_location(final_height, final_width, outpainting_dims, 1, outpainting_ratio, source_frame_height, source_frame_width)
+        height, width, margin_top, margin_left = get_outpainting_frame_location(final_height, final_width, outpainting_dims, 1, outpainting_ratio, source_frame_height, source_frame_width, quantize_margins=outpainting_quantize_margins)
 
     if any_mask:
         num_frames = min(len(video), len(mask_video))
@@ -6267,6 +6278,10 @@ def resolve_model_preprocess_all(model_def, **kwargs):
     preprocess_all = model_def.get("preprocess_all", False)
     return preprocess_all(**kwargs) if callable(preprocess_all) else preprocess_all
 
+def get_outpainting_quantize_margins(model_def):
+    value = model_def.get("outpainting_quantize_margins", 0)
+    return int(model_def.get("vae_block_size", 16) if value is True else value or 0)
+
 def custom_preprocess_video_with_mask(model_handler, base_model_type, pre_video_guide, video_guide, video_mask, height, width, max_frames, start_frame, fit_canvas, fit_crop, target_fps, block_size, expand_scale, video_prompt_type, model_def=None, custom_settings=None):
     pad_frames = 0
     if start_frame < 0:
@@ -6510,13 +6525,19 @@ def generate_media(
         batch_size = 1
     temp_filenames_list = []
 
-    if image_guide is not None and isinstance(image_guide, Image.Image):
-        video_guide = image_guide
-        image_guide = None
+    if image_guide is not None:
+        if isinstance(image_guide, str): 
+            image_guide = _open_image_input(image_guide)
+        if isinstance(image_guide, Image.Image):
+            video_guide = image_guide
+            image_guide = None
 
-    if image_mask is not None and isinstance(image_mask, Image.Image):
-        video_mask = image_mask
-        image_mask = None
+    if image_mask is not None:
+        if isinstance(image_mask, str):
+            image_mask = _open_image_input(image_mask)
+        if isinstance(image_mask, Image.Image):
+            video_mask = image_mask
+            image_mask = None
 
     if model_def.get("no_background_removal", False): remove_background_images_ref = 0
     
@@ -6698,6 +6719,7 @@ def generate_media(
     device_mem_capacity = torch.cuda.get_device_properties(None).total_memory / 1048576
     outpainting_dims = get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio)
     any_outpainting = outpainting_dims is not None
+    outpainting_quantize_margins = get_outpainting_quantize_margins(model_def) if any_outpainting else 0
     guide_inpaint_color = model_def.get("guide_inpaint_color", 127.5)
     if image_mode==2:
         guide_inpaint_color = model_def.get("inpaint_color", guide_inpaint_color)
@@ -7237,13 +7259,14 @@ def generate_media(
                                                                                             outpainting_dims =outpainting_dims,
                                                                                             outpainting_ratio = video_guide_outpainting_ratio,
                                                                                             background_ref_outpainted = model_def.get("background_ref_outpainted", True),
+                                                                                            outpainting_quantize_margins = outpainting_quantize_margins,
                                                                                             return_tensor= True)[0][0]
                         else:
                             ref_pose_tensor = pre_video_guide
  
-                        video_guide_processed, video_mask_processed = preprocess_video_with_mask(ref_pose_tensor, video_guide if sparse_video_image is None else sparse_video_image, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, outpainting_ratio = video_guide_outpainting_ratio, proc_no =1, inpaint_color =inpaint_color, block_size = block_size, to_bbox = "H" in video_prompt_type )
+                        video_guide_processed, video_mask_processed = preprocess_video_with_mask(ref_pose_tensor, video_guide if sparse_video_image is None else sparse_video_image, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, outpainting_ratio = video_guide_outpainting_ratio, proc_no =1, inpaint_color =inpaint_color, block_size = block_size, to_bbox = "H" in video_prompt_type, outpainting_quantize_margins = outpainting_quantize_margins)
                         if preprocess_type2 != None:
-                            video_guide_processed2, video_mask_processed2 = preprocess_video_with_mask(ref_pose_tensor, video_guide, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type2, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, outpainting_ratio = video_guide_outpainting_ratio, proc_no =2, block_size = block_size, to_bbox = "H" in video_prompt_type )
+                            video_guide_processed2, video_mask_processed2 = preprocess_video_with_mask(ref_pose_tensor, video_guide, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type2, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, outpainting_ratio = video_guide_outpainting_ratio, proc_no =2, block_size = block_size, to_bbox = "H" in video_prompt_type, outpainting_quantize_margins = outpainting_quantize_margins)
 
                     if video_guide_processed is not None  and sample_fit_canvas is not None:
                         image_size = video_guide_processed.shape[-2:]
@@ -7308,6 +7331,7 @@ def generate_media(
                                                                                         outpainting_dims =outpainting_dims,
                                                                                         outpainting_ratio = video_guide_outpainting_ratio,
                                                                                         background_ref_outpainted = model_def.get("background_ref_outpainted", True),
+                                                                                        outpainting_quantize_margins = outpainting_quantize_margins,
                                                                                         return_tensor= model_def.get("return_image_refs_tensor", False),
                                                                                         ignore_last_refs =model_def.get("no_processing_on_last_images_refs",0),
                                                                                         background_removal_color = background_removal_color)
@@ -7329,7 +7353,7 @@ def generate_media(
                                                                         None if dont_cat_preguide or fake_start_image and window_no==1 else pre_video_guide, 
                                                                         image_size, current_video_length, latent_size,
                                                                         any_mask, any_guide_padding, guide_inpaint_color, 
-                                                                        keep_frames_parsed, [] if custom_frames_injection else frames_to_inject_parsed , outpainting_dims, video_guide_outpainting_ratio)
+                                                                        keep_frames_parsed, [] if custom_frames_injection else frames_to_inject_parsed , outpainting_dims, video_guide_outpainting_ratio, outpainting_quantize_margins=outpainting_quantize_margins)
                 video_guide_processed = video_guide_processed2 = video_mask_processed = video_mask_processed2 = None
                 if len(src_videos) == 1:
                     src_video, src_video2, src_mask, src_mask2 = src_videos[0], None, src_masks[0], None 
@@ -8256,7 +8280,7 @@ def process_tasks(state):
     release_gen()
 
 
-def validate_task(task, state):
+def validate_task(task, state, skip_validate_settings=False):
     """Validate a task's settings. Returns (updated params dict or None, validation error)."""
     params = task.get('params', {})
     if _is_edit_task_params(params):
@@ -8328,6 +8352,8 @@ def validate_task(task, state):
     clean_settings(model_type, inputs)
 
     inputs.setdefault('mode', "")
+    if skip_validate_settings:
+        return inputs, ""
     override_inputs, _, _, _, validation_error = validate_settings(state, model_type, single_prompt=True, inputs=inputs, silent=True)
     if override_inputs is None:
         return None, validation_error or "Task failed validation."
@@ -8864,7 +8890,7 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
             builtin_preset_settings = builtin_lset_type == "preset_settings"
             lset_path = _builtin_lset_file_path(lset_name) if builtin_lset_type is not None else os.path.join(get_lora_dir(current_model_type), lset_name)
             merge_loras = "merge before" if accelerator_profile else "merge after"
-            configs, _, _ = get_settings_from_file(state,lset_path , True, True, True, min_settings_version=2.38, merge_loras = merge_loras )
+            configs, _, _ = get_settings_from_file(state,lset_path , True, True, True, min_settings_version=2.38, merge_loras = merge_loras, skip_validate_settings=True)
 
             if configs == None:
                 gr.Info("File not supported" + (f": {state.get('_last_settings_file_error')}" if state.get("_last_settings_file_error") else ""))
@@ -9679,7 +9705,7 @@ def update_loras_url_cache(lora_dir, loras_selected, return_URLs = False):
     return new_loras_selected
 
 
-def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, switch_type_if_compatible, min_settings_version = 0, merge_loras = None):    
+def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, switch_type_if_compatible, min_settings_version = 0, merge_loras = None, skip_validate_settings=False):
     configs = None
     any_image_or_video = False
     any_audio = False
@@ -9694,7 +9720,7 @@ def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, sw
         except:
             pass
     elif file_path_lower.endswith(".zip") and allow_json:
-        loaded_queue, error, source_task_count = _parse_settings_zip(file_path, state)
+        loaded_queue, error, source_task_count = _parse_settings_zip(file_path, state, skip_validate_settings=skip_validate_settings)
         state["_last_settings_file_error"] = error
         if error is None and loaded_queue:
             configs = (loaded_queue[0].get("params", {}) or {}).copy()
@@ -9824,7 +9850,7 @@ def load_settings_from_file(state, file_path):
     if file_path==None:
         return gr.update(), gr.update(), None
 
-    configs, any_video_or_image_file, any_audio = get_settings_from_file(state, file_path, True, True, True)
+    configs, any_video_or_image_file, any_audio = get_settings_from_file(state, file_path, True, True, True, skip_validate_settings=True)
     if configs == None:
         gr.Info("File not supported" + (f": {state.get('_last_settings_file_error')}" if state.get("_last_settings_file_error") else ""))
         return gr.update(), gr.update(), None
@@ -9873,6 +9899,9 @@ def _model_choice_target_value(model_type):
     model_dropdowns.debug_model_selector_event("target.write", source=caller, target=model_type)
     return gr.update() if len(model_type) == 0 else f"{model_type}|{time.time()}"
 
+def switch_to_model(model_type, open_media_tab=False):
+    return _model_choice_target_value(model_type), gr.Tabs(selected="media_gen") if open_media_tab else gr.update()
+
 def goto_model_type(state, model_type):
     model_type = _model_choice_target_model_type(model_type)
     if len(model_type) == 0:
@@ -9907,6 +9936,7 @@ def reset_settings(state):
     set_model_settings(state, model_type, ui_defaults)
     gr.Info(f"Default Settings have been Restored")
     return str(time.time())
+
 
 def transfer_current_resolution_to_model(state, source_model_type, target_model_type):
     if not resolution_utils.keep_resolution_on_model_switch_enabled(server_config.get("keep_resolution_on_model_switch", True)):
@@ -10066,7 +10096,7 @@ def save_inputs(
         if "background" in image_mask_guide: 
             image_guide = image_mask_guide["background"]
         if "layers" in image_mask_guide and len(image_mask_guide["layers"])>0: 
-            image_mask = image_mask_guide["layers"][0] 
+            image_mask = image_editor_layer_to_rgb_mask(image_mask_guide["layers"][0])
         image_mask_guide = None
     inputs = get_function_arguments(save_inputs, locals())
     inputs.pop("target")
@@ -11139,7 +11169,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             guide_custom_choices = get_guide_custom_choices(model_def, image_mode_value)
             image_ref_choices = model_def.get("image_ref_choices", None)
 
-            with gr.Column(visible= guide_preprocessing is not None or mask_preprocessing is not None or guide_custom_choices is not None or image_ref_choices is not None) as video_prompt_column: 
+            with gr.Column(visible= guide_preprocessing is not None or mask_preprocessing is not None or guide_custom_choices is not None or image_ref_choices is not None  ) as video_prompt_column: 
                 video_prompt_type_value= ui_get("video_prompt_type")
                 video_prompt_type = gr.Text(value= video_prompt_type_value, visible= False)
                 dropdown_selectable = True

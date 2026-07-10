@@ -45,6 +45,12 @@ _AUTOTUNE_SEEN_SLOTS: set[tuple[int, str, str]] = set()
 _AUTOTUNE_SLOTS_TUNED = 0
 _AUTOTUNE_DEBUG_OVERRIDE: Optional[bool] = None
 
+# Triton reports this staged large-M int8 tile as requiring 102400 bytes of
+# shared memory on SM120, while some cards expose only 101376 bytes per block.
+_HIGH_SHARED_MEMORY_CONFIG = (64, 256, 64, 8, 4)
+_HIGH_SHARED_MEMORY_CONFIG_BYTES = 102400
+_LOW_SHARED_MEMORY_CONFIG = (64, 256, 64, 8, 3)
+
 # Tuned decode-time configs reused from nanovllm int8 kernels.
 _TRITON_SMALL_M_CONFIGS = {
     (2048, 4096): (2, 32, 256, 8, 5),
@@ -394,6 +400,8 @@ def _config_compatible_with_baseline(
     baseline: tuple[int, int, int, int, int],
     cfg: tuple[int, int, int, int, int],
 ) -> bool:
+    if baseline == _LOW_SHARED_MEMORY_CONFIG and cfg == _HIGH_SHARED_MEMORY_CONFIG:
+        return False
     if kind == "fused" and _env_flag(_ENV_AUTOTUNE_LOCK_FUSED_BLOCK_K, "1"):
         # Fused blockscale kernel computes row scales per K-chunk; changing block_k changes numerics.
         return int(cfg[2]) == int(baseline[2])
@@ -867,6 +875,11 @@ def _select_triton_int8_config(
         device_index = _device_index(device)
     except Exception:
         return baseline
+    if baseline == _HIGH_SHARED_MEMORY_CONFIG:
+        props = torch.cuda.get_device_properties(device_index)
+        limit = int(getattr(props, "shared_memory_per_block_optin", getattr(props, "shared_memory_per_block", 0)) or 0)
+        if limit > 0 and limit < _HIGH_SHARED_MEMORY_CONFIG_BYTES:
+            baseline = _LOW_SHARED_MEMORY_CONFIG
     slot_id, rep_shapes = _resolve_autotune_slot(m, k, n)
     session_key = (device_index, kernel_kind, slot_id)
     cached = _AUTOTUNE_SESSION_CACHE.get(session_key)

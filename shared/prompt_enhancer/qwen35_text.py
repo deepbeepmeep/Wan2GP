@@ -134,6 +134,13 @@ def _build_qwen35_gguf_preprocess_sd(tie_output_to_embeddings: bool = False):
     return preprocess_sd
 
 
+def _resolve_quanto_log_ssm_a(model_path: str, spec: dict) -> bool:
+    filename = os.path.basename(str(model_path or "")).strip().lower()
+    log_ssm_a_filenames = {str(name).strip().lower() for name in spec.get("text_int8_log_ssm_a_filenames", [])}
+    selected_filename = str(spec.get("text_int8_filename", "")).strip().lower()
+    return filename in log_ssm_a_filenames or (bool(spec.get("text_int8_log_ssm_a", False)) and filename == selected_filename)
+
+
 def _normalize_generated_text(text: str) -> str:
     text = str(text or "")
     text = text.replace("<|im_end|>", "").replace("<|im_start|>", "")
@@ -761,13 +768,14 @@ def _resolve_legacy_text_execution_device() -> torch.device:
     raise RuntimeError("Qwen3.5 legacy prompt enhancement requires CUDA or MPS.")
 
 
-def _configure_qwen35_gguf_text_model(
+def _configure_qwen35_text_model(
     model,
-    model_dtype: torch.dtype,
+    model_dtype: torch.dtype | None = None,
     *,
     v_head_reordered: bool = False,
     ssm_param_reordered: bool = False,
     interleave_ssm_ab: bool = False,
+    log_ssm_a: bool = False,
 ):
     for module in model.modules():
         if getattr(module, "layer_type", None) == "linear_attention" and hasattr(module, "_gguf_interleave_ssm_ab"):
@@ -776,8 +784,11 @@ def _configure_qwen35_gguf_text_model(
             module._gguf_v_head_reordered = bool(v_head_reordered)
         if getattr(module, "layer_type", None) == "linear_attention" and hasattr(module, "_gguf_ssm_param_reordered"):
             module._gguf_ssm_param_reordered = bool(ssm_param_reordered)
-    model.config.dtype = model_dtype
-    model.config.torch_dtype = model_dtype
+        if getattr(module, "layer_type", None) == "linear_attention" and hasattr(module, "_log_ssm_a"):
+            module._log_ssm_a = bool(log_ssm_a)
+    if model_dtype is not None:
+        model.config.dtype = model_dtype
+        model.config.torch_dtype = model_dtype
 
 
 def _concat_linear_weights(weights):
@@ -936,6 +947,7 @@ def load_qwen35_text_prompt_enhancer(
     if backend == enhancer_quantization_GGUF:
         model_path = _resolve_gguf_model_path(model_path, assets_dir, variant=variant)
         gguf_v_head_reordered, gguf_ssm_param_reordered, gguf_interleave_ssm_ab = _resolve_gguf_linear_attention_layout_from_filename(model_path)
+        quanto_log_ssm_a = False
         preprocess_sd = _build_qwen35_gguf_preprocess_sd(
             tie_output_to_embeddings=bool(spec.get("tie_word_embeddings", False)),
         )
@@ -946,6 +958,7 @@ def load_qwen35_text_prompt_enhancer(
         gguf_interleave_ssm_ab = False
         if model_path is None:
             model_path = get_qwen35_text_quanto_int8_path(assets_dir, variant=variant)
+        quanto_log_ssm_a = _resolve_quanto_log_ssm_a(model_path, spec)
         preprocess_sd = None
         runtime_model_path = text_assets_dir
 
@@ -967,6 +980,8 @@ def load_qwen35_text_prompt_enhancer(
             f"ssm_param_reordered={bool(gguf_ssm_param_reordered)} "
             f"interleave_ssm_ab={bool(gguf_interleave_ssm_ab)}"
         )
+    elif quanto_log_ssm_a:
+        print(f"[Qwen3.5VL][{spec['display_name']}][quanto_int8] SSM A parameters are stored in log form.")
 
     model = _load_local_text_model(
         model_path,
@@ -979,18 +994,21 @@ def load_qwen35_text_prompt_enhancer(
     if backend == enhancer_quantization_QUANTO_INT8 and spec.get("text_int8_tie_word_embeddings", False):
         _tie_qwen35_output_to_embeddings(model)
     if backend == enhancer_quantization_GGUF:
-        _configure_qwen35_gguf_text_model(
+        _configure_qwen35_text_model(
             model,
             default_dtype,
             v_head_reordered=gguf_v_head_reordered,
             ssm_param_reordered=gguf_ssm_param_reordered,
             interleave_ssm_ab=gguf_interleave_ssm_ab,
         )
+    elif quanto_log_ssm_a:
+        _configure_qwen35_text_model(model, log_ssm_a=True)
     _apply_qwen35_projection_fusions(model)
 
     model._prompt_enhancer_tokenizer = tokenizer
     model._prompt_enhancer_gguf_v_head_reordered = bool(gguf_v_head_reordered)
     model._prompt_enhancer_gguf_ssm_param_reordered = bool(gguf_ssm_param_reordered)
+    model._prompt_enhancer_log_ssm_a = bool(quanto_log_ssm_a)
     model._prompt_enhancer_thinking_extra_tokens = QWEN35_PROMPT_THINKING_EXTRA_TOKENS
     model._prompt_enhancer_thinking_max_tokens = QWEN35_PROMPT_THINKING_MAX_TOKENS
     model._prompt_enhancer_close_think_token_id = tokenizer.convert_tokens_to_ids("</think>")

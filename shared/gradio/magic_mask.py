@@ -3,7 +3,6 @@ import queue
 import threading
 import uuid
 from dataclasses import dataclass
-from functools import wraps
 from typing import Any, Callable
 
 import gradio as gr
@@ -348,20 +347,15 @@ class MagicMaskUI:
         global _ORIGINAL_IMAGE_EDITOR
         if _ORIGINAL_IMAGE_EDITOR is not None:
             return True
+        from shared.gradio.wangp_image_editor import WanGPImageEditor
+
         original = gr.ImageEditor
-        original_init = original.__init__
-        if getattr(original_init, "__wangp_magic_mask_patch__", False):
-            _ORIGINAL_IMAGE_EDITOR = original_init
+        if original is WanGPImageEditor:
+            _ORIGINAL_IMAGE_EDITOR = original
             return True
-
-        @wraps(original_init)
-        def patched_init(self, *args, **kwargs):
-            original_init(self, *args, **kwargs)
-            self._wangp_magic_mask_patch_enabled = True
-
-        patched_init.__wangp_magic_mask_patch__ = True
-        _ORIGINAL_IMAGE_EDITOR = original_init
-        original.__init__ = patched_init
+        _ORIGINAL_IMAGE_EDITOR = original
+        gr.ImageEditor = WanGPImageEditor
+        gr.components.ImageEditor = WanGPImageEditor
         return True
 
     @staticmethod
@@ -856,6 +850,10 @@ WMM.init = WMM.init || false;
 WMM.observer = WMM.observer || null;
 WMM.raf = WMM.raf || null;
 WMM.interval = WMM.interval || null;
+if (WMM.interval) {
+    window.clearInterval(WMM.interval);
+    WMM.interval = null;
+}
 
 WMM.isVisible = function (element) {
     if (!element) return false;
@@ -1089,7 +1087,6 @@ if (!WMM.init) {
     if (root) WMM.observer.observe(root, { childList: true, subtree: true });
     window.addEventListener('resize', WMM.scheduleMount);
     window.addEventListener('load', WMM.scheduleMount);
-    WMM.interval = window.setInterval(WMM.scheduleMount, 500);
 }
 WMM.installImageEditorFocusPatch();
 WMM.scheduleMount();

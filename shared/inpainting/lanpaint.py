@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from .utils import *
 from functools import partial
 
@@ -26,16 +27,42 @@ def _unpack_latents(latents, height, width, vae_scale_factor=8):
 
     return latents
 
+def blend_images_with_mask(image1, image2, mask, blend_overlap=1):
+    if image1.shape[0] == 1 and image2.shape[0] > 1:
+        image1 = image1.expand(image2.shape[0], -1, -1, -1)
+    if image2.shape[0] == 1 and image1.shape[0] > 1:
+        image2 = image2.expand(image1.shape[0], -1, -1, -1)
+    if mask.dim() == 3:
+        mask = mask[:, None]
+    if mask.shape[0] == 1 and image1.shape[0] > 1:
+        mask = mask.expand(image1.shape[0], -1, -1, -1)
+    mask = mask.to(device=image1.device, dtype=torch.float32)
+    if blend_overlap > 1:
+        if blend_overlap % 2 == 0:
+            blend_overlap += 1
+        mask = F.max_pool2d(mask, kernel_size=blend_overlap, stride=1, padding=blend_overlap // 2)
+        sigma = (blend_overlap - 1) / 4
+        coords = torch.arange(blend_overlap, device=image1.device, dtype=torch.float32) - blend_overlap // 2
+        y, x = torch.meshgrid(coords, coords, indexing="ij")
+        kernel = torch.exp(-(x ** 2 + y ** 2) / (2 * sigma ** 2))
+        kernel = (kernel / kernel.sum()).view(1, 1, blend_overlap, blend_overlap)
+        mask = F.conv2d(mask, kernel, padding=blend_overlap // 2)
+    mask = mask.clamp_(0, 1)
+    return image1.to(torch.float32) * (1 - mask) + image2.to(torch.float32) * mask
+
 class LanPaint():
-    def __init__(self, NSteps = 5, Friction = 15, Lambda = 8, Beta = 1, StepSize = 0.15, IS_FLUX = True, IS_FLOW = False):
+    def __init__(self, NSteps = 5, Friction = 15, Lambda = 8, Beta = 1, StepSize = 0.15, IS_FLUX = True, IS_FLOW = False, overdamped_fallback=False, force_cfg_big_for_flux=True, MaxTotalStepSize=None):
         self.n_steps = NSteps
         self.chara_lamb = Lambda
         self.IS_FLUX = IS_FLUX
         self.IS_FLOW = IS_FLOW
         self.step_size = StepSize
+        self.max_total_step_size = MaxTotalStepSize
         self.friction = Friction
         self.chara_beta = Beta
         self.img_dim_size = None
+        self.overdamped_fallback = overdamped_fallback
+        self.force_cfg_big_for_flux = force_cfg_big_for_flux
     def add_none_dims(self, array):
         # Create a tuple with ':' for the first dimension and 'None' repeated num_nones times
         index = (slice(None),) + (None,) * (self.img_dim_size-1)
@@ -62,7 +89,7 @@ class LanPaint():
         out = _pack_latents(out)
         return out
     def LanPaint(self, denoise, cfg_predictions, true_cfg_scale, cfg_BIG,  x, sigma, latent_mask, n_steps, IS_FLUX, IS_FLOW):
-        if IS_FLUX:
+        if IS_FLUX and self.force_cfg_big_for_flux:
             cfg_BIG = 1.0
 
         def double_denoise(latents, t):
@@ -104,7 +131,9 @@ class LanPaint():
         # VE_Sigma, abt, Flow_t = current_times
         current_times =  (VE_Sigma, abt, Flow_t)
         
-        step_size = self.step_size * (1 - abt)
+        current_step_size = self.step_size if self.max_total_step_size is None or n_steps <= 0 else min(self.step_size, self.max_total_step_size / n_steps)
+        self.current_step_size = current_step_size
+        step_size = current_step_size * (1 - abt)
         step_size = self.add_none_dims(step_size)
         # self.inner_model.inner_model.scale_latent_inpaint returns variance exploding x_t values
         # This is the replace step
@@ -192,29 +221,65 @@ class LanPaint():
             x_t = x_t.to(dtype)
             v = v.to(dtype)
             return x_t, v
-        if args is None:
-            #v = torch.zeros_like(x_t)
-            v = None
-            C = Coef_C(x_t)
-            if C is None: 
-                return None, None
-            #print(torch.squeeze(dtx), torch.squeeze(dty))
-            x_t, v = advance_time(x_t, v, dt, Gamma, A, C, D)
+
+        def advance_time_overdamped(x_t, dt, A, C, D):
+            dtype = x_t.dtype
+            with torch.autocast(device_type=x_t.device.type, dtype=torch.float32):
+                A_dt = A * dt
+                exp_neg = torch.exp(-A_dt)
+                abs_A = torch.abs(A)
+                k = torch.where(abs_A < 1e-8, dt, (-torch.expm1(-A_dt)) / A)
+                k2 = torch.where(abs_A < 1e-8, dt, (-torch.expm1(-2 * A_dt)) / (2 * A))
+                x_t = exp_neg * x_t + k * C + torch.randn_like(x_t) * torch.sqrt(torch.clamp((D ** 2) * k2, min=0.0))
+            return x_t.to(dtype)
+
+        def run_damped(x_t, args):
+            if args is None:
+                v = None
+                C = Coef_C(x_t)
+                if C is None:
+                    return None, None
+                x_t, v = advance_time(x_t, v, dt, Gamma, A, C, D)
+            else:
+                v, C = args
+                x_t, v = advance_time(x_t, v, dt/2, Gamma, A, C, D)
+                C_new = Coef_C(x_t)
+                if C_new is None:
+                    return None, None
+                v = v + Gamma**0.5 * (C_new - C) * dt
+                x_t, v = advance_time(x_t, v, dt/2, Gamma, A, C, D)
+                C = C_new
+            return x_t, (v, C)
+
+        def run_overdamped(x_t, args):
+            if args is None:
+                C = Coef_C(x_t)
+                if C is None:
+                    return None, None
+                x_t = advance_time_overdamped(x_t, dt, A, C, D)
+            else:
+                _, C = args
+                x_t = advance_time_overdamped(x_t, dt / 2, A, C, D)
+                C_new = Coef_C(x_t)
+                if C_new is None:
+                    return None, None
+                x_t = x_t + (C_new - C) * dt
+                x_t = advance_time_overdamped(x_t, dt / 2, A, C, D)
+                C = C_new
+            return x_t, (None, C)
+
+        if self.overdamped_fallback:
+            try:
+                x_t_next, args_next = run_damped(x_t, args)
+                if x_t_next is None or torch.isnan(x_t_next).any() or (args_next[0] is not None and torch.isnan(args_next[0]).any()):
+                    raise ValueError("NaN detected")
+                x_t, args = x_t_next, args_next
+            except Exception:
+                x_t, args = run_overdamped(x_t, args)
         else:
-            v, C = args
-
-            x_t, v = advance_time(x_t, v, dt/2, Gamma, A, C, D)
-
-            C_new = Coef_C(x_t)
-            if C_new is None: 
-                return None, None
-            v = v + Gamma**0.5 * ( C_new - C) *dt
-
-            x_t, v = advance_time(x_t, v, dt/2, Gamma, A, C, D)
-
-            C = C_new
+            x_t, args = run_damped(x_t, args)
   
-        return x_t, (v, C)
+        return x_t, args
 
     def prepare_step_size(self, current_times, step_size, sigma_x, sigma_y):
         # -------------------------------------------------------------------------
@@ -230,8 +295,8 @@ class LanPaint():
         # Define friction parameter Gamma_hat for each branch.
         # Using dtx**0 provides a tensor of the proper device/dtype.
 
-        Gamma_hat_x = self.friction **2 * self.step_size * sigma_x / 0.1 * sigma**0
-        Gamma_hat_y = self.friction **2 * self.step_size * sigma_y / 0.1 * sigma**0
+        Gamma_hat_x = self.friction **2 * self.current_step_size * sigma_x / 0.1 * sigma**0
+        Gamma_hat_y = self.friction **2 * self.current_step_size * sigma_y / 0.1 * sigma**0
         #print("Gamma_hat_x", torch.mean(Gamma_hat_x).item(), "Gamma_hat_y", torch.mean(Gamma_hat_y).item())
         # adjust dt to match denoise-addnoise steps sizes
         Gamma_hat_x /= 2.

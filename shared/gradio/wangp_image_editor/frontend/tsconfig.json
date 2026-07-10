@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "verbatimModuleSyntax": true,
+    "strict": false,
+    "allowJs": true,
+    "checkJs": false,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "types": ["svelte"]
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.svelte",
+    "C:/Users/Marc/anaconda3/envs/py311/Lib/site-packages/gradio/_frontend_code/**/*.ts",
+    "C:/Users/Marc/anaconda3/envs/py311/Lib/site-packages/gradio/_frontend_code/**/*.svelte"
+  ]
+}

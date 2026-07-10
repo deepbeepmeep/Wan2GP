@@ -89,7 +89,7 @@ _TRITON_LARGE_M_SHAPE_CONFIGS = {
     (4096, 3840): (64, 256, 64, 8, 4),
     (15360, 3840): (64, 256, 64, 8, 4),
     # Hot WAN2 I2V enhanced-lightning fused-int8 shapes (M ~= 512).
-    (4096, 4096): (64, 256, 64, 8, 3),
+    (4096, 4096): (64, 256, 64, 8, 4),
     (4096, 10240): (64, 256, 64, 8, 4),
     (10240, 4096): (64, 256, 64, 8, 4),
 }
@@ -204,7 +204,7 @@ def _select_static_triton_int8_config(m: int, k: int, n: int) -> tuple[int, int,
         if cfg is not None:
             return cfg
         if n >= 2048:
-            return (64, 256, 64, 8, 3)
+            return (64, 256, 64, 8, 4)
     return _TRITON_LARGE_M_DEFAULT
 
 

@@ -45,6 +45,11 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 **Follow DeepBeepMeep on Twitter/X to get the Latest News**: https://x.com/deepbeepmeep
 
+> [!IMPORTANT]
+> **Wan2GP is free to use locally.** The official project will never ask you to pay a license fee, subscription, or donation to run Wan2GP on your own computer (see the license for terms).
+>
+> **Use only the official GitHub repository.** Wan2GP is **not affiliated with wan2gp.com or any other third-party service using the Wan2GP name**, unless explicitly stated here.
+
 ## 📋 Table of Contents
 
 - [🚀 Quick Start](#-quick-start)

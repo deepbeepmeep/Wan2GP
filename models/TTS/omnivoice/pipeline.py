@@ -689,6 +689,7 @@ class OmniVoicePipeline:
         voice_clone_prompt: Optional[VoiceClonePrompt],
         instruct: Optional[str],
         generation_config: OmniVoiceGenerationConfig,
+        segment_duration: Optional[float] = None,
     ) -> Optional[tuple[torch.Tensor, object]]:
         if self._abort_requested() or self._early_stop_requested():
             return None
@@ -699,6 +700,7 @@ class OmniVoicePipeline:
                 voice_clone_prompt=voice_clone_prompt,
                 instruct=instruct,
                 generation_config=generation_config,
+                duration=segment_duration,
             )
         except RuntimeError as exc:
             if _is_abort_exception(exc):
@@ -731,6 +733,29 @@ class OmniVoicePipeline:
         total_progress_steps = max(1, len(segments) * generation_config.num_step)
         audio_segments = []
         elapsed_samples = 0
+
+        # When a fixed duration is requested, give each segment a proportional
+        # duration budget so the model fits the text into that many seconds
+        # (true compression via the upstream-supported `duration` parameter)
+        # instead of generating at the model's natural pace and truncating the
+        # tail afterwards. Pauses count toward the request, so the speech
+        # budget is the total minus the sum of inter-segment pauses.
+        segment_durations: list[Optional[float]] = [None] * len(segments)
+        if max_total_samples is not None:
+            total_pause_samples = pause_samples * max(0, len(segments) - 1)
+            speech_budget_samples = max(0, max_total_samples - total_pause_samples)
+            speech_budget_seconds = float(speech_budget_samples) / float(self.sample_rate)
+            segment_estimates: list[float] = []
+            for _speaker_id, segment_text in segments:
+                try:
+                    estimate = self._estimate_text_seconds(segment_text, speaker_prompts.get(_speaker_id))
+                except Exception:
+                    estimate = 0.0
+                segment_estimates.append(max(1e-6, float(estimate)))
+            estimate_sum = sum(segment_estimates)
+            if estimate_sum > 0:
+                for i, estimate in enumerate(segment_estimates):
+                    segment_durations[i] = max(0.1, speech_budget_seconds * estimate / estimate_sum)
 
         def _poll_early_stop(segment_index: int) -> None:
             if callback is None:
@@ -779,6 +804,7 @@ class OmniVoicePipeline:
                 voice_clone_prompt=speaker_prompts.get(speaker_id),
                 instruct=instruct,
                 generation_config=generation_config,
+                segment_duration=segment_durations[segment_index],
             )
             if segment_result is None:
                 break
@@ -791,8 +817,16 @@ class OmniVoicePipeline:
                 samples_left = max_total_samples - elapsed_samples
                 if samples_left <= 0:
                     break
-                duration_truncated = samples_left < segment_audio.numel()
-                segment_audio = segment_audio[:samples_left]
+                # The model already fit the text into the requested duration
+                # via the `duration` parameter, so this is only a small safety
+                # trim against any post-processing overshoot — never a content
+                # cut. Anything beyond a few hundred ms of overshoot is left as
+                # is to avoid clipping speech the model deliberately produced.
+                safety_trim_samples = max(0, int(round(0.5 * self.sample_rate)))
+                hard_cap = samples_left + safety_trim_samples
+                if segment_audio.numel() > hard_cap:
+                    duration_truncated = True
+                    segment_audio = segment_audio[:hard_cap]
             if segment_audio.numel() > 0:
                 if preserve_voice_design and segment_index == 0 and len(segments) > 1:
                     token_result = None if duration_truncated or auto_end_trim else segment_tokens

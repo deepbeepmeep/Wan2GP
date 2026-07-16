@@ -31,6 +31,11 @@ shared/gradio/wangp_image_editor/templates/component/index.js.map
 storage/
 samples/
 !.gitignore
+!.github
+!.yamllint
+!.dockerignore
+# Private Sanctuary
+private/
 !requirements.txt
 .DS_Store
 *DS_Store

@@ -145,8 +145,8 @@ AUTOSAVE_ERROR_FILENAME = "error_queue.zip"
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-target_mmgp_version = "3.7.9"
-WanGP_version = "12.3"
+target_mmgp_version = "3.7.10"
+WanGP_version = "12.34"
 settings_version = 2.66
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -1071,6 +1071,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
     video_guide_outpainting = inputs["video_guide_outpainting"]
     video_guide_outpainting_ratio = inputs.get("video_guide_outpainting_ratio", "")
     spatial_upsampling = inputs["spatial_upsampling"]
+    temporal_upsampling = inputs.get("temporal_upsampling", "") or ""
     motion_amplitude = inputs["motion_amplitude"]
     self_refiner_setting = inputs["self_refiner_setting"]
     self_refiner_plan = inputs["self_refiner_plan"]
@@ -1115,6 +1116,11 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
             return err(error)
 
     if not model_def.get("motion_amplitude", False): motion_amplitude = 1.
+    if spatial_upsampling and upsampler_api.find_upsampler(spatial_upsampling) is None:
+        return err(f"Spatial upsampling method '{spatial_upsampling}' is not supported by the current WanGP install")
+    temporal_upsampling_error = temporal_upsampler_api.validate_temporal_upsampling(temporal_upsampling, source_is_image=image_mode > 0)
+    if temporal_upsampling_error:
+        return err(f"Temporal upsampling method '{temporal_upsampling}' is not supported by the current WanGP install" if temporal_upsampler_api.find_temporal_upsampler(temporal_upsampling) is None else temporal_upsampling_error)
     vae_upsampling_error = upsampler_api.validate_model_vae_upsampling(spatial_upsampling, image_mode, model_type, model_def, medium)
     if vae_upsampling_error:
         return err(vae_upsampling_error)
@@ -1165,6 +1171,11 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
         replace_voice_sample2 = None
     postprocess_audio_meta = audio_processor_api.method_metadata(postprocess_audio)
     replace_voice_meta = audio_processor_api.method_metadata(replace_voice_method)
+
+    if postprocess_audio and postprocess_audio != "control" and audio_processor_api.find_processor(postprocess_audio) is None:
+        return err(f"Audio processing method '{postprocess_audio}' is not supported by the current WanGP install")
+    if replace_voice_method and audio_processor_api.find_processor(replace_voice_method) is None:
+        return err(f"Audio processing method '{replace_voice_method}' is not supported by the current WanGP install")
 
     if "K" in audio_prompt_type and "V" not in video_prompt_type:
         return err("You must enable a Control Video to use the Control Video Audio Track as an audio prompt")
@@ -11168,25 +11179,23 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 mask_preprocessing = model_def.get("mask_preprocessing", None)
             guide_custom_choices = get_guide_custom_choices(model_def, image_mode_value)
             image_ref_choices = model_def.get("image_ref_choices", None)
+            video_prompt_type_value = ui_get("video_prompt_type")
+            dropdown_selectable = image_mode_value != 2
+            image_ref_inpaint = image_mode_value == 2 and "I" in model_def.get("inpaint_video_prompt_type", "")
+            guide_selection_context_visible = dropdown_selectable or image_ref_inpaint
+            guide_selector_visible = guide_preprocessing is not None and guide_preprocessing.get("visible", True)
+            guide_alt_selector_visible = guide_custom_choices is not None and guide_custom_choices.get("visible", True)
+            mask_selector_visible = mask_preprocessing is not None and "V" in video_prompt_type_value and "U" not in video_prompt_type_value and mask_preprocessing.get("visible", True)
+            image_ref_selector_visible = image_ref_inpaint or image_ref_choices is not None and image_ref_choices.get("visible", True)
+            custom_video_selection = model_def.get("custom_video_selection", None)
+            custom_video_trigger = "" if custom_video_selection is None else custom_video_selection.get("trigger", "")
+            custom_selector_visible = custom_video_selection is not None and (len(custom_video_trigger) == 0 or custom_video_trigger in video_prompt_type_value)
+            guide_selection_visible = guide_selection_context_visible and (guide_selector_visible or guide_alt_selector_visible or custom_selector_visible or mask_selector_visible or image_ref_selector_visible)
+            video_prompt_defaults = (guide_custom_choices.get("default", "") if guide_custom_choices is not None else "") + (image_ref_choices["choices"][0][1] if image_ref_choices is not None else "")
+            video_prompt_inputs_visible = any_letters(video_prompt_type_value + video_prompt_defaults, "VIKFG")
 
-            with gr.Column(visible= guide_preprocessing is not None or mask_preprocessing is not None or guide_custom_choices is not None or image_ref_choices is not None  ) as video_prompt_column: 
-                video_prompt_type_value= ui_get("video_prompt_type")
+            with gr.Column(visible=guide_selection_visible or video_prompt_inputs_visible) as video_prompt_column:
                 video_prompt_type = gr.Text(value= video_prompt_type_value, visible= False)
-                dropdown_selectable = True
-                image_ref_inpaint = False
-                if image_mode_value==2:
-                    dropdown_selectable = False
-                    image_ref_inpaint = "I" in model_def.get("inpaint_video_prompt_type", "")
-
-                guide_selection_context_visible = dropdown_selectable or image_ref_inpaint
-                guide_selector_visible = guide_preprocessing is not None and guide_preprocessing.get("visible", True)
-                guide_alt_selector_visible = guide_custom_choices is not None and guide_custom_choices.get("visible", True)
-                mask_selector_visible = mask_preprocessing is not None and "V" in video_prompt_type_value and "U" not in video_prompt_type_value and mask_preprocessing.get("visible", True)
-                image_ref_selector_visible = image_ref_inpaint or image_ref_choices is not None and image_ref_choices.get("visible", True)
-                custom_video_selection = model_def.get("custom_video_selection", None)
-                custom_video_trigger = "" if custom_video_selection is None else custom_video_selection.get("trigger", "")
-                custom_selector_visible = custom_video_selection is not None and (len(custom_video_trigger) == 0 or custom_video_trigger in video_prompt_type_value)
-                guide_selection_visible = guide_selection_context_visible and (guide_selector_visible or guide_alt_selector_visible or custom_selector_visible or mask_selector_visible or image_ref_selector_visible)
 
                 with gr.Row(visible=guide_selection_visible) as guide_selection_row:
                     # Control Video Preprocessing

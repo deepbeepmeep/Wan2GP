@@ -154,6 +154,8 @@ class model_factory():
         masking_strength = 1.,
         model_mode = 0,
         outpainting_dims = None,
+        vae_upsampler=None,
+        set_progress_status=None,
         **bbargs
     ):
         # Generate with different aspect ratios
@@ -245,6 +247,11 @@ class model_factory():
 
         num_images_per_prompt = 1 if qwen_layered else batch_size
         layers = batch_size if qwen_layered else 1
+        def _vae_upsampler_progress(_phase, current_step=None, total_steps=None):
+            if callable(set_progress_status):
+                label = getattr(vae_upsampler, "progress_label", "VAE Spatial Upsampling")
+                set_progress_status(f"{label} in progress" if current_step is None or total_steps is None else f"{label} in progress ({int(current_step) + 1}/{int(total_steps)})")
+
         image = self.pipeline(
             prompt=input_prompt,
             negative_prompt=n_prompt,
@@ -268,6 +275,9 @@ class model_factory():
             outpainting_dims = outpainting_dims,
             qwen_edit_plus = qwen_edit_plus,
             VAE_tile_size = tile_size,
+            vae_upsampler=vae_upsampler,
+            vae_upsampler_seed=seed,
+            vae_upsampler_progress_callback=_vae_upsampler_progress,
         )      
         if image is None: return None
         return image.transpose(0, 1)

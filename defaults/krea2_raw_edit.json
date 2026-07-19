@@ -1,0 +1,17 @@
+{
+    "model": {
+        "name": "Krea 2 RAW Identity Edit v1.2",
+        "architecture": "krea2_raw_edit",
+        "description": "Instruction-based image editing with identity preservation using Krea 2 RAW and the full-rank Identity Edit v1.2 LoRA. Up to 2 Reference Images are supported. Use the Raw Model if you are trying to remove People or Objects.",
+        "URLs": "krea2_raw",
+        "loras": ["https://huggingface.co/DeepBeepMeep/krea-2/resolve/main/krea2_identity_edit_v1_2.safetensors"],
+        "loras_multipliers": [1]
+    },
+    "prompt": "Change the car color to matte black and keep the camera angle and surroundings unchanged.",
+    "negative_prompt": "",
+    "video_prompt_type": "KI",
+    "model_mode": 0,
+    "batch_size": 1,
+    "num_inference_steps": 20,
+    "guidance_scale": 2
+}

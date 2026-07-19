@@ -9,10 +9,17 @@ from postprocessing.pid.runtime import (
     PID_TEXT_ENCODER_FOLDER,
     PID_TILING_THRESHOLD_CHOICES,
     PID_TILING_THRESHOLD_DEFAULT,
+    PID_VERSION_DEFAULT,
+    PID_QWEN_VAE_UPSAMPLING_METHOD,
+    PID_QWEN_POST_UPSAMPLING_METHOD,
     PID_FLUX_VAE_UPSAMPLING_METHOD,
     PID_FLUX2_VAE_UPSAMPLING_METHOD,
+    PID_FLUX_VAE_UPSAMPLING_METHOD_V15,
+    PID_FLUX2_VAE_UPSAMPLING_METHOD_V15,
     PID_FLUX_POST_UPSAMPLING_METHOD,
     PID_FLUX2_POST_UPSAMPLING_METHOD,
+    PID_FLUX_POST_UPSAMPLING_METHOD_V15,
+    PID_FLUX2_POST_UPSAMPLING_METHOD_V15,
     PID_VAE_UPSAMPLING_METHODS,
     get_pid_download_def,
     get_pid_upsampler,
@@ -21,8 +28,10 @@ from postprocessing.pid.runtime import (
     pid_backbone_for_upsampling,
     pid_checkpoint_filename,
     pid_post_upsampling_choices,
+    pid_version_for_upsampling,
     pid_vae_filename,
     normalize_pid_tiling_threshold,
+    normalize_pid_version_filter,
     split_pid_upsampling,
 )
 
@@ -31,7 +40,7 @@ class PiDBridge:
     PERSIST_UNLOAD = 1
     PERSIST_RAM = 2
     UPSAMPLING_RATIOS = (4.0,)
-    UPSAMPLING_METHODS = (PID_FLUX_POST_UPSAMPLING_METHOD, PID_FLUX2_POST_UPSAMPLING_METHOD, PID_FLUX_VAE_UPSAMPLING_METHOD, PID_FLUX2_VAE_UPSAMPLING_METHOD)
+    UPSAMPLING_METHODS = (PID_FLUX_POST_UPSAMPLING_METHOD, PID_FLUX2_POST_UPSAMPLING_METHOD, PID_FLUX_POST_UPSAMPLING_METHOD_V15, PID_FLUX2_POST_UPSAMPLING_METHOD_V15, PID_QWEN_POST_UPSAMPLING_METHOD, PID_FLUX_VAE_UPSAMPLING_METHOD, PID_FLUX2_VAE_UPSAMPLING_METHOD, PID_FLUX_VAE_UPSAMPLING_METHOD_V15, PID_FLUX2_VAE_UPSAMPLING_METHOD_V15, PID_QWEN_VAE_UPSAMPLING_METHOD)
     batch_image_inputs = True
     uses_image_profile = True
     PERSISTENCE_CHOICES = [("Unload after use", PERSIST_UNLOAD), ("Persistent in RAM", PERSIST_RAM)]
@@ -43,7 +52,7 @@ class PiDBridge:
 
     @classmethod
     def default_config(cls) -> dict[str, Any]:
-        return {"tiling_threshold": PID_TILING_THRESHOLD_DEFAULT, "persistence": cls.PERSIST_UNLOAD}
+        return {"version": PID_VERSION_DEFAULT, "tiling_threshold": PID_TILING_THRESHOLD_DEFAULT, "persistence": cls.PERSIST_UNLOAD}
 
     @classmethod
     def legacy_config_keys(cls) -> tuple[str, ...]:
@@ -57,6 +66,7 @@ class PiDBridge:
     def normalize_config_section(cls, config: dict[str, Any]) -> dict[str, Any]:
         normalized = cls.default_config()
         normalized.update(config or {})
+        normalized["version"] = normalize_pid_version_filter(normalized["version"])
         normalized["tiling_threshold"] = normalize_pid_tiling_threshold(normalized.get("tiling_threshold", PID_TILING_THRESHOLD_DEFAULT))
         try:
             normalized["persistence"] = int(normalized.get("persistence", cls.PERSIST_UNLOAD))
@@ -74,6 +84,14 @@ class PiDBridge:
     def persistent_models(self) -> bool:
         return int(self.config()["persistence"] or self.PERSIST_UNLOAD) == self.PERSIST_RAM
 
+    def format_method_label(self, label: str, method: str) -> str:
+        version = pid_version_for_upsampling(method)
+        return str(label).replace(" PiD ", f" PiD v{'1.0' if version == '1' else version} ")
+
+    def method_available(self, method: str) -> bool:
+        version_filter = self.config()["version"]
+        return version_filter == "both" or pid_version_for_upsampling(method) == version_filter
+
     @classmethod
     def query_upsampler_def(cls) -> dict[str, Any]:
         return {
@@ -86,11 +104,17 @@ class PiDBridge:
             "method_pos": {
                 PID_FLUX_POST_UPSAMPLING_METHOD: 40,
                 PID_FLUX2_POST_UPSAMPLING_METHOD: 41,
+                PID_FLUX_POST_UPSAMPLING_METHOD_V15: 40,
+                PID_FLUX2_POST_UPSAMPLING_METHOD_V15: 41,
+                PID_QWEN_POST_UPSAMPLING_METHOD: 42,
                 PID_FLUX_VAE_UPSAMPLING_METHOD: 40,
                 PID_FLUX2_VAE_UPSAMPLING_METHOD: 41,
+                PID_FLUX_VAE_UPSAMPLING_METHOD_V15: 40,
+                PID_FLUX2_VAE_UPSAMPLING_METHOD_V15: 41,
+                PID_QWEN_VAE_UPSAMPLING_METHOD: 42,
             },
             "methods": pid_post_upsampling_choices(),
-            "vae_methods": [("Flux VAE PiD Upsampler", PID_FLUX_VAE_UPSAMPLING_METHOD), ("Flux2 VAE PiD Upsampler", PID_FLUX2_VAE_UPSAMPLING_METHOD)],
+            "vae_methods": [("Flux VAE PiD Upsampler", PID_FLUX_VAE_UPSAMPLING_METHOD), ("Flux2 VAE PiD Upsampler", PID_FLUX2_VAE_UPSAMPLING_METHOD), ("Flux VAE PiD Upsampler", PID_FLUX_VAE_UPSAMPLING_METHOD_V15), ("Flux2 VAE PiD Upsampler", PID_FLUX2_VAE_UPSAMPLING_METHOD_V15), ("Qwen VAE PiD Upsampler", PID_QWEN_VAE_UPSAMPLING_METHOD)],
             "multipliers": {method: cls.UPSAMPLING_RATIOS for method in cls.UPSAMPLING_METHODS},
             "default_spatial_upsampling": "flux_pid4",
         }
@@ -127,9 +151,15 @@ class PiDBridge:
             elif isinstance(modes, int):
                 modes = (modes,)
             out[method] = tuple(int(mode) for mode in modes)
+        if PID_FLUX_VAE_UPSAMPLING_METHOD in out:
+            out[PID_FLUX_VAE_UPSAMPLING_METHOD_V15] = out[PID_FLUX_VAE_UPSAMPLING_METHOD]
+        if PID_FLUX2_VAE_UPSAMPLING_METHOD in out:
+            out[PID_FLUX2_VAE_UPSAMPLING_METHOD_V15] = out[PID_FLUX2_VAE_UPSAMPLING_METHOD]
         return out
 
     def supports_model_vae_method(self, method, model_type, model_def, image_mode: int) -> bool:
+        if not self.method_available(method):
+            return False
         return int(image_mode) in self._model_vae_methods(model_def).get(str(method or "").strip().lower(), ())
 
     def validate_model_vae_upsampling(self, spatial_upsampling, image_mode: int, model_type, model_def, medium: str) -> str:
@@ -145,9 +175,10 @@ class PiDBridge:
     def create_config_ui(self, gr, config: dict[str, Any], *, lock_config: bool = False):
         with gr.Group():
             with gr.Row():
+                version = gr.Dropdown(choices=[("PiD v1.5 only", "1.5"), ("PiD v1.0 only", "1"), ("Both PiD v1.5 and v1.0", "both")], value=config["version"], label="Visible PiD Versions", interactive=not lock_config)
                 tiling_threshold = gr.Dropdown(choices=PID_TILING_THRESHOLD_CHOICES, value=config["tiling_threshold"], label="PiD Tiling Threshold", interactive=not lock_config)
                 persistence = gr.Dropdown(choices=self.PERSISTENCE_CHOICES, value=config["persistence"], label="PiD Model Persistence", interactive=not lock_config)
-        return [("tiling_threshold", tiling_threshold), ("persistence", persistence)]
+        return [("version", version), ("tiling_threshold", tiling_threshold), ("persistence", persistence)]
 
     def validate_config_section(self, config: dict[str, Any]):
         return ""
@@ -155,22 +186,24 @@ class PiDBridge:
     def config_requires_release(self, old_config: dict[str, Any], new_config: dict[str, Any], changed_keys: set[str]) -> bool:
         return old_config != new_config or bool({"image_profile", "attention_mode"} & changed_keys)
 
-    def _required_files(self, backbone):
-        ckpt_types = pid_checkpoint_types_for_tiling_threshold(self.config()["tiling_threshold"])
-        required = [pid_checkpoint_filename(backbone, ckpt_type) for ckpt_type in ckpt_types]
+    def _required_files(self, backbone, spatial_upsampling):
+        version = pid_version_for_upsampling(spatial_upsampling)
+        ckpt_types = ("2kto4k",) if version == "1.5" else pid_checkpoint_types_for_tiling_threshold(self.config()["tiling_threshold"])
+        required = [pid_checkpoint_filename(backbone, ckpt_type, version) for ckpt_type in ckpt_types]
         required.append(pid_vae_filename(backbone))
         required.extend([f"{PID_TEXT_ENCODER_FOLDER}/{filename}" for filename in PID_TEXT_ENCODER_FILES])
         return required
 
     def download(self, process_files: Callable[..., Any], send_cmd=None, status_text: str | None = None, spatial_upsampling=None) -> bool:
         backbone = pid_backbone_for_upsampling(spatial_upsampling)
-        if all(self.files_locator.locate_file(path, error_if_none=False) is not None for path in self._required_files(backbone)):
+        if all(self.files_locator.locate_file(path, error_if_none=False) is not None for path in self._required_files(backbone, spatial_upsampling)):
             return False
         from shared.utils.download import send_download_status
 
         send_download_status(send_cmd, status_text)
-        ckpt_types = pid_checkpoint_types_for_tiling_threshold(self.config()["tiling_threshold"])
-        for download_def in get_pid_download_def(backbone, ckpt_type=ckpt_types, include_vae=True):
+        version = pid_version_for_upsampling(spatial_upsampling)
+        ckpt_types = ("2kto4k",) if version == "1.5" else pid_checkpoint_types_for_tiling_threshold(self.config()["tiling_threshold"])
+        for download_def in get_pid_download_def(backbone, ckpt_type=ckpt_types, include_vae=True, version=version):
             process_files(**download_def)
         return True
 
@@ -203,6 +236,7 @@ class PiDBridge:
             profile=profile,
             tiling_threshold=config["tiling_threshold"],
             attention_mode=self.server_config.get("attention_mode"),
+            version=pid_version_for_upsampling(spatial_upsampling),
         )
         self._session.ensure_loaded()
 
@@ -229,6 +263,7 @@ class PiDBridge:
             persistent_models=self.persistent_models(),
             tiling_threshold=config["tiling_threshold"],
             attention_mode=attention_mode,
+            version=pid_version_for_upsampling(spatial_upsampling),
         )
         self._session.progress_label = "PiD Spatial Upsampling"
         return self._session

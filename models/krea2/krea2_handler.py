@@ -11,21 +11,24 @@ _QWEN_IMAGE_REPO = "DeepBeepMeep/Qwen_image"
 _TEXT_ENCODER_FOLDER = "Qwen3-VL-4B-Instruct"
 _RAW_MODEL_TYPE = "krea2_raw"
 _TURBO_MODEL_TYPE = "krea2_turbo"
+_RAW_EDIT_MODEL_TYPE = "krea2_raw_edit"
+_TURBO_EDIT_MODEL_TYPE = "krea2_turbo_edit"
 _PROFILE_DIR = "krea2"
 _PRESET_PROFILE_DIR = "krea2_presets"
 
 class family_handler:
     @staticmethod
     def query_model_def(base_model_type, model_def):
+        edit = base_model_type in (_RAW_EDIT_MODEL_TYPE, _TURBO_EDIT_MODEL_TYPE)
         lanpaint_choices = [
             ("LanPaint (2 steps): ~2x slower, easy task", 2),
             ("LanPaint (5 steps): ~5x slower, medium task", 3),
             ("LanPaint (10 steps): ~10x slower, hard task", 4),
             ("LanPaint (15 steps): ~15x slower, very hard task", 5),
         ]
-        return {
+        result = {
             "image_outputs": True,
-            "guidance_max_phases": 1 if base_model_type == _RAW_MODEL_TYPE else 0,
+            "guidance_max_phases": 1 if base_model_type in (_RAW_MODEL_TYPE, _RAW_EDIT_MODEL_TYPE) else 0,
             "NAG": True,
             "NAG_scale": {"min": 1.0, "max": 1.5, "step": 0.01},
             "NAG_tau": {"min": 1.0, "max": 5.0, "step": 0.05},
@@ -34,8 +37,6 @@ class family_handler:
             "inpaint_support": True,
             "inpaint_video_prompt_type": "VA", # "VAG",
             "inpaint_color": "FFFFFF",
-            # "video_guide_outpainting": [1, 2],
-            # "outpainting_quantize_margins": 16,
             "guide_custom_choices_image": {
                 "choices": [("No Control Image", ""), ("Control Image", "V"), ("Control Image with Masked Denoising", "VG")],
                 "letters_filter": "V", # "VG",
@@ -62,15 +63,45 @@ class family_handler:
             "no_background_removal": True,
             "resolutions_categories": ["<=2k"],
             "vae_block_size": 16,
+            "vae_upsamplers": {"qwen_vae_pid(1.5)": [1]},
+            "excluded_spatial_upsamplers": ["qwen_pid(1.5)"],
         }
+        if edit:
+            result.update({
+                "inpaint_support": True,
+                "inpaint_video_prompt_type": "VAG",
+                "image_ref_choices": {
+                    "choices": [
+                        ("None",""),
+                        ("Conditional Image is first Main Subject / Landscape and may be followed by People / Objects", "KI"),
+                        ("Conditional Images are People / Objects", "I"),
+                    ],
+                    "letters_filter": "KI",
+                    "default": "KI",
+                },
+                "at_least_one_image_ref_needed": False,
+                "no_background_removal": False,
+                "background_removal_label": "Remove Backgrounds only behind People / Objects except main Subject / Landscape",
+                "video_guide_outpainting": [1, 2],
+                "outpainting_quantize_margins": 16,
+                "text_encoder_URLs": [build_hf_url(_PROJECT_REPO, _TEXT_ENCODER_FOLDER, "Qwen3-VL-4B-Instruct_bf16.safetensors")],
+                "model_modes": {
+                    "choices": [("Masked Denoising: inpainted area may reuse masked content", 0)] + lanpaint_choices,
+                    "default": 0,
+                    "label": "Inpainting Method",
+                    "image_modes": [2],
+                },
+            })
+        return result
 
     @staticmethod
     def query_supported_types():
-        return [_RAW_MODEL_TYPE, _TURBO_MODEL_TYPE]
+        return [_RAW_MODEL_TYPE, _TURBO_MODEL_TYPE, _RAW_EDIT_MODEL_TYPE, _TURBO_EDIT_MODEL_TYPE]
 
     @staticmethod
     def query_family_maps():
-        return {}, {_RAW_MODEL_TYPE: [_RAW_MODEL_TYPE, _TURBO_MODEL_TYPE], _TURBO_MODEL_TYPE: [_RAW_MODEL_TYPE, _TURBO_MODEL_TYPE]}
+        compatible = [_RAW_MODEL_TYPE, _TURBO_MODEL_TYPE, _RAW_EDIT_MODEL_TYPE, _TURBO_EDIT_MODEL_TYPE]
+        return {}, {model_type: compatible for model_type in compatible}
 
     @staticmethod
     def query_model_family():
@@ -95,7 +126,7 @@ class family_handler:
                 "repoId": _PROJECT_REPO,
                 "sourceFolderList": [_TEXT_ENCODER_FOLDER],
                 "fileList": [
-                    ["config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja"],
+                    ["config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "preprocessor_config.json"],
                 ],
             },
             {
@@ -119,6 +150,7 @@ class family_handler:
         save_quantized=False,
         submodel_no_list=None,
         text_encoder_filename=None,
+        VAE_upsampling=None,
         **kwargs,
     ):
         from .krea2_main import model_factory
@@ -132,17 +164,21 @@ class family_handler:
             text_encoder_filename=text_encoder_filename,
             dtype=dtype,
             VAE_dtype=VAE_dtype,
+            VAE_upsampling=VAE_upsampling,
             save_quantized=save_quantized,
         )
         return pipe_processor, {"transformer": pipe_processor.transformer, "text_encoder": pipe_processor.text_encoder, "vae": pipe_processor.vae}
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
-        ui_defaults.update({"image_mode": 1, "batch_size": 1, "model_mode": 0, "denoising_strength": 1.0, "masking_strength": 1.0})
-        if base_model_type == _TURBO_MODEL_TYPE:
+        edit = base_model_type in (_RAW_EDIT_MODEL_TYPE, _TURBO_EDIT_MODEL_TYPE)
+        ui_defaults.update({"image_mode": 1, "batch_size": 1, "model_mode": 0 if edit else 2, "denoising_strength": 1.0, "masking_strength": 1.0})
+        if base_model_type in (_TURBO_MODEL_TYPE, _TURBO_EDIT_MODEL_TYPE):
             ui_defaults.update({"num_inference_steps": 8, "guidance_scale": 0, "resolution": "1024x1024"})
         else:
-            ui_defaults.update({"num_inference_steps": 52, "guidance_scale": 3.5, "resolution": "1024x1024"})
+            ui_defaults.update({"num_inference_steps": 20 if base_model_type == _RAW_EDIT_MODEL_TYPE else 52, "guidance_scale": 2 if base_model_type == _RAW_EDIT_MODEL_TYPE else 3.5, "resolution": "1024x1024"})
+        if edit:
+            ui_defaults.update({"video_prompt_type": "KI", "remove_background_images_ref": 0})
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
@@ -173,21 +209,14 @@ class family_handler:
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
+        if base_model_type in (_RAW_EDIT_MODEL_TYPE, _TURBO_EDIT_MODEL_TYPE):
+            max_refs = 1 if inputs.get("image_mode") == 2 else 2
+            if len(inputs.get("image_refs") or []) > max_refs:
+                return "Krea 2 Edit supports at most two Reference Images."
         model_mode_int = family_handler.normalize_lanpaint_strengths(inputs)
         if inputs.get("denoising_strength", 1) < 1 and model_mode_int != 0:
             gr.Info("Denoising Strength will be ignored if Masked Denoising is not used")
 
-    @staticmethod
-    def custom_prompt_preprocess(prompt, video_guide_outpainting, model_mode, **kwargs):
-        if model_mode == 0:
-            outpainting_ratio = (kwargs.get("video_guide_outpainting_ratio") or "").strip()
-            if ((len(video_guide_outpainting) and not video_guide_outpainting.startswith("#") and video_guide_outpainting != "0 0 0 0") or (len(outpainting_ratio) > 0 and not video_guide_outpainting.startswith("#"))):
-                if not prompt.endswith("."):
-                    prompt += "."
-                prompt += "Remove the red paddings on the sides and show what's behind them."
-        return prompt
-
-    @staticmethod
     def get_rgb_factors(base_model_type):
         from shared.RGB_factors import get_rgb_factors
 

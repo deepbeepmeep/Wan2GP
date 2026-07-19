@@ -289,6 +289,9 @@ class family_handler():
 
         if  (test_class_t2v(base_model_type) or vace_class or base_model_type in ["chrono_edit"]) and not test_alpha(base_model_type):
             extra_model_def["vae_upsampler"] = [1,2]
+            if test_class_t2v(base_model_type) and not wan_5B:
+                extra_model_def["vae_upsamplers"] = {"qwen_vae_pid(1.5)": [1]}
+                extra_model_def["excluded_spatial_upsamplers"] = ["qwen_pid(1.5)"]
         extra_model_def["vae_block_size"] = 32 if test_wan_5B(base_model_type) or base_model_type in ["scail"] or scail2 else 16
 
         extra_model_def["profiles_dir"] = profiles_dir if isinstance(profiles_dir, list) else [profiles_dir]

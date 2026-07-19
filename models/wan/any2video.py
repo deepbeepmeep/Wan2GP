@@ -498,6 +498,8 @@ class WanAny2V:
         self_refiner_certain_percentage = 0.999,
         custom_settings=None,
         save_masks=False,
+        vae_upsampler=None,
+        set_progress_status=None,
         **bbargs
                 ):
         
@@ -1736,6 +1738,12 @@ class WanAny2V:
         if image_outputs:
             videos = torch.cat([video[:,:1] for video in videos], dim=1) if len(videos) > 1 else videos[0][:,:1]
             if any_vae2: videos2 = torch.cat([video[:,:1] for video in videos2], dim=1) if len(videos2) > 1 else videos2[0][:,:1]
+            if vae_upsampler is not None:
+                if callable(set_progress_status):
+                    set_progress_status(f"{getattr(vae_upsampler, 'progress_label', 'VAE Spatial Upsampling')} in progress")
+                lq_image_ref = [videos.transpose(0, 1).contiguous()]
+                lq_latent_ref = [torch.stack([latent[:, 0] for latent in x0])]
+                videos = vae_upsampler.decode_inputs(lq_image_ref, lq_latent_ref, prompt=input_prompt, seed=seed, abort_callback=lambda: self._interrupt, progress_callback=lambda *_args: None).transpose(0, 1).contiguous()
         else:
             videos = videos[0] # return only first video
             if any_vae2: videos2 = videos2[0] # return only first video

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from postprocessing.pid.runtime import PID_FLUX2_POST_UPSAMPLING_METHOD, PID_FLUX2_POST_UPSAMPLING_VALUE, PID_FLUX_POST_UPSAMPLING_METHOD, PID_FLUX_POST_UPSAMPLING_VALUE, is_pid_post_upsampling, pid_backbone_for_upsampling
+from postprocessing.pid.runtime import PID_FLUX2_POST_UPSAMPLING_VALUE, PID_FLUX_POST_UPSAMPLING_VALUE, PID_QWEN_POST_UPSAMPLING_VALUE, is_pid_post_upsampling, pid_backbone_for_upsampling
 from postprocessing.pid.wgp_bridge import PiDBridge
 
 
@@ -22,11 +22,21 @@ class PiDProcessHandler:
     def _process_target(self, process_settings: dict | None) -> str:
         settings = process_settings if isinstance(process_settings, dict) else {}
         target = str(settings.get("target_ratio") or settings.get("spatial_upsampling_method") or "").strip().lower()
-        return PID_FLUX2_POST_UPSAMPLING_VALUE if target in (PID_FLUX2_POST_UPSAMPLING_METHOD, PID_FLUX2_POST_UPSAMPLING_VALUE) else PID_FLUX_POST_UPSAMPLING_VALUE
+        return self._post_value(target)
+
+    @staticmethod
+    def _post_value(value: str) -> str:
+        from postprocessing.pid.runtime import split_pid_upsampling
+
+        split = split_pid_upsampling(value)
+        if split is not None and is_pid_post_upsampling(value):
+            return f"{split[0]}{split[1]:g}"
+        backbone = pid_backbone_for_upsampling(value)
+        return PID_QWEN_POST_UPSAMPLING_VALUE if backbone == "qwen" else PID_FLUX2_POST_UPSAMPLING_VALUE if backbone == "flux2" else PID_FLUX_POST_UPSAMPLING_VALUE
 
     def normalize_target_control(self, value: str | None) -> str:
         value = str(value or "").strip().lower()
-        return (PID_FLUX2_POST_UPSAMPLING_VALUE if pid_backbone_for_upsampling(value) == "flux2" else PID_FLUX_POST_UPSAMPLING_VALUE) if is_pid_post_upsampling(value) else self.default_target_control
+        return self._post_value(value) if is_pid_post_upsampling(value) else self.default_target_control
 
     def target_control_choices_for_process(self, process_settings: dict) -> list[tuple[str, str]]:
         value = self._process_target(process_settings)
@@ -37,7 +47,7 @@ class PiDProcessHandler:
 
     def normalize_target_control_for_process(self, value: str | None, process_settings: dict) -> str:
         value = str(value or "").strip().lower()
-        return (PID_FLUX2_POST_UPSAMPLING_VALUE if pid_backbone_for_upsampling(value) == "flux2" else PID_FLUX_POST_UPSAMPLING_VALUE) if is_pid_post_upsampling(value) else self._process_target(process_settings)
+        return self._post_value(value) if is_pid_post_upsampling(value) else self._process_target(process_settings)
 
     def output_resolution_token(self, value: str | None) -> str:
         ratios = self.supported_upsampling_ratios()

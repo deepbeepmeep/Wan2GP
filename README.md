@@ -60,6 +60,18 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
+
+### 19th of July 2026: WanGP v12.34, you can breath now
+
+- **Krea 2 Identity Edit**: this Krea2 finetune adds Editing capabilities to Krea 2. You can edit an existing image or combine up to 2 *Reference Images* to produce a new one. WanGP implementation comes out of the box with *Inpainting* and *Outpainting*   
+
+- **PiD 1.5**: The *PiD Spatial Upsampler* has been updated and should deliver better quality (v1 still there if you prefer it) and also now exists in *Qwen VAE* flavor (that is it can be plugged directly to Wan2.1 t2i, Qwen or Krea2 latent output for best quality)
+
+- **LTX2 MSR 2.0**: this new version of this LTX2 finetune with Image Reference support preserves better Identity.
+
+- **ConvRot LoRA support**: Int8 ConvRot checkpoints can now use LoRAs without producing garbage output 
+
+
 ### 1st of July 2026: WanGP v12.3, The VRAM Digger
 
 - **Krea2 Lanpaint**: Krea2 can now do *inpainting* thanks to *Lanpaint*. To get the best results you will need to adjust the prompt and increase the number of Lanpaint steps.

@@ -84,6 +84,9 @@ class PidNet(PixDiT_T2I):
         lq_latent_channels: int = 0,
         lq_hidden_dim: int = 512,
         lq_num_res_blocks: int = 4,
+        lq_latent_unpatchify_factor: int = 1,
+        lq_aux_rgb_head: bool = False,
+        lq_conv_padding_mode: str = "zeros",
         lq_gate_type: str = "sigma_aware_per_token_per_dim",
         lq_interval: int = 1,
         zero_init_lq: bool = True,
@@ -144,16 +147,19 @@ class PidNet(PixDiT_T2I):
             sr_scale=sr_scale,
             latent_spatial_down_factor=latent_spatial_down_factor,
             num_res_blocks=lq_num_res_blocks,
+            latent_unpatchify_factor=lq_latent_unpatchify_factor,
             num_outputs=num_lq_outputs,
             gate_type=lq_gate_type,
             interval=lq_interval,
             zero_init=zero_init_lq,
+            conv_padding_mode=lq_conv_padding_mode,
             pit_output=pit_lq_inject,
+            lq_aux_rgb_head=lq_aux_rgb_head,
         )
 
         # PiT LQ gate (applied to s_cond before pixel blocks)
         if pit_lq_inject:
-            from pid._src.networks.lq_projection_2d import _build_gate
+            from postprocessing.pid.networks.lq_projection_2d import _build_gate
 
             self.pit_lq_gate = _build_gate(pit_lq_gate_type, hidden_size, zero_init=zero_init_lq)
         else:

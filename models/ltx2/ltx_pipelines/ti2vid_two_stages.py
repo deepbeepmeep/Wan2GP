@@ -138,6 +138,7 @@ class TI2VidTwoStagesPipeline:
         cfg_guidance_scale: float,
         images: list[tuple[str, int, float]],
         prompt_relay_frame_offset: int = 0,
+        prompt_relay_epsilon: float = 1e-3,
         audio_cfg_guidance_scale: float | None = None,
         cfg_star_switch: int = 0,
         apg_switch: int = 0,
@@ -262,7 +263,7 @@ class TI2VidTwoStagesPipeline:
             audio_connector,
             return_attention_masks=True,
         )
-        relay_conditioning = encode_prompt_relay(prompt, encode_fn_with_masks, self.text_encoder_cache, self.device, num_frames, frame_rate, text_encoder.tokenizer, visible_frame_offset=prompt_relay_frame_offset)
+        relay_conditioning = encode_prompt_relay(prompt, encode_fn_with_masks, self.text_encoder_cache, self.device, num_frames, frame_rate, text_encoder.tokenizer, visible_frame_offset=prompt_relay_frame_offset, epsilon=prompt_relay_epsilon)
         if relay_conditioning is None:
             contexts = self.text_encoder_cache.encode(
                 encode_fn,

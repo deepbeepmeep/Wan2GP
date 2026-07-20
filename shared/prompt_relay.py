@@ -117,7 +117,7 @@ class PromptRelayMaskBuilder:
 
         raw_query_frames = frame_indices.to(torch.float32)
         raw_max_frame = raw_query_frames.amax(dim=1, keepdim=True).clamp_min(1.0)
-        visible_start = raw_max_frame * self.visible_start_ratio
+        visible_start = torch.round(raw_max_frame * self.visible_start_ratio)
         query_frames = raw_query_frames - visible_start
         max_frame = (raw_max_frame - visible_start).clamp_min(1.0)
         sigma_sq = 2.0 * self.sigma * self.sigma
@@ -126,11 +126,11 @@ class PromptRelayMaskBuilder:
             end_key = min(segment.key_end, positive_len)
             if start_key >= end_key:
                 continue
-            start = torch.tensor(segment.start, device=device, dtype=torch.float32) * max_frame
-            end = torch.tensor(segment.end, device=device, dtype=torch.float32) * max_frame
+            start = torch.round(torch.tensor(segment.start, device=device, dtype=torch.float32) * max_frame)
+            end = torch.round(torch.tensor(segment.end, device=device, dtype=torch.float32) * max_frame)
             length = (end - start).clamp_min(1.0)
-            midpoint = (start + end) * 0.5
-            window = (length * 0.5 - 2.0).clamp_min(0.0)
+            midpoint = torch.floor((start + end) * 0.5)
+            window = (torch.floor(length * 0.5) - 2.0).clamp_min(0.0)
             distance = (query_frames - midpoint).abs()
             cost = torch.relu(distance - window).square() / sigma_sq
             mask[:, :, start_key:end_key] = -cost.unsqueeze(-1)

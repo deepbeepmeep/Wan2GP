@@ -116,7 +116,7 @@ class Qwen3VLConditioner(torch.nn.Module):
             if images is None:
                 inputs = self.tokenizer(prefixed_text, truncation=True, return_length=False, return_overflowing_tokens=False, padding="max_length", max_length=self.max_length + prefix_idx - self.prompt_template_encode_suffix_start_idx, return_tensors="pt").to(target_device)
             else:
-                inputs = self.processor(text=prefixed_text, images=images, padding="longest", return_tensors="pt").to(target_device)
+                inputs = self.processor(text=prefixed_text, images=images * len(text), padding="longest", return_tensors="pt").to(target_device)
         suffix_ids = suffix_inputs["input_ids"]
         suffix_mask = suffix_inputs["attention_mask"].bool()
         input_ids = torch.cat([inputs["input_ids"], suffix_ids], dim=1)

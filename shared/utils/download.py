@@ -1,114 +1,196 @@
 import os, shutil, sys, time
+from collections import deque
+from dataclasses import dataclass
+from threading import Lock
+from typing import Callable
 
-# Global variables to track download progress
-_start_time = None
-_last_time = None
-_last_downloaded = 0
-_speed_history = []
-_update_interval = 0.5  # Update speed every 0.5 seconds
+
+@dataclass(frozen=True)
+class DownloadProgress:
+    phase: str
+    source: str
+    filename: str
+    current: int
+    total: int | None
+    unit: str = "bytes"
+    speed_bps: float | None = None
+    eta_seconds: float | None = None
+    repo_id: str | None = None
+    file_index: int | None = None
+    file_count: int | None = None
+
+
+DownloadProgressCallback = Callable[[DownloadProgress], None]
+
+
+class _DownloadProgressTracker:
+    def __init__(self, *, callback, source, filename, repo_id=None, unit="bytes", file_index=None, file_count=None, emit_interval=0.5, clock=time.monotonic):
+        self.callback = callback
+        self.source = source
+        self.filename = filename
+        self.repo_id = repo_id
+        self.unit = unit
+        self.file_index = file_index
+        self.file_count = file_count
+        self.emit_interval = emit_interval
+        self.clock = clock
+        self.lock = Lock()
+        self.last_time = None
+        self.last_current = None
+        self.last_emit_time = None
+        self.speeds = deque(maxlen=5)
+
+    def _update(self, phase, current, total, force):
+        current = max(0, int(current or 0))
+        total = int(total) if total is not None and total > 0 else None
+        if total is not None:
+            current = min(current, total)
+        now = self.clock()
+        with self.lock:
+            if self.last_time is None:
+                self.last_time, self.last_current = now, current
+            elif now - self.last_time >= self.emit_interval:
+                elapsed = now - self.last_time
+                transferred = current - self.last_current
+                if self.unit == "bytes" and elapsed > 0 and transferred >= 0:
+                    self.speeds.append(transferred / elapsed)
+                self.last_time, self.last_current = now, current
+            speed = sum(self.speeds) / len(self.speeds) if self.speeds else None
+            eta = (total - current) / speed if self.unit == "bytes" and total is not None and current < total and speed else None
+            update = DownloadProgress(
+                phase=phase,
+                source=self.source,
+                filename=self.filename,
+                current=current,
+                total=total,
+                unit=self.unit,
+                speed_bps=speed,
+                eta_seconds=eta,
+                repo_id=self.repo_id,
+                file_index=self.file_index,
+                file_count=self.file_count,
+            )
+            should_emit = self.callback is not None and (self.last_emit_time is None or force or now - self.last_emit_time >= self.emit_interval)
+            if should_emit:
+                try:
+                    self.callback(update)
+                except Exception as exc:
+                    print(f"Download progress callback disabled: {exc}", file=sys.stderr)
+                    self.callback = None
+                self.last_emit_time = now
+            return update
+
+    def update(self, current, total, *, force=False):
+        return self._update("downloading", current, total, force)
+
+    def complete(self, current, total):
+        return self._update("complete", current, total, True)
+
+
+def _format_bytes(value):
+    value = float(value or 0)
+    for unit in ["B", "KB", "MB", "GB"]:
+        if value < 1024:
+            return f"{value:.1f}{unit}"
+        value /= 1024
+    return f"{value:.1f}TB"
+
+
+class _URLProgressHook:
+    def __init__(self, filename, progress_callback=None, *, source="http", repo_id=None, file_index=None, file_count=None):
+        self.path = filename
+        self.filename = os.path.basename(filename) or "Unknown file"
+        self.tracker = _DownloadProgressTracker(
+            callback=progress_callback,
+            source=source,
+            filename=self.filename,
+            repo_id=repo_id,
+            file_index=file_index,
+            file_count=file_count,
+        )
+        self.current = 0
+        self.total = None
+
+    def __call__(self, block_num, block_size, total_size):
+        self.total = total_size if total_size > 0 else None
+        self.current = block_num * block_size
+        if self.total is not None:
+            self.current = min(self.current, self.total)
+        update = self.tracker.update(self.current, self.total)
+        speed = f" @ {_format_bytes(update.speed_bps)}/s" if update.speed_bps else ""
+        if self.total is None:
+            line = f"\r{self.filename}: {_format_bytes(self.current)}{speed}"
+            sys.stdout.write(line.ljust(80))
+        else:
+            percent = min(100, self.current / self.total * 100)
+            filled = int(40 * percent / 100)
+            bar = "█" * filled + "░" * (40 - filled)
+            line = f"\r{self.filename}: [{bar}] {percent:.1f}% ({_format_bytes(self.current)}/{_format_bytes(self.total)}){speed}"
+            sys.stdout.write(line.ljust(100))
+            if self.current >= self.total:
+                sys.stdout.write("\n")
+        sys.stdout.flush()
+        return update
+
+    def complete(self):
+        current = os.path.getsize(self.path) if os.path.isfile(self.path) else self.current
+        return self.tracker.complete(current, self.total)
+
 
 def progress_hook(block_num, block_size, total_size, filename=None):
-    """
-    Simple progress bar hook for urlretrieve
-    
-    Args:
-        block_num: Number of blocks downloaded so far
-        block_size: Size of each block in bytes
-        total_size: Total size of the file in bytes
-        filename: Name of the file being downloaded (optional)
-    """
-    global _start_time, _last_time, _last_downloaded, _speed_history, _update_interval
-    
-    current_time = time.time()
-    downloaded = block_num * block_size
-    
-    # Initialize timing on first call
-    if _start_time is None or block_num == 0:
-        _start_time = current_time
-        _last_time = current_time
-        _last_downloaded = 0
-        _speed_history = []
-    
-    # Calculate download speed only at specified intervals
-    speed = 0
-    if current_time - _last_time >= _update_interval:
-        if _last_time > 0:
-            current_speed = (downloaded - _last_downloaded) / (current_time - _last_time)
-            _speed_history.append(current_speed)
-            # Keep only last 5 speed measurements for smoothing
-            if len(_speed_history) > 5:
-                _speed_history.pop(0)
-            # Average the recent speeds for smoother display
-            speed = sum(_speed_history) / len(_speed_history)
-        
-        _last_time = current_time
-        _last_downloaded = downloaded
-    elif _speed_history:
-        # Use the last calculated average speed
-        speed = sum(_speed_history) / len(_speed_history)
-    # Format file sizes and speed
-    def format_bytes(bytes_val):
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if bytes_val < 1024:
-                return f"{bytes_val:.1f}{unit}"
-            bytes_val /= 1024
-        return f"{bytes_val:.1f}TB"
-    
-    file_display = filename if filename else "Unknown file"
-    
-    if total_size <= 0:
-        # If total size is unknown, show downloaded bytes
-        speed_str = f" @ {format_bytes(speed)}/s" if speed > 0 else ""
-        line = f"\r{file_display}: {format_bytes(downloaded)}{speed_str}"
-        # Clear any trailing characters by padding with spaces
-        sys.stdout.write(line.ljust(80))
-        sys.stdout.flush()
-        return
-    
-    downloaded = block_num * block_size
-    percent = min(100, (downloaded / total_size) * 100)
-    
-    # Create progress bar (40 characters wide to leave room for other info)
-    bar_length = 40
-    filled = int(bar_length * percent / 100)
-    bar = '█' * filled + '░' * (bar_length - filled)
-    
-    # Format file sizes and speed
-    def format_bytes(bytes_val):
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if bytes_val < 1024:
-                return f"{bytes_val:.1f}{unit}"
-            bytes_val /= 1024
-        return f"{bytes_val:.1f}TB"
-    
-    speed_str = f" @ {format_bytes(speed)}/s" if speed > 0 else ""
-    
-    # Display progress with filename first
-    line = f"\r{file_display}: [{bar}] {percent:.1f}% ({format_bytes(downloaded)}/{format_bytes(total_size)}){speed_str}"
-    # Clear any trailing characters by padding with spaces
-    sys.stdout.write(line.ljust(100))
-    sys.stdout.flush()
-    
-    # Print newline when complete
-    if percent >= 100:
-        print()
-
-# Wrapper function to include filename in progress hook
-def create_progress_hook(filename):
-    """Creates a progress hook with the filename included"""
-    global _start_time, _last_time, _last_downloaded, _speed_history
-    # Reset timing variables for new download
-    _start_time = None
-    _last_time = None
-    _last_downloaded = 0
-    _speed_history = []
-    
-    def hook(block_num, block_size, total_size):
-        return progress_hook(block_num, block_size, total_size, filename)
-    return hook
+    """Compatibility console hook; use create_progress_hook for transfer state."""
+    return _URLProgressHook(filename or "Unknown file")(block_num, block_size, total_size)
 
 
-def process_files_def(repoId=None, sourceFolderList=None, fileList=None, targetFolderList=None):
+def create_progress_hook(filename, progress_callback=None, *, source="http", repo_id=None, file_index=None, file_count=None):
+    return _URLProgressHook(filename, progress_callback, source=source, repo_id=repo_id, file_index=file_index, file_count=file_count)
+
+
+def create_hf_progress_class(progress_callback, *, source, filename, repo_id=None, unit="bytes", file_index=None, file_count=None):
+    from tqdm.auto import tqdm
+
+    class HuggingFaceProgress(tqdm):
+        _bars = []
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._download_tracker = _DownloadProgressTracker(
+                callback=progress_callback,
+                source=source,
+                filename=filename,
+                repo_id=repo_id,
+                unit=unit,
+                file_index=file_index,
+                file_count=file_count,
+            )
+            self._download_tracker.update(self.n, self.total, force=True)
+            self._download_closed = False
+            self.__class__._bars.append(self)
+
+        def update(self, n=1):
+            result = super().update(n)
+            self._download_tracker.update(self.n, self.total)
+            return result
+
+        def close(self):
+            if self._download_closed:
+                return None
+            self._download_closed = True
+            result = super().close()
+            self._download_tracker.update(self.n, self.total, force=True)
+            return result
+
+        @classmethod
+        def finish(cls):
+            for bar in cls._bars:
+                if bar.total is None or bar.n >= bar.total:
+                    bar._download_tracker.complete(bar.n, bar.total)
+            cls._bars.clear()
+
+    return HuggingFaceProgress
+
+
+def process_files_def(repoId=None, sourceFolderList=None, fileList=None, targetFolderList=None, progress_callback=None):
     from huggingface_hub import hf_hub_download, snapshot_download
     from shared.utils import files_locator as fl
 
@@ -122,15 +204,30 @@ def process_files_def(repoId=None, sourceFolderList=None, fileList=None, targetF
         local_dir = os.path.join(targetRoot, targetFolder) if targetFolder is not None else targetRoot
         if len(files) == 0:
             if fl.locate_folder(sourceFolder if targetFolder is None else os.path.join(targetFolder, sourceFolder), error_if_none=False) is None:
-                snapshot_download(repo_id=repoId, allow_patterns=sourceFolder + "/*", local_dir=local_dir)
+                kwargs = {}
+                Progress = None
+                if progress_callback is not None:
+                    Progress = kwargs["tqdm_class"] = create_hf_progress_class(progress_callback, source="huggingface_snapshot", filename=f"{repoId}/{sourceFolder}", repo_id=repoId, unit="files")
+                snapshot_download(repo_id=repoId, allow_patterns=sourceFolder + "/*", local_dir=local_dir, **kwargs)
+                if Progress is not None:
+                    Progress.finish()
         else:
-            for onefile in files:
+            for file_index, onefile in enumerate(files, 1):
+                display_name = f"{sourceFolder}/{onefile}" if len(sourceFolder) > 0 else onefile
+                kwargs = {}
+                Progress = None
+                if progress_callback is not None:
+                    Progress = kwargs["tqdm_class"] = create_hf_progress_class(progress_callback, source="huggingface", filename=display_name, repo_id=repoId, file_index=file_index, file_count=len(files))
                 if len(sourceFolder) > 0:
                     if fl.locate_file((sourceFolder + "/" + onefile) if targetFolder is None else os.path.join(targetFolder, sourceFolder, onefile), error_if_none=False) is None:
-                        hf_hub_download(repo_id=repoId, filename=onefile, local_dir=local_dir, subfolder=sourceFolder)
+                        hf_hub_download(repo_id=repoId, filename=onefile, local_dir=local_dir, subfolder=sourceFolder, **kwargs)
+                        if Progress is not None:
+                            Progress.finish()
                 else:
                     if fl.locate_file(onefile if targetFolder is None else os.path.join(targetFolder, onefile), error_if_none=False) is None:
-                        hf_hub_download(repo_id=repoId, filename=onefile, local_dir=local_dir)
+                        hf_hub_download(repo_id=repoId, filename=onefile, local_dir=local_dir, **kwargs)
+                        if Progress is not None:
+                            Progress.finish()
 
 
 def _download_relpath(source_folder, filename, target_folder=None):
@@ -176,15 +273,15 @@ def send_download_status(send_cmd=None, status_text=None):
         send_cmd("status", status_text)
 
 
-def process_files_def_if_needed(download_def, send_cmd=None, status_text=None):
+def process_files_def_if_needed(download_def, send_cmd=None, status_text=None, progress_callback=None):
     if download_def is None or len(download_def_missing_files(download_def)) == 0:
         return False
     send_download_status(send_cmd, status_text)
     if isinstance(download_def, list):
         for one_def in download_def:
-            process_files_def(**one_def)
+            process_files_def(**one_def, progress_callback=progress_callback)
     else:
-        process_files_def(**download_def)
+        process_files_def(**download_def, progress_callback=progress_callback)
     return True
 
 
@@ -200,16 +297,16 @@ def download_audio_background_replacement(send_cmd=None, status_text="Downloadin
     return process_files_def_if_needed(query_audio_background_replacement_download_def(), send_cmd=send_cmd, status_text=status_text)
 
 
-def process_download_defs(download_defs):
+def process_download_defs(download_defs, progress_callback=None):
     if isinstance(download_defs, dict):
-        process_files_def(**download_defs)
+        process_files_def(**download_defs, progress_callback=progress_callback)
         return
     for download_def in download_defs or []:
         if download_def is not None:
-            process_files_def(**download_def)
+            process_files_def(**download_def, progress_callback=progress_callback)
 
 
-def download_file(url, filename):
+def download_file(url, filename, progress_callback=None):
     from huggingface_hub import hf_hub_download
     from shared.utils import files_locator as fl
 
@@ -221,19 +318,30 @@ def download_file(url, filename):
         repoId = url_parts[0]
         onefile = os.path.basename(url_parts[-1])
         sourceFolder = os.path.dirname(url_parts[-1])
+        display_name = f"{sourceFolder}/{onefile}" if len(sourceFolder) > 0 else onefile
+        kwargs = {}
+        Progress = None
+        if progress_callback is not None:
+            Progress = kwargs["tqdm_class"] = create_hf_progress_class(progress_callback, source="huggingface", filename=display_name, repo_id=repoId)
         if len(sourceFolder) == 0:
-            hf_hub_download(repo_id=repoId, filename=onefile, local_dir=fl.get_download_location() if len(base_dir) == 0 else base_dir)
+            hf_hub_download(repo_id=repoId, filename=onefile, local_dir=fl.get_download_location() if len(base_dir) == 0 else base_dir, **kwargs)
+            if Progress is not None:
+                Progress.finish()
         else:
             tgt = fl.get_download_location() if len(base_dir) == 0 else base_dir
             os.makedirs(tgt, exist_ok=True)
             temp_dir_path = os.path.join(tgt, f"_temp{time.time()}")
             temp_full_path = os.path.join(temp_dir_path, sourceFolder)
             os.makedirs(temp_full_path, exist_ok=True)
-            hf_hub_download(repo_id=repoId, filename=onefile, local_dir=temp_dir_path, subfolder=sourceFolder)
+            hf_hub_download(repo_id=repoId, filename=onefile, local_dir=temp_dir_path, subfolder=sourceFolder, **kwargs)
             shutil.move(os.path.join(temp_full_path, onefile), tgt)
             shutil.rmtree(temp_dir_path)
+            if Progress is not None:
+                Progress.finish()
     else:
         from urllib.request import urlretrieve
 
-        urlretrieve(url, filename, create_progress_hook(filename))
+        hook = create_progress_hook(filename, progress_callback)
+        urlretrieve(url, filename, hook)
+        hook.complete()
 

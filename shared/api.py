@@ -68,6 +68,7 @@ class ProgressUpdate:
     total_steps: int | None
     raw_phase: str | None = None
     unit: str | None = None
+    details: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -726,6 +727,7 @@ class WanGPSession:
         total_steps: int | None = None
         status = ""
         unit: str | None = None
+        details: dict[str, Any] | None = None
 
         if isinstance(data, list) and data:
             head = data[0]
@@ -733,10 +735,12 @@ class WanGPSession:
                 current_step = int(head[0])
                 total_steps = int(head[1])
                 status = str(data[1] if len(data) > 1 else "")
-                if len(data) > 3:
-                    unit = str(data[3])
             else:
                 status = str(data[1] if len(data) > 1 else head)
+            if len(data) > 3 and data[3] is not None:
+                unit = str(data[3])
+            if len(data) > 4 and isinstance(data[4], dict):
+                details = copy.deepcopy(data[4])
         else:
             status = str(data or "")
 
@@ -779,6 +783,7 @@ class WanGPSession:
             total_steps=total_steps,
             raw_phase=display_phase or None,
             unit=unit,
+            details=details,
         )
 
     def _build_preview_update(self, wgp, tasks: list[dict[str, Any]], payload: Any) -> PreviewUpdate | None:
@@ -1105,6 +1110,10 @@ class WanGPSession:
             return "inference_stage_2"
         if "denoising third pass" in lowered or "denoising 3rd pass" in lowered:
             return "inference_stage_3"
+        if "checking model files" in lowered:
+            return "checking_model_files"
+        if "downloading model" in lowered:
+            return "downloading_model"
         if "loading model" in lowered or lowered.startswith("loading"):
             return "loading_model"
         if "enhancing prompt" in lowered or "encoding prompt" in lowered or "encoding" in lowered:
@@ -1119,13 +1128,17 @@ class WanGPSession:
 
     @staticmethod
     def _phase_supports_progress(phase: str | None) -> bool:
-        return str(phase or "") in {"inference", "inference_stage_1", "inference_stage_2", "inference_stage_3"}
+        return str(phase or "") in {"downloading_model", "inference", "inference_stage_1", "inference_stage_2", "inference_stage_3"}
 
     @staticmethod
     def _estimate_progress(phase: str, current_step: int | None, total_steps: int | None) -> int:
+        if phase == "checking_model_files":
+            return 5
+        if phase == "downloading_model":
+            return 10
+        if phase == "loading_model":
+            return 15
         if total_steps is None or total_steps <= 0 or current_step is None:
-            if phase == "loading_model":
-                return 10
             if phase == "encoding_text":
                 return 18
             if phase == "inference_stage_1":
@@ -1142,8 +1155,6 @@ class WanGPSession:
                 return 0
             return 15
         ratio = max(0.0, min(1.0, current_step / total_steps))
-        if phase == "loading_model":
-            return min(15, 5 + int(ratio * 10))
         if phase == "encoding_text":
             return min(22, 12 + int(ratio * 10))
         if phase == "inference_stage_1":

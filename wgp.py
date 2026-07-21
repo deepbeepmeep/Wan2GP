@@ -3491,28 +3491,15 @@ def format_download_eta(seconds):
     return f"{seconds}s"
 
 def format_model_download_status(model_name, update):
-    filename = str(update.filename or "")
-    if len(filename) > 100:
-        filename = "…" + filename[-99:]
+    headline = f"Downloading {model_name}"
     if update.unit == "files":
-        parts = [f"Downloading model assets for {model_name}"]
-        if filename:
-            parts.append(filename)
-        parts.append(f"{update.current} / {update.total} files" if update.total else f"{update.current} files")
-        return " · ".join(parts)
-    parts = [f"Downloading model {model_name}"]
-    if filename:
-        parts.append(filename)
-    transferred = format_download_bytes(update.current)
-    if update.total:
-        parts.extend([f"{transferred} / {format_download_bytes(update.total)}", f"{update.current / update.total * 100:.1f}%"])
-    elif transferred:
-        parts.append(transferred)
+        return f"{headline}\n{update.current} / {update.total} files" if update.total else f"{headline}\n{update.current} files"
+    parts = []
     if update.speed_bps:
         parts.append(f"{format_download_bytes(update.speed_bps)}/s")
     if update.eta_seconds is not None:
         parts.append(f"ETA {format_download_eta(update.eta_seconds)}")
-    return " · ".join(parts)
+    return f"{headline}\n{' '.join(parts)}" if parts else headline
 
 def build_model_download_details(model_type, model_name, update):
     details = {
@@ -3535,9 +3522,11 @@ def build_model_download_details(model_type, model_name, update):
 def build_model_download_progress_payload(model_type, model_name, update):
     total = update.total if update.total and update.total > 0 else 0
     current = min(update.current, total) if total else 0
+    family = get_model_family(model_type, for_ui=True)
+    display_name = model_dropdowns.compact_name(families_infos.get(family, (0, ""))[1], model_name)
     return [
         (current, total) if total else 0,
-        format_model_download_status(model_name, update),
+        format_model_download_status(display_name, update),
         total,
         update.unit,
         build_model_download_details(model_type, model_name, update),

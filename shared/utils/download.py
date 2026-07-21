@@ -1,6 +1,8 @@
-import os, shutil, sys, time
+import inspect, os, shutil, sys, time
 from collections import deque
+from contextvars import ContextVar
 from dataclasses import dataclass
+from functools import wraps
 from threading import Lock
 from typing import Callable
 
@@ -153,6 +155,7 @@ def create_hf_progress_class(progress_callback, *, source, filename, repo_id=Non
         _bars = []
 
         def __init__(self, *args, **kwargs):
+            kwargs.pop("name", None)
             super().__init__(*args, **kwargs)
             self._download_tracker = _DownloadProgressTracker(
                 callback=progress_callback,
@@ -168,7 +171,11 @@ def create_hf_progress_class(progress_callback, *, source, filename, repo_id=Non
             self.__class__._bars.append(self)
 
         def update(self, n=1):
-            result = super().update(n)
+            if self.disable:
+                self.n += n
+                result = None
+            else:
+                result = super().update(n)
             self._download_tracker.update(self.n, self.total)
             return result
 
@@ -181,13 +188,108 @@ def create_hf_progress_class(progress_callback, *, source, filename, repo_id=Non
             return result
 
         @classmethod
-        def finish(cls):
+        def finish(cls, success=True):
             for bar in cls._bars:
-                if bar.total is None or bar.n >= bar.total:
+                bar.close()
+                if success:
                     bar._download_tracker.complete(bar.n, bar.total)
             cls._bars.clear()
 
     return HuggingFaceProgress
+
+
+def _accepts_tqdm_class(download):
+    try:
+        parameters = inspect.signature(download).parameters
+    except (TypeError, ValueError):
+        return False
+    return "tqdm_class" in parameters or any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+
+
+_ACTIVE_HF_PROGRESS_CLASS = ContextVar("wangp_hf_progress_class", default=None)
+_HF_PROGRESS_ROUTER_LOCK = Lock()
+_HF_TRANSFER_PROGRESS_NAMES = {"huggingface_hub.http_get", "huggingface_hub.xet_get"}
+
+
+def _install_hf_progress_router():
+    try:
+        from huggingface_hub import file_download
+        progress_context = file_download._get_progress_bar_context
+        parameters = inspect.signature(progress_context).parameters
+    except (AttributeError, ImportError, TypeError, ValueError):
+        return False
+    if "_tqdm_bar" not in parameters or "name" not in parameters:
+        return False
+    if getattr(progress_context, "_wangp_progress_router", False):
+        return True
+
+    with _HF_PROGRESS_ROUTER_LOCK:
+        progress_context = file_download._get_progress_bar_context
+        if getattr(progress_context, "_wangp_progress_router", False):
+            return True
+        try:
+            signature = inspect.signature(progress_context)
+        except (TypeError, ValueError):
+            return False
+        if "_tqdm_bar" not in signature.parameters or "name" not in signature.parameters:
+            return False
+        is_tqdm_disabled = getattr(progress_context, "__globals__", {}).get("is_tqdm_disabled")
+
+        @wraps(progress_context)
+        def route_progress(*args, **kwargs):
+            Progress = _ACTIVE_HF_PROGRESS_CLASS.get()
+            if Progress is None:
+                return progress_context(*args, **kwargs)
+            try:
+                values = signature.bind_partial(*args, **kwargs).arguments
+            except TypeError:
+                return progress_context(*args, **kwargs)
+            if values.get("name") not in _HF_TRANSFER_PROGRESS_NAMES or values.get("_tqdm_bar") is not None:
+                return progress_context(*args, **kwargs)
+            disable = is_tqdm_disabled(log_level=values.get("log_level")) if callable(is_tqdm_disabled) else None
+            kwargs["_tqdm_bar"] = Progress(
+                total=values.get("total"),
+                initial=values.get("initial", 0),
+                desc=values.get("desc"),
+                unit=values.get("unit", "B"),
+                unit_scale=values.get("unit_scale", True),
+                disable=disable,
+            )
+            return progress_context(*args, **kwargs)
+
+        route_progress._wangp_progress_router = True
+        file_download._get_progress_bar_context = route_progress
+    return True
+
+
+def _run_hf_download(download, kwargs, progress_callback=None, progress_options=None, *, legacy_router=True):
+    if progress_callback is None:
+        return download(**kwargs)
+
+    Progress = create_hf_progress_class(progress_callback, **progress_options)
+    token = None
+    fallback = None
+    if _accepts_tqdm_class(download):
+        kwargs = {**kwargs, "tqdm_class": Progress}
+    elif legacy_router and _install_hf_progress_router():
+        token = _ACTIVE_HF_PROGRESS_CLASS.set(Progress)
+    else:
+        fallback = _DownloadProgressTracker(callback=progress_callback, **progress_options)
+        fallback.update(0, None, force=True)
+
+    try:
+        result = download(**kwargs)
+    except Exception:
+        Progress.finish(success=False)
+        raise
+    else:
+        Progress.finish()
+        if fallback is not None:
+            fallback.complete(0, None)
+        return result
+    finally:
+        if token is not None:
+            _ACTIVE_HF_PROGRESS_CLASS.reset(token)
 
 
 def process_files_def(repoId=None, sourceFolderList=None, fileList=None, targetFolderList=None, progress_callback=None):
@@ -204,30 +306,33 @@ def process_files_def(repoId=None, sourceFolderList=None, fileList=None, targetF
         local_dir = os.path.join(targetRoot, targetFolder) if targetFolder is not None else targetRoot
         if len(files) == 0:
             if fl.locate_folder(sourceFolder if targetFolder is None else os.path.join(targetFolder, sourceFolder), error_if_none=False) is None:
-                kwargs = {}
-                Progress = None
-                if progress_callback is not None:
-                    Progress = kwargs["tqdm_class"] = create_hf_progress_class(progress_callback, source="huggingface_snapshot", filename=f"{repoId}/{sourceFolder}", repo_id=repoId, unit="files")
-                snapshot_download(repo_id=repoId, allow_patterns=sourceFolder + "/*", local_dir=local_dir, **kwargs)
-                if Progress is not None:
-                    Progress.finish()
+                _run_hf_download(
+                    snapshot_download,
+                    {"repo_id": repoId, "allow_patterns": sourceFolder + "/*", "local_dir": local_dir},
+                    progress_callback,
+                    {"source": "huggingface_snapshot", "filename": f"{repoId}/{sourceFolder}", "repo_id": repoId, "unit": "files"},
+                    legacy_router=False,
+                )
         else:
             for file_index, onefile in enumerate(files, 1):
                 display_name = f"{sourceFolder}/{onefile}" if len(sourceFolder) > 0 else onefile
-                kwargs = {}
-                Progress = None
-                if progress_callback is not None:
-                    Progress = kwargs["tqdm_class"] = create_hf_progress_class(progress_callback, source="huggingface", filename=display_name, repo_id=repoId, file_index=file_index, file_count=len(files))
+                progress_options = {"source": "huggingface", "filename": display_name, "repo_id": repoId, "file_index": file_index, "file_count": len(files)}
                 if len(sourceFolder) > 0:
                     if fl.locate_file((sourceFolder + "/" + onefile) if targetFolder is None else os.path.join(targetFolder, sourceFolder, onefile), error_if_none=False) is None:
-                        hf_hub_download(repo_id=repoId, filename=onefile, local_dir=local_dir, subfolder=sourceFolder, **kwargs)
-                        if Progress is not None:
-                            Progress.finish()
+                        _run_hf_download(
+                            hf_hub_download,
+                            {"repo_id": repoId, "filename": onefile, "local_dir": local_dir, "subfolder": sourceFolder},
+                            progress_callback,
+                            progress_options,
+                        )
                 else:
                     if fl.locate_file(onefile if targetFolder is None else os.path.join(targetFolder, onefile), error_if_none=False) is None:
-                        hf_hub_download(repo_id=repoId, filename=onefile, local_dir=local_dir, **kwargs)
-                        if Progress is not None:
-                            Progress.finish()
+                        _run_hf_download(
+                            hf_hub_download,
+                            {"repo_id": repoId, "filename": onefile, "local_dir": local_dir},
+                            progress_callback,
+                            progress_options,
+                        )
 
 
 def _download_relpath(source_folder, filename, target_folder=None):
@@ -319,25 +424,28 @@ def download_file(url, filename, progress_callback=None):
         onefile = os.path.basename(url_parts[-1])
         sourceFolder = os.path.dirname(url_parts[-1])
         display_name = f"{sourceFolder}/{onefile}" if len(sourceFolder) > 0 else onefile
-        kwargs = {}
-        Progress = None
-        if progress_callback is not None:
-            Progress = kwargs["tqdm_class"] = create_hf_progress_class(progress_callback, source="huggingface", filename=display_name, repo_id=repoId)
+        progress_options = {"source": "huggingface", "filename": display_name, "repo_id": repoId}
         if len(sourceFolder) == 0:
-            hf_hub_download(repo_id=repoId, filename=onefile, local_dir=fl.get_download_location() if len(base_dir) == 0 else base_dir, **kwargs)
-            if Progress is not None:
-                Progress.finish()
+            _run_hf_download(
+                hf_hub_download,
+                {"repo_id": repoId, "filename": onefile, "local_dir": fl.get_download_location() if len(base_dir) == 0 else base_dir},
+                progress_callback,
+                progress_options,
+            )
         else:
             tgt = fl.get_download_location() if len(base_dir) == 0 else base_dir
             os.makedirs(tgt, exist_ok=True)
             temp_dir_path = os.path.join(tgt, f"_temp{time.time()}")
             temp_full_path = os.path.join(temp_dir_path, sourceFolder)
             os.makedirs(temp_full_path, exist_ok=True)
-            hf_hub_download(repo_id=repoId, filename=onefile, local_dir=temp_dir_path, subfolder=sourceFolder, **kwargs)
+            _run_hf_download(
+                hf_hub_download,
+                {"repo_id": repoId, "filename": onefile, "local_dir": temp_dir_path, "subfolder": sourceFolder},
+                progress_callback,
+                progress_options,
+            )
             shutil.move(os.path.join(temp_full_path, onefile), tgt)
             shutil.rmtree(temp_dir_path)
-            if Progress is not None:
-                Progress.finish()
     else:
         from urllib.request import urlretrieve
 

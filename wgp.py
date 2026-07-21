@@ -2192,6 +2192,10 @@ def clear_queue_action(state):
 def quit_application():
     print("Save and Quit requested...")
     clear_startup_lock()
+    global chrome_proc
+    if chrome_proc:
+        chrome_proc.kill()
+        chrome_proc = None
     autosave_queue()
     import signal
     os.kill(os.getpid(), signal.SIGINT)
@@ -13510,14 +13514,37 @@ if __name__ == "__main__":
     if len(server_name) == 0:
         server_name = os.getenv("SERVER_NAME", "localhost")
     demo = create_ui()
-    clear_startup_lock()
+    clear_startup_lock() 
+    if server_name.startswith("http"):
+        url = server_name
+    else:
+        url = "http://" + server_name
+    url= url + ":" + str(server_port)   
+    if len(args.run_as_chrome_app) >0:
+        def run_chrome(command, callback):
+            import subprocess
+            def cleanup():
+                    global chrome_proc
+                    print("Cleaning up Chrome...")
+                    chrome_proc.kill()
+            def target():
+                global chrome_proc
+                chrome_proc = subprocess.Popen(command)
+                chrome_proc.communicate()                
+                callback()
+            atexit.register(cleanup)
+            thread = threading.Thread(target=target,daemon=True)
+            thread.start()
+        def finish():            
+            print("App has been closed, shutting down server...")
+            quit_application()
+        
+        chrome_exe=args.run_as_chrome_app
+        profile=os.path.join( Path.cwd(), "appModeProfile")        
+        run_chrome([chrome_exe,"--user-data-dir="+profile, "--app="+url], finish)
     if args.open_browser:
-        import webbrowser
-        if server_name.startswith("http"):
-            url = server_name
-        else:
-            url = "http://" + server_name
-        webbrowser.open(url + ":" + str(server_port), new = 0, autoraise = True)
+        import webbrowser       
+        webbrowser.open(url, new = 0, autoraise = True)
     demo.launch(
         favicon_path="favicon.png",
         server_name=server_name,

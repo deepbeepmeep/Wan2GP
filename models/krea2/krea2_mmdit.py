@@ -454,6 +454,11 @@ class SingleStreamDiT(nn.Module):
         self.last = LastLayer(config.features, config.patch, config.channels)
         self.tproj = nn.Sequential(nn.GELU(approximate="tanh"), nn.Linear(config.features, config.features * 6))
 
+    def preprocess_loras(self, model_type, sd):
+        from .lora_convert import convert_diffusers_lora
+
+        return convert_diffusers_lora(sd)
+
     def prepare_context(self, context: Tensor | list[Tensor], mask: Tensor, output_len: int | None = None) -> Tensor | None:
         self.txtfusion._interrupt = getattr(self, "_interrupt", False)
         if isinstance(context, list):

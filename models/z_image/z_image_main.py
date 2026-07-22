@@ -41,7 +41,14 @@ def conv_state_dict(sd: dict) -> dict:
 
     return out_sd
 
-
+def fix_qwen_fp8_sd(sd):
+    # Qwen FP8 models drop lm_head.weight to save space; we restore the tied memory reference.
+    
+    if "lm_head.weight" not in sd and "model.embed_tokens.weight" in sd:
+        sd["lm_head.weight"] = sd["model.embed_tokens.weight"]
+        
+    return sd
+    
 _ZIMAGE_FUSED_SPLIT_MAP = {
     "attention.to_qkv": {"mapped_modules": ("attention.to_q", "attention.to_k", "attention.to_v")},
     "attention.qkv": {"mapped_modules": ("attention.to_q", "attention.to_k", "attention.to_v")},
@@ -128,7 +135,14 @@ class model_factory:
         # text_encoder.to(torch.bfloat16)
         # offload.save_model(text_encoder, "c:/temp/qwnen3_bf16_.safetensors")
         
-        text_encoder = offload.fast_load_transformers_model( text_encoder_filename, writable_tensors=True, modelClass=Qwen3ForCausalLM,)
+        # text_encoder = offload.fast_load_transformers_model( text_encoder_filename, writable_tensors=True, modelClass=Qwen3ForCausalLM,)
+        
+        text_encoder = offload.fast_load_transformers_model(
+            text_encoder_filename, 
+            writable_tensors=True, 
+            modelClass=Qwen3ForCausalLM,
+            preprocess_sd=fix_qwen_fp8_sd
+        )
 
         # Tokenizer
         text_encoder_folder = model_def.get("text_encoder_folder")

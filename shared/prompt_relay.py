@@ -177,6 +177,7 @@ def encode_prompt_relay(
     frame_rate: float,
     tokenizer: Any,
     visible_frame_offset: int = 0,
+    epsilon: float = 1e-3,
 ) -> PromptRelayConditioning | None:
     plan = parse_prompt_relay(prompt)
     if plan is None:
@@ -193,8 +194,8 @@ def encode_prompt_relay(
     return PromptRelayConditioning(
         video_context=video_context,
         audio_context=audio_context,
-        video_mask_builder=_build_mask_builder(plan, video_context, video_mask, token_ranges, num_frames, frame_rate, visible_frame_offset),
-        audio_mask_builder=None if audio_context is None else _build_mask_builder(plan, audio_context, audio_mask, token_ranges, num_frames, frame_rate, visible_frame_offset),
+        video_mask_builder=_build_mask_builder(plan, video_context, video_mask, token_ranges, num_frames, frame_rate, visible_frame_offset, epsilon),
+        audio_mask_builder=None if audio_context is None else _build_mask_builder(plan, audio_context, audio_mask, token_ranges, num_frames, frame_rate, visible_frame_offset, epsilon),
     )
 
 
@@ -206,6 +207,7 @@ def _build_mask_builder(
     num_frames: int,
     frame_rate: float,
     visible_frame_offset: int = 0,
+    epsilon: float = 1e-3,
 ) -> PromptRelayMaskBuilder | None:
     runtime_segments = []
     num_frames = max(int(num_frames), 1)
@@ -225,7 +227,7 @@ def _build_mask_builder(
         runtime_segments.append(_RuntimeSegment(start, end, start_key, end_key))
     if not any(segment.start > 0.0 or segment.end < 1.0 for segment in runtime_segments):
         return None
-    return PromptRelayMaskBuilder(_normalize_key_mask(mask, seq_len), runtime_segments, seq_len, visible_start_ratio=visible_start_ratio)
+    return PromptRelayMaskBuilder(_normalize_key_mask(mask, seq_len), runtime_segments, seq_len, visible_start_ratio=visible_start_ratio, epsilon=epsilon)
 
 
 def _parse_marker(marker: str) -> tuple[PromptRelayBound, PromptRelayBound | None] | None:

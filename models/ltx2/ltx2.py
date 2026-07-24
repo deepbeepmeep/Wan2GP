@@ -1443,6 +1443,14 @@ class LTX2:
         if "1" in audio_prompt_type and effective_audio_cfg_scale <= 1.0:
             effective_audio_cfg_scale = LTX2_ID_LORA_AUDIO_CFG_SCALE
         sample_solver = sample_solver.lower()
+        prompt_relay_epsilon = 1e-3
+        if isinstance(custom_settings, dict):
+            try:
+                prompt_relay_epsilon = float(custom_settings.get("prompt_relay_epsilon", prompt_relay_epsilon))
+            except (TypeError, ValueError):
+                pass
+        if not 0 < prompt_relay_epsilon < 1:
+            prompt_relay_epsilon = 1e-3
         prompt_relay_frame_offset = 0
         if int(window_no or 1) > 1 or (input_video is not None and not is_start_image_only):
             prompt_relay_frame_offset = max(0, int(prefix_frames_count or 0))
@@ -1463,6 +1471,7 @@ class LTX2:
                 num_frames=int(frame_num),
                 frame_rate=float(fps),
                 prompt_relay_frame_offset=prompt_relay_frame_offset,
+                prompt_relay_epsilon=prompt_relay_epsilon,
                 num_inference_steps=int(sampling_steps),
                 cfg_guidance_scale=float(guide_scale),
                 audio_cfg_guidance_scale=effective_audio_cfg_scale,
@@ -1527,6 +1536,7 @@ class LTX2:
                 num_frames=int(frame_num),
                 frame_rate=float(fps),
                 prompt_relay_frame_offset=prompt_relay_frame_offset,
+                prompt_relay_epsilon=prompt_relay_epsilon,
                 images=images,
                 guiding_images=guiding_images or None,
                 guiding_images_stage2=guiding_images_stage2 or None,

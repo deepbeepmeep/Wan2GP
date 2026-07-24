@@ -214,6 +214,7 @@ class DistilledPipeline:
         frame_rate: float,
         images: list[tuple[str, int, float]],
         prompt_relay_frame_offset: int = 0,
+        prompt_relay_epsilon: float = 1e-3,
         negative_prompt: str = DEFAULT_NEGATIVE_PROMPT,
         guiding_images: list[tuple] | None = None,
         guiding_images_stage2: list[tuple] | None = None,
@@ -335,7 +336,7 @@ class DistilledPipeline:
                 audio_connector,
                 return_attention_masks=True,
             )
-            relay_conditioning = encode_prompt_relay(prompt, encode_fn_with_masks, self.text_encoder_cache, self.device, num_frames, frame_rate, text_encoder.tokenizer, visible_frame_offset=prompt_relay_frame_offset)
+            relay_conditioning = encode_prompt_relay(prompt, encode_fn_with_masks, self.text_encoder_cache, self.device, num_frames, frame_rate, text_encoder.tokenizer, visible_frame_offset=prompt_relay_frame_offset, epsilon=prompt_relay_epsilon)
             if relay_conditioning is not None:
                 video_context = relay_conditioning.video_context
                 audio_context = None if skip_audio else relay_conditioning.audio_context

@@ -49,6 +49,16 @@ _EDITANYTHING_MODEL_DEF = {
     "ltx2_edit_anything_ref_token_scale": 0.25,
     "ltx2_edit_anything_adaln_scale": 2.0,
 }
+_PROMPT_RELAY_CUSTOM_SETTING = {
+    "id": "prompt_relay_epsilon",
+    "name": "Prompt Relay Epsilon",
+    "label": "Prompt Relay Epsilon (higher values create softer transitions)",
+    "type": "float",
+    "default": 1e-3,
+    "min": 1e-4,
+    "max": 0.99,
+    "inc": 1e-4,
+}
 _ARCH_SPECS = {
     "ltx2_19B": {
         "repo_id": "DeepBeepMeep/LTX-2",
@@ -426,6 +436,7 @@ class family_handler:
             "ltx2_hdr_scene_embeddings_file": spec.get("hdr_scene_embeddings", ""),
             "self_refiner": True,
             "self_refiner_max_plans": 2,
+            "custom_settings": [_PROMPT_RELAY_CUSTOM_SETTING.copy()],
             # "no_background_removal": True,
             "vae_block_size": 64,
             "keep_frames_video_guide_not_supported": True,
@@ -481,7 +492,10 @@ class family_handler:
                     "video_prompt_enhancer_max_tokens1": 1536,
                     "image_prompt_enhancer_max_tokens1": 1536,
                     "guide_custom_choices": {"choices": [("No Control Video Memory", ""), ("JoyAI-Echo Control Video Memory", "V1")], "letters_filter": "V1", "default": "", "label": "Control Video Memory"},
-                    "custom_settings": [{"id": JOYAI_CONTROL_MEMORY_SETTING, "name": "Control Video Memory Positions", "label": "Joy Memory Positions from Control Video (frames or seconds, comma-separated)", "type": "text", "default": "", "video_prompt_type": "1"}],
+                    "custom_settings": [
+                        _PROMPT_RELAY_CUSTOM_SETTING.copy(),
+                        {"id": JOYAI_CONTROL_MEMORY_SETTING, "name": "Control Video Memory Positions", "label": "Joy Memory Positions from Control Video (frames or seconds, comma-separated)", "type": "text", "default": "", "video_prompt_type": "1"},
+                    ],
                 }
             )
         else:

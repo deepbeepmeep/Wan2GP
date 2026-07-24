@@ -3434,10 +3434,10 @@ def get_loras_preprocessor(transformer, model_type):
     return preprocessor_wrapper    
 
 
-def process_files_def(repoId = None, sourceFolderList = None, fileList = None, targetFolderList = None):
+def process_files_def(repoId = None, sourceFolderList = None, fileList = None, targetFolderList = None, progress_callback = None):
     from shared.utils.download import process_files_def as shared_process_files_def
 
-    return shared_process_files_def(repoId=repoId, sourceFolderList=sourceFolderList, fileList=fileList, targetFolderList=targetFolderList)
+    return shared_process_files_def(repoId=repoId, sourceFolderList=sourceFolderList, fileList=fileList, targetFolderList=targetFolderList, progress_callback=progress_callback)
 
 def release_flashvsr_vram():
     upsampler_api.require_upsampler_by_method("flashvsr").release_vram()
@@ -3463,10 +3463,79 @@ def download_requested_postprocessing_assets(send_cmd, *, postprocess_audio="", 
         edit_upsampler.download(process_files_def, send_cmd=send_cmd, status_text=f"Downloading {edit_upsampler.query_upsampler_def().get('name', 'postprocessing')} model files...", spatial_upsampling=spatial_upsampling)
 
 
-def download_file(url,filename):
+def download_file(url,filename, progress_callback=None):
     from shared.utils.download import download_file as shared_download_file
 
-    return shared_download_file(url, filename)
+    return shared_download_file(url, filename, progress_callback=progress_callback)
+
+def format_download_bytes(value):
+    if value is None:
+        return ""
+    value = float(value)
+    for unit in ["B", "KB", "MB", "GB"]:
+        if abs(value) < 1024:
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
+
+def format_download_eta(seconds):
+    if seconds is None:
+        return ""
+    seconds = max(0, int(seconds))
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
+
+def format_model_download_status(model_name, update):
+    headline = f"Downloading {model_name}"
+    if update.unit == "files":
+        return f"{headline}\n{update.current} / {update.total} files" if update.total else f"{headline}\n{update.current} files"
+    parts = []
+    if update.speed_bps:
+        parts.append(f"{format_download_bytes(update.speed_bps)}/s")
+    if update.eta_seconds is not None:
+        parts.append(f"ETA {format_download_eta(update.eta_seconds)}")
+    return f"{headline}\n{' '.join(parts)}" if parts else headline
+
+def build_model_download_details(model_type, model_name, update):
+    details = {
+        "kind": "model_download",
+        "phase": update.phase,
+        "model_type": model_type,
+        "model_name": model_name,
+        "source": update.source,
+        "repo_id": update.repo_id,
+        "filename": update.filename,
+        "file_index": update.file_index,
+        "file_count": update.file_count,
+    }
+    if update.unit == "bytes":
+        details.update(downloaded_bytes=update.current, total_bytes=update.total, speed_bps=update.speed_bps, eta_seconds=update.eta_seconds)
+    else:
+        details.update(completed_files=update.current, total_files=update.total)
+    return {key: value for key, value in details.items() if value is not None}
+
+def build_model_download_progress_payload(model_type, model_name, update):
+    total = update.total if update.total and update.total > 0 else 0
+    current = min(update.current, total) if total else 0
+    family = get_model_family(model_type, for_ui=True)
+    display_name = model_dropdowns.compact_name(families_infos.get(family, (0, ""))[1], model_name)
+    return [
+        (current, total) if total else 0,
+        format_model_download_status(display_name, update),
+        total,
+        update.unit,
+        build_model_download_details(model_type, model_name, update),
+    ]
+
+def create_model_download_command_callback(send_cmd, model_type, model_name):
+    def on_download_progress(update):
+        send_cmd("progress", build_model_download_progress_payload(model_type, model_name, update))
+    return on_download_progress
 
 def query_core_shared_model_files():
     depth_variant = server_config.get("depth_anything_v2_variant", "vitl")
@@ -3497,7 +3566,7 @@ def query_global_shared_model_files():
     return shared_defs
 
 download_shared_done = False
-def download_models(model_filename = None, model_type= None, file_type = 0, submodel_no = 1, force_path = None):
+def download_models(model_filename = None, model_type= None, file_type = 0, submodel_no = 1, force_path = None, progress_callback = None):
     def computeList(filename):
         if filename == None:
             return []
@@ -3507,8 +3576,8 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
 
 
     if file_type == 0:
-        process_files_def(**query_core_shared_model_files())
-        process_files_def(**query_matanyone_download_def(server_config))
+        process_files_def(**query_core_shared_model_files(), progress_callback=progress_callback)
+        process_files_def(**query_matanyone_download_def(server_config), progress_callback=progress_callback)
 
         global download_shared_done
         download_shared_done = True
@@ -3531,7 +3600,7 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
             if not url.startswith("http"):
                 raise Exception(f"Model '{model_filename}' was not found locally and no URL was provided to download it. Please add an URL in the model definition file.")
             try:
-                download_file(url, local_model_filename)
+                download_file(url, local_model_filename, progress_callback=progress_callback)
             except Exception as e:
                 if os.path.isfile(local_model_filename): os.remove(local_model_filename) 
                 raise Exception(f"'{url}' is invalid for Model '{model_type}' : {str(e)}'")
@@ -3551,7 +3620,7 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
                 if not url.startswith("http"):
                     raise Exception(f"{prop} '{filename}' was not found locally and no URL was provided to download it. Please add an URL in the model definition file.")
                 try:
-                    download_file(url, filename)
+                    download_file(url, filename, progress_callback=progress_callback)
                 except Exception as e:
                     if os.path.isfile(filename): os.remove(filename) 
                     raise Exception(f"{prop} '{url}' is invalid: {str(e)}'")
@@ -3563,7 +3632,7 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
             if not url.startswith("http"):
                 raise Exception(f"Lora '{filename}' was not found in the Loras Folder and no URL was provided to download it. Please add an URL in the model definition file.")
             try:
-                download_file(url, filename)
+                download_file(url, filename, progress_callback=progress_callback)
             except Exception as e:
                 if os.path.isfile(filename): os.remove(filename) 
                 raise Exception(f"Lora URL '{url}' is invalid: {str(e)}'")
@@ -3572,7 +3641,7 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
     model_files = model_type_handler.query_model_files(computeList, base_model_type, model_def)
     if not isinstance(model_files, list): model_files = [model_files]
     for one_repo in model_files:
-        process_files_def(**one_repo)
+        process_files_def(**one_repo, progress_callback=progress_callback)
 
 offload.default_verboseLevel = verbose_level
 
@@ -3872,7 +3941,7 @@ def ensure_prompt_enhancer_loaded(override_profile=None, progress=None, send_cmd
         raise gr.Error("Prompt enhancer text runtime is not available.")
     return prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer
 
-def load_models(model_type, override_profile = -1, output_type="video", **model_kwargs):
+def load_models(model_type, override_profile = -1, output_type="video", download_progress_callback=None, status_callback=None, **model_kwargs):
     global transformer_type, loaded_profile
     def _load_models_info(message):
         if int(verbose_level) > 0:
@@ -3934,11 +4003,11 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
     local_model_file_list= []
     for filename, file_model_type, file_source_type, submodel_no in zip(model_file_list, model_type_list, source_type_list, model_submodel_no_list):
         if len(filename) == 0: continue 
-        download_models(filename, file_model_type, file_source_type, submodel_no)
+        download_models(filename, file_model_type, file_source_type, submodel_no, progress_callback=download_progress_callback)
         local_file_name = fl.get_local_model_filename(filename )
         local_model_file_list.append( os.path.basename(filename) if local_file_name is None else local_file_name )
     if len(local_model_file_list) == 0:
-        download_models("", model_type, 0, -1)
+        download_models("", model_type, 0, -1, progress_callback=download_progress_callback)
 
     VAE_dtype = torch.float16 if server_config.get("vae_precision","16") == "16" else torch.float
     mixed_precision_transformer =  server_config.get("mixed_precision","0") == "1"
@@ -3958,7 +4027,7 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
     if text_encoder_filename is not None and len(text_encoder_filename):
         text_encoder_folder = model_def.get("text_encoder_folder", None)
         if text_encoder_filename is not None:
-            download_models(text_encoder_filename, file_model_type, 2, -1, force_path =text_encoder_folder)
+            download_models(text_encoder_filename, file_model_type, 2, -1, force_path =text_encoder_folder, progress_callback=download_progress_callback)
             text_encoder_filename =  fl.get_local_model_filename(text_encoder_filename, extra_paths=text_encoder_folder)
             _load_models_info(f"Loading Text Encoder '{text_encoder_filename}' ...")
 
@@ -3968,6 +4037,8 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
     if lm_decoder_engine_obtained in ("cg", "vllm") and int(profile) not in [ 1, 3]:
         _load_models_info(f"Unable to use LM Engine '{lm_decoder_engine_obtained}' as it requires a Memory Profile such as 1,3 or 3+ that loads entirely the Main Models in VRAM. Switching to Legacy LM Engine...")
         lm_decoder_engine_obtained = "legacy"
+    if status_callback is not None:
+        status_callback(f"Loading model {get_model_name(model_type)} into memory...")
     with model_unload_guard():
         torch.set_default_device('cpu')
         wan_model, pipe = model_type_handler.load_model(
@@ -6571,11 +6642,14 @@ def generate_media(
     profile = compute_profile(override_profile, output_type)
     if model_type != transformer_type or reload_needed or profile != loaded_profile:
         release_model()
-        send_cmd("status", f"Loading model {get_model_name(model_type)}...")
+        model_name = get_model_name(model_type)
+        send_cmd("status", f"Checking model files for {model_name}...")
         wan_model, offloadobj = load_models(
             model_type,
             override_profile,
             output_type=output_type,
+            download_progress_callback=create_model_download_command_callback(send_cmd, model_type, model_name),
+            status_callback=lambda text: send_cmd("status", text),
             **model_kwargs,
         )
         send_cmd("status", "Model loaded")
@@ -8442,6 +8516,8 @@ def process_tasks_cli(queue, state):
                 task_error = True
             elif cmd == "progress":
                 if isinstance(data, list) and len(data) >= 2:
+                    if len(data) > 3 and data[3] in {"bytes", "files"}:
+                        continue
                     if isinstance(data[0], tuple):
                         step, total = data[0]
                         msg = data[1] if len(data) > 1 else ""
@@ -10247,17 +10323,21 @@ def fill_inputs(state):
  
     return generate_media_tab(update_form = True, state_dict = state, ui_defaults = ui_defaults)
 
-def preload_model_when_switching(state):
+def preload_model_when_switching(state, progress=gr.Progress(track_tqdm=False)):
     global reload_needed, wan_model, offloadobj
     if "S" in preload_model_policy:
         model_type = get_state_model_type(state) 
         if  model_type !=  transformer_type:
             release_model()            
-            model_filename = get_model_name(model_type)
-            yield f"Loading model {model_filename}..."
+            model_name = get_model_name(model_type)
+            yield f"Checking model files for {model_name}..."
+            def on_download_progress(update):
+                progress(*build_model_download_progress_payload(model_type, model_name, update)[:4])
             wan_model, offloadobj = load_models(
                 model_type,
                 output_type=get_profile_type_for_model(model_type, 0),
+                download_progress_callback=on_download_progress,
+                status_callback=lambda text: progress(0, desc=text),
             )
             yield f"Model loaded"
             reload_needed=  False 
@@ -12411,7 +12491,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 while True: 
                     progress_args= gen.get("progress_args", None)
                     if progress_args != None:
-                        progress(*progress_args)
+                        progress(*progress_args[:4])
                         gen["progress_args"] = None
                     status= gen.get("status","")
                     if status is not None and len(status) > 0:

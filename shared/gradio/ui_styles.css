@@ -433,3 +433,4 @@ user-select: text;
 .toast-wrap .toast-text, .toast-wrap .toast-text *, .gradio-container [role="alert"] * { overflow-wrap: anywhere !important; word-break: break-word !important; }
 .toast-wrap .toast-text, .gradio-container [role="alert"] .toast-text { white-space: pre-wrap !important; }
 .toast-wrap .toast-close, .gradio-container [role="alert"] button { position: sticky !important; top: 0 !important; align-self: flex-start !important; flex: 0 0 auto !important; }
+.progress-level-inner { white-space: pre-line; text-align: center; }

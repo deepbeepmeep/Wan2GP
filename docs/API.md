@@ -789,13 +789,23 @@ Delivered through `progress` events and `on_progress(...)`:
 
 ```python
 ProgressUpdate(
-    phase="inference",
-    status="Prompt 1/1 | Denoising | 7.2s",
-    progress=54,
-    current_step=4,
-    total_steps=8,
-    raw_phase="Denoising",
-    unit=None,
+    phase="downloading_model",
+    status="Downloading model LTX-2 22B · model.safetensors · 6.42 GB / 12.10 GB · 53.1%",
+    progress=10,
+    current_step=6_895_321_088,
+    total_steps=12_992_123_904,
+    raw_phase="Downloading model LTX-2 22B",
+    unit="bytes",
+    details={
+        "kind": "model_download",
+        "model_type": "ltx2_22B_distilled",
+        "model_name": "LTX-2 2.3 Distilled 1.0 22B",
+        "filename": "model.safetensors",
+        "downloaded_bytes": 6_895_321_088,
+        "total_bytes": 12_992_123_904,
+        "speed_bps": 88_080_384.0,
+        "eta_seconds": 68.0,
+    },
 )
 ```
 
@@ -803,6 +813,8 @@ Fields:
 
 - `phase: str`
   - Normalized phase. Typical values:
+  - `checking_model_files`
+  - `downloading_model`
   - `loading_model`
   - `encoding_text`
   - `inference`
@@ -812,15 +824,19 @@ Fields:
 - `status: str`
   - Human-readable status string produced by WanGP.
 - `progress: int`
-  - Estimated percentage from `0` to `100`.
+  - Estimated whole-job percentage from `0` to `100`; it is not the current download's percentage.
 - `current_step: int | None`
-  - Current inference step when available.
+  - Current inference step, downloaded bytes (`unit="bytes"`), or completed files (`unit="files"`) when available.
 - `total_steps: int | None`
-  - Total inference steps when available.
+  - Matching inference-step, byte, or file total when available.
 - `raw_phase: str | None`
   - Original WanGP phase label before normalization.
 - `unit: str | None`
   - Optional progress unit if WanGP provides one.
+- `details: dict[str, Any] | None`
+  - Optional structured metadata. Model downloads include safe model/file context, byte or file counters, and speed/ETA when known. Consumers should tolerate additional keys.
+
+Model downloads remain ordinary `progress` events and use the existing `on_progress(...)` callback. Hugging Face snapshot/folder downloads report honest file counts rather than an estimated aggregate byte size. Legacy progress updates have `details=None`.
 
 ### `PreviewUpdate`
 

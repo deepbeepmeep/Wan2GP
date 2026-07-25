@@ -22,6 +22,7 @@ from .omnivoice.pipeline import (
     OMNIVOICE_AUDIO_TOKENIZER_DIR,
     OMNIVOICE_AUDIO_TOKENIZER_WEIGHTS,
     OMNIVOICE_AUTO_END_TRIM_FLAG,
+    OMNIVOICE_ADJUST_SPEED_SETTING_ID,
     OMNIVOICE_AUTO_SPLIT_MAX_SECONDS,
     OMNIVOICE_AUTO_SPLIT_MIN_SECONDS,
     OMNIVOICE_AUTO_SPLIT_SETTING_ID,
@@ -99,6 +100,14 @@ OMNIVOICE_CUSTOM_SETTINGS = [
         "min": 0.0,
         "max": OMNIVOICE_AUTO_SPLIT_MAX_SECONDS,
         "inc": 1.0,
+    },
+    {
+        "id": OMNIVOICE_ADJUST_SPEED_SETTING_ID,
+        "label": "Adjust Speed to Max duration",
+        "name": "Adjust Speed",
+        "type": "dropdown",
+        "choices": ["No", "Yes"],
+        "default": "No",
     },
 ]
 OMNIVOICE_PROMPT_SPECIAL_TAGS = [

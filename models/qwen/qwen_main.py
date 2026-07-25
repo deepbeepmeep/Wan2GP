@@ -94,7 +94,7 @@ class model_factory():
             from wgp import save_quantized_model
             save_quantized_model(transformer, model_type, model_filename[0], dtype, base_config_file)
 
-        text_encoder = offload.fast_load_transformers_model(text_encoder_filename,  writable_tensors= True , modelClass=Qwen2_5_VLForConditionalGeneration,  defaultConfigPath= fl.locate_file(os.path.join("Qwen2.5-VL-7B-Instruct", "config.json")) )
+        text_encoder = offload.fast_load_transformers_model(text_encoder_filename,  writable_tensors= True , modelClass=Qwen2_5_VLForConditionalGeneration,  defaultConfigPath= os.path.join(tokenizer_path, "config.json") )
         # text_encoder = offload.fast_load_transformers_model(text_encoder_filename, do_quantize=True,  writable_tensors= True , modelClass=Qwen2_5_VLForConditionalGeneration, defaultConfigPath="text_encoder_config.json", verboseLevel=2)
         # text_encoder.to(torch.float16)
         # offload.save_model(text_encoder, "text_encoder_quanto_fp16.safetensors", do_quantize= True)

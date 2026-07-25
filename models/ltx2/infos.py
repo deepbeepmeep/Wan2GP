@@ -134,3 +134,19 @@ Character sheets are recommended for character references: use an image that sho
 
 Use the text prompt to describe how the referenced subjects should appear together in the referenced environment.
 """
+
+LTX2_MSR_V2_INFOS = LTX2_MSR_INFOS + """
+
+## **MSR Reference Video Length** (MSR V2 only)
+
+Leave this on `Auto` for normal use. WanGP automatically gives each uploaded subject enough reference space and keeps the background separate:
+
+- 1 subject: `17`
+- 2 subjects: `33`
+- 3 subjects: `49`
+- 4 subjects: `65`
+
+Choose `17` to `65` manually only when you want to experiment with reference strength or reduce memory use. This setting changes how the uploaded images are prepared; it does not change the generated video length. Missing or older saved settings behave like `Auto`.
+
+MSR V2 keeps subject references separate from the background and generally preserves identities and multi-subject scenes better than V1.
+"""

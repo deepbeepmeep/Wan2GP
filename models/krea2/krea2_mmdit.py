@@ -440,6 +440,53 @@ class SingleStreamBlock(nn.Module):
 
 
 class SingleStreamDiT(nn.Module):
+    def preprocess_loras(self, model_type, sd):
+        """Map common Diffusers/Kohya Krea2 LoRA names to this model."""
+        replacements = (
+            ("transformer_blocks", "blocks"),
+            ("text_fusion", "txtfusion"),
+            ("feed_forward.", "mlp."),
+            ("ffn.", "mlp."),
+            ("ff.", "mlp."),
+            ("to_out.0", "wo"),
+            ("to_out", "wo"),
+            ("to_gate", "gate"),
+            ("to_q", "wq"),
+            ("to_k", "wk"),
+            ("to_v", "wv"),
+        )
+
+        def map_key(key):
+            prefix = next((p for p in ("lora_unet_", "lora_te_") if key.startswith(p)), None)
+            if prefix:
+                path, dot, suffix = key[len(prefix):].partition(".")
+                if not dot:
+                    return key
+                for source, target in (
+                    ("transformer_blocks", "blocks"),
+                    ("text_fusion", "txtfusion"),
+                    ("_feed_forward_", "_mlp_"),
+                    ("_ffn_", "_mlp_"),
+                    ("_ff_", "_mlp_"),
+                    ("to_out_0", "wo"),
+                    ("to_out", "wo"),
+                    ("to_gate", "gate"),
+                    ("to_q", "wq"),
+                    ("to_k", "wk"),
+                    ("to_v", "wv"),
+                ):
+                    path = path.replace(source, target)
+                for name in ("layerwise_blocks", "refiner_blocks", "language_model"):
+                    path = path.replace(name, name.replace("_", "-"))
+                path = path.replace("_", ".").replace("-", "_")
+                return f"{path}.{suffix}"
+
+            for source, target in replacements:
+                key = key.replace(source, target)
+            return key
+
+        return {map_key(key): value for key, value in sd.items()}
+
     def __init__(self, config: SingleMMDiTConfig):
         super().__init__()
         self.config = config

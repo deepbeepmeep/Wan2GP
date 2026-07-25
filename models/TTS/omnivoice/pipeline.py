@@ -47,6 +47,7 @@ OMNIVOICE_LEGACY_DEFAULT_VOICE_INSTRUCTION = "female, warm tone, clear articulat
 OMNIVOICE_SIGNATURE_CHUNK_SIZE = 65536
 OMNIVOICE_AUTO_END_TRIM_FLAG = "E"
 OMNIVOICE_AUTO_SPLIT_SETTING_ID = "auto_split_every_s"
+OMNIVOICE_ADJUST_SPEED_SETTING_ID = "adjust_speed_to_max_duration"
 OMNIVOICE_AUTO_SPLIT_MIN_SECONDS = 5.0
 OMNIVOICE_AUTO_SPLIT_MAX_SECONDS = 90.0
 OMNIVOICE_TRAILING_SILENCE_WINDOW_SECONDS = 0.02
@@ -532,6 +533,15 @@ class OmniVoicePipeline:
         value = float(raw_value)
         return value if value > 0 else None
 
+    @staticmethod
+    def _adjust_speed_to_max_duration(custom_settings) -> bool:
+        if not isinstance(custom_settings, dict):
+            return False
+        raw_value = custom_settings.get(OMNIVOICE_ADJUST_SPEED_SETTING_ID, "No")
+        if isinstance(raw_value, bool):
+            return raw_value
+        return str(raw_value or "").strip().lower() == "yes"
+
     def _estimate_text_seconds(self, text: str, voice_clone_prompt: Optional[VoiceClonePrompt]) -> float:
         if voice_clone_prompt is None:
             ref_text = None
@@ -689,6 +699,7 @@ class OmniVoicePipeline:
         voice_clone_prompt: Optional[VoiceClonePrompt],
         instruct: Optional[str],
         generation_config: OmniVoiceGenerationConfig,
+        segment_duration: Optional[float] = None,
     ) -> Optional[tuple[torch.Tensor, object]]:
         if self._abort_requested() or self._early_stop_requested():
             return None
@@ -699,6 +710,7 @@ class OmniVoicePipeline:
                 voice_clone_prompt=voice_clone_prompt,
                 instruct=instruct,
                 generation_config=generation_config,
+                duration=segment_duration,
             )
         except RuntimeError as exc:
             if _is_abort_exception(exc):
@@ -720,6 +732,7 @@ class OmniVoicePipeline:
         generation_config: OmniVoiceGenerationConfig,
         pause_seconds: float,
         duration_seconds: Optional[float],
+        adjust_speed_to_max_duration: bool,
         auto_end_trim: bool,
         callback,
         offloadobj=None,
@@ -731,6 +744,23 @@ class OmniVoicePipeline:
         total_progress_steps = max(1, len(segments) * generation_config.num_step)
         audio_segments = []
         elapsed_samples = 0
+
+        segment_durations: list[Optional[float]] = [None] * len(segments)
+        if adjust_speed_to_max_duration and max_total_samples is not None:
+            total_pause_samples = pause_samples * max(0, len(segments) - 1)
+            speech_budget_samples = max(0, max_total_samples - total_pause_samples)
+            speech_budget_seconds = float(speech_budget_samples) / float(self.sample_rate)
+            segment_estimates: list[float] = []
+            for speaker_id, segment_text in segments:
+                try:
+                    estimate = self._estimate_text_seconds(segment_text, speaker_prompts.get(speaker_id))
+                except Exception:
+                    estimate = 0.0
+                segment_estimates.append(max(1e-6, float(estimate)))
+            estimate_sum = sum(segment_estimates)
+            if estimate_sum > 0:
+                for index, estimate in enumerate(segment_estimates):
+                    segment_durations[index] = max(0.1, speech_budget_seconds * estimate / estimate_sum)
 
         def _poll_early_stop(segment_index: int) -> None:
             if callback is None:
@@ -779,6 +809,7 @@ class OmniVoicePipeline:
                 voice_clone_prompt=speaker_prompts.get(speaker_id),
                 instruct=instruct,
                 generation_config=generation_config,
+                segment_duration=segment_durations[segment_index],
             )
             if segment_result is None:
                 break
@@ -791,8 +822,15 @@ class OmniVoicePipeline:
                 samples_left = max_total_samples - elapsed_samples
                 if samples_left <= 0:
                     break
-                duration_truncated = samples_left < segment_audio.numel()
-                segment_audio = segment_audio[:samples_left]
+                if adjust_speed_to_max_duration:
+                    safety_trim_samples = max(0, int(round(0.5 * self.sample_rate)))
+                    hard_cap = samples_left + safety_trim_samples
+                    if segment_audio.numel() > hard_cap:
+                        duration_truncated = True
+                        segment_audio = segment_audio[:hard_cap]
+                else:
+                    duration_truncated = samples_left < segment_audio.numel()
+                    segment_audio = segment_audio[:samples_left]
             if segment_audio.numel() > 0:
                 if preserve_voice_design and segment_index == 0 and len(segments) > 1:
                     token_result = None if duration_truncated or auto_end_trim else segment_tokens
@@ -854,6 +892,7 @@ class OmniVoicePipeline:
         mode = self._normalize_audio_prompt_type(audio_prompt_type)
         auto_end_trim = OMNIVOICE_AUTO_END_TRIM_FLAG in str(audio_prompt_type or "").upper()
         auto_split_seconds = self._resolve_auto_split_seconds(custom_settings)
+        adjust_speed_to_max_duration = self._adjust_speed_to_max_duration(custom_settings)
         language = self._normalize_language(model_mode)
         guide_scale = float(guide_scale if guide_scale is not None else 2.0)
         generation_config = OmniVoiceGenerationConfig(
@@ -895,6 +934,7 @@ class OmniVoicePipeline:
                 generation_config=generation_config,
                 pause_seconds=pause_seconds,
                 duration_seconds=duration_value,
+                adjust_speed_to_max_duration=adjust_speed_to_max_duration,
                 auto_end_trim=auto_end_trim,
                 callback=callback,
                 offloadobj=offloadobj,
@@ -924,6 +964,7 @@ class OmniVoicePipeline:
             generation_config=generation_config,
             pause_seconds=pause_seconds,
             duration_seconds=duration_value,
+            adjust_speed_to_max_duration=adjust_speed_to_max_duration,
             auto_end_trim=auto_end_trim,
             callback=callback,
             offloadobj=offloadobj,

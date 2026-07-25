@@ -9,6 +9,9 @@ from shared.utils.hf import build_hf_url
 _PROJECT_REPO = "DeepBeepMeep/krea-2"
 _QWEN_IMAGE_REPO = "DeepBeepMeep/Qwen_image"
 _TEXT_ENCODER_FOLDER = "Qwen3-VL-4B-Instruct"
+_TEXT_ENCODER_BF16_FILENAME = "Qwen3-VL-4B-Instruct_text_bf16.safetensors"
+_TEXT_ENCODER_INT8_FILENAME = "Qwen3-VL-4B-Instruct_quanto_bf16_int8.safetensors"
+_VISION_ENCODER_FILENAME = "Qwen3-VL-4B-Instruct_vision_bf16.safetensors"
 _RAW_MODEL_TYPE = "krea2_raw"
 _TURBO_MODEL_TYPE = "krea2_turbo"
 _RAW_EDIT_MODEL_TYPE = "krea2_raw_edit"
@@ -56,8 +59,8 @@ class family_handler:
             "profiles_dir": [_PROFILE_DIR],
             "text_encoder_folder": _TEXT_ENCODER_FOLDER,
             "text_encoder_URLs": [
-                build_hf_url(_PROJECT_REPO, _TEXT_ENCODER_FOLDER, "Qwen3-VL-4B-Instruct_bf16.safetensors"),
-                build_hf_url(_PROJECT_REPO, _TEXT_ENCODER_FOLDER, "Qwen3-VL-4B-Instruct_quanto_bf16_int8.safetensors"),
+                build_hf_url(_PROJECT_REPO, _TEXT_ENCODER_FOLDER, _TEXT_ENCODER_BF16_FILENAME),
+                build_hf_url(_PROJECT_REPO, _TEXT_ENCODER_FOLDER, _TEXT_ENCODER_INT8_FILENAME),
             ],
             "no_negative_prompt": False,
             "no_background_removal": True,
@@ -84,7 +87,11 @@ class family_handler:
                 "background_removal_label": "Remove Backgrounds only behind People / Objects except main Subject / Landscape",
                 "video_guide_outpainting": [1, 2],
                 "outpainting_quantize_margins": 16,
-                "text_encoder_URLs": [build_hf_url(_PROJECT_REPO, _TEXT_ENCODER_FOLDER, "Qwen3-VL-4B-Instruct_bf16.safetensors")],
+                "vision_encoder_filename": os.path.join(_TEXT_ENCODER_FOLDER, _VISION_ENCODER_FILENAME),
+                "preload_URLs": [
+                    build_hf_url(_PROJECT_REPO, _TEXT_ENCODER_FOLDER, _VISION_ENCODER_FILENAME)
+                    + f"|{_TEXT_ENCODER_FOLDER}"
+                ],
                 "model_modes": {
                     "choices": [("Masked Denoising: inpainted area may reuse masked content", 0)] + lanpaint_choices,
                     "default": 0,
@@ -167,7 +174,14 @@ class family_handler:
             VAE_upsampling=VAE_upsampling,
             save_quantized=save_quantized,
         )
-        return pipe_processor, {"transformer": pipe_processor.transformer, "text_encoder": pipe_processor.text_encoder, "vae": pipe_processor.vae}
+        pipe = {
+            "transformer": pipe_processor.transformer,
+            "text_encoder": pipe_processor.text_encoder.language_model,
+            "vae": pipe_processor.vae,
+        }
+        if hasattr(pipe_processor.text_encoder, "visual"):
+            pipe["vision_encoder"] = pipe_processor.text_encoder.visual
+        return pipe_processor, pipe
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):

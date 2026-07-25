@@ -443,6 +443,13 @@ class SingleStreamDiT(nn.Module):
     def preprocess_loras(self, model_type, sd):
         """Map common Diffusers/Kohya Krea2 LoRA names to this model."""
         replacements = (
+            ("final_layer", "last"),
+            ("img_in", "first"),
+            ("time_embed.linear_1", "tmlp.0"),
+            ("time_embed.linear_2", "tmlp.2"),
+            ("time_mod_proj", "tproj.1"),
+            ("txt_in.linear_1", "txtmlp.1"),
+            ("txt_in.linear_2", "txtmlp.3"),
             ("transformer_blocks", "blocks"),
             ("text_fusion", "txtfusion"),
             ("feed_forward.", "mlp."),
@@ -463,6 +470,13 @@ class SingleStreamDiT(nn.Module):
                 if not dot:
                     return key
                 for source, target in (
+                    ("final_layer", "last"),
+                    ("img_in", "first"),
+                    ("time_embed_linear_1", "tmlp_0"),
+                    ("time_embed_linear_2", "tmlp_2"),
+                    ("time_mod_proj", "tproj_1"),
+                    ("txt_in_linear_1", "txtmlp_1"),
+                    ("txt_in_linear_2", "txtmlp_3"),
                     ("transformer_blocks", "blocks"),
                     ("text_fusion", "txtfusion"),
                     ("_feed_forward_", "_mlp_"),

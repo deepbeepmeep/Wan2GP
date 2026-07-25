@@ -88,7 +88,7 @@ WanGP's growing community has developed more than 20 plugins that expand what yo
 
 - **ConvRot LoRA support**: Int8 ConvRot checkpoints can now use LoRAs without producing garbage output 
 
-- **Text Encoder GGUF Support**: you should be able now to use in your Finetunes Text Encoder *GGUF* Checkpoints with LTX2, Krea2, Flux 1/2 and Wan 1/2
+- **Text Encoder GGUF Support**: you should be able now to use in your Finetunes Text Encoder *GGUF* Checkpoints with LTX2, Krea2, Flux 1/2 and Wan 2.1/2.2
 
 - **Onmnivoice Speed ajustment**: a new option gives you more control on the pace on spoken words (for instance to you fit more words in a shorter timespan)
 

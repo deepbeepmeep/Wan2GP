@@ -1,17 +1,5 @@
 [
   {
-    "name": "wan2gp-blender-upsampler",
-    "author": "DeepBeepMeep",
-    "version": "0.1.0",
-    "description": "Template temporal upsampler plugin that creates x2 intermediate frames by blending neighboring frames.",
-    "type": [
-      "processor"
-    ],
-    "date": "",
-    "wan2gp_version": "",
-    "url": "https://github.com/deepbeepmeep/wan2gp-blender-upsampler"
-  },
-  {
     "name": "File Gallery",
     "author": "Tophness and Neires",
     "version": "2.0.3",
@@ -22,6 +10,18 @@
     "date": "",
     "wan2gp_version": "",
     "url": "https://github.com/Tophness/wan2gp-gallery"
+  },
+  {
+    "name": "Finetune Manager",
+    "author": "GKartist75",
+    "version": "3.6.3",
+    "description": "Community finetune registry: browse, load, create, edit, improve, and upload finetune JSONs for Wan2GP",
+    "type": [
+      "app"
+    ],
+    "date": "2026-07-22",
+    "wan2gp_version": "12.3",
+    "url": "https://github.com/GKartist75/Wan2GP-finetune-manager"
   },
   {
     "name": "HideUI",
@@ -38,13 +38,13 @@
   {
     "name": "Image Suite",
     "author": "saintorphan",
-    "version": "0.2.1",
-    "description": "Three-in-one image workbench: Txt2Img, Img2Img and MultiCanvas (layered draw / mask / inpaint) sub-tabs for Flux, Z-Image and the SDXL lineup (Pony, Illustrious). Save any result to the other pages, Img2Vid, the Prompt Library, or disk.",
+    "version": "0.3.0",
+    "description": "Image workbench: Txt2Img, Img2Img, MultiCanvas (layered draw / mask / inpaint) and a Modify editor (crop / resize / flip / colour) for Flux, Z-Image and the SDXL lineup (Pony, Illustrious). Save any result to the other pages, Img2Vid, the Prompt Library, disk \u2014 or, with the SendTo plugin, to other tabs and plugins.",
     "type": [
       "app"
     ],
-    "date": "2026-06-13",
-    "wan2gp_version": "11.90",
+    "date": "2026-06-14",
+    "wan2gp_version": "12.23",
     "url": "https://github.com/saintorphan/ImageSuite-Wan2GP"
   },
   {
@@ -132,6 +132,30 @@
     "url": "https://github.com/deepbeepmeep/wan2gp-pixel-upsampler"
   },
   {
+    "name": "Prompt Library",
+    "author": "saintorphan",
+    "version": "0.2.0",
+    "description": "Standalone, model-agnostic prompt library in the Media Generation tab: save / update / populate / delete prompts, optionally preserving every generation parameter, each tagged with the model selected when it was saved.",
+    "type": [
+      "extension"
+    ],
+    "date": "2026-06-15",
+    "wan2gp_version": "12.23",
+    "url": "https://github.com/saintorphan/MediaGen-PromptLib-Wan2GP"
+  },
+  {
+    "name": "Prompt Manager",
+    "author": "David Brum",
+    "version": "1.4.2",
+    "description": "Browse generated images and videos with search, sort, and grid size controls. Copy metadata, generate in-plugin, manage a saved library with export/import, and bulk actions on multi-select.",
+    "type": [
+      "app"
+    ],
+    "date": "2026-07-03",
+    "wan2gp_version": "",
+    "url": "https://github.com/davidbrum25/wan2gp-prompt-manager"
+  },
+  {
     "name": "Pulsebar",
     "author": "Javier-bat",
     "version": "0.1.0",
@@ -156,6 +180,18 @@
     "url": "https://github.com/Tophness/wan2gp-queue-editor"
   },
   {
+    "name": "Queue Notifier",
+    "author": "Javier-bat",
+    "version": "1.2.8",
+    "description": "Queue notifier for current WanGP saved-output flow, with optional generated media attachments, extended Telegram upload timeouts, task completion/failure and per-task percentage alerts, UI settings, persistent config, and Apprise channels (Telegram/Discord/WhatsApp/IFTTT/Google Chat).",
+    "type": [
+      "app"
+    ],
+    "date": "",
+    "wan2gp_version": "",
+    "url": "https://github.com/Javier-bat/wan2gp-notifier"
+  },
+  {
     "name": "Stable Diffusion 1.4 Model Plugin",
     "author": "DeepBeepMeep",
     "version": "0.1.0",
@@ -166,5 +202,41 @@
     "date": "",
     "wan2gp_version": "",
     "url": "https://github.com/deepbeepmeep/wan2gp-stable-diffusion-1-4"
+  },
+  {
+    "name": "VRAM / RAM Adjuster",
+    "author": "",
+    "version": "1.0.0",
+    "description": "Adjust the Gpu Vram and System Ram - Override the Memory Profiles",
+    "type": [
+      "app"
+    ],
+    "date": "",
+    "wan2gp_version": "",
+    "url": "https://github.com/g3n3rativ3/vram_ram_adj"
+  },
+  {
+    "name": "Wildcards",
+    "author": "GKartist75 (with PI Agent)",
+    "version": "1.6.2",
+    "description": "Dynamic wildcard expansion for prompts + named variables + templates + character profiles + usage stats. Use __name__ syntax for random picks, __$var:file__ for reusable captured variables.",
+    "type": [
+      "extension"
+    ],
+    "date": "2026-07-09",
+    "wan2gp_version": "",
+    "url": "https://github.com/GKartist75/wan2gp-wildcards"
+  },
+  {
+    "name": "wan2gp-blender-upsampler",
+    "author": "DeepBeepMeep",
+    "version": "0.1.0",
+    "description": "Template temporal upsampler plugin that creates x2 intermediate frames by blending neighboring frames.",
+    "type": [
+      "processor"
+    ],
+    "date": "",
+    "wan2gp_version": "",
+    "url": "https://github.com/deepbeepmeep/wan2gp-blender-upsampler"
   }
 ]

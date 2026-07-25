@@ -50,6 +50,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 >
 > **Use only the official GitHub repository.** Wan2GP is **not affiliated with wan2gp.com or any other third-party service using the Wan2GP name**, unless explicitly stated here.
 
+
 ## 📋 Table of Contents
 
 - [🚀 Quick Start](#-quick-start)
@@ -60,6 +61,20 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
+
+## 25th of July 2026: Featured Plugins / Apps
+
+WanGP's growing community has developed more than 20 plugins that expand what you can do. Here is a selection of seven newly available community plugins, all of which can be installed or updated directly from the WanGP Plugin Manager:
+
+- **Finetune Manager** by *GKartist* — Browse community finetunes, load them into WanGP, and create, improve, or share your own.
+- **Image Suite** by *saintorphan* — Create and edit images with text-to-image, image-to-image, layered canvases, masks, inpainting, cropping, resizing, and color adjustments.
+- **Prompt Library** by *saintorphan* — Save your favorite prompts and generation settings, then reuse them with any supported model.
+- **Prompt Manager** by *David Brum* — Search and organize generated images and videos, copy their settings, and manage reusable prompts in one place.
+- **Queue Notifier** by *Javier-bat* — Get progress, completion, and failure alerts through services such as Discord, Telegram, WhatsApp, and Google Chat.
+- **VRAM / RAM Adjuster** by *g3n3rativ3* — Tune how much graphics and system memory WanGP uses without manually editing configuration files.
+- **Wildcards** by *GKartist* — Add reusable variables and random choices to prompts so you can quickly produce controlled variations.
+
+**New Wan2GP Desktop Installer** — [Wan2GP Desktop](https://github.com/GKartist75/wan2gp-desktop) by GKArtist lets you install, update, and launch WanGP from a single window. It handles Git, Python, CUDA, and PyTorch setup for you, making it the easiest way to get started on Windows.
 
 ### 25th of July 2026: WanGP v12.345, you can breath now
 

@@ -58,6 +58,7 @@ _PROMPT_RELAY_CUSTOM_SETTING = {
     "min": 1e-4,
     "max": 0.99,
     "inc": 1e-4,
+    "video_prompt_type": "?",
 }
 _ARCH_SPECS = {
     "ltx2_19B": {

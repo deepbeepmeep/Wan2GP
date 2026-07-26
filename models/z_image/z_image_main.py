@@ -226,6 +226,9 @@ class model_factory:
             preprocess_sd=unified_preprocessor,
         )
 
+        # Resolve SDPA dtype mismatch for GGUF text encoders
+        text_encoder.to(dtype)
+        
         # Tokenizer
         tokenizer = AutoTokenizer.from_pretrained(text_encoder_path, trust_remote_code=True)
 

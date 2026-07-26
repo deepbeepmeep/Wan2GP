@@ -10,7 +10,7 @@ from shared.utils import files_locator as fl
 
 
 WAN_GP_SETTINGS_SUFFIXES = {".json", ".zip"}
-SETTINGS_BUNDLE_ATTACHMENT_KEYS = ("image_start", "image_end", "image_refs", "image_guide", "image_mask", "video_guide", "video_mask", "video_source", "audio_guide", "audio_guide2", "audio_source", "seedvc_voice_sample", "seedvc_voice_sample2", "custom_guide")
+SETTINGS_BUNDLE_ATTACHMENT_KEYS = ("image_start", "image_end", "image_refs", "image_guide", "image_mask", "video_guide", "video_mask", "video_source", "audio_guide", "audio_guide2", "audio_source", "replace_voice_sample", "replace_voice_sample2", "custom_guide")
 
 
 def is_wangp_settings_filename(value: Any) -> bool:

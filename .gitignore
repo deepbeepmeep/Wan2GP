@@ -21,11 +21,13 @@
 *.backup
 *.pkl
 *.html
+!plugins/motion_designer/assets/motion_designer_iframe_template.html
 *.pdf
 *.whl
 *.exe
 cache
 __pycache__/
+shared/gradio/wangp_image_editor/templates/component/index.js.map
 storage/
 samples/
 !.gitignore
@@ -40,7 +42,7 @@ gradio_outputs/
 ckpts/
 loras/
 loras_i2v/
-
+tmp/
 /settings/
 
 wgp_config.json

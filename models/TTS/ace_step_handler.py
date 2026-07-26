@@ -287,7 +287,7 @@ class family_handler:
 
     @staticmethod
     def query_family_infos():
-        return {"tts": (200, "TTS")}
+        return {"music": (2195, "Music"), "tts": (2200, "TTS")}
 
     @staticmethod
     def register_lora_cli_args(parser, lora_root):
@@ -323,6 +323,7 @@ class family_handler:
     def query_model_def(base_model_type, model_def):
         if _is_ace_step15(base_model_type):
             extra_model_def = {
+                "group": "music",
                 "audio_only": True,
                 "image_outputs": False,
                 "sliding_window": False,
@@ -374,6 +375,7 @@ class family_handler:
                 extra_model_def["model_modes"] = ACE_STEP15_MODEL_MODES.copy()
             return extra_model_def
         return {
+            "group": "music",
             "audio_only": True,
             "image_outputs": False,
             "sliding_window": False,

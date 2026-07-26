@@ -137,7 +137,7 @@ class family_handler:
 
     @staticmethod
     def query_family_infos():
-        return {"tts": (200, "TTS")}
+        return {"tts": (2200, "TTS")}
 
     @staticmethod
     def register_lora_cli_args(parser, lora_root):

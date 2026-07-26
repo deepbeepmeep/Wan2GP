@@ -1,0 +1,30 @@
+{
+    "model": {
+        "name": "Ideogram v4 TurboTime FP8 9.3B",
+        "architecture": "ideogram4_turbotime",
+        "description": "Ideogram v4 TurboTime uses the Ideogram 4 conditional transformer with the TurboTime LoRA for fast few-step text-to-image generation. This variant runs without CFG and does not load the unconditional transformer branch.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Ideogram4/resolve/main/Ideogram4_Transformer_fp8.safetensors"
+        ],
+        "loras": [
+            "https://huggingface.co/DeepBeepMeep/Ideogram4/resolve/main/loras/ideogram_4_turbotime_v1.safetensors"
+        ],
+        "loras_multipliers": [
+            1
+        ],
+        "image_outputs": true
+    },
+    "prompt": "{\"aspect_ratio\":\"1:1\",\"high_level_description\":\"A clean editorial poster for a fictional jazz festival called NIGHT GLASS, featuring bold readable typography, a black grand piano reflected in rain-slick pavement, neon cyan and warm amber lighting, elegant modern graphic design, high contrast.\",\"compositional_deconstruction\":{\"background\":\"A dark rainy city square at night with soft neon reflections, subtle mist, and a polished poster-like composition.\",\"elements\":[{\"type\":\"text\",\"bbox\":[90,70,260,930],\"desc\":\"Large crisp headline text reading NIGHT GLASS in a refined modern sans-serif typeface, centered near the top with excellent legibility.\"},{\"type\":\"text\",\"bbox\":[780,150,870,850],\"desc\":\"Small readable event line text: JAZZ FESTIVAL 2026.\"},{\"type\":\"obj\",\"bbox\":[330,190,720,830],\"desc\":\"A glossy black grand piano in three-quarter view, with cyan and amber reflections on its curved body and keys.\"}]}}",
+    "resolution": "1024x1024",
+    "batch_size": 1,
+    "model_mode": null,
+    "num_inference_steps": 8,
+    "guidance_phases": 0,
+    "guidance_scale": 0,
+    "sample_solver": "euler",
+    "flow_shift": 1.0,
+    "custom_settings": {
+        "ideogram_mu": 0.5,
+        "ideogram_std": 1.75
+    }
+}

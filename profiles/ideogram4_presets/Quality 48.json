@@ -1,0 +1,15 @@
+{
+    "num_inference_steps": 48,
+    "guidance_phases": 2,
+    "guidance_scale": 7.0,
+    "guidance2_scale": 3.0,
+    "switch_threshold": 184,
+    "sample_solver": "euler",
+    "flow_shift": 1.0,
+    "custom_settings": {
+        "ideogram_mu": 0.0,
+        "ideogram_std": 1.5
+    },
+    "settings_version": 2.64,
+    "help": "Official Ideogram 4 Quality sampler preset equivalent: Euler sampler, neutral flow shift, 48 steps, 45 steps at CFG 7 then 3 polish steps at CFG 3, mu 0.0, std 1.5."
+}

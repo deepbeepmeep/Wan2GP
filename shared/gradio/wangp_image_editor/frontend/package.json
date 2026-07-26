@@ -1,0 +1,39 @@
+{
+  "name": "wangp-image-editor",
+  "version": "0.0.1",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./Index.svelte"
+  },
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@gradio/client": "1.14.2",
+    "@types/tinycolor2": "^1.4.6",
+    "amuchina": "^1.0.12",
+    "dompurify": "^3.0.3",
+    "github-slugger": "^2.0.0",
+    "katex": "^0.16.47",
+    "marked": "^12.0.2",
+    "marked-gfm-heading-id": "^3.2.0",
+    "marked-highlight": "^2.2.4",
+    "mermaid": "^11.16.0",
+    "pixi-filters": "^6.1.0",
+    "pixi.js": "^8.7.3",
+    "prismjs": "^1.29.0",
+    "svelte-i18n": "^3.6.0",
+    "tinycolor2": "^1.6.0"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^3.1.2",
+    "svelte": "^4.2.20",
+    "svelte-preprocess": "^6.0.3",
+    "typescript": "^5.8.3",
+    "vite": "^5.4.19"
+  },
+  "peerDependencies": {
+    "svelte": "^4.0.0"
+  }
+}

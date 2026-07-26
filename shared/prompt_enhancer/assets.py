@@ -46,6 +46,8 @@ QWEN35_VARIANT_SPECS = {
         "text_required_files": list(QWEN35_ABLITERATED_TEXT_REQUIRED_FILES),
         "text_int8_filename": QWEN35_TEXT_INT8_FILENAME,
         "text_int8_tie_word_embeddings": QWEN35_9B_ABLITERATED_TEXT_INT8_VERSION == 2,
+        "text_int8_log_ssm_a": QWEN35_9B_ABLITERATED_TEXT_INT8_VERSION == 2,
+        "text_int8_log_ssm_a_filenames": [QWEN35_TEXT_INT8_FILENAME_V2],
         "gguf_repo": QWEN35_ABLITERATED_REPO,
         "text_gguf_filename": QWEN35_TEXT_GGUF_FILENAME,
         "vision_filename": QWEN35_VISION_FILENAME,

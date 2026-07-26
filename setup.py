@@ -943,9 +943,9 @@ def create_wgp_config(profile_key, config_data):
             attn_mode = "sage"
 
     compile_mode = ""
-    triton_key = prof_settings.get('triton')
-    if triton_key and triton_key != "none":
-        compile_mode = "transformer"
+    # triton_key = prof_settings.get('triton')
+    # if triton_key and triton_key != "none":
+    #     compile_mode = "transformer"
 
     config_out = {
         "attention_mode": attn_mode,

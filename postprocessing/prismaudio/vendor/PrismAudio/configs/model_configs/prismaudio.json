@@ -1,0 +1,141 @@
+{
+    "model_type": "diffusion_cond",
+    "sample_size": 397312,
+    "sample_rate": 44100,
+    "audio_channels": 2,
+    "model": {
+        "pretransform": {
+            "type": "autoencoder",
+            "iterate_batch": true,
+            "config": {
+                "encoder": {
+                    "type": "oobleck",
+                    "config": {
+                        "in_channels": 2,
+                        "channels": 128,
+                        "c_mults": [1, 2, 4, 8, 16],
+                        "strides": [2, 4, 4, 8, 8],
+                        "latent_dim": 128,
+                        "use_snake": true
+                    }
+                },
+                "decoder": {
+                    "type": "oobleck",
+                    "config": {
+                        "out_channels": 2,
+                        "channels": 128,
+                        "c_mults": [1, 2, 4, 8, 16],
+                        "strides": [2, 4, 4, 8, 8],
+                        "latent_dim": 64,
+                        "use_snake": true,
+                        "final_tanh": false
+                    }
+                },
+                "bottleneck": {
+                    "type": "vae"
+                },
+                "latent_dim": 64,
+                "downsampling_ratio": 2048,
+                "io_channels": 2
+            }
+        },
+        "conditioning": {
+            "configs": [
+                {
+                    "id": "video_features",
+                    "type": "cond_mlp",
+                    "config": {
+                        "dim": 1024,
+                        "output_dim": 1024
+                    }
+                },
+                {
+                    "id": "text_features",
+                    "type": "cond_mlp",
+                    "config": {
+                        "dim": 1024,
+                        "output_dim": 1024
+                    }
+                },
+                {
+                    "id": "sync_features",
+                    "type": "sync_mlp",
+                    "config": {
+                        "dim": 768,
+                        "output_dim": 1024
+                    }
+                }
+            ],
+            "cond_dim": 768
+        },
+        "diffusion": {
+            "cross_attention_cond_ids": ["video_features","text_features"],
+            "add_cond_ids": ["video_features"],
+            "sync_cond_ids": ["sync_features"],
+            "type": "dit",
+            "diffusion_objective": "rectified_flow",
+            "config": {
+                "io_channels": 64,
+                "embed_dim": 1024,
+                "depth": 24,
+                "num_heads": 16,
+                "cond_token_dim": 1024,
+                "add_token_dim": 1024,
+                "sync_token_dim": 1024,
+                "project_cond_tokens": false,
+                "transformer_type": "continuous_transformer",
+                "attn_kwargs":{
+                    "qk_norm": "rns"
+                },
+                "use_gated": true,
+                "use_sync_gated": true
+            }
+        },
+        "io_channels": 64
+    },
+    "training": {
+        "use_ema": true,
+        "log_loss_info": false,
+        "cfg_dropout_prob": 0.1,
+        "pre_encoded": true,
+        "timestep_sampler": "trunc_logit_normal",
+        "optimizer_configs": {
+            "diffusion": {
+                "optimizer": {
+                    "type": "AdamW",
+                    "config": {
+                        "lr": 1e-4,
+                        "betas": [0.9, 0.999],
+                        "weight_decay": 1e-3
+                    }
+                },
+                "scheduler": {
+                    "type": "InverseLR",
+                    "config": {
+                        "inv_gamma": 100000,
+                        "power": 0.5,
+                        "warmup": 0.99
+                    }
+                }
+            }
+        },
+        "demo": {
+            "demo_every": 5000,
+            "demo_steps": 24,
+            "num_demos": 10,
+            "demo_cond": [
+                "dataset/videoprism/test/0Cu33yBwAPg_000060.npz",
+                "dataset/videoprism/test/bmKtI808DsU_000009.npz",
+                "dataset/videoprism/test/VC0c22cJTbM_000424.npz",
+                "dataset/videoprism/test/F3gsbUTdc2U_000090.npz",
+                "dataset/videoprism/test/WatvT8A8iug_000100.npz",
+                "dataset/videoprism/test/0nvBTp-q7tU_000112.npz",
+                "dataset/videoprism/test/3-PFuDkTM48_000080.npz",
+                "dataset/videoprism/test/luSAuu-BoPs_000232.npz",
+                "dataset/videoprism/test/__8UJxW0aOQ_000002.npz",
+                "dataset/videoprism/test/_0m_YMpQayA_000168.npz"
+            ],
+            "demo_cfg_scales": [5]
+        }
+    }
+}

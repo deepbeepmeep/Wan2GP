@@ -1,4 +1,5 @@
 import os
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -13,6 +14,29 @@ MODEL_STATUS_PREFIXES = {
     MODEL_FILE_STATUS_EXPECTED: "\U0001F7E6",
     MODEL_FILE_STATUS_PARTIAL: "\U0001F7E8",
 }
+MODEL_OUTPUT_FILTER_CONFIG_KEY = "model_output_filter"
+MODEL_OUTPUT_FILTER_ALL = "all"
+MODEL_OUTPUT_FILTER_VIDEO = "video"
+MODEL_OUTPUT_FILTER_IMAGE = "image"
+MODEL_OUTPUT_FILTER_AUDIO = "audio"
+MODEL_OUTPUT_FILTERS = {MODEL_OUTPUT_FILTER_ALL, MODEL_OUTPUT_FILTER_VIDEO, MODEL_OUTPUT_FILTER_IMAGE, MODEL_OUTPUT_FILTER_AUDIO}
+LAST_MODEL_PER_OUTPUT_FILTER_CONFIG_KEY = "last_model_per_output_filter"
+MODEL_SELECTOR_DEBUG = False
+_model_selector_debug_seq = 0
+
+
+def debug_model_selector_event(event, **values):
+    if not MODEL_SELECTOR_DEBUG:
+        return
+    global _model_selector_debug_seq
+    _model_selector_debug_seq += 1
+    fields = []
+    for key, value in values.items():
+        text = str(value).replace("\n", "\\n")
+        if len(text) > 160:
+            text = text[:157] + "..."
+        fields.append(f"{key}={text}")
+    print(f"[model-selector-debug #{_model_selector_debug_seq:04d} {time.time():.3f}] {event}: {' '.join(fields)}", flush=True)
 
 
 @dataclass
@@ -31,11 +55,13 @@ class DropdownDeps:
     get_model_filename: callable
     get_local_model_filename: callable
     get_lora_dir: callable
+    get_lora_local_path: callable
     get_parent_model_type: callable
     get_base_model_type: callable
     get_model_family: callable
     get_model_name: callable
     get_transformer_dtype: callable
+    list_model_defs: callable = None
 
 
 def compact_name(family_name, model_name):
@@ -86,6 +112,145 @@ def get_dropdown_model_types(deps):
     if deps.transformer_type not in dropdown_types:
         dropdown_types.append(deps.transformer_type)
     return list(dict.fromkeys(dropdown_types))
+
+
+def normalize_model_output_filter(model_filter):
+    model_filter = str(model_filter or MODEL_OUTPUT_FILTER_ALL).strip().casefold()
+    return model_filter if model_filter in MODEL_OUTPUT_FILTERS else MODEL_OUTPUT_FILTER_ALL
+
+
+def get_model_output_filter(deps=None, state=None):
+    if isinstance(state, dict) and MODEL_OUTPUT_FILTER_CONFIG_KEY in state:
+        return normalize_model_output_filter(state[MODEL_OUTPUT_FILTER_CONFIG_KEY])
+    if deps is not None:
+        return normalize_model_output_filter(deps.server_config.get(MODEL_OUTPUT_FILTER_CONFIG_KEY, MODEL_OUTPUT_FILTER_ALL))
+    return MODEL_OUTPUT_FILTER_ALL
+
+
+def store_model_output_filter(server_config, state, model_type=None):
+    selected_filter = get_model_output_filter(state=state)
+    server_config[MODEL_OUTPUT_FILTER_CONFIG_KEY] = selected_filter
+    if model_type is None or selected_filter == MODEL_OUTPUT_FILTER_ALL:
+        return
+    last_model_per_output_filter = server_config.get(LAST_MODEL_PER_OUTPUT_FILTER_CONFIG_KEY, {})
+    last_model_per_output_filter[selected_filter] = model_type
+    server_config[LAST_MODEL_PER_OUTPUT_FILTER_CONFIG_KEY] = last_model_per_output_filter
+    if isinstance(state, dict):
+        state[LAST_MODEL_PER_OUTPUT_FILTER_CONFIG_KEY] = last_model_per_output_filter
+
+
+def _record_main_outputs(record):
+    outputs = record.get("metadata", {}).get("main_output", [])
+    if isinstance(outputs, str):
+        return [outputs]
+    return list(outputs or [])
+
+
+def _get_model_defs_by_type(deps, dropdown_types):
+    if deps.list_model_defs is not None:
+        return {record["model_type"]: record for record in deps.list_model_defs(model_type=dropdown_types)}
+    records = {}
+    for model_type in dropdown_types:
+        model_def = deps.get_model_def(model_type)
+        if model_def is not None:
+            records[model_type] = model_def
+    return records
+
+
+def _get_model_types_for_output_filter(deps, model_filter, dropdown_types=None):
+    model_filter = normalize_model_output_filter(model_filter)
+    if model_filter == MODEL_OUTPUT_FILTER_ALL:
+        return None
+    dropdown_types = get_dropdown_model_types(deps) if dropdown_types is None else dropdown_types
+    records_by_type = _get_model_defs_by_type(deps, dropdown_types)
+    family_model_types = defaultdict(list)
+    for model_type in dropdown_types:
+        if model_type in records_by_type:
+            family_model_types[deps.get_model_family(model_type, for_ui=True)].append(model_type)
+    allowed_families = set()
+    for family, model_types in family_model_types.items():
+        family_outputs = [_record_main_outputs(records_by_type[model_type]) for model_type in model_types]
+        if model_filter == MODEL_OUTPUT_FILTER_VIDEO:
+            if any(MODEL_OUTPUT_FILTER_VIDEO in outputs for outputs in family_outputs):
+                allowed_families.add(family)
+        elif all(outputs == [model_filter] for outputs in family_outputs):
+            allowed_families.add(family)
+    return {model_type for model_type in dropdown_types if deps.get_model_family(model_type, for_ui=True) in allowed_families}
+
+
+def model_type_matches_output_filter(deps, model_type, model_filter):
+    allowed_model_types = _get_model_types_for_output_filter(deps, model_filter)
+    return allowed_model_types is None or model_type in allowed_model_types
+
+
+def get_filtered_dropdown_model_types(deps, model_filter=None, dropdown_types=None):
+    dropdown_types = get_dropdown_model_types(deps) if dropdown_types is None else list(dict.fromkeys(dropdown_types))
+    allowed_model_types = _get_model_types_for_output_filter(deps, get_model_output_filter(deps) if model_filter is None else model_filter, dropdown_types)
+    if allowed_model_types is None:
+        return dropdown_types
+    return [model_type for model_type in dropdown_types if model_type in allowed_model_types]
+
+
+def _main_outputs_for_model_type(deps, model_type):
+    record = _get_model_defs_by_type(deps, [model_type]).get(model_type, {})
+    return _record_main_outputs(record)
+
+
+def _model_output_filter_from_outputs(outputs):
+    if MODEL_OUTPUT_FILTER_VIDEO in outputs:
+        return MODEL_OUTPUT_FILTER_VIDEO
+    if outputs == [MODEL_OUTPUT_FILTER_AUDIO]:
+        return MODEL_OUTPUT_FILTER_AUDIO
+    if MODEL_OUTPUT_FILTER_IMAGE in outputs:
+        return MODEL_OUTPUT_FILTER_IMAGE
+    if MODEL_OUTPUT_FILTER_AUDIO in outputs:
+        return MODEL_OUTPUT_FILTER_AUDIO
+    return MODEL_OUTPUT_FILTER_VIDEO
+
+
+def get_model_output_filter_for_model_type(deps, model_type):
+    return _model_output_filter_from_outputs(_main_outputs_for_model_type(deps, model_type))
+
+
+def reconcile_model_output_filter_for_model_type(deps, state, model_type):
+    current_filter = get_model_output_filter(deps, state)
+    if current_filter == MODEL_OUTPUT_FILTER_ALL or model_type_matches_output_filter(deps, model_type, current_filter):
+        return current_filter, False
+    selected_filter = get_model_output_filter_for_model_type(deps, model_type)
+    if isinstance(state, dict):
+        state[MODEL_OUTPUT_FILTER_CONFIG_KEY] = selected_filter
+    return selected_filter, selected_filter != current_filter
+
+
+def _first_model_type_for_filter(deps, state, model_filter, dropdown_types):
+    previous_model_type = (state or {}).get(LAST_MODEL_PER_OUTPUT_FILTER_CONFIG_KEY, {}).get(model_filter, "")
+    if previous_model_type in dropdown_types:
+        return previous_model_type
+    family_ids = sorted(
+        {deps.get_model_family(model_type, for_ui=True) for model_type in dropdown_types if deps.get_model_family(model_type, for_ui=True) in deps.families_infos},
+        key=lambda family: deps.families_infos[family][0],
+    )
+    if len(family_ids) == 0:
+        return ""
+    family = family_ids[0]
+    family_name = deps.families_infos[family][1]
+    family_model_types = sorted(
+        [model_type for model_type in dropdown_types if deps.get_model_family(model_type, for_ui=True) == family],
+        key=lambda model_type: compact_name(family_name, deps.get_model_name(model_type)).casefold(),
+    )
+    last_model_per_family = (state or {}).get("last_model_per_family", {})
+    previous_model_type = last_model_per_family.get(family, "")
+    return previous_model_type if previous_model_type in family_model_types else family_model_types[0]
+
+
+def select_model_for_output_filter(deps, state, current_model_type, model_filter=None, dropdown_types=None):
+    model_filter = get_model_output_filter(deps, state) if model_filter is None else normalize_model_output_filter(model_filter)
+    dropdown_types = get_filtered_dropdown_model_types(deps, model_filter, dropdown_types)
+    if current_model_type in dropdown_types:
+        return current_model_type
+    if len(dropdown_types) == 0:
+        return current_model_type
+    return _first_model_type_for_filter(deps, state, model_filter, dropdown_types)
 
 
 def get_family_dropdown_model_types(deps, current_model_family, dropdown_types=None):
@@ -218,10 +383,7 @@ def get_expected_secondary_file_entries_for_status(deps, model_type):
     for url in model_loras:
         if not isinstance(url, str) or len(url) == 0:
             continue
-        basename = os.path.basename(url.split("|", 1)[0])
-        if len(basename) == 0:
-            continue
-        _append_expected_local_path_entry(entries, seen, os.path.join(lora_dir, basename))
+        _append_expected_local_path_entry(entries, seen, deps.get_lora_local_path(lora_dir, url))
 
     return entries
 
@@ -263,7 +425,7 @@ def has_secondary_model_files_for_status(deps, model_type, quantization, dtype_p
     for url in model_loras:
         if not isinstance(url, str) or len(url) == 0:
             continue
-        if not os.path.isfile(os.path.join(lora_dir, os.path.basename(url.split("|", 1)[0]))):
+        if not os.path.isfile(deps.get_lora_local_path(lora_dir, url)):
             return False
 
     module_files = _get_module_files_for_status(deps, model_type, quantization, dtype_policy)
@@ -491,7 +653,7 @@ def create_models_hierarchy(rows):
 
 
 def create_models_selector_hierarchy(deps, dropdown_types=None):
-    dropdown_types = get_dropdown_model_types(deps) if dropdown_types is None else list(dict.fromkeys(dropdown_types))
+    dropdown_types = get_filtered_dropdown_model_types(deps) if dropdown_types is None else list(dict.fromkeys(dropdown_types))
     family_model_types = defaultdict(list)
     for model_type in dropdown_types:
         family = deps.get_model_family(model_type, for_ui=True)
@@ -545,8 +707,10 @@ def get_sorted_dropdown(deps, dropdown_types, current_model_family, current_mode
     return sorted_familes, dropdown_types_list, dropdown_choices
 
 
-def generate_dropdown_model_list(deps, current_model_type):
-    dropdown_types = list(deps.transformer_types) if len(deps.transformer_types) > 0 else list(deps.displayed_model_types)
+def generate_dropdown_model_list(deps, current_model_type, state=None):
+    model_filter = get_model_output_filter(deps, state)
+    dropdown_types = get_dropdown_model_types(deps)
+    dropdown_types = get_filtered_dropdown_model_types(deps, model_filter, dropdown_types)
     if current_model_type not in dropdown_types:
         dropdown_types.append(current_model_type)
     current_model_family = deps.get_model_family(current_model_type, for_ui=True)
@@ -560,14 +724,14 @@ def generate_dropdown_model_list(deps, current_model_type):
         sorted_finetunes = decorate_finetune_dropdown_choices(deps, sorted_finetunes)
     sorted_finetunes = decorate_dropdown_choices_with_status(sorted_finetunes, direct_status_map)
 
-    dropdown_families = gr.Dropdown(choices=sorted_familes, value=current_model_family, show_label=False, scale=2 if deps.three_levels_hierarchy else 1, elem_id="family_list", min_width=50)
-    dropdown_models = gr.Dropdown(choices=sorted_models, value=deps.get_parent_model_type(current_model_type) if deps.three_levels_hierarchy else deps.get_base_model_type(current_model_type), show_label=False, scale=3 if len(sorted_finetunes) > 1 else 6, elem_id="model_base_types_list", visible=deps.three_levels_hierarchy)
-    dropdown_finetunes = gr.Dropdown(choices=sorted_finetunes, value=current_model_type, show_label=False, scale=3, visible=len(sorted_finetunes) > 1 or not deps.three_levels_hierarchy, elem_id="model_list")
+    dropdown_families = gr.Dropdown(choices=sorted_familes, value=current_model_family, show_label=False, scale=2 if deps.three_levels_hierarchy else 1, elem_id="family_list", min_width=50, interactive=True)
+    dropdown_models = gr.Dropdown(choices=sorted_models, value=deps.get_parent_model_type(current_model_type) if deps.three_levels_hierarchy else deps.get_base_model_type(current_model_type), show_label=False, scale=3 if len(sorted_finetunes) > 1 else 6, elem_id="model_base_types_list", visible=deps.three_levels_hierarchy, interactive=True)
+    dropdown_finetunes = gr.Dropdown(choices=sorted_finetunes, value=current_model_type, show_label=False, scale=3, visible=len(sorted_finetunes) > 1 or not deps.three_levels_hierarchy, elem_id="model_list", interactive=True)
     return dropdown_families, dropdown_models, dropdown_finetunes
 
 
 def change_model_family(deps, state, current_model_family):
-    dropdown_types = list(deps.transformer_types) if len(deps.transformer_types) > 0 else list(deps.displayed_model_types)
+    dropdown_types = get_filtered_dropdown_model_types(deps, get_model_output_filter(deps, state))
     current_family_name = deps.families_infos[current_model_family][1]
     models_families = [deps.get_model_family(t, for_ui=True) for t in dropdown_types]
     dropdown_choices = [(compact_name(current_family_name, deps.get_model_name(model_type)), model_type) for model_type, family in zip(dropdown_types, models_families) if family == current_model_family]
@@ -599,7 +763,7 @@ def change_model_family(deps, state, current_model_family):
 def change_model_base_types(deps, state, current_model_family, model_base_type_choice):
     if not deps.three_levels_hierarchy:
         return gr.update()
-    dropdown_types = list(deps.transformer_types) if len(deps.transformer_types) > 0 else list(deps.displayed_model_types)
+    dropdown_types = get_filtered_dropdown_model_types(deps, get_model_output_filter(deps, state))
     current_family_name = deps.families_infos[current_model_family][1]
     dropdown_choices = [(compact_name(current_family_name, deps.get_model_name(model_type)), model_type, model_base_type_choice) for model_type in dropdown_types if deps.get_parent_model_type(model_type) == model_base_type_choice and deps.get_model_family(model_type, for_ui=True) == current_model_family]
     dropdown_choices = sorted(dropdown_choices, key=lambda c: c[0])

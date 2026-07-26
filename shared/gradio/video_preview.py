@@ -36,6 +36,7 @@ _PREVIEW_MAX_WIDTH = 1280
 _PREVIEW_CRF = "24"
 _PREVIEW_PRESET = "veryfast"
 _PREVIEW_CACHE_VERSION = 6
+ENABLE_VIDEO_PREVIEW_PATCH = True
 _CODEC_DISPLAY_NAMES = {
     "av1": "AV1",
     "dnxhd": "DNxHD",
@@ -370,6 +371,8 @@ def _patched_create_app(*args, **kwargs):
 
 def install():
     global _installed, _original_video_format_video, _original_video_postprocess, _original_video_preprocess, _original_file_process_single_file, _original_upload_button_process_single_file, _original_create_app, _original_gallery_postprocess, _original_gallery_preprocess
+    if not ENABLE_VIDEO_PREVIEW_PATCH:
+        return
     if _installed:
         return
     mimetypes.add_type("video/quicktime", ".mov")

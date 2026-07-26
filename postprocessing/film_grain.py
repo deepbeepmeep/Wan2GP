@@ -1,6 +1,14 @@
 # Thanks to https://github.com/Lightricks/ComfyUI-LTXVideo/blob/master/film_grain.py
 import torch
 
+
+def is_film_grain_enabled(grain_intensity) -> bool:
+    try:
+        return float(grain_intensity) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def add_film_grain(images: torch.Tensor, grain_intensity: float = 0, saturation: float = 0.5):
     device = images.device
     input_was_uint8 = images.dtype == torch.uint8

@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "TTS ACE-Step v1.5 Turbo LM_1.7B 2B",
+        "name": "Music ACE-Step v1.5 Turbo LM_1.7B 2B",
         "architecture": "ace_step_v1_5",
         "description": "ACE-Step 1.5 Turbo (8 steps) with 1.7B LM, a diffusion-based music generation model with improved conditioning and timbre control. The LM 1.7B triggers a Medium Think Mode that will increase the Audio Output Quality and Lyrics Matching.",
         "URLs": "ace_step_v1_5",

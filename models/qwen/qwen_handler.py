@@ -23,6 +23,8 @@ class family_handler():
         extra_model_def["text_encoder_folder"] = text_encoder_folder
 
         extra_model_def["vae_upsampler"] = [1,2]
+        extra_model_def["vae_upsamplers"] = {"qwen_vae_pid(1.5)": [1, 2]}
+        extra_model_def["excluded_spatial_upsamplers"] = ["qwen_pid(1.5)"]
 
         if base_model_type in ["qwen_image_layered_20B"]:
             extra_model_def["batch_size_label"] = "Number of Layers"
@@ -33,6 +35,8 @@ class family_handler():
                 "visible": False,
             }
             extra_model_def["vae_upsampler"] = [1]
+            extra_model_def["vae_upsamplers"] = {}
+            extra_model_def["excluded_spatial_upsamplers"] = []
             extra_model_def["sample_solvers"] = [("Default", "default")]
 
         if base_model_type in ["qwen_image_20B"]:
@@ -40,6 +44,7 @@ class family_handler():
             extra_model_def["inpaint_video_prompt_type"] = "VA"
             extra_model_def["image_video_prompt_type"] = ""            
             extra_model_def["video_guide_outpainting"] = [2]
+            extra_model_def["outpainting_quantize_margins"]= 16
             extra_model_def["model_modes"] = {
                         "choices": [
                             ("LanPaint (2 steps): ~2x slower, easy task", 2),
@@ -116,7 +121,7 @@ class family_handler():
 
     @staticmethod
     def query_family_infos():
-        return {"qwen":(110, "Qwen")}
+        return {"qwen":(1110, "Qwen")}
 
     @staticmethod
     def register_lora_cli_args(parser, lora_root):

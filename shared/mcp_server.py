@@ -1,8 +1,11 @@
 """MCP server adapter for WanGP's in-process API."""
 
 import argparse
+import contextlib
 import copy
 import dataclasses
+import io
+import sys
 import threading
 import time
 import uuid
@@ -14,6 +17,30 @@ if TYPE_CHECKING:
 
 
 _MAX_STORED_EVENTS = 500
+_TRANSPORT_ALIASES = {
+    "stdio": "stdio",
+    "sse": "sse",
+    "streamable-http": "streamable-http",
+    "streamable_http": "streamable-http",
+}
+
+
+def _normalize_transport(value: str | None) -> str:
+    transport = str(value or "stdio").strip().lower()
+    try:
+        return _TRANSPORT_ALIASES[transport]
+    except KeyError as exc:
+        raise RuntimeError(f"Unsupported MCP transport: {value}. Use stdio, sse, or streamable-http.") from exc
+
+
+@contextlib.contextmanager
+def _stdio_safe_startup_output(transport: str):
+    if transport != "stdio":
+        yield
+        return
+    target = sys.stderr if sys.stderr is not None else io.StringIO()
+    with contextlib.redirect_stdout(target):
+        yield
 
 
 def _artifact_to_dict(artifact: Any) -> dict[str, Any]:
@@ -197,25 +224,36 @@ def build_server(args: argparse.Namespace):
 
     from shared.api import init
 
-    session = init(
-        root=args.root,
-        config_path=_config_file_from_arg(args.config),
-        output_dir=args.output_dir,
-        cli_args=tuple(args.cli_arg or ()),
-        console_output=bool(args.console_output),
-        console_isatty=False,
-    )
+    args.transport = _normalize_transport(getattr(args, "transport", "stdio"))
+    console_output = bool(args.console_output) and args.transport != "stdio"
+    with _stdio_safe_startup_output(args.transport):
+        session = init(
+            root=args.root,
+            config_path=_config_file_from_arg(args.config),
+            output_dir=args.output_dir,
+            cli_args=tuple(args.cli_arg or ()),
+            console_output=console_output,
+            console_isatty=False,
+        )
     jobs = _JobStore(session)
-    mcp = FastMCP("WanGP")
+    settings: dict[str, Any] = {}
+    if args.host is not None:
+        settings["host"] = args.host
+    if args.port is not None:
+        settings["port"] = args.port
+    if args.transport == "streamable-http":
+        settings["json_response"] = True
+        settings["stateless_http"] = True
+    mcp = FastMCP("WanGP", **settings)
 
     @mcp.tool()
-    def wangp_list_models(family: str = None, base_model_type: str = None, finetune: str = None, model_type: str = None, main_output: str = None, inputs: str = None) -> list[dict[str, Any]]:
+    def wangp_list_models(family: str | None = None, base_model_type: str | None = None, finetune: str | None = None, model_type: str | None = None, main_output: str | None = None, inputs: str | None = None, include_availability: bool = False) -> list[dict[str, Any]]:
         """List compact model metadata records, optionally filtered by metadata fields."""
 
-        return session.list_model_metadata(family=family, base_model_type=base_model_type, finetune=finetune, model_type=model_type, main_output=main_output, inputs=inputs)
+        return session.list_model_metadata(family=family, base_model_type=base_model_type, finetune=finetune, model_type=model_type, main_output=main_output, inputs=inputs, include_availability=include_availability)
 
     @mcp.tool()
-    def wangp_list_model_defs(family: str = None, base_model_type: str = None, finetune: str = None, model_type: str = None, main_output: str = None, inputs: str = None) -> list[dict[str, Any]]:
+    def wangp_list_model_defs(family: str | None = None, base_model_type: str | None = None, finetune: str | None = None, model_type: str | None = None, main_output: str | None = None, inputs: str | None = None) -> list[dict[str, Any]]:
         """List full WanGP model definitions, optionally filtered by metadata fields."""
 
         return session.list_model_defs(family=family, base_model_type=base_model_type, finetune=finetune, model_type=model_type, main_output=main_output, inputs=inputs)
@@ -227,10 +265,22 @@ def build_server(args: argparse.Namespace):
         return session.get_model_def(model_type)
 
     @mcp.tool()
-    def wangp_get_model_metadata(model_type: str) -> dict[str, Any] | None:
+    def wangp_get_model_metadata(model_type: str, include_availability: bool = False) -> dict[str, Any] | None:
         """Return one compact model metadata record."""
 
-        return session.get_model_metadata(model_type)
+        return session.get_model_metadata(model_type, include_availability=include_availability)
+
+    @mcp.tool()
+    def wangp_get_model_availability(model_type: str) -> dict[str, Any]:
+        """Return local file availability for one model using the same status as the UI model selector."""
+
+        return session.get_model_availability(model_type)
+
+    @mcp.tool()
+    def wangp_list_model_availability(family: str | None = None, base_model_type: str | None = None, finetune: str | None = None, model_type: str | None = None, main_output: str | None = None, inputs: str | None = None) -> list[dict[str, Any]]:
+        """List local file availability for models, optionally filtered by metadata fields."""
+
+        return session.list_model_availability(family=family, base_model_type=base_model_type, finetune=finetune, model_type=model_type, main_output=main_output, inputs=inputs)
 
     @mcp.tool()
     def wangp_get_default_settings(model_type: str) -> dict[str, Any]:
@@ -245,7 +295,7 @@ def build_server(args: argparse.Namespace):
         return session.get_model_schema(model_type)
 
     @mcp.tool()
-    def wangp_generate(source: dict, wait: bool = False, timeout_s: float = None, event_limit: int = 20) -> dict[str, Any]:
+    def wangp_generate(source: dict[str, Any] | list[dict[str, Any]], wait: bool = False, timeout_s: float | None = None, event_limit: int = 20) -> dict[str, Any]:
         """Start a WanGP generation from a settings dict, task dict, or task list."""
 
         if not isinstance(source, (dict, list)):
@@ -279,7 +329,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", default=None, help="Directory for generated media.")
     parser.add_argument("--cli-arg", action="append", default=[], help="Extra argument passed to wgp.py during runtime initialization. Repeat for multiple args.")
     parser.add_argument("--console-output", action="store_true", help="Mirror WanGP stdout/stderr to the MCP server console.")
-    parser.add_argument("--transport", default="stdio", help="FastMCP transport, usually stdio.")
+    parser.add_argument("--transport", default="stdio", help="MCP transport: stdio, sse, or streamable-http.")
     parser.add_argument("--host", default=None, help="Optional host for non-stdio transports.")
     parser.add_argument("--port", type=int, default=None, help="Optional port for non-stdio transports.")
     return parser.parse_args(argv)
@@ -295,20 +345,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run_server(server, args: argparse.Namespace) -> int:
-    run_kwargs: dict[str, Any] = {}
-    if args.transport != "stdio":
-        run_kwargs["transport"] = args.transport
-    if args.host is not None:
-        run_kwargs["host"] = args.host
-    if args.port is not None:
-        run_kwargs["port"] = args.port
-    try:
-        server.run(**run_kwargs)
-    except TypeError:
-        if run_kwargs:
-            server.run(transport=args.transport)
-        else:
-            server.run()
+    transport = _normalize_transport(getattr(args, "transport", "stdio"))
+    if transport == "stdio":
+        server.run()
+    else:
+        server.run(transport=transport)
     return 0
 
 

@@ -1,0 +1,7 @@
+{
+    "activated_loras": [
+		"https://huggingface.co/DeepBeepMeep/krea-2/resolve/main/loras/krea2bypass_balanced.safetensors"
+	],
+	"loras_multipliers": "1",
+	"help": "This Preset sets up a LoRA that improves strongly Prompt Adherence and reducing Censorship. You may change the LoRA multiplier to adjust the strength of the effect."
+}

@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "TTS Stable Audio 3 Small SFX",
+        "name": "Music Stable Audio 3 Small SFX",
         "architecture": "stable_audio3_small",
         "description": "Lightweight sound-effects model for impacts, whooshes, ambience, transitions, foley, UI sounds, and short designed audio up to 120 seconds. Better for concrete sonic events than musical composition.",
         "URLs": [

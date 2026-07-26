@@ -1,0 +1,18 @@
+{
+    "model": {
+        "name": "Krea 2 Turbo",
+        "architecture": "krea2_turbo",
+        "description": "Krea 2 is the most aesthetic open-source image model available according to its authors. Krea 2 Turbo is the distilled few-step Krea 2 checkpoint for fast text-to-image generation.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/krea-2/resolve/main/Krea2Turbo_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/krea-2/resolve/main/Krea2Turbo_quanto_bf16_int8.safetensors"
+        ]
+    },
+    "prompt": "a fox walking in fresh snow at golden hour, natural light, detailed fur",
+    "negative_prompt": "",
+    "batch_size": 1,
+    "denoising_strength": 1.0,
+    "masking_strength": 1.0,
+    "num_inference_steps": 8,
+    "guidance_scale": 0
+}

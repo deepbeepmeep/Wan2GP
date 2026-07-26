@@ -12,6 +12,7 @@ HEARTMULA_VERSION = "3B"
 
 def _get_heartmula_model_def():
     return {
+        "group": "music",
         "audio_only": True,
         "image_outputs": False,
         "sliding_window": False,
@@ -82,7 +83,7 @@ class family_handler:
 
     @staticmethod
     def query_family_infos():
-        return {"tts": (200, "TTS")}
+        return {"music": (2195, "Music"), "tts": (2200, "TTS")}
 
     @staticmethod
     def register_lora_cli_args(parser, lora_root):

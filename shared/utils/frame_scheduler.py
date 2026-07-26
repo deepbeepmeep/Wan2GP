@@ -153,10 +153,20 @@ def build_extension_window(prompt: str, *, window_size: int, overlap_frames: int
 
 
 def clone_loras_slists(slists):
-    return {key: value[:] if isinstance(value, list) else value for key, value in slists.items()} if slists is not None else None
+    if slists is None:
+        return None
+    cloned = {}
+    for key, value in slists.items():
+        if isinstance(value, dict):
+            cloned[key] = clone_loras_slists(value)
+        elif isinstance(value, list):
+            cloned[key] = value[:]
+        else:
+            cloned[key] = value
+    return cloned
 
 
-def prepare_loras_mult_windows(frame_scheduler: dict | None, activated_loras, num_inference_steps: int, guidance_phases: int, *, base_loras_slists=None, model_switch_phase: int = 1, store_slists: bool = False) -> str | None:
+def prepare_loras_mult_windows(frame_scheduler: dict | None, activated_loras, num_inference_steps: int, guidance_phases: int, *, base_loras_slists=None, model_switch_phase: int = 1, store_slists: bool = False, lora_multiplier_branches=None) -> str | None:
     if frame_scheduler is None or not frame_scheduler.get("active", False):
         return None
     from shared.utils.loras_mutipliers import parse_loras_multipliers
@@ -165,7 +175,7 @@ def prepare_loras_mult_windows(frame_scheduler: dict | None, activated_loras, nu
         if len(window_loras_multipliers) > 0:
             if len(activated_loras) == 0:
                 return f"Sliding window {idx} uses /loras_mult but no LoRA is selected."
-            _, window_loras_slists, errors = parse_loras_multipliers(window_loras_multipliers, len(activated_loras), num_inference_steps, nb_phases=guidance_phases, merge_slist=clone_loras_slists(base_loras_slists), model_switch_phase=model_switch_phase)
+            _, window_loras_slists, errors = parse_loras_multipliers(window_loras_multipliers, len(activated_loras), num_inference_steps, nb_phases=guidance_phases, merge_slist=clone_loras_slists(base_loras_slists), model_switch_phase=model_switch_phase, lora_multiplier_branches=lora_multiplier_branches)
             if len(errors) > 0:
                 return f"Error parsing /loras_mult for Sliding window {idx}: {errors}"
             if store_slists:

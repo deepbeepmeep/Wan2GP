@@ -679,9 +679,13 @@ def _encode_control_video_slots(model, video_path: str, latent_indices: list[int
         context_start_latent = max(0, int(latent_idx) - 2)
         start_frame = 0 if context_start_latent <= 0 else (context_start_latent - 1) * stride + 1
         end_frame = (int(latent_idx) + 1) * stride
-        frames = decode_video_frames_ffmpeg(video_path, start_frame, max(1, end_frame - start_frame + 1), target_fps=fps, bridge="torch")
+        frame_count = max(1, end_frame - start_frame + 1)
+        frame_count = int(math.ceil(max(0, frame_count - 1) / float(stride))) * stride + 1
+        frames = decode_video_frames_ffmpeg(video_path, start_frame, frame_count, target_fps=fps, bridge="torch")
         if int(frames.shape[0]) == 0:
             continue
+        if (int(frames.shape[0]) - 1) % stride != 0:
+            frames = frames[: ((int(frames.shape[0]) - 1) // stride) * stride + 1]
         local_idx = max(0, min(_pixel_to_latent_index(_latent_center_frame(latent_idx, stride) - start_frame, stride), max(0, int(math.ceil((int(frames.shape[0]) - 1) / stride)))))
         for phase, (phase_height, phase_width) in phase_sizes.items():
             video = load_video_conditioning(frames, height=int(phase_height), width=int(phase_width), frame_cap=None, dtype=model.dtype, device=model.device)

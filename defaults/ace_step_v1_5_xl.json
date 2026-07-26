@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "TTS ACE-Step v1.5 XL Turbo 4B",
+        "name": "Music ACE-Step v1.5 XL Turbo 4B",
         "architecture": "ace_step_v1_5_xl",
         "description": "ACE-Step 1.5 XL Turbo (8 steps) without the 5Hz LM stage. Uses the XL 4B DiT path for higher quality while reusing the ACE-Step 1.5 pipeline, VAE, and text conditioning stack.",
         "URLs": [

@@ -269,7 +269,7 @@ class model_factory:
             image_refs_relative_size = 100,
             denoising_strength = 1.,
             masking_strength = 1.,
-            pid_upsampler = None,
+            vae_upsampler = None,
             **bbargs
     ):
             if self._interrupt:
@@ -278,14 +278,15 @@ class model_factory:
             flux2 = self.is_flux2
             model_mode = bbargs.get("model_mode", None)
             set_progress_status = bbargs.get("set_progress_status", None)
-            def _pid_progress(_phase, current_step=None, total_steps=None):
+            def _vae_upsampler_progress(_phase, current_step=None, total_steps=None):
                 if callable(set_progress_status):
+                    progress_label = getattr(vae_upsampler, "progress_label", "VAE Spatial Upsampling")
                     if current_step is None or total_steps is None:
-                        set_progress_status("PiD Spatial Upsampling in progress")
+                        set_progress_status(f"{progress_label} in progress")
                     else:
                         total_steps = int(total_steps)
                         step_no = min(int(current_step) + 1, total_steps)
-                        set_progress_status(f"PiD Spatial Upsampling in progress ({step_no}/{total_steps})")
+                        set_progress_status(f"{progress_label} in progress ({step_no}/{total_steps})")
             model_mode_int = None
             if model_mode is not None:
                 try:
@@ -530,11 +531,11 @@ class model_factory:
             )
             if x==None: return None
             # decode latents to pixel space
-            pid_lq_latent = torch.cat(scatter_ids(x, inp["img_ids"])).squeeze(2) if flux2 and pid_upsampler is not None else None
+            vae_upsampler_lq_latent = torch.cat(scatter_ids(x, inp["img_ids"])).squeeze(2) if flux2 and vae_upsampler is not None else None
             x = unpack_latent(x)
             if self.vae is not None:
                 vae_latent = x
-                lq_latent = pid_lq_latent if pid_lq_latent is not None else vae_latent
+                lq_latent = vae_upsampler_lq_latent if vae_upsampler_lq_latent is not None else vae_latent
                 with torch.autocast(device_type=device, dtype=torch.bfloat16):
                     x = self.vae.decode(vae_latent)
 
@@ -550,17 +551,17 @@ class model_factory:
                     if img is not None:
                         x = img * (1 - img_msk_rebuilt) + x.to(img) * img_msk_rebuilt
 
-                if pid_upsampler is not None:
-                    _pid_progress(None)
+                if vae_upsampler is not None:
+                    _vae_upsampler_progress(None)
                     x_ref, lq_latent_ref = [x], [lq_latent]
                     x = lq_latent = None
-                    x = pid_upsampler.decode_inputs(
+                    x = vae_upsampler.decode_inputs(
                         x_ref,
                         lq_latent_ref,
                         prompt=input_prompt,
                         seed=seed,
                         abort_callback=lambda: self._interrupt,
-                        progress_callback=_pid_progress,
+                        progress_callback=_vae_upsampler_progress,
                     )
                     if x is None:
                         return None

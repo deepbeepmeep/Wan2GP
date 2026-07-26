@@ -1,0 +1,15 @@
+{
+    "num_inference_steps": 12,
+    "guidance_phases": 2,
+    "guidance_scale": 7.0,
+    "guidance2_scale": 3.0,
+    "switch_threshold": 302,
+    "sample_solver": "euler",
+    "flow_shift": 1.0,
+    "custom_settings": {
+        "ideogram_mu": 0.5,
+        "ideogram_std": 1.75
+    },
+    "settings_version": 2.64,
+    "help": "Official Ideogram 4 Turbo sampler preset equivalent: Euler sampler, neutral flow shift, 12 steps, 11 steps at CFG 7 then 1 polish step at CFG 3, mu 0.5, std 1.75."
+}

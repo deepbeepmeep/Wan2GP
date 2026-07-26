@@ -257,6 +257,10 @@ class ModelRunner:
         gc.collect()
 
     def _get_graph_capture_signature(self):
+        # Note: this only samples the first parameter, so it can miss a partial address
+        # reuse after an offloader (e.g. MMGP) evicts and reloads the model. Integrations
+        # that interleave other models must explicitly call reset_runtime_state() (engine
+        # release_runtime_allocations()) when their phase ends, like Chain-of-Zoom does.
         model_ptr = -1
         kv_ptr = -1
         try:
@@ -746,16 +750,20 @@ class ModelRunner:
                 )
                 return self.model.compute_logits(self.model(**model_kwargs))
             
-            graph = self.graphs[next(x for x in self.graph_bs if x >= bs)]
+            graph_bs = next((x for x in self.graph_bs if x >= bs), None)
+            if graph_bs is None:
+                raise RuntimeError(f"CUDA graph batch size {bs} exceeds captured graph sizes {self.graph_bs} (max_num_seqs={self.config.max_num_seqs})")
+            graph = self.graphs[graph_bs]
             graph_vars = self.graph_vars
+            graph_vars["input_ids"][:graph_bs].zero_()
+            graph_vars["positions"][:graph_bs].zero_()
+            graph_vars["slot_mapping"][:graph_bs].fill_(self.config.num_kvcache_blocks * self.block_size - 1)
+            graph_vars["context_lens"][:graph_bs].zero_()
+            graph_vars["block_tables"][:graph_bs].fill_(-1)
             graph_vars["input_ids"][:bs] = input_ids
             graph_vars["positions"][:bs] = positions
-            graph_vars["slot_mapping"].fill_(-1)
             graph_vars["slot_mapping"][:bs] = context.slot_mapping
-            graph_vars["context_lens"].zero_()
             graph_vars["context_lens"][:bs] = context.context_lens
-            # Clear block_tables first to ensure no stale data from previous runs
-            graph_vars["block_tables"][:bs].fill_(-1)
             graph_vars["block_tables"][:bs, :context.block_tables.size(1)] = context.block_tables
             graph.replay()
             return self.model.compute_logits(graph_vars["outputs"][:bs])
@@ -794,7 +802,7 @@ class ModelRunner:
             
             if self.rank == 0:
                 # Split logits: first half is conditional, second half is unconditional
-                logits_cond = logits_all[:num_cond]
+                logits_cond = logits_all[:num_cond].clone()
                 logits_uncond = logits_all[num_cond:]
                 
                 # Apply repetition penalty to conditional logits (before CFG)
@@ -881,6 +889,7 @@ class ModelRunner:
             reset_context()
             
             if self.rank == 0:
+                logits = logits.clone()
                 # Apply repetition penalty to logits
                 if repetition_penalties is not None:
                     for i, seq in enumerate(seqs):
@@ -904,8 +913,6 @@ class ModelRunner:
                                 logits[i] = torch.where(token_mask, penalty_scores, logits[i])
                 
                 # Apply logits processor for constrained decoding (if any sequence has one)
-                # Clone logits to avoid in-place update issues in inference mode
-                logits = logits.clone()
                 for i, seq in enumerate(seqs):
                     bias = self._get_logits_bias(seq, logits)
                     if bias is not None:
@@ -963,7 +970,8 @@ class ModelRunner:
                     self._graph_cache_order.remove(cache_key)
                 self._graph_cache_order.append(cache_key)
                 return
-                self._drop_graph_cache_entry(cache_key)
+            # signature mismatch: free the stale graphs before capturing new ones
+            self._drop_graph_cache_entry(cache_key)
         hf_config = config.hf_config
         max_bs = min(self.config.max_num_seqs, 512)
         max_num_blocks = (config.max_model_len + self.block_size - 1) // self.block_size
@@ -977,6 +985,9 @@ class ModelRunner:
         self.graph_bs = [bs for bs in base_graph_bs if bs <= max_bs]
         if max_bs > 8:
             self.graph_bs.extend(range(16, max_bs + 1, 16))
+        if max_bs not in self.graph_bs:
+            self.graph_bs.append(max_bs)
+            self.graph_bs.sort()
         if not self.graph_bs:
             self.graph_bs = [max_bs]
         self.graphs = {}

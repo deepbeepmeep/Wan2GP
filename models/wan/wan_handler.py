@@ -9,6 +9,7 @@ from PIL import Image
 from shared.utils.hf import build_hf_url
 from shared.utils import files_locator as fl
 from .bernini_prompt_infos import get_bernini_infos, get_bernini_prompt_infos
+from .vace_infos import VACE_INFOS
 from .kiwi.variant_config import get_kiwi_variant_model_def
 from .scail2 import (
     SCAIL2_ANIMATE_PREPROCESSING_POSE,
@@ -224,6 +225,8 @@ class family_handler():
         extra_model_def["vace_class"] = vace_class = test_vace(base_model_type)
         extra_model_def["bernini_class"] = bernini = test_bernini(base_model_type)
         extra_model_def["scail2"] = scail2 = test_scail2(base_model_type)
+        if vace_class:
+            extra_model_def["infos"] = model_def.get("infos", VACE_INFOS)
         if bernini:
             extra_model_def["t2v_class"] = t2v = False
             extra_model_def["prompt_infos"] = get_bernini_prompt_infos(base_model_type)
@@ -286,6 +289,9 @@ class family_handler():
 
         if  (test_class_t2v(base_model_type) or vace_class or base_model_type in ["chrono_edit"]) and not test_alpha(base_model_type):
             extra_model_def["vae_upsampler"] = [1,2]
+            if test_class_t2v(base_model_type) and not wan_5B:
+                extra_model_def["vae_upsamplers"] = {"qwen_vae_pid(1.5)": [1]}
+                extra_model_def["excluded_spatial_upsamplers"] = ["qwen_pid(1.5)"]
         extra_model_def["vae_block_size"] = 32 if test_wan_5B(base_model_type) or base_model_type in ["scail"] or scail2 else 16
 
         extra_model_def["profiles_dir"] = profiles_dir if isinstance(profiles_dir, list) else [profiles_dir]
@@ -328,6 +334,7 @@ class family_handler():
                             ("flowmatch causvid", "causvid"),
                             ("lcm + ltx", "lcm"), ]
         })
+        extra_model_def["sub_parallel_windows"] = scail2
 
         extra_model_def["self_refiner"] = True
 
@@ -526,7 +533,9 @@ class family_handler():
                 "scale": 3,
                 "show_label": True,
             }
-
+            if scail2:
+                extra_model_def["fake_start_image"] = True
+                extra_model_def["fit_into_canvas_image_refs"] = 0            
             extra_model_def["preprocess_all"] = preprocess_all_scail2 if scail2 else True
             extra_model_def["custom_preprocessor"] = "Preparing Scail2 Inputs" if scail2 else "Extracting 3D Pose (NLFPose)"
             extra_model_def["forced_guide_mask_inputs"] = True
@@ -568,16 +577,14 @@ class family_handler():
                 extra_model_def["image_ref_choices"] = {
                     "choices": [
                         ("None", ""),
-                        ("Reference Image", "I"),
+                        ("Reference Images", "I"),
                     ],
                     "default": "",
-                    "label": "Reference Image",
+                    "label": "Reference Images",
                     "letters_filter": "KI",
                     "visible": True,
                 }
                 extra_model_def["no_background_removal"] = True
-                extra_model_def["one_image_ref_only"] = True
-                extra_model_def["one_image_ref_only_with_background"] = True
                 extra_model_def["magic_mask_object_colors"] = [(0, 0, 255), (255, 0, 0), (0, 255, 0), (255, 0, 255), (0, 255, 255), (255, 255, 0)]
                 extra_model_def["video_mask_label"] = "Video Mask, each Colored Mask corresponds to a person to Animate"
                 extra_model_def["custom_preprocessor_raw_inputs"] = True

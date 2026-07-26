@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from postprocessing.flashvsr.sparse_backend_config import (
     SPARSE_BACKEND_AUTO,
+    SPARSE_BACKEND_CHOICES,
     SPARSE_BACKEND_SPARGE,
     SPARSE_BACKEND_TRITON_SPARSE,
     normalize_sparse_backend,
@@ -26,6 +27,11 @@ class FlashVSRBridge:
     UPSAMPLING_VALUE_PREFIX = "flashvsr"
     UPSAMPLING_TWO_PASS_VALUE_PREFIX = "flashvsr2pass"
     UPSAMPLING_RATIOS = (1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0)
+    MODE_CHOICES = [
+        ("FlashVSR v1.1 Tiny (Slightly Lower Quality, Faster VAE Decoding, Needs Less RAM)", MODE_TINY),
+        ("FlashVSR v1.1 Full (Best Quality, Slower VAE Decoding, Needs More RAM)", MODE_FULL),
+    ]
+    PERSISTENCE_CHOICES = [("Unload after use", PERSIST_UNLOAD), ("Persistent in RAM", PERSIST_RAM)]
 
     TRANSFORMER_FILENAME = "FlashVSR_v1.1_transformer_bf16.safetensors"
     LQ_PROJ_FILENAME = "FlashVSR_v1.1_lq_proj_bf16.safetensors"
@@ -55,40 +61,77 @@ class FlashVSRBridge:
     def normalize_backend(cls, value: Any) -> str:
         return normalize_sparse_backend(value)
 
+    @classmethod
+    def default_config(cls) -> dict[str, Any]:
+        return {"mode": cls.MODE_OFF, "persistence": cls.PERSIST_UNLOAD, "backend": cls.BACKEND_AUTO, "topk_ratio": cls.TOPK_RATIO_DEFAULT}
+
+    @classmethod
+    def legacy_config_keys(cls) -> tuple[str, ...]:
+        return ("flashvsr_mode", "flashvsr_persistence", "flashvsr_backend", "flashvsr_topk_ratio")
+
+    @classmethod
+    def legacy_config(cls, config: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "mode": config.get("flashvsr_mode", cls.MODE_OFF),
+            "persistence": config.get("flashvsr_persistence", cls.PERSIST_UNLOAD),
+            "backend": config.get("flashvsr_backend", cls.BACKEND_AUTO),
+            "topk_ratio": config.get("flashvsr_topk_ratio", cls.TOPK_RATIO_DEFAULT),
+        }
+
+    @classmethod
+    def normalize_config_section(cls, config: dict[str, Any]) -> dict[str, Any]:
+        normalized = cls.default_config()
+        normalized.update(config or {})
+        try:
+            normalized["mode"] = int(normalized.get("mode", cls.MODE_OFF))
+        except (TypeError, ValueError):
+            normalized["mode"] = cls.MODE_OFF
+        try:
+            normalized["persistence"] = int(normalized.get("persistence", cls.PERSIST_UNLOAD))
+        except (TypeError, ValueError):
+            normalized["persistence"] = cls.PERSIST_UNLOAD
+        if normalized["mode"] not in cls._VARIANTS and normalized["mode"] != cls.MODE_OFF:
+            normalized["mode"] = cls.MODE_OFF
+        if normalized["persistence"] not in (cls.PERSIST_UNLOAD, cls.PERSIST_RAM):
+            normalized["persistence"] = cls.PERSIST_UNLOAD
+        normalized["backend"] = cls.normalize_backend(normalized.get("backend", cls.BACKEND_AUTO))
+        normalized["topk_ratio"] = cls.normalize_topk_ratio(normalized.get("topk_ratio", cls.TOPK_RATIO_DEFAULT))
+        return normalized
+
+    @classmethod
+    def apply_pre_1_1_defaults(cls, config: dict[str, Any]) -> bool:
+        if config["mode"] == cls.MODE_OFF:
+            config["mode"] = cls.MODE_TINY
+            return True
+        return False
+
+    def config(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
+        from postprocessing import spatial_upsamplers as upsampler_api
+
+        return upsampler_api.read_config_section(self.server_config if config is None else config, self)
+
     def normalize_config(self, config: dict[str, Any] | None = None) -> tuple[int, int]:
+        from postprocessing import spatial_upsamplers as upsampler_api
+
         config = self.server_config if config is None else config
-        mode = config.get("flashvsr_mode", self.MODE_OFF)
-        persistence = config.get("flashvsr_persistence", self.PERSIST_UNLOAD)
-        try:
-            mode = int(mode)
-        except (TypeError, ValueError):
-            mode = self.MODE_OFF
-        try:
-            persistence = int(persistence)
-        except (TypeError, ValueError):
-            persistence = self.PERSIST_UNLOAD
-        if mode not in self._VARIANTS and mode != self.MODE_OFF:
-            mode = self.MODE_OFF
-        if persistence not in (self.PERSIST_UNLOAD, self.PERSIST_RAM):
-            persistence = self.PERSIST_UNLOAD
-        config["flashvsr_mode"] = mode
-        config["flashvsr_persistence"] = persistence
-        config["flashvsr_backend"] = self.normalize_backend(config.get("flashvsr_backend", self.BACKEND_AUTO))
-        config["flashvsr_topk_ratio"] = self.normalize_topk_ratio(config.get("flashvsr_topk_ratio", self.TOPK_RATIO_DEFAULT))
-        return mode, persistence
+        section = upsampler_api.write_config_section(config, self, self.config(config))
+        return section["mode"], section["persistence"]
 
     def settings(self, config: dict[str, Any] | None = None) -> tuple[bool, str | None, int]:
         mode, persistence = self.normalize_config(config)
         return mode != self.MODE_OFF, self._VARIANTS.get(mode), persistence
 
     def topk_ratio(self) -> float:
-        return self.normalize_topk_ratio(self.server_config.get("flashvsr_topk_ratio", self.TOPK_RATIO_DEFAULT))
+        return self.config()["topk_ratio"]
 
     def backend(self) -> str:
-        return self.normalize_backend(self.server_config.get("flashvsr_backend", self.BACKEND_AUTO))
+        return self.config()["backend"]
 
     def enabled(self) -> bool:
         return self.settings()[0]
+
+    def persistent_models(self) -> bool:
+        return self.settings()[2] == self.PERSIST_RAM
 
     @classmethod
     def format_ratio(cls, scale: float) -> str:
@@ -97,7 +140,7 @@ class FlashVSRBridge:
 
     @classmethod
     def format_ratio_label(cls, scale: float) -> str:
-        return f"{float(scale):.1f}"
+        return cls.format_ratio(scale)
 
     @classmethod
     def upsampling_value(cls, scale: float) -> str:
@@ -106,12 +149,6 @@ class FlashVSRBridge:
     @classmethod
     def upsampling_two_pass_value(cls, scale: float) -> str:
         return f"{cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX}{cls.format_ratio(scale)}"
-
-    @classmethod
-    def upsampling_choices(cls, include_name: bool = True, include_two_pass: bool = False) -> list[tuple[str, str]]:
-        prefix = "FlashVSR " if include_name else ""
-        choices = [(f"{prefix}x{cls.format_ratio_label(scale)}", cls.upsampling_value(scale)) for scale in cls.UPSAMPLING_RATIOS]
-        return choices + ([(f"{prefix}Two Pass x{cls.format_ratio_label(scale)}", cls.upsampling_two_pass_value(scale)) for scale in cls.UPSAMPLING_RATIOS] if include_two_pass else [])
 
     @classmethod
     def scale_for_upsampling(cls, spatial_upsampling) -> float | None:
@@ -130,12 +167,38 @@ class FlashVSRBridge:
         return str(spatial_upsampling or "").strip().lower().startswith(cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX)
 
     @classmethod
-    def query_edit_mode_def(cls, include_name: bool = True) -> dict[str, Any]:
+    def query_upsampler_def(cls) -> dict[str, Any]:
         return {
             "name": "FlashVSR",
-            "spatial_upsampling_choices": cls.upsampling_choices(include_name=include_name, include_two_pass=True),
+            "upsampler_types": ("postprocessing",),
+            "media": ("video", "image"),
+            "profile": "video",
+            "config_key": "flashvsr",
+            "pos": 20,
+            "method_pos": {cls.UPSAMPLING_VALUE_PREFIX: 20, cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX: 21},
+            "methods": [("FlashVSR", cls.UPSAMPLING_VALUE_PREFIX), ("FlashVSR Two Pass", cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX)],
+            "vae_methods": [],
+            "multipliers": {cls.UPSAMPLING_VALUE_PREFIX: cls.UPSAMPLING_RATIOS, cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX: cls.UPSAMPLING_RATIOS},
             "default_spatial_upsampling": cls.upsampling_value(2.0),
         }
+
+    @classmethod
+    def split_value(cls, value) -> tuple[str, float] | None:
+        scale = cls.scale_for_upsampling(value)
+        if scale is None:
+            return None
+        return (cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX if cls.is_two_pass_upsampling(value) else cls.UPSAMPLING_VALUE_PREFIX), scale
+
+    @classmethod
+    def build_value(cls, method, scale) -> str | None:
+        scale = float(scale or 2.0)
+        if scale not in cls.UPSAMPLING_RATIOS:
+            scale = 2.0
+        if method == cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX:
+            return cls.upsampling_two_pass_value(scale)
+        if method == cls.UPSAMPLING_VALUE_PREFIX:
+            return cls.upsampling_value(scale)
+        return None
 
     def is_upsampling(self, spatial_upsampling) -> bool:
         return self.scale_for_upsampling(spatial_upsampling) is not None
@@ -146,6 +209,28 @@ class FlashVSRBridge:
         if not self.enabled():
             return "FlashVSR Spatial Upsampling is disabled in Configuration > Extensions"
         return ""
+
+    def create_config_ui(self, gr, config: dict[str, Any], *, lock_config: bool = False):
+        with gr.Group():
+            with gr.Row():
+                mode = gr.Dropdown(choices=self.MODE_CHOICES, value=config["mode"], label="FlashVSR Spatial Upsampling (Needs Triton; SpargeAttn optional)", interactive=not lock_config)
+                persistence = gr.Dropdown(choices=self.PERSISTENCE_CHOICES, value=config["persistence"], label="FlashVSR Model Persistence", interactive=not lock_config)
+            with gr.Row():
+                backend = gr.Dropdown(choices=SPARSE_BACKEND_CHOICES, value=config["backend"], label="Backend", interactive=not lock_config)
+                topk_ratio = gr.Slider(0.0, self.TOPK_RATIO_MAX, value=config["topk_ratio"], step=0.05, label="FlashVSR Quality / Sparse Top-K Ratio (0 = Auto)", info="Higher keeps more sparse attention candidates and can improve quality at the cost of speed and memory.", interactive=not lock_config)
+        return [("mode", mode), ("persistence", persistence), ("backend", backend), ("topk_ratio", topk_ratio)]
+
+    def validate_config_section(self, config: dict[str, Any]):
+        if config["mode"] <= 0:
+            return ""
+        try:
+            from postprocessing.flashvsr.attention_backend import sparse_attention_requirement_message
+            return sparse_attention_requirement_message(config["backend"]) or ""
+        except Exception as exc:
+            return f"FlashVSR sparse attention dependency check failed: {type(exc).__name__}: {exc}"
+
+    def config_requires_release(self, old_config: dict[str, Any], new_config: dict[str, Any], changed_keys: set[str]) -> bool:
+        return old_config != new_config or bool({"profile", "video_profile", "vae_config"} & changed_keys)
 
     def query_download_def(self, enabled_only: bool = True) -> dict[str, Any] | None:
         if enabled_only and not self.enabled():
@@ -192,16 +277,24 @@ class FlashVSRBridge:
         process_files(**flashvsr_def)
         return True
 
-    def upscale(self, sample, spatial_upsampling, *, seed=0, continue_cache=None, return_continue_cache=False, vae_tile_size=None, process_files: Callable[..., Any], vae_config: int, init_pipe: Callable[..., int], profile, still_image=False, abort_callback=None, progress_callback=None):
+    def load_upsampler(self, spatial_upsampling, *, process_files: Callable[..., Any], init_pipe: Callable[..., int], profile, progress_callback=None, **kwargs):
         scale = self.scale_for_upsampling(spatial_upsampling)
         if scale is None:
             raise ValueError(f"Unknown FlashVSR upsampling mode: {spatial_upsampling}")
-        enabled, variant, persistence = self.settings()
+        enabled, variant, _ = self.settings()
         if not enabled:
             raise RuntimeError("FlashVSR spatial upsampling is disabled in Configuration > Extensions.")
         self.download(process_files)
         from postprocessing.flashvsr.attention_backend import set_sparse_backend
         set_sparse_backend(self.backend())
+        from postprocessing.flashvsr.runtime import load_models
+
+        load_models(self.paths(variant), variant=variant, init_pipe=init_pipe, profile=profile, progress_callback=progress_callback)
+
+    def upscale(self, sample, spatial_upsampling, *, vae_config: int, seed=0, continue_cache=None, return_continue_cache=False, still_image=False, abort_callback=None, progress_callback=None, **kwargs):
+        scale = self.scale_for_upsampling(spatial_upsampling)
+        if scale is None:
+            raise ValueError(f"Unknown FlashVSR upsampling mode: {spatial_upsampling}")
         from postprocessing.flashvsr.runtime import upscale_video
 
         output_height = int(sample.shape[-2] * scale)
@@ -210,17 +303,11 @@ class FlashVSRBridge:
         return upscale_video(
             sample,
             scale,
-            self.paths(variant),
-            variant=variant,
             seed=seed,
             continue_cache=continue_cache,
             return_continue_cache=return_continue_cache,
-            persistent_models=persistence == self.PERSIST_RAM,
             vae_tile_size=flashvsr_tile_size,
             topk_ratio=self.topk_ratio(),
-            init_pipe=init_pipe,
-            profile=profile,
-            attention_mode=self.server_config.get("attention_mode"),
             still_image=still_image,
             two_pass=self.is_two_pass_upsampling(spatial_upsampling),
             abort_callback=abort_callback,

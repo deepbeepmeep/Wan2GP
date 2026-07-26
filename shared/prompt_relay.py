@@ -132,7 +132,13 @@ class PromptRelayMaskBuilder:
             midpoint = (start + end) * 0.5
             window = (length * 0.5 - 2.0).clamp_min(0.0)
             distance = (query_frames - midpoint).abs()
-            cost = torch.relu(distance - window).square() / sigma_sq
+            distance = torch.relu(distance - window)
+            # Relay bounds are continuous, while attention is evaluated only at
+            # the query frames that survived latent/timestep compression. Anchor
+            # the discrete mask at its best available frame without rounding the
+            # bounds or biasing midpoint ties toward an earlier frame.
+            cost = distance.square() / sigma_sq
+            cost = cost - cost.amin(dim=1, keepdim=True)
             mask[:, :, start_key:end_key] = -cost.unsqueeze(-1)
 
         if key_valid.numel() < context_len:
@@ -177,6 +183,7 @@ def encode_prompt_relay(
     frame_rate: float,
     tokenizer: Any,
     visible_frame_offset: int = 0,
+    epsilon: float = 1e-3,
 ) -> PromptRelayConditioning | None:
     plan = parse_prompt_relay(prompt)
     if plan is None:
@@ -193,8 +200,8 @@ def encode_prompt_relay(
     return PromptRelayConditioning(
         video_context=video_context,
         audio_context=audio_context,
-        video_mask_builder=_build_mask_builder(plan, video_context, video_mask, token_ranges, num_frames, frame_rate, visible_frame_offset),
-        audio_mask_builder=None if audio_context is None else _build_mask_builder(plan, audio_context, audio_mask, token_ranges, num_frames, frame_rate, visible_frame_offset),
+        video_mask_builder=_build_mask_builder(plan, video_context, video_mask, token_ranges, num_frames, frame_rate, visible_frame_offset, epsilon),
+        audio_mask_builder=None if audio_context is None else _build_mask_builder(plan, audio_context, audio_mask, token_ranges, num_frames, frame_rate, visible_frame_offset, epsilon),
     )
 
 
@@ -206,6 +213,7 @@ def _build_mask_builder(
     num_frames: int,
     frame_rate: float,
     visible_frame_offset: int = 0,
+    epsilon: float = 1e-3,
 ) -> PromptRelayMaskBuilder | None:
     runtime_segments = []
     num_frames = max(int(num_frames), 1)
@@ -225,7 +233,7 @@ def _build_mask_builder(
         runtime_segments.append(_RuntimeSegment(start, end, start_key, end_key))
     if not any(segment.start > 0.0 or segment.end < 1.0 for segment in runtime_segments):
         return None
-    return PromptRelayMaskBuilder(_normalize_key_mask(mask, seq_len), runtime_segments, seq_len, visible_start_ratio=visible_start_ratio)
+    return PromptRelayMaskBuilder(_normalize_key_mask(mask, seq_len), runtime_segments, seq_len, visible_start_ratio=visible_start_ratio, epsilon=epsilon)
 
 
 def _parse_marker(marker: str) -> tuple[PromptRelayBound, PromptRelayBound | None] | None:

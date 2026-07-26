@@ -1,12 +1,15 @@
 import json
 import os
+from functools import lru_cache
+
 import torch
 from accelerate import init_empty_weights
 from diffusers import FlowMatchEulerDiscreteScheduler
 from diffusers.utils import logging
 from mmgp import offload
 from shared.utils import files_locator as fl
-from transformers import AutoTokenizer, Qwen3ForCausalLM
+from shared.utils.gguf_mapping import has_standard_gguf_tensor_names, remap_state_dict_triplet
+from transformers import AutoConfig, AutoTokenizer, Qwen3ForCausalLM
 
 from .autoencoder_kl import AutoencoderKL
 from .pipeline_z_image import ZImagePipeline
@@ -15,6 +18,79 @@ from .z_image_transformer2d import ZImageTransformer2DModel
 
 logger = logging.get_logger(__name__)
 
+_HF_TOKEN_EMBEDDING_KEY = "model.embed_tokens.weight"
+_HF_LM_HEAD_KEY = "lm_head.weight"
+
+
+def _qwen3_gguf_mapping_needed(state_dict) -> bool:
+    if not state_dict or _HF_TOKEN_EMBEDDING_KEY in state_dict:
+        return False
+    return has_standard_gguf_tensor_names(state_dict)
+
+
+@lru_cache(maxsize=4)
+def _qwen3_gguf_load_info(config_path: str):
+    config_path = os.path.abspath(config_path)
+    config = AutoConfig.from_pretrained(os.path.dirname(config_path), local_files_only=True)
+    with init_empty_weights():
+        model = Qwen3ForCausalLM(config)
+    from transformers.modeling_gguf_pytorch_utils import get_gguf_hf_weights_map
+
+    return get_gguf_hf_weights_map(model), bool(getattr(config, "tie_word_embeddings", False))
+
+
+def _build_qwen3_state_dict_preprocessor(config_path: str):
+    config_path = os.path.abspath(config_path)
+
+    def preprocess_state_dict(state_dict, quantization_map=None, tied_weights_map=None):
+        if not _qwen3_gguf_mapping_needed(state_dict):
+            return state_dict, quantization_map, tied_weights_map
+
+        name_map, tie_word_embeddings = _qwen3_gguf_load_info(config_path)
+        mapped = remap_state_dict_triplet(
+            state_dict,
+            quantization_map,
+            tied_weights_map,
+            name_map,
+            keep_unmapped=False,
+        )
+        mapped_state_dict, mapped_quantization_map, mapped_tied_weights_map = mapped
+        if _HF_TOKEN_EMBEDDING_KEY not in mapped_state_dict:
+            return state_dict, quantization_map, tied_weights_map
+
+        if tie_word_embeddings and _HF_LM_HEAD_KEY not in mapped_state_dict:
+            if mapped_tied_weights_map is None:
+                mapped_tied_weights_map = {}
+            tied_names = mapped_tied_weights_map.setdefault(_HF_TOKEN_EMBEDDING_KEY, [])
+            if _HF_LM_HEAD_KEY not in tied_names:
+                tied_names.append(_HF_LM_HEAD_KEY)
+
+        return mapped_state_dict, mapped_quantization_map, mapped_tied_weights_map
+
+    return preprocess_state_dict
+
+def _fix_qwen_fp8_sd(sd):
+    # Find the actual key for embed tokens in the VL checkpoint
+    embed_key = next((k for k in sd.keys() if "embed_tokens.weight" in k), None)
+    
+    if embed_key is not None:
+        # 1. Provide it at the root (standard behavior)
+        sd["lm_head.weight"] = sd[embed_key]
+        
+        # 2. Provide it at common Vision-Language nested levels
+        sd["language_model.lm_head.weight"] = sd[embed_key]
+        sd["model.language_model.lm_head.weight"] = sd[embed_key]
+        
+        # 3. Provide it dynamically based on however the checkpoint prefixes the embed tokens
+        prefix_a = embed_key.replace("model.embed_tokens.weight", "")
+        prefix_b = embed_key.replace("embed_tokens.weight", "")
+        
+        if prefix_a:
+            sd[prefix_a + "lm_head.weight"] = sd[embed_key]
+        if prefix_b:
+            sd[prefix_b + "lm_head.weight"] = sd[embed_key]
+            
+    return sd
 
 def conv_state_dict(sd: dict) -> dict:
     if "x_embedder.weight" not in sd and "model.diffusion_model.x_embedder.weight" not in sd:
@@ -40,14 +116,6 @@ def conv_state_dict(sd: dict) -> dict:
         out_sd[new_key] = tensor
 
     return out_sd
-
-def fix_qwen_fp8_sd(sd):
-    # Qwen FP8 models drop lm_head.weight to save space; we restore the tied memory reference.
-    
-    if "lm_head.weight" not in sd and "model.embed_tokens.weight" in sd:
-        sd["lm_head.weight"] = sd["model.embed_tokens.weight"]
-        
-    return sd
     
 _ZIMAGE_FUSED_SPLIT_MAP = {
     "attention.to_qkv": {"mapped_modules": ("attention.to_q", "attention.to_k", "attention.to_v")},
@@ -134,23 +202,32 @@ class model_factory:
         # text_encoder = Qwen3ForCausalLM.from_pretrained(os.path.dirname(text_encoder_filename), trust_remote_code=True)
         # text_encoder.to(torch.bfloat16)
         # offload.save_model(text_encoder, "c:/temp/qwnen3_bf16_.safetensors")
-        
-        # text_encoder = offload.fast_load_transformers_model( text_encoder_filename, writable_tensors=True, modelClass=Qwen3ForCausalLM,)
-        
+
+        text_encoder_folder = model_def.get("text_encoder_folder")
+        if text_encoder_folder:
+            text_encoder_path = fl.locate_folder(text_encoder_folder)
+        else:
+            text_encoder_path = os.path.dirname(text_encoder_filename)
+        text_encoder_config = os.path.join(text_encoder_path, "config.json")
+
+        qwen3_preprocessor = _build_qwen3_state_dict_preprocessor(text_encoder_config)
+
+        def unified_preprocessor(sd, qm=None, twm=None):
+            if qwen3_preprocessor is not None:
+                sd, qm, twm = qwen3_preprocessor(sd, qm, twm)
+            sd = _fix_qwen_fp8_sd(sd)
+            return sd, qm, twm
+
         text_encoder = offload.fast_load_transformers_model(
-            text_encoder_filename, 
-            writable_tensors=True, 
+            text_encoder_filename,
+            writable_tensors=True,
             modelClass=Qwen3ForCausalLM,
-            preprocess_sd=fix_qwen_fp8_sd
+            defaultConfigPath=text_encoder_config,
+            preprocess_sd=unified_preprocessor,
         )
 
         # Tokenizer
-        text_encoder_folder = model_def.get("text_encoder_folder")
-        if text_encoder_folder:
-            tokenizer_path = os.path.dirname(fl.locate_file(os.path.join(text_encoder_folder, "tokenizer_config.json")))
-        else:
-            tokenizer_path = os.path.dirname(text_encoder_filename)
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(text_encoder_path, trust_remote_code=True)
 
         # VAE
         vae_filename = fl.locate_file("ZImageTurbo_VAE_bf16.safetensors")
@@ -203,7 +280,7 @@ class model_factory:
         NAG_tau: float = 3.5,
         NAG_alpha: float = 0.5,
         loras_slists=None,
-        pid_upsampler=None,
+        vae_upsampler=None,
         set_progress_status=None,
         **kwargs,
     ):
@@ -233,14 +310,15 @@ class model_factory:
         if self.model_def.get("guidance_max_phases", 0) < 1:
             guide_scale = 0
 
-        def _pid_progress(_phase, current_step=None, total_steps=None):
+        def _vae_upsampler_progress(_phase, current_step=None, total_steps=None):
             if callable(set_progress_status):
+                progress_label = getattr(vae_upsampler, "progress_label", "VAE Spatial Upsampling")
                 if current_step is None or total_steps is None:
-                    set_progress_status("PiD Spatial Upsampling in progress")
+                    set_progress_status(f"{progress_label} in progress")
                 else:
                     total_steps = int(total_steps)
                     step_no = min(int(current_step) + 1, total_steps)
-                    set_progress_status(f"PiD Spatial Upsampling in progress ({step_no}/{total_steps})")
+                    set_progress_status(f"{progress_label} in progress ({step_no}/{total_steps})")
 
         images = self.pipeline(
             prompt=input_prompt,
@@ -268,9 +346,9 @@ class model_factory:
             NAG_tau=NAG_tau,
             NAG_alpha=NAG_alpha,
             loras_slists=loras_slists,
-            pid_upsampler=pid_upsampler,
-            pid_seed=seed,
-            pid_progress_callback=_pid_progress,
+            vae_upsampler=vae_upsampler,
+            vae_upsampler_seed=seed,
+            vae_upsampler_progress_callback=_vae_upsampler_progress,
         )
 
         if images is None:

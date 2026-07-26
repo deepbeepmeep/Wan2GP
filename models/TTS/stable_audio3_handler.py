@@ -124,7 +124,7 @@ class family_handler:
 
     @staticmethod
     def query_family_infos():
-        return {"tts": (200, "TTS")}
+        return {"music": (2195, "Music"), "tts": (2200, "TTS")}
 
     @staticmethod
     def register_lora_cli_args(parser, lora_root):
@@ -141,6 +141,7 @@ class family_handler:
     def query_model_def(base_model_type, model_def):
         prompt_enhancer_instructions, prompt_enhancer_max_tokens, prompt_enhancer_button_label = get_stable_audio3_prompt_enhancer(_model_id(base_model_type, model_def))
         return {
+            "group": "music",
             "audio_only": True,
             "image_outputs": False,
             "sliding_window": False,

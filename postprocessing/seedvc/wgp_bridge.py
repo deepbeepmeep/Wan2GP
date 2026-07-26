@@ -15,8 +15,10 @@ SEEDVC_RESTORE_BACKGROUND_STEM = True
 
 def _release_runtime_objects(converter=None, offloadobj=None) -> None:
     import torch
+    from shared.utils import offload_registry
 
     if offloadobj is not None:
+        offload_registry.unregister_offloadobj("SeedVC", offloadobj)
         offloadobj.unload_all()
         offloadobj.release()
     del converter
@@ -55,6 +57,8 @@ def _get_runtime(persistent_models: bool, profile_no=4, verbose_level: int = 1, 
             profile_no = init_pipe(pipe, offload_kwargs, profile_no)
         offload_kwargs["pinnedMemory"] = False
         offloadobj = offload.profile(pipe, profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=torch.float16, verboseLevel=verbose_level, **offload_kwargs)
+        from shared.utils import offload_registry
+        offload_registry.register_offloadobj("SeedVC", offloadobj, release_models)
         if persistent_models:
             _persistent_converter = converter
             _persistent_offloadobj = offloadobj

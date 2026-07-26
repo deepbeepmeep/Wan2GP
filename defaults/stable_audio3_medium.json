@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "TTS Stable Audio 3 Medium",
+        "name": "Music Stable Audio 3 Medium",
         "architecture": "stable_audio3_medium",
         "description": "Higher-capacity general audio model for longer music, cinematic beds, evolving textures, and detailed sound design up to 380 seconds. Stronger than the Small variants for fidelity, long-range structure, and mixed music/SFX prompts. This Medimum version requires Flash Attention 2 to work.",
         "URLs": [

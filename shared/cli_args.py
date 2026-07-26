@@ -75,7 +75,7 @@ def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default
     add("--process", type=str, default="", help="Process a saved queue (.zip) or settings file (.json) without launching the web UI")
     add("--ask-deepy", action="store_true", help="Start an interactive Deepy console session without launching the web UI")
     add("--mcp", action="store_true", help="Start WanGP as an MCP server without launching the web UI")
-    add("--mcp-transport", type=str, default="stdio", help="MCP transport, usually stdio")
+    add("--mcp-transport", type=str, default="stdio", help="MCP transport: stdio, sse, or streamable-http")
     add("--mcp-host", type=str, default="", help="Optional MCP host for non-stdio transports")
     add("--mcp-port", type=int, default=None, help="Optional MCP port for non-stdio transports")
     add("--mcp-console-output", action="store_true", help="Mirror WanGP stdout/stderr while serving MCP requests")

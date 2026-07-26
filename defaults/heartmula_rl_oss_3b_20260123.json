@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "TTS HeartMuLa RL OSS (20260123) 3B",
+        "name": "Music HeartMuLa RL OSS (20260123) 3B",
         "architecture": "heartmula_oss_3b",
         "description": "HeartMuLa RL OSS 3B checkpoint (20260123) with updated codec support. This version should be better at following instructions thanks to a reinforced learning training.",
         "URLs": [

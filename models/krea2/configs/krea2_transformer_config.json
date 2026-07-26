@@ -1,0 +1,20 @@
+{
+  "_class_name": "Krea2Transformer2DModel",
+  "attention_head_dim": 128,
+  "axes_dims_rope": [32, 48, 48],
+  "in_channels": 64,
+  "intermediate_size": 16384,
+  "norm_eps": 1e-05,
+  "num_attention_heads": 48,
+  "num_key_value_heads": 12,
+  "num_layers": 28,
+  "num_layerwise_text_blocks": 2,
+  "num_refiner_text_blocks": 2,
+  "num_text_layers": 12,
+  "rope_theta": 1000.0,
+  "text_hidden_dim": 2560,
+  "text_intermediate_size": 6912,
+  "text_num_attention_heads": 20,
+  "text_num_key_value_heads": 20,
+  "timestep_embed_dim": 256
+}

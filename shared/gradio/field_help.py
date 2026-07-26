@@ -43,12 +43,19 @@ Spatial Upsampling increases the output resolution of the Image / Video by the S
 - Quality: strongest detail recovery since the matching latent is available.
 - Caveat: image-only and x4 only.
 
-### Flux / Flux2 PiD
+### Flux / Flux2 / Qwen PiD
 - Works: existing images in late postprocessing.
 - Speed: slightly slower since VAE-encodes first, then runs PiD.
 - Memory: high RAM/VRAM use; tiling reduces VRAM peaks for large targets.
 - Quality: strong detail recovery but some slight information may be loss due to VAE encoding
-- Caveat: image-only and x4 only.
+- Caveat: image-only and x4 only. Qwen PiD requires PiD v1.5.
+
+### Chain-of-Zoom
+- Works: images, generation and late postprocessing.
+- Speed: slow, each x2/x4 step runs a one step SD3 diffusion per tile plus a VLM prompt extraction per tile; x8/x16 chain several steps.
+- Memory: heavy downloads (SD3 Medium + Qwen2.5 VL 3B); MMGP swaps the models in VRAM so peaks stay moderate.
+- Quality: extreme magnification (up to x16) with text guided detail synthesis; invented details may diverge from the source at high zooms.
+- Caveat: image-only, supported factors x2 / x4 / x8 / x16.
 """,
     },
 }

@@ -209,6 +209,10 @@ def get_prompt_helper_css():
 .ideogram4-helper-list-row.selected {
     background: rgba(16, 86, 121, 0.12);
 }
+.ideogram4-helper-list-row.unboxed button {
+    border-style: dashed;
+    opacity: 0.78;
+}
 .ideogram4-helper-list-row button {
     width: 28px;
     height: 28px;
@@ -454,6 +458,7 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
             <div class="ideogram4-helper-details">
                 <div class="ideogram4-helper-selected">
                     <label>Selected type<select data-ideogram4-field="type"><option value="obj">obj</option><option value="text">text</option></select></label>
+                    <label>Selected bbox<input data-ideogram4-field="bbox" type="text" placeholder="y1, x1, y2, x2"></label>
                     <label>Selected description<textarea data-ideogram4-field="desc"></textarea></label>
                     <label>Selected palette<input data-ideogram4-field="element_palette" type="text" placeholder="#FFFFFF, #111111"></label>
                     <div class="ideogram4-helper-status" data-ideogram4-status></div>
@@ -493,7 +498,7 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
         const defaultTextDesc = "clear, legible typography contained within the bounding box";
         const fields = {};
         card.querySelectorAll("[data-ideogram4-field]").forEach((field) => fields[field.getAttribute("data-ideogram4-field")] = field);
-        const state = { doc: helper.defaultDoc(), elements: [], elementExtras: [], unboxedElements: [], promptComments: [], selected: -1, drawing: null, resizing: null, moving: null, splitting: null, syncing: false, ratio: 1, splitRatio: 0.64, newType: "obj", dirty: false, changedSinceOpen: false };
+        const state = { doc: helper.defaultDoc(), elements: [], elementExtras: [], promptComments: [], selected: -1, drawing: null, resizing: null, moving: null, splitting: null, syncing: false, ratio: 1, splitRatio: 0.64, newType: "obj", dirty: false, changedSinceOpen: false };
         const actionButtons = {};
         card.querySelectorAll("[data-ideogram4-action]").forEach((button) => actionButtons[button.getAttribute("data-ideogram4-action")] = button);
         const history = { undo: [], redo: [], clean: "", pending: false };
@@ -515,7 +520,6 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
                 values,
                 elements: helper.copy(state.elements),
                 elementExtras: helper.copy(state.elementExtras),
-                unboxedElements: helper.copy(state.unboxedElements),
                 extraRoot: helper.copy(state.extraRoot || {}),
                 extraStyle: helper.copy(state.extraStyle || {}),
                 extraComp: helper.copy(state.extraComp || {}),
@@ -580,7 +584,6 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
             });
             state.elements = helper.copy(snapshot.elements || []);
             state.elementExtras = helper.copy(snapshot.elementExtras || []);
-            state.unboxedElements = helper.copy(snapshot.unboxedElements || []);
             state.extraRoot = helper.copy(snapshot.extraRoot || {});
             state.extraStyle = helper.copy(snapshot.extraStyle || {});
             state.extraComp = helper.copy(snapshot.extraComp || {});
@@ -630,9 +633,28 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
                 helper.clamp(Math.max(rect.x1, rect.x2), 0, 1000)
             ];
         }
+        function normalizeBbox(value) {
+            if (!Array.isArray(value) || value.length !== 4) return null;
+            const raw = value.map((n) => Number(n));
+            if (!raw.every(Number.isFinite)) return null;
+            const bbox = raw.map((n) => helper.clamp(Math.round(n), 0, 1000));
+            return bbox[2] > bbox[0] && bbox[3] > bbox[1] ? bbox : null;
+        }
+        function hasBBox(element) {
+            return !!normalizeBbox(element?.bbox);
+        }
+        function bboxText(element) {
+            return hasBBox(element) ? element.bbox.join(", ") : "";
+        }
+        function parseBBoxText(value) {
+            const text = String(value || "").trim();
+            if (!text) return { ok: true, bbox: null };
+            const bbox = normalizeBbox(text.replace(/[\\[\\]]/g, "").split(/[,\\s]+/).filter(Boolean));
+            return bbox ? { ok: true, bbox } : { ok: false, error: "Selected bbox must contain four numbers as y1, x1, y2, x2." };
+        }
         function hitBox(x, y) {
             for (let i = state.elements.length - 1; i >= 0; i--) {
-                const bbox = state.elements[i].bbox || [];
+                const bbox = normalizeBbox(state.elements[i].bbox) || [];
                 if (bbox.length === 4 && x >= bbox[1] && x <= bbox[3] && y >= bbox[0] && y <= bbox[2]) return i;
             }
             return -1;
@@ -661,13 +683,14 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
         function hitResizeHandle(x, y) {
             const tolerance = resizeTolerance();
             const selected = state.elements[state.selected];
-            if (selected) {
+            if (hasBBox(selected)) {
                 const mode = resizeMode(selected.bbox, x, y, tolerance);
                 if (mode) return { index: state.selected, mode };
             }
             for (let i = state.elements.length - 1; i >= 0; i--) {
                 if (i === state.selected) continue;
-                const mode = resizeMode(state.elements[i].bbox || [], x, y, tolerance);
+                if (!hasBBox(state.elements[i])) continue;
+                const mode = resizeMode(state.elements[i].bbox, x, y, tolerance);
                 if (mode) return { index: i, mode };
             }
             return null;
@@ -683,7 +706,7 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
         }
         function updateResize(point) {
             const element = state.elements[state.resizing?.index];
-            if (!element) return;
+            if (!hasBBox(element)) return;
             const bbox = element.bbox.slice();
             const mode = state.resizing.mode;
             if (mode.includes("n")) bbox[0] = helper.clamp(Math.min(point.y, bbox[2] - 8), 0, 1000);
@@ -697,7 +720,7 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
         }
         function startMove(index, point) {
             const element = state.elements[index];
-            if (!element) return;
+            if (!hasBBox(element)) return;
             state.selected = -1;
             boxEditor.style.display = "none";
             state.moving = { index, startX: point.x, startY: point.y, bbox: element.bbox.slice(), moved: false };
@@ -706,7 +729,7 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
         function updateMove(point) {
             const move = state.moving;
             const element = state.elements[move?.index];
-            if (!element) return;
+            if (!hasBBox(element)) return;
             const dx = point.x - move.startX, dy = point.y - move.startY;
             if (!move.moved && Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
             move.moved = true;
@@ -786,7 +809,9 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
                 ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 1000); ctx.stroke();
                 ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(1000, i); ctx.stroke();
             }
-            state.elements.forEach((element, index) => drawBox(element.bbox, index === state.selected, isText(element) ? (element.text || "text") : (element.desc || "obj")));
+            state.elements.forEach((element, index) => {
+                if (hasBBox(element)) drawBox(element.bbox, index === state.selected, isText(element) ? (element.text || "text") : (element.desc || "obj"));
+            });
             if (state.drawing) drawBox(bboxFromRect(state.drawing), true, "new");
         }
         function resizeCanvas() {
@@ -836,7 +861,10 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
         function renderList() {
             list.innerHTML = state.elements.map((element, index) => {
                 const label = isText(element) ? (element.text || "text") : (element.desc || "obj");
-                return `<div class="ideogram4-helper-list-row ${index === state.selected ? "selected" : ""}" data-index="${index}"><button type="button" data-index="${index}" title="Select box ${index + 1}" aria-label="Select box ${index + 1}">${index + 1}</button><textarea data-index="${index}" placeholder="${isText(element) ? "text" : "description"}">${helper.escapeHtml(label)}</textarea></div>`;
+                const boxed = hasBBox(element);
+                const classes = ["ideogram4-helper-list-row", index === state.selected ? "selected" : "", boxed ? "" : "unboxed"].filter(Boolean).join(" ");
+                const title = boxed ? `Select box ${index + 1}` : `Select element ${index + 1}`;
+                return `<div class="${classes}" data-index="${index}"><button type="button" data-index="${index}" title="${title}" aria-label="${title}">${index + 1}</button><textarea data-index="${index}" placeholder="${isText(element) ? "text" : "description"}">${helper.escapeHtml(label)}</textarea></div>`;
             }).join("");
         }
         function updateListSelection() {
@@ -867,7 +895,7 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
         }
         function updateBoxEditor(focus) {
             const element = state.elements[state.selected];
-            if (!element || state.drawing || state.resizing || state.moving) {
+            if (!hasBBox(element) || state.drawing || state.resizing || state.moving) {
                 boxEditor.style.display = "none";
                 return;
             }
@@ -894,13 +922,15 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
             state.syncing = true;
             const element = state.elements[state.selected];
             const disabled = !element;
-            ["type", "desc", "element_palette"].forEach((name) => fields[name].disabled = disabled);
+            ["type", "bbox", "desc", "element_palette"].forEach((name) => fields[name].disabled = disabled);
             if (element) {
                 fields.type.value = typeValue(element.type);
+                fields.bbox.value = bboxText(element);
                 fields.desc.value = element.desc || "";
                 fields.element_palette.value = helper.paletteText(element.color_palette);
             } else {
                 fields.type.value = state.newType;
+                fields.bbox.value = "";
                 fields.desc.value = "";
                 fields.element_palette.value = "";
             }
@@ -915,8 +945,7 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
         }
         function normalizeElement(source) {
             const type = typeValue(source.type);
-            const bbox = Array.isArray(source.bbox) && source.bbox.length === 4 ? source.bbox.map((n) => helper.clamp(Math.round(Number(n) || 0), 0, 1000)) : [100, 100, 300, 500];
-            const out = { type, bbox, desc: stripTrailingLineBreaks(source.desc) };
+            const out = { type, bbox: normalizeBbox(source.bbox), desc: stripTrailingLineBreaks(source.desc) };
             if (type === "text") out.text = stripTrailingLineBreaks(source.text);
             const palette = helper.parsePalette(source.color_palette, 5);
             if (palette.length) out.color_palette = palette;
@@ -981,7 +1010,6 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
                     state.doc = helper.defaultDoc();
                     state.elements = [];
                     state.elementExtras = [];
-                    state.unboxedElements = [];
                     state.promptComments = parsedPrompt.comments;
                     state.selected = -1;
                     resetFields();
@@ -994,7 +1022,6 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
                     state.doc = helper.defaultDoc();
                     state.elements = [];
                     state.elementExtras = [];
-                    state.unboxedElements = [];
                     state.promptComments = parsedPrompt.comments;
                     state.selected = -1;
                     resetFields();
@@ -1013,13 +1040,10 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
             state.extraComp = helper.extractExtras(comp, COMP_KEYS);
             state.elements = [];
             state.elementExtras = [];
-            state.unboxedElements = [];
             sourceElements.forEach((element) => {
-                if (helper.isObject(element) && Array.isArray(element.bbox) && element.bbox.length === 4) {
+                if (helper.isObject(element)) {
                     state.elements.push(normalizeElement(element));
                     state.elementExtras.push(helper.extractExtras(element, ELEMENT_KEYS));
-                } else {
-                    state.unboxedElements.push(helper.copy(element));
                 }
             });
             fields.aspect_ratio.value = doc.aspect_ratio || "";
@@ -1035,15 +1059,14 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
             state.selected = state.elements.length ? 0 : -1;
             refresh();
             resetHistory();
-            if (state.unboxedElements.length) setStatus(`Preserved ${state.unboxedElements.length} unboxed element(s).`, true);
-            else if (fields.extras.value.trim()) setStatus("Custom JSON leftovers are editable below.");
+            if (fields.extras.value.trim()) setStatus("Custom JSON leftovers are editable below.");
             else if (promptNotes.length) setStatus(`Loaded JSON prompt (${promptNotes.join(", ")}).`);
         }
         function buildElement(source, extra) {
             const type = typeValue(source.type);
             const out = Object.assign({}, helper.isObject(extra) ? extra : {});
             out.type = type;
-            out.bbox = source.bbox;
+            if (hasBBox(source)) out.bbox = source.bbox;
             if (type === "text") out.text = stripTrailingLineBreaks(source.text);
             out.desc = stripTrailingLineBreaks(source.desc);
             const palette = helper.parsePalette(source.color_palette, 5);
@@ -1072,11 +1095,12 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
             if (Object.keys(style).length) doc.style_description = style;
             const comp = Object.assign({}, extras.compositional_deconstruction);
             comp.background = fields.background.value.trim();
-            comp.elements = state.elements.map((element, index) => buildElement(element, extras.elements[index])).concat(state.unboxedElements);
+            comp.elements = state.elements.map((element, index) => buildElement(element, extras.elements[index]));
             doc.compositional_deconstruction = comp;
             return doc;
         }
         function applyPrompt() {
+            if (!updateSelectedBbox()) return false;
             commitPendingHistory();
             const field = promptField();
             const doc = buildDoc();
@@ -1122,7 +1146,6 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
                 state.doc = helper.defaultDoc();
                 state.elements = [];
                 state.elementExtras = [];
-                state.unboxedElements = [];
                 state.extraRoot = {};
                 state.extraStyle = {};
                 state.extraComp = {};
@@ -1351,6 +1374,30 @@ window.wangpIdeogram4PromptHelper = window.wangpIdeogram4PromptHelper || {};
             markPendingHistory();
             refresh();
         }
+        function updateSelectedBbox() {
+            if (state.syncing || state.selected < 0) return true;
+            const parsed = parseBBoxText(fields.bbox.value);
+            if (!parsed.ok) {
+                setStatus(parsed.error, true);
+                return false;
+            }
+            state.elements[state.selected].bbox = parsed.bbox;
+            fields.bbox.value = parsed.bbox ? parsed.bbox.join(", ") : "";
+            markPendingHistory();
+            setStatus("");
+            refresh();
+            return true;
+        }
+        fields.bbox.addEventListener("input", () => {
+            markPendingHistory();
+            setStatus("");
+        });
+        fields.bbox.addEventListener("change", () => {
+            if (updateSelectedBbox()) commitPendingHistory();
+        });
+        fields.bbox.addEventListener("blur", () => {
+            if (updateSelectedBbox()) commitPendingHistory();
+        });
         ["type", "desc", "element_palette"].forEach((name) => {
             fields[name].addEventListener("input", updateSelectedProperties);
             fields[name].addEventListener("change", () => {

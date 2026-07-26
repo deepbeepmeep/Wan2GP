@@ -13,6 +13,8 @@ You convert a natural-language user idea into a structured JSON caption an image
 ```
 
 - Emit a SINGLE-LINE MINIFIED JSON object — no markdown fences, no commentary, no other top-level keys.
+- The JSON must parse with a strict JSON parser. Never echo `user_prompt:`, `#!PROMPT!:`, labels, markdown, or the original prompt outside the JSON object.
+- Never emit duplicate keys inside an object. If another subject, sign, label, or text string is needed, close the current element and add a new element object.
 - Preserve non-ASCII characters as-is (CJK, Cyrillic, Devanagari, Arabic, accented Latin). Never escape with `\uNNNN`, transliterate, or replace `café` with `cafe`.
 - Use SINGLE quotes for embedded text references in prose fields (`'Joe's Diner'`, not `\"Joe's Diner\"`). The `text` field of text elements is the exception — that field holds the user's verbatim characters, may use any characters, and follows QUOTED SPAN FIDELITY below.
 
@@ -44,6 +46,12 @@ Each element is one of:
 ```
 
 `bbox` is optional per-element (see BBOX section below).
+
+Schema guard:
+- `obj` elements use only `type`, optional `bbox`, `desc`, optional `color_palette`, in that order. `obj` never has `text`.
+- `text` elements use only `type`, optional `bbox`, `text`, `desc`, optional `color_palette`, in that order.
+- Each element has exactly one `type`, at most one `bbox`, exactly one `desc`, and no duplicate keys.
+- If an object carries readable lettering, make the object an `obj` and the lettering a separate `text` element; never attach `text` to an `obj`.
 
 ### SINGLE SUBJECT = SINGLE ELEMENT
 
@@ -290,6 +298,8 @@ If the user's idea calls for transparent background, transparent canvas, alpha c
 Do not paraphrase (no `clear backdrop`, `empty alpha`, `no background`, `PNG transparency`).
 
 In `high_level_description`, include the literal phrase `on a transparent background`.
+
+Before output, silently repair the JSON: exactly three top-level keys, no duplicate keys, every element matches either the `obj` or `text` schema, and no two separate subjects are fused into one element.
 
 [USER]
 TARGET IMAGE ASPECT RATIO: {{aspect_ratio}} (width:height).

@@ -409,9 +409,9 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         NAG_tau: float = 3.5,
         NAG_alpha: float = 0.5,
         loras_slists = None,
-        pid_upsampler = None,
-        pid_seed: int = 0,
-        pid_progress_callback = None,
+        vae_upsampler = None,
+        vae_upsampler_seed: int = 0,
+        vae_upsampler_progress_callback = None,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -982,18 +982,18 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
             latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
 
             image = self.vae.decode(latents, return_dict=False)[0]
-            if pid_upsampler is not None:
-                if pid_progress_callback is not None:
-                    pid_progress_callback("PiD")
+            if vae_upsampler is not None:
+                if vae_upsampler_progress_callback is not None:
+                    vae_upsampler_progress_callback("VAE")
                 image_ref, latents_ref = [image], [latents]
                 image = latents = None
-                image = pid_upsampler.decode_inputs(
+                image = vae_upsampler.decode_inputs(
                     image_ref,
                     latents_ref,
                     prompt=prompt,
-                    seed=pid_seed,
+                    seed=vae_upsampler_seed,
                     abort_callback=lambda: self._interrupt,
-                    progress_callback=pid_progress_callback,
+                    progress_callback=vae_upsampler_progress_callback,
                 )
                 if image is None:
                     return None

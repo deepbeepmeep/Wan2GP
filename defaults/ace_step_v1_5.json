@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "TTS ACE-Step v1.5 Turbo 2B",
+        "name": "Music ACE-Step v1.5 Turbo 2B",
         "architecture": "ace_step_v1_5",
         "description": "ACE-Step 1.5 Turbo (8 steps) without the 5Hz LM stage. Uses the DiT-only path for faster/leaner runs.",
         "URLs": [

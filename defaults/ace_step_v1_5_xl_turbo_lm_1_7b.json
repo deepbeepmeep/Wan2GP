@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "TTS ACE-Step v1.5 XL Turbo LM_1.7B 4B",
+        "name": "Music ACE-Step v1.5 XL Turbo LM_1.7B 4B",
         "architecture": "ace_step_v1_5_xl",
         "description": "ACE-Step 1.5 XL Turbo (8 steps) with 1.7B LM, pairing the 4B XL DiT with the default 5Hz LM for stronger lyric and structure control.",
         "URLs": "ace_step_v1_5_xl",

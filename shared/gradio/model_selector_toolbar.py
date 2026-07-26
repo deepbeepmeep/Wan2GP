@@ -188,7 +188,7 @@ def refresh_models_with_info(refresh_model_defs, refresh_model_dropdowns, state,
     return refresh_model_dropdowns(state)
 
 
-def unload_models_from_ram(state, *, server_config, any_GPU_process_running, release_deepy_vram, reset_prompt_enhancer, reset_prompt_enhancer_if_requested, release_flashvsr_vram, release_pid_vram, release_seedvc_vram, release_model):
+def unload_models_from_ram(state, *, server_config, any_GPU_process_running, release_deepy_vram, reset_prompt_enhancer, reset_prompt_enhancer_if_requested, release_extensions, release_model):
     with model_unload_guard():
         unload_targets = _unload_targets_text(server_config)
         if any_GPU_process_running(state, "configuration"):
@@ -199,17 +199,14 @@ def unload_models_from_ram(state, *, server_config, any_GPU_process_running, rel
         if "Prompt Enhancer" in unload_targets:
             reset_prompt_enhancer()
             reset_prompt_enhancer_if_requested()
-        if "FlashVSR" in unload_targets:
-            release_flashvsr_vram()
-        if "PiD" in unload_targets:
-            release_pid_vram()
-        if "SeedVC" in unload_targets:
-            release_seedvc_vram()
+        release_extensions()
         release_model()
     gr.Info(f"{unload_targets} unloaded from RAM.")
 
 
 def _unload_targets_text(server_config):
+    from shared.utils.offload_registry import registered_names
+
     targets = ["Models"]
     try:
         enhancer_enabled = int(server_config.get("enhancer_enabled", 0) or 0) > 0
@@ -217,12 +214,7 @@ def _unload_targets_text(server_config):
         enhancer_enabled = False
     if enhancer_enabled:
         targets.append("Prompt Enhancer")
-    if int(server_config.get("seedvc_mode", 0) or 0) > 0:
-        targets.append("SeedVC")
-    if int(server_config.get("flashvsr_mode", 0) or 0) > 0:
-        targets.append("FlashVSR")
-    if int(server_config.get("pid_persistence", 1) or 1) > 1:
-        targets.append("PiD")
+    targets.extend(registered_names())
     if deepy_available(server_config):
         targets.append("Deepy")
     if len(targets) == 1:
@@ -437,16 +429,6 @@ def get_css():
         border: 0 !important;
         box-shadow: none !important;
         padding: 0 !important;
-    }
-    .wangp-model-selector-tools::before {
-        content: "";
-        position: absolute;
-        left: 0;
-        right: 0;
-        top: calc(50% - 0.5px);
-        height: 1px;
-        background: #333;
-        opacity: 1;
     }
     .wangp-model-selector-tool-row {
         position: relative;

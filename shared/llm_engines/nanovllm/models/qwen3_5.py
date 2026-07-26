@@ -671,6 +671,7 @@ class Qwen3_5Block(nn.Module):
             self._gguf_interleave_ssm_ab = False
             self._gguf_v_head_reordered = False
             self._gguf_ssm_param_reordered = False
+            self._log_ssm_a = False
 
     def prepare_sequence_state(self, max_batch_size: int, device: torch.device, dtype: torch.dtype):
         if self.layer_type != "linear_attention":
@@ -941,6 +942,7 @@ class Qwen3_5Block(nn.Module):
             num_k_heads=self.num_k_heads,
             num_v_heads=self.num_v_heads,
         )
+        ssm_a = -torch.exp(ssm_a.float()) if self._log_ssm_a else ssm_a.float()
         ssm_dt = _maybe_reorder_gguf_ssm_param(
             self.ssm_dt,
             interleave_halves=self._gguf_interleave_ssm_ab,
@@ -948,7 +950,7 @@ class Qwen3_5Block(nn.Module):
             num_k_heads=self.num_k_heads,
             num_v_heads=self.num_v_heads,
         )
-        g = ssm_a.float() * F.softplus(a.float() + ssm_dt)
+        g = ssm_a * F.softplus(a.float() + ssm_dt)
         if self.num_v_heads // self.num_k_heads > 1:
             repeat_factor = self.num_v_heads // self.num_k_heads
             query = query.repeat_interleave(repeat_factor, dim=2)

@@ -84,6 +84,24 @@ def get_default_cfg_rate(mode: int | str | None = SEEDVC_MODE_SPEECH) -> float:
     return float(_MODE_DEFAULTS[normalize_mode(mode)]["cfg_rate"])
 
 
+def validate_seedvc_audio_request(postprocess_audio, replace_voice_sample, replace_voice_sample2=None, *, enabled: bool) -> str:
+    if not enabled:
+        return "SeedVC Voice Replacement is disabled in Configuration > Extensions"
+    if replace_voice_sample is None:
+        return "You must provide a SeedVC Voice Sample"
+    if postprocess_audio in ("seedvc2", "seedvc_two_speakers") and replace_voice_sample2 is None:
+        return "You must provide a second SeedVC Voice Sample"
+    return ""
+
+
+def validate_seedvc_remux_request(video_source, postprocess_audio, replace_voice_sample, replace_voice_sample2=None, *, enabled: bool) -> str:
+    error = validate_seedvc_audio_request(postprocess_audio, replace_voice_sample, replace_voice_sample2, enabled=enabled)
+    if error:
+        return error
+    from shared.utils.audio_video import extract_audio_tracks
+    return "" if extract_audio_tracks(video_source, query_only=True) > 0 else "The selected video has no audio track to replace"
+
+
 def query_required_files(mode: int | str | None = SEEDVC_MODE_SPEECH, root: str = SEEDVC_ROOT) -> list[str]:
     mode = normalize_mode(mode)
     if mode == SEEDVC_MODE_SINGING:

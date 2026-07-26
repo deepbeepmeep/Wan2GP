@@ -1,0 +1,14 @@
+{
+    "model": {
+        "name": "Krea 2 Turbo Ostris Edit",
+        "architecture": "krea2_turbo_ostris_edit",
+        "description": "Krea 2 Turbo with Ostris's reference-edit conditioning: Reference Images are described to the text encoder with 'Picture N' vision markers and their clean latents ride at the end of the sequence at t=0. On its own this mode does little - activate a Krea 2 edit LoRA trained with ai-toolkit's edit mode (such as Style Reference or Detail Enhancer, available as dedicated finetunes) to give it a function.",
+        "URLs": "krea2_turbo"
+    },
+    "prompt": "a woman walking her dog on a city street",
+    "negative_prompt": "",
+    "video_prompt_type": "I",
+    "batch_size": 1,
+    "num_inference_steps": 8,
+    "guidance_scale": 0
+}

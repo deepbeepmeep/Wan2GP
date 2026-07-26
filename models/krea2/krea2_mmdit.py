@@ -83,15 +83,20 @@ def attention(
         neg_k = rearrange(neg_k, "B H L D -> B L H D")
         neg_v = rearrange(neg_v, "B H L D -> B L H D")
         neg_mask = neg_mask[:, None, None, :]
-        x_pos = _attention_from_blh(q, k, v, mask=mask, scale=scale, gqa=gqa)
         img_start = txt_len
+        query_start = int(NAG["query_start"])
+        query_end = int(NAG["query_end"])
+        if not img_start <= query_start < query_end <= q.shape[1]:
+            raise ValueError(f"Krea 2 NAG target query range [{query_start}, {query_end}) is invalid for sequence length {q.shape[1]}.")
+        guidance_q = q[:, query_start:query_end].clone()
+        x_pos = _attention_from_blh(q, k, v, mask=mask, scale=scale, gqa=gqa)
         neg_full_mask = None if mask is None else torch.cat((neg_mask, mask[..., img_start:]), dim=-1)
         k_neg = torch.cat((neg_k, k[:, img_start:]), dim=1)
         v_neg = torch.cat((neg_v, v[:, img_start:]), dim=1)
-        x_guidance = _attention_from_blh(q[:, img_start:], k_neg, v_neg, mask=neg_full_mask, scale=scale, gqa=gqa)
+        x_guidance = _attention_from_blh(guidance_q, k_neg, v_neg, mask=neg_full_mask, scale=scale, gqa=gqa)
         q = k = v = neg_k = neg_v = k_neg = v_neg = neg_mask = neg_full_mask = None
 
-        x_pos_img = x_pos[:, img_start:]
+        x_pos_img = x_pos[:, query_start:query_end]
         nag_scale = float(NAG["scale"])
         nag_alpha = float(NAG["alpha"])
         nag_tau = float(NAG["tau"])
@@ -435,6 +440,67 @@ class SingleStreamBlock(nn.Module):
 
 
 class SingleStreamDiT(nn.Module):
+    def preprocess_loras(self, model_type, sd):
+        """Map common Diffusers/Kohya Krea2 LoRA names to this model."""
+        replacements = (
+            ("final_layer", "last"),
+            ("img_in", "first"),
+            ("time_embed.linear_1", "tmlp.0"),
+            ("time_embed.linear_2", "tmlp.2"),
+            ("time_mod_proj", "tproj.1"),
+            ("txt_in.linear_1", "txtmlp.1"),
+            ("txt_in.linear_2", "txtmlp.3"),
+            ("transformer_blocks", "blocks"),
+            ("text_fusion", "txtfusion"),
+            ("feed_forward.", "mlp."),
+            ("ffn.", "mlp."),
+            ("ff.", "mlp."),
+            ("to_out.0", "wo"),
+            ("to_out", "wo"),
+            ("to_gate", "gate"),
+            ("to_q", "wq"),
+            ("to_k", "wk"),
+            ("to_v", "wv"),
+        )
+
+        def map_key(key):
+            prefix = next((p for p in ("lora_unet_", "lora_te_") if key.startswith(p)), None)
+            if prefix:
+                path, dot, suffix = key[len(prefix):].partition(".")
+                if not dot:
+                    return key
+                for source, target in (
+                    ("final_layer", "last"),
+                    ("img_in", "first"),
+                    ("time_embed_linear_1", "tmlp_0"),
+                    ("time_embed_linear_2", "tmlp_2"),
+                    ("time_mod_proj", "tproj_1"),
+                    ("txt_in_linear_1", "txtmlp_1"),
+                    ("txt_in_linear_2", "txtmlp_3"),
+                    ("transformer_blocks", "blocks"),
+                    ("text_fusion", "txtfusion"),
+                    ("_feed_forward_", "_mlp_"),
+                    ("_ffn_", "_mlp_"),
+                    ("_ff_", "_mlp_"),
+                    ("to_out_0", "wo"),
+                    ("to_out", "wo"),
+                    ("to_gate", "gate"),
+                    ("to_q", "wq"),
+                    ("to_k", "wk"),
+                    ("to_v", "wv"),
+                ):
+                    path = path.replace(source, target)
+                for name in ("layerwise_blocks", "refiner_blocks", "language_model"):
+                    path = path.replace(name, name.replace("_", "-"))
+                path = path.replace("_", ".").replace("-", "_")
+                return f"{path}.{suffix}"
+
+            for source, target in replacements:
+                key = key.replace(source, target)
+            return key
+
+        return {map_key(key): value for key, value in sd.items()}
+
     def __init__(self, config: SingleMMDiTConfig):
         super().__init__()
         self.config = config
@@ -449,7 +515,7 @@ class SingleStreamDiT(nn.Module):
         self.last = LastLayer(config.features, config.patch, config.channels)
         self.tproj = nn.Sequential(nn.GELU(approximate="tanh"), nn.Linear(config.features, config.features * 6))
 
-    def prepare_context(self, context: Tensor | list[Tensor], mask: Tensor) -> Tensor | None:
+    def prepare_context(self, context: Tensor | list[Tensor], mask: Tensor, output_len: int | None = None) -> Tensor | None:
         self.txtfusion._interrupt = getattr(self, "_interrupt", False)
         if isinstance(context, list):
             context_ = context[0]
@@ -457,11 +523,16 @@ class SingleStreamDiT(nn.Module):
             context = context_
         else:
             context = context.clone()
-        txtmask = key_padding_mask(mask[:, : context.shape[1]])
+        valid_mask = mask[:, : context.shape[1]]
+        txtmask = key_padding_mask(valid_mask)
         context = self.txtfusion(context, mask=txtmask)
         if context is None:
             return None
-        return self.txtmlp(context)
+        context = self.txtmlp(context)
+        context.masked_fill_(~valid_mask.unsqueeze(-1), 0)
+        if output_len is not None and context.shape[1] < output_len:
+            context = F.pad(context, (0, 0, 0, output_len - context.shape[1]))
+        return context
 
     def prepare_timestep(self, t: Tensor) -> tuple[Tensor, Tensor]:
         t = self.tmlp(temb(t, self.config.tdim, device=t.device, dtype=t.dtype))
@@ -496,6 +567,7 @@ class SingleStreamDiT(nn.Module):
         NAG: dict | None = None,
         neg_context: Tensor | None = None,
         neg_mask: Tensor | None = None,
+        target_len: int | None = None,
     ) -> Tensor:
         img = self.first(img)
         combined, txtlen, imglen, freqs, mask = self._build_stream(img, context, pos, mask)
@@ -505,9 +577,10 @@ class SingleStreamDiT(nn.Module):
             if getattr(self, "_interrupt", False):
                 return None
             self.txtfusion._interrupt = getattr(self, "_interrupt", False)
-        return self.last([combined[:, txtlen : txtlen + imglen]], t)
+        target_len = imglen if target_len is None else target_len
+        return self.last([combined[:, txtlen + imglen - target_len : txtlen + imglen]], t)
 
-    def forward_cfg(self, img: Tensor, context: Tensor, uncond_context: Tensor, t: Tensor, tvec: Tensor, pos: Tensor, uncond_pos: Tensor, mask: Tensor, uncond_mask: Tensor) -> tuple[Tensor | None, Tensor | None]:
+    def forward_cfg(self, img: Tensor, context: Tensor, uncond_context: Tensor, t: Tensor, tvec: Tensor, pos: Tensor, uncond_pos: Tensor, mask: Tensor, uncond_mask: Tensor, target_len: int | None = None) -> tuple[Tensor | None, Tensor | None]:
         img = self.first(img)
         share_freqs = pos.shape == uncond_pos.shape
         combined, txtlen, imglen, freqs, mask = self._build_stream(img, context, pos, mask)
@@ -520,4 +593,5 @@ class SingleStreamDiT(nn.Module):
             uncond_combined = block(uncond_combined, tvec, uncond_freqs, uncond_mask)
             if getattr(self, "_interrupt", False):
                 return None, None
-        return self.last([combined[:, txtlen : txtlen + imglen]], t), self.last([uncond_combined[:, uncond_txtlen : uncond_txtlen + uncond_imglen]], t)
+        target_len = imglen if target_len is None else target_len
+        return self.last([combined[:, txtlen + imglen - target_len : txtlen + imglen]], t), self.last([uncond_combined[:, uncond_txtlen + uncond_imglen - target_len : uncond_txtlen + uncond_imglen]], t)

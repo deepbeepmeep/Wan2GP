@@ -29,6 +29,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_component("state")
         self.request_component("resolution")
         self.request_component("main_tabs")
+        self.request_component("model_choice_target")
+        self.request_global("switch_to_model")
         self.add_tab(tab_id=PlugIn_Id, label=PlugIn_Name, component_constructor=self.create_config_ui)
 
     @staticmethod
@@ -120,7 +122,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.refresh_model_defs()
             gr.Info(f"finetune {the_time} had been created")
 
-
         with gr.Column():
             state = self.state
             settings = self.get_current_model_settings(state.value)
@@ -138,6 +139,10 @@ class ConfigTabPlugin(WAN2GPPlugin):
             abort_btn = gr.Button("Abort Generation")
 
             write_finetune_btn = gr.Button("Generate a Random LTX 2 Finetune")
+            with gr.Row():
+                switch_wan21_t2v_btn = gr.Button("Switch to Wan2.1 T2V")
+                switch_ltx2_distilled_btn = gr.Button("Switch to LTX-2 Distilled")
+                open_media_tab = gr.Checkbox(label="Open media tab", value=False)
 
         self.on_tab_outputs = [sample_text]
 
@@ -147,4 +152,5 @@ class ConfigTabPlugin(WAN2GPPlugin):
         start_btn.click(fn=generate_media, outputs=[output_video], queue=False)
         abort_btn.click(fn=cancel_demo, queue=False)
         write_finetune_btn.click(fn=write_finetune)
-
+        switch_wan21_t2v_btn.click(fn=lambda open_tab: self.switch_to_model("t2v", open_tab), inputs=[open_media_tab], outputs=[self.model_choice_target, self.main_tabs], show_progress="hidden")
+        switch_ltx2_distilled_btn.click(fn=lambda open_tab: self.switch_to_model("ltx2_22B_distilled", open_tab), inputs=[open_media_tab], outputs=[self.model_choice_target, self.main_tabs], show_progress="hidden")

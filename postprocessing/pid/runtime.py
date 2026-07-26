@@ -15,20 +15,31 @@ from postprocessing.pid.networks.pixeldit_official import get_pid_linear_split_m
 PID_LEGACY_UPSAMPLING_METHOD = "pid"
 PID_FLUX_VAE_UPSAMPLING_METHOD = "flux_vae_pid"
 PID_FLUX2_VAE_UPSAMPLING_METHOD = "flux2_vae_pid"
+PID_FLUX_VAE_UPSAMPLING_METHOD_V15 = "flux_vae_pid(1.5)"
+PID_FLUX2_VAE_UPSAMPLING_METHOD_V15 = "flux2_vae_pid(1.5)"
+PID_QWEN_VAE_UPSAMPLING_METHOD = "qwen_vae_pid(1.5)"
 PID_FLUX_POST_UPSAMPLING_METHOD = "flux_pid"
 PID_FLUX2_POST_UPSAMPLING_METHOD = "flux2_pid"
+PID_FLUX_POST_UPSAMPLING_METHOD_V15 = "flux_pid(1.5)"
+PID_FLUX2_POST_UPSAMPLING_METHOD_V15 = "flux2_pid(1.5)"
+PID_QWEN_POST_UPSAMPLING_METHOD = "qwen_pid(1.5)"
+PID_QWEN_VAE_UPSAMPLING_VALUE = f"{PID_QWEN_VAE_UPSAMPLING_METHOD}4"
 PID_LEGACY_UPSAMPLING_VALUE = "pid4"
 PID_FLUX_VAE_UPSAMPLING_VALUE = f"{PID_FLUX_VAE_UPSAMPLING_METHOD}4"
 PID_FLUX2_VAE_UPSAMPLING_VALUE = f"{PID_FLUX2_VAE_UPSAMPLING_METHOD}4"
 PID_FLUX_POST_UPSAMPLING_VALUE = f"{PID_FLUX_POST_UPSAMPLING_METHOD}4"
 PID_FLUX2_POST_UPSAMPLING_VALUE = f"{PID_FLUX2_POST_UPSAMPLING_METHOD}4"
-PID_VAE_UPSAMPLING_METHODS = (PID_FLUX_VAE_UPSAMPLING_METHOD, PID_FLUX2_VAE_UPSAMPLING_METHOD, PID_LEGACY_UPSAMPLING_METHOD)
-PID_POST_UPSAMPLING_METHODS = (PID_FLUX_POST_UPSAMPLING_METHOD, PID_FLUX2_POST_UPSAMPLING_METHOD)
+PID_QWEN_POST_UPSAMPLING_VALUE = f"{PID_QWEN_POST_UPSAMPLING_METHOD}4"
+PID_VAE_UPSAMPLING_METHODS = (PID_FLUX_VAE_UPSAMPLING_METHOD, PID_FLUX2_VAE_UPSAMPLING_METHOD, PID_FLUX_VAE_UPSAMPLING_METHOD_V15, PID_FLUX2_VAE_UPSAMPLING_METHOD_V15, PID_QWEN_VAE_UPSAMPLING_METHOD, PID_LEGACY_UPSAMPLING_METHOD)
+PID_POST_UPSAMPLING_METHODS = (PID_FLUX_POST_UPSAMPLING_METHOD, PID_FLUX2_POST_UPSAMPLING_METHOD, PID_FLUX_POST_UPSAMPLING_METHOD_V15, PID_FLUX2_POST_UPSAMPLING_METHOD_V15, PID_QWEN_POST_UPSAMPLING_METHOD)
 PID_UPSAMPLING_METHODS = PID_VAE_UPSAMPLING_METHODS + PID_POST_UPSAMPLING_METHODS
-PID_VAE_UPSAMPLING_VALUES = (PID_FLUX_VAE_UPSAMPLING_VALUE, PID_FLUX2_VAE_UPSAMPLING_VALUE, PID_LEGACY_UPSAMPLING_VALUE)
-PID_POST_UPSAMPLING_VALUES = (PID_FLUX_POST_UPSAMPLING_VALUE, PID_FLUX2_POST_UPSAMPLING_VALUE)
+PID_VAE_UPSAMPLING_VALUES = (PID_FLUX_VAE_UPSAMPLING_VALUE, PID_FLUX2_VAE_UPSAMPLING_VALUE, PID_QWEN_VAE_UPSAMPLING_VALUE, PID_LEGACY_UPSAMPLING_VALUE)
+PID_POST_UPSAMPLING_VALUES = (PID_FLUX_POST_UPSAMPLING_VALUE, PID_FLUX2_POST_UPSAMPLING_VALUE, PID_QWEN_POST_UPSAMPLING_VALUE)
 PID_UPSAMPLING_VALUES = PID_VAE_UPSAMPLING_VALUES + PID_POST_UPSAMPLING_VALUES
 PID_CHECKPOINT_TYPES = ("2k", "2kto4k")
+PID_VERSIONS = ("1", "1.5")
+PID_VERSION_DEFAULT = "1.5"
+PID_VERSION_FILTERS = (*PID_VERSIONS, "both")
 PID_TILING_THRESHOLD_AUTO = 0
 PID_TILING_THRESHOLD_2K = 1
 PID_TILING_THRESHOLD_4K = 2
@@ -104,25 +115,46 @@ def normalize_pid_backbone(backbone):
         return "z_image"
     if text == "flux2":
         return "flux2"
+    if text in ("qwen", "qwenimage", "wan", "wan2.1"):
+        return "qwen"
     return "flux"
+
+
+def normalize_pid_version(version):
+    version = str(version or PID_VERSION_DEFAULT).strip().lower().removeprefix("v")
+    return version if version in PID_VERSIONS else PID_VERSION_DEFAULT
+
+
+def normalize_pid_version_filter(version):
+    version = str(version or PID_VERSION_DEFAULT).strip().lower().removeprefix("v")
+    return version if version in PID_VERSION_FILTERS else PID_VERSION_DEFAULT
+
+
+def pid_version_for_upsampling(spatial_upsampling):
+    split = split_pid_upsampling(spatial_upsampling)
+    return "1.5" if split is not None and split[0].endswith("(1.5)") else "1"
 
 
 def pid_backbone_for_upsampling(spatial_upsampling, default="flux"):
     split = split_pid_upsampling(spatial_upsampling)
     method = "" if split is None else split[0]
-    if method in (PID_FLUX2_VAE_UPSAMPLING_METHOD, PID_FLUX2_POST_UPSAMPLING_METHOD):
+    if method in (PID_FLUX2_VAE_UPSAMPLING_METHOD, PID_FLUX2_POST_UPSAMPLING_METHOD, PID_FLUX2_VAE_UPSAMPLING_METHOD_V15, PID_FLUX2_POST_UPSAMPLING_METHOD_V15):
         return "flux2"
-    if method in (PID_FLUX_VAE_UPSAMPLING_METHOD, PID_FLUX_POST_UPSAMPLING_METHOD):
+    if method in (PID_FLUX_VAE_UPSAMPLING_METHOD, PID_FLUX_POST_UPSAMPLING_METHOD, PID_FLUX_VAE_UPSAMPLING_METHOD_V15, PID_FLUX_POST_UPSAMPLING_METHOD_V15):
         return "flux"
+    if method in (PID_QWEN_VAE_UPSAMPLING_METHOD, PID_QWEN_POST_UPSAMPLING_METHOD):
+        return "qwen"
     return normalize_pid_backbone(default)
 
 
 def pid_vae_upsampling_value(backbone):
-    return PID_FLUX2_VAE_UPSAMPLING_VALUE if normalize_pid_backbone(backbone) == "flux2" else PID_FLUX_VAE_UPSAMPLING_VALUE
+    backbone = normalize_pid_backbone(backbone)
+    return PID_QWEN_VAE_UPSAMPLING_VALUE if backbone == "qwen" else PID_FLUX2_VAE_UPSAMPLING_VALUE if backbone == "flux2" else PID_FLUX_VAE_UPSAMPLING_VALUE
 
 
 def pid_vae_upsampling_choice(backbone):
-    return ("Flux2 VAE PiD Upsampler", PID_FLUX2_VAE_UPSAMPLING_METHOD) if normalize_pid_backbone(backbone) == "flux2" else ("Flux VAE PiD Upsampler", PID_FLUX_VAE_UPSAMPLING_METHOD)
+    backbone = normalize_pid_backbone(backbone)
+    return ("Qwen VAE PiD Upsampler", PID_QWEN_VAE_UPSAMPLING_METHOD) if backbone == "qwen" else ("Flux2 VAE PiD Upsampler", PID_FLUX2_VAE_UPSAMPLING_METHOD) if backbone == "flux2" else ("Flux VAE PiD Upsampler", PID_FLUX_VAE_UPSAMPLING_METHOD)
 
 
 def pid_post_upsampling_choices(include_name=True):
@@ -130,12 +162,15 @@ def pid_post_upsampling_choices(include_name=True):
     return [
         (f"{prefix}Flux PiD Upsampler", PID_FLUX_POST_UPSAMPLING_METHOD),
         (f"{prefix}Flux2 PiD Upsampler", PID_FLUX2_POST_UPSAMPLING_METHOD),
+        (f"{prefix}Flux PiD Upsampler", PID_FLUX_POST_UPSAMPLING_METHOD_V15),
+        (f"{prefix}Flux2 PiD Upsampler", PID_FLUX2_POST_UPSAMPLING_METHOD_V15),
+        (f"{prefix}Qwen PiD Upsampler", PID_QWEN_POST_UPSAMPLING_METHOD),
     ]
 
 
 def pid_checkpoint_family(backbone):
     backbone = normalize_pid_backbone(backbone)
-    return "flux" if backbone == "z_image" else backbone
+    return "flux" if backbone == "z_image" else "qwenimage" if backbone == "qwen" else backbone
 
 
 def normalize_pid_tiling_threshold(value):
@@ -175,9 +210,11 @@ def pid_checkpoint_types_for_tiling_threshold(tiling_threshold):
     return ("2k",) if resolve_pid_tiling_threshold(tiling_threshold) == PID_TILING_THRESHOLD_2K else PID_CHECKPOINT_TYPES
 
 
-def pid_checkpoint_filename(backbone, ckpt_type="2k"):
+def pid_checkpoint_filename(backbone, ckpt_type="2k", version="1"):
     ckpt_type = ckpt_type if ckpt_type in PID_CHECKPOINT_TYPES else "2k"
     checkpoint_family = pid_checkpoint_family(backbone)
+    if normalize_pid_version(version) == "1.5":
+        return f"PiD_v1pt5_res2kto4k_sr4x_official_{checkpoint_family}_distill_4step_quanto_bf16_int8.safetensors"
     if ckpt_type == "2kto4k":
         if checkpoint_family == "flux2":
             return "PiD_res2kto4k_sr4x_official_flux2_distill_4step_2606_quanto_bf16_int8.safetensors"
@@ -209,24 +246,28 @@ def _pid_repo(backbone):
     backbone = normalize_pid_backbone(backbone)
     if backbone == "flux2":
         return "DeepBeepMeep/Flux2"
+    if backbone == "qwen":
+        return "DeepBeepMeep/Qwen_image"
     return "DeepBeepMeep/Flux"
 
 
 def pid_vae_filename(backbone):
-    return "flux2_vae.safetensors" if normalize_pid_backbone(backbone) == "flux2" else "flux_vae.safetensors"
+    backbone = normalize_pid_backbone(backbone)
+    return "qwen_vae.safetensors" if backbone == "qwen" else "flux2_vae.safetensors" if backbone == "flux2" else "flux_vae.safetensors"
 
 
 def _pid_vae_repo(backbone):
-    return "DeepBeepMeep/Flux2" if normalize_pid_backbone(backbone) == "flux2" else "DeepBeepMeep/Flux"
+    backbone = normalize_pid_backbone(backbone)
+    return "DeepBeepMeep/Qwen_image" if backbone == "qwen" else "DeepBeepMeep/Flux2" if backbone == "flux2" else "DeepBeepMeep/Flux"
 
 
-def get_pid_download_def(backbone, ckpt_type=None, include_text_encoder=True, include_vae=True):
+def get_pid_download_def(backbone, ckpt_type=None, include_text_encoder=True, include_vae=True, version="1"):
     ckpt_types = normalize_pid_checkpoint_types(ckpt_type)
     download_defs = [
         {
             "repoId": _pid_repo(backbone),
             "sourceFolderList": [""],
-            "fileList": [[pid_checkpoint_filename(backbone, ckpt) for ckpt in ckpt_types]],
+            "fileList": [[pid_checkpoint_filename(backbone, ckpt, version) for ckpt in ckpt_types]],
         }
     ]
     if include_text_encoder:
@@ -284,7 +325,7 @@ def _preprocess_pid_state_dict(state_dict):
     return out
 
 
-def _build_pid_net(backbone):
+def _build_pid_net(backbone, version="1"):
     backbone = normalize_pid_backbone(backbone)
     net_kwargs = {
         "in_channels": 3,
@@ -318,10 +359,18 @@ def _build_pid_net(backbone):
     }
     if backbone == "flux2":
         net_kwargs.update({"lq_latent_channels": 128, "latent_spatial_down_factor": 16})
+    if normalize_pid_version(version) == "1.5":
+        net_kwargs.update({"lq_hidden_dim": 1024, "lq_gate_type": "sigma_aware_per_token", "train_lq_proj_only": True, "pit_lq_inject": True, "pit_lq_gate_type": "sigma_aware_per_token", "lq_conv_padding_mode": "replicate", "rope_ref_h": 2048, "rope_ref_w": 2048})
+        if backbone == "flux2":
+            net_kwargs["lq_latent_unpatchify_factor"] = 2
     return PidNet(**net_kwargs)
 
 
 def _build_pid_vae(backbone):
+    if normalize_pid_backbone(backbone) == "qwen":
+        from models.qwen.autoencoder_kl_qwenimage import AutoencoderKLQwenImage
+
+        return AutoencoderKLQwenImage()
     if normalize_pid_backbone(backbone) == "flux2":
         from models.flux.modules.autoencoder_flux2 import AutoencoderKLFlux2, AutoEncoderParamsFlux2
 
@@ -342,10 +391,11 @@ def _apply_pid_offload_budgets(pipe, kwargs):
 
 
 class PiDUpsampler:
-    def __init__(self, backbone="flux", dtype=torch.bfloat16, ckpt_types=None):
+    def __init__(self, backbone="flux", dtype=torch.bfloat16, ckpt_types=None, version="1"):
         self.backbone = normalize_pid_backbone(backbone)
         self.dtype = dtype
         self.ckpt_types = normalize_pid_checkpoint_types(ckpt_types)
+        self.version = normalize_pid_version(version)
         self.upsampling_set = pid_vae_upsampling_value(self.backbone)
 
         from shared.utils import files_locator as fl
@@ -360,9 +410,9 @@ class PiDUpsampler:
 
         self.nets = {}
         for ckpt_type in self.ckpt_types:
-            checkpoint_path = fl.locate_file(pid_checkpoint_filename(self.backbone, ckpt_type))
+            checkpoint_path = fl.locate_file(pid_checkpoint_filename(self.backbone, ckpt_type, self.version))
             with init_empty_weights(include_buffers=True):
-                net = _build_pid_net(self.backbone)
+                net = _build_pid_net(self.backbone, self.version)
             net.name = f"pid_upsampler_{ckpt_type}"
             offload.load_model_data(
                 net,
@@ -444,7 +494,13 @@ class PiDUpsampler:
     def encode_lq_image(self, lq_image):
         autocast_ctx = torch.autocast(device_type="cuda", dtype=self.dtype) if lq_image.device.type == "cuda" else nullcontext()
         with autocast_ctx:
-            return self.vae.encode(lq_image.to(dtype=self.dtype))
+            lq_image = lq_image.to(dtype=self.dtype)
+            if self.backbone == "qwen":
+                latent = self.vae.encode(lq_image.unsqueeze(2)).latent_dist.mode()
+                mean = torch.tensor(self.vae.config.latents_mean, device=latent.device, dtype=latent.dtype).view(1, -1, 1, 1, 1)
+                std = torch.tensor(self.vae.config.latents_std, device=latent.device, dtype=latent.dtype).view(1, -1, 1, 1, 1)
+                return ((latent - mean) / std).squeeze(2)
+            return self.vae.encode(lq_image)
 
     def _decode_patch(self, lq_latent, caption_embs, degrade_sigma, image_h, image_w, seed, num_steps, ckpt_type, abort_callback=None, progress_callback=None, progress_start=0, progress_total=None, progress_final=True):
         device = caption_embs.device
@@ -520,10 +576,10 @@ class PiDUpsampler:
         return previous_weight
 
     def _direct_ckpt_type(self, lq_image, ckpt_type, tiling_threshold):
-        if resolve_pid_tiling_threshold(tiling_threshold) == PID_TILING_THRESHOLD_2K:
+        if resolve_pid_tiling_threshold(tiling_threshold) == PID_TILING_THRESHOLD_2K and "2k" in self.nets:
             return "2k"
         ckpt_type = ckpt_type if ckpt_type in self.nets else select_pid_checkpoint_type(lq_image.shape[-1], lq_image.shape[-2])
-        return ckpt_type if ckpt_type in self.nets else "2k"
+        return ckpt_type if ckpt_type in self.nets else next(iter(self.nets))
 
     def _should_tile(self, lq_image, tiling_threshold):
         if not PID_TILE_UPSAMPLING:
@@ -540,7 +596,7 @@ class PiDUpsampler:
 
     def _tile_plan(self, lq_h, lq_w, latent_scale, tiling_threshold):
         resolved_threshold = resolve_pid_tiling_threshold(tiling_threshold)
-        candidates = [("2k", PID_TILE_2K_INPUT_SIZE)]
+        candidates = [("2k", PID_TILE_2K_INPUT_SIZE)] if "2k" in self.nets else [("2kto4k", PID_TILE_2K_INPUT_SIZE)]
         if resolved_threshold == PID_TILING_THRESHOLD_4K and "2kto4k" in self.nets:
             candidates.append(("2kto4k", PID_TILE_4K_INPUT_SIZE))
         plans = []
@@ -610,9 +666,10 @@ class PiDUpsampler:
                 if tile_latents is not None:
                     tile_latents[tile_no] = None
                 out_top, out_bottom, out_left, out_right = top * 4, bottom * 4, left * 4, right * 4
-                tile = self._float_to_uint8(tile)
-                weight = self._tile_weight(tile.shape[-2], tile.shape[-1], out_top, out_left, out_bottom, out_right, full_h, full_w, device, self.dtype)
-                previous_weight = self._previous_tile_weight(processed_tiles, out_top, out_bottom, out_left, out_right, full_h, full_w, device, self.dtype)
+                blend_device = output.device
+                tile = self._float_to_uint8(tile).to(device=blend_device)
+                weight = self._tile_weight(tile.shape[-2], tile.shape[-1], out_top, out_left, out_bottom, out_right, full_h, full_w, blend_device, self.dtype)
+                previous_weight = self._previous_tile_weight(processed_tiles, out_top, out_bottom, out_left, out_right, full_h, full_w, blend_device, self.dtype)
                 region = output[:, :, out_top:out_bottom, out_left:out_right]
                 blended = region.to(dtype=self.dtype).mul_(previous_weight).add_(tile.to(dtype=self.dtype).mul_(weight)).div_(previous_weight.add_(weight).clamp_min_(1e-6))
                 region.copy_(blended.round_().clamp_(0, 255).to(torch.uint8))
@@ -630,7 +687,7 @@ class PiDUpsampler:
             lq_latent = lq_latent.to(dtype=self.dtype)
         batch_size = lq_image.shape[0]
         resolved_threshold = resolve_pid_tiling_threshold(tiling_threshold)
-        variant_label = "flux2" if normalize_pid_backbone(self.backbone) == "flux2" else "flux"
+        variant_label = normalize_pid_backbone(self.backbone)
         encode_label = "VAE Encode" if vae_encode or lq_latent is None else "No VAE Encode"
         tiled = self._should_tile(lq_image, resolved_threshold)
         tile_plan = self._tile_plan(lq_image.shape[-2], lq_image.shape[-1], _pid_latent_downscale(self.backbone), resolved_threshold) if tiled else None
@@ -669,11 +726,13 @@ class PiDUpsamplerSession:
         dtype=torch.bfloat16,
         tiling_threshold=PID_TILING_THRESHOLD_DEFAULT,
         attention_mode=None,
+        version=PID_VERSION_DEFAULT,
     ):
         self._runtime = runtime
         self.backbone = normalize_pid_backbone(backbone)
         self.tiling_threshold = normalize_pid_tiling_threshold(tiling_threshold)
-        self.ckpt_types = pid_checkpoint_types_for_tiling_threshold(self.tiling_threshold)
+        self.version = normalize_pid_version(version)
+        self.ckpt_types = ("2kto4k",) if self.version == "1.5" else pid_checkpoint_types_for_tiling_threshold(self.tiling_threshold)
         self.ckpt_type = ckpt_type if ckpt_type in self.ckpt_types else None
         self.init_pipe = init_pipe
         self.profile = profile
@@ -682,7 +741,7 @@ class PiDUpsamplerSession:
         self.attention_mode = attention_mode
 
     def ensure_loaded(self):
-        self._runtime.load(self.backbone, init_pipe=self.init_pipe, profile=self.profile, dtype=self.dtype, ckpt_types=self.ckpt_types)
+        self._runtime.load(self.backbone, init_pipe=self.init_pipe, profile=self.profile, dtype=self.dtype, ckpt_types=self.ckpt_types, version=self.version)
 
     def unload_vram(self):
         self._runtime._unload_mmgp()
@@ -719,17 +778,19 @@ class PiDRuntime:
         self.profile = None
         self.ckpt_types = None
         self.dtype = torch.bfloat16
+        self.version = None
 
-    def load(self, backbone, *, init_pipe, profile, dtype=torch.bfloat16, ckpt_types=None):
+    def load(self, backbone, *, init_pipe, profile, dtype=torch.bfloat16, ckpt_types=None, version=PID_VERSION_DEFAULT):
         backbone = normalize_pid_backbone(backbone)
         ckpt_types = normalize_pid_checkpoint_types(ckpt_types)
-        if self.upsampler is not None and self.backbone == backbone and self.profile == profile and self.dtype == dtype and self.ckpt_types == ckpt_types:
+        version = normalize_pid_version(version)
+        if self.upsampler is not None and self.backbone == backbone and self.profile == profile and self.dtype == dtype and self.ckpt_types == ckpt_types and self.version == version:
             return
 
         self.release()
         from mmgp import offload
 
-        self.upsampler = PiDUpsampler(backbone=backbone, dtype=dtype, ckpt_types=ckpt_types)
+        self.upsampler = PiDUpsampler(backbone=backbone, dtype=dtype, ckpt_types=ckpt_types, version=version)
         pipe = self.upsampler.pipe_modules()
         kwargs = {}
         profile_no = init_pipe(pipe, kwargs, profile)
@@ -741,8 +802,9 @@ class PiDRuntime:
         self.profile = profile
         self.ckpt_types = ckpt_types
         self.dtype = dtype
+        self.version = version
 
-    def session(self, backbone, ckpt_type, *, init_pipe, profile, persistent_models=False, dtype=torch.bfloat16, tiling_threshold=PID_TILING_THRESHOLD_DEFAULT, attention_mode=None):
+    def session(self, backbone, ckpt_type, *, init_pipe, profile, persistent_models=False, dtype=torch.bfloat16, tiling_threshold=PID_TILING_THRESHOLD_DEFAULT, attention_mode=None, version=PID_VERSION_DEFAULT):
         return PiDUpsamplerSession(
             self,
             backbone,
@@ -753,6 +815,7 @@ class PiDRuntime:
             dtype=dtype,
             tiling_threshold=tiling_threshold,
             attention_mode=attention_mode,
+            version=version,
         )
 
     def _unload_mmgp(self):
@@ -770,6 +833,7 @@ class PiDRuntime:
         self.backbone = None
         self.profile = None
         self.ckpt_types = None
+        self.version = None
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -791,7 +855,7 @@ class PiDRuntime:
 _RUNTIME = PiDRuntime()
 
 
-def get_pid_upsampler(backbone, ckpt_type, *, init_pipe, profile, persistent_models=False, dtype=torch.bfloat16, tiling_threshold=PID_TILING_THRESHOLD_DEFAULT, attention_mode=None):
+def get_pid_upsampler(backbone, ckpt_type, *, init_pipe, profile, persistent_models=False, dtype=torch.bfloat16, tiling_threshold=PID_TILING_THRESHOLD_DEFAULT, attention_mode=None, version=PID_VERSION_DEFAULT):
     return _RUNTIME.session(
         backbone,
         ckpt_type,
@@ -801,6 +865,7 @@ def get_pid_upsampler(backbone, ckpt_type, *, init_pipe, profile, persistent_mod
         dtype=dtype,
         tiling_threshold=tiling_threshold,
         attention_mode=attention_mode,
+        version=version,
     )
 
 

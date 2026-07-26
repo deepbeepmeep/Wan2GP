@@ -170,6 +170,14 @@ def _method_labels(handler_def: dict[str, Any]) -> dict[str, str]:
     return {key: label for label, key in _method_choices(handler_def)}
 
 
+def _handler_method_label(handler, label: str, method: str) -> str:
+    return handler.format_method_label(label, method) if hasattr(handler, "format_method_label") else label
+
+
+def _handler_method_available(handler, method: str) -> bool:
+    return not hasattr(handler, "method_available") or handler.method_available(method)
+
+
 def _handler_pos(handler_def: dict[str, Any]) -> float:
     try:
         return float(handler_def.get("pos", 1000))
@@ -253,7 +261,7 @@ def query_model_vae_method_choices(model_type, model_def, image_mode: int) -> li
         handler_def = handler.query_upsampler_def()
         for label, method in handler_def.get("vae_methods", []):
             if _handler_supports_model_vae_method(handler, method, model_type, model_def, image_mode):
-                choices.append((_method_pos(handler_def, method), str(label or "").casefold(), str(method or ""), label, method))
+                choices.append((_method_pos(handler_def, method), str(label or "").casefold(), str(method or ""), _handler_method_label(handler, label, method), method))
     return [(label, method) for _, _, _, label, method in sorted(choices)]
 
 
@@ -395,6 +403,8 @@ def format_upsampling_label(value) -> str:
         return text
     method, scale = split
     label = _method_labels(handler.query_upsampler_def()).get(method)
+    if label:
+        label = _handler_method_label(handler, label, method)
     return format_method_scale_label(label, scale) if label else text
 
 
@@ -410,6 +420,13 @@ def normalize_upsampling_value_for_method(method, current_value) -> tuple[list[t
     return normalize_upsampling_state(method, 2.0 if split is None else split[1])
 
 
+def _method_choice_sort_key(choice: tuple[str, str]) -> tuple[float, str, str]:
+    label, method = choice
+    handler = find_upsampler_by_method(method)
+    position = 1000 if handler is None else _method_pos(handler.query_upsampler_def(), method)
+    return position, str(label or "").casefold(), str(method or "")
+
+
 def query_postprocessing_method_choices(image_outputs: bool = False, late_postprocessing: bool = False) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     video_post_choices, image_post_choices = [], []
     for handler in upsampler_handlers(UPSAMPLER_TYPE_POSTPROCESSING):
@@ -420,7 +437,7 @@ def query_postprocessing_method_choices(image_outputs: bool = False, late_postpr
         media = handler_def.get("media", (UPSAMPLER_PROFILE_VIDEO, UPSAMPLER_PROFILE_IMAGE))
         if (UPSAMPLER_PROFILE_IMAGE if image_outputs else UPSAMPLER_PROFILE_VIDEO) not in media:
             continue
-        choices = [(_method_pos(handler_def, method), str(label or "").casefold(), str(method or ""), label, method) for label, method in handler_def.get("methods", [])]
+        choices = [(_method_pos(handler_def, method), str(label or "").casefold(), str(method or ""), _handler_method_label(handler, label, method), method) for label, method in handler_def.get("methods", []) if _handler_method_available(handler, method)]
         if UPSAMPLER_PROFILE_VIDEO in media:
             video_post_choices += choices
         else:
@@ -433,7 +450,7 @@ def dropdown_state(spatial_upsampling, *, image_outputs: bool = False, late_post
     video_post_choices, image_post_choices = query_postprocessing_method_choices(image_outputs=image_outputs, late_postprocessing=late_postprocessing)
     excluded_methods = excluded_methods or set()
     image_post_choices = [choice for choice in image_post_choices if choice[1] not in excluded_methods and not (exclude_method_fn and exclude_method_fn(choice[1]))]
-    method_choices = [("None", "")] + video_post_choices + list(vae_choices or []) + image_post_choices
+    method_choices = [("None", "")] + sorted(video_post_choices + image_post_choices + list(vae_choices or []), key=_method_choice_sort_key)
     if method not in {value for _, value in method_choices}:
         method = ""
     ratio_choices, scale, value = normalize_upsampling_state(method, scale)
@@ -476,6 +493,8 @@ def query_postprocessing_upsampling_choices(include_name: bool = True, enabled_o
                 continue
         multipliers = handler_def.get("multipliers", {})
         for label, method in handler_def.get("methods", []):
+            if not _handler_method_available(handler, method):
+                continue
             for scale in multipliers.get(method, ()):
                 value = handler.build_value(method, scale)
                 if value is not None:

@@ -8,7 +8,7 @@ from shared.utils.loras_mutipliers import parse_loras_multipliers
 import gradio as gr
 from pathlib import Path
 
-from .infos import LTX2_INFOS, LTX2_MSR_INFOS
+from .infos import LTX2_INFOS, LTX2_MSR_INFOS, LTX2_MSR_V2_INFOS
 from .lora_utils import control_video_phase2_message
 from .ltx2_runtime import LTX2_OUTPAINTING_METHOD
 
@@ -48,6 +48,17 @@ _EDITANYTHING_MODEL_DEF = {
     "ltx2_edit_anything_ref_context_scale": 0.01,
     "ltx2_edit_anything_ref_token_scale": 0.25,
     "ltx2_edit_anything_adaln_scale": 2.0,
+}
+_PROMPT_RELAY_CUSTOM_SETTING = {
+    "id": "prompt_relay_epsilon",
+    "name": "Prompt Relay Epsilon",
+    "label": "Prompt Relay Epsilon (higher values create softer transitions)",
+    "type": "float",
+    "default": 1e-3,
+    "min": 1e-4,
+    "max": 0.99,
+    "inc": 1e-4,
+    "video_prompt_type": "?",
 }
 _ARCH_SPECS = {
     "ltx2_19B": {
@@ -386,6 +397,10 @@ class family_handler:
         spec = _get_arch_spec(base_model_type)
         joy = _is_joyai_echo(base_model_type, model_def)
         msr = _is_msr_model(base_model_type, model_def)
+        msr_v2 = msr and any(
+            "msr-v2" in str(value).lower()
+            for value in (model_def.get("loras", []) if isinstance(model_def.get("loras", []), (list, tuple)) else [model_def.get("loras", "")])
+        )
         if isinstance(preload_urls, list): 
             # migrate old finetunes
             lora_filenames = {spec[key] for key in _LORA_SPEC_KEYS if key in spec}
@@ -405,7 +420,7 @@ class family_handler:
         extra_model_def = {
             "ltx2_22B_class": base_model_type in LTX2_22B_CLASS,
             "ltx2_edit_anything": editanything_ref,
-            "infos": model_def.get("infos", LTX2_MSR_INFOS if msr else LTX2_INFOS),
+            "infos": model_def.get("infos", LTX2_MSR_V2_INFOS if msr_v2 else LTX2_MSR_INFOS if msr else LTX2_INFOS),
             "text_encoder_folder": _GEMMA_FOLDER,
             "text_encoder_URLs": [
                 build_hf_url("DeepBeepMeep/LTX-2", _GEMMA_FOLDER, _GEMMA_FILENAME),
@@ -426,6 +441,7 @@ class family_handler:
             "ltx2_hdr_scene_embeddings_file": spec.get("hdr_scene_embeddings", ""),
             "self_refiner": True,
             "self_refiner_max_plans": 2,
+            "custom_settings": [_PROMPT_RELAY_CUSTOM_SETTING.copy()],
             # "no_background_removal": True,
             "vae_block_size": 64,
             "keep_frames_video_guide_not_supported": True,
@@ -481,7 +497,10 @@ class family_handler:
                     "video_prompt_enhancer_max_tokens1": 1536,
                     "image_prompt_enhancer_max_tokens1": 1536,
                     "guide_custom_choices": {"choices": [("No Control Video Memory", ""), ("JoyAI-Echo Control Video Memory", "V1")], "letters_filter": "V1", "default": "", "label": "Control Video Memory"},
-                    "custom_settings": [{"id": JOYAI_CONTROL_MEMORY_SETTING, "name": "Control Video Memory Positions", "label": "Joy Memory Positions from Control Video (frames or seconds, comma-separated)", "type": "text", "default": "", "video_prompt_type": "1"}],
+                    "custom_settings": [
+                        _PROMPT_RELAY_CUSTOM_SETTING.copy(),
+                        {"id": JOYAI_CONTROL_MEMORY_SETTING, "name": "Control Video Memory Positions", "label": "Joy Memory Positions from Control Video (frames or seconds, comma-separated)", "type": "text", "default": "", "video_prompt_type": "1"},
+                    ],
                 }
             )
         else:
@@ -601,6 +620,18 @@ class family_handler:
                         "ltx2_msr_frame_count": int(model_def.get("ltx2_msr_frame_count", 41)),
                     }
                 )
+                if msr_v2:
+                    extra_model_def["custom_settings"] = list(model_def.get("custom_settings", [])) if isinstance(model_def.get("custom_settings", []), list) else []
+                    extra_model_def["custom_settings"].append(
+                        {
+                            "id": "msr_reference_frames",
+                            "name": "MSR Reference Video Length",
+                            "label": "MSR Reference Video Length",
+                            "type": "dropdown",
+                            "default": "",
+                            "choices": [("Auto", "")] + [(str(value), value) for value in (17, 25, 33, 41, 49, 57, 65)],
+                        }
+                    )
         extra_model_def["sliding_window_defaults"] = {
             "overlap_min": 1,
             "overlap_max": 97,
@@ -856,7 +887,10 @@ class family_handler:
             dtype=dtype,
             VAE_dtype=VAE_dtype,
             text_encoder_filename=text_encoder_filename,
-            text_encoder_filepath = model_def.get("text_encoder_folder", os.path.dirname(text_encoder_filename)),
+            text_encoder_filepath=(
+                model_def.get("text_encoder_folder")
+                or (os.path.dirname(text_encoder_filename) if text_encoder_filename else None)
+            ),
             checkpoint_paths=checkpoint_paths,
         )
 

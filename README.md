@@ -45,6 +45,12 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 **Follow DeepBeepMeep on Twitter/X to get the Latest News**: https://x.com/deepbeepmeep
 
+> [!IMPORTANT]
+> **WanGP is free to use locally.** The official project will never ask you to pay a license fee, subscription, or donation to run WanGP on your own computer (see the license for terms).
+>
+> **Use only the official GitHub repository.** WanGP is **not affiliated with wan2gp.com, wangp.video or any other third-party service using the WanGP/Wan2GP names**, unless explicitly stated here.
+
+
 ## 📋 Table of Contents
 
 - [🚀 Quick Start](#-quick-start)
@@ -55,6 +61,41 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
+
+## 25th of July 2026: Featured Plugins / Apps
+
+WanGP's growing community has developed more than 20 plugins that expand what you can do. Here is a selection of seven newly available community plugins, all of which can be installed or updated directly from the WanGP Plugin Manager:
+
+- **Finetune Manager** by *GKartist* — Browse community finetunes, load them into WanGP, and create, improve, or share your own.
+- **Image Suite** by *saintorphan* — Create and edit images with text-to-image, image-to-image, layered canvases, masks, inpainting, cropping, resizing, and color adjustments.
+- **Prompt Library** by *saintorphan* — Save your favorite prompts and generation settings, then reuse them with any supported model.
+- **Prompt Manager** by *David Brum* — Search and organize generated images and videos, copy their settings, and manage reusable prompts in one place.
+- **Queue Notifier** by *Javier-bat* — Get progress, completion, and failure alerts through services such as Discord, Telegram, WhatsApp, and Google Chat.
+- **VRAM / RAM Adjuster** by *g3n3rativ3* — Tune how much graphics and system memory WanGP uses without manually editing configuration files.
+- **Wildcards** by *GKartist* — Add reusable variables and random choices to prompts so you can quickly produce controlled variations.
+
+**New Wan2GP Desktop Installer** — [Wan2GP Desktop](https://github.com/GKartist75/wan2gp-desktop) by GKArtist lets you install, update, and launch WanGP from a single window. It handles Git, Python, CUDA, and PyTorch setup for you, making it the easiest way to get started on Windows.
+
+### 25th of July 2026: WanGP v12.345, you can breath now
+
+- **Krea 2 Identity Edit**: this Krea2 finetune adds Editing capabilities to Krea 2. You can edit an existing image or combine up to 2 *Reference Images* to produce a new one. WanGP implementation comes out of the box with *Inpainting* and *Outpainting*   
+
+- **PiD 1.5**: The *PiD Spatial Upsampler* has been updated and should deliver better quality (v1 still there if you prefer it) and also now exists in *Qwen VAE* flavor (that is it can be plugged directly to Wan2.1 t2i, Qwen or Krea2 latent output for best quality)
+
+- **LTX2 MSR 2.0**: this new version of this LTX2 finetune with Image Reference support preserves better Identity. WanGP v12.345 adds the setting *MSR Reference Video Length* that will let you control how the *Reference Images* are packed (please check model help for more info)
+
+- **Joy Echo Surgical**: as a reminder the *Joy Echo* LTX2 variant lets you reuse characters identities between shots. This *Surgical* finetune claims to preserve better identity between shots and offers better audio quality.
+
+- **ConvRot LoRA support**: Int8 ConvRot checkpoints can now use LoRAs without producing garbage output 
+
+- **Text Encoder GGUF Support**: you should be able now to use in your Finetunes Text Encoder *GGUF* Checkpoints with LTX2, Krea2, Flux 1/2 and Wan 2.1/2.2
+
+- **Onmnivoice Speed ajustment**: a new option gives you more control on the pace on spoken words (for instance to you fit more words in a shorter timespan)
+
+- **More Krea2 LoRA Support**: more LoRAs formats are supported 
+
+*update 12.345*: Text Encode GGUF Support, Joy Echo Surgical, MSR2 new setting, Omnivoice Speed adjustment, new Krea2 LoRA formats
+
 ### 1st of July 2026: WanGP v12.3, The VRAM Digger
 
 - **Krea2 Lanpaint**: Krea2 can now do *inpainting* thanks to *Lanpaint*. To get the best results you will need to adjust the prompt and increase the number of Lanpaint steps.
@@ -234,13 +275,13 @@ Use this script to manage and switch between your sandboxed environments safely.
 
 ---
 
-### One-click (Pinokio) installer:
-
+### One-click Installers
+- Pinokio installer
 Get started instantly with [Pinokio App](https://pinokio.computer/)\
 It is recommended to use in Pinokio the Community Scripts *wan2gp* or *wan2gp-amd* by **Morpheus** rather than the official Pinokio install.
 
----
-
+- Wan2GP Desktop by GKArtist
+[Wan2GP Desktop](https://github.com/GKartist75/wan2gp-desktop) is a desktop launcher for Wan2GP that installs, updates, and runs it from one window — handling Git, Python, CUDA, and PyTorch setup so you don't have to configure them manually.
 
 ### Manual installation: (for RTX20xx - RTX50xx)
 

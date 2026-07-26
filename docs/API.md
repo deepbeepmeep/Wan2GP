@@ -544,7 +544,7 @@ print(result.generated_files)
 Postprocessing values use the registered postprocessor value strings:
 
 - `temporal_upsampling`: registered temporal upsamplers such as `rife2` or `rife4`. Temporal upsampling is video-only.
-- `spatial_upsampling`: registered postprocessing spatial upsamplers such as `lanczos2`, `flashvsr2`, `flashvsr2pass2`, `coz4`, `flux_pid4`, or `flux2_pid4`. VAE upsamplers are model-pipeline features and are not accepted for late postprocessing.
+- `spatial_upsampling`: registered postprocessing spatial upsamplers such as `lanczos2`, `flashvsr2`, `flashvsr2pass2`, `coz4`, `flux_pid4`, `flux2_pid4`, or `qwen_pid4`. VAE upsamplers are model-pipeline features and are not accepted for late postprocessing.
 - `film_grain_intensity` / `film_grain_saturation`: late film grain settings. Film grain is active when intensity is greater than `0`.
 
 At least one postprocessing operation must be selected.

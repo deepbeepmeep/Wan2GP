@@ -1,0 +1,7 @@
+{
+    "activated_loras": [
+		"https://huggingface.co/DeepBeepMeep/krea-2/resolve/main/loras/Krea2_TextFusion_Refusal_Reduction.safetensors"
+	],
+	"loras_multipliers": "1",
+	"help": "This Preset sets up a LoRA that pushes the model away from refusal behavior so that concepts already represented within the base model are less likely to be suppressed during text conditioning."
+}

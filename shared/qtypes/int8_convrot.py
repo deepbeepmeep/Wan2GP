@@ -368,6 +368,7 @@ class QLinearInt8ConvRot(QModuleMixin, torch.nn.Linear):
         )
         self._convrot_group_size = 0
         self._convrot_default_dtype = dtype
+        self._mm_requires_native_linear_forward = True
 
     def set_default_dtype(self, dtype):
         self._convrot_default_dtype = dtype

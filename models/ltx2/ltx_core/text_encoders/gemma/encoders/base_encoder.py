@@ -354,6 +354,11 @@ def _preprocess_gemma_state_dict(sd, qm, twm, config_path=None):
         )
         if "model.embed_tokens.weight" not in sd:
             sd, qm, twm = original
+        else:
+            # GGUF folds Gemma's `1 + weight` RMSNorm offset into the stored tensor.
+            for name, tensor in sd.items():
+                if "norm.weight" in name:
+                    sd[name] = tensor - 1
 
     sd.pop("spiece_model", None)
     from mmgp.offload import map_state_dict

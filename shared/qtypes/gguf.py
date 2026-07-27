@@ -1702,6 +1702,15 @@ class QEmbedding(BaseQEmbedding):
         )
         self._gguf_default_dtype = dtype
 
+    @classmethod
+    def from_module(cls, module, weights=None, activations=None, optimizer=None):
+        qmodule = super().from_module(module, weights, activations, optimizer)
+        if "embed_scale" in module._buffers:
+            qmodule.register_buffer("embed_scale", module._buffers["embed_scale"], persistent="embed_scale" not in module._non_persistent_buffers_set)
+        elif hasattr(module, "embed_scale"):
+            qmodule.embed_scale = module.embed_scale
+        return qmodule
+
     def set_default_dtype(self, dtype):
         self._gguf_default_dtype = dtype
 
@@ -1711,6 +1720,12 @@ class QEmbedding(BaseQEmbedding):
             return self.weight
         return super().qweight
 
+    def _apply_embed_scale(self, output):
+        embed_scale = getattr(self, "embed_scale", None)
+        if torch.is_tensor(embed_scale):
+            embed_scale = embed_scale.to(device=output.device, dtype=output.dtype)
+        return output if embed_scale is None else output * embed_scale
+
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         qweight = self.qweight
         if isinstance(qweight, GGUFWeightTensor):
@@ -1719,9 +1734,9 @@ class QEmbedding(BaseQEmbedding):
                 if _may_try_llamacpp_cuda_embedding(qweight, input):
                     fast_out = _try_llamacpp_cuda_embedding(qweight, input, target_dtype)
                     if fast_out is not None:
-                        return fast_out
+                        return self._apply_embed_scale(fast_out)
             weight = qweight.dequantize(dtype=target_dtype, device=input.device)
-            return torch.nn.functional.embedding(
+            output = torch.nn.functional.embedding(
                 input,
                 weight,
                 self.padding_idx,
@@ -1730,6 +1745,7 @@ class QEmbedding(BaseQEmbedding):
                 self.scale_grad_by_freq,
                 self.sparse,
             )
+            return self._apply_embed_scale(output)
         return super().forward(input)
 
     def _load_from_state_dict(

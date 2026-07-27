@@ -50,7 +50,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 > [!IMPORTANT]
 > **WanGP is free to use locally.** The official project will never ask you to pay a license fee, subscription, or donation to run WanGP on your own computer (see the license for terms).
 >
-> **Use only the official GitHub repository or wangp.ai / wan2gp.ai websites.** WanGP is **not affiliated to any other third-party service using the WanGP/Wan2GP names**, unless explicitly stated here.
+> **Use only the official GitHub repository or wangp.ai / wan2gp.ai websites. WanGP is not affiliated to any other third-party service using the WanGP/Wan2GP names**, unless explicitly stated here.
 
 
 ## 📋 Table of Contents

@@ -146,7 +146,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.10"
-WanGP_version = "12.345"
+WanGP_version = "12.3456"
 settings_version = 2.66
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -176,6 +176,7 @@ task_id = 0
 unique_id = 0
 unique_id_lock = threading.Lock()
 offloadobj = enhancer_offloadobj = wan_model = None
+loaded_config = ""
 reload_needed = True
 _HANDLER_MODULES = [
     "shared.qtypes.scaled_fp8",
@@ -2824,8 +2825,8 @@ def get_model_name(model_type, description_container = [""]):
 def get_model_record(model_name):
     return f"WanGP v{WanGP_version} by DeepBeepMeep - " +  model_name
 
-def get_model_recursive_prop(model_type, prop = "URLs", sub_prop_name = None, return_list = True,  stack= []):
-    model_def = models_def.get(model_type, None)
+def get_model_recursive_prop(model_type, prop = "URLs", sub_prop_name = None, return_list = True, stack = [], model_def = None):
+    if model_def is None: model_def = models_def.get(model_type, None)
     if model_def != None: 
         prop_value = model_def.get(prop, None)
         if prop_value == None:
@@ -2851,7 +2852,7 @@ def get_model_recursive_prop(model_type, prop = "URLs", sub_prop_name = None, re
             raise Exception(f"Unknown model type '{model_type}'")
         
 
-def get_model_filename(model_type, quantization ="int8", dtype_policy = "", module_type = None, submodel_no = 1, URLs = None, stack=[]):
+def get_model_filename(model_type, quantization ="int8", dtype_policy = "", module_type = None, submodel_no = 1, URLs = None, stack=[], model_def = None):
     if URLs is not None:
         pass
     elif module_type is not None:
@@ -2874,7 +2875,7 @@ def get_model_filename(model_type, quantization ="int8", dtype_policy = "", modu
     else:
         key_name = "URLs" if submodel_no  <= 1 else f"URLs{submodel_no}"
 
-        model_def = models_def.get(model_type, None)
+        if model_def is None: model_def = models_def.get(model_type, None)
         if model_def == None: return ""
         URLs = model_def.get(key_name, [])
         if isinstance(URLs, str):
@@ -3497,7 +3498,7 @@ def query_global_shared_model_files():
     return shared_defs
 
 download_shared_done = False
-def download_models(model_filename = None, model_type= None, file_type = 0, submodel_no = 1, force_path = None):
+def download_models(model_filename = None, model_type= None, file_type = 0, submodel_no = 1, force_path = None, model_def = None):
     def computeList(filename):
         if filename == None:
             return []
@@ -3516,7 +3517,7 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
     if model_filename is None: return
 
     base_model_type = get_base_model_type(model_type)
-    model_def = get_model_def(model_type)
+    model_def = model_def or get_model_def(model_type)
     
     any_source = ("source2" if submodel_no ==2 else "source") in model_def
     any_module_source = ("module_source2" if submodel_no ==2 else "module_source") in model_def 
@@ -3539,7 +3540,7 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
     lora_dir = get_lora_dir(model_type) 
     for prop, recursive in zip(["preload_URLs", "VAE_URLs"], [True, False]):
         if recursive:
-            preload_URLs = get_model_recursive_prop(model_type, prop, return_list= True)
+            preload_URLs = get_model_recursive_prop(model_type, prop, return_list= True, model_def=model_def)
         else:
             preload_URLs = model_def.get(prop, [])
             if isinstance(preload_URLs, str): preload_URLs = [preload_URLs]
@@ -3556,7 +3557,7 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
                     if os.path.isfile(filename): os.remove(filename) 
                     raise Exception(f"{prop} '{url}' is invalid: {str(e)}'")
 
-    model_loras = get_model_recursive_prop(model_type, "loras", return_list= True)
+    model_loras = get_model_recursive_prop(model_type, "loras", return_list= True, model_def=model_def)
     for url in model_loras:
         filename = get_lora_local_path(lora_dir, url)
         if not os.path.isfile(filename ): 
@@ -3872,21 +3873,27 @@ def ensure_prompt_enhancer_loaded(override_profile=None, progress=None, send_cmd
         raise gr.Error("Prompt enhancer text runtime is not available.")
     return prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer
 
-def load_models(model_type, override_profile = -1, output_type="video", **model_kwargs):
-    global transformer_type, loaded_profile
+def load_models(model_type, override_profile = -1, output_type="video", config_id = None, **model_kwargs):
+    global transformer_type, loaded_profile, loaded_config
     def _load_models_info(message):
         if int(verbose_level) > 0:
             print(message)
 
     base_model_type = get_base_model_type(model_type)
     model_def = get_model_def(model_type)
+    if config_id is not None and len(config_id):
+        configs = get_model_recursive_prop(model_type, "configs", return_list=False, model_def=model_def) or {}
+        current_config = configs.get(config_id, None)
+        if current_config is None: raise Exception(f"Config '{config_id}' is not defined in Model Definition file")
+        model_def = model_def.copy()
+        model_def.update(current_config)
     save_quantized = args.save_quantized and model_def != None
-    model_filename = get_model_filename(model_type=model_type, quantization= "" if save_quantized else transformer_quantization, dtype_policy = transformer_dtype_policy) 
+    model_filename = get_model_filename(model_type=model_type, quantization= "" if save_quantized else transformer_quantization, dtype_policy = transformer_dtype_policy, model_def=model_def)
     if "URLs2" in model_def:
-        model_filename2 = get_model_filename(model_type=model_type, quantization= "" if save_quantized else transformer_quantization, dtype_policy = transformer_dtype_policy, submodel_no=2) # !!!!
+        model_filename2 = get_model_filename(model_type=model_type, quantization= "" if save_quantized else transformer_quantization, dtype_policy = transformer_dtype_policy, submodel_no=2, model_def=model_def) # !!!!
     else:
         model_filename2 = None
-    modules = get_model_recursive_prop(model_type, "modules",  return_list= True)
+    modules = get_model_recursive_prop(model_type, "modules", return_list=True, model_def=model_def)
     modules = [get_model_recursive_prop(module, "modules", sub_prop_name  ="_list",  return_list= True) if isinstance(module, str) else module for module in modules ]
     if save_quantized and "quanto" in model_filename:
         save_quantized = False
@@ -3934,11 +3941,11 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
     local_model_file_list= []
     for filename, file_model_type, file_source_type, submodel_no in zip(model_file_list, model_type_list, source_type_list, model_submodel_no_list):
         if len(filename) == 0: continue 
-        download_models(filename, file_model_type, file_source_type, submodel_no)
+        download_models(filename, file_model_type, file_source_type, submodel_no, model_def = model_def)
         local_file_name = fl.get_local_model_filename(filename )
         local_model_file_list.append( os.path.basename(filename) if local_file_name is None else local_file_name )
     if len(local_model_file_list) == 0:
-        download_models("", model_type, 0, -1)
+        download_models("", model_type, 0, -1, model_def = model_def)
 
     VAE_dtype = torch.float16 if server_config.get("vae_precision","16") == "16" else torch.float
     mixed_precision_transformer =  server_config.get("mixed_precision","0") == "1"
@@ -3952,13 +3959,13 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
 
 
     model_type_handler = model_types_handlers[base_model_type] 
-    text_encoder_URLs= get_model_recursive_prop(model_type, "text_encoder_URLs", return_list= True)
+    text_encoder_URLs= get_model_recursive_prop(model_type, "text_encoder_URLs", return_list=True, model_def=model_def)
     if text_encoder_URLs is not None:
         text_encoder_filename = get_model_filename(model_type=model_type, quantization= text_encoder_quantization, dtype_policy = transformer_dtype_policy, URLs=text_encoder_URLs)
     if text_encoder_filename is not None and len(text_encoder_filename):
         text_encoder_folder = model_def.get("text_encoder_folder", None)
         if text_encoder_filename is not None:
-            download_models(text_encoder_filename, file_model_type, 2, -1, force_path =text_encoder_folder)
+            download_models(text_encoder_filename, file_model_type, 2, -1, force_path =text_encoder_folder, model_def = model_def)
             text_encoder_filename =  fl.get_local_model_filename(text_encoder_filename, extra_paths=text_encoder_folder)
             _load_models_info(f"Loading Text Encoder '{text_encoder_filename}' ...")
 
@@ -3996,6 +4003,7 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
         torch.set_default_device(args.gpu)
     transformer_type = model_type
     loaded_profile = profile
+    loaded_config = config_id or ""
     return wan_model, offloadobj 
 
 if not "P" in preload_model_policy:
@@ -4617,6 +4625,11 @@ def select_media(state, current_gallery_tab, input_file_list, file_selected, aud
             misc_values += [video_model_name]
             misc_labels += ["Model"]
             metadata_model_def = get_model_def(configs.get("model_type", None))
+            selected_config = configs.get("config", "")
+            model_configs = (get_model_recursive_prop(configs.get("model_type", None), "configs", return_list=False, model_def=metadata_model_def) or {}) if metadata_model_def is not None else {}
+            if selected_config in model_configs:
+                misc_values += [model_configs[selected_config].get("name", selected_config)]
+                misc_labels += ["Config"]
             model_modes_def = metadata_model_def.get("model_modes", None) if metadata_model_def is not None else None
             if model_modes_def is not None and "model_mode" in configs and configs.get("image_mode", 0) in model_modes_def.get("image_modes", [0, 1, 2]):
                 misc_values += [next((label for label, value in model_modes_def["choices"] if value == configs["model_mode"]), configs["model_mode"])]
@@ -6466,6 +6479,7 @@ def generate_media(
     self_refiner_f_uncertainty,
     self_refiner_certain_percentage,
     output_filename,
+    config,
     state,
     model_type,
     mode,
@@ -6485,7 +6499,7 @@ def generate_media(
         gen["progress_phase"] = (phase_text, -1)
         send_cmd("progress", [0, get_latest_status(state, phase_text)])
 
-    global wan_model, offloadobj, reload_needed
+    global wan_model, offloadobj, reload_needed, loaded_config
     gen = get_gen_info(state)
     api_return_video_uint8, api_return_audio = get_api_output_options(plugin_data)
     api_options = plugin_data.get("api", {}) if isinstance(plugin_data, dict) and isinstance(plugin_data.get("api", {}), dict) else {}
@@ -6516,6 +6530,9 @@ def generate_media(
         replace_voice_sample2 = None
 
     model_def = get_model_def(model_type) 
+    model_configs = get_model_recursive_prop(model_type, "configs", return_list=False, model_def=model_def) or {}
+    if model_configs and config not in model_configs: config = next(iter(model_configs))
+    if not model_configs: config = ""
     is_image = image_mode > 0
     audio_only = model_def.get("audio_only", False)
     duration_def = model_def.get("duration_slider", None)
@@ -6569,13 +6586,14 @@ def generate_media(
         model_kwargs.update(upsampler_api.model_load_kwargs_for_vae_upsampling(spatial_upsampling, base_model_type, model_def, image_mode))
     output_type = get_profile_type_for_model(model_type, image_mode)
     profile = compute_profile(override_profile, output_type)
-    if model_type != transformer_type or reload_needed or profile != loaded_profile:
+    if model_type != transformer_type or reload_needed or profile != loaded_profile or config != loaded_config:
         release_model()
         send_cmd("status", f"Loading model {get_model_name(model_type)}...")
         wan_model, offloadobj = load_models(
             model_type,
             override_profile,
             output_type=output_type,
+            config_id=config,
             **model_kwargs,
         )
         send_cmd("status", "Model loaded")
@@ -10093,6 +10111,7 @@ def save_inputs(
             self_refiner_f_uncertainty,
             self_refiner_certain_percentage,
             output_filename,
+            config,
             mode,
             state,
             plugin_data,
@@ -12163,6 +12182,14 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         gr.Markdown('<B>Customize the Output Filename using Settings Values (<I>date, seed, resolution, num_inference_steps, prompt, flow_shift, video_length, guidance_scale</I>). For Instance:<BR>"<I>{date(YYYY-MM-DD_HH-mm-ss)}_{seed}_{prompt(50)}, {num_inference_steps}</I>"</B>')
                         output_filename = gr.Text( label= " Output Filename ( Leave Blank for Auto Naming)", value= ui_get("output_filename"))
 
+                    model_configs = get_model_recursive_prop(model_type, "configs", return_list=False, model_def=model_def) or {}
+                    with gr.Column(bool(model_configs)) as config_column:
+                        gr.Markdown('<B>You may pick a Variation of the Default Config (VAE Decoder, Text Encoder, may be different for instance)</B>')
+                        config_choices = [(config_def.get("name", config_id), config_id) for config_id, config_def in model_configs.items()]
+                        config_value = ui_get("config")
+                        if model_configs and config_value not in model_configs: config_value = next(iter(model_configs))
+                        config = gr.Dropdown(choices=config_choices or [("", "")], value=config_value if model_configs else "", label="Config")
+
             if not update_form:
                 with gr.Row(visible=(tab_id == 'edit')):
                     edit_btn = gr.Button("Apply Edits", elem_id="edit_tab_apply_button")
@@ -12345,7 +12372,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       video_info_to_start_image_btn, video_info_to_end_image_btn, video_info_to_reference_image_btn, video_info_to_image_guide_btn, video_info_to_image_mask_btn,
                                       NAG_col, audio_options_row, remove_background_sound, normalize_audio_volumes, audio_prompt_type_custom_option, speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, prompt_enhancer_mode_dropdown, prompt_enhancer_think, force_control_video_trim,
                                       min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temporal_upsampling_method, temporal_upsampling_multiplier, spatial_upsampling_method, spatial_upsampling_ratio, temperature_row, *custom_settings_rows, *custom_setting_extra_inputs, top_pk_row,
-                                      number_frames_row, negative_prompt_row,
+                                      number_frames_row, negative_prompt_row, config_column,
                                       self_refiner_col, pause_row]+\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,
         if update_form:

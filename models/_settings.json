@@ -92,6 +92,7 @@
 	"override_profile": -1,
 	"override_attention": "",
 	"output_filename": "",
+	"config": "",
 	"activated_loras": [],
 	"loras_multipliers": "",
 	"image_start": null,

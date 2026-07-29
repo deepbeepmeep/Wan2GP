@@ -63,6 +63,7 @@ For instance if one adds a module *vace_14B* on top of a model with architecture
 - *URLs2*: URLs of all the finetune versions (quantized / non quantized) of the weights used for the second phase of a model. For instance with Wan 2.2, the first phase contains the High Noise model weights and the second phase contains the Low Noise model weights. This feature can be used with other models than Wan 2.2 to combine different model weights during the same video generation.
 - *text_encoder_URLs* : URLs of the text_encoder versions (quantized or not), if specified will override the default text encoder
 - *VAE_URLs* : URL of a VAE (in a list), if specified will override the default VAE (supported so far only with Wan & LTX2 models)
+- *configs*: optional dictionary of selectable model loading configurations, or the id of another model whose *configs* dictionary should be reused. Each config key is its id and each value is a dictionary that overrides properties of the enclosing *model* subtree. A config-level *name* is used as its label in the UI; otherwise its id is displayed.
 - *modules*: this a list of modules to be combined with the models referenced by the URLs. A module is a model extension that is merged with a model to expand its capabilities. Supported models so far are : *vace_14B* and *multitalk*. For instance the full Vace model is the fusion of a Wan text 2 video and the Vace module.
 - *preload_URLs* : URLs of files to download no matter what (used to load quantization maps for instance)
 - *loras* : URLs or file paths of LoRAs that will be applied before any LoRA selected by the user. These LoRAs will often be accelerators. For instance if you specify here a FusioniX LoRA you will be able to reduce the number of generation steps to 10.
@@ -95,6 +96,57 @@ Example:
   "prompt_infos": "## Prompt Format\nWrite one paragraph per shot. Put spoken words in double quotes. Keep character names consistent across the whole prompt."
 }
 ```
+
+### Selectable Model Loading Configurations
+
+Use the optional *configs* dictionary when several component combinations should remain under one model entry. WanGP displays a **Config** dropdown at the end of the **Misc.** tab and stores the selected config id in the generation setting named *config*. Changing it reloads the current model, and the selected config is recorded in the generated media information.
+
+Config values are shallow overrides of the enclosing *model* dictionary and are applied only when the model is loaded. Properties omitted from a config continue to use the enclosing model value or the value inherited from its architecture. The first declared config is selected by default. If a saved config id no longer exists, WanGP also selects the first entry.
+
+The complete config dictionary can be inherited from another model definition:
+
+```json
+"configs": "t2v"
+```
+
+This reuses the configs declared by *t2v*, while each selected config still overrides the enclosing model in which the reference appears.
+
+This example keeps the same transformer while offering the architecture's standard components, an alternate compatible text encoder, or an alternate VAE:
+
+```json
+{
+  "model": {
+    "name": "My LTX2 Finetune",
+    "architecture": "ltx2_22B",
+    "description": "One transformer with selectable text encoder and VAE configurations.",
+    "URLs": [
+      "https://huggingface.co/your-account/your-repo/resolve/main/my_ltx2_finetune_bf16.safetensors",
+      "https://huggingface.co/your-account/your-repo/resolve/main/my_ltx2_finetune_quanto_bf16_int8.safetensors"
+    ],
+    "configs": {
+      "standard": {
+        "name": "Standard Text Encoder and VAE"
+      },
+      "alternate_text_encoder": {
+        "name": "Alternate Text Encoder",
+        "text_encoder_URLs": [
+          "https://huggingface.co/your-account/your-repo/resolve/main/alternate_text_encoder_bf16.safetensors",
+          "https://huggingface.co/your-account/your-repo/resolve/main/alternate_text_encoder_quanto_bf16_int8.safetensors"
+        ]
+      },
+      "alternate_vae": {
+        "name": "Alternate VAE",
+        "VAE_URLs": [
+          "https://huggingface.co/your-account/your-repo/resolve/main/alternate_vae.safetensors"
+        ]
+      }
+    }
+  },
+  "prompt": "A cinematic scene used to compare the available model configurations."
+}
+```
+
+The alternate text encoder must be compatible with the architecture and its tokenizer. If it needs a different component folder, also override *text_encoder_folder* and make sure that folder contains the required tokenizer files. The alternate VAE must likewise be supported by the selected architecture.
 
 In order to favor reusability the properties of *URLs*, *modules*, *loRAs* and  *preload_URLs* can contain instead of a list of URLs a single text which corresponds to the id of a finetune or default model to reuse. Instead of:
 ```

@@ -78,7 +78,7 @@ WanGP's growing community has developed more than 20 plugins that expand what yo
 
 **New Wan2GP Desktop Installer** — [Wan2GP Desktop](https://github.com/GKartist75/wan2gp-desktop) by GKArtist lets you install, update, and launch WanGP from a single window. It handles Git, Python, CUDA, and PyTorch setup for you, making it the easiest way to get started on Windows.
 
-### 25th of July 2026: WanGP v12.345, you can breath now
+### 29th of July 2026: WanGP v12.3456, Increasingly Greater
 
 - **Krea 2 Identity Edit**: this Krea2 finetune adds Editing capabilities to Krea 2. You can edit an existing image or combine up to 2 *Reference Images* to produce a new one. WanGP implementation comes out of the box with *Inpainting* and *Outpainting*   
 
@@ -96,7 +96,14 @@ WanGP's growing community has developed more than 20 plugins that expand what yo
 
 - **More Krea2 LoRA Support**: more LoRAs formats are supported 
 
+- **Shotplan**: some form *PromptRelay* for Wan 2.1 and Wan 2.2, you can divide a gen into different shots that reuses the same characters or objects
+
+- **PrunaVAED**: this an alternative *VAE Video Decoder** for LTX2 that is 2.7 faster and requires half the VRAM during the *VAE decoding*. You will be able to select PrunaVAED in the *Misc* Tab at the bottom, in the new *Config* dropdown box
+
+- **WanGP Configs**: if you just want to change the VAE or the text encoder you no longer need to create multiple finetune, you can now just create a single finetune with multiple configs in it. Please check *docs/FINETUNES.md*
+
 *update 12.345*: Text Encode GGUF Support, Joy Echo Surgical, MSR2 new setting, Omnivoice Speed adjustment, new Krea2 LoRA formats
+*update 12.346*: Shotplan, PrunaVAED, WanGP Configs
 
 ### 1st of July 2026: WanGP v12.3, The VRAM Digger
 

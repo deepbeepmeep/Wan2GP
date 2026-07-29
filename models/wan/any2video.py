@@ -49,6 +49,7 @@ from shared.utils.self_refiner import PnPHandler, create_self_refiner_handler
 from mmgp import safetensors2
 from shared.utils import files_locator as fl 
 from .scail2 import prepare_scail2_conditioning, test_scail2_replace
+from .shotplan import compile_shotplan_prompt
 
 WAN_USE_FP32_ROPE_FREQS = True
 
@@ -174,6 +175,7 @@ class WanAny2V:
         # sd = safetensors2.torch_load_file(xmodel_filename)
         # model_filename = "c:/temp/wan2.2i2v/low/diffusion_pytorch_model-00001-of-00006.safetensors"
         base_config_file = model_def.get("config_file", f"models/wan/configs/{base_model_type}.json")
+        base_config_file2 = model_def.get("config_file2", base_config_file)
         forcedConfigPath = base_config_file if len(model_filename) > 1 else None
         # forcedConfigPath = base_config_file = f"configs/flf2v_720p.json"
         # model_filename[1] = xmodel_filename
@@ -185,15 +187,17 @@ class WanAny2V:
         def preprocess_sd(sd):
             return WanModel.preprocess_sd_with_dtype(dtype, sd)
         kwargs= { "modelClass": WanModel,"do_quantize": quantizeTransformer and not save_quantized, "defaultConfigPath": base_config_file , "ignore_unused_weights": ignore_unused_weights, "writable_tensors": False, "default_dtype": dtype, "preprocess_sd": preprocess_sd, "forcedConfigPath": forcedConfigPath, }
+        kwargs2 = {**kwargs, "defaultConfigPath": base_config_file2, "forcedConfigPath": base_config_file2}
         kwargs_light= { "modelClass": WanModel,"writable_tensors": False, "preprocess_sd": preprocess_sd , "forcedConfigPath" : base_config_file}
+        kwargs_light2 = {**kwargs_light, "forcedConfigPath": base_config_file2}
         if module_source is not None:
             self.model = offload.fast_load_transformers_model(model_filename[:1] + [fl.locate_file(module_source)], **kwargs)
         if module_source2 is not None:
-            self.model2 = offload.fast_load_transformers_model(model_filename[1:2] + [fl.locate_file(module_source2)], **kwargs)
+            self.model2 = offload.fast_load_transformers_model(model_filename[1:2] + [fl.locate_file(module_source2)], **kwargs2)
         if source is not None:
             self.model = offload.fast_load_transformers_model(fl.locate_file(source),  **kwargs_light)
         if source2 is not None:
-            self.model2 = offload.fast_load_transformers_model(fl.locate_file(source2), **kwargs_light)
+            self.model2 = offload.fast_load_transformers_model(fl.locate_file(source2), **kwargs_light2)
 
         if self.model is not None or self.model2 is not None:
             from wgp import save_model
@@ -206,13 +210,13 @@ class WanAny2V:
                 if 0 in submodel_no_list[2:]:
                     shared_modules= {}
                     self.model = offload.fast_load_transformers_model(model_filename[:1], modules = model_filename[2:], return_shared_modules= shared_modules, **kwargs)
-                    self.model2 = offload.fast_load_transformers_model(model_filename[1:2], modules = shared_modules, **kwargs)
+                    self.model2 = offload.fast_load_transformers_model(model_filename[1:2], modules = shared_modules, **kwargs2)
                     shared_modules = None
                 else:
                     modules_for_1 =[ file_name for file_name, submodel_no in zip(model_filename[2:],submodel_no_list[2:] ) if submodel_no ==1 ]
                     modules_for_2 =[ file_name for file_name, submodel_no in zip(model_filename[2:],submodel_no_list[2:] ) if submodel_no ==2 ]
                     self.model = offload.fast_load_transformers_model(model_filename[:1], modules = modules_for_1, **kwargs)
-                    self.model2 = offload.fast_load_transformers_model(model_filename[1:2], modules = modules_for_2, **kwargs)
+                    self.model2 = offload.fast_load_transformers_model(model_filename[1:2], modules = modules_for_2, **kwargs2)
 
             else:
                 self.model = offload.fast_load_transformers_model(model_filename,  **kwargs)
@@ -240,8 +244,8 @@ class WanAny2V:
             from wgp import save_quantized_model
             if self.model is not None:
                 save_quantized_model(self.model, model_type, model_filename[0], dtype, base_config_file)
-            if self.model2 is not None:
-                save_quantized_model(self.model2, model_type, model_filename[1], dtype, base_config_file, submodel_no=2)
+            if self.model2 is not None and model_def.get("save_quantized_submodel2", True):
+                save_quantized_model(self.model2, model_type, model_filename[1], dtype, base_config_file2, submodel_no=2)
         self.sample_neg_prompt = config.sample_neg_prompt
 
         self.use_fp32_rope_freqs = bool(model_def.get("wan_rope_freqs_fp32", WAN_USE_FP32_ROPE_FREQS))
@@ -500,10 +504,16 @@ class WanAny2V:
         save_masks=False,
         vae_upsampler=None,
         set_progress_status=None,
+        fps=16,
         **bbargs
                 ):
         
         model_def = self.model_def
+        shotplan_cut_frames = ()
+        if model_def.get("shotplan", False):
+            shotplan_prompt = compile_shotplan_prompt(input_prompt, frame_num, fps)
+            input_prompt = shotplan_prompt.prompt
+            shotplan_cut_frames = shotplan_prompt.cut_frames
 
         if sample_solver =="euler":
             sample_scheduler = EulerScheduler(
@@ -1154,6 +1164,8 @@ class WanAny2V:
             freqs = ( torch.cat([freqs[0], post_freqs[0]]), torch.cat([freqs[1], post_freqs[1]]) )
 
         kwargs["freqs"] = freqs
+        if model_def.get("shotplan", False):
+            kwargs["shotplan_cut_frames"] = shotplan_cut_frames
 
         def _build_sub_parallel_windows(total, size, overlap):
             if size <= 0 or size >= total:

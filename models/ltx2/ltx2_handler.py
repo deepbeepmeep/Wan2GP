@@ -16,6 +16,8 @@ _GEMMA_FOLDER_URL = "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/gemm
 _GEMMA_FOLDER = "gemma-3-12b-it-qat-q4_0-unquantized"
 _GEMMA_FILENAME = f"{_GEMMA_FOLDER}.safetensors"
 _GEMMA_QUANTO_FILENAME = f"{_GEMMA_FOLDER}_quanto_bf16_int8.safetensors"
+_PRUNAAI_VAE_FILENAME = "ltx-2.3-22b_PrunaAI_vae.safetensors"
+_PRUNAAI_VAE_CONFIG_FILENAME = "ltx-2.3-22b_PrunaAI_vae.json"
 _GEMMA_TOKENIZER_FILES = [
     "added_tokens.json",
     "chat_template.json",
@@ -282,7 +284,7 @@ def _get_embeddings_connector_filename(model_def, base_model_type):
 def _get_multi_file_names(model_def, base_model_type):
     spec = _get_arch_spec(base_model_type)
     return {
-        "video_vae": spec["video_vae"],
+        "video_vae": model_def.get("ltx2_video_vae_file", spec["video_vae"]),
         "audio_vae": spec["audio_vae"],
         "vocoder": spec["vocoder"],
         "text_embedding_projection": spec["text_embedding_projection"],
@@ -298,6 +300,12 @@ def _resolve_multi_file_paths(model_def, base_model_type):
     if not os.path.isfile(model_config):
         raise FileNotFoundError(f"Missing LTX config file: {model_config}")
     paths["model_config"] = model_config
+    video_vae_config_file = model_def.get("ltx2_video_vae_config_file")
+    if video_vae_config_file:
+        video_vae_config = os.path.join(os.path.dirname(__file__), video_vae_config_file)
+        if not os.path.isfile(video_vae_config):
+            raise FileNotFoundError(f"Missing LTX video VAE config file: {video_vae_config}")
+        paths["video_vae_config"] = video_vae_config
     return paths
 
 
@@ -446,6 +454,16 @@ class family_handler:
             "vae_block_size": 64,
             "keep_frames_video_guide_not_supported": True,
         }
+        if base_model_type in LTX2_22B_CLASS:
+            extra_model_def["configs"] = {
+                "Default VAE": {},
+                "PrunaAI VAE": {
+                    "name": "PrunaAI VAE (up to x2 faster)",
+                    "ltx2_video_vae_file": _PRUNAAI_VAE_FILENAME,
+                    "ltx2_video_vae_config_file": _PRUNAAI_VAE_CONFIG_FILENAME,
+                    "ltx2_pruna_vae": True,
+                },
+            }
         extra_model_def.update(_get_system_lora_urls(spec))
         if distilled:
             extra_model_def["ltx2_pipeline"] = "distilled"

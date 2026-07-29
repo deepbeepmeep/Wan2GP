@@ -509,12 +509,6 @@ class WanAny2V:
                 ):
         
         model_def = self.model_def
-        shotplan_cut_frames = ()
-        if model_def.get("shotplan", False):
-            shotplan_prompt = compile_shotplan_prompt(input_prompt, frame_num, fps)
-            input_prompt = shotplan_prompt.prompt
-            shotplan_cut_frames = shotplan_prompt.cut_frames
-
         if sample_solver =="euler":
             sample_scheduler = EulerScheduler(
                 num_train_timesteps=self.num_timesteps,
@@ -565,8 +559,9 @@ class WanAny2V:
         if self._interrupt:
             return None
         # Text Encoder
-        kiwi_edit = model_type in ["kiwi_edit"]
+        kiwi_edit = model_type in ["kiwi_edit"]        
         bernini = model_def.get("bernini_class", False)
+        shotplan = model_def.get("shotplan", False)
         if n_prompt == "":
             n_prompt = self.sample_neg_prompt
         text_len = self.model.text_len
@@ -577,6 +572,10 @@ class WanAny2V:
             any_guidance_at_all = any_guidance_at_all or "I" in video_prompt_type and bernini_omega_i != 1 or "V" in video_prompt_type and "I" in video_prompt_type and bernini_omega_v != 1
         context_null = context = None
         if input_video is not None: height, width = input_video.shape[-2:]
+
+        if shotplan:
+            shotplan_prompt = compile_shotplan_prompt(input_prompt, frame_num, fps)
+            input_prompt = shotplan_prompt.prompt
 
         if kiwi_edit:
             from .kiwi.embedders import build_kiwi_conditions
@@ -1132,6 +1131,10 @@ class WanAny2V:
             extended_latents, freqs = self._build_mocha_latents( input_frames, input_masks,  input_ref_images[:2], frame_num, lat_frames, lat_h, lat_w, VAE_tile_size )
             extended_input_dim = 2
 
+        # shotplan
+        if shotplan:
+            kwargs["shotplan_cut_frames"] = shotplan_prompt.cut_frames
+
         target_shape = (self.vae.model.z_dim, lat_frames + ref_images_count, lat_h, lat_w)
 
         if multitalk:
@@ -1164,8 +1167,6 @@ class WanAny2V:
             freqs = ( torch.cat([freqs[0], post_freqs[0]]), torch.cat([freqs[1], post_freqs[1]]) )
 
         kwargs["freqs"] = freqs
-        if model_def.get("shotplan", False):
-            kwargs["shotplan_cut_frames"] = shotplan_cut_frames
 
         def _build_sub_parallel_windows(total, size, overlap):
             if size <= 0 or size >= total:

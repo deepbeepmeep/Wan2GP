@@ -8869,7 +8869,7 @@ def refresh_lora_list(state, lset_name, loras_choices):
             error_files = [path for path, _ in errors]
             gr.Info("Error while refreshing Lora List, invalid Lora files: " + ", ".join(error_files))
         else:
-            gr.Info("Lora List has been refreshed")
+            gr.Info("LoRAs List and Settings List have been refreshed")
 
 
     return gr.Dropdown(choices=lset_choices, value= lset_name), gr.update(hierarchy=new_loras_hierarchy, value=loras_choices) 
@@ -9356,14 +9356,14 @@ def image_to_ref_image_set(state, input_file_list, choice, target, target_name):
 
 def image_to_ref_image_guide(state, input_file_list, choice):
     file_list, file_settings_list = get_file_list(state, input_file_list)
-    if len(file_list) == 0 or choice == None or choice < 0 or choice > len(file_list): return gr.update(), gr.update()
+    if len(file_list) == 0 or choice == None or choice < 0 or choice > len(file_list): return gr.update(), gr.update(), gr.update()
     ui_settings = get_current_model_settings(state)
     gr.Info(f"Selected Image was copied to Control Image")
     new_image = file_list[choice]
-    if ui_settings["image_mode"]==2 or True:
-        return new_image, new_image
+    if ui_settings.get("image_mode",0)==2 or True:
+        return new_image, new_image, None
     else:
-        return new_image, None
+        return new_image, None, None
 
 def audio_to_source_set(state, input_file_list, choice, target_name):
     file_list, file_settings_list = get_file_list(state, unpack_audio_list(input_file_list), audio_files=True)
@@ -10127,6 +10127,8 @@ def save_inputs(
             image_guide = image_mask_guide["background"]
         if "layers" in image_mask_guide and len(image_mask_guide["layers"])>0: 
             image_mask = image_editor_layer_to_rgb_mask(image_mask_guide["layers"][0])
+        elif image_mask is None and image_guide is not None:
+            image_mask = Image.new("RGB", image_guide.size, (0, 0, 0))
         image_mask_guide = None
     inputs = get_function_arguments(save_inputs, locals())
     inputs.pop("target")
@@ -11200,7 +11202,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             image_ref_choices = model_def.get("image_ref_choices", None)
             video_prompt_type_value = ui_get("video_prompt_type")
             dropdown_selectable = image_mode_value != 2
-            image_ref_inpaint = image_mode_value == 2 and "I" in model_def.get("inpaint_video_prompt_type", "")
+            image_ref_inpaint = image_mode_value == 2 and model_def.get("inpaint_with_image_ref", False)
             guide_selection_context_visible = dropdown_selectable or image_ref_inpaint
             guide_selector_visible = guide_preprocessing is not None and guide_preprocessing.get("visible", True)
             guide_alt_selector_visible = guide_custom_choices is not None and guide_custom_choices.get("visible", True)
@@ -12583,7 +12585,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             video_info_to_video_source_btn.click(fn=video_to_source_video, inputs =[state, output, last_choice], outputs = [video_source] )
             video_info_to_start_image_btn.click(fn=image_to_ref_image_add, inputs =[state, output, last_choice, image_start, gr.State("Start Image")], outputs = [image_start] )
             video_info_to_end_image_btn.click(fn=image_to_ref_image_add, inputs =[state, output, last_choice, image_end, gr.State("End Image")], outputs = [image_end] )
-            video_info_to_image_guide_btn.click(fn=image_to_ref_image_guide, inputs =[state, output, last_choice], outputs = [image_guide, image_mask_guide]).then(fn=None, inputs=[], outputs=[], js=click_brush_js )
+            video_info_to_image_guide_btn.click(fn=image_to_ref_image_guide, inputs =[state, output, last_choice], outputs = [image_guide, image_mask_guide, image_mask]).then(fn=None, inputs=[], outputs=[], js=click_brush_js )
             video_info_to_image_mask_btn.click(fn=image_to_ref_image_set, inputs =[state, output, last_choice, image_mask, gr.State("Image Mask")], outputs = [image_mask] )
             video_info_to_reference_image_btn.click(fn=image_to_ref_image_add, inputs =[state, output, last_choice, image_refs, gr.State("Ref Image")],  outputs = [image_refs] )
 

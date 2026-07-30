@@ -102,7 +102,7 @@ WanGP's growing community has developed more than 20 plugins that expand what yo
 
 - **WanGP Configs**: if you just want to change the VAE or the text encoder you no longer need to create multiple finetune, you can now just create a single finetune with multiple configs in it. Please check *docs/FINETUNES.md*
 
-*update 12.345*: Text Encode GGUF Support, Joy Echo Surgical, MSR2 new setting, Omnivoice Speed adjustment, new Krea2 LoRA formats
+*update 12.345*: Text Encode GGUF Support, Joy Echo Surgical, MSR2 new setting, Omnivoice Speed adjustment, new Krea2 LoRA formats\
 *update 12.346*: Shotplan, PrunaVAED, WanGP Configs
 
 ### 1st of July 2026: WanGP v12.3, The VRAM Digger

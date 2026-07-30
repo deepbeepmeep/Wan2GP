@@ -382,7 +382,7 @@ def build_gemma_text_encoder(
         raise FileNotFoundError(f"Gemma checkpoint not found: {gemma_root}")
     side_files_root = fl.locate_folder(side_files_root or _GEMMA_FOLDER)
     tokenizer_path = side_files_root
-    config_path = fl.locate_file(os.path.join(side_files_root, "config_light.json"))
+    config_path = os.path.join(side_files_root, "config_light.json")
     preprocess_sd = functools.partial(_preprocess_gemma_state_dict, config_path=config_path)
     from accelerate import init_empty_weights
     with init_empty_weights():

@@ -88,10 +88,8 @@ class ResnetBlock3D(nn.Module):
             else nn.Identity()
         )
 
-        # Using GroupNorm with 1 group is equivalent to LayerNorm but works with (B, C, ...) layout
-        # avoiding the need for dimension rearrangement used in standard nn.LayerNorm
         self.norm3 = (
-            nn.GroupNorm(num_groups=1, num_channels=in_channels, eps=eps, affine=True)
+            nn.LayerNorm(in_channels, eps=eps, elementwise_affine=True, bias=True)
             if in_channels != out_channels
             else nn.Identity()
         )
@@ -175,9 +173,8 @@ class ResnetBlock3D(nn.Module):
                 generator=generator,
             )
 
-        input_tensor = self.norm3(input_tensor)
-
-        batch_size = input_tensor.shape[0]
+        if not isinstance(self.norm3, nn.Identity):
+            input_tensor = self.norm3(input_tensor.movedim(1, -1)).movedim(-1, 1)
 
         input_tensor = self.conv_shortcut(input_tensor)
 

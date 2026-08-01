@@ -9,6 +9,7 @@ from PIL import Image
 from shared.utils.hf import build_hf_url
 from shared.utils import files_locator as fl
 from .bernini_prompt_infos import get_bernini_infos, get_bernini_prompt_infos
+from .shotplan_prompt_infos import SHOTPLAN_PROMPT_INFOS
 from .vace_infos import VACE_INFOS
 from .kiwi.variant_config import get_kiwi_variant_model_def
 from .scail2 import (
@@ -29,7 +30,10 @@ def test_class_i2v(base_model_type):
     return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate", "chrono_edit", "steadydancer", "wanmove", "scail", "scail2_14B", "scail2_1.3B", "i2v_2_2_svi2pro" ]
 
 def test_class_t2v(base_model_type):    
-    return base_model_type in ["t2v", "t2v_2_2", "alpha", "alpha2", "lynx", "vista4d", "bernini", "bernini_1.3B"]
+    return base_model_type in ["t2v", "t2v_2_2", "shotplan_t2v", "shotplan_t2v_2_2", "alpha", "alpha2", "lynx", "vista4d", "bernini", "bernini_1.3B"]
+
+def test_shotplan(base_model_type):
+    return base_model_type in ["shotplan_t2v", "shotplan_t2v_2_2"]
 
 def test_oneframe_overlap(base_model_type):
     return test_class_i2v(base_model_type) and not (test_multitalk(base_model_type) or base_model_type in ["animate", "scail"] or test_scail2(base_model_type) or test_svi2pro(base_model_type))  or test_wan_5B(base_model_type)
@@ -67,7 +71,7 @@ class family_handler():
     def query_supported_types():
         return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_14B_2_2", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B",
                     "t2v_1.3B", "standin", "lynx_lite", "lynx", "t2v", "t2v_2_2", "vace_1.3B", "vace_ditto_14B", "phantom_1.3B", "phantom_14B",
-                    "recam_1.3B", "animate", "alpha", "alpha2", "alpha_lynx", "chrono_edit",
+                    "recam_1.3B", "animate", "alpha", "alpha2", "alpha_lynx", "chrono_edit", "shotplan_t2v", "shotplan_t2v_2_2",
                     "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "kiwi_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp", "mocha", "steadydancer", "wanmove", "scail", "scail2_14B", "scail2_1.3B", "vista4d", "i2v_2_2_svi2pro", "bernini", "bernini_1.3B"]
 
 
@@ -141,6 +145,8 @@ class family_handler():
         )
     @staticmethod
     def get_lora_dir(base_model_type, args, lora_root):
+        if test_shotplan(base_model_type):
+            return os.path.join(lora_root, "wan_shotplan_2_2" if base_model_type == "shotplan_t2v_2_2" else "wan_shotplan")
         i2v = test_class_i2v(base_model_type) and not test_i2v_2_2(base_model_type)
         wan_dir = getattr(args, "lora_dir_wan", None) or getattr(args, "lora_dir", None) or os.path.join(lora_root, "wan")
         wan_i2v_dir = getattr(args, "lora_dir_wan_i2v", None) or getattr(args, "lora_dir_i2v", None) or os.path.join(lora_root, "wan_i2v")
@@ -224,7 +230,13 @@ class family_handler():
         extra_model_def["wan_5B_class"] = wan_5B = test_wan_5B(base_model_type)        
         extra_model_def["vace_class"] = vace_class = test_vace(base_model_type)
         extra_model_def["bernini_class"] = bernini = test_bernini(base_model_type)
+        extra_model_def["shotplan"] = shotplan = test_shotplan(base_model_type)
         extra_model_def["scail2"] = scail2 = test_scail2(base_model_type)
+        if shotplan:
+            extra_model_def["prompt_infos"] = SHOTPLAN_PROMPT_INFOS
+            if base_model_type == "shotplan_t2v_2_2":
+                extra_model_def["config_file2"] = "models/wan/configs/t2v_2_2.json"
+                extra_model_def["save_quantized_submodel2"] = False
         if vace_class:
             extra_model_def["infos"] = model_def.get("infos", VACE_INFOS)
         if bernini:
@@ -270,9 +282,11 @@ class family_handler():
         if bernini:
             profiles_dir = ["wan_bernini_1.3B", "wan_1.3B"] if base_model_type == "bernini_1.3B" else ["wan_bernini", "wan_2_2"]
             group = "wan2_2"
-        elif base_model_type in ["t2v_2_2", "vace_14B_2_2"] or test_i2v_2_2(base_model_type):
-            profiles_dir = "wan_2_2"
+        elif base_model_type in ["t2v_2_2", "vace_14B_2_2", "shotplan_t2v_2_2"] or test_i2v_2_2(base_model_type):
+            profiles_dir = ["wan_shotplan_2_2", "wan_2_2"] if shotplan else "wan_2_2"
             group = "wan2_2"
+        elif base_model_type == "shotplan_t2v":
+            profiles_dir = ["wan_shotplan", "wan"]
         elif scail2 or i2v:
             profiles_dir = "wan_i2v"
             if base_model_type in ["chrono_edit"]:
@@ -316,7 +330,7 @@ class family_handler():
         extra_model_def.update({
         "frames_minimum" : frames_minimum,
         "frames_steps" : frames_steps, 
-        "sliding_window" : base_model_type in ["multitalk", "infinitetalk", "t2v", "t2v_2_2", "fantasy", "animate", "lynx"] or test_class_i2v(base_model_type) or test_wan_5B(base_model_type) or vace_class,  #"ti2v_2_2",
+        "sliding_window" : not shotplan and (base_model_type in ["multitalk", "infinitetalk", "t2v", "t2v_2_2", "fantasy", "animate", "lynx"] or test_class_i2v(base_model_type) or test_wan_5B(base_model_type) or vace_class),  #"ti2v_2_2",
         "multiple_submodels" : multiple_submodels,
         "guidance_max_phases" : 3,
         "perturbation" : True,
@@ -324,8 +338,8 @@ class family_handler():
         "cfg_zero" : True,
         "cfg_star" : True,
         "adaptive_projected_guidance" : True,  
-        "tea_cache" : not (base_model_type in ["i2v_2_2"] or test_wan_5B(base_model_type) or multiple_submodels),
-        "mag_cache" : True,
+        "tea_cache" : not shotplan and not (base_model_type in ["i2v_2_2"] or test_wan_5B(base_model_type) or multiple_submodels),
+        "mag_cache" : not shotplan,
         "keep_frames_video_guide_not_supported": base_model_type in ["infinitetalk"],
         "sample_solvers":[
                             ("unipc", "unipc"),
@@ -846,7 +860,7 @@ class family_handler():
 
         if bernini:
             image_prompt_types_allowed = "T"
-        elif vace_class or base_model_type in ["animate", "t2v", "t2v_2_2", "lynx"] :
+        elif vace_class or base_model_type in ["animate", "t2v", "t2v_2_2", "shotplan_t2v", "shotplan_t2v_2_2", "lynx"] :
             image_prompt_types_allowed = "TVL"
         elif base_model_type in ["infinitetalk"]:
             image_prompt_types_allowed = "TSVL"

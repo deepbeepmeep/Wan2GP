@@ -888,7 +888,14 @@ class LTX2:
         transformer.eval().requires_grad_(False)
         VAE_URLs = self.model_def.get("VAE_URLs", None)
         video_vae_path =  fl.locate_file(VAE_URLs[0]) if VAE_URLs is not None and len(VAE_URLs) else _component_path("video_vae")
-        video_config = copy.deepcopy(_component_config(video_vae_path))
+        video_config_path = component_paths.get("video_vae_config") if component_paths else None
+        if video_config_path:
+            with open(video_config_path, "r", encoding="utf-8") as reader:
+                video_config = copy.deepcopy(json.load(reader))
+        else:
+            video_config = copy.deepcopy(_component_config(video_vae_path))
+        if self.model_def.get("ltx2_pruna_vae", False):
+            print("[WanGP][LTX2] Loading PrunaAI VAE (up to x2 faster).")
         video_config_vae = video_config.setdefault("vae", {})
         video_config_vae["spatial_padding_mode"] = "reflect"
         video_config_vae["encoder_spatial_padding_mode"] = "reflect"

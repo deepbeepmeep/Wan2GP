@@ -35,6 +35,8 @@ USER_PROCESS_OUTPUT_KEYS = {
 
 def build_task_settings(process_settings: dict, *, is_user_process: bool) -> dict:
     settings = copy.deepcopy(process_settings)
+    if "video_prompt_type" in settings:
+        settings["video_prompt_type"] = str(settings.get("video_prompt_type") or "").replace("|", "")
     if is_user_process:
         for key in USER_PROCESS_OUTPUT_KEYS:
             settings.pop(key, None)

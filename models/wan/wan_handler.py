@@ -9,7 +9,7 @@ from PIL import Image
 from shared.utils.hf import build_hf_url
 from shared.utils import files_locator as fl
 from .bernini_prompt_infos import get_bernini_infos, get_bernini_prompt_infos
-from .shotplan_prompt_infos import SHOTPLAN_PROMPT_INFOS
+from .shotplan_prompt_infos import SHOTPLAN_PROMPT_ENHANCER, SHOTPLAN_PROMPT_INFOS
 from .vace_infos import VACE_INFOS
 from .kiwi.variant_config import get_kiwi_variant_model_def
 from .scail2 import (
@@ -233,7 +233,18 @@ class family_handler():
         extra_model_def["shotplan"] = shotplan = test_shotplan(base_model_type)
         extra_model_def["scail2"] = scail2 = test_scail2(base_model_type)
         if shotplan:
-            extra_model_def["prompt_infos"] = SHOTPLAN_PROMPT_INFOS
+            extra_model_def.update({
+                "prompt_infos": SHOTPLAN_PROMPT_INFOS,
+                "prompt_enhancer_def": {
+                    "selection": ["T"],
+                    "labels": {"TV": "An Enhanced ShotPlan Prompt Relay using existing Text Prompt"},
+                    "default": "",
+                },
+                "text_prompt_enhancer_instructions": SHOTPLAN_PROMPT_ENHANCER,
+                "video_prompt_enhancer_instructions": SHOTPLAN_PROMPT_ENHANCER,
+                "text_prompt_enhancer_max_tokens": 512,
+                "video_prompt_enhancer_max_tokens": 512,
+            })
             if base_model_type == "shotplan_t2v_2_2":
                 extra_model_def["config_file2"] = "models/wan/configs/t2v_2_2.json"
                 extra_model_def["save_quantized_submodel2"] = False

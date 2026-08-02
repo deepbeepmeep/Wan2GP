@@ -1317,8 +1317,6 @@ class WanModel(ModelMixin, ConfigMixin):
         if hasattr(self, "face_adapter"): self.adapt_animate_model()
 
     def lock_layers_dtypes(self, hybrid_dtype = None, dtype = torch.float32):
-        from optimum.quanto import QTensor
-
         layer_list = [self.head, self.head.head, self.head.modulation, self.patch_embedding]
         if self.scail or self.scail2:
             layer_list += [self.pose_patch_embedding]
@@ -1357,15 +1355,7 @@ class WanModel(ModelMixin, ConfigMixin):
 
         for current_layer_list, current_dtype in zip([layer_list, layer_list2], [target_dype, target_dype2]):
             for layer in current_layer_list:
-                layer._lock_dtype = dtype
-                if isinstance(layer, nn.Parameter):
-                    if not isinstance(layer.data, QTensor):
-                        layer.data = layer.data.to(current_dtype)
-                elif hasattr(layer, "weight") and layer.weight.dtype != current_dtype:
-                    if not isinstance(layer.weight.data, QTensor):
-                        layer.weight.data = layer.weight.data.to(current_dtype)
-                        if hasattr(layer, "bias"):
-                            layer.bias.data = layer.bias.data.to(current_dtype)
+                layer._lock_dtype = current_dtype
 
         self._lock_dtype = dtype
 

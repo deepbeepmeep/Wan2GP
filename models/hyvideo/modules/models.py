@@ -835,16 +835,8 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
 
     def lock_layers_dtypes(self, dtype = torch.float32):
         layer_list = [self.final_layer, self.final_layer.linear, self.final_layer.adaLN_modulation[1]]
-        target_dype= dtype
-        
-        for current_layer_list, current_dtype in zip([layer_list], [target_dype]):
-            for layer in current_layer_list:
-                layer._lock_dtype = dtype
-
-                if hasattr(layer, "weight") and layer.weight.dtype != current_dtype :
-                    layer.weight.data = layer.weight.data.to(current_dtype)
-                    if hasattr(layer, "bias"):
-                        layer.bias.data = layer.bias.data.to(current_dtype)
+        for layer in layer_list:
+            layer._lock_dtype = dtype
 
         self._lock_dtype = dtype
 

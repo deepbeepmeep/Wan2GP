@@ -167,6 +167,7 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
         assets_dir = fl.locate_folder(assets_dir_name, error_if_none=False) or fl.get_download_location(assets_dir_name)
         runtime.llm_model = load_qwen35_text_prompt_enhancer(
             assets_dir=assets_dir,
+            default_dtype=torch.bfloat16 if backend == enhancer_quantization_QUANTO_INT8 else torch.float16,
             backend=backend,
             attn_implementation="sdpa",
             requested_lm_engine=lm_decoder_engine,

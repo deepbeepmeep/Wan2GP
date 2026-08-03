@@ -14,6 +14,14 @@ from .prompt_enhancer import (FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2
 REPO_ID = "DeepBeepMeep/MiniMax-H3"
 TEXT_ENCODER_BF16 = "Qwen3-VL-32B-Instruct-layer50_bf16.safetensors"
 TEXT_ENCODER_INT8 = "Qwen3-VL-32B-Instruct-layer50_quanto_bf16_int8.safetensors"
+TEXT_ENCODER_GGUF_Q2 = "qwen3vl-32B-MiniMax-H3-Q2_K.gguf"
+TEXT_ENCODER_GGUF_Q4 = "qwen3vl-32B-MiniMax-H3-Q4_K_M.gguf"
+TEXT_ENCODER_NVFP4 = "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+TEXT_ENCODER_VARIANTS = {
+    "gguf_q2_k": [TEXT_ENCODER_GGUF_Q2],
+    "gguf_q4_k_m": [TEXT_ENCODER_GGUF_Q4],
+    "nvfp4_awq": [TEXT_ENCODER_NVFP4],
+}
 FL2VA_ARCHITECTURE = "minimax_h3_fl2va"
 FL2VA_PRUNED_ARCHITECTURE = "minimax_h3_fl2va_pruned"
 REF2VA_ARCHITECTURE = "minimax_h3_ref2va"
@@ -99,6 +107,8 @@ class family_handler:
     def query_model_def(base_model_type, model_def):
         reference_mode = base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE)
         pruned = base_model_type in (FL2VA_PRUNED_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE)
+        text_encoder_variant = model_def.get("text_encoder_variant")
+        text_encoder_files = [TEXT_ENCODER_BF16, TEXT_ENCODER_INT8] if text_encoder_variant is None else TEXT_ENCODER_VARIANTS[text_encoder_variant]
         result = {
             "dtype": "bf16",
             "fps": 24,
@@ -135,10 +145,15 @@ class family_handler:
             "profiles_dir": ["minimax_h3"],
             "finetune_custom_urls": ["video_vae_file", "audio_vae_file"],
             "text_encoder_folder": TEXT_ENCODER_FOLDER,
-            "text_encoder_URLs": [
-                build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_BF16),
-                build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_INT8),
-            ],
+            "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, filename) for filename in text_encoder_files],
+            "configs": {
+                "_name": "Text Encoder",
+                "bf16": {"name": "Qwen3-VL BF16", "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_BF16)]},
+                "int8": {"name": "Qwen3-VL Quanto INT8", "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_INT8)]},
+                "nvfp4_awq": {"name": "Qwen3-VL NVFP4 AWQ", "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_NVFP4)]},
+                "gguf_q2_k": {"name": "Qwen3-VL GGUF Q2_K", "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_GGUF_Q2)]},
+                "gguf_q4_k_m": {"name": "Qwen3-VL GGUF Q4_K_M", "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_GGUF_Q4)]},
+            },
         }
         if reference_mode:
             result.update({

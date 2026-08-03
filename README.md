@@ -64,7 +64,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 ## 🔥 Latest Updates : 
 
-## 3rd of August 2026: No Time for Taglines
+## 3rd of August 2026: WanGP v12.41, No Time for Taglines
 
 **MiniMax H3**
 
@@ -80,6 +80,9 @@ But rejoice WanGP version is as usual Ultra Optimized: **5-6GB of VRAM only for 
 
 Both flavours offer the same controls in full 33B and lighter pruned 20B versions.
 
+If you are short on RAM, check the *Advanced / Misc* Tab, you will find at the bottom a selection of quantized text encoders. 
+
+*WanGP v12.41*: add selection quantized text encoders
 ## 25th of July 2026: Featured Plugins / Apps
 
 WanGP's growing community has developed more than 20 plugins that expand what you can do. Here is a selection of seven newly available community plugins, all of which can be installed or updated directly from the WanGP Plugin Manager:

@@ -89,6 +89,7 @@ from shared.deepy import controller as deepy_controller
 from shared.deepy import cli as deepy_cli
 from shared.deepy import gradio_ui as deepy_gradio_ui
 from shared import extra_settings
+from shared import config_groups as model_config_groups
 from shared import resolutions as resolution_utils
 import torch
 import gc
@@ -146,7 +147,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.11"
-WanGP_version = "12.4"
+WanGP_version = "12.41"
 settings_version = 2.66
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -2857,7 +2858,11 @@ def get_model_recursive_prop(model_type, prop = "URLs", sub_prop_name = None, re
             return [] if return_list else model_type 
         else:
             raise Exception(f"Unknown model type '{model_type}'")
-        
+
+
+def get_model_config_groups(model_type, model_def=None):
+    return [get_model_recursive_prop(model_type, key, return_list=False, model_def=model_def) or {} for key in model_config_groups.CONFIG_KEYS]
+
 
 def get_model_filename(model_type, quantization ="int8", dtype_policy = "", module_type = None, submodel_no = 1, URLs = None, stack=[], model_def = None):
     if URLs is not None:
@@ -3897,11 +3902,10 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
     base_model_type = get_base_model_type(model_type)
     model_def = get_model_def(model_type)
     if config_id is not None and len(config_id):
-        configs = get_model_recursive_prop(model_type, "configs", return_list=False, model_def=model_def) or {}
-        current_config = configs.get(config_id, None)
-        if current_config is None: raise Exception(f"Config '{config_id}' is not defined in Model Definition file")
+        config_groups = get_model_config_groups(model_type, model_def)
         model_def = model_def.copy()
-        model_def.update(current_config)
+        for _, _, current_config in model_config_groups.selected_model_configs(config_groups, config_id):
+            model_def.update(current_config)
     save_quantized = args.save_quantized and model_def != None
     model_filename = get_model_filename(model_type=model_type, quantization= "" if save_quantized else transformer_quantization, dtype_policy = transformer_dtype_policy, model_def=model_def)
     if "URLs2" in model_def:
@@ -4640,11 +4644,11 @@ def select_media(state, current_gallery_tab, input_file_list, file_selected, aud
             misc_values += [video_model_name]
             misc_labels += ["Model"]
             metadata_model_def = get_model_def(configs.get("model_type", None))
-            selected_config = configs.get("config", "")
-            model_configs = (get_model_recursive_prop(configs.get("model_type", None), "configs", return_list=False, model_def=metadata_model_def) or {}) if metadata_model_def is not None else {}
-            if selected_config in model_configs:
-                misc_values += [model_configs[selected_config].get("name", selected_config)]
-                misc_labels += ["Config"]
+            config_groups = get_model_config_groups(configs.get("model_type", None), metadata_model_def) if metadata_model_def is not None else [{}, {}, {}]
+            selected_config = model_config_groups.normalize_config_selection(config_groups, configs.get("config", ""))
+            for group, config_id, config_def in model_config_groups.selected_model_configs(config_groups, selected_config):
+                misc_values += [config_def.get("name", config_id)]
+                misc_labels += [model_config_groups.get_config_name(config_groups[group - 1])]
             model_modes_def = metadata_model_def.get("model_modes", None) if metadata_model_def is not None else None
             if model_modes_def is not None and "model_mode" in configs and configs.get("image_mode", 0) in model_modes_def.get("image_modes", [0, 1, 2]):
                 misc_values += [next((label for label, value in model_modes_def["choices"] if value == configs["model_mode"]), configs["model_mode"])]
@@ -6546,9 +6550,8 @@ def generate_media(
         replace_voice_sample2 = None
 
     model_def = get_model_def(model_type) 
-    model_configs = get_model_recursive_prop(model_type, "configs", return_list=False, model_def=model_def) or {}
-    if model_configs and config not in model_configs: config = next(iter(model_configs))
-    if not model_configs: config = ""
+    config_groups = get_model_config_groups(model_type, model_def)
+    config = model_config_groups.normalize_config_selection(config_groups, config)
     is_image = image_mode > 0
     audio_only = model_def.get("audio_only", False)
     duration_def = model_def.get("duration_slider", None)
@@ -12209,13 +12212,19 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         gr.Markdown('<B>Customize the Output Filename using Settings Values (<I>date, seed, resolution, num_inference_steps, prompt, flow_shift, video_length, guidance_scale</I>). For Instance:<BR>"<I>{date(YYYY-MM-DD_HH-mm-ss)}_{seed}_{prompt(50)}, {num_inference_steps}</I>"</B>')
                         output_filename = gr.Text( label= " Output Filename ( Leave Blank for Auto Naming)", value= ui_get("output_filename"))
 
-                    model_configs = get_model_recursive_prop(model_type, "configs", return_list=False, model_def=model_def) or {}
-                    with gr.Column(bool(model_configs)) as config_column:
+                    config_groups = get_model_config_groups(model_type, model_def)
+                    grouped_model_configs = [model_config_groups.get_config_items(configs) for configs in config_groups]
+                    config_value = model_config_groups.normalize_config_selection(config_groups, ui_get("config"))
+                    config_group_values = model_config_groups.split_config_selection(config_value)
+                    config_group_labels = [model_config_groups.get_config_name(configs) for configs in config_groups]
+                    with gr.Column(any(grouped_model_configs)) as config_column:
                         gr.Markdown('<B>You may pick a Variation of the Default Config (VAE Decoder, Text Encoder, may be different for instance)</B>')
-                        config_choices = [(config_def.get("name", config_id), config_id) for config_id, config_def in model_configs.items()]
-                        config_value = ui_get("config")
-                        if model_configs and config_value not in model_configs: config_value = next(iter(model_configs))
-                        config = gr.Dropdown(choices=config_choices or [("", "")], value=config_value if model_configs else "", label="Config")
+                        config_group_dropdowns = []
+                        with gr.Row():
+                            for index, group_configs in enumerate(grouped_model_configs):
+                                config_choices = [("Default", "")] + [(config_def.get("name", config_id), config_id) for config_id, config_def in group_configs]
+                                config_group_dropdowns.append(gr.Dropdown(choices=config_choices, value=config_group_values[index], visible=bool(group_configs), label=config_group_labels[index]))
+                        config = gr.Text(value=config_value, interactive=False, visible=False)
 
             if not update_form:
                 with gr.Row(visible=(tab_id == 'edit')):
@@ -12399,7 +12408,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       video_info_to_start_image_btn, video_info_to_end_image_btn, video_info_to_reference_image_btn, video_info_to_image_guide_btn, video_info_to_image_mask_btn,
                                       NAG_col, audio_options_row, remove_background_sound, normalize_audio_volumes, audio_prompt_type_custom_option, speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, prompt_enhancer_mode_dropdown, prompt_enhancer_think, force_control_video_trim,
                                       min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temporal_upsampling_method, temporal_upsampling_multiplier, spatial_upsampling_method, spatial_upsampling_ratio, temperature_row, *custom_settings_rows, *custom_setting_extra_inputs, top_pk_row,
-                                      number_frames_row, negative_prompt_row, config_column,
+                                      number_frames_row, negative_prompt_row, config_column, *config_group_dropdowns,
                                       self_refiner_col, pause_row]+\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,
         if update_form:
@@ -12413,6 +12422,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
 
             resolution_group.input(fn=change_resolution_group, inputs=[state, resolution_group], outputs=[resolution], show_progress="hidden")
             resolution.change(fn=record_last_resolution, inputs=[state, resolution])
+            gr.on(triggers=[dropdown.input for dropdown in config_group_dropdowns], fn=model_config_groups.serialize_config_selection, inputs=config_group_dropdowns, outputs=config, show_progress="hidden")
             force_control_video_trim.input(fn=change_force_control_video_trim, inputs= [state, video_prompt_type, force_control_video_trim], outputs = video_prompt_type)
             video_info_add_videos_btn.click(fn=add_videos_to_gallery, inputs =[state, output, last_choice, audio_files_paths, audio_file_selected, files_to_load], outputs = [gallery_tabs, current_gallery_tab, output, audio_files_paths, audio_file_selected, audio_gallery_refresh_trigger, files_to_load, video_info_tabs, gallery_source] ).then(
                 fn=select_media, inputs=[state, current_gallery_tab, output, last_choice, audio_files_paths, audio_file_selected, gallery_source, PP_spatial_upsampling], outputs=[last_choice, video_info, video_buttons_row, image_buttons_row, audio_buttons_row, deleted_video_buttons_row, deleted_audio_buttons_row, audio_postprocessing_tab, video_postprocessing_tab, audio_remuxing_tab, PP_temporal_upsampling, PP_temporal_upsampling_method, PP_temporal_upsampling_multiplier, PP_spatial_upsampling, PP_spatial_upsampling_method, PP_spatial_upsampling_ratio], show_progress="hidden")

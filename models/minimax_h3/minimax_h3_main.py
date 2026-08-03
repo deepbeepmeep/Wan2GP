@@ -44,6 +44,11 @@ def _strip_wrappers(state_dict, quantization_map=None, tied_weights_map=None):
     return strip(state_dict), strip(quantization_map), strip(tied_weights_map)
 
 
+def _strip_text_encoder_wrapper(state_dict, quantization_map=None, tied_weights_map=None):
+    root = "language_model" if "model.embed_tokens.weight" in state_dict else ""
+    return tuple(offload.map_state_dict([state_dict, quantization_map, tied_weights_map], rules={"model": root}))
+
+
 def probe_h3_checkpoint(filename):
     """Inspect tensor headers before allocating the network."""
     state_dict, _ = quant_router.load_metadata_state_dict(filename)
@@ -71,7 +76,8 @@ def _load_transformer(filename, dtype, compressed_modulation):
     with init_empty_weights(include_buffers=True):
         transformer = MiniMaxH3Model(adaln_curve_grid=checkpoint["adaln_curve_grid"], time_embed_dim=checkpoint["time_embed_dim"],
                                      dtype=dtype, device="meta")
-    split_map = get_linear_split_map(transformer.attention_inner_size) if SPLIT_QKV_PROJECTIONS else None
+    filenames = filename if isinstance(filename, (list, tuple)) else [filename]
+    split_map = get_linear_split_map(transformer.attention_inner_size) if SPLIT_QKV_PROJECTIONS and not any(path.lower().endswith(".gguf") for path in filenames) else None
     if split_map is not None:
         offload.split_linear_modules(transformer, split_map)
     transformer.requires_grad_(False)
@@ -90,10 +96,9 @@ def _load_text_encoder(filename, dtype):
         text_encoder = MiniMaxH3TextEncoder(config)
     text_encoder.visual.rotary_pos_emb.reset_inv_freq()
     text_encoder.language_model.rotary_emb.reset_inv_freq()
-    state_dict, _ = quant_router.load_metadata_state_dict(filename)
-    prefix = "model" if any(key.startswith("model.") for key in state_dict) else None
-    offload.load_model_data(text_encoder, filename, modelPrefix=prefix, writable_tensors=False, default_dtype=dtype,
-                            ignore_unused_weights=True)
+    text_encoder.requires_grad_(False)
+    offload.load_model_data(text_encoder, filename, writable_tensors=False, default_dtype=dtype,
+                            preprocess_sd=_strip_text_encoder_wrapper, ignore_unused_weights=True)
     text_encoder.set_tokenizer(os.path.dirname(config_path))
     text_encoder.eval().requires_grad_(False)
     return text_encoder

@@ -136,15 +136,16 @@ def _wrap_int8_convrot_weight(weight, compute_dtype):
     if not isinstance(weight, WeightQBytesTensor) or getattr(weight, "qtype", None) != _QINT8_CONVROT_QTYPE:
         return weight
     compute_dtype = _normalize_compute_dtype(compute_dtype)
-    if isinstance(weight, Int8ConvRotWeightTensor) and weight.dtype == compute_dtype:
+    if isinstance(weight, Int8ConvRotWeightTensor) and weight.dtype == compute_dtype and weight._scale.dtype == compute_dtype:
         return weight
+    scale = weight._scale if weight._scale.dtype == compute_dtype else weight._scale.to(compute_dtype)
     return Int8ConvRotWeightTensor.create(
         weight.qtype,
         weight.axis,
         weight.size(),
         weight.stride(),
         weight._data,
-        weight._scale,
+        scale,
         activation_qtype=weight.activation_qtype,
         requires_grad=weight.requires_grad,
         compute_dtype=compute_dtype,
@@ -233,9 +234,9 @@ def _collect_specs(state_dict):
         base = key[:-7]
         scale = state_dict.get(base + ".weight_scale")
         quant_config = state_dict.get(base + ".comfy_quant")
-        if not torch.is_tensor(scale) or not torch.is_tensor(quant_config):
+        if scale is None or quant_config is None or getattr(scale, "dtype", None) is None or getattr(quant_config, "dtype", None) != torch.uint8:
             continue
-        config = _decode_json_tensor(quant_config)
+        config = _decode_json_tensor(quant_config) if torch.is_tensor(quant_config) else {}
         if not isinstance(config, dict):
             continue
         specs.append({"name": base, "weight": tensor, "scale": scale, "config": config})
@@ -268,7 +269,7 @@ def convert_to_quanto(state_dict, default_dtype, verboseLevel=1, detection=None)
         if scale.numel() != weight.shape[0]:
             raise RuntimeError(f"INT8 ConvRot weight scale for '{base}' has {scale.numel()} values, expected {weight.shape[0]}")
         state_dict[base + ".weight._data"] = weight
-        state_dict[base + ".weight._scale"] = scale.to(torch.float32)
+        state_dict[base + ".weight._scale"] = scale.to(_normalize_compute_dtype(default_dtype))
         state_dict[base + _FUSED_SPLIT_MARKER_SUFFIX] = torch.empty(0, dtype=torch.uint8, device=weight.device)
         state_dict[base + ".input_scale"] = torch.ones((), dtype=torch.float32, device=weight.device)
         state_dict[base + ".output_scale"] = torch.ones((), dtype=torch.float32, device=weight.device)

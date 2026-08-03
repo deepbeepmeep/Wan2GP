@@ -1,0 +1,12 @@
+{
+    "model": {
+        "name": "MiniMax H3 Ref2VA 33B",
+        "architecture": "minimax_h3_ref2va",
+        "description": "Reference-to-Video-and-Audio: generate synchronized video and stereo audio from text plus reference images, video, and/or audio.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/MiniMax-H3-Ref2VA_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/MiniMax-H3-Ref2VA_int8_convrot.safetensors"
+        ]
+    },
+    "prompt": "A cinematic close-up of the referenced performer singing on a softly lit stage, preserving identity, costume, and voice while adding natural lip motion, realistic room acoustics, and subtle camera movement."
+}

@@ -8,6 +8,8 @@ from shared.utils.hf import build_hf_url
 
 _PROJECT_REPO = "DeepBeepMeep/krea-2"
 _QWEN_IMAGE_REPO = "DeepBeepMeep/Qwen_image"
+_WAN_REPO = "DeepBeepMeep/Wan2.1"
+_VAE_UPSAMPLER_FILENAME = "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"
 _TEXT_ENCODER_FOLDER = "Qwen3-VL-4B-Instruct"
 _TEXT_ENCODER_BF16_FILENAME = "Qwen3-VL-4B-Instruct_text_bf16.safetensors"
 _TEXT_ENCODER_INT8_FILENAME = "Qwen3-VL-4B-Instruct_quanto_bf16_int8.safetensors"
@@ -66,6 +68,7 @@ class family_handler:
             "no_background_removal": True,
             "resolutions_categories": ["<=2k"],
             "vae_block_size": 16,
+            "vae_upsampler": [1],
             "vae_upsamplers": {"qwen_vae_pid(1.5)": [1]},
             "excluded_spatial_upsamplers": ["qwen_pid(1.5)"],
         }
@@ -140,7 +143,12 @@ class family_handler:
                 "repoId": _QWEN_IMAGE_REPO,
                 "sourceFolderList": [""],
                 "fileList": [["qwen_vae.safetensors", "qwen_vae_config.json"]],
-            }
+            },
+            {
+                "repoId": _WAN_REPO,
+                "sourceFolderList": [""],
+                "fileList": [[_VAE_UPSAMPLER_FILENAME]],
+            },
         ]
 
     @staticmethod

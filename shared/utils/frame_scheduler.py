@@ -12,19 +12,30 @@ def has_slash_commands(prompts: list[str]) -> bool:
     return any(SLASH_BLOCK_RE.search(prompt or "") is not None for prompt in prompts)
 
 
-def normalize_frame_count(frame_count: int, minimum: int, step: int) -> int:
+def normalize_frame_count(frame_count: int, minimum: int, step: int, offset: int = 1) -> int:
     frame_count = max(minimum, frame_count)
     step = max(1, step)
-    return math.ceil(max(0, frame_count - 1) / step) * step + 1 if step > 1 else frame_count
+    offset = max(0, offset)
+    return math.ceil(max(0, frame_count - offset) / step) * step + offset if step > 1 else frame_count
 
 
-def normalize_output_frame_count(frame_count: int, minimum: int, step: int) -> int:
+def floor_frame_count(frame_count: int, minimum: int, step: int, offset: int = 1) -> int:
+    frame_count = max(minimum, frame_count)
+    step = max(1, step)
+    offset = max(0, offset)
+    if step <= 1:
+        return frame_count
+    lower = ((frame_count - offset) // step) * step + offset
+    return lower if lower >= minimum else normalize_frame_count(minimum, minimum, step, offset)
+
+
+def normalize_output_frame_count(frame_count: int, minimum: int, step: int, offset: int = 1) -> int:
     frame_count = max(minimum, frame_count)
     step = max(1, step)
     if step <= 1:
         return frame_count
-    lower = max(minimum, ((frame_count - 1) // step) * step + 1)
-    upper = normalize_frame_count(frame_count, minimum, step)
+    lower = floor_frame_count(frame_count, minimum, step, offset)
+    upper = normalize_frame_count(frame_count, minimum, step, offset)
     return lower if frame_count - lower <= upper - frame_count else upper
 
 
@@ -132,11 +143,11 @@ def _parse_options(prompt: str, *, supported_model_commands: set[str], allow_new
     return SLASH_BLOCK_RE.sub(replace, prompt), wgp_options, model_options, has_options, error
 
 
-def _window(prompt: str, output_frames: int, overlap_frames: int, discard_last_frames: int, model_options: dict | None, minimum: int, step: int, *, new_shot: bool = False) -> dict:
+def _window(prompt: str, output_frames: int, overlap_frames: int, discard_last_frames: int, model_options: dict | None, minimum: int, step: int, *, frame_offset: int = 1, new_shot: bool = False) -> dict:
     overlap_frames = max(0, overlap_frames)
-    output_frames = normalize_output_frame_count(output_frames, minimum, step)
+    output_frames = normalize_output_frame_count(output_frames, minimum, step, frame_offset)
     discard_last_frames = max(0, discard_last_frames)
-    frame_num = normalize_frame_count(output_frames + overlap_frames + discard_last_frames, minimum, step)
+    frame_num = normalize_frame_count(output_frames + overlap_frames + discard_last_frames, minimum, step, frame_offset)
     return {
         "prompt": prompt,
         "output_frames": output_frames,
@@ -148,8 +159,8 @@ def _window(prompt: str, output_frames: int, overlap_frames: int, discard_last_f
     }
 
 
-def build_extension_window(prompt: str, *, window_size: int, overlap_frames: int, discard_last_frames: int = 0, minimum: int, step: int) -> dict:
-    return _window(prompt, max(1, window_size - overlap_frames - discard_last_frames), overlap_frames, discard_last_frames, {}, minimum, step)
+def build_extension_window(prompt: str, *, window_size: int, overlap_frames: int, discard_last_frames: int = 0, minimum: int, step: int, frame_offset: int = 1) -> dict:
+    return _window(prompt, max(1, window_size - overlap_frames - discard_last_frames), overlap_frames, discard_last_frames, {}, minimum, step, frame_offset=frame_offset)
 
 
 def clone_loras_slists(slists):
@@ -192,6 +203,7 @@ def build_frame_scheduler(
     default_overlap: int,
     minimum: int,
     step: int,
+    frame_offset: int = 1,
     overlap_offset: int = 1,
     supported_model_commands=(),
     allow_new_shot: bool = False,
@@ -231,7 +243,7 @@ def build_frame_scheduler(
             if remaining <= 0:
                 return {}, f"Sliding window {idx} would generate no frame because previous windows already consume the requested frame count. Unable to start generation: please specify shorter /duration values for the previous sliding windows or increase the total number of frames."
             duration = min(remaining, max(1, window_size - overlap - discard_last_frames))
-        window = _window(prompt, duration, overlap, discard_last_frames, model_options, minimum, step, new_shot=bool(wgp_options.get("new_shot", False)))
+        window = _window(prompt, duration, overlap, discard_last_frames, model_options, minimum, step, frame_offset=frame_offset, new_shot=bool(wgp_options.get("new_shot", False)))
         if "loras_multipliers" in wgp_options:
             window["loras_multipliers"] = wgp_options["loras_multipliers"]
         windows.append(window)
@@ -239,7 +251,7 @@ def build_frame_scheduler(
 
     while not any_duration and consumed < total_frames and windows:
         duration = min(total_frames - consumed, max(1, window_size - default_overlap - discard_last_frames))
-        windows.append(_window(windows[-1]["prompt"], duration, default_overlap, discard_last_frames, {}, minimum, step))
+        windows.append(_window(windows[-1]["prompt"], duration, default_overlap, discard_last_frames, {}, minimum, step, frame_offset=frame_offset))
         consumed += windows[-1]["output_frames"]
 
     return {
@@ -248,10 +260,11 @@ def build_frame_scheduler(
         "windows": windows,
         "predicted_total_frames": sum(window["output_frames"] for window in windows),
         "requested_total_frames": total_frames,
-        "default_window_size": normalize_frame_count(window_size, minimum, step),
+        "default_window_size": normalize_frame_count(window_size, minimum, step, frame_offset),
         "default_overlap_frames": default_overlap,
         "overlap_offset": overlap_offset,
         "minimum": minimum,
         "step": step,
+        "frame_offset": frame_offset,
         "model_commands": sorted(supported_model_commands),
     }, None

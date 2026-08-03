@@ -11,7 +11,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 | Modality | Supported models |
 | --- | --- |
-| **Video** | **Wan 2.1/2.2** and derived models, **LTX-2**, **Hunyuan Video 1/1.5**, **LongCat**, **Kandinsky**, **LTXV**, **MagiHuman** |
+| **Video** | **Wan 2.1/2.2** and derived models, **MiniMax H3**, **LTX-2**, **Hunyuan Video 1/1.5**, **LongCat**, **Kandinsky**, **LTXV**, **MagiHuman** |
 | **Image** | **Qwen Image**, **Z-Image**, **Flux 1/2** (Klein, Chroma), **HiDream** |
 | **Audio / TTS** | **Qwen3 TTS**, **Ace Step 1/2/XL**, **Omnivoice**, **Index TTS2**, **KugelAudio**, **HearMula**, **Chatterbox** |
 
@@ -63,6 +63,22 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
+
+## 3rd of August 2026: No Time for Taglines
+
+**MiniMax H3**
+
+MiniMax H3 is a top-notch open-weight contender to Seedance 2, combining cinematic video generation, convincing motion, strong prompt adherence, and a synchronized native stereo soundtrack in one model.
+
+Given no *Steps Distilled Checkpoints* is available for the moment, 15-20 inference steps is a minimum.
+
+But rejoice WanGP version is as usual Ultra Optimized: **5-6GB of VRAM only for 5s (124 frames) and 8-9GB of VRAM for 15s at 832x480**. 
+
+- **MiniMax H3 FL2VA: create or continue a shot**: choose this version to generate synchronized video and stereo audio from text alone, start from an image or the last frame of a previous video, target an end image, or constrain both ends of the shot. It also supports longer generations with sliding windows.
+
+- **MiniMax H3 Ref2VA: reuse people, scenes, motion, or voices**: choose this version when the new video should follow *Reference Images*, *Reference Videos*, or *Reference Audio*. References guide the newly generated result rather than becoming fixed frames; this version does not support sliding windows.
+
+Both flavours offer the same controls in full 33B and lighter pruned 20B versions.
 
 ## 25th of July 2026: Featured Plugins / Apps
 

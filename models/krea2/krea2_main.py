@@ -691,13 +691,14 @@ def _load_text_encoder(text_encoder_filename, config_path, dtype, with_vision=Fa
     return text_encoder
 
 
-def _load_vae(filename, config_path, dtype):
+def _load_vae(filename, config_path, dtype, upsampler_factor=1, preprocess_sd=None):
     config = _load_json(config_path)
     for key in ("_class_name", "_diffusers_version", "_name_or_path"):
         config.pop(key, None)
+    config["upsampler_factor"] = upsampler_factor
     with init_empty_weights(include_buffers=True):
         vae = AutoencoderKLQwenImage(**config)
-    offload.load_model_data(vae, filename, writable_tensors=False, default_dtype=dtype)
+    offload.load_model_data(vae, filename, writable_tensors=False, default_dtype=dtype, preprocess_sd=preprocess_sd)
     vae.eval().requires_grad_(False)
     return vae
 
@@ -746,7 +747,16 @@ class model_factory:
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, max_length=512, trust_remote_code=True, extra_special_tokens={})
         image_processor = Qwen2VLImageProcessorFast.from_pretrained(tokenizer_path)
         processor = Krea2Qwen3VLProcessor(image_processor, tokenizer)
-        vae = _load_vae(fl.locate_file("qwen_vae.safetensors"), fl.locate_file("qwen_vae_config.json"), VAE_dtype)
+        vae_upsampler_factor = 2 if VAE_upsampling is not None else 1
+        if vae_upsampler_factor == 2:
+            from models.qwen.convert_diffusers_qwen_vae import convert_state_dict
+
+            vae_filename = "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"
+            preprocess_vae_sd = convert_state_dict
+        else:
+            vae_filename = "qwen_vae.safetensors"
+            preprocess_vae_sd = None
+        vae = _load_vae(fl.locate_file(vae_filename), fl.locate_file("qwen_vae_config.json"), VAE_dtype, upsampler_factor=vae_upsampler_factor, preprocess_sd=preprocess_vae_sd)
         vae.upsampling_set = VAE_upsampling
         self.pipeline = Krea2Pipeline(transformer, vae, Qwen3VLConditioner(text_encoder, tokenizer, processor), dtype=dtype)
         self.transformer = transformer

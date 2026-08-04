@@ -458,12 +458,45 @@ class MiniMaxH3Model(nn.Module):
             del positions, frequencies
         del adaln_indices, changes
 
-        for block in self.blocks:
+        cache = getattr(self, "cache", None)
+        use_fbc = cache is not None and getattr(cache, "h3_first_block", False)
+        if use_fbc:
+            from .step_cache import should_skip_remaining
+
+            step_no = int(payload.get("step_no", 0) or 0)
+            # Blocks mutate hidden in-place via gated residuals; clone the pre-block state.
+            original = hidden.detach().clone()
             if self._interrupt:
                 raise GenerationInterrupted
-            h_list = [hidden]
-            hidden = None
-            hidden = block(h_list, temb, segments, rope)
+            hidden = self.blocks[0]([hidden], temb, segments, rope)
+            first_residual = hidden - original
+            if should_skip_remaining(cache, step_no, first_residual):
+                # Reuse previous full-stack residual; first block already ran.
+                prev = cache.previous_residual
+                if prev.device != original.device or prev.dtype != original.dtype:
+                    prev = prev.to(device=original.device, dtype=original.dtype)
+                hidden = original.add(prev)
+                cache.skipped_steps = int(getattr(cache, "skipped_steps", 0) or 0) + 1
+                del first_residual, original
+            else:
+                for block in self.blocks[1:]:
+                    if self._interrupt:
+                        raise GenerationInterrupted
+                    h_list = [hidden]
+                    hidden = None
+                    hidden = block(h_list, temb, segments, rope)
+                # Store residuals for a later skip (detached; no grad graph).
+                cache.previous_residual = (hidden.detach() - original).contiguous()
+                cache.previous_modulated_input = first_residual.detach().contiguous()
+                cache.full_steps = int(getattr(cache, "full_steps", 0) or 0) + 1
+                del first_residual, original
+        else:
+            for block in self.blocks:
+                if self._interrupt:
+                    raise GenerationInterrupted
+                h_list = [hidden]
+                hidden = None
+                hidden = block(h_list, temb, segments, rope)
 
         target_video_rows = latent_t * (latent_h // self.patch_size[1]) * (latent_w // self.patch_size[2])
         target_audio_rows = audio_t * 2

@@ -65,6 +65,19 @@ PRUNED_INFOS = """
 The Pruned checkpoint replaces the full AdaLN timestep projection matrices with precomputed low-rank modulation curves. It accepts the same inputs and settings as its 33B counterpart while reducing checkpoint size and weight-transfer cost.
 """
 
+FBC_INFOS = """
+### Steps Skipping (First-Block Cache)
+
+MiniMax H3 supports **First-Block Cache** under Advanced → Steps Skipping:
+
+- Every step still runs DiT block 0.
+- If that block's residual is close to the previous full step, blocks 1–49 are skipped and the previous full residual is reused.
+- Higher acceleration multipliers use a looser threshold (faster, more quality risk).
+- Keep the first ~10% of steps unskipped. Always fully computes the last step.
+- This is approximate: check both **video and audio** quality. Disable it for final/hero gens.
+- Inspired by Sol-Engine FirstBlockCache; clean-room WanGP implementation (not Mag Cache / Tea Cache).
+"""
+
 
 class family_handler:
     @staticmethod
@@ -104,6 +117,15 @@ class family_handler:
         return getattr(args, "lora_dir_minimax_h3", None) or os.path.join(lora_root, "minimax_h3")
 
     @staticmethod
+    def set_cache_parameters(cache_type, base_model_type, model_def, inputs, skip_steps_cache):
+        from .step_cache import configure_h3_cache
+
+        if cache_type == "fbc":
+            configure_h3_cache(skip_steps_cache)
+        else:
+            raise Exception(f"MiniMax H3 does not support cache type {cache_type}")
+
+    @staticmethod
     def query_model_def(base_model_type, model_def):
         reference_mode = base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE)
         pruned = base_model_type in (FL2VA_PRUNED_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE)
@@ -127,7 +149,8 @@ class family_handler:
             "returns_audio": True,
             "multimedia_generation": True,
             "control_video_trim_disabled": True,
-            "infos": (REF2VA_INFOS if reference_mode else FL2VA_INFOS) + (PRUNED_INFOS if pruned else ""),
+            "first_block_cache": True,
+            "infos": (REF2VA_INFOS if reference_mode else FL2VA_INFOS) + (PRUNED_INFOS if pruned else "") + FBC_INFOS,
             "prompt_infos": REF2VA_PROMPT_INFOS if reference_mode else FL2VA_PROMPT_INFOS,
             "prompt_enhancer_button_label": "Write H3 Prompt",
             "prompt_enhancer_def": {
@@ -353,4 +376,7 @@ class family_handler:
             "audio_prompt_type": "",
             "video_prompt_type": "",
             "image_mode": 0,
+            "skip_steps_cache_type": "",
+            "skip_steps_multiplier": 2.0,
+            "skip_steps_start_step_perc": 10,
         })

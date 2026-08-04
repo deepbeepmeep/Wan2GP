@@ -369,12 +369,22 @@ class MiniMaxH3Pipeline:
         if sigmas_video.shape != sigmas_audio.shape:
             raise ValueError("The selected H3 flow shift collapses a different number of video and audio schedule points")
         model_steps = sigmas_video.numel() - 1
+        cache = getattr(self.transformer, "cache", None)
+        if cache is not None and getattr(cache, "h3_first_block", False):
+            from .step_cache import finish_h3_cache, reset_h3_cache
+
+            reset_h3_cache(cache, model_steps)
+            thr = float(getattr(cache, "fbc_threshold", 0.08))
+            start = int(getattr(cache, "start_step", 0) or 0)
+            print(f"[H3 FirstBlockCache] enabled threshold={thr:.3f} start_step={start}/{model_steps}", flush=True)
         if callback is not None:
             callback(-1, None, True, override_num_inference_steps=model_steps)
         for step in tqdm(range(model_steps), desc="H3 denoising"):
             self._set_interrupt_state()
             self._check_abort()
             offload.set_step_no_for_lora(self.transformer, step)
+            payload["step_no"] = step
+            payload["num_steps"] = model_steps
             video_velocity, audio_velocity = self.transformer(video, audio, sigmas_video[step:step + 1], sigmas_audio[step:step + 1], context, payload)
             video_sigma_from_t = 1.0 - (1.0 - sigmas_video[step])
             video_ratio = sigmas_video[step + 1] / sigmas_video[step]
@@ -387,6 +397,13 @@ class MiniMaxH3Pipeline:
             video_velocity = audio_velocity = None
             if callback is not None:
                 callback(step, video[0].detach().cpu(), False)
+
+        if cache is not None and getattr(cache, "h3_first_block", False):
+            from .step_cache import finish_h3_cache
+
+            summary = finish_h3_cache(cache)
+            if summary:
+                print(summary, flush=True)
 
         if set_progress_status is not None:
             set_progress_status("Decoding H3 video and stereo audio")

@@ -186,9 +186,11 @@ class WanAny2V:
         module_source2 =  model_def.get("module_source2", None)
         def preprocess_sd(sd):
             return WanModel.preprocess_sd_with_dtype(dtype, sd)
-        kwargs= { "modelClass": WanModel,"do_quantize": quantizeTransformer and not save_quantized, "defaultConfigPath": base_config_file , "ignore_unused_weights": ignore_unused_weights, "writable_tensors": False, "default_dtype": dtype, "preprocess_sd": preprocess_sd, "forcedConfigPath": forcedConfigPath, }
+        def pre_load_callback(model):
+            model.lock_layers_dtypes(torch.float32 if mixed_precision_transformer else dtype)
+        kwargs= { "modelClass": WanModel,"do_quantize": quantizeTransformer and not save_quantized, "defaultConfigPath": base_config_file , "ignore_unused_weights": ignore_unused_weights, "writable_tensors": False, "default_dtype": dtype, "preprocess_sd": preprocess_sd, "pre_load_callback": pre_load_callback, "forcedConfigPath": forcedConfigPath, }
         kwargs2 = {**kwargs, "defaultConfigPath": base_config_file2, "forcedConfigPath": base_config_file2}
-        kwargs_light= { "modelClass": WanModel,"writable_tensors": False, "preprocess_sd": preprocess_sd , "forcedConfigPath" : base_config_file}
+        kwargs_light= { "modelClass": WanModel,"writable_tensors": False, "default_dtype": dtype, "preprocess_sd": preprocess_sd, "pre_load_callback": pre_load_callback, "forcedConfigPath" : base_config_file}
         kwargs_light2 = {**kwargs_light, "forcedConfigPath": base_config_file2}
         if module_source is not None:
             self.model = offload.fast_load_transformers_model(model_filename[:1] + [fl.locate_file(module_source)], **kwargs)
@@ -221,15 +223,6 @@ class WanAny2V:
             else:
                 self.model = offload.fast_load_transformers_model(model_filename,  **kwargs)
         
-
-        if self.model is not None:
-            self.model.lock_layers_dtypes(torch.float32 if mixed_precision_transformer else dtype)
-            offload.change_dtype(self.model, dtype, True)
-            self.model.eval().requires_grad_(False)
-        if self.model2 is not None:
-            self.model2.lock_layers_dtypes(torch.float32 if mixed_precision_transformer else dtype)
-            offload.change_dtype(self.model2, dtype, True)
-            self.model2.eval().requires_grad_(False)
 
         if module_source is not None:
             save_model(self.model, model_type, dtype, None, is_module=True, filter=list(torch_load_file(module_source)), module_source_no=1)
@@ -1057,7 +1050,7 @@ class WanAny2V:
                 if True:
                     with init_empty_weights():
                         arc_resampler = Resampler( depth=4, dim=1280, dim_head=64, embedding_dim=512, ff_mult=4, heads=20, num_queries=16, output_dim=2048 if lynx_lite else 5120 )
-                    offload.load_model_data(arc_resampler, fl.locate_file("wan2.1_lynx_lite_arc_resampler.safetensors" if lynx_lite else "wan2.1_lynx_full_arc_resampler.safetensors"), writable_tensors=False)
+                    offload.load_model_data(arc_resampler, fl.locate_file("wan2.1_lynx_lite_arc_resampler.safetensors" if lynx_lite else "wan2.1_lynx_full_arc_resampler.safetensors"), writable_tensors=False, default_dtype=None)
                     arc_resampler.to(self.device)
                     arcface_embed = face_arc_embeds[None,None,:].to(device=self.device, dtype=torch.float) 
                     ip_hidden_states = arc_resampler(arcface_embed).to(self.dtype)

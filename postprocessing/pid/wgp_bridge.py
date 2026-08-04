@@ -37,13 +37,10 @@ from postprocessing.pid.runtime import (
 
 
 class PiDBridge:
-    PERSIST_UNLOAD = 1
-    PERSIST_RAM = 2
     UPSAMPLING_RATIOS = (4.0,)
     UPSAMPLING_METHODS = (PID_FLUX_POST_UPSAMPLING_METHOD, PID_FLUX2_POST_UPSAMPLING_METHOD, PID_FLUX_POST_UPSAMPLING_METHOD_V15, PID_FLUX2_POST_UPSAMPLING_METHOD_V15, PID_QWEN_POST_UPSAMPLING_METHOD, PID_FLUX_VAE_UPSAMPLING_METHOD, PID_FLUX2_VAE_UPSAMPLING_METHOD, PID_FLUX_VAE_UPSAMPLING_METHOD_V15, PID_FLUX2_VAE_UPSAMPLING_METHOD_V15, PID_QWEN_VAE_UPSAMPLING_METHOD)
     batch_image_inputs = True
     uses_image_profile = True
-    PERSISTENCE_CHOICES = [("Unload after use", PERSIST_UNLOAD), ("Persistent in RAM", PERSIST_RAM)]
 
     def __init__(self, server_config: dict[str, Any], files_locator):
         self.server_config = server_config
@@ -52,7 +49,7 @@ class PiDBridge:
 
     @classmethod
     def default_config(cls) -> dict[str, Any]:
-        return {"version": PID_VERSION_DEFAULT, "tiling_threshold": PID_TILING_THRESHOLD_DEFAULT, "persistence": cls.PERSIST_UNLOAD}
+        return {"version": PID_VERSION_DEFAULT, "tiling_threshold": PID_TILING_THRESHOLD_DEFAULT}
 
     @classmethod
     def legacy_config_keys(cls) -> tuple[str, ...]:
@@ -60,7 +57,7 @@ class PiDBridge:
 
     @classmethod
     def legacy_config(cls, config: dict[str, Any]) -> dict[str, Any]:
-        return {"tiling_threshold": config.get("pid_tiling_threshold", PID_TILING_THRESHOLD_DEFAULT), "persistence": config.get("pid_persistence", cls.PERSIST_UNLOAD)}
+        return {"tiling_threshold": config.get("pid_tiling_threshold", PID_TILING_THRESHOLD_DEFAULT)}
 
     @classmethod
     def normalize_config_section(cls, config: dict[str, Any]) -> dict[str, Any]:
@@ -68,12 +65,6 @@ class PiDBridge:
         normalized.update(config or {})
         normalized["version"] = normalize_pid_version_filter(normalized["version"])
         normalized["tiling_threshold"] = normalize_pid_tiling_threshold(normalized.get("tiling_threshold", PID_TILING_THRESHOLD_DEFAULT))
-        try:
-            normalized["persistence"] = int(normalized.get("persistence", cls.PERSIST_UNLOAD))
-        except (TypeError, ValueError):
-            normalized["persistence"] = cls.PERSIST_UNLOAD
-        if normalized["persistence"] not in (cls.PERSIST_UNLOAD, cls.PERSIST_RAM):
-            normalized["persistence"] = cls.PERSIST_UNLOAD
         return normalized
 
     def config(self) -> dict[str, Any]:
@@ -82,7 +73,9 @@ class PiDBridge:
         return upsampler_api.read_config_section(self.server_config, self)
 
     def persistent_models(self) -> bool:
-        return int(self.config()["persistence"] or self.PERSIST_UNLOAD) == self.PERSIST_RAM
+        from postprocessing import spatial_upsamplers as upsampler_api
+
+        return upsampler_api.persistent_models(self.server_config)
 
     def format_method_label(self, label: str, method: str) -> str:
         version = pid_version_for_upsampling(method)
@@ -177,8 +170,7 @@ class PiDBridge:
             with gr.Row():
                 version = gr.Dropdown(choices=[("PiD v1.5 only", "1.5"), ("PiD v1.0 only", "1"), ("Both PiD v1.5 and v1.0", "both")], value=config["version"], label="Visible PiD Versions", interactive=not lock_config)
                 tiling_threshold = gr.Dropdown(choices=PID_TILING_THRESHOLD_CHOICES, value=config["tiling_threshold"], label="PiD Tiling Threshold", interactive=not lock_config)
-                persistence = gr.Dropdown(choices=self.PERSISTENCE_CHOICES, value=config["persistence"], label="PiD Model Persistence", interactive=not lock_config)
-        return [("version", version), ("tiling_threshold", tiling_threshold), ("persistence", persistence)]
+        return [("version", version), ("tiling_threshold", tiling_threshold)]
 
     def validate_config_section(self, config: dict[str, Any]):
         return ""

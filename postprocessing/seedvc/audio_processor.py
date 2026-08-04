@@ -49,32 +49,28 @@ class SeedVCProcessor:
     def default_config(cls) -> dict[str, Any]:
         from postprocessing.seedvc.wgp_bridge import SeedVCBridge
 
-        return {"mode": SeedVCBridge.MODE_OFF, "persistence": SeedVCBridge.PERSIST_UNLOAD}
+        return {"mode": SeedVCBridge.MODE_OFF}
 
     @classmethod
     def normalize_config_section(cls, config: dict[str, Any]) -> dict[str, Any]:
         from postprocessing.seedvc.wgp_bridge import SeedVCBridge
 
         mode = config.get("mode", SeedVCBridge.MODE_OFF)
-        persistence = config.get("persistence", SeedVCBridge.PERSIST_UNLOAD)
         try:
             mode = int(mode)
         except (TypeError, ValueError):
             mode = SeedVCBridge.MODE_OFF
-        try:
-            persistence = int(persistence)
-        except (TypeError, ValueError):
-            persistence = SeedVCBridge.PERSIST_UNLOAD
         if mode not in SeedVCBridge._VERSIONS and mode != SeedVCBridge.MODE_OFF:
             mode = SeedVCBridge.MODE_OFF
-        if persistence not in (SeedVCBridge.PERSIST_UNLOAD, SeedVCBridge.PERSIST_RAM):
-            persistence = SeedVCBridge.PERSIST_UNLOAD
-        return {"mode": mode, "persistence": persistence}
+        return {"mode": mode}
 
     def _sync_bridge_config(self, config: dict[str, Any] | None = None) -> None:
+        from postprocessing import audio_processors as audio_processor_api
+
         values = read_config_section(self.server_config, self) if config is None else self.normalize_config_section(config)
         self.bridge_config.clear()
-        self.bridge_config.update({"seedvc_mode": values["mode"], "seedvc_persistence": values["persistence"]})
+        persistence = self.bridge.PERSIST_RAM if audio_processor_api.persistent_models(self.server_config) else self.bridge.PERSIST_UNLOAD
+        self.bridge_config.update({"seedvc_mode": values["mode"], "seedvc_persistence": persistence})
         self.bridge.normalize_config()
 
     def enabled(self) -> bool:
@@ -121,8 +117,7 @@ class SeedVCProcessor:
 
         config = self.normalize_config_section(config)
         mode = gr.Dropdown(choices=SeedVCBridge.mode_choices(), value=enabled_choice_value(config.get("mode", SEEDVC_DEFAULT_MODE), SeedVCBridge.mode_choices(), SEEDVC_DEFAULT_MODE), label="SeedVC Voice Replacement", interactive=not lock_config)
-        persistence = gr.Dropdown(choices=SeedVCBridge.persistence_choices(), value=config.get("persistence", SeedVCBridge.PERSIST_UNLOAD), label="SeedVC Model Persistence", interactive=not lock_config)
-        return [("mode", mode), ("persistence", persistence)]
+        return [("mode", mode)]
 
     def config_requires_release(self, old_config: dict[str, Any], new_config: dict[str, Any], changed_keys) -> bool:
         return old_config != new_config

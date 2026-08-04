@@ -17,11 +17,8 @@ class ChainOfZoomBridge(SimpleScaleSuffixMixin):
 
     UPSAMPLING_VALUE_PREFIX = "coz"
     MULTIPLIERS = (2.0, 4.0, 8.0, 16.0)
-    PERSIST_UNLOAD = 1
-    PERSIST_RAM = 2
     batch_image_inputs = False
     uses_image_profile = True
-    PERSISTENCE_CHOICES = [("Unload after use", PERSIST_UNLOAD), ("Persistent in RAM", PERSIST_RAM)]
     PARALLEL_TILE_PROCESSING_CHOICES = [("Auto", "auto"), ("2", 2), ("4", 4), ("8", 8)]
 
     # all Chain-of-Zoom specific files live flat in a single folder (two-level ckpts layout);
@@ -52,7 +49,7 @@ class ChainOfZoomBridge(SimpleScaleSuffixMixin):
 
     @classmethod
     def default_config(cls) -> dict[str, Any]:
-        return {"persistence": cls.PERSIST_UNLOAD, "parallel_tile_processing": "auto"}
+        return {"parallel_tile_processing": "auto"}
 
     @classmethod
     def legacy_config_keys(cls) -> tuple[str, ...]:
@@ -60,20 +57,13 @@ class ChainOfZoomBridge(SimpleScaleSuffixMixin):
 
     @classmethod
     def legacy_config(cls, config: dict[str, Any]) -> dict[str, Any]:
-        return {"persistence": config.get("coz_persistence", cls.PERSIST_UNLOAD)}
+        return {}
 
     @classmethod
     def normalize_config_section(cls, config: dict[str, Any]) -> dict[str, Any]:
         normalized = cls.default_config()
         if config:
-            normalized["persistence"] = config.get("persistence", normalized["persistence"])
             normalized["parallel_tile_processing"] = config.get("parallel_tile_processing", normalized["parallel_tile_processing"])
-        try:
-            normalized["persistence"] = int(normalized.get("persistence", cls.PERSIST_UNLOAD))
-        except (TypeError, ValueError):
-            normalized["persistence"] = cls.PERSIST_UNLOAD
-        if normalized["persistence"] not in (cls.PERSIST_UNLOAD, cls.PERSIST_RAM):
-            normalized["persistence"] = cls.PERSIST_UNLOAD
         if str(normalized["parallel_tile_processing"]).strip().lower() == "auto":
             normalized["parallel_tile_processing"] = "auto"
         else:
@@ -105,9 +95,6 @@ class ChainOfZoomBridge(SimpleScaleSuffixMixin):
         value = self.config()["parallel_tile_processing"]
         return self._auto_parallel_tile_processing() if value == "auto" else int(value)
 
-    def persistent_models(self) -> bool:
-        return int(self.config()["persistence"] or self.PERSIST_UNLOAD) == self.PERSIST_RAM
-
     @classmethod
     def query_upsampler_def(cls) -> dict[str, Any]:
         return {
@@ -127,9 +114,8 @@ class ChainOfZoomBridge(SimpleScaleSuffixMixin):
     def create_config_ui(self, gr, config: dict[str, Any], *, lock_config: bool = False):
         with gr.Group():
             with gr.Row():
-                persistence = gr.Dropdown(choices=self.PERSISTENCE_CHOICES, value=config["persistence"], label="Chain-of-Zoom Model Persistence", interactive=not lock_config)
                 parallel_tile_processing = gr.Dropdown(choices=self.PARALLEL_TILE_PROCESSING_CHOICES, value=config["parallel_tile_processing"], label="Parallel Tile Processing", interactive=not lock_config)
-        return [("persistence", persistence), ("parallel_tile_processing", parallel_tile_processing)]
+        return [("parallel_tile_processing", parallel_tile_processing)]
 
     def config_requires_release(self, old_config: dict[str, Any], new_config: dict[str, Any], changed_keys: set[str]) -> bool:
         return old_config != new_config or bool({"image_profile", "lm_decoder_engine"} & changed_keys)

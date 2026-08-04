@@ -36,7 +36,7 @@ class MMAudioProcessor:
     def default_config(cls) -> dict[str, Any]:
         from postprocessing.mmaudio import MMAUDIO_DEFAULT_MODE
 
-        return {"mode": MMAUDIO_DEFAULT_MODE, "persistence": cls.PERSIST_UNLOAD}
+        return {"mode": MMAUDIO_DEFAULT_MODE}
 
     @classmethod
     def normalize_config_section(cls, config: dict[str, Any]) -> dict[str, Any]:
@@ -45,20 +45,13 @@ class MMAudioProcessor:
         from postprocessing.mmaudio import MMAUDIO_DEFAULT_MODE
 
         mode = config.get("mode", MMAUDIO_DEFAULT_MODE)
-        persistence = config.get("persistence", cls.PERSIST_UNLOAD)
         try:
             mode = int(mode)
         except (TypeError, ValueError):
             mode = MMAUDIO_DEFAULT_MODE
-        try:
-            persistence = int(persistence)
-        except (TypeError, ValueError):
-            persistence = cls.PERSIST_UNLOAD
         if mode not in (MMAUDIO_MODE_V2, MMAUDIO_MODE_NEW):
             mode = MMAUDIO_DEFAULT_MODE
-        if persistence not in (cls.PERSIST_UNLOAD, cls.PERSIST_RAM):
-            persistence = cls.PERSIST_UNLOAD
-        return {"mode": mode, "persistence": persistence}
+        return {"mode": mode}
 
     def config(self, server_config: dict[str, Any] | None = None) -> dict[str, Any]:
         return read_config_section(self.server_config if server_config is None else server_config, self)
@@ -68,9 +61,11 @@ class MMAudioProcessor:
 
     def _settings(self, config: dict[str, Any] | None = None) -> tuple[bool, int, int, str | None, str | None]:
         from postprocessing.mmaudio import MMAUDIO_ALTERNATE, MMAUDIO_MODE_NEW, MMAUDIO_MODE_V2, MMAUDIO_STANDARD
+        from postprocessing import audio_processors as audio_processor_api
 
         values = self.config() if config is None else self.normalize_config_section(config)
-        mode, persistence = int(values["mode"]), int(values["persistence"])
+        mode = int(values["mode"])
+        persistence = self.PERSIST_RAM if audio_processor_api.persistent_models(self.server_config) else self.PERSIST_UNLOAD
         if mode == MMAUDIO_MODE_V2:
             return True, mode, persistence, "large_44k_v2", MMAUDIO_STANDARD
         if mode == MMAUDIO_MODE_NEW:
@@ -144,8 +139,7 @@ class MMAudioProcessor:
 
         config = self.normalize_config_section(config)
         mode = gr.Dropdown(choices=MMAUDIO_MODE_CHOICES, value=config.get("mode", MMAUDIO_DEFAULT_MODE), label="MMAudio Soundtrack Generation (requires 10GB extra download)", interactive=not lock_config)
-        persistence = gr.Dropdown(choices=[("Unload after use", self.PERSIST_UNLOAD), ("Persistent in RAM", self.PERSIST_RAM)], value=config.get("persistence", self.PERSIST_UNLOAD), label="MMAudio Model Persistence", interactive=not lock_config)
-        return [("mode", mode), ("persistence", persistence)]
+        return [("mode", mode)]
 
     def release_vram(self) -> None:
         try:

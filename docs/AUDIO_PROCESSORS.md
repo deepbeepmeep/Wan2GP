@@ -154,6 +154,13 @@ Only enabled/loaded plugins are considered. The plugin manager reuses cached
 Audio processor settings are stored under
 `wgp_config["audio_processors"][config_key]`.
 
+Model persistence is shared by all processors at
+`wgp_config["audio_processors"]["persistence"]`; handlers must not add their own
+persistence control. The registry retains at most one audio processor handler and
+fully releases it before dispatching a different handler. Model-backed handlers
+should obtain the policy through `audio_processors.persistent_models(...)` when
+deciding whether their runtime may keep weights in RAM after use.
+
 Handlers with configuration should implement `default_config()` and
 `normalize_config_section(...)`. If they expose Configuration-tab controls, return
 `[(field_name, gradio_component), ...]` from `create_config_ui(...)`; WanGP uses

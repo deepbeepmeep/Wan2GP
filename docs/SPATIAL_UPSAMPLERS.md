@@ -110,6 +110,14 @@ Upsampler settings are stored under `wgp_config["spatial_upsamplers"][config_key
 Handlers can read old top-level keys during migration with `legacy_config()`, but
 those keys are deleted after the nested section is written.
 
+Model persistence is a registry-wide setting stored at
+`wgp_config["spatial_upsamplers"]["persistence"]`; handlers must not expose a
+separate persistence control in their own config section. The registry retains
+at most one spatial upsampler handler. When dispatch changes handlers, it fully
+releases the previous handler before loading the new one. A handler remains
+responsible for releasing incompatible variants that share that handler, such as
+PiD version, backbone, profile, dtype, or checkpoint-set changes.
+
 Models declare external VAE upsampler support with method ids under
 `model_def["vae_upsamplers"]`, for example:
 

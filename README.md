@@ -82,7 +82,7 @@ Both flavours offer the same controls in full 33B and lighter pruned 20B version
 
 If you are short on RAM, check the *Advanced / Misc* Tab, you will find at the bottom a selection of quantized text encoders. 
 
-*WanGP v12.41*: add selection quantized text encoders
+*WanGP v12.41*: added selection of quantized text encoders
 ## 25th of July 2026: Featured Plugins / Apps
 
 WanGP's growing community has developed more than 20 plugins that expand what you can do. Here is a selection of seven newly available community plugins, all of which can be installed or updated directly from the WanGP Plugin Manager:

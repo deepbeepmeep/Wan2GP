@@ -50,6 +50,7 @@ class AboutPlugin(WAN2GPPlugin):
         gr.Markdown("- <B>Kokoro</B>: text-to-speech (https://github.com/hexgrad/kokoro)")
         gr.Markdown("- <B>SeedVC</B>: voice conversion (https://github.com/Plachtaa/seed-vc)")
         gr.Markdown("- <B>MMAudio</B>: sound generator (https://github.com/hkchengrex/MMAudio). Due to licensing restriction can be used only for Research work.")
+        gr.Markdown("- <B>ByteDance Seed Team and the SeedVR2 authors</B>: one-step image and video restoration (https://github.com/ByteDance-Seed/SeedVR, https://arxiv.org/abs/2506.05301)")
         gr.Markdown("- <B>FlashVSR</B>: high quality video super-resolution (https://github.com/OpenImagingLab/FlashVSR)")
         gr.Markdown("- <B>NVIDIA PiD</B>: diffusion-based image super-resolution (https://github.com/nv-tlabs/PiD)")
 

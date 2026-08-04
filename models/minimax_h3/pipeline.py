@@ -15,6 +15,7 @@ from mmgp import offload
 from shared.utils.text_encoder_cache import TextEncoderCache
 from shared.utils.frame_scheduler import normalize_frame_count
 from .interrupt import GenerationInterrupted
+from .spectrum import MiniMaxH3Spectrum
 from .transformer import VISUAL_COND_TIMESTEP, pack_audio, patchify_video, unpack_audio
 
 
@@ -371,22 +372,32 @@ class MiniMaxH3Pipeline:
         model_steps = sigmas_video.numel() - 1
         if callback is not None:
             callback(-1, None, True, override_num_inference_steps=model_steps)
-        for step in tqdm(range(model_steps), desc="H3 denoising"):
-            self._set_interrupt_state()
-            self._check_abort()
-            offload.set_step_no_for_lora(self.transformer, step)
-            video_velocity, audio_velocity = self.transformer(video, audio, sigmas_video[step:step + 1], sigmas_audio[step:step + 1], context, payload)
-            video_sigma_from_t = 1.0 - (1.0 - sigmas_video[step])
-            video_ratio = sigmas_video[step + 1] / sigmas_video[step]
-            video_velocity.mul_(video_sigma_from_t).add_(video)
-            video.mul_(video_ratio).add_(video_velocity, alpha=1.0 - video_ratio)
-            audio_sigma_from_t = 1.0 - (1.0 - sigmas_audio[step])
-            audio_ratio = sigmas_audio[step + 1] / sigmas_audio[step]
-            audio_velocity.mul_(audio_sigma_from_t).add_(audio)
-            audio.mul_(audio_ratio).add_(audio_velocity, alpha=1.0 - audio_ratio)
-            video_velocity = audio_velocity = None
-            if callback is not None:
-                callback(step, video[0].detach().cpu(), False)
+        cache = self.transformer.cache
+        spectrum = MiniMaxH3Spectrum(cache, sigmas_video[:-1]) if cache is not None and cache.cache_type == "spectrum" else None
+        try:
+            for step in tqdm(range(model_steps), desc="H3 denoising"):
+                self._set_interrupt_state()
+                self._check_abort()
+                offload.set_step_no_for_lora(self.transformer, step)
+                if spectrum is not None:
+                    spectrum.begin_step(step)
+                video_velocity, audio_velocity = self.transformer(video, audio, sigmas_video[step:step + 1], sigmas_audio[step:step + 1], context, payload, spectrum=spectrum)
+                if spectrum is not None:
+                    spectrum.finish_step()
+                video_sigma_from_t = 1.0 - (1.0 - sigmas_video[step])
+                video_ratio = sigmas_video[step + 1] / sigmas_video[step]
+                video_velocity.mul_(video_sigma_from_t).add_(video)
+                video.mul_(video_ratio).add_(video_velocity, alpha=1.0 - video_ratio)
+                audio_sigma_from_t = 1.0 - (1.0 - sigmas_audio[step])
+                audio_ratio = sigmas_audio[step + 1] / sigmas_audio[step]
+                audio_velocity.mul_(audio_sigma_from_t).add_(audio)
+                audio.mul_(audio_ratio).add_(audio_velocity, alpha=1.0 - audio_ratio)
+                video_velocity = audio_velocity = None
+                if callback is not None:
+                    callback(step, video[0].detach().cpu(), False)
+        finally:
+            if spectrum is not None:
+                spectrum.reset()
 
         if set_progress_status is not None:
             set_progress_status("Decoding H3 video and stereo audio")

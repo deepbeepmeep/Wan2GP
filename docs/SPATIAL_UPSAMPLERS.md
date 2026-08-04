@@ -110,6 +110,11 @@ Upsampler settings are stored under `wgp_config["spatial_upsamplers"][config_key
 Handlers can read old top-level keys during migration with `legacy_config()`, but
 those keys are deleted after the nested section is written.
 
+SeedVR2 stores `window_size` under `spatial_upsamplers.seedvr2`. `0` selects the
+GPU-based automatic limit, `-1` disables windowing, and positive values are
+finite frame limits. SeedVR2 aligns finite limits down to its required `4n+1`
+input shape and crossfades three overlapping output frames.
+
 Model persistence is a registry-wide setting stored at
 `wgp_config["spatial_upsamplers"]["persistence"]`; handlers must not expose a
 separate persistence control in their own config section. The registry retains

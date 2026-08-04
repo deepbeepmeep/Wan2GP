@@ -63,7 +63,7 @@ For instance if one adds a module *vace_14B* on top of a model with architecture
 - *URLs2*: URLs of all the finetune versions (quantized / non quantized) of the weights used for the second phase of a model. For instance with Wan 2.2, the first phase contains the High Noise model weights and the second phase contains the Low Noise model weights. This feature can be used with other models than Wan 2.2 to combine different model weights during the same video generation.
 - *text_encoder_URLs* : URLs of the text_encoder versions (quantized or not), if specified will override the default text encoder
 - *VAE_URLs* : URL of a VAE (in a list), if specified will override the default VAE (supported so far only with Wan & LTX2 models)
-- *configs*, *configs2*, *configs3*: optional dictionaries of selectable model loading configurations. Each dictionary represents one independent dropdown and may instead contain the id of another model whose corresponding dictionary should be reused. The reserved *_name* entry sets the dropdown label; every other key is a config id whose value is a dictionary that overrides properties of the enclosing *model* subtree. A config-level *name* is used as the option label in the UI; otherwise its id is displayed.
+- *configs*: optional dictionary of selectable loading configurations defined by the finetune author. It may instead contain the id of another model whose user config dictionary should be reused. The reserved *_name* entry sets the dropdown label and *_default_label* renames its automatic **Default** option. Every other key is a config id whose value is a dictionary that overrides properties of the enclosing *model* subtree. A config-level *name* is used as the option label in the UI; otherwise its id is displayed. Any system configurations supplied by the architecture are applied before this user configuration.
 - *modules*: this a list of modules to be combined with the models referenced by the URLs. A module is a model extension that is merged with a model to expand its capabilities. Supported models so far are : *vace_14B* and *multitalk*. For instance the full Vace model is the fusion of a Wan text 2 video and the Vace module.
 - *preload_URLs* : URLs of files to download no matter what (used to load quantization maps for instance)
 - *loras* : URLs or file paths of LoRAs that will be applied before any LoRA selected by the user. These LoRAs will often be accelerators. For instance if you specify here a FusioniX LoRA you will be able to reduce the number of generation steps to 10.
@@ -99,30 +99,23 @@ Example:
 
 ### Selectable Model Loading Configurations
 
-Use the optional *configs*, *configs2*, and *configs3* dictionaries when several component combinations should remain under one model entry. Each populated dictionary represents an independent config group and dropdown. Existing definitions that only use *configs* remain compatible as the first group.
+Use the optional *configs* dictionary when several component combinations should remain under one finetune entry. It adds one user configuration dropdown after any configuration dropdowns supplied by the architecture. The architecture can supply up to three such dropdowns, so the user dropdown always occupies the fourth position in the config row.
 
-WanGP displays one dropdown at the end of the **Misc.** tab for every dictionary that contains at least one config in addition to its reserved *_name* entry. Every dropdown begins with an automatic **Default** option whose value is empty. Do not add an explicit empty/default config. Set each dropdown label with the *_name* entry in its dictionary; if *_name* is missing or empty, the label is **config**. The reserved *_name* key is not displayed as a selectable option.
+Every populated config dictionary produces a dropdown whose first choice has an empty value and is labeled **Default**. Set *_default_label* in the dictionary to use a different label for that choice. Set *_name* to choose the dropdown label; if it is missing or empty, the label is **config**. Both keys are reserved and are not displayed as selectable configurations. Do not add an explicit empty/default config.
 
-The selected ids are stored in the existing generation setting named *config*, in group order and separated by commas. Empty positions are preserved when needed, while trailing empty positions are omitted:
+The selections are stored in the existing generation setting named *config*, in dropdown order and separated by commas. Empty positions are preserved when needed, while trailing empty positions are omitted. Because the user config is the fourth dropdown, selecting `alternate_text_encoder` there is stored as `,,,alternate_text_encoder`. The UI handles this representation automatically. Config ids must not contain commas, and a saved id that no longer exists resolves to that dropdown's Default option. An all-Default selection is stored as an empty string.
 
-- `alternate_text_encoder` selects that config from group 1.
-- `,alternate_vae` leaves group 1 at Default and selects `alternate_vae` from group 2.
-- `alternate_text_encoder,,alternate_decoder` selects groups 1 and 3 while leaving group 2 at Default.
-- An all-Default selection is stored as an empty string.
+Config values are shallow overrides of the enclosing *model* dictionary and are applied only when the model is loaded. System configurations supplied by the architecture are applied first, in their displayed order, and the selected user config is applied last. The user config therefore wins when it overrides the same property. Properties omitted from all selected configs continue to use the enclosing model value or the value inherited from its architecture. Changing any config dropdown reloads the current model, and all selected configs are recorded in the generated media information.
 
-Config ids must therefore not contain commas. A saved id that no longer exists, or that is stored in the position of a different config dictionary, resolves to that dropdown's Default option. The same config id may be used in more than one dictionary because its position identifies the dictionary.
-
-Config values are shallow overrides of the enclosing *model* dictionary and are applied only when the model is loaded. Selected overrides are applied in order from *configs* through *configs3*; if multiple selected configs override the same property, the later dictionary wins. Properties omitted from all selected configs continue to use the enclosing model value or the value inherited from its architecture. Changing any config dropdown reloads the current model, and the selected configs are recorded in the generated media information.
-
-Each complete config dictionary can be inherited from the corresponding dictionary of another model definition:
+The complete user config dictionary can be inherited from another model definition:
 
 ```json
 "configs": "t2v"
 ```
 
-This reuses the *configs* dictionary declared by *t2v*. A reference assigned to *configs2* or *configs3* similarly reuses that same key from the referenced model, while each selected config still overrides the enclosing model in which the reference appears.
+This reuses the *configs* dictionary declared by *t2v*, while a selected config still overrides the enclosing model in which the reference appears.
 
-This example keeps the same transformer while allowing the text encoder and VAE to be selected independently. The standard architecture components come from the automatic Default options, so no explicit standard config is needed:
+This example keeps the same transformer while allowing one alternate component set to be selected for the finetune. The standard architecture components come from the automatic default option, so no explicit standard config is needed:
 
 ```json
 {
@@ -135,17 +128,15 @@ This example keeps the same transformer while allowing the text encoder and VAE 
       "https://huggingface.co/your-account/your-repo/resolve/main/my_ltx2_finetune_quanto_bf16_int8.safetensors"
     ],
     "configs": {
-      "_name": "Text Encoder",
+      "_name": "Finetune Components",
+      "_default_label": "Architecture Default",
       "alternate_text_encoder": {
         "name": "Alternate Text Encoder",
         "text_encoder_URLs": [
           "https://huggingface.co/your-account/your-repo/resolve/main/alternate_text_encoder_bf16.safetensors",
           "https://huggingface.co/your-account/your-repo/resolve/main/alternate_text_encoder_quanto_bf16_int8.safetensors"
         ]
-      }
-    },
-    "configs2": {
-      "_name": "VAE",
+      },
       "alternate_vae": {
         "name": "Alternate VAE",
         "VAE_URLs": [

@@ -19,10 +19,7 @@ from .video_vae import MiniMaxH3VideoVAE, get_video_vae_linear_split_map
 VIDEO_VAE_FILE = "MiniMax-H3-video_vae_fp16.safetensors"
 AUDIO_VAE_FILE = "MiniMax-H3-audio_vae_fp32.safetensors"
 TEXT_ENCODER_FOLDER = "Qwen3-VL-32B-Instruct"
-PROBE_CHECKPOINT_ARCHITECTURE = False
-ADALN_CURVE_GRID = 1001
-ADALN_CURVE_DIM = 64
-SPLIT_QKV_PROJECTIONS = True
+ADALN_CURVE_DIM = 8
 
 
 def _strip_wrappers(state_dict, quantization_map=None, tied_weights_map=None):
@@ -51,7 +48,8 @@ def _strip_text_encoder_wrapper(state_dict, quantization_map=None, tied_weights_
 
 def probe_h3_checkpoint(filename):
     """Inspect tensor headers before allocating the network."""
-    state_dict, _ = quant_router.load_metadata_state_dict(filename)
+    checkpoint_path = filename[0] if isinstance(filename, (list, tuple)) else filename
+    state_dict, _ = quant_router.load_metadata_state_dict(checkpoint_path)
     normalized = {}
     for key, value in state_dict.items():
         for prefix in ("model.diffusion_model.", "diffusion_model."):
@@ -64,20 +62,22 @@ def probe_h3_checkpoint(filename):
         return {"compressed_modulation": False, "adaln_curve_grid": None, "time_embed_dim": 2688}
     if len(table.shape) != 2 or table.shape[0] < 2:
         raise ValueError(f"Invalid H3 AdaLN curve table shape: {tuple(table.shape)}")
-    return {"compressed_modulation": True, "adaln_curve_grid": int(table.shape[0]), "time_embed_dim": int(table.shape[1])}
+    rank = int(table.shape[1])
+    if rank != ADALN_CURVE_DIM:
+        print(
+            f"MiniMax H3 pruned checkpoint '{checkpoint_path}' uses non-official AdaLN rank {rank}; the official rank is {ADALN_CURVE_DIM}. "
+            "This file may be incompatible with MiniMax H3 LoRAs. Delete it and retry so WanGP can automatically download the official replacement."
+        )
+    return {"compressed_modulation": True, "adaln_curve_grid": int(table.shape[0]), "time_embed_dim": rank}
 
 
-def _load_transformer(filename, dtype, compressed_modulation):
-    checkpoint = probe_h3_checkpoint(filename) if PROBE_CHECKPOINT_ARCHITECTURE else {
-        "compressed_modulation": compressed_modulation,
-        "adaln_curve_grid": ADALN_CURVE_GRID if compressed_modulation else None,
-        "time_embed_dim": ADALN_CURVE_DIM if compressed_modulation else 2688,
-    }
+def _load_transformer(filename, dtype, qkv_splitting=True):
+    checkpoint = probe_h3_checkpoint(filename)
     with init_empty_weights(include_buffers=True):
         transformer = MiniMaxH3Model(adaln_curve_grid=checkpoint["adaln_curve_grid"], time_embed_dim=checkpoint["time_embed_dim"],
                                      dtype=dtype, device="meta")
     filenames = filename if isinstance(filename, (list, tuple)) else [filename]
-    split_map = get_linear_split_map(transformer.attention_inner_size) if SPLIT_QKV_PROJECTIONS and not any(path.lower().endswith(".gguf") for path in filenames) else None
+    split_map = get_linear_split_map(transformer.attention_inner_size) if qkv_splitting and not any(path.lower().endswith(".gguf") for path in filenames) else None
     if split_map is not None:
         offload.split_linear_modules(transformer, split_map)
     transformer.requires_grad_(False)
@@ -104,11 +104,11 @@ def _load_text_encoder(filename, dtype):
     return text_encoder
 
 
-def _load_video_vae(filename, dtype):
+def _load_video_vae(filename, dtype, qkv_splitting=True):
     filename = fl.locate_file(filename)
     with init_empty_weights(include_buffers=False):
         vae = MiniMaxH3VideoVAE()
-    split_map = get_video_vae_linear_split_map() if SPLIT_QKV_PROJECTIONS else None
+    split_map = get_video_vae_linear_split_map() if qkv_splitting else None
     if split_map is not None:
         offload.split_linear_modules(vae, split_map)
     def preprocess(state_dict):
@@ -144,12 +144,12 @@ def _load_audio_vae(filename):
     return vae
 
 
-def model_factory(model_filename, text_encoder_filename, dtype=torch.bfloat16, VAE_dtype=torch.float32, save_quantized=False,
-                  model_type="minimax_h3_fl2va", compressed_modulation=False, reference_mode=False, video_vae_filename=VIDEO_VAE_FILE,
+def model_factory(model_filename, text_encoder_filename, qkv_splitting, dtype=torch.bfloat16, VAE_dtype=torch.float32, save_quantized=False,
+                  model_type="minimax_h3_fl2va", reference_mode=False, video_vae_filename=VIDEO_VAE_FILE,
                   audio_vae_filename=AUDIO_VAE_FILE):
-    transformer = _load_transformer(model_filename, dtype, compressed_modulation)
+    transformer = _load_transformer(model_filename, dtype, qkv_splitting)
     text_encoder = _load_text_encoder(text_encoder_filename, dtype)
-    video_vae = _load_video_vae(video_vae_filename, VAE_dtype)
+    video_vae = _load_video_vae(video_vae_filename, VAE_dtype, qkv_splitting)
     audio_vae = _load_audio_vae(audio_vae_filename)
     pipeline = MiniMaxH3Pipeline(transformer, text_encoder, video_vae, audio_vae, reference_mode=reference_mode, dtype=dtype)
     if save_quantized:
@@ -159,5 +159,5 @@ def model_factory(model_filename, text_encoder_filename, dtype=torch.bfloat16, V
     return pipeline
 
 
-__all__ = ["ADALN_CURVE_DIM", "ADALN_CURVE_GRID", "AUDIO_VAE_FILE", "PROBE_CHECKPOINT_ARCHITECTURE",
-           "SPLIT_QKV_PROJECTIONS", "TEXT_ENCODER_FOLDER", "VIDEO_VAE_FILE", "model_factory", "probe_h3_checkpoint"]
+__all__ = ["ADALN_CURVE_DIM", "AUDIO_VAE_FILE",
+           "TEXT_ENCODER_FOLDER", "VIDEO_VAE_FILE", "model_factory", "probe_h3_checkpoint"]

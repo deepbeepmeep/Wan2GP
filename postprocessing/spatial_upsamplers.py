@@ -77,6 +77,7 @@ _SHARED_PERSISTENCE_BINDING_KEY = "__shared_persistence__"
 spatial_upsampler_handlers = [
     "postprocessing.lanczos.wgp_bridge.LanczosUpsampler",
     "postprocessing.flashvsr.wgp_bridge.FlashVSRBridge",
+    "postprocessing.seedvr2.wgp_bridge.SeedVR2Bridge",
     "postprocessing.pid.wgp_bridge.PiDBridge",
     "postprocessing.chain_of_zoom.wgp_bridge.ChainOfZoomBridge",
     "postprocessing.spatial_upsamplers.WanVaeUpsampler",

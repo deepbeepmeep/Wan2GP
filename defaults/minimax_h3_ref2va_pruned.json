@@ -4,8 +4,8 @@
         "architecture": "minimax_h3_ref2va_pruned",
         "description": "Pruned Reference-to-Video-and-Audio: generate synchronized video and stereo audio from text plus reference images, video, and/or audio.",
         "URLs": [
-            "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/MiniMax-H3-Ref2VA-pruned_bf16.safetensors",
-            "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/MiniMax-H3-Ref2VA-pruned_int8_convrot.safetensors"
+            "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/MiniMax-H3-Ref2VA-pruned_rank8_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/MiniMax-H3-Ref2VA-pruned_rank8_int8_convrot.safetensors"
         ]
     },
     "prompt": "A cinematic close-up of the referenced performer singing on a softly lit stage, preserving identity, costume, and voice while adding natural lip motion, realistic room acoustics, and subtle camera movement."

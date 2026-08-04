@@ -147,7 +147,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.11"
-WanGP_version = "12.41"
+WanGP_version = "12.42"
 settings_version = 2.66
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -960,7 +960,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
         if int(inputs.get("batch_size", 1) or 1) > image_batch_size_max:
             return err(f"This model supports a maximum of {image_batch_size_max} image{'s' if image_batch_size_max > 1 else ''} per generation.")
     is_edit_mode = str(inputs.get("mode", "") or "").startswith("edit_")
-    any_steps_skipping = model_def.get("tea_cache", False) or model_def.get("mag_cache", False)
+    any_steps_skipping = model_def.get("tea_cache", False) or model_def.get("mag_cache", False) or model_def.get("spectrum_cache", False)
     model_type = get_base_model_type(model_type)
 
     model_filename = get_model_filename(model_type)  
@@ -1161,6 +1161,12 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
         model_switch_phase = 1
         
     if not any_steps_skipping: skip_steps_cache_type = ""
+    supported_cache_types = {""}
+    if model_def.get("tea_cache", False): supported_cache_types.add("tea")
+    if model_def.get("mag_cache", False): supported_cache_types.add("mag")
+    if model_def.get("spectrum_cache", False): supported_cache_types.add("spectrum")
+    if skip_steps_cache_type not in supported_cache_types:
+        return err(f"This model does not support step-skipping type '{skip_steps_cache_type}'.")
     if not model_def.get("lock_inference_steps", False) and model_type in ["ltxv_13B"] and num_inference_steps < 20:
         return err("The minimum number of steps should be 20")
     if skip_steps_cache_type == "mag":
@@ -4644,7 +4650,7 @@ def select_media(state, current_gallery_tab, input_file_list, file_selected, aud
             misc_values += [video_model_name]
             misc_labels += ["Model"]
             metadata_model_def = get_model_def(configs.get("model_type", None))
-            config_groups = get_model_config_groups(configs.get("model_type", None), metadata_model_def) if metadata_model_def is not None else [{}, {}, {}]
+            config_groups = get_model_config_groups(configs.get("model_type", None), metadata_model_def) if metadata_model_def is not None else [{} for _ in model_config_groups.CONFIG_KEYS]
             selected_config = model_config_groups.normalize_config_selection(config_groups, configs.get("config", ""))
             for group, config_id, config_def in model_config_groups.selected_model_configs(config_groups, selected_config):
                 misc_values += [config_def.get("name", config_id)]
@@ -5037,8 +5043,8 @@ def select_media(state, current_gallery_tab, input_file_list, file_selected, aud
             video_skip_steps_multiplier = configs.get("skip_steps_multiplier", 0)
             video_skip_steps_cache_start_step_perc = configs.get("skip_steps_start_step_perc", 0)
             if len(video_skip_steps_cache_type) > 0:
-                video_skip_steps_cache = "TeaCache" if video_skip_steps_cache_type == "tea" else "MagCache"
-                video_skip_steps_cache += f" x{video_skip_steps_multiplier }"
+                video_skip_steps_cache = {"tea": "TeaCache", "mag": "MagCache", "spectrum": "Spectrum"}.get(video_skip_steps_cache_type, video_skip_steps_cache_type)
+                if video_skip_steps_cache_type != "spectrum": video_skip_steps_cache += f" x{video_skip_steps_multiplier }"
                 if video_skip_steps_cache_start_step_perc >0:  video_skip_steps_cache += f", Start from {video_skip_steps_cache_start_step_perc}%"
                 values += [ video_skip_steps_cache ]
                 labels += [ "Skip Steps" ]
@@ -6889,6 +6895,8 @@ def generate_media(
         elif skip_steps_cache_type == "tea":
             def_tea_coefficients = model_def.get("teacache_coefficients", None) if model_def != None else None
             if def_tea_coefficients is not None: skip_steps_cache.coefficients = def_tea_coefficients
+        elif skip_steps_cache_type == "spectrum":
+            pass
         else:
             raise Exception(f"unknown cache type {skip_steps_cache_type}")
     trans.cache = skip_steps_cache
@@ -9265,7 +9273,7 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         pop += ["alt_scale"]
 
 
-    if not (model_def.get("tea_cache", False) or model_def.get("mag_cache", False)) :
+    if not (model_def.get("tea_cache", False) or model_def.get("mag_cache", False) or model_def.get("spectrum_cache", False)) :
         pop += ["skip_steps_cache_type", "skip_steps_multiplier", "skip_steps_start_step_perc"]
 
     guidance_max_phases = model_def.get("guidance_max_phases", 0)
@@ -11118,6 +11126,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             lock_inference_steps = model_def.get("lock_inference_steps", False) or (audio_only and not inference_steps_enabled)
             any_tea_cache = model_def.get("tea_cache", False)
             any_mag_cache = model_def.get("mag_cache", False)
+            any_spectrum_cache = model_def.get("spectrum_cache", False)
             recammaster = base_model_type in ["recam_1.3B"]
             vace = test_vace_module(base_model_type)
             multitalk = model_def.get("multitalk_class", False)
@@ -11901,16 +11910,17 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             search_empty_label="No matching LoRAs",
                         )
                         loras_multipliers = gr.Textbox(label="LoRAs Multipliers (1.0 by default) separated by Space chars or CR, lines that start with # are ignored", value=launch_multis_str)
-                with gr.Tab("Steps Skipping", visible = any_tea_cache or any_mag_cache) as speed_tab:
+                with gr.Tab("Steps Skipping", visible = any_tea_cache or any_mag_cache or any_spectrum_cache) as speed_tab:
                     with gr.Column():
-                        gr.Markdown("<B>Tea Cache and Mag Cache accelerate the Video Generation by skipping intelligently some steps, the more steps are skipped the lower the quality of the video.</B>")
-                        gr.Markdown("<B>Steps Skipping  consumes also VRAM. It is recommended not to skip at least the first 10% steps.</B>")
+                        gr.Markdown("<B>Step-skipping accelerators avoid selected full transformer evaluations. More skipped evaluations may reduce output quality.</B>")
+                        gr.Markdown("<B>Keep an initial warmup so the accelerator can establish a stable history.</B>")
                         steps_skipping_choices = [("None", "")]
                         if any_tea_cache: steps_skipping_choices += [("Tea Cache", "tea")]
                         if any_mag_cache: steps_skipping_choices += [("Mag Cache", "mag")]
+                        if any_spectrum_cache: steps_skipping_choices += [("Spectrum Feature Forecasting", "spectrum")]
                         skip_steps_cache_type = gr.Dropdown(
                             choices= steps_skipping_choices,
-                            value="" if not (any_tea_cache or any_mag_cache) else ui_get("skip_steps_cache_type"),
+                            value="" if not (any_tea_cache or any_mag_cache or any_spectrum_cache) else ui_get("skip_steps_cache_type"),
                             visible=True,
                             label="Skip Steps Cache Type"
                         )
@@ -11924,7 +11934,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 ("around x2.5 speed up", 2.5), 
                             ],
                             value=float(ui_get("skip_steps_multiplier")),
-                            visible=True,
+                            visible=any_tea_cache or any_mag_cache,
                             label="Skip Steps Cache Global Acceleration"
                         )
                         skip_steps_start_step_perc = gr.Slider(0, 100, value=ui_get("skip_steps_start_step_perc"), step=1, label="Skip Steps starting moment in % of generation", show_reset_button= False) 
@@ -12217,12 +12227,13 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     config_value = model_config_groups.normalize_config_selection(config_groups, ui_get("config"))
                     config_group_values = model_config_groups.split_config_selection(config_value)
                     config_group_labels = [model_config_groups.get_config_name(configs) for configs in config_groups]
+                    config_group_default_labels = [model_config_groups.get_default_label(configs) for configs in config_groups]
                     with gr.Column(any(grouped_model_configs)) as config_column:
                         gr.Markdown('<B>You may pick a Variation of the Default Config (VAE Decoder, Text Encoder, may be different for instance)</B>')
                         config_group_dropdowns = []
                         with gr.Row():
                             for index, group_configs in enumerate(grouped_model_configs):
-                                config_choices = [("Default", "")] + [(config_def.get("name", config_id), config_id) for config_id, config_def in group_configs]
+                                config_choices = [(config_group_default_labels[index], "")] + [(config_def.get("name", config_id), config_id) for config_id, config_def in group_configs]
                                 config_group_dropdowns.append(gr.Dropdown(choices=config_choices, value=config_group_values[index], visible=bool(group_configs), label=config_group_labels[index]))
                         config = gr.Text(value=config_value, interactive=False, visible=False)
 

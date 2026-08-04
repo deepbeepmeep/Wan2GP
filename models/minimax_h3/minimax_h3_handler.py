@@ -59,6 +59,16 @@ H3 outputs video at 24 FPS. MiniMax documents an official output range of 4–15
 See the [MiniMax H3 model card](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/README.md) for the upstream specifications and prompting guidance.
 """
 
+H3_RUNTIME_INFOS = """
+### Speed and memory choices
+
+Enable **Advanced Mode** to access these options:
+
+- **Spectrum:** in **Steps Skipping**, select **Spectrum Feature Forecasting**. Spectrum accelerates generation by forecasting selected transformer steps, at the cost of possible changes to motion or fine details. Keep the default 25% start for five full warmup steps in a 20-step generation; increasing it starts later and skips fewer steps.
+- **Text Encoder:** at the bottom of **Misc.**, use the **Text Encoder** configuration to reduce system RAM. **Qwen3-VL BF16** uses the most memory; **Quanto INT8** is a balanced lower-memory choice; **NVFP4 AWQ**, **GGUF Q4_K_M**, and especially **GGUF Q2_K** reduce it further. More aggressive quantization can slightly affect prompt interpretation.
+- **Priority:** beside the Text Encoder configuration, choose which memory limit matters most. **Lower VRAM** uses all code optimizations and reduces greatly VRAM consumption while **Lower RAM** uses only VRAM optimizations that doesnt consume extra RAM.
+"""
+
 PRUNED_INFOS = """
 ### Pruned 20B checkpoint
 
@@ -104,6 +114,11 @@ class family_handler:
         return getattr(args, "lora_dir_minimax_h3", None) or os.path.join(lora_root, "minimax_h3")
 
     @staticmethod
+    def set_cache_parameters(cache_type, base_model_type, model_def, inputs, skip_steps_cache):
+        if cache_type != "spectrum":
+            raise ValueError(f"MiniMax H3 does not support step-skipping type {cache_type!r}")
+
+    @staticmethod
     def query_model_def(base_model_type, model_def):
         reference_mode = base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE)
         pruned = base_model_type in (FL2VA_PRUNED_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE)
@@ -121,13 +136,14 @@ class family_handler:
             "lora_multiplier_phases": 1,
             "inference_steps": True,
             "flow_shift": True,
+            "spectrum_cache": True,
             "sample_solvers": [("Euler", "euler")],
             "no_negative_prompt": True,
             "skip_prompt_template": True,
             "returns_audio": True,
             "multimedia_generation": True,
             "control_video_trim_disabled": True,
-            "infos": (REF2VA_INFOS if reference_mode else FL2VA_INFOS) + (PRUNED_INFOS if pruned else ""),
+            "infos": (REF2VA_INFOS if reference_mode else FL2VA_INFOS) + H3_RUNTIME_INFOS + (PRUNED_INFOS if pruned else ""),
             "prompt_infos": REF2VA_PROMPT_INFOS if reference_mode else FL2VA_PROMPT_INFOS,
             "prompt_enhancer_button_label": "Write H3 Prompt",
             "prompt_enhancer_def": {
@@ -144,15 +160,21 @@ class family_handler:
             "video_prompt_enhancer_max_tokens": 2048 if reference_mode else 1024,
             "profiles_dir": ["minimax_h3"],
             "finetune_custom_urls": ["video_vae_file", "audio_vae_file"],
+            "qkv_splitting": True,
             "text_encoder_folder": TEXT_ENCODER_FOLDER,
             "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, filename) for filename in text_encoder_files],
-            "configs": {
+            "system_configs": {
                 "_name": "Text Encoder",
                 "bf16": {"name": "Qwen3-VL BF16", "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_BF16)]},
                 "int8": {"name": "Qwen3-VL Quanto INT8", "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_INT8)]},
                 "nvfp4_awq": {"name": "Qwen3-VL NVFP4 AWQ", "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_NVFP4)]},
-                "gguf_q2_k": {"name": "Qwen3-VL GGUF Q2_K", "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_GGUF_Q2)]},
                 "gguf_q4_k_m": {"name": "Qwen3-VL GGUF Q4_K_M", "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_GGUF_Q4)]},
+                "gguf_q2_k": {"name": "Qwen3-VL GGUF Q2_K", "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_GGUF_Q2)]},
+            },
+            "system_configs2": {
+                "_name": "Priority",
+                "_default_label": "Lower VRAM",
+                "lower_ram": {"name": "Lower RAM", "qkv_splitting": False},
             },
         }
         if reference_mode:
@@ -325,9 +347,9 @@ class family_handler:
         from .minimax_h3_main import model_factory
 
         pipeline = model_factory(model_filename, text_encoder_filename, dtype=dtype, VAE_dtype=VAE_dtype,
-                                 compressed_modulation=base_model_type in (FL2VA_PRUNED_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE),
                                  reference_mode=base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE),
                                  save_quantized=save_quantized, model_type=model_type,
+                                 qkv_splitting=model_def["qkv_splitting"],
                                  video_vae_filename=model_def.get("video_vae_file", VIDEO_VAE_FILE),
                                  audio_vae_filename=model_def.get("audio_vae_file", AUDIO_VAE_FILE))
         return pipeline, {
@@ -350,6 +372,7 @@ class family_handler:
             "guidance_scale": 1.0,
             "flow_shift": 12.0,
             "sample_solver": "euler",
+            "skip_steps_start_step_perc": 25,
             "audio_prompt_type": "",
             "video_prompt_type": "",
             "image_mode": 0,

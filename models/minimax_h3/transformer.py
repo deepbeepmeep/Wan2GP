@@ -338,6 +338,7 @@ class MiniMaxH3Model(nn.Module):
                  dtype=None, device=None, **kwargs):
         super().__init__()
         self._interrupt = False
+        self.cache = None
         self.dtype = dtype
         self.hidden_size = hidden_size
         self.attention_inner_size = num_attention_heads * attention_head_dim
@@ -380,6 +381,10 @@ class MiniMaxH3Model(nn.Module):
         self.token_refiner._interrupt = self._interrupt
         return self.token_refiner([self.condition_proj(text_states[0])]).unsqueeze(0)
 
+    def _check_interrupt(self):
+        if self._interrupt:
+            raise GenerationInterrupted
+
     def _layout(self, text_tags, latent_t, latent_h, latent_w, audio_t, payload):
         signature = (text_tags.numel(), latent_t, latent_h, latent_w, audio_t,
                      tuple(k["resolved_frame_index"] for k in payload.get("keyframes") or ()),
@@ -406,13 +411,38 @@ class MiniMaxH3Model(nn.Module):
         lower = position.floor().long().clamp(max=table.shape[0] - 2)
         return torch.lerp(table[lower], table[lower + 1], (position - lower).unsqueeze(1))
 
-    def forward(self, video_x, audio_x, sigma_video, sigma_audio, context, payload):
+    def forward(self, video_x, audio_x, sigma_video, sigma_audio, context, payload, spectrum=None):
         device, dtype = video_x.device, self.dtype or next(self.blocks.parameters()).dtype
         video_dtype, audio_dtype = video_x.dtype, audio_x.dtype
         _, _, latent_t, latent_h, latent_w = video_x.shape
         audio_t = audio_x.shape[-1]
         text_tags = payload["text_token_tags"].view(-1).cpu()
         layout = self._layout(text_tags, latent_t, latent_h, latent_w, audio_t, payload)
+
+        if spectrum is not None and spectrum.forecasting:
+            timestep, timestep_indices = build_row_timesteps(
+                layout,
+                float(1.0 - sigma_video.flatten()[0]),
+                float(1.0 - sigma_audio.flatten()[0]),
+                max(float(1.0 - sigma_video.flatten()[0]), VISUAL_COND_TIMESTEP),
+                AUDIO_COND_TIMESTEP,
+            )
+            timestep, timestep_indices = timestep.to(device), timestep_indices.to(device)
+            temb = self._time_embedding(timestep)
+            target_video_rows = latent_t * (latent_h // self.patch_size[1]) * (latent_w // self.patch_size[2])
+            target_audio_rows = audio_t * 2
+            video_start = layout.sequence_length - target_video_rows
+            audio_start = video_start - target_audio_rows
+            video_row = int(timestep_indices[video_start])
+            audio_row = int(timestep_indices[audio_start])
+            hidden = spectrum.predict(device, dtype, self._check_interrupt)
+            video, audio = self.final_layer([hidden], temb, (target_audio_rows, target_audio_rows + target_video_rows, video_row),
+                                            (0, target_audio_rows, audio_row))
+            del temb, timestep_indices
+            video = _to_dtype([video], video_dtype)
+            audio = _to_dtype([audio], audio_dtype)
+            return (unpatchify_video_tokens(video, latent_t, latent_h, latent_w, self.latents_dim, self.patch_size),
+                    unpack_audio(audio))
 
         video_rows = patchify_video(video_x.to(torch.float32), self.patch_size)
         audio_rows = pack_audio(audio_x.to(torch.float32))
@@ -459,8 +489,7 @@ class MiniMaxH3Model(nn.Module):
         del adaln_indices, changes
 
         for block in self.blocks:
-            if self._interrupt:
-                raise GenerationInterrupted
+            self._check_interrupt()
             h_list = [hidden]
             hidden = None
             hidden = block(h_list, temb, segments, rope)
@@ -471,6 +500,8 @@ class MiniMaxH3Model(nn.Module):
         audio_start = video_start - target_audio_rows
         video_row = int(timestep_indices[video_start])
         audio_row = int(timestep_indices[audio_start])
+        if spectrum is not None:
+            spectrum.observe(hidden[audio_start:], self._check_interrupt)
         h_list = [hidden]
         hidden = None
         video, audio = self.final_layer(h_list, temb, (video_start, layout.sequence_length, video_row),

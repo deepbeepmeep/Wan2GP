@@ -10,7 +10,7 @@ from shared.deepy.config import DEEPY_ENABLED_KEY
 
 LEGACY_EXTENSIONS_DEFAULTS_MIGRATED_KEY = "_extensions_defaults_migrated"
 EXTENSIONS_DEFAULTS_VERSION_KEY = "extensions_defaults_version"
-EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.18")
+EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.19")
 EXTENSIONS_DEFAULTS_TARGET_VERSION_TEXT = str(EXTENSIONS_DEFAULTS_TARGET_VERSION)
 INSTALLED_REMOTE_PLUGINS_KEY = "installed_remote_plugins"
 
@@ -243,6 +243,11 @@ def migrate_extension_defaults(server_config, server_config_filename="") -> bool
         from postprocessing import spatial_upsamplers as upsampler_api
 
         changed = upsampler_api.migrate_upsampler_config(server_config, prefer_legacy=True, apply_pre_1_1_defaults=version < Decimal("1.1")) or changed
+
+    if version < Decimal("1.19"):
+        from postprocessing import spatial_upsamplers as upsampler_api
+
+        changed = upsampler_api.migrate_upsampler_config(server_config) or changed
 
     changed = _migrate_audio_processors_config(server_config, version) or changed
     changed = _migrate_temporal_upsamplers_config(server_config) or changed

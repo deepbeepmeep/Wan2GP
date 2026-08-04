@@ -83,6 +83,36 @@ LTX2_EMBEDDING_LORA_PREFIXES = (
     "video_embeddings_connector.",
     "audio_embeddings_connector.",
 )
+LTX2_COMFY_LORA_UNDERSCORED_NAMES = (
+    "av_ca_audio_scale_shift_adaln_single",
+    "av_ca_video_scale_shift_adaln_single",
+    "av_ca_a2v_gate_adaln_single",
+    "av_ca_v2a_gate_adaln_single",
+    "audio_prompt_adaln_single",
+    "audio_patchify_proj",
+    "audio_to_video_attn",
+    "prompt_adaln_single",
+    "video_to_audio_attn",
+    "audio_adaln_single",
+    "transformer_blocks",
+    "timestep_embedder",
+    "audio_proj_out",
+    "to_gate_logits",
+    "patchify_proj",
+    "adaln_single",
+    "audio_attn1",
+    "audio_attn2",
+    "audio_ff",
+    "linear_1",
+    "linear_2",
+    "proj_out",
+    "k_norm",
+    "q_norm",
+    "to_out",
+    "to_k",
+    "to_q",
+    "to_v",
+)
 
 
 def _ltx2_main_ingredients_enabled(base_model_type: str | None, video_prompt_type: str) -> bool:
@@ -362,21 +392,25 @@ def _attach_lora_preprocessor(transformer: torch.nn.Module) -> None:
                 key = key[len("diffusion_model.") :]
             if key.startswith("transformer."):
                 key = key[len("transformer.") :]
-            if not LTX2_ENABLE_EMBEDDING_LORAS and key.startswith(LTX2_EMBEDDING_LORA_PREFIXES):
-                continue
-            if key.startswith("embeddings_connector."):
-                key = f"text_embeddings_connector.video_embeddings_connector.{key[len('embeddings_connector.'):]}"
-            if key.startswith("video_embeddings_connector."):
-                key = f"text_embeddings_connector.{key}"
-            if key.startswith("audio_embeddings_connector."):
-                key = f"text_embeddings_connector.{key}"
-            if key.startswith("feature_extractor_linear."):
-                key = f"text_embedding_projection.{key[len('feature_extractor_linear.'):]}"
-
             module_name, suffix = split_lora_key(key)
             if not module_name:
                 dropped_keys.append(original_key)
                 continue
+            if module_name.startswith("lora_unet_"):
+                module_name = module_name[len("lora_unet_") :]
+                for name in LTX2_COMFY_LORA_UNDERSCORED_NAMES:
+                    module_name = module_name.replace(name, name.replace("_", "\0"))
+                module_name = module_name.replace("_", ".").replace("\0", "_")
+            if not LTX2_ENABLE_EMBEDDING_LORAS and module_name.startswith(LTX2_EMBEDDING_LORA_PREFIXES):
+                continue
+            if module_name.startswith("embeddings_connector."):
+                module_name = f"text_embeddings_connector.video_embeddings_connector.{module_name[len('embeddings_connector.') :]}"
+            if module_name.startswith("video_embeddings_connector."):
+                module_name = f"text_embeddings_connector.{module_name}"
+            if module_name.startswith("audio_embeddings_connector."):
+                module_name = f"text_embeddings_connector.{module_name}"
+            if module_name.startswith("feature_extractor_linear."):
+                module_name = f"text_embedding_projection.{module_name[len('feature_extractor_linear.') :]}"
             if module_name not in module_names:
                 prefixed_name = f"velocity_model.{module_name}"
                 if module_name.endswith(".to_out") and f"{prefixed_name}.0" in module_names:
@@ -888,7 +922,14 @@ class LTX2:
         transformer.eval().requires_grad_(False)
         VAE_URLs = self.model_def.get("VAE_URLs", None)
         video_vae_path =  fl.locate_file(VAE_URLs[0]) if VAE_URLs is not None and len(VAE_URLs) else _component_path("video_vae")
-        video_config = copy.deepcopy(_component_config(video_vae_path))
+        video_config_path = component_paths.get("video_vae_config") if component_paths else None
+        if video_config_path:
+            with open(video_config_path, "r", encoding="utf-8") as reader:
+                video_config = copy.deepcopy(json.load(reader))
+        else:
+            video_config = copy.deepcopy(_component_config(video_vae_path))
+        if self.model_def.get("ltx2_pruna_vae", False):
+            print("[WanGP][LTX2] Loading PrunaAI VAE (up to x2 faster).")
         video_config_vae = video_config.setdefault("vae", {})
         video_config_vae["spatial_padding_mode"] = "reflect"
         video_config_vae["encoder_spatial_padding_mode"] = "reflect"

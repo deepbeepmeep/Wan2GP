@@ -1,0 +1,12 @@
+{
+    "model": {
+        "name": "MiniMax H3 FL2VA 33B",
+        "architecture": "minimax_h3_fl2va",
+        "description": "First/Last-Frame-to-Video-and-Audio: generate synchronized video and stereo audio from text alone, a first frame, a last frame, or both.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/MiniMax-H3-FL2VA_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/MiniMax-H3-FL2VA_int8_convrot.safetensors"
+        ]
+    },
+    "prompt": "A cinematic close-up of a jazz duo performing in a softly lit club. The singer delivers a warm, intimate line while the pianist answers with a gentle stereo flourish; natural lip motion, realistic room acoustics, subtle camera movement."
+}

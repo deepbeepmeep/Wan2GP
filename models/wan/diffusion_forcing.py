@@ -72,12 +72,12 @@ class DTT2V:
         # model_filename = "c:/temp/diffusion_pytorch_model-00001-of-00006.safetensors"
         base_config_file = f"configs/{base_model_type}.json"
         forcedConfigPath = base_config_file if len(model_filename) > 1 else None
-        self.model = offload.fast_load_transformers_model(model_filename, modelClass=WanModel,do_quantize= quantizeTransformer, writable_tensors= False , forcedConfigPath=forcedConfigPath)
+        def pre_load_callback(model):
+            model.lock_layers_dtypes(torch.float32 if mixed_precision_transformer else dtype)
+        self.model = offload.fast_load_transformers_model(model_filename, modelClass=WanModel,do_quantize= quantizeTransformer, writable_tensors= False, default_dtype=dtype, pre_load_callback=pre_load_callback, forcedConfigPath=forcedConfigPath)
         # offload.load_model_data(self.model, "recam.ckpt")
         # self.model.cpu()
         # dtype = torch.float16
-        self.model.lock_layers_dtypes(torch.float32 if mixed_precision_transformer else dtype)
-        offload.change_dtype(self.model, dtype, True)
         # offload.save_model(self.model, "sky_reels2_diffusion_forcing_1.3B_mbf16.safetensors", config_file_path="config.json") 
         # offload.save_model(self.model, "sky_reels2_diffusion_forcing_720p_14B_quanto_mbf16_int8.safetensors", do_quantize= True, config_file_path="c:/temp/config _df720.json") 
         # offload.save_model(self.model, "rtfp16_int8.safetensors", do_quantize= "config.json") 

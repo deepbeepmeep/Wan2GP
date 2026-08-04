@@ -694,7 +694,42 @@ def convert_to_quanto(state_dict, default_dtype, verboseLevel=1, detection=None)
     return convert_nvfp4_to_quanto(state_dict, default_dtype=default_dtype, verboseLevel=verboseLevel)
 
 
+class Int8TensorwiseEmbedding(torch.nn.Embedding):
+    def __init__(self, module, output_dtype):
+        super().__init__(module.num_embeddings, module.embedding_dim, module.padding_idx, module.max_norm, module.norm_type,
+                         module.scale_grad_by_freq, module.sparse, device=module.weight.device, dtype=module.weight.dtype)
+        self.register_buffer("weight_scale", torch.empty((module.num_embeddings, 1), device=module.weight.device, dtype=torch.float32))
+        self.output_dtype = output_dtype
+        self.requires_grad_(False)
+
+    def forward(self, input):
+        weight = torch.nn.functional.embedding(input, self.weight, self.padding_idx, self.max_norm, self.norm_type,
+                                                self.scale_grad_by_freq, self.sparse).to(self.output_dtype)
+        scale = torch.nn.functional.embedding(input, self.weight_scale).to(self.output_dtype)
+        return weight.mul_(scale)
+
+
+def _is_int8_tensorwise(config):
+    if not torch.is_tensor(config) or config.dtype != torch.uint8 or config.numel() > 256:
+        return False
+    try:
+        return ast.literal_eval(bytes(config.tolist()).decode()).get("format") == "int8_tensorwise"
+    except (SyntaxError, ValueError, UnicodeDecodeError):
+        return False
+
+
 def apply_pre_quantization(model, state_dict, quantization_map, default_dtype=None, verboseLevel=1):
+    for key in [key for key in state_dict if key.endswith(".comfy_quant") and _is_int8_tensorwise(state_dict[key])]:
+        name = key.removesuffix(".comfy_quant")
+        module = model.get_submodule(name)
+        if not isinstance(module, torch.nn.Embedding):
+            raise ValueError(f"Unsupported tensorwise INT8 module: {name}")
+        scale = state_dict.get(name + ".weight_scale")
+        if scale is None or tuple(scale.shape) != (module.num_embeddings, 1):
+            raise ValueError(f"Invalid tensorwise INT8 embedding scale: {name}")
+        parent_name, child_name = name.rsplit(".", 1)
+        setattr(model.get_submodule(parent_name), child_name, Int8TensorwiseEmbedding(module, default_dtype))
+        state_dict.pop(key)
     return quantization_map, []
 
 

@@ -259,21 +259,17 @@ class Inference(object):
         from mmgp import offload
 
         source =  model_def.get("source", None)
-        kwargs_light = dict(do_quantize= quantizeTransformer and not save_quantized, pinToMemory = pinToMemory, partialPinning = partialPinning, writable_tensors=False)
+        model.mixed_precision = mixed_precision_transformer
+        def pre_load_callback(model):
+            model.lock_layers_dtypes(torch.float32 if model.mixed_precision else dtype)
+        kwargs_light = dict(do_quantize= quantizeTransformer and not save_quantized, pinToMemory = pinToMemory, partialPinning = partialPinning, writable_tensors=False, default_dtype=dtype, pre_load_callback=pre_load_callback)
         if source is not None:
             from wgp import save_model
             offload.load_model_data(model, fl.locate_file(source),  **kwargs_light)
         else:
             offload.load_model_data(model, model_filepath, **kwargs_light)
 
-            
-        model.mixed_precision = mixed_precision_transformer
-
-        model.lock_layers_dtypes(torch.float32 if model.mixed_precision else dtype)
-        offload.change_dtype(model, dtype, True)
         model.eval().requires_grad_(False)
-
-        model.eval()
 
         if not source is None:
             save_model(model, model_type, dtype, None, submodel_no= 1)

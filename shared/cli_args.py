@@ -37,6 +37,7 @@ def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default
     add("--lock-config", action="store_true", help="Prevent modifying the configuration from the web interface")
     add("--lock-model", action="store_true", help="Prevent switch models")
     add("--save-quantized", action="store_true", help="Save a quantized version of the current model")
+    add("--convrot", action="store_true", help="Save INT8 ConvRot instead of Quanto INT8 (requires --save-quantized)")
     add("--test", action="store_true", help="Load the model and exit generation immediately")
     add("--preload", type=str, default="0", help="Megabytes of the diffusion model to preload in VRAM")
     add("--multiple-images", action="store_true", help="Allow inputting multiple images with image to video")

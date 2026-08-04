@@ -11,7 +11,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 | Modality | Supported models |
 | --- | --- |
-| **Video** | **Wan 2.1/2.2** and derived models, **LTX-2**, **Hunyuan Video 1/1.5**, **LongCat**, **Kandinsky**, **LTXV**, **MagiHuman** |
+| **Video** | **Wan 2.1/2.2** and derived models, **MiniMax H3**, **LTX-2**, **Hunyuan Video 1/1.5**, **LongCat**, **Kandinsky**, **LTXV**, **MagiHuman** |
 | **Image** | **Qwen Image**, **Z-Image**, **Flux 1/2** (Klein, Chroma), **HiDream** |
 | **Audio / TTS** | **Qwen3 TTS**, **Ace Step 1/2/XL**, **Omnivoice**, **Index TTS2**, **KugelAudio**, **HearMula**, **Chatterbox** |
 
@@ -45,10 +45,12 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 **Follow DeepBeepMeep on Twitter/X to get the Latest News**: https://x.com/deepbeepmeep
 
+**Official WanGP Web Site**: https://wangp.ai/
+
 > [!IMPORTANT]
 > **WanGP is free to use locally.** The official project will never ask you to pay a license fee, subscription, or donation to run WanGP on your own computer (see the license for terms).
 >
-> **Use only the official GitHub repository.** WanGP is **not affiliated with wan2gp.com, wangp.video or any other third-party service using the WanGP/Wan2GP names**, unless explicitly stated here.
+> **Use only the official GitHub repository or wangp.ai / wan2gp.ai websites. WanGP is not affiliated to any other third-party service using the WanGP/Wan2GP names**, unless explicitly stated here.
 
 
 ## 📋 Table of Contents
@@ -62,6 +64,25 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 ## 🔥 Latest Updates : 
 
+## 3rd of August 2026: WanGP v12.41, No Time for Taglines
+
+**MiniMax H3**
+
+MiniMax H3 is a top-notch open-weight contender to Seedance 2, combining cinematic video generation, convincing motion, strong prompt adherence, and a synchronized native stereo soundtrack in one model.
+
+Given no *Steps Distilled Checkpoints* is available for the moment, 15-20 inference steps is a minimum.
+
+But rejoice WanGP version is as usual Ultra Optimized: **5-6GB of VRAM only for 5s (124 frames) and 8-9GB of VRAM for 15s at 832x480**. 
+
+- **MiniMax H3 FL2VA: create or continue a shot**: choose this version to generate synchronized video and stereo audio from text alone, start from an image or the last frame of a previous video, target an end image, or constrain both ends of the shot. It also supports longer generations with sliding windows.
+
+- **MiniMax H3 Ref2VA: reuse people, scenes, motion, or voices**: choose this version when the new video should follow *Reference Images*, *Reference Videos*, or *Reference Audio*. References guide the newly generated result rather than becoming fixed frames; this version does not support sliding windows.
+
+Both flavours offer the same controls in full 33B and lighter pruned 20B versions.
+
+If you are short on RAM, check the *Advanced / Misc* Tab, you will find at the bottom a selection of quantized text encoders. 
+
+*WanGP v12.41*: add selection quantized text encoders
 ## 25th of July 2026: Featured Plugins / Apps
 
 WanGP's growing community has developed more than 20 plugins that expand what you can do. Here is a selection of seven newly available community plugins, all of which can be installed or updated directly from the WanGP Plugin Manager:
@@ -76,7 +97,7 @@ WanGP's growing community has developed more than 20 plugins that expand what yo
 
 **New Wan2GP Desktop Installer** — [Wan2GP Desktop](https://github.com/GKartist75/wan2gp-desktop) by GKArtist lets you install, update, and launch WanGP from a single window. It handles Git, Python, CUDA, and PyTorch setup for you, making it the easiest way to get started on Windows.
 
-### 25th of July 2026: WanGP v12.345, you can breath now
+### 29th of July 2026: WanGP v12.3456, Increasingly Greater
 
 - **Krea 2 Identity Edit**: this Krea2 finetune adds Editing capabilities to Krea 2. You can edit an existing image or combine up to 2 *Reference Images* to produce a new one. WanGP implementation comes out of the box with *Inpainting* and *Outpainting*   
 
@@ -94,7 +115,14 @@ WanGP's growing community has developed more than 20 plugins that expand what yo
 
 - **More Krea2 LoRA Support**: more LoRAs formats are supported 
 
-*update 12.345*: Text Encode GGUF Support, Joy Echo Surgical, MSR2 new setting, Omnivoice Speed adjustment, new Krea2 LoRA formats
+- **Shotplan**: some form *PromptRelay* for Wan 2.1 and Wan 2.2, you can divide a gen into different shots that reuses the same characters or objects
+
+- **PrunaVAED**: this an alternative *VAE Video Decoder** for LTX2 that is 2.7 faster and requires half the VRAM during the *VAE decoding*. You will be able to select PrunaVAED in the *Misc* Tab at the bottom, in the new *Config* dropdown box
+
+- **WanGP Configs**: if you just want to change the VAE or the text encoder you no longer need to create multiple finetune, you can now just create a single finetune with multiple configs in it. Please check *docs/FINETUNES.md*
+
+*update 12.345*: Text Encode GGUF Support, Joy Echo Surgical, MSR2 new setting, Omnivoice Speed adjustment, new Krea2 LoRA formats\
+*update 12.346*: Shotplan, PrunaVAED, WanGP Configs
 
 ### 1st of July 2026: WanGP v12.3, The VRAM Digger
 

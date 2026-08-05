@@ -1,6 +1,7 @@
 """Model construction and checkpoint loading for MiniMax H3."""
 
 import os
+from functools import partial
 
 import torch
 from accelerate import init_empty_weights
@@ -22,8 +23,9 @@ TEXT_ENCODER_FOLDER = "Qwen3-VL-32B-Instruct"
 ADALN_CURVE_DIM = 8
 
 
-def _strip_wrappers(state_dict, quantization_map=None, tied_weights_map=None):
-    restore_interleaved_h3_qkv(state_dict)
+def _strip_wrappers(state_dict, quantization_map=None, tied_weights_map=None, qkv_splitting=True):
+    if qkv_splitting:
+        restore_interleaved_h3_qkv(state_dict)
     prefixes = ("model.diffusion_model.", "diffusion_model.")
 
     def strip(mapping):
@@ -81,7 +83,8 @@ def _load_transformer(filename, dtype, qkv_splitting=True):
     if split_map is not None:
         offload.split_linear_modules(transformer, split_map)
     transformer.requires_grad_(False)
-    offload.load_model_data(transformer, filename, writable_tensors=False, default_dtype=dtype, preprocess_sd=_strip_wrappers,
+    preprocess_sd = partial(_strip_wrappers, qkv_splitting=qkv_splitting)
+    offload.load_model_data(transformer, filename, writable_tensors=False, default_dtype=dtype, preprocess_sd=preprocess_sd,
                             fused_split_map=split_map)
     transformer.eval().requires_grad_(False)
     transformer.h3_checkpoint_info = checkpoint

@@ -68,6 +68,8 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 **MiniMax H3**
 
+**MiniMax H3**
+
 MiniMax H3 is a top-notch open-weight contender to Seedance 2, combining cinematic video generation, convincing motion, strong prompt adherence, and a synchronized native stereo soundtrack in one model.
 
 Given no *Steps Distilled Checkpoints* is available for the moment, 15-20 inference steps is a minimum.
@@ -83,8 +85,8 @@ Both flavours offer the same controls in full 33B and lighter pruned 20B version
 - **Spectrum step skipping**: Spectrum can make MiniMax H3 generation up to 2× faster, with a modest potential quality tradeoff. Enable it under *Advanced Mode / Steps Skipping* by setting *Skip Steps Cache Type* to *Spectrum Feature Forecasting*.
 
 - **Spatial upsampler improvements**: high-resolution MiniMax H3 generation can be slow, so a practical alternative is to generate at a lower resolution, such as 480p, and upscale the result afterward.
-    - **FlashVSR optimizations**: FlashVSR has been further optimized to reduce system RAM usage.
-    - **SeedVR2**: this high-quality image and video upsampler previously required too much VRAM for longer videos on many consumer GPUs. The WanGP integration reduces its VRAM requirement to roughly one-third of the original implementation. SeedVR2 is available under *Advanced Mode / Post Processing*, in *Late Post Processing*, and through the *Media Flow* plugin.
+ - **FlashVSR optimizations**: FlashVSR has been further optimized to reduce system RAM usage.
+ - **SeedVR2**: this high-quality image and video upsampler previously required too much VRAM for longer videos on many consumer GPUs. The WanGP integration reduces its VRAM requirement to roughly one-third of the original implementation. SeedVR2 is available under *Advanced Mode / Post Processing*, in *Late Post Processing*, and through the *Media Flow* plugin.
 
 - **Memory priority**: MiniMax H3 defaults to *Lower VRAM*. If system RAM is the limiting factor and you have spare VRAM, select *Lower RAM* under *Advanced Mode / Misc. / Priority*.
 
@@ -92,9 +94,8 @@ Both flavours offer the same controls in full 33B and lighter pruned 20B version
 
 - **Lower-RAM text encoders**: if system RAM is limited, open *Advanced Mode / Misc. / Text Encoder* and select one of the quantized Qwen3-VL variants.
 
-- *WanGP v12.41*: Added quantized text-encoder selection.
-- *WanGP v12.42*: Added Spectrum, SeedVR2, the memory-priority selector, and updated pruned checkpoints.
-
+*WanGP v12.41*: Added quantized text-encoder selection.\
+*WanGP v12.42*: Added Spectrum, SeedVR2, the memory-priority selector, and updated pruned checkpoints.
 ## 25th of July 2026: Featured Plugins / Apps
 
 WanGP's growing community has developed more than 20 plugins that expand what you can do. Here is a selection of seven newly available community plugins, all of which can be installed or updated directly from the WanGP Plugin Manager:

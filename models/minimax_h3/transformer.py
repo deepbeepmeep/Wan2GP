@@ -165,8 +165,11 @@ class Attention(nn.Module):
             key = self.k_norm(self.k_proj(x).view(1, seq_len, self.heads, self.head_dim))
             value = self.v_proj(x).view(1, seq_len, self.heads, self.head_dim)
         else:
-            qkv = self.qkv_proj(x).view(seq_len, self.heads, 3, self.head_dim)
-            query, key, value = qkv.unbind(dim=2)
+            qkv = self.qkv_proj(x)
+            query, key, value = qkv.split(self.heads * self.head_dim, dim=-1)
+            query = query.view(seq_len, self.heads, self.head_dim)
+            key = key.view(seq_len, self.heads, self.head_dim)
+            value = value.view(seq_len, self.heads, self.head_dim)
             query, key, value = query.unsqueeze(0), key.unsqueeze(0), value.unsqueeze(0).clone()
             del qkv
         del x

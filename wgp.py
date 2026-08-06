@@ -81,7 +81,7 @@ from shared.utils.process_locks import (
 from shared.utils.model_unload import model_unload_guard, wait_for_model_unload
 from shared.deepy.config import get_deepy_default_runtime_config, set_deepy_runtime_config
 from shared.loras_migration import migrate_loras_layout
-from shared.utils.wgp_config_migration import migrate_extension_defaults
+from shared.utils.wgp_config_migration import migrate_extension_defaults, get_prompt_enhancer_default_mode
 from shared.utils import files_locator as fl 
 from shared.gradio.audio_gallery import AudioGallery  
 from shared.utils.self_refiner import normalize_self_refiner_plan, ensure_refiner_list, add_refiner_rule, remove_refiner_rule
@@ -11616,7 +11616,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 wizard_prompt = gr.Textbox(visible=not advanced_prompt, label=wizard_prompt_label, value=default_wizard_prompt, lines=3, elem_id=PROMPT_WIZARD_ELEM_ID)
                 wizard_prompt_activated_var = gr.Text(wizard_prompt_activated, visible= False)
                 wizard_variables_var = gr.Text(wizard_variables, visible = False)
-            with gr.Row(visible= server_config.get("enhancer_enabled", 0) > 0  ) as prompt_enhancer_row:
+            with gr.Row(visible= server_config.get("enhancer_enabled", get_prompt_enhancer_default_mode()) > 0  ) as prompt_enhancer_row:
                 on_demand_prompt_enhancer = server_config.get("enhancer_mode", 1) == 1
                 prompt_enhancer_value = str(ui_get("prompt_enhancer") or "")
                 prompt_enhancer_btn_label = str(model_def.get("prompt_enhancer_button_label", "Enhance Prompt"))
@@ -11641,7 +11641,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     else:
                         prompt_enhancer_mode_value = prompt_enhancer_values[0]
 
-                prompt_enhancer_think_visible = server_config.get("enhancer_enabled", 0) in (3, 4)
+                prompt_enhancer_think_visible = server_config.get("enhancer_enabled", get_prompt_enhancer_default_mode()) in (3, 4)
                 prompt_enhancer_think_value = prompt_enhancer_think_visible and "K" in prompt_enhancer_value and len(prompt_enhancer_mode_value) > 0
                 prompt_enhancer_value = build_prompt_enhancer_value(prompt_enhancer_mode_value, prompt_enhancer_think_value)
                 prompt_enhancer_think_classes = "cbx_centered" if on_demand_prompt_enhancer else "cbx_bottom"

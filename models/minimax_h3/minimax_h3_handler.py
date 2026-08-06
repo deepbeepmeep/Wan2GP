@@ -215,6 +215,7 @@ class family_handler:
         if reference_mode:
             result.update({
                 "sliding_window": False,
+                "frames_maximum": 737,
                 "image_prompt_types_allowed": "T",
                 "image_ref_choices": {
                     "choices": [("Generate without Reference Images", ""),

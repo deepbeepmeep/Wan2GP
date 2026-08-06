@@ -95,6 +95,19 @@ def _keyframe_t_span(length):
     return float(spans.sum())
 
 
+def _cumulative_t_span(latent_idx):
+    """Time position at the START of latent frame latent_idx.
+    
+    Generalizes the first/last keyframe position calculation so that
+    anchors can be placed at any frame, not just the endpoints.
+    For latent_idx=0 returns 0.0 (matching stock first).
+    """
+    total = 0.0
+    for i in range(latent_idx):
+        total += _FRAME_RESCALE * _FRAME_PER_TOKEN[i % len(_FRAME_PER_TOKEN)]
+    return total
+
+
 def _reference_t_span(length):
     return sum(_FRAME_RESCALE * _FRAME_PER_TOKEN[index % len(_FRAME_PER_TOKEN)] for index in range(length))
 
@@ -137,8 +150,12 @@ def build_packed_sequence(text_token_tags, num_latent_frames, latent_height, lat
             anchor_time = float(text_len)
         elif anchor == "last":
             anchor_time = float(text_len) + _keyframe_t_span(num_latent_frames) - _FRAME_RESCALE
+        elif isinstance(anchor, int):
+            # Interior keyframe: anchor is a latent frame index
+            clamped = max(0, min(num_latent_frames - 1, anchor))
+            anchor_time = float(text_len) + _cumulative_t_span(clamped)
         else:
-            raise ValueError(f"Unknown MiniMax H3 keyframe anchor {anchor!r}")
+            raise ValueError(f"Unknown MiniMax H3 keyframe anchor {anchor!r} (expected first, last, or int)")
         rows = slice(condition_start + index * rows_per_frame, condition_start + (index + 1) * rows_per_frame)
         position_ids[rows, 0] = anchor_time
         position_ids[rows, 1:] = frame_grid

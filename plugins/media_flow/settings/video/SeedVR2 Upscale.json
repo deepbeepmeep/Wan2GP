@@ -1,0 +1,10 @@
+{
+  "model_type": "__system_flashvsr",
+  "model_label": "WanGP System Video Postprocessing",
+  "system_handler": "seedvr2",
+  "spatial_upsampling_method": "seedvr2",
+  "target_ratio": "seedvr22",
+  "chunk_size_seconds": 3.0,
+  "sliding_window_overlap": 0,
+  "prompt": ""
+}

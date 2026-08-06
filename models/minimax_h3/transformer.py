@@ -374,6 +374,33 @@ def _prepared_references(refs):
 
 
 class MiniMaxH3Model(nn.Module):
+    def preprocess_loras(self, model_type, state_dict):
+        converted = {}
+        for key, value in state_dict.items():
+            if key.startswith("lora_unet_"):
+                path, suffix = key[len("lora_unet_"):].split(".", 1)
+                key = path.replace("blocks_", "blocks.", 1).replace("_attn_", ".attn.").replace("_mlp_", ".mlp.") + "." + suffix
+            for source, target in (("transformer_blocks.", "blocks."), (".attn.to_out.0.", ".attn.out_proj."),
+                                   (".attn.to_q.", ".attn.q_proj."), (".attn.to_k.", ".attn.k_proj."),
+                                   (".attn.to_v.", ".attn.v_proj.")):
+                key = key.replace(source, target)
+            converted[key] = value
+        if hasattr(self.blocks[0].attn, "q_proj"):
+            return converted
+        for down_suffix, up_suffix in (("lora_A.weight", "lora_B.weight"), ("lora_down.weight", "lora_up.weight")):
+            marker = "q_proj." + down_suffix
+            for key in [key for key in converted if key.endswith(marker)]:
+                prefix = key[:-len(marker)]
+                down, up, scales = [], [], []
+                for projection in ("q_proj", "k_proj", "v_proj"):
+                    down.append(converted.pop(prefix + projection + "." + down_suffix))
+                    up.append(converted.pop(prefix + projection + "." + up_suffix))
+                    alpha = converted.pop(prefix + projection + ".alpha", None)
+                    scales.append(1.0 if alpha is None else float(alpha) / down[-1].shape[0])
+                converted[prefix + "qkv_proj." + down_suffix] = torch.cat(down)
+                converted[prefix + "qkv_proj." + up_suffix] = torch.block_diag(*(weight * scale for weight, scale in zip(up, scales)))
+        return converted
+
     def __init__(self, hidden_size=5376, num_layers=50, token_refiner_num_layers=2,
                  num_attention_heads=56, attention_head_dim=128, ffn_hidden_size=14336,
                  latents_dim=24, audio_latents_dim=32, patch_size=(1, 2, 2), text_dim=5120,

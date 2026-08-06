@@ -1,5 +1,21 @@
 ############# WanGP Copyright DeepBeepMeep 2025-2026 #############
 import os, sys
+# Never crash when printing non-ASCII: Windows consoles/pipes default to the
+# locale codepage (cp1252), so any output containing e.g. a non-Latin filename
+# raises "UnicodeEncodeError: 'charmap' codec can't encode characters". That
+# crash masks the real error and even breaks the error-queue autosave. Setting
+# errors="replace" makes writes always succeed (non-ASCII becomes '?'), while
+# PYTHONUTF8=1 (set by launchers/Pinokio) keeps full fidelity.
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(errors="replace")
+    except Exception:
+        pass
 os.environ["GRADIO_LANG"] = "en"
 p = os.path.dirname(os.path.abspath(__file__))
 if p not in sys.path:

@@ -206,7 +206,7 @@ class family_handler:
                 "fp8mix": {"name": "FP8 Mixed Precision", "video_vae_file": VIDEO_VAE_FP8MIX_FILE},
             },
             "system_configs3": {
-                "_name": "Priority",
+                "_name": "DiT Denoising Priority",
                 "_default_label": "Lower VRAM",
                 "lower_ram": {"name": "Lower RAM", "qkv_splitting": False},
             },

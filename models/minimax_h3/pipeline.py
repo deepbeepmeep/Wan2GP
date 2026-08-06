@@ -276,7 +276,7 @@ class MiniMaxH3Pipeline:
 
     @_return_none_on_interrupt
     @torch.inference_mode()
-    def generate(self, input_prompt, image_start=None, image_end=None, input_frames=None, input_ref_images=None,
+    def generate(self, input_prompt, image_start=None, image_end=None, interior_keyframes=None, input_frames=None, input_ref_images=None,
                  input_video=None, video_guide=None, video_guide2=None, input_waveform=None, input_waveform_sample_rate=None,
                  audio_guide=None, audio_guide2=None, prefix_frames_count=0,
                  frame_num=124, height=768, width=1344, shift=12.0, sampling_steps=30, seed=0,
@@ -319,6 +319,10 @@ class MiniMaxH3Pipeline:
                 self._add_image_condition(image_start, 0, presentation, visual_latents, keyframes)
             if image_end is not None:
                 self._add_image_condition(image_end, aligned_target_frames - 1, presentation, visual_latents, keyframes)
+            # Interior keyframes: list of (image_tensor, latent_frame_index) tuples
+            for kf_image, kf_frame_idx in (interior_keyframes or []):
+                clamped_idx = max(1, min(aligned_target_frames - 2, int(kf_frame_idx)))
+                self._add_image_condition(kf_image, clamped_idx, presentation, visual_latents, keyframes)
 
         waveform = self._waveform(input_waveform, input_waveform_sample_rate)
         video_sources = []

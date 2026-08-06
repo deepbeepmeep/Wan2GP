@@ -3900,7 +3900,7 @@ def ensure_prompt_enhancer_loaded(override_profile=None, progress=None, send_cmd
     return prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer
 
 def load_models(model_type, override_profile = -1, output_type="video", config_id = None, **model_kwargs):
-    global transformer_type, loaded_profile, loaded_config
+    global wan_model, offloadobj, transformer_type, loaded_profile, loaded_config
     def _load_models_info(message):
         if int(verbose_level) > 0:
             print(message)
@@ -8444,6 +8444,75 @@ def process_tasks_cli(queue, state):
             print(f"  [SKIP] Task {task_no} failed validation: {validation_error or 'Task failed validation.'}")
             skipped += 1
             continue
+
+        # === MULTISHOT: detect script-based multi-shot tasks ===
+        if task.get("params", {}).get("script"):
+            print(f"  [MULTISHOT] Detected script with {len(task['params']['script'].split('---'))} shots")
+            from models.minimax_h3.multishot import generate_multishot as _ms_gen
+            import time as _time
+            _ms_config = {
+                "script": task["params"]["script"],
+                "shots": task.get("params", {}).get("shots", None),
+                "shot_count": task.get("params", {}).get("shot_count", 0),
+                "width": validated_params.get("width", 1280),
+                "height": validated_params.get("height", 720),
+                "frames_per_shot": validated_params.get("frames_per_shot", 124),
+                "steps": validated_params.get("num_inference_steps", 20),
+                "sampling_steps": validated_params.get("num_inference_steps", 20),
+                "guidance_scale": validated_params.get("guidance_scale", 5.0),
+                "seed": validated_params.get("seed", 0),
+                "fps": validated_params.get("force_fps", 24),
+                # New features: memory mode, condition strength, interior keyframes
+                "memory_mode": task.get("params", {}).get("memory_mode", False),
+                "memory_frames": task.get("params", {}).get("memory_frames", 2),
+                "anchor_frames": task.get("params", {}).get("anchor_frames", 1),
+                "visual_cond_strength": task.get("params", {}).get("visual_cond_strength", 0.999),
+                "audio_cond_strength": task.get("params", {}).get("audio_cond_strength", 1.0),
+                "interior_keyframes": task.get("params", {}).get("interior_keyframes", []),
+            }
+            _ms_start = _time.time()
+            try:
+                # Set attention backend (normally done in generate_media)
+                from mmgp import offload as _ms_offload
+                _ms_attn = getattr(args, "attention", "sdpa") or "sdpa"
+                _ms_offload.shared_state["_attention"] = _ms_attn
+                print(f"  [MULTISHOT] Attention: {_ms_attn}")
+                
+                # Trigger model loading if not already loaded
+                if wan_model is None:
+                    _ms_model_type = validated_params.get("model_type", task.get("params", {}).get("model_type", ""))
+                    print(f"  [MULTISHOT] Loading models (type={_ms_model_type})...")
+                    load_models(_ms_model_type, override_profile=int(args.profile) if hasattr(args, "profile") else -1)
+                while wan_model is None:
+                    _time.sleep(0.5)
+                _ms_result = _ms_gen(wan_model, _ms_config)
+                _ms_elapsed = _time.time() - _ms_start
+                print(f"  [MULTISHOT] Done in {_ms_elapsed:.1f}s")
+                _ms_out = task.get("params", {}).get("output", f"outputs/multishot_{int(_time.time())}.mp4")
+                import os as _os
+                _os.makedirs(_os.path.dirname(_ms_out) or ".", exist_ok=True)
+                import torchvision.io as _tv_io
+                import soundfile as _sf
+                _ms_vid = _ms_result["x"].permute(1, 2, 3, 0)
+                _ms_vid = (_ms_vid.add(1.0).mul_(127.5).round_().clamp_(0, 255).byte())
+                _ms_tmp_v = _ms_out.replace(".mp4", "_tmp.mp4")
+                _tv_io.write_video(_ms_tmp_v, _ms_vid.cpu(), fps=24, video_codec="libx264")
+                if _ms_result.get("audio") is not None:
+                    _ms_tmp_a = _ms_out.replace(".mp4", "_tmp.wav")
+                    _sf.write(_ms_tmp_a, _ms_result["audio"], _ms_result["audio_sampling_rate"])
+                    _os.system(f'ffmpeg -y -i "{_ms_tmp_v}" -i "{_ms_tmp_a}" -c:v copy -c:a aac -shortest "{_ms_out}" 2>/dev/null')
+                    _os.remove(_ms_tmp_v); _os.remove(_ms_tmp_a)
+                else:
+                    _os.rename(_ms_tmp_v, _ms_out)
+                print(f"  [MULTISHOT] Saved: {_ms_out}")
+                completed += 1
+                continue
+            except Exception as _ms_e:
+                print(f"  [MULTISHOT ERROR] {_ms_e}")
+                import traceback as _tb; _tb.print_exc()
+                skipped += 1
+                continue
+        # === END MULTISHOT ===
 
         # Update gen state for this task
         gen["prompt_no"] = task_no

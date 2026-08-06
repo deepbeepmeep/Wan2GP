@@ -401,8 +401,11 @@ class MiniMaxH3Model(nn.Module):
                 layout = build_ref2va_packed_sequence(text_tags, _prepared_references(payload["refs"]), latent_t,
                                                       latent_h, latent_w, audio_t, self.patch_size)
             else:
-                anchors = tuple("first" if keyframe["resolved_frame_index"] == 0 else "last"
-                                for keyframe in payload.get("keyframes") or ())
+                anchors = tuple(
+                    "first" if keyframe["resolved_frame_index"] == 0
+                    else keyframe["resolved_frame_index"]  # pass actual frame index for interior keyframes
+                    for keyframe in payload.get("keyframes") or ()
+                )
                 layout = build_packed_sequence(text_tags, latent_t, latent_h, latent_w, audio_t, self.patch_size, anchors)
         payload["layout_signature"], payload["layout"] = signature, layout
         return layout

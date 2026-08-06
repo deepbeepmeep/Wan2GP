@@ -148,7 +148,7 @@ CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.12"
 WanGP_version = "12.43"
-settings_version = 2.69
+settings_version = 2.70
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -11972,6 +11972,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         if any_spectrum_cache: steps_skipping_choices += [("Spectrum Feature Forecasting", "spectrum")]
                         if any_first_block_cache: steps_skipping_choices += [("First Block Cache", "first_block")]
                         skip_steps_cache_type_value = ui_get("skip_steps_cache_type")
+                        skip_steps_cache_type_value = get_custom_setting_dropdown_value(skip_steps_cache_type_value, steps_skipping_choices)
                         skip_steps_cache_type = gr.Dropdown(
                             choices= steps_skipping_choices,
                             value="" if not (any_tea_cache or any_mag_cache or any_spectrum_cache or any_first_block_cache) else skip_steps_cache_type_value,
@@ -11979,15 +11980,17 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             label="Skip Steps Cache Type"
                         )
  
+                        skip_steps_multiplier_choices = model_def.get("skip_steps_multiplier_choices", [
+                            ("around x1.5 speed up", 1.5),
+                            ("around x1.75 speed up", 1.75),
+                            ("around x2 speed up", 2.0),
+                            ("around x2.25 speed up", 2.25),
+                            ("around x2.5 speed up", 2.5),
+                        ])
+                        skip_steps_multiplier_value = get_custom_setting_dropdown_value(float(ui_get("skip_steps_multiplier")), skip_steps_multiplier_choices)
                         skip_steps_multiplier = gr.Dropdown(
-                            choices=model_def.get("skip_steps_multiplier_choices", [
-                                ("around x1.5 speed up", 1.5), 
-                                ("around x1.75 speed up", 1.75), 
-                                ("around x2 speed up", 2.0), 
-                                ("around x2.25 speed up", 2.25), 
-                                ("around x2.5 speed up", 2.5), 
-                            ]),
-                            value=float(ui_get("skip_steps_multiplier")),
+                            choices=skip_steps_multiplier_choices,
+                            value=skip_steps_multiplier_value,
                             visible=skip_steps_cache_type_value in ("tea", "mag", "first_block"),
                             label=model_def.get("skip_steps_multiplier_label", "Skip Steps Cache Global Acceleration")
                         )

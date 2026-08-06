@@ -27,6 +27,7 @@ FL2VA_PRUNED_ARCHITECTURE = "minimax_h3_fl2va_pruned"
 REF2VA_ARCHITECTURE = "minimax_h3_ref2va"
 REF2VA_PRUNED_ARCHITECTURE = "minimax_h3_ref2va_pruned"
 FIRST_BLOCK_CACHE_THRESHOLDS = (0.06, 0.08, 0.10, 0.12, 0.14)
+LEGACY_FIRST_BLOCK_CACHE_THRESHOLDS = {1.5: 0.06, 1.75: 0.08, 2.0: 0.10, 2.25: 0.12, 2.5: 0.14}
 FIRST_BLOCK_CACHE_STRENGTHS = [
     ("Low (0.06)", 0.06),
     ("Balanced (0.08, upstream default)", 0.08),
@@ -405,6 +406,9 @@ class family_handler:
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
+        if settings_version < 2.70:
+            cache_value = float(ui_defaults.get("skip_steps_multiplier", 0.08))
+            ui_defaults["skip_steps_multiplier"] = LEGACY_FIRST_BLOCK_CACHE_THRESHOLDS.get(cache_value, cache_value)
         if settings_version < 2.69:
             encoder, priority, _, finetune = (str(ui_defaults.get("config", "")).split(",") + [""] * 4)[:4]
             ui_defaults["config"] = ",".join((encoder, "", priority, finetune)).rstrip(",")

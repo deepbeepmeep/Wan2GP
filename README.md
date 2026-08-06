@@ -78,13 +78,13 @@ H3 now has new accelerators and RAM shrinkers. Pick one or stack them—the exac
 
 - **Lower-RAM Video VAE:** select *FP8 Mixed Precision* under *Advanced Mode / Misc. / Video VAE* to reduce the RAM occupied by H3's Video VAE weights. Thanks to *Kijai* for creating this quantized VAE.
 
-- **New W4A8 INT8 support:** H3 can now load asymmetric W4A8 checkpoints. Their 4-bit weights reduce checkpoint size and system RAM use, while 8-bit activations use optimized INT8 kernels on compatible NVIDIA GPUs (RTX 30-series or newer). Seriously short on RAM? Look for compatible community H3 W4A8/Q4 or NVFP4 checkpoints already available online. See [docs/FINETUNES.md](docs/FINETUNES.md) to add them to WanGP—and don't forget to share the finetune files you create on the Discord server!
+- **New W4A8 INT8 support:** H3 can now load asymmetric W4A8 checkpoints. Their 4-bit weights reduce checkpoint size and system RAM use, while 8-bit activations use optimized INT8 kernels on compatible NVIDIA GPUs (RTX 30-series or newer). Seriously short on RAM? Look for compatible community H3 W4A8/Q4 or NVFP4 checkpoints already available online. See *docs/FINETUNES.md* to add them to WanGP—and don't forget to share the finetune files you create on the Discord server!
 
 - **Ref2VA tune-up:** this one is on me—I followed the original implementation and could end up feeding H3 a 4K reference image for a 480p video. Great for detail, less great for your stopwatch! You can now choose the reference-image pixel budget from 50% to 400%: lower is faster, 100% matches the output, and higher favors fidelity. The immediate payoff: **WanGP H3 Ref2VA is now twice as fast as before.**
 
 - **New control-video choices:** use a *Reference Video* to reuse subjects, appearance, or motion without changing the output size; *Depth Control* to guide the scene's depth and layout; or *Generic Control* to feed the clip directly to H3. Control videos define the output canvas, while reference videos do not.
 
-Several accelerator LoRAs can already bring H3 generation down to just four steps, including the [MiniMax H3 Turbo LoRA](https://huggingface.co/drbaph/MiniMax-H3-Turbo-Lora-ComfyUI). I will wait until they are a little more polished before adding official WanGP profiles—but adventurous users should absolutely give them a spin in the meantime!
+Several accelerator LoRAs can already bring H3 generation down to just four steps, including the huggingface.co/drbaph/MiniMax-H3-Turbo-Lora-ComfyUI. I will wait until they are a little more polished before adding official WanGP profiles—but adventurous users should absolutely give them a spin in the meantime!
 
 ## 5th of August 2026: WanGP v12.42, No Time for Taglines
 

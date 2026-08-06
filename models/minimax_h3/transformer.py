@@ -575,6 +575,11 @@ class MiniMaxH3Model(nn.Module):
                                                       target_condition_video_frames=target_video_condition_frames,
                                                       target_spatial_context=target_spatial_context)
             else:
+                anchors = tuple(
+                    "first" if keyframe["resolved_frame_index"] == 0
+                    else keyframe["resolved_frame_index"]  # pass actual frame index for interior keyframes
+                    for keyframe in payload.get("keyframes") or ()
+                )
                 layout = build_packed_sequence(text_tags, latent_t, latent_h, latent_w, audio_t, self.patch_size,
                                                anchors, video_time_scale, audio_condition_anchors=audio_anchors,
                                                target_condition_audio_latents=target_audio_condition_latents,

@@ -164,6 +164,7 @@ class family_handler():
             extra_model_def["excluded_spatial_upsamplers"] = ["flux2_pid" if flux2 else "flux_pid"]
         if flux_uso :
             extra_model_def["any_image_refs_relative_size"] = True
+            extra_model_def["image_refs_relative_size"] = {"min": 20, "max": 100, "step": 1}
             extra_model_def["no_background_removal"] = True
             extra_model_def["image_ref_choices"] = {
                 "choices":[("First Image is a Reference Image, and then the next ones (up to two) are Style Images", "KI"),

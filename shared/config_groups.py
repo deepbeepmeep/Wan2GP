@@ -37,6 +37,18 @@ def selected_model_configs(config_groups, selection):
         yield group, config_id, config_def
 
 
+def format_config_selection(config_groups, selection):
+    summaries = []
+    for config_key, configs, config_id in zip(CONFIG_KEYS, config_groups, split_config_selection(selection)):
+        if not config_id:
+            continue
+        config_def = None if config_id in CONFIG_METADATA_KEYS else configs.get(config_id)
+        config_label = configs.get(CONFIG_NAME_KEY) or config_key
+        choice_label = (config_def.get("name") or config_id) if config_def is not None else config_id
+        summaries.append(f"{config_label}={choice_label}")
+    return ", ".join(summaries)
+
+
 def get_config_name(configs):
     return configs.get(CONFIG_NAME_KEY) or "config"
 

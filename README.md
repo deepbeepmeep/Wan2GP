@@ -64,9 +64,29 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 ## 🔥 Latest Updates : 
 
-## 5th of August 2026: WanGP v12.42, No Time for Taglines
+## 6th of August 2026: WanGP v12.43, Cache Me If You Can
 
-**MiniMax H3**
+**MiniMax H3 shifts up a gear!**
+
+H3 now has new accelerators and RAM shrinkers. Pick one or stack them—the exact gain depends on your video, hardware, and settings.
+
+- **First Block Cache:** under *Advanced Mode / Steps Skipping*, H3 runs the first block and reuses the remaining blocks' previous result when little has changed—think TeaCache's cool cousin, driven by the first block's output. *Balanced (0.08)* is the upstream default; higher thresholds can skip more work and go faster, with a possible trade in motion or fine detail. The cache is tuned to add very little VRAM overhead. And yes, *Skip Steps starting moment in % of generation* means exactly what it says: it chooses when skipping may begin, not an acceleration factor.
+
+- **Sol-Attn:** under *Advanced Mode / Misc. / Override Attention Mode*, sparse attention speeds up large visual sequences. It requires BF16, Triton 3.6+, and a compatible NVIDIA GPU (RTX 40/50-series, H100/H200, or B100/B200). Expected gains range from 10–20% on RTX 40-series to around 30% on RTX 50-series, with a possible small quality trade-off.
+
+- **Mix and match:** *Spectrum* and *First Block Cache* are alternative step-skipping modes, but either can be combined with Sol-Attn for an extra push.
+
+- **Lower-RAM Video VAE:** select *FP8 Mixed Precision* under *Advanced Mode / Misc. / Video VAE* to reduce the RAM occupied by H3's Video VAE weights. Thanks to *Kijai* for creating this quantized VAE.
+
+- **New W4A8 INT8 support:** H3 can now load asymmetric W4A8 checkpoints. Their 4-bit weights reduce checkpoint size and system RAM use, while 8-bit activations use optimized INT8 kernels on compatible NVIDIA GPUs (RTX 30-series or newer). Seriously short on RAM? Look for compatible community H3 W4A8/Q4 or NVFP4 checkpoints already available online. See [docs/FINETUNES.md](docs/FINETUNES.md) to add them to WanGP—and don't forget to share the finetune files you create on the Discord server!
+
+- **Ref2VA tune-up:** this one is on me—I followed the original implementation and could end up feeding H3 a 4K reference image for a 480p video. Great for detail, less great for your stopwatch! You can now choose the reference-image pixel budget from 50% to 400%: lower is faster, 100% matches the output, and higher favors fidelity. The immediate payoff: **WanGP H3 Ref2VA is now twice as fast as before.**
+
+- **New control-video choices:** use a *Reference Video* to reuse subjects, appearance, or motion without changing the output size; *Depth Control* to guide the scene's depth and layout; or *Generic Control* to feed the clip directly to H3. Control videos define the output canvas, while reference videos do not.
+
+Several accelerator LoRAs can already bring H3 generation down to just four steps, including the [MiniMax H3 Turbo LoRA](https://huggingface.co/drbaph/MiniMax-H3-Turbo-Lora-ComfyUI). I will wait until they are a little more polished before adding official WanGP profiles—but adventurous users should absolutely give them a spin in the meantime!
+
+## 5th of August 2026: WanGP v12.42, No Time for Taglines
 
 **MiniMax H3**
 

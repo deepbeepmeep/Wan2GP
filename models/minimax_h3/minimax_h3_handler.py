@@ -6,7 +6,7 @@ import torch
 
 from shared.utils.hf import build_hf_url
 
-from .minimax_h3_main import AUDIO_VAE_FILE, TEXT_ENCODER_FOLDER, VIDEO_VAE_FILE
+from .minimax_h3_main import AUDIO_VAE_FILE, TEXT_ENCODER_FOLDER, VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE
 from .prompt_enhancer import (FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
                               REF2VA_IMAGE_SYSTEM_PROMPT, REF2VA_PROMPT_INFOS, REF2VA_TEXT_SYSTEM_PROMPT)
 
@@ -26,6 +26,14 @@ FL2VA_ARCHITECTURE = "minimax_h3_fl2va"
 FL2VA_PRUNED_ARCHITECTURE = "minimax_h3_fl2va_pruned"
 REF2VA_ARCHITECTURE = "minimax_h3_ref2va"
 REF2VA_PRUNED_ARCHITECTURE = "minimax_h3_ref2va_pruned"
+FIRST_BLOCK_CACHE_THRESHOLDS = (0.06, 0.08, 0.10, 0.12, 0.14)
+FIRST_BLOCK_CACHE_STRENGTHS = [
+    ("Low (0.06)", 0.06),
+    ("Balanced (0.08, upstream default)", 0.08),
+    ("High (0.10)", 0.10),
+    ("Very High (0.12)", 0.12),
+    ("Maximum (0.14)", 0.14),
+]
 
 FL2VA_INFOS = """## FL2VA — First/Last Frame to Video and Audio
 
@@ -38,7 +46,7 @@ FL2VA generates a new video with native 32 kHz stereo audio from a text prompt a
 
 Each boundary accepts one image. These images are positions on the output timeline, not general character, identity, or style references; use Ref2VA for those.
 
-H3 outputs video at 24 FPS. MiniMax documents an official output range of 4–15 seconds. WanGP can generate longer videos with sliding windows, but each individual window longer than 15 seconds is outside that documented range.
+H3's native frame rate is 24 FPS. WanGP can use another output frame rate by adjusting H3's temporal positions. MiniMax documents an official output range of 4–15 seconds. WanGP can generate longer videos with sliding windows, but each individual window longer than 15 seconds is outside that documented range.
 """
 
 REF2VA_INFOS = """## Ref2VA — Reference to Video and Audio
@@ -48,13 +56,25 @@ Ref2VA generates a new video with native 32 kHz stereo audio from text plus mult
 ### Reference limits
 
 - **Images:** up to 9.
-- **Videos in WanGP:** up to 2 clips; each clip must be 2–15 seconds, with at most 15 seconds of reference video in total. The H3 model itself documents support for 3 video clips.
+- **Videos in WanGP:** up to 2 clips; each source must be at least 2 seconds, inputs longer than 15 seconds are truncated, and the prepared clips may total at most 15 seconds. The H3 model itself documents support for 3 video clips.
 - **Audio in WanGP:** up to 2 inputs; each clip must be 2–15 seconds, with at most 15 seconds of reference audio in total. The H3 model itself documents support for 3 audio clips.
 - **Audio requires matching visual references:** the combined number of reference images and videos must be at least the number of reference audio clips.
 - **Video soundtracks:** selecting reference-video soundtracks uses one audio-reference slot per selected video. A soundtrack shares its video's uploaded file, so it does not add another file to the mixed-input count.
 - **Mixed references:** at most 12 files across images, videos, and audio.
 
-H3 outputs video at 24 FPS. MiniMax documents an official output range of 4–15 seconds. Ref2VA uses one model pass per generation; sliding-window continuation is not available for this variant.
+### Choosing a video input
+
+- **Reference Video:** reuse subjects, appearance, or motion without changing the selected output resolution.
+- **Depth Control:** reuse the scene's depth and layout.
+- **Generic Control:** provide the video unchanged, use its aspect ratio to set the output dimensions and use the text prompt to tell the model what to do with it.
+
+Reference videos adapt to your chosen output size. Control videos instead define the output size and are converted into the selected guide. Both guide the result creatively rather than reproducing every frame exactly.
+
+### Reference-image size
+
+The reference-image selector can preserve the selected output dimensions or use the first reference image to define them. In **Advanced Mode**, **Rescale Internaly Image Ref (% in relation to Output Video) to change Output Composition** controls each reference image's internal pixel budget while preserving its aspect ratio. **100%** matches the output video's pixel budget. Higher values can preserve more reference detail and improve fidelity, but generation is slower; lower values are faster but can lose fine details. This setting does not change the output resolution after it has been selected or derived.
+
+H3's native frame rate is 24 FPS. WanGP can use another output frame rate by resampling reference videos and adjusting H3's temporal positions. MiniMax documents an official output range of 4–15 seconds. Ref2VA uses one model pass per generation; sliding-window continuation is not available for this variant.
 
 See the [MiniMax H3 model card](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/README.md) for the upstream specifications and prompting guidance.
 """
@@ -65,6 +85,8 @@ H3_RUNTIME_INFOS = """
 Enable **Advanced Mode** to access these options:
 
 - **Spectrum:** in **Steps Skipping**, select **Spectrum Feature Forecasting**. Spectrum accelerates generation by forecasting selected transformer steps, at the cost of possible changes to motion or fine details. Keep the default 25% start for five full warmup steps in a 20-step generation; increasing it starts later and skips fewer steps.
+- **First Block Cache:** in **Steps Skipping**, select **First Block Cache**. It runs the first transformer block to decide whether the remaining blocks can reuse their previous result. The balanced strength uses the upstream 0.08 threshold; higher strengths skip more work but can change motion or fine details. The displayed strength is not an exact speed multiplier.
+- **Sol-Attn:** in **Advanced Mode > Misc. > Override Attention Mode**, select **sol**. It uses sparse attention on large visual sequences to reduce attention cost and speed up generation, with possible small quality differences. It requires BF16, Triton 3.6 or newer, and a CUDA NVIDIA GPU using SM89, SM90, SM100, or SM120 (such as RTX 40/50-series, H100/H200, or B100/B200); the dropdown reports whether it is available on the current system.
 - **Text Encoder:** at the bottom of **Misc.**, use the **Text Encoder** configuration to reduce system RAM. **Qwen3-VL BF16** uses the most memory; **Quanto INT8** is a balanced lower-memory choice; **NVFP4 AWQ**, **GGUF Q4_K_M**, and especially **GGUF Q2_K** reduce it further. More aggressive quantization can slightly affect prompt interpretation.
 - **Priority:** beside the Text Encoder configuration, choose which memory limit matters most. **Lower VRAM** uses all code optimizations and reduces greatly VRAM consumption while **Lower RAM** uses only VRAM optimizations that doesnt consume extra RAM.
 """
@@ -115,7 +137,9 @@ class family_handler:
 
     @staticmethod
     def set_cache_parameters(cache_type, base_model_type, model_def, inputs, skip_steps_cache):
-        if cache_type != "spectrum":
+        if cache_type == "first_block":
+            skip_steps_cache.threshold = float(skip_steps_cache.multiplier)
+        elif cache_type != "spectrum":
             raise ValueError(f"MiniMax H3 does not support step-skipping type {cache_type!r}")
 
     @staticmethod
@@ -137,6 +161,11 @@ class family_handler:
             "inference_steps": True,
             "flow_shift": True,
             "spectrum_cache": True,
+            "first_block_cache": True,
+            "skip_steps_multiplier_choices": FIRST_BLOCK_CACHE_STRENGTHS,
+            "skip_steps_multiplier_label": "First Block Cache Threshold",
+            "first_block_cache_thresholds": FIRST_BLOCK_CACHE_THRESHOLDS,
+            "sol_attention": True,
             "sample_solvers": [("Euler", "euler")],
             "no_negative_prompt": True,
             "skip_prompt_template": True,
@@ -172,6 +201,11 @@ class family_handler:
                 "gguf_q2_k": {"name": "Qwen3-VL GGUF Q2_K", "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_GGUF_Q2)]},
             },
             "system_configs2": {
+                "_name": "Video VAE",
+                "_default_label": "Original VAE",
+                "fp8mix": {"name": "FP8 Mixed Precision", "video_vae_file": VIDEO_VAE_FP8MIX_FILE},
+            },
+            "system_configs3": {
                 "_name": "Priority",
                 "_default_label": "Lower VRAM",
                 "lower_ram": {"name": "Lower RAM", "qkv_splitting": False},
@@ -182,9 +216,9 @@ class family_handler:
                 "sliding_window": False,
                 "image_prompt_types_allowed": "T",
                 "image_ref_choices": {
-                    "choices": [("Generate without Reference Images", ""), ("Use Reference Images", "I"),
-                                # ("Set Output Dimensions from a Background Image, then Use Reference Images", "KI")
-                                ],
+                    "choices": [("Generate without Reference Images", ""),
+                                ("Use Reference Images", "I"),
+                                ("First Reference Image is the Main Subject / Landscape, defines Output Dimensions, and may be followed by other Reference Images", "KI")],
                     "letters_filter": "KI",
                     "default": "",
                     "label": "Reference Images",
@@ -193,16 +227,25 @@ class family_handler:
                 "return_image_refs_tensor": False,
                 "no_processing_on_last_images_refs": 12,
                 "no_background_removal": True,
+                "any_image_refs_relative_size": True,
+                "image_refs_relative_size": {"min": 50, "max": 400, "step": 1},
                 "guide_custom_choices": {
-                    "choices": [("Generate without a Reference Video", ""), ("Use One Reference Video", "VG"),
-                                ("Use Two Reference Videos", "V+G")],
-                    "letters_filter": "V+G",
+                    "choices": [("Generate without a Reference or Control Video", ""), ("Use One Reference Video", "V-"),
+                                ("Use Two Reference Videos", "V+-"),
+                                # ("Transfer Human Pose From Control Video", "PV"),
+                                ("Transfer Depth Map From Control Video", "DV"),
+                                # ("Transfer Edges Map From Control Video", "EV"),
+                                ("Provide Generic Control Video", "V")],
+                    "letters_filter": "PDEV+-",
                     "default": "",
-                    "label": "Reference Videos",
+                    "label": "Reference / Control Video",
                 },
+                "preprocess_video_guide2": True,
+                "reference_video_max_frames": 15 * 24,
+                "reference_video_max_size": (768, 1344),
                 "any_audio_prompt": True,
                 "audio_prompt_choices": True,
-                "video_guide_label": "Reference Video 1",
+                "video_guide_label": "Reference / Control Video 1",
                 "video_guide2_label": "Reference Video 2",
                 "audio_guide_label": "Audio Reference 1",
                 "audio_guide2_label": "Audio Reference 2",
@@ -271,9 +314,9 @@ class family_handler:
                 duration = frames / fps
             except Exception as error:
                 return f"Unable to read Reference Video {index}: {error}"
-            if not 2 <= duration <= 15:
-                return f"Reference Video {index} must be between 2 and 15 seconds long (found {duration:.2f}s)"
-            video_durations.append(duration)
+            if duration < 2:
+                return f"Reference Video {index} must be at least 2 seconds long (found {duration:.2f}s)"
+            video_durations.append(min(duration, 15))
         if sum(video_durations) > 15:
             return f"Reference videos must total at most 15 seconds (found {sum(video_durations):.2f}s)"
 
@@ -315,8 +358,6 @@ class family_handler:
         file_count = image_count + len(videos) + (0 if soundtrack_mode else audio_count)
         if file_count > 12:
             return f"MiniMax H3 accepts at most 12 reference files (found {file_count})"
-        if file_count == 0:
-            return "MiniMax H3 Ref2VA requires at least one reference image, video, or audio"
         return None
 
     @staticmethod
@@ -324,8 +365,9 @@ class family_handler:
         source_folders = []
         file_lists = []
         vae_files = []
-        if "video_vae_file" not in model_def:
-            vae_files.append(VIDEO_VAE_FILE)
+        video_vae_file = model_def.get("video_vae_file", VIDEO_VAE_FILE)
+        if video_vae_file in (VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE):
+            vae_files.append(video_vae_file)
         if "audio_vae_file" not in model_def:
             vae_files.append(AUDIO_VAE_FILE)
         if vae_files:
@@ -362,6 +404,19 @@ class family_handler:
         }
 
     @staticmethod
+    def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
+        if settings_version < 2.69:
+            encoder, priority, _, finetune = (str(ui_defaults.get("config", "")).split(",") + [""] * 4)[:4]
+            ui_defaults["config"] = ",".join((encoder, "", priority, finetune)).rstrip(",")
+        if base_model_type not in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE):
+            return
+        if settings_version < 2.67:
+            ui_defaults["image_refs_relative_size"] = 100
+            ui_defaults["video_prompt_type"] = ui_defaults.get("video_prompt_type", "").replace("G", "")
+        if settings_version < 2.68 and "V" in ui_defaults.get("video_prompt_type", "") and "-" not in ui_defaults["video_prompt_type"]:
+            ui_defaults["video_prompt_type"] += "-"
+
+    @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         reference_mode = base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE)
         ui_defaults.update({
@@ -373,7 +428,10 @@ class family_handler:
             "flow_shift": 12.0,
             "sample_solver": "euler",
             "skip_steps_start_step_perc": 25,
+            "skip_steps_multiplier": 0.08,
             "audio_prompt_type": "",
             "video_prompt_type": "",
             "image_mode": 0,
         })
+        if reference_mode:
+            ui_defaults["image_refs_relative_size"] = 100

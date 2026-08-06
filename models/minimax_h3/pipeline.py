@@ -14,12 +14,12 @@ from tqdm import tqdm
 from mmgp import offload
 from shared.utils.text_encoder_cache import TextEncoderCache
 from shared.utils.frame_scheduler import normalize_frame_count
+from .first_block_cache import MiniMaxH3FirstBlockCache
 from .interrupt import GenerationInterrupted
 from .spectrum import MiniMaxH3Spectrum
 from .transformer import VISUAL_COND_TIMESTEP, pack_audio, patchify_video, unpack_audio
 
 
-FPS = 24
 AUDIO_SAMPLE_RATE = 32000
 AUDIO_LATENT_FPS = 40
 
@@ -85,27 +85,6 @@ def _to_pil(frame):
 
 def _pil_to_video(image):
     return torch.from_numpy(np.asarray(image).copy()).permute(2, 0, 1).float().div_(127.5).sub_(1.0).unsqueeze(1)
-
-
-def _prepare_reference_video(source, max_frames):
-    if isinstance(source, str):
-        from shared.utils.utils import get_resampled_video_transparent
-
-        frames = get_resampled_video_transparent(source, 0, max_frames, FPS, bridge="torch")
-        if not torch.is_tensor(frames):
-            frames = torch.from_numpy(frames)
-        video = frames.permute(3, 0, 1, 2).float().div_(127.5).sub_(1.0)
-    else:
-        video = _as_video(source)
-    video = video[:, :max_frames]
-    target_h, target_w = _resolve_canvas(video.shape[-1], video.shape[-2], 768, 768 * 1344)
-    if video.shape[-2:] != (target_h, target_w):
-        frames = []
-        for index in range(video.shape[1]):
-            frame = _to_pil(video[:, index:index + 1]).resize((target_w, target_h), Image.Resampling.LANCZOS)
-            frames.append(_pil_to_video(frame))
-        video = torch.cat(frames, dim=1)
-    return video
 
 
 class MiniMaxH3Pipeline:
@@ -223,11 +202,13 @@ class MiniMaxH3Pipeline:
         visual_latents.append(self._encode_video(video))
         keyframes.append({"resolved_frame_index": frame_index})
 
-    def _add_image_reference(self, image, presentation, visual_latents, refs):
+    def _add_image_reference(self, image, target_width, target_height, image_refs_relative_size, presentation, visual_latents, refs):
         if image is None:
             return
         image = _to_pil(image)
-        target_h, target_w = _resolve_canvas(*image.size, 2048)
+        ratio = image.width / image.height
+        pixel_budget = target_width * target_height * image_refs_relative_size / 100
+        target_h, target_w = _resolve_canvas(*image.size, math.sqrt(pixel_budget / max(ratio, 1 / ratio)))
         if image.size != (target_w, target_h):
             image = image.resize((target_w, target_h), Image.Resampling.LANCZOS)
         video = _pil_to_video(image)
@@ -236,22 +217,24 @@ class MiniMaxH3Pipeline:
         visual_latents.append(latent)
         refs.append({"kind": "image", "latent_h": latent.shape[-2], "latent_w": latent.shape[-1]})
 
-    def _add_video_reference(self, video, soundtrack, presentation, visual_latents, audio_latents, refs):
+    def _add_video_reference(self, video, soundtrack, fps, presentation, visual_latents, audio_latents, refs):
         video = _as_video(video)
         if video is None:
             return
-        if video.shape[1] < 5:
-            video = torch.cat((video, video[:, -1:].repeat(1, 5 - video.shape[1], 1, 1)), dim=1)
-        valid_frames = ((video.shape[1] - 5) // 17) * 17 + 5
-        video = video[:, :valid_frames]
+        if video.shape[1] < 5 or (video.shape[1] - 5) % 17:
+            raise ValueError(f"MiniMax H3 reference videos must contain 17n+5 preprocessed frames, got {video.shape[1]}")
         latent = self._encode_video(video)
         audio_latent = self._encode_audio(soundtrack) if soundtrack is not None else None
         if audio_latent is not None:
             presentation.append({"type": "audio"})
             audio_latents.append(audio_latent)
-        sample_indices = list(range(0, video.shape[1], FPS // 2))
+        sample_indices, cursor = [], 0.0
+        while round(cursor) < video.shape[1]:
+            if not sample_indices or round(cursor) > sample_indices[-1]:
+                sample_indices.append(round(cursor))
+            cursor += fps / 2
         presentation.append({"type": "video", "frames": _qwen_frames(video[:, sample_indices].clone()),
-                             "timestamps": [index / FPS for index in sample_indices]})
+                             "timestamps": [index / fps for index in sample_indices]})
         visual_latents.append(latent)
         refs.append({"kind": "video_audio" if audio_latent is not None else "video", "latent_t": latent.shape[2],
                      "latent_h": latent.shape[-2], "latent_w": latent.shape[-1],
@@ -276,15 +259,16 @@ class MiniMaxH3Pipeline:
 
     @_return_none_on_interrupt
     @torch.inference_mode()
-    def generate(self, input_prompt, image_start=None, image_end=None, input_frames=None, input_ref_images=None,
-                 input_video=None, video_guide=None, video_guide2=None, input_waveform=None, input_waveform_sample_rate=None,
+    def generate(self, input_prompt, image_start=None, image_end=None, input_frames=None, input_frames2=None, input_ref_images=None, image_refs_relative_size=100,
+                 input_video=None, input_waveform=None, input_waveform_sample_rate=None,
                  audio_guide=None, audio_guide2=None, prefix_frames_count=0,
                  frame_num=124, height=768, width=1344, shift=12.0, sampling_steps=30, seed=0,
                  callback=None, VAE_tile_size=None, audio_prompt_type="", video_prompt_type="", fps=24,
                  sample_solver="euler",
                  set_progress_status=None, **kwargs):
-        if int(fps) != FPS:
-            raise ValueError(f"MiniMax H3 requires {FPS} fps")
+        fps = float(fps)
+        if fps <= 0:
+            raise ValueError("MiniMax H3 requires a positive output frame rate")
         self._set_interrupt_state()
         self._check_abort()
         self._configure_tiling(VAE_tile_size)
@@ -293,8 +277,8 @@ class MiniMaxH3Pipeline:
         if int(sampling_steps) < 1:
             raise ValueError("MiniMax H3 requires at least one inference step")
         frame_num = normalize_frame_count(int(frame_num), 5, 17, 5)
-        if not 4.0 <= frame_num / FPS <= 481 / FPS:
-            raise ValueError("MiniMax H3 generates between 4 and 20 seconds at 24 fps")
+        if not 4.0 <= frame_num / fps <= 20.0:
+            raise ValueError("MiniMax H3 generates between 4 and 20 seconds")
         prefix_frames_count = int(prefix_frames_count or 0)
         continuation = _as_video(input_video) if input_video is not None and prefix_frames_count > 0 else None
         sliding_prefix = continuation if self.reference_mode and prefix_frames_count >= 5 else None
@@ -309,9 +293,9 @@ class MiniMaxH3Pipeline:
             if image_start is not None or image_end is not None:
                 raise ValueError("First/last-frame conditioning requires the FL2VA checkpoint")
             for image in input_ref_images or []:
-                self._add_image_reference(image, presentation, visual_latents, refs)
+                self._add_image_reference(image, width, height, image_refs_relative_size, presentation, visual_latents, refs)
         else:
-            if input_ref_images or input_frames is not None or "A" in (audio_prompt_type or ""):
+            if input_ref_images or input_frames is not None or input_frames2 is not None or "A" in (audio_prompt_type or ""):
                 raise ValueError("Image, video, and audio references require the Ref2VA checkpoint")
             if image_start is None and continuation is not None:
                 image_start = continuation[:, min(prefix_frames_count, continuation.shape[1]) - 1:][:, :1]
@@ -323,24 +307,25 @@ class MiniMaxH3Pipeline:
         waveform = self._waveform(input_waveform, input_waveform_sample_rate)
         video_sources = []
         if self.reference_mode and "V" in (video_prompt_type or ""):
-            video_sources.append(video_guide if video_guide is not None else input_frames)
+            video_sources.append(input_frames)
             if "+" in (video_prompt_type or ""):
-                video_sources.append(video_guide2)
+                video_sources.append(input_frames2)
+        video_sources = [_as_video(source) for source in video_sources]
+        total_reference_duration = sum(video.shape[1] for video in video_sources) / fps
+        if total_reference_duration > 15:
+            raise ValueError(f"MiniMax H3 reference videos must total at most 15 seconds (found {total_reference_duration:.2f}s)")
         soundtrack_sources = (audio_guide, audio_guide2) if "K" in (audio_prompt_type or "") else (None, None)
         for index, source in enumerate(video_sources):
-            video = _prepare_reference_video(source, 15 * FPS)
             soundtrack = self._load_audio_reference(soundtrack_sources[index]) if soundtrack_sources[index] is not None else None
-            self._add_video_reference(video, soundtrack, presentation, visual_latents, audio_latents, refs)
+            self._add_video_reference(source, soundtrack, fps, presentation, visual_latents, audio_latents, refs)
         if self.reference_mode and "A" in (audio_prompt_type or ""):
             self._add_audio_reference(self._load_audio_reference(audio_guide) if audio_guide is not None else waveform, presentation, audio_latents, refs)
         if self.reference_mode and "B" in (audio_prompt_type or ""):
             self._add_audio_reference(self._load_audio_reference(audio_guide2), presentation, audio_latents, refs)
         if sliding_prefix is not None:
             prefix_audio = waveform if not any(flag in (audio_prompt_type or "") for flag in "ABK") else None
-            self._add_video_reference(sliding_prefix[:, :prefix_count], prefix_audio, presentation, visual_latents, audio_latents, refs)
+            self._add_video_reference(sliding_prefix[:, :prefix_count], prefix_audio, fps, presentation, visual_latents, audio_latents, refs)
         if self.reference_mode:
-            if not refs:
-                raise ValueError("The Ref2VA checkpoint requires at least one image, video, or audio reference")
             visual_ref_count = sum(ref["kind"] in ("image", "video", "video_audio") for ref in refs)
             audio_ref_count = sum(ref["kind"] in ("audio", "video_audio") for ref in refs)
             if audio_ref_count > visual_ref_count:
@@ -356,13 +341,14 @@ class MiniMaxH3Pipeline:
 
         latent_t = video_latent_frames(aligned_target_frames)
         latent_h, latent_w = math.ceil(height / 16), math.ceil(width / 16)
-        audio_t = round(aligned_target_frames / FPS * AUDIO_LATENT_FPS)
+        audio_t = round(aligned_target_frames / fps * AUDIO_LATENT_FPS)
         generator = torch.Generator(device="cpu").manual_seed(int(seed))
         cond_video_rows, cond_audio_rows = self._prepare_condition_rows(visual_latents, audio_latents, generator)
         video = torch.randn((1, 24, latent_t, latent_h, latent_w), generator=generator, dtype=torch.float32, device="cpu").to(self.device)
         audio = unpack_audio(torch.randn((audio_t * 2, 32), generator=generator, dtype=torch.float32, device="cpu")).to(self.device)
         payload = {"keyframes": keyframes or None, "refs": refs or None, "cond_video_rows": cond_video_rows,
-                   "cond_audio_rows": cond_audio_rows, "frame_count": aligned_target_frames, "text_token_tags": text_tags}
+                   "cond_audio_rows": cond_audio_rows, "frame_count": aligned_target_frames, "text_token_tags": text_tags,
+                   "fps": fps}
 
         base_sigmas = torch.linspace(1.0, 0.0, int(sampling_steps) + 1, dtype=torch.float32)
         sigmas_video = torch.unique_consecutive(float(shift) * base_sigmas / (1.0 + (float(shift) - 1.0) * base_sigmas)).to(self.device)
@@ -374,6 +360,7 @@ class MiniMaxH3Pipeline:
             callback(-1, None, True, override_num_inference_steps=model_steps)
         cache = self.transformer.cache
         spectrum = MiniMaxH3Spectrum(cache, sigmas_video[:-1]) if cache is not None and cache.cache_type == "spectrum" else None
+        first_block_cache = MiniMaxH3FirstBlockCache(cache) if cache is not None and cache.cache_type == "first_block" else None
         try:
             for step in tqdm(range(model_steps), desc="H3 denoising"):
                 self._set_interrupt_state()
@@ -381,7 +368,9 @@ class MiniMaxH3Pipeline:
                 offload.set_step_no_for_lora(self.transformer, step)
                 if spectrum is not None:
                     spectrum.begin_step(step)
-                video_velocity, audio_velocity = self.transformer(video, audio, sigmas_video[step:step + 1], sigmas_audio[step:step + 1], context, payload, spectrum=spectrum)
+                if first_block_cache is not None:
+                    first_block_cache.begin_step(step)
+                video_velocity, audio_velocity = self.transformer(video, audio, sigmas_video[step:step + 1], sigmas_audio[step:step + 1], context, payload, spectrum=spectrum, first_block_cache=first_block_cache)
                 if spectrum is not None:
                     spectrum.finish_step()
                 video_sigma_from_t = 1.0 - (1.0 - sigmas_video[step])
@@ -398,6 +387,8 @@ class MiniMaxH3Pipeline:
         finally:
             if spectrum is not None:
                 spectrum.reset()
+            if first_block_cache is not None:
+                first_block_cache.reset()
 
         if set_progress_status is not None:
             set_progress_status("Decoding H3 video and stereo audio")
@@ -407,20 +398,20 @@ class MiniMaxH3Pipeline:
         video = None
         decoded_audio = self.audio_vae.decode(audio)[0]
         audio = None
-        target_samples = round(target_frames / FPS * AUDIO_SAMPLE_RATE)
+        target_samples = round(target_frames / fps * AUDIO_SAMPLE_RATE)
         decoded_audio = _fit_audio_samples(decoded_audio, target_samples)
 
         if sliding_prefix is not None:
             decoded_video = torch.cat((sliding_prefix[:, :prefix_count].to(decoded_video), decoded_video), dim=1)
             if waveform is not None:
-                prefix_samples = round(prefix_count / FPS * AUDIO_SAMPLE_RATE)
+                prefix_samples = round(prefix_count / fps * AUDIO_SAMPLE_RATE)
                 prefix_audio = _fit_audio_samples(waveform[0].to(decoded_audio), prefix_samples)
             else:
-                prefix_samples = round(prefix_count / FPS * AUDIO_SAMPLE_RATE)
+                prefix_samples = round(prefix_count / fps * AUDIO_SAMPLE_RATE)
                 prefix_audio = torch.zeros((2, prefix_samples), dtype=decoded_audio.dtype, device=decoded_audio.device)
             decoded_audio = torch.cat((prefix_audio, decoded_audio), dim=1)
 
-        total_samples = round(frame_num / FPS * AUDIO_SAMPLE_RATE)
+        total_samples = round(frame_num / fps * AUDIO_SAMPLE_RATE)
         decoded_audio = decoded_audio[:, :total_samples].transpose(0, 1).float().cpu().numpy()
         return {"x": decoded_video, "audio": decoded_audio, "audio_sampling_rate": AUDIO_SAMPLE_RATE}
 

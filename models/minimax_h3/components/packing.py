@@ -80,23 +80,23 @@ def _axis_from_sqrt_area(dim, patch, sqrt_area):
     return torch.from_numpy(np.linspace(left, left + ratio, dim // patch, endpoint=False) * _INTERP).to(torch.float64)
 
 
-def _video_t_grid(length, origin):
+def _video_t_grid(length, origin, time_scale=1.0):
     spans = torch.tensor(
-        [_FRAME_RESCALE * _FRAME_PER_TOKEN[index % len(_FRAME_PER_TOKEN)] for index in range(length)],
+        [_FRAME_RESCALE * time_scale * _FRAME_PER_TOKEN[index % len(_FRAME_PER_TOKEN)] for index in range(length)],
         dtype=torch.float64,
     )
     return origin + torch.cat((torch.zeros(1, dtype=torch.float64), spans[:-1].cumsum(0)))
 
 
-def _keyframe_t_span(length):
-    spans = np.ones(length, dtype=np.float64) * _FRAME_RESCALE
+def _keyframe_t_span(length, time_scale=1.0):
+    spans = np.ones(length, dtype=np.float64) * _FRAME_RESCALE * time_scale
     for index, frames in enumerate(_FRAME_PER_TOKEN):
         spans[index::len(_FRAME_PER_TOKEN)] *= frames
     return float(spans.sum())
 
 
-def _reference_t_span(length):
-    return sum(_FRAME_RESCALE * _FRAME_PER_TOKEN[index % len(_FRAME_PER_TOKEN)] for index in range(length))
+def _reference_t_span(length, time_scale=1.0):
+    return sum(_FRAME_RESCALE * time_scale * _FRAME_PER_TOKEN[index % len(_FRAME_PER_TOKEN)] for index in range(length))
 
 
 def _frame_grid(latent_height, latent_width, patch_h, patch_w):
@@ -117,7 +117,7 @@ def _fill_audio_positions(position_ids, rows, length, origin, width_grid):
 
 
 def build_packed_sequence(text_token_tags, num_latent_frames, latent_height, latent_width, num_audio_latents,
-                          patch_size, keyframe_anchors=()):
+                          patch_size, keyframe_anchors=(), video_time_scale=1.0):
     _, patch_h, patch_w = patch_size
     rows_per_frame = (latent_height // patch_h) * (latent_width // patch_w)
     text_len = int(text_token_tags.shape[0])
@@ -136,7 +136,7 @@ def build_packed_sequence(text_token_tags, num_latent_frames, latent_height, lat
         if anchor == "first":
             anchor_time = float(text_len)
         elif anchor == "last":
-            anchor_time = float(text_len) + _keyframe_t_span(num_latent_frames) - _FRAME_RESCALE
+            anchor_time = float(text_len) + _keyframe_t_span(num_latent_frames, video_time_scale) - _FRAME_RESCALE * video_time_scale
         else:
             raise ValueError(f"Unknown MiniMax H3 keyframe anchor {anchor!r}")
         rows = slice(condition_start + index * rows_per_frame, condition_start + (index + 1) * rows_per_frame)
@@ -145,7 +145,7 @@ def build_packed_sequence(text_token_tags, num_latent_frames, latent_height, lat
 
     _fill_audio_positions(position_ids, slice(audio_start, video_start), num_audio_latents, float(text_len), width_grid)
     target = position_ids[video_start:].view(num_latent_frames, rows_per_frame, 3)
-    target[:, :, 0] = _video_t_grid(num_latent_frames, float(text_len))[:, None]
+    target[:, :, 0] = _video_t_grid(num_latent_frames, float(text_len), video_time_scale)[:, None]
     target[:, :, 1:] = frame_grid[None]
 
     text_indices = torch.arange(text_len)
@@ -160,7 +160,7 @@ def build_packed_sequence(text_token_tags, num_latent_frames, latent_height, lat
 
 
 def build_ref2va_packed_sequence(text_token_tags, references, num_latent_frames, latent_height, latent_width,
-                                 num_audio_latents, patch_size):
+                                 num_audio_latents, patch_size, video_time_scale=1.0):
     _, patch_h, patch_w = patch_size
     text_len = int(text_token_tags.shape[0])
     target_frame_grid, target_width_grid = _frame_grid(latent_height, latent_width, patch_h, patch_w)
@@ -198,9 +198,9 @@ def build_ref2va_packed_sequence(text_token_tags, references, num_latent_frames,
             frame_grid, width_grid = _frame_grid(ref.latent_height, ref.latent_width, patch_h, patch_w)
             _fill_audio_positions(position_ids, audio_rows, ref.num_audio_latents, time_cursor, width_grid)
             video_grid = position_ids[video_rows].view(ref.num_latent_frames, frame_grid.shape[0], 3)
-            video_grid[:, :, 0] = _video_t_grid(ref.num_latent_frames, time_cursor)[:, None]
+            video_grid[:, :, 0] = _video_t_grid(ref.num_latent_frames, time_cursor, video_time_scale)[:, None]
             video_grid[:, :, 1:] = frame_grid[None]
-            time_cursor += max(float(ref.num_audio_latents), _reference_t_span(ref.num_latent_frames))
+            time_cursor += max(float(ref.num_audio_latents), _reference_t_span(ref.num_latent_frames, video_time_scale))
         else:
             raise ValueError(f"Unknown MiniMax H3 reference kind {ref.kind!r}")
 
@@ -209,7 +209,7 @@ def build_ref2va_packed_sequence(text_token_tags, references, num_latent_frames,
     _fill_audio_positions(position_ids, slice(audio_start, video_start), num_audio_latents, time_cursor,
                           target_width_grid)
     target = position_ids[video_start:].view(num_latent_frames, target_frame_grid.shape[0], 3)
-    target[:, :, 0] = _video_t_grid(num_latent_frames, time_cursor)[:, None]
+    target[:, :, 0] = _video_t_grid(num_latent_frames, time_cursor, video_time_scale)[:, None]
     target[:, :, 1:] = target_frame_grid[None]
 
     video_indices = torch.cat(video_indices + [torch.arange(video_start, sequence_length)])

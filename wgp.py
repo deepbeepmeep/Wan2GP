@@ -11617,7 +11617,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 wizard_prompt_activated_var = gr.Text(wizard_prompt_activated, visible= False)
                 wizard_variables_var = gr.Text(wizard_variables, visible = False)
             with gr.Row(visible= server_config.get("enhancer_enabled", 0) > 0  ) as prompt_enhancer_row:
-                on_demand_prompt_enhancer = server_config.get("enhancer_mode", 0) == 1
+                on_demand_prompt_enhancer = server_config.get("enhancer_mode", 1) == 1
                 prompt_enhancer_value = str(ui_get("prompt_enhancer") or "")
                 prompt_enhancer_btn_label = str(model_def.get("prompt_enhancer_button_label", "Enhance Prompt"))
                 prompt_enhancer_btn = gr.Button( value =prompt_enhancer_btn_label, visible= on_demand_prompt_enhancer, size="lg", scale=1, elem_classes="btn_centered")
@@ -11880,11 +11880,9 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 NAG_alpha = setting_slider("NAG_alpha", visible=True)
                         with gr.Row():
                             repeat_generation = gr.Slider(1, 25.0, value=ui_get("repeat_generation"), step=1, label=f"Num. of Generated {'Audio Files' if audio_only else 'Videos'} per Prompt", visible = not image_outputs, show_reset_button= False) 
-                            multi_images_gen_type = gr.Dropdown( value=ui_get("multi_images_gen_type"), 
-                                choices=[
-                                    ("Generate every combination of images and texts", 0),
-                                    ("Match images and text prompts", 1),
-                                ], visible=multiple_images_as_text_prompts and not edit_mode, label= "Multiple Images as Texts Prompts"
+                            multi_images_gen_choices = [("Generate every combination of images and texts", 0), ("Match images and text prompts", 1)]
+                            multi_images_gen_type = gr.Dropdown( value=get_default_value(multi_images_gen_choices, ui_get("multi_images_gen_type"), 0), 
+                                choices=multi_images_gen_choices, visible=multiple_images_as_text_prompts and not edit_mode, label= "Multiple Images as Texts Prompts"
                             )
                         with gr.Row():
                             multi_prompts_gen_choices = prompt_parser.get_multi_prompts_gen_choices(medium, include_sliding_window=sliding_window_enabled)
@@ -12026,7 +12024,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                     ("OFF", 0),
                                     ("ON", 1), 
                                 ],
-                                value=ui_get("apg_switch"),
+                                value=get_default_value([("OFF", 0), ("ON", 1)], ui_get("apg_switch"), 0),
                                 visible=True,
                                 scale = 1,
                                 label="Adaptive Projected Guidance (requires Guidance > 1 or Audio Guidance > 1) " if multitalk else "Adaptive Projected Guidance (requires Guidance > 1)",
@@ -12039,7 +12037,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                     ("OFF", 0),
                                     ("ON", 1), 
                                 ],
-                                value=ui_get("cfg_star_switch"),
+                                value=get_default_value([("OFF", 0), ("ON", 1)], ui_get("cfg_star_switch"), 0),
                                 visible=True,
                                 scale = 1,
                                 label="Classifier-Free Guidance Star (requires Guidance > 1)"

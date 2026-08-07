@@ -16,6 +16,7 @@
 # AdaLN curves, shared attention backends, chunked FFNs, and early tensor release.
 
 import math
+import time
 
 import torch
 import torch.nn as nn
@@ -385,6 +386,15 @@ class MiniMaxH3Model(nn.Module):
                                    (".attn.to_v.", ".attn.v_proj.")):
                 key = key.replace(source, target)
             converted[key] = value
+        from .lora_affine import convert_adaln_loras
+
+        start = time.perf_counter()
+        count, architecture, source_width, target_width = convert_adaln_loras(
+            model_type, converted, self.adaln_t_table if self.use_adaln_curves else None)
+        if count:
+            source = f"full-width {source_width}" if source_width == 2688 else f"{architecture.upper()} pruned rank {source_width}"
+            target = f"full-width {target_width}" if target_width == 2688 else f"{architecture.upper()} pruned rank {target_width}"
+            print(f"MiniMax H3 LoRA: converted {count} AdaLN adapters from {source} to {target} in {time.perf_counter() - start:.2f}s")
         if hasattr(self.blocks[0].attn, "q_proj"):
             return converted
         for down_suffix, up_suffix in (("lora_A.weight", "lora_B.weight"), ("lora_down.weight", "lora_up.weight")):

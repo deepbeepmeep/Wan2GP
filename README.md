@@ -64,7 +64,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 ## 🔥 Latest Updates : 
 
-## 6th of August 2026: WanGP v12.43, Cache Me If You Can
+## 6th of August 2026: WanGP v12.432, Cache Me If You Can
 
 **MiniMax H3 shifts up a gear!**
 
@@ -84,7 +84,11 @@ H3 now has new accelerators and RAM shrinkers. Pick one or stack them—the exac
 
 - **New control-video choices:** use a *Reference Video* to reuse subjects, appearance, or motion without changing the output size; *Depth Control* to guide the scene's depth and layout; or *Generic Control* to feed the clip directly to H3. Control videos define the output canvas, while reference videos do not.
 
+- **No LoRA Lost in Translation:** Pruned and non-pruned models can now read either LoRA format—the translation happens automatically as they load.
+
 Several accelerator LoRAs can already bring H3 generation down to just four steps, including the huggingface.co/drbaph/MiniMax-H3-Turbo-Lora-ComfyUI. I will wait until they are a little more polished before adding official WanGP profiles—but adventurous users should absolutely give them a spin in the meantime!
+
+*Update v12.431 + Update v12.432*: more loRAs format supported, fixed NVFP4 Format, on the fly LoRA conversion of Non Pruned Loras
 
 ## 5th of August 2026: WanGP v12.42, No Time for Taglines
 

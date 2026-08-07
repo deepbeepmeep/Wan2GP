@@ -367,8 +367,11 @@ class MiniMaxH3VideoAttnProcessor:
             key_second.copy_(key_second_out)
             del query_first_out, query_second_out, key_first_out, key_second_out
 
+        output_dtype = query.dtype
+        if output_dtype == torch.float32:
+            query, key, value = query.half(), key.half(), value.half()
         hidden_states = pay_attention([query, key, value], causal=False, recycle_q=True)
-        return attn.to_out(hidden_states.flatten(2, 3))
+        return attn.to_out(hidden_states.flatten(2, 3).to(output_dtype))
 
 
 class MiniMaxH3VideoAttention(nn.Module):

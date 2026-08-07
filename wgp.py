@@ -147,7 +147,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.12"
-WanGP_version = "12.432"
+WanGP_version = "12.434"
 settings_version = 2.70
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -12296,7 +12296,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     config_group_labels = [model_config_groups.get_config_name(configs) for configs in config_groups]
                     config_group_default_labels = [model_config_groups.get_default_label(configs) for configs in config_groups]
                     with gr.Column(any(grouped_model_configs)) as config_column:
-                        gr.Markdown('<B>You may pick a Variation of the Default Config (VAE Decoder, Text Encoder, may be different for instance)</B>')
+                        gr.Markdown('<B>You may pick a Variation of the Default Config (it may impact RAM/VRAM consumption or performance)</B>')
                         config_group_dropdowns = []
                         with gr.Row():
                             for index, group_configs in enumerate(grouped_model_configs):

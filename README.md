@@ -64,7 +64,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 ## 🔥 Latest Updates : 
 
-## 6th of August 2026: WanGP v12.432, Cache Me If You Can
+## 6th of August 2026: WanGP v12.434, Cache Me If You Can
 
 **MiniMax H3 shifts up a gear!**
 
@@ -84,11 +84,12 @@ H3 now has new accelerators and RAM shrinkers. Pick one or stack them—the exac
 
 - **New control-video choices:** use a *Reference Video* to reuse subjects, appearance, or motion without changing the output size; *Depth Control* to guide the scene's depth and layout; or *Generic Control* to feed the clip directly to H3. Control videos define the output canvas, while reference videos do not.
 
-- **No LoRA Lost in Translation:** Pruned and non-pruned models can now read either LoRA format—the translation happens automatically as they load.
+- **No LoRA Lost in Translation:** Pruned and non-pruned models can now read either LoRA format—the translation happens automatically as they load. Pruned (4 rank) LoRAs can also be used on original WanGP pruned checkpoints (rank 64) if you still use them.
 
-Several accelerator LoRAs can already bring H3 generation down to just four steps, including the huggingface.co/drbaph/MiniMax-H3-Turbo-Lora-ComfyUI. I will wait until they are a little more polished before adding official WanGP profiles—but adventurous users should absolutely give them a spin in the meantime!
+- **LoRAs Accelerators**: kudos to *Lightx2v* and *larryvrh* for delivering the first *LoRAs accelerators* for Minimax H3. You will find them in WanGP as predefined profiles in the *Settings* dropdown box at the top. You may need to increase the number of steps to 8 if not happy with the quality and / or to play with the *LoRA multiplier* (default is 0.5 as 1.0 seems too strong)
 
-*Update v12.431 + Update v12.432*: more loRAs format supported, fixed NVFP4 Format, on the fly LoRA conversion of Non Pruned Loras
+*Update v12.431 + Update v12.432*: more LoRAs format supported, fixed NVFP4 Format, on the fly LoRA conversion of Non Pruned Loras\
+*Update v12.433 + Update v12.434*: even more LoRAs format and quantization supported, LoRAs accelerators
 
 ## 5th of August 2026: WanGP v12.42, No Time for Taglines
 

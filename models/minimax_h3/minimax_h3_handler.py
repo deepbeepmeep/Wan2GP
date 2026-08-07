@@ -169,7 +169,6 @@ class family_handler:
             "sol_attention": True,
             "sample_solvers": [("Euler", "euler")],
             "no_negative_prompt": True,
-            "skip_prompt_template": True,
             "returns_audio": True,
             "multimedia_generation": True,
             "control_video_trim_disabled": True,

@@ -854,6 +854,7 @@ def load_models(paths: FlashVSRPaths, variant: str = FLASHVSR_VARIANT_TINY_LONG,
     _RUNTIME.load(paths, variant, profile=profile, init_pipe=init_pipe)
 
 
+@torch.inference_mode()
 def upscale_video(
     sample: torch.Tensor,
     scale: float,

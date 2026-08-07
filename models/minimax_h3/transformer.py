@@ -392,8 +392,8 @@ class MiniMaxH3Model(nn.Module):
         count, architecture, source_width, target_width = convert_adaln_loras(
             model_type, converted, self.adaln_t_table if self.use_adaln_curves else None)
         if count:
-            source = f"full-width {source_width}" if source_width == 2688 else f"{architecture.upper()} pruned rank {source_width}"
-            target = f"full-width {target_width}" if target_width == 2688 else f"{architecture.upper()} pruned rank {target_width}"
+            source = f"full AdaLN width {source_width}" if source_width == 2688 else f"{architecture.upper()} pruned AdaLN width {source_width}"
+            target = f"full AdaLN width {target_width}" if target_width == 2688 else f"{architecture.upper()} pruned AdaLN width {target_width}"
             print(f"MiniMax H3 LoRA: converted {count} AdaLN adapters from {source} to {target} in {time.perf_counter() - start:.2f}s")
         if hasattr(self.blocks[0].attn, "q_proj"):
             return converted

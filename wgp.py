@@ -12110,14 +12110,15 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 cfg_zero_step = gr.Slider(-1, 39, value=ui_get("cfg_zero_step"), step=1, label="CFG Zero below this Layer (Extra Process)", visible = any_cfg_zero, show_reset_button= False) 
 
                         with gr.Column(visible = v2i_switch_supported and image_outputs) as min_frames_if_references_col:
-                            gr.Markdown("<B>Generating a single Frame alone may not be sufficient to preserve Reference Image Identity / Control Image Information or simply to get a good Image Quality. A workaround is to generate a short Video and keep the First Frame.")
+                            gr.Markdown("<B>WanGP normally runs the shortest model-compatible generation and keeps its first frame. Generating additional frames may improve still-image quality or preserve Reference / Control Image details, at extra generation cost.</B>")
                             _, _, temporal_latent = get_model_min_frames_and_step(base_model_type)
                             temporal_latent = max(1, int(temporal_latent or 1))
-                            frame_counts = [temporal_latent * index + 1 for index in range(1, 5)]
-                            speed_labels = ("x1.5", "x2.0", "x2.5", "x3.0")
-                            image_mode_video_frame_choices = [("Disabled, generate only one Frame", 1)]
-                            image_mode_video_frame_choices += [(f"Generate a {frame_count} Frames long Video only if any Reference Image / Control Image ({speed} slower)", frame_count) for frame_count, speed in zip(frame_counts, speed_labels)]
-                            image_mode_video_frame_choices += [(f"Generate always a {frame_count} Frames long Video ({speed} slower)", 1000 + frame_count) for frame_count, speed in zip(frame_counts, speed_labels)]
+                            frames_offset = max(0, int(model_def.get("frames_offset", 1)))
+                            first_frame_count = frames_offset if frames_offset > 1 else temporal_latent + frames_offset
+                            frame_counts = [first_frame_count + temporal_latent * index for index in range(4)]
+                            image_mode_video_frame_choices = [("Shortest generation, keep only the First Frame", 1)]
+                            image_mode_video_frame_choices += [(f"Generate {frame_count} Frames and keep the First only when using a Reference / Control Image", frame_count) for frame_count in frame_counts]
+                            image_mode_video_frame_choices += [(f"Always generate {frame_count} Frames and keep the First", 1000 + frame_count) for frame_count in frame_counts]
                             min_frames_if_references_value = ui_get("min_frames_if_references", frame_counts[1] if vace else 1)
                             if min_frames_if_references_value not in {choice[1] for choice in image_mode_video_frame_choices}:
                                 min_frames_if_references_value = 1
@@ -12126,7 +12127,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 value=min_frames_if_references_value,
                                 visible=True,
                                 scale = 1,
-                                label="Generate more frames to preserve Reference Image Identity / Control Image Information or improve"
+                                label="Generate additional frames before keeping the first image"
                             )
 
                         with gr.Column(visible = get_container_def("motion_amplitude_col").visible and not image_outputs) as motion_amplitude_col:

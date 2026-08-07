@@ -1,4 +1,4 @@
-"""Affine conversion between full-width and rank-8 MiniMax H3 AdaLN LoRAs."""
+"""Affine conversion between MiniMax H3 AdaLN compression widths."""
 
 from functools import lru_cache
 from pathlib import Path
@@ -8,6 +8,7 @@ from safetensors.torch import load_file
 
 
 FULL_TIME_DIM = 2688
+_PRUNED_WIDTHS = (4, 8, 64)
 _MAP_DIR = Path(__file__).with_name("lora_affine_maps")
 _ARCHITECTURES = {
     "minimax_h3_fl2va": "fl2va",
@@ -30,20 +31,30 @@ def _architecture(model_type):
         raise ValueError(f"Unsupported MiniMax H3 architecture for AdaLN LoRA conversion: {model_type}") from error
 
 
-@lru_cache(maxsize=2)
-def _load_affine_package(architecture):
-    tensors = load_file(str(_MAP_DIR / f"{architecture}_rank8.sft"), device="cpu")
+@lru_cache(maxsize=6)
+def _load_affine_package(architecture, width=8):
+    package_width = 8 if width == 4 else width
+    tensors = load_file(str(_MAP_DIR / f"{architecture}_rank{package_width}.sft"), device="cpu")
     table, affine = tensors["adaln_t_table"].float(), tensors["adaln_affine_map"].float()
-    if table.shape != (1025, 8) or affine.shape != (9, FULL_TIME_DIM):
-        raise ValueError(f"Invalid MiniMax H3 {architecture} AdaLN affine package")
+    if table.ndim != 2 or table.shape[1] != package_width or affine.shape != (package_width + 1, FULL_TIME_DIM):
+        raise ValueError(f"Invalid MiniMax H3 {architecture} rank-{package_width} AdaLN affine package")
+    if width == 4:
+        table = table[:, :width]
+        affine = torch.cat((affine[:width], affine[-1:]))
     return table, affine
 
 
 def _aligned_affine_map(architecture, target_table):
-    canonical_table, canonical_affine = _load_affine_package(architecture)
     target_table = target_table.detach().to(device="cpu", dtype=torch.float64)
-    if target_table.shape != canonical_table.shape:
-        raise ValueError(f"MiniMax H3 {architecture} LoRA conversion expects an AdaLN table shaped {tuple(canonical_table.shape)}, found {tuple(target_table.shape)}")
+    if target_table.ndim != 2 or target_table.shape[1] not in _PRUNED_WIDTHS:
+        raise ValueError(f"Unsupported MiniMax H3 {architecture} AdaLN target table shape {tuple(target_table.shape)}")
+    canonical_table, canonical_affine = _load_affine_package(architecture, target_table.shape[1])
+    if target_table.shape[0] != canonical_table.shape[0]:
+        position = torch.linspace(0, canonical_table.shape[0] - 1, target_table.shape[0], dtype=torch.float64)
+        lower = position.floor().long().clamp(max=canonical_table.shape[0] - 2)
+        canonical_table = torch.lerp(canonical_table[lower].double(), canonical_table[lower + 1].double(), (position - lower).unsqueeze(1))
+    elif torch.equal(target_table.float(), canonical_table):
+        return canonical_affine
     ones = target_table.new_ones(target_table.shape[0], 1)
     target_h = torch.cat((target_table, ones), dim=1)
     canonical_h = torch.cat((canonical_table.double(), ones), dim=1)
@@ -56,10 +67,10 @@ def _aligned_affine_map(architecture, target_table):
     return (fit.solution @ canonical_affine.double()).float()
 
 
-@lru_cache(maxsize=2)
-def _canonical_encoder(architecture):
-    _, affine = _load_affine_package(architecture)
-    return torch.linalg.pinv(affine[:8].double(), rtol=1e-14).T.float()
+@lru_cache(maxsize=6)
+def _canonical_encoder(architecture, width):
+    _, affine = _load_affine_package(architecture, width)
+    return torch.linalg.pinv(affine[:width].double(), rtol=1e-14).T.float()
 
 
 def _add_bias_delta(state_dict, key, delta):
@@ -72,17 +83,16 @@ def _add_bias_delta(state_dict, key, delta):
 
 
 def convert_adaln_loras(model_type, state_dict, target_table=None):
-    """Convert AdaLN LoRA factors to the loaded full or pruned H3 representation."""
+    """Convert the AdaLN input width without changing the LoRA adapter rank."""
     architecture = _architecture(model_type)
-    pruned_target = target_table is not None
-    source_width, target_width = (FULL_TIME_DIM, 8) if pruned_target else (8, FULL_TIME_DIM)
+    target_width = FULL_TIME_DIM if target_table is None else int(target_table.shape[1])
     candidates = []
 
     for down_suffix, up_suffix in _LORA_SUFFIXES:
         marker = "." + down_suffix
         for down_key in [key for key in state_dict if key.endswith(marker) and ".adaln_proj.linear." in key]:
             down = state_dict[down_key]
-            if down.ndim != 2 or down.shape[1] != source_width:
+            if down.ndim != 2:
                 continue
             module_name = down_key[:-len(marker)]
             up_key = module_name + "." + up_suffix
@@ -91,24 +101,34 @@ def convert_adaln_loras(model_type, state_dict, target_table=None):
             up = state_dict[up_key]
             if up.ndim != 2 or up.shape[1] != down.shape[0]:
                 raise ValueError(f"MiniMax H3 LoRA factors are incompatible for {module_name}: A={tuple(down.shape)}, B={tuple(up.shape)}")
-            candidates.append((module_name, down_key, up_key))
+            candidates.append((module_name, down_key, up_key, int(down.shape[1])))
 
     if not candidates:
+        return 0, architecture, target_width, target_width
+
+    source_widths = {candidate[3] for candidate in candidates}
+    if len(source_widths) != 1:
+        raise ValueError(f"MiniMax H3 LoRA mixes AdaLN input widths: {sorted(source_widths)}")
+    source_width = source_widths.pop()
+    supported_widths = (*_PRUNED_WIDTHS, FULL_TIME_DIM)
+    if source_width == target_width:
         return 0, architecture, source_width, target_width
+    if source_width not in supported_widths or target_width not in supported_widths:
+        raise ValueError(f"Unsupported MiniMax H3 AdaLN LoRA conversion {source_width} -> {target_width}; supported widths are {supported_widths}")
 
-    target_affine = _aligned_affine_map(architecture, target_table) if pruned_target else None
-    encoder = None if pruned_target else _canonical_encoder(architecture)
+    target_affine = None if target_table is None else _aligned_affine_map(architecture, target_table)
+    source_affine = None if source_width == FULL_TIME_DIM else _load_affine_package(architecture, source_width)[1]
+    source_encoder = None if source_width == FULL_TIME_DIM else _canonical_encoder(architecture, source_width)
 
-    for module_name, down_key, up_key in candidates:
+    for module_name, down_key, up_key, _ in candidates:
         down, up = state_dict[down_key], state_dict[up_key]
-        if pruned_target:
-            mapped = down.float() @ target_affine.T
-            state_dict[down_key] = mapped[:, :target_width]
-            inner_bias = mapped[:, target_width]
-        else:
-            mapped = down.float() @ encoder
-            state_dict[down_key] = mapped
-            inner_bias = -(mapped @ _load_affine_package(architecture)[1][8])
+        mapped = down.float() if source_encoder is None else down.float() @ source_encoder
+        inner_bias = mapped.new_zeros(mapped.shape[0]) if source_affine is None else -(mapped @ source_affine[-1])
+        if target_affine is not None:
+            mapped = mapped @ target_affine.T
+            inner_bias.add_(mapped[:, target_width])
+            mapped = mapped[:, :target_width]
+        state_dict[down_key] = mapped
         _add_bias_delta(state_dict, module_name + ".diff_b", up.float() @ inner_bias)
 
     return len(candidates), architecture, source_width, target_width

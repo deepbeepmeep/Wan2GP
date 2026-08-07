@@ -209,7 +209,7 @@ class model_factory:
             writable_tensors=True,
             modelClass=AutoencoderKL,
             defaultConfigPath=vae_config_path,
-            default_dtype=VAE_dtype,
+            default_dtype=None,
         )
 
         # Scheduler

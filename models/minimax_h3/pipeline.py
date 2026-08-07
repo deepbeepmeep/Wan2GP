@@ -277,8 +277,6 @@ class MiniMaxH3Pipeline:
         if int(sampling_steps) < 1:
             raise ValueError("MiniMax H3 requires at least one inference step")
         frame_num = normalize_frame_count(int(frame_num), 5, 17, 5)
-        if not 4.0 <= frame_num / fps <= 20.0:
-            raise ValueError("MiniMax H3 generates between 4 and 20 seconds")
         prefix_frames_count = int(prefix_frames_count or 0)
         continuation = _as_video(input_video) if input_video is not None and prefix_frames_count > 0 else None
         sliding_prefix = continuation if self.reference_mode and prefix_frames_count >= 5 else None

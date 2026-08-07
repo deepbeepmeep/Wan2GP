@@ -18,9 +18,13 @@ _ARCHITECTURES = {
 }
 _LORA_SUFFIXES = (
     ("lora_A.weight", "lora_B.weight"),
+    ("lora_A.default.weight", "lora_B.default.weight"),
     ("lora_down.weight", "lora_up.weight"),
+    ("lora_down.default.weight", "lora_up.default.weight"),
     ("lora.A.weight", "lora.B.weight"),
+    ("lora.A.default.weight", "lora.B.default.weight"),
     ("lora.down.weight", "lora.up.weight"),
+    ("lora.down.default.weight", "lora.up.default.weight"),
 )
 
 

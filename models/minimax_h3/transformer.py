@@ -376,15 +376,38 @@ def _prepared_references(refs):
 
 class MiniMaxH3Model(nn.Module):
     def preprocess_loras(self, model_type, state_dict):
+        diffusers_format = any(key.startswith(("transformer_blocks.", "token_refiner.refiner_blocks.",
+                                               "time_embedder.linear_", "audio_proj_in.", "proj_in.",
+                                               "context_embedder.", "norm_out.", "audio_proj_out.", "proj_out."))
+                               for key in state_dict)
         converted = {}
         for key, value in state_dict.items():
             if key.startswith("lora_unet_"):
                 path, suffix = key[len("lora_unet_"):].split(".", 1)
                 key = path.replace("blocks_", "blocks.", 1).replace("_attn_", ".attn.").replace("_mlp_", ".mlp.") + "." + suffix
-            for source, target in (("transformer_blocks.", "blocks."), (".attn.to_out.0.", ".attn.out_proj."),
-                                   (".attn.to_q.", ".attn.q_proj."), (".attn.to_k.", ".attn.k_proj."),
-                                   (".attn.to_v.", ".attn.v_proj.")):
-                key = key.replace(source, target)
+            if diffusers_format:
+                diffusers_fc1 = ".ff.net.0.proj." in key
+                for source, target in (("token_refiner.refiner_blocks.", "token_refiner.blocks."),
+                                       ("transformer_blocks.", "blocks."),
+                                       ("time_embedder.linear_1.", "time_embedder.proj_in."),
+                                       ("time_embedder.linear_2.", "time_embedder.proj_out."),
+                                       ("audio_proj_in.", "audio_patch_proj."), ("proj_in.", "video_patch_proj."),
+                                       ("context_embedder.", "condition_proj."),
+                                       ("norm_out.norm.", "final_layer.norm."),
+                                       ("norm_out.linear.", "final_layer.adaln_proj.linear."),
+                                       ("audio_proj_out.", "final_layer.audio_out."), ("proj_out.", "final_layer.video_out.")):
+                    if key.startswith(source):
+                        key = target + key[len(source):]
+                        break
+                for source, target in ((".attn.norm_q.", ".attn.q_norm."), (".attn.norm_k.", ".attn.k_norm."),
+                                       (".attn.to_out.0.", ".attn.out_proj."), (".attn.to_q.", ".attn.q_proj."),
+                                       (".attn.to_k.", ".attn.k_proj."), (".attn.to_v.", ".attn.v_proj."),
+                                       (".ff.net.0.proj.", ".mlp.fc1."), (".ff.net.2.", ".mlp.fc2.")):
+                    key = key.replace(source, target)
+                if diffusers_fc1 and key.endswith((".lora_B.weight", ".lora_B.default.weight", ".lora_up.weight",
+                                                    ".lora_up.default.weight", ".lora.B.weight", ".lora.B.default.weight",
+                                                    ".lora.up.weight", ".lora.up.default.weight")):
+                    value = torch.cat(value.chunk(2, dim=0)[::-1], dim=0).contiguous()
             converted[key] = value
         from .lora_affine import convert_adaln_loras
 
@@ -397,7 +420,12 @@ class MiniMaxH3Model(nn.Module):
             print(f"MiniMax H3 LoRA: converted {count} AdaLN adapters from {source} to {target} in {time.perf_counter() - start:.2f}s")
         if hasattr(self.blocks[0].attn, "q_proj"):
             return converted
-        for down_suffix, up_suffix in (("lora_A.weight", "lora_B.weight"), ("lora_down.weight", "lora_up.weight")):
+        for down_suffix, up_suffix in (("lora_A.weight", "lora_B.weight"), ("lora_down.weight", "lora_up.weight"),
+                                       ("lora_A.default.weight", "lora_B.default.weight"),
+                                       ("lora_down.default.weight", "lora_up.default.weight"),
+                                       ("lora.A.weight", "lora.B.weight"), ("lora.down.weight", "lora.up.weight"),
+                                       ("lora.A.default.weight", "lora.B.default.weight"),
+                                       ("lora.down.default.weight", "lora.up.default.weight")):
             marker = "q_proj." + down_suffix
             for key in [key for key in converted if key.endswith(marker)]:
                 prefix = key[:-len(marker)]

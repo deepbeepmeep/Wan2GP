@@ -523,7 +523,7 @@ class CLIPModel:
         # self.model.load_state_dict(
         #     torch.load(checkpoint_path, map_location='cpu'), assign= True)
 
-        offload.load_model_data(self.model, checkpoint_path.replace(".pth", "-bf16.safetensors"), writable_tensors= False)
+        offload.load_model_data(self.model, checkpoint_path.replace(".pth", "-bf16.safetensors"), writable_tensors=False, default_dtype=None)
 
         # init tokenizer
         self.tokenizer = HuggingfaceTokenizer(

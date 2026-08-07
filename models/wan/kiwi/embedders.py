@@ -46,7 +46,7 @@ def _load_embedder(
     dtype: torch.dtype,
 ):
     model = embedder_cls()
-    offload.load_model_data(model, embedder_file, writable_tensors=False)
+    offload.load_model_data(model, embedder_file, writable_tensors=False, default_dtype=None)
     model.eval().requires_grad_(False)
     model.to(device=device, dtype=dtype)
     return model

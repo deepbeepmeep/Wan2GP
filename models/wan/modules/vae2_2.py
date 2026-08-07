@@ -1111,7 +1111,7 @@ class WanVAE_(nn.Module):
         self._enc_feat_map = [None] * self._enc_conv_num
 
 
-def _video_vae(pretrained_path=None, z_dim=16, dim=160, device="cpu", **kwargs):
+def _video_vae(pretrained_path=None, z_dim=16, dim=160, device="cpu", *, dtype, **kwargs):
     # params
     cfg = dict(
         dim=dim,
@@ -1136,7 +1136,7 @@ def _video_vae(pretrained_path=None, z_dim=16, dim=160, device="cpu", **kwargs):
     # offload.save_model(model, "Wan_vae_2_2.safetensors")
     # model.to(torch.bfloat16)
     # offload.save_model(model, "Wan_vae_2_2_bf16.safetensors")
-    offload.load_model_data(model, pretrained_path.replace(".pth", ".safetensors"), writable_tensors= False)    
+    offload.load_model_data(model, pretrained_path.replace(".pth", ".safetensors"), writable_tensors=False, default_dtype=dtype)
 
     return model
 
@@ -1272,6 +1272,7 @@ class Wan2_2_VAE:
         self.model = (
             _video_vae(
                 pretrained_path=vae_pth,
+                dtype=dtype,
                 z_dim=z_dim,
                 dim=c_dim,
                 dim_mult=dim_mult,

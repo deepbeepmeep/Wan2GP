@@ -696,6 +696,7 @@ class T5EncoderModel:
             model,
             checkpoint_path,
             writable_tensors=False,
+            default_dtype=torch.bfloat16,
             preprocess_sd=_preprocess_umt5_state_dict,
         )
 

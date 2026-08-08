@@ -489,9 +489,11 @@ class family_handler:
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
-        if settings_version < 2.72 and "sliding_window_overlap" in ui_defaults:
+        if settings_version < 2.73 and "sliding_window_overlap" in ui_defaults:
             overlap = max(1, int(ui_defaults["sliding_window_overlap"] or 18))
             ui_defaults["sliding_window_overlap"] = normalize_overlap(overlap, 17, 1)[0]
+        if settings_version < 2.73 and base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE):
+            ui_defaults["sliding_window_size"] = 362
         if settings_version < 2.71:
             ui_defaults["denoising_strength"] = 1.0
         if settings_version < 2.70:

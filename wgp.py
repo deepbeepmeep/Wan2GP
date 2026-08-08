@@ -13681,6 +13681,59 @@ if __name__ == "__main__":
         else:
             url = "http://" + server_name
         webbrowser.open(url + ":" + str(server_port), new = 0, autoraise = True)
+
+    def patch_gradio_localhost_probe():
+        """Keep launch() from aborting with "When localhost is not accessible, a
+        shareable link must be created" on large UIs.
+
+        Gradio's launch() probes HEAD / with httpx.head(timeout=3), 5 tries, and
+        aborts when all fail. But serving "/" deep-copies the whole Blocks config
+        and filters components per page with an O(N^2) list-membership test, so
+        first-response time grows super-linearly with component count: on a fast
+        box ~8k components answer in 0.3s, ~32k need >3s and launch() dies even
+        though the server is healthy. WanGP's base UI plus a couple of plugins
+        crosses that threshold on slower machines (reported on Pinokio/Windows
+        with two plugins enabled; disabling plugins "fixes" it by shrinking the
+        UI). Patch the probe: after the stock check gives up, retry loopback URLs
+        once with a long timeout — and proxies bypassed, since localhost must not
+        be routed through HTTP_PROXY. Non-loopback URLs (the share-tunnel polling
+        loop) keep stock behavior, and a genuinely dead localhost still fails
+        fast: connection-refused returns immediately in both passes."""
+        try:
+            import httpx
+            from gradio import networking
+        except Exception:
+            print("Warning: could not locate gradio.networking; leaving the localhost probe untouched.")
+            return
+        if getattr(networking, "_wan2gp_patient_url_ok", False):
+            return
+        orig_url_ok = getattr(networking, "url_ok", None)
+        if orig_url_ok is None:
+            return
+
+        local_prefixes = ("http://localhost", "http://127.", "http://[::1]", "http://0.0.0.0")
+
+        def patient_url_ok(url):
+            if orig_url_ok(url):
+                return True
+            if not str(url).lower().startswith(local_prefixes):
+                return False
+            print("Gradio's localhost probe timed out (a large UI is slow to serve its first page); retrying with a 60s timeout...")
+            try:
+                r = httpx.head(url, timeout=60, verify=False, trust_env=False)
+            except Exception:
+                return False
+            # The status set gradio 5.29 accepts (401/302 when auth is set; 303/307 redirects).
+            return r.status_code in (200, 401, 302, 303, 307)
+
+        networking.url_ok = patient_url_ok
+        # The ImageSuite and Prompt Library plugins ship this same shim; setting
+        # their sentinels tells them the host already handled it so nothing stacks.
+        networking._wan2gp_patient_url_ok = True
+        networking._imagesuite_patient_url_ok = True
+        networking._promptlib_patient_url_ok = True
+
+    patch_gradio_localhost_probe()
     demo.launch(
         favicon_path="favicon.png",
         server_name=server_name,

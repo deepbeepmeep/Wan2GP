@@ -196,7 +196,7 @@ def _handle_command(session, job: SessionJob, wgp, tasks: list[dict[str, Any]], 
         job.events.put("progress", progress)
         session._emit_callback("on_progress", progress, job=job)
         return
-    if command == "preview":
+    if command in {"preview", "preview_media"}:
         preview = session._build_preview_update(wgp, tasks, data)
         if preview is not None:
             job.events.put("preview", preview)

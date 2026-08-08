@@ -739,6 +739,7 @@ def euler_denoising_loop(
             denoised_video = post_process_latent(denoised_video, video_state.denoise_mask, video_state.clean_latent)
             if audio_state is not None:
                 denoised_audio = post_process_latent(denoised_audio, audio_state.denoise_mask, audio_state.clean_latent)
+            _invoke_callback(callback, step_idx, pass_no, replace(video_state, latent=denoised_video), preview_tools)
 
             refiner_steps = 0
             if self_refiner_handler is not None:
@@ -856,7 +857,6 @@ def euler_denoising_loop(
 
             if mask_context is not None:
                 _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
-            _invoke_callback(callback, step_idx, pass_no, video_state, preview_tools)
 
         return video_state, audio_state
     finally:
@@ -936,12 +936,12 @@ def gradient_estimating_euler_denoising_loop(
             previous_audio_velocity, denoised_audio = update_velocity_and_sample(
                 audio_state.latent, denoised_audio, sigmas[step_idx], previous_audio_velocity
             )
+            _invoke_callback(callback, step_idx, pass_no, replace(video_state, latent=denoised_video), preview_tools)
 
             video_state = replace(video_state, latent=stepper.step(video_state.latent, denoised_video, sigmas, step_idx))
             audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio, sigmas, step_idx))
             if mask_context is not None:
                 _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
-            _invoke_callback(callback, step_idx, pass_no, video_state, preview_tools)
 
         return video_state, audio_state
     finally:
@@ -2329,6 +2329,7 @@ def res2s_audio_video_denoising_loop(
                 return None, None
             denoised_video_2 = post_process_latent(denoised_video_2, video_state.denoise_mask, video_state.clean_latent)
             denoised_audio_2 = post_process_latent(denoised_audio_2, audio_state.denoise_mask, audio_state.clean_latent)
+            _invoke_callback(callback, step_idx, pass_no, replace(video_state, latent=denoised_video_2), preview_tools)
 
             eps_2_video = denoised_video_2.double() - x_anchor_video
             eps_2_audio = denoised_audio_2.double() - x_anchor_audio
@@ -2354,7 +2355,6 @@ def res2s_audio_video_denoising_loop(
             audio_state = replace(audio_state, latent=x_next_audio.to(audio_state.latent.dtype))
             if mask_context is not None:
                 _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
-            _invoke_callback(callback, step_idx, pass_no, video_state, preview_tools)
 
         if sigmas[-1] == 0:
             if interrupt_check is not None and interrupt_check():

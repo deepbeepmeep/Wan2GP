@@ -9,17 +9,18 @@ import io
 import json
 import numpy as np
 import os
-import queue
 import re
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 from PIL import Image
 
+from shared.preview.types import PreviewMedia
 from shared.utils.process_locks import set_main_generation_running
 from shared.utils.virtual_media import get_virtual_media_vsource, parse_virtual_media_path, replace_virtual_media_source
 
@@ -78,6 +79,7 @@ class PreviewUpdate:
     progress: int
     current_step: int | None
     total_steps: int | None
+    media: PreviewMedia | None = None
 
 
 @dataclass(frozen=True)
@@ -227,35 +229,49 @@ def store_api_output_artifact(gen: dict[str, Any], client_id: str, video_path: A
 
 class SessionStream:
     def __init__(self) -> None:
-        self._queue: queue.Queue[SessionEvent | object] = queue.Queue()
+        self._queue: deque[SessionEvent | object] = deque()
+        self._condition = threading.Condition()
         self._closed = threading.Event()
         self._sentinel = object()
 
     def put(self, kind: str, data: Any = None) -> None:
-        if self._closed.is_set():
-            return
-        self._queue.put(SessionEvent(kind=kind, data=data))
+        with self._condition:
+            if self._closed.is_set():
+                return
+            event = SessionEvent(kind=kind, data=data)
+            if kind == "preview":
+                self._queue = deque(
+                    queued
+                    for queued in self._queue
+                    if not (isinstance(queued, SessionEvent) and queued.kind == "preview")
+                )
+            self._queue.append(event)
+            self._condition.notify()
 
     def close(self) -> None:
-        if self._closed.is_set():
-            return
-        self._closed.set()
-        self._queue.put(self._sentinel)
+        with self._condition:
+            if self._closed.is_set():
+                return
+            self._closed.set()
+            self._queue.append(self._sentinel)
+            self._condition.notify_all()
 
     def clear(self) -> None:
-        while True:
-            try:
-                self._queue.get_nowait()
-            except queue.Empty:
-                break
-        if self._closed.is_set():
-            self._queue.put(self._sentinel)
+        with self._condition:
+            self._queue.clear()
+            if self._closed.is_set():
+                self._queue.append(self._sentinel)
+            self._condition.notify_all()
 
     def get(self, timeout: float | None = None) -> SessionEvent | None:
-        try:
-            item = self._queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._condition:
+            while not self._queue:
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    return None
+                self._condition.wait(timeout=remaining)
+            item = self._queue.popleft()
         if item is self._sentinel:
             return None
         return item
@@ -384,6 +400,9 @@ class SessionJob:
 
     def cancel(self) -> None:
         self._cancel_requested.set()
+        preview_session = self._session._state.get("gen", {}).get("preview_session")
+        if preview_session is not None:
+            preview_session.cancel()
         owner = getattr(self._session, "_gradio_session_proxy", None)
         capture = getattr(owner, "_capture_cancelled_job", None)
         if callable(capture):
@@ -783,6 +802,16 @@ class WanGPSession:
 
     def _build_preview_update(self, wgp, tasks: list[dict[str, Any]], payload: Any) -> PreviewUpdate | None:
         progress = self._build_progress_update([0, self._state["gen"].get("progress_status", "")])
+        if isinstance(payload, PreviewMedia):
+            return PreviewUpdate(
+                image=payload.first_frame,
+                phase=progress.phase,
+                status=progress.status,
+                progress=progress.progress,
+                current_step=payload.step,
+                total_steps=payload.total_steps,
+                media=payload,
+            )
         model_type = ""
         queue_tasks = self._state["gen"].get("queue") or tasks
         if queue_tasks:
@@ -832,6 +861,9 @@ class WanGPSession:
 
     def _prepare_state_for_run(self, tasks: list[dict[str, Any]]) -> None:
         gen = self._state["gen"]
+        previous_preview_session = gen.pop("preview_session", None)
+        if previous_preview_session is not None:
+            previous_preview_session.close()
         gen["queue"] = tasks
         set_main_generation_running(self._state, True)
         gen["process_status"] = "process:main"
@@ -841,6 +873,8 @@ class WanGPSession:
         gen["early_stop"] = False
         gen["early_stop_forwarded"] = False
         gen["preview"] = None
+        gen["preview_media"] = None
+        gen["preview_warning"] = None
         gen["status"] = "Generating..."
         gen["in_progress"] = True
         gen.setdefault("api_output_artifacts", {})
@@ -848,6 +882,9 @@ class WanGPSession:
 
     def _reset_state_after_run(self) -> None:
         gen = self._state["gen"]
+        preview_session = gen.pop("preview_session", None)
+        if preview_session is not None:
+            preview_session.close()
         gen["queue"] = []
         set_main_generation_running(self._state, False)
         gen["process_status"] = "process:main"
@@ -856,6 +893,8 @@ class WanGPSession:
         gen["abort"] = False
         gen["early_stop"] = False
         gen["early_stop_forwarded"] = False
+        gen["preview"] = None
+        gen["preview_media"] = None
         gen.pop("in_progress", None)
         self._ensure_runtime().module.gen_in_progress = False
 

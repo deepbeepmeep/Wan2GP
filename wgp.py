@@ -121,6 +121,11 @@ from shared.gradio.gallery import AdvancedMediaGallery, get_gradio_file_path
 from shared.gradio.hierarchy_selector import HierarchySelector, build_choices_hierarchy
 from shared.ffmpeg_setup import download_ffmpeg
 from shared.api import get_api_output_options, store_api_output_artifact
+from shared.preview.coordinator import PreviewCoordinator
+from shared.preview.loader import PreviewDecoderError, download_decoder, unload_decoders, validate_weight
+from shared.preview.registry import decoder_capability, get_decoder_for_model
+from shared.preview.rendering import preview_media_to_html
+from shared.preview.types import PreviewOptions
 from shared.utils.plugins import PluginManager, WAN2GPApplication, SYSTEM_PLUGINS
 from shared.llm_engines.nanovllm.vllm_support import resolve_lm_decoder_engine
 from shared.gradio import assistant_chat, field_help, finetune_editor, local_file_picker, model_infos, model_output_filter, model_selector_toolbar
@@ -238,6 +243,7 @@ def release_model():
     if offloadobj is not None:
         offloadobj.release()
         offloadobj = None
+    unload_decoders()
     offload.flush_torch_caches()
     gc.collect()
     torch.cuda.empty_cache()
@@ -4111,7 +4117,7 @@ def get_gen_info(state):
         state["gen"] = cache
     return cache
 
-def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_meta=None):
+def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_meta=None, preview_session=None):
     gen = get_gen_info(state)
     gen["num_inference_steps"] = num_inference_steps
     start_time = time.time()    
@@ -4204,6 +4210,23 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
         # progress(*progress_args)
         send_cmd("progress", progress_args)
         if latent is not None:
+            if (gen.get("preview_options") or {}).get("mode", "rgb") == "off":
+                return
+            tiny_vae_attempted = preview_session is not None and not (preview_meta or {}).get("first_latent_only", False)
+            if tiny_vae_attempted:
+                preview_session.capture(
+                    latent,
+                    step=step_idx,
+                    total_steps=num_inference_steps,
+                    pass_no=pass_no if pass_no >= 0 else None,
+                    window_no=gen.get("window_no"),
+                    fps=gen.get("preview_fps"),
+                    duration_seconds=gen.get("preview_duration_seconds"),
+                    context_id=f"pass:{pass_no if pass_no >= 0 else 0}:window:{gen.get('window_no', 0)}",
+                    force_refresh=force_refresh,
+                )
+                if not preview_session.disabled:
+                    return
             payload = pipe.prepare_preview_payload(latent, preview_meta) if hasattr(pipe, "prepare_preview_payload") else latent
             if isinstance(payload, dict):
                 data = payload.copy()
@@ -4277,6 +4300,9 @@ def abort_generation(state, client_id="", notify = True):
         if wan_model != None:
             wan_model._interrupt= True
         gen["abort"] = True            
+        preview_session = gen.get("preview_session")
+        if preview_session is not None:
+            preview_session.cancel()
         msg = "Processing Request to abort Current Generation"
         gen["status"] = msg
         if notify:
@@ -6532,6 +6558,7 @@ def generate_media(
     state,
     model_type,
     mode,
+    preview_options=None,
     plugin_data=None,
 ):
     wait_for_model_unload()
@@ -6552,6 +6579,15 @@ def generate_media(
     gen = get_gen_info(state)
     api_return_video_uint8, api_return_audio = get_api_output_options(plugin_data)
     api_options = plugin_data.get("api", {}) if isinstance(plugin_data, dict) and isinstance(plugin_data.get("api", {}), dict) else {}
+    if preview_options is None and isinstance(plugin_data, dict):
+        preview_options = plugin_data.get("_preview")
+    if preview_options is None:
+        preview_options = server_config.get("preview_options")
+    try:
+        preview_options = PreviewOptions.from_value(preview_options)
+    except ValueError as exc:
+        send_cmd("error", str(exc))
+        return False
     flashvsr_continue_cache = api_options.get("flashvsr_continue_cache")
     return_flashvsr_continue_cache = bool(api_options.get("return_flashvsr_continue_cache"))
     gen["early_stop"] = False
@@ -6583,6 +6619,41 @@ def generate_media(
     config = model_config_groups.normalize_config_selection(config_groups, config)
     is_image = image_mode > 0
     audio_only = model_def.get("audio_only", False)
+    preview_session = None
+    if preview_options.mode == "tae":
+        if is_image or audio_only:
+            preview_options = preview_options.with_mode("rgb")
+            message = "Tiny VAE preview is unavailable for image or audio outputs; using RGB."
+            gen["preview_warning"] = message
+            send_cmd("status", message)
+        else:
+            decoder_spec = get_decoder_for_model(model_type, model_def)
+            decoder_path = decoder_spec.local_path() if decoder_spec is not None else None
+            decoder_valid = decoder_path is not None and validate_weight(decoder_path, decoder_spec)[0]
+            if decoder_spec is not None and decoder_valid:
+                preview_session = PreviewCoordinator(
+                    model_type,
+                    str(model_def.get("architecture") or ""),
+                    decoder_spec,
+                    preview_options,
+                    lambda media: send_cmd("preview_media", media),
+                    lambda message: (gen.__setitem__("preview_warning", message), send_cmd("status", message)),
+                )
+            else:
+                preview_options = preview_options.with_mode("rgb")
+                message = "Tiny VAE preview is unavailable for this model or its decoder weight is missing; using RGB."
+                gen["preview_warning"] = message
+                send_cmd("status", message)
+    gen["preview_session"] = preview_session
+    gen["preview_options"] = {
+        "mode": preview_options.mode,
+        "device": preview_options.device,
+        "update_rate": preview_options.update_rate,
+        "max_edge": preview_options.max_edge,
+        "preview_fps": preview_options.preview_fps,
+        "webp_quality": preview_options.webp_quality,
+        "target_updates": preview_options.target_updates,
+    }
     duration_def = model_def.get("duration_slider", None)
 
     set_video_prompt_type = model_def.get("set_video_prompt_type", None)
@@ -6859,6 +6930,8 @@ def generate_media(
         prompts = frame_scheduler["prompts"]
         video_length = frame_scheduler["predicted_total_frames"]
         current_video_length = video_length
+    gen["preview_fps"] = float(fps)
+    gen["preview_duration_seconds"] = float(video_length) / max(float(fps), 1.0)
     control_audio_tracks = source_audio_tracks = source_audio_metadata = []
     if postprocess_audio == "control" and video_guide is not None:
         control_audio_tracks, _  = extract_audio_tracks(video_guide, temp_format="wav")
@@ -7528,7 +7601,15 @@ def generate_media(
             gen["progress_status"] = status
             progress_phase = "Generating Audio" if audio_only else "Encoding Prompt"
             gen["progress_phase"] = (progress_phase , -1 )
-            callback = build_callback(state, trans, send_cmd, status, num_inference_steps, preview_meta={"first_latent_only": True} if is_image else None)
+            callback = build_callback(
+                state,
+                trans,
+                send_cmd,
+                status,
+                num_inference_steps,
+                preview_meta={"first_latent_only": True} if is_image else None,
+                preview_session=preview_session,
+            )
             progress_args = [0, merge_status_context(status, progress_phase )]
             send_cmd("progress", progress_args)
 
@@ -8054,6 +8135,7 @@ def generate_media(
                     "transformer_loras_multipliers" : transformer_loras_multipliers
                     })
                 embedded_images = {img_name: inputs[img_name] for img_name in image_names_list } if server_config.get("embed_source_images", False) else None
+                inputs["preview_options"] = vars(preview_options).copy()
                 configs = prepare_inputs_dict("metadata", inputs, model_type)
                 if replace_voice_method and replace_voice_sample is not None:
                     configs["replace_voice_method"] = replace_voice_method
@@ -8103,6 +8185,9 @@ def generate_media(
         cleanup_temp_audio_files(control_audio_tracks + source_audio_tracks)
 
     remove_temp_filenames(temp_filenames_list)
+    if preview_session is not None:
+        preview_session.close()
+    gen["preview_session"] = None
     return True
 
 def prepare_generate_media(state):
@@ -8111,6 +8196,43 @@ def prepare_generate_media(state):
         return gr.Button(visible= True), gr.Button(visible= False), gr.Column(visible= False), gr.update(visible=False)
     else:
         return gr.Button(visible= False), gr.Button(visible= True), gr.Column(visible= True), gr.update(visible= False)
+
+
+def _preview_model_def(model_type):
+    try:
+        return get_model_def(model_type) or {}
+    except Exception:
+        return {}
+
+
+def refresh_preview_install_controls(model_type):
+    model_def = _preview_model_def(model_type)
+    spec = get_decoder_for_model(model_type, model_def)
+    capability = decoder_capability(model_type, model_def)
+    install_visible = spec is not None and not capability["tiny_vae_available"]
+    message = capability.get("unavailable_reason") or ("Tiny VAE decoder is not installed for this validated model." if install_visible else "")
+    return gr.update(visible=install_visible), gr.update(value=message, visible=bool(message))
+
+
+def install_tiny_vae_preview(state, progress=gr.Progress()):
+    model_type = get_state_model_type(state)
+    spec = get_decoder_for_model(model_type, _preview_model_def(model_type))
+    if spec is None:
+        return refresh_preview_install_controls(model_type)
+    try:
+        def download_progress(update):
+            if not isinstance(update, dict):
+                return
+            total = float(update.get("total") or 0)
+            current = float(update.get("current") or 0)
+            if total > 0:
+                progress(min(1.0, max(0.0, current / total)), desc=f"Installing {spec.filename}")
+
+        download_decoder(spec, progress_callback=download_progress)
+        gr.Info("Tiny VAE preview decoder installed.")
+    except PreviewDecoderError as exc:
+        gr.Warning(str(exc))
+    return refresh_preview_install_controls(model_type)
 
 
 def generate_preview(model_type, payload):
@@ -8211,6 +8333,12 @@ def process_tasks(state):
 
     def release_gen():
         set_main_generation_running(state, False)
+        preview_session = gen.pop("preview_session", None)
+        if preview_session is not None:
+            preview_session.close()
+        gen["preview"] = None
+        gen["preview_media"] = None
+        gen["preview_warning"] = None
         with gen_lock:
             process_status = gen.get("process_status", None)
             if isinstance(process_status, str) and process_status.startswith("request:"):
@@ -8224,6 +8352,8 @@ def process_tasks(state):
     gen_in_progress = True
     gen["in_progress"] = True
     gen["preview"] = None
+    gen["preview_media"] = None
+    gen["preview_warning"] = None
     gen["status"] = get_task_status_text(queue[0])
     gen["header_text"] = ""    
 
@@ -8345,6 +8475,7 @@ def process_tasks(state):
             gen["last_progress_args"] = [0, status_text] if len(status_text) > 0 else None
         elif cmd == "output":
             gen["preview"] = None
+            gen["preview_media"] = None
             gen["refresh_tab"] = True
             yield time.time(), time.time(), gr.update()
         elif cmd == "progress":
@@ -8362,6 +8493,11 @@ def process_tasks(state):
                 yield time.time(), gr.Text(), gr.update()
             except Exception:
                 pass
+        elif cmd == "preview_media":
+            gen["preview_media"] = data
+            if getattr(data, "first_frame", None) is not None:
+                gen["preview"] = data.first_frame
+            yield time.time(), gr.Text(), gr.update()
         elif cmd == "refresh_models":
             yield gr.update(), gr.update(), (data if data is not None else get_unique_id())
         else:
@@ -8392,6 +8528,9 @@ def validate_task(task, state, skip_validate_settings=False):
     if _is_edit_task_params(params):
         inputs = primary_settings.copy()
         inputs.update(params)
+        preview_value = inputs.pop("_preview", None)
+        if preview_value is not None:
+            inputs["preview_options"] = preview_value
         inputs.pop("model_type", None)
         inputs.pop("base_model_type", None)
         fix_postprocess_audio_settings(inputs, params.get("settings_version", 0))
@@ -8455,6 +8594,9 @@ def validate_task(task, state, skip_validate_settings=False):
         return None, "No model_type specified"
 
     inputs = params.copy()
+    preview_value = inputs.pop("_preview", None)
+    if preview_value is not None:
+        inputs["preview_options"] = preview_value
     clean_settings(model_type, inputs)
 
     inputs.setdefault('mode', "")
@@ -10664,9 +10806,13 @@ def refresh_video_prompt_type_video_custom_checkbox(state, video_prompt_type, vi
 
 def refresh_preview(state):
     gen = get_gen_info(state)
+    preview_media = gen.get("preview_media")
+    if preview_media is not None:
+        return preview_media_to_html(preview_media)
     preview_image = gen.get("preview", None)
     if preview_image is None:
-        return ""
+        warning = gen.get("preview_warning")
+        return f'<div class="preview-warning">{html.escape(str(warning))}</div>' if warning else ""
     
     preview_base64 = pil_to_base64_uri(preview_image, format="jpeg", quality=85)
     if preview_base64 is None:
@@ -10710,6 +10856,9 @@ def show_modal_image(state, action_string):
         queue = gen.get("queue", [])
 
         if parts[0] == 'preview':
+            preview_media = gen.get("preview_media")
+            if preview_media is not None:
+                return gr.HTML(value=preview_media_to_html(preview_media, height=600)), gr.Column(visible=True)
             preview_image = gen.get("preview", None)
             if preview_image:
                 preview_base64 = pil_to_base64_uri(preview_image)
@@ -12445,6 +12594,12 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
 
                 with gr.Column(visible= False) as current_gen_column:
                     with gr.Accordion("Preview", open=False):
+                        initial_preview_spec = get_decoder_for_model(model_type, model_def)
+                        initial_preview_capability = decoder_capability(model_type, model_def)
+                        initial_preview_install_visible = initial_preview_spec is not None and not initial_preview_capability["tiny_vae_available"]
+                        initial_preview_message = initial_preview_capability.get("unavailable_reason") or ("Tiny VAE decoder is not installed for this validated model." if initial_preview_install_visible else "")
+                        preview_install_btn = gr.Button("Install Tiny VAE Preview Decoder", visible=initial_preview_install_visible, size="sm")
+                        preview_install_status = gr.Markdown(value=initial_preview_message, visible=bool(initial_preview_message))
                         preview = gr.HTML(label="Preview", show_label= False)
                         preview_trigger = gr.Text(visible= False)
                     gen_info = gr.HTML(visible=False, min_height=1) 
@@ -12548,6 +12703,18 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             audio_file_selected.change(fn=select_media, inputs=[state, current_gallery_tab, output, last_choice, audio_files_paths, audio_file_selected, gr.State("audio"), PP_spatial_upsampling], outputs=[last_choice, video_info, video_buttons_row, image_buttons_row, audio_buttons_row, deleted_video_buttons_row, deleted_audio_buttons_row, audio_postprocessing_tab, video_postprocessing_tab, audio_remuxing_tab, PP_temporal_upsampling, PP_temporal_upsampling_method, PP_temporal_upsampling_multiplier, PP_spatial_upsampling, PP_spatial_upsampling_method, PP_spatial_upsampling_ratio], show_progress="hidden")
 
             preview_trigger.change(refresh_preview, inputs= [state], outputs= [preview], show_progress="hidden")
+            model_choice.change(
+                refresh_preview_install_controls,
+                inputs=[model_choice],
+                outputs=[preview_install_btn, preview_install_status],
+                show_progress="hidden",
+            )
+            preview_install_btn.click(
+                install_tiny_vae_preview,
+                inputs=[state],
+                outputs=[preview_install_btn, preview_install_status],
+                show_progress="hidden",
+            )
             download_lora_btn.click(fn=download_lora, inputs = [state, lora_url], outputs = [lora_url]).then(fn=refresh_lora_list, inputs=[state, lset_name,loras_choices], outputs=[lset_name, loras_choices])
             def refresh_status_async(state, progress=gr.Progress()):
                 gen = get_gen_info(state)

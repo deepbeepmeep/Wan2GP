@@ -40,7 +40,10 @@ for event in job.events.iter(timeout=0.2):
         print(progress.phase, progress.progress, progress.current_step, progress.total_steps)
     elif event.kind == "preview":
         preview = event.data
-        if preview.image is not None:
+        if preview.media is not None:
+            from pathlib import Path
+            Path("preview.mp4" if preview.media.mime_type == "video/mp4" else "preview.webp").write_bytes(preview.media.data)
+        elif preview.image is not None:
             preview.image.save("preview.png")
     elif event.kind == "stream":
         line = event.data
@@ -834,15 +837,40 @@ PreviewUpdate(
     progress=54,
     current_step=4,
     total_steps=8,
+    media=None,
 )
 ```
 
 Fields:
 
 - `image: PIL.Image.Image | None`
-  - RGB preview image generated from WanGP's latent preview payload.
+  - First-frame RGB image. Existing consumers can continue to use this field.
+- `media: PreviewMedia | None`
+  - Structured preview media. Tiny VAE prefers MP4/H.264 and falls back to animated WebP; `image` remains its first frame.
 - `phase`, `status`, `progress`, `current_step`, `total_steps`
   - Same interpretation as `ProgressUpdate`.
+
+### `PreviewMedia`
+
+`PreviewMedia` contains `media_kind`, `mime_type`, immutable `data` bytes, `width`, `height`, `frame_count`, `fps`, `duration_ms`, `generation_id`, `context_id`, `sequence`, `step`, `total_steps`, `decoder_id`, `decode_ms`, `encode_ms`, `dropped_count`, optional `warning`, and optional `pass_no`/`window_no` labels. `generation_id` and `context_id` let clients discard stale task/window results; `sequence` is monotonically increasing within a generation. Preview events are coalesced so a slow client receives the newest pending preview rather than an unbounded backlog. Cancellation invalidates pending previews without waiting for MP4/WebP encoding.
+
+See [Tiny VAE live preview troubleshooting and support](preview/README.md) for installation, supported profiles, runtime diagnostics, and limitations.
+
+For a JSON/WebSocket bridge, `media.to_dict()` base64-encodes `data`; `media.to_dict(encode_data=False)` retains raw bytes for non-JSON callers. The in-process API does not encode the bytes.
+
+Programmatic clients can request the feature with a reserved `_preview` envelope. It is removed before model validation and never reaches model inference settings:
+
+```python
+settings["_preview"] = {
+    "mode": "tae",          # off, rgb, or tae
+    "device": "auto",       # auto, cuda, or cpu
+    "update_rate": "adaptive",
+    "max_edge": 512,
+    "preview_fps": 16,     # exactly 2, 4, 8, or 16
+    "webp_quality": 72,
+    "target_updates": 7,
+}
+```
 
 ### `StreamMessage`
 
@@ -957,7 +985,7 @@ class VerboseCallbacks:
         print("progress", progress.progress, progress.current_step, progress.total_steps)
 
     def on_preview(self, preview: PreviewUpdate) -> None:
-        print("preview", preview.phase, preview.image.size if preview.image is not None else None)
+        print("preview", preview.phase, preview.media.mime_type if preview.media is not None else "rgb")
 
     def on_stream(self, line: StreamMessage) -> None:
         print(line.stream, line.text)

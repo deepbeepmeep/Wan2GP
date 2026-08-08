@@ -197,7 +197,7 @@ class family_handler:
             "skip_steps_multiplier_label": "First Block Cache Threshold",
             "first_block_cache_thresholds": FIRST_BLOCK_CACHE_THRESHOLDS,
             "sol_attention": True,
-            "sample_solvers": [("Euler", "euler")],
+            "sample_solvers": [("Euler", "euler"), ("RES Multistep", "res_multistep")],
             "no_negative_prompt": True,
             "returns_audio": True,
             "multimedia_generation": True,

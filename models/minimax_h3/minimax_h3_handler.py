@@ -5,6 +5,7 @@ import os
 import torch
 
 from shared.utils.hf import build_hf_url
+from shared.utils.frame_scheduler import normalize_overlap
 
 from .minimax_h3_main import AUDIO_VAE_FILE, TEXT_ENCODER_FOLDER, VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE
 from .prompt_enhancer import (FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
@@ -64,7 +65,7 @@ Start and end images are placed at those exact points in the video. For general 
 
 ### Longer videos
 
-Sliding windows can continue a video beyond one generation. Use an overlap of 18 frames, or another valid value such as 35 or 52 (`17k + 1`). WanGP automatically reuses the overlapping video and audio to make the join smoother.
+Sliding windows can continue a video beyond one generation. Choose any overlap amount and WanGP will round it to the nearest H3-compatible value (1, 18, 35, 52...). It automatically reuses the overlapping video and audio to make the join smoother.
 
 H3 is designed for 24 FPS, although WanGP can generate at another frame rate. MiniMax documents an official duration of 4–15 seconds per generation window; longer videos are possible through sliding windows.
 """
@@ -102,7 +103,7 @@ Background removal is disabled by default. After selecting reference images, use
 
 Ref2VA also supports optional start and end images. These are shown to the prompt before the general reference images: with a start image and one reference image, the start image is `<Picture 1>` and the reference image is `<Picture 2>`.
 
-For longer videos, use a sliding-window overlap of 18 frames, or another valid value such as 35 or 52 (`17k + 1`). WanGP automatically carries the overlapping video and audio into the next window while keeping the selected references available.
+For longer videos, choose any sliding-window overlap amount and WanGP will round it to the nearest H3-compatible value (1, 18, 35, 52...). It automatically carries the overlapping video and audio into the next window while keeping the selected references available.
 
 H3 is designed for 24 FPS, although WanGP can generate at another frame rate. MiniMax documents an official duration of 4–15 seconds per generation window; longer videos are possible through sliding windows.
 
@@ -344,9 +345,10 @@ class family_handler:
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
-        overlap = int(inputs["sliding_window_overlap"] or 0)
-        if overlap and (overlap - 1) % 17:
-            return f"MiniMax H3 continuation overlap must contain 17k + 1 frames (found {overlap})"
+        overlap, error = normalize_overlap(int(inputs["sliding_window_overlap"] or 0), 17, 1)
+        if error:
+            return error
+        inputs["sliding_window_overlap"] = overlap
         if base_model_type not in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE):
             video_prompt_type = inputs["video_prompt_type"]
             audio_prompt_type = inputs["audio_prompt_type"]
@@ -487,6 +489,9 @@ class family_handler:
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
+        if settings_version < 2.72 and "sliding_window_overlap" in ui_defaults:
+            overlap = max(1, int(ui_defaults["sliding_window_overlap"] or 18))
+            ui_defaults["sliding_window_overlap"] = normalize_overlap(overlap, 17, 1)[0]
         if settings_version < 2.71:
             ui_defaults["denoising_strength"] = 1.0
         if settings_version < 2.70:

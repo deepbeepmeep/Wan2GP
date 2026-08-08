@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from mmgp import offload
 from shared.utils.text_encoder_cache import TextEncoderCache
-from shared.utils.frame_scheduler import floor_frame_count, normalize_frame_count
+from shared.utils.frame_scheduler import floor_frame_count, normalize_frame_count, normalize_overlap
 from .first_block_cache import MiniMaxH3FirstBlockCache
 from .interrupt import GenerationInterrupted
 from .spectrum import MiniMaxH3Spectrum
@@ -334,11 +334,13 @@ class MiniMaxH3Pipeline:
             raise ValueError("MiniMax H3 requires at least one inference step")
         frame_num = normalize_frame_count(int(frame_num), 5, 17, 5)
         audio_from_control_video = not self.reference_mode and "2" in (audio_prompt_type or "")
-        prefix_frames_count = int(prefix_frames_count or 0)
+        prefix_frames_count, overlap_error = normalize_overlap(int(prefix_frames_count or 0), 17, 1)
+        if overlap_error:
+            raise ValueError(overlap_error)
         continuation = _as_video(input_video) if input_video is not None and prefix_frames_count > 0 else None
         continuation_count = min(prefix_frames_count, continuation.shape[1]) if continuation is not None and image_start is None else 0
-        if continuation_count and (continuation_count - 1) % 17:
-            raise ValueError(f"MiniMax H3 continuation overlap must contain 17k + 1 frames, got {continuation_count}")
+        if continuation_count and continuation_count < prefix_frames_count:
+            continuation_count = floor_frame_count(continuation_count, 1, 17, 1)
         frozen_control_video = (_build_frozen_control_video(input_frames, continuation, frame_num, continuation_count)
                                 if audio_from_control_video else None)
         if frozen_control_video is not None:

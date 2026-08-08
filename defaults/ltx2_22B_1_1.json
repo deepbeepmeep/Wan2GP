@@ -2,6 +2,12 @@
     "model": {
         "name": "LTX-2 2.3 Dev 1.1 22B",
         "architecture": "ltx2_22B",
+        "capabilities": {
+            "live_preview": {
+                "modes": ["off", "rgb", "tae"],
+                "decoders": ["taeltx2_3"]
+            }
+        },
         "description": "LTX-2.3 dev checkpoint (22B) using the distilled 1.1 stage-2 LoRA. Generates video up to 20s with an audio soundtrack, supports start/end keyframes and sliding-window continuation, and can use an Audio Prompt or a Voice Audio Sample for Id LoRA voice cloning (lora automatically loaded).",
         "URLs": "ltx2_22B",
         "ltx2_lora_distilled": "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-distilled-lora-384-1.1.safetensors",

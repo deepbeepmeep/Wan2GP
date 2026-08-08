@@ -418,7 +418,11 @@ class SingleStreamBlock(nn.Module):
         NAG: dict | None = None,
         neg_context: Tensor | None = None,
         neg_mask: Tensor | None = None,
+        ref_vec: Tensor | None = None,
+        ref_split: int | None = None,
     ) -> Tensor:
+        if ref_vec is not None:
+            return self.forward_ref_span(x, vec, ref_vec, ref_split, freqs, mask, txt_len=txt_len, NAG=NAG, neg_context=neg_context, neg_mask=neg_mask)
         prescale, preshift, pregate, postscale, postshift, postgate = self.mod(vec)
         x_list = [self.prenorm(x)]
         modulate_inplace(x_list, prescale, preshift)
@@ -434,6 +438,52 @@ class SingleStreamBlock(nn.Module):
         modulate_inplace(x_list, postscale, postshift)
         mlp_out = self.mlp(x_list)
         mlp_out.mul_(postgate)
+        x.add_(mlp_out)
+        del mlp_out
+        return x
+
+    def forward_ref_span(
+        self,
+        x: Tensor,
+        vec: Tensor,
+        ref_vec: Tensor,
+        split: int,
+        freqs: Tensor,
+        mask: Tensor | None = None,
+        txt_len: int | None = None,
+        NAG: dict | None = None,
+        neg_context: Tensor | None = None,
+        neg_mask: Tensor | None = None,
+    ) -> Tensor:
+        # Ostris edit conditioning: tokens [:split] (text + noisy target) modulate with the
+        # real-t vec, tokens [split:] (clean reference tokens, plus stream padding) with the
+        # t=0 ref_vec — attention still runs over the whole sequence.
+        if split is None:
+            raise ValueError("Krea 2 reference-span block forward requires an explicit split index.")
+        prescale, preshift, pregate, postscale, postshift, postgate = self.mod(vec)
+        ref_prescale, ref_preshift, ref_pregate, ref_postscale, ref_postshift, ref_postgate = self.mod(ref_vec)
+        x_norm = self.prenorm(x)
+        x_norm[:, :split].mul_(prescale.add_(1)).add_(preshift)
+        x_norm[:, split:].mul_(ref_prescale.add_(1)).add_(ref_preshift)
+        if NAG is not None:
+            neg_context = self.prenorm(neg_context)
+            neg_context.mul_(prescale).add_(preshift)
+        x_list = [x_norm]
+        x_norm = None
+        attn_out = self.attn(x_list, freqs, mask, txt_len=txt_len, NAG=NAG, neg_context=neg_context, neg_mask=neg_mask)
+        neg_context = neg_mask = None
+        attn_out[:, :split].mul_(pregate)
+        attn_out[:, split:].mul_(ref_pregate)
+        x.add_(attn_out)
+        del attn_out
+        x_norm = self.postnorm(x)
+        x_norm[:, :split].mul_(postscale.add_(1)).add_(postshift)
+        x_norm[:, split:].mul_(ref_postscale.add_(1)).add_(ref_postshift)
+        x_list = [x_norm]
+        x_norm = None
+        mlp_out = self.mlp(x_list)
+        mlp_out[:, :split].mul_(postgate)
+        mlp_out[:, split:].mul_(ref_postgate)
         x.add_(mlp_out)
         del mlp_out
         return x
@@ -568,30 +618,47 @@ class SingleStreamDiT(nn.Module):
         neg_context: Tensor | None = None,
         neg_mask: Tensor | None = None,
         target_len: int | None = None,
+        ref_len: int = 0,
+        ref_tvec: Tensor | None = None,
     ) -> Tensor:
+        if ref_len > 0 and ref_tvec is None:
+            raise ValueError("Krea 2 reference-span forward requires a t=0 ref_tvec.")
         img = self.first(img)
         combined, txtlen, imglen, freqs, mask = self._build_stream(img, context, pos, mask)
         del img, context, pos
+        ref_split = txtlen + imglen - ref_len if ref_len > 0 else None
         for block in self.blocks:
-            combined = block(combined, tvec, freqs, mask, txt_len=txtlen, NAG=NAG, neg_context=neg_context, neg_mask=neg_mask)
+            combined = block(combined, tvec, freqs, mask, txt_len=txtlen, NAG=NAG, neg_context=neg_context, neg_mask=neg_mask, ref_vec=ref_tvec if ref_len > 0 else None, ref_split=ref_split)
             if getattr(self, "_interrupt", False):
                 return None
             self.txtfusion._interrupt = getattr(self, "_interrupt", False)
+        if ref_len > 0:
+            # References ride at the tail of the sequence: the denoised target is the front of the image span.
+            target_len = imglen - ref_len if target_len is None else target_len
+            return self.last([combined[:, txtlen : txtlen + target_len]], t)
         target_len = imglen if target_len is None else target_len
         return self.last([combined[:, txtlen + imglen - target_len : txtlen + imglen]], t)
 
-    def forward_cfg(self, img: Tensor, context: Tensor, uncond_context: Tensor, t: Tensor, tvec: Tensor, pos: Tensor, uncond_pos: Tensor, mask: Tensor, uncond_mask: Tensor, target_len: int | None = None) -> tuple[Tensor | None, Tensor | None]:
+    def forward_cfg(self, img: Tensor, context: Tensor, uncond_context: Tensor, t: Tensor, tvec: Tensor, pos: Tensor, uncond_pos: Tensor, mask: Tensor, uncond_mask: Tensor, target_len: int | None = None, ref_len: int = 0, ref_tvec: Tensor | None = None) -> tuple[Tensor | None, Tensor | None]:
+        if ref_len > 0 and ref_tvec is None:
+            raise ValueError("Krea 2 reference-span forward requires a t=0 ref_tvec.")
         img = self.first(img)
         share_freqs = pos.shape == uncond_pos.shape
         combined, txtlen, imglen, freqs, mask = self._build_stream(img, context, pos, mask)
         uncond_combined, uncond_txtlen, uncond_imglen, uncond_freqs, uncond_mask = self._build_stream(img, uncond_context, uncond_pos, uncond_mask, freqs=freqs if share_freqs else None)
         del img, context, uncond_context, pos, uncond_pos
+        block_ref_vec = ref_tvec if ref_len > 0 else None
+        ref_split = txtlen + imglen - ref_len if ref_len > 0 else None
+        uncond_ref_split = uncond_txtlen + uncond_imglen - ref_len if ref_len > 0 else None
         for block in self.blocks:
-            combined = block(combined, tvec, freqs, mask)
+            combined = block(combined, tvec, freqs, mask, ref_vec=block_ref_vec, ref_split=ref_split)
             if getattr(self, "_interrupt", False):
                 return None, None
-            uncond_combined = block(uncond_combined, tvec, uncond_freqs, uncond_mask)
+            uncond_combined = block(uncond_combined, tvec, uncond_freqs, uncond_mask, ref_vec=block_ref_vec, ref_split=uncond_ref_split)
             if getattr(self, "_interrupt", False):
                 return None, None
+        if ref_len > 0:
+            target_len = imglen - ref_len if target_len is None else target_len
+            return self.last([combined[:, txtlen : txtlen + target_len]], t), self.last([uncond_combined[:, uncond_txtlen : uncond_txtlen + target_len]], t)
         target_len = imglen if target_len is None else target_len
         return self.last([combined[:, txtlen + imglen - target_len : txtlen + imglen]], t), self.last([uncond_combined[:, uncond_txtlen + uncond_imglen - target_len : uncond_txtlen + uncond_imglen]], t)

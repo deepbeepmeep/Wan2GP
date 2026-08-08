@@ -1,0 +1,16 @@
+{
+    "model": {
+        "name": "Krea 2 Turbo Ostris Style Reference",
+        "architecture": "krea2_turbo_ostris_edit",
+        "description": "Krea 2 Turbo with Ostris's Style Reference LoRA: add one or more style Reference Images and the prompt is rendered in their style (Ostris edit conditioning: 'Picture N' vision markers + clean reference tokens appended at t=0).",
+        "URLs": "krea2_turbo",
+        "loras": ["https://huggingface.co/ostris/krea2_turbo_style_reference/resolve/main/krea2_style_reference.safetensors"],
+        "loras_multipliers": [1]
+    },
+    "prompt": "a woman walking her dog on a city street",
+    "negative_prompt": "",
+    "video_prompt_type": "I",
+    "batch_size": 1,
+    "num_inference_steps": 8,
+    "guidance_scale": 0
+}

@@ -32,7 +32,7 @@ def load_autoencoder(config_path: str, ckpt_path: str, device: str = "cpu"):
     if state_dict:
         copy_state_dict(autoencoder, state_dict)
     else:
-        offload.load_model_data(autoencoder, ckpt_path, writable_tensors=False)
+        offload.load_model_data(autoencoder, ckpt_path, writable_tensors=False, default_dtype=None)
     return autoencoder
 
 

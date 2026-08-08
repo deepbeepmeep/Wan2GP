@@ -42,6 +42,7 @@ FLASHVSR_STILL_IMAGE_SHIFT_CORRECTION_INPUT_SHIFT = None  # None = half-period o
 FLASHVSR_STILL_IMAGE_SHIFT_CORRECTION_PERIOD = 16
 FLASHVSR_STILL_IMAGE_RETURN_WARMED_FRAME = True
 FLASHVSR_STILL_IMAGE_SHIFT_BLEND = 0.5
+FLASHVSR_SHIFT_BLEND_WORKING_MEMORY_MB = 512
 FLASHVSR_STILL_IMAGE_DEBUG_VIDEO_PATH = "flashvsr_still_image_debug.mp4"
 FLASHVSR_STILL_IMAGE_DEBUG_VIDEO_FPS = 4
 
@@ -156,12 +157,23 @@ def _shift_spatial_replicate(tensor: torch.Tensor, shift_y: int, shift_x: int) -
     return F.pad(crop, (max(0, shift_x), max(0, -shift_x), max(0, shift_y), max(0, -shift_y)), mode="replicate")
 
 
-def _apply_still_image_shift_correction(base: torch.Tensor, shifted: torch.Tensor, scale: float) -> torch.Tensor:
-    base_float = base.to(dtype=torch.float32, copy=True)
-    corrected = base_float.lerp_(shifted.to(dtype=torch.float32), float(FLASHVSR_STILL_IMAGE_SHIFT_BLEND))
-    if base.dtype == torch.uint8:
-        return corrected.round_().clamp_(0, 255).to(torch.uint8)
-    return corrected.clamp_(-1.0, 1.0).to(dtype=base.dtype)
+def _apply_still_image_shift_correction(base: torch.Tensor, shifted: torch.Tensor, shift_y: int, shift_x: int) -> torch.Tensor:
+    working_bytes_per_frame = base[:, :1].numel() * (shifted.element_size() + 2 * torch.finfo(torch.float32).bits // 8)
+    chunk_frames = max(1, min(base.shape[1], FLASHVSR_SHIFT_BLEND_WORKING_MEMORY_MB * 1024**2 // working_bytes_per_frame))
+    for start in range(0, base.shape[1], chunk_frames):
+        end = min(start + chunk_frames, base.shape[1])
+        base_chunk = base[:, start:end]
+        shifted_chunk = _shift_spatial_replicate(shifted[:, start:end], shift_y, shift_x)
+        base_float = base_chunk.to(dtype=torch.float32, copy=True)
+        shifted_float = shifted_chunk.to(dtype=torch.float32)
+        base_float.lerp_(shifted_float, float(FLASHVSR_STILL_IMAGE_SHIFT_BLEND))
+        if base.dtype == torch.uint8:
+            base_float.round_().clamp_(0, 255)
+        else:
+            base_float.clamp_(-1.0, 1.0)
+        base_chunk.copy_(base_float)
+        del base_chunk, shifted_chunk, base_float, shifted_float
+    return base
 
 
 def _shift_continue_cache(continue_cache: Any, shift_y: int, shift_x: int) -> Any:
@@ -842,6 +854,7 @@ def load_models(paths: FlashVSRPaths, variant: str = FLASHVSR_VARIANT_TINY_LONG,
     _RUNTIME.load(paths, variant, profile=profile, init_pipe=init_pipe)
 
 
+@torch.inference_mode()
 def upscale_video(
     sample: torch.Tensor,
     scale: float,
@@ -873,7 +886,7 @@ def upscale_video(
                 shifted_sample = _shift_spatial_replicate(sample, shift_y, shift_x)
                 shifted_continue_cache = _two_pass_shifted_continue_cache(continue_cache, out_shift_y, out_shift_x)
                 shifted, shifted_cache = _RUNTIME.upscale(shifted_sample, scale, seed=seed, continue_cache=shifted_continue_cache, return_continue_cache=return_continue_cache, vae_tile_size=vae_tile_size, topk_ratio=topk_ratio, still_image=still_image, abort_callback=abort_callback, progress_callback=progress_callback)
-                result = (None, None) if shifted is None else (_apply_still_image_shift_correction(base, _shift_spatial_replicate(shifted, -out_shift_y, -out_shift_x), scale), _make_two_pass_continue_cache(base_cache, shifted_cache, shift_y, shift_x, out_shift_y, out_shift_x))
+                result = (None, None) if shifted is None else (_apply_still_image_shift_correction(base, shifted, -out_shift_y, -out_shift_x), _make_two_pass_continue_cache(base_cache, shifted_cache, shift_y, shift_x, out_shift_y, out_shift_x))
         finally:
             base = base_cache = shifted_sample = shifted_continue_cache = shifted = shifted_cache = None
     else:

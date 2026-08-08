@@ -141,7 +141,7 @@ def _load_text_encoder(filename: str, config_path: str, dtype: torch.dtype) -> I
 def _load_autoencoder(filename: str, dtype: torch.dtype) -> AutoencoderKLFlux2:
     with init_empty_weights(include_buffers=True):
         autoencoder = AutoencoderKLFlux2(AutoEncoderParamsFlux2())
-    offload.load_model_data(autoencoder, filename, writable_tensors=False, default_dtype=dtype)
+    offload.load_model_data(autoencoder, filename, writable_tensors=False, default_dtype=None)
     autoencoder.eval().requires_grad_(False)
     return autoencoder
 

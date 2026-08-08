@@ -10,7 +10,7 @@ from shared.deepy.config import DEEPY_ENABLED_KEY
 
 LEGACY_EXTENSIONS_DEFAULTS_MIGRATED_KEY = "_extensions_defaults_migrated"
 EXTENSIONS_DEFAULTS_VERSION_KEY = "extensions_defaults_version"
-EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.17")
+EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.19")
 EXTENSIONS_DEFAULTS_TARGET_VERSION_TEXT = str(EXTENSIONS_DEFAULTS_TARGET_VERSION)
 INSTALLED_REMOTE_PLUGINS_KEY = "installed_remote_plugins"
 
@@ -99,6 +99,42 @@ def _set_missing_persistence(config, key):
         config[key] = 1
 
 
+def _migrate_shared_processor_persistence(server_config) -> bool:
+    from postprocessing import audio_processors as audio_processor_api
+    from postprocessing import spatial_upsamplers as upsampler_api
+
+    legacy_keys = ("flashvsr_persistence", "pid_persistence", "coz_persistence", "mmaudio_persistence", "seedvc_persistence")
+    before = repr((server_config.get(upsampler_api.UPSAMPLER_CONFIG_KEY), server_config.get(audio_processor_api.AUDIO_PROCESSOR_CONFIG_KEY), {key: server_config.get(key) for key in legacy_keys if key in server_config}))
+    spatial_sections = server_config.get(upsampler_api.UPSAMPLER_CONFIG_KEY)
+    if not isinstance(spatial_sections, dict):
+        spatial_sections = {}
+        server_config[upsampler_api.UPSAMPLER_CONFIG_KEY] = spatial_sections
+    flashvsr_section = spatial_sections.get("flashvsr", {})
+    flashvsr_persistence = flashvsr_section.get("persistence", server_config.get("flashvsr_persistence", upsampler_api.PERSIST_UNLOAD)) if isinstance(flashvsr_section, dict) else server_config.get("flashvsr_persistence", upsampler_api.PERSIST_UNLOAD)
+    spatial_sections[upsampler_api.PERSISTENCE_CONFIG_KEY] = upsampler_api.normalize_persistence(spatial_sections.get(upsampler_api.PERSISTENCE_CONFIG_KEY, flashvsr_persistence))
+    for section in spatial_sections.values():
+        if isinstance(section, dict):
+            section.pop("persistence", None)
+    for key in ("flashvsr_persistence", "pid_persistence", "coz_persistence"):
+        server_config.pop(key, None)
+
+    audio_sections = server_config.get(audio_processor_api.AUDIO_PROCESSOR_CONFIG_KEY)
+    if not isinstance(audio_sections, dict):
+        audio_sections = {}
+        server_config[audio_processor_api.AUDIO_PROCESSOR_CONFIG_KEY] = audio_sections
+    mmaudio_section = audio_sections.get("mmaudio", {})
+    legacy_mmaudio_persistence = server_config.get("mmaudio_persistence", 2 if _to_int(server_config.get("mmaudio_enabled", 0), 0) == 2 else audio_processor_api.PERSIST_UNLOAD)
+    mmaudio_persistence = mmaudio_section.get("persistence", legacy_mmaudio_persistence) if isinstance(mmaudio_section, dict) else legacy_mmaudio_persistence
+    audio_sections[audio_processor_api.PERSISTENCE_CONFIG_KEY] = audio_processor_api.normalize_persistence(audio_sections.get(audio_processor_api.PERSISTENCE_CONFIG_KEY, mmaudio_persistence))
+    for section in audio_sections.values():
+        if isinstance(section, dict):
+            section.pop("persistence", None)
+    for key in ("mmaudio_persistence", "seedvc_persistence"):
+        server_config.pop(key, None)
+    after = repr((server_config.get(upsampler_api.UPSAMPLER_CONFIG_KEY), server_config.get(audio_processor_api.AUDIO_PROCESSOR_CONFIG_KEY), {key: server_config.get(key) for key in legacy_keys if key in server_config}))
+    return before != after
+
+
 def _migrate_audio_processors_config(server_config, version: Decimal) -> bool:
     from postprocessing import audio_processors as audio_processor_api
 
@@ -117,15 +153,12 @@ def _migrate_audio_processors_config(server_config, version: Decimal) -> bool:
             mmaudio_mode = 0 if _is_off(server_config.get("mmaudio_enabled", 0)) else MMAUDIO_DEFAULT_MODE
         if version < Decimal("1.1") and _is_off(mmaudio_mode):
             mmaudio_mode = MMAUDIO_DEFAULT_MODE
-        mmaudio_persistence = server_config.get("mmaudio_persistence", None)
-        if mmaudio_persistence is None:
-            mmaudio_persistence = 2 if _to_int(server_config.get("mmaudio_enabled", 0), 0) == 2 else 1
-        sections["mmaudio"] = MMAudioProcessor.normalize_config_section({"mode": mmaudio_mode, "persistence": mmaudio_persistence})
+        sections["mmaudio"] = MMAudioProcessor.normalize_config_section({"mode": mmaudio_mode})
 
         seedvc_mode = server_config.get("seedvc_mode", SEEDVC_DEFAULT_MODE if version < Decimal("1.11") else 0)
         if version < Decimal("1.11") and _is_off(seedvc_mode):
             seedvc_mode = SEEDVC_DEFAULT_MODE
-        sections["seedvc"] = SeedVCProcessor.normalize_config_section({"mode": seedvc_mode, "persistence": server_config.get("seedvc_persistence", 1)})
+        sections["seedvc"] = SeedVCProcessor.normalize_config_section({"mode": seedvc_mode})
         for key in legacy_keys:
             if key in server_config:
                 del server_config[key]
@@ -203,10 +236,18 @@ def migrate_extension_defaults(server_config, server_config_filename="") -> bool
             changed = True
         _set_missing_persistence(server_config, "seedvc_persistence")
 
+    if version < Decimal("1.18"):
+        changed = _migrate_shared_processor_persistence(server_config) or changed
+
     if version < Decimal("1.13"):
         from postprocessing import spatial_upsamplers as upsampler_api
 
         changed = upsampler_api.migrate_upsampler_config(server_config, prefer_legacy=True, apply_pre_1_1_defaults=version < Decimal("1.1")) or changed
+
+    if version < Decimal("1.19"):
+        from postprocessing import spatial_upsamplers as upsampler_api
+
+        changed = upsampler_api.migrate_upsampler_config(server_config) or changed
 
     changed = _migrate_audio_processors_config(server_config, version) or changed
     changed = _migrate_temporal_upsamplers_config(server_config) or changed

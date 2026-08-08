@@ -88,6 +88,7 @@ class InitialFormPatch:
     overlap_step: int
     overlap_max: int
     overlap_visible: bool
+    chunk_size_visible: bool
     output_resolution_visible: bool
     prompt_visible: bool
     process_strength_visible: bool
@@ -178,6 +179,7 @@ class ProcessFormController:
             overlap_step=default_rules.frame_step,
             overlap_max=frames.get_overlap_slider_max(default_model_type, self.get_model_def) if overlap_visible else 1,
             overlap_visible=overlap_visible,
+            chunk_size_visible=not self.library.hides_chunk_size(default_process_name, main_state, initial_user_refs),
             output_resolution_visible=not self.library.hides_output_resolution(default_process_name, main_state, initial_user_refs),
             prompt_visible=not self.library.hides_prompt(default_process_name, main_state, initial_user_refs),
             process_strength_visible=self.library.is_process_strength_visible(default_process_name, main_state, initial_user_refs),

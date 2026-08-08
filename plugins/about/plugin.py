@@ -25,6 +25,8 @@ class AboutPlugin(WAN2GPPlugin):
         gr.Markdown("- <B>Alibaba Qwen Team</B> for their state of the art Qwen Image generators (https://github.com/QwenLM/Qwen-Image)")
         gr.Markdown("- <B>Krea AI</B> for the Krea 2 RAW and Turbo image generators (https://github.com/krea-ai/krea-2, https://huggingface.co/krea/Krea-2-Raw, https://huggingface.co/krea/Krea-2-Turbo, https://www.krea.ai/blog/krea-2-technical-report)")
         gr.Markdown("- <B>Lightricks</B> for their super fast LTX Video models and LTX-2 audio-video model (https://github.com/Lightricks/LTX-Video, https://github.com/Lightricks/LTX-2)")
+        gr.Markdown("- <B>MiniMax AI</B> for the MiniMax H3 native audio-video generation models (https://huggingface.co/MiniMaxAI/MiniMax-H3)")
+        gr.Markdown("- <B>NVIDIA Research Sol-Attn team</B> for Sol-Attn and its reference kernels, and <B>Saganaki22 (drbaph)</B> for the consumer-GPU Triton kernel improvements and MiniMax H3 integration (https://nvlabs.github.io/Sana/Sol-Attn/, https://github.com/Saganaki22/ComfyUI-sol-attn/tree/e2fc225)")
         gr.Markdown("- <B>Echo Team @ Joy Future Academy, JD</B> for JoyAI-Echo (https://github.com/jd-opensource/JoyAI-Echo, https://huggingface.co/jdopensource/JoyAI-Echo)")
         gr.Markdown("- <B>Eyeline Labs</B>, <B>Netflix</B> and collaborators for Vista4D (https://github.com/Eyeline-Labs/Vista4D)")
         gr.Markdown("- <B>Resemble.AI</B> for the incredible ChatterBox (https://github.com/resemble-ai/chatterbox)")
@@ -49,6 +51,7 @@ class AboutPlugin(WAN2GPPlugin):
         gr.Markdown("- <B>Kokoro</B>: text-to-speech (https://github.com/hexgrad/kokoro)")
         gr.Markdown("- <B>SeedVC</B>: voice conversion (https://github.com/Plachtaa/seed-vc)")
         gr.Markdown("- <B>MMAudio</B>: sound generator (https://github.com/hkchengrex/MMAudio). Due to licensing restriction can be used only for Research work.")
+        gr.Markdown("- <B>ByteDance Seed Team and the SeedVR2 authors</B>: one-step image and video restoration (https://github.com/ByteDance-Seed/SeedVR, https://arxiv.org/abs/2506.05301)")
         gr.Markdown("- <B>FlashVSR</B>: high quality video super-resolution (https://github.com/OpenImagingLab/FlashVSR)")
         gr.Markdown("- <B>NVIDIA PiD</B>: diffusion-based image super-resolution (https://github.com/nv-tlabs/PiD)")
 

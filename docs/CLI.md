@@ -105,6 +105,8 @@ python wgp.py --process queue.zip --output-dir ./out --attention sage2
 --profile NUMBER              # Performance profile 1-5 (default: 4)
 --preload NUMBER              # Preload N MB of diffusion model in VRAM
 --fp16                        # Force fp16 instead of bf16 models
+--save-quantized              # Save an INT8 Quanto checkpoint during model loading
+--convrot                     # With --save-quantized, save INT8 ConvRot instead of Quanto INT8
 --gpu DEVICE                  # Run on specific GPU device (e.g., "cuda:1")
 ```
 

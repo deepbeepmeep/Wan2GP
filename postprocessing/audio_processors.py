@@ -3,6 +3,9 @@
 Audio processors are interchangeable handlers for post-generation audio work.
 Each handler declares methods through ``query_audio_processor_def()`` and may
 expose config controls under ``wgp_config["audio_processors"][config_key]``.
+Model persistence is shared through
+``wgp_config["audio_processors"]["persistence"]``. Dispatch retains at most one
+audio processor handler and releases it before another handler runs.
 
 Plugin authors can register processors from ``plugin_info.json`` with:
 
@@ -22,12 +25,19 @@ from dataclasses import dataclass
 import importlib
 from typing import Any, Callable
 
+from shared.utils import offload_registry
+
 
 AUDIO_PROCESSOR_TYPE_SOUNDTRACK = "soundtrack"
 AUDIO_PROCESSOR_TYPE_VOICE_REPLACEMENT = "voice_replacement"
 AUDIO_PROCESSOR_TYPE_AUDIO_EDIT = "audio_edit"
 AUDIO_PROCESSOR_LABEL_CONTEXT_LATE_POSTPROCESSING = "late_postprocessing"
 AUDIO_PROCESSOR_CONFIG_KEY = "audio_processors"
+PERSISTENCE_CONFIG_KEY = "persistence"
+PERSIST_UNLOAD = 1
+PERSIST_RAM = 2
+PERSISTENCE_CHOICES = [("Unload after use", PERSIST_UNLOAD), ("Persistent in RAM", PERSIST_RAM)]
+_SHARED_PERSISTENCE_BINDING_KEY = "__shared_persistence__"
 
 MMAUDIO_METHOD = "mmaudio"
 CUSTOM_SOUNDTRACK_METHOD = "custom"
@@ -52,11 +62,13 @@ audio_processor_handlers = [
 ]
 _audio_processor_handlers: list[Any] = []
 _registered_audio_processor_handler_paths: set[str] = set()
+_active_audio_processor_handler: Any | None = None
+_audio_processor_server_config: dict[str, Any] | None = None
 
 
 @dataclass
 class AudioProcessorConfigBinding:
-    handler: Any
+    handler: Any | None
     config_key: str
     controls: list[tuple[str, Any]]
 
@@ -174,13 +186,14 @@ def _config_key_from_handler_def(handler_def: dict[str, Any], fallback_name: str
     return fallback_name.lower()
 
 
-def default_config_sections(handler_modules: list[str] | None = None) -> dict[str, dict[str, Any]]:
-    sections = {}
+def default_config_sections(handler_modules: list[str] | None = None) -> dict[str, Any]:
+    sections = {PERSISTENCE_CONFIG_KEY: PERSIST_UNLOAD}
     for path in audio_processor_handlers if handler_modules is None else handler_modules:
         handler_cls = _load_processor_class(str(path or "").strip())
         if not hasattr(handler_cls, "default_config"):
             continue
         config = dict(handler_cls.default_config())
+        config.pop(PERSISTENCE_CONFIG_KEY, None)
         if not config:
             continue
         handler_def = handler_cls.query_audio_processor_def()
@@ -189,6 +202,9 @@ def default_config_sections(handler_modules: list[str] | None = None) -> dict[st
 
 
 def register_audio_processors(server_config, files_locator, handler_modules: list[str] | None = None) -> None:
+    global _audio_processor_server_config
+
+    _audio_processor_server_config = server_config
     modules = audio_processor_handlers if handler_modules is None else handler_modules
     for path in modules:
         path = str(path or "").strip()
@@ -212,6 +228,30 @@ def processor_handlers(processor_type: str | None = None, enabled_only: bool = F
 
 def handler_enabled(handler) -> bool:
     return not hasattr(handler, "enabled") or handler.enabled()
+
+
+def _handler_name(handler) -> str:
+    return str(handler.query_audio_processor_def()["name"])
+
+
+def _release_audio_processor_handler(handler) -> None:
+    global _active_audio_processor_handler
+
+    released = offload_registry.release_all([_handler_name(handler)])
+    if not released and hasattr(handler, "release_vram"):
+        handler.release_vram()
+    if _active_audio_processor_handler is handler:
+        _active_audio_processor_handler = None
+
+
+def _activate_audio_processor(handler) -> None:
+    global _active_audio_processor_handler
+
+    if _active_audio_processor_handler is handler:
+        return
+    if _active_audio_processor_handler is not None:
+        _release_audio_processor_handler(_active_audio_processor_handler)
+    _active_audio_processor_handler = handler
 
 
 def find_processor(method) -> Any | None:
@@ -524,12 +564,24 @@ def query_download_defs(enabled_only: bool = True) -> list[dict[str, Any]]:
     return [one for one in defs if one]
 
 
+def _dispatch_processor(handler, operation: str, method, *args, **kwargs):
+    _activate_audio_processor(handler)
+    persistent = persistent_models()
+    try:
+        return getattr(handler, operation)(method, *args, **kwargs)
+    finally:
+        if persistent:
+            offload_registry.unload_vram([_handler_name(handler)])
+        else:
+            _release_audio_processor_handler(handler)
+
+
 def generate_soundtrack(method, **kwargs) -> str:
     method = normalize_method(method)
     handler = find_processor(method)
     if handler is None or not hasattr(handler, "generate_soundtrack"):
         raise RuntimeError(f"No soundtrack audio processor registered for '{method}'")
-    return handler.generate_soundtrack(method, **kwargs)
+    return _dispatch_processor(handler, "generate_soundtrack", method, **kwargs)
 
 
 def replace_voice_tracks(method, audio_tracks: list[str], **kwargs) -> tuple[list[str], list[str]]:
@@ -537,7 +589,7 @@ def replace_voice_tracks(method, audio_tracks: list[str], **kwargs) -> tuple[lis
     handler = find_processor(method)
     if handler is None or not hasattr(handler, "replace_voice_tracks"):
         raise RuntimeError(f"No voice replacement audio processor registered for '{method}'")
-    return handler.replace_voice_tracks(method, audio_tracks, **kwargs)
+    return _dispatch_processor(handler, "replace_voice_tracks", method, audio_tracks, **kwargs)
 
 
 def process_audio_file(method, **kwargs) -> str:
@@ -545,7 +597,7 @@ def process_audio_file(method, **kwargs) -> str:
     handler = find_processor(method)
     if handler is None or not hasattr(handler, "process_audio_file"):
         raise RuntimeError(f"No audio edit processor registered for '{method}'")
-    return handler.process_audio_file(method, **kwargs)
+    return _dispatch_processor(handler, "process_audio_file", method, **kwargs)
 
 
 def config_key_for_handler(handler) -> str:
@@ -569,12 +621,41 @@ def _nested_configs(server_config: dict[str, Any]) -> dict[str, Any]:
     return configs
 
 
+def normalize_persistence(value) -> int:
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        value = PERSIST_UNLOAD
+    return value if value in (PERSIST_UNLOAD, PERSIST_RAM) else PERSIST_UNLOAD
+
+
+def persistence(server_config: dict[str, Any] | None = None) -> int:
+    config = _audio_processor_server_config if server_config is None else server_config
+    if config is None:
+        raise RuntimeError("Audio processors are not registered")
+    return normalize_persistence(_nested_configs(config).get(PERSISTENCE_CONFIG_KEY, PERSIST_UNLOAD))
+
+
+def persistent_models(server_config: dict[str, Any] | None = None) -> bool:
+    return persistence(server_config) == PERSIST_RAM
+
+
+def write_persistence(server_config: dict[str, Any], value) -> int:
+    value = normalize_persistence(value)
+    _nested_configs(server_config)[PERSISTENCE_CONFIG_KEY] = value
+    return value
+
+
 def _default_config(handler) -> dict[str, Any]:
-    return dict(handler.default_config()) if hasattr(handler, "default_config") else {}
+    config = dict(handler.default_config()) if hasattr(handler, "default_config") else {}
+    config.pop(PERSISTENCE_CONFIG_KEY, None)
+    return config
 
 
 def _normalize_config_section(handler, config: dict[str, Any]) -> dict[str, Any]:
-    return dict(handler.normalize_config_section(config)) if hasattr(handler, "normalize_config_section") else dict(config)
+    config = dict(handler.normalize_config_section(config)) if hasattr(handler, "normalize_config_section") else dict(config)
+    config.pop(PERSISTENCE_CONFIG_KEY, None)
+    return config
 
 
 def read_config_section(server_config: dict[str, Any], handler) -> dict[str, Any]:
@@ -594,6 +675,7 @@ def write_config_section(server_config: dict[str, Any], handler, config: dict[st
 
 def migrate_audio_processor_config(server_config: dict[str, Any]) -> bool:
     before = repr(server_config.get(AUDIO_PROCESSOR_CONFIG_KEY, None))
+    write_persistence(server_config, persistence(server_config))
     for handler in _audio_processor_handlers:
         if _default_config(handler):
             write_config_section(server_config, handler, read_config_section(server_config, handler))
@@ -602,7 +684,8 @@ def migrate_audio_processor_config(server_config: dict[str, Any]) -> bool:
 
 
 def create_config_ui(gr, server_config: dict[str, Any], *, lock_config: bool = False) -> list[AudioProcessorConfigBinding]:
-    bindings = []
+    shared_persistence = gr.Dropdown(choices=PERSISTENCE_CHOICES, value=write_persistence(server_config, persistence(server_config)), label="Audio Processor Model Persistence", interactive=not lock_config)
+    bindings = [AudioProcessorConfigBinding(None, _SHARED_PERSISTENCE_BINDING_KEY, [(PERSISTENCE_CONFIG_KEY, shared_persistence)])]
     for handler in _audio_processor_handlers:
         if not hasattr(handler, "create_config_ui"):
             continue
@@ -627,7 +710,7 @@ def collect_config_update(bindings: list[AudioProcessorConfigBinding], values) -
                 raise ValueError("Audio processor config UI values do not match registered controls")
             config[field] = values[index]
             index += 1
-        updates[binding.config_key] = _normalize_config_section(binding.handler, {**_default_config(binding.handler), **config})
+        updates[binding.config_key] = {PERSISTENCE_CONFIG_KEY: normalize_persistence(config[PERSISTENCE_CONFIG_KEY])} if binding.handler is None else _normalize_config_section(binding.handler, {**_default_config(binding.handler), **config})
     if index != len(values):
         raise ValueError("Audio processor config UI values do not match registered controls")
     return updates
@@ -636,6 +719,8 @@ def collect_config_update(bindings: list[AudioProcessorConfigBinding], values) -
 def validate_config_update_messages(bindings: list[AudioProcessorConfigBinding], updates: dict[str, dict[str, Any]]) -> list[str]:
     messages = []
     for binding in bindings:
+        if binding.handler is None:
+            continue
         if binding.config_key in updates and hasattr(binding.handler, "validate_config_section"):
             message = binding.handler.validate_config_section(updates[binding.config_key])
             if isinstance(message, str) and message:
@@ -648,11 +733,17 @@ def validate_config_update_messages(bindings: list[AudioProcessorConfigBinding],
 def apply_config_update(server_config: dict[str, Any], bindings: list[AudioProcessorConfigBinding], updates: dict[str, dict[str, Any]]) -> None:
     for binding in bindings:
         if binding.config_key in updates:
-            write_config_section(server_config, binding.handler, updates[binding.config_key])
+            if binding.handler is None:
+                write_persistence(server_config, updates[binding.config_key][PERSISTENCE_CONFIG_KEY])
+            else:
+                write_config_section(server_config, binding.handler, updates[binding.config_key])
 
 
 def release_changed_config_processors(old_config: dict[str, Any], new_config: dict[str, Any], changed_keys) -> None:
     changed_keys = set(changed_keys)
+    released_handler = _active_audio_processor_handler if persistence(old_config) != persistence(new_config) else None
+    if released_handler is not None:
+        _release_audio_processor_handler(released_handler)
     for handler in _audio_processor_handlers:
         if not hasattr(handler, "release_vram"):
             continue
@@ -662,5 +753,5 @@ def release_changed_config_processors(old_config: dict[str, Any], new_config: di
             should_release = handler.config_requires_release(old_section, new_section, changed_keys)
         else:
             should_release = old_section != new_section
-        if should_release:
-            handler.release_vram()
+        if should_release and handler is not released_handler:
+            _release_audio_processor_handler(handler)

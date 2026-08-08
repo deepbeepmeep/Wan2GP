@@ -734,7 +734,7 @@ def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu
 
     return ref_img.to(device), canvas
 
-def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, image_size, current_video_length = 81, latent_size = 4, any_mask = False, any_guide_padding = False, guide_inpaint_color = 127.5, keep_video_guide_frames = [],  inject_frames = [], outpainting_dims = None, outpainting_ratio = "", device ="cpu", outpainting_quantize_margins = 0):
+def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, image_size, current_video_length = 81, latent_size = 4, any_mask = False, any_guide_padding = False, guide_inpaint_color = 127.5, keep_video_guide_frames = [],  inject_frames = [], outpainting_dims = None, outpainting_ratio = "", device ="cpu", outpainting_quantize_margins = 0, frame_offset = 1):
     src_videos, src_masks = [], []
     inpaint_color_compressed = to_rgb_tensor(guide_inpaint_color, device=device, dtype=torch.float) / 127.5 - 1
     inpaint_color_compressed = inpaint_color_compressed.unsqueeze(1)
@@ -753,7 +753,7 @@ def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, im
                 pad = inpaint_color_compressed.to(src_video.device).expand(3, current_video_length - src_video.shape[1], *src_video.shape[-2:]).clone()
                 src_video = torch.cat([src_video, pad], dim=1)
         elif src_video is not None:
-            new_num_frames = (src_video.shape[1] - 1) // latent_size * latent_size + 1 
+            new_num_frames = src_video.shape[1] if src_video.shape[1] < frame_offset else (src_video.shape[1] - frame_offset) // latent_size * latent_size + frame_offset
             if new_num_frames < src_video.shape[1]:
                 print(f"invalid number of control frames {src_video.shape[1]}, potentially {src_video.shape[1]-new_num_frames} frames will be lost")
             src_video = src_video[:, :new_num_frames]

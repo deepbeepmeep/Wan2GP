@@ -1,12 +1,15 @@
 import json
 import os
+from functools import lru_cache
+
 import torch
 from accelerate import init_empty_weights
 from diffusers import FlowMatchEulerDiscreteScheduler
 from diffusers.utils import logging
 from mmgp import offload
 from shared.utils import files_locator as fl
-from transformers import AutoTokenizer, Qwen3ForCausalLM
+from shared.utils.gguf_mapping import has_standard_gguf_tensor_names, remap_state_dict_triplet
+from transformers import AutoConfig, AutoTokenizer, Qwen3ForCausalLM
 
 from .autoencoder_kl import AutoencoderKL
 from .pipeline_z_image import ZImagePipeline
@@ -14,6 +17,57 @@ from .z_image_transformer2d import ZImageTransformer2DModel
 
 
 logger = logging.get_logger(__name__)
+
+_HF_TOKEN_EMBEDDING_KEY = "model.embed_tokens.weight"
+_HF_LM_HEAD_KEY = "lm_head.weight"
+
+
+def _qwen3_gguf_mapping_needed(state_dict) -> bool:
+    if not state_dict or _HF_TOKEN_EMBEDDING_KEY in state_dict:
+        return False
+    return has_standard_gguf_tensor_names(state_dict)
+
+
+@lru_cache(maxsize=4)
+def _qwen3_gguf_load_info(config_path: str):
+    config_path = os.path.abspath(config_path)
+    config = AutoConfig.from_pretrained(os.path.dirname(config_path), local_files_only=True)
+    with init_empty_weights():
+        model = Qwen3ForCausalLM(config)
+    from transformers.modeling_gguf_pytorch_utils import get_gguf_hf_weights_map
+
+    return get_gguf_hf_weights_map(model), bool(getattr(config, "tie_word_embeddings", False))
+
+
+def _build_qwen3_state_dict_preprocessor(config_path: str):
+    config_path = os.path.abspath(config_path)
+
+    def preprocess_state_dict(state_dict, quantization_map=None, tied_weights_map=None):
+        if not _qwen3_gguf_mapping_needed(state_dict):
+            return state_dict, quantization_map, tied_weights_map
+
+        name_map, tie_word_embeddings = _qwen3_gguf_load_info(config_path)
+        mapped = remap_state_dict_triplet(
+            state_dict,
+            quantization_map,
+            tied_weights_map,
+            name_map,
+            keep_unmapped=False,
+        )
+        mapped_state_dict, mapped_quantization_map, mapped_tied_weights_map = mapped
+        if _HF_TOKEN_EMBEDDING_KEY not in mapped_state_dict:
+            return state_dict, quantization_map, tied_weights_map
+
+        if tie_word_embeddings and _HF_LM_HEAD_KEY not in mapped_state_dict:
+            if mapped_tied_weights_map is None:
+                mapped_tied_weights_map = {}
+            tied_names = mapped_tied_weights_map.setdefault(_HF_TOKEN_EMBEDDING_KEY, [])
+            if _HF_LM_HEAD_KEY not in tied_names:
+                tied_names.append(_HF_LM_HEAD_KEY)
+
+        return mapped_state_dict, mapped_quantization_map, mapped_tied_weights_map
+
+    return preprocess_state_dict
 
 
 def conv_state_dict(sd: dict) -> dict:
@@ -88,7 +142,7 @@ class model_factory:
 
         model_class = ZImageTransformer2DModel
 
-        kwargs_light= { "writable_tensors": False, "preprocess_sd": preprocess_sd, "fused_split_map": _ZIMAGE_FUSED_SPLIT_MAP }
+        kwargs_light= { "writable_tensors": False, "default_dtype": torch.bfloat16, "preprocess_sd": preprocess_sd, "fused_split_map": _ZIMAGE_FUSED_SPLIT_MAP }
         # model_filename contains all files to load (transformer + modules merged by loader)
         import json
         import accelerate
@@ -127,16 +181,24 @@ class model_factory:
         # text_encoder = Qwen3ForCausalLM.from_pretrained(os.path.dirname(text_encoder_filename), trust_remote_code=True)
         # text_encoder.to(torch.bfloat16)
         # offload.save_model(text_encoder, "c:/temp/qwnen3_bf16_.safetensors")
-        
-        text_encoder = offload.fast_load_transformers_model( text_encoder_filename, writable_tensors=True, modelClass=Qwen3ForCausalLM,)
 
-        # Tokenizer
         text_encoder_folder = model_def.get("text_encoder_folder")
         if text_encoder_folder:
-            tokenizer_path = os.path.dirname(fl.locate_file(os.path.join(text_encoder_folder, "tokenizer_config.json")))
+            text_encoder_path = fl.locate_folder(text_encoder_folder)
         else:
-            tokenizer_path = os.path.dirname(text_encoder_filename)
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+            text_encoder_path = os.path.dirname(text_encoder_filename)
+        text_encoder_config = os.path.join(text_encoder_path, "config.json")
+
+        text_encoder = offload.fast_load_transformers_model(
+            text_encoder_filename,
+            writable_tensors=True,
+            modelClass=Qwen3ForCausalLM,
+            defaultConfigPath=text_encoder_config,
+            preprocess_sd=_build_qwen3_state_dict_preprocessor(text_encoder_config),
+        )
+
+        # Tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(text_encoder_path, trust_remote_code=True)
 
         # VAE
         vae_filename = fl.locate_file("ZImageTurbo_VAE_bf16.safetensors")
@@ -147,7 +209,7 @@ class model_factory:
             writable_tensors=True,
             modelClass=AutoencoderKL,
             defaultConfigPath=vae_config_path,
-            default_dtype=VAE_dtype,
+            default_dtype=None,
         )
 
         # Scheduler

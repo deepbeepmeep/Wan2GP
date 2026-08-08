@@ -378,7 +378,7 @@ def create_config_ui(self, api_session):
             gr.update(visible=(is_batch and image_process)),
             gr.update(visible=(not image_process or is_batch)),
             gr.update(visible=not image_process),
-            gr.update(visible=not image_process),
+            gr.update(visible=not library.hides_chunk_size(process_name_value, main_state, refs)),
             gr.update(visible=not image_process),
             gr.update(visible=not image_process),
             gr.update(value=status_ui.render_process_status_html("Idle", "Waiting to start...") if image_process else status_ui.render_chunk_status_html(0, 0, 0, "Idle", "Waiting to start...")),
@@ -535,7 +535,7 @@ def create_config_ui(self, api_session):
             default_process_strength = 1.0 if initial_form.target_ratio_visible else default_state.process_strength
             process_strength = gr.Slider(label="Process Strength (LoRA Multiplier)", minimum=min(0.0, default_process_strength), maximum=max(3.0, default_process_strength), step=0.01, value=default_process_strength, visible=initial_form.process_strength_visible)
         with gr.Row():
-            chunk_size_seconds = gr.Number(label="Chunk Size (seconds)", value=default_state.chunk_size_seconds, precision=2, visible=not initial_image_process)
+            chunk_size_seconds = gr.Number(label="Chunk Size (seconds)", value=default_state.chunk_size_seconds, precision=2, visible=initial_form.chunk_size_visible)
             target_ratio = gr.Dropdown(initial_form.target_ratio_choices if initial_form.target_ratio_visible else ui_constants.RATIO_CHOICES_WITH_EMPTY, value=default_state.target_ratio if initial_form.target_ratio_visible else "", label=initial_form.target_ratio_label, visible=initial_form.target_ratio_visible)
             sliding_window_overlap = gr.Slider(label="Sliding Window Overlap", minimum=0 if not initial_form.overlap_visible else 1, maximum=initial_form.overlap_max, step=initial_form.overlap_step, value=default_state.sliding_window_overlap, visible=initial_form.overlap_visible)
         with gr.Row():

@@ -1,0 +1,21 @@
+{
+    "model": {
+        "name": "Wan2.1 ShotPlan 14B",
+        "architecture": "shotplan_t2v",
+        "description": "Wan2.1 ShotPlan with learnable hard-cut planning tokens controlled by prompt relay ranges.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/shotplan_wan2.1_t2v_14B_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/shotplan_wan2.1_t2v_14B_quanto_bf16_int8.safetensors"
+        ]
+    },
+    "prompt": "A coherent cinematic sequence at a quiet railway station at sunrise, the same woman in a red coat throughout, realistic light and motion.\n[0%:33%] Wide establishing shot as the woman enters the empty station and walks toward the platform.\n[33%:66%] Medium tracking shot as she crosses the platform while a train approaches through the morning mist.\n[66%:] Close-up as she stops beside the platform edge and looks toward the arriving train.",
+    "negative_prompt": "static, blurry, low quality, distorted, discontinuous identity, duplicate character",
+    "multi_prompts_gen_type": "FG",
+    "resolution": "832x480",
+    "video_length": 81,
+    "num_inference_steps": 50,
+    "sample_solver": "unipc",
+    "flow_shift": 5,
+    "guidance_scale": 5,
+    "prompt_enhancer": ""
+}

@@ -23,6 +23,7 @@ from ..scail.model_scail import build_scail_pose_tokens
 from ..scail2 import build_scail2_pose_tokens
 from ..steadydancer.small_archs import FactorConv3d, PoseRefNetNoBNV3
 from ..steadydancer.mobilenetv2_dcd import DYModule
+from ..shotplan import inject_shotplan_tokens
 
 __all__ = ['WanModel']
 
@@ -1072,6 +1073,7 @@ class WanModel(ModelMixin, ConfigMixin):
                  any_kiwi_ref = False,
                  vista4d = False,
                  vista4d_positional_embedding_offset = 31,
+                 shotplan = False,
                  ):
 
         super().__init__()
@@ -1105,6 +1107,7 @@ class WanModel(ModelMixin, ConfigMixin):
         self.vae_scale = vae_scale
         self.any_kiwi_source = any_kiwi_source
         self.any_kiwi_ref = any_kiwi_ref
+        self.shotplan = shotplan
 
         multitalk = multitalk_output_dim > 0
         self.multitalk = multitalk
@@ -1127,6 +1130,8 @@ class WanModel(ModelMixin, ConfigMixin):
         self.time_embedding = nn.Sequential(
             nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
         self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
+        if shotplan:
+            self.hardcut_embedding = nn.Parameter(torch.zeros(1, 1, dim))
 
         # blocks
         if vace_layers == None:
@@ -1312,8 +1317,6 @@ class WanModel(ModelMixin, ConfigMixin):
         if hasattr(self, "face_adapter"): self.adapt_animate_model()
 
     def lock_layers_dtypes(self, hybrid_dtype = None, dtype = torch.float32):
-        from optimum.quanto import QTensor
-
         layer_list = [self.head, self.head.head, self.head.modulation, self.patch_embedding]
         if self.scail or self.scail2:
             layer_list += [self.pose_patch_embedding]
@@ -1352,15 +1355,7 @@ class WanModel(ModelMixin, ConfigMixin):
 
         for current_layer_list, current_dtype in zip([layer_list, layer_list2], [target_dype, target_dype2]):
             for layer in current_layer_list:
-                layer._lock_dtype = dtype
-                if isinstance(layer, nn.Parameter):
-                    if not isinstance(layer.data, QTensor):
-                        layer.data = layer.data.to(current_dtype)
-                elif hasattr(layer, "weight") and layer.weight.dtype != current_dtype:
-                    if not isinstance(layer.weight.data, QTensor):
-                        layer.weight.data = layer.weight.data.to(current_dtype)
-                        if hasattr(layer, "bias"):
-                            layer.bias.data = layer.bias.data.to(current_dtype)
+                layer._lock_dtype = current_dtype
 
         self._lock_dtype = dtype
 
@@ -1526,6 +1521,7 @@ class WanModel(ModelMixin, ConfigMixin):
         kiwi_ref_pad_first = False,
         bernini_sources = None,
         vista = None,
+        shotplan_cut_frames = None,
     ):
         # patch_dtype =  self.patch_embedding.weight.dtype
         modulation_dtype = self.time_projection[1].weight.dtype
@@ -1724,6 +1720,17 @@ class WanModel(ModelMixin, ConfigMixin):
                 x_list[i] = x
         x = None
         vista_condition_tokens = None
+
+        shotplan_keep_mask = None
+        if self.shotplan and shotplan_cut_frames:
+            if offload.shared_state.get("_radial", False):
+                raise RuntimeError("ShotPlan planning tokens are not compatible with radial attention.")
+            base_freqs = freqs
+            for index, hidden_states in enumerate(x_list):
+                x_list[index], shotplan_freqs, keep_mask = inject_shotplan_tokens(hidden_states, base_freqs, self.hardcut_embedding, shotplan_cut_frames, grid_sizes, self.vae_scale)
+                if index == 0:
+                    freqs = shotplan_freqs
+                    shotplan_keep_mask = keep_mask
 
 
 
@@ -1984,6 +1991,8 @@ class WanModel(ModelMixin, ConfigMixin):
                 x = reverse_voxel_chunk_no_padding(x.transpose(1, 2).unsqueeze(-1), x_og_shape, voxel_shape).squeeze(-1)
                 x = x.flatten(2).transpose(1, 2)
 
+            if shotplan_keep_mask is not None:
+                x = x[:, shotplan_keep_mask]
             if bernini_enabled:
                 x = x[:, bernini_output_slices[i]]
             elif real_seq > 0:

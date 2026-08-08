@@ -1128,7 +1128,7 @@ class WanGPSession:
 
     @staticmethod
     def _phase_supports_progress(phase: str | None) -> bool:
-        return str(phase or "") in {"downloading_model", "inference", "inference_stage_1", "inference_stage_2", "inference_stage_3"}
+        return str(phase or "") in {"downloading_model", "encoding_text", "inference", "inference_stage_1", "inference_stage_2", "inference_stage_3", "decoding"}
 
     @staticmethod
     def _estimate_progress(phase: str, current_step: int | None, total_steps: int | None) -> int:

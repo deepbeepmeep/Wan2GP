@@ -51,12 +51,9 @@ def _save_bf16_safetensors(source: str, target: str) -> None:
 class PrismAudioProcessor:
     MODE_OFF = 0
     MODE_PRISMAUDIO = 1
-    PERSIST_UNLOAD = 1
-    PERSIST_RAM = 2
     DEFAULT_STEPS = 24
     DEFAULT_CFG_SCALE = 5.0
     MODE_CHOICES = [("PrismAudio", MODE_PRISMAUDIO)]
-    PERSISTENCE_CHOICES = [("Unload after use", PERSIST_UNLOAD), ("Persistent in RAM", PERSIST_RAM)]
 
     def __init__(self, server_config: dict[str, Any], files_locator):
         self.server_config = server_config
@@ -78,7 +75,7 @@ class PrismAudioProcessor:
 
     @classmethod
     def default_config(cls) -> dict[str, Any]:
-        return {"mode": cls.MODE_PRISMAUDIO, "persistence": cls.PERSIST_UNLOAD, "steps": cls.DEFAULT_STEPS, "cfg_scale": cls.DEFAULT_CFG_SCALE}
+        return {"mode": cls.MODE_PRISMAUDIO, "steps": cls.DEFAULT_STEPS, "cfg_scale": cls.DEFAULT_CFG_SCALE}
 
     @classmethod
     def normalize_config_section(cls, config: dict[str, Any]) -> dict[str, Any]:
@@ -89,10 +86,6 @@ class PrismAudioProcessor:
         except (TypeError, ValueError):
             normalized["mode"] = cls.MODE_PRISMAUDIO
         try:
-            normalized["persistence"] = int(normalized["persistence"])
-        except (TypeError, ValueError):
-            normalized["persistence"] = cls.PERSIST_UNLOAD
-        try:
             normalized["steps"] = int(normalized["steps"])
         except (TypeError, ValueError):
             normalized["steps"] = cls.DEFAULT_STEPS
@@ -102,8 +95,6 @@ class PrismAudioProcessor:
             normalized["cfg_scale"] = cls.DEFAULT_CFG_SCALE
         if normalized["mode"] != cls.MODE_PRISMAUDIO:
             normalized["mode"] = cls.MODE_PRISMAUDIO
-        if normalized["persistence"] not in (cls.PERSIST_UNLOAD, cls.PERSIST_RAM):
-            normalized["persistence"] = cls.PERSIST_UNLOAD
         normalized["steps"] = max(1, min(200, normalized["steps"]))
         normalized["cfg_scale"] = max(0.0, min(25.0, normalized["cfg_scale"]))
         return normalized
@@ -115,7 +106,9 @@ class PrismAudioProcessor:
         return True
 
     def persistent_models(self) -> bool:
-        return int(self.config()["persistence"]) == self.PERSIST_RAM
+        from postprocessing import audio_processors as audio_processor_api
+
+        return audio_processor_api.persistent_models(self.server_config)
 
     def _locate_file(self, filename: str) -> str:
         return self.files_locator.locate_file(os.path.join(PRISMAUDIO_FOLDER, filename))
@@ -295,11 +288,10 @@ class PrismAudioProcessor:
         with gr.Group():
             with gr.Row():
                 mode = gr.Dropdown(choices=self.MODE_CHOICES, value=config["mode"], label="PrismAudio Soundtrack Generation (optional PrismAudio dependencies required)", interactive=not lock_config)
-                persistence = gr.Dropdown(choices=self.PERSISTENCE_CHOICES, value=config["persistence"], label="PrismAudio Model Persistence", interactive=not lock_config)
             with gr.Row():
                 steps = gr.Slider(1, 200, value=config["steps"], step=1, label="PrismAudio Steps", interactive=not lock_config)
                 cfg_scale = gr.Slider(0.0, 25.0, value=config["cfg_scale"], step=0.1, label="PrismAudio CFG Scale", interactive=not lock_config)
-        return [("mode", mode), ("persistence", persistence), ("steps", steps), ("cfg_scale", cfg_scale)]
+        return [("mode", mode), ("steps", steps), ("cfg_scale", cfg_scale)]
 
     def validate_config_section(self, config: dict[str, Any]) -> str:
         if int(config["mode"]) == self.MODE_OFF:

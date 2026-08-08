@@ -60,7 +60,8 @@ class family_handler():
         if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
             extra_model_def["inpaint_support"] = True
             if base_model_type in ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
-                extra_model_def["inpaint_video_prompt_type"]= "VAGI"            
+                extra_model_def["inpaint_video_prompt_type"]= "VAG"            
+                extra_model_def["inpaint_with_image_ref"]= True            
             extra_model_def["image_ref_inpaint"]=  base_model_type in ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]
             extra_model_def["image_ref_choices"] = {
             "choices": [

@@ -71,6 +71,7 @@ _NVFP4_SPLIT_FIELDS = {
     "bias": 0,
     "weight_scale": 0,
     "weight_scale_2": 0,
+    "pre_quant_scale": 0,
     "input_scale": 0,
     "input_global_scale": 0,
     "alpha": 0,
@@ -119,6 +120,7 @@ def split_fused_weights(state_dict, fused_split_map, quantization_map=None, allo
         split_handlers={
             "weight_scale": _split_or_share_nvfp4_scale,
             "weight_scale_2": _split_or_share_nvfp4_scale,
+            "pre_quant_scale": _split_or_share_nvfp4_scale,
             "input_scale": _split_or_share_nvfp4_scale,
             "input_global_scale": _split_or_share_nvfp4_scale,
             "alpha": _split_or_share_nvfp4_scale,
@@ -623,6 +625,7 @@ def _collect_nvfp4_specs(state_dict):
                     "weight": tensor,
                     "weight_scale": state_dict[scale_key],
                     "weight_scale_2": state_dict[weight_scale_2_key],
+                    "pre_quant_scale": state_dict.get(base + ".pre_quant_scale", None),
                     "input_scale": state_dict.get(input_scale_key, None),
                     "bias": state_dict.get(base + ".bias", None),
                     "layout": _NVFP4_LAYOUT_TENSORCORE,
@@ -649,6 +652,7 @@ def _collect_nvfp4_specs(state_dict):
                 "name": base,
                 "weight": tensor,
                 "weight_scale": state_dict[scale_key],
+                "pre_quant_scale": state_dict.get(base + ".pre_quant_scale", None),
                 "input_global_scale": input_global_scale,
                 "alpha": alpha,
                 "bias": state_dict.get(base + ".bias", None),
@@ -694,7 +698,43 @@ def convert_to_quanto(state_dict, default_dtype, verboseLevel=1, detection=None)
     return convert_nvfp4_to_quanto(state_dict, default_dtype=default_dtype, verboseLevel=verboseLevel)
 
 
+class Int8TensorwiseEmbedding(torch.nn.Embedding):
+    def __init__(self, module, output_dtype):
+        super().__init__(module.num_embeddings, module.embedding_dim, module.padding_idx, module.max_norm, module.norm_type,
+                         module.scale_grad_by_freq, module.sparse, device=module.weight.device, dtype=module.weight.dtype)
+        self.register_buffer("weight_scale", torch.empty((module.num_embeddings, 1), device=module.weight.device, dtype=torch.float32))
+        self.output_dtype = output_dtype
+        self._lock_dtype = torch.int8
+        self.requires_grad_(False)
+
+    def forward(self, input):
+        weight = torch.nn.functional.embedding(input, self.weight, self.padding_idx, self.max_norm, self.norm_type,
+                                                self.scale_grad_by_freq, self.sparse).to(self.output_dtype)
+        scale = torch.nn.functional.embedding(input, self.weight_scale).to(self.output_dtype)
+        return weight.mul_(scale)
+
+
+def _is_int8_tensorwise(config):
+    if not torch.is_tensor(config) or config.dtype != torch.uint8 or config.numel() > 256:
+        return False
+    try:
+        return ast.literal_eval(bytes(config.tolist()).decode()).get("format") == "int8_tensorwise"
+    except (SyntaxError, ValueError, UnicodeDecodeError):
+        return False
+
+
 def apply_pre_quantization(model, state_dict, quantization_map, default_dtype=None, verboseLevel=1):
+    for key in [key for key in state_dict if key.endswith(".comfy_quant") and _is_int8_tensorwise(state_dict[key])]:
+        name = key.removesuffix(".comfy_quant")
+        module = model.get_submodule(name)
+        if not isinstance(module, torch.nn.Embedding):
+            raise ValueError(f"Unsupported tensorwise INT8 module: {name}")
+        scale = state_dict.get(name + ".weight_scale")
+        if scale is None or tuple(scale.shape) != (module.num_embeddings, 1):
+            raise ValueError(f"Invalid tensorwise INT8 embedding scale: {name}")
+        parent_name, child_name = name.rsplit(".", 1)
+        setattr(model.get_submodule(parent_name), child_name, Int8TensorwiseEmbedding(module, default_dtype))
+        state_dict.pop(key)
     return quantization_map, []
 
 
@@ -715,6 +755,7 @@ class NVFP4WeightTensor(QTensor):
         alpha=None,
         input_scale=None,
         weight_scale_2=None,
+        pre_quant_scale=None,
         device=None,
         requires_grad=False,
         layout=_NVFP4_LAYOUT_LEGACY,
@@ -743,6 +784,8 @@ class NVFP4WeightTensor(QTensor):
             input_global_scale = input_global_scale.to(device)
         if alpha.device != device:
             alpha = alpha.to(device)
+        if pre_quant_scale is not None and pre_quant_scale.device != device:
+            pre_quant_scale = pre_quant_scale.to(device)
         return NVFP4WeightTensor(
             qtype=_NVFP4_QTYPE,
             axis=0,
@@ -752,6 +795,7 @@ class NVFP4WeightTensor(QTensor):
             weight_scale=weight_scale,
             input_global_scale=input_global_scale,
             alpha=alpha,
+            pre_quant_scale=pre_quant_scale,
             allow_kernel=allow_kernel,
             dtype=dtype,
             requires_grad=requires_grad,
@@ -770,6 +814,7 @@ class NVFP4WeightTensor(QTensor):
         input_global_scale,
         alpha,
         dtype,
+        pre_quant_scale=None,
         allow_kernel=True,
         requires_grad=False,
         layout=_NVFP4_LAYOUT_LEGACY,
@@ -794,6 +839,7 @@ class NVFP4WeightTensor(QTensor):
         input_global_scale,
         alpha,
         dtype,
+        pre_quant_scale=None,
         requires_grad=False,
         layout=_NVFP4_LAYOUT_LEGACY,
         allow_kernel=True,
@@ -803,6 +849,7 @@ class NVFP4WeightTensor(QTensor):
         self._scale = weight_scale
         self._input_global_scale = input_global_scale
         self._alpha = alpha
+        self._pre_quant_scale = pre_quant_scale
         self._block_size = 16
         self._layout = layout
         self._allow_kernel = allow_kernel
@@ -830,18 +877,22 @@ class NVFP4WeightTensor(QTensor):
 
     def get_quantized_subtensors(self):
         if self._layout == _NVFP4_LAYOUT_TENSORCORE:
-            return [
+            subtensors = [
                 ("weight_u8", self._data),
                 ("weight_scale", self._scale),
                 ("weight_scale_2", self._alpha),
                 ("input_scale", self._input_global_scale),
             ]
-        return [
-            ("weight_u8", self._data),
-            ("weight_scale", self._scale),
-            ("input_global_scale", self._input_global_scale),
-            ("alpha", self._alpha),
-        ]
+        else:
+            subtensors = [
+                ("weight_u8", self._data),
+                ("weight_scale", self._scale),
+                ("input_global_scale", self._input_global_scale),
+                ("alpha", self._alpha),
+            ]
+        if self._pre_quant_scale is not None:
+            subtensors.append(("pre_quant_scale", self._pre_quant_scale))
+        return subtensors
 
     def set_quantized_subtensors(self, sub_tensors):
         if isinstance(sub_tensors, dict):
@@ -861,9 +912,13 @@ class NVFP4WeightTensor(QTensor):
             self._alpha = sub_map["weight_scale_2"]
         elif "alpha" in sub_map and sub_map["alpha"] is not None:
             self._alpha = sub_map["alpha"]
+        if "pre_quant_scale" in sub_map:
+            self._pre_quant_scale = sub_map["pre_quant_scale"]
 
     def __tensor_flatten__(self):
         inner_tensors = ["_data", "_scale", "_input_global_scale", "_alpha"]
+        if self._pre_quant_scale is not None:
+            inner_tensors.append("_pre_quant_scale")
         meta = {
             "qtype": self._qtype.name,
             "axis": str(self._axis),
@@ -898,6 +953,7 @@ class NVFP4WeightTensor(QTensor):
             weight_scale=inner_tensors["_scale"],
             input_global_scale=inner_tensors["_input_global_scale"],
             alpha=inner_tensors["_alpha"],
+            pre_quant_scale=inner_tensors.get("_pre_quant_scale"),
             allow_kernel=allow_kernel,
             dtype=dtype,
             layout=layout,
@@ -931,6 +987,7 @@ class NVFP4WeightTensor(QTensor):
                 weight_scale=op(t._scale),
                 input_global_scale=op(t._input_global_scale),
                 alpha=op(t._alpha),
+                pre_quant_scale=op(t._pre_quant_scale) if t._pre_quant_scale is not None else None,
                 allow_kernel=getattr(t, "_allow_kernel", True),
                 size=t.size(),
                 stride=t.stride(),
@@ -949,11 +1006,13 @@ class NVFP4WeightTensor(QTensor):
             out_scale = op(t._scale, device=device, **(kwargs or {}))
             out_igs = op(t._input_global_scale, device=device, **(kwargs or {}))
             out_alpha = op(t._alpha, device=device, **(kwargs or {}))
+            out_pre_quant_scale = op(t._pre_quant_scale, device=device, **(kwargs or {})) if t._pre_quant_scale is not None else None
             return NVFP4WeightTensor.create(
                 weight_u8=out_data,
                 weight_scale=out_scale,
                 input_global_scale=out_igs,
                 alpha=out_alpha,
+                pre_quant_scale=out_pre_quant_scale,
                 allow_kernel=getattr(t, "_allow_kernel", True),
                 size=t.size(),
                 stride=t.stride(),
@@ -1028,6 +1087,9 @@ class QLinearNVFP4(QModuleMixin, torch.nn.Linear):
         return super().qweight
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        pre_quant_scale = getattr(self.qweight, "_pre_quant_scale", None)
+        if pre_quant_scale is not None:
+            input = input * pre_quant_scale.to(device=input.device, dtype=input.dtype)
         return torch.nn.functional.linear(input, self.qweight, bias=self.bias)
 
     def _load_from_state_dict(
@@ -1041,6 +1103,7 @@ class QLinearNVFP4(QModuleMixin, torch.nn.Linear):
         weight_key = prefix + "weight"
         scale_key = prefix + "weight_scale"
         scale2_key = prefix + "weight_scale_2"
+        pre_quant_scale_key = prefix + "pre_quant_scale"
         igs_key = prefix + "input_global_scale"
         alpha_key = prefix + "alpha"
         input_absmax_key = prefix + "input_absmax"
@@ -1052,6 +1115,7 @@ class QLinearNVFP4(QModuleMixin, torch.nn.Linear):
         weight_u8 = state_dict.pop(weight_key, None)
         weight_scale = state_dict.pop(scale_key, None)
         weight_scale_2 = state_dict.pop(scale2_key, None)
+        pre_quant_scale = state_dict.pop(pre_quant_scale_key, None)
         input_global_scale = state_dict.pop(igs_key, None)
         alpha = state_dict.pop(alpha_key, None)
         input_absmax = state_dict.pop(input_absmax_key, None)
@@ -1096,6 +1160,7 @@ class QLinearNVFP4(QModuleMixin, torch.nn.Linear):
                     weight_scale=weight_scale,
                     input_global_scale=input_scale,
                     alpha=weight_scale_2,
+                    pre_quant_scale=pre_quant_scale,
                     allow_kernel=allow_kernel,
                     size=self.weight.size(),
                     stride=self.weight.stride(),
@@ -1112,6 +1177,7 @@ class QLinearNVFP4(QModuleMixin, torch.nn.Linear):
                     weight_scale=weight_scale,
                     input_global_scale=input_global_scale,
                     alpha=alpha,
+                    pre_quant_scale=pre_quant_scale,
                     size=self.weight.size(),
                     stride=self.weight.stride(),
                     dtype=target_dtype,
@@ -1219,6 +1285,9 @@ def validate_nvfp4_kernel(
             )
 
             x = torch.randn(batch_size, in_features, device=device, dtype=dtype)
+            pre_quant_scale = spec.get("pre_quant_scale")
+            if pre_quant_scale is not None:
+                x = x * pre_quant_scale.to(device=device, dtype=dtype)
             if bias is not None:
                 bias = bias.to(device=device, dtype=dtype)
 

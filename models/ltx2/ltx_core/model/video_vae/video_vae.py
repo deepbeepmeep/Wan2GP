@@ -350,7 +350,7 @@ def _make_decoder_block(
             spatial_padding_mode=spatial_padding_mode,
         )
     elif block_name == "res_x_y":
-        out_channels = in_channels // block_config.get("multiplier", 2)
+        out_channels = block_config.get("out_channels", in_channels // block_config.get("multiplier", 2))
         block = ResnetBlock3D(
             dims=convolution_dimensions,
             in_channels=in_channels,

@@ -83,6 +83,36 @@ LTX2_EMBEDDING_LORA_PREFIXES = (
     "video_embeddings_connector.",
     "audio_embeddings_connector.",
 )
+LTX2_COMFY_LORA_UNDERSCORED_NAMES = (
+    "av_ca_audio_scale_shift_adaln_single",
+    "av_ca_video_scale_shift_adaln_single",
+    "av_ca_a2v_gate_adaln_single",
+    "av_ca_v2a_gate_adaln_single",
+    "audio_prompt_adaln_single",
+    "audio_patchify_proj",
+    "audio_to_video_attn",
+    "prompt_adaln_single",
+    "video_to_audio_attn",
+    "audio_adaln_single",
+    "transformer_blocks",
+    "timestep_embedder",
+    "audio_proj_out",
+    "to_gate_logits",
+    "patchify_proj",
+    "adaln_single",
+    "audio_attn1",
+    "audio_attn2",
+    "audio_ff",
+    "linear_1",
+    "linear_2",
+    "proj_out",
+    "k_norm",
+    "q_norm",
+    "to_out",
+    "to_k",
+    "to_q",
+    "to_v",
+)
 
 
 def _ltx2_main_ingredients_enabled(base_model_type: str | None, video_prompt_type: str) -> bool:
@@ -362,21 +392,25 @@ def _attach_lora_preprocessor(transformer: torch.nn.Module) -> None:
                 key = key[len("diffusion_model.") :]
             if key.startswith("transformer."):
                 key = key[len("transformer.") :]
-            if not LTX2_ENABLE_EMBEDDING_LORAS and key.startswith(LTX2_EMBEDDING_LORA_PREFIXES):
-                continue
-            if key.startswith("embeddings_connector."):
-                key = f"text_embeddings_connector.video_embeddings_connector.{key[len('embeddings_connector.'):]}"
-            if key.startswith("video_embeddings_connector."):
-                key = f"text_embeddings_connector.{key}"
-            if key.startswith("audio_embeddings_connector."):
-                key = f"text_embeddings_connector.{key}"
-            if key.startswith("feature_extractor_linear."):
-                key = f"text_embedding_projection.{key[len('feature_extractor_linear.'):]}"
-
             module_name, suffix = split_lora_key(key)
             if not module_name:
                 dropped_keys.append(original_key)
                 continue
+            if module_name.startswith("lora_unet_"):
+                module_name = module_name[len("lora_unet_") :]
+                for name in LTX2_COMFY_LORA_UNDERSCORED_NAMES:
+                    module_name = module_name.replace(name, name.replace("_", "\0"))
+                module_name = module_name.replace("_", ".").replace("\0", "_")
+            if not LTX2_ENABLE_EMBEDDING_LORAS and module_name.startswith(LTX2_EMBEDDING_LORA_PREFIXES):
+                continue
+            if module_name.startswith("embeddings_connector."):
+                module_name = f"text_embeddings_connector.video_embeddings_connector.{module_name[len('embeddings_connector.') :]}"
+            if module_name.startswith("video_embeddings_connector."):
+                module_name = f"text_embeddings_connector.{module_name}"
+            if module_name.startswith("audio_embeddings_connector."):
+                module_name = f"text_embeddings_connector.{module_name}"
+            if module_name.startswith("feature_extractor_linear."):
+                module_name = f"text_embedding_projection.{module_name[len('feature_extractor_linear.') :]}"
             if module_name not in module_names:
                 prefixed_name = f"velocity_model.{module_name}"
                 if module_name.endswith(".to_out") and f"{prefixed_name}.0" in module_names:
@@ -468,7 +502,77 @@ def _msr_ref_image_to_frame(ref_image, width: int, height: int):
     return np.array(pil_image.resize((int(width), int(height)), Image.Resampling.LANCZOS))
 
 
-def _build_msr_reference_video(ref_images, frame_count: int, width: int, height: int, background_first: bool):
+def _is_msr_v2_model_def(model_def) -> bool:
+    values = [str((model_def or {}).get("name", ""))]
+    loras = (model_def or {}).get("loras", [])
+    values.extend(str(value) for value in (loras if isinstance(loras, (list, tuple)) else [loras]))
+    return any("msr-v2" in value.lower() or "msr ref v2" in value.lower() for value in values)
+
+
+def _resolve_msr_reference_frame_count(model_def, custom_settings, ref_images, background_first: bool) -> int:
+    default = int((model_def or {}).get("ltx2_msr_frame_count", 41))
+    if not _is_msr_v2_model_def(model_def):
+        return default
+    raw_value = (custom_settings or {}).get("msr_reference_frames", "") if isinstance(custom_settings, dict) else ""
+    try:
+        selected = int(raw_value or 0)
+    except (TypeError, ValueError):
+        selected = 0
+    if selected in (17, 25, 33, 41, 49, 57, 65):
+        return selected
+    ref_count = len(ref_images) if isinstance(ref_images, (list, tuple)) else 1
+    subject_count = max(1, ref_count - 1 if background_first else ref_count)
+    return min(65, 16 * subject_count + 1)
+
+
+def _build_msr_v2_reference_frames(frames, frame_count: int):
+    subject_frames = frames[:-1]
+    background_frame = frames[-1]
+    video_frames = [background_frame] * frame_count
+    subject_budget = max(0, (frame_count - 1) // 8)
+
+    if subject_budget >= len(subject_frames):
+        counts = [1] * len(subject_frames)
+        extra = subject_budget - len(subject_frames)
+        priority = [0, *range(1, len(subject_frames)), 0]
+        for index in priority:
+            if extra <= 0:
+                break
+            counts[index] += 1
+            extra -= 1
+        index = 0
+        while extra > 0:
+            counts[index % len(counts)] += 1
+            extra -= 1
+            index += 1
+        cursor = 0
+        for frame, count in zip(subject_frames, counts):
+            start = 0 if cursor == 0 else 1 + (cursor - 1) * 8
+            end = (cursor + count - 1) * 8
+            cursor += count
+            for frame_index in range(start, min(frame_count - 1, end) + 1):
+                video_frames[frame_index] = frame
+    else:
+        subject_frame_count = max(1, (subject_budget - 1) * 8 + 1)
+        for index, frame in enumerate(subject_frames):
+            start = int(index * subject_frame_count / len(subject_frames))
+            end = int((index + 1) * subject_frame_count / len(subject_frames)) - 1
+            if index == len(subject_frames) - 1:
+                end = subject_frame_count - 1
+            for frame_index in range(start, min(frame_count - 1, max(start, end)) + 1):
+                video_frames[frame_index] = frame
+
+    return video_frames
+
+
+def _build_msr_reference_video(
+    ref_images,
+    frame_count: int,
+    width: int,
+    height: int,
+    background_first: bool,
+    msr_v2: bool = False,
+):
     import numpy as np
 
     ref_images = list(ref_images) if isinstance(ref_images, (list, tuple)) else [ref_images]
@@ -480,11 +584,14 @@ def _build_msr_reference_video(ref_images, frame_count: int, width: int, height:
     elif not 1 <= len(ref_images) <= 4:
         raise ValueError("LTX2 MSR Subjects / Objects only mode requires 1 to 4 reference images.")
     frames = [_msr_ref_image_to_frame(ref_image, width, height) for ref_image in ref_images]
-    base_count = frame_count // len(frames)
-    remainder = frame_count % len(frames)
-    video_frames = []
-    for index, frame in enumerate(frames):
-        video_frames.extend([frame] * (base_count + (1 if index < remainder else 0)))
+    if msr_v2 and background_first:
+        video_frames = _build_msr_v2_reference_frames(frames, frame_count)
+    else:
+        base_count = frame_count // len(frames)
+        remainder = frame_count % len(frames)
+        video_frames = []
+        for index, frame in enumerate(frames):
+            video_frames.extend([frame] * (base_count + (1 if index < remainder else 0)))
     return np.stack(video_frames, axis=0)
 
 
@@ -743,6 +850,7 @@ class LTX2:
             transformer_path=transformer_path,
             component_paths=component_paths,
             gemma_root=gemma_root,
+            gemma_side_files_root=text_encoder_filepath,
             spatial_upsampler_path=spatial_upsampler_path,
         )
 
@@ -764,6 +872,7 @@ class LTX2:
         transformer_path,
         component_paths: dict,
         gemma_root: str,
+        gemma_side_files_root: str | None,
         spatial_upsampler_path: str,
     ):
         from mmgp import offload as mmgp_offload
@@ -813,7 +922,14 @@ class LTX2:
         transformer.eval().requires_grad_(False)
         VAE_URLs = self.model_def.get("VAE_URLs", None)
         video_vae_path =  fl.locate_file(VAE_URLs[0]) if VAE_URLs is not None and len(VAE_URLs) else _component_path("video_vae")
-        video_config = copy.deepcopy(_component_config(video_vae_path))
+        video_config_path = component_paths.get("video_vae_config") if component_paths else None
+        if video_config_path:
+            with open(video_config_path, "r", encoding="utf-8") as reader:
+                video_config = copy.deepcopy(json.load(reader))
+        else:
+            video_config = copy.deepcopy(_component_config(video_vae_path))
+        if self.model_def.get("ltx2_pruna_vae", False):
+            print("[WanGP][LTX2] Loading PrunaAI VAE (up to x2 faster).")
         video_config_vae = video_config.setdefault("vae", {})
         video_config_vae["spatial_padding_mode"] = "reflect"
         video_config_vae["encoder_spatial_padding_mode"] = "reflect"
@@ -855,7 +971,11 @@ class LTX2:
             text_embeddings_connector = GemmaTextEmbeddingsConnectorModelConfigurator.from_config(text_connector_config)
         text_embeddings_connector = _load_component( text_embeddings_connector, text_connector_path, TEXT_EMBEDDINGS_CONNECTOR_KEY_OPS )
 
-        text_encoder = build_gemma_text_encoder(gemma_root, default_dtype=self.dtype)
+        text_encoder = build_gemma_text_encoder(
+            gemma_root,
+            default_dtype=self.dtype,
+            side_files_root=gemma_side_files_root,
+        )
         text_encoder.eval().requires_grad_(False)
 
         upsampler_config = _load_config_from_checkpoint(spatial_upsampler_path)
@@ -1093,8 +1213,15 @@ class LTX2:
         msr = self.model_def.get("ltx2_msr", False)
         main_ingredients = _ltx2_main_ingredients_enabled(self.base_model_type, video_prompt_type)
         output_frame_num = frame_num
+        msr_frame_count = 0
         if msr and "I" in video_prompt_type and input_ref_images is not None:
-            frame_num = max(frame_num, self.model_def.get("ltx2_msr_frame_count", 0))
+            msr_frame_count = _resolve_msr_reference_frame_count(
+                self.model_def,
+                custom_settings,
+                input_ref_images,
+                "K" in video_prompt_type,
+            )
+            frame_num = max(frame_num, msr_frame_count)
 
         hdr_enabled = self.base_model_type == "ltx2_22B" and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type
         input_video_is_hdr = bool(input_video_is_hdr)
@@ -1247,7 +1374,14 @@ class LTX2:
 
         force_stage2_ref_video_conditioning = False
         if msr and "I" in video_prompt_type and input_ref_images is not None:
-            ref_video = _build_msr_reference_video(input_ref_images, int(self.model_def["ltx2_msr_frame_count"]), int(width), int(height), "K" in video_prompt_type)
+            ref_video = _build_msr_reference_video(
+                input_ref_images,
+                msr_frame_count,
+                int(width),
+                int(height),
+                "K" in video_prompt_type,
+                _is_msr_v2_model_def(self.model_def),
+            )
             if video_conditioning is None:
                 video_conditioning = []
             video_conditioning.append((ref_video, 0, control_strength))
@@ -1443,6 +1577,14 @@ class LTX2:
         if "1" in audio_prompt_type and effective_audio_cfg_scale <= 1.0:
             effective_audio_cfg_scale = LTX2_ID_LORA_AUDIO_CFG_SCALE
         sample_solver = sample_solver.lower()
+        prompt_relay_epsilon = 1e-3
+        if isinstance(custom_settings, dict):
+            try:
+                prompt_relay_epsilon = float(custom_settings.get("prompt_relay_epsilon", prompt_relay_epsilon))
+            except (TypeError, ValueError):
+                pass
+        if not 0 < prompt_relay_epsilon < 1:
+            prompt_relay_epsilon = 1e-3
         prompt_relay_frame_offset = 0
         if int(window_no or 1) > 1 or (input_video is not None and not is_start_image_only):
             prompt_relay_frame_offset = max(0, int(prefix_frames_count or 0))
@@ -1463,6 +1605,7 @@ class LTX2:
                 num_frames=int(frame_num),
                 frame_rate=float(fps),
                 prompt_relay_frame_offset=prompt_relay_frame_offset,
+                prompt_relay_epsilon=prompt_relay_epsilon,
                 num_inference_steps=int(sampling_steps),
                 cfg_guidance_scale=float(guide_scale),
                 audio_cfg_guidance_scale=effective_audio_cfg_scale,
@@ -1527,6 +1670,7 @@ class LTX2:
                 num_frames=int(frame_num),
                 frame_rate=float(fps),
                 prompt_relay_frame_offset=prompt_relay_frame_offset,
+                prompt_relay_epsilon=prompt_relay_epsilon,
                 images=images,
                 guiding_images=guiding_images or None,
                 guiding_images_stage2=guiding_images_stage2 or None,

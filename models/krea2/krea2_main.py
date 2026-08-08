@@ -1,6 +1,7 @@
 import json
 import math
 import os
+from functools import lru_cache
 
 import numpy as np
 import torch
@@ -13,6 +14,7 @@ from transformers.processing_utils import ProcessorMixin
 
 from mmgp import offload
 from shared.utils import files_locator as fl
+from shared.utils.gguf_mapping import has_standard_gguf_tensor_names, remap_state_dict_triplet
 from shared.utils.text_encoder_cache import TextEncoderCache
 
 from models.ideogram4.qwen3_vl_configuration import Qwen3VLConfig, register_qwen3_vl_config
@@ -560,7 +562,107 @@ def _load_transformer(model_filename, config_path, dtype):
     return transformer
 
 
-def _load_text_encoder(text_encoder_filename, config_path, dtype, with_vision=False):
+@lru_cache(maxsize=4)
+def _krea2_qwen3_gguf_name_map(
+    vocab_size,
+    hidden_size,
+    intermediate_size,
+    num_hidden_layers,
+    num_attention_heads,
+    num_key_value_heads,
+    head_dim,
+):
+    from transformers import Qwen3Config, Qwen3ForCausalLM
+    from transformers.modeling_gguf_pytorch_utils import get_gguf_hf_weights_map
+
+    config = Qwen3Config(
+        vocab_size=vocab_size,
+        hidden_size=hidden_size,
+        intermediate_size=intermediate_size,
+        num_hidden_layers=num_hidden_layers,
+        num_attention_heads=num_attention_heads,
+        num_key_value_heads=num_key_value_heads,
+        head_dim=head_dim,
+        tie_word_embeddings=False,
+    )
+    with init_empty_weights():
+        model = Qwen3ForCausalLM(config)
+
+    # Qwen3-VL uses the same text-layer layout as Qwen3, but its text-only
+    # module omits the leading "model." and has no language-model head.
+    return {
+        gguf_name: hf_name.removeprefix("model.")
+        for gguf_name, hf_name in get_gguf_hf_weights_map(model).items()
+        if hf_name.startswith("model.")
+    }
+
+
+def _strip_language_model_name(name):
+    prefix = "language_model."
+    if name.startswith(prefix):
+        return name[len(prefix):]
+    marker = "." + prefix
+    pos = name.find(marker)
+    if pos >= 0:
+        return name[pos + len(marker):]
+    return None
+
+
+def _strip_language_model_mapping(mapping):
+    if mapping is None:
+        return None
+    stripped = mapping.__class__()
+    for name, value in mapping.items():
+        stripped_name = _strip_language_model_name(name)
+        if stripped_name is None:
+            continue
+        if isinstance(value, list):
+            value = [_strip_language_model_name(item) or item for item in value]
+        stripped[stripped_name] = value
+    return stripped
+
+
+def _build_krea2_text_encoder_preprocessor(text_config):
+    map_args = (
+        text_config.vocab_size,
+        text_config.hidden_size,
+        text_config.intermediate_size,
+        text_config.num_hidden_layers,
+        text_config.num_attention_heads,
+        text_config.num_key_value_heads,
+        text_config.head_dim,
+    )
+
+    def preprocess_state_dict(state_dict, quantization_map=None, tied_weights_map=None):
+        if "embed_tokens.weight" in state_dict:
+            return state_dict, quantization_map, tied_weights_map
+
+        if has_standard_gguf_tensor_names(state_dict):
+            original = (state_dict, quantization_map, tied_weights_map)
+            state_dict, quantization_map, tied_weights_map = remap_state_dict_triplet(
+                state_dict,
+                quantization_map,
+                tied_weights_map,
+                _krea2_qwen3_gguf_name_map(*map_args),
+                keep_unmapped=False,
+            )
+            if "embed_tokens.weight" not in state_dict:
+                return original
+            return state_dict, quantization_map, tied_weights_map
+
+        stripped_state_dict = _strip_language_model_mapping(state_dict)
+        if not stripped_state_dict or "embed_tokens.weight" not in stripped_state_dict:
+            return state_dict, quantization_map, tied_weights_map
+        return (
+            stripped_state_dict,
+            _strip_language_model_mapping(quantization_map),
+            _strip_language_model_mapping(tied_weights_map),
+        )
+
+    return preprocess_state_dict
+
+
+def _load_text_encoder(text_encoder_filename, config_path, dtype, with_vision=False, vision_encoder_filename=None):
     register_qwen3_vl_config()
     config = Qwen3VLConfig.from_json_file(config_path)
     with init_empty_weights(include_buffers=True):
@@ -568,21 +670,35 @@ def _load_text_encoder(text_encoder_filename, config_path, dtype, with_vision=Fa
     if with_vision:
         text_encoder.visual.rotary_pos_emb.reset_inv_freq()
     text_encoder.language_model.rotary_emb.reset_inv_freq()
+    offload.load_model_data(
+        text_encoder.language_model,
+        text_encoder_filename,
+        writable_tensors=False,
+        default_dtype=dtype,
+        preprocess_sd=_build_krea2_text_encoder_preprocessor(config.text_config),
+    )
     if with_vision:
-        offload.load_model_data(text_encoder, text_encoder_filename, writable_tensors=False, default_dtype=dtype)
-    else:
-        offload.load_model_data(text_encoder.language_model, text_encoder_filename, modelPrefix="language_model", writable_tensors=False, default_dtype=dtype)
+        if vision_encoder_filename is None:
+            raise ValueError("Krea2 edit requires a standalone Qwen3-VL vision encoder checkpoint.")
+        offload.load_model_data(
+            text_encoder.visual,
+            vision_encoder_filename,
+            modelPrefix="visual",
+            writable_tensors=False,
+            default_dtype=dtype,
+        )
     text_encoder.eval().requires_grad_(False)
     return text_encoder
 
 
-def _load_vae(filename, config_path, dtype):
+def _load_vae(filename, config_path, dtype, upsampler_factor=1, preprocess_sd=None):
     config = _load_json(config_path)
     for key in ("_class_name", "_diffusers_version", "_name_or_path"):
         config.pop(key, None)
+    config["upsampler_factor"] = upsampler_factor
     with init_empty_weights(include_buffers=True):
         vae = AutoencoderKLQwenImage(**config)
-    offload.load_model_data(vae, filename, writable_tensors=False, default_dtype=dtype)
+    offload.load_model_data(vae, filename, writable_tensors=False, default_dtype=None, preprocess_sd=preprocess_sd)
     vae.eval().requires_grad_(False)
     return vae
 
@@ -614,7 +730,16 @@ class model_factory:
         text_encoder_folder = model_def["text_encoder_folder"]
         text_encoder_config_path = fl.locate_file(os.path.join(text_encoder_folder, "config.json"))
         edit = base_model_type in ("krea2_raw_edit", "krea2_turbo_edit")
-        text_encoder = _load_text_encoder(text_encoder_filename, text_encoder_config_path, dtype, with_vision=edit)
+        vision_encoder_filename = None
+        if edit:
+            vision_encoder_filename = fl.locate_file(model_def["vision_encoder_filename"])
+        text_encoder = _load_text_encoder(
+            text_encoder_filename,
+            text_encoder_config_path,
+            dtype,
+            with_vision=edit,
+            vision_encoder_filename=vision_encoder_filename,
+        )
         tokenizer_config = fl.locate_file(os.path.join(text_encoder_folder, "tokenizer_config.json"))
         fl.locate_file(os.path.join(text_encoder_folder, "tokenizer.json"))
         fl.locate_file(os.path.join(text_encoder_folder, "chat_template.jinja"))
@@ -622,7 +747,16 @@ class model_factory:
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, max_length=512, trust_remote_code=True, extra_special_tokens={})
         image_processor = Qwen2VLImageProcessorFast.from_pretrained(tokenizer_path)
         processor = Krea2Qwen3VLProcessor(image_processor, tokenizer)
-        vae = _load_vae(fl.locate_file("qwen_vae.safetensors"), fl.locate_file("qwen_vae_config.json"), VAE_dtype)
+        vae_upsampler_factor = 2 if VAE_upsampling is not None else 1
+        if vae_upsampler_factor == 2:
+            from models.qwen.convert_diffusers_qwen_vae import convert_state_dict
+
+            vae_filename = "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"
+            preprocess_vae_sd = convert_state_dict
+        else:
+            vae_filename = "qwen_vae.safetensors"
+            preprocess_vae_sd = None
+        vae = _load_vae(fl.locate_file(vae_filename), fl.locate_file("qwen_vae_config.json"), VAE_dtype, upsampler_factor=vae_upsampler_factor, preprocess_sd=preprocess_vae_sd)
         vae.upsampling_set = VAE_upsampling
         self.pipeline = Krea2Pipeline(transformer, vae, Qwen3VLConditioner(text_encoder, tokenizer, processor), dtype=dtype)
         self.transformer = transformer

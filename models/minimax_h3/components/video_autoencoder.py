@@ -819,48 +819,39 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
         )
 
         ratio = self.spatial_compression_ratio
-        tiles = []
-        for i_pos, i_len in zip(y_indices, y_lengths):
-            for j_pos, j_len in zip(x_indices, x_lengths):
-                tiles.append(z[..., i_pos // ratio : i_pos // ratio + i_len // ratio,
-                               j_pos // ratio : j_pos // ratio + j_len // ratio])
-        batch_size = z.shape[0]
-        tile_batch = torch.cat(tiles, dim=0)
-        del tiles
-        hidden_states = self.post_quant_conv(tile_batch)
-        del tile_batch
-        decoded = self.decoder(hidden_states)
-        del hidden_states
-
-        canvas = torch.empty(batch_size, *decoded.shape[1:-2], height, width,
-                             dtype=decoded.dtype, device=decoded.device)
+        canvas = None
         row_tails = []
         out_y = 0
-        tile_index = 0
-        for i in range(len(y_indices)):
+        for i, (i_pos, i_len) in enumerate(zip(y_indices, y_lengths)):
             new_tails = []
             left_tail = None
             out_x = 0
-            for j in range(len(x_indices)):
-                tile = decoded[tile_index * batch_size : (tile_index + 1) * batch_size]
-                tile_index += 1
-                if i < len(y_indices) - 1:
-                    new_tails.append(tile[..., -y_overlaps[i] :, :])
-                next_left_tail = tile[..., :, -x_overlaps[j] :] if j < len(x_indices) - 1 else None
+            for j, (j_pos, j_len) in enumerate(zip(x_indices, x_lengths)):
+                tile = z[..., i_pos // ratio : i_pos // ratio + i_len // ratio,
+                         j_pos // ratio : j_pos // ratio + j_len // ratio]
+                hidden_states = self.post_quant_conv(tile)
+                del tile
+                tile = self.decoder(hidden_states)
+                del hidden_states
                 if i > 0:
                     tile = self._blend(row_tails[j], tile, y_overlaps[i - 1], dim=-2)
                 if j > 0:
                     tile = self._blend(left_tail, tile, x_overlaps[j - 1], dim=-1)
+                # Preserve both-axis contributions at corners and when three spatial tiles overlap.
+                if i < len(y_indices) - 1:
+                    new_tails.append(tile[..., -y_overlaps[i] :, :].clone())
+                next_left_tail = tile[..., :, -x_overlaps[j] :].clone() if j < len(x_indices) - 1 else None
                 left_tail = next_left_tail
                 if i < len(y_indices) - 1:
                     tile = tile[..., : -y_overlaps[i], :]
                 if j < len(x_indices) - 1:
                     tile = tile[..., :, : -x_overlaps[j]]
+                if canvas is None:
+                    canvas = torch.empty(*tile.shape[:-2], height, width, dtype=tile.dtype, device=tile.device)
                 canvas[..., out_y : out_y + tile.shape[-2], out_x : out_x + tile.shape[-1]].copy_(tile)
                 out_x += tile.shape[-1]
             row_tails = new_tails
             out_y += tile.shape[-2]
-        del decoded
         return canvas
 
     @apply_forward_hook

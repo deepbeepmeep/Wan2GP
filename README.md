@@ -64,6 +64,30 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 ## 🔥 Latest Updates : 
 
+## 8th of August 2026: WanGP v12.44, Meet The One
+
+**MiniMax H3 had all that potential waiting to be unleashed. We found the keys.**
+
+- **Sliding Windows / Continue Video:** both *FL2VA* and *Ref2VA* can now build longer videos. WanGP carries the previous window's closing motion and matching audio into the next one. Most importantly, overlap is no longer limited to a single frame: using multiple overlap frames gives H3 real motion and sound context across the join, delivering much smoother transitions.
+
+- **Start Image / End Image for Ref2VA:** launch a new shot from a chosen image, aim for a specific ending, or give a continued video the destination it deserves. Ref2VA preserves its selected reference memories across every Sliding Window, so later windows can keep following the same people, places, motion, and sound.
+
+- **Frames Injection in FL2VA:** place several selected images at exact moments in an FL2VA video. Enter frame positions for precise timing or `L` for the end of a sliding-window segment—digital storyboarding without the sticky notes.
+
+- **Audio Source:** FL2VA can create everything from text, follow an uploaded soundtrack, use a Control Video with its original audio, or keep the video unchanged while composing a new soundtrack. Full-length source audio is preserved in the final file; if it runs out early, H3 takes over instead of serving silence.
+
+- **Control Video / Denoising Strength:** FL2VA can stay close to a Control Video or wander further from it as the strength increases. At `1.0` with *Whole Frame*, the visual control is unnecessary, so WanGP skips the extra work—your GPU may now take a very short coffee break.
+
+- **Video Mask / Masking Strength:** choose *Whole Frame*, *Masked Area*, or *Non Masked Area* to decide where FL2VA may make changes and how firmly the remaining picture should follow the original.
+
+> 
+> **Best practices for longer H3 videos**
+>
+> **For a multi-sequence video →** Direct it window by window: give each part its own prompt and duration, connect it smoothly with overlap, or use `[/new_shot]` for a hard cut. WanGP hands you the clapperboard instead of deciding where the story changes. Please check the Prompt Inline Help for the syntax.
+>
+> **For one very long continuous shot →** Use one Start Image followed by several End Images. Each End Image becomes the destination of a later Sliding Window, guiding the action from one visual milestone to the next. This works with both FL2VA and Ref2VA.
+
+
 ## 6th of August 2026: WanGP v12.434, Cache Me If You Can
 
 **MiniMax H3 shifts up a gear!**
@@ -103,7 +127,7 @@ But rejoice WanGP version is as usual Ultra Optimized: **5-6GB of VRAM only for 
 
 - **MiniMax H3 FL2VA: create or continue a shot**: choose this version to generate synchronized video and stereo audio from text alone, start from an image or the last frame of a previous video, target an end image, or constrain both ends of the shot. It also supports longer generations with sliding windows.
 
-- **MiniMax H3 Ref2VA: reuse people, scenes, motion, or voices**: choose this version when the new video should follow *Reference Images*, *Reference Videos*, or *Reference Audio*. References guide the newly generated result rather than becoming fixed frames; this version does not support sliding windows.
+- **MiniMax H3 Ref2VA: reuse people, scenes, motion, or voices**: choose this version when the new video should follow *Reference Images*, *Reference Videos*, or *Reference Audio*. References guide the newly generated result rather than becoming fixed frames, and remain available across sliding windows.
 
 Both flavours offer the same controls in full 33B and lighter pruned 20B versions.
 
@@ -460,7 +484,7 @@ This automated script will:
 
 ### Nvidia
 For detailed installation instructions for different GPU generations:
-- **[Installation Guide](docs/INSTALLATION.md)** - Complete setup instructions for RTX 10XX to RTX 50XX
+- **[Installation Guide](docs/INSTALLATION.md)** - Complete setup instructions for GTX 10XX, RTX 20XX to RTX 50XX
 
 ### AMD
 For detailed installation instructions for different GPU generations:

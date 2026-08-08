@@ -38,16 +38,35 @@ FIRST_BLOCK_CACHE_STRENGTHS = [
 
 FL2VA_INFOS = """## FL2VA — First/Last Frame to Video and Audio
 
-FL2VA generates a new video with native 32 kHz stereo audio from a text prompt and optional boundary frames.
+FL2VA creates a video with stereo sound from your text prompt. You can optionally provide a start image, an end image, a control video, injected frames, or a soundtrack.
 
-- **No frame:** text-to-video-and-audio generation.
-- **First frame only:** use the image as the opening frame.
-- **Last frame only:** use the image as the ending frame.
-- **First and last frames:** constrain both ends of the generated clip.
+### Start and end images
 
-Each boundary accepts one image. These images are positions on the output timeline, not general character, identity, or style references; use Ref2VA for those.
+- **No image:** generate the video and audio from the text prompt.
+- **Start image only:** begin the video with that image.
+- **End image only:** finish the video with that image.
+- **Start and end images:** guide both ends of the video.
 
-H3's native frame rate is 24 FPS. WanGP can use another output frame rate by adjusting H3's temporal positions. MiniMax documents an official output range of 4–15 seconds. WanGP can generate longer videos with sliding windows, but each individual window longer than 15 seconds is outside that documented range.
+Start and end images are placed at those exact points in the video. For general character, object, or style references, use Ref2VA instead.
+
+### Control Video / Frames Injection
+
+- **Generate without using a Control Video:** generate normally from the prompt and any start/end images.
+- **Use Control Video:** use an uploaded video to guide the result. Lower **Denoising Strength** values keep the result closer to the control video; `1.0` gives the model full freedom. At `1.0` with **Whole Frame** selected, the control video does not affect the result, so WanGP skips that work. Choose **Masked Area** or **Non Masked Area** to limit editing to part of the frame. **Masking Strength** controls how strongly the rest of the frame stays close to the control video. Use a lower masking strength (<0.75) to facilitate continuity with masked areas.
+- **Inject Frames:** add images at specific points in the generated video. Add the images under **Reference Images**, then enter one position per image in the same order. Position `1` means the first frame; `L` means the last frame of a sliding-window segment.
+
+### Audio Source
+
+- **Generate Video and Audio from Text Prompt:** let H3 create both.
+- **Generate Video based on Soundtrack and Text Prompt:** upload a soundtrack and H3 will create the video around it. If the soundtrack covers the whole video, WanGP uses the original audio in the final file. If it ends early, H3 generates the remaining sound.
+- **Generate Video based on Control Video + its Audio Track and Text Prompt:** select **Use Control Video**. H3 uses both its frames and its existing audio track; the visual changes follow the denoising and mask settings.
+- **Generate Audio based on Control Video and Text Prompt:** select **Use Control Video**. WanGP keeps the control video's frames unchanged and asks H3 to create a new soundtrack.
+
+### Longer videos
+
+Sliding windows can continue a video beyond one generation. Use an overlap of 18 frames, or another valid value such as 35 or 52 (`17k + 1`). WanGP automatically reuses the overlapping video and audio to make the join smoother.
+
+H3 is designed for 24 FPS, although WanGP can generate at another frame rate. MiniMax documents an official duration of 4–15 seconds per generation window; longer videos are possible through sliding windows.
 """
 
 REF2VA_INFOS = """## Ref2VA — Reference to Video and Audio
@@ -75,7 +94,17 @@ Reference videos adapt to your chosen output size. Control videos instead define
 
 The reference-image selector can preserve the selected output dimensions or use the first reference image to define them. In **Advanced Mode**, **Rescale Internaly Image Ref (% in relation to Output Video) to change Output Composition** controls each reference image's internal pixel budget while preserving its aspect ratio. **100%** matches the output video's pixel budget. Higher values can preserve more reference detail and improve fidelity, but generation is slower; lower values are faster but can lose fine details. This setting does not change the output resolution after it has been selected or derived.
 
-H3's native frame rate is 24 FPS. WanGP can use another output frame rate by resampling reference videos and adjusting H3's temporal positions. MiniMax documents an official output range of 4–15 seconds. Ref2VA uses one model pass per generation; sliding-window continuation is not available for this variant.
+### Background removal
+
+Background removal is disabled by default. After selecting reference images, use **Automatic Removal of Background behind People or Objects in Reference Images** when you want WanGP to isolate people or objects before sending the images to H3. Keep backgrounds when the surrounding scene is part of the reference you want H3 to follow.
+
+### Start/end images and longer videos
+
+Ref2VA also supports optional start and end images. These are shown to the prompt before the general reference images: with a start image and one reference image, the start image is `<Picture 1>` and the reference image is `<Picture 2>`.
+
+For longer videos, use a sliding-window overlap of 18 frames, or another valid value such as 35 or 52 (`17k + 1`). WanGP automatically carries the overlapping video and audio into the next window while keeping the selected references available.
+
+H3 is designed for 24 FPS, although WanGP can generate at another frame rate. MiniMax documents an official duration of 4–15 seconds per generation window; longer videos are possible through sliding windows.
 
 See the [MiniMax H3 model card](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/README.md) for the upstream specifications and prompting guidance.
 """
@@ -190,6 +219,7 @@ class family_handler:
             "profiles_dir": ["minimax_h3"],
             "finetune_custom_urls": ["video_vae_file", "audio_vae_file"],
             "qkv_splitting": True,
+            "keep_frames_video_guide_not_supported": True,
             "text_encoder_folder": TEXT_ENCODER_FOLDER,
             "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, filename) for filename in text_encoder_files],
             "system_configs": {
@@ -213,9 +243,13 @@ class family_handler:
         }
         if reference_mode:
             result.update({
-                "sliding_window": False,
+                "sliding_window": True,
+                "video_continuation": True,
+                "sliding_window_defaults": {"window_min": 124, "window_max": 481, "window_step": 17, "window_default": 362,
+                                            "overlap_min": 1, "overlap_max": 120, "overlap_step": 17, "overlap_offset": 1, "overlap_default": 18},
                 "frames_maximum": 737,
-                "image_prompt_types_allowed": "T",
+                "image_prompt_types_allowed": "TSEVL",
+                "end_frames_always_enabled": True,
                 "image_ref_choices": {
                     "choices": [("Generate without Reference Images", ""),
                                 ("Use Reference Images", "I"),
@@ -226,8 +260,7 @@ class family_handler:
                 },
                 "reference_image_enabled": True,
                 "return_image_refs_tensor": False,
-                "no_processing_on_last_images_refs": 12,
-                "no_background_removal": True,
+                "fit_into_canvas_image_refs": 0,
                 "any_image_refs_relative_size": True,
                 "image_refs_relative_size": {"min": 50, "max": 400, "step": 1},
                 "guide_custom_choices": {
@@ -271,25 +304,73 @@ class family_handler:
                 "sliding_window": True,
                 "video_continuation": True,
                 "sliding_window_defaults": {"window_min": 124, "window_max": 481, "window_step": 17, "window_default": 362,
-                                            "overlap_min": 1, "overlap_max": 1, "overlap_step": 0, "overlap_default": 1},
+                                            "overlap_min": 1, "overlap_max": 120, "overlap_step": 17, "overlap_offset": 1, "overlap_default": 18},
                 "image_prompt_types_allowed": "TSEVL",
                 "end_frames_always_enabled": True,
+                "audio_guide_window_slicing": True,
+                "guide_custom_choices": {
+                    "choices": [("Generate without using a Control Video", ""),
+                                ("Use Control Video", "GV"),
+                                ("Inject Frames", "KFI")],
+                    "letters_filter": "GVKFI",
+                    "default": "",
+                    "label": "Control Video / Frames Injection",
+                },
+                "video_guide_label": "Control Video",
+                "mask_preprocessing": {"selection": ["", "A", "NA"]},
+                "custom_frames_injection": True,
+                "one_image_ref_only": True,
+                "no_background_removal": True,
+                "any_audio_prompt": True,
+                "audio_prompt_choices": True,
+                "audio_guide_label": "Source Audio / Soundtrack",
+                "audio_prompt_type_sources": {
+                    "selection": ["", "A", "K", "2"],
+                    "labels": {
+                        "": "Generate Video and Audio from Text Prompt",
+                        "A": "Generate Video based on Soundtrack and Text Prompt",
+                        "K": "Generate Video based on Control Video + its Audio Track and Text Prompt",
+                        "2": "Generate Audio based on Control Video and Text Prompt",
+                    },
+                    "letters_filter": "AK2",
+                    "label": "Audio Source",
+                    "show_label": True,
+                    "default": "",
+                },
+                "video_length_not_limited_by_audio": True,
+                "output_audio_is_input_audio": True,
             })
         return result
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
+        overlap = int(inputs["sliding_window_overlap"] or 0)
+        if overlap and (overlap - 1) % 17:
+            return f"MiniMax H3 continuation overlap must contain 17k + 1 frames (found {overlap})"
         if base_model_type not in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE):
-            return None
+            video_prompt_type = inputs["video_prompt_type"]
+            audio_prompt_type = inputs["audio_prompt_type"]
+            if "F" in inputs["video_prompt_type"]:
+                position_count = len((inputs["frames_positions"] or "").replace(",", " ").split())
+                image_count = len(inputs["image_refs"] or [])
+                if position_count != image_count:
+                    return f"MiniMax H3 frame injection requires one position per Reference Image (found {position_count} positions and {image_count} images)"
+            if "2" in audio_prompt_type:
+                if "A" in audio_prompt_type or "K" in audio_prompt_type:
+                    return "MiniMax H3 audio generation from Control Video cannot also use a source soundtrack"
+                if "G" not in video_prompt_type or "V" not in video_prompt_type or inputs["video_guide"] is None:
+                    return "MiniMax H3 audio generation from Control Video requires Use Control Video and a Control Video file"
+            if "K" in audio_prompt_type:
+                if "G" not in video_prompt_type or "V" not in video_prompt_type or inputs["video_guide"] is None:
+                    return "MiniMax H3 Control Video soundtrack mode requires Use Control Video and a Control Video file"
+                from shared.utils.audio_video import extract_audio_tracks
 
-        inputs["sliding_window_size"] = inputs["video_length"]
-        inputs["sliding_window_overlap"] = 0
-        inputs["sliding_window_discard_last_frames"] = 0
-        inputs["sliding_window_trim_first_frames"] = 0
-        inputs["sliding_window_overlap_noise"] = 0
-        inputs["sliding_window_color_correction_strength"] = 0
-        inputs["sub_parallel_window_size"] = 0
-        inputs["sub_parallel_window_overlap"] = 0
+                try:
+                    if extract_audio_tracks(inputs["video_guide"], query_only=True) == 0:
+                        return "MiniMax H3 Control Video has no audio track"
+                except Exception as error:
+                    return f"Unable to inspect the MiniMax H3 Control Video soundtrack: {error}"
+            return None
 
         video_prompt_type = inputs["video_prompt_type"]
         audio_prompt_type = inputs["audio_prompt_type"]
@@ -406,6 +487,8 @@ class family_handler:
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
+        if settings_version < 2.71:
+            ui_defaults["denoising_strength"] = 1.0
         if settings_version < 2.70:
             cache_value = float(ui_defaults.get("skip_steps_multiplier", 0.08))
             ui_defaults["skip_steps_multiplier"] = LEGACY_FIRST_BLOCK_CACHE_THRESHOLDS.get(cache_value, cache_value)
@@ -425,17 +508,18 @@ class family_handler:
         reference_mode = base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE)
         ui_defaults.update({
             "video_length": 124,
-            "sliding_window_size": 124 if reference_mode else 362,
-            "sliding_window_overlap": 0 if reference_mode else 1,
+            "sliding_window_size": 362,
+            "sliding_window_overlap": 18,
             "num_inference_steps": 20,
             "guidance_scale": 1.0,
             "flow_shift": 12.0,
             "sample_solver": "euler",
             "skip_steps_start_step_perc": 25,
             "skip_steps_multiplier": 0.08,
+            "denoising_strength": 1.0,
             "audio_prompt_type": "",
             "video_prompt_type": "",
             "image_mode": 0,
         })
         if reference_mode:
-            ui_defaults["image_refs_relative_size"] = 100
+            ui_defaults.update({"image_refs_relative_size": 100, "remove_background_images_ref": 0})

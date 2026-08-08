@@ -1,7 +1,26 @@
 """Prompt guidance and enhancer system prompts for MiniMax H3."""
 
 
-FL2VA_PROMPT_INFOS = """## H3 FL2VA prompt structure
+SLIDING_WINDOW_PROMPT_INFOS = """### Controlling sliding-window length and hard cuts
+
+To give each sliding window its own H3 prompt, set **How to Process each Line of the Text Prompt** to **Each Paragraph Separated by an Empty line will be used for a new Sliding Window of the same Video Generation**. Keep all the H3 fields for one window together without empty lines, then insert one empty line before the next window's prompt.
+
+Begin a window's paragraph with any of these WanGP commands:
+
+- `[/duration=124]`: make the window contribute 124 final frames.
+- `[/duration=5s]`: make it contribute about 5 seconds at the selected frame rate.
+- `[/duration=20%]`: give it 20% of the requested total video length.
+- `[/overlap=18]`: carry 18 frames from the previous H3 window for a smoother transition. H3 overlap values follow the `17k + 1` pattern and WanGP rounds other values to a valid one.
+- `[/new_shot]`: carry no frames from the previous window, creating a hard cut. This is the same as `[/overlap=0]`.
+
+Commands can be combined, for example `[/duration=5s,/overlap=18]` for a connected five-second window or `[/duration=5s,/new_shot]` for a new five-second shot after a hard cut. The duration is the part kept in the final video; overlap frames are additional continuity frames and are removed when WanGP joins the windows. WanGP removes these commands before sending the prompt to H3.
+
+`[Shot 2] At MM:SS.mmm, ...` describes a model-directed cut **inside one H3 window**. Use `[/new_shot]` at the beginning of a later window when the boundary between two generated windows itself must be a hard cut.
+
+"""
+
+
+FL2VA_PROMPT_INFOS = f"""## H3 FL2VA prompt structure
 
 FL2VA uses the same three-part audiovisual prompt for text-only, first-frame, last-frame, and first-and-last-frame generation:
 
@@ -29,6 +48,7 @@ When an image fixes a point on the output timeline, put its alignment instructio
 
 `overall_soundscape` summarizes ambience, physical sounds, and non-verbal human sounds without repeating dialogue. `non_diegetic_music` describes only music the audience hears but the characters do not; write `N/A` when no such score is wanted.
 
+{SLIDING_WINDOW_PROMPT_INFOS}
 ### Prompt examples
 
 #### Text-only, single shot
@@ -67,7 +87,7 @@ Adapted from MiniMax's [official base prompt-writing guide](https://huggingface.
 """
 
 
-REF2VA_PROMPT_INFOS = """## H3 Ref2VA prompt structure
+REF2VA_PROMPT_INFOS = f"""## H3 Ref2VA prompt structure
 
 Ref2VA uses six sections in this order:
 
@@ -106,6 +126,7 @@ Use `fully_preserved`, `partially_preserved`, `attribute_transfer`, or `weak_ref
 
 Describe reference use where it actually takes effect in the timeline. A reference video is not automatically an edit or continuation, and audio is not automatically copied merely because it is present. Put exact dialogue inside `<d>[Language] ...</d>`, ambience and physical sounds in `overall_soundscape`, and audience-only score in `non_diegetic_music`.
 
+{SLIDING_WINDOW_PROMPT_INFOS}
 ### Prompt examples
 
 These compact examples assume the named reference assets have been selected. For a final reference-generation prompt, expand `detailed_description` with the concrete appearance, motion, camera, and continuity details visible in those assets.

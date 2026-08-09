@@ -11,7 +11,6 @@ from shared.utils import files_locator as fl
 from .bernini_prompt_infos import get_bernini_infos, get_bernini_prompt_infos
 from .shotplan_prompt_infos import SHOTPLAN_PROMPT_ENHANCER, SHOTPLAN_PROMPT_INFOS
 from .vace_infos import VACE_INFOS
-from .animate2 import custom_image_ref_postprocessor_animate2
 from .kiwi.variant_config import get_kiwi_variant_model_def
 from .scail2 import (
     SCAIL2_ANIMATE_PREPROCESSING_POSE,
@@ -719,7 +718,6 @@ class family_handler():
                     "placeholder": "Describe the action and background in the driving video.",
                     "lines": 2,
                 },
-                "custom_image_ref_postprocessor": custom_image_ref_postprocessor_animate2,
                 "fake_start_image": True,
                 "return_image_refs_tensor": True,
                 "no_background_removal": True,

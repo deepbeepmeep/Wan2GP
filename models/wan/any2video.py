@@ -855,6 +855,8 @@ class WanAny2V:
         # Animate 2
         if animate2:
             input_frames = input_frames[:, :frame_num].to(device=self.device, dtype=self.VAE_dtype)
+            if not input_ref_images:
+                input_ref_images = [image_start if image_start is not None else convert_image_to_tensor(pre_video_frame)]
             image_ref = input_ref_images[0].to(device=self.device, dtype=self.VAE_dtype)
             image_ref = image_ref.unsqueeze(1) if image_ref.ndim == 3 else image_ref
             color_reference_frame = image_ref.clone()

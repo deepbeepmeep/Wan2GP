@@ -3,25 +3,10 @@ import math
 import torch
 
 from shared.attention import pay_attention
-from shared.utils.utils import convert_image_to_tensor
 from .modules.posemb_layers import apply_rotary_emb
 
 
 _attention_backends = {}
-
-
-def custom_image_ref_postprocessor_animate2(
-    src_ref_images, src_ref_masks, width, height, image_start, image_prompt_type, image_end, video_prompt_type,
-    send_cmd, model_def, custom_settings, image_start_tensor=None, pre_video_frame=None,
-):
-    if src_ref_images:
-        return src_ref_images, src_ref_masks
-    ref_source = image_start_tensor if image_start_tensor is not None else pre_video_frame
-    if ref_source is None:
-        ref_source = image_start
-    if ref_source is None:
-        raise ValueError("Wan Animate 2 needs a Character Reference Image, Start Image, or Continue Video frame.")
-    return [ref_source if torch.is_tensor(ref_source) else convert_image_to_tensor(ref_source)], None
 
 
 def _attention_with_lse(q, k, v):

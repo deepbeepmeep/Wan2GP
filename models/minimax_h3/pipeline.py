@@ -509,15 +509,16 @@ class MiniMaxH3Pipeline:
         model_steps = sigmas_video.numel() - 1
         denoising_start_step = int(round(model_steps * (1.0 - float(denoising_strength)), 4))
         mask_end_step = min(model_steps, denoising_start_step + math.ceil(model_steps * float(masking_strength))) if editable_mask is not None else 0
-        if callback is not None:
-            callback(-1, None, True, override_num_inference_steps=model_steps)
         cache = self.transformer.cache
-        spectrum = MiniMaxH3Spectrum(cache, sigmas_video[:-1]) if cache is not None and cache.cache_type == "spectrum" else None
+        spectrum = MiniMaxH3Spectrum(cache, sigmas_video[:-1], sample_solver) if cache is not None and cache.cache_type == "spectrum" else None
         first_block_cache = MiniMaxH3FirstBlockCache(cache) if cache is not None and cache.cache_type == "first_block" else None
-        old_video_denoised = old_audio_denoised = None
+        offline_spectrum = spectrum is not None and spectrum.full_anchor_cache
         audio_scale = float(shift) / 3.0
-        try:
-            for step in tqdm(range(model_steps), desc="H3 denoising"):
+
+        def denoise_pass(description, denoising_extra=""):
+            nonlocal video, audio
+            old_video_denoised = old_audio_denoised = None
+            for step in tqdm(range(model_steps), desc=description):
                 self._set_interrupt_state()
                 self._check_abort()
                 offload.set_step_no_for_lora(self.transformer, step)
@@ -560,7 +561,32 @@ class MiniMaxH3Pipeline:
                     _reinject_video_source(source_video, source_latents, source_noise, source_mask, sigmas_video[step + 1], source_buffer)
                 video_velocity = audio_velocity = None
                 if callback is not None:
-                    callback(step, video[0].detach().cpu(), False)
+                    preview = video[0].detach().cpu() if not offline_spectrum or spectrum.replaying else None
+                    callback(step, preview, False, denoising_extra=denoising_extra) if denoising_extra else callback(step, preview, False)
+
+        initial_video = initial_audio = None
+        try:
+            if offline_spectrum:
+                initial_video = video.detach().to(device="cpu", copy=True, non_blocking=False)
+                initial_audio = audio.detach().to(device="cpu", copy=True, non_blocking=False)
+                if set_progress_status is not None:
+                    set_progress_status("Denoising")
+                if callback is not None:
+                    callback(-1, None, True, override_num_inference_steps=model_steps)
+                denoise_pass("H3 Spectrum anchor capture")
+                spectrum.complete_capture(self._check_abort)
+                spectrum.start_replay()
+                video = initial_video.to(self.device)
+                audio = initial_audio.to(self.device)
+                if set_progress_status is not None:
+                    set_progress_status("Spectrum smoothing replay")
+                if callback is not None:
+                    callback(-1, None, True, override_num_inference_steps=model_steps, denoising_extra="Spectrum smoothing replay")
+                denoise_pass("H3 Spectrum replay", "Spectrum smoothing replay")
+            else:
+                if callback is not None:
+                    callback(-1, None, True, override_num_inference_steps=model_steps)
+                denoise_pass("H3 denoising")
         finally:
             if spectrum is not None:
                 spectrum.reset()
@@ -569,10 +595,10 @@ class MiniMaxH3Pipeline:
 
         if res_coefficients is not None:
             audio[..., target_audio_condition_latents:].div_(audio_scale)
-        old_video_denoised = old_audio_denoised = None
+        initial_video = initial_audio = None
 
         if set_progress_status is not None:
-            set_progress_status("Decoding H3 stereo audio" if frozen_target_video is not None else "Decoding Video and Audio")
+            set_progress_status("Decoding H3 stereo audio" if frozen_target_video is not None else "VAE Decoding of Video and Audio")
         self._check_abort()
         context = payload = presentation = visual_latents = audio_latents = refs = keyframes = audio_keyframes = source_latents = source_noise = source_buffer = editable_mask = None
         decoded_video = (self.vae.decode(video.to(self.vae._model_dtype)).clamp_(-1.0, 1.0)[0, :, :target_frames].cpu()

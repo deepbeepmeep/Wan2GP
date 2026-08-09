@@ -147,7 +147,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.12"
-WanGP_version = "12.441"
+WanGP_version = "12.45"
 settings_version = 2.73
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -9210,6 +9210,7 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     inputs.pop("exaggeration", None)
     
     if target in ["state", "edit_state"]:
+        inputs["settings_version"] = settings_version
         return inputs
     
     if "lset_name" in inputs:

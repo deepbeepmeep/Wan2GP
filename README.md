@@ -64,7 +64,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 ## 🔥 Latest Updates : 
 
-## 8th of August 2026: WanGP v12.44, Meet The One
+## 9th of August 2026: WanGP v12.45, Meet The One
 
 **MiniMax H3 had all that potential waiting to be unleashed. We found the keys.**
 
@@ -75,6 +75,8 @@ WanGP is a one-stop super app for the best open source generative models across 
 - **Frames Injection in FL2VA:** place several selected images at exact moments in an FL2VA video. Enter frame positions for precise timing or `L` for the end of a sliding-window segment—digital storyboarding without the sticky notes.
 
 - **Audio Source:** FL2VA can create everything from text, follow an uploaded soundtrack, use a Control Video with its original audio, or keep the video unchanged while composing a new soundtrack. Full-length source audio is preserved in the final file; if it runs out early, H3 takes over instead of serving silence.
+
+- **Spectrum v0.2.1 with offline replay:** H3 Spectrum now captures a clean accelerated trajectory and performs a transformer-free smoothing replay. Video and audio are reconstructed independently for better audio quality.
 
 - **Control Video / Denoising Strength:** FL2VA can stay close to a Control Video or wander further from it as the strength increases. At `1.0` with *Whole Frame*, the visual control is unnecessary, so WanGP skips the extra work—your GPU may now take a very short coffee break.
 
@@ -87,6 +89,10 @@ WanGP is a one-stop super app for the best open source generative models across 
 >
 > **For one very long continuous shot →** Use one Start Image followed by several End Images. Each End Image becomes the destination of a later Sliding Window, guiding the action from one visual milestone to the next. This works with both FL2VA and Ref2VA.
 
+**Bonus:**  
+- **Wan2.2 Animate 2**. *Animate* is back—and it wants to reclaim the crown *Scail 2* snatched away. Give it a character image and a driving video, and it will make that character follow the video's movements, expressions, and camera action: dance routines, performances, gestures, fashion clips, creature animation, and more.
+
+*update 12.45*: spectrum upgraded, animate 2
 
 ## 6th of August 2026: WanGP v12.434, Cache Me If You Can
 
@@ -98,7 +104,7 @@ H3 now has new accelerators and RAM shrinkers. Pick one or stack them—the exac
 
 - **Sol-Attn:** under *Advanced Mode / Misc. / Override Attention Mode*, sparse attention speeds up large visual sequences. It requires BF16, Triton 3.6+, and a compatible NVIDIA GPU (RTX 40/50-series, H100/H200, or B100/B200). Expected gains range from 10–20% on RTX 40-series to around 30% on RTX 50-series, with a possible small quality trade-off.
 
-- **Mix and match:** *Spectrum* and *First Block Cache* are alternative step-skipping modes, but either can be combined with Sol-Attn for an extra push.
+- **Mix and match:** *Spectrum* and *First Block Cache* are alternative step-skipping modes. Sol-Attn can technically run with either, but stacking approximations may reduce quality and should be checked with the same seed before relying on the combination.
 
 - **Lower-RAM Video VAE:** select *FP8 Mixed Precision* under *Advanced Mode / Misc. / Video VAE* to reduce the RAM occupied by H3's Video VAE weights. Thanks to *Kijai* for creating this quantized VAE.
 
@@ -131,7 +137,7 @@ But rejoice WanGP version is as usual Ultra Optimized: **5-6GB of VRAM only for 
 
 Both flavours offer the same controls in full 33B and lighter pruned 20B versions.
 
-- **Spectrum step skipping**: Spectrum can make MiniMax H3 generation up to 2× faster, with a modest potential quality tradeoff. Enable it under *Advanced Mode / Steps Skipping* by setting *Skip Steps Cache Type* to *Spectrum Feature Forecasting*.
+- **Spectrum step skipping**: Spectrum can make MiniMax H3 generation substantially faster, with a modest potential quality tradeoff. Its default offline replay retains every actual-step anchor in system RAM, reconstructs skipped steps from bracketing and spectral estimates, and keeps audio on local interpolation. Enable it under *Advanced Mode / Steps Skipping* by setting *Skip Steps Cache Type* to *Spectrum Feature Forecasting*.
 
 - **Spatial upsampler improvements**: high-resolution MiniMax H3 generation can be slow, so a practical alternative is to generate at a lower resolution, such as 480p, and upscale the result afterward.
  - **FlashVSR optimizations**: FlashVSR has been further optimized to reduce system RAM usage.

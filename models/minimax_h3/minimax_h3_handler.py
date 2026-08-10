@@ -120,6 +120,7 @@ Enable **Advanced Mode** to access these options:
 - **Sol-Attn:** in **Advanced Mode > Misc. > Override Attention Mode**, select **sol**. It uses sparse attention on large visual sequences to reduce attention cost and speed up generation, with possible small quality differences. It requires BF16, Triton 3.6 or newer, and a CUDA NVIDIA GPU using SM89, SM90, SM100, or SM120 (such as RTX 40/50-series, H100/H200, or B100/B200); the dropdown reports whether it is available on the current system.
 - **Text Encoder:** at the bottom of **Misc.**, use the **Text Encoder** configuration to reduce system RAM. **Qwen3-VL BF16** uses the most memory; **Quanto INT8** is a balanced lower-memory choice; **NVFP4 AWQ**, **GGUF Q4_K_M**, and especially **GGUF Q2_K** reduce it further. More aggressive quantization can slightly affect prompt interpretation.
 - **Priority:** beside the Text Encoder configuration, choose which memory limit matters most. **Lower VRAM** uses all code optimizations and reduces greatly VRAM consumption while **Lower RAM** uses only VRAM optimizations that doesnt consume extra RAM.
+- **Tiny VAE Preview:** in **Advanced Mode > Misc.**, set **MiniMax H3 Tiny VAE Preview** to CPU or GPU for a true-RGB, four-frame sampling preview. On its first use WanGP downloads the 40 MB H3 Tiny VAE decoder. CPU avoids additional VRAM use; GPU is faster but needs more VRAM. It falls back to the standard latent preview if decoding fails.
 """
 
 PRUNED_INFOS = """

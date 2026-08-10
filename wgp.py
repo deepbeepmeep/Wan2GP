@@ -2545,6 +2545,7 @@ if not Path(config_load_filename).is_file():
         "enable_int8_kernels": 1,
         "clear_file_list" : 5,
         "keep_intermediate_sliding_windows": 1,
+        "minimax_h3_accurate_preview": 0,
         "keep_resolution_on_model_switch": True,
         "enable_4k_resolutions": 0,
         "max_reserved_loras": -1,
@@ -3300,6 +3301,7 @@ upsampler_api.require_upsampler_by_method("flashvsr").normalize_config()
 if "loras_root" not in server_config: server_config["loras_root"] = DEFAULT_LORA_ROOT
 if "save_queue_if_crash" not in server_config: server_config["save_queue_if_crash"] = 1
 if "keep_intermediate_sliding_windows" not in server_config: server_config["keep_intermediate_sliding_windows"] = 1
+if "minimax_h3_accurate_preview" not in server_config: server_config["minimax_h3_accurate_preview"] = 0
 if "prompt_enhancer_temperature" not in server_config: server_config["prompt_enhancer_temperature"] = 0.6
 if "prompt_enhancer_top_p" not in server_config: server_config["prompt_enhancer_top_p"] = 0.9
 if "prompt_enhancer_randomize_seed" not in server_config: server_config["prompt_enhancer_randomize_seed"] = True
@@ -4111,7 +4113,7 @@ def get_gen_info(state):
         state["gen"] = cache
     return cache
 
-def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_meta=None):
+def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_meta=None, accurate_preview_decoder=None):
     gen = get_gen_info(state)
     gen["num_inference_steps"] = num_inference_steps
     generation_start_time = last_refresh_time = time.time()
@@ -4222,7 +4224,11 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
         send_cmd("progress", progress_args)
         last_refresh_time = current_time
         if latent is not None:
-            payload = pipe.prepare_preview_payload(latent, preview_meta) if hasattr(pipe, "prepare_preview_payload") else latent
+            payload = None
+            if accurate_preview_decoder is not None:
+                payload = accurate_preview_decoder.decode_accurate_preview(latent)
+            if payload is None:
+                payload = pipe.prepare_preview_payload(latent, preview_meta) if hasattr(pipe, "prepare_preview_payload") else latent
             if isinstance(payload, dict):
                 data = payload.copy()
                 lat = data.get("latents")
@@ -6523,6 +6529,7 @@ def generate_media(
     postprocess_audio_prompt,
     postprocess_audio_neg_prompt,
     RIFLEx_setting,
+    minimax_h3_tiny_vae_preview,
     NAG_scale,
     NAG_tau,
     NAG_alpha,
@@ -6739,6 +6746,14 @@ def generate_media(
     trans = get_transformer_model(wan_model)
     trans2 = get_transformer_model(wan_model, 2)
     audio_sampling_rate = 16000
+    tiny_vae_preview_mode = int(minimax_h3_tiny_vae_preview or 0)
+    tiny_vae_preview_device = "cuda" if tiny_vae_preview_mode == 2 else "cpu"
+    accurate_h3_preview = base_model_type.startswith("minimax_h3") and tiny_vae_preview_mode > 0
+    if accurate_h3_preview:
+        send_cmd("status", "Preparing MiniMax H3 Tiny VAE preview decoder...")
+        accurate_h3_preview = bool(wan_model.prepare_accurate_preview())
+    if base_model_type.startswith("minimax_h3"):
+        wan_model.set_accurate_preview_enabled(accurate_h3_preview, tiny_vae_preview_device)
 
     prompts = prompt_parser.split_prompt_units(prompt, multi_prompts_gen_type)
     display_prompts = prompts.copy()
@@ -7546,7 +7561,11 @@ def generate_media(
             gen["progress_status"] = status
             progress_phase = "Generating Audio" if audio_only else "Encoding Prompt"
             gen["progress_phase"] = (progress_phase , -1 )
-            callback = build_callback(state, trans, send_cmd, status, num_inference_steps, preview_meta={"first_latent_only": True} if is_image else None)
+            callback = build_callback(
+                state, trans, send_cmd, status, num_inference_steps,
+                preview_meta={"first_latent_only": True} if is_image else None,
+                accurate_preview_decoder=wan_model if accurate_h3_preview else None,
+            )
             progress_args = [0, merge_status_context(status, progress_phase )]
             send_cmd("progress", progress_args)
 
@@ -8135,6 +8154,9 @@ def generate_preview(model_type, payload):
     import einops
     if payload is None:
         return None
+    if isinstance(payload, Image.Image):
+        height = payload.height
+        return payload.resize((max(1, int(payload.width * 200 / height)), 200), resample=Image.Resampling.BILINEAR) if height else None
     if isinstance(payload, dict):
         meta = {k: v for k, v in payload.items() if k != "latents"}
         latents = payload.get("latents")
@@ -10171,6 +10193,7 @@ def save_inputs(
             postprocess_audio_prompt,
             postprocess_audio_neg_prompt,
             RIFLEx_setting,
+            minimax_h3_tiny_vae_preview,
             NAG_scale,
             NAG_tau,
             NAG_alpha,
@@ -12304,6 +12327,21 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         value=ui_get("override_attention"),
                         label=f"Override Attention Mode"
                     )
+                    gr.Markdown("<B>You can use a Tiny VAE for a more recognizable MiniMax H3 generation preview. CPU preserves VRAM; GPU is faster but needs more VRAM.</B>")
+                    minimax_h3_tiny_vae_preview = gr.Dropdown(
+                        choices=[
+                            ("Off (standard latent preview)", 0),
+                            ("On (Tiny VAE RGB preview, CPU; low VRAM)", 1),
+                            ("On (Tiny VAE RGB preview, GPU; faster)", 2),
+                        ],
+                        value=ui_get(
+                            "minimax_h3_tiny_vae_preview",
+                            ui_get("minimax_h3_accurate_preview", server_config.get("minimax_h3_accurate_preview", 0)),
+                        ),
+                        label="MiniMax H3 Tiny VAE Preview",
+                        info="Downloads a 40 MB decoder on first use. CPU avoids extra VRAM use; GPU is faster but needs more VRAM.",
+                        visible=base_model_type.startswith("minimax_h3"),
+                    )
                     with gr.Column():
                         gr.Markdown('<B>Customize the Output Filename using Settings Values (<I>date, seed, resolution, num_inference_steps, prompt, flow_shift, video_length, guidance_scale</I>). For Instance:<BR>"<I>{date(YYYY-MM-DD_HH-mm-ss)}_{seed}_{prompt(50)}, {num_inference_steps}</I>"</B>')
                         output_filename = gr.Text( label= " Output Filename ( Leave Blank for Auto Naming)", value= ui_get("output_filename"))
@@ -12507,7 +12545,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       video_info_to_start_image_btn, video_info_to_end_image_btn, video_info_to_reference_image_btn, video_info_to_image_guide_btn, video_info_to_image_mask_btn,
                                       NAG_col, audio_options_row, remove_background_sound, normalize_audio_volumes, audio_prompt_type_custom_option, speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, prompt_enhancer_mode_dropdown, prompt_enhancer_think, force_control_video_trim,
                                       min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temporal_upsampling_method, temporal_upsampling_multiplier, spatial_upsampling_method, spatial_upsampling_ratio, temperature_row, *custom_settings_rows, *custom_setting_extra_inputs, top_pk_row,
-                                      number_frames_row, negative_prompt_row, config_column, *config_group_dropdowns,
+                                      number_frames_row, negative_prompt_row, config_column, minimax_h3_tiny_vae_preview, *config_group_dropdowns,
                                       self_refiner_col, pause_row]+\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,
         if update_form:

@@ -82,7 +82,11 @@ class GradioProgressCallbacks:
             self._progress(self._ratio, desc=status)
 
     def on_progress(self, update) -> None:
-        self._ratio = max(0.0, min(1.0, float(getattr(update, "progress", 0)) / 100.0))
+        current = getattr(update, "current_step", None)
+        total = getattr(update, "total_steps", None)
+        unit = str(getattr(update, "unit", "") or "")
+        value = float(current) / float(total) if unit in {"bytes", "files"} and current is not None and total else float(getattr(update, "progress", 0)) / 100.0
+        self._ratio = max(0.0, min(1.0, value))
         self._progress(self._ratio, desc=str(getattr(update, "status", "") or "Generating..."))
 
 

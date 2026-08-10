@@ -128,8 +128,6 @@ def _res_multistep_update(sample, denoised, old_denoised, coefficients):
 
 def _resolve_canvas(width, height, short_edge, max_pixels=None):
     ratio = width / height
-    if not 0.25 <= ratio <= 4.0:
-        raise ValueError(f"MiniMax H3 references must have an aspect ratio from 1:4 to 4:1, got {width}x{height}")
     if ratio >= 1.0:
         target_w, target_h = short_edge * ratio, float(short_edge)
     else:

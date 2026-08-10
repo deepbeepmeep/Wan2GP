@@ -146,7 +146,7 @@ class SeedVR2Bridge(SimpleScaleSuffixMixin):
             raise ValueError(f"Unknown SeedVR2 upsampling mode: {spatial_upsampling}")
         scale = split[1]
         output_height, output_width = int(sample.shape[-2] * scale), int(sample.shape[-1] * scale)
-        vae_tile_size = int(vae_tile_size or self.vae_tile_size(vae_config, output_height, output_width) or self.AUTO_VAE_TILE_SIZE)
+        vae_tile_size = int(self.vae_tile_size(vae_config, output_height, output_width) or self.AUTO_VAE_TILE_SIZE)
         vae_tile_size = min(vae_tile_size, self.AUTO_VAE_TILE_SIZE if int(vae_config) == 0 else self.MAX_VAE_TILE_SIZE)
         from .runtime import upscale_video
         if still_image:

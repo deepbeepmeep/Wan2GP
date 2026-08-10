@@ -765,10 +765,14 @@ def prepare_scail2_conditioning(
     additional_ref_count = len(additional_refs)
     inject_ref_frames = additional_ref_count > 0 and custom_settings.get(SCAIL2_INJECT_REF_FRAMES_SETTING, SCAIL2_INJECT_REF_FRAMES_NO) == SCAIL2_INJECT_REF_FRAMES_YES
     if inject_ref_frames:
-        ref_video = _pack_ref_frames_as_video(additional_refs + [image_ref])
-        ref_mask_video = _pack_ref_frames_as_video(additional_masks + [ref_mask])
-        ref_latents = pipeline.vae.encode([ref_video], VAE_tile_size)[0].unsqueeze(0)
-        ref_mask_latents = extract_and_compress_mask_to_latent(ref_mask_video, additional_spatial_downsample=1, label="injected ref masks").to(device=pipeline.device, dtype=pipeline.VAE_dtype)
+        ref_video = _pack_ref_frames_as_video([image_ref] + additional_refs)
+        ref_mask_video = _pack_ref_frames_as_video([ref_mask] + additional_masks)
+        packed_ref_latents = pipeline.vae.encode([ref_video], VAE_tile_size)[0]
+        packed_ref_mask_latents = extract_and_compress_mask_to_latent(ref_mask_video, additional_spatial_downsample=1, label="injected ref masks").to(device=pipeline.device, dtype=pipeline.VAE_dtype)
+        # Keep the transformer's existing additional-refs-then-primary ordering.
+        ref_latents = torch.cat([packed_ref_latents[:, 1:], packed_ref_latents[:, :1]], dim=1).unsqueeze(0)
+        ref_mask_latents = torch.cat([packed_ref_mask_latents[:, 1:], packed_ref_mask_latents[:, :1]], dim=1)
+        del ref_video, ref_mask_video, packed_ref_latents, packed_ref_mask_latents
     else:
         ref_latents = pipeline.vae.encode([image_ref], VAE_tile_size)[0].unsqueeze(0)
         additional_ref_latents = [pipeline.vae.encode([additional_ref], VAE_tile_size)[0] for additional_ref in additional_refs]

@@ -1,5 +1,5 @@
 --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ort-cuda-13-nightly/pypi/simple/
-mmgp==3.7.11
+mmgp==3.7.12
 # Core AI stack
 diffusers==0.36.0
 transformers==4.54.0 #4.53.1
@@ -9,6 +9,7 @@ tqdm
 imageio
 imageio-ffmpeg
 einops
+rotary-embedding-torch>=0.5.3
 sentencepiece
 open_clip_torch>=2.29.0
 numpy==2.1.2

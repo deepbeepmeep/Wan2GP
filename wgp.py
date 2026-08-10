@@ -66,7 +66,7 @@ from shared.utils.video_decode import decode_video_frames_ffmpeg, probe_video_st
 from shared.utils.virtual_media import get_virtual_image, get_virtual_media_entry, get_virtual_media_vsource, media_source_exists, parse_virtual_media_path, replace_virtual_media_source, strip_virtual_media_suffix
 from shared.utils.frame_scheduler import build_extension_window, build_frame_scheduler, floor_frame_count, has_slash_commands, normalize_frame_count, prepare_loras_mult_windows
 from shared.match_archi import match_nvidia_architecture
-from shared.attention import get_attention_modes, get_supported_attention_modes, get_default_attention_mode
+from shared.attention import ATTENTION_MODE_AVAILABILITY, get_attention_modes, get_supported_attention_modes, get_default_attention_mode, get_override_attention_modes, get_supported_override_attention_modes
 from shared.utils.utils import truncate_for_filesystem, sanitize_file_name, process_images_multithread, get_default_workers, resize_lanczos_frames, expand_or_shrink_mask, prepare_binary_mask_frame
 from shared.utils.process_locks import (
     acquire_GPU_ressources,
@@ -146,9 +146,9 @@ AUTOSAVE_ERROR_FILENAME = "error_queue.zip"
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-target_mmgp_version = "3.7.11"
-WanGP_version = "12.41"
-settings_version = 2.66
+target_mmgp_version = "3.7.12"
+WanGP_version = "12.451"
+settings_version = 2.73
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -185,6 +185,7 @@ _HANDLER_MODULES = [
     "shared.qtypes.bnb_nf4",
     "shared.qtypes.nunchaku_int4",
     "shared.qtypes.nunchaku_fp4",
+    "shared.qtypes.asym_w4a8_int8",
     "shared.qtypes.int8_convrot",
     "shared.qtypes.gguf",
 ]
@@ -960,7 +961,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
         if int(inputs.get("batch_size", 1) or 1) > image_batch_size_max:
             return err(f"This model supports a maximum of {image_batch_size_max} image{'s' if image_batch_size_max > 1 else ''} per generation.")
     is_edit_mode = str(inputs.get("mode", "") or "").startswith("edit_")
-    any_steps_skipping = model_def.get("tea_cache", False) or model_def.get("mag_cache", False)
+    any_steps_skipping = model_def.get("tea_cache", False) or model_def.get("mag_cache", False) or model_def.get("spectrum_cache", False) or model_def.get("first_block_cache", False)
     model_type = get_base_model_type(model_type)
 
     model_filename = get_model_filename(model_type)  
@@ -1063,6 +1064,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
     video_length = inputs["video_length"]
     num_inference_steps= inputs["num_inference_steps"]
     skip_steps_cache_type= inputs["skip_steps_cache_type"]
+    skip_steps_multiplier = inputs["skip_steps_multiplier"]
     postprocess_audio = inputs.get("postprocess_audio", "") or ""
     image_mode = inputs["image_mode"]
     switch_threshold = inputs["switch_threshold"]
@@ -1161,6 +1163,15 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
         model_switch_phase = 1
         
     if not any_steps_skipping: skip_steps_cache_type = ""
+    supported_cache_types = {""}
+    if model_def.get("tea_cache", False): supported_cache_types.add("tea")
+    if model_def.get("mag_cache", False): supported_cache_types.add("mag")
+    if model_def.get("spectrum_cache", False): supported_cache_types.add("spectrum")
+    if model_def.get("first_block_cache", False): supported_cache_types.add("first_block")
+    if skip_steps_cache_type not in supported_cache_types:
+        return err(f"This model does not support step-skipping type '{skip_steps_cache_type}'.")
+    if skip_steps_cache_type == "first_block" and float(skip_steps_multiplier) not in model_def["first_block_cache_thresholds"]:
+        return err(f"Unsupported First Block Cache threshold '{skip_steps_multiplier}'.")
     if not model_def.get("lock_inference_steps", False) and model_type in ["ltxv_13B"] and num_inference_steps < 20:
         return err("The minimum number of steps should be 20")
     if skip_steps_cache_type == "mag":
@@ -2447,6 +2458,8 @@ def get_lora_dir(model_type):
 
 attention_modes_installed = get_attention_modes()
 attention_modes_supported = get_supported_attention_modes()
+override_attention_modes_installed = get_override_attention_modes()
+override_attention_modes_supported = get_supported_override_attention_modes()
 args = parse_wgp_args(family_handlers, CONFIG_FILENAME, DEFAULT_LORA_ROOT)
 migrate_loras_layout()
 
@@ -4049,7 +4062,7 @@ def is_generation_in_progress():
 def get_auto_attention():
     return get_default_attention_mode()
 
-def generate_header(model_type, compile, attention_mode):
+def generate_header(model_type, compile, attention_mode, override_attention=""):
 
     description_container = [""]
     model_name = get_model_name(model_type, description_container)
@@ -4058,14 +4071,15 @@ def generate_header(model_type, compile, attention_mode):
     model_filename = os.path.basename(full_filename)
     description  = description_container[0]
     description = model_infos.render_model_description(description, model_def.get("infos", None), model_type=model_type, model_name=model_name, height=60 if server_config.get('display_stats', 0) == 1 else 40)
-    overridden_attention = get_overridden_attention(model_type)
-    attn_mode = attention_mode if overridden_attention == None else overridden_attention 
+    model_attention = get_overridden_attention(model_type)
+    overridden_attention = override_attention or model_attention
+    attn_mode = attention_mode if overridden_attention is None else overridden_attention
     header = "<DIV style='align:right;width:100%'><FONT SIZE=2>Attention mode <B>" + (attn_mode if attn_mode!="auto" else "auto/" + get_auto_attention() )
-    if attention_mode not in attention_modes_installed:
+    if attn_mode not in override_attention_modes_installed:
         header += " -NOT INSTALLED-"
-    elif attention_mode not in attention_modes_supported:
+    elif attn_mode not in override_attention_modes_supported:
         header += " -NOT SUPPORTED-"
-    elif overridden_attention is not None and attention_mode != overridden_attention:
+    elif not override_attention and model_attention is not None and attention_mode != model_attention:
         header += " -MODEL SPECIFIC-"
     header += "</B>"
 
@@ -4100,8 +4114,12 @@ def get_gen_info(state):
 def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_meta=None):
     gen = get_gen_info(state)
     gen["num_inference_steps"] = num_inference_steps
-    start_time = time.time()    
+    generation_start_time = last_refresh_time = time.time()
+    denoising_start_time = None
+    estimated_total_time = None
     def callback(step_idx = -1, latent = None, force_refresh = True, read_state = False, override_num_inference_steps = -1, pass_no = -1, preview_meta=preview_meta, denoising_extra ="", progress_unit = None, status_prefix = ""):
+        nonlocal denoising_start_time, estimated_total_time, last_refresh_time
+        step_completed = step_idx >= 0
         in_pause = False
         with gen_lock:
             process_status = gen.get("process_status", None)
@@ -4134,8 +4152,15 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
             elif wan_model is not None and hasattr(wan_model, "_early_stop"):
                 wan_model._early_stop = True
         refresh_id =  gen.get("refresh", -1)
+        current_time = time.time()
+        if force_refresh and step_idx < 0:
+            denoising_start_time = current_time
+            estimated_total_time = None
         if force_refresh or step_idx >= 0:
             pass
+        elif read_state:
+            if current_time - last_refresh_time < 1:
+                return
         else:
             refresh_id =  gen.get("refresh", -1)
             if refresh_id < 0:
@@ -4178,8 +4203,14 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
             gen["progress_phase"] = (phase, step_idx)
         status_msg = merge_status_context(status, phase)      
 
-        elapsed_time = time.time() - start_time
-        status_msg = merge_status_context(status, f"{phase} | {format_time(elapsed_time)}")              
+        elapsed_time = current_time - generation_start_time
+        progress_time = format_time(elapsed_time)
+        if step_completed and step_idx > 0 and num_inference_steps > 0 and denoising_start_time is not None:
+            denoising_elapsed_time = current_time - denoising_start_time
+            estimated_total_time = denoising_start_time - generation_start_time + max(denoising_elapsed_time, denoising_elapsed_time * num_inference_steps / step_idx)
+        if estimated_total_time is not None:
+            progress_time += f" / {format_time(max(elapsed_time, estimated_total_time))}"
+        status_msg = merge_status_context(status, f"{phase} | {progress_time}")
         if step_idx >= 0:
             progress_args = [(step_idx , num_inference_steps) , status_msg  ,  num_inference_steps]
             if progress_unit:
@@ -4189,6 +4220,7 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
         
         # progress(*progress_args)
         send_cmd("progress", progress_args)
+        last_refresh_time = current_time
         if latent is not None:
             payload = pipe.prepare_preview_payload(latent, preview_meta) if hasattr(pipe, "prepare_preview_payload") else latent
             if isinstance(payload, dict):
@@ -4619,6 +4651,7 @@ def select_media(state, current_gallery_tab, input_file_list, file_selected, aud
         misc_labels = []
         pp_values= []
         pp_labels = []
+        configs_summary = ""
         nb_audio_tracks =  0 
 
         if not os.path.isfile(file_name):
@@ -4644,11 +4677,8 @@ def select_media(state, current_gallery_tab, input_file_list, file_selected, aud
             misc_values += [video_model_name]
             misc_labels += ["Model"]
             metadata_model_def = get_model_def(configs.get("model_type", None))
-            config_groups = get_model_config_groups(configs.get("model_type", None), metadata_model_def) if metadata_model_def is not None else [{}, {}, {}]
-            selected_config = model_config_groups.normalize_config_selection(config_groups, configs.get("config", ""))
-            for group, config_id, config_def in model_config_groups.selected_model_configs(config_groups, selected_config):
-                misc_values += [config_def.get("name", config_id)]
-                misc_labels += [model_config_groups.get_config_name(config_groups[group - 1])]
+            config_groups = get_model_config_groups(configs.get("model_type", None), metadata_model_def) if metadata_model_def is not None else [{} for _ in model_config_groups.CONFIG_KEYS]
+            configs_summary = model_config_groups.format_config_selection(config_groups, configs.get("config", ""))
             model_modes_def = metadata_model_def.get("model_modes", None) if metadata_model_def is not None else None
             if model_modes_def is not None and "model_mode" in configs and configs.get("image_mode", 0) in model_modes_def.get("image_modes", [0, 1, 2]):
                 misc_values += [next((label for label, value in model_modes_def["choices"] if value == configs["model_mode"]), configs["model_mode"])]
@@ -5037,8 +5067,11 @@ def select_media(state, current_gallery_tab, input_file_list, file_selected, aud
             video_skip_steps_multiplier = configs.get("skip_steps_multiplier", 0)
             video_skip_steps_cache_start_step_perc = configs.get("skip_steps_start_step_perc", 0)
             if len(video_skip_steps_cache_type) > 0:
-                video_skip_steps_cache = "TeaCache" if video_skip_steps_cache_type == "tea" else "MagCache"
-                video_skip_steps_cache += f" x{video_skip_steps_multiplier }"
+                video_skip_steps_cache = {"tea": "TeaCache", "mag": "MagCache", "spectrum": "Spectrum", "first_block": "First Block Cache"}.get(video_skip_steps_cache_type, video_skip_steps_cache_type)
+                if video_skip_steps_cache_type in ("tea", "mag"):
+                    video_skip_steps_cache += f" x{video_skip_steps_multiplier}"
+                elif video_skip_steps_cache_type == "first_block":
+                    video_skip_steps_cache += f" (threshold {float(video_skip_steps_multiplier):g})"
                 if video_skip_steps_cache_start_step_perc >0:  video_skip_steps_cache += f", Start from {video_skip_steps_cache_start_step_perc}%"
                 values += [ video_skip_steps_cache ]
                 labels += [ "Skip Steps" ]
@@ -5054,6 +5087,9 @@ def select_media(state, current_gallery_tab, input_file_list, file_selected, aud
                 labels +=["Nb Audio Tracks"]
             values += [ video_creation_date, video_generation_time ]
             labels += [ "Creation Date", "Generation Time" ]
+        if configs_summary:
+            values += [configs_summary]
+            labels += ["Configs"]
         labels = [label for value, label in zip(values, labels) if value is not None]
         values = [value for value in values if value is not None]
 
@@ -5555,6 +5591,17 @@ def preprocess_video(height, width, video_in, max_frames, start_frame=0, fit_can
     # save_one_video("test.mp4", frames_list, fps=8, quality=8, macro_block_size=None)
 
     return torch.stack(frames_list) 
+
+
+def get_reference_video_dimensions(video_in, height, width, max_size, block_size):
+    _, source_width, source_height, _ = get_video_info(video_in)
+    max_short_edge, max_long_edge = max_size
+    scale = min((height * width / (source_height * source_width)) ** 0.5,
+                max_short_edge / min(source_height, source_width), max_long_edge / max(source_height, source_width))
+    height_cap, width_cap = (max_short_edge, max_long_edge) if source_height <= source_width else (max_long_edge, max_short_edge)
+    target_height = min(height_cap // block_size * block_size, max(block_size, round(source_height * scale / block_size) * block_size))
+    target_width = min(width_cap // block_size * block_size, max(block_size, round(source_width * scale / block_size) * block_size))
+    return target_height, target_width
 
  
 def parse_keep_frames_video_guide(keep_frames, video_length):
@@ -6559,6 +6606,8 @@ def generate_media(
     set_video_prompt_type = model_def.get("set_video_prompt_type", None)
     if set_video_prompt_type is not None:
         video_prompt_type = add_to_sequence(video_prompt_type, set_video_prompt_type)
+    reference_videos = "-" in video_prompt_type
+    preprocess_video_guide2 = model_def.get("preprocess_video_guide2", False)
     if is_image:
         image_batch_size_max = max(1, int(model_def.get("image_batch_size_max", 16)))
         if batch_size > image_batch_size_max:
@@ -6648,8 +6697,12 @@ def generate_media(
     attn = overridden_attention if overridden_attention is not None else attention_mode
     if attn == "auto":
         attn = get_auto_attention()
-    elif not attn in attention_modes_supported:
+    elif attn not in override_attention_modes_supported:
         send_cmd("info", f"You have selected attention mode '{attn}'. However it is not installed or supported on your system. You should either install it or switch to the default 'sdpa' attention.")
+        send_cmd("exit")
+        return True
+    elif attn == "sol" and not model_def.get("sol_attention", False):
+        send_cmd("info", f"Sol Attention is not implemented for model type '{model_type}'.")
         send_cmd("exit")
         return True
     
@@ -6889,6 +6942,8 @@ def generate_media(
         elif skip_steps_cache_type == "tea":
             def_tea_coefficients = model_def.get("teacache_coefficients", None) if model_def != None else None
             if def_tea_coefficients is not None: skip_steps_cache.coefficients = def_tea_coefficients
+        elif skip_steps_cache_type in ("spectrum", "first_block"):
+            pass
         else:
             raise Exception(f"unknown cache type {skip_steps_cache_type}")
     trans.cache = skip_steps_cache
@@ -7244,15 +7299,16 @@ def generate_media(
             video_guide_processed = video_mask_processed = video_guide_processed2 = video_mask_processed2 = sparse_video_image = None
             skip_video_guide_preprocess = bool(model_def.get("skip_video_guide_preprocess", False))
             if video_guide is not None and not skip_video_guide_preprocess:
-                keep_frames_parsed_full, error = parse_keep_frames_video_guide(keep_frames_video_guide, source_video_frames_count -source_video_overlap_frames_count + requested_frames_to_generate)
+                guide_frames_limit = round(model_def["reference_video_max_frames"] * fps / model_def["fps"]) if reference_videos else source_video_frames_count - source_video_overlap_frames_count + requested_frames_to_generate
+                keep_frames_parsed_full, error = parse_keep_frames_video_guide(keep_frames_video_guide, guide_frames_limit)
                 if len(error) > 0:
                     raise gr.Error(f"invalid keep frames {keep_frames_video_guide}")
-                guide_frames_extract_start = aligned_window_start_frame if extract_guide_from_window_start else aligned_guide_start_frame
+                guide_frames_extract_start = 0 if reference_videos else aligned_window_start_frame if extract_guide_from_window_start else aligned_guide_start_frame
                 extra_control_frames = model_def.get("extra_control_frames", 0)
                 if extra_control_frames > 0 and aligned_guide_start_frame >= extra_control_frames: guide_frames_extract_start -= extra_control_frames
                         
                 keep_frames_parsed = [True] * -guide_frames_extract_start if guide_frames_extract_start  <0 else []
-                keep_frames_parsed += keep_frames_parsed_full[max(0, guide_frames_extract_start): aligned_guide_end_frame ] 
+                keep_frames_parsed += keep_frames_parsed_full[max(0, guide_frames_extract_start): guide_frames_limit if reference_videos else aligned_guide_end_frame]
                 guide_frames_extract_count = len(keep_frames_parsed)
 
                 process_all = resolve_model_preprocess_all(model_def, base_model_type=base_model_type, video_prompt_type=video_prompt_type, image_prompt_type=image_prompt_type, audio_prompt_type=audio_prompt_type, custom_settings=custom_settings)
@@ -7302,7 +7358,7 @@ def generate_media(
                             w, h = image_refs[0].size
                             if outpainting_dims != None:
                                 h, w = get_outpainting_full_area_dimensions(h, w, outpainting_dims, video_guide_outpainting_ratio)
-                            image_size = calculate_new_dimensions(height, width, h, w, fit_canvas)                            
+                            image_size = calculate_new_dimensions(height, width, h, w, fit_canvas, block_size=block_size)
                             sample_fit_canvas = None 
                             ref_pose_tensor  = resize_and_remove_background(image_refs[nb_frames_positions:nb_frames_positions+1], image_size[1], image_size[0],
                                                                                             False, True, 
@@ -7316,11 +7372,24 @@ def generate_media(
                         else:
                             ref_pose_tensor = pre_video_guide
  
-                        video_guide_processed, video_mask_processed = preprocess_video_with_mask(ref_pose_tensor, video_guide if sparse_video_image is None else sparse_video_image, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, outpainting_ratio = video_guide_outpainting_ratio, proc_no =1, inpaint_color =inpaint_color, block_size = block_size, to_bbox = "H" in video_prompt_type, outpainting_quantize_margins = outpainting_quantize_margins)
-                        if preprocess_type2 != None:
+                        guide_source = video_guide if sparse_video_image is None else sparse_video_image
+                        guide_height, guide_width = image_size
+                        guide_fit_canvas = sample_fit_canvas
+                        if reference_videos:
+                            guide_height, guide_width = get_reference_video_dimensions(guide_source, *image_size, model_def["reference_video_max_size"], block_size)
+                            guide_fit_canvas = None
+                        video_guide_processed, video_mask_processed = preprocess_video_with_mask(ref_pose_tensor, guide_source, video_mask, height=guide_height, width=guide_width, max_frames=guide_frames_extract_count, start_frame=guide_frames_extract_start, fit_canvas=guide_fit_canvas, fit_crop=fit_crop, target_fps=fps, process_type=preprocess_type, expand_scale=mask_expand, RGB_Mask=True, negate_mask="N" in video_prompt_type, process_outside_mask=process_outside_mask, outpainting_dims=outpainting_dims, outpainting_ratio=video_guide_outpainting_ratio, proc_no=1, inpaint_color=inpaint_color, block_size=block_size, to_bbox="H" in video_prompt_type, outpainting_quantize_margins=outpainting_quantize_margins)
+                        if preprocess_video_guide2 and "+" in video_prompt_type and video_guide2 is not None:
+                            guide2_height, guide2_width = image_size
+                            guide2_fit_canvas = sample_fit_canvas
+                            if reference_videos:
+                                guide2_height, guide2_width = get_reference_video_dimensions(video_guide2, *image_size, model_def["reference_video_max_size"], block_size)
+                                guide2_fit_canvas = None
+                            video_guide_processed2, video_mask_processed2 = preprocess_video_with_mask(None, video_guide2, None, height=guide2_height, width=guide2_width, max_frames=guide_frames_extract_count, start_frame=guide_frames_extract_start, fit_canvas=guide2_fit_canvas, fit_crop=fit_crop, target_fps=fps, process_type=preprocess_type, proc_no=2, block_size=block_size)
+                        elif preprocess_type2 != None:
                             video_guide_processed2, video_mask_processed2 = preprocess_video_with_mask(ref_pose_tensor, video_guide, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type2, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, outpainting_ratio = video_guide_outpainting_ratio, proc_no =2, block_size = block_size, to_bbox = "H" in video_prompt_type, outpainting_quantize_margins = outpainting_quantize_margins)
 
-                    if video_guide_processed is not None  and sample_fit_canvas is not None:
+                    if video_guide_processed is not None and sample_fit_canvas is not None and not reference_videos:
                         image_size = video_guide_processed.shape[-2:]
                         sample_fit_canvas = None
 
@@ -7336,12 +7405,13 @@ def generate_media(
                     video_mask_processed2 = None if cached_video_mask_processed2 is None else cached_video_mask_processed2[:, process_slice] 
                     
             if window_no == 1 and image_refs is not None and len(image_refs) > 0:
+                ignored_image_refs = model_def.get("no_processing_on_last_images_refs", 0)
                 if sample_fit_canvas is not None and (nb_frames_positions > 0 or "K" in video_prompt_type) :
                     from shared.utils.utils import get_outpainting_full_area_dimensions
                     w, h = image_refs[0].size
                     if outpainting_dims != None:
                         h, w = get_outpainting_full_area_dimensions(h, w, outpainting_dims, video_guide_outpainting_ratio)
-                    image_size = calculate_new_dimensions(height, width, h, w, fit_canvas)
+                    image_size = calculate_new_dimensions(height, width, h, w, fit_canvas, block_size=block_size)
                 sample_fit_canvas = None
                 if repeat_no == 1:
                     if fit_crop:
@@ -7351,6 +7421,7 @@ def generate_media(
                             end_ref_position = nb_frames_positions + 1
                         else:
                             end_ref_position = nb_frames_positions 
+                        end_ref_position = min(end_ref_position, max(nb_frames_positions, len(image_refs) - ignored_image_refs))
                         for i, img in enumerate(image_refs[:end_ref_position]):
                             image_refs[i] = rescale_and_crop(img, default_image_size[1], default_image_size[0])
                         refresh_preview["image_refs"] = image_refs
@@ -7385,7 +7456,7 @@ def generate_media(
                                                                                         background_ref_outpainted = model_def.get("background_ref_outpainted", True),
                                                                                         outpainting_quantize_margins = outpainting_quantize_margins,
                                                                                         return_tensor= model_def.get("return_image_refs_tensor", False),
-                                                                                        ignore_last_refs =model_def.get("no_processing_on_last_images_refs",0),
+                                                                                        ignore_last_refs=ignored_image_refs,
                                                                                         background_removal_color = background_removal_color)
             custom_postprocessor = model_def.get("custom_image_ref_postprocessor", None)
             if window_no == 1 and repeat_no == 1 and custom_postprocessor is not None:
@@ -9139,6 +9210,7 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     inputs.pop("exaggeration", None)
     
     if target in ["state", "edit_state"]:
+        inputs["settings_version"] = settings_version
         return inputs
     
     if "lset_name" in inputs:
@@ -9265,7 +9337,7 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         pop += ["alt_scale"]
 
 
-    if not (model_def.get("tea_cache", False) or model_def.get("mag_cache", False)) :
+    if not (model_def.get("tea_cache", False) or model_def.get("mag_cache", False) or model_def.get("spectrum_cache", False) or model_def.get("first_block_cache", False)):
         pop += ["skip_steps_cache_type", "skip_steps_multiplier", "skip_steps_start_step_perc"]
 
     guidance_max_phases = model_def.get("guidance_max_phases", 0)
@@ -10250,7 +10322,8 @@ def change_model(state, model_choice):
     state["model_type"] = model_choice
     if hasattr(app, "plugin_manager"):
         app.plugin_manager.notify_model_change(state, model_choice)
-    description, header = generate_header(model_choice, compile=compile, attention_mode=attention_mode)
+    model_settings = get_model_settings(state, model_choice) or get_default_settings(model_choice)
+    description, header = generate_header(model_choice, compile=compile, attention_mode=attention_mode, override_attention=model_settings.get("override_attention", ""))
     
     return description, header
 
@@ -10852,6 +10925,9 @@ attention_modes_choices= [
     (f'sage3{check_attn("sage3")}: >50% faster, may have quality trade-offs, requires manual install', "sage3"),
 ]
 
+def refresh_attention_header(state, override_attention):
+    return generate_header(get_state_model_type(state), compile, attention_mode, override_attention)[1]
+
 def detect_auto_save_form(state, evt:gr.SelectData):
     last_tab_id = state.get("last_tab_id", 0)
     state["last_tab_id"] = new_tab_id = evt.index
@@ -11118,6 +11194,8 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             lock_inference_steps = model_def.get("lock_inference_steps", False) or (audio_only and not inference_steps_enabled)
             any_tea_cache = model_def.get("tea_cache", False)
             any_mag_cache = model_def.get("mag_cache", False)
+            any_spectrum_cache = model_def.get("spectrum_cache", False)
+            any_first_block_cache = model_def.get("first_block_cache", False)
             recammaster = base_model_type in ["recam_1.3B"]
             vace = test_vace_module(base_model_type)
             multitalk = model_def.get("multitalk_class", False)
@@ -11241,8 +11319,6 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             video_prompt_inputs_visible = any_letters(video_prompt_type_value + video_prompt_defaults, "VIKFG")
 
             with gr.Column(visible=guide_selection_visible or video_prompt_inputs_visible) as video_prompt_column:
-                video_prompt_type = gr.Text(value= video_prompt_type_value, visible= False)
-
                 with gr.Row(visible=guide_selection_visible) as guide_selection_row:
                     # Control Video Preprocessing
                     if guide_preprocessing is None:
@@ -11370,6 +11446,8 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                        image_ref_choices = { "choices": [("None", ""), ("People / Objects", "I"), ], "letters_filter":  "I", }
 
                     if image_ref_choices is None:
+                        if not any_reference_image:
+                            video_prompt_type_value = update_value(video_prompt_type_value, "", "I")
                         video_prompt_type_image_refs = gr.Dropdown(
                             # choices=[ ("None", ""),("Start", "KI"),("Ref Image", "I")],
                             choices=[ ("None", ""),],
@@ -11389,6 +11467,8 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             visible = guide_selection_context_visible and image_ref_selector_visible,
                             label=image_ref_choices.get("label", "Inject Reference Images"), show_label= image_ref_choices.get("show_label", True), scale = 1
                         )
+
+                video_prompt_type = gr.Text(value= video_prompt_type_value, visible= False)
 
                 image_guide = gr.Image(label= "Control Image", height = 800, type ="pil", visible= image_mode_value==1 and "V" in video_prompt_type_value and ("U" in video_prompt_type_value or "A" not in video_prompt_type_value ) , value= ui_defaults.get("image_guide", None))
                 video_guide_label = model_def.get("video_guide_label", "Control Video")
@@ -11481,7 +11561,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 image_refs_row, image_refs, image_refs_extra = get_image_gallery(label= image_refs_label, value = ui_defaults.get("image_refs", None), visible= "I" in video_prompt_type_value, single_image_mode=image_refs_single_image_mode)
 
                 frames_positions = gr.Text(value=ui_get("frames_positions") , visible= "F" in video_prompt_type_value, scale = 2, label= "Positions of Injected Frames (1=first, L=last of a window) no position for other Image Refs)" ) 
-                image_refs_relative_size = setting_slider("image_refs_relative_size", visible=image_outputs)
+                image_refs_relative_size = setting_slider("image_refs_relative_size", visible="I" in video_prompt_type_value)
 
                 no_background_removal = model_def.get("no_background_removal", False) #or image_ref_choices is None
                 background_removal_label = model_def.get("background_removal_label", "Remove Background behind People / Objects") 
@@ -11772,7 +11852,10 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     current_video_length = video_length_locked if video_length_locked is not None else ui_get("video_length", 81 if get_model_family(base_model_type)=="wan" else 97)
 
                     computed_fps = get_computed_fps(ui_get("force_fps"), base_model_type , ui_defaults.get("video_guide", None), ui_defaults.get("video_source", None))
-                    video_length = gr.Slider(0 if audio_only else min_frames, get_max_frames(737 if test_any_sliding_window(base_model_type) else 337), value=current_video_length, 
+                    maximum_frames = get_max_frames(model_def.get("frames_maximum", 737 if test_any_sliding_window(base_model_type) else 337))
+                    if "frames_maximum" in model_def:
+                        maximum_frames = floor_frame_count(maximum_frames, min_frames, frames_step, model_def.get("frames_offset", 1))
+                    video_length = gr.Slider(0 if audio_only else min_frames, maximum_frames, value=current_video_length,
                          step=frames_step, label=compute_video_length_label(computed_fps, current_video_length, video_length_locked) , scale=5, visible = True, interactive= video_length_locked is None, show_reset_button= False)
 
                 force_control_video_trim= gr.Dropdown(
@@ -11901,32 +11984,40 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             search_empty_label="No matching LoRAs",
                         )
                         loras_multipliers = gr.Textbox(label="LoRAs Multipliers (1.0 by default) separated by Space chars or CR, lines that start with # are ignored", value=launch_multis_str)
-                with gr.Tab("Steps Skipping", visible = any_tea_cache or any_mag_cache) as speed_tab:
+                with gr.Tab("Steps Skipping", visible=any_tea_cache or any_mag_cache or any_spectrum_cache or any_first_block_cache) as speed_tab:
                     with gr.Column():
-                        gr.Markdown("<B>Tea Cache and Mag Cache accelerate the Video Generation by skipping intelligently some steps, the more steps are skipped the lower the quality of the video.</B>")
-                        gr.Markdown("<B>Steps Skipping  consumes also VRAM. It is recommended not to skip at least the first 10% steps.</B>")
+                        gr.Markdown("<B>Step-skipping accelerators avoid selected full transformer evaluations. More skipped evaluations may reduce output quality.</B>")
+                        gr.Markdown("<B>Keep an initial warmup so the accelerator can establish a stable history.</B>")
                         steps_skipping_choices = [("None", "")]
                         if any_tea_cache: steps_skipping_choices += [("Tea Cache", "tea")]
                         if any_mag_cache: steps_skipping_choices += [("Mag Cache", "mag")]
+                        if any_spectrum_cache: steps_skipping_choices += [("Spectrum Feature Forecasting", "spectrum")]
+                        if any_first_block_cache: steps_skipping_choices += [("First Block Cache", "first_block")]
+                        skip_steps_cache_type_value = ui_get("skip_steps_cache_type")
+                        skip_steps_cache_type_value = get_custom_setting_dropdown_value(skip_steps_cache_type_value, steps_skipping_choices)
                         skip_steps_cache_type = gr.Dropdown(
                             choices= steps_skipping_choices,
-                            value="" if not (any_tea_cache or any_mag_cache) else ui_get("skip_steps_cache_type"),
+                            value="" if not (any_tea_cache or any_mag_cache or any_spectrum_cache or any_first_block_cache) else skip_steps_cache_type_value,
                             visible=True,
                             label="Skip Steps Cache Type"
                         )
  
+                        skip_steps_multiplier_choices = model_def.get("skip_steps_multiplier_choices", [
+                            ("around x1.5 speed up", 1.5),
+                            ("around x1.75 speed up", 1.75),
+                            ("around x2 speed up", 2.0),
+                            ("around x2.25 speed up", 2.25),
+                            ("around x2.5 speed up", 2.5),
+                        ])
+                        skip_steps_multiplier_value = get_custom_setting_dropdown_value(float(ui_get("skip_steps_multiplier")), skip_steps_multiplier_choices)
                         skip_steps_multiplier = gr.Dropdown(
-                            choices=[
-                                ("around x1.5 speed up", 1.5), 
-                                ("around x1.75 speed up", 1.75), 
-                                ("around x2 speed up", 2.0), 
-                                ("around x2.25 speed up", 2.25), 
-                                ("around x2.5 speed up", 2.5), 
-                            ],
-                            value=float(ui_get("skip_steps_multiplier")),
-                            visible=True,
-                            label="Skip Steps Cache Global Acceleration"
+                            choices=skip_steps_multiplier_choices,
+                            value=skip_steps_multiplier_value,
+                            visible=skip_steps_cache_type_value in ("tea", "mag", "first_block"),
+                            label=model_def.get("skip_steps_multiplier_label", "Skip Steps Cache Global Acceleration")
                         )
+                        if not update_form:
+                            skip_steps_cache_type.change(fn=lambda cache_type: gr.update(visible=cache_type in ("tea", "mag", "first_block")), inputs=[skip_steps_cache_type], outputs=[skip_steps_multiplier])
                         skip_steps_start_step_perc = gr.Slider(0, 100, value=ui_get("skip_steps_start_step_perc"), step=1, label="Skip Steps starting moment in % of generation", show_reset_button= False) 
 
                 with gr.Tab("Post Processing", visible = not audio_only) as post_processing_tab:
@@ -12038,14 +12129,15 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 cfg_zero_step = gr.Slider(-1, 39, value=ui_get("cfg_zero_step"), step=1, label="CFG Zero below this Layer (Extra Process)", visible = any_cfg_zero, show_reset_button= False) 
 
                         with gr.Column(visible = v2i_switch_supported and image_outputs) as min_frames_if_references_col:
-                            gr.Markdown("<B>Generating a single Frame alone may not be sufficient to preserve Reference Image Identity / Control Image Information or simply to get a good Image Quality. A workaround is to generate a short Video and keep the First Frame.")
+                            gr.Markdown("<B>WanGP normally runs the shortest model-compatible generation and keeps its first frame. Generating additional frames may improve still-image quality or preserve Reference / Control Image details, at extra generation cost.</B>")
                             _, _, temporal_latent = get_model_min_frames_and_step(base_model_type)
                             temporal_latent = max(1, int(temporal_latent or 1))
-                            frame_counts = [temporal_latent * index + 1 for index in range(1, 5)]
-                            speed_labels = ("x1.5", "x2.0", "x2.5", "x3.0")
-                            image_mode_video_frame_choices = [("Disabled, generate only one Frame", 1)]
-                            image_mode_video_frame_choices += [(f"Generate a {frame_count} Frames long Video only if any Reference Image / Control Image ({speed} slower)", frame_count) for frame_count, speed in zip(frame_counts, speed_labels)]
-                            image_mode_video_frame_choices += [(f"Generate always a {frame_count} Frames long Video ({speed} slower)", 1000 + frame_count) for frame_count, speed in zip(frame_counts, speed_labels)]
+                            frames_offset = max(0, int(model_def.get("frames_offset", 1)))
+                            first_frame_count = frames_offset if frames_offset > 1 else temporal_latent + frames_offset
+                            frame_counts = [first_frame_count + temporal_latent * index for index in range(4)]
+                            image_mode_video_frame_choices = [("Shortest generation, keep only the First Frame", 1)]
+                            image_mode_video_frame_choices += [(f"Generate {frame_count} Frames and keep the First only when using a Reference / Control Image", frame_count) for frame_count in frame_counts]
+                            image_mode_video_frame_choices += [(f"Always generate {frame_count} Frames and keep the First", 1000 + frame_count) for frame_count in frame_counts]
                             min_frames_if_references_value = ui_get("min_frames_if_references", frame_counts[1] if vace else 1)
                             if min_frames_if_references_value not in {choice[1] for choice in image_mode_video_frame_choices}:
                                 min_frames_if_references_value = 1
@@ -12054,7 +12146,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 value=min_frames_if_references_value,
                                 visible=True,
                                 scale = 1,
-                                label="Generate more frames to preserve Reference Image Identity / Control Image Information or improve"
+                                label="Generate additional frames before keeping the first image"
                             )
 
                         with gr.Column(visible = get_container_def("motion_amplitude_col").visible and not image_outputs) as motion_amplitude_col:
@@ -12202,12 +12294,16 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     )
 
                     gr.Markdown("<B>You can set a different Attention Mode to improve the quality / compatibility<B>")
+                    override_attention_choices = [("Default Attention Mode", "")] + attention_modes_choices
+                    if model_def.get("sol_attention", False):
+                        sol_status = ATTENTION_MODE_AVAILABILITY["sol"]
+                        sol_label = "AVAILABLE" if sol_status["supported"] else ("NOT SUPPORTED" if sol_status["installed"] else "NOT INSTALLED")
+                        override_attention_choices.append((f"sol ({sol_label}): Sol sparse attention, requires Triton and RTX 40xx or newer", "sol"))
                     override_attention = gr.Dropdown(
-                        choices=[("Default Attention Mode", "")] + attention_modes_choices,
+                        choices=override_attention_choices,
                         value=ui_get("override_attention"),
                         label=f"Override Attention Mode"
                     )
-
                     with gr.Column():
                         gr.Markdown('<B>Customize the Output Filename using Settings Values (<I>date, seed, resolution, num_inference_steps, prompt, flow_shift, video_length, guidance_scale</I>). For Instance:<BR>"<I>{date(YYYY-MM-DD_HH-mm-ss)}_{seed}_{prompt(50)}, {num_inference_steps}</I>"</B>')
                         output_filename = gr.Text( label= " Output Filename ( Leave Blank for Auto Naming)", value= ui_get("output_filename"))
@@ -12217,12 +12313,13 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     config_value = model_config_groups.normalize_config_selection(config_groups, ui_get("config"))
                     config_group_values = model_config_groups.split_config_selection(config_value)
                     config_group_labels = [model_config_groups.get_config_name(configs) for configs in config_groups]
+                    config_group_default_labels = [model_config_groups.get_default_label(configs) for configs in config_groups]
                     with gr.Column(any(grouped_model_configs)) as config_column:
-                        gr.Markdown('<B>You may pick a Variation of the Default Config (VAE Decoder, Text Encoder, may be different for instance)</B>')
+                        gr.Markdown('<B>You may pick a Variation of the Default Config (it may impact RAM/VRAM consumption or performance)</B>')
                         config_group_dropdowns = []
                         with gr.Row():
                             for index, group_configs in enumerate(grouped_model_configs):
-                                config_choices = [("Default", "")] + [(config_def.get("name", config_id), config_id) for config_id, config_def in group_configs]
+                                config_choices = [(config_group_default_labels[index], "")] + [(config_def.get("name", config_id), config_id) for config_id, config_def in group_configs]
                                 config_group_dropdowns.append(gr.Dropdown(choices=config_choices, value=config_group_values[index], visible=bool(group_configs), label=config_group_labels[index]))
                         config = gr.Text(value=config_value, interactive=False, visible=False)
 
@@ -12258,6 +12355,8 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
         with gr.Column(visible=(tab_id == 'generate')):
             if not update_form:
                 state = default_state if default_state is not None else gr.State(state_dict)
+                if tab_id == "generate" and header is not None:
+                    override_attention.change(fn=refresh_attention_header, inputs=[state, override_attention], outputs=[header], show_progress="hidden")
                 gen_status = gr.Text(interactive=False, label="Status", lines=1, max_lines=1, autoscroll=False)
                 main_bridge_elem_ids = tab_id == 'generate'
                 status_trigger = gr.Text(interactive= False, visible=False, elem_id="wangp_main_status_trigger" if main_bridge_elem_ids else None)
@@ -13185,7 +13284,7 @@ def create_ui():
                 with gr.Row():
                     with gr.Column():
                         with gr.Group(elem_classes="header-markdown-group"):
-                            description_html, header_html = generate_header(transformer_type, compile, attention_mode)
+                            description_html, header_html = generate_header(transformer_type, compile, attention_mode, get_default_settings(transformer_type).get("override_attention", ""))
                             model_description = gr.HTML(description_html, visible= True)
                             header = gr.Markdown(header_html, visible= True)
                     if stats_app is not None:

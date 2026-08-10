@@ -140,6 +140,7 @@ class model_factory:
             dit,
             model_filename,
             writable_tensors=False,
+            default_dtype=torch.bfloat16,
             preprocess_sd=_preprocess_dit_state_dict,
         )
         offload.change_dtype(dit, dtype, True)

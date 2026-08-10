@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 
 DEFAULT_SOURCE = Path(r"MiniMax-H3-FL2VA_bf16.safetensors")
-DEFAULT_OUTPUT = Path(r"MiniMax-H3-FL2VA-pruned_bf16.safetensors")
+DEFAULT_OUTPUT = Path(r"MiniMax-H3-FL2VA-pruned_rank8_bf16.safetensors")
 TIME_SUFFIX = "time_embedder.proj_in.weight"
 TABLE_SUFFIX = "adaln_t_table"
 ADALN_WEIGHT_SUFFIX = ".adaln_proj.linear.weight"
@@ -269,8 +269,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--grid", type=int, default=1001)
-    parser.add_argument("--rank", type=int, default=64)
+    parser.add_argument("--grid", type=int, default=1025)
+    parser.add_argument("--rank", type=int, default=8)
     parser.add_argument("--row-chunk", type=int, default=2048)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--verify-only", action="store_true")

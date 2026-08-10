@@ -324,7 +324,7 @@ class Inference(object):
                     config = json.load(f)
                 upsampler = upsampler_cls(**config)
                 upsampler.target_size = upsampler_target_size  
-                offload.load_model_data(upsampler, upsampler_checkpoint, writable_tensors= False)
+                offload.load_model_data(upsampler, upsampler_checkpoint, writable_tensors=False, default_dtype=None)
 
             vae_configpath = fl.locate_file("hunyuan_video_1_5_VAE.json")
             vae_filepath =  fl.locate_file("hunyuan_video_1_5_VAE_fp32.safetensors")
@@ -334,7 +334,7 @@ class Inference(object):
             from accelerate import init_empty_weights
             with init_empty_weights():
                 vae = AutoencoderKLConv3D(**config)
-            offload.load_model_data(vae, vae_filepath, writable_tensors=False)
+            offload.load_model_data(vae, vae_filepath, writable_tensors=False, default_dtype=None)
             vae = vae.to("cpu")
             s_ratio = t_ratio = 1
             vae._model_dtype =  torch.float32 if VAE_dtype == torch.float32 else  torch.float16

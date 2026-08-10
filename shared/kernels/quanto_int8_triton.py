@@ -34,7 +34,7 @@ _ENV_AUTOTUNE_VALIDATE = "WAN2GP_QUANTO_INT8_AUTOTUNE_VALIDATE"
 _ENV_AUTOTUNE_MAX_ABS_ERR = "WAN2GP_QUANTO_INT8_AUTOTUNE_MAX_ABS_ERR"
 _ENV_AUTOTUNE_MAX_REL_ERR = "WAN2GP_QUANTO_INT8_AUTOTUNE_MAX_REL_ERR"
 _ENV_AUTOTUNE_LOCK_FUSED_BLOCK_K = "WAN2GP_QUANTO_INT8_AUTOTUNE_LOCK_FUSED_BLOCK_K"
-_IS_AVAILABLE = None
+_IS_AVAILABLE = {}
 _CONFIG_LEN = 5
 _AUTOTUNE_CACHE_VERSION = 2
 _AUTOTUNE_CACHE_LOADED = False
@@ -156,11 +156,11 @@ def set_autotune_debug(enabled: Optional[bool] = None) -> None:
     _AUTOTUNE_DEBUG_OVERRIDE = None if enabled is None else bool(enabled)
 
 
-def _runtime_compatible() -> bool:
+def _runtime_compatible(device=None) -> bool:
     if not (_TRITON_AVAILABLE and torch.cuda.is_available()):
         return False
     try:
-        cc_major, _ = torch.cuda.get_device_capability()
+        cc_major, _ = torch.cuda.get_device_capability(device)
     except Exception:
         return False
 
@@ -176,11 +176,14 @@ def _runtime_compatible() -> bool:
     return True
 
 
-def is_available() -> bool:
-    global _IS_AVAILABLE
-    if _IS_AVAILABLE is None:
-        _IS_AVAILABLE = bool(_runtime_compatible() and _env_flag(_ENV_ENABLE, "1"))
-    return _IS_AVAILABLE
+def is_available(device=None) -> bool:
+    if not torch.cuda.is_available():
+        return False
+    device_index = torch.cuda.current_device() if device is None else torch.device(device).index
+    device_index = torch.cuda.current_device() if device_index is None else device_index
+    if device_index not in _IS_AVAILABLE:
+        _IS_AVAILABLE[device_index] = bool(_runtime_compatible(device) and _env_flag(_ENV_ENABLE, "1"))
+    return _IS_AVAILABLE[device_index]
 
 
 def _select_static_triton_int8_config(m: int, k: int, n: int) -> tuple[int, int, int, int, int]:
@@ -1283,6 +1286,7 @@ def scaled_int8_mm(
     a_scale: torch.Tensor,
     b_scale: torch.Tensor,
     out_dtype: Optional[torch.dtype] = None,
+    out: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     if not is_available():
         raise RuntimeError("Triton backend not available")
@@ -1312,7 +1316,10 @@ def scaled_int8_mm(
         b_scale = b_scale.contiguous()
 
     out_dtype = out_dtype or torch.bfloat16
-    out = torch.empty((m, n), device=a_int8.device, dtype=out_dtype)
+    if out is None:
+        out = torch.empty((m, n), device=a_int8.device, dtype=out_dtype)
+    elif out.shape != (m, n) or out.device != a_int8.device or out.dtype != out_dtype:
+        raise RuntimeError(f"Invalid scaled_int8_mm output tensor: expected {(m, n)} {out_dtype} on {a_int8.device}, got {tuple(out.shape)} {out.dtype} on {out.device}")
     a_int8_c = a_int8 if a_int8.is_contiguous() else a_int8.contiguous()
     b_int8_c = b_int8 if b_int8.is_contiguous() else b_int8.contiguous()
     a_scale_c = a_scale if a_scale.is_contiguous() else a_scale.contiguous()

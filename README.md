@@ -64,7 +64,62 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 ## 🔥 Latest Updates : 
 
-## 3rd of August 2026: WanGP v12.41, No Time for Taglines
+## 9th of August 2026: WanGP v12.45, Meet The One
+
+**MiniMax H3 had all that potential waiting to be unleashed. We found the keys.**
+
+- **Sliding Windows / Continue Video:** both *FL2VA* and *Ref2VA* can now build longer videos. WanGP carries the previous window's closing motion and matching audio into the next one. Most importantly, overlap is no longer limited to a single frame: using multiple overlap frames gives H3 real motion and sound context across the join, delivering much smoother transitions.
+
+- **Start Image / End Image for Ref2VA:** launch a new shot from a chosen image, aim for a specific ending, or give a continued video the destination it deserves. Ref2VA preserves its selected reference memories across every Sliding Window, so later windows can keep following the same people, places, motion, and sound.
+
+- **Frames Injection in FL2VA:** place several selected images at exact moments in an FL2VA video. Enter frame positions for precise timing or `L` for the end of a sliding-window segment—digital storyboarding without the sticky notes.
+
+- **Audio Source:** FL2VA can create everything from text, follow an uploaded soundtrack, use a Control Video with its original audio, or keep the video unchanged while composing a new soundtrack. Full-length source audio is preserved in the final file; if it runs out early, H3 takes over instead of serving silence.
+
+- **Spectrum v0.2.1 with offline replay:** H3 Spectrum now captures a clean accelerated trajectory and performs a transformer-free smoothing replay. Video and audio are reconstructed independently for better audio quality.
+
+- **Control Video / Denoising Strength:** FL2VA can stay close to a Control Video or wander further from it as the strength increases. At `1.0` with *Whole Frame*, the visual control is unnecessary, so WanGP skips the extra work—your GPU may now take a very short coffee break.
+
+- **Video Mask / Masking Strength:** choose *Whole Frame*, *Masked Area*, or *Non Masked Area* to decide where FL2VA may make changes and how firmly the remaining picture should follow the original.
+
+
+> **Best practices for longer H3 videos**
+> **For a multi-sequence video →** Direct it window by window: give each part its own prompt and duration, connect it smoothly with overlap, or use `[/new_shot]` for a hard cut. WanGP hands you the clapperboard instead of deciding where the story changes. Please check the Prompt Inline Help for the syntax.
+> **For one very long continuous shot →** Use one Start Image followed by several End Images. Each End Image becomes the destination of a later Sliding Window, guiding the action from one visual milestone to the next. This works with both FL2VA and Ref2VA.
+
+**Bonus:**  
+- **Wan2.2 Animate 2**. *Animate* is back—and it wants to reclaim the crown *Scail 2* snatched away. Give it a character image and a driving video, and it will make that character follow the video's movements, expressions, and camera action: dance routines, performances, gestures, fashion clips, creature animation, and more.
+
+*update 12.45*: spectrum upgraded, animate 2
+
+## 6th of August 2026: WanGP v12.434, Cache Me If You Can
+
+**MiniMax H3 shifts up a gear!**
+
+H3 now has new accelerators and RAM shrinkers. Pick one or stack them—the exact gain depends on your video, hardware, and settings.
+
+- **First Block Cache:** under *Advanced Mode / Steps Skipping*, H3 runs the first block and reuses the remaining blocks' previous result when little has changed—think TeaCache's cool cousin, driven by the first block's output. *Balanced (0.08)* is the upstream default; higher thresholds can skip more work and go faster, with a possible trade in motion or fine detail. The cache is tuned to add very little VRAM overhead. And yes, *Skip Steps starting moment in % of generation* means exactly what it says: it chooses when skipping may begin, not an acceleration factor.
+
+- **Sol-Attn:** under *Advanced Mode / Misc. / Override Attention Mode*, sparse attention speeds up large visual sequences. It requires BF16, Triton 3.6+, and a compatible NVIDIA GPU (RTX 40/50-series, H100/H200, or B100/B200). Expected gains range from 10–20% on RTX 40-series to around 30% on RTX 50-series, with a possible small quality trade-off.
+
+- **Mix and match:** *Spectrum* and *First Block Cache* are alternative step-skipping modes. Sol-Attn can technically run with either, but stacking approximations may reduce quality and should be checked with the same seed before relying on the combination.
+
+- **Lower-RAM Video VAE:** select *FP8 Mixed Precision* under *Advanced Mode / Misc. / Video VAE* to reduce the RAM occupied by H3's Video VAE weights. Thanks to *Kijai* for creating this quantized VAE.
+
+- **New W4A8 INT8 support:** H3 can now load asymmetric W4A8 checkpoints. Their 4-bit weights reduce checkpoint size and system RAM use, while 8-bit activations use optimized INT8 kernels on compatible NVIDIA GPUs (RTX 30-series or newer). Seriously short on RAM? Look for compatible community H3 W4A8/Q4 or NVFP4 checkpoints already available online. See *docs/FINETUNES.md* to add them to WanGP—and don't forget to share the finetune files you create on the Discord server!
+
+- **Ref2VA tune-up:** this one is on me—I followed the original implementation and could end up feeding H3 a 4K reference image for a 480p video. Great for detail, less great for your stopwatch! You can now choose the reference-image pixel budget from 50% to 400%: lower is faster, 100% matches the output, and higher favors fidelity. The immediate payoff: **WanGP H3 Ref2VA is now twice as fast as before.**
+
+- **New control-video choices:** use a *Reference Video* to reuse subjects, appearance, or motion without changing the output size; *Depth Control* to guide the scene's depth and layout; or *Generic Control* to feed the clip directly to H3. Control videos define the output canvas, while reference videos do not.
+
+- **No LoRA Lost in Translation:** Pruned and non-pruned models can now read either LoRA format—the translation happens automatically as they load. Pruned (4 rank) LoRAs can also be used on original WanGP pruned checkpoints (rank 64) if you still use them.
+
+- **LoRAs Accelerators**: kudos to *Lightx2v* and *larryvrh* for delivering the first *LoRAs accelerators* for Minimax H3. You will find them in WanGP as predefined profiles in the *Settings* dropdown box at the top. You may need to increase the number of steps to 8 if not happy with the quality and / or to play with the *LoRA multiplier* (default is 0.5 as 1.0 seems too strong)
+
+*Update v12.431 + Update v12.432*: more LoRAs format supported, fixed NVFP4 Format, on the fly LoRA conversion of Non Pruned Loras\
+*Update v12.433 + Update v12.434*: even more LoRAs format and quantization supported, LoRAs accelerators
+
+## 5th of August 2026: WanGP v12.42, No Time for Taglines
 
 **MiniMax H3**
 
@@ -76,13 +131,24 @@ But rejoice WanGP version is as usual Ultra Optimized: **5-6GB of VRAM only for 
 
 - **MiniMax H3 FL2VA: create or continue a shot**: choose this version to generate synchronized video and stereo audio from text alone, start from an image or the last frame of a previous video, target an end image, or constrain both ends of the shot. It also supports longer generations with sliding windows.
 
-- **MiniMax H3 Ref2VA: reuse people, scenes, motion, or voices**: choose this version when the new video should follow *Reference Images*, *Reference Videos*, or *Reference Audio*. References guide the newly generated result rather than becoming fixed frames; this version does not support sliding windows.
+- **MiniMax H3 Ref2VA: reuse people, scenes, motion, or voices**: choose this version when the new video should follow *Reference Images*, *Reference Videos*, or *Reference Audio*. References guide the newly generated result rather than becoming fixed frames, and remain available across sliding windows.
 
 Both flavours offer the same controls in full 33B and lighter pruned 20B versions.
 
-If you are short on RAM, check the *Advanced / Misc* Tab, you will find at the bottom a selection of quantized text encoders. 
+- **Spectrum step skipping**: Spectrum can make MiniMax H3 generation substantially faster, with a modest potential quality tradeoff. Its default offline replay retains every actual-step anchor in system RAM, reconstructs skipped steps from bracketing and spectral estimates, and keeps audio on local interpolation. Enable it under *Advanced Mode / Steps Skipping* by setting *Skip Steps Cache Type* to *Spectrum Feature Forecasting*.
 
-*WanGP v12.41*: add selection quantized text encoders
+- **Spatial upsampler improvements**: high-resolution MiniMax H3 generation can be slow, so a practical alternative is to generate at a lower resolution, such as 480p, and upscale the result afterward.
+ - **FlashVSR optimizations**: FlashVSR has been further optimized to reduce system RAM usage.
+ - **SeedVR2**: this high-quality image and video upsampler previously required too much VRAM for longer videos on many consumer GPUs. The WanGP integration reduces its VRAM requirement to roughly one-third of the original implementation. SeedVR2 is available under *Advanced Mode / Post Processing*, in *Late Post Processing*, and through the *Media Flow* plugin.
+
+- **Memory priority**: MiniMax H3 defaults to *Lower VRAM*. If system RAM is the limiting factor and you have spare VRAM, select *Lower RAM* under *Advanced Mode / Misc. / Priority*.
+
+- **Updated pruned checkpoints**: WanGP now uses ComfyUI-compatible pruned H3 checkpoints so upcoming H3 LoRAs can work with both applications. The previous WanGP-specific checkpoints were slightly less compressed and offered a small, usually imperceptible quality advantage. Existing installations will download the replacement files after upgrading. The old checkpoints are not removed automatically; keep them only if you plan to create finetunes from them, otherwise they can be deleted. The replacements require about 1 GB less disk space and system RAM.
+
+- **Lower-RAM text encoders**: if system RAM is limited, open *Advanced Mode / Misc. / Text Encoder* and select one of the quantized Qwen3-VL variants.
+
+*WanGP v12.41*: Added quantized text-encoder selection.\
+*WanGP v12.42*: Added Spectrum, SeedVR2, the memory-priority selector, and updated pruned checkpoints.
 ## 25th of July 2026: Featured Plugins / Apps
 
 WanGP's growing community has developed more than 20 plugins that expand what you can do. Here is a selection of seven newly available community plugins, all of which can be installed or updated directly from the WanGP Plugin Manager:
@@ -422,7 +488,7 @@ This automated script will:
 
 ### Nvidia
 For detailed installation instructions for different GPU generations:
-- **[Installation Guide](docs/INSTALLATION.md)** - Complete setup instructions for RTX 10XX to RTX 50XX
+- **[Installation Guide](docs/INSTALLATION.md)** - Complete setup instructions for GTX 10XX, RTX 20XX to RTX 50XX
 
 ### AMD
 For detailed installation instructions for different GPU generations:

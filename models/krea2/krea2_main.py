@@ -698,7 +698,7 @@ def _load_vae(filename, config_path, dtype, upsampler_factor=1, preprocess_sd=No
     config["upsampler_factor"] = upsampler_factor
     with init_empty_weights(include_buffers=True):
         vae = AutoencoderKLQwenImage(**config)
-    offload.load_model_data(vae, filename, writable_tensors=False, default_dtype=dtype, preprocess_sd=preprocess_sd)
+    offload.load_model_data(vae, filename, writable_tensors=False, default_dtype=None, preprocess_sd=preprocess_sd)
     vae.eval().requires_grad_(False)
     return vae
 

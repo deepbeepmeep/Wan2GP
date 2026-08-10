@@ -128,7 +128,7 @@ class LongCatModel:
         model_path = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename
         if model_path is None:
             raise ValueError("Missing LongCat transformer weights path.")
-        offload.load_model_data(transformer, model_path, writable_tensors=False)
+        offload.load_model_data(transformer, model_path, writable_tensors=False, default_dtype=torch.bfloat16)
         transformer._model_dtype = dtype
         transformer.eval().requires_grad_(False)
         self.transformer = transformer

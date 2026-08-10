@@ -74,7 +74,7 @@ def create_byt5(args, device):
     # xsd = torch.load( os.path.dirname( args["byT5_ckpt_path"]) + "/pytorch_model.bin")
     # Load custom checkpoint if provided
     from mmgp import offload
-    offload.load_model_data(byt5_model, args['byT5_ckpt_path'], writable_tensors= False)
+    offload.load_model_data(byt5_model, args['byT5_ckpt_path'], writable_tensors=False, default_dtype=None)
     
     if args['byT5_ckpt_path'] is not None and False:
         if "cuda" not in str(device):

@@ -227,5 +227,5 @@ def load_selected_matanyone_model(server_config=None):
     from ..matanyone.model.matanyone import MatAnyone
 
     model = MatAnyone(OmegaConf.create(config_data["cfg"]), single_object=config_data.get("single_object", True)).eval()
-    offload.load_model_data(model, weights_path, writable_tensors=False)
+    offload.load_model_data(model, weights_path, writable_tensors=False, default_dtype=None)
     return model, get_selected_matanyone_version(server_config), weights_path

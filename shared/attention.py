@@ -23,6 +23,17 @@ except:
     triton_installed = False
 
 
+# Model-specific attention modes exposed only by per-generation overrides.
+# Keep these out of get_attention_modes() so they never appear in the main
+# application attention configuration.
+ATTENTION_MODE_AVAILABILITY = {
+    "sol": {
+        "installed": triton_installed,
+        "supported": triton_installed and (major, minor) >= (8, 9),
+    },
+}
+
+
 try:
     from xformers.ops import memory_efficient_attention
 except ImportError:
@@ -255,6 +266,14 @@ def get_supported_attention_modes():
     return ret
 
 
+def get_override_attention_modes():
+    return get_attention_modes() + [mode for mode, status in ATTENTION_MODE_AVAILABILITY.items() if status["installed"]]
+
+
+def get_supported_override_attention_modes():
+    return get_supported_attention_modes() + [mode for mode, status in ATTENTION_MODE_AVAILABILITY.items() if status["supported"]]
+
+
 def get_default_attention_mode():
     for attn in ("sage2", "sage", "sdpa"):
         if attn in get_supported_attention_modes():
@@ -312,9 +331,12 @@ def attention_config_shared_state(attention_mode=None, resolver=resolve_attentio
             offload.shared_state["_attention"] = previous
 
 __all__ = [
+    'ATTENTION_MODE_AVAILABILITY',
     'attention_config_shared_state',
     'attention_shared_state',
     'get_current_cuda_architecture',
+    'get_override_attention_modes',
+    'get_supported_override_attention_modes',
     'resolve_attention_mode',
     'pay_attention',
     'attention',
@@ -357,6 +379,7 @@ def pay_attention(
         raise ValueError("pay_attention received both attention_mask and causal=True; build a combined mask once and pass causal=False.")
     if attention_mask != None:
         requested_attn = offload.shared_state["_attention"] if force_attention == None else force_attention
+        requested_attn = get_default_attention_mode() if requested_attn == "sol" else requested_attn
         requested_attn = "sage2" if requested_attn == "radial" else requested_attn
         support_reason = None
         if _is_mps:
@@ -374,6 +397,7 @@ def pay_attention(
         if  attention_mask.dtype == torch.bfloat16 and not bfloat16_supported:
             attention_mask = attention_mask.to(torch.float16)
     attn = offload.shared_state["_attention"] if force_attention== None else force_attention
+    attn = get_default_attention_mode() if attn == "sol" else attn
 
     q,k,v = qkv_list
     qkv_list.clear()

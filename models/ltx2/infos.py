@@ -112,6 +112,34 @@ Result: the reference voice workflow uses your ID-LoRA file and weight.
 ```
 """
 
+LTX2_25_INFOS = """
+# LTX-2.5 Workflows
+
+LTX-2.5 generates synchronized video and audio from a text prompt. Both the Dev and the faster 8-step Distilled checkpoints are available.
+
+## Available Conditioning
+
+- Text to video with a generated soundtrack.
+- Start Image and End Image keyframes.
+- Video continuation and sliding-window generation.
+- Audio Prompt conditioning, including audio extracted from a Control Video.
+- Raw Control Video conditioning and audio generation from a Control Video.
+- Reference-frame injection at selected frame positions.
+- Text to image and image to image through WanGP's image mode.
+
+## Audio Options
+
+- `Generate Video & Soundtrack based on Text Prompt`: generates synchronized visuals and audio from the prompt.
+- `Generate Video based on Soundtrack and Text Prompt`: uses an uploaded Audio Prompt to guide timing, speech, music, and sound events.
+- `Generate Video based on Control Video + its Audio Track and Text Prompt`: extracts and uses the Control Video soundtrack.
+- `Generate Audio based on Control Video and Text Prompt`: uses the raw Control Video as visual conditioning while generating its soundtrack.
+
+## LoRAs Support
+
+LTX-2.0/2.3 LoRAs are not compatible with LTX-2.5. Consequently, the LTX-2.5 UI does not offer the old LoRA-driven pose, depth, canny, HDR, inpainting, outpainting, Ingredients, ID/voice-cloning, EditAnything, or MSR workflows. 
+
+"""
+
 LTX2_MSR_INFOS = """
 # LTX2 Multiple Subject Reference
 

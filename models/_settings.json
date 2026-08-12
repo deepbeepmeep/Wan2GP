@@ -21,7 +21,8 @@
 	"speakers_locations": "0:45 55:100",
 	"prompt_enhancer": "",
 	"custom_settings": {
-		"scail2_inject_ref_frames_in_video": "No"
+		"scail2_inject_ref_frames_in_video": "No",
+		"animate2_kv_cache": "Disabled"
 	},
 	"resolution": "832x480",
 	"batch_size": 1,

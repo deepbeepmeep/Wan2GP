@@ -8,15 +8,16 @@ class LTXVGemmaTokenizer:
     ensuring correct settings and output formatting for downstream consumption.
     """
 
-    def __init__(self, tokenizer_path: str, max_length: int = 256):
+    def __init__(self, tokenizer_path: str, max_length: int = 256, fix_mistral_regex: bool = False):
         """
         Initialize the tokenizer.
         Args:
             tokenizer_path (str): Path to the pretrained tokenizer files or model directory.
             max_length (int, optional): Max sequence length for encoding. Defaults to 256.
         """
+        kwargs = {"extra_special_tokens": {"video_token": "<|video|>"}} if fix_mistral_regex else {}
         self.tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_path, local_files_only=True, model_max_length=max_length
+            tokenizer_path, local_files_only=True, model_max_length=max_length, fix_mistral_regex=fix_mistral_regex, **kwargs
         )
         # Gemma expects left padding for chat-style prompts; for plain text it doesn't matter much.
         self.tokenizer.padding_side = "left"

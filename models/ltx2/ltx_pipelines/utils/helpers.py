@@ -688,6 +688,7 @@ def euler_denoising_loop(
     self_refiner_handler=None,
     self_refiner_handler_audio=None,
     self_refiner_generator: torch.Generator | None = None,
+    ancestral_noise_generator: torch.Generator | None = None,
 ) -> tuple[LatentState | None, LatentState | None]:
     """
     Perform the joint audio-video denoising loop over a diffusion schedule.
@@ -724,6 +725,13 @@ def euler_denoising_loop(
     cleanup = getattr(denoise_fn, "_cleanup", None)
     if callable(prewarm):
         prewarm(video_state, audio_state, sigmas)
+
+    def advance(state: LatentState, denoised: torch.Tensor, step_idx: int) -> torch.Tensor:
+        if ancestral_noise_generator is None:
+            return stepper.step(state.latent, denoised, sigmas, step_idx)
+        noise = torch.randn(state.latent.shape, generator=ancestral_noise_generator, device=state.latent.device, dtype=state.latent.dtype)
+        latent = stepper.step(state.latent, denoised, sigmas, step_idx, noise=noise)
+        return post_process_latent(latent, state.denoise_mask, state.clean_latent)
 
     try:
         for step_idx, _ in enumerate(tqdm(sigmas[:-1])):
@@ -850,9 +858,9 @@ def euler_denoising_loop(
                 if audio_state is not None:
                     audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio_final, sigmas, step_idx))
             else:
-                video_state = replace(video_state, latent=stepper.step(video_state.latent, denoised_video, sigmas, step_idx))
+                video_state = replace(video_state, latent=advance(video_state, denoised_video, step_idx))
                 if audio_state is not None:
-                    audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio, sigmas, step_idx))
+                    audio_state = replace(audio_state, latent=advance(audio_state, denoised_audio, step_idx))
 
             if mask_context is not None:
                 _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
@@ -1105,6 +1113,7 @@ def modality_from_latent_state(
         attention_mask=state.attention_mask,
         cross_attention_mask=cross_attention_mask,
         frame_indices=frame_indices,
+        keyframes_mask=state.keyframes_mask,
         runtime_cache=runtime_cache,
         step_index=step_index,
         sigma_schedule=sigma_schedule,

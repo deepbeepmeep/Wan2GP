@@ -29,12 +29,17 @@ from .ltx_core.model.transformer import (
 )
 from .ltx_core.model.upsampler import LatentUpsamplerConfigurator
 from .ltx_core.model.video_vae import VideoDecoderConfigurator, VideoEncoderConfigurator
+from .ltx_core.model.video_vae.diffusion_video_decoder import DiffusionVideoDecoder
 from .ltx_core.text_encoders.gemma import (
+    AUDIO_EMBEDDINGS_CONNECTOR_KEY_OPS,
     GemmaTextEmbeddingsConnectorModelConfigurator,
+    GemmaTextEmbeddingsConnectorModel,
     TEXT_EMBEDDING_PROJECTION_KEY_OPS,
     TEXT_EMBEDDINGS_CONNECTOR_KEY_OPS,
+    VIDEO_EMBEDDINGS_CONNECTOR_KEY_OPS,
     build_gemma_text_encoder,
 )
+from .ltx_core.text_encoders.gemma.embeddings_connector import AudioEmbeddings1DConnectorConfigurator, Embeddings1DConnectorConfigurator
 from .ltx_core.text_encoders.gemma.feature_extractor import GemmaFeaturesExtractorProjLinear
 from .ltx_core.model.video_vae import SpatialTilingConfig, TemporalTilingConfig, TilingConfig
 from .ltx_core.types import AudioLatentShape, VideoPixelShape
@@ -252,6 +257,58 @@ def _make_vae_postprocess(prefix: str):
         return _split_vae_state_dict(state_dict, prefix)
 
     return postprocess
+
+
+def _split_diffusion_vae_state_dict(state_dict: dict, prefix: str):
+    new_sd = {}
+    for key, value in state_dict.items():
+        key = _strip_model_prefix(key)
+        if key.startswith(prefix):
+            key = key[len(prefix):]
+        elif not key.startswith(("encoder.", "decoder.", "per_channel_statistics.")):
+            continue
+        if key == "decoder.type_emb":
+            continue
+        if key.startswith("per_channel_statistics."):
+            suffix = key[len("per_channel_statistics."):]
+            new_sd[f"encoder.per_channel_statistics.{suffix}"] = value.clone()
+            new_sd[f"decoder.per_channel_statistics.{suffix}"] = value.clone()
+        elif key.startswith("decoder.t_embedder.mlp.0."):
+            new_sd[key.replace("decoder.t_embedder.mlp.0.", "decoder.t_embedder.timestep_embedder.linear_1.")] = value
+        elif key.startswith("decoder.t_embedder.mlp.2."):
+            new_sd[key.replace("decoder.t_embedder.mlp.2.", "decoder.t_embedder.timestep_embedder.linear_2.")] = value
+        elif ".attn.qkv." in key:
+            prefix_key, suffix = key.split(".attn.qkv.", 1)
+            q, k, v = value.chunk(3, dim=0)
+            new_sd[f"{prefix_key}.attn.qkv.to_q.{suffix}"] = q
+            new_sd[f"{prefix_key}.attn.qkv.to_k.{suffix}"] = k
+            new_sd[f"{prefix_key}.attn.qkv.to_v.{suffix}"] = v
+        else:
+            new_sd[key] = value
+    return new_sd, {}
+
+
+def _make_diffusion_vae_postprocess(prefix: str):
+    def postprocess(state_dict, quantization_map):
+        return _split_diffusion_vae_state_dict(state_dict, prefix)
+
+    return postprocess
+
+
+def _diffusion_vae_encoder_config(config: dict) -> dict:
+    encoder = config["vae"]["encoder"]
+    return {
+        "vae": {
+            "dims": encoder["dims"],
+            "in_channels": encoder["in_channels"],
+            "latent_channels": encoder["out_channels"],
+            "encoder_blocks": encoder["blocks"],
+            "patch_size": encoder["patch_size"],
+            "norm_layer": encoder["norm_layer"],
+            "latent_log_var": encoder["latent_log_var"],
+            "encoder_spatial_padding_mode": encoder["spatial_padding_mode"],
+        }
+    }
 
 
 class _AudioVAEWrapper(torch.nn.Module):
@@ -928,7 +985,10 @@ class LTX2:
                 video_config = copy.deepcopy(json.load(reader))
         else:
             video_config = copy.deepcopy(_component_config(video_vae_path))
-        if self.model_def.get("ltx2_pruna_vae", False):
+        diffusion_vae = video_config.get("vae", {}).get("_class_name") == "CausalDiffusionVAE"
+        if diffusion_vae:
+            print("[WanGP][LTX2] Loading NAD Diffusion Decoder.")
+        elif self.model_def.get("ltx2_pruna_vae", False):
             print("[WanGP][LTX2] Loading PrunaAI VAE (up to x2 faster).")
         video_config_vae = video_config.setdefault("vae", {})
         video_config_vae["spatial_padding_mode"] = "reflect"
@@ -936,10 +996,11 @@ class LTX2:
         video_config_vae["decoder_spatial_padding_mode"] = "reflect"
         # print("[LTX2 VAE Config] forcing encoder/decoder spatial_padding_mode=reflect")
         with init_empty_weights():
-            video_encoder = VideoEncoderConfigurator.from_config(video_config)
-            video_decoder = VideoDecoderConfigurator.from_config(video_config)
+            video_encoder = VideoEncoderConfigurator.from_config(_diffusion_vae_encoder_config(video_config) if diffusion_vae else video_config)
+            video_decoder = DiffusionVideoDecoder.from_config(video_config) if diffusion_vae else VideoDecoderConfigurator.from_config(video_config)
             video_vae = _VAEContainer(video_encoder, video_decoder)
-        video_vae = _load_component(video_vae, video_vae_path, postprocess=_make_vae_postprocess("vae."), ignore_unused_weights=True)
+        vae_postprocess = _make_diffusion_vae_postprocess("vae.") if diffusion_vae else _make_vae_postprocess("vae.")
+        video_vae = _load_component(video_vae, video_vae_path, postprocess=vae_postprocess, ignore_unused_weights=True)
         video_encoder = video_vae.encoder
         video_decoder = video_vae.decoder
 
@@ -965,11 +1026,26 @@ class LTX2:
             text_embedding_projection = GemmaFeaturesExtractorProjLinear.from_config(text_projection_config)
         text_embedding_projection = _load_component( text_embedding_projection, text_projection_path, TEXT_EMBEDDING_PROJECTION_KEY_OPS )
 
-        text_connector_path = _component_path("text_embeddings_connector")
-        text_connector_config = _component_config(text_connector_path)
-        with init_empty_weights():
-            text_embeddings_connector = GemmaTextEmbeddingsConnectorModelConfigurator.from_config(text_connector_config)
-        text_embeddings_connector = _load_component( text_embeddings_connector, text_connector_path, TEXT_EMBEDDINGS_CONNECTOR_KEY_OPS )
+        self.split_text_connectors = "video_embeddings_connector" in component_paths
+        if self.split_text_connectors:
+            video_connector_path = _component_path("video_embeddings_connector")
+            video_connector_config = _component_config(video_connector_path)
+            with init_empty_weights():
+                video_embeddings_connector = Embeddings1DConnectorConfigurator.from_config(video_connector_config)
+            video_embeddings_connector = _load_component(video_embeddings_connector, video_connector_path, VIDEO_EMBEDDINGS_CONNECTOR_KEY_OPS)
+
+            audio_connector_path = _component_path("audio_embeddings_connector")
+            audio_connector_config = _component_config(audio_connector_path)
+            with init_empty_weights():
+                audio_embeddings_connector = AudioEmbeddings1DConnectorConfigurator.from_config(audio_connector_config)
+            audio_embeddings_connector = _load_component(audio_embeddings_connector, audio_connector_path, AUDIO_EMBEDDINGS_CONNECTOR_KEY_OPS)
+            text_embeddings_connector = GemmaTextEmbeddingsConnectorModel(video_embeddings_connector, audio_embeddings_connector)
+        else:
+            text_connector_path = _component_path("text_embeddings_connector")
+            text_connector_config = _component_config(text_connector_path)
+            with init_empty_weights():
+                text_embeddings_connector = GemmaTextEmbeddingsConnectorModelConfigurator.from_config(text_connector_config)
+            text_embeddings_connector = _load_component(text_embeddings_connector, text_connector_path, TEXT_EMBEDDINGS_CONNECTOR_KEY_OPS)
 
         text_encoder = build_gemma_text_encoder(
             gemma_root,
@@ -1708,6 +1784,7 @@ class LTX2:
                 self_refiner_max_plans=self_refiner_max_plans,
                 editanything_ref_images=editanything_ref_images,
                 ltx2_22B_class=ltx2_22B_class,
+                use_ancestral_sampler=distill and self.base_model_type == "ltx2_25_22B",
                 **distilled_kwargs,
             )
 

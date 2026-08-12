@@ -127,16 +127,16 @@ pip install flash-attn==2.7.2.post1
 
 ## GGUF llama.cpp CUDA Kernels
 
-These kernels are used to accelerate GGUF models. 
+These kernels are used to accelerate GGUF models. The optimized FP16/BF16 modes described below currently require Windows wheel 1.0.7; matching Linux wheels will be provided later.
 
 ### GGUF Kernels Wheels for Python 3.11 / Pytorch 2.10 / Cuda 13
 
 - Windows
    ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.2+torch210cu13py311-cp311-cp311-win_amd64.whl
+  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.7+torch210cu13py311-cp311-cp311-win_amd64.whl
    ```
 
-- Linux
+- Linux (legacy 1.0.2; updated kernels TBD)
    ```
   pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.2+torch210cu13py311-cp311-cp311-linux_x86_64.whl
    ```
@@ -145,13 +145,36 @@ These kernels are used to accelerate GGUF models.
 
 - Windows
    ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.2+torch271cu128py310-cp310-cp310-win_amd64.whl
+  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.7+torch271cu128py310-cp310-cp310-win_amd64.whl
    ```
 
-- Linux
+- Linux (legacy 1.0.2; updated kernels TBD)
    ```
   pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.2+torch271cu128py310-cp310-cp310-linux_x86_64.whl
    ```
+
+### Windows FP16/BF16 matmul modes (wheel 1.0.7+)
+
+The default automatic policy keeps GGUF weights packed and uses native BF16 MMQ when BF16 is requested. To select a policy explicitly, set `WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE` before starting WanGP:
+
+- `fast`: use MMQ for small workloads and materialize larger matrices directly as FP16 or BF16 for cuBLAS.
+- `low_vram`: always multiply from packed GGUF weights with MMQ, without materializing a full dense weight matrix.
+
+For example, in Windows Command Prompt:
+
+```
+set WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE=fast
+python wgp.py
+```
+
+Or in PowerShell:
+
+```
+$env:WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE = "low_vram"
+python wgp.py
+```
+
+The setting is read when the kernel package loads. If it is changed inside an already-running Python process, call `llamacpp_gguf_cuda.refresh_env()` before the next generation. Set `WGP_GGUF_LLAMACPP_CUDA_BF16_FP16=1` only to restore the legacy behavior that computes automatic BF16 requests through FP16 cuBLAS. To disable the GGUF CUDA package entirely, set `WGP_GGUF_LLAMACPP_CUDA=0` before starting WanGP.
 
 ## INT4 / FP4 quantized support
 

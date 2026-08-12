@@ -36,6 +36,7 @@ class Modality:
     attention_mask: torch.Tensor | None = None
     cross_attention_mask: torch.Tensor | None = None
     frame_indices: torch.Tensor | None = None
+    keyframes_mask: torch.Tensor | None = None
     runtime_cache: LatentStateRuntimeCache | None = None
     step_index: int | None = None
     sigma_schedule: torch.Tensor | None = None

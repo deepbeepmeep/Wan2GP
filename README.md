@@ -64,6 +64,21 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 ## 🔥 Latest Updates : 
 
+## 12th of August 2026: WanGP v12.50, Jess is Back !
+
+**LTX 2.5. Jess is back, Dad is still in the garden, and this time the camera crew brought an upgrade.**
+
+- **LTX 2.5 Visual Quality Upgrade:** expect sharper details, better visual consistency, and cleaner results than with LTX 2.3.
+
+- **A new VAE decoder to play with:** the Original (much Faster) VAE remains the default, while the optional NAD Diffusion Decoder trades speed and VRAM for higher quality. NAD also works with LTX 2.3 and uses its Triton accelerator when supported.
+
+- **A clean break from 2.3:** LTX 2.5 models and LoRAs are not compatible with LTX 2.3, so they get separate LoRA folders.  
+
+Dev and Distilled are available in BF16 and INT8 ConvRot, while Distilled also gets an NVFP4 option for compatible NVIDIA hardware. Shared embedders are reused instead of being duplicated inside every checkpoint, saving both disk space and RAM.
+
+**Bonus:**  
+- **Wan2.2 Animate 2 Cache**: up to 50% faster thanks to VRAM or RAM cache
+
 ## 9th of August 2026: WanGP v12.45, Meet The One
 
 **MiniMax H3 had all that potential waiting to be unleashed. We found the keys.**

@@ -6,7 +6,7 @@ from contextlib import contextmanager
 
 import torch
 
-from ..ltx_core.components.diffusion_steps import EulerDiffusionStep
+from ..ltx_core.components.diffusion_steps import EulerAncestralDiffusionStep, EulerDiffusionStep
 from ..ltx_core.components.noisers import GaussianNoiser
 from ..ltx_core.components.protocols import DiffusionStepProtocol
 from ..ltx_core.loader import LoraPathStrengthAndSDOps
@@ -255,6 +255,7 @@ class DistilledPipeline:
         self_refiner_max_plans: int = 1,
         editanything_ref_images=None,
         ltx2_22B_class: bool = False,
+        use_ancestral_sampler: bool = False,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         joyai_echo = self._joyai_echo or {}
         return_joyai_memory = bool(joyai_echo.get("return_latents"))
@@ -265,7 +266,8 @@ class DistilledPipeline:
         generator = torch.Generator(device=self.device).manual_seed(seed)
         mask_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 1)
         noiser = GaussianNoiser(generator=generator)
-        stepper = EulerDiffusionStep()
+        stepper = EulerAncestralDiffusionStep() if use_ancestral_sampler else EulerDiffusionStep()
+        ancestral_noise_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 10000) if use_ancestral_sampler else None
         self_refiner_handler = None
         self_refiner_handler_audio = None
         self_refiner_handler_stage2 = None
@@ -474,6 +476,7 @@ class DistilledPipeline:
                 transformer=transformer,
                 self_refiner_handler=self_refiner_handler,
                 self_refiner_handler_audio=self_refiner_handler_audio,
+                ancestral_noise_generator=ancestral_noise_generator,
                 self_refiner_generator=generator,
             )
 
@@ -587,8 +590,10 @@ class DistilledPipeline:
             if return_latent_slice is not None:
                 latent_slice = video_state.latent[:, :, return_latent_slice].detach().to("cpu")
             if frozen_output_video is None:
+                video_latent = [video_state.latent]
+                video_state = None
                 decoded_video = vae_decode_video_to_tensor(
-                    video_state.latent,
+                    video_latent,
                     self._get_model("video_decoder"),
                     tiling_config,
                     expected_frames=int(stage_1_output_shape.frames),
@@ -597,6 +602,7 @@ class DistilledPipeline:
                     interrupt_check=interrupt_check,
                     hdr_transform=hdr_transform,
                     output_dtype=torch.float16 if hdr_transform is not None else None,
+                    generator=generator,
                 )
             else:
                 decoded_video = frozen_output_video[:, :num_frames, :height, :width].permute(1, 2, 3, 0)
@@ -611,6 +617,7 @@ class DistilledPipeline:
                 return decoded_video, decoded_audio, latent_slice
             return decoded_video, decoded_audio
 
+        stepper = EulerDiffusionStep()
         stage_2_sigma_values = DISTILLED_8_STEPS_STAGE_2_SIGMA_VALUES if LTX23_USE_DISTILLED_8_STEPS_STAGE_2_SIGMAS and ltx2_22B_class else STAGE_2_DISTILLED_SIGMA_VALUES
         stage_2_sigmas = torch.Tensor(stage_2_sigma_values).to(self.device)
         upscaled_video_latent = upsample_video(
@@ -809,9 +816,17 @@ class DistilledPipeline:
         latent_slice = None
         if return_latent_slice is not None:
             latent_slice = video_state.latent[:, :, return_latent_slice].detach().to("cpu")
+        phase_2_memory_latents = None
+        if return_joyai_memory:
+            phase_2_memory_latents = {
+                "video": video_state.latent.detach().cpu(),
+                "audio": audio_state.latent.detach().cpu() if audio_state is not None else None,
+            }
         if frozen_output_video is None:
+            video_latent = [video_state.latent]
+            video_state = None
             decoded_video = vae_decode_video_to_tensor(
-                video_state.latent,
+                video_latent,
                 self._get_model("video_decoder"),
                 tiling_config,
                 expected_frames=int(stage_2_output_shape.frames),
@@ -820,6 +835,7 @@ class DistilledPipeline:
                 interrupt_check=interrupt_check,
                 hdr_transform=hdr_transform,
                 output_dtype=torch.float16 if hdr_transform is not None else None,
+                generator=generator,
             )
         else:
             decoded_video = frozen_output_video[:, :num_frames, :height, :width].permute(1, 2, 3, 0)
@@ -831,10 +847,7 @@ class DistilledPipeline:
         if return_joyai_memory:
             memory_latents = {
                 "phase1": stage_1_memory_latents,
-                "phase2": {
-                    "video": video_state.latent.detach().cpu(),
-                    "audio": audio_state.latent.detach().cpu() if audio_state is not None else None,
-                },
+                "phase2": phase_2_memory_latents,
             }
             return decoded_video, decoded_audio, latent_slice, memory_latents
         if latent_slice is not None:

@@ -240,7 +240,18 @@ class family_handler():
         animate2 = base_model_type == "animate2"
         extra_model_def["animate2"] = animate2
         if animate2:
-            extra_model_def["no_steps_skipping"] = True
+            extra_model_def.update({
+                "no_steps_skipping": True,
+                "custom_settings": [{
+                    "id": "animate2_kv_cache",
+                    "name": "KV cache",
+                    "label": "Animate 2 KV Cache",
+                    "type": "dropdown",
+                    "default": "Disabled",
+                    "choices": [("Disabled", "Disabled"), ("GPU (faster, high VRAM)", "Enabled"), ("RAM (lower VRAM)", "RAM")],
+                    "info": "Caches the driving-video branch. GPU is fastest but uses substantial VRAM; RAM transfers each layer to the GPU as needed.",
+                }],
+            })
         if shotplan:
             extra_model_def.update({
                 "prompt_infos": SHOTPLAN_PROMPT_INFOS,
@@ -1366,6 +1377,7 @@ class family_handler():
                 "force_fps": "control",
                 "alt_prompt": model_def["animate2_ref_prompt"],
                 "prompt_enhancer": "",
+                "custom_settings": {"animate2_kv_cache": "Disabled"},
             })
         elif base_model_type in ["vace_ditto_14B"]:
             ui_defaults.update({ 

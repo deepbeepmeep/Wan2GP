@@ -136,7 +136,7 @@ LTX-2.5 generates synchronized video and audio from a text prompt. Both the Dev 
 
 ## LoRAs Support
 
-LTX-2.0/2.3 LoRAs are not compatible with LTX-2.5. Consequently, the LTX-2.5 UI does not offer the old LoRA-driven pose, depth, canny, HDR, inpainting, outpainting, Ingredients, ID/voice-cloning, EditAnything, or MSR workflows. 
+LTX-2.5 shares the LTX2 LoRA folder and can use compatible LoRAs made for other LTX2 versions. The specialized pose, depth, canny, HDR, inpainting, outpainting, Ingredients, ID/voice-cloning, EditAnything, and MSR workflows are not currently exposed in the LTX-2.5 UI.
 
 """
 

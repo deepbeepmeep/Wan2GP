@@ -72,7 +72,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 - **A new VAE decoder to play with:** the Original (much Faster) VAE remains the default, while the optional NAD Diffusion Decoder trades speed and VRAM for higher quality. NAD also works with LTX 2.3 and uses its Triton accelerator when supported.
 
-- **A clean break from 2.3:** LTX 2.5 models and LoRAs are not compatible with LTX 2.3, so they get separate LoRA folders.  
+- **Bring your LTX2 LoRAs:** LTX 2.5 can use LoRAs made for other LTX2 versions and finds them in the same `loras/ltx2` folder.
 
 Dev and Distilled are available in BF16 and INT8 ConvRot, while Distilled also gets an NVFP4 option for compatible NVIDIA hardware. Shared embedders are reused instead of being duplicated inside every checkpoint, saving both disk space and RAM.
 

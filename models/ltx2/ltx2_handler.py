@@ -137,7 +137,7 @@ _ARCH_SPECS = {
         "dev_profiles_dir": "ltx2_25",
         "preset_profiles_dir": "ltx2_25",
         "distilled_preset_profiles_dir": "ltx2_25",
-        "lora_dir": "ltx2_25",
+        "lora_dir": "ltx2",
     },
 }
 _ARCH_SPECS["ltx2_22B_msr"] = {
@@ -808,17 +808,9 @@ class family_handler:
             default=None,
             help=f"Path to a directory that contains LTX-2 LoRAs (default: {os.path.join(lora_root, 'ltx2')})",
         )
-        parser.add_argument(
-            "--lora-dir-ltx2-25",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains LTX-2.5 LoRAs (default: {os.path.join(lora_root, 'ltx2_25')})",
-        )
 
     @staticmethod
     def get_lora_dir(base_model_type, args, lora_root):
-        if _is_ltx25(base_model_type):
-            return getattr(args, "lora_dir_ltx2_25", None) or os.path.join(lora_root, "ltx2_25")
         return getattr(args, "lora_dir_ltx2", None) or os.path.join(lora_root, "ltx2")
 
     @staticmethod

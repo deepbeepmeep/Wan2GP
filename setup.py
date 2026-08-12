@@ -5,6 +5,7 @@ import subprocess
 import argparse
 import shutil
 import platform
+import time
 
 CONFIG_PATH = "setup_config.json"
 ENVS_FILE = "envs.json"
@@ -993,9 +994,26 @@ def inject_system_paths():
 
     os.environ["PATH"] = current_path
 
+def git_repo_is_valid():
+    try:
+        subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        return True
+    except Exception:
+        return False
+
 def repair_git_repo():
     print("[*] Repairing WAN2GP repository...")
-    if not os.path.exists(".git"):
+    if os.path.exists(".git") and not git_repo_is_valid():
+        # .git exists but is broken (AV quarantine / interrupted clone leaves
+        # HEAD, config or index missing). Move it aside so git init can rebuild.
+        broken = f".git.broken.{int(time.time())}"
+        print(f"[!] Existing .git is invalid, moving to {broken} and re-initializing...")
+        shutil.move(".git", broken)
+
+    if not os.path.exists(".git") or not git_repo_is_valid():
         run_cmd("git init")
 
     try:

@@ -111,6 +111,10 @@ See the [MiniMax H3 model card](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob
 """
 
 H3_RUNTIME_INFOS = """
+### Image mode (stills)
+
+Use the **Text to Image** tab to run H3 as a still generator. WanGP runs the shortest legal clip (**5 frames**), keeps the **first frame** as the image, and skips audio. Use **Number of Images** for multiple **independent** takes (different seeds) of the same prompt — each image is a full short generation, not frames from one clip. Optional reference images still work on Ref2VA. Video mode is unchanged.
+
 ### Speed and memory choices
 
 Enable **Advanced Mode** to access these options:
@@ -183,6 +187,9 @@ class family_handler:
             "dtype": "bf16",
             "fps": 24,
             "frames_minimum": 107,
+            # Image mode uses the model-legal minimum (5 + 17n). Each generated frame is
+            # exported as its own gallery image, so a 5-frame still run yields 5 variations.
+            "frames_minimum_image": 5,
             "frames_steps": 17,
             "frames_offset": 5,
             "block_size": 32,
@@ -202,6 +209,13 @@ class family_handler:
             "returns_audio": True,
             "multimedia_generation": True,
             "control_video_trim_disabled": True,
+            # Video ↔ Image switch in Media Generator. Image mode forces the shortest
+            # legal clip (5 frames), drops audio, keeps the first frame as the still.
+            # Number of Images runs independent multi-seed gens (true different takes).
+            "v2i_switch_supported": True,
+            "image_batch_size_max": 8,
+            "image_mode_keep_all_frames": False,
+            "batch_size_label": "Number of Images (independent seeds)",
             "infos": (REF2VA_INFOS if reference_mode else FL2VA_INFOS) + H3_RUNTIME_INFOS + (PRUNED_INFOS if pruned else ""),
             "prompt_infos": REF2VA_PROMPT_INFOS if reference_mode else FL2VA_PROMPT_INFOS,
             "prompt_enhancer_button_label": "Write H3 Prompt",
@@ -275,6 +289,14 @@ class family_handler:
                     "default": "",
                     "label": "Reference / Control Video",
                 },
+                # Image mode: stills from text + optional reference images (no video controls).
+                "guide_custom_choices_image": {
+                    "choices": [("Generate without a Control Image", "")],
+                    "letters_filter": "",
+                    "default": "",
+                    "label": "Control Image",
+                    "visible": False,
+                },
                 "preprocess_video_guide2": True,
                 "reference_video_max_frames": 15 * 24,
                 "reference_video_max_size": (768, 1344),
@@ -316,6 +338,13 @@ class family_handler:
                     "letters_filter": "GVKFI",
                     "default": "",
                     "label": "Control Video / Frames Injection",
+                },
+                "guide_custom_choices_image": {
+                    "choices": [("Generate without a Control Image", "")],
+                    "letters_filter": "",
+                    "default": "",
+                    "label": "Control Image",
+                    "visible": False,
                 },
                 "video_guide_label": "Control Video",
                 "mask_preprocessing": {"selection": ["", "A", "NA"]},
@@ -527,6 +556,9 @@ class family_handler:
             "audio_prompt_type": "",
             "video_prompt_type": "",
             "image_mode": 0,
+            # Shortest legal H3 clip; first frame kept as the still.
+            "min_frames_if_references": 1,
+            "batch_size": 1,
         })
         if reference_mode:
             ui_defaults.update({"image_refs_relative_size": 100, "remove_background_images_ref": 0})

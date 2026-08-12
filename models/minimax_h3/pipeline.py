@@ -343,11 +343,74 @@ class MiniMaxH3Pipeline:
                  input_masks=None, denoising_strength=1.0, masking_strength=1.0,
                  input_video=None, input_waveform=None, input_waveform_sample_rate=None,
                  audio_guide=None, audio_guide2=None, prefix_frames_count=0,
-                 frame_num=124, height=768, width=1344, shift=12.0, sampling_steps=30, seed=0,
-                 callback=None, VAE_tile_size=None, audio_prompt_type="", video_prompt_type="", fps=24,
-                 sample_solver="euler",
-                 set_progress_status=None, **kwargs):
-        fps = float(fps)
+                  frame_num=124, height=768, width=1344, shift=12.0, sampling_steps=30, seed=0,
+                  callback=None, VAE_tile_size=None, audio_prompt_type="", video_prompt_type="", fps=24,
+                  sample_solver="euler",
+                  set_progress_status=None, image_mode=0, **kwargs):
+        image_mode = int(image_mode or kwargs.pop("image_mode", 0) or 0)
+        # True multi-image: N independent short gens with different seeds (not N frames of one clip).
+        image_batch_size = max(1, int(kwargs.pop("batch_size", 1) or 1)) if image_mode > 0 else 1
+        if image_mode > 0 and image_batch_size > 1:
+            import random
+            base_seed = int(seed) if seed is not None else random.randint(0, 2**31 - 1)
+            stills = []
+            for image_index in range(image_batch_size):
+                if set_progress_status is not None:
+                    set_progress_status(f"H3 still {image_index + 1}/{image_batch_size}")
+                one = self.generate(
+                    input_prompt,
+                    image_start=image_start,
+                    image_end=image_end,
+                    input_frames=input_frames,
+                    input_frames2=input_frames2,
+                    input_ref_images=input_ref_images,
+                    frames_to_inject=frames_to_inject,
+                    frames_relative_positions_list=frames_relative_positions_list,
+                    image_refs_relative_size=image_refs_relative_size,
+                    input_masks=input_masks,
+                    denoising_strength=denoising_strength,
+                    masking_strength=masking_strength,
+                    input_video=input_video,
+                    input_waveform=input_waveform,
+                    input_waveform_sample_rate=input_waveform_sample_rate,
+                    audio_guide=audio_guide,
+                    audio_guide2=audio_guide2,
+                    prefix_frames_count=prefix_frames_count,
+                    frame_num=frame_num,
+                    height=height,
+                    width=width,
+                    shift=shift,
+                    sampling_steps=sampling_steps,
+                    seed=base_seed + image_index,
+                    callback=callback,
+                    VAE_tile_size=VAE_tile_size,
+                    audio_prompt_type=audio_prompt_type,
+                    video_prompt_type=video_prompt_type,
+                    fps=fps,
+                    sample_solver=sample_solver,
+                    set_progress_status=set_progress_status,
+                    image_mode=image_mode,
+                    batch_size=1,
+                    **kwargs,
+                )
+                if one is None:
+                    return None
+                still = one.get("x")
+                if still is None:
+                    return None
+                if still.ndim == 4 and still.shape[1] > 1:
+                    still = still[:, :1]
+                stills.append(still.contiguous())
+            seeds_used = [base_seed + image_index for image_index in range(image_batch_size)]
+            return {
+                "x": torch.cat(stills, dim=1),
+                "audio": None,
+                "audio_sampling_rate": AUDIO_SAMPLE_RATE,
+                "seeds": seeds_used,
+            }
+
+        # Image mode still needs H3's native temporal rate for latent geometry; WanGP may pass fps=1.
+        fps = 24.0 if image_mode > 0 else float(fps)
         if fps <= 0:
             raise ValueError("MiniMax H3 requires a positive output frame rate")
         self._set_interrupt_state()
@@ -357,7 +420,13 @@ class MiniMaxH3Pipeline:
             raise ValueError(f"Unsupported MiniMax H3 sampler {sample_solver!r}")
         if int(sampling_steps) < 1:
             raise ValueError("MiniMax H3 requires at least one inference step")
-        frame_num = normalize_frame_count(int(frame_num), 5, 17, 5)
+        # Image mode uses the shortest legal clip (5 frames) unless the caller requests a longer
+        # 5+17n length for quality; only the first frame is kept as the still.
+        if image_mode > 0:
+            frame_num = normalize_frame_count(max(5, int(frame_num or 5)), 5, 17, 5)
+            audio_prompt_type = ""
+        else:
+            frame_num = normalize_frame_count(int(frame_num), 5, 17, 5)
         audio_from_control_video = not self.reference_mode and "2" in (audio_prompt_type or "")
         prefix_frames_count, overlap_error = normalize_overlap(int(prefix_frames_count or 0), 17, 1)
         if overlap_error:
@@ -596,21 +665,34 @@ class MiniMaxH3Pipeline:
         initial_video = initial_audio = None
 
         if set_progress_status is not None:
-            set_progress_status("Decoding H3 stereo audio" if frozen_target_video is not None else "VAE Decoding of Video and Audio")
+            if image_mode > 0:
+                set_progress_status("VAE Decoding of Image Frames")
+            else:
+                set_progress_status("Decoding H3 stereo audio" if frozen_target_video is not None else "VAE Decoding of Video and Audio")
         self._check_abort()
         context = payload = presentation = visual_latents = audio_latents = refs = keyframes = audio_keyframes = source_latents = source_noise = source_buffer = editable_mask = None
         decoded_video = (self.vae.decode(video.to(self.vae._model_dtype)).clamp_(-1.0, 1.0)[0, :, :target_frames].cpu()
                          if frozen_target_video is None else frozen_target_video[:, :target_frames].cpu())
         video = None
-        decoded_audio = self.audio_vae.decode(audio)[0]
-        audio = None
-        target_samples = round(target_frames / fps * AUDIO_SAMPLE_RATE)
-        decoded_audio = _fit_audio_samples(decoded_audio, target_samples)
 
         output_prefix = history_frames
         output_prefix_count = history_count
         if output_prefix is not None:
             decoded_video = torch.cat((output_prefix.to(decoded_video), decoded_video), dim=1)
+
+        # Image mode: one still per generation (first frame only). Multi-image uses separate seeds above.
+        if image_mode > 0:
+            if decoded_video.shape[1] > 1:
+                decoded_video = decoded_video[:, :1].contiguous()
+            audio = None
+            return {"x": decoded_video, "audio": None, "audio_sampling_rate": AUDIO_SAMPLE_RATE}
+
+        decoded_audio = self.audio_vae.decode(audio)[0]
+        audio = None
+        target_samples = round(target_frames / fps * AUDIO_SAMPLE_RATE)
+        decoded_audio = _fit_audio_samples(decoded_audio, target_samples)
+
+        if output_prefix is not None:
             if history_waveform is not None:
                 prefix_samples = round(output_prefix_count / fps * AUDIO_SAMPLE_RATE)
                 prefix_audio = _fit_audio_samples(history_waveform[0].to(decoded_audio), prefix_samples)

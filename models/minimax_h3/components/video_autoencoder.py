@@ -911,6 +911,27 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
         if pad_tokens > 0:
             z = torch.cat([z, z[:, :, -1:].repeat(1, 1, pad_tokens, 1, 1)], dim=2)
 
+        # Minimum geometry is 5 pixel frames <-> 2 latent tokens (n=0 in 17*n+5 / 5*n+2).
+        # Restoring token_drop yields exactly one tokens_chunk_size window, so the generic
+        # formula sets num_chunks=0 and would write nothing (decoded 0, expected 5). Handle
+        # that single window explicitly: pad the decode view, strip pre-padding, keep 5 frames.
+        if num_chunks <= 0:
+            if z.shape[2] <= 0:
+                raise RuntimeError("MiniMax H3 VAE decode received empty latents")
+            min_len = tokens_chunk_size + self.token_overlap
+            if z.shape[2] < min_len:
+                z = torch.cat([z, z[:, :, -1:].repeat(1, 1, min_len - z.shape[2], 1, 1)], dim=2)
+            clip = self._decode_clip(z[:, :, :min_len])
+            chunk = clip[:, :, self.frame_pre_padding :]
+            # n=0 pixel length: clip_length frames were encoded with pad, real content is 5.
+            output_frames = self.config.clip_length + self.frame_overlap - chunk_num_frames + self.frame_pre_padding
+            output_frames = max(1, int(output_frames))
+            if chunk.shape[2] < output_frames:
+                raise RuntimeError(
+                    f"MiniMax H3 VAE minimum-length decode produced {chunk.shape[2]} frames, expected at least {output_frames}"
+                )
+            return chunk[:, :, :output_frames].contiguous()
+
         intra_tail = self.config.clip_length % temporal_ratio
         num_tokens_before_pad = z.shape[2] - pad_tokens
         pad_frames = sum(

@@ -80,6 +80,7 @@ spatial_upsampler_handlers = [
     "postprocessing.seedvr2.wgp_bridge.SeedVR2Bridge",
     "postprocessing.pid.wgp_bridge.PiDBridge",
     "postprocessing.chain_of_zoom.wgp_bridge.ChainOfZoomBridge",
+    "postprocessing.ltx2_upsampler.wgp_bridge.LTXVideoUpsamplerBridge",
     "postprocessing.spatial_upsamplers.WanVaeUpsampler",
 ]
 _upsampler_handlers: list[Any] = []
@@ -248,6 +249,14 @@ def find_postprocessing_upsampler(spatial_upsampling) -> Any | None:
         return None
     method = handler.split_value(spatial_upsampling)[0]
     return handler if method in [key for _, key in handler.query_upsampler_def().get("methods", [])] else None
+
+
+def resolve_late_postprocessing_prompt(spatial_upsampling, prompt) -> str:
+    prompt = str(prompt or "").strip()
+    if prompt:
+        return prompt
+    handler = find_postprocessing_upsampler(spatial_upsampling)
+    return "" if handler is None else str(handler.query_upsampler_def().get("default_prompt", "")).strip()
 
 
 def find_vae_upsampler(spatial_upsampling) -> Any | None:

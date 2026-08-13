@@ -66,7 +66,7 @@ from .ltx2_runtime import (
 )
 from .ltx_pipelines.distilled import DistilledPipeline
 from .ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline
-from .ltx_pipelines.utils.constants import AUDIO_SAMPLE_RATE, DEFAULT_NEGATIVE_PROMPT
+from .ltx_pipelines.utils.constants import AUDIO_SAMPLE_RATE, DEFAULT_NEGATIVE_PROMPT, DISTILLED_SIGMA_VALUES
 
 
 _GEMMA_FOLDER = "gemma-3-12b-it-qat-q4_0-unquantized"
@@ -80,6 +80,8 @@ LTX2_HDR_TRANSFORM = "logc3"
 LTX2_DISABLE_STAGE2_WITH_CONTROL_VIDEO = True
 LTX2_ENABLE_EMBEDDING_LORAS = False
 LTX2_VAE_TEMPORAL_TILING_FPS = 24.0
+LTX2_UPSCALE_SIGMAS = tuple(DISTILLED_SIGMA_VALUES)
+LTX2_UPSCALE_MAX_FRAMES = 481
 LTX2_EMBEDDING_LORA_PREFIXES = (
     "text_embedding_projection.",
     "feature_extractor_linear.",
@@ -120,9 +122,16 @@ LTX2_COMFY_LORA_UNDERSCORED_NAMES = (
 )
 
 
+_LTX2_MAIN_LORA_ARCHITECTURES = {"ltx2_22B", "ltx2_25_22B"}
+
+
+def _ltx2_main_loras_compatible(base_model_type: str | None) -> bool:
+    return base_model_type in _LTX2_MAIN_LORA_ARCHITECTURES
+
+
 def _ltx2_main_ingredients_enabled(base_model_type: str | None, video_prompt_type: str) -> bool:
     video_prompt_type = video_prompt_type or ""
-    return base_model_type == "ltx2_22B" and "I" in video_prompt_type and not any(letter in video_prompt_type for letter in "KFVOPDEMA&")
+    return _ltx2_main_loras_compatible(base_model_type) and "I" in video_prompt_type and not any(letter in video_prompt_type for letter in f"KFVOPDEMA{VIDEO_PROMPT_HDR_OUTPUT_FLAG}")
 
 
 def _normalize_config(config_value):
@@ -892,16 +901,17 @@ class LTX2:
         gemma_root = text_encoder_filepath if text_encoder_filename is None else text_encoder_filename
         if not gemma_root:
             raise ValueError("Missing Gemma text encoder path.")
+        pixel_spatial_upsampler = model_type.startswith("ltx2_upsampler_")
         if component_paths:
             spatial_upsampler_path = component_paths.get("spatial_upsampler")
         else:
             spatial_upsampler_path = None
-        if not spatial_upsampler_path:
+        if not pixel_spatial_upsampler and not spatial_upsampler_path:
             spatial_upsampler_name = model_def.get("ltx2_spatial_upscaler_file", _SPATIAL_UPSCALER_FILENAME)
             spatial_upsampler_path = fl.locate_file(spatial_upsampler_name)
 
         # Internal FP8 handling is disabled; mmgp manages quantization/dtypes.
-        pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
+        pipeline_kind = "distilled" if model_type.startswith("ltx2_upsampler_") else model_def.get("ltx2_pipeline", "two_stage")
 
         pipeline_models = self._init_models(
             transformer_path=transformer_path,
@@ -930,7 +940,7 @@ class LTX2:
         component_paths: dict,
         gemma_root: str,
         gemma_side_files_root: str | None,
-        spatial_upsampler_path: str,
+        spatial_upsampler_path: str | None,
     ):
         from mmgp import offload as mmgp_offload
 
@@ -1054,10 +1064,12 @@ class LTX2:
         )
         text_encoder.eval().requires_grad_(False)
 
-        upsampler_config = _load_config_from_checkpoint(spatial_upsampler_path)
-        with init_empty_weights():
-            spatial_upsampler = LatentUpsamplerConfigurator.from_config(upsampler_config)
-        spatial_upsampler = _load_component(spatial_upsampler, spatial_upsampler_path, None)
+        spatial_upsampler = None
+        if spatial_upsampler_path:
+            upsampler_config = _load_config_from_checkpoint(spatial_upsampler_path)
+            with init_empty_weights():
+                spatial_upsampler = LatentUpsamplerConfigurator.from_config(upsampler_config)
+            spatial_upsampler = _load_component(spatial_upsampler, spatial_upsampler_path, None)
 
         self.text_encoder = text_encoder
         self.text_embedding_projection = text_embedding_projection
@@ -1129,6 +1141,50 @@ class LTX2:
             trans = self.model
         return trans, None
 
+    def upscale_video(
+        self,
+        sample: torch.Tensor,
+        prompt: str,
+        seed: int,
+        fps: float,
+        pixel_frame_offset: int = 0,
+        VAE_tile_size=None,
+        callback=None,
+        set_progress_status=None,
+        interrupt_check=None,
+    ) -> torch.Tensor | None:
+        if not isinstance(self.pipeline, DistilledPipeline):
+            raise RuntimeError("LTX video upsampling requires a distilled checkpoint")
+        channels, frame_count, source_height, source_width = map(int, sample.shape)
+        if channels != 3 or frame_count > LTX2_UPSCALE_MAX_FRAMES:
+            raise ValueError(f"LTX video upsampling expects RGB windows of at most {LTX2_UPSCALE_MAX_FRAMES} frames")
+        was_uint8 = sample.dtype == torch.uint8
+        source = sample.to(dtype=torch.float32)
+        source = source.div_(127.5).sub_(1.0) if was_uint8 else source.clamp_(-1.0, 1.0)
+        source = source.unsqueeze(0)
+        pad_height, pad_width = (-source_height) % 32, (-source_width) % 32
+        if pad_height or pad_width:
+            source = torch.nn.functional.pad(source, (0, pad_width, 0, pad_height), mode="replicate")
+        source = source.to(device=self.device, dtype=torch.bfloat16)
+        tiling_config = _build_tiling_config(VAE_tile_size, fps)
+        decoded = self.pipeline.upscale_video(
+            source_video=source,
+            prompt=prompt,
+            seed=seed,
+            frame_rate=fps,
+            sigma_values=LTX2_UPSCALE_SIGMAS,
+            latent_frame_offset=int(pixel_frame_offset) // 8,
+            pixel_frame_offset=pixel_frame_offset,
+            tiling_config=tiling_config,
+            callback=callback,
+            set_progress_status=set_progress_status,
+            interrupt_check=interrupt_check,
+        )
+        if decoded is None:
+            return None
+        decoded = decoded[:frame_count, :source_height * 2, :source_width * 2]
+        return decoded.permute(3, 0, 1, 2).contiguous()
+
     def get_loras_transformer(self, get_model_recursive_prop, model_type, video_prompt_type, base_model_type=None, model_def = None, lora_dir = None, sample_solver = None, **kwargs):
         control_map = {
             "O": "pose_align",
@@ -1191,15 +1247,16 @@ class LTX2:
                 mult = "0.5;0.5"
             else:
                 mult = "0;1"
-            _append_system_lora("distilled", mult, "distilled-lora")
-        if resolved_base_model_type == "ltx2_22B" and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type:
+            distilled_lora_name = "distilled_1_1" if resolved_base_model_type == "ltx2_22B" and sample_solver in {"distilled_8_steps", "res2s"} else "distilled"
+            _append_system_lora(distilled_lora_name, mult, "distilled-lora")
+        if _ltx2_main_loras_compatible(resolved_base_model_type) and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type:
             _append_system_lora("hdr", 1.0, "ic-lora-hdr")
         if any(letter in video_prompt_type for letter in control_map):
             _append_system_lora("union_control", 1.0, "union-control")
         any_outpainting = get_outpainting_dims(outpainting_setting, outpainting_ratio) is not None
-        if resolved_base_model_type == "ltx2_22B" and any_outpainting and LTX2_OUTPAINTING_METHOD == 1:
+        if _ltx2_main_loras_compatible(resolved_base_model_type) and any_outpainting and LTX2_OUTPAINTING_METHOD == 1:
             _append_system_lora("outpaint", 1.0, "ic-lora-outpaint")
-        if resolved_base_model_type == "ltx2_22B" and (_ltx2_inpainting_enabled(video_prompt_type) or any_outpainting and LTX2_OUTPAINTING_METHOD == 2):
+        if _ltx2_main_loras_compatible(resolved_base_model_type) and (_ltx2_inpainting_enabled(video_prompt_type) or any_outpainting and LTX2_OUTPAINTING_METHOD == 2):
             _append_system_lora("inpaint", 1.0, "in-outpainting")
         if _ltx2_main_ingredients_enabled(resolved_base_model_type, video_prompt_type):
             _append_system_lora("ingredients", 1.4, "ic-lora-ingredients")
@@ -1299,7 +1356,7 @@ class LTX2:
             )
             frame_num = max(frame_num, msr_frame_count)
 
-        hdr_enabled = self.base_model_type == "ltx2_22B" and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type
+        hdr_enabled = _ltx2_main_loras_compatible(self.base_model_type) and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type
         input_video_is_hdr = bool(input_video_is_hdr)
         hdr_scene_context = self._load_hdr_scene_context(lora_dir) if hdr_enabled else None
         if hdr_enabled:
@@ -1334,7 +1391,7 @@ class LTX2:
         ltx2_inpainting = _ltx2_inpainting_enabled(video_prompt_type)
         new_outpainting = any_outpainting and LTX2_OUTPAINTING_METHOD == 2
         self_refiner_max_plans = self.model_def.get("self_refiner_max_plans", 1)
-        requested_outpaint_gamma_roundtrip = self.base_model_type == "ltx2_22B" and any_outpainting and LTX2_OUTPAINTING_METHOD == 1
+        requested_outpaint_gamma_roundtrip = _ltx2_main_loras_compatible(self.base_model_type) and any_outpainting and LTX2_OUTPAINTING_METHOD == 1
         if hdr_enabled:
             requested_outpaint_gamma_roundtrip = False
         if any_outpainting and LTX2_OUTPAINTING_METHOD == 1:
@@ -1726,6 +1783,8 @@ class LTX2:
                 self_refiner_max_plans=self_refiner_max_plans,
                 editanything_ref_images=editanything_ref_images,
                 ltx2_22B_class=ltx2_22B_class,
+                hdr_transform=LTX2_HDR_TRANSFORM if hdr_enabled else None,
+                skip_audio=hdr_enabled,
             )
         else:
             distilled_kwargs = {}

@@ -115,6 +115,26 @@ GPU-based automatic limit, `-1` disables windowing, and positive values are
 finite frame limits. SeedVR2 aligns finite limits down to its required `4n+1`
 input shape and crossfades three overlapping output frames.
 
+The LTX video handler exposes LTX 2.3 and LTX 2.5 as decoded-video x2 methods.
+It reuses the existing checkpoint declarations and LTX family loader under
+private runtime model types and always creates its MMGP offload object with
+memory profile 5. Each source window is VAE encoded and appended as a
+downscale-2 reference for the matching official Pixel Spatial Upscaler IC-LoRA;
+the x2 target starts from noise, follows the official eight-step distilled sigma
+schedule, and is VAE decoded. LTX 2.3 uses the Dev checkpoint with Distilled
+1.1 at 0.5 and the x2 IC-LoRA at 1.0; LTX 2.5 uses its distilled checkpoint with
+the same 2.3 x2 IC-LoRA at 1.0. Inputs longer than the configured window use
+stride-aligned windows (81 frames with a 17-frame overlap by default);
+overlapping windows address the same deterministic global noise and time
+coordinates. The Configuration plugin selects the one version shown in native
+Post Processing and Late Postprocessing (2.3 by default), while Media Flow keeps
+explicit processes for both versions. It also exposes the LTX window size and
+overlap as shared controls under `spatial_upsamplers.ltx2`. Both values follow
+the VAE's `8n+1` frame cadence; window size ranges from 9 to 481 frames, with 81
+as the default. The values are read at the start of every native or Media Flow
+upscale. Audio remains under the existing WGP and Media Flow preservation paths;
+the LTX spatial upsampler itself only returns video frames.
+
 Model persistence is a registry-wide setting stored at
 `wgp_config["spatial_upsamplers"]["persistence"]`; handlers must not expose a
 separate persistence control in their own config section. The registry retains

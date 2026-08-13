@@ -127,7 +127,7 @@ pip install flash-attn==2.7.2.post1
 
 ## GGUF llama.cpp CUDA Kernels
 
-These kernels are used to accelerate GGUF models. The optimized FP16/BF16 modes described below currently require Windows wheel 1.0.7; matching Linux wheels will be provided later.
+These kernels are used to accelerate GGUF models. Wheel 1.0.7 provides the optimized FP16/BF16 modes described below on Windows and Linux.
 
 ### GGUF Kernels Wheels for Python 3.11 / Pytorch 2.10 / Cuda 13
 
@@ -136,9 +136,9 @@ These kernels are used to accelerate GGUF models. The optimized FP16/BF16 modes 
   pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.7+torch210cu13py311-cp311-cp311-win_amd64.whl
    ```
 
-- Linux (legacy 1.0.2; updated kernels TBD)
+- Linux
    ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.2+torch210cu13py311-cp311-cp311-linux_x86_64.whl
+  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.7+torch210cu13py311-cp311-cp311-linux_x86_64.whl
    ```
 
 ### GGUF Kernels Wheels for Python 3.10 / Pytorch 2.7.1 / Cuda 12.8
@@ -148,12 +148,12 @@ These kernels are used to accelerate GGUF models. The optimized FP16/BF16 modes 
   pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.7+torch271cu128py310-cp310-cp310-win_amd64.whl
    ```
 
-- Linux (legacy 1.0.2; updated kernels TBD)
+- Linux
    ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.2+torch271cu128py310-cp310-cp310-linux_x86_64.whl
+  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.7+torch271cu128py310-cp310-cp310-linux_x86_64.whl
    ```
 
-### Windows FP16/BF16 matmul modes (wheel 1.0.7+)
+### FP16/BF16 matmul modes (wheel 1.0.7+)
 
 The default automatic policy keeps GGUF weights packed and uses native BF16 MMQ when BF16 is requested. To select a policy explicitly, set `WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE` before starting WanGP:
 
@@ -171,6 +171,13 @@ Or in PowerShell:
 
 ```
 $env:WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE = "low_vram"
+python wgp.py
+```
+
+Or on Linux:
+
+```
+export WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE=low_vram
 python wgp.py
 ```
 

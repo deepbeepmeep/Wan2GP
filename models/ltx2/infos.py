@@ -10,6 +10,14 @@ LTX2_INFOS = """
 - Ingredients Reference Sheet: 22B can use one composite reference-sheet image with the Ingredients IC-LoRA to keep characters, props, and location consistent.
 - EditAnything variants: provide a source/control video plus one reference image to add or edit a subject in the video.
 
+## VAE Decoder Choices
+
+Choose the decoder from the `VAE` system configuration:
+
+- `Default VAE`: the original decoder and default choice. It offers the best balance of speed, quality, and VRAM use for normal generation.
+- `PrunaAI VAE (faster, slightly worse quality)`: an optimized alternative available for both LTX-2.3 and LTX-2.5.
+- `NAD Diffusion Decoder (slower, higher VRAM, better motion)`: an optional diffusion decoder that supports tiled decoding and automatically uses its Triton accelerator when a compatible Triton version is available; the console reports whether the Triton or standard implementation is active. NAD is available for both LTX-2.3 and LTX-2.5.
+
 ## Text To Image Mode
 
 LTX2 image generation is implemented by generating a short video internally and keeping only the first frame.
@@ -112,33 +120,7 @@ Result: the reference voice workflow uses your ID-LoRA file and weight.
 ```
 """
 
-LTX2_25_INFOS = """
-# LTX-2.5 Workflows
-
-LTX-2.5 generates synchronized video and audio from a text prompt. Both the Dev and the faster 8-step Distilled checkpoints are available.
-
-## Available Conditioning
-
-- Text to video with a generated soundtrack.
-- Start Image and End Image keyframes.
-- Video continuation and sliding-window generation.
-- Audio Prompt conditioning, including audio extracted from a Control Video.
-- Raw Control Video conditioning and audio generation from a Control Video.
-- Reference-frame injection at selected frame positions.
-- Text to image and image to image through WanGP's image mode.
-
-## Audio Options
-
-- `Generate Video & Soundtrack based on Text Prompt`: generates synchronized visuals and audio from the prompt.
-- `Generate Video based on Soundtrack and Text Prompt`: uses an uploaded Audio Prompt to guide timing, speech, music, and sound events.
-- `Generate Video based on Control Video + its Audio Track and Text Prompt`: extracts and uses the Control Video soundtrack.
-- `Generate Audio based on Control Video and Text Prompt`: uses the raw Control Video as visual conditioning while generating its soundtrack.
-
-## LoRAs Support
-
-LTX-2.5 shares the LTX2 LoRA folder and can use compatible LoRAs made for other LTX2 versions. The specialized pose, depth, canny, HDR, inpainting, outpainting, Ingredients, ID/voice-cloning, EditAnything, and MSR workflows are not currently exposed in the LTX-2.5 UI.
-
-"""
+LTX2_25_INFOS = LTX2_INFOS
 
 LTX2_MSR_INFOS = """
 # LTX2 Multiple Subject Reference

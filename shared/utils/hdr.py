@@ -99,13 +99,14 @@ def iter_hdr_gbrpf32_frames(video: torch.Tensor | Iterable[torch.Tensor]):
             chunk = chunk[0]
         if chunk.ndim != 4:
             raise ValueError(f"Expected [C,F,H,W] HDR tensor, got {tuple(chunk.shape)}.")
-        frames = chunk.detach().cpu().to(dtype=torch.float32)
+        frames = chunk.detach().cpu()
         for frame in frames.permute(1, 0, 2, 3):
+            frame = frame.to(dtype=torch.float32)
             yield frame[[1, 2, 0]].contiguous().numpy().astype(np.float32, copy=False).tobytes()
 
 
 def write_hdr_exr_frames(
-    video: torch.Tensor,
+    video: torch.Tensor | Iterable[torch.Tensor],
     output_dir: str | os.PathLike[str],
     *,
     start_index: int = 0,
@@ -114,22 +115,24 @@ def write_hdr_exr_frames(
     os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
     import cv2
 
-    if video.ndim == 5 and video.shape[0] == 1:
-        video = video[0]
-    if video.ndim != 4:
-        raise ValueError(f"Expected [C,F,H,W] HDR tensor, got {tuple(video.shape)}.")
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    frame_count = int(video.shape[1])
     params: list[int] = []
     if exr_half and hasattr(cv2, "IMWRITE_EXR_TYPE") and hasattr(cv2, "IMWRITE_EXR_TYPE_HALF"):
         params = [int(cv2.IMWRITE_EXR_TYPE), int(cv2.IMWRITE_EXR_TYPE_HALF)]
-    frames = video.detach().cpu().to(dtype=torch.float32).permute(1, 2, 3, 0).contiguous()
-    for idx, frame in enumerate(frames, start=int(start_index)):
-        rgb = frame.numpy().astype(np.float32, copy=False)
-        bgr = np.ascontiguousarray(rgb[..., ::-1])
-        path = os.path.join(os.fspath(output_dir), f"frame_{idx:06d}.exr")
-        if not cv2.imwrite(path, bgr, params):
-            raise RuntimeError(f"Failed to write HDR EXR frame: {path}")
+    frame_count = 0
+    for chunk in iter_video_chunks(video):
+        if chunk.ndim == 5 and chunk.shape[0] == 1:
+            chunk = chunk[0]
+        if chunk.ndim != 4:
+            raise ValueError(f"Expected [C,F,H,W] HDR tensor, got {tuple(chunk.shape)}.")
+        frames = chunk.detach().cpu().permute(1, 2, 3, 0)
+        for frame in frames:
+            rgb = frame.to(dtype=torch.float32).contiguous().numpy().astype(np.float32, copy=False)
+            bgr = np.ascontiguousarray(rgb[..., ::-1])
+            path = os.path.join(os.fspath(output_dir), f"frame_{int(start_index) + frame_count:06d}.exr")
+            if not cv2.imwrite(path, bgr, params):
+                raise RuntimeError(f"Failed to write HDR EXR frame: {path}")
+            frame_count += 1
     return frame_count
 
 

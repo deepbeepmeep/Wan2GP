@@ -74,8 +74,6 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 - **Bring your LTX2 LoRAs:** LTX 2.5 finds LoRAs in the shared `loras/ltx2` folder and restores the compatible LTX 2.3 LoRA workflows, including pose/depth/canny control, inpainting, outpainting, Ingredients references, SDR-to-HDR conversion, and reference-voice conditioning.
 
-- **Unlocked Control Video Processes:** no longer LTX 2.3 exclusives, the Detailer, Outpaint Video, Refocus, Uncompress, Ungrade, and SDR-to-HDR Media Flow processes are now available for LTX 2.5 too.
-
 - **LTX-2 Video Upsampler:** use LTX 2.3 or LTX 2.5 as a spatial video upsampler—directly after generation, as a late postprocessor, or as part of a Media Flow process.
 
 Dev and Distilled are available in BF16 and INT8 ConvRot, while Distilled also gets an NVFP4 option for compatible NVIDIA hardware. Shared embedders are reused instead of being duplicated inside every checkpoint, saving both disk space and RAM.

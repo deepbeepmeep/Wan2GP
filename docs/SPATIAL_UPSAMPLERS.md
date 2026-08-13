@@ -123,13 +123,13 @@ downscale-2 reference for the matching official Pixel Spatial Upscaler IC-LoRA;
 the x2 target starts from noise, follows the official eight-step distilled sigma
 schedule, and is VAE decoded. LTX 2.3 uses the Dev checkpoint with Distilled
 1.1 at 0.5 and the x2 IC-LoRA at 1.0; LTX 2.5 uses its distilled checkpoint with
-the same 2.3 x2 IC-LoRA at 1.0. Inputs longer than the configured window use
+the official 2.5 x2 IC-LoRA at 1.0. Inputs longer than the configured window use
 stride-aligned windows (81 frames with a 17-frame overlap by default);
 overlapping windows address the same deterministic global noise and time
-coordinates. The Configuration plugin selects the one version shown in native
-Post Processing and Late Postprocessing (2.3 by default), while Media Flow keeps
-explicit processes for both versions. It also exposes the LTX window size and
-overlap as shared controls under `spatial_upsamplers.ltx2`. Both values follow
+coordinates. Both versions are shown in Post Processing and Late Postprocessing,
+and Media Flow keeps explicit processes for both versions. The Configuration
+plugin exposes only the shared LTX window size and overlap controls under
+`spatial_upsamplers.ltx2`. Both values follow
 the VAE's `8n+1` frame cadence; window size ranges from 9 to 481 frames, with 81
 as the default. The values are read at the start of every native or Media Flow
 upscale. Audio remains under the existing WGP and Media Flow preservation paths;

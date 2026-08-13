@@ -124,7 +124,7 @@ _ARCH_SPECS = {
         "spatial_upscaler": "ltx-2.5-spatial-upscaler-x2-1.0_bf16.safetensors",
         "temporal_upscaler": "ltx-2.5-temporal-upscaler-x2-1.0_bf16.safetensors",
         "distilled_lora": "ltx-2.5-22b-distilled-lora-450_bf16.safetensors",
-        "pixel_spatial_upscaler_lora": "ltx-2.3-22b-ic-lora-pixel-spatial-upscaler-x2-0.9.safetensors",
+        "pixel_spatial_upscaler_lora": "ltx-2.5-22b-ic-lora-pixel-spatial-upscaler-x2-1.0.safetensors",
         "union_control_lora": "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",
         "id_lora": "id-lora-celebvhq-ltx2.3.safetensors",
         "outpaint_lora": "ltx-2.3-22b-ic-lora-outpaint.safetensors",

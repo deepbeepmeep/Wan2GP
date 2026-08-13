@@ -13,7 +13,6 @@ DEFAULT_PROMPT = "high quality, detailed, sharp, natural textures"
 
 class LTXVideoUpsamplerBridge(SimpleScaleSuffixMixin):
     METHODS = (("LTX 2.3 Pixel Spatial Upscaler", "ltx23"), ("LTX 2.5 Pixel Spatial Upscaler", "ltx25"))
-    VERSION_CHOICES = (("LTX 2.3", "ltx23"), ("LTX 2.5", "ltx25"))
     MULTIPLIERS = {method: (2.0,) for _, method in METHODS}
     MIN_WINDOW_FRAMES = TEMPORAL_STRIDE + 1
     WINDOW_SIZE_VALUES = tuple(range(MIN_WINDOW_FRAMES, MAX_WINDOW_FRAMES + 1, TEMPORAL_STRIDE))
@@ -25,13 +24,13 @@ class LTXVideoUpsamplerBridge(SimpleScaleSuffixMixin):
 
     @classmethod
     def default_config(cls) -> dict[str, Any]:
-        return {"version": "ltx23", "window_size": DEFAULT_WINDOW_FRAMES, "window_overlap": WINDOW_OVERLAP_FRAMES}
+        return {"window_size": DEFAULT_WINDOW_FRAMES, "window_overlap": WINDOW_OVERLAP_FRAMES}
 
     @classmethod
     def normalize_config_section(cls, config: dict[str, Any]) -> dict[str, Any]:
         normalized = cls.default_config()
         normalized.update(config or {})
-        normalized["version"] = normalized["version"] if normalized["version"] in MODEL_TYPES else "ltx23"
+        normalized.pop("version", None)
         try:
             window_size = int(normalized["window_size"])
         except (TypeError, ValueError):
@@ -53,21 +52,15 @@ class LTXVideoUpsamplerBridge(SimpleScaleSuffixMixin):
     def create_config_ui(self, gr, config: dict[str, Any], *, lock_config: bool = False):
         with gr.Group():
             with gr.Row():
-                version = gr.Dropdown(choices=self.VERSION_CHOICES, value=config["version"], label="LTX Pixel Spatial Upscaler Version", info="Version shown in Post Processing and Late Postprocessing. Media Flow keeps both versions available.", interactive=not lock_config)
-            with gr.Row():
-                window_size = gr.Slider(self.MIN_WINDOW_FRAMES, MAX_WINDOW_FRAMES, value=config["window_size"], step=TEMPORAL_STRIDE, label="LTX Sliding Window Size", info="Frames processed per LTX refinement window. Larger windows use more VRAM.", interactive=not lock_config)
-                window_overlap = gr.Slider(1, config["window_size"] - TEMPORAL_STRIDE, value=config["window_overlap"], step=TEMPORAL_STRIDE, label="LTX Sliding Window Overlap", info="Frames shared and crossfaded between consecutive windows.", interactive=not lock_config)
+                window_size = gr.Slider(self.MIN_WINDOW_FRAMES, MAX_WINDOW_FRAMES, value=config["window_size"], step=TEMPORAL_STRIDE, label="LTX Upsampler Sliding Window Size", info="Frames processed per LTX refinement window. Larger windows use more VRAM.", interactive=not lock_config)
+                window_overlap = gr.Slider(1, config["window_size"] - TEMPORAL_STRIDE, value=config["window_overlap"], step=TEMPORAL_STRIDE, label="LTX Upsampler Sliding Window Overlap", info="Frames shared and crossfaded between consecutive windows.", interactive=not lock_config)
 
         def update_overlap_limit(new_window_size, current_overlap):
             maximum = int(new_window_size) - TEMPORAL_STRIDE
             return gr.update(maximum=maximum, value=min(int(current_overlap), maximum))
 
         window_size.change(update_overlap_limit, inputs=[window_size, window_overlap], outputs=window_overlap)
-        return [("version", version), ("window_size", window_size), ("window_overlap", window_overlap)]
-
-    @staticmethod
-    def config_requires_release(old_config: dict[str, Any], new_config: dict[str, Any], changed_keys: set[str]) -> bool:
-        return old_config["version"] != new_config["version"]
+        return [("window_size", window_size), ("window_overlap", window_overlap)]
 
     @classmethod
     def query_upsampler_def(cls) -> dict[str, Any]:
@@ -88,9 +81,6 @@ class LTXVideoUpsamplerBridge(SimpleScaleSuffixMixin):
 
     def enabled(self) -> bool:
         return True
-
-    def method_available(self, method: str) -> bool:
-        return method == self.config()["version"]
 
     def validate_upsampling(self, spatial_upsampling, image_mode: int) -> str:
         split = self.split_value(spatial_upsampling)

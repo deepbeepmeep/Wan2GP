@@ -13,10 +13,10 @@ DEFAULT_WINDOW_FRAMES = 81
 MAX_WINDOW_FRAMES = 481
 WINDOW_OVERLAP_FRAMES = 17
 TEMPORAL_STRIDE = 8
-MODEL_TYPES = {"ltx23": "ltx2_22B", "ltx25": "ltx2_25_22B_distilled"}
+MODEL_TYPES = {"ltx23": "ltx2_22B", "ltx25": "ltx2_25_22B"}
 FAKE_MODEL_TYPES = {"ltx23": "ltx2_upsampler_23", "ltx25": "ltx2_upsampler_25"}
-LORA_KEYS = {"ltx23": ("ltx2_lora_distilled_1_1", "ltx2_lora_pixel_spatial_upscaler"), "ltx25": ("ltx2_lora_pixel_spatial_upscaler",)}
-LORA_MULTIPLIERS = {"ltx23": (0.5, 1.0), "ltx25": (1.0,)}
+LORA_KEYS = {"ltx23": ("ltx2_lora_distilled_1_1", "ltx2_lora_pixel_spatial_upscaler"), "ltx25": ("ltx2_lora_distilled", "ltx2_lora_pixel_spatial_upscaler")}
+LORA_MULTIPLIERS = {"ltx23": (0.5, 1.0), "ltx25": (1.0, 1.0)}
 
 
 def lora_urls(wgp, variant: str) -> tuple[str, ...]:

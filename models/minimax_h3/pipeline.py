@@ -531,11 +531,12 @@ class MiniMaxH3Pipeline:
                 video_velocity, audio_velocity = self.transformer(video, audio, sigmas_video[step:step + 1], sigmas_audio[step:step + 1], context, payload, spectrum=spectrum, first_block_cache=first_block_cache)
                 if spectrum is not None:
                     spectrum.finish_step()
+                video_denoised = None
                 if res_coefficients is None:
                     video_ratio = sigmas_video[step + 1] / sigmas_video[step]
                     if not target_video_condition_frames:
-                        video_velocity.mul_(sigmas_video[step]).add_(video)
-                        video.mul_(video_ratio).add_(video_velocity, alpha=1.0 - video_ratio)
+                        video_denoised = video_velocity.mul_(sigmas_video[step]).add_(video)
+                        video.mul_(video_ratio).add_(video_denoised, alpha=1.0 - video_ratio)
                     audio_ratio = sigmas_audio[step + 1] / sigmas_audio[step]
                     if audio_tail.shape[-1]:
                         audio_velocity_tail = audio_velocity[..., target_audio_condition_latents:]
@@ -559,7 +560,14 @@ class MiniMaxH3Pipeline:
                     _reinject_video_source(source_video, source_latents, source_noise, source_mask, sigmas_video[step + 1], source_buffer)
                 video_velocity = audio_velocity = None
                 if callback is not None:
-                    preview = video[0].detach().cpu() if not offline_spectrum or spectrum.replaying else None
+                    preview = None
+                    if not offline_spectrum or spectrum.replaying:
+                        preview_video = video_denoised if video_denoised is not None else video
+                        if video_denoised is not None and source_latents is not None and (step < denoising_start_step or step < mask_end_step):
+                            preview_video = preview_video.clone()
+                            source_mask = None if step < denoising_start_step else editable_mask
+                            _reinject_video_source(preview_video[:, :, :source_latents.shape[2]], source_latents, source_noise, source_mask, 0.0, source_buffer)
+                        preview = preview_video[0].detach().cpu()
                     callback(step, preview, False, denoising_extra=denoising_extra) if denoising_extra else callback(step, preview, False)
 
         initial_video = initial_audio = None

@@ -113,7 +113,10 @@ def _json_safe(value: Any) -> Any:
             "progress": value.progress,
             "current_step": value.current_step,
             "total_steps": value.total_steps,
+            "media": _json_safe(value.media) if value.media is not None else None,
         }
+    if class_name == "PreviewMedia":
+        return value.to_dict()
     if dataclasses.is_dataclass(value):
         return {field.name: _json_safe(getattr(value, field.name)) for field in dataclasses.fields(value)}
     if isinstance(value, dict):

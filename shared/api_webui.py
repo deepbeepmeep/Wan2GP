@@ -334,6 +334,7 @@ class WebUIQueueProbe:
         self._gen["last_progress_args"] = None
         self._gen["progress_args"] = None
         self._gen["preview"] = None
+        self._gen["preview_media"] = None
 
     def _poll_once(self) -> None:
         queue_client_ids, active_client_id = self._get_queue_snapshot()
@@ -503,20 +504,44 @@ class WebUIQueueProbe:
                 if progress_key != self._last_progress_key:
                     self._last_progress_key = progress_key
                     self._publish("progress", progress_update, "on_progress")
+            preview_media = self._gen.get("preview_media")
             preview_image = self._gen.get("preview")
-            if preview_image is not None and progress_update is not None:
-                preview_key = (active_client_id, id(preview_image), getattr(preview_image, "size", None), progress_update.progress)
+            preview_progress = progress_update or self._session._build_progress_update(self._gen.get("last_progress_args"), include_state_fallback=True)
+            if preview_media is not None and preview_progress is not None:
+                preview_key = (
+                    active_client_id,
+                    preview_media.generation_id,
+                    preview_media.context_id,
+                    preview_media.sequence,
+                )
+                if preview_key != self._last_preview_key:
+                    self._last_preview_key = preview_key
+                    self._publish(
+                        "preview",
+                        PreviewUpdate(
+                            image=preview_media.first_frame,
+                            phase=preview_progress.phase,
+                            status=preview_progress.status,
+                            progress=preview_progress.progress,
+                            current_step=preview_media.step,
+                            total_steps=preview_media.total_steps,
+                            media=preview_media,
+                        ),
+                        "on_preview",
+                    )
+            elif preview_image is not None and preview_progress is not None:
+                preview_key = (active_client_id, id(preview_image), getattr(preview_image, "size", None), preview_progress.progress)
                 if preview_key != self._last_preview_key:
                     self._last_preview_key = preview_key
                     self._publish(
                         "preview",
                         PreviewUpdate(
                             image=preview_image,
-                            phase=progress_update.phase,
-                            status=progress_update.status,
-                            progress=progress_update.progress,
-                            current_step=progress_update.current_step,
-                            total_steps=progress_update.total_steps,
+                            phase=preview_progress.phase,
+                            status=preview_progress.status,
+                            progress=preview_progress.progress,
+                            current_step=preview_progress.current_step,
+                            total_steps=preview_progress.total_steps,
                         ),
                         "on_preview",
                     )

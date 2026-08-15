@@ -6,11 +6,11 @@ fallback; Off disables preview work entirely.
 
 ## Supported profiles
 
-The initial registry enables `taeltx2_3.safetensors` only for the four
-standard 22B profile IDs listed in [latent-contracts.md](latent-contracts.md).
-19B, Edit Anything, MSR, JoyAI Echo, and quantized derived profiles are not
-Tiny VAE eligible until their callback latent contracts are independently
-verified.
+The registry enables `taeltx2_3.safetensors` for the four standard 22B LTX
+profiles listed in [latent-contracts.md](latent-contracts.md), and
+`taeh3.safetensors` for the four MiniMax H3 FL2VA/Ref2VA profiles
+(including pruned variants). Other profiles remain ineligible until their
+callback latent contracts are independently verified.
 
 ## Settings and installation
 
@@ -34,6 +34,9 @@ through WanGP's existing download-progress plumbing to:
 <configured model root>/preview_decoders/taehv/taeltx2_3.safetensors
 ```
 
+MiniMax H3 uses the same install flow at
+`preview_decoders/taeh3/taeh3.safetensors`.
+
 The file is checked by exact size and SHA-256 before it can be advertised or
 loaded. Tests never download it.
 
@@ -53,9 +56,10 @@ loaded. Tests never download it.
 
 ## Architecture and diagnostics
 
-The callback validates WanGP's `C,T,H,W` latent, converts it to TAEHV's
-`N,T,C,H,W` contract, decodes synchronously when using CUDA, copies only the
-selected resized `uint8` frames to CPU, and encodes MP4/WebP in a bounded worker.
+The callback validates WanGP's `C,T,H,W` latent and converts it to each
+decoder's expected layout. LTX uses temporal TAEHV decoding; MiniMax H3 uses
+the pinned 2D TAE on each latent frame. CUDA decode is synchronous, while only
+selected resized `uint8` frames are copied to CPU and encoded in a bounded worker.
 There is at most one active encode and one replaceable pending job. Generation,
 context, sequence, and cancellation tokens suppress stale publication.
 

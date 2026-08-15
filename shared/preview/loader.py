@@ -48,18 +48,23 @@ def load_decoder(path: str | os.PathLike[str], spec: PreviewDecoderSpec, *, devi
     with _LOCK:
         if cache_key in _CACHE:
             return _CACHE[cache_key]
-        from .vendor.taehv import TAEHV
-
-        model = TAEHV(
-            checkpoint_path=None,
-            patch_size=spec.patch_size,
-            latent_channels=spec.latent_channels,
-            encoder_time_downscale=spec.encoder_time_downscale,
-            decoder_time_upscale=spec.decoder_time_upscale,
-            decoder_space_upscale=(True, True, True),
-        )
         state_dict = load_file(str(path), device="cpu")
-        model.load_state_dict(model.patch_tgrow_layers(state_dict), strict=True)
+        if spec.adapter_id == "h3":
+            from .adapters.h3 import build_h3_decoder
+
+            model = build_h3_decoder(state_dict)
+        else:
+            from .vendor.taehv import TAEHV
+
+            model = TAEHV(
+                checkpoint_path=None,
+                patch_size=spec.patch_size,
+                latent_channels=spec.latent_channels,
+                encoder_time_downscale=spec.encoder_time_downscale,
+                decoder_time_upscale=spec.decoder_time_upscale,
+                decoder_space_upscale=(True, True, True),
+            )
+            model.load_state_dict(model.patch_tgrow_layers(state_dict), strict=True)
         model.eval().requires_grad_(False).to(device=target_device, dtype=target_dtype)
         _CACHE[cache_key] = model
         return model

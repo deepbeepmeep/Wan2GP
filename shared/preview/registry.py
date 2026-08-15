@@ -63,7 +63,37 @@ TAELTX23 = PreviewDecoderSpec(
     source_url="https://raw.githubusercontent.com/madebyollin/taehv/62f7591f59dfbb4c3c02b7a621d180a9eeaba26c/safetensors/taeltx2_3.safetensors",
 )
 
-DECODERS = {TAELTX23.decoder_id: TAELTX23}
+TAEH3 = PreviewDecoderSpec(
+    decoder_id="taeh3",
+    filename="taeh3.safetensors",
+    sha256="f0f60fa072089997f817402098c2fd90777cb2660dd79cf5df42fc1e3e08e527",
+    size_bytes=9_791_388,
+    latent_channels=24,
+    patch_size=1,
+    encoder_time_downscale=(False, False, False),
+    decoder_time_upscale=(False, False, False),
+    compatible_architectures=frozenset(
+        {
+            "minimax_h3_fl2va",
+            "minimax_h3_fl2va_pruned",
+            "minimax_h3_ref2va",
+            "minimax_h3_ref2va_pruned",
+        }
+    ),
+    compatible_model_types=frozenset(
+        {
+            "minimax_h3_fl2va",
+            "minimax_h3_fl2va_pruned",
+            "minimax_h3_ref2va",
+            "minimax_h3_ref2va_pruned",
+        }
+    ),
+    adapter_id="h3",
+    source_url="https://huggingface.co/Kijai/MiniMax-H3-TAE/resolve/a213ac8bf2f148b4f32372279a7f207846978900/vae_approx/taeh3.safetensors",
+    target_dir="preview_decoders/taeh3",
+)
+
+DECODERS = {spec.decoder_id: spec for spec in (TAELTX23, TAEH3)}
 
 
 def get_decoder_for_model(model_type: str, model_def: dict[str, Any] | None = None) -> PreviewDecoderSpec | None:

@@ -22,7 +22,7 @@ from shared.preview.adapters.ltx2 import preview_sample_count, uniform_frame_ind
 from shared.preview.coordinator import PreviewCoordinator
 from shared.preview.encoding import encode_preview
 from shared.preview.loader import PreviewDecoderError, load_decoder, validate_weight
-from shared.preview.registry import PreviewDecoderSpec, TAELTX23, decoder_capability, get_decoder_for_model
+from shared.preview.registry import PreviewDecoderSpec, TAEH3, TAELTX23, decoder_capability, get_decoder_for_model
 from shared.preview.rendering import preview_media_to_html
 from shared.preview.scheduler import CaptureScheduler
 from shared.preview.types import PreviewContext, PreviewMedia, PreviewOptions
@@ -102,6 +102,21 @@ class PreviewSubsystemTests(unittest.TestCase):
             with self.subTest(filename=filename):
                 model_def = json.loads(Path("defaults", filename).read_text(encoding="utf-8"))["model"]
                 self.assertIsNotNone(get_decoder_for_model(filename.removesuffix(".json"), model_def))
+
+    def test_default_h3_profiles_advertise_tae_capability(self):
+        self.assertEqual(TAEH3.filename, "taeh3.safetensors")
+        self.assertEqual(TAEH3.size_bytes, 9_791_388)
+        self.assertEqual(TAEH3.sha256, "f0f60fa072089997f817402098c2fd90777cb2660dd79cf5df42fc1e3e08e527")
+        self.assertIn("Kijai/MiniMax-H3-TAE", TAEH3.source_url)
+        for filename in (
+            "minimax_h3_fl2va.json",
+            "minimax_h3_fl2va_pruned.json",
+            "minimax_h3_ref2va.json",
+            "minimax_h3_ref2va_pruned.json",
+        ):
+            with self.subTest(filename=filename):
+                model_def = json.loads(Path("defaults", filename).read_text(encoding="utf-8"))["model"]
+                self.assertIs(get_decoder_for_model(model_def["architecture"], model_def), TAEH3)
 
     def test_missing_weight_is_not_advertised(self):
         with patch.object(PreviewDecoderSpec, "local_path", return_value=None):
@@ -364,6 +379,31 @@ class PreviewSubsystemTests(unittest.TestCase):
         self.assertTrue(_torch.equal(latent, original))
 
     @unittest.skipUnless(_torch is not None, "torch runtime unavailable")
+    def test_h3_adapter_uses_raw_latent_frames(self):
+        from shared.preview.adapters.h3 import decode_h3_latent
+
+        class FakeDecoder:
+            def __init__(self):
+                self.parameter = _torch.nn.Parameter(_torch.zeros(1))
+
+            def parameters(self):
+                return iter((self.parameter,))
+
+            def decode_video(self, value, parallel=True, show_progress_bar=False):
+                self.received = value
+                return _torch.zeros((1, value.shape[1], 3, 8, 12), device=value.device, dtype=value.dtype)
+
+        decoder = FakeDecoder()
+        latent = _torch.randn(24, 3, 2, 3)
+        original = latent.clone()
+        frames, _, decoded_count = decode_h3_latent(decoder, latent, spec=TAEH3, max_edge=12, preview_fps=8, source_fps=16)
+        self.assertEqual(tuple(decoder.received.shape), (1, 3, 24, 2, 3))
+        self.assertTrue(_torch.equal(decoder.received[0, :, :, :, :].permute(1, 0, 2, 3), original))
+        self.assertEqual(decoded_count, 3)
+        self.assertEqual(len(frames), 2)
+        self.assertTrue(_torch.equal(latent, original))
+
+    @unittest.skipUnless(_torch is not None, "torch runtime unavailable")
     def test_euler_callback_uses_postprocessed_denoised_latent(self):
         source = Path("models/ltx2/ltx_pipelines/utils/helpers.py").read_text(encoding="utf-8")
         functions = {node.name: node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef)}
@@ -421,6 +461,64 @@ class PreviewSubsystemTests(unittest.TestCase):
         self.assertEqual([(step, is_final, pass_no) for step, _, is_final, pass_no in captured], [(0, False, 7)])
         self.assertTrue(_torch.equal(captured[0][1], _torch.tensor(13.0)))
         self.assertTrue(_torch.equal(final_video.latent, _torch.tensor([113.0])))
+
+    @unittest.skipUnless(_torch is not None, "torch runtime unavailable")
+    def test_h3_euler_callback_uses_denoised_latent(self):
+        source = ast.parse(Path("models/minimax_h3/pipeline.py").read_text(encoding="utf-8"))
+        denoise_pass = next(node for node in ast.walk(source) if isinstance(node, ast.FunctionDef) and node.name == "denoise_pass")
+        denoise_pass.body[0] = ast.Global(names=["video", "audio"])
+        namespace = {
+            "torch": _torch,
+            "tqdm": lambda steps, **_: steps,
+            "offload": type("Offload", (), {"set_step_no_for_lora": staticmethod(lambda *_: None)}),
+            "model_steps": 1,
+            "sigmas_video": _torch.tensor([1.0, 0.5]),
+            "sigmas_audio": _torch.tensor([1.0, 0.5]),
+            "res_coefficients": None,
+            "spectrum": None,
+            "first_block_cache": None,
+            "target_audio_condition_latents": 0,
+            "target_video_condition_frames": 0,
+            "source_latents": None,
+            "source_noise": None,
+            "source_buffer": None,
+            "editable_mask": None,
+            "denoising_start_step": 0,
+            "mask_end_step": 0,
+            "offline_spectrum": False,
+            "payload": None,
+            "context": None,
+            "audio_scale": 1.0,
+            "video": _torch.tensor([1.0]),
+            "audio": _torch.tensor([0.0]),
+        }
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[denoise_pass], type_ignores=[])), "models/minimax_h3/pipeline.py", "exec"), namespace)
+
+        class Transformer:
+            cache = None
+
+            def __call__(self, *_args, **_kwargs):
+                return _torch.tensor([2.0]), _torch.tensor([0.0])
+
+        class Pipeline:
+            transformer = Transformer()
+
+            @staticmethod
+            def _set_interrupt_state():
+                pass
+
+            @staticmethod
+            def _check_abort():
+                pass
+
+        captured = []
+        namespace["self"] = Pipeline()
+        namespace["callback"] = lambda step, latent, is_final: captured.append((step, latent, is_final))
+        namespace["denoise_pass"]("H3")
+
+        self.assertEqual([(step, is_final) for step, _, is_final in captured], [(0, False)])
+        self.assertTrue(_torch.equal(captured[0][1], _torch.tensor(3.0)))
+        self.assertTrue(_torch.equal(namespace["video"], _torch.tensor([2.0])))
 
     @unittest.skipUnless(_torch is not None and _safetensors is not None and os.getenv("WANGP_PREVIEW_FIXTURE_TEST"), "opt-in torch fixture test")
     def test_strict_loader_accepts_a_matching_safetensors_fixture(self):

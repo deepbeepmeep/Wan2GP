@@ -4,6 +4,7 @@ import os
 import uuid
 from typing import Any, Callable
 
+from .adapters.h3 import decode_h3_latent
 from .adapters.ltx2 import decode_ltx2_latent
 from .loader import load_decoder, unload_decoders
 from .registry import PreviewDecoderSpec
@@ -45,6 +46,19 @@ class PreviewCoordinator:
         ):
             self._publish_callback(media)
 
+    def _decode(self, latent: Any, *, fps: float | None, duration_seconds: float | None, parallel: bool) -> tuple[list[Any], float, int]:
+        decoder = decode_h3_latent if self.spec.adapter_id == "h3" else decode_ltx2_latent
+        return decoder(
+            self._decoder,
+            latent,
+            spec=self.spec,
+            max_edge=self.options.max_edge,
+            preview_fps=self.options.preview_fps,
+            source_fps=fps,
+            duration_seconds=duration_seconds,
+            parallel=parallel,
+        )
+
     def capture(self, latent: Any, *, step: int, total_steps: int, pass_no: int | None = None, window_no: int | None = None, fps: float | None = None, duration_seconds: float | None = None, context_id: str | None = None, force_refresh: bool = False) -> bool:
         if self.cancelled or self.disabled:
             return False
@@ -79,7 +93,7 @@ class PreviewCoordinator:
                 self._decoder = load_decoder(self.spec.local_path(), self.spec, device=device)
                 self._decode_device = device
             parallel = device != "cpu"
-            frames, decode_ms, decoded_count = decode_ltx2_latent(self._decoder, latent, spec=self.spec, max_edge=self.options.max_edge, preview_fps=self.options.preview_fps, source_fps=fps, duration_seconds=duration_seconds, parallel=parallel)
+            frames, decode_ms, decoded_count = self._decode(latent, fps=fps, duration_seconds=duration_seconds, parallel=parallel)
             self.sequence += 1
             context = PreviewContext(
                 generation_id=self.generation_id,
@@ -101,7 +115,7 @@ class PreviewCoordinator:
             if "out of memory" in str(exc).lower():
                 if self._decoder is not None:
                     try:
-                        frames, decode_ms, decoded_count = decode_ltx2_latent(self._decoder, latent, spec=self.spec, max_edge=self.options.max_edge, preview_fps=self.options.preview_fps, source_fps=fps, duration_seconds=duration_seconds, parallel=False)
+                        frames, decode_ms, decoded_count = self._decode(latent, fps=fps, duration_seconds=duration_seconds, parallel=False)
                         self.sequence += 1
                         context = PreviewContext(self.generation_id, self.context_id, self.sequence, self.model_type, self.architecture, self.spec.decoder_id, step, total_steps, pass_no, window_no, fps, (decoded_count - 1) / fps if fps and fps > 0 else duration_seconds, {"decoded_frame_count": decoded_count})
                         return self._worker.try_submit(PreviewJob(tuple(frames), context, self.options, decode_ms))
@@ -112,7 +126,7 @@ class PreviewCoordinator:
                         unload_decoders()
                         self._decoder = load_decoder(self.spec.local_path(), self.spec, device="cpu")
                         self._decode_device = "cpu"
-                        frames, decode_ms, decoded_count = decode_ltx2_latent(self._decoder, latent, spec=self.spec, max_edge=self.options.max_edge, preview_fps=self.options.preview_fps, source_fps=fps, duration_seconds=duration_seconds, parallel=False)
+                        frames, decode_ms, decoded_count = self._decode(latent, fps=fps, duration_seconds=duration_seconds, parallel=False)
                         self.sequence += 1
                         context = PreviewContext(self.generation_id, self.context_id, self.sequence, self.model_type, self.architecture, self.spec.decoder_id, step, total_steps, pass_no, window_no, fps, (decoded_count - 1) / fps if fps and fps > 0 else duration_seconds, {"decoded_frame_count": decoded_count})
                         return self._worker.try_submit(PreviewJob(tuple(frames), context, self.options, decode_ms))

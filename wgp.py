@@ -152,8 +152,8 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.12"
-WanGP_version = "12.44"
-settings_version = 2.71
+WanGP_version = "12.52"
+settings_version = 2.73
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -3912,7 +3912,7 @@ def ensure_prompt_enhancer_loaded(override_profile=None, progress=None, send_cmd
         raise gr.Error("Prompt enhancer text runtime is not available.")
     return prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer
 
-def load_models(model_type, override_profile = -1, output_type="video", config_id = None, **model_kwargs):
+def load_models(model_type, override_profile = -1, output_type="video", config_id = None, runtime_model_type=None, track_as_main=True, **model_kwargs):
     global transformer_type, loaded_profile, loaded_config
     def _load_models_info(message):
         if int(verbose_level) > 0:
@@ -3987,7 +3987,8 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
 
     VAE_dtype = torch.float16 if server_config.get("vae_precision","16") == "16" else torch.float
     mixed_precision_transformer =  server_config.get("mixed_precision","0") == "1"
-    transformer_type = None
+    if track_as_main:
+        transformer_type = None
 
     for source_type, filename in zip(source_type_list, local_model_file_list):
         if source_type==0:  
@@ -4016,7 +4017,7 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
     with model_unload_guard():
         torch.set_default_device('cpu')
         wan_model, pipe = model_type_handler.load_model(
-                    local_model_file_list, model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = text_encoder_quantization,
+                    local_model_file_list, runtime_model_type or model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = text_encoder_quantization,
                     dtype = transformer_dtype, VAE_dtype = VAE_dtype, mixed_precision_transformer = mixed_precision_transformer, save_quantized = save_quantized, submodel_no_list   = model_submodel_no_list, text_encoder_filename = text_encoder_filename, profile=profile, lm_decoder_engine=lm_decoder_engine_obtained, **model_kwargs )
 
         kwargs = {}
@@ -4039,9 +4040,10 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
         offloadobj = offload.profile(pipe, profile_no= mmgp_profile, compile = compile_modules, quantizeTransformer = False, loras = loras_transformer, perc_reserved_mem_max = perc_reserved_mem_max , vram_safety_coefficient = vram_safety_coefficient , convertWeightsFloatTo = transformer_dtype, **kwargs)
     if len(args.gpu) > 0:
         torch.set_default_device(args.gpu)
-    transformer_type = model_type
-    loaded_profile = profile
-    loaded_config = config_id or ""
+    if track_as_main:
+        transformer_type = model_type
+        loaded_profile = profile
+        loaded_config = config_id or ""
     return wan_model, offloadobj 
 
 if not "P" in preload_model_policy:
@@ -4120,8 +4122,12 @@ def get_gen_info(state):
 def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_meta=None, preview_session=None):
     gen = get_gen_info(state)
     gen["num_inference_steps"] = num_inference_steps
-    start_time = time.time()    
+    generation_start_time = last_refresh_time = time.time()
+    denoising_start_time = None
+    estimated_total_time = None
     def callback(step_idx = -1, latent = None, force_refresh = True, read_state = False, override_num_inference_steps = -1, pass_no = -1, preview_meta=preview_meta, denoising_extra ="", progress_unit = None, status_prefix = ""):
+        nonlocal denoising_start_time, estimated_total_time, last_refresh_time
+        step_completed = step_idx >= 0
         in_pause = False
         with gen_lock:
             process_status = gen.get("process_status", None)
@@ -4154,8 +4160,15 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
             elif wan_model is not None and hasattr(wan_model, "_early_stop"):
                 wan_model._early_stop = True
         refresh_id =  gen.get("refresh", -1)
+        current_time = time.time()
+        if force_refresh and step_idx < 0:
+            denoising_start_time = current_time
+            estimated_total_time = None
         if force_refresh or step_idx >= 0:
             pass
+        elif read_state:
+            if current_time - last_refresh_time < 1:
+                return
         else:
             refresh_id =  gen.get("refresh", -1)
             if refresh_id < 0:
@@ -4198,8 +4211,14 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
             gen["progress_phase"] = (phase, step_idx)
         status_msg = merge_status_context(status, phase)      
 
-        elapsed_time = time.time() - start_time
-        status_msg = merge_status_context(status, f"{phase} | {format_time(elapsed_time)}")              
+        elapsed_time = current_time - generation_start_time
+        progress_time = format_time(elapsed_time)
+        if step_completed and step_idx > 0 and num_inference_steps > 0 and denoising_start_time is not None:
+            denoising_elapsed_time = current_time - denoising_start_time
+            estimated_total_time = denoising_start_time - generation_start_time + max(denoising_elapsed_time, denoising_elapsed_time * num_inference_steps / step_idx)
+        if estimated_total_time is not None:
+            progress_time += f" / {format_time(max(elapsed_time, estimated_total_time))}"
+        status_msg = merge_status_context(status, f"{phase} | {progress_time}")
         if step_idx >= 0:
             progress_args = [(step_idx , num_inference_steps) , status_msg  ,  num_inference_steps]
             if progress_unit:
@@ -4209,6 +4228,7 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
         
         # progress(*progress_args)
         send_cmd("progress", progress_args)
+        last_refresh_time = current_time
         if latent is not None:
             if (gen.get("preview_options") or {}).get("mode", "rgb") == "off":
                 return
@@ -5662,7 +5682,7 @@ def perform_temporal_upsampling(sample, previous_last_frame, temporal_upsampling
     return temporal_upsampler_api.temporal_upsample(temporal_upsampling, sample, previous_last_frame, fps, main_offloadobj=offloadobj, processing_device=processing_device, to_uint8_callback=convert_video_tensor_to_uint8_chunked, process_files=process_files_def, init_pipe=init_pipe, profile=loaded_profile if loaded_profile >= 0 else get_default_profile("video"))
 
 
-def perform_spatial_upsampling(sample, spatial_upsampling, seed=0, flashvsr_continue_cache=None, return_flashvsr_continue_cache=False, vae_tile_size=None, still_image=False, abort_callback=None, progress_callback=None):
+def perform_spatial_upsampling(sample, spatial_upsampling, seed=0, flashvsr_continue_cache=None, return_flashvsr_continue_cache=False, vae_tile_size=None, still_image=False, abort_callback=None, progress_callback=None, fps=24.0, frame_offset=0, prompt="", negative_prompt=""):
     wait_for_model_unload()
     if upsampler_api.is_vae_upsampling(spatial_upsampling):
         sample = upsampler_api.post_model_process_vae_upsampling(sample, spatial_upsampling)
@@ -5676,20 +5696,20 @@ def perform_spatial_upsampling(sample, spatial_upsampling, seed=0, flashvsr_cont
             profile = get_default_profile("audio")
         else:
             profile = loaded_profile if loaded_profile >= 0 else get_default_profile("video")
-        sample, upsampler_cache = upsampler_api.upscale_postprocessing(edit_upsampler, sample, spatial_upsampling, main_offloadobj=offloadobj, seed=seed, continue_cache=flashvsr_continue_cache, return_continue_cache=return_flashvsr_continue_cache, vae_tile_size=vae_tile_size, process_files=process_files_def, vae_config=vae_config, init_pipe=init_pipe, profile=profile, still_image=still_image, abort_callback=abort_callback, progress_callback=progress_callback)
+        sample, upsampler_cache = upsampler_api.upscale_postprocessing(edit_upsampler, sample, spatial_upsampling, main_offloadobj=offloadobj, seed=seed, continue_cache=flashvsr_continue_cache, return_continue_cache=return_flashvsr_continue_cache, vae_tile_size=vae_tile_size, process_files=process_files_def, vae_config=vae_config, init_pipe=init_pipe, profile=profile, still_image=still_image, fps=fps, frame_offset=frame_offset, prompt=prompt, negative_prompt=negative_prompt, abort_callback=abort_callback, progress_callback=progress_callback)
         return (sample, upsampler_cache) if return_flashvsr_continue_cache else sample
     raise ValueError(f"No spatial upsampler registered for '{spatial_upsampling}'")
 
 
-def perform_image_spatial_upsampling(sample, spatial_upsampling, seed=0, vae_tile_size=None, abort_callback=None, progress_callback=None):
+def perform_image_spatial_upsampling(sample, spatial_upsampling, seed=0, vae_tile_size=None, abort_callback=None, progress_callback=None, fps=24.0, prompt="", negative_prompt=""):
     edit_upsampler = upsampler_api.find_postprocessing_upsampler(spatial_upsampling)
     if edit_upsampler is None or sample.shape[1] <= 1 or getattr(edit_upsampler, "batch_image_inputs", False):
-        return perform_spatial_upsampling(sample, spatial_upsampling, seed=seed, vae_tile_size=vae_tile_size, still_image=True, abort_callback=abort_callback, progress_callback=progress_callback)
+        return perform_spatial_upsampling(sample, spatial_upsampling, seed=seed, vae_tile_size=vae_tile_size, still_image=True, fps=fps, prompt=prompt, negative_prompt=negative_prompt, abort_callback=abort_callback, progress_callback=progress_callback)
     frames = []
     for frame_no in range(sample.shape[1]):
         if abort_callback is not None and abort_callback():
             return None
-        frames.append(perform_spatial_upsampling(sample[:, frame_no:frame_no + 1], spatial_upsampling, seed=seed, vae_tile_size=vae_tile_size, still_image=True, abort_callback=abort_callback, progress_callback=progress_callback))
+        frames.append(perform_spatial_upsampling(sample[:, frame_no:frame_no + 1], spatial_upsampling, seed=seed, vae_tile_size=vae_tile_size, still_image=True, fps=fps, prompt=prompt, negative_prompt=negative_prompt, abort_callback=abort_callback, progress_callback=progress_callback))
     return torch.cat(frames, dim=1)
 
 
@@ -5753,6 +5773,7 @@ def edit_media(
     api_return_video_uint8, api_return_audio = get_api_output_options(plugin_data)
     api_options = plugin_data.get("api", {}) if isinstance(plugin_data, dict) and isinstance(plugin_data.get("api", {}), dict) else {}
     api_suppress_source_audio = bool(api_options.get("suppress_source_audio"))
+    upsampler_frame_offset = int(api_options.get("upsampler_frame_offset", 0))
     flashvsr_continue_cache = api_options.get("flashvsr_continue_cache")
     return_flashvsr_continue_cache = bool(api_options.get("return_flashvsr_continue_cache"))
 
@@ -5822,7 +5843,7 @@ def edit_media(
                 sample = sample.permute(-1,0,1,2)
             frames_count = sample.shape[1] 
 
-        output_fps  = round(fps)
+        output_fps = fps
         if len(temporal_upsampling) > 0:
             sample, previous_last_frame, output_fps = perform_temporal_upsampling(sample, None, temporal_upsampling, fps)
             configs["temporal_upsampling"] = temporal_upsampling
@@ -5830,6 +5851,7 @@ def edit_media(
 
 
         if len(spatial_upsampling) > 0:
+            spatial_upsampling_prompt = upsampler_api.resolve_late_postprocessing_prompt(spatial_upsampling, configs.get("prompt"))
             def flashvsr_progress(phase, current_step=None, total_steps=None):
                 phase_text = f"Upsampling - {phase}"
                 gen["progress_phase"] = (phase_text, int(current_step) if current_step is not None else -1)
@@ -5839,10 +5861,10 @@ def edit_media(
                 else:
                     send_cmd("progress", [0, status_msg])
             if source_is_image:
-                sample = perform_image_spatial_upsampling(sample, spatial_upsampling, seed=seed, abort_callback=lambda: gen.get("abort", False), progress_callback=flashvsr_progress)
+                sample = perform_image_spatial_upsampling(sample, spatial_upsampling, seed=seed, fps=fps, prompt=spatial_upsampling_prompt, negative_prompt=str(configs.get("negative_prompt", "")), abort_callback=lambda: gen.get("abort", False), progress_callback=flashvsr_progress)
                 flashvsr_continue_cache = None
             else:
-                sample = perform_spatial_upsampling(sample, spatial_upsampling, seed=seed, flashvsr_continue_cache=flashvsr_continue_cache, return_flashvsr_continue_cache=return_flashvsr_continue_cache, abort_callback=lambda: gen.get("abort", False), progress_callback=flashvsr_progress)
+                sample = perform_spatial_upsampling(sample, spatial_upsampling, seed=seed, flashvsr_continue_cache=flashvsr_continue_cache, return_flashvsr_continue_cache=return_flashvsr_continue_cache, fps=fps, frame_offset=upsampler_frame_offset, prompt=spatial_upsampling_prompt, negative_prompt=str(configs.get("negative_prompt", "")), abort_callback=lambda: gen.get("abort", False), progress_callback=flashvsr_progress)
             if return_flashvsr_continue_cache and not source_is_image:
                 sample, flashvsr_continue_cache = sample
             if gen.get("abort", False) or sample is None:
@@ -5855,7 +5877,7 @@ def edit_media(
             configs["film_grain_intensity"] = film_grain_intensity
             configs["film_grain_saturation"] = film_grain_saturation
     else:
-        output_fps  = round(fps)
+        output_fps = fps
 
     soundtrack_error = audio_processor_api.validate_method(soundtrack_method, audio_processor_api.AUDIO_PROCESSOR_TYPE_SOUNDTRACK, video_source=None, frames_count=frames_count, fps=output_fps, audio_source=audio_source, media_source_exists=media_source_exists, has_audio_file_extension=has_audio_file_extension) if soundtrack_method else ""
     any_soundtrack_processor = bool(soundtrack_method and not soundtrack_error)
@@ -7950,10 +7972,10 @@ def generate_media(
                         else:
                             send_cmd("progress", [0, status_msg])
                     if is_image:
-                        sample = perform_image_spatial_upsampling(sample, spatial_upsampling, seed=seed, vae_tile_size=VAE_tile_size, abort_callback=lambda: gen.get("abort", False), progress_callback=flashvsr_progress)
+                        sample = perform_image_spatial_upsampling(sample, spatial_upsampling, seed=seed, vae_tile_size=VAE_tile_size, fps=fps, prompt=prompt, negative_prompt=negative_prompt, abort_callback=lambda: gen.get("abort", False), progress_callback=flashvsr_progress)
                         flashvsr_continue_cache = None
                     else:
-                        sample = perform_spatial_upsampling(sample, spatial_upsampling, seed=seed, flashvsr_continue_cache=flashvsr_continue_cache, return_flashvsr_continue_cache=return_flashvsr_continue_cache, vae_tile_size=VAE_tile_size, abort_callback=lambda: gen.get("abort", False), progress_callback=flashvsr_progress)
+                        sample = perform_spatial_upsampling(sample, spatial_upsampling, seed=seed, flashvsr_continue_cache=flashvsr_continue_cache, return_flashvsr_continue_cache=return_flashvsr_continue_cache, vae_tile_size=VAE_tile_size, fps=fps, prompt=prompt, negative_prompt=negative_prompt, abort_callback=lambda: gen.get("abort", False), progress_callback=flashvsr_progress)
                     if return_flashvsr_continue_cache and not is_image:
                         sample, flashvsr_continue_cache = sample
                     if gen.get("abort", False) or sample is None:
@@ -9334,6 +9356,7 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     inputs.pop("exaggeration", None)
     
     if target in ["state", "edit_state"]:
+        inputs["settings_version"] = settings_version
         return inputs
     
     if "lset_name" in inputs:

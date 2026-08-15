@@ -17,4 +17,7 @@ def get_system_handler(name: str | None) -> Any:
     if name == "coz":
         from postprocessing.chain_of_zoom.process_handler import HANDLER
         return HANDLER
+    if name == "ltx2_upsampler":
+        from postprocessing.ltx2_upsampler.process_handler import HANDLER
+        return HANDLER
     return None

@@ -180,6 +180,8 @@ class TI2VidTwoStagesPipeline:
         self_refiner_max_plans: int = 1,
         editanything_ref_images=None,
         ltx2_22B_class: bool = False,
+        hdr_transform: str | None = None,
+        skip_audio: bool = False,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         assert_resolution(height=height, width=width, is_two_stage=True)
 
@@ -520,20 +522,22 @@ class TI2VidTwoStagesPipeline:
             if return_latent_slice is not None:
                 latent_slice = video_state.latent[:, :, return_latent_slice].detach().to("cpu")
             if frozen_output_video is None:
+                video_latent = [video_state.latent]
+                video_state = None
                 decoded_video = vae_decode_video_to_tensor(
-                    video_state.latent,
+                    video_latent,
                     self._get_stage_model(1, "video_decoder"),
                     tiling_config,
                     expected_frames=int(stage_1_output_shape.frames),
                     expected_height=int(stage_1_output_shape.height),
                     expected_width=int(stage_1_output_shape.width),
                     interrupt_check=interrupt_check,
+                    hdr_transform=hdr_transform,
+                    output_dtype=torch.float16 if hdr_transform is not None else None,
                 )
             else:
                 decoded_video = frozen_output_video[:, :num_frames, :height, :width].permute(1, 2, 3, 0)
-            decoded_audio = vae_decode_audio(
-                audio_state.latent, self._get_stage_model(1, "audio_decoder"), self._get_stage_model(1, "vocoder")
-            )
+            decoded_audio = None if skip_audio else vae_decode_audio(audio_state.latent, self._get_stage_model(1, "audio_decoder"), self._get_stage_model(1, "vocoder"))
             if latent_slice is not None:
                 return decoded_video, decoded_audio, latent_slice
             return decoded_video, decoded_audio
@@ -737,20 +741,22 @@ class TI2VidTwoStagesPipeline:
         if return_latent_slice is not None:
             latent_slice = video_state.latent[:, :, return_latent_slice].detach().to("cpu")
         if frozen_output_video is None:
+            video_latent = [video_state.latent]
+            video_state = None
             decoded_video = vae_decode_video_to_tensor(
-                video_state.latent,
+                video_latent,
                 self._get_stage_model(2, "video_decoder"),
                 tiling_config,
                 expected_frames=int(stage_2_output_shape.frames),
                 expected_height=int(stage_2_output_shape.height),
                 expected_width=int(stage_2_output_shape.width),
                 interrupt_check=interrupt_check,
+                hdr_transform=hdr_transform,
+                output_dtype=torch.float16 if hdr_transform is not None else None,
             )
         else:
             decoded_video = frozen_output_video[:, :num_frames, :height, :width].permute(1, 2, 3, 0)
-        decoded_audio = vae_decode_audio(
-            audio_state.latent, self._get_stage_model(2, "audio_decoder"), self._get_stage_model(2, "vocoder")
-        )
+        decoded_audio = None if skip_audio else vae_decode_audio(audio_state.latent, self._get_stage_model(2, "audio_decoder"), self._get_stage_model(2, "vocoder"))
         if latent_slice is not None:
             return decoded_video, decoded_audio, latent_slice
         return decoded_video, decoded_audio

@@ -5,6 +5,7 @@ import os
 import torch
 
 from shared.utils.hf import build_hf_url
+from shared.utils.frame_scheduler import normalize_overlap
 
 from .minimax_h3_main import AUDIO_VAE_FILE, TEXT_ENCODER_FOLDER, VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE
 from .prompt_enhancer import (FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
@@ -64,7 +65,7 @@ Start and end images are placed at those exact points in the video. For general 
 
 ### Longer videos
 
-Sliding windows can continue a video beyond one generation. Use an overlap of 18 frames, or another valid value such as 35 or 52 (`17k + 1`). WanGP automatically reuses the overlapping video and audio to make the join smoother.
+Sliding windows can continue a video beyond one generation. Choose any overlap amount and WanGP will round it to the nearest H3-compatible value (1, 18, 35, 52...). It automatically reuses the overlapping video and audio to make the join smoother.
 
 H3 is designed for 24 FPS, although WanGP can generate at another frame rate. MiniMax documents an official duration of 4–15 seconds per generation window; longer videos are possible through sliding windows.
 """
@@ -102,7 +103,7 @@ Background removal is disabled by default. After selecting reference images, use
 
 Ref2VA also supports optional start and end images. These are shown to the prompt before the general reference images: with a start image and one reference image, the start image is `<Picture 1>` and the reference image is `<Picture 2>`.
 
-For longer videos, use a sliding-window overlap of 18 frames, or another valid value such as 35 or 52 (`17k + 1`). WanGP automatically carries the overlapping video and audio into the next window while keeping the selected references available.
+For longer videos, choose any sliding-window overlap amount and WanGP will round it to the nearest H3-compatible value (1, 18, 35, 52...). It automatically carries the overlapping video and audio into the next window while keeping the selected references available.
 
 H3 is designed for 24 FPS, although WanGP can generate at another frame rate. MiniMax documents an official duration of 4–15 seconds per generation window; longer videos are possible through sliding windows.
 
@@ -114,7 +115,7 @@ H3_RUNTIME_INFOS = """
 
 Enable **Advanced Mode** to access these options:
 
-- **Spectrum:** in **Steps Skipping**, select **Spectrum Feature Forecasting**. Spectrum accelerates generation by forecasting selected transformer steps, at the cost of possible changes to motion or fine details. Keep the default 25% start for five full warmup steps in a 20-step generation; increasing it starts later and skips fewer steps.
+- **Spectrum:** in **Steps Skipping**, select **Spectrum Feature Forecasting**. Spectrum captures an accelerated local-only trajectory, retains its actual-step anchors in system RAM, then performs a transformer-free smoothing replay with independent video and audio prediction. Keep the default 25% start for five full warmup steps in a 20-step generation; increasing it starts later and skips fewer steps. Short Euler schedules can bootstrap after their first actual step, while RES Multistep preserves a three-step actual tail.
 - **First Block Cache:** in **Steps Skipping**, select **First Block Cache**. It runs the first transformer block to decide whether the remaining blocks can reuse their previous result. The balanced strength uses the upstream 0.08 threshold; higher strengths skip more work but can change motion or fine details. The displayed strength is not an exact speed multiplier.
 - **Sol-Attn:** in **Advanced Mode > Misc. > Override Attention Mode**, select **sol**. It uses sparse attention on large visual sequences to reduce attention cost and speed up generation, with possible small quality differences. It requires BF16, Triton 3.6 or newer, and a CUDA NVIDIA GPU using SM89, SM90, SM100, or SM120 (such as RTX 40/50-series, H100/H200, or B100/B200); the dropdown reports whether it is available on the current system.
 - **Text Encoder:** at the bottom of **Misc.**, use the **Text Encoder** configuration to reduce system RAM. **Qwen3-VL BF16** uses the most memory; **Quanto INT8** is a balanced lower-memory choice; **NVFP4 AWQ**, **GGUF Q4_K_M**, and especially **GGUF Q2_K** reduce it further. More aggressive quantization can slightly affect prompt interpretation.
@@ -196,7 +197,7 @@ class family_handler:
             "skip_steps_multiplier_label": "First Block Cache Threshold",
             "first_block_cache_thresholds": FIRST_BLOCK_CACHE_THRESHOLDS,
             "sol_attention": True,
-            "sample_solvers": [("Euler", "euler")],
+            "sample_solvers": [("Euler", "euler"), ("RES Multistep", "res_multistep")],
             "no_negative_prompt": True,
             "returns_audio": True,
             "multimedia_generation": True,
@@ -344,9 +345,10 @@ class family_handler:
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
-        overlap = int(inputs["sliding_window_overlap"] or 0)
-        if overlap and (overlap - 1) % 17:
-            return f"MiniMax H3 continuation overlap must contain 17k + 1 frames (found {overlap})"
+        overlap, error = normalize_overlap(int(inputs["sliding_window_overlap"] or 0), 17, 1)
+        if error:
+            return error
+        inputs["sliding_window_overlap"] = overlap
         if base_model_type not in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE):
             video_prompt_type = inputs["video_prompt_type"]
             audio_prompt_type = inputs["audio_prompt_type"]
@@ -487,6 +489,11 @@ class family_handler:
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
+        if settings_version < 2.73 and "sliding_window_overlap" in ui_defaults:
+            overlap = max(1, int(ui_defaults["sliding_window_overlap"] or 18))
+            ui_defaults["sliding_window_overlap"] = normalize_overlap(overlap, 17, 1)[0]
+        if settings_version < 2.73 and base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE):
+            ui_defaults["sliding_window_size"] = 362
         if settings_version < 2.71:
             ui_defaults["denoising_strength"] = 1.0
         if settings_version < 2.70:

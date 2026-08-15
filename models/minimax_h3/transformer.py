@@ -645,7 +645,7 @@ class MiniMaxH3Model(nn.Module):
         audio_row = int(timestep_indices[audio_start + min(layout.num_target_condition_audio_latents,
                                                            max(audio_t - 1, 0))])
         if spectrum is not None:
-            spectrum.observe(hidden[audio_start:], self._check_interrupt)
+            spectrum.observe(hidden[audio_start:], target_audio_rows, self._check_interrupt)
         h_list = [hidden]
         hidden = None
         video, audio = self.final_layer(h_list, temb, (video_start, layout.sequence_length, video_row),

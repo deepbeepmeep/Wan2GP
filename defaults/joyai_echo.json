@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "JoyAI-Echo 22B",
+        "name": "LTX-2 2.3 JoyAI-Echo 22B",
         "architecture": "joyai_echo",
         "description": "JoyAI-Echo is an LTX-2.3-based audio-video model for connected multi-window stories. WanGP keeps compact visual and audio memories so later windows can reuse characters, voices, objects, and places. Write clear story beats with stable IDs, repeated identity details, readable dialogue, and consistent sound design. A Control Video with audio can predefine memory before generation.",
         "URLs": [

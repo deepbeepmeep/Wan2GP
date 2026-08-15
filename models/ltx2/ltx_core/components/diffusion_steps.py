@@ -22,6 +22,40 @@ class EulerDiffusionStep(DiffusionStepProtocol):
         return (sample.to(torch.float32) + velocity.to(torch.float32) * dt).to(sample.dtype)
 
 
+class EulerAncestralDiffusionStep(DiffusionStepProtocol):
+    """Rectified-flow ancestral Euler step used by LTX-2.5 Distilled."""
+
+    def __init__(self, eta: float = 1.0, s_noise: float = 1.0) -> None:
+        self.eta = eta
+        self.s_noise = s_noise
+
+    def step(
+        self,
+        sample: torch.Tensor,
+        denoised_sample: torch.Tensor,
+        sigmas: torch.Tensor,
+        step_index: int,
+        noise: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        sigma = sigmas[step_index].to(torch.float32)
+        sigma_next = sigmas[step_index + 1].to(torch.float32)
+        if sigma_next == 0:
+            return denoised_sample.to(sample.dtype)
+        if self.eta > 0 and noise is None:
+            raise ValueError("EulerAncestralDiffusionStep requires noise when eta > 0")
+
+        downstep_ratio = 1.0 + (sigma_next / sigma - 1.0) * self.eta
+        sigma_down = sigma_next * downstep_ratio
+        sigma_down_ratio = sigma_down / sigma
+        x_next = sigma_down_ratio * sample.float() + (1.0 - sigma_down_ratio) * denoised_sample.float()
+        if self.eta > 0:
+            alpha_next = 1.0 - sigma_next
+            alpha_down = 1.0 - sigma_down
+            renoise_coeff = (sigma_next.square() - sigma_down.square() * alpha_next.square() / alpha_down.square()).clamp(min=0).sqrt()
+            x_next = alpha_next / alpha_down * x_next + noise.float() * self.s_noise * renoise_coeff
+        return x_next.to(sample.dtype)
+
+
 class Res2sDiffusionStep(DiffusionStepProtocol):
     """
     Second-order diffusion step for the res_2s HQ sampler.

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import gc
 
+import numpy as np
 import torch
 from tqdm import tqdm
 
 from shared.utils import offload_registry
+from shared.utils.audio_video import slice_audio_window
 
 
 RUNTIME_NAME = "LTX Video Upsampler"
@@ -17,6 +19,7 @@ MODEL_TYPES = {"ltx23": "ltx2_22B", "ltx25": "ltx2_25_22B_distilled"}
 FAKE_MODEL_TYPES = {"ltx23": "ltx2_upsampler_23", "ltx25": "ltx2_upsampler_25"}
 LORA_KEYS = {"ltx23": ("ltx2_lora_distilled_1_1", "ltx2_lora_pixel_spatial_upscaler"), "ltx25": ("ltx2_lora_pixel_spatial_upscaler",)}
 LORA_MULTIPLIERS = {"ltx23": (0.5, 1.0), "ltx25": (1.0,)}
+AUDIO_SAMPLE_RATE = 16000
 
 
 def lora_urls(wgp, variant: str) -> tuple[str, ...]:
@@ -41,7 +44,7 @@ def window_starts(frame_count: int, window_size: int = DEFAULT_WINDOW_FRAMES, wi
 
 def pad_window(video: torch.Tensor) -> torch.Tensor:
     frame_count = int(video.shape[1])
-    padded_frame_count = ((frame_count - 1 + TEMPORAL_STRIDE - 1) // TEMPORAL_STRIDE) * TEMPORAL_STRIDE + 1
+    padded_frame_count = max(TEMPORAL_STRIDE + 1, ((frame_count - 1 + TEMPORAL_STRIDE - 1) // TEMPORAL_STRIDE) * TEMPORAL_STRIDE + 1)
     if padded_frame_count == frame_count:
         return video
     return torch.cat((video, video[:, -1:].expand(-1, padded_frame_count - frame_count, -1, -1)), dim=1)
@@ -50,6 +53,26 @@ def pad_window(video: torch.Tensor) -> torch.Tensor:
 def crossfade_frames(previous: torch.Tensor, current: torch.Tensor) -> torch.Tensor:
     weights = torch.linspace(0.0, torch.pi, previous.shape[1], device=previous.device, dtype=torch.float32).cos_().mul_(-0.5).add_(0.5).view(1, -1, 1, 1)
     return previous.float().lerp_(current.float(), weights).round_().to(previous.dtype)
+
+
+def slice_audio_for_window(audio_waveform, audio_sample_rate: int, source_audio_path: str | None, start: int, frame_count: int, padded_frame_count: int, fps: float):
+    if source_audio_path:
+        audio, sample_rate = slice_audio_window(source_audio_path, start, frame_count, fps)
+    else:
+        sample_rate = int(audio_sample_rate or AUDIO_SAMPLE_RATE)
+        if audio_waveform is None:
+            audio = np.zeros((int(round(frame_count * sample_rate / fps)), 1), dtype=np.float32)
+        else:
+            audio = audio_waveform.detach().cpu().numpy() if torch.is_tensor(audio_waveform) else np.asarray(audio_waveform)
+            if audio.ndim == 1:
+                audio = audio[:, None]
+            start_sample = int(round(start * sample_rate / fps))
+            stop_sample = start_sample + int(round(frame_count * sample_rate / fps))
+            audio = audio[start_sample:stop_sample]
+    target_samples = int(round(padded_frame_count * sample_rate / fps))
+    if audio.shape[0] < target_samples:
+        audio = np.pad(audio, ((0, target_samples - audio.shape[0]), (0, 0)))
+    return np.asarray(audio[:target_samples], dtype=np.float32), sample_rate
 
 
 class LTXUpsamplerRuntime:
@@ -123,6 +146,9 @@ class LTXUpsamplerRuntime:
         window_size: int = DEFAULT_WINDOW_FRAMES,
         window_overlap: int = WINDOW_OVERLAP_FRAMES,
         frame_offset: int = 0,
+        audio_waveform=None,
+        audio_sample_rate: int = 0,
+        source_audio_path: str | None = None,
         vae_tile_size=None,
         abort_callback=None,
         progress_callback=None,
@@ -137,6 +163,7 @@ class LTXUpsamplerRuntime:
                 return None, None
             stop = min(start + window_size, frame_count)
             input_window = pad_window(sample[:, start:stop])
+            audio_window, window_audio_sample_rate = slice_audio_for_window(audio_waveform, audio_sample_rate, source_audio_path, start, stop - start, int(input_window.shape[1]), fps)
             window_label = f"Window {window_index} / {len(starts)}" if len(starts) > 1 else ""
 
             def status_callback(phase, label=window_label):
@@ -151,6 +178,10 @@ class LTXUpsamplerRuntime:
             window_output = self.model.upscale_video(
                 input_window,
                 prompt=prompt,
+                negative_prompt=negative_prompt,
+                audio_waveform=audio_window,
+                audio_sample_rate=window_audio_sample_rate,
+                upsampler_variant=self.variant,
                 seed=seed,
                 fps=fps,
                 pixel_frame_offset=int(frame_offset) + start,
@@ -159,7 +190,7 @@ class LTXUpsamplerRuntime:
                 set_progress_status=status_callback,
                 interrupt_check=abort_callback,
             )
-            input_window = None
+            input_window = audio_window = None
             if window_output is None:
                 return None, None
             window_output = window_output[:, : stop - start]

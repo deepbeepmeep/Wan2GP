@@ -17,6 +17,7 @@ Every spatial upsampler (built-in or extension) class is listed in
     "vae_methods": [],                       # VAE methods (label, method key); model-pipeline integration
     "multipliers": {"flashvsr": (2.0, 4.0)}, # supported upsampling multipliers per method key
     "default_spatial_upsampling": "flashvsr2",
+    "source_audio_conditioning": False,        # request a decoded source-audio input without changing final remux audio
 }
 ```
 

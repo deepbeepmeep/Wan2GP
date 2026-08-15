@@ -70,6 +70,7 @@ _TRITON_TINY_M_SHAPE_CONFIGS = {
     (2, 8192, 3072): (4, 128, 64, 4, 4),
     (4, 8192, 3072): (2, 128, 128, 8, 4),
 }
+_TRITON_TINY_M_RUNTIME_CONFIGS = {}
 _TRITON_TINY_M_PAIR_CONFIGS = {
     (3072, 3072): (2, 128, 64, 8, 4),
     (3072, 1024): (2, 256, 128, 8, 4),
@@ -186,9 +187,27 @@ def is_available(device=None) -> bool:
     return _IS_AVAILABLE[device_index]
 
 
+def configure_tiny_m_shape_overrides(configs=None) -> None:
+    global _TRITON_TINY_M_RUNTIME_CONFIGS
+    configs = configs or {}
+    parsed = {}
+    for shape, config in configs.items():
+        if not isinstance(shape, (tuple, list)) or len(shape) != 3 or not isinstance(config, (tuple, list)) or len(config) != _CONFIG_LEN:
+            raise ValueError("Triton tiny-M overrides require (M, K, N) keys and five-value configs")
+        shape, config = tuple(int(value) for value in shape), tuple(int(value) for value in config)
+        if shape[0] > 4 or min(shape) <= 0 or min(config) <= 0:
+            raise ValueError(f"Invalid Triton tiny-M override: shape={shape}, config={config}")
+        parsed[shape] = config
+    _TRITON_TINY_M_RUNTIME_CONFIGS = parsed
+
+
+def _tiny_m_shape_config(m: int, k: int, n: int):
+    return _TRITON_TINY_M_RUNTIME_CONFIGS.get((m, k, n)) or _TRITON_TINY_M_SHAPE_CONFIGS.get((m, k, n))
+
+
 def _select_static_triton_int8_config(m: int, k: int, n: int) -> tuple[int, int, int, int, int]:
     if m <= 4:
-        cfg = _TRITON_TINY_M_SHAPE_CONFIGS.get((m, k, n))
+        cfg = _tiny_m_shape_config(m, k, n)
         if cfg is not None:
             return cfg
         cfg = _TRITON_TINY_M_PAIR_CONFIGS.get((k, n))
@@ -234,7 +253,7 @@ def _dedup_shapes(shapes: tuple[tuple[int, int, int], ...]) -> tuple[tuple[int, 
 def _resolve_autotune_slot(m: int, k: int, n: int) -> tuple[str, tuple[tuple[int, int, int], ...]]:
     baseline = _select_static_triton_int8_config(m, k, n)
     if m <= 4:
-        if (m, k, n) in _TRITON_TINY_M_SHAPE_CONFIGS:
+        if _tiny_m_shape_config(m, k, n) is not None:
             slot_id = f"tiny_shape|m={m}|k={k}|n={n}"
             reps = ((m, k, n),)
         elif (k, n) in _TRITON_TINY_M_PAIR_CONFIGS:
@@ -460,7 +479,7 @@ def _candidate_configs(
                 (8, 128, 64, 4, 4),
             ]
         )
-        shape_cfg = _TRITON_TINY_M_SHAPE_CONFIGS.get((m, k, n))
+        shape_cfg = _tiny_m_shape_config(m, k, n)
         if shape_cfg is not None:
             out.append(shape_cfg)
         pair_cfg = _TRITON_TINY_M_PAIR_CONFIGS.get((k, n))
@@ -872,6 +891,8 @@ def _select_triton_int8_config(
     kernel_kind: str = "fused",
 ) -> tuple[int, int, int, int, int]:
     baseline = _select_static_triton_int8_config(m, k, n)
+    if (m, k, n) in _TRITON_TINY_M_RUNTIME_CONFIGS:
+        return baseline
     if not is_available() or not torch.cuda.is_available():
         return baseline
     try:

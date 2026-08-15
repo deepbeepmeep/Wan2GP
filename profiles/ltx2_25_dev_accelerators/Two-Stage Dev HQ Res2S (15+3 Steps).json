@@ -1,5 +1,5 @@
 {
-    "model_type": "ltx2_22B",
+    "model_type": "ltx2_25_22B",
     "sample_solver": "res2s",
     "num_inference_steps": 15,
     "guidance_phases": 2,
@@ -15,9 +15,9 @@
     "cfg_star_switch": 0,
     "self_refiner_setting": 0,
     "activated_loras": [
-        "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-distilled-lora-384-1.1.safetensors"
+        "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.5-22b-distilled-lora-450_bf16.safetensors"
     ],
     "loras_multipliers": "0.5",
     "settings_version": 2.56,
-    "help": "Runs the Dev checkpoint with the LTX-2.3 distilled LoRA at 0.5: 15-step HQ res2s generation followed by 3 refinement steps."
+    "help": "Runs LTX 2.5 Dev with its distilled LoRA at 0.5: 15-step HQ res2s generation followed by 3 refinement steps."
 }

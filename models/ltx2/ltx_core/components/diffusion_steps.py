@@ -22,6 +22,30 @@ class EulerDiffusionStep(DiffusionStepProtocol):
         return (sample.to(torch.float32) + velocity.to(torch.float32) * dt).to(sample.dtype)
 
 
+class EulerCFGPPDiffusionStep(DiffusionStepProtocol):
+    """Rectified-flow Euler CFG++ step used by the official LTX-2.3 upscaler workflow."""
+
+    uses_unconditional = True
+
+    def step(
+        self,
+        sample: torch.Tensor,
+        denoised_sample: torch.Tensor,
+        sigmas: torch.Tensor,
+        step_index: int,
+        unconditional_denoised_sample: torch.Tensor,
+    ) -> torch.Tensor:
+        sigma = sigmas[step_index].to(torch.float32)
+        sigma_next = sigmas[step_index + 1].to(torch.float32)
+        if sigma_next == 0:
+            return denoised_sample.to(sample.dtype)
+
+        alpha = 1.0 - sigma
+        alpha_next = 1.0 - sigma_next
+        noise = (sample.float() - alpha * unconditional_denoised_sample.float()) / sigma
+        return (alpha_next * denoised_sample.float() + sigma_next * noise).to(sample.dtype)
+
+
 class EulerAncestralDiffusionStep(DiffusionStepProtocol):
     """Rectified-flow ancestral Euler step used by LTX-2.5 Distilled."""
 

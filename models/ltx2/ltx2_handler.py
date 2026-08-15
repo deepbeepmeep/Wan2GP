@@ -144,7 +144,7 @@ _ARCH_SPECS = {
         "audio_embeddings_connector_int8": "ltx-2.5-22b_audio_embeddings_connector_int8_convrot.safetensors",
         "audio_embeddings_connector_nvfp4": "ltx-2.5-22b_audio_embeddings_connector_nvfp4_bf16.safetensors",
         "profiles_dir": "ltx2",
-        "dev_profiles_dir": "ltx2_dev_accelerators",
+        "dev_profiles_dir": "ltx2_25_dev_accelerators",
         "preset_profiles_dir": "ltx2_presets",
         "distilled_preset_profiles_dir": "ltx2_distilled_presets",
         "lora_dir": "ltx2",
@@ -275,15 +275,15 @@ def _default_perturbation_layers(base_model_type: str | None) -> list[int]:
 def _default_dev_settings(base_model_type: str | None) -> dict:
     if _is_ltx25(base_model_type):
         return {
-            "num_inference_steps": 30,
+            "num_inference_steps": 8,
             "video_length": 241,
             "resolution": "1280x704",
-            "sample_solver": "euler",
-            "guidance_scale": 3.0,
-            "audio_guidance_scale": 7.0,
-            "alt_guidance_scale": 3.0,
-            "alt_scale": 0.7,
-            "perturbation_switch": 2,
+            "sample_solver": "distilled_8_steps_ancestral",
+            "guidance_scale": 1.0,
+            "audio_guidance_scale": 1.0,
+            "alt_guidance_scale": 1.0,
+            "alt_scale": 0.0,
+            "perturbation_switch": 0,
             "perturbation_layers": _default_perturbation_layers(base_model_type),
             "perturbation_start_perc": 0,
             "perturbation_end_perc": 100,
@@ -774,7 +774,9 @@ class family_handler:
                     "perturbation_layers_max": 48,
                 }
             )
-            if base_model_type in LTX2_22B_CLASS or ltx25:
+            if ltx25:
+                extra_model_def["sample_solvers"] = [("Distilled 8 Steps (Euler Ancestral)", "distilled_8_steps_ancestral"), ("Distilled 8 Steps (Euler)", "distilled_8_steps"), ("Euler", "euler"), ("HQ (res2s)", "res2s")]
+            elif base_model_type in LTX2_22B_CLASS:
                 extra_model_def["sample_solvers"] = [("Distilled 8 Steps", "distilled_8_steps"), ("Euler", "euler"), ("HQ (res2s)", "res2s")]
         extra_model_def["guidance_max_phases"] = 2
         extra_model_def["visible_phases"] = 0 if distilled else 1
@@ -875,10 +877,13 @@ class family_handler:
             sampler_enabled = base_model_type in LTX2_22B_CLASS or _is_ltx25(base_model_type)
             sample_solver = inputs.get("sample_solver", "euler" if sampler_enabled else "").lower()
             if sampler_enabled:
-                if sample_solver not in {"distilled_8_steps", "euler", "res2s"}:
+                supported_samplers = {"distilled_8_steps", "euler", "res2s"}
+                if _is_ltx25(base_model_type):
+                    supported_samplers.add("distilled_8_steps_ancestral")
+                if sample_solver not in supported_samplers:
                     return f"Unsupported LTX2 sampler '{sample_solver}'."
                 inputs["sample_solver"] = sample_solver
-                if sample_solver == "distilled_8_steps":
+                if sample_solver in {"distilled_8_steps", "distilled_8_steps_ancestral"}:
                     inputs["num_inference_steps"] = 8
                 if sample_solver == "res2s":
                     if inputs.get("apg_switch", 0):

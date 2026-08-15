@@ -1,13 +1,13 @@
 {
     "model_type": "ltx2_22B",
-    "sample_solver": "res2s",
-    "num_inference_steps": 15,
+    "sample_solver": "euler",
+    "num_inference_steps": 30,
     "guidance_phases": 2,
     "guidance_scale": 3.0,
     "audio_guidance_scale": 7.0,
     "alt_guidance_scale": 3.0,
-    "alt_scale": 0.45,
-    "perturbation_switch": 0,
+    "alt_scale": 0.7,
+    "perturbation_switch": 2,
     "perturbation_layers": [28],
     "perturbation_start_perc": 0,
     "perturbation_end_perc": 100,
@@ -17,7 +17,7 @@
     "activated_loras": [
         "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-distilled-lora-384-1.1.safetensors"
     ],
-    "loras_multipliers": "0.5",
+    "loras_multipliers": "0;1",
     "settings_version": 2.56,
-    "help": "Runs the Dev checkpoint with the LTX-2.3 distilled LoRA at 0.5: 15-step HQ res2s generation followed by 3 refinement steps."
+    "help": "Runs LTX 2.3 Dev with modality guidance: 30 Euler steps using CFG and STG at half resolution, followed by x2 spatial upscaling and 3 refinement steps with the distilled LoRA."
 }

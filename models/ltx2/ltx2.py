@@ -1145,6 +1145,10 @@ class LTX2:
         self,
         sample: torch.Tensor,
         prompt: str,
+        negative_prompt: str,
+        audio_waveform,
+        audio_sample_rate: int,
+        upsampler_variant: str,
         seed: int,
         fps: float,
         pixel_frame_offset: int = 0,
@@ -1167,9 +1171,32 @@ class LTX2:
             source = torch.nn.functional.pad(source, (0, pad_width, 0, pad_height), mode="replicate")
         source = source.to(device=self.device, dtype=torch.bfloat16)
         tiling_config = _build_tiling_config(VAE_tile_size, fps)
+        if set_progress_status is not None:
+            set_progress_status("Audio VAE encoding")
+        waveform = torch.as_tensor(audio_waveform, dtype=torch.float32)
+        waveform = waveform.unsqueeze(1) if waveform.ndim == 1 else waveform
+        waveform = waveform.T.unsqueeze(0)
+        audio_encoder = self.pipeline._get_model("audio_encoder")
+        target_channels = int(audio_encoder.in_channels)
+        if waveform.shape[1] != target_channels:
+            if waveform.shape[1] == 1:
+                waveform = waveform.repeat(1, target_channels, 1)
+            elif target_channels == 1:
+                waveform = waveform.mean(dim=1, keepdim=True)
+            else:
+                waveform = waveform[:, :target_channels]
+                if waveform.shape[1] < target_channels:
+                    waveform = torch.cat((waveform, waveform.new_zeros(waveform.shape[0], target_channels - waveform.shape[1], waveform.shape[2])), dim=1)
+        audio_processor = AudioProcessor(sample_rate=audio_encoder.sample_rate, mel_bins=audio_encoder.mel_bins, mel_hop_length=audio_encoder.mel_hop_length, n_fft=audio_encoder.n_fft)
+        mel = audio_processor.waveform_to_mel(waveform, int(audio_sample_rate))
+        audio_params = next(audio_encoder.parameters())
+        audio_latent = audio_encoder(mel.to(device=audio_params.device, dtype=audio_params.dtype))
         decoded = self.pipeline.upscale_video(
             source_video=source,
             prompt=prompt,
+            negative_prompt=negative_prompt,
+            audio_latent=audio_latent,
+            upsampler_variant=upsampler_variant,
             seed=seed,
             frame_rate=fps,
             sigma_values=LTX2_UPSCALE_SIGMAS,
@@ -1231,9 +1258,10 @@ class LTX2:
             loras.append(url)
             loras_mult.append(multiplier)
 
-        if pipeline_kind != "distilled" and (guidance_phases > 1 or sample_solver in {"distilled_8_steps", "res2s"}):
+        distilled_samplers = {"distilled_8_steps", "distilled_8_steps_ancestral"}
+        if pipeline_kind != "distilled" and (guidance_phases > 1 or sample_solver in distilled_samplers | {"res2s"}):
             use_hq_sampler = sample_solver == "res2s"
-            use_distilled_8_steps = sample_solver == "distilled_8_steps"
+            use_distilled_8_steps = sample_solver in distilled_samplers
             use_id_lora = "1" in audio_prompt_type
             if guidance_phases == 1 and use_hq_sampler:
                 mult = 0.2
@@ -1247,7 +1275,7 @@ class LTX2:
                 mult = "0.5;0.5"
             else:
                 mult = "0;1"
-            distilled_lora_name = "distilled_1_1" if resolved_base_model_type == "ltx2_22B" and sample_solver in {"distilled_8_steps", "res2s"} else "distilled"
+            distilled_lora_name = "distilled_1_1" if resolved_base_model_type == "ltx2_22B" and sample_solver in distilled_samplers | {"res2s"} else "distilled"
             _append_system_lora(distilled_lora_name, mult, "distilled-lora")
         if _ltx2_main_loras_compatible(resolved_base_model_type) and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type:
             _append_system_lora("hdr", 1.0, "ic-lora-hdr")

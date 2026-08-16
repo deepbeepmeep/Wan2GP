@@ -873,7 +873,7 @@ def _build_fused_column_linear(modules):
     if hasattr(template, "_router_default_dtype"):
         fused_kwargs["dtype"] = template._router_default_dtype
     if hasattr(template, "weight") and torch.is_tensor(template.weight):
-        fused_kwargs.setdefault("device", template.weight.device)
+        fused_kwargs["device"] = torch.device("meta")
         fused_kwargs.setdefault("dtype", template.weight.dtype)
     try:
         fused = template.__class__(int(template.in_features), out_features, bias=all(module.bias is not None for module in modules), **fused_kwargs)

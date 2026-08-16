@@ -767,6 +767,19 @@ class GradioWanGPSession:
     def get_default_settings(self, model_type: str) -> dict[str, Any]:
         return self._ensure_session().get_default_settings(model_type)
 
+    def resolve_profiles(
+        self,
+        model_type: str,
+        *,
+        accelerator_profile_id: str | None = None,
+        preset_profile_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._ensure_session().resolve_profiles(
+            model_type,
+            accelerator_profile_id=accelerator_profile_id,
+            preset_profile_id=preset_profile_id,
+        )
+
     def get_model_schema(self, model_type: str) -> dict[str, Any] | None:
         return self._ensure_session().get_model_schema(model_type)
 

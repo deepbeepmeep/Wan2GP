@@ -1,4 +1,5 @@
 {
+    "profile_id": "ltx2_25_two_stage_hq_res2s_15_3",
     "model_type": "ltx2_25_22B",
     "sample_solver": "res2s",
     "num_inference_steps": 15,

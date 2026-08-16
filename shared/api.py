@@ -517,6 +517,125 @@ class WanGPSession:
         settings["model_type"] = str(model_type)
         return settings
 
+    def resolve_profiles(
+        self,
+        model_type: str,
+        *,
+        accelerator_profile_id: str | None = None,
+        preset_profile_id: str | None = None,
+    ) -> dict[str, Any]:
+        if self.get_model_def(model_type) is None:
+            raise ValueError(f"Unknown model_type: {model_type}")
+        if accelerator_profile_id is None and preset_profile_id is None:
+            raise ValueError("At least one profile ID is required")
+
+        runtime = self._ensure_runtime()
+        with _pushd(runtime.root):
+            profile_groups = {group_id: paths for group_id, _, paths in runtime.module._get_builtin_lset_groups(model_type)}
+
+            def resolve_registered_profile(group_id: str, requested_id: str) -> tuple[str, dict[str, Any]]:
+                label = "accelerator" if group_id == "accelerator_profiles" else "preset"
+                if not isinstance(requested_id, str) or not requested_id.strip():
+                    raise ValueError(f"{label}_profile_id must be a non-empty string")
+                requested_id = requested_id.strip()
+                normalized_id = requested_id.replace("\\", "/")
+                if (
+                    "\0" in requested_id
+                    or requested_id.startswith(("/", "\\"))
+                    or re.match(r"^[A-Za-z]:[\\/]", requested_id)
+                    or any(part in (".", "..") for part in normalized_id.split("/"))
+                ):
+                    raise ValueError(f"{label}_profile_id must identify a registered profile, not a filesystem path")
+
+                profiles = []
+                explicit_profiles = {}
+                for choice in profile_groups.get(group_id, []):
+                    choice = str(choice)
+                    try:
+                        with open(runtime.module._builtin_lset_file_path(choice), "r", encoding="utf-8") as reader:
+                            profile = json.load(reader)
+                    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                        raise ValueError(f"Invalid {label} profile JSON '{choice}': {exc}") from exc
+                    if not isinstance(profile, dict):
+                        raise ValueError(f"Invalid {label} profile JSON '{choice}': expected an object")
+
+                    explicit_id = profile.get("profile_id")
+                    if explicit_id is not None:
+                        if not isinstance(explicit_id, str) or re.fullmatch(r"[a-z0-9][a-z0-9._-]*", explicit_id) is None:
+                            raise ValueError(f"Invalid {label} profile_id in '{choice}': {explicit_id!r}")
+                        if explicit_id in explicit_profiles:
+                            raise ValueError(f"Duplicate {label} profile_id for model_type '{model_type}': {explicit_id}")
+                        explicit_profiles[explicit_id] = (choice, profile)
+                    profiles.append((choice, profile, explicit_id))
+
+                selected = explicit_profiles.get(requested_id)
+                if selected is not None:
+                    return selected
+
+                legacy_matches = {}
+                for choice, profile, explicit_id in profiles:
+                    if explicit_id is not None:
+                        continue
+                    normalized_choice = choice.replace("\\", "/")
+                    aliases = {normalized_choice.rsplit("/", 1)[-1]}
+                    if not os.path.isabs(choice) and re.match(r"^[A-Za-z]:[\\/]", choice) is None:
+                        aliases.add(normalized_choice)
+                    if normalized_id in aliases:
+                        legacy_matches[choice] = profile
+                if len(legacy_matches) > 1:
+                    raise ValueError(f"Ambiguous legacy {label} profile ID for model_type '{model_type}': {requested_id}")
+                if legacy_matches:
+                    return next(iter(legacy_matches.items()))
+                raise ValueError(f"Unknown {label}_profile_id for model_type '{model_type}': {requested_id}")
+
+            effective = copy.deepcopy(self.get_default_settings(model_type))
+            for group_id, requested_id, merge_mode in (
+                ("accelerator_profiles", accelerator_profile_id, "merge before"),
+                ("preset_settings", preset_profile_id, "merge after"),
+            ):
+                if requested_id is None:
+                    continue
+                choice, profile = resolve_registered_profile(group_id, requested_id)
+                declared_model_type = profile.get("model_type")
+                if declared_model_type is not None:
+                    if not isinstance(declared_model_type, str) or not declared_model_type:
+                        raise ValueError(f"Invalid model_type in profile '{choice}': {declared_model_type!r}")
+                    if declared_model_type != model_type and not runtime.module.are_model_types_compatible(declared_model_type, model_type):
+                        raise ValueError(
+                            f"Profile '{choice}' declares incompatible model_type '{declared_model_type}' "
+                            f"for requested model_type '{model_type}'"
+                        )
+
+                old_loras = copy.deepcopy(effective.get("activated_loras", []))
+                old_multipliers = copy.deepcopy(effective.get("loras_multipliers", ""))
+                profile_settings = copy.deepcopy(profile)
+                profile_settings.pop("profile_id", None)
+                profile_settings.pop("help", None)
+                profile_settings.pop("model_type", None)
+                missing_profile_multipliers = "activated_loras" in profile_settings and "loras_multipliers" not in profile_settings
+                effective.update(profile_settings)
+                if missing_profile_multipliers:
+                    effective["loras_multipliers"] = ""
+
+                loras = effective.get("activated_loras", []) or []
+                multipliers = effective.get("loras_multipliers", "") or ""
+                if old_loras is not None and not (len(old_loras) == 0 and "|" in multipliers):
+                    loras, multipliers = runtime.module.merge_loras_settings(
+                        old_loras,
+                        old_multipliers,
+                        loras,
+                        multipliers,
+                        merge_mode,
+                    )
+                effective["activated_loras"] = loras
+                effective["loras_multipliers"] = multipliers
+                runtime.module.fix_settings(model_type, effective, min_settings_version=2.38)
+
+            effective["model_type"] = str(model_type)
+            effective.pop("profile_id", None)
+            effective.pop("help", None)
+            return copy.deepcopy(effective)
+
     def get_model_availability(self, model_type: str) -> dict[str, Any]:
         if self.get_model_def(model_type) is None:
             raise ValueError(f"Unknown model_type: {model_type}")

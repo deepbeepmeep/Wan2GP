@@ -23,7 +23,7 @@ DEEPY_VRAM_MODE_ALWAYS_LOADED = "always_loaded"
 DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST = "unload_on_request"
 DEEPY_DEFAULT_GEN_IMAGE = "Z Image Turbo"
 DEEPY_DEFAULT_EDIT_IMAGE = "Flux Klein 9B"
-DEEPY_DEFAULT_GEN_VIDEO = "LTX-2 2.3 Distilled"
+DEEPY_DEFAULT_GEN_VIDEO = "LTX-2 2.3 Distilled 1.0"
 DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH = "Infinitalk"
 DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION = "Qwen3 1.7B"
 DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE = "Index TTS 2"
@@ -34,15 +34,20 @@ DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT = True
 DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT = True
 DEEPY_CONFIG_FILENAME = "wgp_config.json"
 
-DEEPY_QWEN_ENHANCER_IDS = {3, 4}
-_DEEPY_QWEN_VARIANT_LABELS = {3: "Qwen3.5-4B", 4: "Qwen3.5-9B"}
+DEEPY_QWEN_ENHANCER_IDS = {3, 4, 5}
+_DEEPY_QWEN_VARIANT_LABELS = {3: "Qwen3.5-4B", 4: "Qwen3.5-9B", 5: "Qwen3.8-27B"}
 _DEEPY_QWEN_KV_CACHE_SPECS = {
     3: {"num_kv_cache_layers": 8, "num_key_value_heads": 4, "head_dim": 256, "dtype_bytes": 2, "kvcache_block_size": 256},
     4: {"num_kv_cache_layers": 8, "num_key_value_heads": 4, "head_dim": 256, "dtype_bytes": 2, "kvcache_block_size": 256},
+    5: {"num_kv_cache_layers": 16, "num_key_value_heads": 4, "head_dim": 256, "dtype_bytes": 2, "kvcache_block_size": 256},
 }
 _DEEPY_DEFAULT_GEN_IMAGE_ALIASES = {"Z_Image_Turbo": DEEPY_DEFAULT_GEN_IMAGE}
 _DEEPY_DEFAULT_EDIT_IMAGE_ALIASES = {"Qwen_Edit": DEEPY_DEFAULT_EDIT_IMAGE}
-_DEEPY_DEFAULT_GEN_VIDEO_ALIASES = {"ltx2_22B_distilled": DEEPY_DEFAULT_GEN_VIDEO}
+_DEEPY_DEFAULT_GEN_VIDEO_ALIASES = {
+    "ltx2_22B_distilled": DEEPY_DEFAULT_GEN_VIDEO,
+    "LTX-2 2.3 Distilled": DEEPY_DEFAULT_GEN_VIDEO,
+}
+_DEEPY_GEN_VIDEO_WITH_SPEECH_ALIASES = {"LTX-2.3 Distilled With Sound": "LTX-2.3 Distilled 1.0 With Sound"}
 _DEEPY_RUNTIME_CONFIG: dict[str, Any] | None = None
 _DEEPY_RUNTIME_CONFIG_FILENAME = ""
 
@@ -78,7 +83,7 @@ def normalize_deepy_tool_gen_video(value: Any) -> str:
 
 
 def normalize_deepy_tool_gen_video_with_speech(value: Any) -> str:
-    return _normalize_deepy_variant(value, {}, DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH)
+    return _normalize_deepy_variant(value, _DEEPY_GEN_VIDEO_WITH_SPEECH_ALIASES, DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH)
 
 
 def normalize_deepy_tool_gen_speech_from_description(value: Any) -> str:
@@ -244,11 +249,11 @@ def deepy_requirement_message(server_config: dict[str, Any] | None) -> str:
     if deepy_requirement_met(server_config):
         return (
             "<div style='color:#1b6d44; font-weight:600;'>"
-            "Deepy is available because Prompt Enhancer is set to a Qwen3.5VL mode."
+            "Deepy is available because Prompt Enhancer is set to a Qwen3.5/3.8 VL mode."
             "</div>"
         )
     return (
         "<div style='color:#8a4a14; font-weight:600;'>"
-        "Deepy requires Prompt Enhancer to be set to Qwen3.5VL Abliterated 4B or 9B in the Extensions tab."
+        "Deepy requires Prompt Enhancer to be set to a Qwen3.5VL Abliterated or Qwen3.8VL Uncensored mode in the Extensions tab."
         "</div>"
     )

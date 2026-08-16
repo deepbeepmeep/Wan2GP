@@ -23,6 +23,7 @@ from .assets import (
     LLAMAJOY_FOLDER,
     PROMPT_ENHANCER_REPO,
 )
+from .config import validate_prompt_enhancer_speculative_decoding
 
 
 @dataclass(slots=True)
@@ -36,8 +37,9 @@ class PromptEnhancerRuntime:
     co_tenants: dict[str, list[str]] = field(default_factory=dict)
 
 
-def ensure_prompt_enhancer_assets(process_files_def, enhancer_enabled: int, qwen_backend: str = "quanto_int8"):
+def ensure_prompt_enhancer_assets(process_files_def, enhancer_enabled: int, qwen_backend: str = "quanto_int8", speculative_decoding: bool = False):
     enhancer_enabled = int(enhancer_enabled)
+    speculative_decoding = validate_prompt_enhancer_speculative_decoding(enhancer_enabled, speculative_decoding)
     if enhancer_enabled == 1:
         process_files_def(
             repoId=PROMPT_ENHANCER_REPO,
@@ -58,13 +60,13 @@ def ensure_prompt_enhancer_assets(process_files_def, enhancer_enabled: int, qwen
             ],
         )
         return
-    if enhancer_enabled in (3, 4):
+    if enhancer_enabled in (3, 4, 5):
         from .qwen35_vl import ensure_qwen35_prompt_enhancer_assets, get_qwen35_prompt_enhancer_variant
 
-        ensure_qwen35_prompt_enhancer_assets(process_files_def, backend=qwen_backend, variant=get_qwen35_prompt_enhancer_variant(enhancer_enabled))
+        ensure_qwen35_prompt_enhancer_assets(process_files_def, backend=qwen_backend, variant=get_qwen35_prompt_enhancer_variant(enhancer_enabled), speculative_decoding=bool(speculative_decoding))
 
 
-def download_prompt_enhancer_assets(enhancer_enabled: int, qwen_backend: str = "quanto_int8", send_cmd=None, progress=None, status_text="Downloading Prompt Enhancer model files..."):
+def download_prompt_enhancer_assets(enhancer_enabled: int, qwen_backend: str = "quanto_int8", speculative_decoding: bool = False, send_cmd=None, progress=None, status_text="Downloading Prompt Enhancer model files..."):
     enhancer_enabled = int(enhancer_enabled)
     if enhancer_enabled <= 0:
         return False
@@ -85,7 +87,7 @@ def download_prompt_enhancer_assets(enhancer_enabled: int, qwen_backend: str = "
             status_sent = True
         downloaded = process_files_def_if_needed(download_def, send_cmd=send_cmd, status_text=download_status_text) or downloaded
 
-    ensure_prompt_enhancer_assets(process_download_def, enhancer_enabled=enhancer_enabled, qwen_backend=qwen_backend)
+    ensure_prompt_enhancer_assets(process_download_def, enhancer_enabled=enhancer_enabled, qwen_backend=qwen_backend, speculative_decoding=speculative_decoding)
     return downloaded
 
 
@@ -143,15 +145,16 @@ def _load_joycaption_prompt_enhancer():
     return llm_model, llm_tokenizer, 10000
 
 
-def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_decoder_engine: str = "", qwen_backend: str = "quanto_int8") -> PromptEnhancerRuntime:
+def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_decoder_engine: str = "", qwen_backend: str = "quanto_int8", speculative_decoding: bool = False) -> PromptEnhancerRuntime:
     enhancer_enabled = int(enhancer_enabled)
+    speculative_decoding = validate_prompt_enhancer_speculative_decoding(enhancer_enabled, speculative_decoding)
     runtime = PromptEnhancerRuntime()
     if enhancer_enabled <= 0:
         return runtime
 
-    ensure_prompt_enhancer_assets(process_files_def, enhancer_enabled=enhancer_enabled, qwen_backend=qwen_backend)
+    ensure_prompt_enhancer_assets(process_files_def, enhancer_enabled=enhancer_enabled, qwen_backend=qwen_backend, speculative_decoding=speculative_decoding)
 
-    if enhancer_enabled in (3, 4):
+    if enhancer_enabled in (3, 4, 5):
         from .qwen35_text import load_qwen35_text_prompt_enhancer
         from .qwen35_vl import (
             enhancer_quantization_GGUF,
@@ -159,11 +162,14 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
             alias_qwen35_text_embedding_for_mmgp,
             get_qwen35_assets_dir_name,
             get_qwen35_prompt_enhancer_variant,
+            get_qwen35_variant_spec,
             load_qwen35_vl_prompt_enhancer,
         )
 
         backend = qwen_backend or enhancer_quantization_QUANTO_INT8
         qwen35_variant = get_qwen35_prompt_enhancer_variant(enhancer_enabled)
+        spec = get_qwen35_variant_spec(qwen35_variant)
+        backend = spec.get("backend", backend)
         assets_dir_name = get_qwen35_assets_dir_name(qwen35_variant)
         assets_dir = fl.locate_folder(assets_dir_name, error_if_none=False) or fl.get_download_location(assets_dir_name)
         if backend == enhancer_quantization_GGUF:
@@ -178,6 +184,7 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
             attn_implementation="sdpa",
             requested_lm_engine=lm_decoder_engine,
             variant=qwen35_variant,
+            speculative_decoding=bool(speculative_decoding),
         )
         runtime.llm_tokenizer = getattr(runtime.llm_model, "_prompt_enhancer_tokenizer", None)
         runtime.llm_model.eval()
@@ -195,9 +202,9 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
         runtime.pipe_models["prompt_enhancer_image_caption_vision_tower_model"] = vision_tower_model
         runtime.pipe_models["prompt_enhancer_image_caption_embedding_model"] = caption_embedding_model
         runtime.pipe_models["prompt_enhancer_llm_model"] = runtime.llm_model
-        runtime.budgets["prompt_enhancer_image_caption_vision_tower_model"] = 3000
-        runtime.budgets["prompt_enhancer_image_caption_embedding_model"] = 2000
-        runtime.budgets["prompt_enhancer_llm_model"] = 10000
+        runtime.budgets["prompt_enhancer_image_caption_vision_tower_model"] = spec.get("vision_budget", 3000)
+        runtime.budgets["prompt_enhancer_image_caption_embedding_model"] = spec.get("embedding_budget", 2000)
+        runtime.budgets["prompt_enhancer_llm_model"] = spec.get("llm_budget", 10000)
         runtime.co_tenants["prompt_enhancer_image_caption_vision_tower_model"] = ["prompt_enhancer_image_caption_embedding_model"]
         runtime.co_tenants["prompt_enhancer_image_caption_embedding_model"] = ["prompt_enhancer_image_caption_vision_tower_model"]
         return runtime

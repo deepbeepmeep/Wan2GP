@@ -256,6 +256,21 @@ class Attention(nn.Module):
         k_cache, v_cache = self.k_cache, self.v_cache
         if k_cache.numel() and v_cache.numel():
             store_kvcache(k, v, k_cache, v_cache, context.slot_mapping, use_triton_kv_cache=self.use_triton_kv_cache)
+        if context.speculative_verify:
+            if self.flash_attn_with_kvcache is None:
+                raise RuntimeError("Predictive CUDA graph verification requires FlashAttention KV-cache support.")
+            # The q=2 verification queries have already been written to the paged
+            # cache. FlashAttention's KV-cache API replays this layout correctly;
+            # its varlen prefill API does not preserve the first query on replay.
+            return self.flash_attn_with_kvcache(
+                q.unsqueeze(0),
+                k_cache,
+                v_cache,
+                cache_seqlens=context.cu_seqlens_k[1:],
+                block_table=context.block_tables,
+                softmax_scale=self.scale,
+                causal=True,
+            ).squeeze(0)
         if context.is_prefill:
             if context.block_tables is not None:    # prefix cache
                 k, v = k_cache, v_cache

@@ -76,6 +76,7 @@ _DOC_TOKEN_RE = re.compile(r"[a-z0-9]+")
 _SELECTED_REFERENCE_RE = re.compile(r"\b(selected|current(?:ly)?\s+selected|current\s+(?:item|media))\b", flags=re.IGNORECASE)
 _RUNTIME_UPDATE_BLOCK_RE = re.compile(r"\s*<wangp_runtime_update>.*?</wangp_runtime_update>\s*", flags=re.DOTALL | re.IGNORECASE)
 _POST_TRIM_WINDOW_FRACTION = 0.25
+_POST_TRIM_FALLBACK_WINDOW_FRACTION = 0.50
 _GENERATION_RESERVE_TOKENS = 128
 _THINKING_HEADROOM_TOKENS = 512
 _VIDEO_TOOL_RUNTIME_REINJECT_TOKENS = 2000
@@ -5397,8 +5398,14 @@ class AssistantEngine:
             return target_tokens, False
         if self._ensure_current_turn_video_runtime_update_for_compaction():
             target_tokens = self._render_messages(add_generation_prompt=add_generation_prompt)
-        history_token_cap = max(0, int(math.ceil(max(0, len(target_tokens) - base_token_count) * _POST_TRIM_WINDOW_FRACTION)))
+        history_budget = max(0, hard_budget - base_token_count)
+        history_token_cap = int(math.ceil(history_budget * _POST_TRIM_WINDOW_FRACTION))
+        history_token_fallback_cap = int(math.ceil(history_budget * _POST_TRIM_FALLBACK_WINDOW_FRACTION))
         while max(0, len(target_tokens) - base_token_count) > history_token_cap:
+            user_turn_count = sum(str(message.get("role", "")).strip().lower() == "user" for message in self.session.messages)
+            if user_turn_count == 2 and max(0, len(target_tokens) - base_token_count) <= history_token_fallback_cap:
+                self._log("Retaining the newest completed turn above the preferred history target because it fits within the fallback limit.")
+                break
             trim_reason = self._discard_oldest_completed_turn()
             if len(trim_reason) == 0:
                 break
@@ -5490,7 +5497,7 @@ class AssistantEngine:
         if len(self.session.rendered_token_ids) > 0:
             if not trimmed_any and self._sync_current_turn_context_from_turn_start_snapshot(target_tokens=target_tokens):
                 return
-            mode = self._extend_context_from_preserved_base(target_tokens) if trimmed_any else None
+            mode = self._extend_context_from_preserved_base(target_tokens)
             if mode is None:
                 mode = self._append_target_suffix_from_live_runtime(target_tokens)
             if mode is None:
@@ -5883,6 +5890,12 @@ class AssistantEngine:
         if self.runtime is None:
             return False
         restore_mode = self._restore_or_replay_session(context_label)
+        if target_tokens is not None:
+            mode = self._append_target_suffix_from_live_runtime([int(token_id) for token_id in target_tokens])
+            if mode is None:
+                return False
+            self._record_live_context(f"{log_label} (restore={restore_mode}, sync={mode})")
+            return True
         suffix_tokens = None
         if self._can_append_pending_tool_suffix():
             thinking_enabled = qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)

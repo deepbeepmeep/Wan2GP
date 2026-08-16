@@ -85,7 +85,8 @@ _PRESET_SOURCE_PRIORITY = {
 _LEGACY_VARIANT_ALIASES = {
     "edit_image": {"Qwen_Edit": DEEPY_DEFAULT_EDIT_IMAGE},
     "gen_image": {"Z_Image_Turbo": DEEPY_DEFAULT_GEN_IMAGE},
-    "gen_video": {"ltx2_22B_distilled": DEEPY_DEFAULT_GEN_VIDEO},
+    "gen_video": {"ltx2_22B_distilled": DEEPY_DEFAULT_GEN_VIDEO, "LTX-2 2.3 Distilled": DEEPY_DEFAULT_GEN_VIDEO},
+    "gen_video_with_speech": {"LTX-2.3 Distilled With Sound": "LTX-2.3 Distilled 1.0 With Sound"},
 }
 _LIVE_FILE_PRESET_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 GENERATION_TOOL_IDS = tuple(_TOOL_CONFIG_SPECS.keys())

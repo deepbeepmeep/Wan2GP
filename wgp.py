@@ -64,7 +64,7 @@ from shared.utils.media_recording import record_file_metadata as shared_record_f
 from shared.utils.settings_bundle import is_wangp_settings_filename
 from shared.utils.video_decode import decode_video_frames_ffmpeg, probe_video_stream_metadata
 from shared.utils.virtual_media import get_virtual_image, get_virtual_media_entry, get_virtual_media_vsource, media_source_exists, parse_virtual_media_path, replace_virtual_media_source, strip_virtual_media_suffix
-from shared.utils.frame_scheduler import build_extension_window, build_frame_scheduler, floor_frame_count, has_slash_commands, normalize_frame_count, prepare_loras_mult_windows
+from shared.utils.frame_scheduler import build_default_window_plan, build_extension_window, build_frame_scheduler, floor_frame_count, has_slash_commands, normalize_frame_count, prepare_loras_mult_windows
 from shared.match_archi import match_nvidia_architecture
 from shared.attention import ATTENTION_MODE_AVAILABILITY, get_attention_modes, get_supported_attention_modes, get_default_attention_mode, get_override_attention_modes, get_supported_override_attention_modes
 from shared.utils.utils import truncate_for_filesystem, sanitize_file_name, process_images_multithread, get_default_workers, resize_lanczos_frames, expand_or_shrink_mask, prepare_binary_mask_frame
@@ -99,6 +99,7 @@ import typing
 import inspect
 from shared.utils import prompt_parser
 from shared.prompt_enhancer import chaining as prompt_enhancer_chaining
+from shared.prompt_enhancer.config import PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT, PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, normalize_prompt_enhancer_speculative_decoding
 import base64
 import io
 from PIL import Image
@@ -148,7 +149,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.12"
-WanGP_version = "12.53"
+WanGP_version = "12.54"
 settings_version = 2.73
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -1034,6 +1035,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
             step=frames_steps,
             frame_offset=model_def.get("frames_offset", 1),
             overlap_offset=model_def.get("sliding_window_defaults", {}).get("overlap_offset", 1),
+            max_overlap=model_def.get("sliding_window_defaults", {}).get("overlap_max"),
             supported_model_commands=model_def.get("prompt_slash_commands", []),
             allow_new_shot=image_prompt_types_allow_t2v(model_def, inputs.get("image_mode", 0)),
             first_window_overlap_frames=estimate_first_window_overlap_frames(inputs.get("image_start"), inputs.get("video_source"), inputs.get("keep_frames_video_source", ""), schedule_fps),
@@ -2609,6 +2611,7 @@ if not Path(config_load_filename).is_file():
         temporal_upsampler_api.TEMPORAL_UPSAMPLER_CONFIG_KEY: temporal_upsampler_api.default_config_sections(),
         **get_deepy_default_runtime_config(),
         "prompt_enhancer_quantization": "quanto_int8",
+        PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY: PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT,
         "prompt_enhancer_temperature": 0.6,
         "prompt_enhancer_top_p": 0.9,
         "prompt_enhancer_randomize_seed": True,
@@ -2623,6 +2626,7 @@ else:
     server_config = json.loads(text)
 
 server_config.setdefault("prompt_enhancer_quantization", "quanto_int8")
+server_config.setdefault(PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT)
 server_config["multi_prompts_gen_type"] = prompt_parser.normalize_multi_prompts_mode(
     server_config.get("multi_prompts_gen_type", prompt_parser.DEFAULT_MULTI_PROMPTS_MODE),
     default=prompt_parser.DEFAULT_MULTI_PROMPTS_MODE,
@@ -3905,6 +3909,7 @@ def setup_prompt_enhancer(pipe, kwargs):
             enhancer_enabled=model_no,
             lm_decoder_engine=server_config.get("lm_decoder_engine", ""),
             qwen_backend=server_config.get("prompt_enhancer_quantization", "quanto_int8"),
+            speculative_decoding=normalize_prompt_enhancer_speculative_decoding(server_config.get(PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT)),
         )
         prompt_enhancer_image_caption_model = runtime.image_caption_model
         prompt_enhancer_image_caption_processor = runtime.image_caption_processor
@@ -3929,6 +3934,7 @@ def ensure_prompt_enhancer_loaded(override_profile=None, progress=None, send_cmd
         download_prompt_enhancer_assets(
             enhancer_enabled=server_config.get("enhancer_enabled", 0),
             qwen_backend=server_config.get("prompt_enhancer_quantization", "quanto_int8"),
+            speculative_decoding=normalize_prompt_enhancer_speculative_decoding(server_config.get(PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT)),
             send_cmd=send_cmd,
             progress=progress,
         )
@@ -6929,8 +6935,8 @@ def generate_media(
     video_length = floor_frame_count(video_length, frames_minimum, latent_size, frames_offset)
     if sliding_window_size !=0:
         sliding_window_size = floor_frame_count(sliding_window_size, frames_minimum, latent_size, frames_offset)
+    sliding_window_defaults = model_def.get("sliding_window_defaults", {})
     if sliding_window_overlap !=0:
-        sliding_window_defaults = model_def.get("sliding_window_defaults", {})
         if sliding_window_defaults.get("overlap_default", 0) != sliding_window_overlap:
             overlap_offset = sliding_window_defaults.get("overlap_offset", 1)
             sliding_window_overlap = sliding_window_overlap // latent_size * latent_size if overlap_offset == 0 else (sliding_window_overlap - overlap_offset) // latent_size * latent_size + overlap_offset
@@ -6989,6 +6995,7 @@ def generate_media(
             step=frames_steps,
             frame_offset=frames_offset,
             overlap_offset=model_def.get("sliding_window_defaults", {}).get("overlap_offset", 1),
+            max_overlap=model_def.get("sliding_window_defaults", {}).get("overlap_max"),
             supported_model_commands=model_def.get("prompt_slash_commands", []),
             allow_new_shot=image_prompt_types_allow_t2v(model_def, image_mode),
             first_window_overlap_frames=estimate_first_window_overlap_frames(None if fake_start_image else image_start, video_source, keep_frames_video_source, fps),
@@ -7155,18 +7162,26 @@ def generate_media(
     scheduler_active = frame_scheduler is not None and frame_scheduler["active"]
     scheduled_windows_template = [dict(window) for window in frame_scheduler["windows"]] if scheduler_active else []
     scheduled_windows = [dict(window) for window in scheduled_windows_template]
-    default_reuse_frames = min(sliding_window_size - latent_size, sliding_window_overlap) if test_any_sliding_window(model_type) else 0
+    any_sliding_window = test_any_sliding_window(model_type)
+    default_reuse_frames = min(sliding_window_size - latent_size, sliding_window_overlap) if any_sliding_window else 0
     if scheduler_active:
         sliding_window = True
         reuse_frames = default_reuse_frames
         current_video_length = scheduled_windows[0]["frame_num"]
-    elif test_any_sliding_window(model_type) :
+    elif any_sliding_window:
         sliding_window = current_video_length > sliding_window_size
         reuse_frames = default_reuse_frames
     else:
         sliding_window = False
         sliding_window_size = current_video_length
         reuse_frames = 0
+    if scheduler_active:
+        default_windows_template = []
+    elif any_sliding_window:
+        default_windows_template = build_default_window_plan(total_frames=current_video_length, window_size=sliding_window_size, default_overlap=default_reuse_frames, discard_last_frames=sliding_window_discard_last_frames, minimum=frames_minimum, step=frames_steps, frame_offset=frames_offset, overlap_offset=sliding_window_defaults.get("overlap_offset", 1), max_overlap=sliding_window_defaults.get("overlap_max"))
+    else:
+        default_windows_template = [{"output_frames": current_video_length, "overlap_frames": 0, "discard_last_frames": 0, "trim_last_frames": 0, "frame_num": current_video_length}]
+    default_windows = [dict(window) for window in default_windows_template]
     seed = set_seed(seed)
 
     torch.set_grad_enabled(False) 
@@ -7183,20 +7198,15 @@ def generate_media(
     gen["prompt"] = prompt    
     repeat_no = 0
     extra_generation = 0
-    initial_total_windows = 0
     discard_last_frames = sliding_window_discard_last_frames
     default_discard_last_frames = discard_last_frames
     default_requested_frames_to_generate = current_video_length
     nb_frames_positions = 0
     if scheduler_active:
-        initial_total_windows = len(scheduled_windows)
         default_requested_frames_to_generate = frame_scheduler["predicted_total_frames"]
         current_video_length = scheduled_windows[0]["frame_num"]
-    elif sliding_window:
-        initial_total_windows= compute_sliding_window_no(default_requested_frames_to_generate, sliding_window_size, discard_last_frames, reuse_frames) 
-        current_video_length = sliding_window_size
     else:
-        initial_total_windows = 1
+        current_video_length = default_windows[0]["frame_num"]
 
     first_window_video_length = current_video_length
     original_prompts = display_original_prompts.copy()
@@ -7215,6 +7225,8 @@ def generate_media(
         gen_state = {}
         if scheduler_active:
             scheduled_windows = [dict(window) for window in scheduled_windows_template]
+        else:
+            default_windows = [dict(window) for window in default_windows_template]
         src_video = src_video2 = src_mask = src_mask2 = src_faces = sparse_video_image = full_generated_audio =None
         prefix_video = pre_video_frame = None
         source_video_overlap_frames_count = 0 # number of frames overalapped in source video for first window
@@ -7307,25 +7319,29 @@ def generate_media(
                     break
                 frame_window_options = scheduled_windows[window_no]
                 prompt, reuse_frames, current_video_length, new_shot, discard_last_frames = frame_window_options["prompt"], frame_window_options["overlap_frames"], frame_window_options["frame_num"], frame_window_options["new_shot"], frame_window_options["discard_last_frames"]
+                automatic_trim_last_frames = frame_window_options["trim_last_frames"]
                 current_loras_slists = frame_window_options.get("loras_slists", loras_slists)
                 sliding_window = True
             else:
                 frame_window_options, current_loras_slists, new_shot, discard_last_frames = None, loras_slists, False, default_discard_last_frames
+                for _ in range(new_extra_windows):
+                    default_windows.append(build_extension_window("", window_size=sliding_window_size, overlap_frames=default_reuse_frames, discard_last_frames=default_discard_last_frames, minimum=frames_minimum, step=frames_steps, frame_offset=frames_offset))
+                    requested_frames_to_generate += default_windows[-1]["output_frames"]
+                if window_no >= len(default_windows):
+                    break
+                default_window = default_windows[window_no]
+                reuse_frames, current_video_length, discard_last_frames = default_window["overlap_frames"], default_window["frame_num"], default_window["discard_last_frames"]
+                automatic_trim_last_frames = default_window["trim_last_frames"]
                 prompt =  prompts[window_no] if window_no < len(prompts) else prompts[-1]
-                requested_frames_to_generate +=  new_extra_windows * (sliding_window_size - discard_last_frames - reuse_frames)
-                sliding_window = sliding_window  or extra_windows > 0
+                sliding_window = len(default_windows) > 1
+            gen["sliding_window"] = sliding_window
             current_alt_prompt = alt_prompts[window_no] if window_no < len(alt_prompts) else alt_prompts[-1]
             if scheduler_active:
                 next_overlap_frames = scheduled_windows[window_no + 1]["overlap_frames"] if window_no + 1 < len(scheduled_windows) else default_reuse_frames
             else:
-                next_overlap_frames = reuse_frames
-            if not scheduler_active and sliding_window and window_no > 0:
-                # num_frames_generated -= reuse_frames
-                if (requested_frames_to_generate - num_frames_generated) <  latent_size:
-                    break
-                current_video_length = min(sliding_window_size, floor_frame_count(requested_frames_to_generate - num_frames_generated + reuse_frames + discard_last_frames, frames_minimum, latent_size, frames_offset))
+                next_overlap_frames = default_windows[window_no + 1]["overlap_frames"] if window_no + 1 < len(default_windows) else default_reuse_frames
 
-            total_windows = len(scheduled_windows) if scheduler_active else initial_total_windows + extra_windows
+            total_windows = len(scheduled_windows) if scheduler_active else len(default_windows)
             gen["total_windows"] = total_windows
             if window_no >= total_windows:
                 break
@@ -7334,8 +7350,10 @@ def generate_media(
             enable_RIFLEx = image_mode==0 and(RIFLEx_setting == 0 and current_video_length > (6 * fps + 1) or RIFLEx_setting == 1)
             return_latent_slice = None 
             frames_relative_positions_list = []
-            if reuse_frames > 0:                
-                return_latent_slice = slice(- max(1, (reuse_frames + discard_last_frames ) // latent_size) , None if discard_last_frames == 0 else -(discard_last_frames // latent_size) )
+            tail_trim_frames = discard_last_frames + automatic_trim_last_frames
+            if reuse_frames > 0:
+                tail_trim_latents = tail_trim_frames // latent_size
+                return_latent_slice = slice(- max(1, (reuse_frames + tail_trim_frames) // latent_size), None if tail_trim_latents == 0 else -tail_trim_latents)
             refresh_preview  = {"image_guide" : image_guide, "image_mask" : image_mask} if image_mode >= 1 else {}
             if new_shot:
                 pre_video_guide, pre_audio_guide, pre_audio_guide_sample_rate = None, None, 0
@@ -7952,6 +7970,12 @@ def generate_media(
                         guide_start_frame -= discard_last_frames
                         if generated_audio is not None:
                             generated_audio = truncate_audio(generated_audio, 0, discard_last_frames, fps, output_audio_sampling_rate)
+                    if automatic_trim_last_frames > 0:
+                        print(f"Automatic frame trimming: removed {automatic_trim_last_frames} frame(s) from the end of Sliding Window {window_no} (generated {current_video_length}, overlap {reuse_frames}).")
+                        sample = sample[:, :-automatic_trim_last_frames]
+                        guide_start_frame -= automatic_trim_last_frames
+                        if generated_audio is not None:
+                            generated_audio = truncate_audio(generated_audio, 0, automatic_trim_last_frames, fps, output_audio_sampling_rate)
                     if generated_audio is not None and next_overlap_frames > 0 and not drop_generated_audio:
                         pre_audio_guide = generated_audio[-int(round(next_overlap_frames * output_audio_sampling_rate / fps)):]
                         pre_audio_guide_sample_rate = output_audio_sampling_rate
@@ -11867,7 +11891,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 prompt_enhancer_values = [value for _, value in prompt_enhancer_choices]
                 prompt_enhancer_mode_value = prompt_enhancer_chaining.normalize_choice(prompt_enhancer_value, prompt_enhancer_values, prompt_enhancer_default, require_choice=on_demand_prompt_enhancer)
 
-                prompt_enhancer_think_visible = server_config.get("enhancer_enabled", 0) in (3, 4)
+                prompt_enhancer_think_visible = server_config.get("enhancer_enabled", 0) in (3, 4, 5)
                 prompt_enhancer_think_value = prompt_enhancer_think_visible and "K" in prompt_enhancer_value and len(prompt_enhancer_mode_value) > 0
                 prompt_enhancer_value = build_prompt_enhancer_value(prompt_enhancer_mode_value, prompt_enhancer_think_value)
                 prompt_enhancer_think_classes = "cbx_centered" if on_demand_prompt_enhancer else "cbx_bottom"

@@ -83,7 +83,7 @@ Dev and Distilled are available in BF16 and INT8 ConvRot, while Distilled also g
 
 - **MinaMax Music 3**: Ace Step has met its match as Minimax Music 3 generates high quality songs. WanGP implementation is optimized with a *vllm engine* for x3 faster generation. It is recommended to have 16 GB of VRAM to use profile 3/3+ for much faster generation. This implementation contains several *Prompt Enhancers* that can either generate for you lyrics and / or the music description.
 
-- **Upgraded GGUF Kernels 1.07**: lower VRAM and more accurate kernels using GGUF with a BF16 model, check the *docs/INSTALLATION.md* to upgrade to these kernels
+- **Upgraded GGUF Kernels 1.08**: lower VRAM, accurate native BF16, and CUDA-graph-safe Stream-K for GGUF models; check *docs/INSTALLATION.md* to upgrade.
 
 
 *update 12.51*: Unlocked Control Video Processes, LTX-2 video upsampler\

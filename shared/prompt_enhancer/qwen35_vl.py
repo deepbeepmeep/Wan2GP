@@ -33,6 +33,7 @@ from .assets import (
     QWEN35_VARIANT_9B,
     QWEN35_VARIANT_SPECS,
     QWEN35_VISION_FILENAME,
+    QWEN38_VARIANT_27B,
 )
 from .qwen3_5 import load_qwen35_model_class
 
@@ -57,6 +58,10 @@ QWEN35_VARIANT_ALIASES = {
     "qwen3.5-4b": QWEN35_VARIANT_4B,
     "qwen3.5-4b abliterated": QWEN35_VARIANT_4B,
     "qwen3.5-4b_abliterated": QWEN35_VARIANT_4B,
+    "27": QWEN38_VARIANT_27B,
+    "27b": QWEN38_VARIANT_27B,
+    "qwen3.8-27b": QWEN38_VARIANT_27B,
+    "qwen3.8-27b uncensored": QWEN38_VARIANT_27B,
 }
 
 
@@ -72,7 +77,7 @@ def get_qwen35_assets_dir_name(variant: str | None = None) -> str:
 
 
 def get_qwen35_prompt_enhancer_variant(model_no) -> str:
-    return QWEN35_VARIANT_4B if int(model_no) == 3 else QWEN35_VARIANT_9B
+    return {3: QWEN35_VARIANT_4B, 4: QWEN35_VARIANT_9B, 5: QWEN38_VARIANT_27B}[int(model_no)]
 
 
 def _resolve_qwen35_assets_dir(assets_dir: str | None, variant: str | None = None, error_if_none: bool = True) -> str | None:
@@ -123,12 +128,23 @@ def get_qwen35_modeling_path() -> str:
     return os.path.join(os.path.dirname(__file__), "qwen3_5", UPSTREAM_MODELING_FILENAME)
 
 
-def ensure_qwen35_prompt_enhancer_assets(process_files_def, backend: str = enhancer_quantization_QUANTO_INT8, variant: str | None = None):
+def ensure_qwen35_prompt_enhancer_assets(process_files_def, backend: str = enhancer_quantization_QUANTO_INT8, variant: str | None = None, speculative_decoding: bool = False):
     spec = get_qwen35_variant_spec(variant)
+    backend = spec.get("backend", backend)
     repo_subfolder = spec.get("repo_subfolder", "")
     qwen35_shared_files = list(spec["root_files"])
-    qwen35_runtime_files = [spec["vision_filename"], spec["text_gguf_filename" if backend == enhancer_quantization_GGUF else "text_int8_filename"]]
-    process_files_def(repoId=spec["root_repo"], sourceFolderList=[repo_subfolder], fileList=[qwen35_shared_files + qwen35_runtime_files])
+    if spec["root_repo"] == spec.get("gguf_repo"):
+        qwen35_shared_files += [spec["vision_filename"], spec["text_gguf_filename" if backend == enhancer_quantization_GGUF else "text_int8_filename"]]
+        if speculative_decoding and spec.get("text_mtp_filename"):
+            qwen35_shared_files.append(spec["text_mtp_filename"])
+    download_def = {"repoId": spec["root_repo"], "sourceFolderList": [repo_subfolder], "fileList": [qwen35_shared_files]}
+    if len(repo_subfolder) == 0:
+        download_def["targetFolderList"] = [spec["assets_dir_name"]]
+    process_files_def(**download_def)
+    if spec["root_repo"] != spec.get("gguf_repo"):
+        if backend != enhancer_quantization_GGUF:
+            raise ValueError(f"{spec['display_name']} supports only the GGUF backend.")
+        process_files_def(repoId=spec["gguf_repo"], sourceFolderList=[spec.get("gguf_repo_subfolder", "")], fileList=[[spec["vision_filename"], spec["text_gguf_filename"]]])
     if spec.get("text_repo") and spec.get("text_required_files"):
         process_files_def(repoId=spec["text_repo"], sourceFolderList=[repo_subfolder], fileList=[list(spec["text_required_files"])])
     qwen35_modeling_path = get_qwen35_modeling_path()
@@ -205,18 +221,32 @@ def get_qwen35_text_gguf_path(assets_dir: str, variant: str | None = None) -> st
 def _build_qwen35_vl_gguf_preprocess_sd(patch_shape):
     def preprocess_sd(sd, quant_map=None, tied_map=None):
         new_sd = OrderedDict()
+        patch_slices = []
         for name, tensor in sd.items():
-            if name == "v.pos_embed.weight":
+            if name in ("v.pos_embed.weight", "v.position_embd.weight"):
                 target_name = "pos_embed.weight"
                 target_tensor = tensor
-            elif name == "v.patch_embed.bias":
+            elif name in ("v.patch_embed.bias", "v.patch_embd.bias"):
                 target_name = "patch_embed.proj.bias"
                 target_tensor = tensor
             elif name == "v.patch_embed.weight":
                 target_name = "patch_embed.proj.weight"
                 target_tensor = tensor.reshape(*patch_shape)
+            elif re.match(r"^v\.patch_embd\.weight(?:\.\d+)?$", name):
+                patch_index = int(name.rsplit(".", 1)[-1]) if name.rsplit(".", 1)[-1].isdigit() else 0
+                patch_slices.append((patch_index, tensor))
+                continue
             elif name.startswith("v.merger."):
                 target_name = name[2:]
+                target_tensor = tensor
+            elif name.startswith("v.post_ln."):
+                target_name = "merger.norm." + name.removeprefix("v.post_ln.")
+                target_tensor = tensor
+            elif name.startswith("mm.0."):
+                target_name = "merger.linear_fc1." + name.removeprefix("mm.0.")
+                target_tensor = tensor
+            elif name.startswith("mm.2."):
+                target_name = "merger.linear_fc2." + name.removeprefix("mm.2.")
                 target_tensor = tensor
             else:
                 vision_match = re.match(r"^v\.blk\.(\d+)\.(.+)$", name)
@@ -227,7 +257,12 @@ def _build_qwen35_vl_gguf_preprocess_sd(patch_shape):
                 prefix = f"blocks.{layer_no}."
                 target_name = None
                 target_tensor = tensor
-                if suffix == "attn_q.weight":
+                if suffix == "attn_qkv.weight" or suffix == "attn_qkv.bias":
+                    projection_suffix = suffix.rsplit(".", 1)[-1]
+                    for projection_name, projection_tensor in zip(("q_proj", "k_proj", "v_proj"), tensor.chunk(3, dim=0)):
+                        new_sd[prefix + f"attn.{projection_name}.{projection_suffix}"] = projection_tensor
+                    continue
+                elif suffix == "attn_q.weight":
                     target_name = prefix + "attn.q_proj.weight"
                 elif suffix == "attn_q.bias":
                     target_name = prefix + "attn.q_proj.bias"
@@ -243,11 +278,21 @@ def _build_qwen35_vl_gguf_preprocess_sd(patch_shape):
                     target_name = prefix + "attn.proj.weight"
                 elif suffix == "attn_out.bias":
                     target_name = prefix + "attn.proj.bias"
+                elif suffix.startswith("ffn_up."):
+                    target_name = prefix + "mlp.linear_fc1." + suffix.removeprefix("ffn_up.")
+                elif suffix.startswith("ffn_down."):
+                    target_name = prefix + "mlp.linear_fc2." + suffix.removeprefix("ffn_down.")
+                elif suffix.startswith("ln1."):
+                    target_name = prefix + "norm1." + suffix.removeprefix("ln1.")
+                elif suffix.startswith("ln2."):
+                    target_name = prefix + "norm2." + suffix.removeprefix("ln2.")
                 elif suffix.startswith("mlp.") or suffix.startswith("norm"):
                     target_name = prefix + suffix
                 if target_name is None:
                     continue
             new_sd[target_name] = target_tensor
+        if patch_slices:
+            new_sd["patch_embed.proj.weight"] = torch.stack([tensor for _, tensor in sorted(patch_slices)], dim=2).reshape(*patch_shape)
         return new_sd, quant_map, tied_map
 
     return preprocess_sd

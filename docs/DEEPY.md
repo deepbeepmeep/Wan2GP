@@ -114,7 +114,7 @@ Deepy shows the selected template in the chat transcript for generation tools, f
 
 ```text
 Generate Image [Z Image Turbo]
-Generate Video [LTX-2 2.3 Distilled]
+Generate Video [LTX-2 2.3 Distilled 1.0]
 Edit Image [Flux Klein 9B]
 ```
 ### Save Deepy Settings
@@ -376,7 +376,7 @@ Examples:
 
 ```text
 /template gen_image "Z Image Turbo"
-/template gen_video "LTX-2 2.3 Distilled"
+/template gen_video "LTX-2 2.3 Distilled 1.0"
 /size 1280x720
 /frames 97
 /seed -1

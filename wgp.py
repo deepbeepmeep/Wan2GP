@@ -8232,6 +8232,7 @@ def generate_media(
                 if replace_voice_method and replace_voice_sample is not None:
                     configs["replace_voice_method"] = replace_voice_method
                 if sliding_window: configs["window_no"] = window_no
+                configs.pop("prompt_enhancer", None)
                 configs.pop("enhanced_prompt", None)
                 configs.pop("enhanced_alt_prompt", None)
                 configs["prompt"] = prompt_parser.serialize_prompt_blocks_with_prefix(prompts, prompt_enhancer_chaining.originals_for_outputs(original_prompts, len(prompts))) if prompt_was_enhanced else prompt_parser.serialize_prompt_units("", original_prompts, multi_prompts_gen_type)
@@ -12818,6 +12819,17 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 outputs= None
             ).then( fn=use_video_settings, inputs =[state, audio_files_paths, audio_file_selected, gr.State("audio")] , outputs= [refresh_form_trigger, model_choice_target])
 
+            enhance_prompt_inputs = [state, prompt, alt_prompt, prompt_enhancer, multi_images_gen_type, multi_prompts_gen_type, override_profile, video_prompt_type, image_prompt_type, audio_prompt_type]
+            enhance_prompt_sinks = [gr.State(), gr.State()]
+            enhance_prompt_outputs = [[prompt, enhance_prompt_sinks[0], wizard_prompt], [enhance_prompt_sinks[0], alt_prompt, enhance_prompt_sinks[1]], [prompt, alt_prompt, wizard_prompt]]
+            enhance_prompt_triggers = [gr.Text(visible=False) for _ in range(3)]
+            for trigger, outputs in zip(enhance_prompt_triggers, enhance_prompt_outputs):
+                trigger.change(fn=enhance_prompt, inputs=enhance_prompt_inputs, outputs=outputs)
+
+            def route_prompt_enhancer(mode):
+                output_fields = {step.output_field for step in prompt_enhancer_chaining.parse_mode(mode)}
+                target = 2 if len(output_fields) > 1 else int("alt_prompt" in output_fields)
+                return [str(time.time_ns()) if index == target else gr.update() for index in range(3)]
 
             prompt_enhancer_btn.click(fn=validate_wizard_prompt,
                 inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
@@ -12826,7 +12838,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             ).then(fn=save_inputs,
                 inputs =[target_state] + gen_inputs,
                 outputs= None
-            ).then( fn=enhance_prompt, inputs =[state, prompt, alt_prompt, prompt_enhancer, multi_images_gen_type, multi_prompts_gen_type, override_profile, video_prompt_type, image_prompt_type, audio_prompt_type ] , outputs= [prompt, alt_prompt, wizard_prompt])
+            ).then(fn=route_prompt_enhancer, inputs=prompt_enhancer, outputs=enhance_prompt_triggers, show_progress="hidden")
 
             # save_form_trigger.change(fn=validate_wizard_prompt,
             def set_save_form_event(trigger):
@@ -12982,8 +12994,11 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     model_choice=model_choice,
                     model_choice_target=model_choice_target,
                     refresh_form_trigger=refresh_form_trigger,
+                    lset_name=lset_name,
+                    loras_choices=loras_choices,
                     refresh_model_defs=refresh_model_defs,
                     refresh_model_dropdowns=refresh_model_dropdowns,
+                    refresh_lora_list=refresh_lora_list,
                     unload_handler=lambda state_value: model_selector_toolbar.unload_models_from_ram(
                         state_value,
                         server_config=server_config,

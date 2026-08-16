@@ -1,4 +1,5 @@
 {
+    "profile_id": "ltx2_vbvr_video_reasoning",
   
     "activated_loras": [
         "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/loras/Ltx2.3-Licon-VBVR-I2V-96000-R32.safetensors"

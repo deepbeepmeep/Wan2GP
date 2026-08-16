@@ -19,6 +19,9 @@ from ..modules.posemb_layers import get_nd_rotary_pos_embed
 SCAIL2_TYPES = {"scail2_14B", "scail2_1.3B"}
 SCAIL2_ANIMATE_PREPROCESSING_RAW = "raw"
 SCAIL2_ANIMATE_PREPROCESSING_POSE = "pose"
+SCAIL2_INJECT_REF_FRAMES_SETTING = "scail2_inject_ref_frames_in_video"
+SCAIL2_INJECT_REF_FRAMES_NO = "No"
+SCAIL2_INJECT_REF_FRAMES_YES = "Yes"
 SCAIL2_DEBUG_REF_MASK_PATH = "scail2_image_ref_mask_debug.png"
 SCAIL2_DEBUG_MATTED_REF_PATH = "scail2_image_ref_condition_debug.png"
 SCAIL2_INFOS = """
@@ -59,6 +62,10 @@ Replacement uses the Control Video as the source frames. The mask says which peo
 ## Experimental Subwindows
 
 SCAIL-2 can use experimental subwindow sampling inside each sliding-window generation. When `Sub Parallel Window Size` is nonzero, WanGP denoises several overlapping temporal subwindows sequentially at every denoising step, blends their noise predictions over `Sub Parallel Window Overlap`, then applies one scheduler step to the full latent window. This can reduce peak VRAM for long SCAIL-2 windows, but it may introduce motion or identity discontinuities at subwindow boundaries. Keep it disabled unless you are testing longer windows or need the VRAM reduction.
+
+## Inject Ref Frames in Video
+
+When using several Reference Images, setting this to `Yes` packs them into a short still-image video before generation. This may help SCAIL-2 hold onto the references more consistently and reduce the quality loss or artifacts that extra references can sometimes cause. The first image remains the primary reference. Leave it at `No` for the normal reference workflow or when using a single reference.
 
 ## Colored Masks
 
@@ -135,6 +142,10 @@ def as_batched_5d(tensor: torch.Tensor) -> torch.Tensor:
     if tensor.ndim == 5:
         return tensor
     raise ValueError(f"Expected a 4D or 5D tensor, got shape {tuple(tensor.shape)}")
+
+
+def _pack_ref_frames_as_video(frames):
+    return torch.cat([frames[0]] + [frame.repeat(1, 4, 1, 1) for frame in frames[1:]], dim=1)
 
 
 def extract_and_compress_mask_to_latent(mask_cthw: torch.Tensor, additional_spatial_downsample: int = 1, temporal_compression_stride: int = 4, label: str = "mask") -> torch.Tensor:
@@ -741,20 +752,35 @@ def prepare_scail2_conditioning(
 
     _save_debug_ref_image(image_ref, SCAIL2_DEBUG_MATTED_REF_PATH, save_masks=save_masks)
 
-    ref_latents = pipeline.vae.encode([image_ref], VAE_tile_size)[0].unsqueeze(0)
-    additional_ref_count = 0
-    additional_ref_latents = []
-    additional_ref_mask_latents = []
+    additional_refs = []
+    additional_masks = []
     for idx in range(0, len(additional_ref_pairs), 2):
         additional_ref = _tensor_or_image_to_cthw(additional_ref_pairs[idx], pipeline.device, pipeline.VAE_dtype)
         additional_mask = _tensor_or_image_to_cthw(additional_ref_pairs[idx + 1], pipeline.device, pipeline.VAE_dtype)
         additional_mask = prepare_scail2_mask(additional_mask, 1, height, width, pipeline.device, pipeline.VAE_dtype)
         additional_mask = normalize_single_color_mask(additional_mask, model_def)
-        additional_ref_latents.append(pipeline.vae.encode([additional_ref], VAE_tile_size)[0])
-        additional_ref_mask_latents.append(extract_and_compress_mask_to_latent(additional_mask, additional_spatial_downsample=1, label=f"additional ref mask {idx // 2 + 1}").to(device=pipeline.device, dtype=pipeline.VAE_dtype))
-    if additional_ref_latents:
-        additional_ref_count = sum(latent.shape[1] for latent in additional_ref_latents)
-        ref_latents = torch.cat(additional_ref_latents + [ref_latents[0]], dim=1).unsqueeze(0)
+        additional_refs.append(additional_ref)
+        additional_masks.append(additional_mask)
+
+    additional_ref_count = len(additional_refs)
+    inject_ref_frames = additional_ref_count > 0 and custom_settings.get(SCAIL2_INJECT_REF_FRAMES_SETTING, SCAIL2_INJECT_REF_FRAMES_NO) == SCAIL2_INJECT_REF_FRAMES_YES
+    if inject_ref_frames:
+        ref_video = _pack_ref_frames_as_video([image_ref] + additional_refs)
+        ref_mask_video = _pack_ref_frames_as_video([ref_mask] + additional_masks)
+        packed_ref_latents = pipeline.vae.encode([ref_video], VAE_tile_size)[0]
+        packed_ref_mask_latents = extract_and_compress_mask_to_latent(ref_mask_video, additional_spatial_downsample=1, label="injected ref masks").to(device=pipeline.device, dtype=pipeline.VAE_dtype)
+        # Keep the transformer's existing additional-refs-then-primary ordering.
+        ref_latents = torch.cat([packed_ref_latents[:, 1:], packed_ref_latents[:, :1]], dim=1).unsqueeze(0)
+        ref_mask_latents = torch.cat([packed_ref_mask_latents[:, 1:], packed_ref_mask_latents[:, :1]], dim=1)
+        del ref_video, ref_mask_video, packed_ref_latents, packed_ref_mask_latents
+    else:
+        ref_latents = pipeline.vae.encode([image_ref], VAE_tile_size)[0].unsqueeze(0)
+        additional_ref_latents = [pipeline.vae.encode([additional_ref], VAE_tile_size)[0] for additional_ref in additional_refs]
+        if additional_ref_latents:
+            ref_latents = torch.cat(additional_ref_latents + [ref_latents[0]], dim=1).unsqueeze(0)
+        additional_ref_mask_latents = [extract_and_compress_mask_to_latent(additional_mask, additional_spatial_downsample=1, label=f"additional ref mask {idx + 1}").to(device=pipeline.device, dtype=pipeline.VAE_dtype) for idx, additional_mask in enumerate(additional_masks)]
+        ref_mask_latent_28ch = extract_and_compress_mask_to_latent(ref_mask, additional_spatial_downsample=1, label="ref mask").to(device=pipeline.device, dtype=pipeline.VAE_dtype)
+        ref_mask_latents = torch.cat(additional_ref_mask_latents + [ref_mask_latent_28ch], dim=1) if additional_ref_mask_latents else ref_mask_latent_28ch
 
     history_latents = None
     expected_history_lat_t = int((prefix_frames_count - 1) // pipeline.vae_stride[0]) + 1 if prefix_frames_count > 0 else 0
@@ -783,8 +809,6 @@ def prepare_scail2_conditioning(
     driving_mask_video = F.interpolate(driving_mask_video.permute(1, 0, 2, 3), size=(max(1, height // 2), max(1, width // 2)), mode="bilinear", align_corners=False).permute(1, 0, 2, 3)
     driving_masks = extract_and_compress_mask_to_latent(driving_mask_video, additional_spatial_downsample=1, label="driving mask").to(device=pipeline.device, dtype=pipeline.VAE_dtype).unsqueeze(0)
 
-    ref_mask_latent_28ch = extract_and_compress_mask_to_latent(ref_mask, additional_spatial_downsample=1, label="ref mask").to(device=pipeline.device, dtype=pipeline.VAE_dtype)
-    ref_mask_latents = torch.cat(additional_ref_mask_latents + [ref_mask_latent_28ch], dim=1) if additional_ref_mask_latents else ref_mask_latent_28ch
     null_noisy_mask = torch.zeros(ref_mask_latents.shape[0], lat_t, lat_h, lat_w, device=pipeline.device, dtype=ref_mask_latents.dtype)
     ref_masks = torch.cat([ref_mask_latents, null_noisy_mask], dim=1).unsqueeze(0)
 

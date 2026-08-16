@@ -201,6 +201,17 @@ def _gguf_cuda_module():
     return _GGUF_CUDA_MODULE
 
 
+def get_gguf_compute_dtype():
+    module = _gguf_cuda_module()
+    if module is None:
+        return torch.bfloat16
+    try:
+        version = tuple(int(part) for part in module.__version__.split("+", 1)[0].split(".")[:3])
+    except (AttributeError, TypeError, ValueError):
+        return torch.float16
+    return torch.bfloat16 if version >= (1, 0, 7) else torch.float16
+
+
 def set_gguf_cuda_kernels_enabled(enabled=None):
     global _GGUF_CUDA_KERNELS_ENABLED_CACHE, _GGUF_CUDA_MODULE, _GGUF_CUDA_LOAD_ERROR
     if enabled is False:
@@ -471,8 +482,12 @@ def get_file_metadata(file_path):
     if cached is not None:
         state_dict, metadata = cached
         return OrderedDict(state_dict), dict(metadata)
-    metadata = _get_lightweight_gguf_metadata(file_path)
-    result = (OrderedDict(), metadata)
+    from mmgp.safetensors2 import tensor_stub
+    parsed = _gguf_get_index(file_path)
+    orig_shapes = dict(parsed.orig_shapes)
+    state_dict = OrderedDict((tensor.name, tensor_stub(torch.uint8, orig_shapes.get(tensor.name, tuple(reversed(tensor.raw_shape))))) for tensor in parsed.tensor_infos)
+    metadata = {"config": parsed.config} if parsed.config is not None else {}
+    result = (state_dict, metadata)
     _GGUF_METADATA_CACHE[cache_key] = (OrderedDict(result[0]), dict(result[1]))
     return OrderedDict(result[0]), dict(result[1])
 

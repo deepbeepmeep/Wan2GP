@@ -64,6 +64,31 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 ## 🔥 Latest Updates : 
 
+## 12th of August 2026: WanGP v12.53, Jess is Back !
+
+**LTX 2.5. Jess is back, Dad is still in the garden, and this time the camera crew brought an upgrade.**
+
+- **LTX 2.5 Visual Quality Upgrade:** expect sharper details, better visual consistency, and cleaner results than with LTX 2.3.
+
+- **A new VAE decoder to play with:** the Original (much Faster) VAE remains the default, while the optional NAD Diffusion Decoder trades speed and VRAM for higher quality. NAD also works with LTX 2.3 and uses its Triton accelerator when supported.
+
+- **Bring your LTX2 LoRAs:** LTX 2.5 finds LoRAs in the shared `loras/ltx2` folder and restores the compatible LTX 2.3 LoRA workflows, including pose/depth/canny control, inpainting, outpainting, Ingredients references, SDR-to-HDR conversion, and reference-voice conditioning.
+
+- **LTX-2 Video Upsampler:** use LTX 2.3 or LTX 2.5 as a spatial video upsampler—directly after generation, as a late postprocessor, or as part of a Media Flow process. In WanGP 12.53, LTX 2.6 upsampler has been greatly improved an produces much better outputs.
+
+Dev and Distilled are available in BF16 and INT8 ConvRot, while Distilled also gets an NVFP4 option for compatible NVIDIA hardware. Shared embedders are reused instead of being duplicated inside every checkpoint, saving both disk space and RAM.
+
+**Bonus:**  
+- **Wan2.2 Animate 2 Cache**: up to 50% faster thanks to VRAM or RAM cache
+
+- **MinaMax Music 3**: Ace Step has met its match as Minimax Music 3 generates high quality songs. WanGP implementation is optimized with a *vllm engine* for x3 faster generation. It is recommended to have 16 GB of VRAM to use profile 3/3+ for much faster generation. This implementation contains several *Prompt Enhancers* that can either generate for you lyrics and / or the music description.
+
+- **Upgraded GGUF Kernels 1.07**: lower VRAM and more accurate kernels using GGUF with a BF16 model, check the *docs/INSTALLATION.md* to upgrade to these kernels
+
+
+*update 12.51*: Unlocked Control Video Processes, LTX-2 video upsampler\
+*update 12.53*: MiniMax 3, LTX Upsampler 2.5 improved, upgraded GGUF Kernels
+ 
 ## 9th of August 2026: WanGP v12.45, Meet The One
 
 **MiniMax H3 had all that potential waiting to be unleashed. We found the keys.**

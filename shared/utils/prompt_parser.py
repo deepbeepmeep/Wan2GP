@@ -144,6 +144,15 @@ def serialize_prompt_blocks_with_prefix(prompts, original_prompts=None):
         blocks.append(f"{PROMPT_UNIT_PREFIX} {original_prompt}\n{prompt}")
     return "\n\n".join(blocks)
 
+def parse_prompt_history(prompt_text, enhanced_prompt_text, multi_prompts_gen_type):
+    prompt_text = str(prompt_text or "")
+    enhanced_prompt_text = str(enhanced_prompt_text or "")
+    if enhanced_prompt_text:
+        return split_prompt_units(prompt_text, multi_prompts_gen_type, originals=True), split_prompt_units(enhanced_prompt_text, multi_prompts_gen_type)
+    if prompt_text.startswith(PROMPT_UNIT_PREFIX):
+        return split_prompt_units(prompt_text, multi_prompts_gen_type, originals=True), split_prompt_units(prompt_text, multi_prompts_gen_type)
+    return None
+
 def is_speaker_options_line(line):
     return SPEAKER_OPTIONS_LINE_RE.search(line or "") is not None
 

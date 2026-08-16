@@ -222,7 +222,7 @@ def _unload_targets_text(server_config):
     return ", ".join(targets[:-1]) + f", and {targets[-1]}" if len(targets) > 2 else " and ".join(targets)
 
 
-def bind_toolbar(toolbar: ModelSelectorToolbar, *, deps_factory: Callable, state, model_family, model_base_type_choice, model_choice, model_choice_target, refresh_form_trigger, refresh_model_defs: Callable, refresh_model_dropdowns: Callable, unload_handler: Callable):
+def bind_toolbar(toolbar: ModelSelectorToolbar, *, deps_factory: Callable, state, model_family, model_base_type_choice, model_choice, model_choice_target, refresh_form_trigger, lset_name, loras_choices, refresh_model_defs: Callable, refresh_model_dropdowns: Callable, refresh_lora_list: Callable, unload_handler: Callable):
     toolbar.search_button.click(
         fn=show_search_panel,
         outputs=[toolbar.tool_row, toolbar.search_row, toolbar.search_query, toolbar.search_results],
@@ -249,6 +249,11 @@ def bind_toolbar(toolbar: ModelSelectorToolbar, *, deps_factory: Callable, state
         fn=lambda state_value: refresh_models_with_info(refresh_model_defs, refresh_model_dropdowns, state_value, deps_factory),
         inputs=[state],
         outputs=[model_family, model_base_type_choice, model_choice, refresh_form_trigger],
+        show_progress="hidden",
+    ).then(
+        fn=refresh_lora_list,
+        inputs=[state, lset_name, loras_choices],
+        outputs=[lset_name, loras_choices],
         show_progress="hidden",
     )
     toolbar.unload_button.click(fn=unload_handler, inputs=[state], outputs=None, show_progress="hidden")

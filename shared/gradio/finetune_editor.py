@@ -13,6 +13,7 @@ from typing import Callable
 import gradio as gr
 
 from shared.gradio.local_file_picker import CHECKPOINT_FILE_EXTENSIONS, LocalFilePickerTextbox
+from shared.prompt_enhancer import chaining as prompt_enhancer_chaining
 from shared import resolutions as resolution_utils
 from shared.utils import files_locator as fl
 
@@ -1023,15 +1024,16 @@ def _prompt_enhancer_system_specs(deps: FinetuneEditorDeps, source_model_type: s
     mode_prefixes = _prompt_enhancer_mode_prefixes(model_def)
     grouped = {}
     for label, mode in _prompt_enhancer_choices(model_def):
-        suffix = _prompt_enhancer_profile_suffix(mode)
-        prefixes = mode_prefixes(mode)
-        if not prefixes:
-            continue
-        grouped.setdefault(suffix, {"suffix": suffix, "labels": [], "prefixes": []})
-        grouped[suffix]["labels"].append(str(label))
-        for prefix in prefixes:
-            if prefix not in grouped[suffix]["prefixes"]:
-                grouped[suffix]["prefixes"].append(prefix)
+        for step_mode in prompt_enhancer_chaining.split_mode(mode):
+            suffix = _prompt_enhancer_profile_suffix(step_mode)
+            prefixes = mode_prefixes(step_mode)
+            if not prefixes:
+                continue
+            grouped.setdefault(suffix, {"suffix": suffix, "labels": [], "prefixes": []})
+            grouped[suffix]["labels"].append(str(label))
+            for prefix in prefixes:
+                if prefix not in grouped[suffix]["prefixes"]:
+                    grouped[suffix]["prefixes"].append(prefix)
     specs = []
     for suffix, spec in sorted(grouped.items(), key=lambda item: int(item[0] or 0)):
         specs.append({
@@ -1109,8 +1111,7 @@ def _prompt_enhancer_mode_prefixes(model_def: dict):
 
 
 def _prompt_enhancer_profile_suffix(mode: str) -> str:
-    match = re.search(r"\d", str(mode or ""))
-    return match.group(0) if match else "0"
+    return prompt_enhancer_chaining.profile_suffix(mode)
 
 
 def _prompt_enhancer_system_label(labels: list[str]) -> str:

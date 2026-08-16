@@ -24,7 +24,7 @@ from ..scail2 import build_scail2_pose_tokens
 from ..steadydancer.small_archs import FactorConv3d, PoseRefNetNoBNV3
 from ..steadydancer.mobilenetv2_dcd import DYModule
 from ..shotplan import inject_shotplan_tokens
-from ..animate2 import animate2_attention_block
+from ..animate2 import animate2_attention_block, animate2_cached_attention_block
 
 __all__ = ['WanModel']
 
@@ -598,6 +598,7 @@ class WanAttentionBlock(nn.Module):
         lynx_ref_buffer = None,
         sub_x_no =0,         
         animate2_generation = None,
+        animate2_cached = False,
     ):
         r"""
         Args:
@@ -607,7 +608,7 @@ class WanAttentionBlock(nn.Module):
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
         """
         if animate2_generation is not None:
-            return animate2_attention_block(self, x, e, context, grid_sizes, freqs, animate2_generation)
+            return animate2_cached_attention_block(self, x, e, grid_sizes, freqs, animate2_generation) if animate2_cached else animate2_attention_block(self, x, e, context, grid_sizes, freqs, animate2_generation)
 
         hints_processed = None
         attention_dtype =  self.self_attn.q.weight.dtype 
@@ -1538,6 +1539,7 @@ class WanModel(ModelMixin, ConfigMixin):
         animate2_ref_clip_fea = None,
         animate2_ref_freqs = None,
         animate2_log_scale = 0.0,
+        animate2_kv_cache = "Disabled",
     ):
         # patch_dtype =  self.patch_embedding.weight.dtype
         modulation_dtype = self.time_projection[1].weight.dtype
@@ -1579,6 +1581,8 @@ class WanModel(ModelMixin, ConfigMixin):
             scail2_ref_latents_list = [scail2_ref_latents] * len(x_list)
         bernini_enabled = bernini_sources is not None
         animate2_enabled = animate2_ref_x is not None
+        animate2_cache = get_cache("animate2_kv") if animate2_enabled and animate2_kv_cache in ("GPU", "RAM") else None
+        animate2_cached = animate2_cache is not None and len(animate2_cache.get("blocks", [])) == len(self.blocks)
         bernini_freqs_list = []
         bernini_output_slices = []
 
@@ -1742,12 +1746,18 @@ class WanModel(ModelMixin, ConfigMixin):
 
         animate2_ref_hidden = animate2_ref_grid_sizes = None
         if animate2_enabled:
-            animate2_ref_input = torch.cat([animate2_ref_x, animate2_ref_y], dim=1)
-            animate2_ref_x = animate2_ref_y = None
-            animate2_ref_hidden = self.patch_embedding(animate2_ref_input.to(self.patch_embedding.weight.dtype)).to(modulation_dtype)
-            animate2_ref_input = None
-            animate2_ref_grid_sizes = animate2_ref_hidden.shape[2:]
-            animate2_ref_hidden = animate2_ref_hidden.flatten(2).transpose(1, 2)
+            if animate2_cached:
+                animate2_ref_x = animate2_ref_y = None
+                animate2_ref_grid_sizes = animate2_cache["grid_sizes"]
+            else:
+                animate2_ref_input = torch.cat([animate2_ref_x, animate2_ref_y], dim=1)
+                animate2_ref_x = animate2_ref_y = None
+                animate2_ref_hidden = self.patch_embedding(animate2_ref_input.to(self.patch_embedding.weight.dtype)).to(modulation_dtype)
+                animate2_ref_input = None
+                animate2_ref_grid_sizes = animate2_ref_hidden.shape[2:]
+                animate2_ref_hidden = animate2_ref_hidden.flatten(2).transpose(1, 2)
+                if animate2_cache is not None:
+                    animate2_cache.update({"grid_sizes": animate2_ref_grid_sizes, "blocks": []})
 
         shotplan_keep_mask = None
         if self.shotplan and shotplan_cut_frames:
@@ -1860,13 +1870,15 @@ class WanModel(ModelMixin, ConfigMixin):
             context_list = context
 
         animate2_ref_context_emb = None
-        if animate2_enabled:
+        if animate2_enabled and not animate2_cached:
             animate2_ref_context_emb = self.text_embedding(animate2_ref_context)
             animate2_ref_context = None
             animate2_ref_clip_emb = self.img_emb(animate2_ref_clip_fea)
             animate2_ref_clip_fea = None
             animate2_ref_context_emb = torch.cat([animate2_ref_clip_emb, animate2_ref_context_emb], dim=1)
             animate2_ref_clip_emb = None
+        elif animate2_enabled:
+            animate2_ref_context = animate2_ref_clip_fea = None
 
         if multitalk_audio != None:
             multitalk_audio_list = []
@@ -2000,9 +2012,15 @@ class WanModel(ModelMixin, ConfigMixin):
                         "freqs": freqs,
                         "log_scale": animate2_log_scale,
                     }
-                    animate2_ref_handoff = [animate2_ref_hidden]
-                    animate2_ref_hidden = None
-                    animate2_ref_hidden, x_list = block(animate2_ref_handoff, e=animate2_ref_e0, context=animate2_ref_context_emb, grid_sizes=animate2_ref_grid_sizes, freqs=animate2_ref_freqs, animate2_generation=animate2_generation)
+                    if animate2_cached:
+                        animate2_ref_handoff = [animate2_cache["blocks"][block_idx].to(device=x_list[0].device, dtype=modulation_dtype)]
+                        x_list = block(animate2_ref_handoff, e=animate2_ref_e0, context=None, grid_sizes=animate2_ref_grid_sizes, freqs=animate2_ref_freqs, animate2_generation=animate2_generation, animate2_cached=True)
+                    else:
+                        if animate2_cache is not None:
+                            animate2_cache["blocks"].append(animate2_ref_hidden.detach().to(animate2_ref_hidden.device if animate2_kv_cache == "GPU" else "cpu", copy=True))
+                        animate2_ref_handoff = [animate2_ref_hidden]
+                        animate2_ref_hidden = None
+                        animate2_ref_hidden, x_list = block(animate2_ref_handoff, e=animate2_ref_e0, context=animate2_ref_context_emb, grid_sizes=animate2_ref_grid_sizes, freqs=animate2_ref_freqs, animate2_generation=animate2_generation)
                     animate2_generation = None
                 elif perturbation_layers is not None and block_idx in perturbation_layers:
                     if x_id != 0 or not x_should_calc[0]:

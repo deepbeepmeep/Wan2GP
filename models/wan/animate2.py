@@ -3,7 +3,7 @@ import math
 import torch
 
 from shared.attention import pay_attention
-from .modules.posemb_layers import apply_rotary_emb
+from .modules.posemb_layers import apply_rotary_emb, apply_rotary_emb_single
 
 
 _attention_backends = {}
@@ -67,7 +67,8 @@ def _restore_tokens(x):
     return x.reshape(x.shape[0], -1, x.shape[-1])
 
 
-def _pre_self_attention(block, x, e, freqs):
+def _modulated_self_attention_input(block, x, e):
+    e = e.to(x)
     dtype = x.dtype
     attention_dtype = block.self_attn.q.weight.dtype
     frames = e.shape[0]
@@ -76,6 +77,11 @@ def _pre_self_attention(block, x, e, freqs):
     x_mod *= 1 + e[1]
     x_mod += e[0]
     x_mod = _restore_tokens(x_mod).to(attention_dtype)
+    return x_mod, e, dtype
+
+
+def _pre_self_attention(block, x, e, freqs):
+    x_mod, e, dtype = _modulated_self_attention_input(block, x, e)
 
     b, s = x_mod.shape[:2]
     heads, head_dim = block.self_attn.num_heads, block.self_attn.head_dim
@@ -88,6 +94,18 @@ def _pre_self_attention(block, x, e, freqs):
     qkv_list[0] = qkv_list[1] = None
     qkv_list[:2] = apply_rotary_emb(qk_list, freqs, head_first=False)
     return qkv_list, e, dtype
+
+
+def _reference_kv(block, x, e, freqs):
+    x_mod, _, _ = _modulated_self_attention_input(block, x, e)
+    b, s = x_mod.shape[:2]
+    heads, head_dim = block.self_attn.num_heads, block.self_attn.head_dim
+    ref_k = block.self_attn.k(x_mod)
+    ref_v = block.self_attn.v(x_mod).view(b, s, heads, head_dim)
+    x_mod = None
+    block.self_attn.norm_k(ref_k)
+    ref_k = apply_rotary_emb_single([ref_k.view(b, s, heads, head_dim)], freqs, head_first=False)
+    return [ref_k, ref_v]
 
 
 def _post_attention_block(block, x_handoff, attention_handoff, e, context, grid_sizes, dtype):
@@ -104,6 +122,7 @@ def _post_attention_block(block, x_handoff, attention_handoff, e, context, grid_
     x = _restore_tokens(x)
 
     if context is not None:
+        context = context.to(x.device)
         y = block.norm3(x).to(block.cross_attn.q.weight.dtype)
         y_list = [y]
         y = None
@@ -154,11 +173,24 @@ def animate2_generation_block(block, outputs, index, e, context, grid_sizes, fre
     outputs[index] = _post_attention_block(block, x_handoff, attention_handoff, e, context, grid_sizes, dtype)
 
 
-def animate2_attention_block(block, ref_x_list, ref_e, ref_context, ref_grid_sizes, ref_freqs, generation):
-    ref_x, ref_kv_list = animate2_reference_block(block, ref_x_list, ref_e, ref_context, ref_grid_sizes, ref_freqs)
+def _animate2_generation_blocks(block, ref_kv_list, ref_grid_sizes, generation):
     outputs = generation["x_list"]
     for index, (context, should_calc, unconditional) in enumerate(zip(generation["contexts"], generation["should_calc"], generation["unconditional"])):
         if should_calc and not (unconditional and block.block_no == 9):
             animate2_generation_block(block, outputs, index, generation["e"], context, generation["grid_sizes"], generation["freqs"], ref_kv_list, ref_grid_sizes, generation["log_scale"])
     ref_kv_list.clear()
+    return outputs
+
+
+def animate2_attention_block(block, ref_x_list, ref_e, ref_context, ref_grid_sizes, ref_freqs, generation):
+    ref_x, ref_kv_list = animate2_reference_block(block, ref_x_list, ref_e, ref_context, ref_grid_sizes, ref_freqs)
+    outputs = _animate2_generation_blocks(block, ref_kv_list, ref_grid_sizes, generation)
     return ref_x, outputs
+
+
+def animate2_cached_attention_block(block, ref_x_list, ref_e, ref_grid_sizes, ref_freqs, generation):
+    ref_x = ref_x_list[0]
+    ref_x_list.clear()
+    ref_kv_list = _reference_kv(block, ref_x, ref_e, ref_freqs)
+    ref_x = None
+    return _animate2_generation_blocks(block, ref_kv_list, ref_grid_sizes, generation)

@@ -150,7 +150,7 @@ CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.12"
 WanGP_version = "12.54"
-settings_version = 2.73
+settings_version = 2.74
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -6660,6 +6660,7 @@ def generate_media(
     min_frames_if_references,
     override_profile,
     override_attention,
+    attention_sparsity,
     temperature,
     custom_settings,
     top_p,
@@ -7834,6 +7835,7 @@ def generate_media(
                     NAG_scale = NAG_scale,
                     NAG_tau = NAG_tau,
                     NAG_alpha = NAG_alpha,
+                    attention_sparsity = attention_sparsity,
                     speakers_bboxes =speakers_bboxes,
                     image_mode =  image_mode,
                     video_prompt_type= video_prompt_type,
@@ -10381,7 +10383,8 @@ def save_inputs(
             prompt_enhancer,
             min_frames_if_references,
             override_profile,
-            override_attention,            
+            override_attention,
+            attention_sparsity,
             temperature,
             custom_setting_1,
             custom_setting_2,
@@ -12478,12 +12481,13 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     if model_def.get("sol_attention", False):
                         sol_status = ATTENTION_MODE_AVAILABILITY["sol"]
                         sol_label = "AVAILABLE" if sol_status["supported"] else ("NOT SUPPORTED" if sol_status["installed"] else "NOT INSTALLED")
-                        override_attention_choices.append((f"sol ({sol_label}): Sol sparse attention, requires Triton and RTX 40xx or newer", "sol"))
+                        override_attention_choices.append((f"sol ({sol_label}): Sol sparse attention, requires Triton and RTX 30xx or newer", "sol"))
                     override_attention = gr.Dropdown(
                         choices=override_attention_choices,
                         value=ui_get("override_attention"),
                         label=f"Override Attention Mode"
                     )
+                    attention_sparsity = setting_slider("attention_sparsity", visible=ui_get("override_attention") == "sol")
                     with gr.Column():
                         gr.Markdown('<B>Customize the Output Filename using Settings Values (<I>date, seed, resolution, num_inference_steps, prompt, flow_shift, video_length, guidance_scale</I>). For Instance:<BR>"<I>{date(YYYY-MM-DD_HH-mm-ss)}_{seed}_{prompt(50)}, {num_inference_steps}</I>"</B>')
                         output_filename = gr.Text( label= " Output Filename ( Leave Blank for Auto Naming)", value= ui_get("output_filename"))
@@ -12537,6 +12541,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 state = default_state if default_state is not None else gr.State(state_dict)
                 if tab_id == "generate" and header is not None:
                     override_attention.change(fn=refresh_attention_header, inputs=[state, override_attention], outputs=[header], show_progress="hidden")
+                override_attention.change(fn=lambda value: gr.update(visible=value == "sol"), inputs=[override_attention], outputs=[attention_sparsity], show_progress="hidden")
                 gen_status = gr.Text(interactive=False, label="Status", lines=1, max_lines=1, autoscroll=False)
                 main_bridge_elem_ids = tab_id == 'generate'
                 status_trigger = gr.Text(interactive= False, visible=False, elem_id="wangp_main_status_trigger" if main_bridge_elem_ids else None)

@@ -96,6 +96,7 @@
 	"RIFLEx_setting": 0,
 	"override_profile": -1,
 	"override_attention": "",
+	"attention_sparsity": 1.0,
 	"output_filename": "",
 	"config": "",
 	"activated_loras": [],

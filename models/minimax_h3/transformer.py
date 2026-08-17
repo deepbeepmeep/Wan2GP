@@ -620,7 +620,7 @@ class MiniMaxH3Model(nn.Module):
         target_audio_rows = audio_t * 2
         video_start = layout.sequence_length - target_video_rows
         audio_start = video_start - target_audio_rows
-        self.sol_attention.begin_forward(layout, device, dtype)
+        self.sol_attention.begin_forward(layout, device, dtype, payload["attention_sparsity"])
 
         if first_block_cache is None:
             for block in self.blocks:

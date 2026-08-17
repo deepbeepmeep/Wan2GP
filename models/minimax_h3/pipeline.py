@@ -22,6 +22,7 @@ from .transformer import VISUAL_COND_TIMESTEP, pack_audio, patchify_video, unpac
 
 AUDIO_SAMPLE_RATE = 32000
 AUDIO_LATENT_FPS = 40
+SOL_ATTN_TAU_END = 0.8
 
 
 def _return_none_on_interrupt(method):
@@ -345,7 +346,7 @@ class MiniMaxH3Pipeline:
                  audio_guide=None, audio_guide2=None, prefix_frames_count=0,
                  frame_num=124, height=768, width=1344, shift=12.0, sampling_steps=30, seed=0,
                  callback=None, VAE_tile_size=None, audio_prompt_type="", video_prompt_type="", fps=24,
-                 sample_solver="euler",
+                 sample_solver="euler", attention_sparsity=1.0,
                  set_progress_status=None, **kwargs):
         fps = float(fps)
         if fps <= 0:
@@ -495,7 +496,8 @@ class MiniMaxH3Pipeline:
                    "refs": refs or None, "cond_video_rows": cond_video_rows,
                    "cond_audio_rows": cond_audio_rows, "frame_count": aligned_target_frames, "text_token_tags": text_tags,
                    "fps": fps, "target_audio_condition_latents": target_audio_condition_latents,
-                   "target_video_condition_frames": target_video_condition_frames}
+                   "target_video_condition_frames": target_video_condition_frames,
+                   "attention_sparsity": float(attention_sparsity)}
 
         base_sigmas = torch.linspace(1.0, 0.0, int(sampling_steps) + 1, dtype=torch.float32)
         sigmas_video = torch.unique_consecutive(float(shift) * base_sigmas / (1.0 + (float(shift) - 1.0) * base_sigmas))
@@ -505,6 +507,8 @@ class MiniMaxH3Pipeline:
         res_coefficients = _res_multistep_coefficients(sigmas_video) if sample_solver == "res_multistep" else None
         sigmas_video, sigmas_audio = sigmas_video.to(self.device), sigmas_audio.to(self.device)
         model_steps = sigmas_video.numel() - 1
+        tau_start = float(attention_sparsity)
+        tau_denominator = max(1, model_steps - 1)
         denoising_start_step = int(round(model_steps * (1.0 - float(denoising_strength)), 4))
         mask_end_step = min(model_steps, denoising_start_step + math.ceil(model_steps * float(masking_strength))) if editable_mask is not None else 0
         cache = self.transformer.cache
@@ -519,6 +523,7 @@ class MiniMaxH3Pipeline:
             for step in tqdm(range(model_steps), desc=description):
                 self._set_interrupt_state()
                 self._check_abort()
+                payload["attention_sparsity"] = tau_start + (SOL_ATTN_TAU_END - tau_start) * step / tau_denominator
                 offload.set_step_no_for_lora(self.transformer, step)
                 if spectrum is not None:
                     spectrum.begin_step(step)

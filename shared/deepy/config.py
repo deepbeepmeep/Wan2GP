@@ -15,6 +15,7 @@ DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY = "deepy_tool_gen_speech_from_descrip
 DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY = "deepy_tool_gen_speech_from_sample"
 DEEPY_CONTEXT_TOKENS_KEY = "deepy_context_tokens"
 DEEPY_KV_CACHE_QUANTIZATION_KEY = "deepy_kv_cache_quantization"
+DEEPY_COMPACTION_TYPE_KEY = "deepy_compaction_type"
 DEEPY_CUSTOM_SYSTEM_PROMPT_KEY = "deepy_custom_system_prompt"
 DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY = "deepy_auto_cancel_queue_tasks"
 DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY = "deepy_separate_requests_with_empty_line"
@@ -22,6 +23,8 @@ DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY = "deepy_separate_requests_with_empt
 DEEPY_VRAM_MODE_UNLOAD = "unload"
 DEEPY_VRAM_MODE_ALWAYS_LOADED = "always_loaded"
 DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST = "unload_on_request"
+DEEPY_COMPACTION_TYPE_DISCARD = "discard"
+DEEPY_COMPACTION_TYPE_SUMMARIZE = "summarize"
 DEEPY_DEFAULT_GEN_IMAGE = "Z Image Turbo"
 DEEPY_DEFAULT_EDIT_IMAGE = "Flux Klein 9B"
 DEEPY_DEFAULT_GEN_VIDEO = "LTX-2 2.3 Distilled 1.0"
@@ -31,6 +34,8 @@ DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE = "Index TTS 2"
 DEEPY_CONTEXT_TOKENS_MIN = 8192
 DEEPY_CONTEXT_TOKENS_MAX = 256000
 DEEPY_CONTEXT_TOKENS_DEFAULT = 16386
+DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS = 32000
+DEEPY_COMPACTION_TYPE_DEFAULT = DEEPY_COMPACTION_TYPE_DISCARD
 DEEPY_KV_CACHE_QUANTIZATION_DEFAULT = ""
 DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT = True
 DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT = True
@@ -108,6 +113,18 @@ def normalize_deepy_kv_cache_quantization(value: Any) -> str:
     return "int8" if str(value or "").strip().lower() == "int8" else ""
 
 
+def normalize_deepy_compaction_type(value: Any) -> str:
+    return DEEPY_COMPACTION_TYPE_SUMMARIZE if str(value or "").strip().lower() == DEEPY_COMPACTION_TYPE_SUMMARIZE else DEEPY_COMPACTION_TYPE_DISCARD
+
+
+def validate_deepy_compaction_config(compaction_type: Any, context_tokens: Any) -> str:
+    normalized_type = normalize_deepy_compaction_type(compaction_type)
+    normalized_tokens = normalize_deepy_context_tokens(context_tokens)
+    if normalized_type == DEEPY_COMPACTION_TYPE_SUMMARIZE and normalized_tokens < DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:
+        raise ValueError(f"Deepy Summarize compaction requires at least {DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:,} context tokens.")
+    return normalized_type
+
+
 def normalize_deepy_custom_system_prompt(value: Any) -> str:
     text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     return text
@@ -170,6 +187,7 @@ def normalize_deepy_runtime_config(server_config: dict[str, Any] | None) -> dict
     runtime_config[DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY] = normalize_deepy_tool_gen_speech_from_sample(runtime_config.get(DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY, DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE))
     runtime_config[DEEPY_CONTEXT_TOKENS_KEY] = normalize_deepy_context_tokens(runtime_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
     runtime_config[DEEPY_KV_CACHE_QUANTIZATION_KEY] = normalize_deepy_kv_cache_quantization(runtime_config.get(DEEPY_KV_CACHE_QUANTIZATION_KEY, DEEPY_KV_CACHE_QUANTIZATION_DEFAULT))
+    runtime_config[DEEPY_COMPACTION_TYPE_KEY] = normalize_deepy_compaction_type(runtime_config.get(DEEPY_COMPACTION_TYPE_KEY, DEEPY_COMPACTION_TYPE_DEFAULT))
     runtime_config[DEEPY_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_custom_system_prompt(runtime_config.get(DEEPY_CUSTOM_SYSTEM_PROMPT_KEY, ""))
     runtime_config[DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY] = normalize_deepy_auto_cancel_queue_tasks(runtime_config.get(DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY, DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT))
     runtime_config[DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY] = normalize_deepy_separate_requests_with_empty_line(runtime_config.get(DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY, DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT))
@@ -188,6 +206,7 @@ def get_deepy_default_runtime_config() -> dict[str, Any]:
         DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY: DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE,
         DEEPY_CONTEXT_TOKENS_KEY: DEEPY_CONTEXT_TOKENS_DEFAULT,
         DEEPY_KV_CACHE_QUANTIZATION_KEY: DEEPY_KV_CACHE_QUANTIZATION_DEFAULT,
+        DEEPY_COMPACTION_TYPE_KEY: DEEPY_COMPACTION_TYPE_DEFAULT,
         DEEPY_CUSTOM_SYSTEM_PROMPT_KEY: "",
         DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY: DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT,
         DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY: DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT,

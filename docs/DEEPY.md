@@ -57,6 +57,7 @@ Deepy settings in that tab:
 - `Enable Deepy`: turns Deepy on or off
 - `Deepy VRAM Loading Mode`: controls whether Deepy stays in VRAM, unloads when idle, or unloads only when another WanGP component needs VRAM. The more Deepy stays in VRAM, the more responsive.
 - `Context Window Tokens`: how much conversation and tool history Deepy tries to keep live
+- `Compaction Type When Cache is Full`: either discard the oldest conversation entries at the limit or summarize older completed turns near 75% context usage. Summarize requires at least 32,000 context tokens and falls back visibly to discarding old entries if summarization fails. If the current turn alone reaches the hard limit, Deepy preserves its user request and removes the oldest completed tool-call/result step atomically.
 - `Custom System Prompt`: extra instructions appended to Deepy on the next user turn
 
 When the requirement is met, the `Ask Deepy` launcher appears in the WanGP web UI.

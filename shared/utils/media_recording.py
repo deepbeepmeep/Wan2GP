@@ -31,6 +31,21 @@ def record_file_metadata(video_path: str | list[str], configs: Any, is_image: bo
     for no, path in enumerate(paths):
         previous_path = None
         saved_configs = _ensure_creation_metadata(configs)
+        # Multi-image batches often share one task seed while models generate with seed+index
+        # (e.g. MiniMax H3 image mode). Record the per-image seed so metadata matches reality.
+        if (
+            is_image
+            and isinstance(saved_configs, dict)
+            and len(paths) > 1
+            and saved_configs.get("seed") is not None
+        ):
+            try:
+                base_seed = int(saved_configs["seed"])
+                if base_seed >= 0:
+                    saved_configs = dict(saved_configs)
+                    saved_configs["seed"] = base_seed + no
+            except (TypeError, ValueError):
+                pass
         if configs is not None:
             if metadata_choice == "json":
                 with open(os.path.splitext(path)[0] + ".json", "w") as f:

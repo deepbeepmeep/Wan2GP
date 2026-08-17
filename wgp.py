@@ -992,7 +992,11 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
     image_outputs = inputs["image_mode"] > 0
     if image_outputs:
         image_batch_size_max = max(1, int(model_def.get("image_batch_size_max", 16)))
-        if int(inputs.get("batch_size", 1) or 1) > image_batch_size_max:
+        try:
+            inputs["batch_size"] = max(1, int(float(inputs.get("batch_size", 1) or 1)))
+        except (TypeError, ValueError):
+            inputs["batch_size"] = 1
+        if inputs["batch_size"] > image_batch_size_max:
             return err(f"This model supports a maximum of {image_batch_size_max} image{'s' if image_batch_size_max > 1 else ''} per generation.")
     is_edit_mode = str(inputs.get("mode", "") or "").startswith("edit_")
     any_steps_skipping = model_def.get("tea_cache", False) or model_def.get("mag_cache", False) or model_def.get("spectrum_cache", False) or model_def.get("first_block_cache", False)
@@ -1017,6 +1021,10 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
         return err("Prompt cannot be empty.")
     validation_prompts = prompts
     frames_minimum, frames_steps, latent_size = get_model_min_frames_and_step(model_type)
+    if image_outputs:
+        image_frames_minimum = model_def.get("frames_minimum_image", None)
+        if image_frames_minimum is not None:
+            frames_minimum = max(1, int(image_frames_minimum))
     inputs.pop("frame_scheduler", None)
     frame_scheduler = None
     scheduler_supported = frame_scheduler_supported(model_type, model_def, inputs.get("image_mode", 0), is_edit_mode)
@@ -6726,6 +6734,7 @@ def generate_media(
     preprocess_video_guide2 = model_def.get("preprocess_video_guide2", False)
     if is_image:
         image_batch_size_max = max(1, int(model_def.get("image_batch_size_max", 16)))
+        batch_size = max(1, int(batch_size or 1))
         if batch_size > image_batch_size_max:
             raise ValueError(f"This model supports a maximum of {image_batch_size_max} image{'s' if image_batch_size_max > 1 else ''} per generation.")
         if not model_def.get("custom_video_length", False):
@@ -6868,6 +6877,11 @@ def generate_media(
     display_alt_prompts = alt_prompts.copy()
     display_original_alt_prompts = prompt_parser.split_prompt_units(str(alt_prompt or ""), alt_prompt_mode, originals=True) if alt_prompt_has_history else display_alt_prompts.copy()
     frames_minimum, frames_steps, latent_size = get_model_min_frames_and_step(model_type)
+    # Image mode may use a lower legal minimum than video (e.g. MiniMax H3: 5 vs 107).
+    if is_image:
+        image_frames_minimum = model_def.get("frames_minimum_image", None)
+        if image_frames_minimum is not None:
+            frames_minimum = max(1, int(image_frames_minimum))
     parsed_keep_frames_video_source= max_source_video_frames if len(keep_frames_video_source) ==0 else int(keep_frames_video_source) 
     transformer_loras_filenames, transformer_loras_multipliers  = get_transformer_loras(model_type)
     lora_dir = get_lora_dir(model_type)
@@ -7905,6 +7919,7 @@ def generate_media(
             post_decode_pre_trim = 0
             output_audio_sampling_rate= audio_sampling_rate
             sample_is_hdr = False
+            image_output_seeds = None
             if samples != None:
                 if isinstance(samples, dict):
                     sample_is_hdr = samples.get("hdr", False)
@@ -7913,6 +7928,7 @@ def generate_media(
                     generated_audio = samples.get("audio", generated_audio)
                     overridden_inputs = samples.get("overridden_inputs", None)
                     output_audio_sampling_rate = samples.get("audio_sampling_rate", audio_sampling_rate)
+                    image_output_seeds = samples.get("seeds", None)
                     input_fills_window = input_waveform is not None and input_waveform.shape[0] >= int(round(current_video_length * input_waveform_sample_rate / fps))
                     if generated_audio is not None:
                         if model_def.get("output_audio_is_input_audio", False) and output_new_audio_filepath is not None and "O" not in audio_prompt_type and input_fills_window:
@@ -8109,8 +8125,20 @@ def generate_media(
                     image_path = os.path.join(output_dir, file_name)
                     sample =  sample.transpose(1,0)  #c f h w -> f c h w 
                     new_image_path = []
-                    for no, img in enumerate(sample):  
-                        img_path = os.path.splitext(image_path)[0] + ("" if no==0 else f"_{no}") + ".jpg" 
+                    # Multi-still batches (e.g. H3 independent seeds) use seed, seed+1, ...
+                    base_image_seed = seed if seed is not None else None
+                    for no, img in enumerate(sample):
+                        if base_image_seed is not None and sample.shape[0] > 1:
+                            img_seed = int(base_image_seed) + no
+                            stem = os.path.splitext(image_path)[0]
+                            # Prefer unique seed in the filename when several stills share one task.
+                            if f"_seed{base_image_seed}_" in stem or stem.endswith(f"_seed{base_image_seed}"):
+                                stem = stem.replace(f"_seed{base_image_seed}", f"_seed{img_seed}", 1)
+                                img_path = stem + ".jpg"
+                            else:
+                                img_path = os.path.splitext(image_path)[0] + ("" if no == 0 else f"_{no}") + ".jpg"
+                        else:
+                            img_path = os.path.splitext(image_path)[0] + ("" if no == 0 else f"_{no}") + ".jpg"
                         new_image_path.append(save_image(img, save_file = img_path, quality = server_config.get("image_output_codec", None)))
 
                     video_path= new_image_path
@@ -8241,7 +8269,14 @@ def generate_media(
                 configs["creation_date"] = datetime.fromtimestamp(end_time).isoformat(timespec="seconds")
                 configs["creation_timestamp"] = int(end_time)
                 # if sample_is_image: configs["is_image"] = True
-                record_file_metadata(video_path, configs, is_image, audio_only, gen, embedded_images=embedded_images, replace_last_file=sliding_window and window_no > 1 and not server_config.get("keep_intermediate_sliding_windows", 1))
+                # Prefer model-reported per-image seeds (H3 multi-still) over a single task seed.
+                if is_image and isinstance(video_path, list) and image_output_seeds and len(image_output_seeds) == len(video_path):
+                    for img_path, img_seed in zip(video_path, image_output_seeds):
+                        img_configs = dict(configs)
+                        img_configs["seed"] = int(img_seed)
+                        record_file_metadata(img_path, img_configs, is_image, audio_only, gen, embedded_images=embedded_images, replace_last_file=False)
+                else:
+                    record_file_metadata(video_path, configs, is_image, audio_only, gen, embedded_images=embedded_images, replace_last_file=sliding_window and window_no > 1 and not server_config.get("keep_intermediate_sliding_windows", 1))
                 if api_return_video_uint8 or api_return_audio or return_flashvsr_continue_cache:
                     media_type = "audio" if audio_only else ("image" if is_image else "video")
                     artifact_audio = output_new_audio_data if api_return_audio else None
@@ -11997,7 +12032,33 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 batch_label = model_def.get("batch_size_label", "Number of Images to Generate")
                 batch_size_max = max(1, int(model_def.get("image_batch_size_max", 16)))
                 batch_size_value = min(batch_size_max, max(1, int(ui_get("batch_size") or 1)))
-                batch_size = gr.Slider(1, batch_size_max, value=batch_size_value, step=1, label=batch_label, visible = image_outputs, show_reset_button= False)
+                # Always interactive=True (do not bind to image_outputs). v2i models build this
+                # control first in Video mode; Gradio form refresh often keeps interactive=False
+                # if it started disabled, which made the old slider look stuck.
+                # Radio for small maxima (H3-style); Slider for large maxima (Flux/Z-Image).
+                if batch_size_max <= 8:
+                    batch_size_choices = [(f"{n}", n) for n in range(1, batch_size_max + 1)]
+                    batch_size = gr.Radio(
+                        choices=batch_size_choices,
+                        value=batch_size_value if 1 <= batch_size_value <= batch_size_max else 1,
+                        label=batch_label,
+                        visible=image_outputs,
+                        interactive=True,
+                        elem_id="wangp_image_batch_size",
+                        info=f"Each value = separate stills with different seeds (1–{batch_size_max})." if batch_size_max > 1 else "This model generates one image per run.",
+                    )
+                else:
+                    batch_size = gr.Slider(
+                        minimum=1,
+                        maximum=batch_size_max,
+                        value=batch_size_value,
+                        step=1,
+                        label=batch_label,
+                        visible=image_outputs,
+                        interactive=True,
+                        show_reset_button=False,
+                        elem_id="wangp_image_batch_size",
+                    )
                 if image_outputs:
                     video_length = gr.Slider(1, 9999, value=ui_get("video_length"), step=1, label="Number of frames", visible = False, show_reset_button= False)
                 else:
@@ -12284,24 +12345,41 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 cfg_zero_step = gr.Slider(-1, 39, value=ui_get("cfg_zero_step"), step=1, label="CFG Zero below this Layer (Extra Process)", visible = any_cfg_zero, show_reset_button= False) 
 
                         with gr.Column(visible = v2i_switch_supported and image_outputs) as min_frames_if_references_col:
-                            gr.Markdown("<B>WanGP normally runs the shortest model-compatible generation and keeps its first frame. Generating additional frames may improve still-image quality or preserve Reference / Control Image details, at extra generation cost.</B>")
+                            keep_all_image_frames = bool(model_def.get("image_mode_keep_all_frames", False))
+                            if keep_all_image_frames:
+                                gr.Markdown("<B>This model exports every generated frame as a separate still. The shortest run already yields several image variations from one prompt. Longer runs add more frames (and more stills) at extra cost.</B>")
+                            else:
+                                gr.Markdown("<B>WanGP normally runs the shortest model-compatible generation and keeps its first frame. Generating additional frames may improve still-image quality or preserve Reference / Control Image details, at extra generation cost.</B>")
                             _, _, temporal_latent = get_model_min_frames_and_step(base_model_type)
                             temporal_latent = max(1, int(temporal_latent or 1))
                             frames_offset = max(0, int(model_def.get("frames_offset", 1)))
-                            first_frame_count = frames_offset if frames_offset > 1 else temporal_latent + frames_offset
+                            image_frames_minimum = model_def.get("frames_minimum_image", None)
+                            if image_frames_minimum is not None:
+                                first_frame_count = max(1, int(image_frames_minimum))
+                            else:
+                                first_frame_count = frames_offset if frames_offset > 1 else temporal_latent + frames_offset
                             frame_counts = [first_frame_count + temporal_latent * index for index in range(4)]
-                            image_mode_video_frame_choices = [("Shortest generation, keep only the First Frame", 1)]
-                            image_mode_video_frame_choices += [(f"Generate {frame_count} Frames and keep the First only when using a Reference / Control Image", frame_count) for frame_count in frame_counts]
-                            image_mode_video_frame_choices += [(f"Always generate {frame_count} Frames and keep the First", 1000 + frame_count) for frame_count in frame_counts]
-                            min_frames_if_references_value = ui_get("min_frames_if_references", frame_counts[1] if vace else 1)
+                            if keep_all_image_frames:
+                                image_mode_video_frame_choices = [(f"Shortest generation ({frame_counts[0]} frames → {frame_counts[0]} stills)", 1)]
+                                image_mode_video_frame_choices += [(f"Generate {frame_count} frames → {frame_count} stills when using a Reference / Control Image", frame_count) for frame_count in frame_counts]
+                                image_mode_video_frame_choices += [(f"Always generate {frame_count} frames → {frame_count} stills", 1000 + frame_count) for frame_count in frame_counts]
+                                frames_dropdown_label = "How many frames / stills to generate"
+                                default_min_frames = frame_counts[0]
+                            else:
+                                image_mode_video_frame_choices = [("Shortest generation, keep only the First Frame", 1)]
+                                image_mode_video_frame_choices += [(f"Generate {frame_count} Frames and keep the First only when using a Reference / Control Image", frame_count) for frame_count in frame_counts]
+                                image_mode_video_frame_choices += [(f"Always generate {frame_count} Frames and keep the First", 1000 + frame_count) for frame_count in frame_counts]
+                                frames_dropdown_label = "Generate additional frames before keeping the first image"
+                                default_min_frames = frame_counts[1] if vace else 1
+                            min_frames_if_references_value = ui_get("min_frames_if_references", default_min_frames)
                             if min_frames_if_references_value not in {choice[1] for choice in image_mode_video_frame_choices}:
-                                min_frames_if_references_value = 1
+                                min_frames_if_references_value = default_min_frames
                             min_frames_if_references = gr.Dropdown(
                                 choices=image_mode_video_frame_choices,
                                 value=min_frames_if_references_value,
                                 visible=True,
                                 scale = 1,
-                                label="Generate additional frames before keeping the first image"
+                                label=frames_dropdown_label
                             )
 
                         with gr.Column(visible = get_container_def("motion_amplitude_col").visible and not image_outputs) as motion_amplitude_col:

@@ -85,6 +85,7 @@ class SeedVR2Bridge(SimpleScaleSuffixMixin):
             "vae_methods": [],
             "multipliers": {cls.UPSAMPLING_VALUE_PREFIX: cls.UPSAMPLING_RATIOS},
             "default_spatial_upsampling": cls.upsampling_value(2.0),
+            "description": "Restore detail and reduce degradation while spatially upscaling an image or video.",
         }
 
     def enabled(self) -> bool:

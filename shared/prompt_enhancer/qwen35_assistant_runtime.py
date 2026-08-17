@@ -690,11 +690,12 @@ class Qwen35AssistantRuntime:
                 "free_block_ids": [int(block_id) for block_id in llm.scheduler.block_manager.free_block_ids],
                 "used_block_ids": [int(block_id) for block_id in llm.scheduler.block_manager.used_block_ids],
             },
-            "kv_cache": None if not hasattr(runner, "kv_cache") else runner.kv_cache.detach().to("cpu").clone(),
+            "kv_cache": None if not hasattr(runner, "kv_cache") else runner.kv_cache.detach().to("cpu").as_subclass(torch.Tensor).clone(),
+            "kv_cache_scales": None if not hasattr(runner, "kv_cache_scales") else runner.kv_cache_scales.detach().to("cpu").as_subclass(torch.Tensor).clone(),
             "linear_states": [
                 {
-                    "conv": module.conv_state_buffer.detach().to("cpu").clone(),
-                    "recurrent": module.recurrent_state_buffer.detach().to("cpu").clone(),
+                    "conv": module.conv_state_buffer.detach().to("cpu").as_subclass(torch.Tensor).clone(),
+                    "recurrent": module.recurrent_state_buffer.detach().to("cpu").as_subclass(torch.Tensor).clone(),
                 }
                 for module in linear_modules
             ],
@@ -746,6 +747,11 @@ class Qwen35AssistantRuntime:
             raise RuntimeError("Assistant KV cache snapshot shape does not match current runtime.")
         with torch.inference_mode():
             runner.kv_cache.copy_(kv_cache.to(device=runner.kv_cache.device, dtype=runner.kv_cache.dtype))
+            if hasattr(runner, "kv_cache_scales"):
+                kv_cache_scales = snapshot.get("kv_cache_scales")
+                if kv_cache_scales is None or tuple(kv_cache_scales.shape) != tuple(runner.kv_cache_scales.shape):
+                    raise RuntimeError("Assistant KV cache scale snapshot does not match current runtime.")
+                runner.kv_cache_scales.copy_(kv_cache_scales.to(device=runner.kv_cache_scales.device, dtype=runner.kv_cache_scales.dtype))
         linear_modules = self._get_linear_state_modules()
         linear_states = snapshot.get("linear_states", [])
         if len(linear_modules) != len(linear_states):

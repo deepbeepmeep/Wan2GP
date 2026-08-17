@@ -45,6 +45,7 @@ class AccelInferenceEngine:
         block_size: int = 256,
         num_blocks: int = 128,
         use_cuda_graph: bool = True,
+        dtype: torch.dtype = torch.float16,
     ):
         """
         Args:
@@ -65,6 +66,7 @@ class AccelInferenceEngine:
         self.head_dim = head_dim
         self._default_num_blocks = max(1, int(num_blocks))
         self.num_blocks = 1
+        self.dtype = dtype
         self.use_cuda_graph = use_cuda_graph and torch.cuda.is_available()
         self.hidden_size = (
             model.config.hidden_size
@@ -99,7 +101,7 @@ class AccelInferenceEngine:
             head_dim=self.head_dim,
             block_size=self.block_size,
             num_blocks=int(max(1, num_blocks)),
-            dtype=torch.float16,  # Force fp16 for FlashAttention
+            dtype=self.dtype,
             device=device,
         )
 

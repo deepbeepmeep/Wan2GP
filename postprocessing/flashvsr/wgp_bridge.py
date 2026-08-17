@@ -167,6 +167,10 @@ class FlashVSRBridge:
             "vae_methods": [],
             "multipliers": {cls.UPSAMPLING_VALUE_PREFIX: cls.UPSAMPLING_RATIOS, cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX: cls.UPSAMPLING_RATIOS},
             "default_spatial_upsampling": cls.upsampling_value(2.0),
+            "method_descriptions": {
+                cls.UPSAMPLING_VALUE_PREFIX: "Restore detail and spatially upscale an image or video with FlashVSR.",
+                cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX: "Apply two FlashVSR restoration passes for stronger spatial upscaling.",
+            },
         }
 
     @classmethod

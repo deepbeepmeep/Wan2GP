@@ -242,26 +242,32 @@ def clear_qwen35_runtime_caches(device: torch.device | None = None) -> None:
         _MROPE_FREQ_CACHE.pop(cache_key, None)
 
 
-def rotate_half(x: torch.Tensor) -> torch.Tensor:
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
-    return torch.cat((-x2, x1), dim=-1)
-
-
 def apply_rotary_pos_emb(
-    q: torch.Tensor,
-    k: torch.Tensor,
+    qk_list: list[torch.Tensor],
     cos: torch.Tensor,
     sin: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    q, k = qk_list
+    qk_list.clear()
     rotary_dim = cos.shape[-1]
-    q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
-    k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
     cos = cos.unsqueeze(2)
     sin = sin.unsqueeze(2)
-    q_embed = (q_rot * cos) + (rotate_half(q_rot) * sin)
-    k_embed = (k_rot * cos) + (rotate_half(k_rot) * sin)
-    return torch.cat((q_embed, q_pass), dim=-1), torch.cat((k_embed, k_pass), dim=-1)
+    half = rotary_dim // 2
+    for tensor in (q, k):
+        first = tensor[..., :half]
+        second = tensor[..., half:rotary_dim]
+        scratch = torch.empty_like(first)
+        scratch.copy_(first)
+        first.mul_(cos[..., :half]).sub_(second * sin[..., :half])
+        second.mul_(cos[..., half:]).add_(scratch * sin[..., half:])
+        scratch = None
+    return q, k
+
+
+def _take_tensor(x_list: list[torch.Tensor]) -> torch.Tensor:
+    x = x_list[0]
+    x_list.clear()
+    return x
 
 
 def l2norm(x: torch.Tensor, dim: int = -1, eps: float = 1e-6) -> torch.Tensor:
@@ -489,8 +495,8 @@ class Qwen3_5StaticCache(Qwen3_5DynamicCache):
     def snapshot(self) -> dict:
         return {
             "seq_length": self._seq_length,
-            "key_cache": [None if cache is None else cache[:, :self._seq_length].detach().to("cpu").clone() for cache in self.key_cache],
-            "value_cache": [None if cache is None else cache[:, :self._seq_length].detach().to("cpu").clone() for cache in self.value_cache],
+            "key_cache": [None if cache is None else cache[:, :self._seq_length].detach().to("cpu").as_subclass(torch.Tensor).clone() for cache in self.key_cache],
+            "value_cache": [None if cache is None else cache[:, :self._seq_length].detach().to("cpu").as_subclass(torch.Tensor).clone() for cache in self.value_cache],
         }
 
     def restore(self, snapshot: dict) -> None:
@@ -565,6 +571,25 @@ class Qwen3_5RMSNormGated(nn.Module):
         hidden_states = hidden_states * F.silu(gate.float())
         return hidden_states.to(dtype=input_dtype)
 
+    def forward_list(self, state_list: list[torch.Tensor]) -> torch.Tensor:
+        hidden_states, gate = state_list
+        state_list.clear()
+        input_dtype = hidden_states.dtype
+        hidden_states = hidden_states.float()
+        hidden_states.mul_(torch.rsqrt(hidden_states.square().mean(-1, keepdim=True).add_(self.eps)))
+        hidden_states.mul_(self.weight.float())
+        gate = F.silu(gate.float(), inplace=True)
+        hidden_states.mul_(gate)
+        return hidden_states.to(dtype=input_dtype)
+
+
+def _forward_gated_norm_list(norm: nn.Module, state_list: list[torch.Tensor]) -> torch.Tensor:
+    if isinstance(norm, Qwen3_5RMSNormGated):
+        return norm.forward_list(state_list)
+    hidden_states, gate = state_list
+    state_list.clear()
+    return norm(hidden_states, gate)
+
 
 def _repeat_kv(hidden_states: torch.Tensor, num_repeats: int) -> torch.Tensor:
     if num_repeats == 1:
@@ -573,14 +598,14 @@ def _repeat_kv(hidden_states: torch.Tensor, num_repeats: int) -> torch.Tensor:
 
 
 def _flash_attention(
-    query_states: torch.Tensor,
-    key_states: torch.Tensor,
-    value_states: torch.Tensor,
+    qkv_list: list[torch.Tensor],
     query_lengths: list[int],
     key_lengths: list[int],
     scaling: float,
     flash_attention_fn,
 ) -> torch.Tensor:
+    query_states, key_states, value_states = qkv_list
+    qkv_list.clear()
     if flash_attention_fn is not None and query_states.is_cuda:
         q_chunks = [query_states[idx, : q_len] for idx, q_len in enumerate(query_lengths) if q_len > 0]
         k_chunks = [key_states[idx, : k_len] for idx, k_len in enumerate(key_lengths) if k_len > 0]
@@ -832,12 +857,14 @@ class Qwen3_5Block(nn.Module):
 
     def _forward_full_attention(
         self,
-        hidden_states: torch.Tensor,
+        x_list: list[torch.Tensor],
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         layer_idx: int,
         past_key_values: Qwen3_5DynamicCache | None,
     ) -> torch.Tensor:
+        hidden_states = _take_tensor(x_list)
         batch_size, seq_len, _ = hidden_states.shape
+        is_cuda = hidden_states.is_cuda
         q_and_gate = self.attn_q(hidden_states).view(batch_size, seq_len, self.num_heads, self.head_dim * 2)
         query_states, gate = torch.chunk(q_and_gate, 2, dim=-1)
         gate = gate.reshape(batch_size, seq_len, -1)
@@ -852,11 +879,14 @@ class Qwen3_5Block(nn.Module):
             key_states = key_states.contiguous()
             value_states = value_states.contiguous()
         key_states = self.attn_k_norm(key_states)
+        hidden_states = None
 
         cos, sin = position_embeddings
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        qk_list = [query_states, key_states]
+        query_states = key_states = None
+        query_states, key_states = apply_rotary_pos_emb(qk_list, cos, sin)
 
-        if isinstance(past_key_values, Qwen3_5StaticCache) and self.attn.flash_attn_with_kvcache is not None and hidden_states.is_cuda:
+        if isinstance(past_key_values, Qwen3_5StaticCache) and self.attn.flash_attn_with_kvcache is not None and is_cuda:
             attn_output = self.attn.flash_attn_with_kvcache(
                 query_states,
                 past_key_values.key_cache[layer_idx],
@@ -875,35 +905,44 @@ class Qwen3_5Block(nn.Module):
             )
             key_states = key_states.transpose(1, 2)
             value_states = value_states.transpose(1, 2)
+            key_length = int(key_states.shape[1])
+            qkv_list = [query_states, key_states, value_states]
+            query_states = key_states = value_states = None
             attn_output = _flash_attention(
-                query_states,
-                key_states,
-                value_states,
+                qkv_list,
                 query_lengths=[int(seq_len)] * batch_size,
-                key_lengths=[int(key_states.shape[1])] * batch_size,
+                key_lengths=[key_length] * batch_size,
                 scaling=self.scaling,
                 flash_attention_fn=self._flash_attn_varlen_func,
             ).reshape(batch_size, seq_len, -1)
         else:
-            attn_output = self.attn(
+            qkv_list = [
                 query_states.reshape(-1, self.num_heads, self.head_dim),
                 key_states.reshape(-1, self.num_kv_heads, self.head_dim),
                 value_states.reshape(-1, self.num_kv_heads, self.head_dim),
-            ).reshape(batch_size, seq_len, -1)
-        attn_output = attn_output * torch.sigmoid(gate)
+            ]
+            query_states = key_states = value_states = None
+            attn_output = self.attn.forward_list(qkv_list).reshape(batch_size, seq_len, -1)
+        query_states = key_states = value_states = None
+        gate.sigmoid_()
+        attn_output.mul_(gate)
+        gate = q_and_gate = None
         return self.attn_output(attn_output)
 
     def _forward_linear_attention(
         self,
-        hidden_states: torch.Tensor,
+        x_list: list[torch.Tensor],
         layer_idx: int,
         cache_params: Qwen3_5DynamicCache | None,
         attention_mask: torch.Tensor | None,
     ) -> torch.Tensor:
+        hidden_states = _take_tensor(x_list)
         if attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
-            hidden_states = (hidden_states * attention_mask[:, :, None]).to(hidden_states.dtype)
+            hidden_states.mul_(attention_mask[:, :, None])
 
         batch_size, seq_len, _ = hidden_states.shape
+        hidden_dtype = hidden_states.dtype
+        is_cuda = hidden_states.is_cuda
         context = get_context()
         if cache_params is not None:
             conv_state = cache_params.conv_states[layer_idx]
@@ -930,6 +969,7 @@ class Qwen3_5Block(nn.Module):
             gate_ab = self.attn_gate_ab(hidden_states)
             gate_proj, a, b = torch.split(gate_ab, [self.value_dim, self.num_v_heads, self.num_v_heads], dim=-1)
             z = gate_proj.reshape(batch_size, seq_len, -1, self.head_v_dim)
+        hidden_states = None
         if self._gguf_v_head_reordered:
             z = _reorder_v_head_axis_tiled_to_grouped(
                 z,
@@ -1046,7 +1086,7 @@ class Qwen3_5Block(nn.Module):
                     )
                 else:
                     mixed_qkv = F.silu(self.ssm_conv1d(conv_input)[:, :, :seq_len])
-                mixed_qkv = mixed_qkv.to(hidden_states.dtype)
+                mixed_qkv = mixed_qkv.to(hidden_dtype)
             mixed_qkv = mixed_qkv.transpose(1, 2)
 
         if use_short_convolution:
@@ -1054,6 +1094,8 @@ class Qwen3_5Block(nn.Module):
                 cache_params.conv_states[layer_idx] = last_conv_state
             elif last_conv_state is not conv_state:
                 conv_state.copy_(last_conv_state)
+
+        mixed_qkv_input = None
 
         query, key, value = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
         query = query.reshape(batch_size, seq_len, -1, self.head_k_dim)
@@ -1084,6 +1126,7 @@ class Qwen3_5Block(nn.Module):
             num_v_heads=self.num_v_heads,
         )
         g = ssm_a * F.softplus(a.float() + ssm_dt)
+        a = b = None
         if self.num_v_heads // self.num_k_heads > 1:
             repeat_factor = self.num_v_heads // self.num_k_heads
             query = query.repeat_interleave(repeat_factor, dim=2)
@@ -1093,7 +1136,7 @@ class Qwen3_5Block(nn.Module):
             recurrent_outputs = []
             current_recurrent_state = recurrent_state
             for token_idx in range(seq_len):
-                if self._fast_recurrent_gated_delta_rule is not None and hidden_states.is_cuda:
+                if self._fast_recurrent_gated_delta_rule is not None and is_cuda:
                     recurrent_output, current_recurrent_state = self._fast_recurrent_gated_delta_rule(
                         query[:, token_idx:token_idx + 1],
                         key[:, token_idx:token_idx + 1],
@@ -1119,7 +1162,7 @@ class Qwen3_5Block(nn.Module):
             core_attn_out = torch.cat(recurrent_outputs, dim=1)
             last_recurrent_state = current_recurrent_state
         elif use_precomputed_states:
-            if self._fast_recurrent_gated_delta_rule is not None and hidden_states.is_cuda:
+            if self._fast_recurrent_gated_delta_rule is not None and is_cuda:
                 core_attn_out, last_recurrent_state = self._fast_recurrent_gated_delta_rule(
                     query,
                     key,
@@ -1142,7 +1185,7 @@ class Qwen3_5Block(nn.Module):
                 )
         else:
             recurrent_initial_state = recurrent_state if has_previous_state else None
-            if self._fast_chunk_gated_delta_rule is not None and hidden_states.is_cuda:
+            if self._fast_chunk_gated_delta_rule is not None and is_cuda:
                 core_attn_out, last_recurrent_state = self._fast_chunk_gated_delta_rule(
                     query,
                     key,
@@ -1169,10 +1212,11 @@ class Qwen3_5Block(nn.Module):
         else:
             recurrent_state.copy_(last_recurrent_state)
 
-        core_attn_out = self.ssm_norm(
-            core_attn_out.reshape(-1, self.head_v_dim),
-            z.reshape(-1, self.head_v_dim),
-        )
+        query = key = value = mixed_qkv = beta = g = last_recurrent_state = None
+
+        norm_state_list = [core_attn_out.reshape(-1, self.head_v_dim), z.reshape(-1, self.head_v_dim)]
+        core_attn_out = z = None
+        core_attn_out = _forward_gated_norm_list(self.ssm_norm, norm_state_list)
         core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
         if self._gguf_v_head_reordered:
             core_attn_out = _reorder_v_heads_grouped_to_tiled(
@@ -1186,26 +1230,39 @@ class Qwen3_5Block(nn.Module):
 
     def forward(
         self,
-        hidden_states: torch.Tensor,
+        x_list: list[torch.Tensor | None],
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        residual: torch.Tensor | None,
         layer_idx: int,
         attention_mask: torch.Tensor | None = None,
         past_key_values: Qwen3_5DynamicCache | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        hidden_states, residual = x_list
+        x_list.clear()
         if residual is None:
-            hidden_states, residual = self.attn_norm(hidden_states), hidden_states
+            residual = hidden_states
+            hidden_states = self.attn_norm(hidden_states)
         else:
-            hidden_states, residual = self.attn_norm(hidden_states, residual)
+            norm_state_list = [hidden_states, residual]
+            hidden_states = residual = None
+            hidden_states, residual = self.attn_norm.forward_list(norm_state_list)
 
         if self.layer_type == "full_attention":
-            hidden_states = self._forward_full_attention(hidden_states, position_embeddings, layer_idx, past_key_values)
+            x_list = [hidden_states]
+            hidden_states = None
+            hidden_states = self._forward_full_attention(x_list, position_embeddings, layer_idx, past_key_values)
         else:
-            hidden_states = self._forward_linear_attention(hidden_states, layer_idx, past_key_values, attention_mask)
+            x_list = [hidden_states]
+            hidden_states = None
+            hidden_states = self._forward_linear_attention(x_list, layer_idx, past_key_values, attention_mask)
 
-        hidden_states, residual = self.post_attention_norm(hidden_states, residual)
+        norm_state_list = [hidden_states, residual]
+        hidden_states = residual = None
+        hidden_states, residual = self.post_attention_norm.forward_list(norm_state_list)
         gate_up = self.ffn_gate_up(hidden_states) if self.ffn_gate_up is not None else torch.cat((self.ffn_gate(hidden_states), self.ffn_up(hidden_states)), dim=-1)
-        hidden_states = self.ffn_down(self.mlp_act_fn(gate_up))
+        hidden_states = None
+        gate_up_list = [gate_up]
+        gate_up = None
+        hidden_states = self.ffn_down(self.mlp_act_fn.forward_list(gate_up_list))
         return hidden_states, residual
 
 
@@ -1280,15 +1337,18 @@ class Qwen3_5ForCausalLM(nn.Module):
         position_embeddings = self.rotary_emb(hidden_states, positions)
         residual = None
         for layer_idx, block in enumerate(self.blk):
+            x_list = [hidden_states, residual]
+            hidden_states = residual = None
             hidden_states, residual = block(
-                hidden_states,
+                x_list,
                 position_embeddings,
-                residual,
                 layer_idx=layer_idx,
                 attention_mask=attention_mask,
                 past_key_values=past_key_values,
             )
-        hidden_states, _ = self.output_norm(hidden_states, residual)
+        norm_state_list = [hidden_states, residual]
+        hidden_states = residual = None
+        hidden_states, _ = self.output_norm.forward_list(norm_state_list)
         return hidden_states
 
     def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
@@ -1396,10 +1456,14 @@ class Qwen3_5MTP(nn.Module):
         static_flash_cache = isinstance(self._cache, Qwen3_5StaticCache) and self.block.attn.flash_attn_with_kvcache is not None and hidden_states.is_cuda
         if static_flash_cache and not cache_prepared:
             self._cache.prepare_append()
-        hidden_states, residual = self.block(hidden_states, position_embeddings, None, layer_idx=0, past_key_values=self._cache)
+        x_list = [hidden_states, None]
+        hidden_states = None
+        hidden_states, residual = self.block(x_list, position_embeddings, layer_idx=0, past_key_values=self._cache)
         if static_flash_cache and not cache_prepared:
             self._cache.advance(hidden_states.shape[1])
-        hidden_states, _ = self.norm(hidden_states, residual)
+        norm_state_list = [hidden_states, residual]
+        hidden_states = residual = None
+        hidden_states, _ = self.norm.forward_list(norm_state_list)
         logits_hidden = hidden_states[:, -1:] if last_logits_only else hidden_states
         return hidden_states, self.lm_head(logits_hidden) if compute_logits else None
 

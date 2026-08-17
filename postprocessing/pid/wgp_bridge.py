@@ -110,6 +110,7 @@ class PiDBridge:
             "vae_methods": [("Flux VAE PiD Upsampler", PID_FLUX_VAE_UPSAMPLING_METHOD), ("Flux2 VAE PiD Upsampler", PID_FLUX2_VAE_UPSAMPLING_METHOD), ("Flux VAE PiD Upsampler", PID_FLUX_VAE_UPSAMPLING_METHOD_V15), ("Flux2 VAE PiD Upsampler", PID_FLUX2_VAE_UPSAMPLING_METHOD_V15), ("Qwen VAE PiD Upsampler", PID_QWEN_VAE_UPSAMPLING_METHOD)],
             "multipliers": {method: cls.UPSAMPLING_RATIOS for method in cls.UPSAMPLING_METHODS},
             "default_spatial_upsampling": "flux_pid4",
+            "description": "Use a diffusion image model to add detail during high-quality image upscaling.",
         }
 
     def is_upsampling(self, spatial_upsampling) -> bool:

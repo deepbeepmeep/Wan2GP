@@ -3,6 +3,9 @@
 Audio processors are interchangeable handlers for post-generation audio work.
 Each handler declares methods through ``query_audio_processor_def()`` and may
 expose config controls under ``wgp_config["audio_processors"][config_key]``.
+Definitions may also expose an optional ``description`` plus optional
+``method_descriptions`` and ``method_parameters`` mappings for reusable
+discovery interfaces. Existing handlers without these fields remain valid.
 Model persistence is shared through
 ``wgp_config["audio_processors"]["persistence"]``. Dispatch retains at most one
 audio processor handler and releases it before another handler runs.

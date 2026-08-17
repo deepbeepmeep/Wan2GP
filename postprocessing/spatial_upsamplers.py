@@ -18,6 +18,9 @@ Every spatial upsampler (built-in or extension) class is listed in
     "multipliers": {"flashvsr": (2.0, 4.0)}, # supported upsampling multipliers per method key
     "default_spatial_upsampling": "flashvsr2",
     "source_audio_conditioning": False,        # request a decoded source-audio input without changing final remux audio
+    "description": "Restore detail while spatially upscaling media.", # optional fallback description for discovery UIs/tools
+    "method_descriptions": {"flashvsr": "..."}, # optional descriptions per method
+    "method_parameters": {"flashvsr": [...]}, # optional extra parameter descriptors per method
 }
 ```
 

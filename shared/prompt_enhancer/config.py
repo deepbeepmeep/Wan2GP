@@ -6,8 +6,6 @@ from typing import Any
 PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY = "prompt_enhancer_speculative_decoding"
 PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT = 0
 PROMPT_ENHANCER_SPECULATIVE_DECODING_IDS = frozenset((4, 5))
-
-
 def normalize_prompt_enhancer_speculative_decoding(value: Any) -> int:
     if isinstance(value, str):
         return 1 if value.strip().lower() in {"1", "true", "yes", "on"} else 0

@@ -36,6 +36,7 @@ from shared.deepy import DEFAULT_SYSTEM_PROMPT as ASSISTANT_SYSTEM_PROMPT
 from shared.deepy.debug_bootstrap import capture_external_logs
 from shared import extra_settings
 from shared.deepy import media_registry, tool_settings as deepy_tool_settings, transcription as deepy_transcription, ui_settings as deepy_ui_settings, video_tools as deepy_video_tools, vision as deepy_vision
+from postprocessing import catalog as postprocessing_catalog
 from shared.gradio import assistant_chat
 from shared.prompt_enhancer import qwen35_text
 from shared.prompt_enhancer.qwen35_assistant_runtime import (
@@ -2297,6 +2298,127 @@ class tools:
     def get_default_settings(self, tool_id: str) -> dict[str, Any]:
         result, error_result = self._get_effective_generation_defaults(tool_id)
         return result if error_result is None else error_result
+
+    def _build_postprocessing_task(self, source_media: dict[str, Any], process: dict[str, Any], parameters: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        media_type = media_registry.detect_media_type(str(source_media["path"]))
+        source_path = str(source_media["path"])
+        process_id = str(process["id"])
+        process_type = str(process["type"])
+        source_settings = source_media.get("settings", {})
+        client_id = _next_ai_client_id()
+        self._remember_generated_client_id(client_id)
+        task = {
+            "client_id": client_id,
+            "prompt": str(process["label"]),
+            "resolution": str(source_settings.get("resolution", "") if isinstance(source_settings, dict) else ""),
+            "image_mode": 1 if media_type == "image" else 0,
+            "repeat_generation": 1,
+            "seed": int(parameters.get("seed", -1)),
+            "temporal_upsampling": "",
+            "spatial_upsampling": "",
+            "film_grain_intensity": 0,
+            "film_grain_saturation": 0.5,
+            "postprocess_audio": "",
+            "postprocess_audio_prompt": str(parameters.get("prompt", "")),
+            "postprocess_audio_neg_prompt": str(parameters.get("negative_prompt", "")),
+            "replace_voice_method": "",
+            "replace_voice_sample": None,
+            "replace_voice_sample2": None,
+        }
+        if process_type == postprocessing_catalog.PROCESS_TYPE_SPATIAL_UPSAMPLING:
+            value = postprocessing_catalog.build_process_value(process, parameters)
+            if value is None:
+                return None, {"status": "error", "media_id": source_media["media_id"], "process": process_id, "error": "The spatial upsampling parameters could not be converted to a valid process value."}
+            task.update({"mode": "edit_postprocessing", "video_source": source_path, "spatial_upsampling": value})
+        elif process_type == postprocessing_catalog.PROCESS_TYPE_TEMPORAL_UPSAMPLING:
+            value = postprocessing_catalog.build_process_value(process, parameters)
+            if value is None:
+                return None, {"status": "error", "media_id": source_media["media_id"], "process": process_id, "error": "The temporal upsampling parameters could not be converted to a valid process value."}
+            task.update({"mode": "edit_postprocessing", "video_source": source_path, "temporal_upsampling": value})
+        elif process_type in {postprocessing_catalog.PROCESS_TYPE_SOUNDTRACK, postprocessing_catalog.PROCESS_TYPE_VOICE_REPLACEMENT}:
+            task.update({"mode": "edit_remux", "video_source": source_path, "postprocess_audio": process_id})
+        elif process_type == postprocessing_catalog.PROCESS_TYPE_AUDIO_EDIT:
+            task.update({"mode": "edit_audio", "audio_source": source_path, "postprocess_audio": process_id})
+        else:
+            return None, {"status": "error", "media_id": source_media["media_id"], "process": process_id, "error": f"Unsupported post-processing type: {process_type}."}
+
+        media_parameters = {
+            "audio_media_id": "audio_source",
+            "voice_sample_media_id": "replace_voice_sample",
+            "voice_sample2_media_id": "replace_voice_sample2",
+        }
+        for parameter_name, task_key in media_parameters.items():
+            if parameter_name not in parameters:
+                continue
+            media_record, error_result = self._resolve_audio_media(parameters[parameter_name], parameter_name)
+            if error_result is not None:
+                error_result.update({"process": process_id})
+                return None, error_result
+            task[task_key] = str(media_record["path"])
+        standard_parameters = {"multiplier", "seed", "prompt", "negative_prompt", *media_parameters}
+        parameter_defs = {str(parameter["name"]): parameter for parameter in process.get("parameters", ())}
+        for name, value in parameters.items():
+            if name not in standard_parameters:
+                task[str(parameter_defs[name].get("setting", name))] = value
+        return task, None
+
+    @assistant_tool(
+        display_name="Postprocessing",
+        description="Discover compatible post-processing operations for a gallery media id, or run one discovered operation and wait for its new gallery output.",
+        parameters={
+            "media_id": {
+                "type": "string",
+                "description": "The gallery media id returned by Get Selected Media or Resolve Media.",
+            },
+            "process": {
+                "type": "string",
+                "description": "Optional process id returned by discovery. Omit it to list compatible processes and their expected parameters.",
+                "required": False,
+            },
+            "parameters": {
+                "type": "object",
+                "description": "Optional process-specific parameter object using exactly the names returned by discovery.",
+                "required": False,
+            },
+        },
+    )
+    def postprocessing(self, media_id: str, process: str | None = None, parameters: dict[str, Any] | None = None) -> dict[str, Any]:
+        self._sync_recent_media()
+        media_id = str(media_id or "").strip()
+        if self.session is None:
+            return {"status": "error", "media_id": media_id, "error": "Assistant session is not available."}
+        source_media = media_registry.get_media_record(self.session, media_id)
+        if source_media is None:
+            return {"status": "error", "media_id": media_id, "error": "Unknown media id."}
+        media_type = media_registry.detect_media_type(str(source_media.get("path", "") or ""))
+        if media_type not in {"image", "video", "audio"}:
+            return {"status": "error", "media_id": str(source_media["media_id"]), "media_type": media_type, "error": "The gallery media file extension is not supported for post-processing."}
+        available_processes = postprocessing_catalog.query_processes(media_type)
+        process_id = str(process or "").strip()
+        if not process_id:
+            return {
+                "status": "discovery",
+                "media_id": str(source_media["media_id"]),
+                "media_type": media_type,
+                "processes": available_processes,
+                "count": len(available_processes),
+                "error": "",
+            }
+        matches = [candidate for candidate in available_processes if candidate["id"] == process_id]
+        if not matches:
+            return {"status": "error", "media_id": str(source_media["media_id"]), "media_type": media_type, "process": process_id, "processes": available_processes, "error": "The requested process is not available for this media."}
+        if len(matches) > 1:
+            return {"status": "error", "media_id": str(source_media["media_id"]), "media_type": media_type, "process": process_id, "error": "The requested process id is ambiguous for this media."}
+        process_def = matches[0]
+        normalized_parameters, error = postprocessing_catalog.normalize_parameters(process_def, parameters)
+        if error:
+            return {"status": "error", "media_id": str(source_media["media_id"]), "media_type": media_type, "process": process_id, "expected_parameters": process_def["parameters"], "error": error}
+        task, error_result = self._build_postprocessing_task(source_media, process_def, normalized_parameters)
+        if error_result is not None:
+            return error_result
+        result = self._queue_generation_task(task, activity_label=f"{process_def['label']} post-processing", output_label=f"{process_def['label']} result", gallery_media_type=media_type)
+        result.update({"source_media_id": str(source_media["media_id"]), "process": process_id, "process_label": str(process_def["label"]), "parameters": normalized_parameters})
+        return result
 
     @assistant_tool(
         display_name="Generate Image",
@@ -5169,7 +5291,7 @@ class AssistantEngine:
             self.session.release_vram_callback = None
             self.session.discard_runtime_snapshot_on_release = False
 
-    def _pause_runtime(self, pause_reason: str = "idle") -> None:
+    def _pause_runtime(self, pause_reason: str = "idle", preserve_session_snapshot: bool = False) -> None:
         keep_loaded = self.vram_mode in (DEEPY_VRAM_MODE_ALWAYS_LOADED, DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST)
         if pause_reason == "vision":
             keep_loaded = False
@@ -5192,10 +5314,11 @@ class AssistantEngine:
                 self.session.drop_state_requested = False
             return
         try:
-            if self.runtime is not None and not self.session.drop_state_requested and not self._skip_pause_snapshot:
-                self.session.runtime_snapshot = self.runtime.snapshot_context()
-            else:
-                self.session.runtime_snapshot = None
+            if not preserve_session_snapshot:
+                if self.runtime is not None and not self.session.drop_state_requested and not self._skip_pause_snapshot:
+                    self.session.runtime_snapshot = self.runtime.snapshot_context()
+                else:
+                    self.session.runtime_snapshot = None
         finally:
             try:
                 if not keep_loaded:
@@ -6227,20 +6350,25 @@ class AssistantEngine:
                 break
         finally:
             self._hide_status()
+            preserve_interrupted_snapshot = False
             if self.session.interrupt_requested:
                 rollback_assistant_turn(self.session, rendered_system_prompt_signature=self._current_system_prompt_signature())
-                try:
-                    if not self._sync_interrupted_rollback_context_from_turn_start_snapshot():
+                if self.vram_mode == DEEPY_VRAM_MODE_UNLOAD and not self.session.drop_state_requested:
+                    preserve_interrupted_snapshot = True
+                    self._log("Interrupted-turn replay deferred until the next turn so the text runtime can unload immediately.")
+                else:
+                    try:
+                        if not self._sync_interrupted_rollback_context_from_turn_start_snapshot():
+                            self._skip_pause_snapshot = False
+                            self._log("Interrupted-turn context stayed on the clean turn-start snapshot for the next turn.")
+                    except Exception as exc:
                         self._skip_pause_snapshot = False
+                        self._log(f"Interrupted-turn context sync failed: {exc}")
                         self._log("Interrupted-turn context stayed on the clean turn-start snapshot for the next turn.")
-                except Exception as exc:
-                    self._skip_pause_snapshot = False
-                    self._log(f"Interrupted-turn context sync failed: {exc}")
-                    self._log("Interrupted-turn context stayed on the clean turn-start snapshot for the next turn.")
                 if self.debug_enabled and len(str(self.session.interruption_notice or "").strip()) > 0:
                     self._log(f"Interruption recorded: {self.session.interruption_notice}")
             try:
-                self._pause_runtime(pause_reason="idle")
+                self._pause_runtime(pause_reason="idle", preserve_session_snapshot=preserve_interrupted_snapshot)
             except Exception as exc:
                 self._log(f"Pause-after-turn failed: {exc}")
             finish_assistant_turn(self.session)

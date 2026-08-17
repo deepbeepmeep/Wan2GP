@@ -68,6 +68,12 @@ def normalize_media_type(media_type: str | None, reference: str | None = None) -
     return "any"
 
 
+def detect_media_type(path: str) -> str:
+    """Return the media kind inferred from a gallery file extension."""
+
+    return _detect_media_type(path)
+
+
 def get_media_record(session, media_id: str) -> dict[str, Any] | None:
     lookup_id = str(media_id or "").strip()
     if len(lookup_id) == 0:

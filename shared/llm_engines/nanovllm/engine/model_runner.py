@@ -186,11 +186,11 @@ class ModelRunner:
     def _prepare_model_sequence_state(self):
         if self.model is None:
             return
-        model_device = self._get_model_device()
+        runtime_device = self._get_runtime_device()
         for module in self.model.modules():
             prepare = getattr(module, "prepare_sequence_state", None)
             if callable(prepare):
-                prepare(self.config.max_num_seqs, model_device, self.dtype)
+                prepare(self.config.max_num_seqs, runtime_device, self.dtype)
         mtp = getattr(self.model, "mtp", None)
         if mtp is not None and bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False)):
             mtp.prepare_cache(self.config.max_model_len, self._get_runtime_device(), self.dtype)
@@ -237,6 +237,7 @@ class ModelRunner:
                 for module in self.model.modules():
                     if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
                         module.k_cache = module.v_cache = torch.tensor([])
+                        module.k_scale = module.v_scale = torch.tensor([])
                     release_sequence_state = getattr(module, "release_sequence_state", None)
                     if callable(release_sequence_state):
                         release_sequence_state()
@@ -254,6 +255,11 @@ class ModelRunner:
         if hasattr(self, "kv_cache"):
             try:
                 del self.kv_cache
+            except Exception:
+                pass
+        if hasattr(self, "kv_cache_scales"):
+            try:
+                del self.kv_cache_scales
             except Exception:
                 pass
         # CUDA graphs captured against previous model/KV pointers are unsafe after runtime reset.
@@ -540,9 +546,14 @@ class ModelRunner:
         is_cuda_runtime = runtime_device.type == "cuda"
         num_kv_heads = hf_config.num_key_value_heads // self.world_size
         head_dim = getattr(hf_config, "head_dim", hf_config.hidden_size // hf_config.num_attention_heads)
+        if config.kv_cache_int8 and head_dim % 32:
+            raise RuntimeError(f"INT8 KV cache requires a head dimension divisible by 32; got {head_dim}.")
         kv_cache_modules = self._get_kv_cache_modules()
         kv_cache_layer_count = len(kv_cache_modules)
-        block_bytes = 2 * kv_cache_layer_count * self.block_size * num_kv_heads * head_dim * self.dtype.itemsize
+        cache_element_size = torch.empty((), dtype=torch.int8 if config.kv_cache_int8 else self.dtype).element_size()
+        scale_elements = head_dim // 32 if config.kv_cache_int8 else 0
+        scale_element_size = torch.float16.itemsize if config.kv_cache_int8 else 0
+        block_bytes = 2 * kv_cache_layer_count * self.block_size * num_kv_heads * (head_dim * cache_element_size + scale_elements * scale_element_size)
 
         # Strict policy: allocate exactly the blocks required by requested runtime limits.
         required_blocks_per_seq = (config.max_model_len + self.block_size - 1) // self.block_size
@@ -572,8 +583,19 @@ class ModelRunner:
                 num_kv_heads,
                 head_dim,
                 device=runtime_device,
-                dtype=self.dtype,
+                dtype=torch.int8 if config.kv_cache_int8 else self.dtype,
             )
+            if config.kv_cache_int8:
+                self.kv_cache_scales = torch.zeros(
+                    2,
+                    kv_cache_layer_count,
+                    config.num_kvcache_blocks,
+                    self.block_size,
+                    num_kv_heads,
+                    scale_elements,
+                    device=runtime_device,
+                    dtype=torch.float16,
+                )
         except RuntimeError as exc:
             if "out of memory" in str(exc).lower():
                 extra = ""
@@ -588,6 +610,9 @@ class ModelRunner:
         for layer_id, module in enumerate(kv_cache_modules):
             module.k_cache = self.kv_cache[0, layer_id]
             module.v_cache = self.kv_cache[1, layer_id]
+            if config.kv_cache_int8:
+                module.k_scale = self.kv_cache_scales[0, layer_id]
+                module.v_scale = self.kv_cache_scales[1, layer_id]
 
     def prepare_block_tables(self, seqs: list[Sequence]):
         bs = len(seqs)
@@ -887,8 +912,8 @@ class ModelRunner:
         draft = self._speculative_drafts.get(seq_id)
         return {
             "mtp_cache": self.model.mtp.snapshot_sequence_state(),
-            "draft": None if draft is None else {name: tensor.detach().to("cpu").clone() for name, tensor in draft.items()},
-            "pending": None if pending is None else {name: tensor.detach().to("cpu").clone() for name, tensor in pending.items()},
+            "draft": None if draft is None else {name: tensor.detach().to("cpu").as_subclass(torch.Tensor).clone() for name, tensor in draft.items()},
+            "pending": None if pending is None else {name: tensor.detach().to("cpu").as_subclass(torch.Tensor).clone() for name, tensor in pending.items()},
         }
 
     def restore_speculative_state(self, seq_id: int, snapshot: dict) -> None:
@@ -1008,6 +1033,12 @@ class ModelRunner:
 
     @torch.inference_mode()
     def _run_native_mtp(self, seq: Sequence, is_prefill: bool) -> list[list[int]]:
+        if not self.model._prompt_enhancer_speculative_method_logged:
+            sampling_method = "rejection sampling" if seq.top_k != 1 else "greedy exact-match"
+            execution = "eager" if self.enforce_eager else "CUDA graph"
+            draft_tokens = self.model._prompt_enhancer_speculative_sampling_tokens if seq.top_k != 1 else self.model._prompt_enhancer_speculative_tokens
+            print(f"[Deepy][Speculative] method=native MTP ({sampling_method}, up to {draft_tokens} draft tokens, {execution} verification).")
+            self.model._prompt_enhancer_speculative_method_logged = True
         sample_params = self.prepare_sample([seq], is_cfg_batch=False)
         if is_prefill:
             self._prime_mtp_context(seq)

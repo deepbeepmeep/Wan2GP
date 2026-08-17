@@ -14,6 +14,7 @@ from tqdm.auto import tqdm
 from shared.utils import files_locator as fl
 from shared.llm_engines.nanovllm import SamplingParams
 from shared.llm_engines.nanovllm.models.qwen3_5 import Qwen3_5ForCausalLM, clear_qwen35_runtime_caches
+from shared.llm_engines.nanovllm.layers.attention import reset_attention_backend_logs
 from shared.llm_engines.nanovllm.utils.context import reset_context
 from shared.llm_engines.nanovllm.vllm_support import (
     NanoVllmTextEngine,
@@ -518,7 +519,7 @@ def _resolve_prompt_enhancer_engine(backend: str, requested_lm_engine: str, runt
         return "legacy", f"disabled by {QWEN35_TEXT_VLLM_SWITCH_ENV}", False, False
     requested_lm_engine = str(requested_lm_engine or "").strip().lower()
     requested_label = requested_lm_engine or "auto"
-    resolved_engine = resolve_lm_decoder_engine(requested_lm_engine, ["cg", "vllm"])
+    resolved_engine = resolve_lm_decoder_engine(requested_lm_engine, ["cg", "vllm"], require_flash_attention=False)
     enable_cudagraph = _env_enabled(QWEN35_TEXT_VLLM_CUDAGRAPH_ENV, default=True)
 
     if resolved_engine == "legacy":
@@ -597,6 +598,7 @@ def _get_or_create_vllm_engine(model, usage_mode: str | None = None):
         tokenizer=tokenizer,
         enforce_eager=not enable_cudagraph,
         graph_pool_handle=graph_pool_handle,
+        kv_cache_int8=usage_mode in ("assistant", "multimodal") and bool(getattr(model, "_deepy_kv_cache_int8", False)),
     )
     model._prompt_enhancer_vllm_engine = engine
     model._prompt_enhancer_vllm_mode = usage_mode
@@ -967,6 +969,7 @@ def load_qwen35_text_prompt_enhancer(
     requested_lm_engine: str = "",
     variant: str | None = None,
     speculative_decoding: bool = QWEN35_PROMPT_ENABLE_SPECULATIVE_DECODING,
+    kv_cache_int8: bool = False,
 ):
     del attn_implementation
     if assets_dir is None:
@@ -994,7 +997,7 @@ def load_qwen35_text_prompt_enhancer(
         runtime_model_path=text_assets_dir,
     )
     safe_legacy_mode = not allow_vllm_kernels
-    enable_mtp = bool(speculative_decoding and spec.get("supports_mtp", False) and allow_vllm_kernels)
+    enable_mtp = bool(speculative_decoding and spec.get("supports_mtp", False))
     mtp_filename = spec.get("text_mtp_filename") if enable_mtp else None
     mtp_modules = [_resolve_qwen35_checkpoint_file(assets_dir, mtp_filename, variant=variant)] if mtp_filename else None
     postprocess_sd = _add_qwen35_mtp_shared_weights if enable_mtp else None
@@ -1094,6 +1097,8 @@ def load_qwen35_text_prompt_enhancer(
     model._prompt_enhancer_assistant_graph_pool_handle = None
     model._prompt_enhancer_safe_legacy = safe_legacy_mode
     model._prompt_enhancer_speculative_decoding = enable_mtp
+    model._prompt_enhancer_speculative_method_logged = False
+    model._deepy_kv_cache_int8 = bool(kv_cache_int8)
     model._prompt_enhancer_speculative_tokens = spec.get("mtp_speculative_tokens", QWEN35_PROMPT_SPECULATIVE_TOKENS)
     model._prompt_enhancer_speculative_sampling_tokens = spec.get("mtp_speculative_sampling_tokens", QWEN35_PROMPT_SPECULATIVE_SAMPLING_TOKENS)
     model._prompt_enhancer_speculative_confidence = spec.get("mtp_speculative_confidence", 0.30)
@@ -1102,6 +1107,7 @@ def load_qwen35_text_prompt_enhancer(
     model._prompt_enhancer_use_legacy_cuda_runner = engine_name == "legacy"
     if model._prompt_enhancer_use_vllm or model._prompt_enhancer_use_legacy_cuda_runner:
         model._budget = 0
+    reset_attention_backend_logs()
     print(f"[Qwen3.5VL][{spec['display_name']}] Text generation engine: {engine_name}")
     if enable_mtp:
         print(f"[Qwen3.5VL][{spec['display_name']}] Native MTP speculative decoder: enabled")

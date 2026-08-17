@@ -22,6 +22,9 @@ class MyTemporalUpsampler:
             "methods": [("MyTemporalUpsampler", "mytemporal")],
             "multipliers": {"mytemporal": (2.0, 4.0)},        # supported multipliers per method
             "default_temporal_upsampling": "mytemporal2",
+            "description": "Interpolate smoother video frames.", # optional discovery fallback
+            "method_descriptions": {"mytemporal": "..."},    # optional per-method descriptions
+            "method_parameters": {"mytemporal": [...]},      # optional extra parameter descriptors
         }
 
     def is_upsampling(self, value): ...                       # does this handler own the value?
@@ -57,6 +60,14 @@ Dropdown entries are sorted by method position, then by method label. A handler
 can define a default `pos` and override individual methods with `method_pos`.
 Position is independent of multiplier; expanded choices such as `mytemporal2`
 and `mytemporal4` share the `mytemporal` method position.
+
+Discovery consumers infer the required `multiplier` parameter from
+`multipliers`. Optional `description`, `method_descriptions`, and
+`method_parameters` fields add reusable presentation and parameter metadata.
+Each `method_parameters` entry is a list of dictionaries with at least `name`;
+it may also define `type`, `description`, `required`, `default`, `enum`, and a
+queue-setting override named `setting`. These fields are optional so older and
+third-party handlers remain compatible.
 
 ## Runtime Contract
 

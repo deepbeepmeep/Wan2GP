@@ -14,6 +14,7 @@ DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY = "deepy_tool_gen_video_with_speech"
 DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY = "deepy_tool_gen_speech_from_description"
 DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY = "deepy_tool_gen_speech_from_sample"
 DEEPY_CONTEXT_TOKENS_KEY = "deepy_context_tokens"
+DEEPY_KV_CACHE_QUANTIZATION_KEY = "deepy_kv_cache_quantization"
 DEEPY_CUSTOM_SYSTEM_PROMPT_KEY = "deepy_custom_system_prompt"
 DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY = "deepy_auto_cancel_queue_tasks"
 DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY = "deepy_separate_requests_with_empty_line"
@@ -30,6 +31,7 @@ DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE = "Index TTS 2"
 DEEPY_CONTEXT_TOKENS_MIN = 8192
 DEEPY_CONTEXT_TOKENS_MAX = 256000
 DEEPY_CONTEXT_TOKENS_DEFAULT = 16386
+DEEPY_KV_CACHE_QUANTIZATION_DEFAULT = ""
 DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT = True
 DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT = True
 DEEPY_CONFIG_FILENAME = "wgp_config.json"
@@ -102,6 +104,10 @@ def normalize_deepy_context_tokens(value: Any) -> int:
     return max(DEEPY_CONTEXT_TOKENS_MIN, min(DEEPY_CONTEXT_TOKENS_MAX, tokens))
 
 
+def normalize_deepy_kv_cache_quantization(value: Any) -> str:
+    return "int8" if str(value or "").strip().lower() == "int8" else ""
+
+
 def normalize_deepy_custom_system_prompt(value: Any) -> str:
     text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     return text
@@ -127,7 +133,7 @@ def normalize_deepy_separate_requests_with_empty_line(value: Any) -> bool:
     return bool(value)
 
 
-def estimate_deepy_kv_cache_mb(enhancer_enabled: Any, context_tokens: Any) -> tuple[str | None, int | None]:
+def estimate_deepy_kv_cache_mb(enhancer_enabled: Any, context_tokens: Any, kv_cache_quantization: Any = "") -> tuple[str | None, int | None]:
     try:
         enhancer_no = int(enhancer_enabled or 0)
     except Exception:
@@ -138,23 +144,18 @@ def estimate_deepy_kv_cache_mb(enhancer_enabled: Any, context_tokens: Any) -> tu
     tokens = normalize_deepy_context_tokens(context_tokens)
     block_size = max(1, int(spec.get("kvcache_block_size", 256) or 256))
     num_blocks = (tokens + block_size - 1) // block_size
-    total_bytes = (
-        2
-        * int(spec["num_kv_cache_layers"])
-        * num_blocks
-        * block_size
-        * int(spec["num_key_value_heads"])
-        * int(spec["head_dim"])
-        * int(spec["dtype_bytes"])
-    )
+    head_dim = int(spec["head_dim"])
+    vector_bytes = head_dim + 2 if normalize_deepy_kv_cache_quantization(kv_cache_quantization) == "int8" else head_dim * int(spec["dtype_bytes"])
+    total_bytes = 2 * int(spec["num_kv_cache_layers"]) * num_blocks * block_size * int(spec["num_key_value_heads"]) * vector_bytes
     return _DEEPY_QWEN_VARIANT_LABELS.get(enhancer_no, "Qwen3.5"), int(round(total_bytes / (1024 * 1024)))
 
 
-def format_deepy_context_tokens_label(enhancer_enabled: Any, context_tokens: Any) -> str:
-    variant_label, cache_mb = estimate_deepy_kv_cache_mb(enhancer_enabled, context_tokens)
+def format_deepy_context_tokens_label(enhancer_enabled: Any, context_tokens: Any, kv_cache_quantization: Any = "") -> str:
+    quantization = normalize_deepy_kv_cache_quantization(kv_cache_quantization)
+    variant_label, cache_mb = estimate_deepy_kv_cache_mb(enhancer_enabled, context_tokens, quantization)
     if variant_label is None or cache_mb is None:
         return "Context Window Tokens (KV cache: N/A)"
-    return f"Context Window Tokens (KV cache ~{cache_mb} MB on {variant_label})"
+    return f"Context Window Tokens (KV cache ~{cache_mb} MB {quantization.upper() if quantization else 'BF16'} on {variant_label})"
 
 
 def normalize_deepy_runtime_config(server_config: dict[str, Any] | None) -> dict[str, Any]:
@@ -168,6 +169,7 @@ def normalize_deepy_runtime_config(server_config: dict[str, Any] | None) -> dict
     runtime_config[DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY] = normalize_deepy_tool_gen_speech_from_description(runtime_config.get(DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY, DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION))
     runtime_config[DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY] = normalize_deepy_tool_gen_speech_from_sample(runtime_config.get(DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY, DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE))
     runtime_config[DEEPY_CONTEXT_TOKENS_KEY] = normalize_deepy_context_tokens(runtime_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
+    runtime_config[DEEPY_KV_CACHE_QUANTIZATION_KEY] = normalize_deepy_kv_cache_quantization(runtime_config.get(DEEPY_KV_CACHE_QUANTIZATION_KEY, DEEPY_KV_CACHE_QUANTIZATION_DEFAULT))
     runtime_config[DEEPY_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_custom_system_prompt(runtime_config.get(DEEPY_CUSTOM_SYSTEM_PROMPT_KEY, ""))
     runtime_config[DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY] = normalize_deepy_auto_cancel_queue_tasks(runtime_config.get(DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY, DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT))
     runtime_config[DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY] = normalize_deepy_separate_requests_with_empty_line(runtime_config.get(DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY, DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT))
@@ -185,6 +187,7 @@ def get_deepy_default_runtime_config() -> dict[str, Any]:
         DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY: DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION,
         DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY: DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE,
         DEEPY_CONTEXT_TOKENS_KEY: DEEPY_CONTEXT_TOKENS_DEFAULT,
+        DEEPY_KV_CACHE_QUANTIZATION_KEY: DEEPY_KV_CACHE_QUANTIZATION_DEFAULT,
         DEEPY_CUSTOM_SYSTEM_PROMPT_KEY: "",
         DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY: DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT,
         DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY: DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT,

@@ -79,7 +79,7 @@ from shared.utils.process_locks import (
     unregister_GPU_resident,
 )
 from shared.utils.model_unload import model_unload_guard, wait_for_model_unload
-from shared.deepy.config import get_deepy_default_runtime_config, set_deepy_runtime_config
+from shared.deepy.config import DEEPY_KV_CACHE_QUANTIZATION_DEFAULT, DEEPY_KV_CACHE_QUANTIZATION_KEY, get_deepy_default_runtime_config, set_deepy_runtime_config
 from shared.loras_migration import migrate_loras_layout
 from shared.utils.wgp_config_migration import migrate_extension_defaults
 from shared.utils import files_locator as fl 
@@ -3910,6 +3910,7 @@ def setup_prompt_enhancer(pipe, kwargs):
             lm_decoder_engine=server_config.get("lm_decoder_engine", ""),
             qwen_backend=server_config.get("prompt_enhancer_quantization", "quanto_int8"),
             speculative_decoding=normalize_prompt_enhancer_speculative_decoding(server_config.get(PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT)),
+            deepy_kv_cache_quantization=server_config.get(DEEPY_KV_CACHE_QUANTIZATION_KEY, DEEPY_KV_CACHE_QUANTIZATION_DEFAULT),
         )
         prompt_enhancer_image_caption_model = runtime.image_caption_model
         prompt_enhancer_image_caption_processor = runtime.image_caption_processor

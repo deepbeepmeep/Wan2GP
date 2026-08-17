@@ -34,6 +34,9 @@ class MyUpsampler:
             "vae_methods": [],                             # VAE entries (manual integration)
             "multipliers": {"myup": (2.0, 4.0)},           # supported multipliers per method
             "default_spatial_upsampling": "myup2",
+            "description": "Upscale while restoring detail.", # optional discovery fallback
+            "method_descriptions": {"myup": "..."},       # optional per-method descriptions
+            "method_parameters": {"myup": [...]},         # optional extra parameter descriptors
         }
 
     def is_upsampling(self, value): ...                    # does this handler own the value?
@@ -73,6 +76,14 @@ Dropdown entries are sorted by method position, then by method label. A handler
 can define a default `pos` and override individual methods with `method_pos`.
 Position is independent of multiplier; expanded choices such as `myup2` and
 `myup4` share the `myup` method position.
+
+Discovery consumers infer the required `multiplier` parameter from
+`multipliers`. Optional `description`, `method_descriptions`, and
+`method_parameters` fields add reusable presentation and parameter metadata.
+Each `method_parameters` entry is a list of dictionaries with at least `name`;
+it may also define `type`, `description`, `required`, `default`, `enum`, and a
+queue-setting override named `setting`. These fields are optional so older and
+third-party handlers remain compatible.
 
 Registration is owned by `postprocessing/spatial_upsamplers.py`. Add the handler class path
 to `spatial_upsampler_handlers`:

@@ -218,12 +218,12 @@
   {
     "name": "Wildcards",
     "author": "GKartist75 (with PI Agent)",
-    "version": "1.6.2",
+    "version": "1.6.4",
     "description": "Dynamic wildcard expansion for prompts + named variables + templates + character profiles + usage stats. Use __name__ syntax for random picks, __$var:file__ for reusable captured variables.",
     "type": [
       "extension"
     ],
-    "date": "2026-07-09",
+    "date": "2026-08-13",
     "wan2gp_version": "",
     "url": "https://github.com/GKartist75/wan2gp-wildcards"
   },

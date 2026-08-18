@@ -84,11 +84,19 @@ class PreviewSubsystemTests(unittest.TestCase):
         self.assertEqual(indices[0], 0)
         self.assertEqual(indices[-1], 120)
 
-    def test_registry_filters_unsupported_model_ids(self):
-        self.assertIsNone(get_decoder_for_model("ltx2_22B", {"architecture": "ltx2_22B"}))
-        self.assertIsNotNone(get_decoder_for_model("ltx2_22B", self.LTX_MODEL_DEF))
-        self.assertIsNone(get_decoder_for_model("ltx2_19B", {"architecture": "ltx2_19B"}))
-        capability = decoder_capability("ltx2_19B", {"architecture": "ltx2_19B"})
+    def test_registry_requires_architecture_and_declared_capability(self):
+        self.assertIs(get_decoder_for_model("unregistered_model_type", self.LTX_MODEL_DEF), TAELTX23)
+        unsupported_architecture = {
+            "architecture": "ltx2_19B",
+            "capabilities": {"live_preview": {"modes": ["tae"], "decoders": ["taeltx2_3"]}},
+        }
+        missing_decoder_capability = {
+            "architecture": "ltx2_22B",
+            "capabilities": {"live_preview": {"modes": ["tae"]}},
+        }
+        self.assertIsNone(get_decoder_for_model("unregistered_model_type", unsupported_architecture))
+        self.assertIsNone(get_decoder_for_model("unregistered_model_type", missing_decoder_capability))
+        capability = decoder_capability("unregistered_model_type", missing_decoder_capability)
         self.assertEqual(capability["modes"], ["off", "rgb"])
 
     def test_default_ltx_profiles_advertise_tae_capability(self):

@@ -16,7 +16,6 @@ class PreviewDecoderSpec:
     encoder_time_downscale: tuple[bool, ...]
     decoder_time_upscale: tuple[bool, ...]
     compatible_architectures: frozenset[str]
-    compatible_model_types: frozenset[str]
     adapter_id: str
     source_url: str
     target_dir: str = "preview_decoders/taehv"
@@ -51,14 +50,6 @@ TAELTX23 = PreviewDecoderSpec(
     encoder_time_downscale=(True, True, True),
     decoder_time_upscale=(True, True, True),
     compatible_architectures=frozenset({"ltx2_22B"}),
-    compatible_model_types=frozenset(
-        {
-            "ltx2_22B",
-            "ltx2_22B_distilled",
-            "ltx2_22B_1_1",
-            "ltx2_22B_distilled_1_1",
-        }
-    ),
     adapter_id="ltx2",
     source_url="https://raw.githubusercontent.com/madebyollin/taehv/62f7591f59dfbb4c3c02b7a621d180a9eeaba26c/safetensors/taeltx2_3.safetensors",
 )
@@ -80,14 +71,6 @@ TAEH3 = PreviewDecoderSpec(
             "minimax_h3_ref2va_pruned",
         }
     ),
-    compatible_model_types=frozenset(
-        {
-            "minimax_h3_fl2va",
-            "minimax_h3_fl2va_pruned",
-            "minimax_h3_ref2va",
-            "minimax_h3_ref2va_pruned",
-        }
-    ),
     adapter_id="h3",
     source_url="https://huggingface.co/Kijai/MiniMax-H3-TAE/resolve/a213ac8bf2f148b4f32372279a7f207846978900/vae_approx/taeh3.safetensors",
     target_dir="preview_decoders/taeh3",
@@ -97,7 +80,6 @@ DECODERS = {spec.decoder_id: spec for spec in (TAELTX23, TAEH3)}
 
 
 def get_decoder_for_model(model_type: str, model_def: dict[str, Any] | None = None) -> PreviewDecoderSpec | None:
-    model_type = str(model_type or "").strip()
     architecture = str((model_def or {}).get("architecture") or "").strip()
     capabilities = (model_def or {}).get("capabilities", {})
     live_preview = capabilities.get("live_preview", {}) if isinstance(capabilities, dict) else {}
@@ -105,8 +87,7 @@ def get_decoder_for_model(model_type: str, model_def: dict[str, Any] | None = No
         return None
     for spec in DECODERS.values():
         if (
-            model_type in spec.compatible_model_types
-            and architecture in spec.compatible_architectures
+            architecture in spec.compatible_architectures
             and spec.decoder_id in set(live_preview.get("decoders", ()))
             and "tae" in set(live_preview.get("modes", ()))
         ):

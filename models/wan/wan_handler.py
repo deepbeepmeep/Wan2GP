@@ -216,6 +216,8 @@ class family_handler():
     @staticmethod
     def query_model_def(base_model_type, model_def):
         extra_model_def = {}
+        if base_model_type not in ["mocha", "recam_1.3B", "scail2_14B", "scail2_1.3B", "vista4d"]:
+            extra_model_def["riflex"] = True
         override_text_encoder_urls = model_def.get("text_encoder_URLs", None)
         override_text_encoder_folder = model_def.get("text_encoder_folder", None)
         if "URLs2" in model_def:

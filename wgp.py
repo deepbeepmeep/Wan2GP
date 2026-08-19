@@ -48,6 +48,7 @@ from shared.gradio import gradio_model_switch_patch, gradio_queue_focus_patch, v
 from gradio.themes.utils.sizes import Size
 import random
 import json
+import copy
 import numpy as np
 import importlib
 from models import model_metadata
@@ -122,12 +123,13 @@ import requests
 from shared.gradio.gallery import AdvancedMediaGallery, get_gradio_file_path
 from shared.gradio.hierarchy_selector import HierarchySelector, build_choices_hierarchy
 from shared.ffmpeg_setup import download_ffmpeg
-from shared.api import get_api_output_options, store_api_output_artifact
+from shared.api import apply_video_length_duration, get_api_output_options, store_api_output_artifact
 from shared.utils.plugins import PluginManager, WAN2GPApplication, SYSTEM_PLUGINS
 from shared.llm_engines.nanovllm.vllm_support import resolve_lm_decoder_engine
 from shared.gradio import assistant_chat, field_help, finetune_editor, local_file_picker, model_infos, model_output_filter, model_selector_toolbar
 from shared.gradio.magic_mask import MagicMaskUI
 from shared import model_dropdowns
+from shared import settings_metadata
 from postprocessing import audio_processors as audio_processor_api
 from postprocessing import temporal_upsamplers as temporal_upsampler_api
 from postprocessing import spatial_upsamplers as upsampler_api
@@ -149,7 +151,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.12"
-WanGP_version = "12.54"
+WanGP_version = "12.60"
 settings_version = 2.74
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -1013,9 +1015,14 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
             return err("Error processing prompt template: " + errors)
     prompt = prompt.strip("\n").strip()
 
-    prompts = prompt_parser.split_prompt_units(prompt, multi_prompts_gen_type, single_prompt=single_prompt and "W" not in multi_prompts_gen_type)
+    prompts = prompt_parser.split_prompt_units(prompt, multi_prompts_gen_type)
     if len(prompts) == 0:
         return err("Prompt cannot be empty.")
+    if single_prompt and multi_prompts_gen_type in {"G", "PG"} and len(prompts) > 1:
+        return err(f"multi_prompts_gen_type='{multi_prompts_gen_type}' parses this prompt into {len(prompts)} separate generation requests, but this submission accepts one generation task. Submit separate tasks or use 'FG' if the line breaks belong to one prompt.")
+    window_boundary_error = prompt_parser.validate_sliding_window_prompt_boundaries(prompts, multi_prompts_gen_type, inputs.get("image_end"))
+    if window_boundary_error:
+        return err(window_boundary_error)
     validation_prompts = prompts
     frames_minimum, frames_steps, latent_size = get_model_min_frames_and_step(model_type)
     inputs.pop("frame_scheduler", None)
@@ -1747,14 +1754,8 @@ def save_queue_action(state):
     return gradio_downloads.register_download("queue.zip", "application/zip", lambda: gradio_downloads.stream_writer(lambda writer: _save_queue_to_zip(queue, writer)))
 
 def clean_settings(model_type, params):
-    # Use primary_settings plus model-specific defaults as base (not model-specific saved settings).
-    # This ensures loaded queues/settings behave predictably while preserving handler defaults.
     saved_settings_version = params.get('settings_version', 0)
-    merged = primary_settings.copy()
-    model_def = get_model_def(model_type)
-    base_model_type = get_base_model_type(model_type)
-    model_handler = get_model_handler(model_type)
-    model_handler.update_default_settings(base_model_type, model_def, merged)
+    merged = get_factory_settings(model_type)
     merged.update({k: v for k, v in params.items() if v is not None or k not in merged})
     params.clear()
     params.update(merged)
@@ -3022,6 +3023,9 @@ def fix_settings(model_type, ui_defaults, min_settings_version = 0):
     settings_version =  max(min_settings_version, ui_defaults.get("settings_version", 0))
     model_def = get_model_def(model_type)
     base_model_type = get_base_model_type(model_type)
+    duration_conversion = apply_video_length_duration(ui_defaults, model_def)
+    if duration_conversion is not None:
+        print(f"WanGP settings converted video_length={duration_conversion['input']!r} to {duration_conversion['frames']} frames at {duration_conversion['fps']:g} fps for {model_type}")
 
     prompts = ui_defaults.get("prompts", "")
     if len(prompts) > 0:
@@ -3148,36 +3152,39 @@ def fix_settings(model_type, ui_defaults, min_settings_version = 0):
     if hasattr(model_handler, "fix_settings"):
             model_handler.fix_settings(base_model_type, settings_version, model_def, ui_defaults)
 
-def get_default_settings(model_type):
-    def get_default_prompt(i2v):
-        if i2v:
-            return "Several giant wooly mammoths approach treading through a snowy meadow, their long wooly fur lightly blows in the wind as they walk, snow covered trees and dramatic snow capped mountains in the distance, mid afternoon light with wispy clouds and a sun high in the distance creates a warm glow, the low camera view is stunning capturing the large furry mammal with beautiful photography, depth of field."
-        else:
-            return "A large orange octopus is seen resting on the bottom of the ocean floor, blending in with the sandy and rocky terrain. Its tentacles are spread out around its body, and its eyes are closed. The octopus is unaware of a king crab that is crawling towards it from behind a rock, its claws raised and ready to attack. The crab is brown and spiny, with long legs and antennae. The scene is captured from a wide angle, showing the vastness and depth of the ocean. The water is clear and blue, with rays of sunlight filtering through. The shot is sharp and crisp, with a high dynamic range. The octopus and the crab are in focus, while the background is slightly blurred, creating a depth of field effect."
+def get_default_prompt(i2v):
+    if i2v:
+        return "Several giant wooly mammoths approach treading through a snowy meadow, their long wooly fur lightly blows in the wind as they walk, snow covered trees and dramatic snow capped mountains in the distance, mid afternoon light with wispy clouds and a sun high in the distance creates a warm glow, the low camera view is stunning capturing the large furry mammal with beautiful photography, depth of field."
+    return "A large orange octopus is seen resting on the bottom of the ocean floor, blending in with the sandy and rocky terrain. Its tentacles are spread out around its body, and its eyes are closed. The octopus is unaware of a king crab that is crawling towards it from behind a rock, its claws raised and ready to attack. The crab is brown and spiny, with long legs and antennae. The scene is captured from a wide angle, showing the vastness and depth of the ocean. The water is clear and blue, with rays of sunlight filtering through. The shot is sharp and crisp, with a high dynamic range. The octopus and the crab are in focus, while the background is slightly blurred, creating a depth of field effect."
+
+
+def get_factory_settings(model_type):
     i2v = test_class_i2v(model_type)
+    model_def = get_model_def(model_type)
+    base_model_type = get_base_model_type(model_type)
+    ui_defaults = copy.deepcopy(primary_settings)
+    ui_defaults.update({
+        "settings_version": settings_version,
+        "prompt": get_default_prompt(i2v),
+        "resolution": "1280x720" if "720" in base_model_type else "832x480",
+        "flow_shift": 7.0 if "720" not in base_model_type and i2v else 5.0,
+    })
+    get_model_handler(model_type).update_default_settings(base_model_type, model_def, ui_defaults)
+    model_settings = model_def.get("settings")
+    if model_settings is not None:
+        ui_defaults.update(copy.deepcopy(model_settings))
+    if len(ui_defaults.get("prompt", "")) == 0:
+        ui_defaults["prompt"] = get_default_prompt(i2v)
+    fix_settings(model_type, ui_defaults, settings_version)
+    return ui_defaults
+
+
+def get_default_settings(model_type):
     defaults_filename = get_settings_file_name(model_type)
     if not Path(defaults_filename).is_file():
-        model_def = get_model_def(model_type)
-        base_model_type = get_base_model_type(model_type)
-
-        ui_defaults = {
-            "settings_version" : settings_version,
-            "prompt": get_default_prompt(i2v),
-            "resolution": "1280x720" if "720" in base_model_type else "832x480",
-            "flow_shift": 7.0 if not "720" in base_model_type and i2v else 5.0, 
-        }
-
-        model_handler = get_model_handler(model_type)
-        model_handler.update_default_settings(base_model_type, model_def, ui_defaults)
-
-        ui_defaults_update = model_def.get("settings", None) 
-        if ui_defaults_update is not None: ui_defaults.update(ui_defaults_update)
-        if len(ui_defaults.get("prompt","")) == 0:
-            ui_defaults["prompt"]= get_default_prompt(i2v)
-
+        ui_defaults = get_factory_settings(model_type)
         with open(defaults_filename, "w", encoding="utf-8") as f:
             json.dump(ui_defaults, f, indent=4)
-        fix_settings(model_type, ui_defaults)
     else:
         with open(defaults_filename, "r", encoding="utf-8") as f:
             ui_defaults = json.load(f)
@@ -7349,7 +7356,7 @@ def generate_media(
                 break
             window_no += 1
             gen["window_no"] = window_no
-            enable_RIFLEx = image_mode==0 and(RIFLEx_setting == 0 and current_video_length > (6 * fps + 1) or RIFLEx_setting == 1)
+            enable_RIFLEx = model_def.get("riflex", False) and image_mode == 0 and (RIFLEx_setting == 0 and current_video_length > (6 * fps + 1) or RIFLEx_setting == 1)
             return_latent_slice = None 
             frames_relative_positions_list = []
             tail_trim_frames = discard_last_frames + automatic_trim_last_frames
@@ -8472,7 +8479,7 @@ def process_tasks(state):
                     import inspect
                     model_type = params.get('model_type')
                     if model_type and not _is_edit_task_params(params):
-                        default_settings = get_default_settings(model_type)
+                        default_settings = get_factory_settings(model_type)
                         expected_args = set(inspect.signature(generate_media).parameters.keys())
                         for arg_name in expected_args:
                             if arg_name not in params and arg_name in default_settings:
@@ -9407,163 +9414,15 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     inputs["type"] = get_model_record(get_model_name(model_type))  
     inputs["settings_version"] = settings_version
     base_model_type = get_base_model_type(model_type)
-    model_family = get_model_family(base_model_type)
     if model_type != base_model_type:
         inputs["base_model_type"] = base_model_type
-    diffusion_forcing = base_model_type in ["sky_df_1.3B", "sky_df_14B"]
-    vace =  test_vace_module(base_model_type) 
-    t2v=   test_class_t2v(base_model_type) 
-    ltxv = base_model_type in ["ltxv_13B"]
     if target == "settings":
         return inputs
 
-    image_outputs = inputs.get("image_mode",0) > 0
-
-    pop=[]    
-    if len(custom_settings) == 0:
-        pop += ["custom_settings"]
-    if not model_def.get("audio_only", False):
-        pop += ["temperature"]
-    if model_def.get("duration_slider", None) is None:
-        pop += ["duration_seconds"]
-    if not model_def.get("pause_between_sentences", False):
-        pop += ["pause_seconds"]
-    if not model_def.get("top_p_slider", False):
-        pop += ["top_p"]
-    if not model_def.get("top_k_slider", False):
-        pop += ["top_k"]
-    if not model_def.get("temperature", True):
-        pop += ["temperature"]
-    if not model_def.get("inference_steps", True):
-        pop += ["num_inference_steps"]
-
-    if "force_fps" in inputs and len(inputs["force_fps"])== 0:
-        pop += ["force_fps"]
-
-    if model_def.get("sample_solvers", None) is None:
-        pop += ["sample_solver"]
-    
-    postprocess_audio_meta = audio_processor_api.method_metadata(inputs.get("postprocess_audio", ""))
-    if not (postprocess_audio_meta["needs_prompt"] or postprocess_audio_meta["needs_negative_prompt"]) or any_audio_track(base_model_type):
-        pop += ["postprocess_audio_prompt", "postprocess_audio_neg_prompt"]
-
-    image_prompt_type = inputs.get("image_prompt_type", "") or ""
-    video_prompt_type = inputs["video_prompt_type"]
-    if "G" not in video_prompt_type:
-        pop += ["denoising_strength"]
-
-    if  "G" not in video_prompt_type and not model_def.get("mask_strength_always_enabled", False):
-        pop += ["masking_strength"]
-    
-    if not input_video_strength_visible(model_def, image_prompt_type, video_prompt_type):
-        pop += ["input_video_strength"]
-
-
-    if not (server_config.get("enhancer_enabled", 0) > 0 and server_config.get("enhancer_mode", 1) == 0):
-        pop += ["prompt_enhancer"]
-
-    if model_def.get("model_modes", None) is None:
-        pop += ["model_mode"]
-
-    if get_guide_custom_choices(model_def, inputs.get("image_mode", 0)) is None and model_def.get("guide_preprocessing", None ) is None:
-        pop += ["keep_frames_video_guide", "mask_expand"]
-
-    if not "I" in video_prompt_type:
-        pop += ["remove_background_images_ref"]
-        if not model_def.get("any_image_refs_relative_size", False):
-            pop += ["image_refs_relative_size"]
-
-    if not "F" in video_prompt_type:
-        pop += ["frames_positions"]
-    
-    if model_def.get("control_net_weight_name", None) is None:
-        pop += ["control_net_weight", "control_net_weight2"] 
-
-    if not len(model_def.get("control_net_weight_alt_name", "")) >0:
-        pop += ["control_net_weight_alt"]
-
-    if not model_def.get("self_refiner", False):
-        pop += ["self_refiner_setting", "self_refiner_f_uncertainty", "self_refiner_plan", "self_refiner_certain_percentage"]
-        # pop += ["self_refiner_setting", "self_refiner_plan"]
-
-    if model_def.get("audio_scale_name", None) is None or not image_outputs:
-        pop += ["audio_scale"]
-
-    if not model_def.get("motion_amplitude", False):
-        pop += ["motion_amplitude"]
-
-    if model_def.get("video_guide_outpainting", None) is None:
-        pop += ["video_guide_outpainting", "video_guide_outpainting_ratio"] 
-
-    if not (vace or t2v):
-        pop += ["min_frames_if_references"]
-
-    if not model_def.get("multiple_images_as_text_prompts", False):
-        pop += ["multi_images_gen_type"]
-
-    if not (diffusion_forcing or ltxv or vace):
-        pop += ["keep_frames_video_source"]
-
-    if not test_any_sliding_window( base_model_type):
-        pop += ["sliding_window_size", "sliding_window_overlap", "sub_parallel_window_size", "sub_parallel_window_overlap", "sliding_window_overlap_noise", "sliding_window_discard_last_frames", "sliding_window_trim_first_frames", "sliding_window_color_correction_strength"]
-    elif not model_def.get("sub_parallel_windows", False):
-        pop += ["sub_parallel_window_size", "sub_parallel_window_overlap"]
-
-    if not model_def.get("audio_guidance", False):
-        pop += ["audio_guidance_scale", "speakers_locations"]
-
-    if not model_def.get("embedded_guidance", False):
-        pop += ["embedded_guidance_scale"]
-
-    if model_def.get("alt_guidance", None) is None:
-        pop += ["alt_guidance_scale"]
-
-    if model_def.get("alt_scale", None) is None:
-        pop += ["alt_scale"]
-
-
-    if not (model_def.get("tea_cache", False) or model_def.get("mag_cache", False) or model_def.get("spectrum_cache", False) or model_def.get("first_block_cache", False)):
-        pop += ["skip_steps_cache_type", "skip_steps_multiplier", "skip_steps_start_step_perc"]
-
-    guidance_max_phases = model_def.get("guidance_max_phases", 0)
-    guidance_phases = inputs.get("guidance_phases", 1)
-    visible_phases = model_def.get("visible_phases", guidance_phases) 
-
-    if guidance_max_phases < 1:
-        pop += ["guidance_scale", "guidance_phases"]
-
-    if guidance_max_phases < 2 or guidance_phases < 2:
-        pop += ["guidance2_scale", "switch_threshold"]
-
-    if guidance_max_phases < 3 or guidance_phases < 3:
-        pop += ["guidance3_scale", "switch_threshold2", "model_switch_phase"]
-
-    if not model_def.get("flow_shift", False):
-        pop += ["flow_shift"]
-
-    if model_def.get("no_negative_prompt", False) :
-        pop += ["negative_prompt" ] 
-
-    if not model_def.get("perturbation", False):
-        pop += ["perturbation_switch", "perturbation_layers", "perturbation_start_perc", "perturbation_end_perc"]
-
-    if not model_def.get("cfg_zero", False):
-        pop += [ "cfg_zero_step"  ] 
-
-    if not model_def.get("cfg_star", False):
-        pop += ["cfg_star_switch" ] 
-
-    if not model_def.get("adaptive_projected_guidance", False):
-        pop += ["apg_switch"] 
-
-    if not model_def.get("NAG", False):
-        pop +=["NAG_scale", "NAG_tau", "NAG_alpha" ]
-
-    for k in pop:
-        if k in inputs: inputs.pop(k)
-
     if target == "metadata":
-        inputs = {k: v for k,v in inputs.items() if v != None  }
+        effective_attention_mode = inputs.get("override_attention", "") or get_overridden_attention(model_type) or attention_mode
+        prompt_enhancer_visible = server_config.get("enhancer_enabled", 0) > 0 and server_config.get("enhancer_mode", 1) == 0
+        settings_metadata.clean_metadata_settings(inputs, model_def, attention_mode=effective_attention_mode, prompt_enhancer_visible=prompt_enhancer_visible)
         if hasattr(app, 'plugin_manager'):
             inputs = app.plugin_manager.run_data_hooks(
                 'before_metadata_save',
@@ -9974,8 +9833,7 @@ def use_video_settings(state, input_file_list, choice, source):
             models_compatible = are_model_types_compatible(model_type,current_model_type) 
             if models_compatible:
                 model_type = current_model_type
-            defaults = get_model_settings(state, model_type) 
-            defaults = get_default_settings(model_type) if defaults == None else defaults
+            defaults = get_factory_settings(model_type)
             defaults.update(configs)
             defaults["model_type"] = model_type
             prompt = configs.get("prompt", "")
@@ -10029,7 +9887,7 @@ def update_loras_url_cache(lora_dir, loras_selected, return_URLs = False):
     return new_loras_selected
 
 
-def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, switch_type_if_compatible, min_settings_version = 0, merge_loras = None, skip_validate_settings=False):
+def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, switch_type_if_compatible, min_settings_version = 0, merge_loras = None, skip_validate_settings=False, merge_factory_defaults=False):
     configs = None
     any_image_or_video = False
     any_audio = False
@@ -10100,11 +9958,12 @@ def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, sw
         model_type = current_model_type
     old_loras_selected = old_loras_multipliers = None
     if merge_with_defaults:
-        defaults = get_model_settings(state, model_type) 
-        defaults = get_default_settings(model_type) if defaults == None else defaults
+        current_settings = get_model_settings(state, model_type)
+        defaults = get_factory_settings(model_type) if merge_factory_defaults else (get_default_settings(model_type) if current_settings is None else current_settings.copy())
         has_loras_without_multipliers = "activated_loras" in configs and "loras_multipliers" not in configs
         if merge_loras is not None and model_type == current_model_type:
-            old_loras_selected, old_loras_multipliers  = defaults.get("activated_loras", []), defaults.get("loras_multipliers", ""),
+            lora_settings = current_settings or defaults
+            old_loras_selected, old_loras_multipliers = lora_settings.get("activated_loras", []), lora_settings.get("loras_multipliers", "")
         defaults.update(configs)
         if has_loras_without_multipliers:
             defaults["loras_multipliers"] = ""
@@ -10174,7 +10033,7 @@ def load_settings_from_file(state, file_path):
     if file_path==None:
         return gr.update(), gr.update(), None
 
-    configs, any_video_or_image_file, any_audio = get_settings_from_file(state, file_path, True, True, True, skip_validate_settings=True)
+    configs, any_video_or_image_file, any_audio = get_settings_from_file(state, file_path, True, True, True, skip_validate_settings=True, merge_factory_defaults=True)
     if configs == None:
         gr.Info("File not supported" + (f": {state.get('_last_settings_file_error')}" if state.get("_last_settings_file_error") else ""))
         return gr.update(), gr.update(), None
@@ -12035,8 +11894,8 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     current_video_length = video_length_locked if video_length_locked is not None else ui_get("video_length", 81 if get_model_family(base_model_type)=="wan" else 97)
 
                     computed_fps = get_computed_fps(ui_get("force_fps"), base_model_type , ui_defaults.get("video_guide", None), ui_defaults.get("video_source", None))
-                    maximum_frames = get_max_frames(model_def.get("frames_maximum", 737 if test_any_sliding_window(base_model_type) else 337))
-                    if "frames_maximum" in model_def:
+                    maximum_frames = get_max_frames(model_def.get("frames_selection_maximum", 737 if test_any_sliding_window(base_model_type) else 337))
+                    if "frames_selection_maximum" in model_def:
                         maximum_frames = floor_frame_count(maximum_frames, min_frames, frames_step, model_def.get("frames_offset", 1))
                     video_length = gr.Slider(0 if audio_only else min_frames, maximum_frames, value=current_video_length,
                          step=frames_step, label=compute_video_length_label(computed_fps, current_video_length, video_length_locked) , scale=5, visible = True, interactive= video_length_locked is None, show_reset_button= False)
@@ -12425,7 +12284,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
 
                         
                 with gr.Tab("Misc.") as misc_tab:
-                    with gr.Column(visible = not (recammaster or ltxv or diffusion_forcing or audio_only or image_outputs)) as RIFLEx_setting_col:
+                    with gr.Column(visible=model_def.get("riflex", False)) as RIFLEx_setting_col:
                         gr.Markdown("<B>With Riflex you can generate videos longer than 5s which is the default duration of videos used to train the model</B>")
                         RIFLEx_setting = gr.Dropdown(
                             choices=[
@@ -12435,7 +12294,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             ],
                             value=ui_get("RIFLEx_setting"),
                             label="RIFLEx positional embedding to generate long video",
-                            visible = True
+                            visible=model_def.get("riflex", False)
                         )
                     with gr.Column(visible = not (audio_only or image_outputs)) as force_fps_col:
                         gr.Markdown("<B>You can change the Default number of Frames Per Second of the output Video, in the absence of Control Video this may create unwanted slow down / acceleration</B>")
@@ -13618,7 +13477,7 @@ def _mcp_forwarded_wgp_args():
         if skip_next:
             skip_next = False
             continue
-        if arg == "--mcp" or arg == "--mcp-console-output":
+        if arg in {"--mcp", "--mcp-console-output", "--mcp-allow-read-file-system"}:
             continue
         if arg in mcp_value_args:
             skip_next = True
@@ -13642,6 +13501,7 @@ def run_mcp_server():
         transport=args.mcp_transport,
         host=args.mcp_host.strip() or None,
         port=args.mcp_port,
+        allow_read_file_system=args.mcp_allow_read_file_system,
     )
     try:
         server = build_server(mcp_args)

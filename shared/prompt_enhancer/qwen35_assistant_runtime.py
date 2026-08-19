@@ -73,6 +73,20 @@ def render_tool_turn_suffix(tokenizer, tool_contents: list[str], thinking_enable
     return [int(token_id) for token_id in token_ids]
 
 
+def render_assistant_text_suffix(tokenizer, assistant_content: str, thinking_enabled: bool, prompt_open: bool) -> list[int]:
+    assistant_content = str(assistant_content or "").strip()
+    if len(assistant_content) == 0:
+        return []
+    if prompt_open:
+        suffix = ("</think>\n\n" if bool(thinking_enabled) else "") + assistant_content + "<|im_end|>\n"
+    else:
+        suffix = f"<|im_start|>assistant\n<think>\n\n</think>\n\n{assistant_content}<|im_end|>\n"
+    token_ids = tokenizer.encode(suffix, add_special_tokens=False)
+    if torch.is_tensor(token_ids):
+        token_ids = token_ids.tolist()
+    return [int(token_id) for token_id in token_ids]
+
+
 def strip_tool_blocks(raw_text: str) -> str:
     return _TOOL_BLOCK_RE.sub("\n", str(raw_text or "")).strip()
 
@@ -558,7 +572,7 @@ class Qwen35AssistantRuntime:
                 self._log("Embedded decode finished without an active assistant snapshot; releasing runtime allocations.")
                 engine.release_runtime_allocations()
 
-    def start_generation_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool) -> Sequence:
+    def start_generation_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, continue_existing_completion: bool = False) -> tuple[Sequence, int]:
         seq = self._get_active_sequence()
         if seq is None:
             raise RuntimeError("Assistant context is not initialized.")
@@ -581,8 +595,10 @@ class Qwen35AssistantRuntime:
                 f"new={budget_info['effective_new_tokens']}/{budget_info['requested_new_tokens']} "
                 f"thinking_extra={budget_info['effective_runtime_extra']}/{budget_info['requested_runtime_extra']}."
             )
-        seq.num_prompt_tokens = seq.num_tokens
-        seq.max_tokens = sampling_params.max_tokens
+        existing_completion_tokens = int(seq.num_completion_tokens) if continue_existing_completion else 0
+        if not continue_existing_completion:
+            seq.num_prompt_tokens = seq.num_tokens
+        seq.max_tokens = existing_completion_tokens + int(sampling_params.max_tokens)
         seq.temperature = sampling_params.temperature
         seq.ignore_eos = True
         seq.top_k = sampling_params.top_k
@@ -593,12 +609,13 @@ class Qwen35AssistantRuntime:
         seq.logits_processor_update_state = sampling_params.logits_processor_update_state
         seq.logits_bias = sampling_params.logits_bias
         llm.model_runner.call("set_sampling_seed", sampling_params.seed)
-        return seq
+        return seq, int(sampling_params.max_tokens)
 
-    def generate_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, stream_callback=None, stream_interval_seconds: float = 1.0) -> AssistantDecodeResult:
-        seq = self.start_generation_segment(max_new_tokens=max_new_tokens, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled)
-        requested_segment_tokens = max(0, int(seq.max_tokens or 0))
-        seq.max_tokens = max(int(seq.max_tokens or 0), requested_segment_tokens + 1)
+    def generate_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, stream_callback=None, stream_interval_seconds: float = 1.0, continue_existing_completion: bool = False) -> AssistantDecodeResult:
+        seq, requested_segment_tokens = self.start_generation_segment(max_new_tokens=max_new_tokens, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled, continue_existing_completion=continue_existing_completion)
+        existing_completion_tokens = int(seq.num_completion_tokens)
+        requested_segment_tokens = max(0, int(requested_segment_tokens))
+        seq.max_tokens = max(int(seq.max_tokens or 0), existing_completion_tokens + requested_segment_tokens + 1)
         stop_token_ids = {int(token_id) for token_id in getattr(self.model, "_prompt_enhancer_stop_token_ids", []) or [] if int(token_id) >= 0}
         speculative = bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False))
         if speculative:
@@ -643,7 +660,7 @@ class Qwen35AssistantRuntime:
                 if stream_emitter is not None:
                     stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=generated_tokens, stop_reason="stop_token", is_final=True, force=True)
                 return AssistantDecodeResult(raw_text=raw_text, stop_reason="stop_token", token_count=generated_tokens, stop_token_id=last_token_id)
-        seq.max_tokens = requested_segment_tokens
+        seq.max_tokens = existing_completion_tokens + requested_segment_tokens
         raw_text = self.tokenizer.decode(seq.completion_token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
         if stream_emitter is not None:
             stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=requested_segment_tokens, stop_reason="max_tokens", is_final=True, force=True)

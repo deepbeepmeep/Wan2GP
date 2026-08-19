@@ -12,6 +12,7 @@ from typing import Any
 import markdown
 
 from shared.deepy import video_tools as deepy_video_tools
+from shared.deepy.config import DEEPY_TYPE_PRIME, normalize_deepy_type
 
 
 CHAT_HOST_ID = "assistant_chat_html"
@@ -45,15 +46,62 @@ SERVER_INSTANCE_ID = uuid.uuid4().hex
 _UNSET = object()
 
 
-def _shell_markup() -> str:
-    return """
+def _empty_state_markup(deepy_type: str) -> str:
+    if normalize_deepy_type(deepy_type) == DEEPY_TYPE_PRIME:
+        title = "Deepy Prime"
+        mode = "Advanced creative orchestration"
+        intro = "Describe the result you want and Deepy Prime can plan the work, choose suitable models and tools, and connect multiple image, video, and audio steps into one creative workflow."
+        benefits = (
+            "Plan and complete multi-step projects that create, inspect, edit, and combine several pieces of media.",
+            "Choose among available WanGP models and settings according to your goal, quality preference, and source media.",
+            "Build on Gallery items or existing files, then extract, transcribe, resize, add sound, upscale, or continue generating.",
+            "Extend the workflow with other connected services when they are available.",
+        )
+        examples = (
+            "Create a character portrait and related keyframes, then turn them into a longer video with a soundtrack.",
+            "Inspect the selected video, improve the weak sections, upscale it, and prepare a subtitled version.",
+            "Design an album cover, write a matching song, and create a short promotional video from both.",
+        )
+    else:
+        title = "Deepy Zero"
+        mode = "Fast, focused creation"
+        intro = "Deepy Zero is the lightweight assistant for straightforward requests. It uses the models and templates selected in Deepy Settings, making it a good match for smaller LLMs, quick responses, and familiar results."
+        benefits = (
+            "Generate an image, video, speech clip, or song with your preferred templates and defaults.",
+            "Handle focused edits and practical media tasks without requiring a complex workflow.",
+            "Refer naturally to the selected, latest, or previous Gallery item.",
+            "See each generation and completed result in the normal WanGP queue and Galleries.",
+        )
+        examples = (
+            "Generate a square album cover showing a robot jazz band.",
+            "Animate the selected image as a five-second cinematic shot.",
+            "Transcribe the last video or resize it for social media.",
+        )
+    benefit_items = "".join(f"<li>{html.escape(item)}</li>" for item in benefits)
+    example_items = "".join(f"<li>{html.escape(item)}</li>" for item in examples)
+    return (
+        "<div class='wangp-assistant-chat__empty-card'>"
+        "<header class='wangp-assistant-chat__empty-header'>"
+        "<span class='wangp-assistant-chat__empty-eyebrow'>Current assistant</span>"
+        f"<h2 class='wangp-assistant-chat__empty-title'>{html.escape(title)}</h2>"
+        f"<span class='wangp-assistant-chat__empty-mode'>{html.escape(mode)}</span>"
+        "</header>"
+        f"<p class='wangp-assistant-chat__empty-intro'>{html.escape(intro)}</p>"
+        "<div class='wangp-assistant-chat__empty-grid'>"
+        f"<section class='wangp-assistant-chat__empty-section'><h3>What it does for you</h3><ul>{benefit_items}</ul></section>"
+        f"<section class='wangp-assistant-chat__empty-section wangp-assistant-chat__empty-section--examples'><h3>Try asking</h3><ul>{example_items}</ul></section>"
+        "</div>"
+        "<p class='wangp-assistant-chat__empty-tip'>Start with the outcome you want. Deepy will ask only when an important choice is missing.</p>"
+        "</div>"
+    )
+
+
+def _shell_markup(deepy_type: str = "") -> str:
+    return f"""
 <section class="wangp-assistant-chat">
   <div class="wangp-assistant-chat__scroll">
     <div class="wangp-assistant-chat__empty">
-      <div>
-        <strong>Dialogue With Deepy</strong>
-        Ask for an image or video idea, then inspect the assistant's reasoning and tool usage without losing the live transcript.
-      </div>
+      {_empty_state_markup(deepy_type)}
     </div>
     <div class="wangp-assistant-chat__transcript"></div>
   </div>
@@ -69,8 +117,8 @@ def _shell_markup() -> str:
 """.strip()
 
 
-def render_shell_html() -> str:
-    return f"<div id='{CHAT_HOST_ID}' data-wangp-assistant-chat-mounted='true'>{_shell_markup()}</div>"
+def render_shell_html(deepy_type: str = "") -> str:
+    return f"<div id='{CHAT_HOST_ID}' data-wangp-assistant-chat-mounted='true' data-deepy-type='{html.escape(normalize_deepy_type(deepy_type))}'>{_shell_markup(deepy_type)}</div>"
 
 
 def render_stats_html() -> str:
@@ -616,26 +664,157 @@ def get_css() -> str:
 
 .wangp-assistant-chat__empty {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
-    height: 100%;
+    min-height: 100%;
     box-sizing: border-box;
-    padding: 36px 34px 102px;
+    padding: 22px 24px 92px;
     border: 0;
     border-radius: 0;
     color: var(--muted-text);
-    text-align: center;
-    font-size: calc(0.98rem * var(--dock-font-scale));
-    line-height: 1.6;
+    text-align: left;
+    font-size: calc(0.9rem * var(--dock-font-scale));
+    line-height: 1.48;
     background: transparent;
     backdrop-filter: none;
 }
 
-.wangp-assistant-chat__empty strong {
-    display: block;
-    margin-bottom: 6px;
+.wangp-assistant-chat__empty-card {
+    width: min(100%, 482px);
+}
+
+.wangp-assistant-chat__empty-header {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 2px 12px;
+    align-items: center;
+    padding: 14px 16px;
+    overflow: hidden;
+    border: 1px solid rgba(24, 101, 144, 0.2);
+    border-radius: 18px;
+    background: linear-gradient(135deg, rgba(12, 79, 115, 0.98) 0%, rgba(19, 111, 151, 0.92) 56%, rgba(54, 151, 178, 0.88) 100%);
+    box-shadow: 0 12px 26px rgba(15, 83, 119, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.wangp-assistant-chat__empty-header::after {
+    content: "";
+    position: absolute;
+    top: -38px;
+    right: -22px;
+    width: 126px;
+    height: 126px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.wangp-assistant-chat__empty-eyebrow {
+    position: relative;
+    z-index: 1;
+    grid-column: 1 / -1;
+    color: rgba(237, 249, 255, 0.76);
+    font-size: calc(0.61rem * var(--dock-font-scale));
+    font-weight: 800;
+    letter-spacing: 0.17em;
+    line-height: 1.2;
+    text-transform: uppercase;
+}
+
+.wangp-assistant-chat__empty-title {
+    position: relative;
+    z-index: 1;
+    margin: 0;
+    color: #ffffff;
+    font-size: calc(1.48rem * var(--dock-font-scale));
+    font-weight: 820;
+    letter-spacing: -0.02em;
+    line-height: 1.08;
+}
+
+.wangp-assistant-chat__empty-mode {
+    position: relative;
+    z-index: 1;
+    max-width: 174px;
+    padding: 5px 9px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 999px;
+    color: #f2fbff;
+    font-size: calc(0.65rem * var(--dock-font-scale));
+    font-weight: 700;
+    line-height: 1.15;
+    text-align: center;
+    background: rgba(4, 47, 71, 0.3);
+}
+
+.wangp-assistant-chat__empty-intro {
+    margin: 13px 3px 12px;
+    color: #3f5f72;
+    font-size: calc(0.86rem * var(--dock-font-scale));
+    line-height: 1.48;
+}
+
+.wangp-assistant-chat__empty-grid {
+    display: grid;
+    grid-template-columns: 1fr 0.92fr;
+    gap: 10px;
+}
+
+.wangp-assistant-chat__empty-section {
+    padding: 12px 13px 11px;
+    border: 1px solid rgba(31, 94, 132, 0.12);
+    border-radius: 15px;
+    background: linear-gradient(180deg, rgba(244, 250, 253, 0.96) 0%, rgba(235, 246, 251, 0.88) 100%);
+}
+
+.wangp-assistant-chat__empty-section--examples {
+    background: linear-gradient(180deg, rgba(248, 251, 253, 0.98) 0%, rgba(241, 247, 250, 0.9) 100%);
+}
+
+.wangp-assistant-chat__empty-section h3 {
+    margin: 0 0 7px;
     color: #194d70;
-    font-size: calc(1rem * var(--dock-font-scale));
+    font-size: calc(0.72rem * var(--dock-font-scale));
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    line-height: 1.2;
+    text-transform: uppercase;
+}
+
+.wangp-assistant-chat__empty-section ul {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.wangp-assistant-chat__empty-section li {
+    position: relative;
+    margin: 0;
+    padding-left: 12px;
+    color: #526d7e;
+    font-size: calc(0.74rem * var(--dock-font-scale));
+    line-height: 1.36;
+}
+
+.wangp-assistant-chat__empty-section li::before {
+    content: "";
+    position: absolute;
+    top: 0.5em;
+    left: 0;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #2c93bd;
+    box-shadow: 0 0 0 3px rgba(44, 147, 189, 0.1);
+}
+
+.wangp-assistant-chat__empty-tip {
+    margin: 10px 3px 0;
+    color: #587486;
+    font-size: calc(0.7rem * var(--dock-font-scale));
+    font-weight: 650;
+    line-height: 1.35;
 }
 
 .wangp-assistant-chat__transcript {
@@ -916,6 +1095,14 @@ def get_css() -> str:
 
 .wangp-assistant-chat__message--assistant .wangp-assistant-chat__disclosure-body {
     color: var(--assistant-text);
+}
+
+.wangp-assistant-chat__context-summary > :first-child {
+    margin-top: 0;
+}
+
+.wangp-assistant-chat__context-summary > :last-child {
+    margin-bottom: 0;
 }
 
 .wangp-assistant-chat__tool-title {
@@ -1581,7 +1768,9 @@ def get_css() -> str:
     --empty-border: rgba(103, 132, 151, 0.16);
 }
 
-#assistant_chat_dock.is-dark .wangp-assistant-chat__empty strong,
+#assistant_chat_dock.is-dark .wangp-assistant-chat__empty-intro,
+#assistant_chat_dock.is-dark .wangp-assistant-chat__empty-section li,
+#assistant_chat_dock.is-dark .wangp-assistant-chat__empty-tip,
 #assistant_chat_dock.is-dark .wangp-assistant-chat__body,
 #assistant_chat_dock.is-dark .wangp-assistant-chat__body p,
 #assistant_chat_dock.is-dark .wangp-assistant-chat__body li,
@@ -1593,6 +1782,21 @@ def get_css() -> str:
 #assistant_chat_dock.is-dark .wangp-assistant-chat__body h3,
 #assistant_chat_dock.is-dark .wangp-assistant-chat__body h4 {
     color: #edf4f9;
+}
+
+#assistant_chat_dock.is-dark .wangp-assistant-chat__empty-header {
+    border-color: rgba(100, 171, 205, 0.28);
+    background: linear-gradient(135deg, rgba(7, 49, 72, 0.98) 0%, rgba(10, 75, 104, 0.96) 58%, rgba(18, 98, 125, 0.92) 100%);
+    box-shadow: 0 14px 28px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+#assistant_chat_dock.is-dark .wangp-assistant-chat__empty-section {
+    border-color: rgba(103, 132, 151, 0.2);
+    background: linear-gradient(180deg, rgba(18, 24, 29, 0.98) 0%, rgba(10, 15, 19, 0.98) 100%);
+}
+
+#assistant_chat_dock.is-dark .wangp-assistant-chat__empty-section h3 {
+    color: #9edaf3;
 }
 
 #assistant_chat_dock.is-dark .wangp-assistant-chat__stats {
@@ -1707,7 +1911,21 @@ def get_css() -> str:
     }
 
     .wangp-assistant-chat__empty {
-        padding: 28px 20px 88px;
+        padding: 18px 14px 82px;
+    }
+
+    .wangp-assistant-chat__empty-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .wangp-assistant-chat__empty-header {
+        grid-template-columns: 1fr;
+    }
+
+    .wangp-assistant-chat__empty-mode {
+        max-width: none;
+        justify-self: start;
+        margin-top: 5px;
     }
 
     .wangp-assistant-chat__transcript {
@@ -1907,13 +2125,18 @@ WAC.normalizeText = function (value) {
   return String(value || '').replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ').trim();
 };
 
+WAC.normalizeMatchText = function (value) {
+  return WAC.normalizeText(value).replace(/\s+/g, ' ');
+};
+
 WAC.splitRequestBlocks = function (value) {
   const normalized = String(value || '').replace(/\r\n?/g, '\n').trim();
   if (!normalized) return [];
   const blocks = [];
   let current = [];
   for (const rawLine of normalized.split('\n')) {
-    if (!String(rawLine).trim()) {
+    const strippedLine = String(rawLine).trim();
+    if (!strippedLine || /^[-=_]{3,}$/.test(strippedLine)) {
       if (current.length > 0) {
         const block = current.join('\n').trim();
         if (block) blocks.push(block);
@@ -2040,8 +2263,8 @@ WAC.reconcileOptimisticSubmits = function () {
   const maxMatch = Math.min(serverUserTexts.length, optimistic.length);
   for (let count = maxMatch; count > 0; count -= 1) {
     const serverSuffix = serverUserTexts.slice(serverUserTexts.length - count);
-    const optimisticPrefix = optimistic.slice(0, count).map((item) => WAC.normalizeText(item && item.text || ''));
-    if (serverSuffix.length === optimisticPrefix.length && serverSuffix.every((text, index) => text === optimisticPrefix[index])) {
+    const optimisticPrefix = optimistic.slice(0, count).map((item) => WAC.normalizeMatchText(item && item.text || ''));
+    if (serverSuffix.length === optimisticPrefix.length && serverSuffix.every((text, index) => WAC.normalizeMatchText(text) === optimisticPrefix[index])) {
       matchedPrefix = count;
       break;
     }
@@ -2050,10 +2273,10 @@ WAC.reconcileOptimisticSubmits = function () {
       const content = WAC.normalizeText(item && item.text || '');
       if (!content) continue;
       const blocks = WAC.splitRequestBlocks(content);
-      flattenedPrefix.push(...(blocks.length > 1 ? blocks : [content]).map((block) => WAC.normalizeText(block)));
+      flattenedPrefix.push(...(blocks.length > 1 ? blocks : [content]).map((block) => WAC.normalizeMatchText(block)));
     }
     const splitServerSuffix = flattenedPrefix.length > count ? serverUserTexts.slice(serverUserTexts.length - flattenedPrefix.length) : [];
-    if (splitServerSuffix.length === flattenedPrefix.length && splitServerSuffix.every((text, index) => text === flattenedPrefix[index])) {
+    if (splitServerSuffix.length === flattenedPrefix.length && splitServerSuffix.every((text, index) => WAC.normalizeMatchText(text) === flattenedPrefix[index])) {
       matchedPrefix = count;
       break;
     }
@@ -2099,6 +2322,74 @@ WAC.empty = function () {
   return document.querySelector('#assistant_chat_html .wangp-assistant-chat__empty');
 };
 
+WAC.acknowledgeOptimisticSubmit = function (text) {
+  const acknowledged = WAC.normalizeText(text);
+  if (!acknowledged) return;
+  WAC.optimisticSubmits = (WAC.optimisticSubmits || []).filter((item) => WAC.normalizeText(item && item.text || '') !== acknowledged);
+};
+
+WAC.emptyMarkup = function (mode) {
+  if (mode === 'prime') {
+    return `<div class="wangp-assistant-chat__empty-card">
+      <header class="wangp-assistant-chat__empty-header">
+        <span class="wangp-assistant-chat__empty-eyebrow">Current assistant</span>
+        <h2 class="wangp-assistant-chat__empty-title">Deepy Prime</h2>
+        <span class="wangp-assistant-chat__empty-mode">Advanced creative orchestration</span>
+      </header>
+      <p class="wangp-assistant-chat__empty-intro">Describe the result you want and Deepy Prime can plan the work, choose suitable models and tools, and connect multiple image, video, and audio steps into one creative workflow.</p>
+      <div class="wangp-assistant-chat__empty-grid">
+        <section class="wangp-assistant-chat__empty-section"><h3>What it does for you</h3><ul>
+          <li>Plan and complete multi-step projects that create, inspect, edit, and combine several pieces of media.</li>
+          <li>Choose among available WanGP models and settings according to your goal, quality preference, and source media.</li>
+          <li>Build on Gallery items or existing files, then extract, transcribe, resize, add sound, upscale, or continue generating.</li>
+          <li>Extend the workflow with other connected services when they are available.</li>
+        </ul></section>
+        <section class="wangp-assistant-chat__empty-section wangp-assistant-chat__empty-section--examples"><h3>Try asking</h3><ul>
+          <li>Create a character portrait and related keyframes, then turn them into a longer video with a soundtrack.</li>
+          <li>Inspect the selected video, improve the weak sections, upscale it, and prepare a subtitled version.</li>
+          <li>Design an album cover, write a matching song, and create a short promotional video from both.</li>
+        </ul></section>
+      </div>
+      <p class="wangp-assistant-chat__empty-tip">Start with the outcome you want. Deepy will ask only when an important choice is missing.</p>
+    </div>`;
+  }
+  return `<div class="wangp-assistant-chat__empty-card">
+    <header class="wangp-assistant-chat__empty-header">
+      <span class="wangp-assistant-chat__empty-eyebrow">Current assistant</span>
+      <h2 class="wangp-assistant-chat__empty-title">Deepy Zero</h2>
+      <span class="wangp-assistant-chat__empty-mode">Fast, focused creation</span>
+    </header>
+    <p class="wangp-assistant-chat__empty-intro">Deepy Zero is the lightweight assistant for straightforward requests. It uses the models and templates selected in Deepy Settings, making it a good match for smaller LLMs, quick responses, and familiar results.</p>
+    <div class="wangp-assistant-chat__empty-grid">
+      <section class="wangp-assistant-chat__empty-section"><h3>What it does for you</h3><ul>
+        <li>Generate an image, video, speech clip, or song with your preferred templates and defaults.</li>
+        <li>Handle focused edits and practical media tasks without requiring a complex workflow.</li>
+        <li>Refer naturally to the selected, latest, or previous Gallery item.</li>
+        <li>See each generation and completed result in the normal WanGP queue and Galleries.</li>
+      </ul></section>
+      <section class="wangp-assistant-chat__empty-section wangp-assistant-chat__empty-section--examples"><h3>Try asking</h3><ul>
+        <li>Generate a square album cover showing a robot jazz band.</li>
+        <li>Animate the selected image as a five-second cinematic shot.</li>
+        <li>Transcribe the last video or resize it for social media.</li>
+      </ul></section>
+    </div>
+    <p class="wangp-assistant-chat__empty-tip">Start with the outcome you want. Deepy will ask only when an important choice is missing.</p>
+  </div>`;
+};
+
+WAC.syncDeepyTypePreview = function () {
+  const control = document.querySelector('#deepy_type_choice');
+  const input = control && control.querySelector ? control.querySelector('input') : null;
+  const value = String((input && input.value) || (control && control.textContent) || '').trim().toLowerCase();
+  if (!value) return;
+  const mode = value === 'prime' || value === 'deepy prime' ? 'prime' : 'zero';
+  const host = WAC.host();
+  const empty = WAC.empty();
+  if (!host || !empty || host.dataset.deepyType === mode) return;
+  host.dataset.deepyType = mode;
+  empty.innerHTML = WAC.emptyMarkup(mode);
+};
+
 WAC.statusNode = function () {
   return document.querySelector('#assistant_chat_html .wangp-assistant-chat__status');
 };
@@ -2117,6 +2408,8 @@ WAC.disclosureKey = function (node) {
   if (reasoningId) return `reasoning:${reasoningId}`;
   const toolId = String(node.getAttribute('data-tool-id') || '').trim();
   if (toolId) return `tool:${toolId}`;
+  const contextSummaryId = String(node.getAttribute('data-context-summary-id') || '').trim();
+  if (contextSummaryId) return `context-summary:${contextSummaryId}`;
   return '';
 };
 
@@ -2269,6 +2562,7 @@ WAC.consumePayload = function (payload) {
     return [];
   }
   if (event.type === 'sync') {
+    if (Object.prototype.hasOwnProperty.call(event, 'acknowledged_user_text')) WAC.acknowledgeOptimisticSubmit(event.acknowledged_user_text || '');
     WAC.sync(event.messages || [], event.status || null, Object.prototype.hasOwnProperty.call(event, 'stats') ? (event.stats || null) : WAC.state.stats);
     return [];
   }
@@ -2456,10 +2750,7 @@ WAC.ensureShell = function () {
     <section class="wangp-assistant-chat">
       <div class="wangp-assistant-chat__scroll">
         <div class="wangp-assistant-chat__empty">
-          <div>
-            <strong>Dialogue With Deepy</strong>
-            Ask for an image or video idea, then inspect the assistant's reasoning and tool usage without losing the live transcript.
-          </div>
+          ${WAC.emptyMarkup('zero')}
         </div>
         <div class="wangp-assistant-chat__transcript"></div>
       </div>
@@ -2788,6 +3079,7 @@ WAC.installObserver = function () {
         WAC.syncScrollBridge();
         WAC.syncThemeState();
         WAC.syncDockLayout();
+        WAC.syncDeepyTypePreview();
         WAC.handleEventNodeMutation();
         WAC.readEventSource();
       });
@@ -2812,6 +3104,15 @@ WAC.installDockBridge = function () {
   WAC.dockBridgeInstalled = true;
   WAC.dockOpen = false;
   try { window.localStorage.removeItem('wangp-assistant-chat-open'); } catch (_error) {}
+  document.addEventListener('input', (event) => {
+    if (event.target && event.target.closest && event.target.closest('#deepy_type_choice')) WAC.syncDeepyTypePreview();
+  }, true);
+  document.addEventListener('change', (event) => {
+    if (event.target && event.target.closest && event.target.closest('#deepy_type_choice')) WAC.syncDeepyTypePreview();
+  }, true);
+  document.addEventListener('click', (event) => {
+    if (event.target && event.target.closest && event.target.closest('#deepy_type_choice')) window.setTimeout(WAC.syncDeepyTypePreview, 0);
+  }, true);
   document.addEventListener('pointerdown', (event) => {
     if (WAC.handleDisclosurePointerDown(event)) return;
     if (WAC.handleAttachmentPointerDown(event)) return;
@@ -2843,10 +3144,9 @@ WAC.installDockBridge = function () {
     const stopButton = event.target && event.target.closest ? event.target.closest('.wangp-assistant-chat__status-stop') : null;
     if (stopButton) {
       event.preventDefault();
-      for (const target of WAC.stopBridgeTargets()) {
-        target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-        if (typeof target.click === 'function') target.click();
-      }
+      event.stopPropagation();
+      const target = WAC.stopBridgeTargets()[0];
+      if (target && typeof target.click === 'function') target.click();
       return;
     }
     const jumpBottomButton = event.target && event.target.closest ? event.target.closest('.wangp-assistant-chat__jump-bottom') : null;
@@ -2907,7 +3207,7 @@ if (!WAC.init) {
   WAC.init = true;
 }
 
-setTimeout(() => { WAC.ensureShell(); WAC.handleEventNodeMutation(); WAC.readEventSource(); WAC.syncDockState(); WAC.syncDockLayout(); }, 50);
+setTimeout(() => { WAC.ensureShell(); WAC.syncDeepyTypePreview(); WAC.handleEventNodeMutation(); WAC.readEventSource(); WAC.syncDockState(); WAC.syncDockLayout(); }, 50);
 if (window.__wangpAssistantChatPending.length > 0) {
   const pending = window.__wangpAssistantChatPending.slice();
   window.__wangpAssistantChatPending.length = 0;
@@ -2959,11 +3259,13 @@ def build_event_batch(payloads: list[str]) -> str:
     return json.dumps({"event_id": uuid.uuid4().hex, "instance_id": SERVER_INSTANCE_ID, "batch": envelopes}, ensure_ascii=False)
 
 
-def build_sync_event(session, status: dict[str, Any] | None = None, stats: dict[str, Any] | None = None) -> str:
+def build_sync_event(session, status: dict[str, Any] | None = None, stats: dict[str, Any] | None = None, acknowledged_user_text: str | None = None) -> str:
     messages = [_render_message_payload(record) for record in session.chat_transcript]
     event = {"type": "sync", "messages": messages, "status": status}
     if stats is not None:
         event["stats"] = stats
+    if acknowledged_user_text is not None:
+        event["acknowledged_user_text"] = str(acknowledged_user_text)
     return _event_payload(event)
 
 
@@ -3092,6 +3394,18 @@ def append_reasoning(session, message_id: str, text: str) -> str | None:
     return payload
 
 
+def add_context_summary(session, message_id: str, text: str) -> tuple[str, str | None]:
+    summary_text = str(text or "").strip()
+    if len(summary_text) == 0:
+        return "", None
+    record = _find_message(session, message_id)
+    if record is None:
+        return "", None
+    block_id = _next_block_id("context_summary")
+    _ensure_message_blocks(record).append({"id": block_id, "type": "context_summary", "text": summary_text})
+    return block_id, _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
+
+
 def upsert_reasoning_block(session, message_id: str, reasoning_id: str | None, text: str) -> tuple[str, str | None]:
     reasoning_text = str(text or "").strip()
     if len(reasoning_text) == 0:
@@ -3190,6 +3504,8 @@ def _friendly_tool_label(tool_name: str | None) -> str:
     name = str(tool_name or "").strip()
     if len(name) == 0:
         return "Tool"
+    if name.startswith("wangp_"):
+        name = name[len("wangp_"):]
     return name.replace("_", " ").replace("-", " ").strip().title()
 
 
@@ -3243,6 +3559,11 @@ def _markdown_to_html(text: str) -> str:
         return ""
     text = html.escape(text, quote=False)
     return markdown.markdown(text, extensions=_MARKDOWN_EXTENSIONS, output_format="html5")
+
+
+def _plain_text_to_html(text: str) -> str:
+    escaped = html.escape(str(text or "").strip(), quote=False)
+    return "" if not escaped else f"<p>{escaped.replace(chr(10), '<br>')}</p>"
 
 
 def _extract_attachments_from_markdown(text: str) -> tuple[str, list[dict[str, Any]]]:
@@ -3356,7 +3677,7 @@ def _render_message_blocks(record: dict[str, Any]) -> tuple[str, set[str]]:
         block_type = str(block.get("type", "markdown")).strip().lower() or "markdown"
         if block_type == "markdown":
             content_source, attachments = _extract_attachments_from_markdown(block.get("text", ""))
-            content_html = _markdown_to_html(content_source)
+            content_html = _plain_text_to_html(content_source) if str(record.get("role", "")).strip().lower() == "user" else _markdown_to_html(content_source)
             if len(content_html) > 0:
                 rendered.append(content_html)
             attachment_html = _render_attachments(_dedupe_attachments(attachments, rendered_attachment_keys))
@@ -3369,6 +3690,11 @@ def _render_message_blocks(record: dict[str, Any]) -> tuple[str, set[str]]:
                 continue
             reasoning_no += 1
             rendered.append(_render_reasoning_block(block, reasoning_no, reasoning_total))
+            continue
+        if block_type == "context_summary":
+            summary_text = str(block.get("text", "")).strip()
+            if len(summary_text) > 0:
+                rendered.append(_render_context_summary_block(block))
             continue
         if block_type == "tool":
             rendered.append(_render_tool_block(block))
@@ -3397,6 +3723,15 @@ def _render_reasoning_block(block: dict[str, Any], block_no: int, total_blocks: 
         f"<details class='wangp-assistant-chat__disclosure wangp-assistant-chat__disclosure--reasoning' data-reasoning-id='{html.escape(str(block.get('id', '')))}'>"
         f"<summary><span class='wangp-assistant-chat__tool-title'><span class='wangp-assistant-chat__tool-chip'>Thought</span>{html.escape(label)}</span></summary>"
         f"<div class='wangp-assistant-chat__disclosure-body'><div class='wangp-assistant-chat__reasoning-block'>{_markdown_to_html(block.get('text', ''))}</div></div>"
+        "</details>"
+    )
+
+
+def _render_context_summary_block(block: dict[str, Any]) -> str:
+    return (
+        f"<details class='wangp-assistant-chat__disclosure wangp-assistant-chat__disclosure--context-summary' data-context-summary-id='{html.escape(str(block.get('id', '')))}'>"
+        "<summary><span class='wangp-assistant-chat__tool-title'><span class='wangp-assistant-chat__tool-chip'>Context</span>Earlier chat history was summarized to preserve Deepy's context window.</span></summary>"
+        f"<div class='wangp-assistant-chat__disclosure-body'><div class='wangp-assistant-chat__context-summary'>{_markdown_to_html(block.get('text', ''))}</div></div>"
         "</details>"
     )
 

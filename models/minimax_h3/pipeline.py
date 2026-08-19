@@ -127,6 +127,11 @@ def _res_multistep_update(sample, denoised, old_denoised, coefficients):
         sample.add_(old_denoised, alpha=old_denoised_coefficient)
 
 
+def _map_shifted_sigma(sigma, source_shift, target_shift):
+    base_sigma = sigma / (source_shift + sigma * (1.0 - source_shift))
+    return target_shift * base_sigma / (1.0 + (target_shift - 1.0) * base_sigma)
+
+
 def _resolve_canvas(width, height, short_edge, max_pixels=None):
     ratio = width / height
     if ratio >= 1.0:
@@ -354,8 +359,10 @@ class MiniMaxH3Pipeline:
         self._set_interrupt_state()
         self._check_abort()
         self._configure_tiling(VAE_tile_size)
-        if sample_solver not in ("euler", "res_multistep"):
+        if sample_solver not in ("euler", "res_multistep", "ralston_2s"):
             raise ValueError(f"Unsupported MiniMax H3 sampler {sample_solver!r}")
+        if sample_solver == "ralston_2s" and self.transformer.cache is not None and self.transformer.cache.cache_type == "spectrum":
+            raise ValueError("MiniMax H3 Ralston 2S does not support Spectrum Feature Forecasting; use No Skipping or First Block Cache")
         if int(sampling_steps) < 1:
             raise ValueError("MiniMax H3 requires at least one inference step")
         frame_num = normalize_frame_count(int(frame_num), 5, 17, 5)
@@ -505,7 +512,14 @@ class MiniMaxH3Pipeline:
         if sigmas_video.shape != sigmas_audio.shape:
             raise ValueError("The selected H3 flow shift collapses a different number of video and audio schedule points")
         res_coefficients = _res_multistep_coefficients(sigmas_video) if sample_solver == "res_multistep" else None
+        if sample_solver == "ralston_2s":
+            ralston_sigmas_video = torch.lerp(sigmas_video[:-1], sigmas_video[1:], 2.0 / 3.0)
+            ralston_sigmas_audio = _map_shifted_sigma(ralston_sigmas_video, float(shift), 3.0)
+        else:
+            ralston_sigmas_video = ralston_sigmas_audio = None
         sigmas_video, sigmas_audio = sigmas_video.to(self.device), sigmas_audio.to(self.device)
+        if ralston_sigmas_video is not None:
+            ralston_sigmas_video, ralston_sigmas_audio = ralston_sigmas_video.to(self.device), ralston_sigmas_audio.to(self.device)
         model_steps = sigmas_video.numel() - 1
         tau_start = float(attention_sparsity)
         tau_denominator = max(1, model_steps - 1)
@@ -516,6 +530,7 @@ class MiniMaxH3Pipeline:
         first_block_cache = MiniMaxH3FirstBlockCache(cache) if cache is not None and cache.cache_type == "first_block" else None
         offline_spectrum = spectrum is not None and spectrum.full_anchor_cache
         audio_scale = float(shift) / 3.0
+        audio_on_video_schedule = sample_solver in ("res_multistep", "ralston_2s")
 
         def denoise_pass(description, denoising_extra=""):
             nonlocal video, audio
@@ -530,13 +545,13 @@ class MiniMaxH3Pipeline:
                 if first_block_cache is not None:
                     first_block_cache.begin_step(step)
                 audio_tail = audio[..., target_audio_condition_latents:]
-                if res_coefficients is not None and audio_tail.shape[-1]:
-                    # RES carries generated audio on the video schedule; H3 still receives its native audio state.
+                if audio_on_video_schedule and audio_tail.shape[-1]:
+                    # Higher-order samplers carry generated audio on the video schedule; H3 receives its native state.
                     audio_tail.mul_(sigmas_audio[step] / sigmas_video[step])
                 video_velocity, audio_velocity = self.transformer(video, audio, sigmas_video[step:step + 1], sigmas_audio[step:step + 1], context, payload, spectrum=spectrum, first_block_cache=first_block_cache)
                 if spectrum is not None:
                     spectrum.finish_step()
-                if res_coefficients is None:
+                if sample_solver == "euler":
                     video_ratio = sigmas_video[step + 1] / sigmas_video[step]
                     if not target_video_condition_frames:
                         video_velocity.mul_(sigmas_video[step]).add_(video)
@@ -546,7 +561,7 @@ class MiniMaxH3Pipeline:
                         audio_velocity_tail = audio_velocity[..., target_audio_condition_latents:]
                         audio_velocity_tail.mul_(sigmas_audio[step]).add_(audio_tail)
                         audio_tail.mul_(audio_ratio).add_(audio_velocity_tail, alpha=1.0 - audio_ratio)
-                else:
+                elif sample_solver == "res_multistep":
                     coefficients = res_coefficients[step]
                     if not target_video_condition_frames:
                         video_denoised = video_velocity.mul_(sigmas_video[step]).add_(video)
@@ -558,6 +573,42 @@ class MiniMaxH3Pipeline:
                         audio_tail.mul_(sigmas_video[step] / sigmas_audio[step])
                         _res_multistep_update(audio_tail, audio_denoised, old_audio_denoised, coefficients)
                         old_audio_denoised = audio_denoised
+                else:
+                    sigma_video, sigma_audio = sigmas_video[step], sigmas_audio[step]
+                    stage_sigma_video, stage_sigma_audio = ralston_sigmas_video[step], ralston_sigmas_audio[step]
+                    step_size = sigma_video - sigmas_video[step + 1]
+                    stage_size = sigma_video - stage_sigma_video
+                    stage_video = video if target_video_condition_frames else video_velocity.clone().mul_(stage_size).add_(video)
+                    if source_latents is not None and not target_video_condition_frames and (step < denoising_start_step or step < mask_end_step):
+                        stage_source_video = stage_video[:, :, :source_latents.shape[2]]
+                        stage_source_mask = None if step < denoising_start_step else editable_mask
+                        _reinject_video_source(stage_source_video, source_latents, source_noise, stage_source_mask, stage_sigma_video, source_buffer)
+                    if audio_tail.shape[-1]:
+                        audio_velocity_tail = audio_velocity[..., target_audio_condition_latents:]
+                        audio_velocity_tail.mul_(1.0 + (audio_scale - 1.0) * sigma_audio).add_(audio_tail, alpha=audio_scale - 1.0)
+                        audio_tail.mul_(sigma_video / sigma_audio)
+                        stage_audio = audio.clone()
+                        stage_audio_tail = stage_audio[..., target_audio_condition_latents:]
+                        stage_audio_tail.add_(audio_velocity_tail.clone().mul_(stage_size)).mul_(stage_sigma_audio / stage_sigma_video)
+                    else:
+                        stage_audio = audio
+                    self._check_abort()
+                    payload["attention_sparsity"] = tau_start + (SOL_ATTN_TAU_END - tau_start) * min(step + 2.0 / 3.0, tau_denominator) / tau_denominator
+                    stage_video_velocity, stage_audio_velocity = self.transformer(stage_video, stage_audio, stage_sigma_video.view(1), stage_sigma_audio.view(1), context, payload, first_block_cache=first_block_cache)
+                    self._check_abort()
+                    if not target_video_condition_frames:
+                        # Match RES4LYF ralston_2s noise_anchor=1: anchor the second-stage denoised estimate to the interval start.
+                        stage_video_velocity.mul_(stage_sigma_video).add_(stage_video).sub_(video).div_(sigma_video)
+                        video_velocity.mul_(0.25).add_(stage_video_velocity, alpha=0.75).mul_(step_size)
+                        video.add_(video_velocity)
+                    if audio_tail.shape[-1]:
+                        stage_audio_velocity_tail = stage_audio_velocity[..., target_audio_condition_latents:]
+                        stage_audio_velocity_tail.mul_(1.0 + (audio_scale - 1.0) * stage_sigma_audio).add_(stage_audio_tail, alpha=audio_scale - 1.0)
+                        stage_audio_tail.mul_(stage_sigma_video / stage_sigma_audio)
+                        stage_audio_velocity_tail.mul_(stage_sigma_video).add_(stage_audio_tail).sub_(audio_tail).div_(sigma_video)
+                        audio_velocity_tail.mul_(0.25).add_(stage_audio_velocity_tail, alpha=0.75).mul_(step_size)
+                        audio_tail.add_(audio_velocity_tail)
+                    stage_video = stage_audio = stage_video_velocity = stage_audio_velocity = None
                 if source_latents is not None and (step < denoising_start_step or step < mask_end_step):
                     source_video = video[:, :, :source_latents.shape[2]]
                     source_mask = None if step < denoising_start_step else editable_mask
@@ -596,7 +647,7 @@ class MiniMaxH3Pipeline:
             if first_block_cache is not None:
                 first_block_cache.reset()
 
-        if res_coefficients is not None:
+        if audio_on_video_schedule:
             audio[..., target_audio_condition_latents:].div_(audio_scale)
         initial_video = initial_audio = None
 

@@ -26,17 +26,16 @@ FL2VA uses the same three-part audiovisual prompt for text-only, first-frame, la
 
 ```text
 integrated_multimodal_description: [Shot 1] ... [Shot 2] At 00:03.500, ...
-
 overall_soundscape: ...
-
 non_diegetic_music: ...
 ```
 
 When an image fixes a point on the output timeline, put its alignment instruction before these fields:
 
-- **First frame:** `<Picture 1>` belongs to `[Shot 1]` at `0.00` seconds.
-- **Last frame:** `<Picture 1>` (if only an End Image is provided) belongs to the actual final shot and aligns with the exact end time.
-- **First + last:** `<Picture 1>` anchors `0.00` seconds and `<Picture 2>` anchors the exact end time. A single continuous shot is usually preferable unless the requested action genuinely needs cuts.
+- **Start frame:** (First Frame) `<Picture 1>` belongs to `[Shot 1]` at `0.00` seconds.
+- **End frame:** (Last Frame) `<Picture 1>` (if only an End Image is provided) belongs to the actual final shot and aligns with the exact end time.
+- **Start + End:** `<Picture 1>` anchors `0.00` seconds and `<Picture 2>` anchors the exact end time. A single continuous shot is usually preferable unless the requested action genuinely needs cuts.
+Pleae note that when using sliding windows, the picture count is reset to 1 in each new window. So the last overlap frame (first frame of the new window) will always correspond to `<Picture 1>` and any new End Frame provided will correspond to `<Picture 2>` (or `<Picture 1>` if new shot is requested or there is no overlap frame for this window)
 
 ### Connecting shots
 
@@ -48,6 +47,8 @@ When an image fixes a point on the output timeline, put its alignment instructio
 
 `overall_soundscape` summarizes ambience, physical sounds, and non-verbal human sounds without repeating dialogue. `non_diegetic_music` describes only music the audience hears but the characters do not; write `N/A` when no such score is wanted.
 
+Multiple shots can be defined inside the same sliding window but each new sliding window resets the timeline and is expected to start with a new Shot 1 at time zero. 
+
 {SLIDING_WINDOW_PROMPT_INFOS}
 ### Prompt examples
 
@@ -55,9 +56,7 @@ When an image fixes a point on the output timeline, put its alignment instructio
 
 ```text
 integrated_multimodal_description: [Shot 1] At blue hour, a tired bicycle courier in a yellow raincoat pedals through a narrow rain-soaked market street. The camera tracks beside her at wheel height, then rises smoothly into a medium close-up as she stops beneath a flickering awning. Water runs from her helmet while she catches her breath, looks toward the closed train station, and says (S1) <d>[English] I missed it again.</d> Neon reflections ripple across the pavement and the shot holds on her rueful smile.
-
 overall_soundscape: Steady rain on canvas and metal, bicycle-chain clicks, wet tires hissing over stone, distant traffic, and the courier's breath settling after the stop.
-
 non_diegetic_music: N/A
 ```
 
@@ -65,11 +64,8 @@ non_diegetic_music: N/A
 
 ```text
 For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.
-
 integrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>, preserving its subject, clothes, composition, warm window light, and studio layout. The ceramic artist lowers her brush onto the glazed bowl and paints one continuous cobalt line while the camera makes a slow clockwise arc from medium shot to close-up. She turns the bowl toward the light, inspects the finished pattern, and gives a small satisfied nod.
-
 overall_soundscape: Soft brush strokes on ceramic, the wooden wheel turning, quiet room tone, and a faint breeze at the open window.
-
 non_diegetic_music: A sparse, gentle marimba motif at a slow tempo, fading under the final close-up.
 ```
 
@@ -77,9 +73,7 @@ non_diegetic_music: A sparse, gentle marimba motif at a slow tempo, fading under
 
 ```text
 integrated_multimodal_description: [Shot 1] A red fox runs across a snowy ridge at sunrise as a long-lens camera pans with it, powder spraying from every stride. [Shot 2] At 00:04.000, cut to a wide aerial view as the fox descends into a pine valley, its trail drawing a curved line through untouched snow. [Shot 3] At 00:07.500, cut to ground level beside a frozen stream; the fox slows, listens, and looks directly past the camera while drifting snow catches the orange backlight.
-
 overall_soundscape: Fast paw impacts in powder, cold wind across the ridge, distant crows, snow falling from pine branches, and the fox's quiet breathing near the stream.
-
 non_diegetic_music: Low sustained cellos with a restrained frame-drum pulse, opening into a single bright horn note in the final shot.
 ```
 
@@ -110,6 +104,7 @@ overall_soundscape: ...
 
 non_diegetic_music: ...
 ```
+Dont't keep any empty lines between prompt sections when using sliding windows, otherwise they will be interpreted as sliding windows separators.
 
 ### Reference labels
 
@@ -124,6 +119,8 @@ Use `fully_preserved`, `partially_preserved`, `attribute_transfer`, or `weak_ref
 
 `[Shot 1]` has no timestamp; later shots use strictly increasing cut times in the form `[Shot N] At MM:SS.mmm, ...`. Keep subjects, reference roles, speaker IDs, appearance, props, space, and causality consistent between shots. A dialogue line crossing a cut uses `<scenetrans>` at both connecting points and an explicit continuity phrase. Use `<cutoff>` only when speech is truncated by the end of the video. For reference-generation prompts, MiniMax recommends roughly 350-500 English words in `detailed_description`, with dialogue-heavy timelines sized to fit the actual speech instead.
 
+Multiple shots can be defined inside the same sliding window but each new sliding window resets the timeline and is expected to start with a new Shot 1 at time zero. 
+
 Describe reference use where it actually takes effect in the timeline. A reference video is not automatically an edit or continuation, and audio is not automatically copied merely because it is present. Put exact dialogue inside `<d>[Language] ...</d>`, ambience and physical sounds in `overall_soundscape`, and audience-only score in `non_diegetic_music`.
 
 {SLIDING_WINDOW_PROMPT_INFOS}
@@ -136,18 +133,13 @@ These compact examples assume the named reference assets have been selected. For
 ```text
 subject_definitions:
 <Subject 1> is the violinist from <Picture 1>, preserving her identity, facial features, dark braided hair, burgundy concert dress, and antique violin.
-
 summary:
 [reference generation] Place <Subject 1> in a new dawn performance on a misty rooftop while preserving her recognizable appearance and instrument.
-
 retention_analysis:
 <Subject 1> (appears in [Shot 1]): fully_preserved - identity, face, hair, burgundy dress, and antique violin are retained; the rooftop setting and performance are new.
-
 detailed_description:
 The target video is a cinematic single-shot rooftop performance at dawn with cool mist and soft amber rim light. [Shot 1] <Subject 1> stands near the roof edge, framed from the waist up against a waking skyline. She raises the referenced violin naturally to her shoulder and begins an energetic passage, her bowing, fingering, posture, dress movement, and breathing remaining physically coherent. The camera makes a slow semicircle around her, widening as the mist parts and ending with her lowering the bow after the final note.
-
 overall_soundscape: Light rooftop wind, distant morning traffic, fabric movement, breathing, and close natural violin performance.
-
 non_diegetic_music: N/A
 ```
 
@@ -157,19 +149,14 @@ non_diegetic_music: N/A
 subject_definitions:
 <Subject 1> is the silver rally car from <Picture 1>, preserving its body shape, paint, decals, and wheel design.
 <Video 1> supplies the reference driving rhythm, controlled rear drift, and low tracking-camera trajectory without contributing its driver, car appearance, or location.
-
 summary:
 [reference generation] Generate <Subject 1> racing through a new desert location while transferring the motion timing and camera trajectory of <Video 1>.
-
 retention_analysis:
 <Subject 1> (appears in [Shot 1] and [Shot 2]): fully_preserved - body shape, silver paint, decals, and wheels remain recognizable.
 <Video 1> (guides [Shot 1] and [Shot 2]): attribute_transfer - driving rhythm, drift timing, and low tracking motion transfer; source subjects and scenery do not.
-
 detailed_description:
 The target video is a fast, sun-bleached desert rally sequence with grounded vehicle physics. [Shot 1] <Subject 1> accelerates along a hard-packed canyon road while the camera follows the low, close tracking path of <Video 1>; suspension compression, tire rotation, dust, and steering response match the reference rhythm. [Shot 2] At 00:04.500, cut to the outside of a hairpin as the car performs the referenced controlled rear drift, throwing a widening dust plume before regaining grip and speeding toward the canyon exit.
-
 overall_soundscape: A high-revving engine, gravel striking the chassis, tire scrub during the drift, rushing air, and a dense dust-plume rumble.
-
 non_diegetic_music: A tense electronic pulse with dry percussion, synchronized to the acceleration and drift.
 ```
 
@@ -189,9 +176,7 @@ retention_analysis:
 
 detailed_description:
 The target video is an intimate, warmly lit workshop portrait. [Shot 1] <Subject 1> sits at a crowded wooden bench under a brass task lamp, holding a tiny gear with tweezers. In a steady close shot he fits the gear into the open pocket watch, looks over his round glasses toward an apprentice off camera, and says in the warm, gravelly voice referenced from <Audio 1>, (S1) <d>[English] Patience is the smallest tool, and the hardest one to hold.</d> His lips, breath, and restrained smile stay synchronized with the line. He closes the case, winds the crown, and listens as the mechanism starts.
-
 overall_soundscape: Delicate metal clicks, tweezers touching the bench, the restored watch beginning to tick, soft room tone, and a quiet satisfied exhale.
-
 non_diegetic_music: N/A
 ```
 

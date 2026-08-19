@@ -80,6 +80,19 @@ Queue completed: 3/3 tasks in 5m 23s
 | 1 | Error (file not found, invalid queue, or task failures) |
 | 130 | Interrupted by user (Ctrl+C) |
 
+## MCP Server
+
+```bash
+--mcp                              # Start WanGP as an MCP server without the web UI
+--mcp-transport TRANSPORT          # stdio, sse, or streamable-http
+--mcp-host HOST                    # Host for HTTP transports
+--mcp-port PORT                    # Port for HTTP transports
+--mcp-console-output               # Mirror WanGP output while serving MCP
+--mcp-allow-read-file-system       # Allow agents to submit arbitrary server file paths (disabled by default)
+```
+
+Gallery ids remain usable when filesystem reads are disabled. Streamable HTTP and SSE servers also expose short-lived Gallery upload/download URLs; stdio does not provide HTTP media transfer.
+
 ### Examples
 ```bash
 # Overnight batch processing

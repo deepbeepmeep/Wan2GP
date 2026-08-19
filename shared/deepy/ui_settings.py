@@ -7,11 +7,13 @@ from shared.deepy.config import (
     DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY,
     DEEPY_DEFAULT_EDIT_IMAGE,
     DEEPY_DEFAULT_GEN_IMAGE,
+    DEEPY_DEFAULT_GEN_SONG,
     DEEPY_DEFAULT_GEN_VIDEO,
     DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT,
     DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY,
     DEEPY_TOOL_EDIT_IMAGE_KEY,
     DEEPY_TOOL_GEN_IMAGE_KEY,
+    DEEPY_TOOL_GEN_SONG_KEY,
     DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY,
     DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY,
     DEEPY_TOOL_GEN_VIDEO_KEY,
@@ -31,11 +33,15 @@ ASSISTANT_OVERRIDE_HEIGHT_DEFAULT = 720
 ASSISTANT_OVERRIDE_FRAMES_MIN = 5
 ASSISTANT_OVERRIDE_FRAMES_MAX = 768
 ASSISTANT_OVERRIDE_FRAMES_DEFAULT = 81
+ASSISTANT_OVERRIDE_AUDIO_DURATION_MIN = 1
+ASSISTANT_OVERRIDE_AUDIO_DURATION_MAX = 600
+ASSISTANT_OVERRIDE_AUDIO_DURATION_DEFAULT = 10
 ASSISTANT_OVERRIDE_SEED_DEFAULT = -1
 ASSISTANT_USE_TEMPLATE_PROPERTIES_KEY = "deepy_use_template_properties"
 ASSISTANT_OVERRIDE_WIDTH_KEY = "deepy_width"
 ASSISTANT_OVERRIDE_HEIGHT_KEY = "deepy_height"
 ASSISTANT_OVERRIDE_NUM_FRAMES_KEY = "deepy_num_frames"
+ASSISTANT_OVERRIDE_AUDIO_DURATION_KEY = "deepy_audio_duration"
 ASSISTANT_OVERRIDE_SEED_KEY = "deepy_seed"
 
 
@@ -77,6 +83,10 @@ def normalize_assistant_override_num_frames(value: Any) -> int:
     return _clamp_int(value, ASSISTANT_OVERRIDE_FRAMES_DEFAULT, ASSISTANT_OVERRIDE_FRAMES_MIN, ASSISTANT_OVERRIDE_FRAMES_MAX, 1)
 
 
+def normalize_assistant_override_audio_duration(value: Any) -> int:
+    return _clamp_int(value, ASSISTANT_OVERRIDE_AUDIO_DURATION_DEFAULT, ASSISTANT_OVERRIDE_AUDIO_DURATION_MIN, ASSISTANT_OVERRIDE_AUDIO_DURATION_MAX, 1)
+
+
 def normalize_assistant_override_seed(value: Any) -> int:
     return _clamp_int(value, ASSISTANT_OVERRIDE_SEED_DEFAULT, -1, 999999999, 1)
 
@@ -94,9 +104,11 @@ def get_persisted_assistant_tool_ui_settings(server_config: dict[str, Any] | Non
         width=source.get(ASSISTANT_OVERRIDE_WIDTH_KEY, get_deepy_config_value(ASSISTANT_OVERRIDE_WIDTH_KEY, ASSISTANT_OVERRIDE_WIDTH_DEFAULT)),
         height=source.get(ASSISTANT_OVERRIDE_HEIGHT_KEY, get_deepy_config_value(ASSISTANT_OVERRIDE_HEIGHT_KEY, ASSISTANT_OVERRIDE_HEIGHT_DEFAULT)),
         num_frames=source.get(ASSISTANT_OVERRIDE_NUM_FRAMES_KEY, get_deepy_config_value(ASSISTANT_OVERRIDE_NUM_FRAMES_KEY, ASSISTANT_OVERRIDE_FRAMES_DEFAULT)),
+        audio_duration=source.get(ASSISTANT_OVERRIDE_AUDIO_DURATION_KEY, get_deepy_config_value(ASSISTANT_OVERRIDE_AUDIO_DURATION_KEY, ASSISTANT_OVERRIDE_AUDIO_DURATION_DEFAULT)),
         seed=source.get(ASSISTANT_OVERRIDE_SEED_KEY, get_deepy_config_value(ASSISTANT_OVERRIDE_SEED_KEY, ASSISTANT_OVERRIDE_SEED_DEFAULT)),
         video_with_speech_variant=source.get(DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY, get_deepy_config_value(DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY, deepy_tool_settings.get_default_video_with_speech_variant())),
         image_generator_variant=source.get(DEEPY_TOOL_GEN_IMAGE_KEY, get_deepy_config_value(DEEPY_TOOL_GEN_IMAGE_KEY, DEEPY_DEFAULT_GEN_IMAGE)),
+        song_variant=source.get(DEEPY_TOOL_GEN_SONG_KEY, get_deepy_config_value(DEEPY_TOOL_GEN_SONG_KEY, DEEPY_DEFAULT_GEN_SONG)),
         image_editor_variant=source.get(DEEPY_TOOL_EDIT_IMAGE_KEY, get_deepy_config_value(DEEPY_TOOL_EDIT_IMAGE_KEY, DEEPY_DEFAULT_EDIT_IMAGE)),
         video_generator_variant=source.get(DEEPY_TOOL_GEN_VIDEO_KEY, get_deepy_config_value(DEEPY_TOOL_GEN_VIDEO_KEY, DEEPY_DEFAULT_GEN_VIDEO)),
         speech_from_description_variant=source.get(DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY, get_deepy_config_value(DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY, deepy_tool_settings.get_default_speech_from_description_variant())),
@@ -115,9 +127,11 @@ def store_assistant_tool_ui_settings(server_config: dict[str, Any] | None, setti
         ASSISTANT_OVERRIDE_WIDTH_KEY: normalized["width"],
         ASSISTANT_OVERRIDE_HEIGHT_KEY: normalized["height"],
         ASSISTANT_OVERRIDE_NUM_FRAMES_KEY: normalized["num_frames"],
+        ASSISTANT_OVERRIDE_AUDIO_DURATION_KEY: normalized["audio_duration"],
         ASSISTANT_OVERRIDE_SEED_KEY: normalized["seed"],
         DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY: normalized["video_with_speech_variant"],
         DEEPY_TOOL_GEN_IMAGE_KEY: normalized["image_generator_variant"],
+        DEEPY_TOOL_GEN_SONG_KEY: normalized["song_variant"],
         DEEPY_TOOL_EDIT_IMAGE_KEY: normalized["image_editor_variant"],
         DEEPY_TOOL_GEN_VIDEO_KEY: normalized["video_generator_variant"],
         DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY: normalized["speech_from_description_variant"],
@@ -132,6 +146,8 @@ def get_template_selector_state() -> dict[str, Any]:
     return {
         "image_generator_choices": deepy_tool_settings.list_tool_variant_choices("gen_image", current_variant=persisted["image_generator_variant"]),
         "selected_image_generator": persisted["image_generator_variant"],
+        "song_choices": deepy_tool_settings.list_tool_variant_choices("gen_song", current_variant=persisted["song_variant"]),
+        "selected_song": persisted["song_variant"],
         "image_editor_choices": deepy_tool_settings.list_tool_variant_choices("edit_image", current_variant=persisted["image_editor_variant"]),
         "selected_image_editor": persisted["image_editor_variant"],
         "video_generator_choices": deepy_tool_settings.list_tool_variant_choices("gen_video", current_variant=persisted["video_generator_variant"]),
@@ -145,11 +161,13 @@ def get_template_selector_state() -> dict[str, Any]:
     }
 
 
-def refresh_template_selector_state(current_image_generator: Any, current_image_editor: Any, current_video_generator: Any, current_video_with_speech: Any, current_speech_from_description: Any, current_speech_from_sample: Any) -> dict[str, Any]:
+def refresh_template_selector_state(current_image_generator: Any, current_image_editor: Any, current_video_generator: Any, current_video_with_speech: Any, current_song: Any, current_speech_from_description: Any, current_speech_from_sample: Any) -> dict[str, Any]:
     deepy_tool_settings.refresh_tool_presets()
     return {
         "image_generator_choices": deepy_tool_settings.list_tool_variant_choices("gen_image", current_variant=current_image_generator),
         "selected_image_generator": deepy_tool_settings.find_tool_variant("gen_image", current_image_generator),
+        "song_choices": deepy_tool_settings.list_tool_variant_choices("gen_song", current_variant=current_song),
+        "selected_song": deepy_tool_settings.find_tool_variant("gen_song", current_song),
         "image_editor_choices": deepy_tool_settings.list_tool_variant_choices("edit_image", current_variant=current_image_editor),
         "selected_image_editor": deepy_tool_settings.find_tool_variant("edit_image", current_image_editor),
         "video_generator_choices": deepy_tool_settings.list_tool_variant_choices("gen_video", current_variant=current_video_generator),
@@ -172,9 +190,11 @@ def normalize_assistant_tool_ui_settings(
     width: Any = None,
     height: Any = None,
     num_frames: Any = None,
+    audio_duration: Any = None,
     seed: Any = None,
     video_with_speech_variant: Any = None,
     image_generator_variant: Any = None,
+    song_variant: Any = None,
     image_editor_variant: Any = None,
     video_generator_variant: Any = None,
     speech_from_description_variant: Any = None,
@@ -187,9 +207,11 @@ def normalize_assistant_tool_ui_settings(
         "width": normalize_assistant_override_width(get_deepy_config_value(ASSISTANT_OVERRIDE_WIDTH_KEY, ASSISTANT_OVERRIDE_WIDTH_DEFAULT) if width is None else width),
         "height": normalize_assistant_override_height(get_deepy_config_value(ASSISTANT_OVERRIDE_HEIGHT_KEY, ASSISTANT_OVERRIDE_HEIGHT_DEFAULT) if height is None else height),
         "num_frames": normalize_assistant_override_num_frames(get_deepy_config_value(ASSISTANT_OVERRIDE_NUM_FRAMES_KEY, ASSISTANT_OVERRIDE_FRAMES_DEFAULT) if num_frames is None else num_frames),
+        "audio_duration": normalize_assistant_override_audio_duration(get_deepy_config_value(ASSISTANT_OVERRIDE_AUDIO_DURATION_KEY, ASSISTANT_OVERRIDE_AUDIO_DURATION_DEFAULT) if audio_duration is None else audio_duration),
         "seed": normalize_assistant_override_seed(get_deepy_config_value(ASSISTANT_OVERRIDE_SEED_KEY, ASSISTANT_OVERRIDE_SEED_DEFAULT) if seed is None else seed),
         "video_with_speech_variant": deepy_tool_settings.resolve_tool_variant("gen_video_with_speech", get_deepy_config_value(DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY, deepy_tool_settings.get_default_video_with_speech_variant()) if video_with_speech_variant is None else video_with_speech_variant, default_variant=deepy_tool_settings.get_default_video_with_speech_variant()),
         "image_generator_variant": deepy_tool_settings.resolve_tool_variant("gen_image", get_deepy_config_value(DEEPY_TOOL_GEN_IMAGE_KEY, DEEPY_DEFAULT_GEN_IMAGE) if image_generator_variant is None else image_generator_variant, default_variant=DEEPY_DEFAULT_GEN_IMAGE),
+        "song_variant": deepy_tool_settings.resolve_tool_variant("gen_song", get_deepy_config_value(DEEPY_TOOL_GEN_SONG_KEY, DEEPY_DEFAULT_GEN_SONG) if song_variant is None else song_variant, default_variant=DEEPY_DEFAULT_GEN_SONG),
         "image_editor_variant": deepy_tool_settings.resolve_tool_variant("edit_image", get_deepy_config_value(DEEPY_TOOL_EDIT_IMAGE_KEY, DEEPY_DEFAULT_EDIT_IMAGE) if image_editor_variant is None else image_editor_variant, default_variant=DEEPY_DEFAULT_EDIT_IMAGE),
         "video_generator_variant": deepy_tool_settings.resolve_tool_variant("gen_video", get_deepy_config_value(DEEPY_TOOL_GEN_VIDEO_KEY, DEEPY_DEFAULT_GEN_VIDEO) if video_generator_variant is None else video_generator_variant, default_variant=DEEPY_DEFAULT_GEN_VIDEO),
         "speech_from_description_variant": deepy_tool_settings.resolve_tool_variant("gen_speech_from_description", get_deepy_config_value(DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY, deepy_tool_settings.get_default_speech_from_description_variant()) if speech_from_description_variant is None else speech_from_description_variant, default_variant=deepy_tool_settings.get_default_speech_from_description_variant()),
@@ -207,6 +229,10 @@ __all__ = [
     "ASSISTANT_OVERRIDE_HEIGHT_DEFAULT",
     "ASSISTANT_OVERRIDE_HEIGHT_KEY",
     "ASSISTANT_OVERRIDE_NUM_FRAMES_KEY",
+    "ASSISTANT_OVERRIDE_AUDIO_DURATION_DEFAULT",
+    "ASSISTANT_OVERRIDE_AUDIO_DURATION_KEY",
+    "ASSISTANT_OVERRIDE_AUDIO_DURATION_MAX",
+    "ASSISTANT_OVERRIDE_AUDIO_DURATION_MIN",
     "ASSISTANT_OVERRIDE_SEED_DEFAULT",
     "ASSISTANT_OVERRIDE_SEED_KEY",
     "ASSISTANT_OVERRIDE_WIDTH_DEFAULT",
@@ -217,6 +243,7 @@ __all__ = [
     "get_template_selector_state",
     "normalize_assistant_override_height",
     "normalize_assistant_override_num_frames",
+    "normalize_assistant_override_audio_duration",
     "normalize_assistant_override_seed",
     "normalize_assistant_override_width",
     "normalize_assistant_separate_requests_with_empty_line",

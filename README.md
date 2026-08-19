@@ -64,6 +64,31 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 ## 🔥 Latest Updates : 
 
+## 19th of August 2026: WanGP v12.60, Remember to be nice with Deepy
+
+Deepy and the WanGP Prompt Enhancer have learned some impressive new tricks (enable them from the *Configuration / Deepy* menu):
+- **Speculative Decoding** lets Deepy (and Prompt Enhancer) think up to twice as fast, so there is less waiting between ideas and actions.
+- **INT8 KV Cache Quantization** lets it remember conversations roughly twice as long for the same VRAM budget. Install **GGUF Kernels 1.11** for the best performance; see the [installation guide](docs/INSTALLATION.md).
+- **Smart context compaction** lets Deepy summarize the journey and carry on when its memory starts getting crowded, instead of suddenly forgetting the plot.
+- The new **Qwen3.8 VL 27B** model brings sharper reasoning and richer enhanced prompts.
+- With your permission, Deepy can browse your files and use them as part of a creative workflow.
+- Deepy could already inspect media, trim clips, and process audio; it can now reach much further into WanGP's processing toolbox, including upscaling videos on demand.
+
+But the star of this release is **Deepy Prime**. Open *Configuration / Deepy* and use the **Deepy** menu to invite either **Deepy Prime** or the original **Deepy Zero**:
+- **Deepy Zero** is the quick, lightweight companion for straightforward requests and smaller language models.
+- **Deepy Prime**, powered by **Qwen3.8 VL 27B**, is the ambitious one: give it a multi-step idea involving images, sound, and video, and it will plan the whole production.
+- It understands WanGP's creative toolbox well enough to choose models, combine media, and plan long videos as connected sliding windows.
+- When a plan hits a wall, Prime is resourceful: it can reconsider, try another route, and keep working toward the goal. Watching its thoughts unfold can be half the fun.
+- It can connect to optional **MCP Servers** when you want outside help or interaction with another app; these connections live under **Deepy Prime Guidance** in the same settings page.
+- Enable **Allow Deepy to Read the Filesystem** and you can ask for things like *"make one video for every prompt in this text file"* or the wonderfully vague *"use the files in this folder and make something nice out of them."*
+
+There is one catch worthy of a tiny violin: for now, **Deepy Prime requires a GPU with at least 24 GB of VRAM**.
+
+Also in the news:
+- **Sol Attention 0.6.2 for H3**: faster generations and better-looking results, according to its creators.
+- **Ralston 2S Sampler for H3**: considered one of the best-looking H3 samplers, although it likes to take roughly twice as long.
+- **IndexTTS 2.5**: a new version of this Text-to-Speech model for voices that delivers realistic emotions.
+
 ## 12th of August 2026: WanGP v12.53, Jess is Back !
 
 **LTX 2.5. Jess is back, Dad is still in the garden, and this time the camera crew brought an upgrade.**

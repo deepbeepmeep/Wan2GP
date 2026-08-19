@@ -23,7 +23,8 @@ from .assets import (
     LLAMAJOY_FOLDER,
     PROMPT_ENHANCER_REPO,
 )
-from .config import validate_prompt_enhancer_speculative_decoding
+from shared.deepy.config import resolve_deepy_kv_cache_quantization
+from .config import resolve_prompt_enhancer_speculative_decoding
 
 
 @dataclass(slots=True)
@@ -39,7 +40,7 @@ class PromptEnhancerRuntime:
 
 def ensure_prompt_enhancer_assets(process_files_def, enhancer_enabled: int, qwen_backend: str = "quanto_int8", speculative_decoding: bool = False):
     enhancer_enabled = int(enhancer_enabled)
-    speculative_decoding = validate_prompt_enhancer_speculative_decoding(enhancer_enabled, speculative_decoding)
+    speculative_decoding = resolve_prompt_enhancer_speculative_decoding(enhancer_enabled, speculative_decoding)[0]
     if enhancer_enabled == 1:
         process_files_def(
             repoId=PROMPT_ENHANCER_REPO,
@@ -147,7 +148,7 @@ def _load_joycaption_prompt_enhancer():
 
 def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_decoder_engine: str = "", qwen_backend: str = "quanto_int8", speculative_decoding: bool = False, deepy_kv_cache_quantization: str = "") -> PromptEnhancerRuntime:
     enhancer_enabled = int(enhancer_enabled)
-    speculative_decoding = validate_prompt_enhancer_speculative_decoding(enhancer_enabled, speculative_decoding)
+    speculative_decoding, speculative_decoding_message = resolve_prompt_enhancer_speculative_decoding(enhancer_enabled, speculative_decoding)
     runtime = PromptEnhancerRuntime()
     if enhancer_enabled <= 0:
         return runtime
@@ -155,6 +156,11 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
     ensure_prompt_enhancer_assets(process_files_def, enhancer_enabled=enhancer_enabled, qwen_backend=qwen_backend, speculative_decoding=speculative_decoding)
 
     if enhancer_enabled in (3, 4, 5):
+        deepy_kv_cache_quantization, kv_cache_message = resolve_deepy_kv_cache_quantization(deepy_kv_cache_quantization)
+        if speculative_decoding_message:
+            print(f"[Prompt Enhancer / Deepy] {speculative_decoding_message}")
+        if kv_cache_message:
+            print(f"[Prompt Enhancer / Deepy] {kv_cache_message}")
         from .qwen35_text import load_qwen35_text_prompt_enhancer
         from .qwen35_vl import (
             enhancer_quantization_GGUF,

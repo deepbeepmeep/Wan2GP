@@ -9,8 +9,8 @@ from shared.utils.audio_video import read_image_metadata
 
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"}
-_VIDEO_EXTENSIONS = {".mkv", ".mov", ".mp4"}
-_AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac"}
+_VIDEO_EXTENSIONS = {".mkv", ".mov", ".mp4", ".m4v", ".webm", ".avi"}
+_AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac", ".m4a", ".flac", ".ogg", ".opus", ".wma"}
 _MEDIA_TYPES = {"image", "video", "audio", "any", "all"}
 _TYPE_HINTS = {
     "image": ("image", "images", "picture", "photo", "photos", "pic", "pics"),

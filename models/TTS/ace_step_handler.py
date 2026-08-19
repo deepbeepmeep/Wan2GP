@@ -128,6 +128,34 @@ ACE_STEP15_MODEL_MODES = {
     "default": 0,
     "label": "LM Chain Of Thought Preprocessing",
 }
+ACE_STEP_LYRICS_PROMPT_INFOS = """### Formatting lyrics
+
+Treat lyrics as the song's timeline. Put each section tag on its own line and separate sections with a blank line:
+
+```text
+[Intro - ambient]
+
+[Verse 1]
+Walking through the empty streets
+Thinking of your gentle touch
+
+[Chorus - anthemic]
+WE RISE TOGETHER
+Into the light (into the light)
+
+[Bridge - whispered]
+If tomorrow never comes
+
+[Outro - fade out]
+```
+
+- Common structure tags include `[Intro]`, `[Verse]`, `[Pre-Chorus]`, `[Chorus]`, `[Bridge]`, and `[Outro]`.
+- Use tags such as `[Build]`, `[Drop]`, `[Breakdown]`, `[Instrumental]`, `[Guitar Solo]`, or `[Piano Interlude]` to guide dynamics and instrumental passages. Use `[Instrumental]` alone for a fully instrumental track.
+- Keep tags concise. Add at most a short performance hint after a hyphen, such as `[Chorus - anthemic]`; put detailed style, instrumentation, and mood in Music Caption / Genres / Tags, and keep both fields consistent.
+- Aim for roughly 6-10 syllables per line and similar line lengths within repeated sections. Use UPPERCASE for extra intensity and parentheses for backing vocals or echoes.
+
+Based on the [official ACE-Step 1.5 prompting guide](https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/Tutorial.md#about-lyrics-the-temporal-script).
+"""
 ACE_STEP15_SETTING_ALIASES = {
     "bpm": "bpm",
     "keyscale": "keyscale",
@@ -345,6 +373,7 @@ class family_handler:
                 "enabled_audio_lora": True,
                 "lm_engines": ["vllm"],
                 "prompt_class": "Lyrics",
+                "prompt_infos": ACE_STEP_LYRICS_PROMPT_INFOS,
                 "alt_guidance": "LM Guidance (CFG)",
                 "prompt_description": "Lyrics / Prompt (Write [Instrumental] for Instrumental Generation only)",
                 "audio_prompt_type_sources": {
@@ -408,6 +437,7 @@ class family_handler:
                 "placeholder": "disco",
                 "lines": 2,
             },
+            "prompt_infos": ACE_STEP_LYRICS_PROMPT_INFOS,
             "duration_slider": dict(ACE_STEP_DURATION_SLIDER),
             "text_prompt_enhancer_instructions": HEARTMULA_LYRIC_PROMPT,
             "prompt_enhancer_button_label": "Compose Lyrics",

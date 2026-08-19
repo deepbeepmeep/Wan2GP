@@ -679,6 +679,10 @@ def get_css() -> str:
     backdrop-filter: none;
 }
 
+#deepy_type_value {
+    display: none !important;
+}
+
 .wangp-assistant-chat__empty-card {
     width: min(100%, 482px);
 }
@@ -2378,11 +2382,10 @@ WAC.emptyMarkup = function (mode) {
 };
 
 WAC.syncDeepyTypePreview = function () {
-  const control = document.querySelector('#deepy_type_choice');
-  const input = control && control.querySelector ? control.querySelector('input') : null;
-  const value = String((input && input.value) || (control && control.textContent) || '').trim().toLowerCase();
+  const canonical = document.querySelector('#deepy_type_value');
+  const value = String((canonical && canonical.textContent) || '').trim().toLowerCase();
   if (!value) return;
-  const mode = value === 'prime' || value === 'deepy prime' ? 'prime' : 'zero';
+  const mode = value === 'prime' ? 'prime' : 'zero';
   const host = WAC.host();
   const empty = WAC.empty();
   if (!host || !empty || host.dataset.deepyType === mode) return;

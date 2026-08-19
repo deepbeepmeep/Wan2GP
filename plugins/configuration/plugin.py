@@ -379,6 +379,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         info="Deepy Zero is lightweight and focused on straightforward requests. Deepy Prime plans advanced workflows and requires Qwen3.8 VL 27B, Summarize compaction, and at least 32,000 context tokens.",
                         elem_id="deepy_type_choice",
                     )
+                    self.deepy_type_value = gr.HTML(value=deepy_type_default, elem_id="deepy_type_value")
                     self.deepy_vram_mode_choice = gr.Dropdown(
                         choices=[
                             ("Unload from VRAM as soon as possible", DEEPY_VRAM_MODE_UNLOAD),
@@ -536,9 +537,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
             runtime_config[DEEPY_CONTEXT_TOKENS_KEY] = deepy_context_tokens_choice
             runtime_config[DEEPY_COMPACTION_TYPE_KEY] = deepy_compaction_type_choice
             context_label = format_deepy_context_tokens_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice)
-            return gr.update(value=deepy_context_tokens_choice, label=context_label), gr.update(value=deepy_compaction_type_choice), deepy_requirement_message(runtime_config)
+            return gr.update(value=deepy_context_tokens_choice, label=context_label), gr.update(value=deepy_compaction_type_choice), deepy_requirement_message(runtime_config), deepy_mode_from_config(deepy_enabled_choice, deepy_type_choice)
 
-        self.deepy_type_choice.input(fn=enforce_deepy_prime_requirements, inputs=[self.deepy_type_choice, self.deepy_context_tokens_choice, self.deepy_compaction_type_choice, self.enhancer_enabled_choice, self.deepy_kv_cache_quantization_choice], outputs=[self.deepy_context_tokens_choice, self.deepy_compaction_type_choice, self.deepy_requirement_md], show_progress="hidden")
+        self.deepy_type_choice.input(fn=enforce_deepy_prime_requirements, inputs=[self.deepy_type_choice, self.deepy_context_tokens_choice, self.deepy_compaction_type_choice, self.enhancer_enabled_choice, self.deepy_kv_cache_quantization_choice], outputs=[self.deepy_context_tokens_choice, self.deepy_compaction_type_choice, self.deepy_requirement_md, self.deepy_type_value], show_progress="hidden")
 
         def update_deepy_context_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice):
             return gr.update(label=format_deepy_context_tokens_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice))

@@ -89,7 +89,7 @@ Also in the news:
 - **Ralston 2S Sampler for H3**: considered one of the best-looking H3 samplers, although it likes to take roughly twice as long.
 - **IndexTTS 2.5**: a new version of this Text-to-Speech model for voices that delivers realistic emotions.
 
-## 12th of August 2026: WanGP v12.53, Jess is Back !
+## 16th of August 2026: WanGP v12.53, Jess is Back !
 
 **LTX 2.5. Jess is back, Dad is still in the garden, and this time the camera crew brought an upgrade.**
 
@@ -109,7 +109,6 @@ Dev and Distilled are available in BF16 and INT8 ConvRot, while Distilled also g
 - **MinaMax Music 3**: Ace Step has met its match as Minimax Music 3 generates high quality songs. WanGP implementation is optimized with a *vllm engine* for x3 faster generation. It is recommended to have 16 GB of VRAM to use profile 3/3+ for much faster generation. This implementation contains several *Prompt Enhancers* that can either generate for you lyrics and / or the music description.
 
 - **Upgraded GGUF Kernels 1.08**: lower VRAM, accurate native BF16, and CUDA-graph-safe Stream-K for GGUF models; check *docs/INSTALLATION.md* to upgrade.
-
 
 *update 12.51*: Unlocked Control Video Processes, LTX-2 video upsampler\
 *update 12.53*: MiniMax 3, LTX Upsampler 2.5 improved, upgraded GGUF Kernels

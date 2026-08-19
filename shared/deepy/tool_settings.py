@@ -460,7 +460,7 @@ def validate_wangp_settings_payload_for_tool(tool_name: str, payload: dict[str, 
         return None
     image_mode = _int_setting(payload, "image_mode")
     accepts_audio_prompt = "A" in str(payload.get("audio_prompt_type", "") or "")
-    has_image_refs = _sequence_setting_has_value(payload, "image_refs")
+    has_image_refs = "I" in payload.get("video_prompt_type", "")
     model_def = _get_model_def_from_settings_payload(payload)
     audio_only = bool(model_def.get("audio_only", False)) if isinstance(model_def, dict) else False
     checks = {

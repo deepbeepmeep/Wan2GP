@@ -1,4 +1,4 @@
-import os, shutil, sys, time
+import os, shutil, sys, tempfile, time
 
 # Global variables to track download progress
 _start_time = None
@@ -226,12 +226,19 @@ def download_file(url, filename):
         else:
             tgt = fl.get_download_location() if len(base_dir) == 0 else base_dir
             os.makedirs(tgt, exist_ok=True)
-            temp_dir_path = os.path.join(tgt, f"_temp{time.time()}")
+            # Stage in the OS temp dir (short path) instead of under ckpts:
+            # huggingface_hub writes its .cache/huggingface/download staging tree
+            # next to local_dir, which can exceed Windows' 260-char MAX_PATH when
+            # the install path is deep and the filename is long (issue: WinError 3
+            # "'...safetensors.metadata' The system cannot find the path specified").
+            temp_dir_path = tempfile.mkdtemp(prefix="_temp")
             temp_full_path = os.path.join(temp_dir_path, sourceFolder)
             os.makedirs(temp_full_path, exist_ok=True)
-            hf_hub_download(repo_id=repoId, filename=onefile, local_dir=temp_dir_path, subfolder=sourceFolder)
-            shutil.move(os.path.join(temp_full_path, onefile), tgt)
-            shutil.rmtree(temp_dir_path)
+            try:
+                hf_hub_download(repo_id=repoId, filename=onefile, local_dir=temp_dir_path, subfolder=sourceFolder)
+                shutil.move(os.path.join(temp_full_path, onefile), tgt)
+            finally:
+                shutil.rmtree(temp_dir_path, ignore_errors=True)
     else:
         from urllib.request import urlretrieve
 

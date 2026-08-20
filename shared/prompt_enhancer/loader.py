@@ -164,18 +164,21 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
         from .qwen35_text import load_qwen35_text_prompt_enhancer
         from .qwen35_vl import (
             enhancer_quantization_GGUF,
+            enhancer_quantization_GGUF_Q2,
             enhancer_quantization_QUANTO_INT8,
             alias_qwen35_text_embedding_for_mmgp,
             get_qwen35_assets_dir_name,
             get_qwen35_prompt_enhancer_variant,
+            get_qwen35_quantization,
+            get_qwen35_text_gguf_path,
             get_qwen35_variant_spec,
             load_qwen35_vl_prompt_enhancer,
         )
 
-        backend = qwen_backend or enhancer_quantization_QUANTO_INT8
         qwen35_variant = get_qwen35_prompt_enhancer_variant(enhancer_enabled)
         spec = get_qwen35_variant_spec(qwen35_variant)
-        backend = spec.get("backend", backend)
+        quantization = get_qwen35_quantization(qwen_backend or enhancer_quantization_QUANTO_INT8, variant=qwen35_variant)
+        backend = enhancer_quantization_GGUF if quantization == enhancer_quantization_GGUF_Q2 else quantization
         assets_dir_name = get_qwen35_assets_dir_name(qwen35_variant)
         assets_dir = fl.locate_folder(assets_dir_name, error_if_none=False) or fl.get_download_location(assets_dir_name)
         if backend == enhancer_quantization_GGUF:
@@ -183,7 +186,9 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
             default_dtype = get_gguf_compute_dtype()
         else:
             default_dtype = torch.bfloat16
+        text_model_path = get_qwen35_text_gguf_path(assets_dir, variant=qwen35_variant, backend=quantization) if backend == enhancer_quantization_GGUF else None
         runtime.llm_model = load_qwen35_text_prompt_enhancer(
+            model_path=text_model_path,
             assets_dir=assets_dir,
             default_dtype=default_dtype,
             backend=backend,

@@ -40,6 +40,7 @@ from .qwen3_5 import load_qwen35_model_class
 
 UPSTREAM_MODELING_FILENAME = "modeling_qwen3_5.py"
 enhancer_quantization_GGUF = "gguf"
+enhancer_quantization_GGUF_Q2 = "gguf_q2"
 enhancer_quantization_SAFETENSORS = "safetensors"
 enhancer_quantization_QUANTO_INT8 = "quanto_int8"
 QWEN35_GGUF_LLAMACPP_ENV = "WGP_GGUF_LLAMACPP_CUDA"
@@ -78,6 +79,15 @@ def get_qwen35_assets_dir_name(variant: str | None = None) -> str:
 
 def get_qwen35_prompt_enhancer_variant(model_no) -> str:
     return {3: QWEN35_VARIANT_4B, 4: QWEN35_VARIANT_9B, 5: QWEN38_VARIANT_27B}[int(model_no)]
+
+
+def get_qwen35_quantization(backend: str, variant: str | None = None) -> str:
+    spec = get_qwen35_variant_spec(variant)
+    if backend == enhancer_quantization_GGUF_Q2:
+        if "text_gguf_q2_filename" not in spec:
+            raise ValueError(f"{spec['display_name']} does not provide a GGUF Q2 checkpoint.")
+        return backend
+    return spec.get("backend", backend)
 
 
 def _resolve_qwen35_assets_dir(assets_dir: str | None, variant: str | None = None, error_if_none: bool = True) -> str | None:
@@ -130,11 +140,14 @@ def get_qwen35_modeling_path() -> str:
 
 def ensure_qwen35_prompt_enhancer_assets(process_files_def, backend: str = enhancer_quantization_QUANTO_INT8, variant: str | None = None, speculative_decoding: bool = False):
     spec = get_qwen35_variant_spec(variant)
-    backend = spec.get("backend", backend)
+    backend = get_qwen35_quantization(backend, variant=variant)
     repo_subfolder = spec.get("repo_subfolder", "")
     qwen35_shared_files = list(spec["root_files"])
     if spec["root_repo"] == spec.get("gguf_repo"):
-        qwen35_shared_files += [spec["vision_filename"], spec["text_gguf_filename" if backend == enhancer_quantization_GGUF else "text_int8_filename"]]
+        checkpoint_filename = spec["text_int8_filename"]
+        if backend in (enhancer_quantization_GGUF, enhancer_quantization_GGUF_Q2):
+            checkpoint_filename = spec["text_gguf_q2_filename" if backend == enhancer_quantization_GGUF_Q2 else "text_gguf_filename"]
+        qwen35_shared_files += [spec["vision_filename"], checkpoint_filename]
         if speculative_decoding and spec.get("text_mtp_filename"):
             qwen35_shared_files.append(spec["text_mtp_filename"])
     download_def = {"repoId": spec["root_repo"], "sourceFolderList": [repo_subfolder], "fileList": [qwen35_shared_files]}
@@ -142,9 +155,10 @@ def ensure_qwen35_prompt_enhancer_assets(process_files_def, backend: str = enhan
         download_def["targetFolderList"] = [spec["assets_dir_name"]]
     process_files_def(**download_def)
     if spec["root_repo"] != spec.get("gguf_repo"):
-        if backend != enhancer_quantization_GGUF:
+        if backend not in (enhancer_quantization_GGUF, enhancer_quantization_GGUF_Q2):
             raise ValueError(f"{spec['display_name']} supports only the GGUF backend.")
-        process_files_def(repoId=spec["gguf_repo"], sourceFolderList=[spec.get("gguf_repo_subfolder", "")], fileList=[[spec["vision_filename"], spec["text_gguf_filename"]]])
+        gguf_filename = spec["text_gguf_q2_filename" if backend == enhancer_quantization_GGUF_Q2 else "text_gguf_filename"]
+        process_files_def(repoId=spec["gguf_repo"], sourceFolderList=[spec.get("gguf_repo_subfolder", "")], fileList=[[spec["vision_filename"], gguf_filename]])
     if spec.get("text_repo") and spec.get("text_required_files"):
         process_files_def(repoId=spec["text_repo"], sourceFolderList=[repo_subfolder], fileList=[list(spec["text_required_files"])])
     qwen35_modeling_path = get_qwen35_modeling_path()
@@ -215,9 +229,12 @@ def _load_qwen35_image_processor(assets_dir: str):
     return Qwen2VLImageProcessorFast(**config)
 
 
-def get_qwen35_text_gguf_path(assets_dir: str, variant: str | None = None) -> str:
-    filename = get_qwen35_variant_spec(variant)["text_gguf_filename"]
+def get_qwen35_text_gguf_path(assets_dir: str, variant: str | None = None, backend: str = enhancer_quantization_GGUF) -> str:
+    spec = get_qwen35_variant_spec(variant)
+    filename = spec["text_gguf_q2_filename" if get_qwen35_quantization(backend, variant=variant) == enhancer_quantization_GGUF_Q2 else "text_gguf_filename"]
     return _resolve_qwen35_checkpoint_file(assets_dir, filename, variant=variant, error_if_none=False)
+
+
 def _build_qwen35_vl_gguf_preprocess_sd(patch_shape):
     def preprocess_sd(sd, quant_map=None, tied_map=None):
         new_sd = OrderedDict()
@@ -994,12 +1011,14 @@ __all__ = [
     "QWEN35_VARIANT_9B",
     "QWEN35_VARIANT_4B",
     "enhancer_quantization_GGUF",
+    "enhancer_quantization_GGUF_Q2",
     "enhancer_quantization_SAFETENSORS",
     "enhancer_quantization_QUANTO_INT8",
     "QWEN35_TEXT_GGUF_FILENAME",
     "QWEN35_VISION_FILENAME",
     "UPSTREAM_MODELING_FILENAME",
     "get_qwen35_prompt_enhancer_variant",
+    "get_qwen35_quantization",
     "get_qwen35_assets_dir_name",
     "get_qwen35_modeling_path",
     "get_qwen35_variant_spec",

@@ -106,6 +106,7 @@ def _resolve_gguf_linear_attention_layout_from_filename(model_path: str) -> tupl
     if filename in {
         "qwen3.5-9b-abliterated-text-q4-k-m-bis.gguf",
         "qwen3.8-27b-uncensored-q4-k-m.gguf",
+        "qwen3.8-27b-uncensored-iq2-m.gguf",
     }:
         return True, True, False
     if filename in {

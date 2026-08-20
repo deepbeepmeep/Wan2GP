@@ -64,13 +64,13 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 ## 🔥 Latest Updates : 
 
-## 19th of August 2026: WanGP v12.60, Remember to be nice with Deepy
+## 19th of August 2026: WanGP v12.61, Remember to be nice with Deepy
 
 Deepy and the WanGP Prompt Enhancer have learned some impressive new tricks (enable them from the *Configuration / Deepy* menu):
 - **Speculative Decoding** lets Deepy (and Prompt Enhancer) think up to twice as fast, so there is less waiting between ideas and actions.
 - **INT8 KV Cache Quantization** lets it remember conversations roughly twice as long for the same VRAM budget. Install **GGUF Kernels 1.11** for the best performance; see the [installation guide](docs/INSTALLATION.md).
 - **Smart context compaction** lets Deepy summarize the journey and carry on when its memory starts getting crowded, instead of suddenly forgetting the plot.
-- The new **Qwen3.8 VL 27B** model brings sharper reasoning and richer enhanced prompts.
+- The new **Qwen3.8 VL 27B** model brings sharper reasoning and richer enhanced prompts. It is available in GGUF Q2 and GGUF Q4 (recommended)
 - With your permission, Deepy can browse your files and use them as part of a creative workflow.
 - Deepy could already inspect media, trim clips, and process audio; it can now reach much further into WanGP's processing toolbox, including upscaling videos on demand.
 
@@ -83,6 +83,8 @@ But the star of this release is **Deepy Prime**. Open *Configuration / Deepy* an
 - Enable **Allow Deepy to Read the Filesystem** and you can ask for things like *"make one video for every prompt in this text file"* or the wonderfully vague *"use the files in this folder and make something nice out of them."*
 
 There is one catch worthy of a tiny violin: for now, **Deepy Prime requires a GPU with at least 24 GB of VRAM**.
+
+**Breaking News WanGP 12.61**: by selecting the newly added *Qwen3.8 VL 27B GGUF Q2*, a max *32000 KV Cache*, *Speculative Decoding Disabled*, and launching the Web Browser in *no GPU mode*, **you can now use Deepy Prime with 16GB of VRAM** !
 
 Also in the news:
 - **Sol Attention 0.6.2 for H3**: faster generations and better-looking results, according to its creators.

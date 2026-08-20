@@ -73,11 +73,26 @@ from shared.utils.wgp_config_migration import (
 )
 
 
+QWEN35_PROMPT_ENHANCER_IDS = (3, 4)
+QWEN38_PROMPT_ENHANCER_ID = 5
+QWEN35_QUANTIZATION_CHOICES = [("Quanto Int8 (recommended, better quality)", "quanto_int8"), ("GGUF Q4 (less VRAM/RAM & faster if kernels are installed, but worse quality)", "gguf")]
+QWEN38_QUANTIZATION_CHOICES = [("GGUF Q4 (default, higher quality, requires at least 24 GB of VRAM)", "gguf"), ("GGUF Q2 (lower VRAM/RAM,  requires at least 16 GB of VRAM, lower quality)", "gguf_q2")]
+
+
+def prompt_enhancer_quantization_ui_state(enhancer_enabled, quantization):
+    enhancer_enabled = int(enhancer_enabled)
+    if enhancer_enabled == QWEN38_PROMPT_ENHANCER_ID:
+        value = quantization if quantization in ("gguf", "gguf_q2") else "gguf"
+        return QWEN38_QUANTIZATION_CHOICES, value, True
+    value = "gguf" if quantization in ("gguf", "gguf_q2") else "quanto_int8"
+    return QWEN35_QUANTIZATION_CHOICES, value, enhancer_enabled in QWEN35_PROMPT_ENHANCER_IDS
+
+
 class ConfigTabPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = "Configuration Tab"
-        self.version = "1.1.3"
+        self.version = "1.1.4"
         self.description = "Lets you adjust all your performance and UI options for WAN2GP"
 
     def setup_ui(self):
@@ -331,16 +346,19 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
                 with gr.Tab("Prompt Enhancer / Deepy"):
                     with gr.Group():
+                        enhancer_enabled_value = enabled_choice_value(self.server_config.get("enhancer_enabled", prompt_enhancer_default_mode), PROMPT_ENHANCER_CHOICES, prompt_enhancer_default_mode)
                         self.enhancer_enabled_choice = gr.Dropdown(
                             choices=PROMPT_ENHANCER_CHOICES,
-                            value=enabled_choice_value(self.server_config.get("enhancer_enabled", prompt_enhancer_default_mode), PROMPT_ENHANCER_CHOICES, prompt_enhancer_default_mode),
+                            value=enhancer_enabled_value,
                             label="Model used to power Prompt Enhancer / Deepy"
                         )
+                        enhancer_quantization_choices, enhancer_quantization_value, enhancer_quantization_visible = prompt_enhancer_quantization_ui_state(enhancer_enabled_value, self.server_config.get("prompt_enhancer_quantization", "quanto_int8"))
                         with gr.Row():
                             self.enhancer_quantization_choice = gr.Dropdown(
-                                choices=[("Quanto Int8 (recommended, better quality)", "quanto_int8"), ("GGUF Q4 (less VRAM/RAM & faster if kernels are installed, but worse quality)", "gguf")],
-                                value=self.server_config.get("prompt_enhancer_quantization", "quanto_int8"),
+                                choices=enhancer_quantization_choices,
+                                value=enhancer_quantization_value,
                                 label="Qwen LLM Quantization",
+                                visible=enhancer_quantization_visible,
                             )
                             self.enhancer_speculative_decoding_choice = gr.Dropdown(
                                 choices=[("Auto", PROMPT_ENHANCER_SPECULATIVE_DECODING_AUTO), ("Yes", 1), ("No", 0)],
@@ -552,6 +570,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
         def update_speculative_decoding_choice(enhancer_enabled_choice, speculative_decoding_choice):
             return gr.update(value=normalize_prompt_enhancer_speculative_decoding(speculative_decoding_choice), interactive=not self.args.lock_config)
 
+        def update_enhancer_quantization_choice(enhancer_enabled_choice, enhancer_quantization_choice):
+            choices, value, visible = prompt_enhancer_quantization_ui_state(enhancer_enabled_choice, enhancer_quantization_choice)
+            return gr.update(choices=choices, value=value, visible=visible)
+
+        self.enhancer_enabled_choice.input(fn=update_enhancer_quantization_choice, inputs=[self.enhancer_enabled_choice, self.enhancer_quantization_choice], outputs=[self.enhancer_quantization_choice], show_progress="hidden")
         self.enhancer_enabled_choice.input(fn=update_speculative_decoding_choice, inputs=[self.enhancer_enabled_choice, self.enhancer_speculative_decoding_choice], outputs=[self.enhancer_speculative_decoding_choice], show_progress="hidden")
         self.process_queues_when_browser_unfocused_choice.change(
             fn=None,
@@ -672,8 +695,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
             last_resolution_choice
         ) = fixed_args
 
-        if int(enhancer_enabled_choice) == 5 and enhancer_quantization_choice != "gguf":
-            error = "Qwen3.8-27B is available only as GGUF. Select GGUF Q4 as the Qwen LLM quantization."
+        if int(enhancer_enabled_choice) == QWEN38_PROMPT_ENHANCER_ID and enhancer_quantization_choice not in ("gguf", "gguf_q2"):
+            error = "Qwen3.8-27B is available only as GGUF. Select GGUF Q2 or Q4 as the Qwen LLM quantization."
+            gr.Info(f"Configuration was not saved: {error}")
+            return f"<div style='color:red; text-align:center;'>Configuration was not saved: {error}</div>", *[gr.update()]*8
+        if int(enhancer_enabled_choice) in QWEN35_PROMPT_ENHANCER_IDS and enhancer_quantization_choice not in ("quanto_int8", "gguf"):
+            error = "Qwen3.5 is available as Quanto Int8 or GGUF Q4."
             gr.Info(f"Configuration was not saved: {error}")
             return f"<div style='color:red; text-align:center;'>Configuration was not saved: {error}</div>", *[gr.update()]*8
 

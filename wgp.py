@@ -1043,6 +1043,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
             frame_offset=model_def.get("frames_offset", 1),
             overlap_offset=model_def.get("sliding_window_defaults", {}).get("overlap_offset", 1),
             max_overlap=model_def.get("sliding_window_defaults", {}).get("overlap_max"),
+            preserve_exact_output_frames=model_def.get("image_end_frame_position", False),
             supported_model_commands=model_def.get("prompt_slash_commands", []),
             allow_new_shot=image_prompt_types_allow_t2v(model_def, inputs.get("image_mode", 0)),
             first_window_overlap_frames=estimate_first_window_overlap_frames(inputs.get("image_start"), inputs.get("video_source"), inputs.get("keep_frames_video_source", ""), schedule_fps),
@@ -7005,6 +7006,7 @@ def generate_media(
             frame_offset=frames_offset,
             overlap_offset=model_def.get("sliding_window_defaults", {}).get("overlap_offset", 1),
             max_overlap=model_def.get("sliding_window_defaults", {}).get("overlap_max"),
+            preserve_exact_output_frames=model_def.get("image_end_frame_position", False),
             supported_model_commands=model_def.get("prompt_slash_commands", []),
             allow_new_shot=image_prompt_types_allow_t2v(model_def, image_mode),
             first_window_overlap_frames=estimate_first_window_overlap_frames(None if fake_start_image else image_start, video_source, keep_frames_video_source, fps),
@@ -7187,7 +7189,7 @@ def generate_media(
     if scheduler_active:
         default_windows_template = []
     elif any_sliding_window:
-        default_windows_template = build_default_window_plan(total_frames=current_video_length, window_size=sliding_window_size, default_overlap=default_reuse_frames, discard_last_frames=sliding_window_discard_last_frames, minimum=frames_minimum, step=frames_steps, frame_offset=frames_offset, overlap_offset=sliding_window_defaults.get("overlap_offset", 1), max_overlap=sliding_window_defaults.get("overlap_max"))
+        default_windows_template = build_default_window_plan(total_frames=current_video_length, window_size=sliding_window_size, default_overlap=default_reuse_frames, discard_last_frames=sliding_window_discard_last_frames, minimum=frames_minimum, step=frames_steps, frame_offset=frames_offset, overlap_offset=sliding_window_defaults.get("overlap_offset", 1), max_overlap=sliding_window_defaults.get("overlap_max"), preserve_exact_output_frames=model_def.get("image_end_frame_position", False))
     else:
         default_windows_template = [{"output_frames": current_video_length, "overlap_frames": 0, "discard_last_frames": 0, "trim_last_frames": 0, "frame_num": current_video_length}]
     default_windows = [dict(window) for window in default_windows_template]
@@ -7209,7 +7211,7 @@ def generate_media(
     extra_generation = 0
     discard_last_frames = sliding_window_discard_last_frames
     default_discard_last_frames = discard_last_frames
-    default_requested_frames_to_generate = current_video_length
+    default_requested_frames_to_generate = current_video_length if scheduler_active else sum(window["output_frames"] for window in default_windows)
     nb_frames_positions = 0
     if scheduler_active:
         default_requested_frames_to_generate = frame_scheduler["predicted_total_frames"]
@@ -7322,7 +7324,7 @@ def generate_media(
             extra_windows += new_extra_windows
             if scheduler_active:
                 for _ in range(new_extra_windows):
-                    scheduled_windows.append(build_extension_window(scheduled_windows[-1]["prompt"], window_size=sliding_window_size, overlap_frames=default_reuse_frames, discard_last_frames=default_discard_last_frames, minimum=frames_minimum, step=frames_steps, frame_offset=frames_offset))
+                    scheduled_windows.append(build_extension_window(scheduled_windows[-1]["prompt"], window_size=sliding_window_size, overlap_frames=default_reuse_frames, discard_last_frames=default_discard_last_frames, minimum=frames_minimum, step=frames_steps, frame_offset=frames_offset, preserve_exact_output_frames=model_def.get("image_end_frame_position", False)))
                     requested_frames_to_generate += scheduled_windows[-1]["output_frames"]
                 if window_no >= len(scheduled_windows):
                     break
@@ -7334,7 +7336,7 @@ def generate_media(
             else:
                 frame_window_options, current_loras_slists, new_shot, discard_last_frames = None, loras_slists, False, default_discard_last_frames
                 for _ in range(new_extra_windows):
-                    default_windows.append(build_extension_window("", window_size=sliding_window_size, overlap_frames=default_reuse_frames, discard_last_frames=default_discard_last_frames, minimum=frames_minimum, step=frames_steps, frame_offset=frames_offset))
+                    default_windows.append(build_extension_window("", window_size=sliding_window_size, overlap_frames=default_reuse_frames, discard_last_frames=default_discard_last_frames, minimum=frames_minimum, step=frames_steps, frame_offset=frames_offset, preserve_exact_output_frames=model_def.get("image_end_frame_position", False)))
                     requested_frames_to_generate += default_windows[-1]["output_frames"]
                 if window_no >= len(default_windows):
                     break
@@ -7413,6 +7415,7 @@ def generate_media(
                         image_size  = image_end_tensor.shape[-2:]
                         sample_fit_canvas = None
                 image_end_list= None
+            image_end_frame_position = current_video_length - tail_trim_frames - 1 if image_end_tensor is not None and model_def.get("image_end_frame_position", False) else None
             window_start_frame = guide_start_frame - (reuse_frames if window_no > 1 else source_video_overlap_frames_count)
             guide_end_frame = guide_start_frame + current_video_length - (source_video_overlap_frames_count if window_no == 1 else reuse_frames)
             alignment_shift = source_video_frames_count if reset_control_aligment else 0
@@ -7764,6 +7767,7 @@ def generate_media(
                     alt_prompt = current_alt_prompt,
                     image_start = image_start_tensor,  
                     image_end = image_end_tensor,
+                    image_end_frame_position=image_end_frame_position,
                     input_frames = src_video,
                     input_frames2 = src_video2,
                     input_ref_images=  src_ref_images,
@@ -7981,7 +7985,8 @@ def generate_media(
                         if generated_audio is not None:
                             generated_audio = truncate_audio(generated_audio, 0, discard_last_frames, fps, output_audio_sampling_rate)
                     if automatic_trim_last_frames > 0:
-                        print(f"Automatic frame trimming: removed {automatic_trim_last_frames} frame(s) from the end of Sliding Window {window_no} (generated {current_video_length}, overlap {reuse_frames}).")
+                        frame_label = "frame" if automatic_trim_last_frames == 1 else "frames"
+                        print(f"{automatic_trim_last_frames} {frame_label} trimmed to match expected duration (Sliding Window {window_no}).")
                         sample = sample[:, :-automatic_trim_last_frames]
                         guide_start_frame -= automatic_trim_last_frames
                         if generated_audio is not None:

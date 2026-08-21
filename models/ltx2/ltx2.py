@@ -1298,6 +1298,7 @@ class LTX2:
         n_prompt: str | None = None,
         image_start=None,
         image_end=None,
+        image_end_frame_position: int | None = None,
         sampling_steps: int = 40,
         guide_scale: float = 4.0,
         alt_guide_scale: float = 1.0,
@@ -1598,7 +1599,7 @@ class LTX2:
             images_stage2.append(entry)
 
         if image_end is not None:
-            entry = (image_end, output_frame_num - 1, input_video_strength)
+            entry = (image_end, output_frame_num - 1 if image_end_frame_position is None else int(image_end_frame_position), input_video_strength)
             guiding_images.append(entry)
             guiding_images_stage2.append(entry)
 

@@ -13,7 +13,7 @@
     ],
 	
     "loras_multipliers": "1.0",
-    "type": "MiniMax H3 FL2VA Turbo Lightx2v 8 Steps",
+    "type": "MiniMax H3 FL2VA Pruned Turbo Lightx2v 8 Steps",
     "settings_version": 2.73,
-    "model_type": "minimax_h3_fl2va"
+    "model_type": "minimax_h3_fl2va_pruned"
 }

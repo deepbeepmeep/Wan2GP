@@ -344,7 +344,7 @@ class MiniMaxH3Pipeline:
 
     @_return_none_on_interrupt
     @torch.inference_mode()
-    def generate(self, input_prompt, image_start=None, image_end=None, input_frames=None, input_frames2=None, input_ref_images=None,
+    def generate(self, input_prompt, image_start=None, image_end=None, image_end_frame_position=None, input_frames=None, input_frames2=None, input_ref_images=None,
                  frames_to_inject=None, frames_relative_positions_list=None, image_refs_relative_size=100,
                  input_masks=None, denoising_strength=1.0, masking_strength=1.0,
                  input_video=None, input_waveform=None, input_waveform_sample_rate=None,
@@ -414,7 +414,10 @@ class MiniMaxH3Pipeline:
         elif image_start is not None and not audio_from_control_video:
             self._add_image_condition(image_start, 0, presentation, visual_latents, keyframes)
         if image_end is not None and not audio_from_control_video:
-            self._add_image_condition(image_end, aligned_target_frames - 1, presentation, visual_latents, keyframes)
+            if image_end_frame_position is None:
+                self._add_image_condition(image_end, aligned_target_frames - 1, presentation, visual_latents, keyframes)
+            else:
+                self._add_image_condition(image_end, int(image_end_frame_position) - history_count, presentation, visual_latents, keyframes, anchor="frame")
         for image, frame_index in zip(frames_to_inject or (), frames_relative_positions_list or ()):
             frame_index = int(frame_index) - history_count
             if 0 <= frame_index < target_frames:

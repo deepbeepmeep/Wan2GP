@@ -104,7 +104,7 @@ def register_media(
         return None
     resolved_settings = _resolve_settings(path, settings)
     prompt = str((resolved_settings or {}).get("prompt", "") or "").strip()
-    prompt_summary = _summarize_prompt(prompt, detected_type)
+    prompt_summary = summarize_prompt(prompt, detected_type)
     path_key = _normalize_path_key(path)
     existing = None
     for record in session.media_registry:
@@ -338,7 +338,7 @@ def _default_label(path: str, media_type: str) -> str:
     return base_name or f"Generated {media_type}"
 
 
-def _summarize_prompt(prompt: str, media_type: str) -> str:
+def summarize_prompt(prompt: str, media_type: str) -> str:
     prompt = str(prompt or "").strip()
     if len(prompt) == 0:
         return f"Generated {media_type}"
@@ -365,7 +365,7 @@ def _label_from_settings(settings: dict[str, Any] | None, path: str) -> str | No
     media_type = _detect_media_type(path)
     if len(prompt) == 0:
         return None
-    return _summarize_prompt(prompt, media_type)
+    return summarize_prompt(prompt, media_type)
 
 
 def _gallery_client_media_key(path: Any, settings: Any) -> tuple[str, str] | None:
@@ -387,5 +387,6 @@ __all__ = [
     "normalize_media_type",
     "register_media",
     "resolve_media_reference",
+    "summarize_prompt",
     "sync_recent_generated_media",
 ]

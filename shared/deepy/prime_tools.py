@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import os
@@ -17,7 +18,78 @@ from anyio.from_thread import start_blocking_portal
 
 from shared.api import WanGPSession
 from shared.deepy.config import DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT, DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_PRIME_MCP_SERVERS_KEY, get_deepy_config_value, normalize_deepy_allow_read_file_system, normalize_deepy_context_tokens, normalize_deepy_prime_mcp_servers
+from shared.gradio import assistant_chat
 from shared.mcp_server import build_inprocess_server
+
+
+_MARKDOWN_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+
+
+def _extract_markdown_sections(markdown: str) -> list[dict[str, Any]]:
+    content = str(markdown or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    lines = content.split("\n") if content else []
+    headings = []
+    in_code_block = False
+    for line_no, line in enumerate(lines):
+        if line.strip().startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        match = _MARKDOWN_HEADING_RE.match(line)
+        if match is not None:
+            headings.append((line_no, len(match.group(1)), match.group(2).strip()))
+    include_top_level = not any(level > 1 for _line_no, level, _heading in headings)
+    stack = []
+    sections = []
+    for heading_no, (start_line, level, heading) in enumerate(headings):
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        stack.append((level, heading))
+        if not include_top_level and level == 1:
+            continue
+        end_line = len(lines)
+        for next_line, next_level, _next_heading in headings[heading_no + 1:]:
+            if next_level <= level:
+                end_line = next_line
+                break
+        section_path = " > ".join(title for heading_level, title in stack if include_top_level or heading_level > 1)
+        sections.append({"section": section_path or heading, "heading": heading, "heading_level": level, "content": "\n".join(lines[start_line:end_line]).strip(), "body": "\n".join(lines[start_line + 1:end_line]).strip()})
+    if not sections and content:
+        sections.append({"section": "Document", "heading": "Document", "heading_level": 1, "content": content, "body": content})
+    return sections
+
+
+def _select_markdown_sections(markdown: str, section_filter: str) -> tuple[str, list[str]]:
+    sections = _extract_markdown_sections(markdown)
+    pattern = str(section_filter or "").strip().casefold()
+    wildcard = "*" in pattern or "?" in pattern
+    if wildcard:
+        matches = [section for section in sections if any(fnmatch.fnmatchcase(str(section[key]).casefold(), pattern) for key in ("section", "heading"))]
+    else:
+        matches = [section for section in sections if any(pattern == str(section[key]).casefold() for key in ("section", "heading"))]
+        if not matches:
+            matches = [section for section in sections if any(pattern in str(section[key]).casefold() for key in ("section", "heading"))]
+    if not matches:
+        raise ValueError(f"Markdown section not found: {section_filter}")
+    return "\n\n".join(str(section["content"]) for section in matches), [str(section["section"]) for section in matches]
+
+
+def _search_markdown_sections(markdown: str, query: str, title: str = "") -> list[dict[str, Any]]:
+    from shared.deepy.engine import _build_doc_excerpt, _score_doc_section, _tokenize_doc_query
+
+    query = str(query or "").strip()
+    if not query:
+        raise ValueError("query is empty.")
+    query_tokens = _tokenize_doc_query(query)
+    matches = []
+    for section in _extract_markdown_sections(markdown):
+        score = _score_doc_section(query, query_tokens, str(title or ""), section)
+        if score <= 0:
+            continue
+        matches.append({"section": section["section"], "heading": section["heading"], "heading_level": section["heading_level"], "excerpt": _build_doc_excerpt(section, query, query_tokens), "score": int(score)})
+    matches.sort(key=lambda item: (-int(item["score"]), len(str(item["section"]))))
+    return matches[:5]
 
 
 class DeepyPrimeTools:
@@ -160,7 +232,8 @@ class DeepyPrimeTools:
                         self._tool_defs.append({"type": "function", "function": {"name": exposed_name, "description": description, "parameters": dict(tool.inputSchema or {"type": "object", "properties": {}})}})
                 self._tool_defs.extend([
                     {"type": "function", "function": {"name": "mcp_list_resources", "description": "List documentation and other resources exposed by connected MCP servers.", "parameters": {"type": "object", "properties": {"server": {"type": "string", "description": "Optional MCP server name such as wangp."}}}}},
-                    {"type": "function", "function": {"name": "mcp_read_resource", "description": "Read one MCP resource by the exact server and URI returned by mcp_list_resources or documented by the trusted WanGP agent guide.", "parameters": {"type": "object", "properties": {"server": {"type": "string", "description": "MCP server name, normally wangp."}, "uri": {"type": "string", "description": "Exact resource URI."}}, "required": ["server", "uri"]}}},
+                    {"type": "function", "function": {"name": "mcp_search_resource", "description": "Search one Markdown MCP resource and return up to five ranked section excerpts without adding the full document to context.", "parameters": {"type": "object", "properties": {"server": {"type": "string", "description": "MCP server name, normally wangp."}, "uri": {"type": "string", "description": "Exact resource URI."}, "query": {"type": "string", "description": "Keywords or a short natural-language question."}}, "required": ["server", "uri", "query"]}}},
+                    {"type": "function", "function": {"name": "mcp_read_resource", "description": "Read one MCP resource by exact server and URI. For Markdown, optional section returns only matching heading sections.", "parameters": {"type": "object", "properties": {"server": {"type": "string", "description": "MCP server name, normally wangp."}, "uri": {"type": "string", "description": "Exact resource URI."}, "section": {"type": "string", "description": "Optional exact or partial Markdown heading path, or a case-insensitive * and ? glob."}}, "required": ["server", "uri"]}}},
                 ])
                 self._ready_event.set()
 
@@ -175,23 +248,49 @@ class DeepyPrimeTools:
                             resources = [resource for resource in self._resource_defs if not requested_server or resource["server"] == requested_server]
                             future.set_result({"status": "done", "resources": resources, "count": len(resources)})
                             continue
+                        if tool_name == "mcp_search_resource":
+                            server_name = str(arguments.get("server", "") or "").strip()
+                            uri = str(arguments.get("uri", "") or "").strip()
+                            query = str(arguments.get("query", "") or "").strip()
+                            if server_name not in clients:
+                                raise ValueError(f"Unknown MCP server: {server_name}")
+                            resource_def = next((resource for resource in self._resource_defs if resource["server"] == server_name and resource["uri"] == uri), None)
+                            if resource_def is None:
+                                raise ValueError(f"Unknown MCP resource for server '{server_name}': {uri}")
+                            resource_result = await clients[server_name].read_resource(uri)
+                            matches = []
+                            for content in resource_result.contents:
+                                if not hasattr(content, "text"):
+                                    raise ValueError("Markdown resource search is only available for text resources.")
+                                matches.extend(_search_markdown_sections(str(content.text), query, title=resource_def["title"] or resource_def["name"]))
+                            matches.sort(key=lambda item: (-int(item["score"]), len(str(item["section"]))))
+                            future.set_result({"status": "done", "server": server_name, "uri": uri, "query": query, "matches": matches[:5]})
+                            continue
                         if tool_name == "mcp_read_resource":
                             server_name = str(arguments.get("server", "") or "").strip()
                             uri = str(arguments.get("uri", "") or "").strip()
+                            section_filter = str(arguments.get("section", "") or "").strip()
                             if server_name not in clients:
                                 raise ValueError(f"Unknown MCP server: {server_name}")
                             if not any(resource["server"] == server_name and resource["uri"] == uri for resource in self._resource_defs):
                                 raise ValueError(f"Unknown MCP resource for server '{server_name}': {uri}")
                             resource_result = await clients[server_name].read_resource(uri)
                             contents = []
+                            matched_sections = []
                             for content in resource_result.contents:
                                 item = {"uri": str(content.uri), "mime_type": str(content.mimeType or "")}
                                 if hasattr(content, "text"):
-                                    item["text"] = str(content.text)
+                                    text = str(content.text)
+                                    if section_filter:
+                                        text, current_matches = _select_markdown_sections(text, section_filter)
+                                        matched_sections.extend(current_matches)
+                                    item["text"] = text
                                 elif hasattr(content, "blob"):
+                                    if section_filter:
+                                        raise ValueError("Markdown section filtering is only available for text resources.")
                                     item["blob"] = str(content.blob)
                                 contents.append(item)
-                            future.set_result({"status": "done", "server": server_name, "uri": uri, "contents": contents})
+                            future.set_result({"status": "done", "server": server_name, "uri": uri, "section": section_filter, "matched_sections": matched_sections, "contents": contents})
                             continue
                         server_name, original_name = self._tool_routes[tool_name]
                         future.set_result(await clients[server_name].call_tool(original_name, arguments))
@@ -316,8 +415,82 @@ class DeepyPrimeTools:
             normalized_name = normalized_name[len("wangp_"):]
         return normalized_name.replace("_", " ").strip().title()
 
-    def get_tool_transcript_label(self, tool_name: str) -> str:
-        return self.get_tool_display_name(tool_name)
+    @staticmethod
+    def _generation_settings(source: Any) -> list[dict[str, Any]]:
+        settings = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, list):
+                for item in value:
+                    collect(item)
+                return
+            if not isinstance(value, dict):
+                return
+            if isinstance(value.get("tasks"), list):
+                collect(value["tasks"])
+                return
+            settings.append(value["params"] if isinstance(value.get("params"), dict) else value["settings"] if isinstance(value.get("settings"), dict) else value)
+
+        collect(source)
+        return settings
+
+    def _model_label_metadata(self, model_type: str) -> tuple[str, dict[str, Any]]:
+        model_type = str(model_type or "").strip()
+        if not model_type:
+            return "", {}
+        metadata = self._api_session.get_model_metadata(model_type) or {}
+        return str(metadata.get("name", "") or model_type.replace("_", " ").replace("-", " ").title()).strip(), metadata
+
+    def _generation_label_context(self, source: Any) -> tuple[str, str]:
+        tasks = self._generation_settings(source)
+        model_names = []
+        media_kinds = []
+        for settings in tasks:
+            model_name, metadata = self._model_label_metadata(settings.get("model_type", ""))
+            if model_name and model_name not in model_names:
+                model_names.append(model_name)
+            try:
+                image_mode = int(settings.get("image_mode", 0) or 0)
+            except (TypeError, ValueError):
+                image_mode = 0
+            outputs = metadata.get("main_output", [])
+            outputs = [outputs] if isinstance(outputs, str) else list(outputs or [])
+            normalized_outputs = {str(output or "").strip().casefold() for output in outputs}
+            if "image_mode" in settings:
+                media_kinds.append("Image" if image_mode > 0 else "Video" if "video" in normalized_outputs else "Audio" if normalized_outputs == {"audio"} else "Media")
+            else:
+                media_kinds.append("Image" if normalized_outputs == {"image"} else "Video" if normalized_outputs == {"video"} else "Audio" if normalized_outputs == {"audio"} else "Media")
+        count = len(tasks)
+        if count == 0:
+            media_label = "Media"
+        elif len(set(media_kinds)) > 1:
+            media_label = f"{count} Media Items"
+        else:
+            kind = media_kinds[0]
+            media_label = kind if count == 1 else f"{count} Media Items" if kind == "Media" else f"{count} {kind}s"
+        return media_label, " and ".join(model_names)
+
+    def get_tool_transcript_label(self, tool_name: str, arguments: dict[str, Any] | None = None) -> str:
+        arguments = dict(arguments or {})
+        if tool_name not in self._tool_defs_by_name:
+            return f"Unknown Tool - {self.get_tool_display_name(tool_name)}"
+        if tool_name == "wangp_toolbox":
+            action = str(arguments.get("action", "") or "").strip()
+            if not action:
+                return "List Toolbox Content"
+            action_arguments = arguments.get("arguments")
+            if action_arguments is None:
+                action_label = self._zero_tools.get_tool_transcript_label(action, {}) if self._zero_tools is not None else action.replace("_", " ").title()
+                return f"Get {action_label} Schema"
+            if self._zero_tools is not None:
+                return self._zero_tools.get_tool_transcript_label(action, action_arguments)
+        model_label = ""
+        media_label = ""
+        if tool_name == "wangp_generate":
+            media_label, model_label = self._generation_label_context(arguments.get("source"))
+        elif arguments.get("model_type"):
+            model_label, _metadata = self._model_label_metadata(arguments["model_type"])
+        return assistant_chat.build_tool_call_label(tool_name, arguments, base_label=self.get_tool_display_name(tool_name), model_label=model_label, media_label=media_label)
 
     def get_tool_template_filename(self, tool_name: str) -> str:
         return ""
@@ -325,8 +498,18 @@ class DeepyPrimeTools:
     def get_tool_variant(self, tool_name: str) -> str:
         return ""
 
-    def get_tool_policy(self, tool_name: str) -> dict[str, Any]:
-        return {"pause_runtime": tool_name in {"wangp_generate", "wangp_postprocess", "wangp_toolbox"}, "pause_reason": "tool"}
+    def get_tool_policy(self, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        call_arguments = dict(arguments or {})
+        if tool_name == "wangp_generate":
+            return {"pause_runtime": True, "pause_reason": "tool"}
+        if tool_name == "wangp_postprocess":
+            return {"pause_runtime": bool(str(call_arguments.get("process", "") or "").strip()), "pause_reason": "tool"}
+        if tool_name == "wangp_toolbox":
+            action = str(call_arguments.get("action", "") or "").strip()
+            if not action or call_arguments.get("arguments") is None:
+                return {"pause_runtime": False, "pause_reason": "tool"}
+            return self._zero_tools.get_tool_policy(action, call_arguments["arguments"])
+        return {"pause_runtime": False, "pause_reason": "tool"}
 
     def validate_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> str:
         schema = self._tool_defs_by_name.get(str(tool_name or "").strip())

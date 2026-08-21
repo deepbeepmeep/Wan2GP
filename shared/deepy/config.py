@@ -28,6 +28,14 @@ DEEPY_PRIME_MCP_SERVERS_KEY = "deepy_prime_mcp_servers"
 DEEPY_ALLOW_READ_FILE_SYSTEM_KEY = "deepy_allow_read_file_system"
 DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY = "deepy_auto_cancel_queue_tasks"
 DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY = "deepy_separate_requests_with_empty_line"
+DEEPY_TEMPLATE_CONFIG_MIGRATIONS = {
+    DEEPY_TOOL_GEN_VIDEO_KEY: {
+        "MiniMax H3 FL2VA Turbo Lightx2v 8 Steps": "MiniMax H3 FL2VA Pruned Turbo Lightx2v 8 Steps",
+    },
+    DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY: {
+        "MiniMax H3 FL2VA Turbo Lightx2v 8 Steps With Sound": "MiniMax H3 FL2VA Pruned Turbo Lightx2v 8 Steps With Sound",
+    },
+}
 
 DEEPY_VRAM_MODE_UNLOAD = "unload"
 DEEPY_VRAM_MODE_ALWAYS_LOADED = "always_loaded"
@@ -71,8 +79,12 @@ _DEEPY_DEFAULT_EDIT_IMAGE_ALIASES = {"Qwen_Edit": DEEPY_DEFAULT_EDIT_IMAGE}
 _DEEPY_DEFAULT_GEN_VIDEO_ALIASES = {
     "ltx2_22B_distilled": "LTX-2 2.3 Distilled 1.0",
     "LTX-2 2.3 Distilled": "LTX-2 2.3 Distilled 1.0",
+    **DEEPY_TEMPLATE_CONFIG_MIGRATIONS[DEEPY_TOOL_GEN_VIDEO_KEY],
 }
-_DEEPY_GEN_VIDEO_WITH_SPEECH_ALIASES = {"LTX-2.3 Distilled With Sound": "LTX-2.3 Distilled 1.0 With Sound"}
+_DEEPY_GEN_VIDEO_WITH_SPEECH_ALIASES = {
+    "LTX-2.3 Distilled With Sound": "LTX-2.3 Distilled 1.0 With Sound",
+    **DEEPY_TEMPLATE_CONFIG_MIGRATIONS[DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY],
+}
 _DEEPY_RUNTIME_CONFIG: dict[str, Any] | None = None
 _DEEPY_RUNTIME_CONFIG_FILENAME = ""
 

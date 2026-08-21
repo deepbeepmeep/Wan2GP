@@ -5,12 +5,12 @@ from postprocessing.mmaudio import MMAUDIO_DEFAULT_MODE
 from postprocessing.mmaudio.audio_processor import MMAudioProcessor
 from postprocessing.rife.temporal_upsampler import RifeTemporalUpsampler
 from postprocessing.seedvc.audio_processor import SeedVCProcessor
-from shared.deepy.config import DEEPY_ENABLED_KEY
+from shared.deepy.config import DEEPY_ENABLED_KEY, DEEPY_TEMPLATE_CONFIG_MIGRATIONS
 
 
 LEGACY_EXTENSIONS_DEFAULTS_MIGRATED_KEY = "_extensions_defaults_migrated"
 EXTENSIONS_DEFAULTS_VERSION_KEY = "extensions_defaults_version"
-EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.19")
+EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.20")
 EXTENSIONS_DEFAULTS_TARGET_VERSION_TEXT = str(EXTENSIONS_DEFAULTS_TARGET_VERSION)
 INSTALLED_REMOTE_PLUGINS_KEY = "installed_remote_plugins"
 
@@ -188,6 +188,17 @@ def _migrate_temporal_upsamplers_config(server_config) -> bool:
     return changed
 
 
+def _migrate_deepy_template_names(server_config) -> bool:
+    changed = False
+    for key, migrations in DEEPY_TEMPLATE_CONFIG_MIGRATIONS.items():
+        old_value = server_config.get(key)
+        new_value = migrations.get(old_value)
+        if new_value is not None:
+            server_config[key] = new_value
+            changed = True
+    return changed
+
+
 def _extension_defaults_version(config) -> Decimal:
     version = config.get(EXTENSIONS_DEFAULTS_VERSION_KEY, None)
     if version is not None:
@@ -249,6 +260,9 @@ def migrate_extension_defaults(server_config, server_config_filename="") -> bool
         from postprocessing import spatial_upsamplers as upsampler_api
 
         changed = upsampler_api.migrate_upsampler_config(server_config) or changed
+
+    if version < Decimal("1.20"):
+        changed = _migrate_deepy_template_names(server_config) or changed
 
     changed = _migrate_audio_processors_config(server_config, version) or changed
     changed = _migrate_temporal_upsamplers_config(server_config) or changed

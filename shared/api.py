@@ -686,7 +686,7 @@ class WanGPSession:
     def get_exported_default_settings(self, model_type: str) -> dict[str, Any]:
         return self.prepare_settings_for_export(self.get_default_settings(model_type))
 
-    def list_loras(self, model_type: str) -> dict[str, Any]:
+    def list_loras(self, model_type: str, name: str | Sequence[str] | None = None) -> dict[str, Any]:
         runtime = self._ensure_runtime()
         with _pushd(runtime.root):
             model_def = runtime.module.get_model_def(model_type)
@@ -696,6 +696,9 @@ class WanGPSession:
                 return {"model_type": str(model_type), "supported": False, "loras": [], "count": 0}
             lora_dir = runtime.module.get_lora_dir(model_type)
             loras = runtime.module.setup_loras(model_type, None, lora_dir, "", None)[0]
+        name_patterns = [str(value).strip().casefold() for value in (name if isinstance(name, (list, tuple, set)) else [name]) if value is not None and str(value).strip()]
+        if name_patterns:
+            loras = [lora for lora in loras if any(fnmatch.fnmatchcase(str(lora).casefold(), pattern) for pattern in name_patterns)]
         return {"model_type": str(model_type), "supported": True, "loras": list(loras), "count": len(loras)}
 
     def get_model_availability(self, model_type: str) -> dict[str, Any]:

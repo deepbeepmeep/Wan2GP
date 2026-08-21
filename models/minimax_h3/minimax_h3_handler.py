@@ -208,6 +208,7 @@ class family_handler:
             "no_negative_prompt": True,
             "returns_audio": True,
             "multimedia_generation": True,
+            "image_end_frame_position": True,
             "control_video_trim_disabled": True,
             "infos": (REF2VA_INFOS if reference_mode else FL2VA_INFOS) + H3_RUNTIME_INFOS + (PRUNED_INFOS if pruned else ""),
             "prompt_infos": REF2VA_PROMPT_INFOS if reference_mode else FL2VA_PROMPT_INFOS,

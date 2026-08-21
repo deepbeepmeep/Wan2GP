@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import secrets
+import threading
 import time
 import traceback
 from dataclasses import dataclass
@@ -37,11 +38,13 @@ from shared.deepy.engine import (
     AssistantRuntimeHooks,
     begin_assistant_turn,
     build_interruption_notice,
+    clear_assistant_steering,
     clear_assistant_session,
     get_or_create_assistant_session,
     mark_assistant_turn_message,
     record_interruption_history,
     request_assistant_interrupt,
+    request_assistant_steering,
     request_assistant_reset,
     set_assistant_debug,
     set_assistant_tool_ui_settings,
@@ -91,6 +94,7 @@ class DeepyController:
     def __init__(self, deps: DeepyDeps):
         self._deps = deps
         self._active_assistant_session: Any | None = None
+        self._queue_state_lock = threading.RLock()
 
     def get_verbose_level(self) -> int:
         try:
@@ -140,26 +144,64 @@ class DeepyController:
                 continue
             if str(record.get("role", "")).strip().lower() != "user":
                 continue
-            if str(record.get("badge", "")).strip() != "Queued":
+            if not bool(record.get("queued", False)):
                 continue
             message_id = str(record.get("id", "") or "").strip()
             if len(message_id) > 0:
                 return message_id
         return ""
 
-    def _cancel_next_queued_request(self, session) -> bool:
-        if int(session.queued_job_count or 0) <= 0:
-            return False
-        message_id = self._find_next_queued_user_message_id(session)
-        if len(message_id) == 0:
-            return False
-        user_text = assistant_chat.get_message_content(session, message_id)
-        interruption_notice = build_interruption_notice(user_text)
-        session.queued_job_count = max(0, int(session.queued_job_count or 0) - 1)
-        session.queued_cancel_count = max(0, int(session.queued_cancel_count or 0)) + 1
-        assistant_chat.set_message_badge(session, message_id, "Interrupted")
-        record_interruption_history(session, user_text, interruption_notice)
-        return True
+    def _cancel_next_queued_request(self, session) -> str:
+        with self._queue_state_lock:
+            if int(session.queued_job_count or 0) <= 0:
+                return ""
+            message_id = self._find_next_queued_user_message_id(session)
+            if len(message_id) == 0:
+                return ""
+            user_text = assistant_chat.get_message_content(session, message_id)
+            interruption_notice = build_interruption_notice(user_text)
+            session.queued_job_count = max(0, int(session.queued_job_count or 0) - 1)
+            session.queued_cancel_count = max(0, int(session.queued_cancel_count or 0)) + 1
+            assistant_chat._find_message(session, message_id)["queued"] = False
+            assistant_chat.set_message_badge(session, message_id, "Interrupted")
+            record_interruption_history(session, user_text, interruption_notice)
+            return user_text
+
+    def _apply_queued_request_action(self, state, action_payload):
+        session = get_or_create_assistant_session(state)
+        try:
+            payload = json.loads(str(action_payload or ""))
+        except (TypeError, ValueError):
+            return gr.update(), gr.update(), gr.update(), gr.update()
+        if not isinstance(payload, dict):
+            return gr.update(), gr.update(), gr.update(), gr.update()
+        action = str(payload.get("action", "") or "").strip().lower()
+        message_id = str(payload.get("message_id", "") or "").strip()
+        text = str(payload.get("text", "") or "").strip()
+        if action not in {"edit", "remove"} or len(message_id) == 0 or (action == "edit" and len(text) == 0):
+            return gr.update(), gr.update(), gr.update(), gr.update()
+        with self._queue_state_lock:
+            record = assistant_chat._find_message(session, message_id)
+            if record is None or str(record.get("role", "")).strip() != "user" or str(record.get("badge", "")).strip() != "Queued":
+                return gr.update(), gr.update(), gr.update(), gr.update()
+            if action == "edit":
+                chat_event = assistant_chat.set_user_message_content(session, message_id, text)
+            else:
+                session.cancelled_queued_message_ids.add(message_id)
+                session.queued_job_count = max(0, int(session.queued_job_count or 0) - 1)
+                chat_event = assistant_chat.remove_message(session, message_id)
+        self._debug_log(f"Queued request {action} user_message_id={message_id} queued_jobs={int(session.queued_job_count or 0)}")
+        return chat_event if chat_event is not None else gr.update(), gr.update(), gr.update(), gr.update()
+
+    def _cancel_active_prime_job(self, session, action: str) -> str:
+        cancel_active_job = getattr(session.prime_toolbox, "cancel_active_job", None)
+        if not callable(cancel_active_job):
+            return ""
+        try:
+            return str(cancel_active_job() or "").strip()
+        except Exception as exc:
+            self._debug_log(f"Immediate MCP job cancellation failed after {action}: {exc}")
+            return ""
 
     def is_available(self) -> bool:
         return deepy_available(self._server_config())
@@ -301,83 +343,105 @@ class DeepyController:
             return [normalized_request]
         return self._split_request_blocks(normalized_request) or [normalized_request]
 
-    def _queue_assistant_request(self, state, session, output_queue, ask_request: str, queued_epoch: int, *, queued: bool, precreate_assistant_turn: bool = False) -> None:
+    def _queue_assistant_request(self, state, session, output_queue, ask_request: str, queued_epoch: int, *, queued: bool, client_submission_id: str = "", assistant_badge: str = "") -> None:
         raw_send_cmd = output_queue.push
-        assistant_turn_id = ""
+        assistant_badge = str(assistant_badge or "").strip()
 
         def send_cmd(cmd, data=None):
             if queued_epoch != session.chat_epoch and cmd in {"chat_output", "load_queue_trigger", "refresh_gallery", "error"}:
                 return
             raw_send_cmd(cmd, data)
 
-        session.queued_job_count += 1
-        user_message_id, _user_event = assistant_chat.add_user_message(session, ask_request, queued=queued)
-        if precreate_assistant_turn:
-            assistant_turn_id = assistant_chat.create_assistant_turn(session)
-        self._debug_log(f"Request enqueued user_message_id={user_message_id} queued={bool(queued)} queued_jobs={int(session.queued_job_count or 0)} precreated_turn={bool(precreate_assistant_turn)}")
+        with self._queue_state_lock:
+            session.queued_job_count += 1
+            user_message_id, _user_event = assistant_chat.add_user_message(session, ask_request, queued=queued, client_submission_id=client_submission_id)
+            if assistant_badge:
+                user_record = assistant_chat._find_message(session, user_message_id)
+                user_record["assistant_badge"] = assistant_badge
+                user_record["badge"] = ""
+            self._debug_log(f"Request enqueued user_message_id={user_message_id} queued={bool(queued)} queued_jobs={int(session.queued_job_count or 0)}")
 
         def queue_worker_func():
             with deepy_log_scope(start_if_needed=True):
                 started_turn = False
-                if queued_epoch != session.chat_epoch:
+                active_request = ask_request
+                with self._queue_state_lock:
+                    stale_request = queued_epoch != session.chat_epoch
+                    targeted_cancelled = not stale_request and user_message_id in session.cancelled_queued_message_ids
+                    cancelled_request = not stale_request and (targeted_cancelled or int(session.queued_cancel_count or 0) > 0)
+                    if stale_request:
+                        if session.control_queue is output_queue:
+                            session.control_queue = None
+                    elif cancelled_request:
+                        if targeted_cancelled:
+                            session.cancelled_queued_message_ids.discard(user_message_id)
+                        else:
+                            session.queued_cancel_count = max(0, int(session.queued_cancel_count or 0) - 1)
+                            assistant_chat.set_message_badge(session, user_message_id, "Interrupted")
+                        cancelled_sync = assistant_chat.build_sync_event(session)
+                        cancelled_has_more_work = session.queued_job_count > 0
+                    else:
+                        active_request = assistant_chat.get_message_content(session, user_message_id)
+                        session.queued_job_count = max(0, session.queued_job_count - 1)
+                        session.interrupt_requested = False
+                        clear_assistant_steering(session)
+                        session.control_queue = output_queue
+                        session.worker_active = True
+                        self._active_assistant_session = session
+                        begin_assistant_turn(session, user_message_id, active_request, assistant_badge=assistant_badge)
+                        started_turn = True
+                        assistant_chat._find_message(session, user_message_id)["queued"] = False
+                        assistant_chat.set_message_badge(session, user_message_id, None)
+                        starting_status = {"visible": True, "kind": "queued" if assistant_badge else "loading", "text": "Steering accepted. Deepy is applying the new instructions..." if assistant_badge else "Starting Deepy..."}
+                        starting_sync = assistant_chat.build_sync_event(session, status=starting_status)
+                if stale_request:
                     self._debug_log(f"Worker skipped stale request user_message_id={user_message_id} queued_epoch={queued_epoch} chat_epoch={session.chat_epoch}")
-                    if session.control_queue is output_queue:
-                        session.control_queue = None
                     raw_send_cmd("exit", None)
                     return
-                if int(session.queued_cancel_count or 0) > 0:
+                if cancelled_request:
                     self._debug_log(f"Worker cancelled queued request user_message_id={user_message_id}")
-                    session.queued_cancel_count = max(0, int(session.queued_cancel_count or 0) - 1)
-                    assistant_chat.set_message_badge(session, user_message_id, "Interrupted")
-                    if session.control_queue is output_queue and session.queued_job_count <= 0:
-                        session.control_queue = None
-                    raw_send_cmd("chat_output", assistant_chat.build_sync_event(session))
-                    if session.queued_job_count > 0:
+                    raw_send_cmd("chat_output", cancelled_sync)
+                    if cancelled_has_more_work:
                         raw_send_cmd("chat_output", assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued"))
                     else:
                         raw_send_cmd("chat_output", assistant_chat.build_status_event(None, visible=False))
                         raw_send_cmd("exit", None)
                     return
-                session.queued_job_count = max(0, session.queued_job_count - 1)
-                session.interrupt_requested = False
-                session.control_queue = output_queue
-                session.worker_active = True
-                self._active_assistant_session = session
                 self._debug_log(f"Worker starting user_message_id={user_message_id} queued_jobs={int(session.queued_job_count or 0)}")
-                begin_assistant_turn(session, user_message_id, ask_request)
-                started_turn = True
-                assistant_chat.set_message_badge(session, user_message_id, None)
-                active_turn_id = assistant_turn_id or assistant_chat.create_assistant_turn(session)
-                mark_assistant_turn_message(session, active_turn_id)
-                send_cmd("chat_output", assistant_chat.build_sync_event(session))
+                send_cmd("chat_output", starting_sync)
                 my_tools = self.create_tools(state, send_cmd, session=session)
                 try:
                     self._debug_log(f"Prompt enhancer dispatch starting user_message_id={user_message_id}")
-                    self._deps.exec_prompt_enhancer_engine(state, "", None, "AK", [ask_request], None, None, False, False, 0, None, 3.5, send_cmd, my_tools)
+                    self._deps.exec_prompt_enhancer_engine(state, "", None, "AK", [active_request], None, None, False, False, 0, None, 3.5, send_cmd, my_tools)
                 except Exception as e:
                     traceback.print_exc()
-                    error_turn_id = assistant_turn_id or assistant_chat.create_assistant_turn(session)
+                    error_turn_id = assistant_chat.create_assistant_turn(session)
+                    if assistant_badge:
+                        assistant_chat.set_message_badge(session, error_turn_id, assistant_badge)
+                    mark_assistant_turn_message(session, error_turn_id)
                     error_event = assistant_chat.set_assistant_content(session, error_turn_id, f"Assistant crashed: {e}")
                     if error_event is not None:
                         send_cmd("chat_output", error_event)
                     send_cmd("chat_output", assistant_chat.build_status_event(None, visible=False))
                 finally:
-                    if self._active_assistant_session is session:
-                        self._active_assistant_session = None
-                    session.worker_active = False
-                    stale_turn = queued_epoch != session.chat_epoch
-                    has_more_work = not stale_turn and session.queued_job_count > 0
-                    if not has_more_work and session.control_queue is output_queue:
-                        session.control_queue = None
+                    with self._queue_state_lock:
+                        if self._active_assistant_session is session:
+                            self._active_assistant_session = None
+                        session.worker_active = False
+                        stale_turn = queued_epoch != session.chat_epoch
+                        has_more_work = not stale_turn and session.queued_job_count > 0
+                        if not has_more_work and session.control_queue is output_queue:
+                            session.control_queue = None
+                        pending_steering = has_more_work and any(str(record.get("role", "")).strip() == "user" and bool(record.get("queued", False)) and str(record.get("assistant_badge", "")).strip() == "Steered" for record in session.chat_transcript)
+                        final_status = None if not has_more_work else {"visible": True, "kind": "queued", "text": "Steering accepted. Deepy is applying the new instructions..." if pending_steering else "Queued behind the current assistant task."}
+                        final_sync = None if stale_turn else assistant_chat.build_sync_event(session, status=final_status)
+                        session.interrupt_requested = False
                     if stale_turn:
                         if started_turn:
-                            raw_send_cmd("chat_output", assistant_chat.build_reset_event())
+                            raw_send_cmd("chat_output", assistant_chat.build_reset_event(session))
                     else:
-                        raw_send_cmd("chat_output", assistant_chat.build_sync_event(session))
-                        if has_more_work:
-                            raw_send_cmd("chat_output", assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued"))
+                        raw_send_cmd("chat_output", final_sync)
                     self._debug_log(f"Worker finished user_message_id={user_message_id} stale={bool(stale_turn)} has_more_work={bool(has_more_work)} queued_jobs={int(session.queued_job_count or 0)}")
-                    session.interrupt_requested = False
                     if not has_more_work:
                         raw_send_cmd("exit", None)
 
@@ -476,8 +540,10 @@ class DeepyController:
                 top_p=enhancer_top_p,
             )
 
-    def ask_ai(self, state, ask_request):
+    def ask_ai(self, state, ask_request, client_submission_id: str = "", steering: bool = False):
         debug_enabled = self._sync_debug_enabled()
+        submission_id = str(client_submission_id or "").strip()[:128]
+        acknowledged_submission_ids = [submission_id] if submission_id else []
 
         def get_refresh_id():
             return str(time.time()) + "_" + str(self._deps.get_new_refresh_id())
@@ -498,29 +564,61 @@ class DeepyController:
         if len(request_blocks) == 0:
             if debug_enabled:
                 self._debug_log("Request ignored because it was empty after normalization.")
-            yield gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            yield assistant_chat.build_sync_event(session, acknowledged_submission_ids=acknowledged_submission_ids), gr.update(), gr.update(value=""), gr.update(), gr.update()
             return
         if debug_enabled:
             self._debug_log(f"Request received blocks={len(request_blocks)} worker_active={bool(session.worker_active)} queued_jobs={int(session.queued_job_count or 0)} foreign_session_reset={bool(foreign_session_reset)}")
         if session.drop_state_requested:
             if debug_enabled:
                 self._debug_log("Request held because a Deepy reset is pending.")
-            yield assistant_chat.build_status_event("Resetting after the current work stops...", kind="queued"), gr.update(), gr.update(value=""), gr.update(), gr.update()
+            status = {"visible": True, "kind": "queued", "text": "Resetting after the current work stops..."}
+            yield assistant_chat.build_sync_event(session, status=status, acknowledged_submission_ids=acknowledged_submission_ids), gr.update(), gr.update(value=""), gr.update(), gr.update()
             return
         if not self.is_available():
             if debug_enabled:
                 self._debug_log(f"Request rejected: {self.requirement_error_text()}")
             error_turn_id = assistant_chat.create_assistant_turn(session)
-            error_event = assistant_chat.set_assistant_content(session, error_turn_id, self.requirement_error_text())
-            yield error_event if error_event is not None else gr.update(), gr.update(), gr.update(value=""), gr.update(), gr.update()
+            assistant_chat.set_assistant_content(session, error_turn_id, self.requirement_error_text())
+            yield assistant_chat.build_sync_event(session, acknowledged_submission_ids=acknowledged_submission_ids), gr.update(), gr.update(value=""), gr.update(), gr.update()
             return
+        if steering:
+            with self._queue_state_lock:
+                steering_active = bool(session.worker_active and session.control_queue is not None)
+                if steering_active:
+                    output_queue = session.control_queue
+                    queued_epoch = session.chat_epoch
+                    with session.turn_lock:
+                        checkpoint = session.current_turn
+                        steered_current_turn = isinstance(checkpoint, dict)
+                        if steered_current_turn:
+                            request_assistant_steering(session)
+                    for index, request_block in enumerate(request_blocks):
+                        self._queue_assistant_request(state, session, output_queue, request_block, queued_epoch, queued=True, client_submission_id=submission_id, assistant_badge="Steered" if steered_current_turn and index == 0 else "")
+                    if steered_current_turn:
+                        if session.assistant_action_active:
+                            steering_text = "Steering accepted. Steering will apply once the current tool action is done."
+                        elif session.assistant_thought_active:
+                            steering_text = "Steering accepted. Waiting for the current thought to finish..."
+                        else:
+                            steering_text = "Steering accepted. Applying the new instructions at the current boundary..."
+                    else:
+                        steering_text = "Queued behind the current assistant task."
+                    steering_status = {"visible": True, "kind": "queued", "text": steering_text}
+                    steering_sync = assistant_chat.build_sync_event(session, status=steering_status, acknowledged_submission_ids=acknowledged_submission_ids)
+            if steering_active:
+                self._debug_log(f"Steering requested worker_active=True active_turn={steered_current_turn} thought_active={bool(session.assistant_thought_active)} action_active={bool(session.assistant_action_active)} queued_jobs={int(session.queued_job_count or 0)}")
+                yield steering_sync, gr.update(), gr.update(value=""), gr.update(), gr.update()
+                return
         com_stream = AsyncStream()
         output_queue = com_stream.output_queue
-        queued = foreign_session_reset or session.worker_active or session.queued_job_count > 0
-        queued_epoch = session.chat_epoch
-        for index, request_block in enumerate(request_blocks):
-            self._queue_assistant_request(state, session, output_queue, request_block, queued_epoch, queued=queued or index > 0, precreate_assistant_turn=not queued and index == 0 and len(request_blocks) > 1)
-        yield assistant_chat.build_sync_event(session, acknowledged_user_text=str(ask_request or "")), gr.update(), gr.update(value=""), gr.update(), gr.update()
+        with self._queue_state_lock:
+            queued = foreign_session_reset or session.worker_active or session.queued_job_count > 0
+            queued_epoch = session.chat_epoch
+            for index, request_block in enumerate(request_blocks):
+                self._queue_assistant_request(state, session, output_queue, request_block, queued_epoch, queued=queued or index > 0, client_submission_id=submission_id)
+            accepted_status = None if queued else {"visible": True, "kind": "loading", "text": "Starting Deepy..."}
+            accepted_sync = assistant_chat.build_sync_event(session, status=accepted_status, acknowledged_submission_ids=acknowledged_submission_ids)
+        yield accepted_sync, gr.update(), gr.update(value=""), gr.update(), gr.update()
         if queued or len(request_blocks) > 1:
             yield assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued"), gr.update(), gr.update(), gr.update(), gr.update()
         while True:
@@ -542,49 +640,59 @@ class DeepyController:
             elif cmd == "exit":
                 break
 
-    def enqueue_ai_while_busy(self, state, ask_request):
+    def enqueue_ai_while_busy(self, state, ask_request, client_submission_id: str = ""):
         self._sync_debug_enabled()
         session = get_or_create_assistant_session(state)
+        submission_id = str(client_submission_id or "").strip()[:128]
+        acknowledged_submission_ids = [submission_id] if submission_id else []
         request_blocks = self._expand_assistant_requests(session, ask_request)
         if len(request_blocks) == 0:
-            return gr.update(), gr.update(value="")
+            yield assistant_chat.build_sync_event(session, acknowledged_submission_ids=acknowledged_submission_ids), gr.update(), gr.update(value=""), gr.update(), gr.update()
+            return
         if session.drop_state_requested:
-            return assistant_chat.build_status_event("Resetting after the current work stops...", kind="queued"), gr.update(value="")
+            status = {"visible": True, "kind": "queued", "text": "Resetting after the current work stops..."}
+            yield assistant_chat.build_sync_event(session, status=status, acknowledged_submission_ids=acknowledged_submission_ids), gr.update(), gr.update(value=""), gr.update(), gr.update()
+            return
         if not self.is_available():
-            if session.control_queue is not None:
-                error_turn_id = assistant_chat.create_assistant_turn(session)
-                error_event = assistant_chat.set_assistant_content(session, error_turn_id, self.requirement_error_text())
-                if error_event is not None:
-                    session.control_queue.push("chat_output", error_event)
-            return gr.update(), gr.update(value="")
-        output_queue = session.control_queue
-        if output_queue is None or (not session.worker_active and session.queued_job_count <= 0):
-            return gr.update(), gr.update(value="")
-        queued_epoch = session.chat_epoch
-        for request_block in request_blocks:
-            self._queue_assistant_request(state, session, output_queue, request_block, queued_epoch, queued=True)
-        output_queue.push("chat_output", assistant_chat.build_sync_event(session, acknowledged_user_text=str(ask_request or "")))
-        output_queue.push("chat_output", assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued"))
-        return gr.update(), gr.update(value="")
+            error_turn_id = assistant_chat.create_assistant_turn(session)
+            assistant_chat.set_assistant_content(session, error_turn_id, self.requirement_error_text())
+            yield assistant_chat.build_sync_event(session, acknowledged_submission_ids=acknowledged_submission_ids), gr.update(), gr.update(value=""), gr.update(), gr.update()
+            return
+        with self._queue_state_lock:
+            output_queue = session.control_queue
+            enqueue_active = output_queue is not None and (session.worker_active or session.queued_job_count > 0)
+            if enqueue_active:
+                queued_epoch = session.chat_epoch
+                for request_block in request_blocks:
+                    self._queue_assistant_request(state, session, output_queue, request_block, queued_epoch, queued=True, client_submission_id=submission_id)
+                status = {"visible": True, "kind": "queued", "text": "Queued behind the current assistant task."}
+                queued_sync = assistant_chat.build_sync_event(session, status=status, acknowledged_submission_ids=acknowledged_submission_ids)
+        if enqueue_active:
+            yield queued_sync, gr.update(), gr.update(value=""), gr.update(), gr.update()
+            return
+        yield from self.ask_ai(state, ask_request, client_submission_id=submission_id)
 
-    def stop_ai(self, state):
+    def stop_ai(self, state, queued_action=""):
+        if str(queued_action or "").strip():
+            return self._apply_queued_request_action(state, queued_action)
         session = get_or_create_assistant_session(state)
-        if session.worker_active:
-            if session.interrupt_requested and self._cancel_next_queued_request(session):
+        with self._queue_state_lock:
+            worker_active = session.worker_active
+            interrupt_requested = session.interrupt_requested
+            if worker_active and not interrupt_requested:
+                with session.turn_lock:
+                    request_assistant_interrupt(session)
+        if worker_active:
+            cancelled_user_text = self._cancel_next_queued_request(session) if interrupt_requested else ""
+            if cancelled_user_text:
                 return assistant_chat.build_sync_event(session), gr.update(), gr.update(), gr.update()
-            request_assistant_interrupt(session)
-            cancelled_job_id = ""
-            cancel_active_job = getattr(session.prime_toolbox, "cancel_active_job", None)
-            if callable(cancel_active_job):
-                try:
-                    cancelled_job_id = str(cancel_active_job() or "").strip()
-                except Exception as exc:
-                    self._debug_log(f"Immediate MCP job cancellation failed after Stop: {exc}")
+            cancelled_job_id = self._cancel_active_prime_job(session, "Stop")
             self._debug_log(f"Stop requested worker_active=True active_prime_mcp_job={cancelled_job_id or 'none'}")
             status_text = "Stopping generation..." if cancelled_job_id else "Interrupting the current assistant task..."
             status = {"visible": True, "kind": "queued", "text": status_text}
             return assistant_chat.build_sync_event(session, status=status), gr.update(), gr.update(), gr.update()
-        if not session.worker_active and self._cancel_next_queued_request(session):
+        cancelled_user_text = self._cancel_next_queued_request(session)
+        if cancelled_user_text:
             chat_event = assistant_chat.build_sync_event(session)
             return chat_event, gr.update(), gr.update(), gr.update()
         return gr.update(), gr.update(), gr.update(), gr.update()
@@ -611,12 +719,12 @@ class DeepyController:
                 print("[Assistant] Idle Reset: fallback to full clear.")
                 self.release_vram(state, True)
         session.chat_html = ""
-        return assistant_chat.build_reset_event(), gr.update(), gr.update(value=""), gr.update()
+        return assistant_chat.build_reset_event(session), gr.update(), gr.update(value=""), gr.update()
 
     def browser_session_started(self, state):
         session = get_or_create_assistant_session(state)
         if self._reset_foreign_active_session(session):
-            return assistant_chat.build_reset_event(), gr.update(), gr.update(value=""), gr.update()
+            return assistant_chat.build_reset_event(session), gr.update(), gr.update(value=""), gr.update()
         if not session.worker_active and session.queued_job_count <= 0:
             return gr.update(), gr.update(), gr.update(), gr.update()
         request_assistant_reset(session)

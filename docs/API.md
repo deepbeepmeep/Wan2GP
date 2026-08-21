@@ -420,15 +420,14 @@ Tools:
   - Availability records with the same filters as `wangp_list_models(...)`.
 - `wangp_get_default_settings(model_type)`
   - Returns pristine model defaults after WanGP removes irrelevant fields and fixed `settings_version`/`type` metadata. User-saved UI defaults are not included.
-- `wangp_list_loras(model_type)`
-  - Returns every locally available `.safetensors` or `.sft` LoRA for the model family. Values are relative identifiers suitable for `activated_loras`; supply corresponding weights through `loras_multipliers`.
+- `wangp_list_loras(model_type, name=None)`
+  - Recursively returns locally available `.safetensors` and `.sft` LoRAs for the model family. `name` optionally filters subfolder-relative identifiers using case-insensitive `*` and `?` globs. Returned values are suitable for `activated_loras`; supply corresponding weights through `loras_multipliers`.
 - `wangp_get_model_schema(model_type)`
   - Returns compact capability, media-role, frame-limit, prompt-guidance, and sliding-window metadata.
-- `wangp_list_gallery(media_type="all", limit=50)`
-  - Lists the current session's image, video, and audio Gallery items with paths, settings, session-local ids, and selection state.
-- `wangp_get_gallery_item(gallery_id)`
-- `wangp_get_gallery_selection(media_type="all")`
-  - Returns the selected visual and/or audio item, including the selected video's current playback time when available.
+- `wangp_list_gallery(media_type="all", limit=50, selected_only=False)`
+  - Lists compact summaries of the current session's image, video, and audio Gallery items with session-local ids and selection state. Paths and generation settings are omitted. Set `selected_only=True` to return only the live visual and/or audio selections, including the selected video's current playback time when available.
+- `wangp_get_media_settings(media_id=None, path=None)`
+  - Returns the generation settings stored in or extracted from exactly one media file. Use `media_id` with a Gallery id returned by `wangp_list_gallery`; use the mutually exclusive `path` input only when filesystem reads are enabled.
 - `wangp_list_files(path, extensions=None)` *(filesystem reads enabled only)*
   - Lists files directly inside a server directory with optional extension filtering, returning filenames, paths, extensions, and byte sizes.
 - `wangp_query_file(path)` *(filesystem reads enabled only)*
@@ -444,7 +443,7 @@ Tools:
 - `wangp_postprocess(path, process=None, parameters=None)`
   - With no process, discovers compatible post-processing operations for a Gallery item. With a returned process id, queues the operation through WanGP and returns a job id. Direct paths require filesystem-read permission.
 - `wangp_toolbox(action=None, arguments=None)`
-  - With no action, returns a compact utility list; pass one action without arguments for its exact schema, then pass arguments to execute it. Supports visual inspection of images or video frames, extraction, transcription, resize/crop, audio replacement, video merging, media-detail, and documentation operations using Gallery ids. Direct paths require filesystem-read permission.
+  - With no action, returns a compact utility list; pass one action without arguments for its exact schema, then pass arguments to execute it. Supports joint visual inspection of up to five images or video frames, extraction, transcription, resize/crop, audio replacement, video merging, media-detail, and documentation operations using Gallery ids. Direct paths require filesystem-read permission.
 - `wangp_generate(source, wait=False, timeout_s=None, event_limit=20)`
   - Starts a job from a settings dict, task dict, manifest dict, or task list. Media fields accept Gallery ids; direct paths require filesystem-read permission. Terminal results include matching `gallery_items` records.
 - `wangp_get_job(job_id, event_limit=20)`

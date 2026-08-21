@@ -84,8 +84,15 @@ class DeepyChatUI:
     settings_save_btn: Any
     html_output: Any
     chat_event: Any
+    submission_id: Any
     busy_queue_request: Any
+    busy_queue_submission_id: Any
     busy_queue_btn: Any
+    steer_request: Any
+    steer_submission_id: Any
+    steer_btn: Any
+    queued_action_input: Any
+    queued_action_btn: Any
     stats_output: Any
     stop_btn: Any
     request: Any
@@ -284,8 +291,15 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
             settings_launcher_host = gr.HTML(assistant_chat.render_settings_launcher_html(), elem_id=assistant_chat.SETTINGS_LAUNCHER_HOST_ID)
             html_output = gr.HTML(assistant_chat.render_shell_html(normalize_deepy_type(get_deepy_config_value(DEEPY_TYPE_KEY, ""))), elem_id=assistant_chat.CHAT_BLOCK_ID)
             chat_event = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.CHAT_EVENT_ID)
+            submission_id = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.SUBMISSION_ID)
             busy_queue_request = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.BUSY_QUEUE_INPUT_ID)
+            busy_queue_submission_id = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.BUSY_QUEUE_SUBMISSION_ID)
             busy_queue_btn = gr.Button("Queue Busy Request", visible=False, elem_id=assistant_chat.BUSY_QUEUE_BUTTON_ID)
+            steer_request = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.STEER_INPUT_ID)
+            steer_submission_id = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.STEER_SUBMISSION_ID)
+            steer_btn = gr.Button("Steer", visible=False, elem_id=assistant_chat.STEER_BUTTON_ID)
+            queued_action_input = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.QUEUED_ACTION_INPUT_ID)
+            queued_action_btn = gr.Button("Update Queued Request", visible=False, elem_id=assistant_chat.QUEUED_ACTION_BUTTON_ID)
             stop_btn = gr.Button("Stop", elem_id=assistant_chat.STOP_BRIDGE_ID)
             with gr.Row(elem_id=assistant_chat.CONTROLS_ID):
                 request = gr.Text(value="", label="Request", scale=3, show_label=False, elem_id=assistant_chat.REQUEST_ID)
@@ -398,8 +412,15 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
         settings_save_btn=settings_save_btn,
         html_output=html_output,
         chat_event=chat_event,
+        submission_id=submission_id,
         busy_queue_request=busy_queue_request,
+        busy_queue_submission_id=busy_queue_submission_id,
         busy_queue_btn=busy_queue_btn,
+        steer_request=steer_request,
+        steer_submission_id=steer_submission_id,
+        steer_btn=steer_btn,
+        queued_action_input=queued_action_input,
+        queued_action_btn=queued_action_btn,
         stats_output=stats_output,
         stop_btn=stop_btn,
         request=request,
@@ -495,6 +516,7 @@ def bind_deepy_chat_ui(
         audio_files_paths_value,
         audio_file_selected_value,
         ask_request,
+        client_submission_id,
         auto_cancel_queue_tasks,
         separate_requests_with_empty_line,
         use_template_properties,
@@ -530,7 +552,7 @@ def bind_deepy_chat_ui(
             default_speech_from_description,
             default_speech_from_sample,
         )
-        yield from handlers.ask_ai(state_value, ask_request)
+        yield from handlers.ask_ai(state_value, ask_request, client_submission_id=client_submission_id)
 
     def enqueue_ai_with_ui_settings(
         state_value,
@@ -539,6 +561,7 @@ def bind_deepy_chat_ui(
         audio_files_paths_value,
         audio_file_selected_value,
         ask_request,
+        client_submission_id,
         auto_cancel_queue_tasks,
         separate_requests_with_empty_line,
         use_template_properties,
@@ -574,7 +597,52 @@ def bind_deepy_chat_ui(
             default_speech_from_description,
             default_speech_from_sample,
         )
-        return handlers.enqueue_ai(state_value, ask_request)
+        yield from handlers.enqueue_ai(state_value, ask_request, client_submission_id=client_submission_id)
+
+    def steer_ai_with_ui_settings(
+        state_value,
+        output_value,
+        last_choice_value,
+        audio_files_paths_value,
+        audio_file_selected_value,
+        ask_request,
+        client_submission_id,
+        auto_cancel_queue_tasks,
+        separate_requests_with_empty_line,
+        use_template_properties,
+        override_height,
+        override_width,
+        override_num_frames,
+        override_audio_duration,
+        override_seed,
+        default_video_generator,
+        default_video_with_speech,
+        default_image_generator,
+        default_image_editor,
+        default_song,
+        default_speech_from_description,
+        default_speech_from_sample,
+    ):
+        handlers.prepare_request_context(state_value, output_value, last_choice_value, audio_files_paths_value, audio_file_selected_value)
+        update_session_ui_settings(
+            state_value,
+            auto_cancel_queue_tasks,
+            separate_requests_with_empty_line,
+            use_template_properties,
+            override_height,
+            override_width,
+            override_num_frames,
+            override_audio_duration,
+            override_seed,
+            default_video_generator,
+            default_video_with_speech,
+            default_image_generator,
+            default_image_editor,
+            default_song,
+            default_speech_from_description,
+            default_speech_from_sample,
+        )
+        yield from handlers.ask_ai(state_value, ask_request, client_submission_id=client_submission_id, steering=True)
 
     def _apply_ui_settings(
         state_value,
@@ -694,6 +762,9 @@ def bind_deepy_chat_ui(
 
     def stop_ai_with_ui(state_value):
         return handlers.stop_ai(state_value)
+
+    def queued_request_action_with_ui(state_value, action_payload):
+        return handlers.stop_ai(state_value, queued_action=action_payload)
 
     def reset_ai_with_ui(state_value):
         return handlers.reset_ai(state_value)
@@ -862,6 +933,7 @@ def bind_deepy_chat_ui(
             audio_files_paths,
             audio_file_selected,
             ui.request,
+            ui.submission_id,
             ui.auto_cancel_queue_tasks,
             ui.separate_requests_with_empty_line,
             ui.use_template_properties,
@@ -891,6 +963,7 @@ def bind_deepy_chat_ui(
             audio_files_paths,
             audio_file_selected,
             ui.busy_queue_request,
+            ui.busy_queue_submission_id,
             ui.auto_cancel_queue_tasks,
             ui.separate_requests_with_empty_line,
             ui.use_template_properties,
@@ -907,11 +980,42 @@ def bind_deepy_chat_ui(
             ui.default_speech_from_description,
             ui.default_speech_from_sample,
         ],
-        outputs=[ui.chat_event, ui.request],
+        outputs=[ui.chat_event, load_queue_trigger, ui.request, output_trigger, abort_client_id],
         show_progress="hidden",
-        queue=False,
+        trigger_mode="multiple",
     )
-    ui.stop_btn.click(fn=stop_ai_with_ui, inputs=[state], outputs=[ui.chat_event, load_queue_trigger, ui.request, abort_client_id], show_progress="hidden", queue=False)
+    ui.steer_btn.click(
+        fn=steer_ai_with_ui_settings,
+        inputs=[
+            state,
+            output,
+            last_choice,
+            audio_files_paths,
+            audio_file_selected,
+            ui.steer_request,
+            ui.steer_submission_id,
+            ui.auto_cancel_queue_tasks,
+            ui.separate_requests_with_empty_line,
+            ui.use_template_properties,
+            ui.override_height,
+            ui.override_width,
+            ui.override_num_frames,
+            ui.override_audio_duration,
+            ui.override_seed,
+            ui.default_video_generator,
+            ui.default_video_with_speech,
+            ui.default_image_generator,
+            ui.default_image_editor,
+            ui.default_song,
+            ui.default_speech_from_description,
+            ui.default_speech_from_sample,
+        ],
+        outputs=[ui.chat_event, load_queue_trigger, ui.request, output_trigger, abort_client_id],
+        show_progress="hidden",
+        trigger_mode="multiple",
+    )
+    ui.queued_action_btn.click(fn=queued_request_action_with_ui, inputs=[state, ui.queued_action_input], outputs=[ui.chat_event, load_queue_trigger, ui.request, abort_client_id], show_progress="hidden", queue=False, trigger_mode="multiple")
+    ui.stop_btn.click(fn=stop_ai_with_ui, inputs=[state], outputs=[ui.chat_event, load_queue_trigger, ui.request, abort_client_id], show_progress="hidden", queue=False, trigger_mode="multiple")
     ui.reset_btn.click(fn=reset_ai_with_ui, inputs=[state], outputs=[ui.chat_event, load_queue_trigger, ui.request, abort_client_id], show_progress="hidden")
 
 

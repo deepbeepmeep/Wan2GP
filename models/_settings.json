@@ -92,7 +92,6 @@
 	"sliding_window_overlap_noise": 0,
 	"sliding_window_discard_last_frames": 0,
 	"sliding_window_trim_first_frames": 0,
-	"keep_intermediate_sliding_windows": 1,
 	"RIFLEx_setting": 0,
 	"override_profile": -1,
 	"override_attention": "",

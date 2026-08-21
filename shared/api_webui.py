@@ -773,8 +773,8 @@ class GradioWanGPSession:
     def get_exported_default_settings(self, model_type: str) -> dict[str, Any]:
         return self._ensure_session().get_exported_default_settings(model_type)
 
-    def list_loras(self, model_type: str) -> dict[str, Any]:
-        return self._ensure_session().list_loras(model_type)
+    def list_loras(self, model_type: str, name: str | None = None) -> dict[str, Any]:
+        return self._ensure_session().list_loras(model_type, name=name)
 
     def get_model_schema(self, model_type: str) -> dict[str, Any] | None:
         return self._ensure_session().get_model_schema(model_type)

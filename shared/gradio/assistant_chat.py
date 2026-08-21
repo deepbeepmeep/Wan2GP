@@ -33,7 +33,14 @@ ASK_BUTTON_ID = "assistant_chat_ask_button"
 RESET_BUTTON_ID = "assistant_chat_reset_button"
 STOP_BRIDGE_ID = "assistant_chat_stop_bridge"
 BUSY_QUEUE_INPUT_ID = "assistant_chat_busy_queue_input"
+BUSY_QUEUE_SUBMISSION_ID = "assistant_chat_busy_queue_submission_id"
 BUSY_QUEUE_BUTTON_ID = "assistant_chat_busy_queue_button"
+SUBMISSION_ID = "assistant_chat_submission_id"
+STEER_INPUT_ID = "assistant_chat_steer_input"
+STEER_SUBMISSION_ID = "assistant_chat_steer_submission_id"
+STEER_BUTTON_ID = "assistant_chat_steer_button"
+QUEUED_ACTION_INPUT_ID = "assistant_chat_queued_action_input"
+QUEUED_ACTION_BUTTON_ID = "assistant_chat_queued_action_button"
 SAVE_SETTINGS_BUTTON_ID = "assistant_chat_save_settings_button"
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".jfif", ".pjpeg"}
 _VIDEO_EXTENSIONS = deepy_video_tools.VIDEO_EXTENSIONS
@@ -122,7 +129,7 @@ def render_shell_html(deepy_type: str = "") -> str:
 
 
 def render_stats_html() -> str:
-    return f"<div id='{STATS_ID}' class='wangp-assistant-chat__stats' aria-hidden='true'></div>"
+    return f"<div id='{STATS_ID}' class='wangp-assistant-chat__stats' aria-hidden='true'><span class='wangp-assistant-chat__input-helper' aria-hidden='true'>Press Enter to Queue Requests / CTRL Enter to Steer Deepy</span><span class='wangp-assistant-chat__stats-text'></span></div>"
 
 
 def render_launcher_html() -> str:
@@ -597,7 +604,7 @@ def get_css() -> str:
 }
 
 #assistant_chat_html {
-    min-height: 430px;
+    min-height: 495px;
 }
 
 .wangp-assistant-chat {
@@ -623,7 +630,7 @@ def get_css() -> str:
     position: relative;
     display: flex;
     flex-direction: column;
-    height: 430px;
+    height: 495px;
     overflow: hidden;
     border: 1px solid var(--chat-border);
     border-radius: 26px;
@@ -668,7 +675,7 @@ def get_css() -> str:
     justify-content: center;
     min-height: 100%;
     box-sizing: border-box;
-    padding: 22px 24px 92px;
+    padding: 22px 24px 16px;
     border: 0;
     border-radius: 0;
     color: var(--muted-text);
@@ -763,6 +770,23 @@ def get_css() -> str:
     gap: 10px;
 }
 
+.wangp-assistant-chat__input-helper {
+    display: none;
+    flex: 1 1 auto;
+    min-width: 0;
+    color: rgba(66, 88, 103, 0.68);
+    font-size: calc(0.68rem * var(--dock-font-scale));
+    line-height: 1.15;
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.wangp-assistant-chat__input-helper.is-visible {
+    display: block;
+}
+
 .wangp-assistant-chat__empty-section {
     padding: 12px 13px 11px;
     border: 1px solid rgba(31, 94, 132, 0.12);
@@ -829,22 +853,34 @@ def get_css() -> str:
 }
 
 .wangp-assistant-chat__stats {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
     min-height: calc(0.78rem * var(--dock-font-scale));
     padding: 0 2px;
     font-size: calc(0.64rem * var(--dock-font-scale));
     line-height: 1.15;
     white-space: nowrap;
-    text-align: right;
     overflow: hidden;
-    text-overflow: ellipsis;
     color: #8d9aa5;
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.18s ease;
 }
 
-.wangp-assistant-chat__stats.is-visible {
+.wangp-assistant-chat__stats.is-visible,
+.wangp-assistant-chat__stats.has-input-helper {
     opacity: 0.96;
+}
+
+.wangp-assistant-chat__stats-text {
+    flex: 0 1 auto;
+    min-width: 0;
+    margin-left: auto;
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .wangp-assistant-chat__message {
@@ -887,6 +923,7 @@ def get_css() -> str:
 }
 
 .wangp-assistant-chat__message-card {
+    position: relative;
     width: min(82%, 860px);
     border-radius: 22px;
     padding: 16px 16px 14px;
@@ -929,6 +966,129 @@ def get_css() -> str:
     min-height: 1em;
 }
 
+.wangp-assistant-chat__meta-right {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 7px;
+    min-width: 0;
+}
+
+.wangp-assistant-chat__message--user .wangp-assistant-chat__meta-right {
+    padding-right: 31px;
+}
+
+.wangp-assistant-chat__message--user .wangp-assistant-chat__message-actions {
+    position: absolute;
+    top: 50%;
+    right: 16px;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 7px;
+    transform: translateY(-50%);
+}
+
+.wangp-assistant-chat__message--user .wangp-assistant-chat__body {
+    padding-right: 31px;
+}
+
+.wangp-assistant-chat__copy-button,
+.wangp-assistant-chat__message-action-button,
+.wangp-assistant-chat__collapse-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+    padding: 0;
+    border: 1px solid rgba(40, 104, 142, 0.16);
+    border-radius: 7px;
+    color: #346f92;
+    background: rgba(255, 255, 255, 0.54);
+    cursor: pointer;
+    transition: opacity 0.16s ease, transform 0.16s ease, color 0.16s ease, background 0.16s ease;
+}
+
+.wangp-assistant-chat__copy-button svg,
+.wangp-assistant-chat__message-action-button svg {
+    width: 13px;
+    height: 13px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.5;
+}
+
+.wangp-assistant-chat__copy-button:hover,
+.wangp-assistant-chat__copy-button:focus-visible,
+.wangp-assistant-chat__message-action-button:hover,
+.wangp-assistant-chat__message-action-button:focus-visible {
+    color: #0d5d89;
+    background: rgba(255, 255, 255, 0.92);
+    outline: none;
+}
+
+.wangp-assistant-chat__copy-button.is-copied {
+    color: #19734a;
+    border-color: rgba(25, 115, 74, 0.28);
+    background: rgba(221, 249, 234, 0.96);
+}
+
+.wangp-assistant-chat__copy-button.is-copy-error {
+    color: #a13f3f;
+    border-color: rgba(161, 63, 63, 0.28);
+}
+
+.wangp-assistant-chat__message--assistant .wangp-assistant-chat__copy-button {
+    color: rgba(245, 251, 255, 0.86);
+    border-color: rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.wangp-assistant-chat__message--assistant .wangp-assistant-chat__copy-button:hover,
+.wangp-assistant-chat__message--assistant .wangp-assistant-chat__copy-button:focus-visible {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.16);
+}
+
+.wangp-assistant-chat__message--user .wangp-assistant-chat__copy-button,
+.wangp-assistant-chat__message--user .wangp-assistant-chat__message-action-button,
+.wangp-assistant-chat__tool-json .wangp-assistant-chat__copy-button {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-2px);
+}
+
+.wangp-assistant-chat__tool-json .wangp-assistant-chat__copy-button {
+    transform: none;
+    transition: color 0.16s ease, background 0.16s ease;
+}
+
+.wangp-assistant-chat__message--user .wangp-assistant-chat__message-card:hover .wangp-assistant-chat__copy-button,
+.wangp-assistant-chat__message--user .wangp-assistant-chat__copy-button:focus-visible,
+.wangp-assistant-chat__message--user .wangp-assistant-chat__message-card:hover .wangp-assistant-chat__message-action-button,
+.wangp-assistant-chat__message--user .wangp-assistant-chat__message-action-button:focus-visible,
+.wangp-assistant-chat__tool-json:hover .wangp-assistant-chat__copy-button,
+.wangp-assistant-chat__tool-json .wangp-assistant-chat__copy-button:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+}
+
+.wangp-assistant-chat__message.is-pending-queue-action .wangp-assistant-chat__message-action-button {
+    opacity: 0.45;
+    pointer-events: none;
+}
+
+.wangp-assistant-chat__message--user.is-editing .wangp-assistant-chat__message-card {
+    outline: 2px solid rgba(31, 126, 177, 0.34);
+    outline-offset: 2px;
+}
+
 .wangp-assistant-chat__author {
     font-weight: 700;
     letter-spacing: 0.03em;
@@ -956,6 +1116,24 @@ def get_css() -> str:
 .wangp-assistant-chat__message--assistant .wangp-assistant-chat__badge {
     background: rgba(255, 255, 255, 0.12);
     color: #eff9ff;
+}
+
+.wangp-assistant-chat__message-end {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 12px;
+}
+
+.wangp-assistant-chat__message-end-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12);
+    color: #eff9ff;
+    font-size: calc(0.72rem * var(--dock-font-scale));
+    font-weight: 700;
+    letter-spacing: 0.02em;
 }
 
 .wangp-assistant-chat__message--assistant .wangp-assistant-chat__tool-title,
@@ -1089,6 +1267,33 @@ def get_css() -> str:
     color: #385363;
 }
 
+.wangp-assistant-chat__collapse-button {
+    display: flex;
+    margin: 10px 0 0 auto;
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+    border: 0;
+    border-radius: 0;
+    color: #ffffff !important;
+    background: transparent;
+    line-height: 1;
+    transition: none;
+}
+
+.wangp-assistant-chat__collapse-button > span {
+    display: block;
+    color: #ffffff !important;
+    font-size: calc(0.78rem * var(--dock-font-scale));
+    line-height: 1;
+    transform: rotate(180deg);
+}
+
+.wangp-assistant-chat__collapse-button:focus-visible {
+    outline: 1px solid currentColor;
+    outline-offset: 1px;
+}
+
 .wangp-assistant-chat__disclosure:not([open]) > .wangp-assistant-chat__disclosure-body {
     display: none;
 }
@@ -1184,6 +1389,18 @@ def get_css() -> str:
     gap: 12px;
 }
 
+.wangp-assistant-chat__tool-json {
+    min-width: 0;
+}
+
+.wangp-assistant-chat__tool-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 24px;
+}
+
 .wangp-assistant-chat__tool-section-title {
     margin-bottom: 6px;
     font-size: calc(0.67rem * var(--dock-font-scale));
@@ -1195,6 +1412,20 @@ def get_css() -> str:
 
 .wangp-assistant-chat__message--assistant .wangp-assistant-chat__tool-section-title {
     color: rgba(233, 246, 255, 0.76);
+}
+
+.wangp-assistant-chat__tool-section-header .wangp-assistant-chat__tool-section-title {
+    margin-bottom: 0;
+}
+
+@media (hover: none) {
+    .wangp-assistant-chat__message--user .wangp-assistant-chat__copy-button,
+    .wangp-assistant-chat__message--user .wangp-assistant-chat__message-action-button,
+    .wangp-assistant-chat__tool-json .wangp-assistant-chat__copy-button {
+        opacity: 0.72;
+        pointer-events: auto;
+        transform: none;
+    }
 }
 
 .wangp-assistant-chat__attachments {
@@ -1750,6 +1981,10 @@ def get_css() -> str:
     color: #93a6b4 !important;
 }
 
+#assistant_chat_dock.is-dark .wangp-assistant-chat__input-helper {
+    color: rgba(174, 190, 201, 0.68);
+}
+
 #assistant_chat_dock.is-dark #assistant_chat_reset_button {
     color: #e8f1f6;
     border-color: rgba(103, 132, 151, 0.22);
@@ -1811,6 +2046,12 @@ def get_css() -> str:
     color: #eef6fb;
     background: linear-gradient(180deg, rgba(24, 31, 37, 0.99) 0%, rgba(10, 12, 14, 0.99) 100%);
     border-color: rgba(103, 132, 151, 0.2);
+}
+
+#assistant_chat_dock.is-dark .wangp-assistant-chat__message--user .wangp-assistant-chat__copy-button {
+    color: #b9d9ea;
+    border-color: rgba(148, 185, 205, 0.2);
+    background: rgba(255, 255, 255, 0.07);
 }
 
 #assistant_chat_dock.is-dark .wangp-assistant-chat__body code {
@@ -1895,8 +2136,12 @@ def get_css() -> str:
     }
 
     .wangp-assistant-chat {
-        height: 390px;
+        height: 449px;
         border-radius: 20px;
+    }
+
+    #assistant_chat_html {
+        min-height: 449px;
     }
 
     .wangp-assistant-chat__scroll {
@@ -1915,7 +2160,7 @@ def get_css() -> str:
     }
 
     .wangp-assistant-chat__empty {
-        padding: 18px 14px 82px;
+        padding: 18px 14px 14px;
     }
 
     .wangp-assistant-chat__empty-grid {
@@ -2089,8 +2334,9 @@ WAC.escapeHtml = function (value) {
   return String(value || '').replace(/[&<>\"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[char] || char));
 };
 
-WAC.timeLabel = function () {
-  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+WAC.timeLabel = function (timestamp) {
+  const value = Number(timestamp);
+  return Number.isFinite(value) && value > 0 ? new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
 };
 
 WAC.bottomThreshold = function () {
@@ -2122,39 +2368,27 @@ WAC.applyAutoscrollState = function (state) {
   WAC.syncJumpToBottom();
 };
 
+const optimisticProtocolVersion = 2;
+if (WAC.optimisticProtocolVersion !== optimisticProtocolVersion) {
+  WAC.optimisticSubmits = [];
+  WAC.state.order = WAC.state.order.filter((messageId) => {
+    const optimistic = String(messageId || '').startsWith('optimistic_');
+    if (optimistic) delete WAC.state.messages[messageId];
+    return !optimistic;
+  });
+  WAC.optimisticProtocolVersion = optimisticProtocolVersion;
+}
 WAC.optimisticSubmits = Array.isArray(WAC.optimisticSubmits) ? WAC.optimisticSubmits : [];
 WAC.serverInstanceId = WAC.serverInstanceId || '';
+WAC.chatSessionId = WAC.chatSessionId || '';
+WAC.chatRevision = Number.isFinite(Number(WAC.chatRevision)) ? Number(WAC.chatRevision) : -1;
+WAC.optimisticMaxAgeMs = 30000;
+WAC.pendingSteeringId = WAC.pendingSteeringId || '';
+WAC.queuedEditMessageId = WAC.queuedEditMessageId || '';
+WAC.queuedEditDraft = typeof WAC.queuedEditDraft === 'string' ? WAC.queuedEditDraft : '';
 
 WAC.normalizeText = function (value) {
   return String(value || '').replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ').trim();
-};
-
-WAC.normalizeMatchText = function (value) {
-  return WAC.normalizeText(value).replace(/\s+/g, ' ');
-};
-
-WAC.splitRequestBlocks = function (value) {
-  const normalized = String(value || '').replace(/\r\n?/g, '\n').trim();
-  if (!normalized) return [];
-  const blocks = [];
-  let current = [];
-  for (const rawLine of normalized.split('\n')) {
-    const strippedLine = String(rawLine).trim();
-    if (!strippedLine || /^[-=_]{3,}$/.test(strippedLine)) {
-      if (current.length > 0) {
-        const block = current.join('\n').trim();
-        if (block) blocks.push(block);
-        current = [];
-      }
-      continue;
-    }
-    current.push(String(rawLine).replace(/\s+$/, ''));
-  }
-  if (current.length > 0) {
-    const block = current.join('\n').trim();
-    if (block) blocks.push(block);
-  }
-  return blocks;
 };
 
 WAC.gradioConfig = function () {
@@ -2223,14 +2457,15 @@ WAC.getWanGpSettingsSelection = function () {
   return { value, label };
 };
 
-WAC.buildOptimisticUserMessage = function (optimisticId, content) {
+WAC.buildOptimisticUserMessage = function (optimisticId, content, timestamp) {
   const contentHtml = WAC.escapeHtml(content).replace(/\n/g, '<br>');
+  const copyButton = `<button type='button' class='wangp-assistant-chat__copy-button' data-copy-source='user' data-copy-text='${WAC.escapeHtml(content)}' aria-label='Copy request' title='Copy request'><svg viewBox='0 0 16 16' aria-hidden='true' focusable='false'><rect x='5' y='5' width='8' height='8' rx='1.5'></rect><path d='M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V3A1.5 1.5 0 0 1 3 1.5h6A1.5 1.5 0 0 1 10.5 3v.5'></path></svg></button>`;
   const html = [
     `<article class='wangp-assistant-chat__message wangp-assistant-chat__message--user' data-message-id='${optimisticId}'>`,
     "<div class='wangp-assistant-chat__avatar'>You</div>",
     "<div class='wangp-assistant-chat__message-card'>",
     "<div class='wangp-assistant-chat__meta'><div class='wangp-assistant-chat__meta-left'></div>",
-    `<div class='wangp-assistant-chat__time'>${WAC.escapeHtml(WAC.timeLabel())}</div></div>`,
+    `<div class='wangp-assistant-chat__meta-right'><div class='wangp-assistant-chat__time'>${WAC.escapeHtml(WAC.timeLabel(timestamp))}</div>${copyButton}</div></div>`,
     `<div class='wangp-assistant-chat__body'><p>${contentHtml}</p></div>`,
     "</div></article>",
   ].join('');
@@ -2253,57 +2488,46 @@ WAC.clearRequestInput = function (expectedText) {
   input.dispatchEvent(new Event('change', { bubbles: true }));
 };
 
-WAC.reconcileOptimisticSubmits = function () {
-  const optimistic = Array.isArray(WAC.optimisticSubmits) ? WAC.optimisticSubmits.slice() : [];
-  if (optimistic.length === 0) return;
-  const serverUserTexts = [];
+WAC.reconcileOptimisticSubmits = function (acknowledgedSubmissionIds) {
+  const acknowledged = new Set((Array.isArray(acknowledgedSubmissionIds) ? acknowledgedSubmissionIds : []).map((value) => String(value || '').trim()).filter(Boolean));
   for (const messageId of WAC.state.order) {
     const message = WAC.state.messages[messageId];
-    if (!message || message.role !== 'user' || String(message.id || '').startsWith('optimistic_')) continue;
-    const node = WAC.createMessageNode(message);
-    serverUserTexts.push(WAC.messageBodyText(node));
+    const submissionId = String(message && message.client_submission_id || '').trim();
+    if (submissionId) acknowledged.add(submissionId);
   }
-  let matchedPrefix = 0;
-  const maxMatch = Math.min(serverUserTexts.length, optimistic.length);
-  for (let count = maxMatch; count > 0; count -= 1) {
-    const serverSuffix = serverUserTexts.slice(serverUserTexts.length - count);
-    const optimisticPrefix = optimistic.slice(0, count).map((item) => WAC.normalizeMatchText(item && item.text || ''));
-    if (serverSuffix.length === optimisticPrefix.length && serverSuffix.every((text, index) => WAC.normalizeMatchText(text) === optimisticPrefix[index])) {
-      matchedPrefix = count;
-      break;
-    }
-    const flattenedPrefix = [];
-    for (const item of optimistic.slice(0, count)) {
-      const content = WAC.normalizeText(item && item.text || '');
-      if (!content) continue;
-      const blocks = WAC.splitRequestBlocks(content);
-      flattenedPrefix.push(...(blocks.length > 1 ? blocks : [content]).map((block) => WAC.normalizeMatchText(block)));
-    }
-    const splitServerSuffix = flattenedPrefix.length > count ? serverUserTexts.slice(serverUserTexts.length - flattenedPrefix.length) : [];
-    if (splitServerSuffix.length === flattenedPrefix.length && splitServerSuffix.every((text, index) => WAC.normalizeMatchText(text) === flattenedPrefix[index])) {
-      matchedPrefix = count;
-      break;
-    }
-  }
-  WAC.optimisticSubmits = optimistic.slice(matchedPrefix);
+  const now = Date.now();
+  WAC.optimisticSubmits = (Array.isArray(WAC.optimisticSubmits) ? WAC.optimisticSubmits : []).filter((item) => {
+    const submissionId = String(item && item.id || '').trim();
+    const timestamp = Number(item && item.ts || 0);
+    return submissionId && !acknowledged.has(submissionId) && timestamp > 0 && now - timestamp < WAC.optimisticMaxAgeMs;
+  });
   for (const item of WAC.optimisticSubmits) {
     const optimisticId = String(item && item.id || '').trim();
     const content = WAC.normalizeText(item && item.text || '');
     if (!optimisticId || !content || WAC.state.messages[optimisticId]) continue;
     WAC.state.order.push(optimisticId);
-    WAC.state.messages[optimisticId] = WAC.buildOptimisticUserMessage(optimisticId, content);
+    WAC.state.messages[optimisticId] = WAC.buildOptimisticUserMessage(optimisticId, content, item.ts);
   }
+};
+
+WAC.newSubmissionId = function () {
+  const randomId = window.crypto && typeof window.crypto.randomUUID === 'function' ? window.crypto.randomUUID() : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  return `optimistic_${randomId}`;
 };
 
 WAC.pushOptimisticUserMessage = function (text) {
   const content = WAC.normalizeText(text);
-  if (!content) return;
+  if (!content) return '';
   const now = Date.now();
-  const lastOptimistic = (WAC.optimisticSubmits || [])[WAC.optimisticSubmits.length - 1] || { text: '', ts: 0 };
-  if (WAC.normalizeText(lastOptimistic.text || '') === content && (now - Number(lastOptimistic.ts || 0)) < 900) return;
-  const optimisticId = `optimistic_${now}`;
+  const optimisticId = WAC.newSubmissionId();
   WAC.optimisticSubmits.push({ id: optimisticId, text: content, ts: now });
-  WAC.upsertMessage(WAC.buildOptimisticUserMessage(optimisticId, content));
+  WAC.upsertMessage(WAC.buildOptimisticUserMessage(optimisticId, content, now));
+  window.setTimeout(() => {
+    if (!(WAC.optimisticSubmits || []).some((item) => String(item && item.id || '') === optimisticId)) return;
+    WAC.dropOptimisticSubmit(optimisticId);
+    WAC.removeMessage(optimisticId);
+  }, WAC.optimisticMaxAgeMs);
+  return optimisticId;
 };
 
 WAC.host = function () {
@@ -2326,10 +2550,28 @@ WAC.empty = function () {
   return document.querySelector('#assistant_chat_html .wangp-assistant-chat__empty');
 };
 
-WAC.acknowledgeOptimisticSubmit = function (text) {
-  const acknowledged = WAC.normalizeText(text);
-  if (!acknowledged) return;
-  WAC.optimisticSubmits = (WAC.optimisticSubmits || []).filter((item) => WAC.normalizeText(item && item.text || '') !== acknowledged);
+WAC.acknowledgeOptimisticSubmits = function (submissionIds) {
+  const acknowledged = new Set((Array.isArray(submissionIds) ? submissionIds : []).map((value) => String(value || '').trim()).filter(Boolean));
+  if (acknowledged.size === 0) return;
+  WAC.optimisticSubmits = (WAC.optimisticSubmits || []).filter((item) => !acknowledged.has(String(item && item.id || '').trim()));
+  for (const submissionId of acknowledged) delete WAC.state.messages[submissionId];
+  WAC.state.order = WAC.state.order.filter((messageId) => !acknowledged.has(String(messageId || '')));
+};
+
+WAC.mergeStaleSync = function (messages, acknowledgedSubmissionIds) {
+  WAC.ensureShell();
+  const scrollState = WAC.captureAutoscrollState();
+  WAC.acknowledgeOptimisticSubmits(acknowledgedSubmissionIds);
+  const snapshotOrder = [];
+  for (const message of (Array.isArray(messages) ? messages : [])) {
+    if (!message || !message.id) continue;
+    const messageId = String(message.id);
+    snapshotOrder.push(messageId);
+    if (!WAC.state.messages[messageId]) WAC.state.messages[messageId] = message;
+  }
+  const snapshotIds = new Set(snapshotOrder);
+  WAC.state.order = snapshotOrder.concat(WAC.state.order.filter((messageId) => !snapshotIds.has(String(messageId))));
+  WAC.hydrate(scrollState);
 };
 
 WAC.emptyMarkup = function (mode) {
@@ -2453,6 +2695,68 @@ WAC.toggleDisclosure = function (node) {
   WAC.applyAutoscrollState(scrollState);
 };
 
+WAC.closeDisclosure = function (node) {
+  if (!node || !node.open) return;
+  WAC.toggleDisclosure(node);
+  const summary = node.querySelector(':scope > summary');
+  if (summary && typeof summary.focus === 'function') summary.focus({ preventScroll: true });
+};
+
+WAC.markCopyButton = function (button, state) {
+  if (!button) return;
+  const originalLabel = String(button.dataset.copyLabel || button.getAttribute('aria-label') || 'Copy');
+  button.dataset.copyLabel = originalLabel;
+  button.classList.toggle('is-copied', state === 'copied');
+  button.classList.toggle('is-copy-error', state === 'error');
+  const label = state === 'copied' ? 'Copied' : state === 'error' ? 'Copy failed' : originalLabel;
+  button.setAttribute('aria-label', label);
+  button.setAttribute('title', label);
+  if (button.copyResetTimer) window.clearTimeout(button.copyResetTimer);
+  if (state) button.copyResetTimer = window.setTimeout(() => { WAC.markCopyButton(button, ''); }, 1200);
+};
+
+WAC.handleCopyButtonClick = function (event) {
+  const button = event && event.target && event.target.closest ? event.target.closest('.wangp-assistant-chat__copy-button') : null;
+  if (!button) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  const source = String(button.getAttribute('data-copy-source') || '');
+  const jsonNode = source === 'json' ? button.closest('.wangp-assistant-chat__tool-json') : null;
+  const pre = jsonNode ? jsonNode.querySelector('pre') : null;
+  const text = source === 'json' ? String((pre && pre.textContent) || '') : String(button.getAttribute('data-copy-text') || '');
+  if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+    WAC.markCopyButton(button, 'error');
+    return true;
+  }
+  navigator.clipboard.writeText(text).then(() => { WAC.markCopyButton(button, 'copied'); }).catch(() => { WAC.markCopyButton(button, 'error'); });
+  return true;
+};
+
+WAC.handleCollapseButtonClick = function (event) {
+  const button = event && event.target && event.target.closest ? event.target.closest('[data-disclosure-action="collapse"]') : null;
+  if (!button) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  if (button.dataset.collapsePointerHandled === 'true') {
+    delete button.dataset.collapsePointerHandled;
+    return true;
+  }
+  WAC.closeDisclosure(button.closest('.wangp-assistant-chat__disclosure'));
+  return true;
+};
+
+WAC.handleCollapseButtonPointerDown = function (event) {
+  const button = event && event.target && event.target.closest ? event.target.closest('[data-disclosure-action="collapse"]') : null;
+  if (!button) return false;
+  const isPrimaryPointer = event.button === 0 || event.pointerType === 'touch' || event.pointerType === 'pen';
+  if (!isPrimaryPointer) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  button.dataset.collapsePointerHandled = 'true';
+  WAC.closeDisclosure(button.closest('.wangp-assistant-chat__disclosure'));
+  return true;
+};
+
 WAC.handleDisclosurePointerDown = function (event) {
   const summary = event && event.target && event.target.closest ? event.target.closest('summary') : null;
   if (!summary) return false;
@@ -2492,14 +2796,125 @@ WAC.stopBridgeTargets = function () {
   return targets.filter((target, index, items) => !!target && items.indexOf(target) === index);
 };
 
-WAC.queueBusyRequest = function (text) {
+WAC.setBridgeValue = function (selector, value) {
+  const input = document.querySelector(selector);
+  if (!input) return false;
+  input.value = String(value || '');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+};
+
+WAC.queueBusyRequest = function (text, submissionId) {
   const input = document.querySelector('#assistant_chat_busy_queue_input textarea, #assistant_chat_busy_queue_input input');
   const button = document.querySelector('#assistant_chat_busy_queue_button button, #assistant_chat_busy_queue_button');
   if (!input || !button) return false;
-  input.value = String(text || '');
+  WAC.setBridgeValue('#assistant_chat_busy_queue_input textarea, #assistant_chat_busy_queue_input input', text);
+  WAC.setBridgeValue('#assistant_chat_busy_queue_submission_id textarea, #assistant_chat_busy_queue_submission_id input', submissionId);
+  if (typeof button.click === 'function') button.click();
+  return true;
+};
+
+WAC.steerRequest = function (text, submissionId) {
+  const button = document.querySelector('#assistant_chat_steer_button button, #assistant_chat_steer_button');
+  if (!button) return false;
+  WAC.setBridgeValue('#assistant_chat_steer_input textarea, #assistant_chat_steer_input input', text);
+  WAC.setBridgeValue('#assistant_chat_steer_submission_id textarea, #assistant_chat_steer_submission_id input', submissionId);
+  if (typeof button.click === 'function') button.click();
+  return true;
+};
+
+WAC.queuedRequestAction = function (action, messageId, text) {
+  const button = document.querySelector('#assistant_chat_queued_action_button button, #assistant_chat_queued_action_button');
+  if (!button) return false;
+  const payload = JSON.stringify({ action: String(action || ''), message_id: String(messageId || ''), text: String(text || '') });
+  WAC.setBridgeValue('#assistant_chat_queued_action_input textarea, #assistant_chat_queued_action_input input', payload);
+  if (typeof button.click === 'function') button.click();
+  return true;
+};
+
+WAC.setRequestInputValue = function (value) {
+  const input = WAC.requestInput();
+  if (!input) return;
+  input.value = String(value || '');
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
-  if (typeof button.click === 'function') button.click();
+};
+
+WAC.setQueuedEditButtonLabels = function (editing) {
+  const askButton = document.querySelector('#assistant_chat_ask_button button, #assistant_chat_ask_button');
+  const resetButton = document.querySelector('#assistant_chat_reset_button button, #assistant_chat_reset_button');
+  if (askButton) askButton.textContent = editing ? 'Save' : 'Ask';
+  if (resetButton) resetButton.textContent = editing ? 'Cancel' : 'Reset';
+};
+
+WAC.finishQueuedRequestEdit = function () {
+  const messageId = String(WAC.queuedEditMessageId || '');
+  if (messageId) {
+    const messageNode = WAC.transcript() && WAC.transcript().querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+    if (messageNode) messageNode.classList.remove('is-editing');
+  }
+  WAC.setRequestInputValue(WAC.queuedEditDraft);
+  WAC.queuedEditMessageId = '';
+  WAC.queuedEditDraft = '';
+  WAC.setQueuedEditButtonLabels(false);
+};
+
+WAC.startQueuedRequestEdit = function (messageNode) {
+  if (!messageNode) return;
+  const copyButton = messageNode.querySelector('[data-copy-source="user"]');
+  const input = WAC.requestInput();
+  if (!copyButton || !input || !messageNode.querySelector('[data-message-action="edit"]')) return;
+  if (WAC.queuedEditMessageId) WAC.finishQueuedRequestEdit();
+  WAC.queuedEditMessageId = String(messageNode.getAttribute('data-message-id') || '');
+  WAC.queuedEditDraft = String(input.value || '');
+  const text = String(copyButton.getAttribute('data-copy-text') || '');
+  messageNode.classList.add('is-editing');
+  WAC.setRequestInputValue(text);
+  WAC.setQueuedEditButtonLabels(true);
+  input.focus({ preventScroll: true });
+  input.setSelectionRange(input.value.length, input.value.length);
+};
+
+WAC.syncQueuedRequestEdit = function () {
+  const messageId = String(WAC.queuedEditMessageId || '');
+  if (!messageId) return;
+  const messageNode = WAC.transcript() && WAC.transcript().querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+  if (!messageNode || !messageNode.querySelector('[data-message-action="edit"]')) {
+    WAC.finishQueuedRequestEdit();
+    return;
+  }
+  messageNode.classList.add('is-editing');
+  WAC.setQueuedEditButtonLabels(true);
+};
+
+WAC.submitQueuedRequestAction = function (messageNode, action, text) {
+  if (!messageNode) return;
+  const messageId = String(messageNode.getAttribute('data-message-id') || '');
+  const normalizedAction = String(action || '').trim().toLowerCase();
+  const content = String(text || '').trim();
+  if (!messageId || !['edit', 'remove'].includes(normalizedAction) || (normalizedAction === 'edit' && !content)) return;
+  if (WAC.queuedEditMessageId === messageId) WAC.finishQueuedRequestEdit();
+  messageNode.classList.add('is-pending-queue-action');
+  if (!WAC.queuedRequestAction(normalizedAction, messageId, content)) {
+    messageNode.classList.remove('is-pending-queue-action');
+    return;
+  }
+  window.setTimeout(() => {
+    if (messageNode.isConnected) messageNode.classList.remove('is-pending-queue-action');
+  }, 3000);
+};
+
+WAC.handleQueuedRequestClick = function (event) {
+  const messageAction = event && event.target && event.target.closest ? event.target.closest('[data-message-action]') : null;
+  if (!messageAction) return false;
+  const messageNode = messageAction.closest('.wangp-assistant-chat__message--user');
+  if (!messageNode) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  const action = String(messageAction.getAttribute('data-message-action') || '');
+  if (action === 'edit') WAC.startQueuedRequestEdit(messageNode);
+  else if (action === 'remove') WAC.submitQueuedRequestAction(messageNode, 'remove', '');
   return true;
 };
 
@@ -2507,6 +2922,22 @@ WAC.isAssistantBusy = function () {
   if (WAC.state && WAC.state.status && WAC.state.status.visible && WAC.state.status.text) return true;
   const stopButton = document.querySelector('#assistant_chat_html .wangp-assistant-chat__status-stop');
   return !!(stopButton && !stopButton.disabled);
+};
+
+WAC.setBusyInputHelper = function (visible) {
+  const stats = WAC.statsNode();
+  if (!stats) return;
+  let helper = stats.querySelector('.wangp-assistant-chat__input-helper');
+  if (!helper) {
+    helper = document.createElement('span');
+    helper.className = 'wangp-assistant-chat__input-helper';
+    helper.textContent = 'Press Enter to Queue Requests / CTRL Enter to Steer Deepy';
+    stats.prepend(helper);
+  }
+  helper.classList.toggle('is-visible', !!visible);
+  helper.setAttribute('aria-hidden', visible ? 'false' : 'true');
+  stats.classList.toggle('has-input-helper', !!visible);
+  stats.setAttribute('aria-hidden', visible || stats.classList.contains('is-visible') ? 'false' : 'true');
 };
 
 WAC.eventSource = function () {
@@ -2543,12 +2974,43 @@ WAC.consumePayload = function (payload) {
   }
   const event = envelope && envelope.event ? envelope.event : envelope;
   if (!event || typeof event !== 'object') return [];
+  const chatSessionId = typeof event.chat_session_id === 'string' ? event.chat_session_id : '';
+  if (chatSessionId && WAC.chatSessionId && chatSessionId !== WAC.chatSessionId) WAC.reset();
+  if (chatSessionId) WAC.chatSessionId = chatSessionId;
+  const transcriptEvent = event.type === 'sync' || event.type === 'upsert_message' || event.type === 'remove_message';
+  const revision = Number(event.revision);
+  const hasRevision = transcriptEvent && Number.isFinite(revision);
+  const acknowledgedSubmissionIds = event.type === 'sync' ? (event.acknowledged_submission_ids || []) : [];
+  const canonicalSubmissionIds = event.type === 'sync' ? (event.messages || []).map((message) => String(message && message.client_submission_id || '').trim()).filter(Boolean) : [];
+  const steeringAcknowledged = !!WAC.pendingSteeringId && [...acknowledgedSubmissionIds, ...canonicalSubmissionIds].some((submissionId) => String(submissionId || '').trim() === WAC.pendingSteeringId);
+  if (hasRevision && revision < WAC.chatRevision) {
+    if (event.type === 'sync') {
+      WAC.mergeStaleSync(event.messages || [], acknowledgedSubmissionIds);
+      if (steeringAcknowledged) {
+        WAC.pendingSteeringId = '';
+        WAC.setStatus(event.status || null);
+      }
+    }
+    return [];
+  }
+  if (hasRevision) WAC.chatRevision = revision;
   if (event.type === 'reset') {
     WAC.reset();
+    if (chatSessionId) WAC.chatSessionId = chatSessionId;
+    if (Number.isFinite(revision)) WAC.chatRevision = revision;
     return [];
   }
   if (event.type === 'upsert_message') {
-    WAC.upsertMessage(event.message || {});
+    const message = event.message || {};
+    const submissionId = String(message.client_submission_id || '').trim();
+    if (submissionId) {
+      WAC.acknowledgeOptimisticSubmits([submissionId]);
+      if (submissionId === WAC.pendingSteeringId) {
+        WAC.pendingSteeringId = '';
+        WAC.setStatus({ visible: true, kind: 'queued', text: 'Steering accepted. Waiting for the current thought/action boundary...' });
+      }
+    }
+    WAC.upsertMessage(message);
     return [];
   }
   if (event.type === 'remove_message') {
@@ -2556,6 +3018,7 @@ WAC.consumePayload = function (payload) {
     return [];
   }
   if (event.type === 'status') {
+    if (WAC.pendingSteeringId) return [];
     WAC.setStatus(event.status || null);
     if (Object.prototype.hasOwnProperty.call(event, 'stats')) WAC.setStats(event.stats || null);
     return [];
@@ -2565,8 +3028,9 @@ WAC.consumePayload = function (payload) {
     return [];
   }
   if (event.type === 'sync') {
-    if (Object.prototype.hasOwnProperty.call(event, 'acknowledged_user_text')) WAC.acknowledgeOptimisticSubmit(event.acknowledged_user_text || '');
-    WAC.sync(event.messages || [], event.status || null, Object.prototype.hasOwnProperty.call(event, 'stats') ? (event.stats || null) : WAC.state.stats);
+    const status = WAC.pendingSteeringId && !steeringAcknowledged ? WAC.state.status : (event.status || null);
+    if (steeringAcknowledged) WAC.pendingSteeringId = '';
+    WAC.sync(event.messages || [], status, Object.prototype.hasOwnProperty.call(event, 'stats') ? (event.stats || null) : WAC.state.stats, acknowledgedSubmissionIds);
     return [];
   }
   return [];
@@ -2833,7 +3297,9 @@ WAC.syncAttributes = function (target, source) {
 
 WAC.patchDisclosureNode = function (current, next) {
   if (!current || !next) return;
+  const wasOpen = !!current.open;
   WAC.syncAttributes(current, next);
+  current.open = wasOpen;
   current.className = next.className;
   const currentSummary = current.querySelector(':scope > summary');
   const nextSummary = next.querySelector(':scope > summary');
@@ -2843,27 +3309,46 @@ WAC.patchDisclosureNode = function (current, next) {
   if (currentBody && nextBody && currentBody.innerHTML !== nextBody.innerHTML) currentBody.innerHTML = nextBody.innerHTML;
 };
 
-WAC.reuseDisclosureNodes = function (currentBody, nextBody) {
+WAC.patchMessageBody = function (currentBody, nextBody) {
   if (!currentBody || !nextBody) return;
   const existingByKey = new Map();
   currentBody.querySelectorAll(':scope > .wangp-assistant-chat__disclosure').forEach((node) => {
     const key = WAC.disclosureKey(node);
     if (key) existingByKey.set(key, node);
   });
-  nextBody.querySelectorAll(':scope > .wangp-assistant-chat__disclosure').forEach((node) => {
-    const key = WAC.disclosureKey(node);
-    if (!key) return;
-    const current = existingByKey.get(key);
-    if (!current) return;
-    WAC.patchDisclosureNode(current, node);
-    node.replaceWith(current);
-  });
+  let cursor = currentBody.firstChild;
+  for (const nextNode of Array.from(nextBody.childNodes)) {
+    const key = nextNode.nodeType === 1 && nextNode.classList.contains('wangp-assistant-chat__disclosure') ? WAC.disclosureKey(nextNode) : '';
+    const reusable = key ? existingByKey.get(key) : null;
+    if (reusable) {
+      WAC.patchDisclosureNode(reusable, nextNode);
+      existingByKey.delete(key);
+      if (reusable === cursor) cursor = cursor.nextSibling;
+      else currentBody.insertBefore(reusable, cursor);
+      continue;
+    }
+    const cursorIsDisclosure = cursor && cursor.nodeType === 1 && cursor.classList.contains('wangp-assistant-chat__disclosure');
+    if (cursor && !cursorIsDisclosure) {
+      const replaced = cursor;
+      cursor = cursor.nextSibling;
+      replaced.replaceWith(nextNode);
+    } else {
+      currentBody.insertBefore(nextNode, cursor);
+    }
+  }
+  while (cursor) {
+    const removed = cursor;
+    cursor = cursor.nextSibling;
+    removed.remove();
+  }
 };
 
 WAC.patchMessageNode = function (current, next) {
   if (!current || !next) return;
+  const preserveQueuedEdit = String(WAC.queuedEditMessageId || '') === String(current.getAttribute('data-message-id') || '') && !!next.querySelector('[data-message-action="edit"]');
   WAC.syncAttributes(current, next);
   current.className = next.className;
+  if (preserveQueuedEdit) current.classList.add('is-editing');
   const currentAvatar = current.querySelector(':scope > .wangp-assistant-chat__avatar');
   const nextAvatar = next.querySelector(':scope > .wangp-assistant-chat__avatar');
   if (currentAvatar && nextAvatar) {
@@ -2890,8 +3375,18 @@ WAC.patchMessageNode = function (current, next) {
   if (currentBody && nextBody) {
     WAC.syncAttributes(currentBody, nextBody);
     currentBody.className = nextBody.className;
-    WAC.reuseDisclosureNodes(currentBody, nextBody);
-    currentBody.replaceChildren(...Array.from(nextBody.childNodes));
+    WAC.patchMessageBody(currentBody, nextBody);
+  }
+  const currentEnd = currentCard.querySelector(':scope > .wangp-assistant-chat__message-end');
+  const nextEnd = nextCard.querySelector(':scope > .wangp-assistant-chat__message-end');
+  if (currentEnd && nextEnd) {
+    WAC.syncAttributes(currentEnd, nextEnd);
+    currentEnd.className = nextEnd.className;
+    if (currentEnd.innerHTML !== nextEnd.innerHTML) currentEnd.innerHTML = nextEnd.innerHTML;
+  } else if (currentEnd) {
+    currentEnd.remove();
+  } else if (nextEnd) {
+    currentCard.appendChild(nextEnd);
   }
 };
 
@@ -2911,23 +3406,6 @@ WAC.upsertMessage = function (message) {
   if (!node) return;
   const existing = transcript.querySelector(`[data-message-id="${CSS.escape(String(message.id))}"]`);
   const incomingId = String(message.id);
-  if (!existing && message.role === 'user' && !incomingId.startsWith('optimistic_') && Array.isArray(WAC.optimisticSubmits) && WAC.optimisticSubmits.length > 0) {
-    const incomingText = WAC.messageBodyText(node);
-    const optimistic = WAC.optimisticSubmits.find((item) => WAC.normalizeText(item && item.text || '') === incomingText);
-    const optimisticId = String(optimistic && optimistic.id || '');
-    const optimisticNode = optimisticId ? transcript.querySelector(`[data-message-id="${CSS.escape(optimisticId)}"]`) : null;
-    if (optimisticNode && optimisticId && incomingText) {
-      optimisticNode.replaceWith(node);
-      delete WAC.state.messages[optimisticId];
-      WAC.state.order = WAC.state.order.map((id) => id === optimisticId ? incomingId : id);
-      WAC.state.messages[incomingId] = message;
-      WAC.dropOptimisticSubmit(optimisticId);
-      WAC.hideEmpty();
-      WAC.applyDisclosureState(transcript);
-      WAC.applyAutoscrollState(scrollState);
-      return;
-    }
-  }
   if (existing) {
     WAC.patchMessageNode(existing, node);
   } else {
@@ -2937,6 +3415,7 @@ WAC.upsertMessage = function (message) {
   WAC.state.messages[incomingId] = message;
   WAC.hideEmpty();
   WAC.applyDisclosureState(transcript);
+  WAC.syncQueuedRequestEdit();
   WAC.applyAutoscrollState(scrollState);
 };
 
@@ -2948,6 +3427,7 @@ WAC.removeMessage = function (messageId) {
   if (existing) existing.remove();
   delete WAC.state.messages[String(messageId)];
   WAC.state.order = WAC.state.order.filter(id => id !== String(messageId));
+  WAC.syncQueuedRequestEdit();
   WAC.showEmptyIfNeeded();
   WAC.applyAutoscrollState(scrollState);
 };
@@ -2965,6 +3445,7 @@ WAC.setStatus = function (status, restoreAnchor) {
     node.removeAttribute('data-kind');
     if (textNode) textNode.textContent = '';
     if (stopNode) stopNode.disabled = true;
+    WAC.setBusyInputHelper(false);
     WAC.applyAutoscrollState(scrollState);
     return;
   }
@@ -2972,6 +3453,7 @@ WAC.setStatus = function (status, restoreAnchor) {
   node.dataset.kind = String(status.kind || 'status');
   if (stopNode) stopNode.disabled = false;
   node.classList.add('is-visible');
+  WAC.setBusyInputHelper(true);
   WAC.applyAutoscrollState(scrollState);
 };
 
@@ -2980,27 +3462,39 @@ WAC.setStats = function (stats) {
   WAC.state.stats = stats || null;
   const node = WAC.statsNode();
   if (!node) return;
+  let textNode = node.querySelector('.wangp-assistant-chat__stats-text');
+  if (!textNode) {
+    textNode = document.createElement('span');
+    textNode.className = 'wangp-assistant-chat__stats-text';
+    node.appendChild(textNode);
+  }
   if (!stats || stats.visible === false || !stats.text) {
     node.classList.remove('is-visible');
-    node.textContent = '';
+    textNode.textContent = '';
+    node.setAttribute('aria-hidden', node.classList.contains('has-input-helper') ? 'false' : 'true');
     return;
   }
-  node.textContent = String(stats.text);
+  textNode.textContent = String(stats.text);
   node.classList.add('is-visible');
+  node.setAttribute('aria-hidden', 'false');
 };
 
-WAC.sync = function (messages, status, stats) {
+WAC.sync = function (messages, status, stats, acknowledgedSubmissionIds) {
   WAC.ensureShell();
   WAC.captureDisclosureState(WAC.transcript());
   const scrollState = WAC.captureAutoscrollState();
   WAC.replaceState(messages, status, stats);
-  WAC.reconcileOptimisticSubmits();
+  WAC.reconcileOptimisticSubmits(acknowledgedSubmissionIds);
   WAC.hydrate(scrollState);
 };
 
 WAC.reset = function () {
+  if (WAC.queuedEditMessageId) WAC.finishQueuedRequestEdit();
   WAC.state = { order: [], messages: {}, status: null, stats: null };
   WAC.optimisticSubmits = [];
+  WAC.pendingSteeringId = '';
+  WAC.chatSessionId = '';
+  WAC.chatRevision = -1;
   WAC.disclosureState = {};
   WAC.ensureShell();
   const transcript = WAC.transcript();
@@ -3018,7 +3512,7 @@ WAC.hydrate = function (scrollState) {
     const messageId = String(node.getAttribute('data-message-id') || '');
     if (messageId) existingById.set(messageId, node);
   });
-  const fragment = document.createDocumentFragment();
+  let cursor = transcript.firstElementChild;
   for (const messageId of WAC.state.order) {
     const message = WAC.state.messages[messageId];
     if (!message) continue;
@@ -3027,14 +3521,16 @@ WAC.hydrate = function (scrollState) {
     const existing = existingById.get(String(messageId));
     if (existing) {
       WAC.patchMessageNode(existing, node);
-      fragment.appendChild(existing);
       existingById.delete(String(messageId));
-      continue;
+      if (existing === cursor) cursor = cursor.nextElementSibling;
+      else transcript.insertBefore(existing, cursor);
+    } else {
+      transcript.insertBefore(node, cursor);
     }
-    fragment.appendChild(node);
   }
-  transcript.replaceChildren(fragment);
+  for (const obsolete of existingById.values()) obsolete.remove();
   WAC.applyDisclosureState(transcript);
+  WAC.syncQueuedRequestEdit();
   WAC.showEmptyIfNeeded();
   WAC.setStatus(WAC.state.status, null);
   WAC.setStats(WAC.state.stats);
@@ -3117,10 +3613,14 @@ WAC.installDockBridge = function () {
     if (event.target && event.target.closest && event.target.closest('#deepy_type_choice')) window.setTimeout(WAC.syncDeepyTypePreview, 0);
   }, true);
   document.addEventListener('pointerdown', (event) => {
+    if (WAC.handleCollapseButtonPointerDown(event)) return;
     if (WAC.handleDisclosurePointerDown(event)) return;
     if (WAC.handleAttachmentPointerDown(event)) return;
   }, true);
   document.addEventListener('click', (event) => {
+    if (WAC.handleCopyButtonClick(event)) return;
+    if (WAC.handleCollapseButtonClick(event)) return;
+    if (WAC.handleQueuedRequestClick(event)) return;
     const attachmentLink = event.target && event.target.closest ? event.target.closest('.wangp-assistant-chat__attachment, .wangp-assistant-chat__body a') : null;
     if (attachmentLink) return;
     const disclosureSummary = event.target && event.target.closest ? event.target.closest('summary') : null;
@@ -3158,22 +3658,48 @@ WAC.installDockBridge = function () {
       WAC.scrollToBottom();
       return;
     }
+    const resetButton = event.target && event.target.closest ? event.target.closest('#assistant_chat_reset_button') : null;
+    if (resetButton && WAC.queuedEditMessageId) {
+      event.preventDefault();
+      event.stopPropagation();
+      WAC.finishQueuedRequestEdit();
+      return;
+    }
     const askButton = event.target && event.target.closest ? event.target.closest('#assistant_chat_ask_button') : null;
     if (!askButton) return;
     const input = WAC.requestInput();
     const text = input ? String(input.value || '').trim() : '';
+    if (WAC.queuedEditMessageId) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!text) {
+        if (input) input.focus({ preventScroll: true });
+        return;
+      }
+      const messageNode = WAC.transcript() && WAC.transcript().querySelector(`[data-message-id="${CSS.escape(WAC.queuedEditMessageId)}"]`);
+      WAC.submitQueuedRequestAction(messageNode, 'edit', text);
+      return;
+    }
     if (!text) return;
     WAC.setDockOpen(true);
-    WAC.pushOptimisticUserMessage(text);
-    window.setTimeout(() => { WAC.clearRequestInput(text); }, 0);
+    const submissionId = WAC.pushOptimisticUserMessage(text);
+    WAC.setBusyInputHelper(true);
+    WAC.setBridgeValue('#assistant_chat_submission_id textarea, #assistant_chat_submission_id input', submissionId);
     if (WAC.isAssistantBusy()) {
       event.preventDefault();
       event.stopPropagation();
-      WAC.queueBusyRequest(text);
+      WAC.clearRequestInput(text);
+      WAC.queueBusyRequest(text, submissionId);
       return;
     }
   }, true);
   document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && WAC.queuedEditMessageId) {
+      event.preventDefault();
+      event.stopPropagation();
+      WAC.finishQueuedRequestEdit();
+      return;
+    }
     if (event.key !== 'Escape') return;
     if (WAC.settingsOpen) {
       WAC.setSettingsOpen(false);
@@ -3184,16 +3710,31 @@ WAC.installDockBridge = function () {
   }, true);
   document.addEventListener('keydown', (event) => {
     const input = WAC.requestInput();
-    if (!input || event.target !== input || event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
+    if (!input || event.target !== input || event.key !== 'Enter' || event.shiftKey || event.altKey) return;
     const text = String(input.value || '').trim();
+    if (WAC.queuedEditMessageId) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!text) {
+        input.focus({ preventScroll: true });
+        return;
+      }
+      const messageNode = WAC.transcript() && WAC.transcript().querySelector(`[data-message-id="${CSS.escape(WAC.queuedEditMessageId)}"]`);
+      WAC.submitQueuedRequestAction(messageNode, 'edit', text);
+      return;
+    }
     if (!text) return;
     event.preventDefault();
     event.stopPropagation();
     WAC.setDockOpen(true);
-    WAC.pushOptimisticUserMessage(text);
-    window.setTimeout(() => { WAC.clearRequestInput(text); }, 0);
-    if (WAC.isAssistantBusy()) {
-      WAC.queueBusyRequest(text);
+    if (event.ctrlKey || event.metaKey) {
+      const submissionId = WAC.pushOptimisticUserMessage(text);
+      WAC.pendingSteeringId = submissionId;
+      WAC.setStatus({ visible: true, kind: 'queued', text: 'Steering requested. Waiting for the current thought/action boundary...' });
+      WAC.setBusyInputHelper(true);
+      window.setTimeout(() => { if (WAC.pendingSteeringId === submissionId) WAC.pendingSteeringId = ''; }, WAC.optimisticMaxAgeMs);
+      window.setTimeout(() => { WAC.clearRequestInput(text); }, 0);
+      WAC.steerRequest(text, submissionId);
       return;
     }
     const askButton = document.querySelector('#assistant_chat_ask_button button, #assistant_chat_ask_button');
@@ -3222,13 +3763,19 @@ window.applyAssistantChatEvent = function (payload) {
 """
 
 
+def _touch_chat(session) -> int:
+    session.chat_revision = int(session.chat_revision or 0) + 1
+    return session.chat_revision
+
+
 def reset_session_chat(session) -> None:
     session.chat_transcript.clear()
     session.chat_transcript_counter = 0
+    _touch_chat(session)
 
 
-def build_reset_event() -> str:
-    return _event_payload({"type": "reset"})
+def build_reset_event(session=None) -> str:
+    return _event_payload({"type": "reset"}, session)
 
 
 def build_status_event(text: str | None, kind: str = "status", visible: bool = True, stats: dict[str, Any] | None = None) -> str:
@@ -3262,14 +3809,22 @@ def build_event_batch(payloads: list[str]) -> str:
     return json.dumps({"event_id": uuid.uuid4().hex, "instance_id": SERVER_INSTANCE_ID, "batch": envelopes}, ensure_ascii=False)
 
 
-def build_sync_event(session, status: dict[str, Any] | None = None, stats: dict[str, Any] | None = None, acknowledged_user_text: str | None = None) -> str:
-    messages = [_render_message_payload(record) for record in session.chat_transcript]
+def _message_has_renderable_output(record: dict[str, Any]) -> bool:
+    return str(record.get("role", "")).strip() != "assistant" or bool(_ensure_message_blocks(record)) or bool(record.get("attachments"))
+
+
+def build_sync_event(session, status: dict[str, Any] | None = None, stats: dict[str, Any] | None = None, acknowledged_submission_ids: list[str] | tuple[str, ...] | None = None) -> str:
+    while True:
+        revision = int(session.chat_revision or 0)
+        messages = [_render_message_payload(record) for record in list(session.chat_transcript) if _message_has_renderable_output(record)]
+        if revision == int(session.chat_revision or 0):
+            break
     event = {"type": "sync", "messages": messages, "status": status}
     if stats is not None:
         event["stats"] = stats
-    if acknowledged_user_text is not None:
-        event["acknowledged_user_text"] = str(acknowledged_user_text)
-    return _event_payload(event)
+    if acknowledged_submission_ids is not None:
+        event["acknowledged_submission_ids"] = [str(submission_id or "").strip() for submission_id in acknowledged_submission_ids if str(submission_id or "").strip()]
+    return _event_payload(event, session, revision)
 
 
 def _queued_tail_insert_index(session) -> int:
@@ -3281,13 +3836,14 @@ def _queued_tail_insert_index(session) -> int:
             break
         if str(record.get("role", "")).strip() != "user":
             break
-        if str(record.get("badge", "")).strip() != "Queued":
+        if not bool(record.get("queued", False)):
             break
         insert_index -= 1
     return insert_index
 
 
-def add_user_message(session, text: str, queued: bool = False) -> tuple[str, str]:
+def add_user_message(session, text: str, queued: bool = False, client_submission_id: str | None = None) -> tuple[str, str]:
+    submission_id = str(client_submission_id or "").strip()[:128]
     record = {
         "id": _next_message_id(session, "user"),
         "role": "user",
@@ -3296,12 +3852,16 @@ def add_user_message(session, text: str, queued: bool = False) -> tuple[str, str
         "blocks": [],
         "attachments": [],
         "badge": "Queued" if queued else "",
+        "queued": bool(queued),
     }
+    if submission_id:
+        record["client_submission_id"] = submission_id
     content = str(text or "").strip()
     if len(content) > 0:
         record["blocks"].append({"id": _next_block_id("content"), "type": "markdown", "text": content})
     session.chat_transcript.append(record)
-    return record["id"], _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
+    revision = _touch_chat(session)
+    return record["id"], _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
 
 
 def create_assistant_turn(session) -> str:
@@ -3315,6 +3875,7 @@ def create_assistant_turn(session) -> str:
         "badge": "",
     }
     session.chat_transcript.insert(_queued_tail_insert_index(session), record)
+    _touch_chat(session)
     return record["id"]
 
 
@@ -3332,7 +3893,8 @@ def add_assistant_note(session, text: str, badge: str | None = None, author: str
         "badge": str(badge or "").strip(),
     }
     session.chat_transcript.insert(_queued_tail_insert_index(session), record)
-    return record["id"], _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
+    revision = _touch_chat(session)
+    return record["id"], _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
 
 
 def get_message_content(session, message_id: str) -> str:
@@ -3341,6 +3903,21 @@ def get_message_content(session, message_id: str) -> str:
         return ""
     parts = [str(block.get("text", "")).strip() for block in _ensure_message_blocks(record) if isinstance(block, dict) and block.get("type") == "markdown" and len(str(block.get("text", "")).strip()) > 0]
     return "\n\n".join(parts)
+
+
+def set_user_message_content(session, message_id: str, text: str) -> str | None:
+    content = str(text or "").strip()
+    record = _find_message(session, message_id)
+    if record is None or str(record.get("role", "")).strip() != "user" or len(content) == 0:
+        return None
+    blocks = _ensure_message_blocks(record)
+    markdown_block = next((block for block in blocks if isinstance(block, dict) and block.get("type") == "markdown"), None)
+    if markdown_block is None:
+        blocks.insert(0, {"id": _next_block_id("content"), "type": "markdown", "text": content})
+    else:
+        markdown_block["text"] = content
+    revision = _touch_chat(session)
+    return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
 
 
 def get_message_reasoning_content(session, message_id: str) -> str:
@@ -3356,16 +3933,31 @@ def set_message_badge(session, message_id: str, badge: str | None) -> str | None
     if record is None:
         return None
     record["badge"] = str(badge or "").strip()
-    return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
+    revision = _touch_chat(session)
+    return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
+
+
+def set_message_end_badge(session, message_id: str, badge: str | None) -> str | None:
+    record = _find_message(session, message_id)
+    if record is None:
+        return None
+    record["end_badge"] = str(badge or "").strip()
+    revision = _touch_chat(session)
+    return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
 
 
 def clear_message_blocks(session, message_id: str) -> str | None:
     record = _find_message(session, message_id)
     if record is None:
         return None
-    record["blocks"] = []
+    blocks = _ensure_message_blocks(record)
+    retained_blocks = [block for block in blocks if isinstance(block, dict) and block.get("type") == "context_summary"]
+    if len(retained_blocks) == len(blocks) and not record.get("attachments"):
+        return None
+    record["blocks"] = retained_blocks
     record["attachments"] = []
-    return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
+    revision = _touch_chat(session)
+    return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
 
 
 def clear_assistant_content(session, message_id: str) -> str | None:
@@ -3378,7 +3970,8 @@ def clear_assistant_content(session, message_id: str) -> str | None:
         return None
     record["blocks"] = kept_blocks
     record["content"] = ""
-    return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
+    revision = _touch_chat(session)
+    return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
 
 
 def remove_message(session, message_id: str) -> str | None:
@@ -3389,7 +3982,8 @@ def remove_message(session, message_id: str) -> str | None:
     session.chat_transcript[:] = [record for record in session.chat_transcript if str(record.get("id", "")) != target_id]
     if len(session.chat_transcript) == original_len:
         return None
-    return _event_payload({"type": "remove_message", "message_id": target_id})
+    revision = _touch_chat(session)
+    return _event_payload({"type": "remove_message", "message_id": target_id}, session, revision)
 
 
 def append_reasoning(session, message_id: str, text: str) -> str | None:
@@ -3406,7 +4000,8 @@ def add_context_summary(session, message_id: str, text: str) -> tuple[str, str |
         return "", None
     block_id = _next_block_id("context_summary")
     _ensure_message_blocks(record).append({"id": block_id, "type": "context_summary", "text": summary_text})
-    return block_id, _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
+    revision = _touch_chat(session)
+    return block_id, _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
 
 
 def upsert_reasoning_block(session, message_id: str, reasoning_id: str | None, text: str) -> tuple[str, str | None]:
@@ -3424,10 +4019,12 @@ def upsert_reasoning_block(session, message_id: str, reasoning_id: str | None, t
         if str(block.get("text", "")).strip() == reasoning_text:
             return target_id, None
         block["text"] = reasoning_text
-        return target_id, _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
+        revision = _touch_chat(session)
+        return target_id, _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
     target_id = target_id or f"reasoning_{uuid.uuid4().hex[:10]}"
     blocks.append({"id": target_id, "type": "reasoning", "text": reasoning_text})
-    return target_id, _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
+    revision = _touch_chat(session)
+    return target_id, _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
 
 
 def add_tool_call(session, message_id: str, tool_name: str, arguments: dict[str, Any], tool_label: str | None = None) -> tuple[str, str | None]:
@@ -3446,7 +4043,8 @@ def add_tool_call(session, message_id: str, tool_name: str, arguments: dict[str,
         "attachment": None,
     }
     _ensure_message_blocks(record).append(tool_record)
-    return tool_record["id"], _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
+    revision = _touch_chat(session)
+    return tool_record["id"], _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
 
 
 def update_tool_call(session, message_id: str, tool_id: str, status: str | None = None, result: dict[str, Any] | object = _UNSET, status_text: str | None = None) -> str | None:
@@ -3463,7 +4061,8 @@ def update_tool_call(session, message_id: str, tool_id: str, status: str | None 
         if result is not _UNSET:
             tool_record["result"] = None if result is None else dict(result or {})
             tool_record["attachment"] = _attachment_from_tool_result(tool_record.get("result"))
-        return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
+        revision = _touch_chat(session)
+        return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
     return None
 
 
@@ -3487,7 +4086,8 @@ def set_assistant_content(session, message_id: str, text: str) -> str | None:
         blocks[-1]["text"] = content_text
     else:
         blocks.append({"id": _next_block_id("content"), "type": "markdown", "text": content_text})
-    return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
+    revision = _touch_chat(session)
+    return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
 
 
 def _next_message_id(session, prefix: str) -> str:
@@ -3510,6 +4110,192 @@ def _friendly_tool_label(tool_name: str | None) -> str:
     if name.startswith("wangp_"):
         name = name[len("wangp_"):]
     return name.replace("_", " ").replace("-", " ").strip().title()
+
+
+def _short_tool_label_value(value: Any, max_chars: int = 42) -> str:
+    if value is None or isinstance(value, (dict, list, tuple, set)):
+        return ""
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) == 0:
+        return ""
+    if "/" in text or "\\" in text:
+        text = os.path.basename(text.replace("\\", "/")) or text
+    return text if len(text) <= max_chars else f"{text[:max_chars - 1].rstrip()}…"
+
+
+def _humanize_tool_value(value: Any) -> str:
+    text = _short_tool_label_value(value)
+    if len(text) == 0:
+        return ""
+    aliases = {
+        "edit_image": "Edit Image",
+        "gen_image": "Generate Image",
+        "gen_song": "Generate Song",
+        "gen_speech_from_description": "Generate Speech From Description",
+        "gen_speech_from_sample": "Generate Speech From Sample",
+        "gen_video": "Generate Video",
+        "gen_video_with_speech": "Generate Video With Speech",
+    }
+    if text.casefold() in aliases:
+        return aliases[text.casefold()]
+    words = re.sub(r"[_-]+", " ", text).split()
+    special = {
+        "api": "API",
+        "audio": "Audio",
+        "doc": "Doc",
+        "id": "ID",
+        "image": "Image",
+        "lora": "LoRA",
+        "loras": "LoRAs",
+        "mcp": "MCP",
+        "media": "Media",
+        "ui": "UI",
+        "url": "URL",
+        "video": "Video",
+        "wangp": "WanGP",
+    }
+    return " ".join(special.get(word.casefold(), word if any(character.isupper() for character in word) else word.title()) for word in words)
+
+
+def _finish_tool_call_label(label: str) -> str:
+    compact = re.sub(r"\s+", " ", str(label or "")).strip() or "Tool"
+    return compact if len(compact) <= 96 else f"{compact[:95].rstrip()}…"
+
+
+def build_tool_call_label(
+    tool_name: str,
+    arguments: dict[str, Any] | None = None,
+    *,
+    base_label: str | None = None,
+    model_label: str | None = None,
+    media_label: str | None = None,
+    variant_label: str | None = None,
+) -> str:
+    """Build the chat-only label shown as soon as a tool call starts."""
+
+    arguments = dict(arguments or {})
+    name = str(tool_name or "").strip()
+    normalized_name = name[len("wangp_"):] if name.startswith("wangp_") else name
+    base = str(base_label or "").strip() or _friendly_tool_label(name)
+    model = _short_tool_label_value(model_label) or _humanize_tool_value(arguments.get("model_type"))
+    media = _short_tool_label_value(media_label)
+    variant = _short_tool_label_value(variant_label)
+
+    model_actions = {
+        "get_model": "Get Model Definition of",
+        "get_model_metadata": "Get Model Information for",
+        "get_model_availability": "Check Model Availability of",
+        "get_default_settings": "Get Default Settings of",
+        "get_model_schema": "Get Model Schema of",
+        "list_loras": "List LoRAs for",
+    }
+    if normalized_name in model_actions and model:
+        return _finish_tool_call_label(f"{model_actions[normalized_name]} {model}")
+    if normalized_name == "get_default_settings":
+        target = _humanize_tool_value(arguments.get("tool_id"))
+        if target:
+            return _finish_tool_call_label(f"Get Default Settings for {target}")
+    if normalized_name == "generate":
+        label = f"Generate {media or 'Media'}"
+        return _finish_tool_call_label(f"{label} Using {model}" if model else label)
+    if normalized_name == "toolbox":
+        action = _humanize_tool_value(arguments.get("action"))
+        return _finish_tool_call_label("List Toolbox Content" if not action else f"Use Toolbox {action}")
+    if normalized_name == "search_models":
+        query = _short_tool_label_value(arguments.get("query"))
+        return _finish_tool_call_label("Search Models" if not query else f'Search Models for “{query}”')
+    if normalized_name in {"list_models", "list_model_defs", "list_model_availability"}:
+        labels = {"list_models": "List Models", "list_model_defs": "List Model Definitions", "list_model_availability": "List Model Availability"}
+        query = _short_tool_label_value(arguments.get("query") or arguments.get("name") or arguments.get("family") or arguments.get("main_output"))
+        return _finish_tool_call_label(labels[normalized_name] if not query else f"{labels[normalized_name]} Matching {query}")
+    if normalized_name == "list_gallery":
+        kind = _humanize_tool_value(arguments.get("media_type"))
+        kind = "Media" if not kind or kind.casefold() == "all" else {"image": "Images", "video": "Videos", "audio": "Audio"}.get(kind.casefold(), kind)
+        selected = "Selected " if bool(arguments.get("selected_only", False)) else ""
+        return _finish_tool_call_label(f"List {selected}Gallery {kind}")
+    if normalized_name == "get_media_settings":
+        target = _short_tool_label_value(arguments.get("media_id") or arguments.get("path"))
+        return _finish_tool_call_label("Get Media Settings" if not target else f"Get Media Settings for {target}")
+    if normalized_name in {"list_files", "query_file"}:
+        target = _short_tool_label_value(arguments.get("path"))
+        action = "List Files" if normalized_name == "list_files" else "Read File Information"
+        return _finish_tool_call_label(action if not target else f"{action} for {target}")
+    if normalized_name == "list_deepy_templates":
+        target = _humanize_tool_value(arguments.get("tool_id"))
+        return _finish_tool_call_label("List Deepy Templates" if not target else f"List {target} Templates")
+    if normalized_name == "get_deepy_template_settings":
+        tool = _humanize_tool_value(arguments.get("tool_id"))
+        template = _short_tool_label_value(arguments.get("template"))
+        if tool and template.casefold() == "default":
+            return _finish_tool_call_label(f"Get Default Template Settings for {tool}")
+        if tool:
+            return _finish_tool_call_label(f"Get Template Settings for {tool}" if not template else f"Get {template} Template Settings for {tool}")
+        return _finish_tool_call_label("Get Deepy Template Settings" if not template else f"Get Deepy Template Settings for {template}")
+    if normalized_name in {"postprocess", "postprocessing"}:
+        process = _humanize_tool_value(arguments.get("process"))
+        return _finish_tool_call_label("List Postprocessing Options" if not process else f"Run {process} Postprocessing")
+    if normalized_name in {"get_job", "cancel_job"}:
+        job_id = _short_tool_label_value(arguments.get("job_id"))
+        action = "Check Generation Job" if normalized_name == "get_job" else "Cancel Generation Job"
+        return _finish_tool_call_label(action if not job_id else f"{action} {job_id}")
+    if normalized_name == "get_loras":
+        target = _humanize_tool_value(arguments.get("tool_id"))
+        return _finish_tool_call_label("List LoRAs" if not target else f"List LoRAs for {target}")
+    if normalized_name in {"gen_image", "edit_image", "gen_video", "gen_video_with_speech", "gen_song", "gen_speech_from_description", "gen_speech_from_sample"}:
+        return _finish_tool_call_label(base if not variant else f"{base} Using {variant}")
+    if normalized_name == "create_color_frame":
+        width, height = arguments.get("width"), arguments.get("height")
+        color = _short_tool_label_value(arguments.get("color"))
+        details = f" {width}×{height}" if width is not None and height is not None else ""
+        return _finish_tool_call_label(f"Create{details} {color or 'Color'} Frame")
+    if normalized_name == "inspect_media":
+        media_ids = arguments.get("media_ids")
+        count = len(media_ids) if isinstance(media_ids, list) else 1 if _short_tool_label_value(arguments.get("media_id")) else 0
+        return _finish_tool_call_label("Inspect Images" if count == 0 else "Inspect Image" if count == 1 else f"Inspect {count} Images")
+    if normalized_name == "resize_crop":
+        width, height = arguments.get("width"), arguments.get("height")
+        cropping = any(arguments.get(key) is not None for key in ("crop_left", "crop_top", "crop_right", "crop_bottom"))
+        action = "Resize and Crop Media" if cropping and (width is not None or height is not None) else "Crop Media" if cropping else "Resize Media"
+        if width is not None and height is not None:
+            action += f" to {width}×{height}"
+        elif width is not None:
+            action += f" to {width}px Wide"
+        elif height is not None:
+            action += f" to {height}px High"
+        return _finish_tool_call_label(action)
+    if normalized_name == "search_doc":
+        query = _short_tool_label_value(arguments.get("query"))
+        return _finish_tool_call_label("Search Documentation" if not query else f'Search Documentation for “{query}”')
+    if normalized_name == "load_doc_section":
+        section = _short_tool_label_value(arguments.get("section"))
+        return _finish_tool_call_label("Read Documentation Section" if not section else f"Read {section} from Documentation")
+    if normalized_name == "get_selected_media":
+        kind = _humanize_tool_value(arguments.get("media_type"))
+        return _finish_tool_call_label("Get Selected Media" if not kind or kind.casefold() == "all" else f"Get Selected {kind}")
+    if normalized_name == "get_media_details":
+        target = _short_tool_label_value(arguments.get("media_id"))
+        return _finish_tool_call_label("Get Media Details" if not target else f"Get Media Details for {target}")
+    if normalized_name == "resolve_media_reference":
+        reference = _humanize_tool_value(arguments.get("reference"))
+        kind = _humanize_tool_value(arguments.get("media_type"))
+        return _finish_tool_call_label("Resolve Media" if not reference else f"Resolve {reference}{f' {kind}' if kind and kind.casefold() != 'all' else ''}")
+    if normalized_name == "mcp_list_resources":
+        server = _short_tool_label_value(arguments.get("server"))
+        return _finish_tool_call_label("List MCP Documents" if not server else f"List {server} Documents")
+    if normalized_name == "mcp_read_resource":
+        target = _humanize_tool_value(arguments.get("uri"))
+        section = _short_tool_label_value(arguments.get("section"))
+        return _finish_tool_call_label("Read MCP Document" if not target else f"Read {section} from {target}" if section else f"Read {target}")
+    if normalized_name == "mcp_search_resource":
+        query = _short_tool_label_value(arguments.get("query"))
+        return _finish_tool_call_label("Search MCP Documents" if not query else f'Search MCP Documents for “{query}”')
+
+    subjects = ("media_id", "path", "reference", "doc_id", "section", "query", "job_id", "server", "uri")
+    subject = next((_short_tool_label_value(arguments.get(key)) for key in subjects if _short_tool_label_value(arguments.get(key))), "")
+    if not subject:
+        ignored_keys = {"prompt", "question", "content", "text", "source", "arguments", "parameters", "extra_settings", "limit", "offset", "wait", "timeout_s", "event_limit"}
+        subject = next((_short_tool_label_value(value) for key, value in arguments.items() if key not in ignored_keys and not isinstance(value, bool) and _short_tool_label_value(value)), "")
+    return _finish_tool_call_label(base if not subject else f"{base} for {subject}")
 
 
 def _find_message(session, message_id: str) -> dict[str, Any] | None:
@@ -3552,8 +4338,12 @@ def _time_label() -> str:
     return time.strftime("%H:%M")
 
 
-def _event_payload(event: dict[str, Any]) -> str:
-    return json.dumps({"event_id": uuid.uuid4().hex, "instance_id": SERVER_INSTANCE_ID, "event": event}, ensure_ascii=False)
+def _event_payload(event: dict[str, Any], session=None, revision: int | None = None) -> str:
+    payload = dict(event)
+    if session is not None:
+        payload["chat_session_id"] = str(session.chat_session_id)
+        payload["revision"] = int(session.chat_revision if revision is None else revision)
+    return json.dumps({"event_id": uuid.uuid4().hex, "instance_id": SERVER_INSTANCE_ID, "event": payload}, ensure_ascii=False)
 
 
 def _markdown_to_html(text: str) -> str:
@@ -3636,9 +4426,37 @@ def _attachment_from_path(path: str, label: str | None = None) -> dict[str, Any]
     }
 
 
+def _render_copy_button(source: str, label: str, text: str | None = None) -> str:
+    copy_text = "" if text is None else f" data-copy-text='{html.escape(str(text), quote=True)}'"
+    return (
+        f"<button type='button' class='wangp-assistant-chat__copy-button' data-copy-source='{html.escape(source, quote=True)}'{copy_text} aria-label='{html.escape(label, quote=True)}' title='{html.escape(label, quote=True)}'>"
+        "<svg viewBox='0 0 16 16' aria-hidden='true' focusable='false'><rect x='5' y='5' width='8' height='8' rx='1.5'></rect><path d='M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V3A1.5 1.5 0 0 1 3 1.5h6A1.5 1.5 0 0 1 10.5 3v.5'></path></svg>"
+        "</button>"
+    )
+
+
+def _render_queued_request_actions() -> str:
+    edit_label = html.escape("Edit queued request", quote=True)
+    remove_label = html.escape("Remove queued request", quote=True)
+    return (
+        f"<button type='button' class='wangp-assistant-chat__message-action-button' data-message-action='edit' aria-label='{edit_label}' title='{edit_label}'>"
+        "<svg viewBox='0 0 16 16' aria-hidden='true' focusable='false'><path d='M3 11.8 3.5 9l6.8-6.8a1.4 1.4 0 0 1 2 0l1.5 1.5a1.4 1.4 0 0 1 0 2L7 12.5l-2.8.5Z'></path><path d='m9.4 3.1 3.5 3.5'></path></svg>"
+        "</button>"
+        f"<button type='button' class='wangp-assistant-chat__message-action-button' data-message-action='remove' aria-label='{remove_label}' title='{remove_label}'>"
+        "<svg viewBox='0 0 16 16' aria-hidden='true' focusable='false'><path d='M3 4.5h10M6 4.5V2.7h4v1.8M4.7 4.5l.6 8.3h5.4l.6-8.3M7 7v3.4M9 7v3.4'></path></svg>"
+        "</button>"
+    )
+
+
+def _render_collapse_button(label: str) -> str:
+    escaped_label = html.escape(f"Collapse {label}", quote=True)
+    return f"<button type='button' class='wangp-assistant-chat__collapse-button' data-disclosure-action='collapse' aria-label='{escaped_label}' title='{escaped_label}'><span aria-hidden='true'>▾</span></button>"
+
+
 def _render_message_payload(record: dict[str, Any]) -> dict[str, Any]:
     role = str(record.get("role", "assistant"))
     badge_text = str(record.get("badge", "")).strip()
+    end_badge_text = str(record.get("end_badge", "")).strip()
     blocks_html, rendered_attachment_keys = _render_message_blocks(record)
     attachments_html = _render_attachments(
         [
@@ -3648,22 +4466,30 @@ def _render_message_payload(record: dict[str, Any]) -> dict[str, Any]:
         ]
     )
     badge_html = "" if len(badge_text) == 0 else f"<span class='wangp-assistant-chat__badge'>{html.escape(badge_text)}</span>"
+    copy_text = "\n\n".join(str(block.get("text", "")).strip() for block in _ensure_message_blocks(record) if isinstance(block, dict) and block.get("type") == "markdown" and len(str(block.get("text", "")).strip()) > 0)
+    copy_button_html = _render_copy_button("user", "Copy request", copy_text) if role == "user" else ""
+    queued_actions_html = _render_queued_request_actions() if role == "user" and badge_text == "Queued" else ""
+    actions_html = f"<div class='wangp-assistant-chat__message-actions'>{copy_button_html}{queued_actions_html}</div>" if role == "user" else ""
+    end_badge_html = "" if len(end_badge_text) == 0 else f"<div class='wangp-assistant-chat__message-end'><span class='wangp-assistant-chat__message-end-badge'>{html.escape(end_badge_text)}</span></div>"
     body_html = f"{blocks_html}{attachments_html}"
-    if len(body_html) == 0 and role == "assistant":
-        body_html = "<p>Working through the request.</p>"
     card_html = (
         f"<article class='wangp-assistant-chat__message wangp-assistant-chat__message--{html.escape(role)}' data-message-id='{html.escape(str(record.get('id', '')))}'>"
         f"<div class='wangp-assistant-chat__avatar'>{html.escape('You' if role == 'user' else 'Deepy')}</div>"
         f"<div class='wangp-assistant-chat__message-card'>"
         f"<div class='wangp-assistant-chat__meta'>"
         f"<div class='wangp-assistant-chat__meta-left'>{badge_html}</div>"
-        f"<div class='wangp-assistant-chat__time'>{html.escape(str(record.get('created_at', '')))}</div>"
+        f"<div class='wangp-assistant-chat__meta-right'>{actions_html}<div class='wangp-assistant-chat__time'>{html.escape(str(record.get('created_at', '')))}</div></div>"
         f"</div>"
         f"<div class='wangp-assistant-chat__body'>{body_html}</div>"
+        f"{end_badge_html}"
         f"</div>"
         f"</article>"
     )
-    return {"id": record.get("id", ""), "role": role, "html": card_html}
+    payload = {"id": record.get("id", ""), "role": role, "html": card_html}
+    client_submission_id = str(record.get("client_submission_id", "") or "").strip()
+    if client_submission_id:
+        payload["client_submission_id"] = client_submission_id
+    return payload
 
 
 def _render_message_blocks(record: dict[str, Any]) -> tuple[str, set[str]]:
@@ -3725,7 +4551,7 @@ def _render_reasoning_block(block: dict[str, Any], block_no: int, total_blocks: 
     return (
         f"<details class='wangp-assistant-chat__disclosure wangp-assistant-chat__disclosure--reasoning' data-reasoning-id='{html.escape(str(block.get('id', '')))}'>"
         f"<summary><span class='wangp-assistant-chat__tool-title'><span class='wangp-assistant-chat__tool-chip'>Thought</span>{html.escape(label)}</span></summary>"
-        f"<div class='wangp-assistant-chat__disclosure-body'><div class='wangp-assistant-chat__reasoning-block'>{_markdown_to_html(block.get('text', ''))}</div></div>"
+        f"<div class='wangp-assistant-chat__disclosure-body'><div class='wangp-assistant-chat__reasoning-block'>{_markdown_to_html(block.get('text', ''))}</div>{_render_collapse_button('thought')}</div>"
         "</details>"
     )
 
@@ -3733,7 +4559,7 @@ def _render_reasoning_block(block: dict[str, Any], block_no: int, total_blocks: 
 def _render_context_summary_block(block: dict[str, Any]) -> str:
     return (
         f"<details class='wangp-assistant-chat__disclosure wangp-assistant-chat__disclosure--context-summary' data-context-summary-id='{html.escape(str(block.get('id', '')))}'>"
-        "<summary><span class='wangp-assistant-chat__tool-title'><span class='wangp-assistant-chat__tool-chip'>Context</span>Earlier chat history was summarized to preserve Deepy's context window.</span></summary>"
+        "<summary><span class='wangp-assistant-chat__tool-title'><span class='wangp-assistant-chat__tool-chip'>Context</span>Earlier history summarized</span></summary>"
         f"<div class='wangp-assistant-chat__disclosure-body'><div class='wangp-assistant-chat__context-summary'>{_markdown_to_html(block.get('text', ''))}</div></div>"
         "</details>"
     )
@@ -3748,14 +4574,17 @@ def _render_tool_block(tool_record: dict[str, Any]) -> str:
     arguments_text = html.escape(json.dumps(tool_record.get("arguments", {}), ensure_ascii=False, indent=2, sort_keys=True))
     result_payload = tool_record.get("result", {})
     result_text = html.escape(json.dumps(result_payload, ensure_ascii=False, indent=2, sort_keys=True)) if result_payload is not None else ""
+    arguments_copy_button = _render_copy_button("json", f"Copy {label} arguments")
+    result_copy_button = "" if result_payload is None else _render_copy_button("json", "Copy result")
     return (
         f"<details class='wangp-assistant-chat__disclosure wangp-assistant-chat__disclosure--tool' data-tool-id='{html.escape(str(tool_record.get('id', '')))}'>"
         f"<summary><span class='wangp-assistant-chat__tool-title'><span class='wangp-assistant-chat__tool-chip'>Tool</span>{html.escape(label)}</span><span class='wangp-assistant-chat__tool-status wangp-assistant-chat__tool-status--{status_class}'>{html.escape(status_label)}</span></summary>"
         "<div class='wangp-assistant-chat__disclosure-body'>"
         "<div class='wangp-assistant-chat__tool-grid'>"
-        f"<div><div class='wangp-assistant-chat__tool-section-title'>{html.escape(label)} Arguments</div><pre class='wangp-assistant-chat__pre'>{arguments_text}</pre></div>"
-        f"<div><div class='wangp-assistant-chat__tool-section-title'>Result</div><pre class='wangp-assistant-chat__pre'>{result_text or html.escape('Pending...')}</pre></div>"
+        f"<div class='wangp-assistant-chat__tool-json'><div class='wangp-assistant-chat__tool-section-header'><div class='wangp-assistant-chat__tool-section-title'>{html.escape(label)} Arguments</div>{arguments_copy_button}</div><pre class='wangp-assistant-chat__pre'>{arguments_text}</pre></div>"
+        f"<div class='wangp-assistant-chat__tool-json'><div class='wangp-assistant-chat__tool-section-header'><div class='wangp-assistant-chat__tool-section-title'>Result</div>{result_copy_button}</div><pre class='wangp-assistant-chat__pre'>{result_text or html.escape('Pending...')}</pre></div>"
         "</div>"
+        f"{_render_collapse_button('tool')}"
         "</div>"
         "</details>"
     )

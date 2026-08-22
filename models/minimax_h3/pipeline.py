@@ -16,6 +16,7 @@ from shared.utils.text_encoder_cache import TextEncoderCache
 from shared.utils.frame_scheduler import floor_frame_count, normalize_frame_count, normalize_overlap
 from .first_block_cache import MiniMaxH3FirstBlockCache
 from .interrupt import GenerationInterrupted
+from .preview_vae import AccurateH3Preview
 from .spectrum import MiniMaxH3Spectrum
 from .transformer import VISUAL_COND_TIMESTEP, pack_audio, patchify_video, unpack_audio
 
@@ -172,6 +173,9 @@ class MiniMaxH3Pipeline:
         self.reference_mode = bool(reference_mode)
         self.dtype = dtype
         self.text_encoder_cache = TextEncoderCache()
+        self._accurate_preview = None
+        self._accurate_preview_enabled = False
+        self._accurate_preview_device = "cpu"
         self._interrupt = False
 
     @property
@@ -191,6 +195,18 @@ class MiniMaxH3Pipeline:
 
     def get_trans_lora(self):
         return self.transformer, None
+
+    def prepare_accurate_preview(self):
+        if self._accurate_preview is None:
+            self._accurate_preview = AccurateH3Preview()
+        return self._accurate_preview.prepare()
+
+    def set_accurate_preview_enabled(self, enabled, device="cpu"):
+        self._accurate_preview_enabled = bool(enabled)
+        self._accurate_preview_device = "cuda" if device == "cuda" else "cpu"
+
+    def decode_accurate_preview(self, latents):
+        return self._accurate_preview.decode(latents, device=self._accurate_preview_device) if self._accurate_preview is not None else None
 
     def _check_abort(self):
         if self._interrupt:
@@ -354,6 +370,7 @@ class MiniMaxH3Pipeline:
                  sample_solver="euler", attention_sparsity=1.0,
                  set_progress_status=None, **kwargs):
         fps = float(fps)
+        accurate_preview = self._accurate_preview_enabled
         if fps <= 0:
             raise ValueError("MiniMax H3 requires a positive output frame rate")
         self._set_interrupt_state()
@@ -615,7 +632,8 @@ class MiniMaxH3Pipeline:
                     _reinject_video_source(source_video, source_latents, source_noise, source_mask, sigmas_video[step + 1], source_buffer)
                 video_velocity = audio_velocity = None
                 if callback is not None:
-                    preview = video[0].detach().cpu() if not offline_spectrum or spectrum.replaying else None
+                    preview = video[0].detach() if accurate_preview else video[0].detach().cpu()
+                    preview = preview if not offline_spectrum or spectrum.replaying else None
                     callback(step, preview, False, denoising_extra=denoising_extra) if denoising_extra else callback(step, preview, False)
 
         initial_video = initial_audio = None

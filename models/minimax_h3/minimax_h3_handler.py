@@ -117,7 +117,8 @@ Enable **Advanced Mode** to access these options:
 
 - **Spectrum:** in **Steps Skipping**, select **Spectrum Feature Forecasting**. Spectrum captures an accelerated local-only trajectory, retains its actual-step anchors in system RAM, then performs a transformer-free smoothing replay with independent video and audio prediction. Keep the default 25% start for five full warmup steps in a 20-step generation; increasing it starts later and skips fewer steps. Short Euler schedules can bootstrap after their first actual step, while RES Multistep preserves a three-step actual tail.
 - **First Block Cache:** in **Steps Skipping**, select **First Block Cache**. It runs the first transformer block to decide whether the remaining blocks can reuse their previous result. The balanced strength uses the upstream 0.08 threshold; higher strengths skip more work but can change motion or fine details. The displayed strength is not an exact speed multiplier.
-- **Sol-Attn:** in **Advanced Mode > Misc. > Override Attention Mode**, select **sol**. It uses sparse attention on large visual sequences to reduce attention cost and speed up generation, with possible small quality differences. It requires BF16, Triton 3.6 or newer, and a CUDA NVIDIA GPU using SM89, SM90, SM100, or SM120 (such as RTX 40/50-series, H100/H200, or B100/B200); the dropdown reports whether it is available on the current system.
+- **Ralston 2S:** in **Sampler Solver / Scheduler**, select **Ralston 2S** to use the anchored deterministic second-order Runge-Kutta sampler. It evaluates H3 at the start and two-thirds point of every interval, anchors the second prediction to the interval start, then combines both predictions with Ralston's `1/4, 3/4` weights. This can reduce numerical integration error and may improve fine-detail retention, motion stability, and audio/video coherence. Perceptual improvements are prompt-dependent and are not guaranteed. Its second prediction depends on the first, so they cannot run in parallel: Ralston performs two full transformer predictions per step and sampling is approximately **2x slower** than Euler or RES Multistep at the same step count. Spectrum Feature Forecasting is unsupported with Ralston 2S.
+- **Sol-Attn:** in **Advanced Mode > Misc. > Override Attention Mode**, select **sol**. The **Start Tau** slider then appears below the attention selector and shows that End Tau is fixed at `0.8`. H3 defaults to `1.3`; this value is used on the first denoising step and decreases linearly to `0.8` on the final step. Use `1.0` for the Sol-Attn paper starting value, increase it to route more attention blocks through the approximate path for greater speed, or lower it for denser attention and higher fidelity. It uses sparse attention only on large visual sequences and requires BF16, Triton 3.6 or newer, and a CUDA NVIDIA GPU using SM86, SM89, SM90, SM100, SM120, or SM121 (such as RTX 30/40/50-series, H100/H200, B100/B200, or DGX Spark); the dropdown reports whether it is available on the current system.
 - **Text Encoder:** at the bottom of **Misc.**, use the **Text Encoder** configuration to reduce system RAM. **Qwen3-VL BF16** uses the most memory; **Quanto INT8** is a balanced lower-memory choice; **NVFP4 AWQ**, **GGUF Q4_K_M**, and especially **GGUF Q2_K** reduce it further. More aggressive quantization can slightly affect prompt interpretation.
 - **Priority:** beside the Text Encoder configuration, choose which memory limit matters most. **Lower VRAM** uses all code optimizations and reduces greatly VRAM consumption while **Lower RAM** uses only VRAM optimizations that doesnt consume extra RAM.
 - **Tiny VAE Preview:** in **Advanced Mode > Misc.**, set **MiniMax H3 Tiny VAE Preview** to CPU or GPU for a true-RGB, four-frame sampling preview. On its first use WanGP downloads the 40 MB H3 Tiny VAE decoder. CPU avoids additional VRAM use; GPU is faster but needs more VRAM. It falls back to the standard latent preview if decoding fails.
@@ -198,7 +199,13 @@ class family_handler:
             "skip_steps_multiplier_label": "First Block Cache Threshold",
             "first_block_cache_thresholds": FIRST_BLOCK_CACHE_THRESHOLDS,
             "sol_attention": True,
-            "sample_solvers": [("Euler", "euler"), ("RES Multistep", "res_multistep")],
+            "attention_sparsity": {
+                "label": "Start Tau (higher = more sparse/faster; lower = more faithful; End Tau = 0.8)",
+                "start": 0.0,
+                "end": 4.0,
+                "inc": 0.05,
+            },
+            "sample_solvers": [("Euler", "euler"), ("RES Multistep", "res_multistep"), ("Ralston 2S (~2x slower)", "ralston_2s")],
             "no_negative_prompt": True,
             "returns_audio": True,
             "multimedia_generation": True,
@@ -249,7 +256,7 @@ class family_handler:
                 "video_continuation": True,
                 "sliding_window_defaults": {"window_min": 124, "window_max": 481, "window_step": 17, "window_default": 362,
                                             "overlap_min": 1, "overlap_max": 120, "overlap_step": 17, "overlap_offset": 1, "overlap_default": 18},
-                "frames_maximum": 737,
+                "frames_selection_maximum": 737,
                 "image_prompt_types_allowed": "TSEVL",
                 "end_frames_always_enabled": True,
                 "image_ref_choices": {
@@ -490,6 +497,8 @@ class family_handler:
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
+        if settings_version < 2.74:
+            ui_defaults["attention_sparsity"] = 1.3
         if settings_version < 2.73 and "sliding_window_overlap" in ui_defaults:
             overlap = max(1, int(ui_defaults["sliding_window_overlap"] or 18))
             ui_defaults["sliding_window_overlap"] = normalize_overlap(overlap, 17, 1)[0]
@@ -522,6 +531,7 @@ class family_handler:
             "guidance_scale": 1.0,
             "flow_shift": 12.0,
             "sample_solver": "euler",
+            "attention_sparsity": 1.3,
             "skip_steps_start_step_perc": 25,
             "skip_steps_multiplier": 0.08,
             "denoising_strength": 1.0,

@@ -80,6 +80,7 @@ def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default
     add("--mcp-host", type=str, default="", help="Optional MCP host for non-stdio transports")
     add("--mcp-port", type=int, default=None, help="Optional MCP port for non-stdio transports")
     add("--mcp-console-output", action="store_true", help="Mirror WanGP stdout/stderr while serving MCP requests")
+    add("--mcp-allow-read-file-system", action="store_true", help="Allow MCP agents to reference arbitrary server filesystem paths; disabled by default")
     add("--dry-run", action="store_true", help="Validate file without generating (use with --process)")
     add("--output-dir", type=str, default="", help="Override output directory for CLI processing (use with --process)")
     add("--refresh-catalog", action="store_true", help="Refresh local plugin metadata for installed external plugins")

@@ -64,6 +64,9 @@ _TOOL_ALIASES = {
     "video_with_speech": "gen_video_with_speech",
     "talking_video": "gen_video_with_speech",
     "speech_video": "gen_video_with_speech",
+    "gen_song": "gen_song",
+    "song": "gen_song",
+    "music": "gen_song",
     "gen_speech_from_description": "gen_speech_from_description",
     "speech_from_description": "gen_speech_from_description",
     "voice_description": "gen_speech_from_description",
@@ -879,11 +882,13 @@ class DeepyCliSession:
             f"Template properties: {'on' if settings['use_template_properties'] else 'off'}",
             f"Default size: {settings['width']}x{settings['height']}",
             f"Video frames: {settings['num_frames']}",
+            f"Audio duration: {settings['audio_duration']} seconds",
             f"Seed: {settings['seed']}",
             f"gen_image template: {self._format_template_value(settings['image_generator_variant'])}",
             f"edit_image template: {self._format_template_value(settings['image_editor_variant'])}",
             f"gen_video template: {self._format_template_value(settings['video_generator_variant'])}",
             f"gen_video_with_speech template: {self._format_template_value(settings['video_with_speech_variant'])}",
+            f"gen_song template: {self._format_template_value(settings['song_variant'])}",
             f"gen_speech_from_description template: {self._format_template_value(settings['speech_from_description_variant'])}",
             f"gen_speech_from_sample template: {self._format_template_value(settings['speech_from_sample_variant'])}",
         ]
@@ -1003,6 +1008,7 @@ class DeepyCliSession:
             self._print("  /settings       Show current CLI generation settings")
             self._print("  /size [WxH]     Show or set default generation size and disable template properties")
             self._print("  /frames [count] Show or set default gen_video frame count and disable template properties")
+            self._print("  /duration [seconds]  Show or set default audio duration and disable template properties")
             self._print("  /seed [value]   Show or set default generation seed and disable template properties")
             self._print("  /template <tool> <variant>  Set the preset for any Deepy generation tool")
             self._print("  /templates [tool]  List available preset variants")
@@ -1110,6 +1116,23 @@ class DeepyCliSession:
             else:
                 self._print(f"Default gen_video frame count set to {settings['num_frames']}. Template properties disabled.")
             return True
+        if command in {"/duration", "/audio-duration"}:
+            if len(argument) == 0:
+                settings = self._get_tool_ui_settings()
+                self._print(f"Audio duration: {settings['audio_duration']} seconds (template properties {'on' if settings['use_template_properties'] else 'off'})")
+                return True
+            try:
+                duration = int(argument)
+            except Exception:
+                self._print("Use /duration <seconds>.")
+                return True
+            try:
+                settings = self._update_tool_ui_settings(audio_duration=duration, use_template_properties=False)
+            except Exception as exc:
+                self._print(f"[ERROR] {exc}")
+            else:
+                self._print(f"Default audio duration set to {settings['audio_duration']} seconds. Template properties disabled.")
+            return True
         if command == "/seed":
             if len(argument) == 0:
                 settings = self._get_tool_ui_settings()
@@ -1131,7 +1154,7 @@ class DeepyCliSession:
             tool_name, _, tool_value = argument.partition(" ")
             resolved_tool = self._resolve_tool_name(tool_name)
             if resolved_tool is None or len(tool_value.strip()) == 0:
-                self._print("Use /template <gen_image|edit_image|gen_video|gen_video_with_speech|gen_speech_from_description|gen_speech_from_sample> <variant>.")
+                self._print("Use /template <gen_image|edit_image|gen_video|gen_video_with_speech|gen_song|gen_speech_from_description|gen_speech_from_sample> <variant>.")
                 return True
             try:
                 if resolved_tool == "gen_image":
@@ -1146,6 +1169,9 @@ class DeepyCliSession:
                 elif resolved_tool == "gen_video_with_speech":
                     settings = self._update_tool_ui_settings(video_with_speech_variant=tool_value.strip())
                     value = settings["video_with_speech_variant"]
+                elif resolved_tool == "gen_song":
+                    settings = self._update_tool_ui_settings(song_variant=tool_value.strip())
+                    value = settings["song_variant"]
                 elif resolved_tool == "gen_speech_from_description":
                     settings = self._update_tool_ui_settings(speech_from_description_variant=tool_value.strip())
                     value = settings["speech_from_description_variant"]
@@ -1173,7 +1199,7 @@ class DeepyCliSession:
                 return True
             resolved_tool = self._resolve_tool_name(argument)
             if resolved_tool is None:
-                self._print("Use /templates [gen_image|edit_image|gen_video|gen_video_with_speech|gen_speech_from_description|gen_speech_from_sample].")
+                self._print("Use /templates [gen_image|edit_image|gen_video|gen_video_with_speech|gen_song|gen_speech_from_description|gen_speech_from_sample].")
                 return True
             variants = deepy_tool_settings.list_tool_variants(resolved_tool)
             self._print(f"{resolved_tool}: {', '.join(variants) if variants else '(none)'}")

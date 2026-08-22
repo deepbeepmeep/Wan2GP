@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import json
 import math
-import os
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -14,12 +13,14 @@ from shared.utils.loras_mutipliers import merge_loras_settings
 from shared.deepy.config import (
     DEEPY_DEFAULT_EDIT_IMAGE,
     DEEPY_DEFAULT_GEN_IMAGE,
+    DEEPY_DEFAULT_GEN_SONG,
     DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION,
     DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE,
     DEEPY_DEFAULT_GEN_VIDEO,
     DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH,
     DEEPY_TOOL_EDIT_IMAGE_KEY,
     DEEPY_TOOL_GEN_IMAGE_KEY,
+    DEEPY_TOOL_GEN_SONG_KEY,
     DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY,
     DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY,
     DEEPY_TOOL_GEN_VIDEO_KEY,
@@ -27,6 +28,7 @@ from shared.deepy.config import (
     get_deepy_config_value,
     normalize_deepy_tool_edit_image,
     normalize_deepy_tool_gen_image,
+    normalize_deepy_tool_gen_song,
     normalize_deepy_tool_gen_speech_from_description,
     normalize_deepy_tool_gen_speech_from_sample,
     normalize_deepy_tool_gen_video,
@@ -38,6 +40,7 @@ _DEEPY_DIR = Path(__file__).resolve().parent
 SETTINGS_DIR = _DEEPY_DIR / "settings"
 DEFAULT_IMAGE_EDITOR_VARIANT = DEEPY_DEFAULT_EDIT_IMAGE
 DEFAULT_VIDEO_WITH_SPEECH_VARIANT = DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH
+DEFAULT_SONG_VARIANT = DEEPY_DEFAULT_GEN_SONG
 DEFAULT_SPEECH_FROM_DESCRIPTION_VARIANT = DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION
 DEFAULT_SPEECH_FROM_SAMPLE_VARIANT = DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE
 TOOL_DISPLAY_NAMES = {
@@ -45,12 +48,14 @@ TOOL_DISPLAY_NAMES = {
     "edit_image": "Image Editor",
     "gen_video": "Media Generator",
     "gen_video_with_speech": "Video With Speech",
+    "gen_song": "Song Generator",
     "gen_speech_from_description": "Speech From Description",
     "gen_speech_from_sample": "Speech From Sample",
 }
 _TOOL_TEMPLATE_VALIDATION_ERRORS = {
     "gen_video": "The settings should generate a video",
     "gen_video_with_speech": "The settings should generate a Video and accept an Audio Prompt",
+    "gen_song": "The settings should generate music",
     "gen_image": "The settings of the model must generate an Image",
     "edit_image": "The settings of the model must generate an Image and accept an Image Ref",
     "gen_speech_from_description": "The model should generate only an audio output",
@@ -65,6 +70,7 @@ _TOOL_CONFIG_SPECS = {
         "default": DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH,
         "normalize": normalize_deepy_tool_gen_video_with_speech,
     },
+    "gen_song": {"key": DEEPY_TOOL_GEN_SONG_KEY, "default": DEEPY_DEFAULT_GEN_SONG, "normalize": normalize_deepy_tool_gen_song},
     "gen_speech_from_description": {
         "key": DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY,
         "default": DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION,
@@ -85,7 +91,8 @@ _PRESET_SOURCE_PRIORITY = {
 _LEGACY_VARIANT_ALIASES = {
     "edit_image": {"Qwen_Edit": DEEPY_DEFAULT_EDIT_IMAGE},
     "gen_image": {"Z_Image_Turbo": DEEPY_DEFAULT_GEN_IMAGE},
-    "gen_video": {"ltx2_22B_distilled": DEEPY_DEFAULT_GEN_VIDEO},
+    "gen_video": {"ltx2_22B_distilled": DEEPY_DEFAULT_GEN_VIDEO, "LTX-2 2.3 Distilled": DEEPY_DEFAULT_GEN_VIDEO},
+    "gen_video_with_speech": {"LTX-2.3 Distilled With Sound": "LTX-2.3 Distilled 1.0 With Sound"},
 }
 _LIVE_FILE_PRESET_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 GENERATION_TOOL_IDS = tuple(_TOOL_CONFIG_SPECS.keys())
@@ -402,7 +409,7 @@ def _resolve_tool_lora_dir(tool_name: str, variant: str) -> tuple[str, Path]:
 def _list_tool_lora_entries(tool_name: str, variant: str) -> list[tuple[str, str]]:
     lookup_name = str(tool_name or "").strip()
     if lookup_name not in GENERATION_TOOL_IDS:
-        raise ValueError(f"LoRAs are only available for the 6 generation tools: {', '.join(GENERATION_TOOL_IDS)}.")
+        raise ValueError(f"LoRAs are only available for the configured generation tools: {', '.join(GENERATION_TOOL_IDS)}.")
     _model_type, lora_dir = _resolve_tool_lora_dir(lookup_name, variant)
     if not lora_dir.is_dir():
         return []
@@ -453,12 +460,13 @@ def validate_wangp_settings_payload_for_tool(tool_name: str, payload: dict[str, 
         return None
     image_mode = _int_setting(payload, "image_mode")
     accepts_audio_prompt = "A" in str(payload.get("audio_prompt_type", "") or "")
-    has_image_refs = _sequence_setting_has_value(payload, "image_refs")
+    has_image_refs = "I" in payload.get("video_prompt_type", "")
     model_def = _get_model_def_from_settings_payload(payload)
     audio_only = bool(model_def.get("audio_only", False)) if isinstance(model_def, dict) else False
     checks = {
         "gen_video": image_mode == 0,
         "gen_video_with_speech": image_mode == 0 and accepts_audio_prompt,
+        "gen_song": audio_only and isinstance(model_def, dict) and str(model_def.get("group", "") or "").strip() == "music",
         "gen_image": image_mode == 1,
         "edit_image": image_mode == 1 and has_image_refs,
         "gen_speech_from_description": audio_only,
@@ -540,6 +548,11 @@ def get_default_image_editor_variant() -> str:
 def get_default_video_with_speech_variant() -> str:
     configured = _get_configured_tool_variant("gen_video_with_speech")
     return resolve_tool_variant("gen_video_with_speech", configured, default_variant=DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH)
+
+
+def get_default_song_variant() -> str:
+    configured = _get_configured_tool_variant("gen_song")
+    return resolve_tool_variant("gen_song", configured, default_variant=DEEPY_DEFAULT_GEN_SONG)
 
 
 def get_default_speech_from_description_variant() -> str:
@@ -763,6 +776,7 @@ __all__ = [
     "find_tool_variant",
     "get_default_image_editor_variant",
     "get_default_image_generator_variant",
+    "get_default_song_variant",
     "get_default_speech_from_description_variant",
     "get_default_speech_from_sample_variant",
     "get_default_video_generator_variant",

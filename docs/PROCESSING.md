@@ -107,11 +107,22 @@ Spatial processing controls image regions or canvas size.
 
 Spatial outpainting targets the resolution you request. If the requested resolution is the same as the source media, the original content may lose detail because canvas space is being reallocated. For outpainting, a higher output resolution is often useful.
 
-### Sliding Windows For Long Videos
+### Long Videos Workflows
 
 Sliding windows let WanGP generate longer videos by merging multiple generation windows.
 
-The longer the video, the more likely quality is to degrade over time. The effect is usually less visible when the generated video mostly preserves unmodified control-video content.
+The longer the video, the more likely quality is to degrade over time: artifacts can accumulate and character identity may progressively drift. The effect is usually less visible when the generated video mostly preserves unmodified control-video content. If the model supports end frames, a useful way to limit drift is to prepare several end-frame images in advance with an image-generation model and assign them to successive windows. These visual anchors steer later windows back toward the intended characters, composition, and appearance.
+
+A reliable way to create related end frames is to generate one strong master image first, then use an image-editing model several times on that same master image to produce the planned keyframes. Ask each edit for the pose, camera angle, action, environment, or composition required at the end of its matching video window while preserving the original character identity and style. Always branch each edit from the master image rather than editing the previous keyframe in sequence, because chained edits can accumulate visual drift before video generation even begins.
+
+Some uncommon models, including MiniMax H3 and VACE, can also re-inject reference images or frames between windows. Supplying suitable intermediate references gives the model recurring visual anchors and can restore character identity, appearance, or composition before drift becomes too noticeable. The available Reference Images or Injected Frames controls and their placement rules depend on the selected model.
+
+There are two ways to build a multi-window video:
+
+- **Plan all windows in one generation:** provide multiple prompts in advance, with one prompt for each window. This usually gives the best technical quality because WanGP keeps the windows in memory and performs the final merge and video encoding only once. The tradeoffs are higher RAM usage and the need to decide the sequence in advance.
+- **Continue an existing video repeatedly:** use each completed video as the source for another continuation. This supports improvisation because the next prompt can be chosen after reviewing the latest result. However, every continuation reads an already encoded video and produces another encoded result, so repeated lossy re-encoding can slightly degrade quality at each stage.
+
+Avoid making a window larger than the model can handle reliably. Larger windows take longer and require more VRAM, and every model has a practical or declared frame limit. On the other hand, a reasonably long window gives the model more room to preserve motion and character identity within that window. Choose the longest window that remains reliable for the selected model and available hardware rather than automatically using either the maximum or a very short window.
 
 When sliding windows are enabled, positional arguments such as injected-frame positions or frames to keep are usually relative to the first frame of the first window. This lets you change the sliding-window size without recalculating all frame positions.
 
@@ -130,6 +141,13 @@ Generated Frames = [Nb Windows - 1] x [Window Size - Overlap - Discard] + Window
 ```
 
 Multi-line prompts can be used when the model supports assigning one prompt line per sliding window. If there are more windows than prompt lines, the last prompt line repeats.
+
+Choose how window prompts are separated with **How to Process each Line of the Text Prompt**:
+
+- **Each Line Will be used for a new Sliding Window of the same Video Generation:** every non-empty line starts a new window prompt.
+- **Each Paragraph Separated by an Empty line will be used for a new Sliding Window of the same Video Generation:** every paragraph separated by an empty line starts a new window prompt. Use this choice when an individual window prompt contains line breaks of its own.
+
+Each window prompt may begin with optional `[/...]` commands. Use `[/overlap=9]` to select a different overlap for that transition, or `[/overlap]` to restore the model's default overlap. On text-to-video-capable models, `[/overlap=0]` creates a hard cut by preventing the preceding window from conditioning the new one; `[/new_shot]` is its more explicit alias. Different window lengths can be requested with `[/duration=121]`, `[/duration=5s]`, or `[/duration=20%]`. When duration commands are present, they define the window schedule and predicted final length instead of treating the UI's Number of Frames as a strict final cap; windows without an explicit duration consume the remaining requested frames, up to the configured Sliding Window Size. Commands can be combined, for example `[/duration=4s,/new_shot]`.
 
 Sliding-window settings:
 

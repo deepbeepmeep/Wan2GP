@@ -9,8 +9,8 @@ from shared.utils.audio_video import read_image_metadata
 
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"}
-_VIDEO_EXTENSIONS = {".mkv", ".mov", ".mp4"}
-_AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac"}
+_VIDEO_EXTENSIONS = {".mkv", ".mov", ".mp4", ".m4v", ".webm", ".avi"}
+_AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac", ".m4a", ".flac", ".ogg", ".opus", ".wma"}
 _MEDIA_TYPES = {"image", "video", "audio", "any", "all"}
 _TYPE_HINTS = {
     "image": ("image", "images", "picture", "photo", "photos", "pic", "pics"),
@@ -66,6 +66,12 @@ def normalize_media_type(media_type: str | None, reference: str | None = None) -
         if any(hint in reference_text for hint in hints):
             return candidate_type
     return "any"
+
+
+def detect_media_type(path: str) -> str:
+    """Return the media kind inferred from a gallery file extension."""
+
+    return _detect_media_type(path)
 
 
 def get_media_record(session, media_id: str) -> dict[str, Any] | None:

@@ -64,6 +64,57 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 ## 🔥 Latest Updates : 
 
+## 19th of August 2026: WanGP v12.61, Remember to be nice with Deepy
+
+Deepy and the WanGP Prompt Enhancer have learned some impressive new tricks (enable them from the *Configuration / Deepy* menu):
+- **Speculative Decoding** lets Deepy (and Prompt Enhancer) think up to twice as fast, so there is less waiting between ideas and actions.
+- **INT8 KV Cache Quantization** lets it remember conversations roughly twice as long for the same VRAM budget. Install **GGUF Kernels 1.11** for the best performance; see the [installation guide](docs/INSTALLATION.md).
+- **Smart context compaction** lets Deepy summarize the journey and carry on when its memory starts getting crowded, instead of suddenly forgetting the plot.
+- The new **Qwen3.8 VL 27B** model brings sharper reasoning and richer enhanced prompts. It is available in GGUF Q2 and GGUF Q4 (recommended)
+- With your permission, Deepy can browse your files and use them as part of a creative workflow.
+- Deepy could already inspect media, trim clips, and process audio; it can now reach much further into WanGP's processing toolbox, including upscaling videos on demand.
+
+But the star of this release is **Deepy Prime**. Open *Configuration / Deepy* and use the **Deepy** menu to invite either **Deepy Prime** or the original **Deepy Zero**:
+- **Deepy Zero** is the quick, lightweight companion for straightforward requests and smaller language models.
+- **Deepy Prime**, powered by **Qwen3.8 VL 27B**, is the ambitious one: give it a multi-step idea involving images, sound, and video, and it will plan the whole production.
+- It understands WanGP's creative toolbox well enough to choose models, combine media, and plan long videos as connected sliding windows.
+- When a plan hits a wall, Prime is resourceful: it can reconsider, try another route, and keep working toward the goal. Watching its thoughts unfold can be half the fun.
+- It can connect to optional **MCP Servers** when you want outside help or interaction with another app; these connections live under **Deepy Prime Guidance** in the same settings page.
+- Enable **Allow Deepy to Read the Filesystem** and you can ask for things like *"make one video for every prompt in this text file"* or the wonderfully vague *"use the files in this folder and make something nice out of them."*
+
+There is one catch worthy of a tiny violin: for now, **Deepy Prime requires a GPU with at least 24 GB of VRAM**.
+
+**Breaking News WanGP 12.61**: by selecting the newly added *Qwen3.8 VL 27B GGUF Q2*, a max *32000 KV Cache*, *Speculative Decoding Disabled*, and launching the Web Browser in *no GPU mode*, **you can now use Deepy Prime with 16GB of VRAM** !
+
+Also in the news:
+- **Sol Attention 0.6.2 for H3**: faster generations and better-looking results, according to its creators.
+- **Ralston 2S Sampler for H3**: considered one of the best-looking H3 samplers, although it likes to take roughly twice as long.
+- **IndexTTS 2.5**: a new version of this Text-to-Speech model for voices that delivers realistic emotions.
+
+## 16th of August 2026: WanGP v12.53, Jess is Back !
+
+**LTX 2.5. Jess is back, Dad is still in the garden, and this time the camera crew brought an upgrade.**
+
+- **LTX 2.5 Visual Quality Upgrade:** expect sharper details, better visual consistency, and cleaner results than with LTX 2.3.
+
+- **A new VAE decoder to play with:** the Original (much Faster) VAE remains the default, while the optional NAD Diffusion Decoder trades speed and VRAM for higher quality. NAD also works with LTX 2.3 and uses its Triton accelerator when supported.
+
+- **Bring your LTX2 LoRAs:** LTX 2.5 finds LoRAs in the shared `loras/ltx2` folder and restores the compatible LTX 2.3 LoRA workflows, including pose/depth/canny control, inpainting, outpainting, Ingredients references, SDR-to-HDR conversion, and reference-voice conditioning.
+
+- **LTX-2 Video Upsampler:** use LTX 2.3 or LTX 2.5 as a spatial video upsampler—directly after generation, as a late postprocessor, or as part of a Media Flow process. In WanGP 12.53, LTX 2.6 upsampler has been greatly improved an produces much better outputs.
+
+Dev and Distilled are available in BF16 and INT8 ConvRot, while Distilled also gets an NVFP4 option for compatible NVIDIA hardware. Shared embedders are reused instead of being duplicated inside every checkpoint, saving both disk space and RAM.
+
+**Bonus:**  
+- **Wan2.2 Animate 2 Cache**: up to 50% faster thanks to VRAM or RAM cache
+
+- **MinaMax Music 3**: Ace Step has met its match as Minimax Music 3 generates high quality songs. WanGP implementation is optimized with a *vllm engine* for x3 faster generation. It is recommended to have 16 GB of VRAM to use profile 3/3+ for much faster generation. This implementation contains several *Prompt Enhancers* that can either generate for you lyrics and / or the music description.
+
+- **Upgraded GGUF Kernels 1.08**: lower VRAM, accurate native BF16, and CUDA-graph-safe Stream-K for GGUF models; check *docs/INSTALLATION.md* to upgrade.
+
+*update 12.51*: Unlocked Control Video Processes, LTX-2 video upsampler\
+*update 12.53*: MiniMax 3, LTX Upsampler 2.5 improved, upgraded GGUF Kernels
+ 
 ## 9th of August 2026: WanGP v12.45, Meet The One
 
 **MiniMax H3 had all that potential waiting to be unleashed. We found the keys.**

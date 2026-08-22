@@ -778,7 +778,6 @@ def save_hdr_video(
             break
     if width is None or height is None:
         raise RuntimeError("Unable to determine HDR video dimensions.")
-
     error = None
     for _ in range(retry):
         cmd = [

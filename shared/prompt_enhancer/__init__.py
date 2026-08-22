@@ -14,6 +14,7 @@ _EXPORTS = {
     "QWEN35_VARIANT_4B": ("shared.prompt_enhancer.qwen35_vl", "QWEN35_VARIANT_4B"),
     "QWEN35_ABLITERATED_TEXT_REQUIRED_FILES": ("shared.prompt_enhancer.qwen35_vl", "QWEN35_ABLITERATED_TEXT_REQUIRED_FILES"),
     "enhancer_quantization_GGUF": ("shared.prompt_enhancer.qwen35_vl", "enhancer_quantization_GGUF"),
+    "enhancer_quantization_GGUF_Q2": ("shared.prompt_enhancer.qwen35_vl", "enhancer_quantization_GGUF_Q2"),
     "enhancer_quantization_QUANTO_INT8": ("shared.prompt_enhancer.qwen35_vl", "enhancer_quantization_QUANTO_INT8"),
     "enhancer_quantization_SAFETENSORS": ("shared.prompt_enhancer.qwen35_vl", "enhancer_quantization_SAFETENSORS"),
     "QWEN35_TEXT_GGUF_FILENAME": ("shared.prompt_enhancer.qwen35_vl", "QWEN35_TEXT_GGUF_FILENAME"),

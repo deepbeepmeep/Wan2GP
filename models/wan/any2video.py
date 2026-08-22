@@ -555,6 +555,8 @@ class WanAny2V:
         # Text Encoder
         kiwi_edit = model_type in ["kiwi_edit"]
         animate2 = model_def.get("animate2", False)
+        animate2_kv_cache = custom_settings.get("animate2_kv_cache", "Disabled") if animate2 and isinstance(custom_settings, dict) else "Disabled"
+        if animate2_kv_cache == "Enabled": animate2_kv_cache = "GPU"
         bernini = model_def.get("bernini_class", False)
         shotplan = model_def.get("shotplan", False)
         if n_prompt == "":
@@ -871,7 +873,7 @@ class WanAny2V:
             y = torch.cat([torch.cat([self.get_i2v_mask(lat_h, lat_w, 1, lat_t=1, device=self.device), self.get_i2v_mask(lat_h, lat_w, prefix_frames_count, lat_t=lat_frames, device=self.device)], dim=1), torch.cat([identity_latents, output_latents], dim=1)])
             grid_h, grid_w = lat_h // ps_h, lat_w // ps_w
             animate2_ref_freqs = get_nd_rotary_pos_embed((1, 0, grid_w), (1 + lat_frames, grid_h, 2 * grid_w), (lat_frames, grid_h, grid_w), L_test=lat_frames, enable_riflex=False)
-            kwargs.update({"y": y, "animate2_ref_x": driving_latents.unsqueeze(0), "animate2_ref_y": torch.cat([self.get_i2v_mask(lat_h, lat_w, frame_num, lat_t=lat_frames, device=self.device), driving_latents]).unsqueeze(0), "animate2_ref_context": animate2_ref_context, "animate2_ref_freqs": animate2_ref_freqs, "animate2_log_scale": model_def["animate2_log_scale"]})
+            kwargs.update({"y": y, "animate2_ref_x": driving_latents.unsqueeze(0), "animate2_ref_y": torch.cat([self.get_i2v_mask(lat_h, lat_w, frame_num, lat_t=lat_frames, device=self.device), driving_latents]).unsqueeze(0), "animate2_ref_context": animate2_ref_context, "animate2_ref_freqs": animate2_ref_freqs, "animate2_log_scale": model_def["animate2_log_scale"], "animate2_kv_cache": animate2_kv_cache})
             ref_images_before, ref_images_count = True, 1
             identity_latents = output_latents = output_pixels = None
 

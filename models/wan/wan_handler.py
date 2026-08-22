@@ -15,6 +15,9 @@ from .kiwi.variant_config import get_kiwi_variant_model_def
 from .scail2 import (
     SCAIL2_ANIMATE_PREPROCESSING_POSE,
     SCAIL2_ANIMATE_PREPROCESSING_RAW,
+    SCAIL2_INJECT_REF_FRAMES_NO,
+    SCAIL2_INJECT_REF_FRAMES_SETTING,
+    SCAIL2_INJECT_REF_FRAMES_YES,
     SCAIL2_INFOS,
     custom_image_ref_postprocessor_scail2,
     custom_preprocess_scail2,
@@ -213,6 +216,8 @@ class family_handler():
     @staticmethod
     def query_model_def(base_model_type, model_def):
         extra_model_def = {}
+        if base_model_type not in ["mocha", "recam_1.3B", "scail2_14B", "scail2_1.3B", "vista4d"]:
+            extra_model_def["riflex"] = True
         override_text_encoder_urls = model_def.get("text_encoder_URLs", None)
         override_text_encoder_folder = model_def.get("text_encoder_folder", None)
         if "URLs2" in model_def:
@@ -237,7 +242,18 @@ class family_handler():
         animate2 = base_model_type == "animate2"
         extra_model_def["animate2"] = animate2
         if animate2:
-            extra_model_def["no_steps_skipping"] = True
+            extra_model_def.update({
+                "no_steps_skipping": True,
+                "custom_settings": [{
+                    "id": "animate2_kv_cache",
+                    "name": "KV cache",
+                    "label": "Animate 2 KV Cache",
+                    "type": "dropdown",
+                    "default": "Disabled",
+                    "choices": [("Disabled", "Disabled"), ("GPU (faster, high VRAM)", "Enabled"), ("RAM (lower VRAM)", "RAM")],
+                    "info": "Caches the driving-video branch. GPU is fastest but uses substantial VRAM; RAM transfers each layer to the GPU as needed.",
+                }],
+            })
         if shotplan:
             extra_model_def.update({
                 "prompt_infos": SHOTPLAN_PROMPT_INFOS,
@@ -300,7 +316,7 @@ class family_handler():
             profiles_dir = ["wan_bernini_1.3B", "wan_1.3B"] if base_model_type == "bernini_1.3B" else ["wan_bernini", "wan_2_2"]
             group = "wan2_2"
         elif base_model_type == "animate2":
-            profiles_dir = "wan_animate2"
+            profiles_dir = "wan_i2v"
             group = "wan2_2"
         elif base_model_type in ["t2v_2_2", "vace_14B_2_2", "shotplan_t2v_2_2"] or test_i2v_2_2(base_model_type):
             profiles_dir = ["wan_shotplan_2_2", "wan_2_2"] if shotplan else "wan_2_2"
@@ -606,6 +622,18 @@ class family_handler():
                     "label": "Image Ref Keyword content",
                     "type": "text",
                     "default": "human character",
+                    "video_prompt_type": "I",
+                })
+                extra_model_def["custom_settings"].append({
+                    "id": SCAIL2_INJECT_REF_FRAMES_SETTING,
+                    "name": "Inject Ref Frames in Video",
+                    "label": "Inject Ref Frames in Video",
+                    "type": "dropdown",
+                    "default": SCAIL2_INJECT_REF_FRAMES_NO,
+                    "choices": [
+                        (SCAIL2_INJECT_REF_FRAMES_NO, SCAIL2_INJECT_REF_FRAMES_NO),
+                        (SCAIL2_INJECT_REF_FRAMES_YES, SCAIL2_INJECT_REF_FRAMES_YES),
+                    ],
                     "video_prompt_type": "I",
                 })
                 extra_model_def["image_ref_choices"] = {
@@ -1351,6 +1379,7 @@ class family_handler():
                 "force_fps": "control",
                 "alt_prompt": model_def["animate2_ref_prompt"],
                 "prompt_enhancer": "",
+                "custom_settings": {"animate2_kv_cache": "Disabled"},
             })
         elif base_model_type in ["vace_ditto_14B"]:
             ui_defaults.update({ 
@@ -1394,6 +1423,7 @@ class family_handler():
                 "custom_settings": {
                     "scail2_animate_preprocessing": SCAIL2_ANIMATE_PREPROCESSING_RAW,
                     "image_ref_keyword_content": "human character",
+                    SCAIL2_INJECT_REF_FRAMES_SETTING: SCAIL2_INJECT_REF_FRAMES_NO,
                 },
             })
 

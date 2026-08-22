@@ -12,6 +12,9 @@ from .prompt_enhancers import TTS_MONOLOGUE_PROMPT, TTS_QWEN3_DIALOGUE_PROMPT
 INDEX_TTS2_REPO_ID = "DeepBeepMeep/TTS"
 INDEX_TTS2_FOLDER = "index_tts2"
 INDEX_TTS2_MAIN_GPT_FILENAME = "index_tts2_gpt_fp16.safetensors"
+INDEX_TTS25_ARCHITECTURE = "index_tts25"
+INDEX_TTS25_FOLDER = "index_tts25"
+INDEX_TTS25_MAIN_GPT_FILENAME = "IndexTTS25_GPT_bf16.safetensors"
 INDEX_TTS2_QWEN_EMO_FOLDER = "qwen0.6bemo4-merge"
 INDEX_TTS2_BIGVGAN_FOLDER = "bigvgan_v2_22khz_80band_256x"
 INDEX_TTS2_W2V_BERT_FOLDER = "w2v-bert-2.0"
@@ -68,10 +71,40 @@ INDEX_TTS2_AUTO_SPLIT_SETTING_ID = "auto_split_every_s"
 INDEX_TTS2_AUTO_SPLIT_MIN_SECONDS = 5.0
 INDEX_TTS2_AUTO_SPLIT_MAX_SECONDS = 90.0
 INDEX_TTS2_CUSTOM_SETTINGS = []
+INDEX_TTS25_CUSTOM_SETTINGS = [
+    {
+        "id": "speech_speed",
+        "label": "Speech Speed (0.5-2.0)",
+        "name": "Speech Speed",
+        "type": "float",
+        "default": 1.0,
+        "min": 0.5,
+        "max": 2.0,
+        "inc": 0.05,
+    },
+    {
+        "id": "text_normalization",
+        "label": "Text Normalization",
+        "name": "Text Normalization",
+        "type": "dropdown",
+        "default": "Yes",
+        "choices": [("Yes", "Yes"), ("No", "No")],
+    },
+]
+INDEX_TTS25_ROOT_FILES = [
+    "feat1.pt",
+    "feat2.pt",
+    "index_tts25_codec_fp32.safetensors",
+    "index_tts25_s2mel_fp32.safetensors",
+    "multilingual_zh_ja_yue_char_del.tiktoken",
+    "wav2vec2bert_stats.pt",
+    "campplus_cn_common.bin",
+]
 
 
-def _get_index_tts2_model_def():
-    return {
+def _get_index_tts2_model_def(base_model_type):
+    is_v25 = base_model_type == INDEX_TTS25_ARCHITECTURE
+    model_def = {
         "audio_only": True,
         "image_outputs": False,
         "sliding_window": False,
@@ -83,18 +116,18 @@ def _get_index_tts2_model_def():
         "top_k_slider": True,
         "image_prompt_types_allowed": "",
         "supports_early_stop": True,
-        "profiles_dir": ["index_tts2"],
+        "profiles_dir": [base_model_type],
         "duration_slider": dict(INDEX_TTS2_DURATION_SLIDER),
         "any_audio_prompt": True,
         "audio_prompt_choices": True,
         "audio_prompt_type_sources": dict(INDEX_TTS2_AUDIO_PROMPT_TYPES),
-        "custom_settings": [one.copy() for one in INDEX_TTS2_CUSTOM_SETTINGS],
+        "custom_settings": [one.copy() for one in (INDEX_TTS25_CUSTOM_SETTINGS if is_v25 else INDEX_TTS2_CUSTOM_SETTINGS)],
         "preserve_empty_prompt_lines": True,
         "pause_between_sentences": True,
         "audio_guide_label": "Speaker reference voice",
         "audio_guide2_label": "Speaker 2 voice / emotion reference (optional)",
         "alt_prompt": {
-            "label": "Default Emotion Instruction (if none, emotion will be detected or set manually for each sentence)",
+            "label": "Default Emotion Instruction (empty preserves emotion from the speaker reference; [] overrides per segment)",
             "name": "Default Emotion Instruction",
             "placeholder": "happy,angry,sad,afraid,disgusted,melancholic,surprised,calm",
             "lines": 2,
@@ -115,9 +148,53 @@ def _get_index_tts2_model_def():
         "lm_engines": ["legacy", "cg", "vllm"],
         "compile": False,
     }
+    if is_v25:
+        model_def.update({
+            "model_modes": {
+                "label": "Language",
+                "choices": [("English", "EN"), ("Chinese", "ZH"), ("Chinese / English Mixed", "ZHEN"), ("Japanese", "JA"), ("Spanish", "ES"), ("Arabic", "AR")],
+                "default": "EN",
+            },
+            "infos": (
+                "### Improvements over IndexTTS 2.0\n\n"
+                "- Supports **Chinese, English, Japanese, Spanish, and Arabic**.\n"
+                "- Supports **cross-lingual voice cloning**.\n"
+                "- Uses a faster **25 Hz semantic-token path**.\n"
+                "- Adds native speech-speed control and Pinyin, CMU phoneme, and Kana pronunciation annotations.\n\n"
+                "### Language\n\n"
+                "Language is required by IndexTTS 2.5 because it conditions both the text prefix and a learned "
+                "language embedding. Select the language matching the text; **EN** is the default.\n\n"
+                "### Emotion control\n\n"
+                "- Put an emotion instruction in square brackets immediately before the text it controls, for "
+                "example: `[happy]` or `[calm and reassuring]`.\n"
+                "- An inline emotion remains active until another bracketed instruction appears.\n"
+                "- **Default Emotion Instruction** applies to segments without an inline emotion.\n"
+                "- If neither is provided, WanGP preserves emotion from the speaker reference.\n\n"
+                "### Speech Speed\n\n"
+                "- **1.0** is normal speed.\n"
+                "- Values above **1.0** speak faster.\n"
+                "- Values below **1.0** speak slower.\n\n"
+                "### Text Normalization\n\n"
+                "Text Normalization expands supported written forms such as numbers and symbols before tokenization. "
+                "Disable it when the prompt is already written exactly as it should be spoken or when testing precise "
+                "pronunciation markup."
+            ),
+            "prompt_infos": (
+                "Emotion example: [fear] I heard something outside. [calm] It was only the wind. "
+                "Pronunciation syntax: Chinese <行|XING2>, English <minute|M IH1 . N AH0 T>, Japanese <上手|じょうず>."
+            ),
+        })
+    return model_def
 
 
-def _get_index_tts2_download_def():
+def _get_index_tts2_download_def(base_model_type):
+    if base_model_type == INDEX_TTS25_ARCHITECTURE:
+        qwen_files = [name for name in INDEX_TTS2_QWEN_EMO_FILES if name != "model.safetensors"] + ["model_int8_convrot.safetensors"]
+        return {
+            "repoId": INDEX_TTS2_REPO_ID,
+            "sourceFolderList": [INDEX_TTS25_FOLDER, INDEX_TTS2_QWEN_EMO_FOLDER, INDEX_TTS2_BIGVGAN_FOLDER, INDEX_TTS2_W2V_BERT_FOLDER],
+            "fileList": [INDEX_TTS25_ROOT_FILES, qwen_files, INDEX_TTS2_BIGVGAN_FILES, INDEX_TTS2_W2V_BERT_FILES],
+        }
     return {
         "repoId": INDEX_TTS2_REPO_ID,
         # IndexTTS2 configs are bundled with source code in models/TTS/index_tts2/configs.
@@ -178,7 +255,7 @@ def _ensure_w2v_bert_fp16_file():
 class family_handler:
     @staticmethod
     def query_supported_types():
-        return ["index_tts2"]
+        return ["index_tts2", INDEX_TTS25_ARCHITECTURE]
 
     @staticmethod
     def query_family_maps():
@@ -200,18 +277,21 @@ class family_handler:
             default=None,
             help=f"Path to a directory that contains IndexTTS2 settings (default: {os.path.join(lora_root, 'index_tts2')})",
         )
+        parser.add_argument("--lora-dir-index-tts25", type=str, default=None, help=f"Path to IndexTTS 2.5 LoRAs (default: {os.path.join(lora_root, INDEX_TTS25_ARCHITECTURE)})")
 
     @staticmethod
     def get_lora_dir(base_model_type, args, lora_root):
+        if base_model_type == INDEX_TTS25_ARCHITECTURE:
+            return getattr(args, "lora_dir_index_tts25", None) or os.path.join(lora_root, INDEX_TTS25_ARCHITECTURE)
         return getattr(args, "lora_dir_index_tts2", None) or os.path.join(lora_root, "index_tts2")
 
     @staticmethod
     def query_model_def(base_model_type, model_def):
-        return _get_index_tts2_model_def()
+        return _get_index_tts2_model_def(base_model_type)
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):
-        return _get_index_tts2_download_def()
+        return _get_index_tts2_download_def(base_model_type)
 
     @staticmethod
     def load_model(
@@ -233,6 +313,8 @@ class family_handler:
     ):
         from .index_tts2.pipeline import IndexTTS2Pipeline
 
+        is_v25 = base_model_type == INDEX_TTS25_ARCHITECTURE
+        main_gpt_filename = INDEX_TTS25_MAIN_GPT_FILENAME if is_v25 else INDEX_TTS2_MAIN_GPT_FILENAME
         # _ensure_w2v_bert_fp16_file()
         weights_candidate = None
         if isinstance(model_filename, (list, tuple)):
@@ -244,7 +326,7 @@ class family_handler:
         if weights_candidate:
             gpt_weights_path = fl.locate_file(weights_candidate, error_if_none=False) or weights_candidate
         if gpt_weights_path is None:
-            gpt_weights_path = fl.locate_file(INDEX_TTS2_MAIN_GPT_FILENAME, error_if_none=False)
+            gpt_weights_path = fl.locate_file(main_gpt_filename, error_if_none=False)
         if gpt_weights_path is not None:
             gpt_name = os.path.basename(gpt_weights_path)
             if "_quanto_" in gpt_name:
@@ -254,7 +336,7 @@ class family_handler:
                     gpt_weights_path = non_quanto_path
         if gpt_weights_path is None:
             raise FileNotFoundError(
-                f"IndexTTS2 main transformer file '{INDEX_TTS2_MAIN_GPT_FILENAME}' is missing. "
+                f"IndexTTS main transformer file '{main_gpt_filename}' is missing. "
                 "It must be provided in defaults model.URLs."
             )
 
@@ -265,6 +347,7 @@ class family_handler:
             gpt_weights_path=gpt_weights_path,
             show_load_logs=INDEX_TTS2_SHOW_LOAD_LOGS,
             lm_decoder_engine=lm_decoder_engine,
+            architecture=base_model_type,
         )
         if torch.cuda.is_available():
             pipeline.model.device = "cuda:0"
@@ -277,6 +360,8 @@ class family_handler:
             "campplus_model": pipeline.model.campplus_model,
             "qwen_emo_model": pipeline.model.qwen_emo.model,
         }
+        if is_v25:
+            pipe["semantic_codec"] = pipeline.model.semantic_codec
         if str(lm_decoder_engine).strip().lower() in ("cg", "cudagraph", "vllm"):
             pipe["transformer"]._budget = 0
 
@@ -288,21 +373,10 @@ class family_handler:
             load_def["budgets"] = {"transformer2": 250}
 
         if save_quantized and gpt_weights_path:
-            from mmgp import offload
+            from wgp import save_quantized_model
 
-            quant_filename = os.path.basename(gpt_weights_path)
-            if "quanto" not in quant_filename:
-                if "_fp16" in quant_filename:
-                    quant_filename = quant_filename.replace("_fp16", "_quanto_fp16_int8")
-                else:
-                    dot_pos = quant_filename.rfind(".")
-                    if dot_pos >= 0:
-                        quant_filename = f"{quant_filename[:dot_pos]}_quanto_int8{quant_filename[dot_pos:]}"
-                    else:
-                        quant_filename = f"{quant_filename}_quanto_int8.safetensors"
-            if fl.locate_file(quant_filename, error_if_none=False) is None:
-                quant_path = os.path.join(fl.get_download_location(), quant_filename)
-                offload.save_model(pipeline.model.gpt, quant_path, do_quantize=True, config_file_path=None)
+            gpt_config_path = os.path.join(pipeline.model_dir, "configs", "gpt_runtime_config.json")
+            save_quantized_model(pipeline.model.gpt, model_type, gpt_weights_path, dtype or torch.float16, gpt_config_path, submodel_no=1)
 
         return pipeline, load_def
 
@@ -313,6 +387,13 @@ class family_handler:
         defaults = {
             "audio_prompt_type": "A",
         }
+        if base_model_type == INDEX_TTS25_ARCHITECTURE:
+            defaults["model_mode"] = "EN"
+            custom_settings = ui_defaults.get("custom_settings")
+            custom_settings = custom_settings.copy() if isinstance(custom_settings, dict) else {}
+            custom_settings.setdefault("speech_speed", 1.0)
+            custom_settings.setdefault("text_normalization", "Yes")
+            ui_defaults["custom_settings"] = custom_settings
         for key, value in defaults.items():
             ui_defaults.setdefault(key, value)
 
@@ -336,6 +417,16 @@ class family_handler:
                 "multi_prompts_gen_type": "FG",
             }
         )
+        if base_model_type == INDEX_TTS25_ARCHITECTURE:
+            ui_defaults.update({
+                "model_mode": "EN",
+                "prompt": "[fear] At the very beginning I was so afraid to speak.\n"
+                "[sadness] Nobody would talk to me. I felt so alone.\n"
+                "[disgust] They would just ignore me and pretend that I didnt exist\n"
+                "[happy] By chance I discovered this wonderful App, and now everything is different.\n"
+                "[anger] I have a new voice and now everybody will have no choice but to listen to my words !!!",
+                "custom_settings": {"speech_speed": 1.0, "text_normalization": "Yes"},
+            })
 
     @staticmethod
     def validate_generative_prompt(base_model_type, model_def, inputs, one_prompt):
@@ -386,6 +477,21 @@ class family_handler:
         if duration <= 0:
             return "Max duration must be greater than 0."
         custom_settings = inputs.get("custom_settings", None)
+        if base_model_type == INDEX_TTS25_ARCHITECTURE:
+            if not isinstance(custom_settings, dict):
+                return "IndexTTS 2.5 custom settings are missing."
+            language = str(inputs.get("model_mode", "EN") or "EN").upper()
+            if language not in ("EN", "ZH", "ZHEN", "JA", "ES", "AR"):
+                return "Unsupported IndexTTS 2.5 language."
+            try:
+                speech_speed = float(custom_settings.get("speech_speed", 1.0))
+            except Exception:
+                return "Speech Speed must be a number between 0.5 and 2.0."
+            if speech_speed < 0.5 or speech_speed > 2.0:
+                return "Speech Speed must be between 0.5 and 2.0."
+            normalization = str(custom_settings.get("text_normalization", "Yes"))
+            if normalization not in ("Yes", "No"):
+                return "Text Normalization must be Yes or No."
         if custom_settings is None:
             return None
         if not isinstance(custom_settings, dict):

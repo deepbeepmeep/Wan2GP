@@ -109,6 +109,7 @@ class ChainOfZoomBridge(SimpleScaleSuffixMixin):
             "vae_methods": [],
             "multipliers": {cls.UPSAMPLING_VALUE_PREFIX: cls.MULTIPLIERS},
             "default_spatial_upsampling": f"{cls.UPSAMPLING_VALUE_PREFIX}4",
+            "description": "Upscale an image tile by tile with Chain-of-Zoom detail reconstruction.",
         }
 
     def create_config_ui(self, gr, config: dict[str, Any], *, lock_config: bool = False):

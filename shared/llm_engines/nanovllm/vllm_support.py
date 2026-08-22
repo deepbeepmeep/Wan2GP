@@ -123,12 +123,14 @@ def probe_vllm_runtime(force=False):
     return result
 
 
-def resolve_lm_decoder_engine(requested_engine, engines_available = []):
+def resolve_lm_decoder_engine(requested_engine, engines_available = [], require_flash_attention=True):
     requested_engine = str(requested_engine or "").strip().lower()
     if _is_mps_available():
         return "legacy"
     probe_result = probe_vllm_runtime()
-    supported = bool(probe_result.get("supported", False))
+    checks = probe_result.get("checks", {})
+    triton_supported = bool(checks.get("triton", {}).get("ok", False))
+    supported = bool(probe_result.get("supported", False)) if require_flash_attention else triton_supported
     cg_available = "cg" in engines_available
     vllm_available= "vllm" in engines_available
     default_engine = "cg" if cg_available else "legacy"
@@ -141,10 +143,11 @@ def resolve_lm_decoder_engine(requested_engine, engines_available = []):
         else:
             global _WARNED_REQUESTED_VLLM_NOT_SUPPORTED
             if not _WARNED_REQUESTED_VLLM_NOT_SUPPORTED:
-                checks = probe_result.get("checks", {})
                 reasons = []
                 if isinstance(checks, dict):
                     for check_name, check_data in checks.items():
+                        if check_name == "flash_attention_2" and not require_flash_attention:
+                            continue
                         if isinstance(check_data, dict) and not check_data.get("ok", False):
                             msg = str(check_data.get("message", "failed")).replace("\n", " ").strip()
                             if len(msg) > 220:
@@ -152,7 +155,8 @@ def resolve_lm_decoder_engine(requested_engine, engines_available = []):
                             reasons.append(f"{check_name}={msg}")
                 reason_text = "; ".join(reasons) if len(reasons) > 0 else "unknown reason"
                 # print(f"[LM] Requested decoder engine 'vllm' is not supported at startup ({reason_text}).")
-                print(f"[LM] Requested decoder engine 'vllm' is not supported (triton & flash attention 2 are needed).")
+                requirement = "Triton and FlashAttention 2 are needed" if require_flash_attention else "Triton is needed"
+                print(f"[LM] Requested decoder engine 'vllm' is not supported ({requirement}).")
                 _WARNED_REQUESTED_VLLM_NOT_SUPPORTED = True
             return default_engine
     if requested_engine == "":
@@ -182,12 +186,13 @@ def _clear_inductor_cuda_pools():
 class NanoVllmTextEngine:
     keep_loaded_for_phase2 = True
 
-    def __init__(self, model, model_path: str, tokenizer, enforce_eager: bool = False, graph_pool_handle=None):
+    def __init__(self, model, model_path: str, tokenizer, enforce_eager: bool = False, graph_pool_handle=None, kv_cache_int8: bool = False):
         self.model = model
         self.model_path = model_path
         self.tokenizer = tokenizer
         self.enforce_eager = bool(enforce_eager)
         self.graph_pool_handle = graph_pool_handle
+        self.kv_cache_int8 = bool(kv_cache_int8)
         self.hf_config = getattr(model, "config", None)
         self._llm = None
         self._sampling_params_cls = None
@@ -280,6 +285,7 @@ class NanoVllmTextEngine:
             tokenizer=self.tokenizer,
             model_object=self.model,
             graph_pool_handle=self.graph_pool_handle,
+            kv_cache_int8=self.kv_cache_int8,
         )
         self._sampling_params_cls = SamplingParams
 

@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "JoyAI-Echo Surgical 22B",
+        "name": "LTX-2 2.3 JoyAI-Echo Surgical 22B",
         "architecture": "joyai_echo",
         "description": "JoyAI-Echo LTX-2.3 surgical fine-tune with the video/conditioning and AV cross-attention modulation from JoyAI-Echo, plus the audio and both cross-attention paths from LTX-2.3 distilled 1.1. The local checkpoint is stripped to diffusion-model weights; WanGP supplies the text projection, embedding connectors, VAEs, and vocoder separately.",
         "URLs": [

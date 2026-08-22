@@ -18,7 +18,8 @@
     "guidance_scale": 5.0,
     "custom_settings": {
         "scail2_animate_preprocessing": "raw",
-        "image_ref_keyword_content": "human character"
+        "image_ref_keyword_content": "human character",
+        "scail2_inject_ref_frames_in_video": "No"
     },
     "sliding_window_size": 81,
     "sliding_window_overlap": 5,

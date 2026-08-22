@@ -7,7 +7,7 @@ import torch
 
 
 BLOCK_SIZE = 64
-SUPPORTED_CUDA_CAPABILITIES = ((8, 9), (9, 0), (10, 0), (12, 0))
+SUPPORTED_CUDA_CAPABILITIES = ((8, 6), (8, 9), (9, 0), (10, 0), (12, 0), (12, 1))
 
 
 def validate_runtime(device, dtype):
@@ -67,18 +67,21 @@ def _sink_block_range(tokens, sink_start, sink_tokens):
 
 
 def sol_attn(q, k, v, *, scale=None, tau=1.0, thresh_type="diag", sink_tokens=0, sink_start=None, query_start=0,
-             recycle_q=False, int8_qk=False):
+             recycle_q=False, int8_qk=False, int8_pv=False):
+    if int8_pv and not int8_qk:
+        raise ValueError("int8_pv requires int8_qk")
     if int8_qk:
         capability = _validate_inputs(q, k, v, thresh_type, sink_tokens, sink_start, query_start)
         if query_start:
             raise ValueError("The optimized INT8 Sol-Attn path requires query_start=0")
-        if capability < (8, 9):
-            raise RuntimeError(f"Triton Sol-Attn requires compute capability >= 8.9; got SM{capability[0]}{capability[1]}")
+        if capability not in SUPPORTED_CUDA_CAPABILITIES:
+            supported = ", ".join(f"SM{major}{minor}" for major, minor in SUPPORTED_CUDA_CAPABILITIES)
+            raise RuntimeError(f"Triton Sol-Attn supports {supported}; got SM{capability[0]}{capability[1]}")
         from .saganaki import sol_attn as optimized_sol_attn
 
         sink_blocks = _sink_block_range(q.shape[1], sink_start, sink_tokens)
         return optimized_sol_attn(q, k, v, scale=scale, tau=tau, thresh_type=thresh_type,
-                                  int8_qk=True, sink_blocks=sink_blocks)
+                                  int8_qk=True, int8_pv=int8_pv, sink_blocks=sink_blocks)
 
     from .triton_kernels import sol_attn as triton_sol_attn
 

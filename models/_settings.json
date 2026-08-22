@@ -20,7 +20,12 @@
 	"audio_prompt_type": "",
 	"speakers_locations": "0:45 55:100",
 	"prompt_enhancer": "",
-	"custom_settings": null,
+	"custom_settings": {
+		"scail2_inject_ref_frames_in_video": "No",
+		"animate2_kv_cache": "Disabled",
+		"speech_speed": 1.0,
+		"text_normalization": "Yes"
+	},
 	"resolution": "832x480",
 	"batch_size": 1,
 	"video_length": 81,
@@ -91,6 +96,7 @@
 	"RIFLEx_setting": 0,
 	"override_profile": -1,
 	"override_attention": "",
+	"attention_sparsity": 1.0,
 	"output_filename": "",
 	"config": "",
 	"activated_loras": [],

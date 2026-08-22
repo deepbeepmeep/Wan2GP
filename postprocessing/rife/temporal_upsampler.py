@@ -31,6 +31,7 @@ class RifeTemporalUpsampler(temporal_upsampler_api.SimpleScaleSuffixMixin):
             "methods": [("RIFE", cls.METHOD)],
             "multipliers": {cls.METHOD: (2.0, 4.0)},
             "default_temporal_upsampling": "rife2",
+            "description": "Increase video frame rate by interpolating smooth intermediate frames.",
         }
 
     @classmethod

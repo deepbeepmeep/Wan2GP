@@ -54,6 +54,7 @@ class TextNormalizer:
             "$": ".",
             **self.char_rep_map,
         }
+        self.clean_pattern = re.compile("|".join(re.escape(p) for p in self.char_rep_map))
         self.enable_glossary = enable_glossary
         # 术语词汇表：用户可自定义专业术语的读法
         # 格式: {"原始术语": {"en": "英文读法", "zh": "中文读法"}}
@@ -137,10 +138,29 @@ class TextNormalizer:
             )
             self.en_normalizer = NormalizerEn(overwrite_cache=False)
 
+    G2P_PRONUNCIATION_ANNOTATION_PATTERN = re.compile(r'<([^|>\n]+)\|([^>\n]+)>')
+
+    def _protect_pronunciation_annotations(self, text):
+        placeholders = {}
+
+        def _replace(match):
+            key = f"PRONPLACEHOLDER{chr(ord('a') + len(placeholders))}PRONPLACEHOLDER"
+            placeholders[key] = match.group(0)
+            return key
+
+        return self.G2P_PRONUNCIATION_ANNOTATION_PATTERN.sub(_replace, text), placeholders
+
+    @staticmethod
+    def _restore_pronunciation_annotations(text, placeholders):
+        for key, value in placeholders.items():
+            text = text.replace(key, value)
+        return text
+
     def normalize(self, text: str) -> str:
         if not self.zh_normalizer or not self.en_normalizer:
             print("Error, text normalizer is not initialized !!!")
             return ""
+        text, pronunciation_placeholders = self._protect_pronunciation_annotations(text)
         if self.use_chinese(text):
             text = re.sub(TextNormalizer.ENGLISH_CONTRACTION_PATTERN, r"\1 is", text, flags=re.IGNORECASE)
             # 应用术语词汇表（优先级最高，在所有保护之前）
@@ -180,7 +200,7 @@ class TextNormalizer:
                 print(traceback.format_exc())
             pattern = re.compile("|".join(re.escape(p) for p in self.char_rep_map.keys()))
             result = pattern.sub(lambda x: self.char_rep_map[x.group()], result)
-        return result
+        return self._restore_pronunciation_annotations(result, pronunciation_placeholders)
 
     def correct_pinyin(self, pinyin: str):
         """

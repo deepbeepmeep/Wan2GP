@@ -9,6 +9,7 @@ from typing import Any, Callable
 import gradio as gr
 
 from shared.deepy import tool_settings as deepy_tool_settings
+from shared.deepy.config import DEEPY_TYPE_KEY, get_deepy_config_value, normalize_deepy_type
 from shared.deepy import ui_settings as deepy_ui_settings
 from shared.gradio import assistant_chat
 
@@ -16,6 +17,7 @@ from shared.gradio import assistant_chat
 _TEMPLATE_TOOL_LAYOUT = (
     ("gen_video", "gen_video_with_speech"),
     ("gen_image", "edit_image"),
+    ("gen_song",),
     ("gen_speech_from_description", "gen_speech_from_sample"),
 )
 _TEMPLATE_TOOL_ORDER = tuple(tool_name for row in _TEMPLATE_TOOL_LAYOUT for tool_name in row)
@@ -23,6 +25,7 @@ _TEMPLATE_TOOL_SELECTOR_CHOICE_KEY = {
     "gen_video": "video_generator_choices",
     "gen_video_with_speech": "video_with_speech_choices",
     "gen_image": "image_generator_choices",
+    "gen_song": "song_choices",
     "edit_image": "image_editor_choices",
     "gen_speech_from_description": "speech_from_description_choices",
     "gen_speech_from_sample": "speech_from_sample_choices",
@@ -31,6 +34,7 @@ _TEMPLATE_TOOL_SELECTOR_SELECTED_KEY = {
     "gen_video": "selected_video_generator",
     "gen_video_with_speech": "selected_video_with_speech",
     "gen_image": "selected_image_generator",
+    "gen_song": "selected_song",
     "edit_image": "selected_image_editor",
     "gen_speech_from_description": "selected_speech_from_description",
     "gen_speech_from_sample": "selected_speech_from_sample",
@@ -39,6 +43,7 @@ _TEMPLATE_TOOL_UI_KEY = {
     "gen_video": "video_generator_variant",
     "gen_video_with_speech": "video_with_speech_variant",
     "gen_image": "image_generator_variant",
+    "gen_song": "song_variant",
     "edit_image": "image_editor_variant",
     "gen_speech_from_description": "speech_from_description_variant",
     "gen_speech_from_sample": "speech_from_sample_variant",
@@ -47,6 +52,7 @@ _TEMPLATE_TOOL_DEFAULT_GETTER = {
     "gen_video": deepy_tool_settings.get_default_video_generator_variant,
     "gen_video_with_speech": deepy_tool_settings.get_default_video_with_speech_variant,
     "gen_image": deepy_tool_settings.get_default_image_generator_variant,
+    "gen_song": deepy_tool_settings.get_default_song_variant,
     "edit_image": deepy_tool_settings.get_default_image_editor_variant,
     "gen_speech_from_description": deepy_tool_settings.get_default_speech_from_description_variant,
     "gen_speech_from_sample": deepy_tool_settings.get_default_speech_from_sample_variant,
@@ -91,9 +97,11 @@ class DeepyChatUI:
     override_height: Any
     override_width: Any
     override_num_frames: Any
+    override_audio_duration: Any
     override_seed: Any
     default_video_with_speech: Any
     default_image_generator: Any
+    default_song: Any
     default_image_editor: Any
     default_video_generator: Any
     default_speech_from_description: Any
@@ -122,12 +130,13 @@ class DeepyChatHandlers:
     reset_ai: Callable[[Any], Any]
 
 
-def _tool_values_from_inputs(current_video_generator: Any, current_video_with_speech: Any, current_image_generator: Any, current_image_editor: Any, current_speech_from_description: Any, current_speech_from_sample: Any) -> dict[str, Any]:
+def _tool_values_from_inputs(current_video_generator: Any, current_video_with_speech: Any, current_image_generator: Any, current_image_editor: Any, current_song: Any, current_speech_from_description: Any, current_speech_from_sample: Any) -> dict[str, Any]:
     return {
         "gen_video": current_video_generator,
         "gen_video_with_speech": current_video_with_speech,
         "gen_image": current_image_generator,
         "edit_image": current_image_editor,
+        "gen_song": current_song,
         "gen_speech_from_description": current_speech_from_description,
         "gen_speech_from_sample": current_speech_from_sample,
     }
@@ -248,6 +257,7 @@ def _template_dropdown_updates(tool_values: dict[str, Any]) -> tuple[tuple[Any, 
         tool_values.get("edit_image"),
         tool_values.get("gen_video"),
         tool_values.get("gen_video_with_speech"),
+        tool_values.get("gen_song"),
         tool_values.get("gen_speech_from_description"),
         tool_values.get("gen_speech_from_sample"),
     )
@@ -272,7 +282,7 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
         launcher_host = gr.HTML(assistant_chat.render_launcher_html() if deepy_visible else "", elem_id=assistant_chat.LAUNCHER_HOST_ID, visible=deepy_visible)
         with gr.Column(elem_id=assistant_chat.PANEL_ID, visible=deepy_visible) as panel:
             settings_launcher_host = gr.HTML(assistant_chat.render_settings_launcher_html(), elem_id=assistant_chat.SETTINGS_LAUNCHER_HOST_ID)
-            html_output = gr.HTML(assistant_chat.render_shell_html(), elem_id=assistant_chat.CHAT_BLOCK_ID)
+            html_output = gr.HTML(assistant_chat.render_shell_html(normalize_deepy_type(get_deepy_config_value(DEEPY_TYPE_KEY, ""))), elem_id=assistant_chat.CHAT_BLOCK_ID)
             chat_event = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.CHAT_EVENT_ID)
             busy_queue_request = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.BUSY_QUEUE_INPUT_ID)
             busy_queue_btn = gr.Button("Queue Busy Request", visible=False, elem_id=assistant_chat.BUSY_QUEUE_BUTTON_ID)
@@ -296,7 +306,14 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
                                     value=tool_ui_state["auto_cancel_queue_tasks"],
                                     label="Auto-abort or remove Deepy-started generation on Stop/Reset.",
                                 )
-                                use_template_properties = gr.Checkbox(value=tool_ui_state["use_template_properties"], label="Use Properties defined in Templates Settings files.")
+                                use_template_properties = gr.Dropdown(
+                                    choices=[
+                                        ("Use by Default Dimensions / Durations / Seed defined in Templates Settings Used", True),
+                                        ("Use by Default Always Dimensions / Durations / Seed Below", False),
+                                    ],
+                                    value=tool_ui_state["use_template_properties"],
+                                    label="Default Dimensions / Durations / Seed",
+                                )
                                 with gr.Row():
                                     override_width = gr.Slider(
                                         deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MIN,
@@ -314,14 +331,23 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
                                         label="Default Height",
                                         interactive=not tool_ui_state["use_template_properties"],
                                     )
-                                override_num_frames = gr.Slider(
-                                    deepy_ui_settings.ASSISTANT_OVERRIDE_FRAMES_MIN,
-                                    deepy_ui_settings.ASSISTANT_OVERRIDE_FRAMES_MAX,
-                                    value=tool_ui_state["num_frames"],
-                                    step=1,
-                                    label="Default Number of Frames",
-                                    interactive=not tool_ui_state["use_template_properties"],
-                                )
+                                with gr.Row():
+                                    override_num_frames = gr.Slider(
+                                        deepy_ui_settings.ASSISTANT_OVERRIDE_FRAMES_MIN,
+                                        deepy_ui_settings.ASSISTANT_OVERRIDE_FRAMES_MAX,
+                                        value=tool_ui_state["num_frames"],
+                                        step=1,
+                                        label="Default Number of Frames",
+                                        interactive=not tool_ui_state["use_template_properties"],
+                                    )
+                                    override_audio_duration = gr.Slider(
+                                        deepy_ui_settings.ASSISTANT_OVERRIDE_AUDIO_DURATION_MIN,
+                                        deepy_ui_settings.ASSISTANT_OVERRIDE_AUDIO_DURATION_MAX,
+                                        value=tool_ui_state["audio_duration"],
+                                        step=1,
+                                        label="Default Audio Duration (seconds)",
+                                        interactive=not tool_ui_state["use_template_properties"],
+                                    )
                                 override_seed = gr.Slider(
                                     -1,
                                     999999999,
@@ -385,9 +411,11 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
         override_height=override_height,
         override_width=override_width,
         override_num_frames=override_num_frames,
+        override_audio_duration=override_audio_duration,
         override_seed=override_seed,
         default_video_with_speech=controls_by_tool["gen_video_with_speech"].dropdown,
         default_image_generator=controls_by_tool["gen_image"].dropdown,
+        default_song=controls_by_tool["gen_song"].dropdown,
         default_image_editor=controls_by_tool["edit_image"].dropdown,
         default_video_generator=controls_by_tool["gen_video"].dropdown,
         default_speech_from_description=controls_by_tool["gen_speech_from_description"].dropdown,
@@ -434,6 +462,7 @@ def bind_deepy_chat_ui(
         ui.default_video_with_speech,
         ui.default_image_generator,
         ui.default_image_editor,
+        ui.default_song,
         ui.default_speech_from_description,
         ui.default_speech_from_sample,
     ]
@@ -441,15 +470,15 @@ def bind_deepy_chat_ui(
 
     def toggle_override_controls(use_template_properties):
         interactive = not deepy_ui_settings.normalize_assistant_use_template_properties(use_template_properties)
-        return gr.update(interactive=interactive), gr.update(interactive=interactive), gr.update(interactive=interactive), gr.update(interactive=interactive)
+        return gr.update(interactive=interactive), gr.update(interactive=interactive), gr.update(interactive=interactive), gr.update(interactive=interactive), gr.update(interactive=interactive)
 
-    def track_template_selection(tool_name, selection_history, current_video_generator, current_video_with_speech, current_image_generator, current_image_editor, current_speech_from_description, current_speech_from_sample):
+    def track_template_selection(tool_name, selection_history, current_video_generator, current_video_with_speech, current_image_generator, current_image_editor, current_song, current_speech_from_description, current_speech_from_sample):
         raw_history = selection_history if isinstance(selection_history, dict) else {}
         previous_current = None
         record = raw_history.get(tool_name)
         if isinstance(record, dict):
             previous_current = deepy_tool_settings.find_tool_variant(tool_name, record.get("current"))
-        tool_values = _tool_values_from_inputs(current_video_generator, current_video_with_speech, current_image_generator, current_image_editor, current_speech_from_description, current_speech_from_sample)
+        tool_values = _tool_values_from_inputs(current_video_generator, current_video_with_speech, current_image_generator, current_image_editor, current_song, current_speech_from_description, current_speech_from_sample)
         normalized_history = _normalize_template_selection_history(selection_history, tool_values)
         current_value = normalized_history[tool_name]["current"]
         if previous_current is not None and previous_current != current_value:
@@ -472,11 +501,13 @@ def bind_deepy_chat_ui(
         override_height,
         override_width,
         override_num_frames,
+        override_audio_duration,
         override_seed,
         default_video_generator,
         default_video_with_speech,
         default_image_generator,
         default_image_editor,
+        default_song,
         default_speech_from_description,
         default_speech_from_sample,
     ):
@@ -489,11 +520,13 @@ def bind_deepy_chat_ui(
             override_height,
             override_width,
             override_num_frames,
+            override_audio_duration,
             override_seed,
             default_video_generator,
             default_video_with_speech,
             default_image_generator,
             default_image_editor,
+            default_song,
             default_speech_from_description,
             default_speech_from_sample,
         )
@@ -512,11 +545,13 @@ def bind_deepy_chat_ui(
         override_height,
         override_width,
         override_num_frames,
+        override_audio_duration,
         override_seed,
         default_video_generator,
         default_video_with_speech,
         default_image_generator,
         default_image_editor,
+        default_song,
         default_speech_from_description,
         default_speech_from_sample,
     ):
@@ -529,11 +564,13 @@ def bind_deepy_chat_ui(
             override_height,
             override_width,
             override_num_frames,
+            override_audio_duration,
             override_seed,
             default_video_generator,
             default_video_with_speech,
             default_image_generator,
             default_image_editor,
+            default_song,
             default_speech_from_description,
             default_speech_from_sample,
         )
@@ -547,11 +584,13 @@ def bind_deepy_chat_ui(
         override_height,
         override_width,
         override_num_frames,
+        override_audio_duration,
         override_seed,
         default_video_generator,
         default_video_with_speech,
         default_image_generator,
         default_image_editor,
+        default_song,
         default_speech_from_description,
         default_speech_from_sample,
         *,
@@ -565,10 +604,12 @@ def bind_deepy_chat_ui(
             width=override_width,
             height=override_height,
             num_frames=override_num_frames,
+            audio_duration=override_audio_duration,
             seed=override_seed,
             video_with_speech_variant=default_video_with_speech,
             image_generator_variant=default_image_generator,
             image_editor_variant=default_image_editor,
+            song_variant=default_song,
             video_generator_variant=default_video_generator,
             speech_from_description_variant=default_speech_from_description,
             speech_from_sample_variant=default_speech_from_sample,
@@ -583,11 +624,13 @@ def bind_deepy_chat_ui(
         override_height,
         override_width,
         override_num_frames,
+        override_audio_duration,
         override_seed,
         default_video_generator,
         default_video_with_speech,
         default_image_generator,
         default_image_editor,
+        default_song,
         default_speech_from_description,
         default_speech_from_sample,
     ):
@@ -599,11 +642,13 @@ def bind_deepy_chat_ui(
             override_height,
             override_width,
             override_num_frames,
+            override_audio_duration,
             override_seed,
             default_video_generator,
             default_video_with_speech,
             default_image_generator,
             default_image_editor,
+            default_song,
             default_speech_from_description,
             default_speech_from_sample,
             persist=False,
@@ -617,11 +662,13 @@ def bind_deepy_chat_ui(
         override_height,
         override_width,
         override_num_frames,
+        override_audio_duration,
         override_seed,
         default_video_generator,
         default_video_with_speech,
         default_image_generator,
         default_image_editor,
+        default_song,
         default_speech_from_description,
         default_speech_from_sample,
     ):
@@ -633,11 +680,13 @@ def bind_deepy_chat_ui(
             override_height,
             override_width,
             override_num_frames,
+            override_audio_duration,
             override_seed,
             default_video_generator,
             default_video_with_speech,
             default_image_generator,
             default_image_editor,
+            default_song,
             default_speech_from_description,
             default_speech_from_sample,
             persist=True,
@@ -690,8 +739,8 @@ def bind_deepy_chat_ui(
         modal_state = {"action": "delete", "tool_name": tool_name, "variant_name": selected_variant}
         return _open_template_modal(modal_state, title_html, body_html, yes_visible=True, no_visible=True, close_visible=False)
 
-    def confirm_template_modal_action(template_modal_state, selection_history, current_video_generator, current_video_with_speech, current_image_generator, current_image_editor, current_speech_from_description, current_speech_from_sample):
-        tool_values = _tool_values_from_inputs(current_video_generator, current_video_with_speech, current_image_generator, current_image_editor, current_speech_from_description, current_speech_from_sample)
+    def confirm_template_modal_action(template_modal_state, selection_history, current_video_generator, current_video_with_speech, current_image_generator, current_image_editor, current_song, current_speech_from_description, current_speech_from_sample):
+        tool_values = _tool_values_from_inputs(current_video_generator, current_video_with_speech, current_image_generator, current_image_editor, current_song, current_speech_from_description, current_speech_from_sample)
         normalized_history = _normalize_template_selection_history(selection_history, tool_values)
         modal_state = template_modal_state if isinstance(template_modal_state, dict) else {}
         action = str(modal_state.get("action", "")).strip().lower()
@@ -733,7 +782,7 @@ def bind_deepy_chat_ui(
     ui.use_template_properties.change(
         fn=toggle_override_controls,
         inputs=[ui.use_template_properties],
-        outputs=[ui.override_height, ui.override_width, ui.override_num_frames, ui.override_seed],
+        outputs=[ui.override_height, ui.override_width, ui.override_num_frames, ui.override_audio_duration, ui.override_seed],
         show_progress="hidden",
         queue=False,
     )
@@ -791,11 +840,13 @@ def bind_deepy_chat_ui(
             ui.override_height,
             ui.override_width,
             ui.override_num_frames,
+            ui.override_audio_duration,
             ui.override_seed,
             ui.default_video_generator,
             ui.default_video_with_speech,
             ui.default_image_generator,
             ui.default_image_editor,
+            ui.default_song,
             ui.default_speech_from_description,
             ui.default_speech_from_sample,
         ],
@@ -817,11 +868,13 @@ def bind_deepy_chat_ui(
             ui.override_height,
             ui.override_width,
             ui.override_num_frames,
+            ui.override_audio_duration,
             ui.override_seed,
             ui.default_video_generator,
             ui.default_video_with_speech,
             ui.default_image_generator,
             ui.default_image_editor,
+            ui.default_song,
             ui.default_speech_from_description,
             ui.default_speech_from_sample,
         ],
@@ -844,11 +897,13 @@ def bind_deepy_chat_ui(
             ui.override_height,
             ui.override_width,
             ui.override_num_frames,
+            ui.override_audio_duration,
             ui.override_seed,
             ui.default_video_generator,
             ui.default_video_with_speech,
             ui.default_image_generator,
             ui.default_image_editor,
+            ui.default_song,
             ui.default_speech_from_description,
             ui.default_speech_from_sample,
         ],

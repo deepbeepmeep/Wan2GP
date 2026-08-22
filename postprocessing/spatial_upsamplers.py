@@ -17,6 +17,10 @@ Every spatial upsampler (built-in or extension) class is listed in
     "vae_methods": [],                       # VAE methods (label, method key); model-pipeline integration
     "multipliers": {"flashvsr": (2.0, 4.0)}, # supported upsampling multipliers per method key
     "default_spatial_upsampling": "flashvsr2",
+    "source_audio_conditioning": False,        # request a decoded source-audio input without changing final remux audio
+    "description": "Restore detail while spatially upscaling media.", # optional fallback description for discovery UIs/tools
+    "method_descriptions": {"flashvsr": "..."}, # optional descriptions per method
+    "method_parameters": {"flashvsr": [...]}, # optional extra parameter descriptors per method
 }
 ```
 
@@ -80,6 +84,7 @@ spatial_upsampler_handlers = [
     "postprocessing.seedvr2.wgp_bridge.SeedVR2Bridge",
     "postprocessing.pid.wgp_bridge.PiDBridge",
     "postprocessing.chain_of_zoom.wgp_bridge.ChainOfZoomBridge",
+    "postprocessing.ltx2_upsampler.wgp_bridge.LTXVideoUpsamplerBridge",
     "postprocessing.spatial_upsamplers.WanVaeUpsampler",
 ]
 _upsampler_handlers: list[Any] = []
@@ -248,6 +253,14 @@ def find_postprocessing_upsampler(spatial_upsampling) -> Any | None:
         return None
     method = handler.split_value(spatial_upsampling)[0]
     return handler if method in [key for _, key in handler.query_upsampler_def().get("methods", [])] else None
+
+
+def resolve_late_postprocessing_prompt(spatial_upsampling, prompt) -> str:
+    prompt = str(prompt or "").strip()
+    if prompt:
+        return prompt
+    handler = find_postprocessing_upsampler(spatial_upsampling)
+    return "" if handler is None else str(handler.query_upsampler_def().get("default_prompt", "")).strip()
 
 
 def find_vae_upsampler(spatial_upsampling) -> Any | None:

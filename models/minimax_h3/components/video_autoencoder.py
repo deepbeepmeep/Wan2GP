@@ -367,8 +367,11 @@ class MiniMaxH3VideoAttnProcessor:
             key_second.copy_(key_second_out)
             del query_first_out, query_second_out, key_first_out, key_second_out
 
+        output_dtype = query.dtype
+        if output_dtype == torch.float32:
+            query, key, value = query.half(), key.half(), value.half()
         hidden_states = pay_attention([query, key, value], causal=False, recycle_q=True)
-        return attn.to_out(hidden_states.flatten(2, 3))
+        return attn.to_out(hidden_states.flatten(2, 3).to(output_dtype))
 
 
 class MiniMaxH3VideoAttention(nn.Module):
@@ -841,18 +844,21 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
             for j in range(len(x_indices)):
                 tile = decoded[tile_index * batch_size : (tile_index + 1) * batch_size]
                 tile_index += 1
-                if i < len(y_indices) - 1:
-                    new_tails.append(tile[..., -y_overlaps[i] :, :])
-                next_left_tail = tile[..., :, -x_overlaps[j] :] if j < len(x_indices) - 1 else None
                 if i > 0:
                     tile = self._blend(row_tails[j], tile, y_overlaps[i - 1], dim=-2)
                 if j > 0:
                     tile = self._blend(left_tail, tile, x_overlaps[j - 1], dim=-1)
+                # Preserve both-axis contributions at corners and when three spatial tiles overlap.
+                if i < len(y_indices) - 1:
+                    new_tails.append(tile[..., -y_overlaps[i] :, :].clone())
+                next_left_tail = tile[..., :, -x_overlaps[j] :].clone() if j < len(x_indices) - 1 else None
                 left_tail = next_left_tail
                 if i < len(y_indices) - 1:
                     tile = tile[..., : -y_overlaps[i], :]
                 if j < len(x_indices) - 1:
                     tile = tile[..., :, : -x_overlaps[j]]
+                if canvas is None:
+                    canvas = torch.empty(*tile.shape[:-2], height, width, dtype=tile.dtype, device=tile.device)
                 canvas[..., out_y : out_y + tile.shape[-2], out_x : out_x + tile.shape[-1]].copy_(tile)
                 out_x += tile.shape[-1]
             row_tails = new_tails

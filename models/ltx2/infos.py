@@ -10,6 +10,14 @@ LTX2_INFOS = """
 - Ingredients Reference Sheet: 22B can use one composite reference-sheet image with the Ingredients IC-LoRA to keep characters, props, and location consistent.
 - EditAnything variants: provide a source/control video plus one reference image to add or edit a subject in the video.
 
+## VAE Decoder Choices
+
+Choose the decoder from the `VAE` system configuration:
+
+- `Default VAE`: the original decoder and default choice. It offers the best balance of speed, quality, and VRAM use for normal generation.
+- `PrunaAI VAE (faster, slightly worse quality)`: an optimized alternative available for both LTX-2.3 and LTX-2.5.
+- `NAD Diffusion Decoder (slower, higher VRAM, better motion)`: an optional diffusion decoder that supports tiled decoding and automatically uses its Triton accelerator when a compatible Triton version is available; the console reports whether the Triton or standard implementation is active. NAD is available for both LTX-2.3 and LTX-2.5.
+
 ## Text To Image Mode
 
 LTX2 image generation is implemented by generating a short video internally and keeping only the first frame.
@@ -111,6 +119,8 @@ Filename rule: it contains "id-lora-celebvhq"
 Result: the reference voice workflow uses your ID-LoRA file and weight.
 ```
 """
+
+LTX2_25_INFOS = LTX2_INFOS
 
 LTX2_MSR_INFOS = """
 # LTX2 Multiple Subject Reference

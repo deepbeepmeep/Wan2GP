@@ -17,6 +17,10 @@ Every spatial upsampler (built-in or extension) class is listed in
     "vae_methods": [],                       # VAE methods (label, method key); model-pipeline integration
     "multipliers": {"flashvsr": (2.0, 4.0)}, # supported upsampling multipliers per method key
     "default_spatial_upsampling": "flashvsr2",
+    "source_audio_conditioning": False,        # request a decoded source-audio input without changing final remux audio
+    "description": "Restore detail while spatially upscaling media.", # optional fallback description for discovery UIs/tools
+    "method_descriptions": {"flashvsr": "..."}, # optional descriptions per method
+    "method_parameters": {"flashvsr": [...]}, # optional extra parameter descriptors per method
 }
 ```
 
@@ -38,6 +42,11 @@ the generic VAE upsampler hooks below; model defs declare support.
 
 Handlers may also expose Config-tab controls with ``create_config_ui(...)`` and
 normalize their own nested section under ``wgp_config["spatial_upsamplers"]``.
+Model persistence is shared by all handlers through
+``wgp_config["spatial_upsamplers"]["persistence"]``. At most one spatial
+upsampler handler is retained: dispatching another handler releases the previous
+one before loading the new selection. Handlers still own incompatible variant
+switches within one handler (for example PiD version/backbone changes).
 
 Upsamplers that allocate their own mmgp offload object must register it in
 ``shared.utils.offload_registry`` so its resources can be tracked and released
@@ -63,21 +72,30 @@ UPSAMPLER_PROFILE_VIDEO = "video"
 UPSAMPLER_PROFILE_IMAGE = "image"
 UPSAMPLER_PROFILE_AUDIO = "audio"
 UPSAMPLER_CONFIG_KEY = "spatial_upsamplers"
+PERSISTENCE_CONFIG_KEY = "persistence"
+PERSIST_UNLOAD = 1
+PERSIST_RAM = 2
+PERSISTENCE_CHOICES = [("Unload after use", PERSIST_UNLOAD), ("Persistent in RAM", PERSIST_RAM)]
+_SHARED_PERSISTENCE_BINDING_KEY = "__shared_persistence__"
 
 spatial_upsampler_handlers = [
     "postprocessing.lanczos.wgp_bridge.LanczosUpsampler",
     "postprocessing.flashvsr.wgp_bridge.FlashVSRBridge",
+    "postprocessing.seedvr2.wgp_bridge.SeedVR2Bridge",
     "postprocessing.pid.wgp_bridge.PiDBridge",
     "postprocessing.chain_of_zoom.wgp_bridge.ChainOfZoomBridge",
+    "postprocessing.ltx2_upsampler.wgp_bridge.LTXVideoUpsamplerBridge",
     "postprocessing.spatial_upsamplers.WanVaeUpsampler",
 ]
 _upsampler_handlers: list[Any] = []
 _registered_upsampler_handler_paths: set[str] = set()
+_active_upsampler_handler: Any | None = None
+_upsampler_server_config: dict[str, Any] | None = None
 
 
 @dataclass
 class UpsamplerConfigBinding:
-    handler: Any
+    handler: Any | None
     config_key: str
     controls: list[tuple[str, Any]]
 
@@ -119,13 +137,14 @@ def _config_key_from_handler_def(handler_def: dict[str, Any], fallback_name: str
     return fallback_name.lower()
 
 
-def default_config_sections(handler_modules: list[str] | None = None) -> dict[str, dict[str, Any]]:
-    sections = {}
+def default_config_sections(handler_modules: list[str] | None = None) -> dict[str, Any]:
+    sections = {PERSISTENCE_CONFIG_KEY: PERSIST_UNLOAD}
     for path in spatial_upsampler_handlers if handler_modules is None else handler_modules:
         handler_cls = _load_upsampler_class(str(path or "").strip())
         if not hasattr(handler_cls, "default_config"):
             continue
         config = dict(handler_cls.default_config())
+        config.pop(PERSISTENCE_CONFIG_KEY, None)
         if not config:
             continue
         handler_def = handler_cls.query_upsampler_def()
@@ -134,6 +153,9 @@ def default_config_sections(handler_modules: list[str] | None = None) -> dict[st
 
 
 def register_spatial_upsamplers(server_config, files_locator, handler_modules: list[str] | None = None) -> None:
+    global _upsampler_server_config
+
+    _upsampler_server_config = server_config
     modules = spatial_upsampler_handlers if handler_modules is None else handler_modules
     for path in modules:
         path = str(path or "").strip()
@@ -156,6 +178,30 @@ def upsampler_handlers(upsampler_type: str | None = None, enabled_only: bool = F
 
 def handler_enabled(handler) -> bool:
     return not hasattr(handler, "enabled") or handler.enabled()
+
+
+def _handler_name(handler) -> str:
+    return str(handler.query_upsampler_def()["name"])
+
+
+def _release_upsampler_handler(handler) -> None:
+    global _active_upsampler_handler
+
+    released = offload_registry.release_all([_handler_name(handler)])
+    if not released and hasattr(handler, "release_vram"):
+        handler.release_vram()
+    if _active_upsampler_handler is handler:
+        _active_upsampler_handler = None
+
+
+def _activate_upsampler(handler) -> None:
+    global _active_upsampler_handler
+
+    if _active_upsampler_handler is handler:
+        return
+    if _active_upsampler_handler is not None:
+        _release_upsampler_handler(_active_upsampler_handler)
+    _active_upsampler_handler = handler
 
 
 def query_upsampler_defs(upsampler_type: str | None = None, enabled_only: bool = False) -> list[dict[str, Any]]:
@@ -209,6 +255,14 @@ def find_postprocessing_upsampler(spatial_upsampling) -> Any | None:
     return handler if method in [key for _, key in handler.query_upsampler_def().get("methods", [])] else None
 
 
+def resolve_late_postprocessing_prompt(spatial_upsampling, prompt) -> str:
+    prompt = str(prompt or "").strip()
+    if prompt:
+        return prompt
+    handler = find_postprocessing_upsampler(spatial_upsampling)
+    return "" if handler is None else str(handler.query_upsampler_def().get("default_prompt", "")).strip()
+
+
 def find_vae_upsampler(spatial_upsampling) -> Any | None:
     handler = find_upsampler(spatial_upsampling)
     if handler is None:
@@ -222,7 +276,8 @@ def is_vae_upsampling(spatial_upsampling) -> bool:
 
 
 def upscale_postprocessing(handler, sample, spatial_upsampling, *, main_offloadobj=None, **kwargs):
-    persistent = handler.persistent_models() if hasattr(handler, "persistent_models") else False
+    _activate_upsampler(handler)
+    persistent = persistent_models()
     name = handler.query_upsampler_def()["name"]
     with attention_shared_state():
         try:
@@ -235,7 +290,7 @@ def upscale_postprocessing(handler, sample, spatial_upsampling, *, main_offloado
             if persistent:
                 offload_registry.unload_vram([name])
             else:
-                offload_registry.release_all([name])
+                _release_upsampler_handler(handler)
 
 
 def validate_postprocessing_spatial_upsampling(spatial_upsampling, image_mode: int) -> str:
@@ -293,6 +348,8 @@ def loaded_model_vae_upsampling_value(model) -> str | None:
 
 def model_load_kwargs_for_vae_upsampling(spatial_upsampling, model_type, model_def, image_mode: int) -> dict[str, Any]:
     handler = find_vae_upsampler(spatial_upsampling)
+    if handler is not None:
+        _activate_upsampler(handler)
     if handler is None or not hasattr(handler, "model_load_kwargs_for_vae_upsampling"):
         return {}
     return handler.model_load_kwargs_for_vae_upsampling(spatial_upsampling, model_type, model_def, image_mode)
@@ -313,12 +370,13 @@ def has_post_model_process_vae_upsampling(spatial_upsampling) -> bool:
 def prepare_vae_upsampler(handler, spatial_upsampling, **kwargs):
     if handler is None or not hasattr(handler, "prepare_vae_upsampler"):
         return None
+    _activate_upsampler(handler)
     return handler.prepare_vae_upsampler(spatial_upsampling, **kwargs)
 
 
 def release_vae_upsampler(handler, session) -> None:
-    if handler is not None and session is not None and hasattr(handler, "release_vram") and not (hasattr(handler, "persistent_models") and handler.persistent_models()):
-        handler.release_vram()
+    if handler is not None and session is not None and not persistent_models():
+        _release_upsampler_handler(handler)
 
 
 def find_upsampler_by_method(method) -> Any | None:
@@ -538,8 +596,35 @@ def _nested_configs(server_config: dict[str, Any]) -> dict[str, Any]:
     return configs
 
 
+def normalize_persistence(value) -> int:
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        value = PERSIST_UNLOAD
+    return value if value in (PERSIST_UNLOAD, PERSIST_RAM) else PERSIST_UNLOAD
+
+
+def persistence(server_config: dict[str, Any] | None = None) -> int:
+    config = _upsampler_server_config if server_config is None else server_config
+    if config is None:
+        raise RuntimeError("Spatial upsamplers are not registered")
+    return normalize_persistence(_nested_configs(config).get(PERSISTENCE_CONFIG_KEY, PERSIST_UNLOAD))
+
+
+def persistent_models(server_config: dict[str, Any] | None = None) -> bool:
+    return persistence(server_config) == PERSIST_RAM
+
+
+def write_persistence(server_config: dict[str, Any], value) -> int:
+    value = normalize_persistence(value)
+    _nested_configs(server_config)[PERSISTENCE_CONFIG_KEY] = value
+    return value
+
+
 def _default_config(handler) -> dict[str, Any]:
-    return dict(handler.default_config()) if hasattr(handler, "default_config") else {}
+    config = dict(handler.default_config()) if hasattr(handler, "default_config") else {}
+    config.pop(PERSISTENCE_CONFIG_KEY, None)
+    return config
 
 
 def _legacy_config(handler, server_config: dict[str, Any]) -> dict[str, Any]:
@@ -551,7 +636,9 @@ def _legacy_config_keys(handler) -> tuple[str, ...]:
 
 
 def _normalize_config_section(handler, config: dict[str, Any]) -> dict[str, Any]:
-    return dict(handler.normalize_config_section(config)) if hasattr(handler, "normalize_config_section") else dict(config)
+    config = dict(handler.normalize_config_section(config)) if hasattr(handler, "normalize_config_section") else dict(config)
+    config.pop(PERSISTENCE_CONFIG_KEY, None)
+    return config
 
 
 def read_config_section(server_config: dict[str, Any], handler, *, prefer_legacy: bool = False) -> dict[str, Any]:
@@ -582,6 +669,7 @@ def write_config_section(server_config: dict[str, Any], handler, config: dict[st
 def migrate_upsampler_config(server_config: dict[str, Any], *, prefer_legacy: bool = False, apply_pre_1_1_defaults: bool = False) -> bool:
     legacy_keys = tuple(dict.fromkeys(key for handler in _upsampler_handlers for key in _legacy_config_keys(handler)))
     before = repr((server_config.get(UPSAMPLER_CONFIG_KEY, None), {key: server_config.get(key) for key in legacy_keys if key in server_config}))
+    write_persistence(server_config, persistence(server_config))
     for handler in _upsampler_handlers:
         if _default_config(handler) or hasattr(handler, "legacy_config"):
             config = write_config_section(server_config, handler, read_config_section(server_config, handler, prefer_legacy=prefer_legacy))
@@ -599,7 +687,8 @@ def config_for_method(method, server_config: dict[str, Any] | None = None) -> di
 
 
 def create_config_ui(gr, server_config: dict[str, Any], *, lock_config: bool = False) -> list[UpsamplerConfigBinding]:
-    bindings = []
+    shared_persistence = gr.Dropdown(choices=PERSISTENCE_CHOICES, value=write_persistence(server_config, persistence(server_config)), label="Spatial Upsampler Model Persistence", interactive=not lock_config)
+    bindings = [UpsamplerConfigBinding(None, _SHARED_PERSISTENCE_BINDING_KEY, [(PERSISTENCE_CONFIG_KEY, shared_persistence)])]
     for handler in _upsampler_handlers:
         if not hasattr(handler, "create_config_ui"):
             continue
@@ -624,7 +713,7 @@ def collect_config_update(bindings: list[UpsamplerConfigBinding], values) -> dic
                 raise ValueError("Spatial upsampler config UI values do not match registered controls")
             config[field] = values[index]
             index += 1
-        updates[binding.config_key] = _normalize_config_section(binding.handler, {**_default_config(binding.handler), **config})
+        updates[binding.config_key] = {PERSISTENCE_CONFIG_KEY: normalize_persistence(config[PERSISTENCE_CONFIG_KEY])} if binding.handler is None else _normalize_config_section(binding.handler, {**_default_config(binding.handler), **config})
     if index != len(values):
         raise ValueError("Spatial upsampler config UI values do not match registered controls")
     return updates
@@ -633,6 +722,8 @@ def collect_config_update(bindings: list[UpsamplerConfigBinding], values) -> dic
 def validate_config_update_messages(bindings: list[UpsamplerConfigBinding], updates: dict[str, dict[str, Any]]) -> list[str]:
     messages = []
     for binding in bindings:
+        if binding.handler is None:
+            continue
         if binding.config_key in updates and hasattr(binding.handler, "validate_config_section"):
             message = binding.handler.validate_config_section(updates[binding.config_key])
             if isinstance(message, str) and message:
@@ -645,11 +736,17 @@ def validate_config_update_messages(bindings: list[UpsamplerConfigBinding], upda
 def apply_config_update(server_config: dict[str, Any], bindings: list[UpsamplerConfigBinding], updates: dict[str, dict[str, Any]]) -> None:
     for binding in bindings:
         if binding.config_key in updates:
-            write_config_section(server_config, binding.handler, updates[binding.config_key])
+            if binding.handler is None:
+                write_persistence(server_config, updates[binding.config_key][PERSISTENCE_CONFIG_KEY])
+            else:
+                write_config_section(server_config, binding.handler, updates[binding.config_key])
 
 
 def release_changed_config_upsamplers(old_config: dict[str, Any], new_config: dict[str, Any], changed_keys) -> None:
     changed_keys = set(changed_keys)
+    released_handler = _active_upsampler_handler if persistence(old_config) != persistence(new_config) else None
+    if released_handler is not None:
+        _release_upsampler_handler(released_handler)
     for handler in _upsampler_handlers:
         if not hasattr(handler, "release_vram"):
             continue
@@ -659,8 +756,8 @@ def release_changed_config_upsamplers(old_config: dict[str, Any], new_config: di
             should_release = handler.config_requires_release(old_section, new_section, changed_keys)
         else:
             should_release = old_section != new_section
-        if should_release:
-            handler.release_vram()
+        if should_release and handler is not released_handler:
+            _release_upsampler_handler(handler)
 
 
 class SimpleScaleSuffixMixin:

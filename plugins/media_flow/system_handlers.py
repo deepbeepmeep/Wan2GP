@@ -8,10 +8,16 @@ def get_system_handler(name: str | None) -> Any:
     if name == "flashvsr":
         from postprocessing.flashvsr.process_handler import HANDLER
         return HANDLER
+    if name == "seedvr2":
+        from postprocessing.seedvr2.process_handler import HANDLER
+        return HANDLER
     if name == "pid":
         from postprocessing.pid.process_handler import HANDLER
         return HANDLER
     if name == "coz":
         from postprocessing.chain_of_zoom.process_handler import HANDLER
+        return HANDLER
+    if name == "ltx2_upsampler":
+        from postprocessing.ltx2_upsampler.process_handler import HANDLER
         return HANDLER
     return None

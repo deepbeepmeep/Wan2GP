@@ -422,7 +422,7 @@ That global configuration decides:
 
 - which Prompt Enhancer family WanGP loads
 - whether it works automatically during generation or on demand
-- for Qwen3.5-based enhancers, which quantized backend is used
+- for Qwen3.5- and Qwen3.8-based enhancers, which quantized backend is used
 - sampling behavior such as `temperature`, `top_p`, and random seed randomization
 
 Once that is enabled, the generation screen shows the Prompt Enhancer row near the main prompt field.
@@ -476,10 +476,11 @@ WanGP currently supports several Prompt Enhancer backends that you can choose in
 - `Llama Joy`
 - `Qwen3.5-4B Abliterated`
 - `Qwen3.5-9B Abliterated`
+- `Qwen3.8-27B Uncensored`
 
-Qwen 3.5 (especially the 9B / quanto int8 variant) should be the smartest Prompt Enhancer. In addition it supports the `Think` mode which will force the Prompt Enhancer to spend more time on your request (Think mode will require more VRAM too).
+Qwen 3.5 (especially the 9B / quanto int8 variant) provides a strong quality/performance balance, while Qwen3.8 targets the highest quality. Both families support `Think` mode, which lets the Prompt Enhancer spend more time on your request and may require more VRAM.
 
-### Qwen3.5 Backend Choices
+### Qwen Backend Choices
 
 For Qwen3.5-based enhancers, WanGP can use different backends.
 
@@ -489,6 +490,8 @@ For Qwen3.5-based enhancers, WanGP can use different backends.
 | `GGUF` | Lower RAM/disk usage, especially if you already use GGUF tooling | Can be very fast with GGUF CUDA kernels, especially on Windows | Lower Prompt Compliance |
 
 Qwen3.5 can be greatly accelerated if `Config / Performance / Language Models Decoder Engine` option is set to *cg* or *vllm*.
+
+Qwen3.8 uses GGUF weights and offers Q4 (default, higher quality) or Q2 (lower RAM and VRAM use). The quantization selector is shown only when a Qwen3.5 or Qwen3.8 enhancer is selected.
 
 ### The Main Prompt Enhancer Choices
 

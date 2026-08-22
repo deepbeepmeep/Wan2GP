@@ -18,5 +18,6 @@
         "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-distilled-lora-384-1.1.safetensors"
     ],
     "loras_multipliers": "0.5",
-    "settings_version": 2.56
+    "settings_version": 2.56,
+    "help": "Runs the Dev checkpoint with the LTX-2.3 distilled LoRA at 0.5: 15-step HQ res2s generation followed by 3 refinement steps."
 }

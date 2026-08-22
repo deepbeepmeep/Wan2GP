@@ -2,6 +2,8 @@
 
 WanGP generation settings are JSON-serializable values consumed by `wgp.py` and by the Python API in `shared/api.py`.
 
+Topics: [model selection](#model-selection), [prompts](#prompt-settings), [output dimensions and duration](#output-shape), [sampling](#core-sampling), [guidance](#guidance), [image and video inputs](#image-and-video-inputs), [audio inputs](#audio-inputs), [acceleration and caching](#acceleration-and-cache), [audio post-processing](#post-processing-audio), [advanced sampling](#advanced-sampling), [sliding windows](#sliding-window), [LoRAs](#loras), [flag settings](#flag-settings), and [model API metadata](#api-metadata-about-models).
+
 The baseline schema lives in `models/_settings.json`. Model defaults in `defaults/*.json` and `finetunes/*.json` override those values, then handler code can update or hide settings according to the selected model definition. In practice, an exported settings file is the safest template for a specific model.
 
 ## Model Selection
@@ -32,7 +34,7 @@ The baseline schema lives in `models/_settings.json`. Model defaults in `default
 | `image_mode` | integer | `0` for video/audio-generation mode, `1` for image mode, `2` for image inpainting mode. The available tabs depend on `image_outputs`, `v2i_switch_supported`, and `inpaint_support` in the model definition. |
 | `resolution` | string | Output size as `WIDTHxHEIGHT`, for example `1280x720`. |
 | `batch_size` | integer | Number of images for image-output models. For some special image models this may have model-specific meaning. Video and audio paths usually force one sample per repeat. |
-| `video_length` | integer | Requested output frames. For audio-only models this is usually `0`; duration may come from `duration_seconds`. |
+| `video_length` | integer or seconds string | Requested output frames. Settings files, queue imports, and API/MCP requests may use a value such as `"10s"`; WanGP converts it using numeric `force_fps` when supplied, otherwise the model FPS, then selects the nearest frame count valid for the model. For audio-only models this is usually `0`; duration may come from `duration_seconds`. |
 | `duration_seconds` | number | Requested duration for audio models or models exposing `duration_slider`. |
 | `pause_seconds` | number | Pause inserted between multi-speaker or multi-sentence audio segments when supported. |
 | `force_fps` | string | Output FPS policy. Empty uses the model default. Accepts `auto`, `control`, `source`, or a numeric string such as `24`. |
@@ -187,7 +189,7 @@ WanGP stores several UI selections as compact strings of letters. These are not 
 | empty | Text-only/new generation. |
 | `S` | Use `image_start` as starting image(s). |
 | `E` | Use `image_end` as end image(s), if the selected source mode supports end frames. |
-| `V` | Continue from `video_source`. |
+| `V` | Continue from `video_source`. The returned video contains the source video followed by the newly generated continuation; it is the merged result, not only the new continuation segment. |
 | `L` | Continue from the last generated video. |
 | `T` | Model definition sentinel for text/new-video availability. The stored value is usually empty rather than `T`. |
 
@@ -226,7 +228,7 @@ Only flags listed in `model_def["image_prompt_types_allowed"]` survive settings 
 | `Q` | Hidden/model-forced special option used by specific handlers. Do not set manually unless the model definition selects it. |
 | `&` | LTX-2 HDR-output option in the IC-LoRA control choices. |
 
-The same letter can have slightly different labels in different handlers. For example, `V` means "Control Video" in video mode and "Control Image" in image mode. Always prefer a value from the selected model's exposed choices instead of composing a string by hand.
+The same letter can have slightly different labels in different handlers. For example, `V` in `video_prompt_type` means "Control Video" in video mode and "Control Image" in image mode. Do not confuse it with `V` in `image_prompt_type`: there it selects video continuation, and WanGP returns the source video merged with the generated continuation. Always prefer a value from the selected model's exposed choices instead of composing a string by hand.
 
 ### `audio_prompt_type`
 
@@ -350,3 +352,4 @@ Inference rules:
 - `media_inputs.audio.prompt` describes audio input support. It is not audio output; output audio is indicated by `outputs` containing `audio` or `capabilities.audio_output`.
 - `capabilities` provides common text/image/video/audio workflow booleans derived from the model definition.
 - `setting_values` exposes normalized allowed values for agent-facing settings, especially letter-flag settings such as `image_prompt_type`, `video_prompt_type`, `audio_prompt_type`, `prompt_enhancer`, and model-specific selectors such as `model_mode`.
+- For models whose outputs include video, compact model-schema metadata exposes `frames_maximum` as the suggested maximum for one generation window, including the first window of models without sliding-window support. WanGP first calls the model handler's `update_default_settings(...)` with an empty dictionary and uses its `sliding_window_size`; if absent, it uses `model_def["sliding_window_defaults"]["window_default"]`; if that is also absent, it selects the model-valid frame count closest to 97 using `frames_minimum`, `frames_steps`, and `frames_offset`. It is not the total-frame UI limit. Model definitions may use `frames_selection_maximum` to cap the total `video_length` selector. Non-video model schemas omit `frames_maximum`.

@@ -163,7 +163,7 @@ class model_factory:
 
         model_class = ZImageTransformer2DModel
 
-        kwargs_light= { "writable_tensors": False, "preprocess_sd": preprocess_sd, "fused_split_map": _ZIMAGE_FUSED_SPLIT_MAP }
+        kwargs_light= { "writable_tensors": False, "default_dtype": torch.bfloat16, "preprocess_sd": preprocess_sd, "fused_split_map": _ZIMAGE_FUSED_SPLIT_MAP }
         # model_filename contains all files to load (transformer + modules merged by loader)
         import json
         import accelerate
@@ -241,7 +241,7 @@ class model_factory:
             writable_tensors=True,
             modelClass=AutoencoderKL,
             defaultConfigPath=vae_config_path,
-            default_dtype=VAE_dtype,
+            default_dtype=None,
         )
 
         # Scheduler

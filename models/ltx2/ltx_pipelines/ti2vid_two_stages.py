@@ -3,7 +3,7 @@ from collections.abc import Callable, Iterator
 
 import torch
 
-from ..ltx_core.components.diffusion_steps import EulerDiffusionStep, Res2sDiffusionStep
+from ..ltx_core.components.diffusion_steps import EulerAncestralDiffusionStep, EulerDiffusionStep, Res2sDiffusionStep
 from ..ltx_core.components.guiders import CFGGuider, CFGStarRescalingGuider, LtxAPGGuider, MultiModalGuider, MultiModalGuiderParams
 from ..ltx_core.components.noisers import GaussianNoiser
 from ..ltx_core.components.protocols import DiffusionStepProtocol
@@ -180,6 +180,8 @@ class TI2VidTwoStagesPipeline:
         self_refiner_max_plans: int = 1,
         editanything_ref_images=None,
         ltx2_22B_class: bool = False,
+        hdr_transform: str | None = None,
+        skip_audio: bool = False,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         assert_resolution(height=height, width=width, is_two_stage=True)
 
@@ -188,12 +190,15 @@ class TI2VidTwoStagesPipeline:
         noiser = GaussianNoiser(generator=generator)
         sample_solver = (sample_solver or "euler").lower()
         use_hq_sampler = sample_solver == "res2s"
-        use_distilled_8_steps = sample_solver == "distilled_8_steps"
-        if sample_solver not in {"euler", "res2s", "distilled_8_steps"}:
+        use_ancestral_sampler = sample_solver == "distilled_8_steps_ancestral"
+        use_distilled_8_steps = sample_solver in {"distilled_8_steps", "distilled_8_steps_ancestral"}
+        if sample_solver not in {"euler", "res2s", "distilled_8_steps", "distilled_8_steps_ancestral"}:
             raise ValueError(f"Unsupported LTX2 sampler '{sample_solver}'.")
         skip_stage_2 = bool(skip_stage_2)
         stage_1_pass_no = 0 if skip_stage_2 else 1
-        stepper = Res2sDiffusionStep() if use_hq_sampler else EulerDiffusionStep()
+        stage_1_stepper = Res2sDiffusionStep() if use_hq_sampler else EulerAncestralDiffusionStep() if use_ancestral_sampler else EulerDiffusionStep()
+        stage_2_stepper = Res2sDiffusionStep() if use_hq_sampler else EulerDiffusionStep()
+        ancestral_noise_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 10000) if use_ancestral_sampler else None
         self_refiner_handler = None
         self_refiner_handler_audio = None
         self_refiner_handler_stage2 = None
@@ -431,6 +436,7 @@ class TI2VidTwoStagesPipeline:
                 self_refiner_handler=self_refiner_handler,
                 self_refiner_handler_audio=self_refiner_handler_audio,
                 self_refiner_generator=generator,
+                ancestral_noise_generator=ancestral_noise_generator,
             )
         if interrupt_check is not None and interrupt_check():
             return None, None
@@ -499,7 +505,7 @@ class TI2VidTwoStagesPipeline:
             audio_conditionings=audio_conditionings,
             noiser=noiser,
             sigmas=sigmas,
-            stepper=stepper,
+            stepper=stage_1_stepper,
             denoising_loop_fn=first_stage_denoising_loop,
             components=self.pipeline_components,
             dtype=dtype,
@@ -520,20 +526,22 @@ class TI2VidTwoStagesPipeline:
             if return_latent_slice is not None:
                 latent_slice = video_state.latent[:, :, return_latent_slice].detach().to("cpu")
             if frozen_output_video is None:
+                video_latent = [video_state.latent]
+                video_state = None
                 decoded_video = vae_decode_video_to_tensor(
-                    video_state.latent,
+                    video_latent,
                     self._get_stage_model(1, "video_decoder"),
                     tiling_config,
                     expected_frames=int(stage_1_output_shape.frames),
                     expected_height=int(stage_1_output_shape.height),
                     expected_width=int(stage_1_output_shape.width),
                     interrupt_check=interrupt_check,
+                    hdr_transform=hdr_transform,
+                    output_dtype=torch.float16 if hdr_transform is not None else None,
                 )
             else:
                 decoded_video = frozen_output_video[:, :num_frames, :height, :width].permute(1, 2, 3, 0)
-            decoded_audio = vae_decode_audio(
-                audio_state.latent, self._get_stage_model(1, "audio_decoder"), self._get_stage_model(1, "vocoder")
-            )
+            decoded_audio = None if skip_audio else vae_decode_audio(audio_state.latent, self._get_stage_model(1, "audio_decoder"), self._get_stage_model(1, "vocoder"))
             if latent_slice is not None:
                 return decoded_video, decoded_audio, latent_slice
             return decoded_video, decoded_audio
@@ -711,7 +719,7 @@ class TI2VidTwoStagesPipeline:
             audio_conditionings=stage_2_audio_conditionings,
             noiser=noiser,
             sigmas=distilled_sigmas,
-            stepper=stepper,
+            stepper=stage_2_stepper,
             denoising_loop_fn=second_stage_denoising_loop,
             components=self.pipeline_components,
             dtype=dtype,
@@ -737,20 +745,22 @@ class TI2VidTwoStagesPipeline:
         if return_latent_slice is not None:
             latent_slice = video_state.latent[:, :, return_latent_slice].detach().to("cpu")
         if frozen_output_video is None:
+            video_latent = [video_state.latent]
+            video_state = None
             decoded_video = vae_decode_video_to_tensor(
-                video_state.latent,
+                video_latent,
                 self._get_stage_model(2, "video_decoder"),
                 tiling_config,
                 expected_frames=int(stage_2_output_shape.frames),
                 expected_height=int(stage_2_output_shape.height),
                 expected_width=int(stage_2_output_shape.width),
                 interrupt_check=interrupt_check,
+                hdr_transform=hdr_transform,
+                output_dtype=torch.float16 if hdr_transform is not None else None,
             )
         else:
             decoded_video = frozen_output_video[:, :num_frames, :height, :width].permute(1, 2, 3, 0)
-        decoded_audio = vae_decode_audio(
-            audio_state.latent, self._get_stage_model(2, "audio_decoder"), self._get_stage_model(2, "vocoder")
-        )
+        decoded_audio = None if skip_audio else vae_decode_audio(audio_state.latent, self._get_stage_model(2, "audio_decoder"), self._get_stage_model(2, "vocoder"))
         if latent_slice is not None:
             return decoded_video, decoded_audio, latent_slice
         return decoded_video, decoded_audio

@@ -1,0 +1,11 @@
+{
+  "model_type": "__system_flashvsr",
+  "model_label": "WanGP System Video Postprocessing",
+  "system_handler": "ltx2_upsampler",
+  "spatial_upsampling_method": "ltx25",
+  "target_ratio": "ltx252",
+  "chunk_size_seconds": 3.0,
+  "sliding_window_overlap": 17,
+  "prompt": "high quality, detailed, sharp, natural textures",
+  "negative_prompt": "blurry, low quality, artifacts, distorted"
+}

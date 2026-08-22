@@ -1,0 +1,17 @@
+{
+    "model": {
+        "name": "Music MiniMax Music 3",
+        "architecture": "minimax_music3",
+        "description": "Lyrics- and description-conditioned full-song generation with an 8B global language model, RVQ depth decoder, flow-matching audio transformer, and native 44.1 kHz stereo vocoder.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/MiniMax_Music3_transformer_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/MiniMax_Music3_transformer_int8_convrot.safetensors"
+        ]
+    },
+    "prompt": "[Verse]\nNeon rain on the city line\nYou hum the tune and I fall in time\n[Chorus]\nHold me close and keep the time",
+    "alt_prompt": "dreamy synth-pop, shimmering pads, soft vocals",
+    "audio_prompt_type": "",
+    "duration_seconds": 30,
+    "num_inference_steps": 30,
+    "guidance_scale": 1.7
+}

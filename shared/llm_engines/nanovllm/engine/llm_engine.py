@@ -189,11 +189,11 @@ class LLMEngine:
     def step(self):
         seqs, is_prefill = self.scheduler.schedule()
         token_ids = self.model_runner.call("run", seqs, is_prefill)
-        self.scheduler.postprocess(seqs, token_ids)
+        emitted_tokens = self.scheduler.postprocess(seqs, token_ids)
         # Only output conditional sequences (unconditional sequences are just for CFG computation)
         output_seqs = [seq for seq in seqs if seq.is_finished and (seq.cfg_scale <= 1.0 or not seq.is_unconditional)]
         outputs = [(seq.seq_id, seq.completion_token_ids) for seq in output_seqs]
-        num_tokens = sum(len(seq) for seq in seqs) if is_prefill else -len([s for s in seqs if not s.is_unconditional])
+        num_tokens = sum(len(seq) for seq in seqs) if is_prefill else -emitted_tokens
         return outputs, num_tokens
 
     def is_finished(self):

@@ -928,7 +928,7 @@ def _video_vae(pretrained_path=None, z_dim=None, device='cpu', preprocess_sd=Non
     # model.load_state_dict(
     #     torch.load(pretrained_path, map_location=device), assign=True)
     # offload.load_model_data(model, pretrained_path.replace(".pth", "_bf16.safetensors"), writable_tensors= False)    
-    offload.load_model_data(model, pretrained_path, writable_tensors=False, preprocess_sd=preprocess_sd)    
+    offload.load_model_data(model, pretrained_path, writable_tensors=False, default_dtype=None, preprocess_sd=preprocess_sd)
     return model
 
 

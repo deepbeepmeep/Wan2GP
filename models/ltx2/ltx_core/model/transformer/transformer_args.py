@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import os
+from collections.abc import Callable
 
 import torch
 import torch.nn.functional as F
@@ -15,6 +16,19 @@ from .rope import (
 )
 from .text_projection import PixArtAlphaTextProjection
 from .timestep_embedding import get_timestep_embedding
+
+
+KeyframesEmbeddingProvider = Callable[[], torch.Tensor | None]
+
+
+def apply_keyframes_absolute_embedding(hidden_states: torch.Tensor, keyframes_mask: torch.Tensor | None, embedding_provider: KeyframesEmbeddingProvider | None) -> torch.Tensor:
+    if keyframes_mask is None or embedding_provider is None:
+        return hidden_states
+    embedding = embedding_provider()
+    if embedding is None:
+        return hidden_states
+    mask = (keyframes_mask > 0).to(device=hidden_states.device, dtype=hidden_states.dtype)
+    return hidden_states + mask * embedding.to(device=hidden_states.device, dtype=hidden_states.dtype)
 
 
 @dataclass(frozen=True, eq=False)
@@ -170,11 +184,13 @@ class TransformerArgsPreprocessor:
         positional_embedding_theta: float,
         rope_type: LTXRopeType,
         prompt_adaln: AdaLayerNormSingle | None = None,
+        keyframes_embedding_provider: KeyframesEmbeddingProvider | None = None,
     ) -> None:
         self.patchify_proj = patchify_proj
         self.adaln = adaln
         self.caption_projection = caption_projection
         self.prompt_adaln = prompt_adaln
+        self.keyframes_embedding_provider = keyframes_embedding_provider
         self.inner_dim = inner_dim
         self.max_pos = max_pos
         self.num_attention_heads = num_attention_heads
@@ -456,6 +472,7 @@ class TransformerArgsPreprocessor:
             self._gguf_latent_logged = True
             print(f"[GGUF][patchify_proj] latent={latent_dtype} weight={getattr(getattr(self.patchify_proj, 'weight', None), 'dtype', None)}")
         x = self.patchify_proj(latent)
+        x = apply_keyframes_absolute_embedding(x, modality.keyframes_mask, self.keyframes_embedding_provider)
         base_timestep, prompt_base_timestep = self._get_runtime_timestep_bases(modality)
         prepared = self._get_prepared_conditioning(modality.context)
         timestep, embedded_timestep = self._prepare_timestep_from_base(
@@ -540,6 +557,7 @@ class MultiModalTransformerArgsPreprocessor:
         rope_type: LTXRopeType,
         av_ca_timestep_scale_multiplier: int,
         prompt_adaln: AdaLayerNormSingle | None = None,
+        keyframes_embedding_provider: KeyframesEmbeddingProvider | None = None,
     ) -> None:
         self.simple_preprocessor = TransformerArgsPreprocessor(
             patchify_proj=patchify_proj,
@@ -554,6 +572,7 @@ class MultiModalTransformerArgsPreprocessor:
             positional_embedding_theta=positional_embedding_theta,
             rope_type=rope_type,
             prompt_adaln=prompt_adaln,
+            keyframes_embedding_provider=keyframes_embedding_provider,
         )
         self.cross_scale_shift_adaln = cross_scale_shift_adaln
         self.cross_gate_adaln = cross_gate_adaln

@@ -3,11 +3,23 @@ import json
 import re
 
 
-def _render_inline_markdown(text: str) -> str:
+def _render_inline_styles(text: str) -> str:
     rendered = html.escape(text, quote=False)
     rendered = re.sub(r"`([^`]+)`", lambda match: f"<code>{match.group(1)}</code>", rendered)
     rendered = re.sub(r"\*\*([^*]+)\*\*", lambda match: f"<strong>{match.group(1)}</strong>", rendered)
     return rendered
+
+
+def _render_inline_markdown(text: str) -> str:
+    parts, offset = [], 0
+    for match in re.finditer(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)", text):
+        parts.append(_render_inline_styles(text[offset:match.start()]))
+        label = _render_inline_styles(match.group(1))
+        href = html.escape(match.group(2), quote=True)
+        parts.append(f"<a href='{href}' target='_blank' rel='noopener noreferrer'>{label}</a>")
+        offset = match.end()
+    parts.append(_render_inline_styles(text[offset:]))
+    return "".join(parts)
 
 
 def _render_markdown(markdown: str) -> str:

@@ -88,9 +88,18 @@ class MiniMaxH3VideoVAE(AutoencoderKLMiniMaxH3):
         posterior = super().encode(self._pixels(video), return_dict=False)[0]
         return self._normalize(posterior.mode().float())
 
-    def encode_condition(self, video):
+    def encode_condition(self, video, keep_all_latents=False):
         pixels = self._pixels(video)
-        moments = self._encode_clip(pixels) if pixels.shape[2] == 1 else self._encode(pixels)
+        if pixels.shape[2] == 1:
+            moments = self._encode_clip(pixels)
+        elif keep_all_latents:
+            clip_length = self.config.clip_length
+            moments = torch.cat([
+                self._encode_clip(pixels[:, :, start:start + clip_length])
+                for start in range(0, pixels.shape[2], clip_length)
+            ], dim=2)
+        else:
+            moments = self._encode(pixels)
         mean, logvar = moments.float().chunk(2, dim=1)
         std = torch.exp(0.5 * logvar.clamp(-30.0, 20.0))
         noise = torch.randn(mean.shape, generator=torch.Generator().manual_seed(42), dtype=torch.float32, device="cpu")

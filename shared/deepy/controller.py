@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import time
 import traceback
@@ -10,15 +11,25 @@ from typing import Any, Callable
 import gradio as gr
 
 from shared.deepy.config import (
+    DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT,
+    DEEPY_ALLOW_READ_FILE_SYSTEM_KEY,
+    DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY,
     DEEPY_ENABLED_KEY,
+    DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY,
+    DEEPY_TYPE_KEY,
+    DEEPY_TYPE_PRIME,
     DEEPY_VRAM_MODE_KEY,
     DEEPY_VRAM_MODE_UNLOAD,
     deepy_available,
+    deepy_requirement_error,
     deepy_requirement_met,
     normalize_deepy_enabled,
+    normalize_deepy_allow_read_file_system,
+    normalize_deepy_type,
     normalize_deepy_vram_mode,
     set_deepy_runtime_config,
 )
+from shared.deepy import PRIME_SYSTEM_PROMPT, ZERO_SYSTEM_PROMPT
 from shared.deepy import ui_settings as deepy_ui_settings
 from shared.deepy.debug_bootstrap import deepy_log_scope
 from shared.deepy.engine import (
@@ -34,14 +45,13 @@ from shared.deepy.engine import (
     request_assistant_reset,
     set_assistant_debug,
     set_assistant_tool_ui_settings,
-    tools as AssistantTools,
+    DeepyZeroTools,
 )
 from shared.gradio import assistant_chat
 from shared.utils.thread_utils import AsyncStream, async_run_in
 
 
 _DEEPY_GPU_PROCESS_ID = "deepy"
-_DEEPY_REQUIREMENT_TEXT = "Deepy requires Prompt Enhancer to be set to Qwen3.5VL Abliterated 4B or 9B."
 _DEEPY_DISABLED_TEXT = "Deepy is disabled in Configuration > Deepy."
 
 
@@ -157,7 +167,7 @@ class DeepyController:
     def requirement_error_text(self) -> str:
         server_config = self._server_config()
         if not deepy_requirement_met(server_config):
-            return _DEEPY_REQUIREMENT_TEXT
+            return deepy_requirement_error(server_config)
         if not normalize_deepy_enabled(server_config.get(DEEPY_ENABLED_KEY, 0)):
             return _DEEPY_DISABLED_TEXT
         return ""
@@ -165,6 +175,9 @@ class DeepyController:
     def get_vram_mode(self) -> str:
         server_config = self._server_config()
         return normalize_deepy_vram_mode(server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_MODE_UNLOAD))
+
+    def get_deepy_type(self) -> str:
+        return normalize_deepy_type(self._server_config().get(DEEPY_TYPE_KEY, ""))
 
     def _ensure_vision_loaded(self, override_profile=None):
         self._deps.ensure_prompt_enhancer_loaded(override_profile=override_profile)
@@ -236,7 +249,7 @@ class DeepyController:
                 force_release_on_acquire=True,
             )
 
-    def update_tool_ui_settings(self, state, *, auto_cancel_queue_tasks=None, separate_requests_with_empty_line=None, use_template_properties=None, width=None, height=None, num_frames=None, seed=None, video_with_speech_variant=None, image_generator_variant=None, image_editor_variant=None, video_generator_variant=None, speech_from_description_variant=None, speech_from_sample_variant=None, persist=False):
+    def update_tool_ui_settings(self, state, *, auto_cancel_queue_tasks=None, separate_requests_with_empty_line=None, use_template_properties=None, width=None, height=None, num_frames=None, audio_duration=None, seed=None, video_with_speech_variant=None, image_generator_variant=None, image_editor_variant=None, video_generator_variant=None, song_variant=None, speech_from_description_variant=None, speech_from_sample_variant=None, persist=False):
         session = get_or_create_assistant_session(state)
         normalized = set_assistant_tool_ui_settings(
             session,
@@ -246,11 +259,13 @@ class DeepyController:
             width=width,
             height=height,
             num_frames=num_frames,
+            audio_duration=audio_duration,
             seed=seed,
             video_with_speech_variant=video_with_speech_variant,
             image_generator_variant=image_generator_variant,
             image_editor_variant=image_editor_variant,
             video_generator_variant=video_generator_variant,
+            song_variant=song_variant,
             speech_from_description_variant=speech_from_description_variant,
             speech_from_sample_variant=speech_from_sample_variant,
         )
@@ -266,7 +281,8 @@ class DeepyController:
         requests = []
         current_lines = []
         for raw_line in normalized.split("\n"):
-            if not raw_line.strip():
+            stripped_line = raw_line.strip()
+            if not stripped_line or re.fullmatch(r"[-=_]{3,}", stripped_line):
                 if current_lines:
                     requests.append("\n".join(current_lines).strip())
                     current_lines = []
@@ -377,8 +393,21 @@ class DeepyController:
 
     def create_tools(self, state, send_cmd, session = None):
         active_session = get_or_create_assistant_session(state) if session is None else session
+        if self.get_deepy_type() == DEEPY_TYPE_PRIME:
+            from shared.deepy.prime_tools import DeepyPrimeTools
+
+            if active_session.prime_toolbox is None:
+                gen = self._deps.get_gen_info(state)
+                zero_tools = DeepyZeroTools(gen, self._deps.get_processed_queue, send_cmd, session=active_session, get_output_filepath=self._deps.get_output_filepath, record_file_metadata=self._deps.record_file_metadata, get_server_config=self._server_config)
+                active_session.prime_toolbox = DeepyPrimeTools(state, send_cmd, active_session, zero_tools=zero_tools)
+            else:
+                active_session.prime_toolbox.bind_turn(state, send_cmd)
+            return active_session.prime_toolbox
+        if active_session.prime_toolbox is not None:
+            active_session.prime_toolbox.close()
+            active_session.prime_toolbox = None
         gen = self._deps.get_gen_info(state)
-        return AssistantTools(
+        return DeepyZeroTools(
             gen,
             self._deps.get_processed_queue,
             send_cmd,
@@ -394,7 +423,7 @@ class DeepyController:
         if not normalize_deepy_enabled(server_config.get(DEEPY_ENABLED_KEY, 0)):
             raise gr.Error(_DEEPY_DISABLED_TEXT)
         if not deepy_requirement_met(server_config):
-            raise gr.Error(_DEEPY_REQUIREMENT_TEXT)
+            raise gr.Error(deepy_requirement_error(server_config))
         if send_cmd is None or tools is None:
             raise gr.Error("Assistant mode requires a command stream and a tool registry.")
         enhancer_temperature = server_config.get("prompt_enhancer_temperature", 0.6)
@@ -403,6 +432,19 @@ class DeepyController:
         assistant_seed = secrets.randbits(32) if randomize_seed else (seed if seed is not None and seed >= 0 else 0)
         session = get_or_create_assistant_session(state)
         assistant_model_def = model_def
+        deepy_type = self.get_deepy_type()
+        allow_read_file_system = normalize_deepy_allow_read_file_system(server_config.get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT))
+        system_prompt = ZERO_SYSTEM_PROMPT
+        custom_system_prompt_key = DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY
+        if deepy_type == DEEPY_TYPE_PRIME:
+            server_instructions = tools.get_system_instructions()
+            system_prompt = f"{PRIME_SYSTEM_PROMPT}\n\n{server_instructions}".strip() if server_instructions else PRIME_SYSTEM_PROMPT
+            custom_system_prompt_key = DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY
+        if allow_read_file_system:
+            file_access_instructions = "Filesystem reading is enabled. Media parameters may use either Gallery/media ids or existing file paths with extensions. Use List Files and Query File when filesystem discovery or inspection is needed. Deepy runs inside WanGP, so remote Gallery upload/download tools are not needed and are intentionally unavailable."
+        else:
+            file_access_instructions = "Filesystem reading is disabled. Always resolve and use Gallery/media ids for media inputs; do not reference filesystem paths."
+        system_prompt = f"{system_prompt}\n\n{file_access_instructions}"
         _assistant_instructions, assistant_max_new_tokens = self._deps.resolve_prompt_enhancer_settings("", assistant_model_def, prompt_enhancer_modes, is_image=False, text_encoder_max_tokens=1024)
         assistant = AssistantEngine(
             session,
@@ -421,6 +463,8 @@ class DeepyController:
             debug_enabled=debug_enabled,
             thinking_enabled="K" in prompt_enhancer_modes,
             vram_mode=self.get_vram_mode(),
+            system_prompt=system_prompt,
+            custom_system_prompt_key=custom_system_prompt_key,
         )
         with deepy_log_scope(start_if_needed=debug_enabled):
             assistant.run_turn(
@@ -476,7 +520,7 @@ class DeepyController:
         queued_epoch = session.chat_epoch
         for index, request_block in enumerate(request_blocks):
             self._queue_assistant_request(state, session, output_queue, request_block, queued_epoch, queued=queued or index > 0, precreate_assistant_turn=not queued and index == 0 and len(request_blocks) > 1)
-        yield assistant_chat.build_sync_event(session), gr.update(), gr.update(value=""), gr.update(), gr.update()
+        yield assistant_chat.build_sync_event(session, acknowledged_user_text=str(ask_request or "")), gr.update(), gr.update(value=""), gr.update(), gr.update()
         if queued or len(request_blocks) > 1:
             yield assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued"), gr.update(), gr.update(), gr.update(), gr.update()
         while True:
@@ -519,7 +563,7 @@ class DeepyController:
         queued_epoch = session.chat_epoch
         for request_block in request_blocks:
             self._queue_assistant_request(state, session, output_queue, request_block, queued_epoch, queued=True)
-        output_queue.push("chat_output", assistant_chat.build_sync_event(session))
+        output_queue.push("chat_output", assistant_chat.build_sync_event(session, acknowledged_user_text=str(ask_request or "")))
         output_queue.push("chat_output", assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued"))
         return gr.update(), gr.update(value="")
 
@@ -529,7 +573,17 @@ class DeepyController:
             if session.interrupt_requested and self._cancel_next_queued_request(session):
                 return assistant_chat.build_sync_event(session), gr.update(), gr.update(), gr.update()
             request_assistant_interrupt(session)
-            return assistant_chat.build_status_event("Interrupting the current assistant task...", kind="queued"), gr.update(), gr.update(), gr.update()
+            cancelled_job_id = ""
+            cancel_active_job = getattr(session.prime_toolbox, "cancel_active_job", None)
+            if callable(cancel_active_job):
+                try:
+                    cancelled_job_id = str(cancel_active_job() or "").strip()
+                except Exception as exc:
+                    self._debug_log(f"Immediate MCP job cancellation failed after Stop: {exc}")
+            self._debug_log(f"Stop requested worker_active=True active_prime_mcp_job={cancelled_job_id or 'none'}")
+            status_text = "Stopping generation..." if cancelled_job_id else "Interrupting the current assistant task..."
+            status = {"visible": True, "kind": "queued", "text": status_text}
+            return assistant_chat.build_sync_event(session, status=status), gr.update(), gr.update(), gr.update()
         if not session.worker_active and self._cancel_next_queued_request(session):
             chat_event = assistant_chat.build_sync_event(session)
             return chat_event, gr.update(), gr.update(), gr.update()

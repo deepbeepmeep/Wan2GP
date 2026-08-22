@@ -112,19 +112,7 @@ class GPT2AccelAttention(nn.Module):
         k_flat = key.transpose(1, 2).contiguous().view(-1, num_heads, head_dim)
         v_flat = value.transpose(1, 2).contiguous().view(-1, num_heads, head_dim)
 
-        # ensure fp16
-        if q_flat.device.type == "cuda" and q_flat.dtype != torch.float16:
-            orig_dtype = q_flat.dtype
-            q_flat = q_flat.to(torch.float16)
-            k_flat = k_flat.to(torch.float16)
-            v_flat = v_flat.to(torch.float16)
-        else:
-            orig_dtype = q_flat.dtype
-
         o_flat = self.accel_attn(q_flat, k_flat, v_flat)  # [B*T, H, D]
-
-        if o_flat.dtype != orig_dtype:
-            o_flat = o_flat.to(orig_dtype)
 
         # Reshape back: [B*T, H, D] -> [B, H, T, D]
         attn_output = o_flat.view(bsz, seq_len, num_heads, head_dim).transpose(1, 2)

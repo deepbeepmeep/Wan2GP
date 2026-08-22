@@ -439,7 +439,7 @@ class PiDUpsampler:
         with init_empty_weights(include_buffers=True):
             self.vae = _build_pid_vae(self.backbone)
         self.vae.name = "pid_vae_encoder"
-        offload.load_model_data(self.vae, vae_path, writable_tensors=False, default_dtype=dtype)
+        offload.load_model_data(self.vae, vae_path, writable_tensors=False, default_dtype=None)
         self.vae.eval().requires_grad_(False)
         _disable_broken_transformers_optional_imports()
         from transformers import AutoTokenizer

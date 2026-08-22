@@ -623,6 +623,7 @@ class ProcessRunner:
         if uses_builtin_outpaint_ui:
             target_ratio = self.library.normalize_outpaint_target_ratio(process_settings, target_ratio)
         system_supports_continue_cache = system_handler is not None and (not callable(getattr(system_handler, "supports_continue_cache_for_target", None)) or system_handler.supports_continue_cache_for_target(system_target_control))
+        system_crossfades_overlap_outputs = system_handler is not None and bool(getattr(system_handler, "crossfade_overlap_outputs", False))
         if self._process_is_image(process_definition):
             yield from self._start_image_process(
                 request,
@@ -862,7 +863,7 @@ class ProcessRunner:
                                     common.plugin_info("FlashVSR continuation sidecar is missing; continuing from decoded output tail frames. The first resumed chunk may have lower temporal continuity.")
                             completed_chunks, _ = frames.count_completed_written_chunks(full_plans, resumed_unique_frames)
                             exact_start_seconds = (start_frame + resumed_unique_frames) / fps_float
-                            resume_overlap_frames = 0
+                            resume_overlap_frames = min(overlap_frames, resumed_unique_frames) if system_crossfades_overlap_outputs else 0
                             if resumed_unique_frames < requested_unique_frames:
                                 print(f"[MediaFlow] Continuing system process from source frame {start_frame + resumed_unique_frames}" + (" using continue cache" if system_supports_continue_cache else ""))
                         elif checked_unique_frames <= 0 or last_frame_image is None:

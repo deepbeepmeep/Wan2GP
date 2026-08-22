@@ -174,3 +174,8 @@ class RMSNorm(nn.Module):
         if self._can_use_triton(x, residual):
             return self._triton_add_rms_forward(x, residual)
         return self._fallback_add_rms_forward(x, residual)
+
+    def forward_list(self, state_list: list[torch.Tensor | None]) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        x, residual = state_list
+        state_list.clear()
+        return self.forward(x, residual)

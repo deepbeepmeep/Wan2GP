@@ -21,6 +21,7 @@ class CustomSoundtrackProcessor:
             "needs_audio_source": {CUSTOM_SOUNDTRACK_METHOD: True},
             "status": {CUSTOM_SOUNDTRACK_METHOD: "Custom Audio Remuxing"},
             "pos": 10,
+            "description": "Replace a video's soundtrack with another audio item from the gallery.",
         }
 
     def validate_method(self, method, audio_source=None, has_audio_file_extension=None, media_source_exists=None, **_kwargs) -> str:

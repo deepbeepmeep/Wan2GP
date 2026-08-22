@@ -4,6 +4,9 @@ Temporal upsamplers are interchangeable handlers for frame interpolation.
 Handlers expose methods and supported multipliers through
 ``query_temporal_upsampler_def()`` and may expose config controls under
 ``wgp_config["temporal_upsamplers"][config_key]``.
+Definitions may also expose an optional ``description`` plus optional
+``method_descriptions`` and ``method_parameters`` mappings for reusable
+discovery interfaces. Existing handlers without these fields remain valid.
 
 Plugin authors can register processors from ``plugin_info.json`` with:
 

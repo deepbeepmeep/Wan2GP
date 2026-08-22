@@ -34,6 +34,9 @@ class MyUpsampler:
             "vae_methods": [],                             # VAE entries (manual integration)
             "multipliers": {"myup": (2.0, 4.0)},           # supported multipliers per method
             "default_spatial_upsampling": "myup2",
+            "description": "Upscale while restoring detail.", # optional discovery fallback
+            "method_descriptions": {"myup": "..."},       # optional per-method descriptions
+            "method_parameters": {"myup": [...]},         # optional extra parameter descriptors
         }
 
     def is_upsampling(self, value): ...                    # does this handler own the value?
@@ -74,6 +77,14 @@ can define a default `pos` and override individual methods with `method_pos`.
 Position is independent of multiplier; expanded choices such as `myup2` and
 `myup4` share the `myup` method position.
 
+Discovery consumers infer the required `multiplier` parameter from
+`multipliers`. Optional `description`, `method_descriptions`, and
+`method_parameters` fields add reusable presentation and parameter metadata.
+Each `method_parameters` entry is a list of dictionaries with at least `name`;
+it may also define `type`, `description`, `required`, `default`, `enum`, and a
+queue-setting override named `setting`. These fields are optional so older and
+third-party handlers remain compatible.
+
 Registration is owned by `postprocessing/spatial_upsamplers.py`. Add the handler class path
 to `spatial_upsampler_handlers`:
 
@@ -109,6 +120,39 @@ parsed a second time for upsampler discovery.
 Upsampler settings are stored under `wgp_config["spatial_upsamplers"][config_key]`.
 Handlers can read old top-level keys during migration with `legacy_config()`, but
 those keys are deleted after the nested section is written.
+
+SeedVR2 stores `window_size` under `spatial_upsamplers.seedvr2`. `0` selects the
+GPU-based automatic limit, `-1` disables windowing, and positive values are
+finite frame limits. SeedVR2 aligns finite limits down to its required `4n+1`
+input shape and crossfades three overlapping output frames.
+
+The LTX video handler exposes LTX 2.3 and LTX 2.5 as decoded-video x2 methods.
+It reuses the existing checkpoint declarations and LTX family loader under
+private runtime model types and always creates its MMGP offload object with
+memory profile 5. Each source window is VAE encoded and appended as a
+downscale-2 reference for the matching official Pixel Spatial Upscaler IC-LoRA;
+the x2 target starts from noise, follows the official eight-step distilled sigma
+schedule, and is VAE decoded. LTX 2.3 uses the Dev checkpoint with Distilled
+1.1 at 0.5 and the x2 IC-LoRA at 1.0; LTX 2.5 uses its distilled checkpoint with
+the official 2.5 x2 IC-LoRA at 1.0. Inputs longer than the configured window use
+stride-aligned windows (81 frames with a 17-frame overlap by default);
+overlapping windows address the same deterministic global noise and time
+coordinates. Both versions are shown in Post Processing and Late Postprocessing,
+and Media Flow keeps explicit processes for both versions. The Configuration
+plugin exposes only the shared LTX window size and overlap controls under
+`spatial_upsamplers.ltx2`. Both values follow
+the VAE's `8n+1` frame cadence; window size ranges from 9 to 481 frames, with 81
+as the default. The values are read at the start of every native or Media Flow
+upscale. Audio remains under the existing WGP and Media Flow preservation paths;
+the LTX spatial upsampler itself only returns video frames.
+
+Model persistence is a registry-wide setting stored at
+`wgp_config["spatial_upsamplers"]["persistence"]`; handlers must not expose a
+separate persistence control in their own config section. The registry retains
+at most one spatial upsampler handler. When dispatch changes handlers, it fully
+releases the previous handler before loading the new one. A handler remains
+responsible for releasing incompatible variants that share that handler, such as
+PiD version, backbone, profile, dtype, or checkpoint-set changes.
 
 Models declare external VAE upsampler support with method ids under
 `model_def["vae_upsamplers"]`, for example:

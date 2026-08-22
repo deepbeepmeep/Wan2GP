@@ -287,6 +287,12 @@ class ProcessLibrary:
             return float(getattr(handler, "default_chunk_size_seconds", 10.0))
         return 10.0
 
+    def hides_chunk_size(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:
+        if self.is_image_process(process_name, main_state, user_refs):
+            return True
+        handler = self.system_handler_for_process(process_name, main_state, user_refs)
+        return bool(getattr(handler, "hide_chunk_size", False)) if handler is not None else False
+
     def hides_sliding_window_overlap(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:
         if self.is_image_process(process_name, main_state, user_refs):
             return True

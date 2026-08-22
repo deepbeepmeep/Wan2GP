@@ -253,10 +253,6 @@ class SeedVCBridge:
     def mode_choices(cls) -> list[tuple[str, int]]:
         return [("Off", cls.MODE_OFF), *[(label, mode) for mode, label in cls._VERSIONS.items()]]
 
-    @classmethod
-    def persistence_choices(cls) -> list[tuple[str, int]]:
-        return [("Unload after use", cls.PERSIST_UNLOAD), ("Persistent in RAM", cls.PERSIST_RAM)]
-
     def normalize_config(self, config: dict[str, Any] | None = None) -> tuple[int, int]:
         config = self.server_config if config is None else config
         mode = config.get("seedvc_mode", self.MODE_OFF)

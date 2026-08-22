@@ -54,6 +54,7 @@ class LanczosUpsampler(SimpleScaleSuffixMixin):
             "vae_methods": [],
             "multipliers": {"lanczos": self.MULTIPLIERS},
             "default_spatial_upsampling": "lanczos2",
+            "description": "Resize images or videos with fast, deterministic Lanczos interpolation.",
         }
 
     def validate_upsampling(self, spatial_upsampling, image_mode: int) -> str:

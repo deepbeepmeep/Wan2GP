@@ -330,7 +330,7 @@ class Qwen3VLVisionAttention(nn.Module):
                 key_states[:, cursor:end].contiguous(),
                 value_states[:, cursor:end].contiguous(),
             ]
-            attn_outputs.append(pay_attention(qkv_list, softmax_scale=self.scaling, causal=False, recycle_q=True))
+            attn_outputs.append(pay_attention(qkv_list, softmax_scale=self.scaling, causal=False, force_attention="sdpa", recycle_q=True))
             cursor = end
         del query_states, key_states, value_states
         attn_output = _cat_tensors(attn_outputs, dim=1).reshape(seq_length, -1).contiguous()

@@ -7,6 +7,9 @@ from .ssim import ssim_matlab
 from .RIFE_HDv3 import Model as ModelV3
 from .RIFE_V4 import Model as ModelV4
 
+RIFE_SCENE_DETECTION = True
+RIFE_SCENE_THRESHOLD = 0.2
+
 def get_frame(frames, frame_no):
     if frame_no >= frames.shape[1]:
         return None
@@ -83,26 +86,48 @@ def process_frames(model, device, frames, exp):
         I1_small = F.interpolate(I1, (32, 32), mode='bilinear', align_corners=False)
         ssim = ssim_matlab(I0_small[:, :3], I1_small[:, :3])
 
+        source_scene_score = float(ssim.detach().mean().item())
+        source_scene_event = (
+            RIFE_SCENE_DETECTION
+            and source_scene_score < RIFE_SCENE_THRESHOLD
+        )
+
         break_flag = False
-        if ssim > 0.996 or pos > 100:        
-            pos += 1
-            frame = get_frame(frames, pos)
-            if frame is None:
-                break_flag = True
-                frame = lastframe
-            else:
-                temp = frame
-            I1 = frame.to(device, non_blocking=True).unsqueeze(0)
-            I1 = pad_image(I1)
-            if supports_timestep:
-                I1 = model.inference(I0, I1, 0.5, scale)
-            else:
-                I1 = model.inference(I0, I1, scale)
-            I1_small = F.interpolate(I1, (32, 32), mode='bilinear', align_corners=False)
-            ssim = ssim_matlab(I0_small[:, :3], I1_small[:, :3])
-            frame = I1[0][:, :h, :w]
+        # (Rami123) No frame-index shortcut; use the actual SSIM check.
+        if not source_scene_event and ssim > 0.996:
+            # (Rami123) Check the next source pair before making a midpoint.
+            lookahead_frame = get_frame(frames, pos + 1)
+            lookahead_scene_event = False
+            if lookahead_frame is not None and RIFE_SCENE_DETECTION:
+                lookahead_I1 = lookahead_frame.to(device, non_blocking=True).unsqueeze(0)
+                lookahead_I1 = pad_image(lookahead_I1)
+                lookahead_I1_small = F.interpolate(
+                    lookahead_I1, (32, 32), mode='bilinear', align_corners=False
+                )
+                lookahead_score = float(
+                    ssim_matlab(I1_small[:, :3], lookahead_I1_small[:, :3])
+                    .detach().mean().item()
+                )
+                lookahead_scene_event = lookahead_score < RIFE_SCENE_THRESHOLD
+
+            if not lookahead_scene_event:
+                pos += 1
+                frame = lookahead_frame
+                if frame is None:
+                    break_flag = True
+                    frame = lastframe
+                else:
+                    temp = frame
+                I1 = frame.to(device, non_blocking=True).unsqueeze(0)
+                I1 = pad_image(I1)
+                if supports_timestep:
+                    I1 = model.inference(I0, I1, 0.5, scale)
+                else:
+                    I1 = model.inference(I0, I1, scale)
+                frame = I1[0][:, :h, :w]
         
-        if ssim < 0.2:
+        if source_scene_event:
+            # (Rami123) Repeat the previous frame instead of blending across the cut.
             output = []
             for _ in range((2 ** exp) - 1):
                 output.append(I0)

@@ -16,6 +16,7 @@
 # AdaLN curves, shared attention backends, chunked FFNs, and early tensor release.
 
 import math
+import os
 import time
 
 import torch
@@ -39,6 +40,46 @@ from .components.packing import (
     unpack_audio_tokens,
     unpatchify_video_tokens,
 )
+
+
+H3_SAFE_FP16_OUT_PROJ_SCALE = 64.0
+H3_SAFE_FP16_FC2_SCALE = 256.0
+
+
+def _h3_safe_fp16_enabled(dtype, device=None):
+    """Return whether H3 needs its Turing-safe FP16 residual path."""
+    if dtype != torch.float16 or not torch.cuda.is_available():
+        return False
+    if device is not None and torch.device(device).type not in ("cuda", "meta"):
+        return False
+    try:
+        return torch.cuda.get_device_capability(None if device == "meta" else device)[0] < 8
+    except (RuntimeError, ValueError):
+        return False
+
+
+def _h3_dtype_trace_enabled():
+    return os.environ.get("WAN2GP_H3_SAFE_FP16_DTYPE_TRACE", "").lower() in ("1", "true", "yes", "on")
+
+
+def _trace_rmsnorm_input(norm, hidden):
+    if not _h3_dtype_trace_enabled() or not hasattr(norm, "_h3_safe_fp16_trace_name"):
+        return
+    if getattr(norm, "_h3_safe_fp16_trace_seen", False):
+        return
+    norm._h3_safe_fp16_trace_seen = True
+    print(f"[MiniMax H3][safe-fp16][dtype] {norm._h3_safe_fp16_trace_name}: "
+          f"RMSNorm input={hidden.dtype}, weight={norm.weight.dtype}")
+
+
+def _trace_branch_input(module, hidden):
+    if not _h3_dtype_trace_enabled() or not hasattr(module, "_h3_safe_fp16_trace_name"):
+        return
+    if getattr(module, "_h3_safe_fp16_trace_seen", False):
+        return
+    module._h3_safe_fp16_trace_seen = True
+    print(f"[MiniMax H3][safe-fp16][dtype] {module._h3_safe_fp16_trace_name}: "
+          f"branch input={hidden.dtype}")
 
 
 VISUAL_COND_TIMESTEP = MINIMAX_H3_KEYFRAME_NOISE_AUG
@@ -117,25 +158,39 @@ class RotaryEmbedding(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, hidden, ffn, chunk_size=0, dtype=None, device=None):
+    def __init__(self, hidden, ffn, chunk_size=0, safe_fp16=False, dtype=None, device=None):
         super().__init__()
         self.hidden = hidden
         self.ffn = ffn
         self.chunk_size = int(chunk_size)
+        self.safe_fp16 = safe_fp16
+        self.compute_dtype = dtype
+        self.output_scale = H3_SAFE_FP16_FC2_SCALE if safe_fp16 else 1.0
         self.fc1 = nn.Linear(hidden, 2 * ffn, bias=False, dtype=dtype, device=device)
         self.fc2 = nn.Linear(ffn, hidden, bias=False, dtype=dtype, device=device)
 
     def _project(self, x_list):
         x = _take(x_list)
+        if self.safe_fp16:
+            x = x.to(self.compute_dtype)
         expanded = self.fc1(x)
         del x
         gate, value = expanded.chunk(2, dim=-1)
+        if self.safe_fp16:
+            # SwiGLU and fc2 can exceed FP16 range. Keep pointwise work in FP32,
+            # then shift the linear projection exponent range by an exact power of two.
+            activated = F.silu(gate.float()).mul_(value.float())
+            del expanded, gate, value
+            return self.fc2(activated.div_(H3_SAFE_FP16_FC2_SCALE).to(self.compute_dtype))
         F.silu(gate, inplace=True).mul_(value)
         del expanded, value
         return self.fc2(gate)
 
     def forward(self, x_list):
         x = _take(x_list)
+        if self.safe_fp16:
+            x = x.to(self.compute_dtype)
+            _trace_branch_input(self, x)
         chunk_size = self.chunk_size
         if chunk_size > 0:
             chunk_size = max(1, x.shape[0] * self.hidden // (2 * self.ffn))
@@ -149,11 +204,14 @@ class MLP(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self, hidden, heads, head_dim, eps, sol_attention=None, dtype=None, device=None):
+    def __init__(self, hidden, heads, head_dim, eps, sol_attention=None, safe_fp16=False, dtype=None, device=None):
         super().__init__()
         self.heads = heads
         self.head_dim = head_dim
         self.sol_attention = sol_attention
+        self.safe_fp16 = safe_fp16
+        self.compute_dtype = dtype
+        self.output_scale = H3_SAFE_FP16_OUT_PROJ_SCALE if safe_fp16 else 1.0
         inner = heads * head_dim
         self.qkv_proj = nn.Linear(hidden, 3 * inner, bias=False, dtype=dtype, device=device)
         self.q_norm = nn.RMSNorm(head_dim, eps=eps, dtype=dtype, device=device)
@@ -162,15 +220,24 @@ class Attention(nn.Module):
 
     def forward(self, x_list, rope=None, transformer_options=None):
         x = _take(x_list)
+        if self.safe_fp16:
+            x = x.to(self.compute_dtype)
+            _trace_branch_input(self, x)
         seq_len = x.shape[0]
         use_sol = self.sol_attention is not None and self.sol_attention.use_for_layer(seq_len)
         split_qkv = hasattr(self, "q_proj")
         if split_qkv:
             query = self.q_proj(x).view(1, seq_len, self.heads, self.head_dim)
             if not use_sol:
+                if self.safe_fp16:
+                    query = query.to(self.q_norm.weight.dtype)
+                _trace_rmsnorm_input(self.q_norm, query)
                 query = self.q_norm(query)
             key = self.k_proj(x).view(1, seq_len, self.heads, self.head_dim)
             if not use_sol:
+                if self.safe_fp16:
+                    key = key.to(self.k_norm.weight.dtype)
+                _trace_rmsnorm_input(self.k_norm, key)
                 key = self.k_norm(key)
             value = self.v_proj(x).view(1, seq_len, self.heads, self.head_dim)
         else:
@@ -183,40 +250,66 @@ class Attention(nn.Module):
             if not use_sol:
                 value = value.clone()
             del qkv
+            if not use_sol:
+                if self.safe_fp16:
+                    query = query.to(self.q_norm.weight.dtype)
+                    key = key.to(self.k_norm.weight.dtype)
+                _trace_rmsnorm_input(self.q_norm, query)
+                query = self.q_norm(query)
+                _trace_rmsnorm_input(self.k_norm, key)
+                key = self.k_norm(key)
         del x
         if use_sol:
+            if self.safe_fp16:
+                query, key, value = (query.to(self.compute_dtype), key.to(self.compute_dtype), value.to(self.compute_dtype))
             from shared.sol_attn import qk_rms_norm_rope_
             qk_rms_norm_rope_(query, key, self.q_norm.weight, self.k_norm.weight, rope, self.q_norm.eps)
-        elif not split_qkv:
-            query, key = self.q_norm(query), self.k_norm(key)
-        qkv_list = [query, key, value]
-        del query, key, value
         if rope is not None and not use_sol:
             pairs = rope.shape[-2]
             cosine, sine = rope[..., 0], rope[..., 1]
-            scratch = torch.empty_like(qkv_list[0][..., :pairs])
-            for index in range(2):
-                tensor = qkv_list[index]
+            scratch = torch.empty_like(query[..., :pairs])
+            for tensor in (query, key):
                 first, second = tensor[..., :pairs], tensor[..., pairs:2 * pairs]
                 scratch.copy_(first)
                 first.mul_(cosine).addcmul_(second, sine, value=-1)
                 second.mul_(cosine).addcmul_(scratch, sine)
             del scratch, tensor, first, second
+        if self.safe_fp16 and not use_sol:
+            # Quantized projections can retain a checkpoint dtype. Normalize and
+            # rotate Q/K in FP32, then use FP16 for attention matrix operations.
+            query, key, value = (query.to(self.compute_dtype), key.to(self.compute_dtype), value.to(self.compute_dtype))
+        qkv_list = [query, key, value]
+        del query, key, value
         attention = pay_attention(qkv_list, recycle_q=True) if self.sol_attention is None else self.sol_attention(qkv_list, use_sol)
         output = attention.reshape(seq_len, -1)
+        if self.safe_fp16:
+            # out_proj can overflow FP16; its matching scale is restored during the
+            # FP32 residual accumulation to avoid a full-size FP32 branch tensor.
+            output.div_(H3_SAFE_FP16_OUT_PROJ_SCALE)
         return self.out_proj(output)
 
 
 class RefinerBlock(nn.Module):
-    def __init__(self, hidden, heads, head_dim, ffn, eps, qk_eps, ffn_chunk_size=0, dtype=None, device=None):
+    def __init__(self, hidden, heads, head_dim, ffn, eps, qk_eps, ffn_chunk_size=0, safe_fp16=False, dtype=None, device=None):
         super().__init__()
+        self.safe_fp16 = safe_fp16
         self.norm1 = nn.RMSNorm(hidden, eps=eps, dtype=dtype, device=device)
-        self.attn = Attention(hidden, heads, head_dim, qk_eps, dtype=dtype, device=device)
+        self.attn = Attention(hidden, heads, head_dim, qk_eps, safe_fp16=safe_fp16, dtype=dtype, device=device)
         self.norm2 = nn.RMSNorm(hidden, eps=eps, dtype=dtype, device=device)
-        self.mlp = MLP(hidden, ffn, ffn_chunk_size, dtype=dtype, device=device)
+        self.mlp = MLP(hidden, ffn, ffn_chunk_size, safe_fp16=safe_fp16, dtype=dtype, device=device)
 
     def forward(self, x_list):
         hidden = _take(x_list)
+        if self.safe_fp16:
+            hidden = hidden.float()
+            _trace_rmsnorm_input(self.norm1, hidden)
+            branch = self.attn([self.norm1(hidden)])
+            hidden.add_(branch, alpha=self.attn.output_scale)
+            del branch
+            _trace_rmsnorm_input(self.norm2, hidden)
+            branch = self.mlp([self.norm2(hidden)])
+            hidden.add_(branch, alpha=self.mlp.output_scale)
+            return hidden
         branch = self.attn([self.norm1(hidden)])
         branch.add_(hidden)
         del hidden
@@ -228,10 +321,10 @@ class RefinerBlock(nn.Module):
 
 
 class TokenRefiner(nn.Module):
-    def __init__(self, layers, hidden, heads, head_dim, ffn, eps, qk_eps, out_eps, dtype=None, device=None):
+    def __init__(self, layers, hidden, heads, head_dim, ffn, eps, qk_eps, out_eps, safe_fp16=False, dtype=None, device=None):
         super().__init__()
         self.blocks = nn.ModuleList([RefinerBlock(hidden, heads, head_dim, ffn, eps, qk_eps,
-                                                   dtype=dtype, device=device) for _ in range(layers)])
+                                                   safe_fp16=safe_fp16, dtype=dtype, device=device) for _ in range(layers)])
         self.final_norm = nn.RMSNorm(hidden, eps=out_eps, dtype=dtype, device=device)
         self._interrupt = False
 
@@ -241,6 +334,7 @@ class TokenRefiner(nn.Module):
             if self._interrupt:
                 raise GenerationInterrupted
             hidden = block([hidden])
+        _trace_rmsnorm_input(self.final_norm, hidden)
         return self.final_norm(hidden)
 
 
@@ -281,12 +375,13 @@ def _gated_residual(hidden_list, gate_list, branch_list, segments):
 
 class DiTBlock(nn.Module):
     def __init__(self, hidden, heads, head_dim, ffn, time_dim, eps, qk_eps, apply_silu=True,
-                 adaln_dtype=None, ffn_chunk_size=2048, sol_attention=None, dtype=None, device=None):
+                 adaln_dtype=None, ffn_chunk_size=2048, sol_attention=None, safe_fp16=False, dtype=None, device=None):
         super().__init__()
+        self.safe_fp16 = safe_fp16
         self.norm1 = nn.RMSNorm(hidden, eps=eps, dtype=dtype, device=device)
-        self.attn = Attention(hidden, heads, head_dim, qk_eps, sol_attention=sol_attention, dtype=dtype, device=device)
+        self.attn = Attention(hidden, heads, head_dim, qk_eps, sol_attention=sol_attention, safe_fp16=safe_fp16, dtype=dtype, device=device)
         self.norm2 = nn.RMSNorm(hidden, eps=eps, dtype=dtype, device=device)
-        self.mlp = MLP(hidden, ffn, ffn_chunk_size, dtype=dtype, device=device)
+        self.mlp = MLP(hidden, ffn, ffn_chunk_size, safe_fp16=safe_fp16, dtype=dtype, device=device)
         self.adaln_proj = AdalnProj(time_dim, hidden, 6, apply_silu=apply_silu,
                                     dtype=adaln_dtype or dtype, device=device)
 
@@ -307,9 +402,48 @@ class DiTBlock(nn.Module):
             hidden.copy_(branch)
         return hidden, signature
 
+    @staticmethod
+    def _safe_signature(branch, gate, segments, stride, scale):
+        positions = torch.arange(0, branch.numel(), stride, device=branch.device)
+        rows = torch.div(positions, branch.shape[-1], rounding_mode="floor")
+        columns = positions.remainder(branch.shape[-1])
+        sampled = branch.reshape(-1)[::stride].float()
+        gates = torch.empty_like(sampled)
+        for start, stop, row in segments:
+            selected = (rows >= start) & (rows < stop)
+            gates[selected] = gate[row].index_select(0, columns[selected])
+        return sampled.mul_(gates).mul_(scale)
+
+    @classmethod
+    def _safe_gated_branch(cls, hidden, gate, branch, segments, scale, signature_stride=0, signature=None):
+        if signature_stride:
+            sampled = cls._safe_signature(branch, gate, segments, signature_stride, scale)
+            if signature is None:
+                signature = sampled
+            else:
+                signature.add_(sampled)
+        for start, stop, row in segments:
+            hidden[start:stop].addcmul_(branch[start:stop], gate[row], value=scale)
+        return hidden, signature
+
     def forward(self, x_list, temb, segments, rope, residual_signature_elements=0):
         residual_list = [_take(x_list)]
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln_proj(temb)
+        if self.safe_fp16:
+            hidden = _take(residual_list).float()
+            _trace_rmsnorm_input(self.norm1, hidden)
+            h_list = [_modulate(self.norm1(hidden), [shift_msa, scale_msa], segments)]
+            branch = self.attn(h_list, rope=rope)
+            signature_stride = max(1, math.ceil(hidden.numel() / residual_signature_elements)) if residual_signature_elements else 0
+            hidden, signature = self._safe_gated_branch(hidden, gate_msa, branch, segments, self.attn.output_scale,
+                                                         signature_stride)
+            del branch
+            _trace_rmsnorm_input(self.norm2, hidden)
+            h_list = [_modulate(self.norm2(hidden), [shift_mlp, scale_mlp], segments)]
+            branch = self.mlp(h_list)
+            hidden, signature = self._safe_gated_branch(hidden, gate_mlp, branch, segments, self.mlp.output_scale,
+                                                         signature_stride, signature)
+            return (hidden, signature) if residual_signature_elements else hidden
         h_list = [_modulate(self.norm1(residual_list[0]), [shift_msa, scale_msa], segments)]
         if not residual_signature_elements:
             residual_list = [_gated_residual(residual_list, [gate_msa], [self.attn(h_list, rope=rope)], segments)]
@@ -338,7 +472,9 @@ class FinalLayer(nn.Module):
         self.audio_out = nn.Linear(hidden, audio_dim, bias=True, dtype=torch.float32, device=device)
 
     def _head(self, h_list, shift, scale, row, output):
-        value = self.norm(_take(h_list)).to(scale.dtype)
+        hidden = _take(h_list)
+        _trace_rmsnorm_input(self.norm, hidden)
+        value = self.norm(hidden).to(scale.dtype)
         if isinstance(row, list):
             for start, stop, index in row:
                 value[start:stop].mul_(1.0 + scale[index]).add_(shift[index])
@@ -455,6 +591,7 @@ class MiniMaxH3Model(nn.Module):
         self._interrupt = False
         self.cache = None
         self.dtype = dtype
+        self.safe_fp16 = _h3_safe_fp16_enabled(dtype, device)
         self.hidden_size = hidden_size
         self.attention_inner_size = num_attention_heads * attention_head_dim
         self.patch_size = tuple(patch_size)
@@ -464,7 +601,8 @@ class MiniMaxH3Model(nn.Module):
         video_dim = latents_dim * math.prod(self.patch_size)
         self.video_patch_proj = nn.Linear(video_dim, hidden_size, bias=True, dtype=torch.float32, device=device)
         self.audio_patch_proj = nn.Linear(audio_latents_dim, hidden_size, bias=True, dtype=torch.float32, device=device)
-        self.condition_proj = nn.Linear(text_dim, hidden_size, bias=True, dtype=dtype, device=device)
+        self.condition_proj = nn.Linear(text_dim, hidden_size, bias=True,
+                                        dtype=torch.float32 if self.safe_fp16 else dtype, device=device)
         if self.use_adaln_curves:
             self.register_buffer("adaln_t_table", torch.empty(adaln_curve_grid, time_embed_dim, dtype=torch.float32, device=device))
         else:
@@ -472,15 +610,15 @@ class MiniMaxH3Model(nn.Module):
                                               dtype=torch.float32, device=device)
         self.rope = RotaryEmbedding(rope_inv_freq_len, rope_theta, device=device)
         self.token_refiner = TokenRefiner(token_refiner_num_layers, hidden_size, num_attention_heads,
-                                          attention_head_dim, ffn_hidden_size, norm_eps, qk_norm_eps,
-                                          final_norm_eps, dtype=dtype, device=device)
+                                           attention_head_dim, ffn_hidden_size, norm_eps, qk_norm_eps,
+                                           final_norm_eps, safe_fp16=self.safe_fp16, dtype=dtype, device=device)
         self.sol_attention = MiniMaxH3SolAttention()
         curve = {"apply_silu": not self.use_adaln_curves,
-                 "adaln_dtype": torch.float32 if self.use_adaln_curves else dtype}
+                 "adaln_dtype": torch.float32 if self.use_adaln_curves or self.safe_fp16 else dtype}
         self.blocks = nn.ModuleList([DiTBlock(hidden_size, num_attention_heads, attention_head_dim, ffn_hidden_size,
-                                               time_embed_dim, norm_eps, qk_norm_eps, **curve,
-                                               ffn_chunk_size=ffn_chunk_size, sol_attention=self.sol_attention,
-                                               dtype=dtype, device=device) for _ in range(num_layers)])
+                                                time_embed_dim, norm_eps, qk_norm_eps, **curve,
+                                                ffn_chunk_size=ffn_chunk_size, sol_attention=self.sol_attention,
+                                                safe_fp16=self.safe_fp16, dtype=dtype, device=device) for _ in range(num_layers)])
         self.final_layer = FinalLayer(hidden_size, time_embed_dim, video_dim, audio_latents_dim,
                                       final_norm_eps, **curve, dtype=dtype, device=device)
         fp32_modules = [self.video_patch_proj, self.audio_patch_proj, self.final_layer.video_out, self.final_layer.audio_out]
@@ -491,12 +629,43 @@ class MiniMaxH3Model(nn.Module):
             fp32_modules.extend((self.time_embedder.proj_in, self.time_embedder.proj_out))
         for module in fp32_modules:
             module._lock_dtype = torch.float32
+        if self.safe_fp16:
+            self.condition_proj._lock_dtype = torch.float32
+            self.final_layer.norm._lock_dtype = torch.float32
+            self.token_refiner.final_norm._lock_dtype = torch.float32
+            self.final_layer.norm._h3_safe_fp16_trace_name = "final_layer.norm"
+            self.token_refiner.final_norm._h3_safe_fp16_trace_name = "token_refiner.final_norm"
+            for index, block in enumerate(self.token_refiner.blocks):
+                block.norm1._lock_dtype = torch.float32
+                block.norm2._lock_dtype = torch.float32
+                block.attn.q_norm._lock_dtype = torch.float32
+                block.attn.k_norm._lock_dtype = torch.float32
+                block.norm1._h3_safe_fp16_trace_name = f"token_refiner.blocks.{index}.norm1"
+                block.norm2._h3_safe_fp16_trace_name = f"token_refiner.blocks.{index}.norm2"
+                block.attn.q_norm._h3_safe_fp16_trace_name = f"token_refiner.blocks.{index}.attn.q_norm"
+                block.attn.k_norm._h3_safe_fp16_trace_name = f"token_refiner.blocks.{index}.attn.k_norm"
+                block.attn._h3_safe_fp16_trace_name = f"token_refiner.blocks.{index}.attn"
+                block.mlp._h3_safe_fp16_trace_name = f"token_refiner.blocks.{index}.mlp"
+            for index, block in enumerate(self.blocks):
+                block.norm1._lock_dtype = torch.float32
+                block.norm2._lock_dtype = torch.float32
+                block.attn.q_norm._lock_dtype = torch.float32
+                block.attn.k_norm._lock_dtype = torch.float32
+                block.norm1._h3_safe_fp16_trace_name = f"blocks.{index}.norm1"
+                block.norm2._h3_safe_fp16_trace_name = f"blocks.{index}.norm2"
+                block.attn.q_norm._h3_safe_fp16_trace_name = f"blocks.{index}.attn.q_norm"
+                block.attn.k_norm._h3_safe_fp16_trace_name = f"blocks.{index}.attn.k_norm"
+                block.attn._h3_safe_fp16_trace_name = f"blocks.{index}.attn"
+                block.mlp._h3_safe_fp16_trace_name = f"blocks.{index}.mlp"
+            print("[MiniMax H3] Turing safe-FP16 path enabled (SM "
+                  f"{torch.cuda.get_device_capability()[0]}.{torch.cuda.get_device_capability()[1]})")
 
     def preprocess_text_embeds(self, text_states):
         if text_states.shape[-1] == self.hidden_size:
             return text_states
         self.token_refiner._interrupt = self._interrupt
-        return self.token_refiner([self.condition_proj(text_states[0])]).unsqueeze(0)
+        text_states = text_states[0].to(self.condition_proj.weight.dtype)
+        return self.token_refiner([self.condition_proj(text_states)]).unsqueeze(0)
 
     def _check_interrupt(self):
         if self._interrupt:
@@ -549,6 +718,7 @@ class MiniMaxH3Model(nn.Module):
 
     def forward(self, video_x, audio_x, sigma_video, sigma_audio, context, payload, spectrum=None, first_block_cache=None):
         device, dtype = video_x.device, self.dtype or next(self.blocks.parameters()).dtype
+        residual_dtype = torch.float32 if self.safe_fp16 and _h3_safe_fp16_enabled(dtype, device) else dtype
         video_dtype, audio_dtype = video_x.dtype, audio_x.dtype
         _, _, latent_t, latent_h, latent_w = video_x.shape
         sigma_video = sigma_video.flatten()
@@ -577,7 +747,7 @@ class MiniMaxH3Model(nn.Module):
             video_row = int(timestep_indices[video_start])
             audio_row = int(timestep_indices[audio_start + min(layout.num_target_condition_audio_latents,
                                                                max(audio_t - 1, 0))])
-            hidden = spectrum.predict(device, dtype, self._check_interrupt)
+            hidden = spectrum.predict(device, residual_dtype, self._check_interrupt)
             video, audio = self.final_layer([hidden], temb, (target_audio_rows, target_audio_rows + target_video_rows, video_row),
                                             (0, target_audio_rows, audio_row))
             del temb, timestep_indices
@@ -601,10 +771,10 @@ class MiniMaxH3Model(nn.Module):
         text_embeds = context[0]
         if text_embeds.shape[-1] != self.hidden_size:
             text_embeds = self.preprocess_text_embeds(context)[0]
-        hidden = torch.empty(layout.sequence_length, self.hidden_size, dtype=dtype, device=device)
-        hidden.index_copy_(0, layout.text_indices.to(device), text_embeds)
-        hidden.index_copy_(0, layout.video_indices.to(device), video_embeds)
-        hidden.index_copy_(0, layout.audio_indices.to(device), audio_embeds)
+        hidden = torch.empty(layout.sequence_length, self.hidden_size, dtype=residual_dtype, device=device)
+        hidden.index_copy_(0, layout.text_indices.to(device), text_embeds.to(residual_dtype))
+        hidden.index_copy_(0, layout.video_indices.to(device), video_embeds.to(residual_dtype))
+        hidden.index_copy_(0, layout.audio_indices.to(device), audio_embeds.to(residual_dtype))
         del text_embeds, video_embeds, audio_embeds
 
         timestep, timestep_indices = build_row_timesteps(

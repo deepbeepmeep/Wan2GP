@@ -11,6 +11,7 @@ from shared.utils import files_locator as fl
 
 from .audio_vae import MiniMaxH3AudioVAE
 from .convrot_layout import get_convrot_layout, restore_interleaved_h3_qkv
+from .latent_upscaler import MiniMaxH3LatentUpscaler
 from .pipeline import MiniMaxH3Pipeline
 from .text_encoder import MiniMaxH3TextEncoder, load_h3_qwen_config
 from .transformer import MiniMaxH3Model, get_linear_split_map
@@ -20,6 +21,8 @@ from .video_vae import MiniMaxH3VideoVAE, get_video_vae_linear_split_map
 VIDEO_VAE_FILE = "MiniMax-H3-video_vae_fp16.safetensors"
 VIDEO_VAE_FP8MIX_FILE = "minimax_h3_video_vae_fp8mix.safetensors"
 AUDIO_VAE_FILE = "MiniMax-H3-audio_vae_fp32.safetensors"
+LATENT_UPSCALER_FOLDER = "minimax_h3"
+LATENT_UPSCALER_FILE = "minimax_h3_latent_upscaler_3d_bf16.safetensors"
 TEXT_ENCODER_FOLDER = "Qwen3-VL-32B-Instruct"
 ADALN_CURVE_DIM = 8
 
@@ -149,15 +152,36 @@ def _load_audio_vae(filename):
     return vae
 
 
+def _load_latent_upscaler(filename):
+    filename = fl.locate_file(filename)
+    previous_dtype = torch.get_default_dtype()
+    try:
+        torch.set_default_dtype(torch.bfloat16)
+        with init_empty_weights(include_buffers=True):
+            upscaler = MiniMaxH3LatentUpscaler()
+    finally:
+        torch.set_default_dtype(previous_dtype)
+    offload.load_model_data(upscaler, filename, writable_tensors=False, default_dtype=torch.bfloat16)
+    return upscaler.eval().requires_grad_(False)
+
+
 def model_factory(model_filename, text_encoder_filename, qkv_splitting, dtype=torch.bfloat16, VAE_dtype=torch.float32, save_quantized=False,
                   model_type="minimax_h3_fl2va", reference_mode=False, video_vae_filename=VIDEO_VAE_FILE,
-                  audio_vae_filename=AUDIO_VAE_FILE):
+                  audio_vae_filename=AUDIO_VAE_FILE, latent_upscaler_filename=os.path.join(LATENT_UPSCALER_FOLDER, LATENT_UPSCALER_FILE),
+                  shared_h3_pipeline=None):
     transformer = _load_transformer(model_filename, dtype, qkv_splitting)
-    text_encoder = _load_text_encoder(text_encoder_filename, dtype)
-    video_vae_qkv_splitting = qkv_splitting and video_vae_filename == VIDEO_VAE_FILE
-    video_vae = _load_video_vae(video_vae_filename, VAE_dtype, video_vae_qkv_splitting)
-    audio_vae = _load_audio_vae(audio_vae_filename)
-    pipeline = MiniMaxH3Pipeline(transformer, text_encoder, video_vae, audio_vae, reference_mode=reference_mode, dtype=dtype)
+    if shared_h3_pipeline is None:
+        text_encoder = _load_text_encoder(text_encoder_filename, dtype)
+        video_vae_qkv_splitting = qkv_splitting and video_vae_filename == VIDEO_VAE_FILE
+        video_vae = _load_video_vae(video_vae_filename, VAE_dtype, video_vae_qkv_splitting)
+        audio_vae = _load_audio_vae(audio_vae_filename)
+        latent_upscaler = _load_latent_upscaler(latent_upscaler_filename)
+    else:
+        text_encoder = shared_h3_pipeline.text_encoder
+        video_vae = shared_h3_pipeline.vae
+        audio_vae = shared_h3_pipeline.audio_vae
+        latent_upscaler = shared_h3_pipeline.latent_upscaler
+    pipeline = MiniMaxH3Pipeline(transformer, text_encoder, video_vae, audio_vae, latent_upscaler=latent_upscaler, reference_mode=reference_mode, dtype=dtype)
     if save_quantized:
         from wgp import save_quantized_model
         save_quantized_model(transformer, model_type, model_filename[0], dtype, None,
@@ -165,5 +189,5 @@ def model_factory(model_filename, text_encoder_filename, qkv_splitting, dtype=to
     return pipeline
 
 
-__all__ = ["ADALN_CURVE_DIM", "AUDIO_VAE_FILE", "TEXT_ENCODER_FOLDER", "VIDEO_VAE_FILE",
-           "VIDEO_VAE_FP8MIX_FILE", "model_factory", "probe_h3_checkpoint"]
+__all__ = ["ADALN_CURVE_DIM", "AUDIO_VAE_FILE", "LATENT_UPSCALER_FILE", "LATENT_UPSCALER_FOLDER", "TEXT_ENCODER_FOLDER",
+           "VIDEO_VAE_FILE", "VIDEO_VAE_FP8MIX_FILE", "model_factory", "probe_h3_checkpoint"]

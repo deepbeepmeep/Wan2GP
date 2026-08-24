@@ -5,6 +5,8 @@ from contextlib import nullcontext
 import torch
 from PIL import Image
 
+from shared.llm_io import known_token_ids, llm_io_enabled, log_llm_io, media_descriptor
+
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
 T2V_CINEMATIC_PROMPT = """You are an expert cinematic director with many award winning movies, When writing prompts based on the user input, focus on detailed, chronological descriptions of actions and scenes.
@@ -296,7 +298,9 @@ def _generate_t2v_prompt(
         )
 
     if hasattr(prompt_enhancer_model, "generate_messages"):
-        return prompt_enhancer_model.generate_messages(
+        if llm_io_enabled():
+            log_llm_io("OUT", "local-prompt-enhancer", "messages", {"messages": messages, "generation": {"max_new_tokens": max_new_tokens, "do_sample": do_sample, "temperature": temperature, "top_p": top_p, "top_k": top_k, "seed": seed, "thinking_enabled": thinking_enabled}})
+        outputs = prompt_enhancer_model.generate_messages(
             messages,
             max_new_tokens,
             do_sample=do_sample,
@@ -306,6 +310,8 @@ def _generate_t2v_prompt(
             seed=seed,
             thinking_enabled=thinking_enabled,
         )
+        log_llm_io("IN", "local-prompt-enhancer", "messages", {"text": outputs})
+        return outputs
 
     texts = [
         prompt_enhancer_tokenizer.apply_chat_template(
@@ -379,7 +385,9 @@ def _generate_i2v_prompt(
         )
 
     if hasattr(prompt_enhancer_model, "generate_messages"):
-        return prompt_enhancer_model.generate_messages(
+        if llm_io_enabled():
+            log_llm_io("OUT", "local-prompt-enhancer", "messages", {"messages": messages, "images": [media_descriptor(image) for image in first_frames], "image_captions": image_captions, "generation": {"max_new_tokens": max_new_tokens, "do_sample": do_sample, "temperature": temperature, "top_p": top_p, "top_k": top_k, "seed": seed, "thinking_enabled": thinking_enabled}})
+        outputs = prompt_enhancer_model.generate_messages(
             messages,
             max_new_tokens,
             do_sample=do_sample,
@@ -389,6 +397,8 @@ def _generate_i2v_prompt(
             seed=seed,
             thinking_enabled=thinking_enabled,
         )
+        log_llm_io("IN", "local-prompt-enhancer", "messages", {"text": outputs})
+        return outputs
 
     texts = [
         prompt_enhancer_tokenizer.apply_chat_template(
@@ -436,6 +446,14 @@ def _generate_image_captions(
         bad_words_ids = [[int(bos_id)]]
 
     with torch.inference_mode():
+        if llm_io_enabled():
+            log_llm_io("OUT", "local-image-captioner", "generation", {
+                "prompts": image_caption_prompts,
+                "images": [media_descriptor(image) for image in images],
+                "input_token_ids": inputs["input_ids"].tolist(),
+                "known_token_ids": known_token_ids(image_caption_processor.tokenizer),
+                "generation": {"max_new_tokens": 1024, "do_sample": False, "num_beams": 3, "bad_words_ids": bad_words_ids},
+            })
         generated_ids = image_caption_model.generate(
             input_ids=inputs["input_ids"],
             pixel_values=inputs["pixel_values"],
@@ -444,8 +462,9 @@ def _generate_image_captions(
             num_beams=3,
             bad_words_ids=bad_words_ids,
         )
-
-    return image_caption_processor.batch_decode(generated_ids, skip_special_tokens=True)
+    decoded = image_caption_processor.batch_decode(generated_ids, skip_special_tokens=True)
+    log_llm_io("IN", "local-image-captioner", "generation", {"text": decoded, "output_token_ids": generated_ids.tolist()})
+    return decoded
 
 
 def _generate_and_decode_prompts(
@@ -483,6 +502,12 @@ def _generate_and_decode_prompts(
             gen_kwargs["top_p"] = float(top_p)
         if top_k is not None:
             gen_kwargs["top_k"] = int(top_k)
+        if llm_io_enabled():
+            log_llm_io("OUT", "local-prompt-enhancer", "generation", {
+                "input_token_ids": model_inputs.input_ids.tolist(),
+                "known_token_ids": known_token_ids(prompt_enhancer_tokenizer),
+                "generation": {**gen_kwargs, "seed": seed},
+            })
         outputs = prompt_enhancer_model.generate(
             **model_inputs,
             **gen_kwargs,
@@ -494,5 +519,5 @@ def _generate_and_decode_prompts(
         decoded_prompts = prompt_enhancer_tokenizer.batch_decode(
             generated_ids, skip_special_tokens=True
         )
-
+    log_llm_io("IN", "local-prompt-enhancer", "generation", {"text": decoded_prompts, "output_token_ids": [token_ids.tolist() for token_ids in generated_ids]})
     return decoded_prompts

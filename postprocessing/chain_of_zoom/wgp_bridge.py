@@ -109,7 +109,8 @@ class ChainOfZoomBridge(SimpleScaleSuffixMixin):
             "vae_methods": [],
             "multipliers": {cls.UPSAMPLING_VALUE_PREFIX: cls.MULTIPLIERS},
             "default_spatial_upsampling": f"{cls.UPSAMPLING_VALUE_PREFIX}4",
-            "description": "Upscale an image tile by tile with Chain-of-Zoom detail reconstruction.",
+            "postprocessing_category": "upsampler",
+            "description": "Upscales from x2 to x16 using tiled SD3 diffusion and VLM-derived prompts. It is slow and requires large model downloads, while MMGP swaps the models to control VRAM. At high magnification it may invent details that diverge from the source.",
         }
 
     def create_config_ui(self, gr, config: dict[str, Any], *, lock_config: bool = False):

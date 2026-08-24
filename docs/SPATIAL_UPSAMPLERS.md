@@ -1,6 +1,7 @@
-# Spatial Upsampler Plugin API
+# Spatial Upsampler / Visual Refiner Plugin API
 
-Spatial upsamplers (Lanczos, FlashVSR, PiD, Chain-of-Zoom, VAE upscalers, ...) are
+Spatial upsamplers and visual refiners (Lanczos, FlashVSR, PiD, H3 Face Refiner,
+Chain-of-Zoom, VAE upscalers, ...) are
 registered in `postprocessing/spatial_upsamplers.py`. Each upsampler declares itself and its
 capabilities through a handler object; the registry owns dropdown state, value
 parsing, validation helpers, config nesting, downloads and dispatch.
@@ -16,6 +17,14 @@ parsing, validation helpers, config nesting, downloads and dispatch.
   expose capabilities through the same API. Handlers declare whether a selected
   VAE upsampler requires a main model reload (Wan VAE) or an external runtime
   session passed to the model pipeline (PiD-style upsamplers).
+
+Decoded-media handlers also declare `postprocessing_category`:
+
+- `upsampler`: increases spatial resolution and declares one or more scale
+  multipliers.
+- `refiner`: improves decoded media without necessarily resizing it. A refiner
+  may omit `multipliers`; WanGP then hides the Scale control and serializes the
+  bare method id.
 
 ## Handler contract
 
@@ -34,9 +43,22 @@ class MyUpsampler:
             "vae_methods": [],                             # VAE entries (manual integration)
             "multipliers": {"myup": (2.0, 4.0)},           # supported multipliers per method
             "default_spatial_upsampling": "myup2",
-            "description": "Upscale while restoring detail.", # optional discovery fallback
+            "postprocessing_category": "upsampler",       # "upsampler" or "refiner"
+            "description": "Upscale while restoring detail.", # processor-owned help/discovery text
+            "media_descriptions": {"video": "Uses overlapping windows."}, # optional media-specific help
             "method_descriptions": {"myup": "..."},       # optional per-method descriptions
-            "method_parameters": {"myup": [...]},         # optional extra parameter descriptors
+            "method_parameters": {"myup": [{
+                "name": "spatial_upsampler_prompt",       # common prefix for UI parameters
+                "setting": "prompt",                      # upscale() keyword
+                "type": "string",
+                "component": "textbox",
+                "ui": ("late_postprocessing",),           # where to display the control
+                "required": False,
+                "default": "",
+                "label": "Refiner Prompt",
+                "description": "Optional refinement instructions.",
+            }]},
+            "source_audio_conditioning": False,            # request source audio in late postprocessing
         }
 
     def is_upsampling(self, value): ...                    # does this handler own the value?
@@ -46,6 +68,9 @@ class MyUpsampler:
     # postprocessing type only:
     def upscale(self, sample, value, *, seed, ..., abort_callback, progress_callback): ...
     def download(self, process_files, send_cmd=None, status_text=None, spatial_upsampling=None): ...
+    def load_upsampler(self, value, **kwargs): ...            # optional pre-dispatch load hook
+    def supports_loaded_model(self, value, context, **kwargs): ... # optional core-model borrowing
+    def release_private_runtime(self): ...                    # optional before borrowing core model
     def release_vram(self): ...
     def enabled(self): ...                                 # optional UI gating
     # VAE type only:
@@ -77,13 +102,60 @@ can define a default `pos` and override individual methods with `method_pos`.
 Position is independent of multiplier; expanded choices such as `myup2` and
 `myup4` share the `myup` method position.
 
-Discovery consumers infer the required `multiplier` parameter from
-`multipliers`. Optional `description`, `method_descriptions`, and
-`method_parameters` fields add reusable presentation and parameter metadata.
-Each `method_parameters` entry is a list of dictionaries with at least `name`;
-it may also define `type`, `description`, `required`, `default`, `enum`, and a
-queue-setting override named `setting`. These fields are optional so older and
-third-party handlers remain compatible.
+### Borrowing the loaded generation model
+
+A postprocessor that can run through an already loaded generation pipeline may
+implement `supports_loaded_model(value, context)`. The context contains the
+core-owned pipeline, MMGP offload object, model type/family/definition, profile,
+and selected config. If the method returns true, the registry skips
+`load_upsampler()`, passes the context to `upscale(...,
+loaded_model_context=context)`, and leaves ownership of the model and offload
+object with WanGP. `release_private_runtime()` is called first so the handler
+does not retain a duplicate private model. If compatibility returns false, the
+normal private-runtime path is used; this is also the fallback when no core
+model is loaded.
+
+Borrowed runtimes are always released from RAM after the call, even when shared
+spatial-upscaler persistence is enabled. This detaches borrowed model references
+before the core MMGP owner can be released or replaced.
+
+Borrowing is an explicit capability contract, not an architecture guess. A
+pipeline should advertise the protocol its handler expects (for example H3 uses
+`refinement_api = "masked_video_sigma_v1"`). A borrowing handler that changes
+temporary model state, such as active LoRAs or caches, must restore that state
+before returning.
+
+Discovery consumers infer a required `multiplier` parameter only when the method
+declares `multipliers`. `description` or `method_descriptions` supplies both
+Deepy's process description and the dynamic help next to WanGP's selector.
+`media_descriptions` can add guidance specific to `image` or `video`. The UI
+compiles help only from methods available for the current media and, during
+generation, the current model; late postprocessing follows the selected gallery
+item.
+
+Each `method_parameters` entry is a list of dictionaries with at least `name`,
+`type`, `description`, and `required`. It may also define `default`, `enum`,
+`minimum`, `maximum`, and a runtime keyword override named `setting`. UI-exposed
+parameter names must use the shared `spatial_upsampler_` prefix. Built-in
+parameters must also declare their default as a separate top-level entry in
+`models/_settings.json`; do not group method parameters inside one settings
+dictionary. `ui` selects
+one or both UI contexts: `postprocessing` means the normal generation-time Post
+Processing section, while `late_postprocessing` means the Post Processing tab
+for an existing gallery item. A parameter can still be inferred and passed by
+WanGP when it is absent from a UI context; H3, for example, receives generation
+prompt/reference data without showing redundant controls during generation.
+
+Supported generic UI components are `textbox`, `number`, `slider`, `dropdown`,
+`checkbox`, and `images`. Image parameters are rendered by
+`AdvancedMediaGallery`; set `multiple` to `True` for an ordered list or `False`
+for one image. Deepy receives only the call-relevant fields (`name`, `type`,
+`description`, `required`, `default`, `enum`, `minimum`, `maximum`, and
+`media_type`), so UI/runtime fields such as `component`, `ui`, `label`, `step`,
+and `setting` do not consume assistant context. Parameters with `media_type:
+"image"` are resolved from media ids to paths. Each runtime value remains a flat
+queue setting under its generic parameter `name`; dispatch maps it to the
+`upscale()` keyword named by `setting`.
 
 Registration is owned by `postprocessing/spatial_upsamplers.py`. Add the handler class path
 to `spatial_upsampler_handlers`:

@@ -91,7 +91,7 @@ Queue completed: 3/3 tasks in 5m 23s
 --mcp-allow-read-file-system       # Allow agents to submit arbitrary server file paths (disabled by default)
 ```
 
-Gallery ids remain usable when filesystem reads are disabled. Streamable HTTP and SSE servers also expose short-lived Gallery upload/download URLs; stdio does not provide HTTP media transfer.
+Media IDs returned by the Gallery remain usable when filesystem reads are disabled. Streamable HTTP and SSE servers also expose short-lived Gallery upload/download URLs; stdio does not provide HTTP media transfer.
 
 ### Examples
 ```bash
@@ -107,6 +107,16 @@ python wgp.py --process my_queue.zip --verbose 2
 # Combined with other options
 python wgp.py --process queue.zip --output-dir ./out --attention sage2
 ```
+
+## LLM I/O Transcript
+
+```bash
+--llm-io FOLDER                     # Record local and remote LLM traffic as a readable plain-text transcript
+```
+
+WanGP creates a timestamped `.log` file in the supplied folder. Each record is labelled `[OUT → LLM]` or `[IN ← LLM]` and identifies the engine and stream. Text is preserved verbatim; known special tokens include their names and numeric IDs, while other token streams use numeric IDs. Binary media is described by its source, type, dimensions, and size instead of being written as encoded data.
+
+The transcript can contain prompts, conversation history, tool arguments/results, and model output. Enable it only while diagnosing a problem and treat the resulting file as private data.
 
 ## Model and Performance Options
 

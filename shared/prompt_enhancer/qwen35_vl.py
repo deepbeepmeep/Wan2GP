@@ -16,6 +16,7 @@ from transformers import AutoConfig, AutoTokenizer, Qwen2TokenizerFast, Qwen2VLI
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.models.qwen2_vl.video_processing_qwen2_vl import Qwen2VLVideoProcessor
 
+from shared.llm_io import known_token_ids, llm_io_enabled, log_llm_io, media_descriptor
 from shared.llm_engines.nanovllm.models.qwen3_5 import Qwen3_5DynamicCache
 from shared.llm_engines.nanovllm.utils.context import reset_context
 from shared.qtypes.gguf import materialize_module_source_tensors
@@ -804,6 +805,18 @@ def _generate_image_captions_vllm(self, images):
             top_p=None,
             top_k=None,
         )
+        if llm_io_enabled():
+            log_llm_io("OUT", "local-image-captioner", "qwen-visual-generation", {
+                "prompt": text,
+                "messages": message,
+                "image": media_descriptor(image),
+                "input_token_ids": prompt_token_ids,
+                "known_token_ids": known_token_ids(tokenizer),
+                "prompt_embeddings": prompt_embeds,
+                "prompt_position_ids": prompt_position_ids,
+                "position_offset": position_offset,
+                "generation": {"max_new_tokens": 128, "temperature": temp, "top_p": normalized_top_p, "top_k": normalized_top_k, "do_sample": False},
+            })
         response = engine.generate_embedded(
             prompt_token_ids=prompt_token_ids,
             prompt_embeds=prompt_embeds,
@@ -819,7 +832,9 @@ def _generate_image_captions_vllm(self, images):
             ignore_eos=False,
             position_offset=position_offset,
         )
-        outputs.append(_clean_generated_text("" if response is None else response.get("text", "")))
+        raw_text = "" if response is None else response.get("text", "")
+        log_llm_io("IN", "local-image-captioner", "qwen-visual-generation", {"text": raw_text, "response": response})
+        outputs.append(_clean_generated_text(raw_text))
         reset_context()
     return outputs
 
@@ -858,6 +873,15 @@ def _generate_image_captions(self, images):
             return_mm_token_type_ids=True,
         )
         model_inputs = _move_batch_to_device(model_inputs, torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else torch.device("cpu"))
+        if llm_io_enabled():
+            log_llm_io("OUT", "local-image-captioner", "qwen-visual-generation", {
+                "prompt": text,
+                "messages": message,
+                "image": media_descriptor(image),
+                "input_token_ids": model_inputs["input_ids"].tolist(),
+                "known_token_ids": known_token_ids(self._prompt_enhancer_tokenizer),
+                "generation": {"max_new_tokens": 128, "do_sample": False},
+            })
         decoded = _generate_and_decode(
             self,
             model_inputs,
@@ -869,6 +893,7 @@ def _generate_image_captions(self, images):
             seed=None,
             progress_desc="Qwen3.5 image description tokens",
         )
+        log_llm_io("IN", "local-image-captioner", "qwen-visual-generation", {"text": decoded})
         outputs.extend(decoded)
     return outputs
 

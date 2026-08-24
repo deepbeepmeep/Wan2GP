@@ -159,6 +159,8 @@ def get_css() -> str:
     --dock-settings-panel-width: 660px;
     --dock-settings-panel-offset: 44px;
     --dock-font-scale: 0.9;
+    --chat-history-min-height: 112px;
+    --chat-request-max-height: 320px;
     position: fixed !important;
     top: 50%;
     left: 0;
@@ -291,6 +293,32 @@ def get_css() -> str:
     transform: translateY(-50%) translateX(0) scale(1);
     transition: opacity 0.22s ease, transform 0.22s ease, visibility 0.22s step-start;
     pointer-events: auto;
+}
+
+#assistant_chat_panel.has-fixed-composer-layout {
+    display: flex !important;
+    flex-direction: column !important;
+    min-height: 0 !important;
+    max-height: calc(100vh - 36px);
+}
+
+#assistant_chat_panel.has-fixed-composer-layout #assistant_chat_shell_block {
+    flex: 1 1 auto !important;
+    min-height: var(--chat-history-min-height) !important;
+    overflow: hidden !important;
+}
+
+#assistant_chat_panel.has-fixed-composer-layout #assistant_chat_shell_block > .html-container,
+#assistant_chat_panel.has-fixed-composer-layout #assistant_chat_shell_block .prose,
+#assistant_chat_panel.has-fixed-composer-layout #assistant_chat_html,
+#assistant_chat_panel.has-fixed-composer-layout .wangp-assistant-chat {
+    height: 100% !important;
+    min-height: 0 !important;
+}
+
+#assistant_chat_panel.has-fixed-composer-layout #assistant_chat_controls,
+#assistant_chat_panel.has-fixed-composer-layout #assistant_chat_stats_block {
+    flex: 0 0 auto !important;
 }
 
 #assistant_chat_settings_launcher_host {
@@ -524,8 +552,12 @@ def get_css() -> str:
 
 #assistant_chat_request textarea,
 #assistant_chat_request input {
+    box-sizing: border-box !important;
     width: 100% !important;
     min-height: 48px !important;
+    max-height: var(--chat-request-max-height) !important;
+    overflow-y: auto !important;
+    resize: none !important;
     font-size: calc(0.92rem * var(--dock-font-scale)) !important;
     line-height: 1.45;
     border: 1px solid rgba(23, 90, 125, 0.18) !important;
@@ -975,23 +1007,27 @@ def get_css() -> str:
 }
 
 .wangp-assistant-chat__message--user .wangp-assistant-chat__meta-right {
-    padding-right: 31px;
+    padding-right: 0;
+}
+
+.wangp-assistant-chat__message--user .wangp-assistant-chat__meta-left {
+    padding-left: 78px;
 }
 
 .wangp-assistant-chat__message--user .wangp-assistant-chat__message-actions {
     position: absolute;
-    top: 50%;
-    right: 16px;
+    top: 12px;
+    left: 16px;
     display: inline-flex;
-    flex-direction: column;
+    flex-direction: row;
     align-items: center;
-    justify-content: flex-end;
-    gap: 7px;
-    transform: translateY(-50%);
+    justify-content: flex-start;
+    gap: 3px;
+    transform: none;
 }
 
 .wangp-assistant-chat__message--user .wangp-assistant-chat__body {
-    padding-right: 31px;
+    padding-right: 0;
 }
 
 .wangp-assistant-chat__copy-button,
@@ -1021,6 +1057,11 @@ def get_css() -> str:
     stroke-linecap: round;
     stroke-linejoin: round;
     stroke-width: 1.5;
+}
+
+.wangp-assistant-chat__message-actions .wangp-assistant-chat__copy-button,
+.wangp-assistant-chat__message-action-button {
+    margin: 0 !important;
 }
 
 .wangp-assistant-chat__copy-button:hover,
@@ -1267,16 +1308,25 @@ def get_css() -> str:
     color: #385363;
 }
 
+.wangp-assistant-chat__reasoning-block > :last-child {
+    margin-bottom: 0;
+}
+
 .wangp-assistant-chat__collapse-button {
     display: flex;
-    margin: 10px 0 0 auto;
-    width: 24px;
-    height: 24px;
-    min-width: 24px;
+    align-items: center;
+    justify-content: flex-end;
+    box-sizing: border-box;
+    margin: 0 -14px -14px;
+    width: calc(100% + 28px);
+    height: 20px;
+    min-width: 0;
+    padding: 0 12px;
     border: 0;
     border-radius: 0;
     color: #ffffff !important;
-    background: transparent;
+    background: transparent !important;
+    box-shadow: none !important;
     line-height: 1;
     transition: none;
 }
@@ -2305,6 +2355,9 @@ WAC.dockOpen = typeof WAC.dockOpen === 'boolean' ? WAC.dockOpen : false;
 WAC.settingsOpen = typeof WAC.settingsOpen === 'boolean' ? WAC.settingsOpen : false;
 WAC.disclosureNode = WAC.disclosureNode || null;
 WAC.disclosureState = WAC.disclosureState || {};
+WAC.composerLayoutMode = WAC.composerLayoutMode || '';
+WAC.composerResizeScrollState = WAC.composerResizeScrollState || null;
+WAC.composerResizeFrame = WAC.composerResizeFrame || 0;
 
 WAC.dock = function () {
   return document.querySelector('#assistant_chat_dock');
@@ -2328,6 +2381,57 @@ WAC.settingsLauncher = function () {
 
 WAC.requestInput = function () {
   return document.querySelector('#assistant_chat_request textarea, #assistant_chat_request input');
+};
+
+WAC.resetComposerLayout = function () {
+  const panel = WAC.panel();
+  if (!panel) return;
+  panel.classList.remove('has-fixed-composer-layout');
+  panel.style.removeProperty('height');
+  panel.style.removeProperty('--chat-request-max-height');
+  panel.dataset.composerLayoutMode = '';
+  WAC.composerLayoutMode = '';
+};
+
+WAC.syncComposerLayout = function () {
+  const dock = WAC.dock();
+  const panel = WAC.panel();
+  const shellBlock = document.querySelector('#assistant_chat_shell_block');
+  const input = WAC.requestInput();
+  if (!dock || !panel || !shellBlock || !input || !WAC.dockOpen || window.getComputedStyle(panel).display === 'none') return;
+  const mode = window.innerWidth <= 900 ? 'mobile' : 'desktop';
+  if (panel.dataset.composerLayoutMode === mode && panel.classList.contains('has-fixed-composer-layout')) return;
+  WAC.resetComposerLayout();
+  const panelRect = panel.getBoundingClientRect();
+  const shellRect = shellBlock.getBoundingClientRect();
+  const inputRect = input.getBoundingClientRect();
+  if (panelRect.height <= 0 || shellRect.height <= 0 || inputRect.height <= 0) return;
+  const historyMinHeight = parseFloat(window.getComputedStyle(dock).getPropertyValue('--chat-history-min-height')) || 112;
+  const viewportLimit = Math.max(320, window.innerHeight - 36);
+  const panelHeight = Math.min(panelRect.height, viewportLimit);
+  const nonHistoryHeight = Math.max(0, panelRect.height - shellRect.height);
+  const availableHistoryHeight = Math.max(historyMinHeight, panelHeight - nonHistoryHeight);
+  const maxRequestHeight = Math.max(inputRect.height, inputRect.height + availableHistoryHeight - historyMinHeight);
+  panel.style.height = `${panelHeight}px`;
+  panel.style.setProperty('--chat-request-max-height', `${maxRequestHeight}px`);
+  panel.dataset.composerLayoutMode = mode;
+  panel.classList.add('has-fixed-composer-layout');
+  WAC.composerLayoutMode = mode;
+};
+
+WAC.scheduleComposerLayout = function (scrollState) {
+  if (scrollState) WAC.composerResizeScrollState = scrollState;
+  else if (!WAC.composerResizeScrollState) WAC.composerResizeScrollState = WAC.captureAutoscrollState();
+  if (WAC.composerResizeFrame) window.cancelAnimationFrame(WAC.composerResizeFrame);
+  WAC.composerResizeFrame = window.requestAnimationFrame(() => {
+    WAC.composerResizeFrame = window.requestAnimationFrame(() => {
+      WAC.composerResizeFrame = 0;
+      WAC.syncComposerLayout();
+      const state = WAC.composerResizeScrollState;
+      WAC.composerResizeScrollState = null;
+      WAC.applyAutoscrollState(state);
+    });
+  });
 };
 
 WAC.escapeHtml = function (value) {
@@ -2465,7 +2569,7 @@ WAC.buildOptimisticUserMessage = function (optimisticId, content, timestamp) {
     "<div class='wangp-assistant-chat__avatar'>You</div>",
     "<div class='wangp-assistant-chat__message-card'>",
     "<div class='wangp-assistant-chat__meta'><div class='wangp-assistant-chat__meta-left'></div>",
-    `<div class='wangp-assistant-chat__meta-right'><div class='wangp-assistant-chat__time'>${WAC.escapeHtml(WAC.timeLabel(timestamp))}</div>${copyButton}</div></div>`,
+    `<div class='wangp-assistant-chat__meta-right'><div class='wangp-assistant-chat__message-actions'>${copyButton}</div><div class='wangp-assistant-chat__time'>${WAC.escapeHtml(WAC.timeLabel(timestamp))}</div></div></div>`,
     `<div class='wangp-assistant-chat__body'><p>${contentHtml}</p></div>`,
     "</div></article>",
   ].join('');
@@ -3181,6 +3285,7 @@ WAC.setDockOpen = function (open) {
   WAC.syncDockLayout();
   if (WAC.dockOpen) {
     window.setTimeout(() => {
+      WAC.syncComposerLayout();
       const input = WAC.requestInput();
       if (input) input.focus();
     }, 140);
@@ -3211,6 +3316,7 @@ WAC.ensureShell = function () {
     WAC.showEmptyIfNeeded();
     WAC.syncDockState();
     WAC.syncDockLayout();
+    WAC.syncComposerLayout();
     return true;
   }
   host.innerHTML = `
@@ -3236,6 +3342,7 @@ WAC.ensureShell = function () {
   WAC.syncDockVisibility();
   WAC.syncDockState();
   WAC.syncDockLayout();
+  WAC.syncComposerLayout();
   WAC.syncDisclosureBridge();
   WAC.syncScrollBridge();
   return true;
@@ -3471,10 +3578,12 @@ WAC.setStats = function (stats) {
   if (!stats || stats.visible === false || !stats.text) {
     node.classList.remove('is-visible');
     textNode.textContent = '';
+    textNode.removeAttribute('title');
     node.setAttribute('aria-hidden', node.classList.contains('has-input-helper') ? 'false' : 'true');
     return;
   }
   textNode.textContent = String(stats.text);
+  textNode.title = String(stats.text);
   node.classList.add('is-visible');
   node.setAttribute('aria-hidden', 'false');
 };
@@ -3595,7 +3704,11 @@ WAC.installEventBridge = function () {
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) WAC.readEventSource();
   });
-  window.addEventListener('resize', () => { WAC.syncDockLayout(); }, { passive: true });
+  window.addEventListener('resize', () => {
+    WAC.resetComposerLayout();
+    WAC.syncDockLayout();
+    window.requestAnimationFrame(WAC.syncComposerLayout);
+  }, { passive: true });
 };
 
 WAC.installDockBridge = function () {
@@ -3603,8 +3716,18 @@ WAC.installDockBridge = function () {
   WAC.dockBridgeInstalled = true;
   WAC.dockOpen = false;
   try { window.localStorage.removeItem('wangp-assistant-chat-open'); } catch (_error) {}
+  document.addEventListener('beforeinput', (event) => {
+    const input = WAC.requestInput();
+    if (input && event.target === input) WAC.composerResizeScrollState = WAC.captureAutoscrollState();
+  }, true);
   document.addEventListener('input', (event) => {
     if (event.target && event.target.closest && event.target.closest('#deepy_type_choice')) WAC.syncDeepyTypePreview();
+    const input = WAC.requestInput();
+    if (input && event.target === input) WAC.scheduleComposerLayout();
+  }, true);
+  document.addEventListener('focusin', (event) => {
+    const input = WAC.requestInput();
+    if (input && event.target === input) WAC.syncComposerLayout();
   }, true);
   document.addEventListener('change', (event) => {
     if (event.target && event.target.closest && event.target.closest('#deepy_type_choice')) WAC.syncDeepyTypePreview();
@@ -3751,7 +3874,7 @@ if (!WAC.init) {
   WAC.init = true;
 }
 
-setTimeout(() => { WAC.ensureShell(); WAC.syncDeepyTypePreview(); WAC.handleEventNodeMutation(); WAC.readEventSource(); WAC.syncDockState(); WAC.syncDockLayout(); }, 50);
+setTimeout(() => { WAC.ensureShell(); WAC.syncDeepyTypePreview(); WAC.handleEventNodeMutation(); WAC.readEventSource(); WAC.syncDockState(); WAC.syncDockLayout(); WAC.syncComposerLayout(); }, 50);
 if (window.__wangpAssistantChatPending.length > 0) {
   const pending = window.__wangpAssistantChatPending.slice();
   window.__wangpAssistantChatPending.length = 0;
@@ -3820,6 +3943,10 @@ def build_sync_event(session, status: dict[str, Any] | None = None, stats: dict[
         if revision == int(session.chat_revision or 0):
             break
     event = {"type": "sync", "messages": messages, "status": status}
+    if stats is None:
+        stored_stats = getattr(session, "remote_usage_stats", None)
+        if isinstance(stored_stats, dict):
+            stats = stored_stats
     if stats is not None:
         event["stats"] = stats
     if acknowledged_submission_ids is not None:
@@ -4072,6 +4199,43 @@ def complete_tool_call(session, message_id: str, tool_id: str, result: dict[str,
     return update_tool_call(session, message_id, tool_id, status="error" if failed else "done", result=result, status_text="Interrupted" if status == "interrupted" else ("Error" if failed else "Done"))
 
 
+def upsert_assistant_content_block(session, message_id: str, content_id: str | None, text: str) -> tuple[str, str | None]:
+    content_text = str(text or "").strip()
+    if len(content_text) == 0:
+        return "", None
+    record = _find_message(session, message_id)
+    if record is None:
+        return "", None
+    blocks = _ensure_message_blocks(record)
+    target_id = str(content_id or "").strip()
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "markdown" or block.get("id", "") != target_id:
+            continue
+        if str(block.get("text", "")).strip() == content_text:
+            return target_id, None
+        block["text"] = content_text
+        revision = _touch_chat(session)
+        return target_id, _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
+    target_id = target_id or _next_block_id("content")
+    blocks.append({"id": target_id, "type": "markdown", "text": content_text})
+    revision = _touch_chat(session)
+    return target_id, _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
+
+
+def remove_assistant_content_block(session, message_id: str, content_id: str) -> str | None:
+    record = _find_message(session, message_id)
+    if record is None:
+        return None
+    blocks = _ensure_message_blocks(record)
+    target_id = str(content_id or "").strip()
+    for index, block in enumerate(blocks):
+        if isinstance(block, dict) and block.get("type") == "markdown" and block.get("id", "") == target_id:
+            del blocks[index]
+            revision = _touch_chat(session)
+            return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
+    return None
+
+
 def set_assistant_content(session, message_id: str, text: str) -> str | None:
     record = _find_message(session, message_id)
     if record is None:
@@ -4217,7 +4381,7 @@ def build_tool_call_label(
         target = _short_tool_label_value(arguments.get("media_id") or arguments.get("path"))
         return _finish_tool_call_label("Get Media Settings" if not target else f"Get Media Settings for {target}")
     if normalized_name in {"list_files", "query_file"}:
-        target = _short_tool_label_value(arguments.get("path"))
+        target = _short_tool_label_value(arguments.get("media_id") or arguments.get("path"))
         action = "List Files" if normalized_name == "list_files" else "Read File Information"
         return _finish_tool_call_label(action if not target else f"{action} for {target}")
     if normalized_name == "list_deepy_templates":
@@ -4248,10 +4412,49 @@ def build_tool_call_label(
         color = _short_tool_label_value(arguments.get("color"))
         details = f" {width}×{height}" if width is not None and height is not None else ""
         return _finish_tool_call_label(f"Create{details} {color or 'Color'} Frame")
+    if normalized_name == "inspect_video":
+        source = _short_tool_label_value(arguments.get("media_id"))
+        start_time, end_time = arguments.get("start_time_seconds"), arguments.get("end_time_seconds")
+        try:
+            range_label = f" from {float(start_time):g}s to {float(end_time):g}s"
+        except (TypeError, ValueError):
+            range_label = ""
+        action = "Inspect Mid-Res Video" if bool(arguments.get("mid_res_sampling", False)) else "Inspect Video"
+        return _finish_tool_call_label(f"{action}{f' {source}' if source else ''}{range_label}")
     if normalized_name == "inspect_media":
-        media_ids = arguments.get("media_ids")
-        count = len(media_ids) if isinstance(media_ids, list) else 1 if _short_tool_label_value(arguments.get("media_id")) else 0
-        return _finish_tool_call_label("Inspect Images" if count == 0 else "Inspect Image" if count == 1 else f"Inspect {count} Images")
+        media_inputs = arguments.get("media_inputs")
+        if isinstance(media_inputs, list):
+            inputs = media_inputs
+        else:
+            media_ids = arguments.get("media_ids")
+            inputs = [{"media_id": value} for value in media_ids] if isinstance(media_ids, list) else [{"media_id": arguments.get("media_id")}] if arguments.get("media_id") else []
+        images, frames, unknown, video_names = 0, 0, 0, []
+        for item in inputs:
+            source = item.get("media_id") if isinstance(item, dict) else item
+            source_basename = os.path.basename(str(source or "").strip().replace("\\", "/"))
+            source_name = _short_tool_label_value(source)
+            extension = os.path.splitext(source_basename)[1].casefold()
+            if extension in _IMAGE_EXTENSIONS:
+                images += 1
+            elif extension in _VIDEO_EXTENSIONS or isinstance(item, dict) and any(item.get(key) is not None for key in ("frame_no", "time_seconds")):
+                frames += 1
+                if extension in _VIDEO_EXTENSIONS:
+                    video_names.append(source_name)
+            else:
+                unknown += 1
+        if unknown or images + frames == 0:
+            count = images + frames + unknown
+            return _finish_tool_call_label("Inspect Media" if count == 0 else "Inspect Visual" if count == 1 else f"Inspect {count} Visuals")
+        if images and frames:
+            image_text = "Image" if images == 1 else f"{images} Images"
+            frame_text = "Frame" if frames == 1 else f"{frames} Frames"
+            return _finish_tool_call_label(f"Inspect {image_text} and {frame_text}")
+        if images:
+            return _finish_tool_call_label("Inspect Image" if images == 1 else f"Inspect {images} Images")
+        frame_text = "Frame" if frames == 1 else f"{frames} Frames"
+        if len(video_names) == frames and len(set(video_names)) == 1:
+            return _finish_tool_call_label(f"Inspect {frame_text} from {video_names[0]}")
+        return _finish_tool_call_label(f"Inspect {frame_text}" if frames == 1 else f"Inspect {frames} Video Frames")
     if normalized_name == "resize_crop":
         width, height = arguments.get("width"), arguments.get("height")
         cropping = any(arguments.get(key) is not None for key in ("crop_left", "crop_top", "crop_right", "crop_bottom"))
@@ -4351,7 +4554,8 @@ def _markdown_to_html(text: str) -> str:
     if len(text) == 0:
         return ""
     text = html.escape(text, quote=False)
-    return markdown.markdown(text, extensions=_MARKDOWN_EXTENSIONS, output_format="html5")
+    rendered = markdown.markdown(text, extensions=_MARKDOWN_EXTENSIONS, output_format="html5")
+    return re.sub(r'<a href="(https?://[^"]+)"', r'<a href="\1" target="_blank" rel="noopener noreferrer"', rendered)
 
 
 def _plain_text_to_html(text: str) -> str:

@@ -375,7 +375,7 @@ python wgp.py --mcp --mcp-transport streamable-http --mcp-host 127.0.0.1 --mcp-p
 python wgp.py --mcp --mcp-transport streamable-http --mcp-allow-read-file-system
 ```
 
-For Streamable HTTP, connect MCP clients to `http://<host>:<port>/mcp`. Use `--mcp-host 0.0.0.0` only on a trusted network or behind an authenticated reverse proxy. Direct server filesystem paths are rejected by default; Gallery ids remain usable. `--mcp-allow-read-file-system` explicitly permits agents to supply arbitrary existing server paths.
+For Streamable HTTP, connect MCP clients to `http://<host>:<port>/mcp`. Use `--mcp-host 0.0.0.0` only on a trusted network or behind an authenticated reverse proxy. Direct server filesystem paths are rejected by default; media IDs returned by `wangp_list_gallery` remain usable. `--mcp-allow-read-file-system` explicitly permits agents to supply arbitrary existing server paths.
 
 The lower-level adapter can still be launched directly:
 
@@ -388,7 +388,7 @@ Set `--job-event-limit 0` when the MCP client only needs terminal job state/resu
 
 The server keeps one warm `WanGPSession`, so agents can perform discovery and multiple generations in a row without starting a new WanGP process each time.
 
-HTTP transports expose short-lived, one-use media-transfer routes. Call `wangp_create_gallery_upload(filename)` and PUT the raw file bytes to the returned URL; WanGP validates the media, adds images/videos to the Visual Gallery or audio to the Audio Gallery, and selects the new item. Call `wangp_create_gallery_download(gallery_id)` and GET the returned URL to stream a Gallery item. URLs expire after ten minutes and upload size is capped at 8 GiB. Resolve relative transfer URLs against the MCP server origin. These tools are omitted for stdio transport.
+HTTP transports expose short-lived, one-use media-transfer routes. Call `wangp_create_gallery_upload(filename)` and PUT the raw file bytes to the returned URL; WanGP validates the media, adds images/videos to the Visual Gallery or audio to the Audio Gallery, and selects the new item. Call `wangp_create_gallery_download(media_id)` and GET the returned URL to stream a Gallery item. URLs expire after ten minutes and upload size is capped at 8 GiB. Resolve relative transfer URLs against the MCP server origin. These tools are omitted for stdio transport.
 
 Prompt:
 
@@ -425,27 +425,27 @@ Tools:
 - `wangp_get_model_schema(model_type)`
   - Returns compact capability, media-role, frame-limit, prompt-guidance, and sliding-window metadata.
 - `wangp_list_gallery(media_type="all", limit=50, selected_only=False)`
-  - Lists compact summaries of the current session's image, video, and audio Gallery items with session-local ids and selection state. Paths and generation settings are omitted. Set `selected_only=True` to return only the live visual and/or audio selections, including the selected video's current playback time when available.
+  - Lists compact summaries of the current session's image, video, and audio Gallery items with one `media_id` per item and selection state. Paths and generation settings are omitted. Set `selected_only=True` to return only the live visual and/or audio selections, including the selected video's current playback time when available.
 - `wangp_get_media_settings(media_id=None, path=None)`
-  - Returns the generation settings stored in or extracted from exactly one media file. Use `media_id` with a Gallery id returned by `wangp_list_gallery`; use the mutually exclusive `path` input only when filesystem reads are enabled.
+  - Returns the generation settings stored in or extracted from exactly one media file. Use `media_id` with a value returned by `wangp_list_gallery`; use the mutually exclusive `path` input only when filesystem reads are enabled.
 - `wangp_list_files(path, extensions=None)` *(filesystem reads enabled only)*
   - Lists files directly inside a server directory with optional extension filtering, returning filenames, paths, extensions, and byte sizes.
-- `wangp_query_file(path)` *(filesystem reads enabled only)*
-  - Accepts a Gallery id or server path. Returns resolution, frames, FPS, duration and audio-track information for visual media; duration, sample rate, channels and track count for audio; or UTF-8 text up to 16,000 characters.
+- `wangp_query_file(media_id=None, path=None)` *(filesystem reads enabled only)*
+  - Inspects exactly one source: `media_id` for Gallery media, or `path` for a server file. Returns resolution, frames, FPS, duration and audio-track information for visual media; duration, sample rate, channels and track count for audio; or UTF-8 text up to 16,000 characters.
 - `wangp_create_gallery_upload(filename)` *(HTTP transports only)*
   - Creates a short-lived HTTP PUT URL. A successful upload returns the new Gallery record and selects it.
-- `wangp_create_gallery_download(gallery_id)` *(HTTP transports only)*
+- `wangp_create_gallery_download(media_id)` *(HTTP transports only)*
   - Creates a short-lived HTTP GET URL for streaming one registered Gallery item.
 - `wangp_list_deepy_templates(tool_id=None)`
   - Lists every settings template available in Deepy's Template Settings section and marks the current default for each tool.
 - `wangp_get_deepy_template_settings(tool_id, template)`
   - Returns merged, migrated, and model-filtered non-conflicting `settings` for any named template. Pass `template="default"` to resolve the tool's current default directly. With template properties enabled, inactive General Property defaults are omitted and dimensions, frame count or audio duration, and seed remain template-owned. With template properties disabled, those keys are removed from `settings` and the active defaults are returned separately in `general_properties`.
-- `wangp_postprocess(path, process=None, parameters=None)`
-  - With no process, discovers compatible post-processing operations for a Gallery item. With a returned process id, queues the operation through WanGP and returns a job id. Direct paths require filesystem-read permission.
+- `wangp_postprocess(media_id=None, path=None, process=None, parameters=None)`
+  - Provide exactly one source: `media_id` for Gallery media, or `path` for a server file when filesystem reads are enabled. With no process, discovers compatible post-processing operations. With a returned process id, queues the operation through WanGP and returns a job id.
 - `wangp_toolbox(action=None, arguments=None)`
-  - With no action, returns a compact utility list; pass one action without arguments for its exact schema, then pass arguments to execute it. Supports joint visual inspection of up to five images or video frames, extraction, transcription, resize/crop, audio replacement, video merging, media-detail, and documentation operations using Gallery ids. Direct paths require filesystem-read permission.
+  - With no action, returns a compact utility list; pass one action without arguments for its exact schema, then pass arguments to execute it. Supports joint visual inspection of up to five images or video frames, extraction, transcription, resize/crop, audio replacement, video merging, media-detail, and documentation operations using media IDs. Direct paths require filesystem-read permission.
 - `wangp_generate(source, wait=False, timeout_s=None, event_limit=20)`
-  - Starts a job from a settings dict, task dict, manifest dict, or task list. Media fields accept Gallery ids; direct paths require filesystem-read permission. Terminal results include matching `gallery_items` records.
+  - Starts a job from a settings dict, task dict, manifest dict, or task list. Media fields accept media IDs returned by `wangp_list_gallery`; direct paths require filesystem-read permission. Terminal results include matching compact `gallery_items` records.
 - `wangp_get_job(job_id, event_limit=20)`
   - Polls progress/events/result.
 - `wangp_cancel_job(job_id)`
@@ -586,9 +586,8 @@ Convenience helpers are available for the common edit task shapes:
 ```python
 job = session.submit_media_postprocessing(
     r"C:\media\input.mp4",
-    temporal_upsampling="rife2",
-    spatial_upsampling="flashvsr2",
-    film_grain_intensity=0.15,
+    spatial_upsampling="h3facerefine",
+    spatial_upsampler_face_count=2,
     return_media=True,
 )
 
@@ -599,7 +598,8 @@ print(result.generated_files)
 Postprocessing values use the registered postprocessor value strings:
 
 - `temporal_upsampling`: registered temporal upsamplers such as `rife2` or `rife4`. Temporal upsampling is video-only.
-- `spatial_upsampling`: registered postprocessing spatial upsamplers such as `lanczos2`, `flashvsr2`, `flashvsr2pass2`, `coz4`, `flux_pid4`, `flux2_pid4`, or `qwen_pid4`. VAE upsamplers are model-pipeline features and are not accepted for late postprocessing.
+- `spatial_upsampling`: registered decoded-media upsamplers such as `lanczos2`, `flashvsr2`, `coz4`, or the no-scale visual refiner `h3facerefine`. VAE upsamplers are model-pipeline features and are not accepted for late postprocessing.
+- Method-specific values use the flat parameter ids returned by postprocessing discovery. For example, H3 accepts `spatial_upsampler_prompt`, `spatial_upsampler_reference_images`, and `spatial_upsampler_face_count`.
 - `film_grain_intensity` / `film_grain_saturation`: late film grain settings. Film grain is active when intensity is greater than `0`.
 
 At least one postprocessing operation must be selected.
@@ -666,6 +666,7 @@ settings = {
     "video_source": r"C:\media\input.mp4",
     "temporal_upsampling": "rife4",
     "spatial_upsampling": "lanczos2",
+    "spatial_upsampler_face_count": 1,
     "_api": {"return_media": True},
 }
 
@@ -676,7 +677,7 @@ Raw task modes:
 
 | Mode | Source field | Processor fields |
 | --- | --- | --- |
-| `edit_postprocessing` | `video_source` | `temporal_upsampling`, `spatial_upsampling`, `film_grain_intensity`, `film_grain_saturation` |
+| `edit_postprocessing` | `video_source` | `temporal_upsampling`, `spatial_upsampling`, flat `spatial_upsampler_*` method parameters, `film_grain_intensity`, `film_grain_saturation` |
 | `edit_remux` | `video_source` | `postprocess_audio`, `audio_source`, `postprocess_audio_prompt`, `postprocess_audio_neg_prompt`, `replace_voice_sample`, `replace_voice_sample2` |
 | `edit_audio` | `audio_source` | `postprocess_audio`, `replace_voice_sample`, `replace_voice_sample2` |
 

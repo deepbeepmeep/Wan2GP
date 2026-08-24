@@ -25,6 +25,7 @@ DEEPY_COMPACTION_TYPE_KEY = "deepy_compaction_type"
 DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY = "deepy_zero_custom_system_prompt"
 DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY = "deepy_prime_custom_system_prompt"
 DEEPY_PRIME_MCP_SERVERS_KEY = "deepy_prime_mcp_servers"
+DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY = "deepy_mcp_auto_discover_paths"
 DEEPY_ALLOW_READ_FILE_SYSTEM_KEY = "deepy_allow_read_file_system"
 DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY = "deepy_auto_cancel_queue_tasks"
 DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY = "deepy_separate_requests_with_empty_line"
@@ -63,6 +64,7 @@ DEEPY_KV_CACHE_QUANTIZATION_AUTO = "auto"
 DEEPY_KV_CACHE_QUANTIZATION_DEFAULT = DEEPY_KV_CACHE_QUANTIZATION_AUTO
 DEEPY_KV_CACHE_QUANTIZATION_MIN_GGUF_KERNELS_VERSION = "1.0.11"
 DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT = False
+DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT = False
 DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT = True
 DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT = True
 DEEPY_CONFIG_FILENAME = "wgp_config.json"
@@ -270,6 +272,12 @@ def normalize_deepy_allow_read_file_system(value: Any) -> bool:
     return bool(value)
 
 
+def normalize_deepy_mcp_auto_discover_paths(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "on", "yes"}
+    return bool(value)
+
+
 def normalize_deepy_separate_requests_with_empty_line(value: Any) -> bool:
     if isinstance(value, str):
         text = value.strip().lower()
@@ -325,6 +333,7 @@ def normalize_deepy_runtime_config(server_config: dict[str, Any] | None) -> dict
     runtime_config[DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_custom_system_prompt(runtime_config.get(DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY, ""))
     runtime_config[DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_prime_guidance(runtime_config.get(DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_GUIDANCE_DEFAULT))
     runtime_config[DEEPY_PRIME_MCP_SERVERS_KEY] = normalize_deepy_prime_mcp_servers(runtime_config.get(DEEPY_PRIME_MCP_SERVERS_KEY, {}))
+    runtime_config[DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY] = normalize_deepy_mcp_auto_discover_paths(runtime_config.get(DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT))
     runtime_config[DEEPY_ALLOW_READ_FILE_SYSTEM_KEY] = normalize_deepy_allow_read_file_system(runtime_config.get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT))
     runtime_config[DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY] = normalize_deepy_auto_cancel_queue_tasks(runtime_config.get(DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY, DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT))
     runtime_config[DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY] = normalize_deepy_separate_requests_with_empty_line(runtime_config.get(DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY, DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT))
@@ -349,6 +358,7 @@ def get_deepy_default_runtime_config() -> dict[str, Any]:
         DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY: "",
         DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY: DEEPY_PRIME_GUIDANCE_DEFAULT,
         DEEPY_PRIME_MCP_SERVERS_KEY: {},
+        DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY: DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT,
         DEEPY_ALLOW_READ_FILE_SYSTEM_KEY: DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT,
         DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY: DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT,
         DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY: DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT,
@@ -397,14 +407,21 @@ def deepy_requirement_met(server_config: dict[str, Any] | None) -> bool:
 
 def deepy_requirement_error(server_config: dict[str, Any] | None) -> str:
     runtime_config = server_config or {}
+    from shared.remote_llm.config import is_remote_engine, local_enhancer_id, resolve_role_engine
+
+    deepy_engine = resolve_role_engine(runtime_config, "deepy")
+    if is_remote_engine(deepy_engine):
+        if normalize_deepy_type(runtime_config.get(DEEPY_TYPE_KEY, DEEPY_TYPE_DEFAULT)) != DEEPY_TYPE_PRIME:
+            return "External LLM engines require Deepy Prime because only Deepy Prime exposes WanGP's MCP tools."
+        return ""
     try:
-        enhancer_enabled = int(runtime_config.get("enhancer_enabled", 0) or 0)
+        enhancer_enabled = local_enhancer_id(deepy_engine, runtime_config.get("enhancer_enabled", 0))
     except Exception:
         enhancer_enabled = 0
     if enhancer_enabled not in DEEPY_QWEN_ENHANCER_IDS:
         return "Deepy requires Prompt Enhancer to be set to a Qwen3.5VL Abliterated or Qwen3.8VL Uncensored mode in the Extensions tab."
     try:
-        validate_deepy_version_config(runtime_config.get(DEEPY_TYPE_KEY, DEEPY_TYPE_DEFAULT), runtime_config.get(DEEPY_COMPACTION_TYPE_KEY, DEEPY_COMPACTION_TYPE_DEFAULT), runtime_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT), runtime_config.get("enhancer_enabled", 0))
+        validate_deepy_version_config(runtime_config.get(DEEPY_TYPE_KEY, DEEPY_TYPE_DEFAULT), runtime_config.get(DEEPY_COMPACTION_TYPE_KEY, DEEPY_COMPACTION_TYPE_DEFAULT), runtime_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT), enhancer_enabled)
     except ValueError as exc:
         return str(exc)
     return ""
@@ -423,10 +440,14 @@ def deepy_requirement_message(server_config: dict[str, Any] | None) -> str:
     runtime_config = server_config or {}
     requirement_error = deepy_requirement_error(runtime_config)
     if len(requirement_error) == 0:
+        from shared.remote_llm.config import ENGINE_LABELS, is_remote_engine, resolve_role_engine
+
         version = "Deepy Prime" if normalize_deepy_type(runtime_config.get(DEEPY_TYPE_KEY, DEEPY_TYPE_DEFAULT)) == DEEPY_TYPE_PRIME else "Deepy Zero"
+        engine = resolve_role_engine(runtime_config, "deepy")
+        detail = f" using {ENGINE_LABELS.get(engine, engine.title())} externally" if is_remote_engine(engine) else " with the current Prompt Enhancer and context configuration"
         return (
             "<div style='color:#1b6d44; font-weight:600;'>"
-            f"{version} is available with the current Prompt Enhancer and context configuration."
+            f"{version} is available{detail}."
             "</div>"
         )
     return (

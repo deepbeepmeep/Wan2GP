@@ -12,6 +12,7 @@ _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", "
 _VIDEO_EXTENSIONS = {".mkv", ".mov", ".mp4", ".m4v", ".webm", ".avi"}
 _AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac", ".m4a", ".flac", ".ogg", ".opus", ".wma"}
 _MEDIA_TYPES = {"image", "video", "audio", "any", "all"}
+PROMPT_SUMMARY_MAX_CHARS = 128
 _TYPE_HINTS = {
     "image": ("image", "images", "picture", "photo", "photos", "pic", "pics"),
     "video": ("video", "videos", "clip", "movie", "footage"),
@@ -339,16 +340,17 @@ def _default_label(path: str, media_type: str) -> str:
 
 
 def summarize_prompt(prompt: str, media_type: str) -> str:
-    prompt = str(prompt or "").strip()
-    if len(prompt) == 0:
-        return f"Generated {media_type}"
-    first_sentence = re.split(r"[\n.;]", prompt, maxsplit=1)[0].strip()
-    first_clause = re.split(r"\s*,\s*", first_sentence, maxsplit=1)[0].strip()
-    summary = first_clause or first_sentence or prompt
-    words = summary.split()
-    if len(words) > 12:
-        summary = " ".join(words[:12])
-    return summary.strip() or f"Generated {media_type}"
+    meaningful_lines = []
+    for raw_line in str(prompt or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("!"):
+            continue
+        line = re.sub(r"\[[^\]\r\n]*\]", " ", line)
+        line = re.sub(r"\s+", " ", line).strip()
+        if line:
+            meaningful_lines.append(line)
+    summary = " ".join(meaningful_lines)[:PROMPT_SUMMARY_MAX_CHARS].rstrip()
+    return summary or f"Generated {media_type}"
 
 
 def _resolve_source(settings: dict[str, Any] | None) -> str:

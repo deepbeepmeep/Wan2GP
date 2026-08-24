@@ -5,7 +5,7 @@ Deepy is WanGP's conversational media assistant. It can generate, inspect, edit,
 Deepy comes in two versions:
 
 - **Deepy Zero** is the lightweight, fast version for straightforward requests. It should spent less time thinking and is designed to work well with a smaller LLM (for instance Qwen3.5 4B or 9B).
-- **Deepy Prime** is the advanced version for ambitious, multi-step work. It can discover available models and capabilities, plan connected actions, combine several image, video, and audio assets, and use external MCP services when configured. It requires the Qwen3.8 VL 27B model.
+- **Deepy Prime** is the advanced version for ambitious, multi-step work. It can discover available models and capabilities, plan connected actions, combine several image, video, and audio assets, and use external MCP services when configured. It requires Qwen3.8 VL 27B when run locally, or it can use a configured remote LLM.
 
 Both versions share the same chat, default deepy settings and templates, Gallery integration, VRAM policy, context window, compaction, and interruption handling.
 
@@ -52,13 +52,13 @@ You can also ask Deepy directly to override supported template settings such as 
 Deepy is available only when these base conditions are met:
 
 1. `Deepy` is set to `Deepy Zero` or `Deepy Prime` rather than `Disabled`.
-2. Prompt Enhancer is set to a supported Qwen3.5VL mode.
+2. The shared Prompt Enhancer / Deepy engine is a supported local Qwen model or a configured remote LLM. Remote LLMs require Deepy Prime.
 
-Deepy Prime additionally requires `Compaction Type When Cache is Full` to be set to `Summarize` and `Context Window Tokens` to be at least 32,000. Selecting Deepy Prime in the Configuration UI automatically raises a smaller context to 32,000 and selects Summarize. Configuration saving and runtime startup both reject an invalid Prime configuration.
+With a local LLM, Deepy Prime additionally requires `Compaction Type When Cache is Full` to be set to `Summarize` and `Context Window Tokens` to be at least 32,000. Selecting Deepy Prime in the Configuration UI automatically raises a smaller context to 32,000 and selects Summarize. Configuration saving and runtime startup both reject an invalid local Prime configuration. Deepy Prime can instead use Codex, Claude Code, or OpenCode; see [Remote LLMs](REMOTE_LLMS.md) for installation, authentication, lifecycle, privacy, and troubleshooting.
 
 Open the Configuration plugin and go to the `Prompt Enhancer / Deepy` tab.
 
-Required Prompt Enhancer modes:
+Supported local Prompt Enhancer modes:
 
 - `Qwen3.5VL Abliterated 4B`
 - `Qwen3.5VL Abliterated 9B`
@@ -76,6 +76,7 @@ Deepy settings in that tab:
 - `Deepy Zero Prompt`: edits independent extra instructions for Deepy Zero.
 - `Deepy Prime Guidance`: edits standing user guidance directly. It is prefilled to prefer the highest-quality base or full model unless the user prioritizes speed or names another model, and is appended to Deepy Prime's trusted system instructions rather than replacing them.
 - `External MCP Servers (JSON)`: optional stdio, SSE, or Streamable HTTP MCP server definitions used only by Deepy Prime. External tool names are prefixed with their server name to avoid collisions.
+- `Allow Searching for Changed MCP Executable Paths`: disabled by default. When enabled, a missing versioned stdio command in a `<runtime>/<version>/bin/<executable>` layout may resolve to the newest exact executable name in a sibling version folder under the same runtime root. References to the old `bin` folder in that server's environment values are adjusted for the launched process only; saved JSON is not rewritten.
 
 When the requirement is met, the `Ask Deepy` launcher appears in the WanGP web UI.
 
@@ -83,7 +84,7 @@ Deepy Prime always includes WanGP's in-process MCP server and automatically load
 
 For large Markdown MCP resources, Deepy Prime uses `mcp_search_resource` to return up to five ranked section excerpts without adding the complete document to its context. It can then call `mcp_read_resource` with an optional `section` value—an exact or partial heading path, or a case-insensitive `*`/`?` glob—to load only the selected section. This mirrors Zero's `Search Doc` followed by `Load Doc Section` workflow.
 
-Because Deepy Prime runs inside the same WanGP process, its in-process MCP definition intentionally omits remote Gallery upload/download tools. It can reuse Gallery ids directly, and when filesystem access is enabled it can also use local paths. Gallery browsing returns compact summaries without paths or generation settings. `Get Media Settings` retrieves full settings on demand using a Gallery media id, or a mutually exclusive filesystem path when filesystem access is enabled. Gallery ids observed by the MCP session remain resolvable while their files exist after `Keep Previous Generations in Gallery` trims their visible UI rows; remembered records remain discoverable with `in_gallery: false` without being reinserted into Gradio. `List Files` optionally filters extensions and returns names, paths, and byte sizes. `Query File` accepts a Gallery/media id or path and returns resolution, frame count, FPS, duration and audio-track information for visual media; duration, sample rate, channels and track count for audio; or UTF-8 text up to 16,000 characters.
+Because Deepy Prime runs inside the same WanGP process, its in-process MCP definition intentionally omits remote Gallery upload/download tools. It can reuse `media_id` values returned by Gallery browsing, and when filesystem access is enabled it can also use local paths. Gallery browsing returns compact summaries without paths or generation settings. `Get Media Settings` retrieves full settings on demand using `media_id`, or a mutually exclusive filesystem path when filesystem access is enabled. Media IDs observed by the MCP session remain resolvable while their files exist after `Keep Previous Generations in Gallery` trims their visible UI rows; remembered records remain discoverable with `in_gallery: false` without being reinserted into Gradio. `List Files` optionally filters extensions and returns names, paths, and byte sizes. `Query File` accepts exactly one `media_id` or `path` and returns resolution, frame count, FPS, duration and audio-track information for visual media; duration, sample rate, channels and track count for audio; or UTF-8 text up to 16,000 characters.
 
 Deepy Prime receives the current `Deepy Settings > General Properties` precedence as system-level guidance at session startup. With `Use by Default Dimensions / Durations / Seed defined in Templates Settings Used`, inactive panel defaults are not injected or returned, and the template query keeps those template-owned fields in `settings`. With `Use by Default Always Dimensions / Durations / Seed Below`, the standing defaults relevant to the requested tool are injected and returned separately as `general_properties`, while conflicting resolution, frame-count, duration, and seed keys are removed from template `settings`. Explicit user overrides still take precedence. Changes to these General Properties change the system-prompt signature and are injected on the next turn.
 

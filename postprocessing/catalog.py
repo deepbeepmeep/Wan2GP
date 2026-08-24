@@ -15,6 +15,8 @@ PROCESS_TYPE_SOUNDTRACK = "soundtrack"
 PROCESS_TYPE_VOICE_REPLACEMENT = "voice_replacement"
 PROCESS_TYPE_AUDIO_EDIT = "audio_edit"
 
+_CALL_PARAMETER_FIELDS = ("name", "type", "description", "required", "default", "enum", "minimum", "maximum", "media_type")
+
 
 def _method_description(handler_def: dict[str, Any], method: str, fallback: str) -> str:
     descriptions = handler_def.get("method_descriptions", {})
@@ -30,7 +32,16 @@ def _method_parameters(handler_def: dict[str, Any], method: str) -> list[dict[st
     method_parameters = parameters.get(method, ())
     if not isinstance(method_parameters, (list, tuple)):
         return []
-    return [copy.deepcopy(parameter) for parameter in method_parameters if isinstance(parameter, dict) and str(parameter.get("name", "") or "").strip()]
+    normalized = []
+    for parameter in method_parameters:
+        if not isinstance(parameter, dict) or not str(parameter.get("name", "") or "").strip():
+            continue
+        parameter = copy.deepcopy(parameter)
+        parameter.setdefault("type", "string")
+        parameter.setdefault("required", True)
+        parameter.setdefault("description", str(parameter["name"]).replace("_", " ").capitalize() + ".")
+        normalized.append(parameter)
+    return normalized
 
 
 def _merge_parameters(inferred: list[dict[str, Any]], declared: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -45,6 +56,21 @@ def _merge_parameters(inferred: list[dict[str, Any]], declared: list[dict[str, A
     return [merged[name] for name in order]
 
 
+def call_parameters(parameters) -> list[dict[str, Any]]:
+    """Return only parameter metadata an assistant needs to make the call."""
+
+    return [{key: copy.deepcopy(parameter[key]) for key in _CALL_PARAMETER_FIELDS if key in parameter} for parameter in parameters]
+
+
+def call_processes(processes) -> list[dict[str, Any]]:
+    """Remove handler runtime and UI metadata from assistant discovery results."""
+
+    output = copy.deepcopy(processes)
+    for process in output:
+        process["parameters"] = call_parameters(process.get("parameters", ()))
+    return output
+
+
 def _multiplier_parameter(multipliers) -> dict[str, Any]:
     return {
         "name": "multiplier",
@@ -55,8 +81,8 @@ def _multiplier_parameter(multipliers) -> dict[str, Any]:
     }
 
 
-def _process(process_id: str, label: str, description: str, process_type: str, media: tuple[str, ...], parameters: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
+def _process(process_id: str, label: str, description: str, process_type: str, media: tuple[str, ...], parameters: list[dict[str, Any]], category: str | None = None) -> dict[str, Any]:
+    process = {
         "id": str(process_id),
         "label": str(label),
         "description": str(description),
@@ -64,6 +90,9 @@ def _process(process_id: str, label: str, description: str, process_type: str, m
         "media": list(media),
         "parameters": parameters,
     }
+    if category:
+        process["category"] = str(category)
+    return process
 
 
 def _spatial_processes(media_type: str, enabled_only: bool) -> list[dict[str, Any]]:
@@ -81,7 +110,8 @@ def _spatial_processes(media_type: str, enabled_only: bool) -> list[dict[str, An
             multipliers = tuple(multipliers_by_method.get(method, ()))
             inferred = [_multiplier_parameter(multipliers)] if multipliers else []
             description = _method_description(handler_def, method, f"Spatially upscale the {media_type} with {display_label}.")
-            processes.append((_method_position(handler_def, method), _process(method, display_label, description, PROCESS_TYPE_SPATIAL_UPSAMPLING, media, _merge_parameters(inferred, _method_parameters(handler_def, method)))))
+            category = spatial_upsamplers.method_category(method)
+            processes.append((_method_position(handler_def, method), _process(method, display_label, description, PROCESS_TYPE_SPATIAL_UPSAMPLING, media, _merge_parameters(inferred, _method_parameters(handler_def, method)), category)))
     return [process for _, process in sorted(processes, key=lambda item: (item[0], item[1]["label"].casefold(), item[1]["id"]))]
 
 
@@ -241,4 +271,9 @@ def _normalize_parameter(name: str, value: Any, parameter_def: dict[str, Any]) -
     allowed = parameter_def.get("enum", None)
     if isinstance(allowed, (list, tuple)) and value not in allowed:
         return None, f"{name} must be one of: {', '.join(str(item) for item in allowed)}."
+    minimum, maximum = parameter_def.get("minimum"), parameter_def.get("maximum")
+    if minimum is not None and value < minimum:
+        return None, f"{name} must be at least {minimum}."
+    if maximum is not None and value > maximum:
+        return None, f"{name} must be at most {maximum}."
     return value, ""

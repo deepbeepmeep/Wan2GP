@@ -5,7 +5,7 @@ import inspect
 import re
 import datetime
 from typing import Dict, Any, Optional, List, Union, Set
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import gradio as gr
 import traceback
 import subprocess
@@ -29,6 +29,49 @@ PLUGIN_MODEL_HANDLERS_KEY = "model_handlers"
 PLUGIN_MODEL_DEFAULTS_KEY = "defaults"
 PLUGIN_MODEL_PROFILES_KEY = "profiles"
 PENDING_DELETIONS_KEY = "pending_plugin_deletions"
+_DEEPY_TOOL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_DEEPY_PRIME_RESERVED_TOOL_NAMES = {"mcp_list_resources", "mcp_search_resource", "mcp_read_resource"}
+
+
+@dataclass
+class PluginDeepyTool:
+    name: str
+    function: callable
+    display_name: str
+    description: str
+    parameters: Dict[str, Dict[str, Any]]
+    pause_runtime: bool
+    pause_reason: str
+    requires_file_system: bool
+    plugin_id: str = ""
+
+    def assistant_metadata(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "display_name": self.display_name,
+            "description": self.description,
+            "parameters": self.parameters,
+            "pause_runtime": self.pause_runtime,
+            "pause_reason": self.pause_reason,
+            "requires_file_system": self.requires_file_system,
+        }
+
+
+_ACTIVE_DEEPY_PRIME_TOOLS: Dict[str, PluginDeepyTool] = {}
+_ACTIVE_DEEPY_ZERO_TOOLS: Dict[str, PluginDeepyTool] = {}
+
+
+def get_deepy_prime_plugin_tools() -> tuple[PluginDeepyTool, ...]:
+    return tuple(_ACTIVE_DEEPY_PRIME_TOOLS.values())
+
+
+def get_deepy_zero_plugin_tools() -> tuple[PluginDeepyTool, ...]:
+    return tuple(_ACTIVE_DEEPY_ZERO_TOOLS.values())
+
+
+def _reset_deepy_plugin_tools() -> None:
+    _ACTIVE_DEEPY_PRIME_TOOLS.clear()
+    _ACTIVE_DEEPY_ZERO_TOOLS.clear()
 
 def _has_value(value: Any) -> bool:
     if value is None:
@@ -286,6 +329,8 @@ class WAN2GPPlugin:
         self.tab_ids: List[str] = []
         self._set_wgp_global_func = None
         self._custom_js_snippets: List[str] = []
+        self._deepy_prime_tools: List[PluginDeepyTool] = []
+        self._deepy_zero_tools: List[PluginDeepyTool] = []
         
     def setup_ui(self) -> None:
         pass
@@ -333,6 +378,59 @@ class WAN2GPPlugin:
     def add_custom_js(self, js_code: str) -> None:
         if isinstance(js_code, str) and js_code.strip():
             self._custom_js_snippets.append(js_code)
+
+    @staticmethod
+    def _deepy_tool_signature(function: callable) -> inspect.Signature:
+        if not callable(function):
+            raise TypeError("Deepy tool function must be callable.")
+        signature = inspect.signature(function)
+        unsupported = [parameter.name for parameter in signature.parameters.values() if parameter.kind in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}]
+        if unsupported:
+            raise TypeError(f"Deepy tool functions only support named parameters: {', '.join(unsupported)}")
+        return signature
+
+    @staticmethod
+    def _deepy_tool_identity(function: callable, name: str | None, display_name: str | None, description: str | None) -> tuple[str, str, str]:
+        tool_name = str(name or getattr(function, "__name__", "")).strip()
+        if not _DEEPY_TOOL_NAME_RE.fullmatch(tool_name):
+            raise ValueError(f"Invalid Deepy tool name '{tool_name}'. Use letters, digits, and underscores, starting with a letter or underscore.")
+        tool_display_name = str(display_name or tool_name.replace("_", " ").title()).strip()
+        tool_description = str((inspect.getdoc(function) or "") if description is None else description or "").strip()
+        return tool_name, tool_display_name, tool_description
+
+    @staticmethod
+    def _add_deepy_tool(definitions: List[PluginDeepyTool], definition: PluginDeepyTool) -> callable:
+        if any(existing.name == definition.name for existing in definitions):
+            raise ValueError(f"Deepy tool '{definition.name}' is already registered by this plugin.")
+        definitions.append(definition)
+        return definition.function
+
+    def register_deepy_prime_tool(self, function: callable, *, name: str | None = None, display_name: str | None = None, description: str | None = None, pause_runtime: bool = True, pause_reason: str = "tool", requires_file_system: bool = False) -> callable:
+        """Expose a typed Python callable to Deepy Prime as an in-process MCP tool."""
+        self._deepy_tool_signature(function)
+        tool_name, tool_display_name, tool_description = self._deepy_tool_identity(function, name, display_name, description)
+        if tool_name in _DEEPY_PRIME_RESERVED_TOOL_NAMES:
+            raise ValueError(f"Deepy Prime tool name '{tool_name}' is reserved.")
+        definition = PluginDeepyTool(tool_name, function, tool_display_name, tool_description, {}, bool(pause_runtime), str(pause_reason or "tool").strip() or "tool", bool(requires_file_system))
+        return self._add_deepy_tool(self._deepy_prime_tools, definition)
+
+    def register_deepy_zero_tool(self, function: callable, *, name: str | None = None, display_name: str | None = None, description: str | None = None, parameters: Dict[str, Dict[str, Any]] | None = None, pause_runtime: bool = True, pause_reason: str = "tool", requires_file_system: bool = False) -> callable:
+        """Expose a typed synchronous Python callable to Deepy Zero as a native tool."""
+        if inspect.iscoroutinefunction(function):
+            raise TypeError("Deepy Zero tool functions must be synchronous.")
+        signature = self._deepy_tool_signature(function)
+        tool_name, tool_display_name, tool_description = self._deepy_tool_identity(function, name, display_name, description)
+        parameter_overrides = dict(parameters or {})
+        unknown_parameters = set(parameter_overrides) - set(signature.parameters)
+        if unknown_parameters:
+            raise ValueError(f"Unknown parameters for Deepy Zero tool '{tool_name}': {', '.join(sorted(unknown_parameters))}")
+        tool_parameters = {}
+        for parameter in signature.parameters.values():
+            metadata = dict(parameter_overrides.get(parameter.name, {}))
+            metadata.setdefault("required", parameter.default is inspect.Parameter.empty)
+            tool_parameters[parameter.name] = metadata
+        definition = PluginDeepyTool(tool_name, function, tool_display_name, tool_description, tool_parameters, bool(pause_runtime), str(pause_reason or "tool").strip() or "tool", bool(requires_file_system))
+        return self._add_deepy_tool(self._deepy_zero_tools, definition)
 
     @property
     def custom_js_snippets(self) -> List[str]:
@@ -1356,6 +1454,19 @@ class PluginManager:
             except Exception as e:
                 print(f"[PluginManager] Failed to update {metadata_path}: {e}")
 
+    @staticmethod
+    def _activate_plugin_deepy_tools(plugin_id: str, plugin: WAN2GPPlugin) -> None:
+        prime_tools = [replace(definition, plugin_id=plugin_id) for definition in plugin._deepy_prime_tools]
+        zero_tools = [replace(definition, plugin_id=plugin_id) for definition in plugin._deepy_zero_tools]
+        registrations = [(definition, _ACTIVE_DEEPY_PRIME_TOOLS, "Deepy Prime") for definition in prime_tools]
+        registrations += [(definition, _ACTIVE_DEEPY_ZERO_TOOLS, "Deepy Zero") for definition in zero_tools]
+        for definition, registry, runtime_name in registrations:
+            existing = registry.get(definition.name)
+            if existing is not None:
+                raise ValueError(f"{runtime_name} tool '{definition.name}' is already registered by plugin '{existing.plugin_id}'.")
+        _ACTIVE_DEEPY_PRIME_TOOLS.update({definition.name: definition for definition in prime_tools})
+        _ACTIVE_DEEPY_ZERO_TOOLS.update({definition.name: definition for definition in zero_tools})
+
     def discover_plugins(self) -> List[str]:
         discovered = []
         for item in os.listdir(self.plugins_dir):
@@ -1368,6 +1479,7 @@ class PluginManager:
 
     def load_plugins_from_directory(self, enabled_user_plugins: List[str], safe_mode: bool = False, files_locator=None) -> None:
         self.custom_js_snippets = []
+        _reset_deepy_plugin_tools()
         if safe_mode:
             print("[Safe Mode] User plugins are disabled. Only system plugins will be loaded.")
             plugins_to_load = SYSTEM_PLUGINS
@@ -1396,6 +1508,7 @@ class PluginManager:
                         if is_bundled:
                             plugin.uninstallable = False
                         plugin.setup_ui()
+                        self._activate_plugin_deepy_tools(plugin_dir_name, plugin)
                         self.plugins[plugin_dir_name] = plugin
                         if plugin.custom_js_snippets:
                             self.custom_js_snippets.extend(plugin.custom_js_snippets)

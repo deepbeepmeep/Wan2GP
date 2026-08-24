@@ -10,7 +10,7 @@ from shared.utils import offload_registry
 from shared.utils.audio_video import slice_audio_window
 
 
-RUNTIME_NAME = "LTX Video Upsampler"
+RUNTIME_NAME = "LTX-2 Video Upsampler"
 DEFAULT_WINDOW_FRAMES = 81
 MAX_WINDOW_FRAMES = 481
 WINDOW_OVERLAP_FRAMES = 17

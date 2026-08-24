@@ -2,12 +2,14 @@
 
 import os
 
+import gradio as gr
 import torch
 
 from shared.utils.hf import build_hf_url
 from shared.utils.frame_scheduler import normalize_overlap
 
-from .minimax_h3_main import AUDIO_VAE_FILE, TEXT_ENCODER_FOLDER, VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE
+from .constants import H3_PHASE_2_NOISE_LEVEL_START_DEFAULT
+from .minimax_h3_main import AUDIO_VAE_FILE, LATENT_UPSCALER_FILE, LATENT_UPSCALER_FOLDER, TEXT_ENCODER_FOLDER, VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE
 from .prompt_enhancer import (FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
                               REF2VA_IMAGE_SYSTEM_PROMPT, REF2VA_PROMPT_INFOS, REF2VA_TEXT_SYSTEM_PROMPT)
 
@@ -18,6 +20,10 @@ TEXT_ENCODER_INT8 = "Qwen3-VL-32B-Instruct-layer50_quanto_bf16_int8.safetensors"
 TEXT_ENCODER_GGUF_Q2 = "qwen3vl-32B-MiniMax-H3-Q2_K.gguf"
 TEXT_ENCODER_GGUF_Q4 = "qwen3vl-32B-MiniMax-H3-Q4_K_M.gguf"
 TEXT_ENCODER_NVFP4 = "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+TURBO_LORA_FILE = "minimax_h3_lightx2v_fl2v_turbo_4step_alpha16_v0.1.safetensors"
+TURBO_LORA_KEY = "minimax_h3_lora_turbo"
+REF_TURBO_LORA_FILE = "minimax_h3_lightx2v_ref2v_turbo_4step_alpha8_v0.1_bf16.safetensors"
+REF_TURBO_LORA_KEY = "minimax_h3_ref_lora_turbo"
 TEXT_ENCODER_VARIANTS = {
     "gguf_q2_k": [TEXT_ENCODER_GGUF_Q2],
     "gguf_q4_k_m": [TEXT_ENCODER_GGUF_Q4],
@@ -111,6 +117,14 @@ See the [MiniMax H3 model card](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob
 """
 
 H3_RUNTIME_INFOS = """
+### One phase or two phases
+
+- **One phase (default):** H3 generates directly at the selected resolution with the chosen steps and sampler.
+- **Two phases:** H3 establishes composition and motion at half width and height, upscales the latent, then refines at the selected resolution with three Euler steps and the LightX2V Turbo v0.1 LoRA. Step skipping is always disabled for this pass. Start/end images, injected frames, and image/video references are re-encoded at the final resolution; **Rescale Internaly Image Ref** is reapplied.
+- **Phase 2 with tiling:** uses the same two-phase path with a fixed 2x2 grid. Tile dimensions adapt to the selected output resolution with at least 25% overlap. Spatially aligned conditions are cropped per tile, references retain their full targeted size, phase-one audio is reused as a frozen condition, and decoded tiles are cosine-feathered into the final 8-bit video buffer.
+
+Two phases can improve high-resolution detail but take longer and may use more peak VRAM. The required Turbo LoRA is downloaded automatically, locked to `1.0`, and cannot currently be replaced. Other selected LoRAs whose filename contains `turbo` are likewise disabled for phase two to avoid redundancy; non-Turbo LoRAs keep their phase-two multiplier. WanGP reports a disablement in the console unless its multiplier was already zero.
+
 ### Speed and memory choices
 
 Enable **Advanced Mode** to access these options:
@@ -188,8 +202,17 @@ class family_handler:
             "frames_offset": 5,
             "block_size": 32,
             "vae_block_size": 32,
-            "guidance_max_phases": 0,
-            "lora_multiplier_phases": 1,
+            "guidance_max_phases": 2,
+            "visible_phases": 0,
+            "lora_multiplier_phases": 2,
+            "phase_2_spatial_tiling": True,
+            "switch_threshold": {
+                "label": "Phase 2 Noise Level Start",
+                "type": "number",
+                "min": 0.7,
+                "max": 1.0,
+                "step": 0.0001,
+            },
             "inference_steps": True,
             "flow_shift": True,
             "spectrum_cache": True,
@@ -227,6 +250,8 @@ class family_handler:
             "video_prompt_enhancer_max_tokens": 2048 if reference_mode else 1024,
             "profiles_dir": ["minimax_h3"],
             "finetune_custom_urls": ["video_vae_file", "audio_vae_file"],
+            TURBO_LORA_KEY: build_hf_url(REPO_ID, "loras", TURBO_LORA_FILE),
+            REF_TURBO_LORA_KEY: build_hf_url(REPO_ID, "loras", REF_TURBO_LORA_FILE),
             "qkv_splitting": True,
             "keep_frames_video_guide_not_supported": True,
             "text_encoder_folder": TEXT_ENCODER_FOLDER,
@@ -357,6 +382,12 @@ class family_handler:
         if error:
             return error
         inputs["sliding_window_overlap"] = overlap
+        if "~" in (inputs["video_prompt_type"] or ""):
+            from .pipeline import H3_PHASE_2_TILE_COUNT, _spatial_tiles
+
+            width, height = map(int, inputs["resolution"].split("x"))
+            rows, columns = _spatial_tiles(height), _spatial_tiles(width)
+            gr.Info(f"MiniMax H3 phase 2 tiling: {H3_PHASE_2_TILE_COUNT} tiles of {columns[0][1]}x{rows[0][1]} pixels (2x2 grid) for a {width}x{height} output.")
         if base_model_type not in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE):
             video_prompt_type = inputs["video_prompt_type"]
             audio_prompt_type = inputs["audio_prompt_type"]
@@ -467,6 +498,8 @@ class family_handler:
             file_lists.append(vae_files)
         source_folders.append(TEXT_ENCODER_FOLDER)
         file_lists.append(["config.json", "tokenizer.json", "tokenizer_config.json", "preprocessor_config.json", "vocab.json"])
+        source_folders.append(LATENT_UPSCALER_FOLDER)
+        file_lists.append([LATENT_UPSCALER_FILE])
         return [{
             "repoId": REPO_ID,
             "sourceFolderList": source_folders,
@@ -477,7 +510,8 @@ class family_handler:
     def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer=False,
                    text_encoder_quantization=None, dtype=torch.bfloat16, VAE_dtype=torch.float32,
                    mixed_precision_transformer=False, save_quantized=False, submodel_no_list=None,
-                   text_encoder_filename=None, **kwargs):
+                   text_encoder_filename=None, shared_h3_pipeline=None, shared_h3_offloadobj=None,
+                   disable_pinning=False, **kwargs):
         from .minimax_h3_main import model_factory
 
         pipeline = model_factory(model_filename, text_encoder_filename, dtype=dtype, VAE_dtype=VAE_dtype,
@@ -485,18 +519,31 @@ class family_handler:
                                  save_quantized=save_quantized, model_type=model_type,
                                  qkv_splitting=model_def["qkv_splitting"],
                                  video_vae_filename=model_def.get("video_vae_file", VIDEO_VAE_FILE),
-                                 audio_vae_filename=model_def.get("audio_vae_file", AUDIO_VAE_FILE))
-        return pipeline, {
-            "transformer": pipeline.transformer,
-            "text_encoder": pipeline.text_encoder.language_model,
-            "vision_encoder": pipeline.text_encoder.visual,
-            "vae": pipeline.video_decoder,
-            "video_encoder": pipeline.video_encoder,
-            "audio_vae": pipeline.audio_vae,
-        }
+                                 audio_vae_filename=model_def.get("audio_vae_file", AUDIO_VAE_FILE), shared_h3_pipeline=shared_h3_pipeline)
+        pipe = {"transformer": pipeline.transformer}
+        if shared_h3_pipeline is None:
+            pipe.update({
+                "text_encoder": pipeline.text_encoder.language_model,
+                "vision_encoder": pipeline.text_encoder.visual,
+                "vae": pipeline.video_decoder,
+                "video_encoder": pipeline.video_encoder,
+                "audio_vae": pipeline.audio_vae,
+                "latent_upscaler": pipeline.latent_upscaler,
+            })
+        else:
+            class BorrowingPipe(dict):
+                pass
+
+            borrowed_names = ("text_encoder", "vision_encoder", "vae", "video_encoder", "audio_vae", "latent_upscaler")
+            pipe = BorrowingPipe(pipe)
+            pipe.update({name: shared_h3_offloadobj.models[name] for name in borrowed_names})
+            pipe._mmgp_ignore_models = borrowed_names
+        return pipeline, {"pipe": pipe, "pinnedMemory": False} if disable_pinning else pipe
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
+        if settings_version < 2.75:
+            ui_defaults["switch_threshold"] = H3_PHASE_2_NOISE_LEVEL_START_DEFAULT
         if settings_version < 2.74:
             ui_defaults["attention_sparsity"] = 1.3
         if settings_version < 2.73 and "sliding_window_overlap" in ui_defaults:
@@ -528,6 +575,8 @@ class family_handler:
             "sliding_window_size": 362,
             "sliding_window_overlap": 18,
             "num_inference_steps": 20,
+            "guidance_phases": 1,
+            "switch_threshold": H3_PHASE_2_NOISE_LEVEL_START_DEFAULT,
             "guidance_scale": 1.0,
             "flow_shift": 12.0,
             "sample_solver": "euler",

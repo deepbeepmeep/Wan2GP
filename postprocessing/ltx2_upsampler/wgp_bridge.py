@@ -78,7 +78,8 @@ class LTXVideoUpsamplerBridge(SimpleScaleSuffixMixin):
             "default_spatial_upsampling": "ltx232",
             "default_prompt": DEFAULT_PROMPT,
             "source_audio_conditioning": True,
-            "description": "Spatially upscale video with the selected LTX video model while preserving motion and source-audio conditioning.",
+            "postprocessing_category": "upsampler",
+            "description": "Spatially upscale video x2 with the selected LTX 2.3 or 2.5 model, preserving motion and conditioning on source audio. Long videos use deterministic overlapping windows; window size and overlap are configurable in Extensions.",
         }
 
     def enabled(self) -> bool:

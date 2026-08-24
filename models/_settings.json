@@ -23,6 +23,7 @@
 	"custom_settings": {
 		"scail2_inject_ref_frames_in_video": "No",
 		"animate2_kv_cache": "Disabled",
+		"sensenova_kv_cache": "Disabled",
 		"speech_speed": 1.0,
 		"text_normalization": "Yes"
 	},
@@ -66,6 +67,9 @@
 	"skip_steps_start_step_perc": 0,
 	"temporal_upsampling": "",
 	"spatial_upsampling": "",
+	"spatial_upsampler_prompt": "",
+	"spatial_upsampler_reference_images": null,
+	"spatial_upsampler_face_count": 1,
 	"film_grain_intensity": 0,
 	"film_grain_saturation": 0.5,
 	"postprocess_audio": "",

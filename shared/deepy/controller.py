@@ -52,6 +52,7 @@ from shared.deepy.engine import (
 )
 from shared.gradio import assistant_chat
 from shared.utils.thread_utils import AsyncStream, async_run_in
+from shared.remote_llm.config import is_remote_engine, resolve_role_engine
 
 
 _DEEPY_GPU_PROCESS_ID = "deepy"
@@ -414,12 +415,14 @@ class DeepyController:
                     self._debug_log(f"Prompt enhancer dispatch starting user_message_id={user_message_id}")
                     self._deps.exec_prompt_enhancer_engine(state, "", None, "AK", [active_request], None, None, False, False, 0, None, 3.5, send_cmd, my_tools)
                 except Exception as e:
-                    traceback.print_exc()
+                    user_action_required = bool(getattr(e, "user_action_required", False))
+                    if not user_action_required:
+                        traceback.print_exc()
                     error_turn_id = assistant_chat.create_assistant_turn(session)
                     if assistant_badge:
                         assistant_chat.set_message_badge(session, error_turn_id, assistant_badge)
                     mark_assistant_turn_message(session, error_turn_id)
-                    error_event = assistant_chat.set_assistant_content(session, error_turn_id, f"Assistant crashed: {e}")
+                    error_event = assistant_chat.set_assistant_content(session, error_turn_id, str(e) if user_action_required else f"Assistant crashed: {e}")
                     if error_event is not None:
                         send_cmd("chat_output", error_event)
                     send_cmd("chat_output", assistant_chat.build_status_event(None, visible=False))
@@ -509,6 +512,16 @@ class DeepyController:
         else:
             file_access_instructions = "Filesystem reading is disabled. Always resolve and use Gallery/media ids for media inputs; do not reference filesystem paths."
         system_prompt = f"{system_prompt}\n\n{file_access_instructions}"
+        remote_engine = resolve_role_engine(server_config, "deepy")
+        if is_remote_engine(remote_engine):
+            from shared.deepy.config import normalize_deepy_custom_system_prompt
+            from shared.remote_llm.deepy_runner import run_remote_deepy_turn
+
+            custom_prompt = normalize_deepy_custom_system_prompt(server_config.get(custom_system_prompt_key, ""))
+            system_context_getter = getattr(tools, "get_system_context", None)
+            system_context = str(system_context_getter() or "").strip() if callable(system_context_getter) else ""
+            remote_system_prompt = "\n\n".join(part for part in (system_prompt, custom_prompt, system_context) if part).strip()
+            return run_remote_deepy_turn(server_config, session, original_prompts[0] if original_prompts else "", remote_system_prompt, tools, send_cmd)
         _assistant_instructions, assistant_max_new_tokens = self._deps.resolve_prompt_enhancer_settings("", assistant_model_def, prompt_enhancer_modes, is_image=False, text_encoder_max_tokens=1024)
         assistant = AssistantEngine(
             session,

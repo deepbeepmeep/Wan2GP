@@ -87,6 +87,8 @@ class PiDBridge:
 
     @classmethod
     def query_upsampler_def(cls) -> dict[str, Any]:
+        post_methods = pid_post_upsampling_choices()
+        vae_methods = [("Flux VAE PiD Upsampler", PID_FLUX_VAE_UPSAMPLING_METHOD), ("Flux2 VAE PiD Upsampler", PID_FLUX2_VAE_UPSAMPLING_METHOD), ("Flux VAE PiD Upsampler", PID_FLUX_VAE_UPSAMPLING_METHOD_V15), ("Flux2 VAE PiD Upsampler", PID_FLUX2_VAE_UPSAMPLING_METHOD_V15), ("Qwen VAE PiD Upsampler", PID_QWEN_VAE_UPSAMPLING_METHOD)]
         return {
             "name": "PiD",
             "upsampler_types": ("postprocessing", "vae"),
@@ -106,11 +108,16 @@ class PiDBridge:
                 PID_FLUX2_VAE_UPSAMPLING_METHOD_V15: 41,
                 PID_QWEN_VAE_UPSAMPLING_METHOD: 42,
             },
-            "methods": pid_post_upsampling_choices(),
-            "vae_methods": [("Flux VAE PiD Upsampler", PID_FLUX_VAE_UPSAMPLING_METHOD), ("Flux2 VAE PiD Upsampler", PID_FLUX2_VAE_UPSAMPLING_METHOD), ("Flux VAE PiD Upsampler", PID_FLUX_VAE_UPSAMPLING_METHOD_V15), ("Flux2 VAE PiD Upsampler", PID_FLUX2_VAE_UPSAMPLING_METHOD_V15), ("Qwen VAE PiD Upsampler", PID_QWEN_VAE_UPSAMPLING_METHOD)],
+            "methods": post_methods,
+            "vae_methods": vae_methods,
             "multipliers": {method: cls.UPSAMPLING_RATIOS for method in cls.UPSAMPLING_METHODS},
             "default_spatial_upsampling": "flux_pid4",
-            "description": "Use a diffusion image model to add detail during high-quality image upscaling.",
+            "postprocessing_category": "upsampler",
+            "description": "Uses a dedicated x4 diffusion upsampler for strong detail recovery.",
+            "method_descriptions": {
+                **{method: "VAE-encode the input before diffusion upscaling; tiling can reduce memory peaks on large targets." for _label, method in post_methods},
+                **{method: "Reuse the compatible generation model's existing latent, avoiding a separate input encode." for _label, method in vae_methods},
+            },
         }
 
     def is_upsampling(self, spatial_upsampling) -> bool:

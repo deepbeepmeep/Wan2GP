@@ -3,6 +3,7 @@
 import functools
 import hashlib
 import math
+import os
 
 import numpy as np
 import torch
@@ -12,17 +13,35 @@ from PIL import Image
 from tqdm import tqdm
 
 from mmgp import offload
+from shared.utils.loras_mutipliers import update_loras_slists
 from shared.utils.text_encoder_cache import TextEncoderCache
 from shared.utils.frame_scheduler import floor_frame_count, normalize_frame_count, normalize_overlap
+from .constants import H3_PHASE_2_NOISE_LEVEL_START_DEFAULT
 from .first_block_cache import MiniMaxH3FirstBlockCache
 from .interrupt import GenerationInterrupted
 from .spectrum import MiniMaxH3Spectrum
 from .transformer import VISUAL_COND_TIMESTEP, pack_audio, patchify_video, unpack_audio
+from .video_vae import LATENTS_MEAN, LATENTS_STD
 
 
 AUDIO_SAMPLE_RATE = 32000
 AUDIO_LATENT_FPS = 40
 SOL_ATTN_TAU_END = 0.8
+H3_TWO_PHASE_SCALE = 2.0
+H3_PHASE_2_SIGMAS = (H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, 0.6316, 0.3158, 0.0)
+H3_PHASE_2_SAMPLE_SOLVER = "euler"
+H3_PHASE_2_TILE_COUNT = 4
+H3_PHASE_2_TILE_OVERLAP_RATIO = 0.25
+H3_PHASE_2_TILE_ALIGNMENT = 32
+H3_PHASE_2_TILING_FLAG = "~"
+H3_TURBO_LORA_KEY = "minimax_h3_lora_turbo"
+H3_REQUIRED_TURBO_TOKENS = ("minimax_h3", "fl2v", "turbo", "4step", "v0.1")
+H3_ALLOW_PHASE_2_TURBO_OVERRIDE = False
+
+
+def _is_required_h3_turbo(name):
+    name = name.lower()
+    return "comfy" not in name and all(token in name for token in H3_REQUIRED_TURBO_TOKENS)
 
 
 def _return_none_on_interrupt(method):
@@ -49,6 +68,50 @@ def _as_video(tensor):
     if tensor.ndim != 4:
         raise ValueError(f"Expected a CTHW tensor, got shape {tuple(tensor.shape)}")
     return tensor
+
+
+def _resize_video(video, height, width):
+    video = _as_video(video)
+    if video is None or video.shape[-2:] == (height, width):
+        return video
+    return F.interpolate(video.permute(1, 0, 2, 3), size=(height, width), mode="bicubic", align_corners=False, antialias=True).permute(1, 0, 2, 3)
+
+
+def _spatial_tiles(length, alignment=H3_PHASE_2_TILE_ALIGNMENT):
+    tile_length = min(length, math.ceil(length / (2.0 - H3_PHASE_2_TILE_OVERLAP_RATIO) / alignment) * alignment)
+    return [(0, tile_length), (length - tile_length, tile_length)]
+
+
+def _crop_spatial_tile(tensor, top, left, tile_height, tile_width):
+    tile = tensor[..., top:min(top + tile_height, tensor.shape[-2]), left:min(left + tile_width, tensor.shape[-1])]
+    pad_height, pad_width = tile_height - tile.shape[-2], tile_width - tile.shape[-1]
+    return F.pad(tile, (0, pad_width, 0, pad_height), mode="replicate") if pad_height or pad_width else tile
+
+
+def _phase_2_tile_weights(height, width, top_overlap=0, bottom_overlap=0,
+                          left_overlap=0, right_overlap=0):
+    height_weights = torch.ones(height, dtype=torch.float32, device="cpu")
+    width_weights = torch.ones(width, dtype=torch.float32, device="cpu")
+    if top_overlap:
+        height_weights[:top_overlap] = torch.linspace(0.0, math.pi / 2.0, top_overlap, device="cpu").sin_().square_()
+    if bottom_overlap:
+        height_weights[-bottom_overlap:] = torch.linspace(0.0, math.pi / 2.0, bottom_overlap, device="cpu").cos_().square_()
+    if left_overlap:
+        width_weights[:left_overlap] = torch.linspace(0.0, math.pi / 2.0, left_overlap, device="cpu").sin_().square_()
+    if right_overlap:
+        width_weights[-right_overlap:] = torch.linspace(0.0, math.pi / 2.0, right_overlap, device="cpu").cos_().square_()
+    return (height_weights[:, None] * width_weights[None]).view(1, 1, 1, height, width)
+
+
+def _video_to_uint8_cpu(video, max_buffer_mb=64):
+    output = torch.empty(video.shape, dtype=torch.uint8, device="cpu")
+    frame_bytes = max(1, video.shape[0] * video.shape[-2] * video.shape[-1] * (video.element_size() + 1))
+    chunk_frames = max(1, int(max_buffer_mb * 1024 * 1024) // frame_bytes)
+    for start in range(0, video.shape[1], chunk_frames):
+        end = min(video.shape[1], start + chunk_frames)
+        pixels = video[:, start:end].add(1.0).mul(127.5).round_().clamp_(0, 255).to(torch.uint8)
+        output[:, start:end].copy_(pixels.to(device="cpu", non_blocking=False))
+    return output
 
 
 def _build_frozen_control_video(input_frames, input_video, frame_num, prefix_frames_count):
@@ -78,7 +141,7 @@ def _fit_audio_samples(audio, sample_count):
     return F.pad(audio[..., :sample_count], (0, max(0, sample_count - audio.shape[-1])))
 
 
-def _resize_video_mask(mask, latent_shape, clip_length, temporal_ratio):
+def _resize_video_mask(mask, latent_shape, clip_length, temporal_ratio, binarize=True):
     latent_t, latent_h, latent_w = latent_shape
     mask = mask[:1].unsqueeze(0).float()
     pad_frames = (-mask.shape[2]) % clip_length
@@ -89,15 +152,65 @@ def _resize_video_mask(mask, latent_shape, clip_length, temporal_ratio):
     starts = torch.arange(0, mask.shape[2], clip_length, device=mask.device)
     frame_indices = (starts[:, None] + offsets[None]).flatten()[:latent_t]
     mask = mask.index_select(2, frame_indices)
-    return F.interpolate(mask, size=(latent_t, latent_h, latent_w), mode="nearest").ge(0.5).float()
+    if not binarize and mask.shape[-2:] == (1, 1):
+        return torch.ceil(mask.clamp_(0.0, 1.0) * 256.0).div_(256.0)
+    mask = F.interpolate(mask, size=(latent_t, latent_h, latent_w), mode="nearest")
+    return mask.ge(0.5).float() if binarize else mask.clamp_(0.0, 1.0)
 
 
-def _reinject_video_source(video, source, noise, editable_mask, sigma, buffer):
-    torch.lerp(source, noise, sigma, out=buffer)
+def _uniform_latent_frame_sigma_schedule(sigmas, strength, latent_frames):
+    return (sigmas.float() * strength).view(-1, 1, 1, 1, 1, 1).expand(-1, 1, 1, latent_frames, 1, 1)
+
+
+def _reinject_video_source(video, source, noise, editable_mask, sigma, buffer, preserved_sigma=None):
+    torch.lerp(source, noise, sigma if preserved_sigma is None else preserved_sigma, out=buffer)
     if editable_mask is None:
         video.copy_(buffer)
     else:
         video.lerp_(buffer, 1.0 - editable_mask)
+
+
+def _blend_video_source(video, source, editable_mask):
+    target = video[:, :, :source.shape[2]]
+    target.lerp_(source.to(target), 1.0 - editable_mask.to(target))
+
+
+def _er_sde_step(x, denoised, sigma, sigma_next, previous_sigma, previous_previous_sigma,
+                 previous_denoised, previous_denoised_d, noise, stage_used):
+    active = sigma > 0
+    safe_sigma = torch.where(active, sigma, torch.full_like(sigma, 0.5))
+    er_lambda_s = safe_sigma / (1.0 - safe_sigma)
+    er_lambda_t = sigma_next / (1.0 - sigma_next)
+    alpha_t = 1.0 - sigma_next
+
+    def noise_scaler(value):
+        return value * ((value ** 0.3).exp() + 10.0)
+
+    ratio = noise_scaler(er_lambda_t) / noise_scaler(er_lambda_s)
+    updated = (alpha_t / (1.0 - sigma)) * ratio * x + alpha_t * (1.0 - ratio) * denoised
+    denoised_d = None
+    if stage_used >= 2:
+        safe_previous_sigma = torch.where(active, previous_sigma, torch.full_like(previous_sigma, 0.5))
+        previous_lambda = safe_previous_sigma / (1.0 - safe_previous_sigma)
+        dt = er_lambda_t - er_lambda_s
+        lambda_step_size = -dt / 200.0
+        lambda_positions = er_lambda_t.unsqueeze(-1) + torch.arange(200, dtype=torch.float32, device=x.device) * lambda_step_size.unsqueeze(-1)
+        scaled_positions = noise_scaler(lambda_positions)
+        integral = torch.sum(1.0 / scaled_positions, dim=-1) * lambda_step_size
+        denoised_d = (denoised - previous_denoised) / (er_lambda_s - previous_lambda)
+        updated.add_(denoised_d * alpha_t * (dt + integral * noise_scaler(er_lambda_t)))
+        if stage_used >= 3:
+            safe_previous_previous_sigma = torch.where(active, previous_previous_sigma, torch.full_like(previous_previous_sigma, 0.5))
+            previous_previous_lambda = safe_previous_previous_sigma / (1.0 - safe_previous_previous_sigma)
+            integral_u = torch.sum((lambda_positions - er_lambda_s.unsqueeze(-1)) / scaled_positions, dim=-1) * lambda_step_size
+            denoised_u = (denoised_d - previous_denoised_d) / ((er_lambda_s - previous_previous_lambda) / 2.0)
+            updated.add_(denoised_u * alpha_t * (dt**2 / 2.0 + integral_u * noise_scaler(er_lambda_t)))
+    noise_scale = (er_lambda_t**2 - er_lambda_s**2 * ratio**2).sqrt().nan_to_num(nan=0.0)
+    updated.add_(noise * alpha_t * noise_scale)
+    updated = torch.where(active, updated, x)
+    if denoised_d is not None:
+        denoised_d = torch.where(active, denoised_d, torch.zeros_like(denoised_d))
+    return updated, denoised_d
 
 
 def _res_multistep_coefficients(sigmas):
@@ -160,7 +273,9 @@ def _pil_to_video(image):
 
 
 class MiniMaxH3Pipeline:
-    def __init__(self, transformer, text_encoder, video_vae, audio_vae, reference_mode=False, dtype=torch.bfloat16):
+    refinement_api = "masked_video_sigma_v1"
+
+    def __init__(self, transformer, text_encoder, video_vae, audio_vae, latent_upscaler=None, reference_mode=False, dtype=torch.bfloat16):
         self.transformer = transformer
         self.text_encoder = text_encoder
         self.vae = video_vae
@@ -169,10 +284,29 @@ class MiniMaxH3Pipeline:
         if torch.cuda.is_available() and torch.cuda.get_device_properties(None).total_memory >= 10 * 1024**3:
             self.video_decoder._budget = 0
         self.audio_vae = audio_vae
+        self.latent_upscaler = latent_upscaler
         self.reference_mode = bool(reference_mode)
         self.dtype = dtype
         self.text_encoder_cache = TextEncoderCache()
+        self._shared_offloadobj = None
+        self._private_offloadobj = None
         self._interrupt = False
+
+    def set_offload_handoff(self, shared_offloadobj, private_offloadobj):
+        self._shared_offloadobj = shared_offloadobj
+        self._private_offloadobj = private_offloadobj
+
+    def _use_shared_components(self):
+        if self._private_offloadobj is not None:
+            self._private_offloadobj.unload_all()
+
+    def _use_transformer(self):
+        if self._shared_offloadobj is not None:
+            self._shared_offloadobj.unload_all()
+
+    def detach_shared_components(self):
+        self.text_encoder = self.vae = self.video_encoder = self.video_decoder = self.audio_vae = self.latent_upscaler = None
+        self._shared_offloadobj = self._private_offloadobj = None
 
     @property
     def _interrupt(self):
@@ -181,13 +315,24 @@ class MiniMaxH3Pipeline:
     @_interrupt.setter
     def _interrupt(self, value):
         self._abort = bool(value)
-        for name in ("transformer", "text_encoder", "vae", "audio_vae"):
+        for name in ("transformer", "text_encoder", "vae", "audio_vae", "latent_upscaler"):
             if hasattr(self, name):
-                getattr(self, name)._interrupt = self._abort
+                module = getattr(self, name)
+                if module is not None:
+                    module._interrupt = self._abort
 
     @property
     def device(self):
         return torch.device("cuda" if torch.cuda.is_available() else next(self.transformer.parameters()).device)
+
+    def get_loras_transformer(self, _get_model_recursive_prop, model_def, guidance_phases, activated_loras, **_kwargs):
+        if int(guidance_phases) <= 1:
+            return [], []
+        selected_lora = next((lora for lora in activated_loras if _is_required_h3_turbo(os.path.basename(str(lora).split("|", 1)[0]))), None)
+        if selected_lora is not None and H3_ALLOW_PHASE_2_TURBO_OVERRIDE:
+            print(f"Automatic H3 Turbo LoRA copy is unnecessary because the user selected {os.path.basename(selected_lora)!r}; its phase-one multiplier is preserved and phase two is forced to 1.0")
+            return [], []
+        return [model_def[H3_TURBO_LORA_KEY]], ["0;1"]
 
     def get_trans_lora(self):
         return self.transformer, None
@@ -201,6 +346,8 @@ class MiniMaxH3Pipeline:
         self.text_encoder._interrupt = self._interrupt
         self.vae._interrupt = self._interrupt
         self.audio_vae._interrupt = self._interrupt
+        if self.latent_upscaler is not None:
+            self.latent_upscaler._interrupt = self._interrupt
 
     @staticmethod
     def _update_tensor_digest(digest, tensor):
@@ -287,20 +434,39 @@ class MiniMaxH3Pipeline:
         audio_latents.append(latent)
         audio_keyframes.append({"anchor": anchor, "latent_frame_count": latent.shape[-1]})
 
-    def _add_image_reference(self, image, target_width, target_height, image_refs_relative_size, presentation, visual_latents, refs):
+    def _prepare_image_reference(self, image, target_width, target_height, image_refs_relative_size):
         if image is None:
-            return
+            return None
         image = _to_pil(image)
         ratio = image.width / image.height
         pixel_budget = target_width * target_height * image_refs_relative_size / 100
         target_h, target_w = _resolve_canvas(*image.size, math.sqrt(pixel_budget / max(ratio, 1 / ratio)))
         if image.size != (target_w, target_h):
             image = image.resize((target_w, target_h), Image.Resampling.LANCZOS)
-        video = _pil_to_video(image)
+        return _pil_to_video(image)
+
+    def _add_image_reference(self, image, target_width, target_height, image_refs_relative_size, presentation, visual_latents, refs):
+        video = self._prepare_image_reference(image, target_width, target_height, image_refs_relative_size)
+        if video is None:
+            return
         latent = self._encode_video(video)
         presentation.append({"type": "image", "frames": _qwen_frames(video.clone())})
         visual_latents.append(latent)
         refs.append({"kind": "image", "latent_h": latent.shape[-2], "latent_w": latent.shape[-1]})
+
+    @torch.inference_mode()
+    def prewarm_refinement_prompt(self, prompt, reference_images, width, height, image_refs_relative_size=100.0):
+        """Populate the prompt/reference cache without loading or running either VAE."""
+        self._use_shared_components()
+        self._check_abort()
+        presentation = []
+        for image in reference_images or ():
+            video = self._prepare_image_reference(image, width, height, image_refs_relative_size)
+            if video is not None:
+                presentation.append({"type": "image", "frames": _qwen_frames(video)})
+        context, _ = self._encode_prompt(prompt, presentation)
+        self._check_abort()
+        context = presentation = None
 
     def _add_video_reference(self, video, soundtrack, fps, presentation, visual_latents, audio_latents, refs):
         video = _as_video(video)
@@ -352,14 +518,16 @@ class MiniMaxH3Pipeline:
                  frame_num=124, height=768, width=1344, shift=12.0, sampling_steps=30, seed=0,
                  callback=None, VAE_tile_size=None, audio_prompt_type="", video_prompt_type="", fps=24,
                  sample_solver="euler", attention_sparsity=1.0,
-                 set_progress_status=None, **kwargs):
+                 guide_phases=1, switch_threshold=H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, loras_slists=None, loras_selected=None, set_progress_status=None,
+                 starting_sigma=None, preserve_input_mask_values=False, refinement_mode=False, **kwargs):
+        self._use_shared_components()
         fps = float(fps)
         if fps <= 0:
             raise ValueError("MiniMax H3 requires a positive output frame rate")
         self._set_interrupt_state()
         self._check_abort()
         self._configure_tiling(VAE_tile_size)
-        if sample_solver not in ("euler", "res_multistep", "ralston_2s"):
+        if sample_solver not in ("euler", "er_sde", "res_multistep", "ralston_2s"):
             raise ValueError(f"Unsupported MiniMax H3 sampler {sample_solver!r}")
         if sample_solver == "ralston_2s" and self.transformer.cache is not None and self.transformer.cache.cache_type == "spectrum":
             raise ValueError("MiniMax H3 Ralston 2S does not support Spectrum Feature Forecasting; use No Skipping or First Block Cache")
@@ -384,7 +552,8 @@ class MiniMaxH3Pipeline:
         aligned_target_frames = normalize_frame_count(target_frames, 5, 17, 5)
         if target_frames <= 0:
             raise ValueError("Sliding-window overlap leaves no frames for H3 to generate")
-        control_video = not self.reference_mode and "G" in (video_prompt_type or "")
+        refinement_mode = bool(refinement_mode)
+        control_video = refinement_mode or (not self.reference_mode and "G" in (video_prompt_type or ""))
         video_to_video = control_video and not audio_from_control_video and (float(denoising_strength) < 1.0 or input_masks is not None)
 
         waveform = self._waveform(input_waveform, input_waveform_sample_rate)
@@ -392,13 +561,82 @@ class MiniMaxH3Pipeline:
         target_audio_condition = None
         target_video_condition = None
         frozen_target_video = None if frozen_control_video is None else frozen_control_video[:, history_count:]
-        presentation, visual_latents, audio_latents, refs, keyframes, audio_keyframes = [], [], [], [], [], []
+        target_height, target_width = int(height), int(width)
+        two_phase = int(guide_phases) > 1 and frozen_target_video is None
+        tiled_phase_2 = two_phase and H3_PHASE_2_TILING_FLAG in (video_prompt_type or "")
+        if two_phase:
+            if self.latent_upscaler is None:
+                raise RuntimeError("MiniMax H3 two-phase generation requires the latent upscaler")
+            height = max(32, round(target_height / H3_TWO_PHASE_SCALE / 32) * 32)
+            width = max(32, round(target_width / H3_TWO_PHASE_SCALE / 32) * 32)
+
+        def activate_lora_phase(phase, steps):
+            if loras_slists is None:
+                return
+            phase_switch_step = steps if phase == 1 else 0
+            update_loras_slists(self.transformer, loras_slists, steps, phase_switch_step=phase_switch_step, phase_switch_step2=steps)
+            offload.set_step_no_for_lora(self.transformer, 0)
+
+        def apply_phase_2_lora_policy():
+            if loras_slists is None:
+                return
+            required_turbo_found = False
+            for index, lora in enumerate(loras_selected or ()):
+                name = os.path.basename(str(lora).split("|", 1)[0])
+                lower_name = name.lower()
+                phase_2_multiplier = loras_slists["phase2"][index]
+                values = phase_2_multiplier if isinstance(phase_2_multiplier, list) else [phase_2_multiplier]
+                required_turbo = _is_required_h3_turbo(lower_name)
+                if required_turbo and (H3_ALLOW_PHASE_2_TURBO_OVERRIDE or not required_turbo_found):
+                    if any(float(value) != 1.0 for value in values):
+                        print(f"MiniMax H3 phase 2: forcing required Turbo LoRA '{name}' to multiplier 1.0")
+                    loras_slists["phase2"][index] = 1.0
+                    loras_slists["shared"][index] = False
+                    required_turbo_found = True
+                elif "turbo" in lower_name:
+                    if any(float(value) != 0.0 for value in values):
+                        print(f"MiniMax H3 phase 2: disabled Turbo LoRA '{name}' to avoid stacking it with the required LightX2V v0.1 Turbo LoRA")
+                    loras_slists["phase2"][index] = 0.0
+                    loras_slists["shared"][index] = False
+
+        activate_lora_phase(1, int(sampling_steps))
+
+        def prepare_keyframes(stage_height, stage_width, stage_presentation, tile_origin=None):
+            stage_latents, stage_keyframes = [], []
+
+            def prepare_stage_video(source):
+                if tile_origin is None:
+                    return _resize_video(source, stage_height, stage_width)
+                source = _resize_video(source, target_height, target_width)
+                return _crop_spatial_tile(source, tile_origin[0], tile_origin[1], stage_height, stage_width)
+
+            if continuation_count:
+                if history_frames is not None:
+                    self._add_video_history(prepare_stage_video(history_frames), stage_latents, stage_keyframes)
+                self._add_image_condition(prepare_stage_video(continuation[:, -1:]), 0, stage_presentation, stage_latents, stage_keyframes)
+            elif image_start is not None and not audio_from_control_video:
+                self._add_image_condition(prepare_stage_video(image_start), 0, stage_presentation, stage_latents, stage_keyframes)
+            if image_end is not None and not audio_from_control_video:
+                if image_end_frame_position is None:
+                    self._add_image_condition(prepare_stage_video(image_end), aligned_target_frames - 1, stage_presentation, stage_latents, stage_keyframes)
+                else:
+                    self._add_image_condition(prepare_stage_video(image_end), int(image_end_frame_position) - history_count, stage_presentation, stage_latents, stage_keyframes, anchor="frame")
+            for image, frame_index in zip(frames_to_inject or (), frames_relative_positions_list or ()):
+                frame_index = int(frame_index) - history_count
+                if 0 <= frame_index < target_frames:
+                    image = _to_pil(image)
+                    if tile_origin is not None:
+                        image = prepare_stage_video(_pil_to_video(image))
+                    elif image.size != (stage_width, stage_height):
+                        image = image.resize((stage_width, stage_height), Image.Resampling.LANCZOS)
+                    self._add_image_condition(image if torch.is_tensor(image) else _pil_to_video(image), frame_index, stage_presentation, stage_latents, stage_keyframes, anchor="frame")
+            return stage_latents, stage_keyframes
+
+        presentation, audio_latents, refs, audio_keyframes = [], [], [], []
+        visual_latents, keyframes = prepare_keyframes(height, width, presentation)
         if not self.reference_mode and (input_ref_images or input_frames is not None and not (control_video or audio_from_control_video) or input_frames2 is not None):
             raise ValueError("Image, video, and audio references require the Ref2VA checkpoint")
         if continuation_count:
-            if history_frames is not None:
-                self._add_video_history(history_frames, visual_latents, keyframes)
-            self._add_image_condition(continuation[:, -1:], 0, presentation, visual_latents, keyframes)
             if waveform is not None:
                 overlap_samples = round(continuation_count / fps * AUDIO_SAMPLE_RATE)
                 continuation_waveform = _fit_audio_samples(waveform[0], overlap_samples).unsqueeze(0)
@@ -411,22 +649,8 @@ class MiniMaxH3Pipeline:
                 if history_latents:
                     self._add_audio_condition(continuation_audio[..., :history_latents], "history", audio_latents, audio_keyframes)
                 self._add_audio_condition(continuation_audio[..., history_latents:], "first", audio_latents, audio_keyframes)
-        elif image_start is not None and not audio_from_control_video:
-            self._add_image_condition(image_start, 0, presentation, visual_latents, keyframes)
-        if image_end is not None and not audio_from_control_video:
-            if image_end_frame_position is None:
-                self._add_image_condition(image_end, aligned_target_frames - 1, presentation, visual_latents, keyframes)
-            else:
-                self._add_image_condition(image_end, int(image_end_frame_position) - history_count, presentation, visual_latents, keyframes, anchor="frame")
-        for image, frame_index in zip(frames_to_inject or (), frames_relative_positions_list or ()):
-            frame_index = int(frame_index) - history_count
-            if 0 <= frame_index < target_frames:
-                image = _to_pil(image)
-                if image.size != (width, height):
-                    image = image.resize((width, height), Image.Resampling.LANCZOS)
-                self._add_image_condition(_pil_to_video(image), frame_index, presentation, visual_latents, keyframes, anchor="frame")
         if frozen_target_video is not None:
-            target_video_condition = self._encode_video(frozen_target_video, keep_all_latents=True)
+            target_video_condition = self._encode_video(_resize_video(frozen_target_video, height, width), keep_all_latents=True)
         if self.reference_mode:
             for image in input_ref_images or []:
                 self._add_image_reference(image, width, height, image_refs_relative_size, presentation, visual_latents, refs)
@@ -441,14 +665,14 @@ class MiniMaxH3Pipeline:
         if total_reference_duration > 15:
             raise ValueError(f"MiniMax H3 reference videos must total at most 15 seconds (found {total_reference_duration:.2f}s)")
         soundtrack_sources = (audio_guide, audio_guide2) if "K" in (audio_prompt_type or "") else (None, None)
+        soundtracks = [self._load_audio_reference(soundtrack_sources[index]) if soundtrack_sources[index] is not None else None for index in range(len(video_sources))]
         for index, source in enumerate(video_sources):
-            soundtrack = self._load_audio_reference(soundtrack_sources[index]) if soundtrack_sources[index] is not None else None
-            self._add_video_reference(source, soundtrack, fps, presentation, visual_latents, audio_latents, refs)
-        if self.reference_mode and "A" in (audio_prompt_type or ""):
+            self._add_video_reference(_resize_video(source, height, width), soundtracks[index], fps, presentation, visual_latents, audio_latents, refs)
+        if self.reference_mode and not refinement_mode and "A" in (audio_prompt_type or ""):
             self._add_audio_reference(self._load_audio_reference(audio_guide) if audio_guide is not None else waveform, presentation, audio_latents, refs)
-        if self.reference_mode and "B" in (audio_prompt_type or ""):
+        if self.reference_mode and not refinement_mode and "B" in (audio_prompt_type or ""):
             self._add_audio_reference(self._load_audio_reference(audio_guide2), presentation, audio_latents, refs)
-        if not self.reference_mode and any(flag in (audio_prompt_type or "") for flag in "AK") and waveform is not None:
+        if (refinement_mode or not self.reference_mode) and any(flag in (audio_prompt_type or "") for flag in "AK") and waveform is not None:
             condition_start = round(history_count / fps * AUDIO_SAMPLE_RATE)
             condition_samples = round(target_frames / fps * AUDIO_SAMPLE_RATE)
             condition_waveform = waveform[..., condition_start:condition_start + condition_samples]
@@ -467,18 +691,19 @@ class MiniMaxH3Pipeline:
             if set_progress_status is not None:
                 set_progress_status("Encoding H3 control video")
             self._check_abort()
-            source_video = _as_video(input_frames)[:, history_count:history_count + aligned_target_frames]
+            source_video = _resize_video(_as_video(input_frames)[:, history_count:history_count + aligned_target_frames], height, width)
             source_latents = self.vae.encode(source_video.unsqueeze(0).to(device=self.device, dtype=self.vae._model_dtype)).cpu()
             self._check_abort()
             if input_masks is not None:
                 source_mask = input_masks[:, history_count:history_count + source_video.shape[1]]
-                editable_mask = _resize_video_mask(source_mask, source_latents.shape[-3:], self.vae.config.clip_length, self.vae.temporal_compression_ratio)
+                editable_mask = _resize_video_mask(source_mask, source_latents.shape[-3:], self.vae.config.clip_length, self.vae.temporal_compression_ratio, binarize=not preserve_input_mask_values)
             source_video = source_mask = None
 
         if set_progress_status is not None:
             set_progress_status("Encoding H3 prompt and references")
         context, text_tags = self._encode_prompt(input_prompt, presentation)
         self._check_abort()
+        self._use_transformer()
         context = self.transformer.preprocess_text_embeds(context)
 
         latent_t = video_latent_frames(aligned_target_frames)
@@ -509,157 +734,453 @@ class MiniMaxH3Pipeline:
                    "target_video_condition_frames": target_video_condition_frames,
                    "attention_sparsity": float(attention_sparsity)}
 
-        base_sigmas = torch.linspace(1.0, 0.0, int(sampling_steps) + 1, dtype=torch.float32)
+        if starting_sigma is None:
+            base_sigmas = torch.linspace(1.0, 0.0, int(sampling_steps) + 1, dtype=torch.float32)
+        else:
+            starting_sigma = float(starting_sigma)
+            if not 0.0 < starting_sigma <= 1.0:
+                raise ValueError("MiniMax H3 starting_sigma must be in (0, 1]")
+            base_start = starting_sigma / (float(shift) - starting_sigma * (float(shift) - 1.0))
+            base_sigmas = torch.linspace(base_start, 0.0, int(sampling_steps) + 1, dtype=torch.float32)
         sigmas_video = torch.unique_consecutive(float(shift) * base_sigmas / (1.0 + (float(shift) - 1.0) * base_sigmas))
         sigmas_audio = torch.unique_consecutive(3.0 * base_sigmas / (1.0 + 2.0 * base_sigmas))
         if sigmas_video.shape != sigmas_audio.shape:
             raise ValueError("The selected H3 flow shift collapses a different number of video and audio schedule points")
-        res_coefficients = _res_multistep_coefficients(sigmas_video) if sample_solver == "res_multistep" else None
-        if sample_solver == "ralston_2s":
-            ralston_sigmas_video = torch.lerp(sigmas_video[:-1], sigmas_video[1:], 2.0 / 3.0)
-            ralston_sigmas_audio = _map_shifted_sigma(ralston_sigmas_video, float(shift), 3.0)
-        else:
-            ralston_sigmas_video = ralston_sigmas_audio = None
         sigmas_video, sigmas_audio = sigmas_video.to(self.device), sigmas_audio.to(self.device)
-        if ralston_sigmas_video is not None:
-            ralston_sigmas_video, ralston_sigmas_audio = ralston_sigmas_video.to(self.device), ralston_sigmas_audio.to(self.device)
-        model_steps = sigmas_video.numel() - 1
+        refinement_sigmas_video = None
+        if source_latents is not None and starting_sigma is not None and preserve_input_mask_values:
+            if editable_mask is None or editable_mask.shape[-2:] != (1, 1):
+                raise ValueError("MiniMax H3 refinement requires a spatially uniform strength mask")
+            latent_strengths = editable_mask[0, 0, :source_latents.shape[2], 0, 0]
+            refinement_strength = latent_strengths[0]
+            if not bool((latent_strengths == refinement_strength).all()):
+                raise ValueError("MiniMax H3 refinement requires one uniform strength for the whole video")
+            refinement_sigmas_video = _uniform_latent_frame_sigma_schedule(sigmas_video, refinement_strength, source_latents.shape[2])
+            print(f"MiniMax H3 refinement: uniform strength {float(refinement_strength):.2f}, initial sigma {float(refinement_sigmas_video[0, 0, 0, 0, 0, 0]):.3f}")
+        if source_latents is not None and starting_sigma is not None:
+            source_video = video[:, :, :source_latents.shape[2]]
+            torch.lerp(source_latents, source_noise, refinement_sigmas_video[0] if refinement_sigmas_video is not None else sigmas_video[0], out=source_buffer)
+            if refinement_sigmas_video is not None or editable_mask is None:
+                source_video.copy_(source_buffer)
+            elif preserve_input_mask_values:
+                preserved = torch.lerp(source_latents, source_noise, 1.0 - VISUAL_COND_TIMESTEP)
+                source_video.copy_(preserved).lerp_(source_buffer, editable_mask)
+                preserved = None
+            else:
+                source_video.copy_(source_latents).lerp_(source_buffer, editable_mask)
         tau_start = float(attention_sparsity)
-        tau_denominator = max(1, model_steps - 1)
-        denoising_start_step = int(round(model_steps * (1.0 - float(denoising_strength)), 4))
-        mask_end_step = min(model_steps, denoising_start_step + math.ceil(model_steps * float(masking_strength))) if editable_mask is not None else 0
         cache = self.transformer.cache
-        spectrum = MiniMaxH3Spectrum(cache, sigmas_video[:-1], sample_solver) if cache is not None and cache.cache_type == "spectrum" else None
-        first_block_cache = MiniMaxH3FirstBlockCache(cache) if cache is not None and cache.cache_type == "first_block" else None
-        offline_spectrum = spectrum is not None and spectrum.full_anchor_cache
         audio_scale = float(shift) / 3.0
-        audio_on_video_schedule = sample_solver in ("res_multistep", "ralston_2s")
 
-        def denoise_pass(description, denoising_extra=""):
+        def run_denoising(stage_sigmas_video, stage_sigmas_audio, description, denoising_extra="", pass_no=-1, freeze_audio=False, stage_solver=None, use_cache=True, effective_sigmas_video=None):
             nonlocal video, audio
-            old_video_denoised = old_audio_denoised = None
-            for step in tqdm(range(model_steps), desc=description):
-                self._set_interrupt_state()
-                self._check_abort()
-                payload["attention_sparsity"] = tau_start + (SOL_ATTN_TAU_END - tau_start) * step / tau_denominator
-                offload.set_step_no_for_lora(self.transformer, step)
-                if spectrum is not None:
-                    spectrum.begin_step(step)
-                if first_block_cache is not None:
-                    first_block_cache.begin_step(step)
-                audio_tail = audio[..., target_audio_condition_latents:]
-                if audio_on_video_schedule and audio_tail.shape[-1]:
-                    # Higher-order samplers carry generated audio on the video schedule; H3 receives its native state.
-                    audio_tail.mul_(sigmas_audio[step] / sigmas_video[step])
-                video_velocity, audio_velocity = self.transformer(video, audio, sigmas_video[step:step + 1], sigmas_audio[step:step + 1], context, payload, spectrum=spectrum, first_block_cache=first_block_cache)
-                if spectrum is not None:
-                    spectrum.finish_step()
-                if sample_solver == "euler":
-                    video_ratio = sigmas_video[step + 1] / sigmas_video[step]
-                    if not target_video_condition_frames:
-                        video_velocity.mul_(sigmas_video[step]).add_(video)
-                        video.mul_(video_ratio).add_(video_velocity, alpha=1.0 - video_ratio)
-                    audio_ratio = sigmas_audio[step + 1] / sigmas_audio[step]
-                    if audio_tail.shape[-1]:
-                        audio_velocity_tail = audio_velocity[..., target_audio_condition_latents:]
-                        audio_velocity_tail.mul_(sigmas_audio[step]).add_(audio_tail)
-                        audio_tail.mul_(audio_ratio).add_(audio_velocity_tail, alpha=1.0 - audio_ratio)
-                elif sample_solver == "res_multistep":
-                    coefficients = res_coefficients[step]
-                    if not target_video_condition_frames:
-                        video_denoised = video_velocity.mul_(sigmas_video[step]).add_(video)
-                        _res_multistep_update(video, video_denoised, old_video_denoised, coefficients)
-                        old_video_denoised = video_denoised
-                    if audio_tail.shape[-1]:
-                        audio_velocity_tail = audio_velocity[..., target_audio_condition_latents:]
-                        audio_denoised = audio_velocity_tail.mul_(sigmas_audio[step]).add_(audio_tail).mul_(audio_scale)
-                        audio_tail.mul_(sigmas_video[step] / sigmas_audio[step])
-                        _res_multistep_update(audio_tail, audio_denoised, old_audio_denoised, coefficients)
-                        old_audio_denoised = audio_denoised
-                else:
-                    sigma_video, sigma_audio = sigmas_video[step], sigmas_audio[step]
-                    stage_sigma_video, stage_sigma_audio = ralston_sigmas_video[step], ralston_sigmas_audio[step]
-                    step_size = sigma_video - sigmas_video[step + 1]
-                    stage_size = sigma_video - stage_sigma_video
-                    stage_video = video if target_video_condition_frames else video_velocity.clone().mul_(stage_size).add_(video)
-                    if source_latents is not None and not target_video_condition_frames and (step < denoising_start_step or step < mask_end_step):
-                        stage_source_video = stage_video[:, :, :source_latents.shape[2]]
-                        stage_source_mask = None if step < denoising_start_step else editable_mask
-                        _reinject_video_source(stage_source_video, source_latents, source_noise, stage_source_mask, stage_sigma_video, source_buffer)
-                    if audio_tail.shape[-1]:
-                        audio_velocity_tail = audio_velocity[..., target_audio_condition_latents:]
-                        audio_velocity_tail.mul_(1.0 + (audio_scale - 1.0) * sigma_audio).add_(audio_tail, alpha=audio_scale - 1.0)
-                        audio_tail.mul_(sigma_video / sigma_audio)
-                        stage_audio = audio.clone()
-                        stage_audio_tail = stage_audio[..., target_audio_condition_latents:]
-                        stage_audio_tail.add_(audio_velocity_tail.clone().mul_(stage_size)).mul_(stage_sigma_audio / stage_sigma_video)
-                    else:
-                        stage_audio = audio
-                    self._check_abort()
-                    payload["attention_sparsity"] = tau_start + (SOL_ATTN_TAU_END - tau_start) * min(step + 2.0 / 3.0, tau_denominator) / tau_denominator
-                    stage_video_velocity, stage_audio_velocity = self.transformer(stage_video, stage_audio, stage_sigma_video.view(1), stage_sigma_audio.view(1), context, payload, first_block_cache=first_block_cache)
-                    self._check_abort()
-                    if not target_video_condition_frames:
-                        # Match RES4LYF ralston_2s noise_anchor=1: anchor the second-stage denoised estimate to the interval start.
-                        stage_video_velocity.mul_(stage_sigma_video).add_(stage_video).sub_(video).div_(sigma_video)
-                        video_velocity.mul_(0.25).add_(stage_video_velocity, alpha=0.75).mul_(step_size)
-                        video.add_(video_velocity)
-                    if audio_tail.shape[-1]:
-                        stage_audio_velocity_tail = stage_audio_velocity[..., target_audio_condition_latents:]
-                        stage_audio_velocity_tail.mul_(1.0 + (audio_scale - 1.0) * stage_sigma_audio).add_(stage_audio_tail, alpha=audio_scale - 1.0)
-                        stage_audio_tail.mul_(stage_sigma_video / stage_sigma_audio)
-                        stage_audio_velocity_tail.mul_(stage_sigma_video).add_(stage_audio_tail).sub_(audio_tail).div_(sigma_video)
-                        audio_velocity_tail.mul_(0.25).add_(stage_audio_velocity_tail, alpha=0.75).mul_(step_size)
-                        audio_tail.add_(audio_velocity_tail)
-                    stage_video = stage_audio = stage_video_velocity = stage_audio_velocity = None
-                if source_latents is not None and (step < denoising_start_step or step < mask_end_step):
-                    source_video = video[:, :, :source_latents.shape[2]]
-                    source_mask = None if step < denoising_start_step else editable_mask
-                    _reinject_video_source(source_video, source_latents, source_noise, source_mask, sigmas_video[step + 1], source_buffer)
-                video_velocity = audio_velocity = None
-                if callback is not None:
-                    preview = video[0].detach().cpu() if not offline_spectrum or spectrum.replaying else None
-                    callback(step, preview, False, denoising_extra=denoising_extra) if denoising_extra else callback(step, preview, False)
+            stage_solver = stage_solver or sample_solver
+            audio_on_video_schedule = stage_solver in ("res_multistep", "ralston_2s")
+            model_steps = stage_sigmas_video.numel() - 1
+            tau_denominator = max(1, model_steps - 1)
+            denoising_start_step = 0 if starting_sigma is not None else int(round(model_steps * (1.0 - float(denoising_strength)), 4))
+            mask_end_step = min(model_steps, denoising_start_step + math.ceil(model_steps * float(masking_strength))) if editable_mask is not None else 0
+            effective_res_sigmas = effective_sigmas_video[:, 0, 0, 0, 0, 0] if effective_sigmas_video is not None else stage_sigmas_video
+            res_coefficients = _res_multistep_coefficients(effective_res_sigmas) if stage_solver == "res_multistep" else None
+            audio_res_coefficients = _res_multistep_coefficients(stage_sigmas_video) if effective_sigmas_video is not None and stage_solver == "res_multistep" else res_coefficients
+            if stage_solver == "ralston_2s":
+                ralston_sigmas_video = torch.lerp(stage_sigmas_video[:-1], stage_sigmas_video[1:], 2.0 / 3.0)
+                ralston_effective_sigmas_video = torch.lerp(effective_sigmas_video[:-1], effective_sigmas_video[1:], 2.0 / 3.0) if effective_sigmas_video is not None else None
+                ralston_sigmas_audio = torch.zeros_like(ralston_sigmas_video) if freeze_audio else _map_shifted_sigma(ralston_sigmas_video, float(shift), 3.0)
+            else:
+                ralston_sigmas_video = ralston_effective_sigmas_video = ralston_sigmas_audio = None
+            active_cache = cache if use_cache else None
+            spectrum = MiniMaxH3Spectrum(active_cache, stage_sigmas_video[:-1], stage_solver) if active_cache is not None and active_cache.cache_type == "spectrum" else None
+            first_block_cache = MiniMaxH3FirstBlockCache(active_cache) if active_cache is not None and active_cache.cache_type == "first_block" else None
+            offline_spectrum = spectrum is not None and spectrum.full_anchor_cache
 
-        initial_video = initial_audio = None
-        try:
-            if offline_spectrum:
+            def denoise_pass(pass_description, pass_extra):
+                nonlocal video, audio
+                old_video_denoised = old_audio_denoised = None
+                old_video_denoised_d = old_audio_denoised_d = None
+                er_generator = torch.Generator(device=video.device).manual_seed(int(seed)) if stage_solver == "er_sde" else None
+                for step in tqdm(range(model_steps), desc=pass_description):
+                    self._set_interrupt_state()
+                    self._check_abort()
+                    payload["attention_sparsity"] = tau_start + (SOL_ATTN_TAU_END - tau_start) * step / tau_denominator
+                    offload.set_step_no_for_lora(self.transformer, step)
+                    if spectrum is not None:
+                        spectrum.begin_step(step)
+                    if first_block_cache is not None:
+                        first_block_cache.begin_step(step)
+                    audio_tail = audio[..., target_audio_condition_latents:]
+                    if audio_on_video_schedule and audio_tail.shape[-1]:
+                        audio_tail.mul_(stage_sigmas_audio[step] / stage_sigmas_video[step])
+                    sigma_video = effective_sigmas_video[step] if effective_sigmas_video is not None else stage_sigmas_video[step]
+                    sigma_video_next = effective_sigmas_video[step + 1] if effective_sigmas_video is not None else stage_sigmas_video[step + 1]
+                    previous_sigma_video = (effective_sigmas_video[step - 1] if effective_sigmas_video is not None else stage_sigmas_video[step - 1]) if step else None
+                    previous_previous_sigma_video = (effective_sigmas_video[step - 2] if effective_sigmas_video is not None else stage_sigmas_video[step - 2]) if step > 1 else None
+                    video_velocity, audio_velocity = self.transformer(video, audio, sigma_video.flatten(), stage_sigmas_audio[step:step + 1], context, payload, spectrum=spectrum, first_block_cache=first_block_cache)
+                    if spectrum is not None:
+                        spectrum.finish_step()
+                    if stage_solver == "er_sde":
+                        video_denoised = video_velocity.float().mul_(sigma_video).add_(video)
+                        if effective_sigmas_video is None and source_latents is not None and editable_mask is not None:
+                            _blend_video_source(video_denoised, source_latents, editable_mask)
+                        audio_denoised = None
+                        if audio_tail.shape[-1]:
+                            audio_denoised = audio_velocity[..., target_audio_condition_latents:].float().mul_(stage_sigmas_audio[step]).add_(audio_tail)
+                        if not bool(sigma_video_next.any()):
+                            video.copy_(video_denoised)
+                            if audio_denoised is not None:
+                                audio_tail.copy_(audio_denoised)
+                        else:
+                            video_er_noise = torch.randn(video.shape, dtype=video.dtype, device=video.device, generator=er_generator)
+                            audio_er_noise = torch.randn(audio.shape, dtype=audio.dtype, device=audio.device, generator=er_generator)
+                            video, video_denoised_d = _er_sde_step(video, video_denoised, sigma_video, sigma_video_next,
+                                                                  previous_sigma_video, previous_previous_sigma_video,
+                                                                  old_video_denoised, old_video_denoised_d, video_er_noise, min(3, step + 1))
+                            if audio_denoised is not None:
+                                updated_audio, audio_denoised_d = _er_sde_step(audio_tail, audio_denoised, stage_sigmas_audio[step], stage_sigmas_audio[step + 1],
+                                                                               stage_sigmas_audio[step - 1] if step else None,
+                                                                               stage_sigmas_audio[step - 2] if step > 1 else None,
+                                                                               old_audio_denoised, old_audio_denoised_d,
+                                                                               audio_er_noise[..., target_audio_condition_latents:], min(3, step + 1))
+                                audio_tail.copy_(updated_audio)
+                                old_audio_denoised_d = audio_denoised_d
+                            video_er_noise = audio_er_noise = None
+                            old_video_denoised_d = video_denoised_d
+                        old_video_denoised, old_audio_denoised = video_denoised, audio_denoised
+                    elif stage_solver == "euler":
+                        video_ratio = sigma_video_next / sigma_video
+                        if not target_video_condition_frames:
+                            video_denoised = video_velocity.mul_(sigma_video).add_(video)
+                            if effective_sigmas_video is None and source_latents is not None and editable_mask is not None:
+                                _blend_video_source(video_denoised, source_latents, editable_mask)
+                            if effective_sigmas_video is None:
+                                video.mul_(video_ratio).add_(video_denoised, alpha=1.0 - video_ratio)
+                            else:
+                                video.mul_(video_ratio).add_(video_denoised * (1.0 - video_ratio))
+                        if audio_tail.shape[-1]:
+                            audio_ratio = stage_sigmas_audio[step + 1] / stage_sigmas_audio[step]
+                            audio_velocity_tail = audio_velocity[..., target_audio_condition_latents:]
+                            audio_velocity_tail.mul_(stage_sigmas_audio[step]).add_(audio_tail)
+                            audio_tail.mul_(audio_ratio).add_(audio_velocity_tail, alpha=1.0 - audio_ratio)
+                    elif stage_solver == "res_multistep":
+                        coefficients = res_coefficients[step]
+                        if not target_video_condition_frames:
+                            video_denoised = video_velocity.mul_(sigma_video).add_(video)
+                            if effective_sigmas_video is None and source_latents is not None and editable_mask is not None:
+                                _blend_video_source(video_denoised, source_latents, editable_mask)
+                            _res_multistep_update(video, video_denoised, old_video_denoised, coefficients)
+                            old_video_denoised = video_denoised
+                        if audio_tail.shape[-1]:
+                            audio_velocity_tail = audio_velocity[..., target_audio_condition_latents:]
+                            audio_denoised = audio_velocity_tail.mul_(stage_sigmas_audio[step]).add_(audio_tail).mul_(audio_scale)
+                            audio_tail.mul_(stage_sigmas_video[step] / stage_sigmas_audio[step])
+                            _res_multistep_update(audio_tail, audio_denoised, old_audio_denoised, audio_res_coefficients[step])
+                            old_audio_denoised = audio_denoised
+                    else:
+                        sigma_audio = stage_sigmas_audio[step]
+                        stage_sigma_video = ralston_effective_sigmas_video[step] if ralston_effective_sigmas_video is not None else ralston_sigmas_video[step]
+                        stage_sigma_audio = ralston_sigmas_audio[step]
+                        step_size = sigma_video - sigma_video_next
+                        stage_size = sigma_video - stage_sigma_video
+                        carrier_sigma_video = stage_sigmas_video[step]
+                        carrier_stage_sigma_video = ralston_sigmas_video[step]
+                        carrier_step_size = carrier_sigma_video - stage_sigmas_video[step + 1]
+                        carrier_stage_size = carrier_sigma_video - carrier_stage_sigma_video
+                        if effective_sigmas_video is None and source_latents is not None and editable_mask is not None:
+                            video_velocity.mul_(sigma_video).add_(video)
+                            _blend_video_source(video_velocity, source_latents, editable_mask)
+                            video_velocity.sub_(video).div_(sigma_video)
+                        stage_video = video if target_video_condition_frames else video_velocity.clone().mul_(stage_size).add_(video)
+                        if effective_sigmas_video is None and source_latents is not None and not target_video_condition_frames and (step < denoising_start_step or step < mask_end_step):
+                            stage_source_video = stage_video[:, :, :source_latents.shape[2]]
+                            stage_source_mask = None if step < denoising_start_step else editable_mask
+                            _reinject_video_source(stage_source_video, source_latents, source_noise, stage_source_mask, stage_sigma_video, source_buffer,
+                                                   1.0 - VISUAL_COND_TIMESTEP if preserve_input_mask_values else None)
+                        if audio_tail.shape[-1]:
+                            audio_velocity_tail = audio_velocity[..., target_audio_condition_latents:]
+                            audio_velocity_tail.mul_(1.0 + (audio_scale - 1.0) * sigma_audio).add_(audio_tail, alpha=audio_scale - 1.0)
+                            audio_tail.mul_(carrier_sigma_video / sigma_audio)
+                            stage_audio = audio.clone()
+                            stage_audio_tail = stage_audio[..., target_audio_condition_latents:]
+                            stage_audio_tail.add_(audio_velocity_tail.clone().mul_(carrier_stage_size)).mul_(stage_sigma_audio / carrier_stage_sigma_video)
+                        else:
+                            stage_audio = audio
+                        self._check_abort()
+                        payload["attention_sparsity"] = tau_start + (SOL_ATTN_TAU_END - tau_start) * min(step + 2.0 / 3.0, tau_denominator) / tau_denominator
+                        stage_video_velocity, stage_audio_velocity = self.transformer(stage_video, stage_audio, stage_sigma_video.flatten(), stage_sigma_audio.view(1), context, payload, first_block_cache=first_block_cache)
+                        self._check_abort()
+                        if not target_video_condition_frames:
+                            stage_video_velocity.mul_(stage_sigma_video).add_(stage_video)
+                            if effective_sigmas_video is None and source_latents is not None and editable_mask is not None:
+                                _blend_video_source(stage_video_velocity, source_latents, editable_mask)
+                            stage_video_velocity.sub_(video).div_(sigma_video)
+                            video_velocity.mul_(0.25).add_(stage_video_velocity, alpha=0.75).mul_(step_size)
+                            video.add_(video_velocity)
+                        if audio_tail.shape[-1]:
+                            stage_audio_velocity_tail = stage_audio_velocity[..., target_audio_condition_latents:]
+                            stage_audio_velocity_tail.mul_(1.0 + (audio_scale - 1.0) * stage_sigma_audio).add_(stage_audio_tail, alpha=audio_scale - 1.0)
+                            stage_audio_tail.mul_(carrier_stage_sigma_video / stage_sigma_audio)
+                            stage_audio_velocity_tail.mul_(carrier_stage_sigma_video).add_(stage_audio_tail).sub_(audio_tail).div_(carrier_sigma_video)
+                            audio_velocity_tail.mul_(0.25).add_(stage_audio_velocity_tail, alpha=0.75).mul_(carrier_step_size)
+                            audio_tail.add_(audio_velocity_tail)
+                        stage_video = stage_audio = stage_video_velocity = stage_audio_velocity = None
+                    final_masked_er_step = preserve_input_mask_values and stage_solver == "er_sde" and not bool(sigma_video_next.any())
+                    if effective_sigmas_video is None and source_latents is not None and not final_masked_er_step and (step < denoising_start_step or step < mask_end_step):
+                        source_video = video[:, :, :source_latents.shape[2]]
+                        source_mask = None if step < denoising_start_step else editable_mask
+                        _reinject_video_source(source_video, source_latents, source_noise, source_mask, stage_sigmas_video[step + 1], source_buffer,
+                                               1.0 - VISUAL_COND_TIMESTEP if preserve_input_mask_values else None)
+                    video_velocity = audio_velocity = None
+                    if callback is not None:
+                        preview = video[0].detach().cpu() if not offline_spectrum or spectrum.replaying else None
+                        callback(step, preview, False, denoising_extra=pass_extra, **({"pass_no": pass_no} if pass_no >= 0 else {}))
+
+            try:
+                if callback is not None:
+                    callback(-1, None, True, override_num_inference_steps=model_steps, denoising_extra=denoising_extra, **({"pass_no": pass_no} if pass_no >= 0 else {}))
+                if not offline_spectrum:
+                    denoise_pass(description, denoising_extra)
+                    return
                 initial_video = video.detach().to(device="cpu", copy=True, non_blocking=False)
                 initial_audio = audio.detach().to(device="cpu", copy=True, non_blocking=False)
-                if set_progress_status is not None:
-                    set_progress_status("Denoising")
-                if callback is not None:
-                    callback(-1, None, True, override_num_inference_steps=model_steps)
-                denoise_pass("H3 Spectrum anchor capture")
+                denoise_pass(f"{description} Spectrum anchor capture", denoising_extra)
                 spectrum.complete_capture(self._check_abort)
                 spectrum.start_replay()
                 video = initial_video.to(self.device)
                 audio = initial_audio.to(self.device)
+                replay_extra = f"{denoising_extra} Spectrum smoothing replay".strip()
                 if set_progress_status is not None:
-                    set_progress_status("Spectrum smoothing replay")
+                    set_progress_status(replay_extra)
                 if callback is not None:
-                    callback(-1, None, True, override_num_inference_steps=model_steps, denoising_extra="Spectrum smoothing replay")
-                denoise_pass("H3 Spectrum replay", "Spectrum smoothing replay")
-            else:
-                if callback is not None:
-                    callback(-1, None, True, override_num_inference_steps=model_steps)
-                denoise_pass("H3 denoising")
-        finally:
-            if spectrum is not None:
-                spectrum.reset()
-            if first_block_cache is not None:
-                first_block_cache.reset()
+                    callback(-1, None, True, override_num_inference_steps=model_steps, denoising_extra=replay_extra, **({"pass_no": pass_no} if pass_no >= 0 else {}))
+                denoise_pass(f"{description} Spectrum replay", replay_extra)
+            finally:
+                if spectrum is not None:
+                    spectrum.reset()
+                if first_block_cache is not None:
+                    first_block_cache.reset()
+                if audio_on_video_schedule:
+                    audio[..., target_audio_condition_latents:].div_(audio_scale)
 
-        if audio_on_video_schedule:
-            audio[..., target_audio_condition_latents:].div_(audio_scale)
-        initial_video = initial_audio = None
+        phase_1_extra = "Phase 1/2 Low Resolution" if two_phase else ""
+        if set_progress_status is not None:
+            set_progress_status(phase_1_extra or "Denoising")
+        run_denoising(sigmas_video, sigmas_audio, "H3 phase 1 denoising" if two_phase else "H3 denoising", phase_1_extra, 1 if two_phase else -1,
+                      effective_sigmas_video=refinement_sigmas_video)
+
+        decoded_video = None
+        if two_phase:
+            self._use_shared_components()
+            if set_progress_status is not None:
+                set_progress_status("Upscaling H3 latent between phases")
+
+            def upscaler_progress(_phase, current_step, total_steps):
+                if set_progress_status is not None:
+                    set_progress_status(f"Upscaling H3 latent between phases ({int(current_step) + 1}/{int(total_steps)})")
+
+            target_latent_h, target_latent_w = math.ceil(target_height / 16), math.ceil(target_width / 16)
+            effective_scale = (target_latent_h / video.shape[-2] + target_latent_w / video.shape[-1]) / 2.0
+            mean = video.new_tensor(LATENTS_MEAN, dtype=torch.bfloat16).view(1, -1, 1, 1, 1)
+            std = video.new_tensor(LATENTS_STD, dtype=torch.bfloat16).view(1, -1, 1, 1, 1)
+            normalized_video = (video.to(torch.bfloat16) - mean) / std
+            video = self.latent_upscaler(normalized_video, effective_scale, target_size=(latent_t, target_latent_h, target_latent_w), abort_callback=lambda: self._interrupt, progress_callback=upscaler_progress)
+            video = (video * std + mean).float()
+            normalized_video = mean = std = None
+            self._check_abort()
+
+            apply_phase_2_lora_policy()
+            activate_lora_phase(2, len(H3_PHASE_2_SIGMAS) - 1)
+            phase_2_reference_presentation, phase_2_reference_latents = [], []
+            phase_2_refs = []
+            if self.reference_mode:
+                for image in input_ref_images or []:
+                    self._add_image_reference(image, target_width, target_height, image_refs_relative_size, phase_2_reference_presentation, phase_2_reference_latents, phase_2_refs)
+                for index, source in enumerate(video_sources):
+                    if soundtracks[index] is not None:
+                        phase_2_reference_presentation.append({"type": "audio"})
+                    self._add_video_reference(_resize_video(source, target_height, target_width), None, fps, phase_2_reference_presentation, phase_2_reference_latents, [], phase_2_refs)
+                visual_refs = [ref for ref in refs if ref["kind"] != "audio"]
+                for phase_2_ref, original_ref in zip(phase_2_refs, visual_refs):
+                    phase_2_ref["kind"] = original_ref["kind"]
+                    phase_2_ref["ref_audio_t"] = original_ref.get("ref_audio_t", 0)
+                for audio_ref in (ref for ref in refs if ref["kind"] == "audio"):
+                    phase_2_reference_presentation.append({"type": "audio"})
+                    phase_2_refs.append(audio_ref)
+            phase_2_presentation = []
+            phase_2_visual_latents, keyframes = prepare_keyframes(target_height, target_width, phase_2_presentation)
+            phase_2_keyframe_count = len(keyframes)
+            phase_2_presentation.extend(phase_2_reference_presentation)
+            phase_2_visual_latents.extend(phase_2_reference_latents)
+            context, text_tags = self._encode_prompt(input_prompt, phase_2_presentation)
+            self._check_abort()
+            phase_2_generator = torch.Generator(device="cpu").manual_seed(int(seed))
+            phase_2_sigmas_video = torch.tensor((float(switch_threshold), *H3_PHASE_2_SIGMAS[1:]), dtype=torch.float32, device=self.device)
+            target_audio_condition_latents = audio_t
+            target_video_condition_frames = 0
+
+            if tiled_phase_2:
+                phase_2_keyframe_conditions = []
+                for latent in phase_2_visual_latents[:phase_2_keyframe_count]:
+                    condition = latent.float().mul_(VISUAL_COND_TIMESTEP)
+                    condition.add_(torch.randn(latent.shape, generator=phase_2_generator, dtype=torch.float32, device="cpu"), alpha=1.0 - VISUAL_COND_TIMESTEP)
+                    phase_2_keyframe_conditions.append(condition)
+                phase_2_reference_rows, _ = self._prepare_condition_rows(phase_2_visual_latents[phase_2_keyframe_count:], [], phase_2_generator)
+                phase_2_visual_latents = None
+                phase_2_base_video = video.detach().to(device="cpu", copy=True, non_blocking=False)
+                phase_2_noise = torch.randn(video.shape, generator=torch.Generator(device="cpu").manual_seed(int(seed)), dtype=torch.float32, device="cpu")
+                phase_2_latent_canvas = torch.lerp(phase_2_base_video, phase_2_noise, float(phase_2_sigmas_video[0]))
+                video = phase_2_base_video = None
+                row_tiles = _spatial_tiles(target_height)
+                column_tiles = _spatial_tiles(target_width)
+                tile_count = H3_PHASE_2_TILE_COUNT
+                if video_to_video:
+                    phase_2_source_video = _resize_video(_as_video(input_frames)[:, history_count:history_count + aligned_target_frames], target_height, target_width)
+                    phase_2_source_latents = self.vae.encode(phase_2_source_video.unsqueeze(0).to(device=self.device, dtype=self.vae._model_dtype))
+                    phase_2_source_latents = phase_2_source_latents[:, :, :latent_t].to(device="cpu", dtype=phase_2_latent_canvas.dtype, non_blocking=False)
+                    if input_masks is not None:
+                        phase_2_source_mask = input_masks[:, history_count:history_count + phase_2_source_video.shape[1]]
+                        phase_2_editable_mask = _resize_video_mask(phase_2_source_mask, phase_2_source_latents.shape[-3:], self.vae.config.clip_length,
+                                                                   self.vae.temporal_compression_ratio, binarize=not preserve_input_mask_values)
+                    else:
+                        phase_2_editable_mask = None
+                    phase_2_source_video = phase_2_source_mask = None
+                else:
+                    phase_2_source_latents = phase_2_editable_mask = None
+                if phase_2_source_latents is not None:
+                    phase_2_source_noise = phase_2_noise[:, :, :phase_2_source_latents.shape[2]]
+                    phase_2_source_buffer = torch.empty_like(phase_2_source_latents)
+                    if phase_2_editable_mask is not None:
+                        torch.lerp(phase_2_source_latents, phase_2_source_noise, float(phase_2_sigmas_video[0]), out=phase_2_source_buffer)
+                        phase_2_latent_canvas[:, :, :phase_2_source_latents.shape[2]].lerp_(phase_2_source_buffer, 1.0 - phase_2_editable_mask)
+                else:
+                    phase_2_source_noise = phase_2_source_buffer = None
+
+                phase_2_tiles = []
+                phase_2_weight_sum = torch.zeros((1, 1, 1, target_latent_h, target_latent_w), dtype=torch.float32, device="cpu")
+                for row, (top, tile_height) in enumerate(row_tiles):
+                    top_overlap = 0 if not row else row_tiles[row - 1][0] + row_tiles[row - 1][1] - top
+                    bottom_overlap = 0 if row + 1 == len(row_tiles) else top + tile_height - row_tiles[row + 1][0]
+                    for column, (left, tile_width) in enumerate(column_tiles):
+                        left_overlap = 0 if not column else column_tiles[column - 1][0] + column_tiles[column - 1][1] - left
+                        right_overlap = 0 if column + 1 == len(column_tiles) else left + tile_width - column_tiles[column + 1][0]
+                        latent_top, latent_left = top // 16, left // 16
+                        latent_height, latent_width = tile_height // 16, tile_width // 16
+                        tile_condition_rows = ([patchify_video(_crop_spatial_tile(condition, latent_top, latent_left, latent_height, latent_width), self.transformer.patch_size)
+                                                for condition in phase_2_keyframe_conditions])
+                        tile_condition_rows = torch.cat(tile_condition_rows) if tile_condition_rows else None
+                        weights = _phase_2_tile_weights(latent_height, latent_width, top_overlap // 16, bottom_overlap // 16,
+                                                        left_overlap // 16, right_overlap // 16)
+                        phase_2_weight_sum[..., latent_top:latent_top + latent_height, latent_left:latent_left + latent_width].add_(weights)
+                        phase_2_tiles.append((latent_top, latent_left, latent_height, latent_width, weights,
+                                              tile_condition_rows, (target_latent_h, target_latent_w, latent_top, latent_left)))
+
+                source_latents = source_noise = source_buffer = editable_mask = None
+                self._use_transformer()
+                context = self.transformer.preprocess_text_embeds(context)
+                payload["keyframes"] = keyframes or None
+                payload["refs"] = phase_2_refs or None
+                payload["text_token_tags"] = text_tags
+                payload["target_audio_condition_latents"] = audio_t
+                payload["target_video_condition_frames"] = 0
+                phase_extra = "Phase 2/2 Tiled"
+                model_steps = phase_2_sigmas_video.numel() - 1
+                progress_steps = model_steps * tile_count
+                denoising_start_step = 0 if starting_sigma is not None else int(round(model_steps * (1.0 - float(denoising_strength)), 4))
+                mask_end_step = min(model_steps, denoising_start_step + math.ceil(model_steps * float(masking_strength))) if phase_2_editable_mask is not None else 0
+                if set_progress_status is not None:
+                    set_progress_status(phase_extra)
+                if callback is not None:
+                    callback(-1, None, True, override_num_inference_steps=progress_steps, denoising_extra=phase_extra, pass_no=2)
+                for step in tqdm(range(model_steps), desc="H3 phase 2 tiled denoising"):
+                    self._set_interrupt_state()
+                    self._check_abort()
+                    payload["attention_sparsity"] = tau_start + (SOL_ATTN_TAU_END - tau_start) * step / max(1, model_steps - 1)
+                    offload.set_step_no_for_lora(self.transformer, step)
+                    sigma_video, sigma_video_next = phase_2_sigmas_video[step], phase_2_sigmas_video[step + 1]
+                    phase_2_accumulator = torch.zeros_like(phase_2_latent_canvas)
+                    for tile_no, (latent_top, latent_left, latent_height, latent_width, weights, tile_condition_rows, spatial_context) in enumerate(phase_2_tiles, 1):
+                        self._check_abort()
+                        progress_step = step * tile_count + tile_no
+                        condition_rows = [rows for rows in (tile_condition_rows, phase_2_reference_rows) if rows is not None]
+                        payload["cond_video_rows"] = torch.cat(condition_rows) if len(condition_rows) > 1 else (condition_rows[0] if condition_rows else None)
+                        payload["target_spatial_context"] = spatial_context
+                        for key in ("layout_signature", "layout", "rope"):
+                            payload.pop(key, None)
+                        tile_video = _crop_spatial_tile(phase_2_latent_canvas, latent_top, latent_left, latent_height, latent_width).to(self.device)
+                        tile_velocity, audio_velocity = self.transformer(tile_video, audio, sigma_video.view(1), phase_2_sigmas_video.new_zeros(1), context, payload)
+                        tile_denoised = tile_velocity.float().mul_(sigma_video).add_(tile_video)
+                        tile_prediction = tile_denoised.detach().to(device="cpu", non_blocking=False)
+                        tile_prediction.mul_(weights)
+                        phase_2_accumulator[..., latent_top:latent_top + latent_height, latent_left:latent_left + latent_width].add_(tile_prediction)
+                        tile_video = tile_velocity = tile_denoised = tile_prediction = audio_velocity = condition_rows = None
+                        self._check_abort()
+                        if callback is not None and tile_no < tile_count:
+                            callback(progress_step - 1, None, False, denoising_extra=phase_extra, pass_no=2)
+                    phase_2_accumulator.div_(phase_2_weight_sum)
+                    if phase_2_source_latents is not None and phase_2_editable_mask is not None:
+                        _blend_video_source(phase_2_accumulator, phase_2_source_latents, phase_2_editable_mask)
+                    video_ratio = float(sigma_video_next / sigma_video)
+                    phase_2_latent_canvas.mul_(video_ratio).add_(phase_2_accumulator, alpha=1.0 - video_ratio)
+                    if phase_2_source_latents is not None and (step < denoising_start_step or step < mask_end_step):
+                        phase_2_source_mask = None if step < denoising_start_step else phase_2_editable_mask
+                        _reinject_video_source(phase_2_latent_canvas[:, :, :phase_2_source_latents.shape[2]], phase_2_source_latents,
+                                               phase_2_source_noise, phase_2_source_mask, float(sigma_video_next), phase_2_source_buffer,
+                                               1.0 - VISUAL_COND_TIMESTEP if preserve_input_mask_values else None)
+                    phase_2_accumulator = None
+                    if callback is not None:
+                        callback(progress_step - 1, phase_2_latent_canvas[0].detach(), False, denoising_extra=phase_extra, pass_no=2)
+
+                video = phase_2_latent_canvas.to(self.device)
+                payload.pop("target_spatial_context", None)
+                for key in ("layout_signature", "layout", "rope"):
+                    payload.pop(key, None)
+                phase_2_noise = phase_2_latent_canvas = phase_2_keyframe_conditions = phase_2_reference_rows = None
+                phase_2_source_latents = phase_2_source_noise = phase_2_source_buffer = phase_2_editable_mask = None
+                phase_2_tiles = phase_2_weight_sum = None
+            else:
+                self._use_transformer()
+                context = self.transformer.preprocess_text_embeds(context)
+                payload["cond_video_rows"], _ = self._prepare_condition_rows(phase_2_visual_latents, [], phase_2_generator)
+                payload["keyframes"] = keyframes or None
+                payload["refs"] = phase_2_refs or None
+                payload["text_token_tags"] = text_tags
+                payload["target_audio_condition_latents"] = audio_t
+                payload["target_video_condition_frames"] = 0
+                for key in ("layout_signature", "layout", "rope"):
+                    payload.pop(key, None)
+                presentation, visual_latents, refs = phase_2_presentation, phase_2_visual_latents, phase_2_refs
+                phase_2_noise = torch.randn(video.shape, generator=torch.Generator(device="cpu").manual_seed(int(seed)), dtype=torch.float32, device="cpu").to(self.device)
+                video = torch.lerp(video, phase_2_noise, phase_2_sigmas_video[0])
+                if video_to_video:
+                    self._use_shared_components()
+                    source_video = _resize_video(_as_video(input_frames)[:, history_count:history_count + aligned_target_frames], target_height, target_width)
+                    source_latents = self.vae.encode(source_video.unsqueeze(0).to(device=self.device, dtype=self.vae._model_dtype)).cpu()[:, :, :latent_t].to(video)
+                    source_noise = phase_2_noise[:, :, :source_latents.shape[2]]
+                    source_buffer = torch.empty_like(source_latents)
+                    if input_masks is not None:
+                        source_mask = input_masks[:, history_count:history_count + source_video.shape[1]]
+                        editable_mask = _resize_video_mask(source_mask, source_latents.shape[-3:], self.vae.config.clip_length, self.vae.temporal_compression_ratio, binarize=not preserve_input_mask_values).to(video)
+                    self._use_transformer()
+                else:
+                    source_latents = source_noise = source_buffer = editable_mask = None
+                phase_2_noise = source_video = source_mask = None
+                if set_progress_status is not None:
+                    set_progress_status("Phase 2/2 High Resolution")
+                run_denoising(phase_2_sigmas_video, torch.zeros_like(phase_2_sigmas_video), "H3 phase 2 denoising", "Phase 2/2 High Resolution", 2,
+                              freeze_audio=True, stage_solver=H3_PHASE_2_SAMPLE_SOLVER, use_cache=False)
+            phase_2_presentation = phase_2_visual_latents = phase_2_reference_presentation = phase_2_reference_latents = phase_2_refs = None
 
         if set_progress_status is not None:
-            set_progress_status("Decoding H3 stereo audio" if frozen_target_video is not None else "VAE Decoding of Video and Audio")
+            set_progress_status("Decoding H3 stereo audio" if decoded_video is not None or frozen_target_video is not None else "VAE Decoding of Video and Audio")
         self._check_abort()
+        self._use_shared_components()
         context = payload = presentation = visual_latents = audio_latents = refs = keyframes = audio_keyframes = source_latents = source_noise = source_buffer = editable_mask = None
-        decoded_video = (self.vae.decode(video.to(self.vae._model_dtype)).clamp_(-1.0, 1.0)[0, :, :target_frames].cpu()
-                         if frozen_target_video is None else frozen_target_video[:, :target_frames].cpu())
+        if decoded_video is None:
+            if frozen_target_video is None:
+                video = video.to(self.vae._model_dtype)
+                decoded_video = self.vae.decode(video).clamp_(-1.0, 1.0)[0, :, :target_frames]
+                decoded_video = _video_to_uint8_cpu(decoded_video) if tiled_phase_2 else decoded_video.cpu()
+            else:
+                decoded_video = frozen_target_video[:, :target_frames].cpu()
         video = None
         decoded_audio = self.audio_vae.decode(audio)[0]
         audio = None
@@ -669,6 +1190,10 @@ class MiniMaxH3Pipeline:
         output_prefix = history_frames
         output_prefix_count = history_count
         if output_prefix is not None:
+            if two_phase and output_prefix.shape[-2:] != decoded_video.shape[-2:]:
+                output_prefix = _resize_video(output_prefix, decoded_video.shape[-2], decoded_video.shape[-1])
+            if decoded_video.dtype == torch.uint8 and output_prefix.dtype != torch.uint8:
+                output_prefix = output_prefix.clamp(-1.0, 1.0).add_(1.0).mul_(127.5).round_().to(torch.uint8)
             decoded_video = torch.cat((output_prefix.to(decoded_video), decoded_video), dim=1)
             if history_waveform is not None:
                 prefix_samples = round(output_prefix_count / fps * AUDIO_SAMPLE_RATE)
@@ -681,6 +1206,55 @@ class MiniMaxH3Pipeline:
         total_samples = round(frame_num / fps * AUDIO_SAMPLE_RATE)
         decoded_audio = decoded_audio[:, :total_samples].transpose(0, 1).float().cpu().numpy()
         return {"x": decoded_video, "audio": decoded_audio, "audio_sampling_rate": AUDIO_SAMPLE_RATE}
+
+    def refine_video(self, video, *, prompt, strengths, denoising_strength=0.45, sampling_steps=4, shift=12.0,
+                     seed=0, fps=24.0, sample_solver="euler", VAE_tile_size=None, audio_waveform=None,
+                     audio_sample_rate=0, reference_images=None, image_refs_relative_size=100.0,
+                     callback=None, set_progress_status=None):
+        video = _as_video(video)
+        if video is None:
+            raise ValueError("MiniMax H3 refinement requires a source video")
+        strengths = torch.as_tensor(strengths, dtype=torch.float32).flatten()
+        if strengths.numel() != video.shape[1]:
+            raise ValueError(f"MiniMax H3 refinement received {strengths.numel()} strengths for {video.shape[1]} frames")
+        if not bool((strengths == strengths[0]).all()):
+            raise ValueError("MiniMax H3 refinement requires one uniform strength for the whole video")
+        if not 0.0 <= float(denoising_strength) <= 1.0:
+            raise ValueError("MiniMax H3 refinement denoising strength must be between 0 and 1")
+        strength_mask = strengths.clamp(0.0, 1.0).view(1, -1, 1, 1)
+        if float(denoising_strength) == 0.0 or not bool(strength_mask.any()):
+            return video
+        total_steps = max(int(sampling_steps), int(int(sampling_steps) / float(denoising_strength)))
+        base_start = float(sampling_steps) / total_steps
+        start = float(shift) * base_start / (1.0 + (float(shift) - 1.0) * base_start)
+        result = self.generate(
+            input_prompt=prompt,
+            input_frames=video,
+            input_ref_images=reference_images,
+            image_refs_relative_size=image_refs_relative_size,
+            input_masks=strength_mask,
+            denoising_strength=1.0,
+            masking_strength=1.0,
+            input_waveform=audio_waveform,
+            input_waveform_sample_rate=audio_sample_rate,
+            frame_num=video.shape[1],
+            height=video.shape[-2],
+            width=video.shape[-1],
+            shift=shift,
+            sampling_steps=sampling_steps,
+            seed=seed,
+            callback=callback,
+            VAE_tile_size=VAE_tile_size,
+            audio_prompt_type="A" if audio_waveform is not None else "",
+            fps=fps,
+            sample_solver=sample_solver,
+            guide_phases=1,
+            starting_sigma=start,
+            preserve_input_mask_values=True,
+            refinement_mode=True,
+            set_progress_status=set_progress_status,
+        )
+        return None if result is None else result["x"]
 
 
 __all__ = ["MiniMaxH3Pipeline", "video_latent_frames"]

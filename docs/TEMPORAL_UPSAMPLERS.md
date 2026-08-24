@@ -36,6 +36,8 @@ class MyTemporalUpsampler:
     def query_download_def(self, *, enabled_only=True): ...    # -> one process_files definition
     def query_download_defs(self, *, enabled_only=True): ...   # -> list of process_files definitions
     def load_upsampler(self, value, **kwargs): ...             # optional pre-dispatch load hook
+    def supports_loaded_model(self, value, context): ...       # optional core-model borrowing
+    def release_private_runtime(self): ...                     # optional before borrowing core model
     def persistent_models(self): ...                          # optional, True keeps model in RAM and unloads VRAM only
     def release_vram(self): ...                               # optional Configuration-tab release hook
     def enabled(self): ...                                    # optional UI gating
@@ -94,6 +96,14 @@ unloads the main generation offload object before running the temporal upsampler
 and releases registered extension resources after use. If `persistent_models()`
 returns `True`, WanGP unloads the handler VRAM through the offload registry but
 keeps persistent CPU/RAM state available for the next call.
+
+A temporal handler may borrow an already loaded compatible generation model by
+implementing `supports_loaded_model(value, context)`. On a match, dispatch skips
+`load_upsampler()`, calls `release_private_runtime()` when present, and passes
+the core-owned context as `loaded_model_context` to `temporal_upsample()`. A
+non-match follows the existing private-runtime path. The handler may use the
+borrowed model and MMGP offload object for that call, but must not release them
+and must restore any temporary model state before returning.
 
 ## Registration
 

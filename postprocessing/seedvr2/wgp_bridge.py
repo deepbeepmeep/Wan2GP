@@ -85,7 +85,9 @@ class SeedVR2Bridge(SimpleScaleSuffixMixin):
             "vae_methods": [],
             "multipliers": {cls.UPSAMPLING_VALUE_PREFIX: cls.UPSAMPLING_RATIOS},
             "default_spatial_upsampling": cls.upsampling_value(2.0),
-            "description": "Restore detail and reduce degradation while spatially upscaling an image or video.",
+            "postprocessing_category": "upsampler",
+            "description": "Restore detail and reduce compression or generation degradation while spatially upscaling with SeedVR2.",
+            "media_descriptions": {"video": "Overlapping model windows preserve temporal continuity; the window size is configurable in Extensions."},
         }
 
     def enabled(self) -> bool:

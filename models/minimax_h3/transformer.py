@@ -339,7 +339,11 @@ class FinalLayer(nn.Module):
 
     def _head(self, h_list, shift, scale, row, output):
         value = self.norm(_take(h_list)).to(scale.dtype)
-        value.mul_(1.0 + scale[row]).add_(shift[row])
+        if isinstance(row, list):
+            for start, stop, index in row:
+                value[start:stop].mul_(1.0 + scale[index]).add_(shift[index])
+        else:
+            value.mul_(1.0 + scale[row]).add_(shift[row])
         value = value.to(output.weight.dtype)
         return output(value)
 
@@ -499,8 +503,10 @@ class MiniMaxH3Model(nn.Module):
             raise GenerationInterrupted
 
     def _layout(self, text_tags, latent_t, latent_h, latent_w, audio_t, payload):
+        target_spatial_context = payload.get("target_spatial_context")
         signature = (text_tags.numel(), latent_t, latent_h, latent_w, audio_t,
                      payload["fps"],
+                     target_spatial_context,
                      payload.get("target_audio_condition_latents", 0),
                      payload.get("target_video_condition_frames", 0),
                      tuple((k["anchor"], k["latent_frame_count"], k.get("frame_index")) for k in payload.get("keyframes") or ()),
@@ -522,12 +528,14 @@ class MiniMaxH3Model(nn.Module):
                                                       latent_h, latent_w, audio_t, self.patch_size, video_time_scale,
                                                       keyframe_anchors=anchors, audio_condition_anchors=audio_anchors,
                                                       target_condition_audio_latents=target_audio_condition_latents,
-                                                      target_condition_video_frames=target_video_condition_frames)
+                                                      target_condition_video_frames=target_video_condition_frames,
+                                                      target_spatial_context=target_spatial_context)
             else:
                 layout = build_packed_sequence(text_tags, latent_t, latent_h, latent_w, audio_t, self.patch_size,
                                                anchors, video_time_scale, audio_condition_anchors=audio_anchors,
                                                target_condition_audio_latents=target_audio_condition_latents,
-                                               target_condition_video_frames=target_video_condition_frames)
+                                               target_condition_video_frames=target_video_condition_frames,
+                                               target_spatial_context=target_spatial_context)
         payload["layout_signature"], payload["layout"] = signature, layout
         return layout
 
@@ -543,6 +551,11 @@ class MiniMaxH3Model(nn.Module):
         device, dtype = video_x.device, self.dtype or next(self.blocks.parameters()).dtype
         video_dtype, audio_dtype = video_x.dtype, audio_x.dtype
         _, _, latent_t, latent_h, latent_w = video_x.shape
+        sigma_video = sigma_video.flatten()
+        if sigma_video.numel() not in (1, latent_t):
+            raise ValueError(f"MiniMax H3 received {sigma_video.numel()} video sigmas for {latent_t} latent frames")
+        if sigma_video.numel() > 1 and not bool((sigma_video == sigma_video[0]).all()):
+            raise ValueError("MiniMax H3 requires one uniform video sigma")
         audio_t = audio_x.shape[-1]
         text_tags = payload["text_token_tags"].view(-1).cpu()
         layout = self._layout(text_tags, latent_t, latent_h, latent_w, audio_t, payload)
@@ -602,11 +615,27 @@ class MiniMaxH3Model(nn.Module):
             AUDIO_COND_TIMESTEP,
         )
         timestep, timestep_indices = timestep.to(device), timestep_indices.to(device)
+        target_video_rows = latent_t * (latent_h // self.patch_size[1]) * (latent_w // self.patch_size[2])
+        video_start = layout.sequence_length - target_video_rows
+        video_head_row = int(timestep_indices[video_start])
+        frame_rows = None
+        if sigma_video.numel() == latent_t:
+            frame_timesteps = 1.0 - sigma_video.to(device=device, dtype=torch.float32)
+            timestep, remap = torch.unique(torch.cat((timestep, frame_timesteps)), sorted=True, return_inverse=True)
+            timestep_indices = remap[:timestep_indices.max().item() + 1][timestep_indices]
+            frame_rows = remap[-latent_t:]
+            video_head_row = [(index * (target_video_rows // latent_t), (index + 1) * (target_video_rows // latent_t), int(row))
+                              for index, row in enumerate(frame_rows)]
         adaln_indices = timestep_indices * 3 + layout.token_tags.to(device).clamp_min(0)
         changes = torch.cat((torch.ones(1, dtype=torch.bool, device=device), adaln_indices[1:] != adaln_indices[:-1],
                              torch.ones(1, dtype=torch.bool, device=device))).nonzero().flatten()
         segments = [(int(changes[index]), int(changes[index + 1]), int(adaln_indices[changes[index]]))
                     for index in range(changes.numel() - 1)]
+        if frame_rows is not None:
+            segments = [segment for segment in segments if segment[0] < video_start]
+            rows_per_frame = target_video_rows // latent_t
+            segments.extend((video_start + index * rows_per_frame, video_start + (index + 1) * rows_per_frame,
+                             int(row) * 3 + MINIMAX_H3_VIDEO_TAG) for index, row in enumerate(frame_rows))
         temb = self._time_embedding(timestep)
         rope = payload.get("rope")
         if rope is None:
@@ -616,9 +645,7 @@ class MiniMaxH3Model(nn.Module):
             payload["rope"] = rope
             del positions, frequencies
         del adaln_indices, changes
-        target_video_rows = latent_t * (latent_h // self.patch_size[1]) * (latent_w // self.patch_size[2])
         target_audio_rows = audio_t * 2
-        video_start = layout.sequence_length - target_video_rows
         audio_start = video_start - target_audio_rows
         self.sol_attention.begin_forward(layout, device, dtype, payload["attention_sparsity"])
 
@@ -641,14 +668,13 @@ class MiniMaxH3Model(nn.Module):
             else:
                 first_block_cache.apply_tail_residual(hidden[audio_start:])
 
-        video_row = int(timestep_indices[video_start])
         audio_row = int(timestep_indices[audio_start + min(layout.num_target_condition_audio_latents,
                                                            max(audio_t - 1, 0))])
         if spectrum is not None:
             spectrum.observe(hidden[audio_start:], target_audio_rows, self._check_interrupt)
         h_list = [hidden]
         hidden = None
-        video, audio = self.final_layer(h_list, temb, (video_start, layout.sequence_length, video_row),
+        video, audio = self.final_layer(h_list, temb, (video_start, layout.sequence_length, video_head_row),
                                         (audio_start, video_start, audio_row))
         del temb, rope, timestep_indices
         video = _to_dtype([video], video_dtype)

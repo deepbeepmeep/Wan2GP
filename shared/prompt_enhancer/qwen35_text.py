@@ -11,6 +11,8 @@ from collections import OrderedDict
 import torch
 from mmgp import offload
 from tqdm.auto import tqdm
+
+from shared.llm_io import known_token_ids, llm_io_enabled, log_llm_io
 from shared.utils import files_locator as fl
 from shared.llm_engines.nanovllm import SamplingParams
 from shared.llm_engines.nanovllm.models.qwen3_5 import Qwen3_5ForCausalLM, clear_qwen35_runtime_caches
@@ -646,8 +648,10 @@ def _generate_messages_vllm(
     for idx, message in enumerate(tqdm(messages, total=len(messages), desc=progress_desc, dynamic_ncols=True, leave=False)):
         prompt = _build_chat_prompt(tokenizer, message, enable_thinking=thinking_enabled)
         try:
-            prompt_len = len(tokenizer.encode(prompt))
+            prompt_token_ids = [int(token_id) for token_id in tokenizer.encode(prompt)]
+            prompt_len = len(prompt_token_ids)
         except Exception:
+            prompt_token_ids = []
             prompt_len = 0
         generation_max_tokens = int(max_new_tokens) + runtime_extra_tokens
         engine.reserve_runtime(prompt_len=prompt_len, max_tokens=generation_max_tokens, cfg_scale=1.0)
@@ -677,6 +681,15 @@ def _generate_messages_vllm(
             seed=sample_seed,
         )
 
+        if llm_io_enabled():
+            log_llm_io("OUT", "local-prompt-enhancer", "qwen-generation", {
+                "prompt": prompt,
+                "messages": message,
+                "input_token_ids": prompt_token_ids,
+                "known_token_ids": known_token_ids(tokenizer),
+                "generation": {"max_new_tokens": generation_max_tokens, "temperature": temp, "top_p": normalized_top_p, "top_k": normalized_top_k, "seed": sample_seed, "thinking_enabled": thinking_enabled},
+            }, prompt_number=idx + 1)
+
         try:
             batch_outputs = engine._llm.generate(
                 prompts=[prompt],
@@ -699,6 +712,7 @@ def _generate_messages_vllm(
             except Exception:
                 raw_text = text
         thinking_text, answer_text = _split_generated_text(raw_text)
+        log_llm_io("IN", "local-prompt-enhancer", "qwen-generation", {"text": raw_text, "output_token_ids": [int(token_id) for token_id in token_ids], "answer": answer_text}, prompt_number=idx + 1)
         if thinking_enabled:
             _print_thinking_process(idx, len(messages), thinking_text)
         outputs.append(answer_text)

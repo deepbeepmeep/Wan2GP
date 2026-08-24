@@ -167,9 +167,12 @@ class FlashVSRBridge:
             "vae_methods": [],
             "multipliers": {cls.UPSAMPLING_VALUE_PREFIX: cls.UPSAMPLING_RATIOS, cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX: cls.UPSAMPLING_RATIOS},
             "default_spatial_upsampling": cls.upsampling_value(2.0),
+            "postprocessing_category": "upsampler",
+            "description": "Provides learned detail recovery and is optimized for modest VRAM use. The Full variant's final VAE decode can be slow; Tiny is faster, and Two Pass may reduce horizontal banding.",
+            "media_descriptions": {"video": "Its learned reconstruction is designed for good temporal stability."},
             "method_descriptions": {
-                cls.UPSAMPLING_VALUE_PREFIX: "Restore detail and spatially upscale an image or video with FlashVSR.",
-                cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX: "Apply two FlashVSR restoration passes for stronger spatial upscaling.",
+                cls.UPSAMPLING_VALUE_PREFIX: "Restore detail and spatially upscale with learned FlashVSR reconstruction. The Full variant's final VAE decode can be slow; Tiny is faster and large outputs can consume substantial VRAM.",
+                cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX: "Apply two FlashVSR restoration passes for stronger detail reconstruction and reduced horizontal banding, at approximately twice the processing cost.",
             },
         }
 

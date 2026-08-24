@@ -1,5 +1,5 @@
 --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ort-cuda-13-nightly/pypi/simple/
-mmgp==3.7.12
+mmgp==3.7.14
 # Core AI stack
 diffusers==0.36.0
 transformers==4.54.0 #4.53.1
@@ -51,6 +51,8 @@ spacy
 
 # Vision & segmentation
 opencv-python>=4.12.0.88
+ultralytics
+scipy
 pycocotools
 segment-anything
 rembg[gpu]==2.0.65; platform_system != "Darwin"

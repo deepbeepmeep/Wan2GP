@@ -462,6 +462,7 @@ class SessionJob:
         self._done = threading.Event()
         self._cancel_requested = threading.Event()
         self._webui_submission_ready = threading.Event()
+        self._webui_submission_or_done = threading.Event()
         self._thread: threading.Thread | None = None
         self._result: GenerationResult | None = None
         self._webui_manifest: list[dict[str, Any]] = []
@@ -478,6 +479,7 @@ class SessionJob:
     def _set_result(self, result: GenerationResult) -> None:
         self._result = result
         self._done.set()
+        self._webui_submission_or_done.set()
 
     def _set_webui_bridge(self, *, manifest: Sequence[dict[str, Any]], client_ids: Sequence[str], load_queue_token: str) -> None:
         self._webui_manifest = copy.deepcopy(list(manifest))
@@ -493,6 +495,7 @@ class SessionJob:
 
     def _mark_webui_submission_ready(self) -> None:
         self._webui_submission_ready.set()
+        self._webui_submission_or_done.set()
 
     def _bind_webui_owner_call(self, call_id: str) -> None:
         self._webui_owner_call_id = str(call_id or "").strip()
@@ -516,6 +519,10 @@ class SessionJob:
             failed_tasks=0,
             artifacts=(),
         )
+
+    def wait_for_webui_submission_or_completion(self, timeout: float | None = None) -> bool:
+        self._webui_submission_or_done.wait(timeout=timeout)
+        return self._webui_submission_ready.is_set()
 
     def join(self, timeout: float | None = None) -> GenerationResult:
         return self.result(timeout=timeout)
@@ -754,8 +761,8 @@ class WanGPSession:
         task = self._normalize_task(settings, task_index=1)
         return self._submit_tasks([self._absolutize_task_paths(task, caller_base_path)], callbacks=callbacks)
 
-    def submit_media_postprocessing(self, media_source: str | os.PathLike[str], *, temporal_upsampling: str = "", spatial_upsampling: str = "", film_grain_intensity: float = 0, film_grain_saturation: float = 0.5, seed: int = -1, api_options: dict[str, Any] | None = None, return_media: bool = False, callbacks: object | None = None, **settings_overrides: Any) -> SessionJob:
-        settings = build_media_postprocessing_settings(media_source, temporal_upsampling=temporal_upsampling, spatial_upsampling=spatial_upsampling, film_grain_intensity=film_grain_intensity, film_grain_saturation=film_grain_saturation, seed=seed, api_options=api_options, return_media=return_media, **settings_overrides)
+    def submit_media_postprocessing(self, media_source: str | os.PathLike[str], *, temporal_upsampling: str = "", spatial_upsampling: str = "", spatial_upsampler_prompt: str = "", spatial_upsampler_reference_images: list[str] | None = None, spatial_upsampler_face_count: int = 1, film_grain_intensity: float = 0, film_grain_saturation: float = 0.5, seed: int = -1, api_options: dict[str, Any] | None = None, return_media: bool = False, callbacks: object | None = None, **settings_overrides: Any) -> SessionJob:
+        settings = build_media_postprocessing_settings(media_source, temporal_upsampling=temporal_upsampling, spatial_upsampling=spatial_upsampling, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_face_count=spatial_upsampler_face_count, film_grain_intensity=film_grain_intensity, film_grain_saturation=film_grain_saturation, seed=seed, api_options=api_options, return_media=return_media, **settings_overrides)
         return self.submit_task(settings, callbacks=callbacks)
 
     def submit_audio_remux(self, video_source: str | os.PathLike[str], *, postprocess_audio: str, audio_source: str | os.PathLike[str] | None = None, postprocess_audio_prompt: str = "", postprocess_audio_neg_prompt: str = "", seed: int = -1, repeat_generation: int = 1, replace_voice_sample: str | os.PathLike[str] | None = None, replace_voice_sample2: str | os.PathLike[str] | None = None, api_options: dict[str, Any] | None = None, return_media: bool = False, callbacks: object | None = None, **settings_overrides: Any) -> SessionJob:
@@ -804,6 +811,11 @@ class WanGPSession:
             job = self._active_job
         if job is not None:
             job.cancel()
+
+    @property
+    def active_job(self) -> SessionJob | None:
+        with self._job_lock:
+            return self._active_job
 
     @staticmethod
     def _create_headless_state() -> dict[str, Any]:
@@ -1361,7 +1373,7 @@ class WanGPSession:
         return min(90, 20 + int(ratio * 65))
 
 
-def build_media_postprocessing_settings(media_source: str | os.PathLike[str], *, temporal_upsampling: str = "", spatial_upsampling: str = "", film_grain_intensity: float = 0, film_grain_saturation: float = 0.5, seed: int = -1, api_options: dict[str, Any] | None = None, return_media: bool = False, **settings_overrides: Any) -> dict[str, Any]:
+def build_media_postprocessing_settings(media_source: str | os.PathLike[str], *, temporal_upsampling: str = "", spatial_upsampling: str = "", spatial_upsampler_prompt: str = "", spatial_upsampler_reference_images: list[str] | None = None, spatial_upsampler_face_count: int = 1, film_grain_intensity: float = 0, film_grain_saturation: float = 0.5, seed: int = -1, api_options: dict[str, Any] | None = None, return_media: bool = False, **settings_overrides: Any) -> dict[str, Any]:
     settings = {
         "mode": "edit_postprocessing",
         "prompt": "Media postprocessing",
@@ -1369,6 +1381,9 @@ def build_media_postprocessing_settings(media_source: str | os.PathLike[str], *,
         "video_source": os.fspath(media_source),
         "temporal_upsampling": temporal_upsampling or "",
         "spatial_upsampling": spatial_upsampling or "",
+        "spatial_upsampler_prompt": spatial_upsampler_prompt,
+        "spatial_upsampler_reference_images": list(spatial_upsampler_reference_images or []),
+        "spatial_upsampler_face_count": spatial_upsampler_face_count,
         "film_grain_intensity": film_grain_intensity,
         "film_grain_saturation": film_grain_saturation,
         "postprocess_audio": "",

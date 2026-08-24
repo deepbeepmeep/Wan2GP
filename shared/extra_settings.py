@@ -203,6 +203,9 @@ def _show_if_int_at_least(key: str, minimum: int) -> _Resolver:
 
 
 def _switch_threshold_label(model_def: dict[str, Any] | None, context: dict[str, Any]) -> str:
+    custom_label = str(_model_setting_config(model_def, "switch_threshold").get("label", "") or "").strip()
+    if custom_label:
+        return custom_label
     guidance_phases = 1
     try:
         guidance_phases = int(context.get("guidance_phases", 1) or 0)
@@ -237,6 +240,12 @@ def _model_setting_bound(key: str, bound: str, fallback: int | float | None) -> 
     return resolver
 
 
+def _model_setting_type(key: str, fallback: str) -> _Resolver:
+    def resolver(model_def: dict[str, Any] | None, _context: dict[str, Any]) -> str:
+        return _normalize_type(_model_setting_config(model_def, key).get("type", fallback))
+    return resolver
+
+
 def _show_if_model_setting_label(key: str) -> _Resolver:
     return _show_if(lambda model_def: len(_model_setting_config(model_def, key).get("label", "").strip()) > 0)
 
@@ -268,7 +277,7 @@ def _guidance_row_visible(model_def: dict[str, Any]) -> bool:
 
 
 def _guidance_phases_row_visible(model_def: dict[str, Any]) -> bool:
-    return int(model_def.get("guidance_max_phases", 0) or 0) >= 2 and int(model_def.get("visible_phases", 2) or 0) >= 2
+    return int(model_def.get("guidance_max_phases", 0) or 0) >= 2 and (int(model_def.get("visible_phases", 2) or 0) >= 2 or bool(model_def.get("switch_threshold")))
 
 
 def _embedded_guidance_row_visible(model_def: dict[str, Any]) -> bool:
@@ -501,7 +510,7 @@ _add_container("motion_amplitude_col", visible=_show_if_flag("motion_amplitude")
 _add_setting("guidance_scale", "Guidance (CFG)", "number", min=1.0, max=20.0, step=0.1, visible=_show_if_guidance_phase(1), containers=("guidance_row",))
 _add_setting("guidance2_scale", "Guidance2 (CFG)", "number", min=1.0, max=20.0, step=0.1, visible=_show_if_guidance_phase(2), containers=("guidance_row",))
 _add_setting("guidance3_scale", "Guidance3 (CFG)", "number", min=1.0, max=20.0, step=0.1, visible=_show_if_guidance_phase(3), containers=("guidance_row",))
-_add_setting("switch_threshold", _switch_threshold_label, "integer", min=0, max=1000, step=1, visible=_show_if_int_at_least("guidance_max_phases", 2), containers=("guidance_phases_row",))
+_add_setting("switch_threshold", _switch_threshold_label, _model_setting_type("switch_threshold", "integer"), min=_model_setting_bound("switch_threshold", "min", 0), max=_model_setting_bound("switch_threshold", "max", 1000), step=_model_setting_bound("switch_threshold", "step", 1), visible=_show_if_int_at_least("guidance_max_phases", 2), containers=("guidance_phases_row",))
 _add_setting("switch_threshold2", "Phase 2-3", "integer", min=0, max=1000, step=1, visible=_show_if_int_at_least("guidance_max_phases", 3), containers=("guidance_phases_row",))
 _add_setting("alt_guidance_scale", _model_label("alt_guidance", "Alternate Guidance"), "number", min=1.0, max=20.0, step=0.5, visible=_show_if_not_none("alt_guidance"), containers=("embedded_guidance_row",))
 _add_setting("alt_scale", _model_label("alt_scale", "Alt Scale"), "number", min=0.0, max=1.0, step=0.05, visible=_show_if_not_none("alt_scale"), containers=("embedded_guidance_row",))

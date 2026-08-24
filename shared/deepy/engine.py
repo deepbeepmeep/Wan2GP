@@ -18,8 +18,9 @@ from typing import Any, Callable
 
 from PIL import Image, ImageColor
 
+from shared.llm_io import known_token_ids, llm_io_enabled, log_llm_io, media_descriptor, token_id_descriptor
 from shared.utils.audio_video import extract_audio_tracks
-from shared.utils.utils import get_video_frame, get_video_info
+from shared.utils.utils import get_video_info
 from shared.deepy.config import (
     DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT,
     DEEPY_ALLOW_READ_FILE_SYSTEM_KEY,
@@ -423,6 +424,7 @@ class AssistantSessionState:
     generated_seconds_total: float = 0.0
     runtime_max_model_len: int = 0
     chat_stats_signature: str = ""
+    remote_usage_stats: dict[str, Any] | None = None
     seen_video_gallery_paths: list[str] = field(default_factory=list)
     seen_audio_gallery_paths: list[str] = field(default_factory=list)
     generated_client_ids: list[str] = field(default_factory=list)
@@ -437,6 +439,7 @@ class AssistantSessionState:
     reset_base_context_window_tokens: int = 0
     reset_to_base_callback: Callable[[], bool] | None = None
     prime_toolbox: Any | None = None
+    remote_backends: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -461,6 +464,11 @@ def get_or_create_assistant_session(state) -> AssistantSessionState:
 
 
 def clear_assistant_session(session: AssistantSessionState) -> None:
+    for backend in session.remote_backends.values():
+        close_backend = getattr(backend, "close", None)
+        if callable(close_backend):
+            close_backend()
+    session.remote_backends.clear()
     if session.prime_toolbox is not None:
         close_prime_toolbox = getattr(session.prime_toolbox, "close", None)
         if callable(close_prime_toolbox):
@@ -498,6 +506,7 @@ def clear_assistant_session(session: AssistantSessionState) -> None:
     session.generated_seconds_total = 0.0
     session.runtime_max_model_len = 0
     session.chat_stats_signature = ""
+    session.remote_usage_stats = None
     session.seen_video_gallery_paths = []
     session.seen_audio_gallery_paths = []
     session.generated_client_ids = []
@@ -680,7 +689,7 @@ def _summarize_interrupted_committed_messages(messages: list[dict[str, Any]]) ->
                 tool_name = str(payload.get("tool", "") or payload.get("tool_id", "") or "").strip()
                 tool_name = mapped_tool_name or tool_name
                 status = str(payload.get("status", "") or "").strip()
-                identifiers = [f"{key}={payload[key]}" for key in ("job_id", "output_file", "media_id", "gallery_id") if payload.get(key) not in (None, "")]
+                identifiers = [f"{key}={payload[key]}" for key in ("job_id", "output_file", "media_id") if payload.get(key) not in (None, "")]
             if tool_name == "wangp_get_deepy_template_settings" and isinstance(payload.get("settings"), dict):
                 retained_template = {key: payload.get(key) for key in ("tool_id", "template", "general_properties_active") if payload.get(key) is not None}
                 retained_template["settings"] = payload["settings"]
@@ -1117,8 +1126,17 @@ class DeepyZeroTools:
         self.get_output_filepath = get_output_filepath
         self.record_file_metadata = record_file_metadata
         self.get_server_config = get_server_config
-        self._vision_query_callback: Callable[[dict[str, Any] | list[dict[str, Any]], str, int | None], dict[str, Any]] | None = None
+        self._vision_query_callback: Callable[..., dict[str, Any]] | None = None
+        self._vision_is_remote = False
+        self._vision_max_images = deepy_vision.VISION_MAX_IMAGES
         self._tool_progress_callback: Callable[..., None] | None = None
+        from shared.utils.plugins import get_deepy_zero_plugin_tools
+
+        self._plugin_tools = tuple((definition.function, definition.assistant_metadata(), definition.plugin_id) for definition in get_deepy_zero_plugin_tools())
+        built_in_names = {metadata["name"] for attr_name in dir(self) if not attr_name.startswith("_") for metadata in [getattr(getattr(self, attr_name), "_assistant_tool", None)] if metadata is not None}
+        for _function, metadata, plugin_id in self._plugin_tools:
+            if metadata["name"] in built_in_names:
+                raise RuntimeError(f"Deepy Zero plugin '{plugin_id}' cannot replace built-in tool '{metadata['name']}'.")
 
     def _log(self, message: str) -> None:
         if ASSISTANT_DEBUG:
@@ -1153,9 +1171,11 @@ class DeepyZeroTools:
     def _set_status(self, text: str | None, kind: str = "working") -> None:
         self.send_cmd("chat_output", assistant_chat.build_status_event(text, kind=kind, visible=text is not None and len(str(text).strip()) > 0))
 
-    def bind_runtime_tools(self, vision_query_callback: Callable[[dict[str, Any] | list[dict[str, Any]], str, int | None], dict[str, Any]] | None = None, tool_progress_callback: Callable[..., None] | None = None) -> None:
+    def bind_runtime_tools(self, vision_query_callback: Callable[..., dict[str, Any]] | None = None, tool_progress_callback: Callable[..., None] | None = None, vision_is_remote: bool = False) -> None:
         self._vision_query_callback = vision_query_callback
         self._tool_progress_callback = tool_progress_callback
+        self._vision_is_remote = bool(vision_is_remote)
+        self._vision_max_images = deepy_vision.VISION_REMOTE_MAX_IMAGES if self._vision_is_remote else deepy_vision.VISION_MAX_IMAGES
 
     def _update_tool_progress(self, status: str | None = None, status_text: str | None = None, result: dict[str, Any] | None = None) -> None:
         if callable(self._tool_progress_callback):
@@ -1246,7 +1266,23 @@ class DeepyZeroTools:
 
     def get_tool_transcript_label(self, tool_name: str, arguments: dict[str, Any] | None = None) -> str:
         template_label = Path(self.get_tool_template_filename(tool_name)).stem.strip()
-        return assistant_chat.build_tool_call_label(tool_name, arguments, base_label=self.get_tool_display_name(tool_name), variant_label=template_label)
+        return assistant_chat.build_tool_call_label(tool_name, self.resolve_tool_label_arguments(arguments), base_label=self.get_tool_display_name(tool_name), variant_label=template_label)
+
+    def resolve_tool_label_arguments(self, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        self._sync_recent_media()
+
+        def replace_media_id(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {key: replace_media_id(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [replace_media_id(item) for item in value]
+            if not isinstance(value, str) or self.session is None:
+                return value
+            record = media_registry.get_media_record(self.session, value)
+            media_path = str(record.get("path", "") if record is not None else self._resolve_gallery_media_path(value)).strip()
+            return os.path.basename(media_path) if media_path else value
+
+        return replace_media_id(dict(arguments or {}))
 
     def _parse_generation_resolution(self, resolution: Any) -> tuple[int | None, int | None]:
         width_text, separator, height_text = str(resolution or "").strip().lower().partition("x")
@@ -2028,7 +2064,7 @@ class DeepyZeroTools:
         if callable(self.get_output_filepath):
             resolved = str(self.get_output_filepath(file_path, is_image, audio_only) or "").strip()
             if len(resolved) > 0:
-                return resolved
+                return os.path.abspath(os.path.normpath(resolved))
         return os.path.abspath(os.path.normpath(file_path))
 
     def _record_direct_media(self, output_path: str, settings: dict[str, Any], *, is_image: bool, audio_only: bool, label: str | None = None, persist_metadata: bool = True) -> dict[str, Any] | None:
@@ -2036,6 +2072,14 @@ class DeepyZeroTools:
             raise RuntimeError(f"Output file was not created: {output_path}")
         if not callable(self.record_file_metadata):
             raise RuntimeError("WanGP direct media recording is not available.")
+        path_key, settings_key, selection_key = ("audio_file_list", "audio_file_settings_list", "audio_selected") if audio_only else ("file_list", "file_settings_list", "selected")
+        paths = list(self.gen.get(path_key, []))
+        saved_settings = list(self.gen.get(settings_key, []))
+        keep_count = int(self._server_config().get("clear_file_list", 0))
+        keep_from = max(len(paths) - keep_count, 0) if keep_count > 0 else len(paths)
+        self.gen[path_key] = paths[keep_from:]
+        self.gen[settings_key] = saved_settings[keep_from:]
+        self.gen[selection_key] = max(int(self.gen.get(selection_key, 0)) - keep_from, 0)
         self.record_file_metadata(output_path, settings if persist_metadata else None, is_image, audio_only, self.gen)
         self.send_cmd("refresh_gallery", {"path": output_path})
         return self._register_tool_media(output_path, settings, label=label)
@@ -2051,7 +2095,19 @@ class DeepyZeroTools:
     def _tool_enabled(self, metadata: dict[str, Any]) -> bool:
         return not metadata.get("requires_file_system", False) or self._file_system_read_enabled()
 
-    def _resolve_gallery_id_path(self, value: str) -> str:
+    def _iter_tools(self):
+        for attr_name in dir(self):
+            if attr_name.startswith("_"):
+                continue
+            method = getattr(self, attr_name)
+            metadata = getattr(method, "_assistant_tool", None)
+            if metadata is not None and self._tool_enabled(metadata):
+                yield method, metadata
+        for method, metadata, _plugin_id in self._plugin_tools:
+            if self._tool_enabled(metadata):
+                yield method, metadata
+
+    def _resolve_gallery_media_path(self, value: str) -> str:
         lookup = str(value or "").strip().lower()
         if not lookup.startswith(("visual:", "audio:")):
             return ""
@@ -2070,7 +2126,7 @@ class DeepyZeroTools:
         record = None if self.session is None else media_registry.get_media_record(self.session, lookup)
         if record is not None or self.session is None:
             return record
-        gallery_path = self._resolve_gallery_id_path(lookup)
+        gallery_path = self._resolve_gallery_media_path(lookup)
         if gallery_path:
             return media_registry.register_media(self.session, gallery_path, source="gallery")
         candidate = Path(lookup).expanduser()
@@ -2580,6 +2636,29 @@ class DeepyZeroTools:
         else:
             return None, {"status": "error", "media_id": source_media["media_id"], "process": process_id, "error": f"Unsupported post-processing type: {process_type}."}
 
+        parameter_defs = {str(parameter["name"]): parameter for parameter in process.get("parameters", ())}
+        spatial_parameter_names = set()
+        if process_type == postprocessing_catalog.PROCESS_TYPE_SPATIAL_UPSAMPLING:
+            spatial_parameters = {}
+            for name, value in parameters.items():
+                if name == "multiplier":
+                    continue
+                parameter_def = parameter_defs[name]
+                if parameter_def.get("media_type") == "image":
+                    media_ids = value if isinstance(value, list) else [value]
+                    paths = []
+                    for media_id in media_ids:
+                        media_record, error_result = self._resolve_image_media(media_id, name)
+                        if error_result is not None:
+                            error_result.update({"process": process_id})
+                            return None, error_result
+                        if media_record is not None:
+                            paths.append(str(media_record["path"]))
+                    value = paths if isinstance(value, list) else (paths[0] if paths else None)
+                spatial_parameters[name] = value
+                spatial_parameter_names.add(name)
+            task.update(spatial_parameters)
+
         media_parameters = {
             "audio_media_id": "audio_source",
             "voice_sample_media_id": "replace_voice_sample",
@@ -2593,8 +2672,7 @@ class DeepyZeroTools:
                 error_result.update({"process": process_id})
                 return None, error_result
             task[task_key] = str(media_record["path"])
-        standard_parameters = {"multiplier", "seed", "prompt", "negative_prompt", *media_parameters}
-        parameter_defs = {str(parameter["name"]): parameter for parameter in process.get("parameters", ())}
+        standard_parameters = {"multiplier", "seed", "prompt", "negative_prompt", *media_parameters, *spatial_parameter_names}
         for name, value in parameters.items():
             if name not in standard_parameters:
                 task[str(parameter_defs[name].get("setting", name))] = value
@@ -2632,25 +2710,26 @@ class DeepyZeroTools:
         if media_type not in {"image", "video", "audio"}:
             return {"status": "error", "media_id": str(source_media["media_id"]), "media_type": media_type, "error": "The gallery media file extension is not supported for post-processing."}
         available_processes = postprocessing_catalog.query_processes(media_type)
+        discovered_processes = postprocessing_catalog.call_processes(available_processes)
         process_id = str(process or "").strip()
         if not process_id:
             return {
                 "status": "discovery",
                 "media_id": str(source_media["media_id"]),
                 "media_type": media_type,
-                "processes": available_processes,
-                "count": len(available_processes),
+                "processes": discovered_processes,
+                "count": len(discovered_processes),
                 "error": "",
             }
         matches = [candidate for candidate in available_processes if candidate["id"] == process_id]
         if not matches:
-            return {"status": "error", "media_id": str(source_media["media_id"]), "media_type": media_type, "process": process_id, "processes": available_processes, "error": "The requested process is not available for this media."}
+            return {"status": "error", "media_id": str(source_media["media_id"]), "media_type": media_type, "process": process_id, "processes": discovered_processes, "error": "The requested process is not available for this media."}
         if len(matches) > 1:
             return {"status": "error", "media_id": str(source_media["media_id"]), "media_type": media_type, "process": process_id, "error": "The requested process id is ambiguous for this media."}
         process_def = matches[0]
         normalized_parameters, error = postprocessing_catalog.normalize_parameters(process_def, parameters)
         if error:
-            return {"status": "error", "media_id": str(source_media["media_id"]), "media_type": media_type, "process": process_id, "expected_parameters": process_def["parameters"], "error": error}
+            return {"status": "error", "media_id": str(source_media["media_id"]), "media_type": media_type, "process": process_id, "expected_parameters": postprocessing_catalog.call_parameters(process_def["parameters"]), "error": error}
         task, error_result = self._build_postprocessing_task(source_media, process_def, normalized_parameters)
         if error_result is not None:
             return error_result
@@ -3364,7 +3443,7 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Extract Image",
-        description="Extract one image from a previously resolved video at a specific frame number or exact playback time and add it to WanGP galleries.",
+        description="Save one video frame as a Gallery image at a specific frame number or playback time. For visual analysis alone, use Inspect Media without extracting it.",
         parameters={
             "media_id": {
                 "type": "string",
@@ -3409,7 +3488,7 @@ class DeepyZeroTools:
         output_name = f"{source_name}_{output_suffix}.png"
         output_path = self._resolve_direct_output_path(output_name, True, False)
         try:
-            deepy_video_tools.extract_video_frame(source_path, output_path, frame_no=frame_no, time_seconds=time_seconds)
+            output_path = deepy_video_tools.extract_video_frame(source_path, output_path, frame_no=frame_no, time_seconds=time_seconds)
         except Exception as exc:
             result = {
                 "status": "error",
@@ -4506,11 +4585,11 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Inspect Media",
-        description="Ask Deepy to jointly inspect up to five previously resolved images or video frames and answer a visual question about them.",
+        description="Directly inspect or compare multiple images and/or explicitly selected video frames in one call; video frames do not need to be extracted first.",
         parameters={
             "media_id": {
                 "type": "string",
-                "description": "One media id returned by Resolve Media. Use either media_id or media_ids.",
+                "description": "One media id returned by Resolve Media. Use exactly one of media_id, media_ids, or media_inputs.",
                 "required": False,
             },
             "media_ids": {
@@ -4518,7 +4597,24 @@ class DeepyZeroTools:
                 "items": {"type": "string"},
                 "minItems": 1,
                 "maxItems": 5,
-                "description": "One to five media ids to inspect together in the listed order. Use either media_id or media_ids.",
+                "description": "Ordered media ids to inspect together. Videos use frame_no, or frame 0 when it is omitted. Use exactly one of media_id, media_ids, or media_inputs.",
+                "required": False,
+            },
+            "media_inputs": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "media_id": {"type": "string", "description": "A media id returned by Resolve Media."},
+                        "frame_no": {"type": "integer", "minimum": 0, "description": "Optional video frame number. If omitted for a video, frame 0 is used."},
+                        "time_seconds": {"type": "number", "minimum": 0, "description": "Optional exact video time in seconds. Do not combine it with frame_no."},
+                    },
+                    "required": ["media_id"],
+                },
+                "minItems": 1,
+                "maxItems": 5,
+                "description": "Ordered visual inputs. Repeat the same video media_id with different frame_no or time_seconds values to inspect multiple frames jointly. Images omit both selectors. Use exactly one of media_id, media_ids, or media_inputs.",
                 "required": False,
             },
             "question": {
@@ -4527,64 +4623,229 @@ class DeepyZeroTools:
             },
             "frame_no": {
                 "type": "integer",
-                "description": "Optional frame number to inspect for every supplied video. If omitted, the first frame is used.",
+                "description": "Optional frame number to inspect for every video supplied through media_id or media_ids. If omitted, frame 0 is used. Do not use it with media_inputs.",
                 "required": False,
             },
         },
         pause_runtime=False,
         pause_reason="vision",
     )
-    def inspect_media(self, media_id: str | None = None, question: str = "", frame_no: int | None = None, media_ids: list[str] | None = None) -> dict[str, Any]:
+    def inspect_media(self, media_id: str | None = None, question: str = "", frame_no: int | None = None, media_ids: list[str] | None = None, media_inputs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         self._sync_recent_media()
         single_media_id = str(media_id or "").strip()
         question = str(question or "").strip()
         if len(question) == 0:
-            return {"status": "error", "media_id": single_media_id, "media_ids": [], "question": "", "answer": "", "error": "question is required."}
+            return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": [], "question": "", "answer": "", "error": "question is required."}
         if media_ids is not None and not isinstance(media_ids, list):
-            return {"status": "error", "media_id": single_media_id, "media_ids": [], "question": question, "answer": "", "error": "media_ids must be an array."}
-        if single_media_id and media_ids is not None:
-            return {"status": "error", "media_id": single_media_id, "media_ids": [], "question": question, "answer": "", "error": "Use either media_id or media_ids, not both."}
-        requested_media_ids = [single_media_id] if single_media_id else list(media_ids or [])
-        if not 1 <= len(requested_media_ids) <= deepy_vision.VISION_MAX_IMAGES:
-            return {"status": "error", "media_id": single_media_id, "media_ids": requested_media_ids, "question": question, "answer": "", "error": f"Provide between 1 and {deepy_vision.VISION_MAX_IMAGES} media ids."}
-        if any(not isinstance(value, str) or len(value.strip()) == 0 for value in requested_media_ids):
-            return {"status": "error", "media_id": single_media_id, "media_ids": requested_media_ids, "question": question, "answer": "", "error": "Every media id must be a non-empty string."}
-        requested_media_ids = [value.strip() for value in requested_media_ids]
+            return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": [], "question": question, "answer": "", "error": "media_ids must be an array."}
+        if media_inputs is not None and not isinstance(media_inputs, list):
+            return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": [], "question": question, "answer": "", "error": "media_inputs must be an array."}
+        source_count = int(bool(single_media_id)) + int(media_ids is not None) + int(media_inputs is not None)
+        if source_count > 1:
+            return {"status": "error", "media_id": single_media_id, "media_ids": list(media_ids or []), "media_inputs": list(media_inputs or []), "question": question, "answer": "", "error": "Use exactly one of media_id, media_ids, or media_inputs."}
         try:
             frame_no = None if frame_no is None or str(frame_no).strip() == "" else int(frame_no)
         except Exception:
-            return {"status": "error", "media_id": single_media_id, "media_ids": requested_media_ids, "question": question, "answer": "", "error": "frame_no must be an integer."}
-        self._update_tool_progress("running", "Inspecting", {"status": "running", "media_id": single_media_id, "media_ids": requested_media_ids, "question": question, "frame_no": frame_no})
+            return {"status": "error", "media_id": single_media_id, "media_ids": list(media_ids or []), "media_inputs": list(media_inputs or []), "question": question, "answer": "", "error": "frame_no must be an integer."}
+        if media_inputs is not None and frame_no is not None:
+            return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": media_inputs, "question": question, "answer": "", "error": "Do not combine frame_no with media_inputs; put frame_no inside each video input."}
+        raw_inputs = list(media_inputs or []) if media_inputs is not None else [{"media_id": value, "frame_no": frame_no} for value in ([single_media_id] if single_media_id else list(media_ids or []))]
+        if not 1 <= len(raw_inputs) <= self._vision_max_images:
+            return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"Provide between 1 and {self._vision_max_images} visual inputs."}
+        requested_inputs = []
+        for index, raw_input in enumerate(raw_inputs):
+            if not isinstance(raw_input, dict):
+                return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}] must be an object."}
+            unknown_keys = set(raw_input) - {"media_id", "frame_no", "time_seconds"}
+            if unknown_keys:
+                return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"Unsupported media_inputs[{index}] field: {sorted(unknown_keys)[0]}."}
+            requested_media_id = raw_input.get("media_id", "")
+            if not isinstance(requested_media_id, str) or len(requested_media_id.strip()) == 0:
+                return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}].media_id must be a non-empty string."}
+            input_frame_no = raw_input.get("frame_no", None)
+            input_time_seconds = raw_input.get("time_seconds", None)
+            try:
+                input_frame_no = None if input_frame_no is None or str(input_frame_no).strip() == "" else int(input_frame_no)
+            except Exception:
+                return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}].frame_no must be an integer."}
+            try:
+                input_time_seconds = None if input_time_seconds is None or str(input_time_seconds).strip() == "" else float(input_time_seconds)
+            except Exception:
+                return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}].time_seconds must be a number."}
+            if input_frame_no is not None and input_time_seconds is not None:
+                return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}] cannot combine frame_no and time_seconds."}
+            if input_frame_no is not None and input_frame_no < 0:
+                return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}].frame_no must be non-negative."}
+            if input_time_seconds is not None and (not math.isfinite(input_time_seconds) or input_time_seconds < 0):
+                return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}].time_seconds must be a finite non-negative number."}
+            requested_inputs.append({"media_id": requested_media_id.strip(), "frame_no": input_frame_no, "time_seconds": input_time_seconds})
+        requested_media_ids = [item["media_id"] for item in requested_inputs]
+        progress_inputs = [{key: value for key, value in item.items() if value is not None} for item in requested_inputs]
+        self._update_tool_progress("running", "Inspecting", {"status": "running", "media_id": single_media_id, "media_ids": requested_media_ids, "media_inputs": progress_inputs, "question": question, "frame_no": frame_no})
         if self.session is None:
-            return {"status": "error", "media_id": single_media_id, "media_ids": requested_media_ids, "question": question, "answer": "", "error": "Assistant session is not available."}
+            return {"status": "error", "media_id": single_media_id, "media_ids": requested_media_ids, "media_inputs": progress_inputs, "question": question, "answer": "", "error": "Assistant session is not available."}
         media_records = []
-        for requested_media_id in requested_media_ids:
+        for index, requested_input in enumerate(requested_inputs):
+            requested_media_id = requested_input["media_id"]
             media_record = self._resolve_media_record_input(requested_media_id)
             if media_record is None:
-                return {"status": "error", "media_id": requested_media_id, "media_ids": requested_media_ids, "question": question, "answer": "", "error": f"Unknown media id: {requested_media_id}."}
+                return {"status": "error", "media_id": requested_media_id, "media_ids": requested_media_ids, "media_inputs": progress_inputs, "question": question, "answer": "", "error": f"Unknown media id: {requested_media_id}."}
             if media_record.get("media_type") not in {"image", "video"}:
-                return {"status": "error", "media_id": media_record.get("media_id", ""), "media_ids": requested_media_ids, "media_type": media_record.get("media_type", ""), "question": question, "answer": "", "error": "Visual inspection currently supports images and videos."}
-            media_records.append(media_record)
+                return {"status": "error", "media_id": media_record.get("media_id", ""), "media_ids": requested_media_ids, "media_inputs": progress_inputs, "media_type": media_record.get("media_type", ""), "question": question, "answer": "", "error": "Visual inspection currently supports images and videos."}
+            if media_inputs is not None and media_record.get("media_type") == "image" and (requested_input["frame_no"] is not None or requested_input["time_seconds"] is not None):
+                return {"status": "error", "media_id": media_record.get("media_id", ""), "media_ids": requested_media_ids, "media_inputs": progress_inputs, "media_type": "image", "question": question, "answer": "", "error": f"media_inputs[{index}] is an image and cannot specify frame_no or time_seconds."}
+            inspection_record = dict(media_record)
+            inspection_record["frame_no"] = (requested_input["frame_no"] if requested_input["frame_no"] is not None or requested_input["time_seconds"] is not None else 0) if media_record.get("media_type") == "video" else None
+            inspection_record["time_seconds"] = requested_input["time_seconds"] if media_record.get("media_type") == "video" else None
+            media_records.append(inspection_record)
         if self._vision_query_callback is None:
             return {
                 "status": "error",
                 "media_id": single_media_id,
                 "media_ids": requested_media_ids,
+                "media_inputs": progress_inputs,
                 "question": question,
                 "answer": "",
                 "error": "Deepy vision inspection is not available.",
             }
-        return self._vision_query_callback(media_records[0] if len(media_records) == 1 else media_records, question, frame_no)
+        return self._vision_query_callback(media_records[0] if len(media_records) == 1 else media_records, question, frame_no if media_inputs is None else None)
+
+    @assistant_tool(
+        display_name="Inspect Video",
+        description="Inspect a video across a time range using automatically selected, evenly spaced frames. Use this instead of manually extracting or listing frames.",
+        parameters={
+            "media_id": {
+                "type": "string",
+                "description": "One video media id returned by Resolve Media.",
+            },
+            "start_time_seconds": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Start of the inspected time range in seconds.",
+            },
+            "end_time_seconds": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "End of the inspected time range in seconds. It must be after start_time_seconds.",
+            },
+            "question": {
+                "type": "string",
+                "description": "The visual question to answer about the video over this range.",
+            },
+            "mid_res_sampling": {
+                "type": "boolean",
+                "description": "Optional mid-resolution mode that uses one-quarter as many frames fitted within 512x512 instead of 256x256.",
+                "required": False,
+            },
+            "min_frames_between_samples": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Optional minimum number of source-video frames between samples. It can only reduce the sample count and never exceeds the tool maximum. Do not combine with min_seconds_between_samples.",
+                "required": False,
+            },
+            "min_seconds_between_samples": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "Optional minimum seconds between samples. It can only reduce the sample count and never exceeds the tool maximum. Do not combine with min_frames_between_samples.",
+                "required": False,
+            },
+        },
+        pause_runtime=False,
+        pause_reason="vision",
+    )
+    def inspect_video(self, media_id: str, start_time_seconds: float, end_time_seconds: float, question: str, mid_res_sampling: bool = False, min_frames_between_samples: int | None = None, min_seconds_between_samples: float | None = None) -> dict[str, Any]:
+        self._sync_recent_media()
+        requested_media_id = str(media_id or "").strip()
+        question = str(question or "").strip()
+        if not requested_media_id:
+            return {"status": "error", "media_id": "", "question": question, "answer": "", "error": "media_id is required."}
+        if not question:
+            return {"status": "error", "media_id": requested_media_id, "question": "", "answer": "", "error": "question is required."}
+        if not isinstance(mid_res_sampling, bool):
+            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "mid_res_sampling must be a boolean."}
+        if min_frames_between_samples is not None and min_seconds_between_samples is not None:
+            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "Use either min_frames_between_samples or min_seconds_between_samples, not both."}
+        if min_frames_between_samples is not None:
+            try:
+                parsed_min_frames = int(min_frames_between_samples)
+                if isinstance(min_frames_between_samples, bool) or float(min_frames_between_samples) != parsed_min_frames or parsed_min_frames < 1:
+                    raise ValueError
+                min_frames_between_samples = parsed_min_frames
+            except Exception:
+                return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "min_frames_between_samples must be an integer greater than zero."}
+        if min_seconds_between_samples is not None:
+            try:
+                min_seconds_between_samples = float(min_seconds_between_samples)
+            except Exception:
+                min_seconds_between_samples = float("nan")
+            if not math.isfinite(min_seconds_between_samples) or min_seconds_between_samples <= 0:
+                return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "min_seconds_between_samples must be a finite number greater than zero."}
+        try:
+            start_time_seconds = float(start_time_seconds)
+            end_time_seconds = float(end_time_seconds)
+        except Exception:
+            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "start_time_seconds and end_time_seconds must be numbers."}
+        if not math.isfinite(start_time_seconds) or start_time_seconds < 0:
+            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "start_time_seconds must be a finite non-negative number."}
+        if not math.isfinite(end_time_seconds) or end_time_seconds <= start_time_seconds:
+            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "end_time_seconds must be finite and greater than start_time_seconds."}
+        if self.session is None:
+            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "Assistant session is not available."}
+        media_record = self._resolve_media_record_input(requested_media_id)
+        if media_record is None:
+            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": f"Unknown media id: {requested_media_id}."}
+        if media_record.get("media_type") != "video":
+            return {"status": "error", "media_id": media_record.get("media_id", ""), "media_type": media_record.get("media_type", ""), "question": question, "answer": "", "error": "Inspect Video requires a video."}
+        if self._vision_query_callback is None:
+            return {"status": "error", "media_id": media_record.get("media_id", ""), "question": question, "answer": "", "error": "Deepy vision inspection is not available."}
+        media_path = str(media_record.get("path", "") or "").strip()
+        fps, _width, _height, frame_count = get_video_info(media_path)
+        precise_fps = deepy_video_tools.get_precise_video_fps(media_path)
+        effective_fps = float(precise_fps) if precise_fps is not None and precise_fps > 0 else float(fps)
+        if effective_fps <= 0 or int(frame_count) <= 0:
+            return {"status": "error", "media_id": media_record.get("media_id", ""), "question": question, "answer": "", "error": "Could not determine the video frame rate or frame count."}
+        duration_seconds = int(frame_count) / effective_fps
+        if start_time_seconds >= duration_seconds:
+            return {"status": "error", "media_id": media_record.get("media_id", ""), "question": question, "answer": "", "error": f"start_time_seconds must be before the video duration ({duration_seconds:.3f} seconds)."}
+        sampled_end_seconds = min(end_time_seconds, duration_seconds)
+        start_frame = deepy_video_tools.resolve_video_frame_no(media_path, time_seconds=start_time_seconds)
+        end_frame = deepy_video_tools.resolve_video_frame_no(media_path, time_seconds=sampled_end_seconds)
+        target_count = deepy_vision.video_inspection_sample_count(remote=self._vision_is_remote, mid_res_sampling=mid_res_sampling)
+        frame_span = end_frame - start_frame
+        min_frame_gap = min_frames_between_samples or (max(1, math.ceil(min_seconds_between_samples * effective_fps - 1e-9)) if min_seconds_between_samples is not None else 1)
+        rate_limited_count = max(1, math.ceil((sampled_end_seconds - start_time_seconds) * deepy_vision.VISION_VIDEO_MAX_SAMPLES_PER_SECOND - 1e-9))
+        sample_count = min(target_count, rate_limited_count, frame_span // min_frame_gap + 1)
+        frame_indices = [start_frame] if sample_count == 1 else [round(start_frame + (end_frame - start_frame) * index / (sample_count - 1)) for index in range(sample_count)]
+        max_image_edge = deepy_vision.VISION_VIDEO_MID_RES_MAX_IMAGE_EDGE if mid_res_sampling else deepy_vision.VISION_VIDEO_MAX_IMAGE_EDGE
+        inspection_records = []
+        for frame_index in frame_indices:
+            inspection_record = dict(media_record)
+            inspection_record["frame_no"] = int(frame_index)
+            inspection_record["time_seconds"] = float(frame_index) / effective_fps
+            inspection_records.append(inspection_record)
+        progress = {
+            "status": "running", "media_id": media_record.get("media_id", ""), "question": question,
+            "start_time_seconds": start_time_seconds, "end_time_seconds": sampled_end_seconds, "sample_count": sample_count,
+            "max_image_edge": max_image_edge, "mid_res_sampling": mid_res_sampling,
+            "min_frames_between_samples": min_frames_between_samples, "min_seconds_between_samples": min_seconds_between_samples,
+        }
+        self._update_tool_progress("running", f"Inspecting {sample_count} video frames", progress)
+        result = self._vision_query_callback(inspection_records, question, None, max_image_edge)
+        if isinstance(result, dict):
+            result.pop("media", None)
+            result.pop("media_ids", None)
+            result.update({
+                "media_id": media_record.get("media_id", ""), "start_frame_no": start_frame, "end_frame_no": end_frame,
+                "start_time_seconds": start_time_seconds, "end_time_seconds": sampled_end_seconds,
+                "requested_end_time_seconds": end_time_seconds, "sample_count": sample_count,
+                "max_image_edge": max_image_edge, "mid_res_sampling": mid_res_sampling,
+                "min_frames_between_samples": min_frames_between_samples, "min_seconds_between_samples": min_seconds_between_samples,
+            })
+        return result
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         schemas = []
-        for attr_name in dir(self):
-            if attr_name.startswith("_"):
-                continue
-            method = getattr(self, attr_name)
-            metadata = getattr(method, "_assistant_tool", None)
-            if metadata is None or not self._tool_enabled(metadata):
-                continue
+        for method, metadata in self._iter_tools():
             properties = {}
             required = []
             annotations = getattr(method, "__annotations__", {})
@@ -4592,14 +4853,28 @@ class DeepyZeroTools:
                 properties[param_name] = _build_tool_parameter_schema(annotations, param_name, param_meta)
                 if self._file_system_read_enabled() and properties[param_name].get("type") == "string" and "media id" in properties[param_name].get("description", "").casefold():
                     properties[param_name]["description"] += " An existing media file path with an extension is also accepted."
+                if self._file_system_read_enabled() and param_name == "media_inputs":
+                    properties[param_name]["items"]["properties"]["media_id"]["description"] += " An existing media file path with an extension is also accepted."
                 if bool(param_meta.get("required", True)):
                     required.append(param_name)
+            description = metadata["description"]
+            if metadata["name"] == "inspect_media":
+                properties["media_ids"]["maxItems"] = self._vision_max_images
+                properties["media_inputs"]["maxItems"] = self._vision_max_images
+                properties["media_ids"]["description"] = f"One to {self._vision_max_images} ordered media ids to inspect together. Videos use frame_no, or frame 0 when it is omitted. Use exactly one of media_id, media_ids, or media_inputs."
+                properties["media_inputs"]["description"] = f"One to {self._vision_max_images} ordered visual inputs. Repeat a video media_id with different frame_no or time_seconds values to inspect selected frames jointly. Images omit both selectors."
+                description = f"Directly inspect or compare up to {self._vision_max_images} images and/or explicitly selected video frames in one call."
+            elif metadata["name"] == "inspect_video":
+                high_count = deepy_vision.video_inspection_sample_count(remote=self._vision_is_remote, mid_res_sampling=False)
+                mid_count = deepy_vision.video_inspection_sample_count(remote=self._vision_is_remote, mid_res_sampling=True)
+                properties["mid_res_sampling"]["description"] = f"When true, sample up to {mid_count} frames fitted within 512x512 instead of the default up to {high_count} frames fitted within 256x256."
+                description = f"Inspect a video time range with up to {high_count} automatically selected frames fitted within 256x256, capped at two samples per second, or up to {mid_count} frames fitted within 512x512 when mid_res_sampling is true."
             schemas.append(
                 {
                     "type": "function",
                     "function": {
                         "name": metadata["name"],
-                        "description": metadata["description"],
+                        "description": description,
                         "parameters": {
                             "type": "object",
                             "properties": properties,
@@ -4612,24 +4887,16 @@ class DeepyZeroTools:
 
     def get_tool_display_name(self, tool_name: str) -> str:
         lookup_name = str(tool_name or "").strip()
-        for attr_name in dir(self):
-            if attr_name.startswith("_"):
-                continue
-            method = getattr(self, attr_name)
-            metadata = getattr(method, "_assistant_tool", None)
-            if metadata is None or not self._tool_enabled(metadata) or metadata["name"] != lookup_name:
+        for _method, metadata in self._iter_tools():
+            if metadata["name"] != lookup_name:
                 continue
             return str(metadata.get("display_name", lookup_name)).strip() or lookup_name
         return lookup_name.replace("_", " ").replace("-", " ").strip().title() or "Tool"
 
     def get_tool_policy(self, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         lookup_name = str(tool_name or "").strip()
-        for attr_name in dir(self):
-            if attr_name.startswith("_"):
-                continue
-            method = getattr(self, attr_name)
-            metadata = getattr(method, "_assistant_tool", None)
-            if metadata is None or not self._tool_enabled(metadata) or metadata["name"] != lookup_name:
+        for _method, metadata in self._iter_tools():
+            if metadata["name"] != lookup_name:
                 continue
             return {
                 "pause_runtime": bool(metadata.get("pause_runtime", True)),
@@ -4640,12 +4907,8 @@ class DeepyZeroTools:
     def validate_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> str:
         lookup_name = str(tool_name or "").strip()
         call_args = dict(arguments or {})
-        for attr_name in dir(self):
-            if attr_name.startswith("_"):
-                continue
-            method = getattr(self, attr_name)
-            metadata = getattr(method, "_assistant_tool", None)
-            if metadata is None or not self._tool_enabled(metadata) or metadata["name"] != lookup_name:
+        for _method, metadata in self._iter_tools():
+            if metadata["name"] != lookup_name:
                 continue
             for param_name, param_meta in metadata["parameters"].items():
                 if not bool(param_meta.get("required", True)):
@@ -4710,13 +4973,7 @@ class DeepyZeroTools:
         return []
 
     def call(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        for attr_name in dir(self):
-            if attr_name.startswith("_"):
-                continue
-            method = getattr(self, attr_name)
-            metadata = getattr(method, "_assistant_tool", None)
-            if metadata is None or not self._tool_enabled(metadata):
-                continue
+        for method, metadata in self._iter_tools():
             if metadata["name"] != tool_name:
                 continue
             return method(**dict(arguments or {}))
@@ -4759,7 +5016,7 @@ class AssistantEngine:
         self._runtime_debug_signature = ""
         bind_runtime_tools = getattr(self.tool_box, "bind_runtime_tools", None)
         if callable(bind_runtime_tools):
-            bind_runtime_tools(vision_query_callback=self._run_visual_query, tool_progress_callback=self._handle_tool_progress)
+            bind_runtime_tools(vision_query_callback=self._run_visual_query, tool_progress_callback=self._handle_tool_progress, vision_is_remote=False)
 
     def _log(self, message: str) -> None:
         if self.debug_enabled:
@@ -5615,35 +5872,53 @@ class AssistantEngine:
             raise RuntimeError("Deepy vision runtime is not available.")
         return caption_model, caption_processor
 
-    def _run_visual_query(self, media_record: dict[str, Any] | list[dict[str, Any]], question: str, frame_no: int | None = None) -> dict[str, Any]:
+    def _run_visual_query(self, media_record: dict[str, Any] | list[dict[str, Any]], question: str, frame_no: int | None = None, max_image_edge: int | None = None) -> dict[str, Any]:
         if not self._gpu_acquired:
             self.runtime_hooks.clear_gpu_resident()
             self.session.release_vram_callback = None
             self.runtime_hooks.acquire_gpu()
             self._gpu_acquired = True
         media_records = list(media_record) if isinstance(media_record, list) else [media_record]
-        images = []
+        images = [None] * len(media_records)
         inspected_media = []
-        for current_record in media_records:
+        video_inputs: dict[str, list[tuple[int, int]]] = {}
+        for input_index, current_record in enumerate(media_records):
             media_path = str(current_record.get("path", "")).strip()
             if len(media_path) == 0 or not os.path.isfile(media_path):
                 raise FileNotFoundError(f"Media file not found: {media_path}")
             media_type = str(current_record.get("media_type", "")).strip().lower()
             resolved_frame_no = None
+            time_seconds = current_record.get("time_seconds", None)
             if media_type == "video":
-                resolved_frame_no = 0 if frame_no is None else int(frame_no)
-                image = get_video_frame(media_path, resolved_frame_no, return_last_if_missing=True, return_PIL=True).convert("RGB")
+                requested_frame_no = current_record.get("frame_no", frame_no)
+                resolved_frame_no = deepy_video_tools.resolve_video_frame_no(media_path, frame_no=requested_frame_no, time_seconds=time_seconds) if requested_frame_no is not None or time_seconds is not None else 0
+                video_inputs.setdefault(media_path, []).append((input_index, resolved_frame_no))
             else:
                 with Image.open(media_path) as image_handle:
                     image = image_handle.convert("RGB")
-            images.append(image)
-            inspected_media.append({"media_id": current_record.get("media_id", ""), "media_type": media_type, "label": current_record.get("label", ""), "frame_no": resolved_frame_no})
+                    images[input_index] = deepy_vision.resize_inspection_image(image, max_image_edge) if max_image_edge is not None else image
+            inspected_media.append({"input_index": input_index + 1, "media_id": current_record.get("media_id", ""), "media_type": media_type, "label": current_record.get("label", ""), "frame_no": resolved_frame_no, "time_seconds": time_seconds})
+        for media_path, indexed_frames in video_inputs.items():
+            decoded_images = deepy_vision.decode_inspection_video_frames(media_path, [item[1] for item in indexed_frames], max_edge=max_image_edge)
+            for (input_index, _resolved_frame_no), decoded_image in zip(indexed_frames, decoded_images):
+                images[input_index] = decoded_image
+        visual_labels = []
+        for index, item in enumerate(inspected_media):
+            source_label = str(item.get("label", "") or os.path.basename(str(media_records[index].get("path", "")))).strip()
+            if item["media_type"] == "video":
+                time_label = "" if item["time_seconds"] is None else f" at {float(item['time_seconds']):.3f} seconds"
+                visual_labels.append(f"Visual {index + 1}: video {source_label}, frame {item['frame_no']}{time_label}.")
+            else:
+                visual_labels.append(f"Visual {index + 1}: image {source_label}.")
         caption_model, caption_processor = self._ensure_vision_loaded()
         prompt_token_ids, prompt_embeds, prompt_position_ids, position_offset = deepy_vision.build_image_question_prompt(
             caption_model,
             caption_processor,
             images,
             question,
+            image_labels=visual_labels,
+            max_images=deepy_vision.VISION_MAX_IMAGES if max_image_edge is None else len(images),
+            max_pixels_per_image=None if max_image_edge is None else max_image_edge * max_image_edge,
         )
         if self.debug_enabled:
             prompt_embeds_shape = None if prompt_embeds is None else tuple(int(x) for x in prompt_embeds.shape)
@@ -5659,6 +5934,18 @@ class AssistantEngine:
                 f"position_offset={int(position_offset or 0)}"
             )
         runtime = self._acquire_runtime()
+        if llm_io_enabled():
+            log_llm_io("OUT", "local-deepy", "visual-query", {
+                "question": str(question or "").strip(),
+                "visual_labels": visual_labels,
+                "media": [{**item, "source": media_descriptor(media_records[index]["path"])} for index, item in enumerate(inspected_media)],
+                "input_token_ids": [int(token_id) for token_id in prompt_token_ids],
+                "known_token_ids": known_token_ids(runtime.tokenizer),
+                "prompt_embeddings": prompt_embeds,
+                "prompt_position_ids": prompt_position_ids,
+                "position_offset": int(position_offset or 0),
+                "generation": {"max_new_tokens": deepy_vision.VISION_ANSWER_MAX_NEW_TOKENS, "seed": 0, "do_sample": False},
+            })
         answer = runtime.generate_embedded_answer(
             prompt_token_ids,
             prompt_embeds,
@@ -5671,10 +5958,12 @@ class AssistantEngine:
             top_p=None,
             top_k=None,
         )
+        log_llm_io("IN", "local-deepy", "visual-query", {"text": answer})
         result = {
             "status": "done",
             "media_ids": [item["media_id"] for item in inspected_media],
             "media": inspected_media,
+            "visual_count": len(inspected_media),
             "question": str(question or "").strip(),
             "answer": answer,
             "error": "",
@@ -5971,6 +6260,15 @@ class AssistantEngine:
         except Exception:
             self.runtime.restore_snapshot(rollback_snapshot)
             raise
+        if llm_io_enabled():
+            log_llm_io("OUT", "local-deepy", "history-compaction", {
+                "source_messages": prior_messages,
+                "instruction": ASSISTANT_COMPACTION_PROMPT,
+                "source_token_ids": source_tokens,
+                "instruction_token_ids": appended_tokens,
+                "known_token_ids": known_token_ids(self.runtime.tokenizer),
+                "generation": {"max_new_tokens": _SUMMARY_COMPACTION_MAX_NEW_TOKENS, "seed": 0, "do_sample": False, "thinking_enabled": False},
+            })
         self._log(f"Compaction reused {len(source_tokens):,} cached tokens and appended {len(appended_tokens):,} tokens for the summary instruction.")
         return rollback_snapshot, compaction_context_tokens
 
@@ -6004,6 +6302,15 @@ class AssistantEngine:
         except Exception:
             self.runtime.restore_snapshot(rollback_snapshot)
             raise
+        if llm_io_enabled():
+            log_llm_io("OUT", "local-deepy", "active-turn-compaction", {
+                "source_messages": self.session.messages,
+                "instruction": active_prompt,
+                "source_token_ids": source_tokens,
+                "instruction_token_ids": appended_tokens,
+                "known_token_ids": known_token_ids(self.runtime.tokenizer),
+                "generation": {"max_new_tokens": _SUMMARY_COMPACTION_MAX_NEW_TOKENS, "seed": 0, "do_sample": False, "thinking_enabled": False},
+            })
         self._log(f"Active-turn compaction reused {len(source_tokens):,} cached tokens and appended {len(appended_tokens):,} tokens for the summary instruction.")
         return rollback_snapshot, compaction_context_tokens
 
@@ -6268,6 +6575,12 @@ class AssistantEngine:
                 thinking_enabled=False,
                 stop_requested=lambda: bool(self.session.interrupt_requested),
             )
+            log_llm_io("IN", "local-deepy", "history-compaction", {
+                "text": result.raw_text,
+                "stop_reason": result.stop_reason,
+                "generated_tokens": result.token_count,
+                "stop_token": token_id_descriptor(self.runtime.tokenizer, result.stop_token_id),
+            })
             self._record_generation_metrics(result.token_count, max(0.0, time.perf_counter() - generation_started_at))
             if self.debug_enabled:
                 raw_preview = str(result.raw_text or "").replace("\r", "\\r").replace("\n", "\\n")
@@ -6371,6 +6684,12 @@ class AssistantEngine:
                 thinking_enabled=False,
                 stop_requested=lambda: bool(self.session.interrupt_requested),
             )
+            log_llm_io("IN", "local-deepy", "active-turn-compaction", {
+                "text": result.raw_text,
+                "stop_reason": result.stop_reason,
+                "generated_tokens": result.token_count,
+                "stop_token": token_id_descriptor(self.runtime.tokenizer, result.stop_token_id),
+            })
             self._record_generation_metrics(result.token_count, max(0.0, time.perf_counter() - generation_started_at))
             if self.debug_enabled:
                 raw_preview = str(result.raw_text or "").replace("\r", "\\r").replace("\n", "\\n")
@@ -7338,6 +7657,26 @@ class AssistantEngine:
                 try:
                     continue_existing_completion = bool(self._continue_generation_segment_once)
                     self._continue_generation_segment_once = False
+                    if llm_io_enabled():
+                        active_sequence = self.runtime._get_active_sequence()
+                        context_token_ids = list(self.session.rendered_token_ids) if active_sequence is None else [int(token_id) for token_id in active_sequence.token_ids]
+                        log_llm_io("OUT", "local-deepy", "generation", {
+                            "system_prompt": self._build_system_prompt(log_injections=True),
+                            "messages": self.session.messages,
+                            "tools": self.tool_box.get_tool_schemas(),
+                            "input_token_ids": context_token_ids,
+                            "known_token_ids": known_token_ids(self.runtime.tokenizer),
+                            "generation": {
+                                "max_new_tokens": max_new_tokens,
+                                "seed": current_seed,
+                                "do_sample": do_sample,
+                                "temperature": temperature,
+                                "top_p": top_p,
+                                "top_k": top_k,
+                                "thinking_enabled": self.thinking_enabled,
+                                "continue_existing_completion": continue_existing_completion,
+                            },
+                        }, pass_number=model_passes + 1)
                     result = self.runtime.generate_segment(
                         max_new_tokens=max_new_tokens,
                         seed=current_seed,
@@ -7354,6 +7693,15 @@ class AssistantEngine:
                 finally:
                     finish_assistant_thought(self.session)
                     self._finish_stream_pass(None if result is None else result.token_count)
+                active_sequence = self.runtime._get_active_sequence()
+                completion_token_ids = [] if active_sequence is None else [int(token_id) for token_id in active_sequence.completion_token_ids]
+                log_llm_io("IN", "local-deepy", "generation", {
+                    "text": result.raw_text,
+                    "output_token_ids": completion_token_ids,
+                    "stop_reason": result.stop_reason,
+                    "generated_tokens": result.token_count,
+                    "stop_token": token_id_descriptor(self.runtime.tokenizer, result.stop_token_id),
+                }, pass_number=model_passes + 1)
                 model_passes += 1
                 if self.session.interrupt_requested or result.stop_reason == "interrupted":
                     break

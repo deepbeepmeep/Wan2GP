@@ -50,6 +50,7 @@ def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default
     add("--profile", type=str, default=-1, help="Profile No")
     add("--verbose", type=str, default=1, help="Verbose level")
     add("--debug-deepy", type=str, default=None, help="Enable Deepy verbose debug logging and write it to the given folder")
+    add("--llm-io", type=str, default="", metavar="FOLDER", help="Write a plain-text transcript of all local and remote LLM input/output to FOLDER")
     add("--steps", type=int, default=0, help="default denoising steps")
     add("--frames", type=int, default=0, help="default number of frames")
     add("--seed", type=int, default=-1, help="default generation seed")
@@ -88,6 +89,10 @@ def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default
     add("--merge-catalog", action="store_true", help="Merge plugins_local.json into plugins.json and remove plugins_local.json")
 
     args = parser.parse_args(argv)
+    if args.llm_io:
+        from shared.llm_io import configure_llm_io
+
+        configure_llm_io(args.llm_io)
     if args.ask_deepy and not _arg_provided(argv, "--verbose"):
         args.verbose = "0"
     return args

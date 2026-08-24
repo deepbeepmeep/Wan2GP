@@ -63,6 +63,17 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
+## 23rd of August 2026: WanGP v12.64, Twice the Phase, Half the Trouble
+
+- **H3 Two-Phase Generation with Latent Upscaling**: H3 now offers an LTX2-style two-phase workflow. Under *Advanced Mode / General*, select *Two Phases* from *Phases*. H3 first generates at half the target width and height, upscales the latent, and then performs a fixed three-step refinement at the target resolution using the LightX2V Turbo LoRA. This makes high-resolution generation much faster, even when the first phase uses many steps (for example, 20), but it does not reduce peak VRAM usage. To lower peak VRAM usage, select *Two Phases with Tiling*, which divides the high-resolution video into four tiles. Tiling may introduce visible seams; adjust the new *Phase 2 Noise Level Start* slider to balance fine detail against seamless tile blending.
+
+- **H3 Face Refiner**: detect, identity-track, and refine up to five faces with H3 Ref2VA without changing the video resolution. Select *H3 Face Refiner* under *Advanced Mode / Post Processing*, use the selected Gallery video's *Post Processing* tab for Late Post Processing, or ask Deepy. Set *Faces to Refine* to `0` for automatic selection of up to five relevant faces.
+
+- **Sense Nova U1.5**: *SenseNova-U1.5 8B MoT* is a unified image generator and editor designed for native-4K images, text-heavy layouts, and infographics. Select it from the Image model list and generate from text or one or more *Reference Images*. Its built-in *Infographic Prompt* enhancer can expand a short brief into a structured layout; native 4K requires substantially more time and memory.
+
+- **Deepy Prime for Everyone / Prompts Enhanced by Claude or ChatGPT**: use an OpenAI Codex or Anthropic Claude account, including supported free accounts, to power Deepy Prime and Prompt Enhancer without pausing a WanGP's generation. Open *Configuration / Prompt Enhancer / Deepy*, select *Codex* or *Claude Code* as the LLM engine, sign in, select *Deepy Prime*, and save. Choose models carefully and monitor the token usage shown in the chat footer; see the [Remote LLM guide](docs/REMOTE_LLMS.md) for details.
+
+- **New Deepy Capabilities**: Deepy can now analyse the content of a video, compare frames and use the new H3 Head refiner
 
 ## 19th of August 2026: WanGP v12.61, Remember to be nice with Deepy
 
@@ -554,6 +565,7 @@ For detailed installation instructions for different GPU generations:
 
 ### Advanced Features
 - **[Deepy Assistant](docs/DEEPY.md)** - Enable Deepy, configure its tool presets, use selected media and frames, and run Deepy from the CLI
+- **[Remote LLMs](docs/REMOTE_LLMS.md)** - Configure Codex, Claude Code, and OpenCode providers for Deepy and Prompt Enhancer
 - **[Loras Guide](docs/LORAS.md)** - Using and managing Loras for customization
 - **[Finetunes](docs/FINETUNES.md)** - Add manually new models to WanGP
 - **[VACE ControlNet](docs/VACE.md)** - Advanced video control and manipulation

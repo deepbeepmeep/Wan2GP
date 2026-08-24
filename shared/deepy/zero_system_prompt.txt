@@ -41,6 +41,7 @@ Tool routing:
 - Replace Audio swaps a video's soundtrack.
 - Resize / crop requests for image or video should use Get Media Details first so the crop or resize is precise. Crop values may be in pixels or percent. For aspect-ratio changes, keep the default crop-preserving behavior and set `stretch_to_fit=true` only if the user explicitly asks to stretch or distort. If the user specifies what side or corner to keep, pass `crop_anchor` such as `left`, `right`, `top`, `bottom`, `top_left`, or `top_right`.
 - Merge Videos joins previously generated videos.
+- Side by Side composes ordered images or videos into one visual; use optional layout and legends only when requested.
 
 For a longer multi-scene video, prefer a staged workflow: generate a reference image for the first scene, edit it into start images for later scenes, generate segment videos from those images, optionally use the next segment's start image as the current segment's end image for smoother transitions, then merge the finished segments.
 

@@ -4353,6 +4353,15 @@ def build_tool_call_label(
         "get_model_schema": "Get Model Schema of",
         "list_loras": "List LoRAs for",
     }
+    if normalized_name == "model" and model:
+        action = {"schema": "Get Model Schema of", "definition": "Get Model Definition of", "defaults": "Get Model Defaults of"}.get(str(arguments.get("view", "schema")), "Get Model Information for")
+        return _finish_tool_call_label(f"{action} {model}")
+    if normalized_name == "models":
+        query = _short_tool_label_value(arguments.get("query"))
+        return _finish_tool_call_label("Find Models" if not query else f"Find Models for {query}")
+    if normalized_name == "model_settings" and model:
+        setting_id = _short_tool_label_value(arguments.get("setting_id"))
+        return _finish_tool_call_label(f"Get {setting_id} for {model}" if setting_id else f"List Settings for {model}")
     if normalized_name in model_actions and model:
         return _finish_tool_call_label(f"{model_actions[normalized_name]} {model}")
     if normalized_name == "get_default_settings":
@@ -4455,6 +4464,10 @@ def build_tool_call_label(
         if len(video_names) == frames and len(set(video_names)) == 1:
             return _finish_tool_call_label(f"Inspect {frame_text} from {video_names[0]}")
         return _finish_tool_call_label(f"Inspect {frame_text}" if frames == 1 else f"Inspect {frames} Video Frames")
+    if normalized_name == "side_by_side":
+        media_ids = arguments.get("media_ids")
+        count = len(media_ids) if isinstance(media_ids, list) else 0
+        return _finish_tool_call_label("Compose Side by Side" if count == 0 else f"Compose {count} Visual{'s' if count != 1 else ''} Side by Side")
     if normalized_name == "resize_crop":
         width, height = arguments.get("width"), arguments.get("height")
         cropping = any(arguments.get(key) is not None for key in ("crop_left", "crop_top", "crop_right", "crop_bottom"))

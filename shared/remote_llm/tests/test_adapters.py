@@ -26,6 +26,7 @@ from shared.remote_llm.opencode_backend import OpenCodeBackend
 from shared.remote_llm.base import BackendEvent
 from shared.remote_llm.deepy_runner import _visual_query, run_remote_deepy_turn
 from shared.remote_llm.usage import build_remote_usage_stats, claude_context_window
+from shared.prompt_enhancer.qwen35_assistant_runtime import extract_tool_calls
 
 
 class _ClosableBackend:
@@ -135,6 +136,20 @@ class _FakeToolbox:
 
 
 class RemoteLLMAdapterTests(unittest.TestCase):
+    def test_local_tool_parser_keeps_xml_like_prompt_tags_inside_source(self):
+        source = {"model_type": "minimax_h3", "prompt": "<Subject 1> speaks. <d>[English] Hello.</d> <action>waves</action> <wait>true</wait>"}
+        raw = "\n".join(("<tool_call>", "<function=wangp_generate>", f"<parameter=source>{json.dumps(source)}</parameter>", "</function>", "</tool_call>"))
+        self.assertEqual(extract_tool_calls(raw, {"wangp_generate": {"source", "wait"}}), [{"name": "wangp_generate", "arguments": {"source": source}}])
+
+    def test_local_tool_parser_does_not_promote_unwrapped_prompt_tags(self):
+        raw = "<tool_call><function=wangp_generate><d>[English] Hello.</d><parameter=wait>true</parameter></function></tool_call>"
+        self.assertEqual(extract_tool_calls(raw, {"wangp_generate": {"source", "wait"}}), [{"name": "wangp_generate", "arguments": {"wait": True}}])
+
+    def test_local_tool_parser_accepts_known_generic_parameters_only(self):
+        source = {"model_type": "minimax_h3", "prompt": "<d>[English] Hello.</d>"}
+        raw = f"<tool_call><function=wangp_generate><source>{json.dumps(source)}</source><d>wrong</d><wait>true</wait></function></tool_call>"
+        self.assertEqual(extract_tool_calls(raw, {"wangp_generate": {"source", "wait"}}), [{"name": "wangp_generate", "arguments": {"source": source, "wait": True}}])
+
     def test_plain_text_llm_io_log_uses_readable_directions_and_numeric_token_ids(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = configure_llm_io(temp_dir)

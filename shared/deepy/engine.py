@@ -3442,6 +3442,62 @@ class DeepyZeroTools:
         return result
 
     @assistant_tool(
+        display_name="Side by Side",
+        description="Place any number of images or videos in one comparison image or video.",
+        parameters={
+            "media_ids": {"type": "array", "items": {"type": "string"}, "description": "Ordered image or video media ids."},
+            "layout": {"type": "string", "description": "Optional: horizontal (default), vertical, grid, or COLSxROWS.", "required": False},
+            "legends": {"type": "array", "items": {"type": "string"}, "description": "Optional labels in media order.", "required": False},
+        },
+        pause_runtime=False,
+    )
+    def side_by_side(self, media_ids: list[str], layout: str | None = None, legends: list[str] | None = None) -> dict[str, Any]:
+        self._sync_recent_media()
+        if not isinstance(media_ids, list) or not media_ids:
+            return {"status": "error", "media_ids": media_ids, "output_file": "", "error": "media_ids must be a non-empty array."}
+        media = []
+        for index, media_id in enumerate(media_ids):
+            record = self._resolve_media_record_input(media_id)
+            if record is None:
+                return {"status": "error", "media_ids": media_ids, "output_file": "", "error": f"Unknown media id at index {index}."}
+            if record.get("media_type") not in {"image", "video"}:
+                return {"status": "error", "media_ids": media_ids, "output_file": "", "error": f"media_ids[{index}] must reference an image or video."}
+            media.append(record)
+        is_video = any(record["media_type"] == "video" for record in media)
+        resolved_layout = str(layout or "horizontal").strip().lower() or "horizontal"
+        video_codec, video_container = self._get_video_output_settings()
+        extension = deepy_video_tools.get_video_container_extension(video_container) if is_video else ".png"
+        output_path = self._resolve_direct_output_path(f"side_by_side{extension}", not is_video, False)
+        self._set_status("Building side-by-side media...", kind="tool")
+        self._update_tool_progress("running", "Composing", {"status": "running", "media_ids": [record["media_id"] for record in media], "layout": resolved_layout})
+        try:
+            output_path = deepy_video_tools.side_by_side_media([record["path"] for record in media], output_path, resolved_layout, legends, video_codec=video_codec, video_container=video_container, audio_codec=self._get_video_audio_output_codec())
+        except Exception as exc:
+            result = {"status": "error", "media_ids": [record["media_id"] for record in media], "layout": resolved_layout, "output_file": "", "error": str(exc)}
+            self._update_tool_progress("error", "Error", result)
+            self._set_status(f"Side-by-side composition failed: {exc}", kind="error")
+            return result
+        if is_video:
+            settings = self._build_deepy_settings(f"A side-by-side comparison video of {len(media)} media items.", f"Composed {len(media)} media items in a {resolved_layout} layout", image_mode=0)
+            self._update_video_metadata_fields(output_path, settings)
+        else:
+            with Image.open(output_path) as image:
+                width, height = image.size
+            settings = self._build_direct_image_settings(f"Composed {len(media)} images in a {resolved_layout} layout", width, height, prompt=f"A side-by-side comparison of {len(media)} images.")
+        media_record = self._record_direct_media(output_path, settings, is_image=not is_video, audio_only=False, label=f"Side-by-side {'video' if is_video else 'image'}")
+        result = {
+            "status": "done",
+            "media_id": "" if media_record is None else media_record.get("media_id", ""),
+            "source_media_ids": [record["media_id"] for record in media],
+            "layout": resolved_layout,
+            "output_file": output_path,
+            "error": "",
+        }
+        self._update_tool_progress("done", "Done", result)
+        self._set_status("Side-by-side media created.", kind="tool")
+        return result
+
+    @assistant_tool(
         display_name="Extract Image",
         description="Save one video frame as a Gallery image at a specific frame number or playback time. For visual analysis alone, use Inspect Media without extracting it.",
         parameters={
@@ -4626,11 +4682,12 @@ class DeepyZeroTools:
                 "description": "Optional frame number to inspect for every video supplied through media_id or media_ids. If omitted, frame 0 is used. Do not use it with media_inputs.",
                 "required": False,
             },
+            "bbox": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 1000}, "minItems": 4, "maxItems": 4, "description": "Optional normalized [x_min,y_min,x_max,y_max] crop, applied before resize.", "required": False},
         },
         pause_runtime=False,
         pause_reason="vision",
     )
-    def inspect_media(self, media_id: str | None = None, question: str = "", frame_no: int | None = None, media_ids: list[str] | None = None, media_inputs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    def inspect_media(self, media_id: str | None = None, question: str = "", frame_no: int | None = None, media_ids: list[str] | None = None, media_inputs: list[dict[str, Any]] | None = None, bbox: list[int] | None = None) -> dict[str, Any]:
         self._sync_recent_media()
         single_media_id = str(media_id or "").strip()
         question = str(question or "").strip()
@@ -4647,6 +4704,10 @@ class DeepyZeroTools:
             frame_no = None if frame_no is None or str(frame_no).strip() == "" else int(frame_no)
         except Exception:
             return {"status": "error", "media_id": single_media_id, "media_ids": list(media_ids or []), "media_inputs": list(media_inputs or []), "question": question, "answer": "", "error": "frame_no must be an integer."}
+        try:
+            bbox = deepy_vision.normalize_inspection_bbox(bbox)
+        except ValueError as exc:
+            return {"status": "error", "media_id": single_media_id, "media_ids": list(media_ids or []), "media_inputs": list(media_inputs or []), "question": question, "answer": "", "error": str(exc)}
         if media_inputs is not None and frame_no is not None:
             return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": media_inputs, "question": question, "answer": "", "error": "Do not combine frame_no with media_inputs; put frame_no inside each video input."}
         raw_inputs = list(media_inputs or []) if media_inputs is not None else [{"media_id": value, "frame_no": frame_no} for value in ([single_media_id] if single_media_id else list(media_ids or []))]
@@ -4681,7 +4742,7 @@ class DeepyZeroTools:
             requested_inputs.append({"media_id": requested_media_id.strip(), "frame_no": input_frame_no, "time_seconds": input_time_seconds})
         requested_media_ids = [item["media_id"] for item in requested_inputs]
         progress_inputs = [{key: value for key, value in item.items() if value is not None} for item in requested_inputs]
-        self._update_tool_progress("running", "Inspecting", {"status": "running", "media_id": single_media_id, "media_ids": requested_media_ids, "media_inputs": progress_inputs, "question": question, "frame_no": frame_no})
+        self._update_tool_progress("running", "Inspecting", {"status": "running", "media_id": single_media_id, "media_ids": requested_media_ids, "media_inputs": progress_inputs, "question": question, "frame_no": frame_no, "bbox": bbox})
         if self.session is None:
             return {"status": "error", "media_id": single_media_id, "media_ids": requested_media_ids, "media_inputs": progress_inputs, "question": question, "answer": "", "error": "Assistant session is not available."}
         media_records = []
@@ -4697,6 +4758,7 @@ class DeepyZeroTools:
             inspection_record = dict(media_record)
             inspection_record["frame_no"] = (requested_input["frame_no"] if requested_input["frame_no"] is not None or requested_input["time_seconds"] is not None else 0) if media_record.get("media_type") == "video" else None
             inspection_record["time_seconds"] = requested_input["time_seconds"] if media_record.get("media_type") == "video" else None
+            inspection_record["bbox"] = bbox
             media_records.append(inspection_record)
         if self._vision_query_callback is None:
             return {
@@ -5881,35 +5943,38 @@ class AssistantEngine:
         media_records = list(media_record) if isinstance(media_record, list) else [media_record]
         images = [None] * len(media_records)
         inspected_media = []
-        video_inputs: dict[str, list[tuple[int, int]]] = {}
+        video_inputs: dict[str, list[tuple[int, int, list[int] | None]]] = {}
         for input_index, current_record in enumerate(media_records):
             media_path = str(current_record.get("path", "")).strip()
             if len(media_path) == 0 or not os.path.isfile(media_path):
                 raise FileNotFoundError(f"Media file not found: {media_path}")
             media_type = str(current_record.get("media_type", "")).strip().lower()
+            bbox = current_record.get("bbox", None)
             resolved_frame_no = None
             time_seconds = current_record.get("time_seconds", None)
             if media_type == "video":
                 requested_frame_no = current_record.get("frame_no", frame_no)
                 resolved_frame_no = deepy_video_tools.resolve_video_frame_no(media_path, frame_no=requested_frame_no, time_seconds=time_seconds) if requested_frame_no is not None or time_seconds is not None else 0
-                video_inputs.setdefault(media_path, []).append((input_index, resolved_frame_no))
+                video_inputs.setdefault(media_path, []).append((input_index, resolved_frame_no, bbox))
             else:
                 with Image.open(media_path) as image_handle:
-                    image = image_handle.convert("RGB")
-                    images[input_index] = deepy_vision.resize_inspection_image(image, max_image_edge) if max_image_edge is not None else image
-            inspected_media.append({"input_index": input_index + 1, "media_id": current_record.get("media_id", ""), "media_type": media_type, "label": current_record.get("label", ""), "frame_no": resolved_frame_no, "time_seconds": time_seconds})
+                    images[input_index] = deepy_vision.prepare_inspection_image(image_handle, max_edge=max_image_edge, bbox=bbox)
+            inspected_media.append({"input_index": input_index + 1, "media_id": current_record.get("media_id", ""), "media_type": media_type, "label": current_record.get("label", ""), "frame_no": resolved_frame_no, "time_seconds": time_seconds, "bbox": bbox})
         for media_path, indexed_frames in video_inputs.items():
-            decoded_images = deepy_vision.decode_inspection_video_frames(media_path, [item[1] for item in indexed_frames], max_edge=max_image_edge)
-            for (input_index, _resolved_frame_no), decoded_image in zip(indexed_frames, decoded_images):
+            bboxes = [item[2] for item in indexed_frames]
+            decode_kwargs = {"max_edge": max_image_edge, **({"bboxes": bboxes} if any(bbox is not None for bbox in bboxes) else {})}
+            decoded_images = deepy_vision.decode_inspection_video_frames(media_path, [item[1] for item in indexed_frames], **decode_kwargs)
+            for (input_index, _resolved_frame_no, _bbox), decoded_image in zip(indexed_frames, decoded_images):
                 images[input_index] = decoded_image
         visual_labels = []
         for index, item in enumerate(inspected_media):
             source_label = str(item.get("label", "") or os.path.basename(str(media_records[index].get("path", "")))).strip()
+            bbox_label = "" if item["bbox"] is None else f", bbox {item['bbox']}"
             if item["media_type"] == "video":
                 time_label = "" if item["time_seconds"] is None else f" at {float(item['time_seconds']):.3f} seconds"
-                visual_labels.append(f"Visual {index + 1}: video {source_label}, frame {item['frame_no']}{time_label}.")
+                visual_labels.append(f"Visual {index + 1}: video {source_label}, frame {item['frame_no']}{time_label}{bbox_label}.")
             else:
-                visual_labels.append(f"Visual {index + 1}: image {source_label}.")
+                visual_labels.append(f"Visual {index + 1}: image {source_label}{bbox_label}.")
         caption_model, caption_processor = self._ensure_vision_loaded()
         prompt_token_ids, prompt_embeds, prompt_position_ids, position_offset = deepy_vision.build_image_question_prompt(
             caption_model,
@@ -7710,7 +7775,8 @@ class AssistantEngine:
                 raw_text = segment_raw_text
                 if len(self._continued_segment_raw_text) > 0:
                     raw_text = self._merge_text_continuation(self._continued_segment_raw_text, raw_text)
-                tool_calls = extract_tool_calls(raw_text)
+                tool_parameters = {str(function.get("name", "")): set(function.get("parameters", {}).get("properties", {})) for schema in self.tool_box.get_tool_schemas() for function in [schema.get("function", {})]}
+                tool_calls = extract_tool_calls(raw_text, tool_parameters=tool_parameters)
                 if len(tool_calls) == 0:
                     tool_calls = self.tool_box.infer_tool_calls(raw_text)
                 deduplicated_tool_calls = self._deduplicate_tool_calls(tool_calls)

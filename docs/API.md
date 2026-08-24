@@ -404,26 +404,14 @@ Resources:
 
 Tools:
 
-- `wangp_list_models(..., name=None, query=None, limit=10, offset=0, include_availability=False)`
-  - Compact metadata page capped at 10 records, with the same filters as `list_model_metadata(...)`. String filters accept case-insensitive `*` and `?` globs. Detailed `setting_values` are omitted; fetch one selected model's schema instead. For generation without a user-specified model, use the corresponding default template rather than browsing.
-  - Set `include_availability=True` to include the optional `availability` field.
-- `wangp_search_models(query, ..., limit=10, offset=0, include_availability=False)`
-  - Searches user-facing names, model ids, architectures, family fields, and descriptions. Returns matches plus `total_matches` and `has_more`.
-- `wangp_list_model_defs(...)`
-  - Full model definitions with metadata.
-- `wangp_get_model(model_type)`
-  - Returns model capabilities and detailed parameter declarations, but omits the redundant embedded `settings` block. Use it only when required parameters remain unclear after inspecting a template and compact schema. Use `wangp_get_default_settings` for raw generation requests, not after a template query.
-- `wangp_get_model_metadata(model_type, include_availability=False)`
-- `wangp_get_model_availability(model_type)`
-  - Local file availability for one model using the same status as the UI selector: `available` (blue), `partial` (yellow), or `missing` (black).
-- `wangp_list_model_availability(...)`
-  - Availability records with the same filters as `wangp_list_models(...)`.
-- `wangp_get_default_settings(model_type)`
-  - Returns pristine model defaults after WanGP removes irrelevant fields and fixed `settings_version`/`type` metadata. User-saved UI defaults are not included.
+- `wangp_models(query="", filters=None, limit=10, offset=0)`
+  - Searches models and returns compact records with supported capabilities and media roles as arrays. `filters` accepts `family`, `base_model_type`, `finetune`, `model_type`, `main_output`, `inputs`, or `name`; string filters support case-insensitive `*` and `?` globs.
+- `wangp_model(model_type, view="schema")`
+  - Returns one model's compact `schema`, full `definition`, or pristine generation `defaults`. Use the default schema first and request the definition only when exact parameters remain unclear. Availability is intentionally separate from this tool.
+- `wangp_model_settings(model_type, setting_id=None)`
+  - With only `model_type`, lists saved user settings, accelerator profiles, and presets. Each entry has a prefixed `id` and `type`; pass one returned id as `setting_id` to fetch its full content.
 - `wangp_list_loras(model_type, name=None)`
   - Recursively returns locally available `.safetensors` and `.sft` LoRAs for the model family. `name` optionally filters subfolder-relative identifiers using case-insensitive `*` and `?` globs. Returned values are suitable for `activated_loras`; supply corresponding weights through `loras_multipliers`.
-- `wangp_get_model_schema(model_type)`
-  - Returns compact capability, media-role, frame-limit, prompt-guidance, and sliding-window metadata.
 - `wangp_list_gallery(media_type="all", limit=50, selected_only=False)`
   - Lists compact summaries of the current session's image, video, and audio Gallery items with one `media_id` per item and selection state. Paths and generation settings are omitted. Set `selected_only=True` to return only the live visual and/or audio selections, including the selected video's current playback time when available.
 - `wangp_get_media_settings(media_id=None, path=None)`
@@ -450,6 +438,8 @@ Tools:
   - Polls progress/events/result.
 - `wangp_cancel_job(job_id)`
   - Requests cancellation.
+
+Deepy's in-process MCP exposes only the three compact model-data tools above. Standalone MCP clients retain the legacy granular endpoints (`wangp_list_models`, `wangp_search_models`, `wangp_list_model_defs`, `wangp_get_model`, `wangp_get_model_metadata`, `wangp_get_model_availability`, `wangp_list_model_availability`, `wangp_get_default_settings`, and `wangp_get_model_schema`) for compatibility.
 
 ## Getting Outputs In Memory
 

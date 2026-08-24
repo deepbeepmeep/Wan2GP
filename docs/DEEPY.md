@@ -82,6 +82,10 @@ When the requirement is met, the `Ask Deepy` launcher appears in the WanGP web U
 
 Deepy Prime always includes WanGP's in-process MCP server and automatically loads its trusted `wangp_agent` operating guide. Its WanGP generation calls use the active browser session's Gradio queue, so jobs and generated media remain visible in the normal queue and Galleries while Deepy stays unloaded from VRAM. External servers extend that tool set; their prompts are not loaded automatically.
 
+Its compact model-data surface is `wangp_models(...)` for search, `wangp_model(model_type, view="schema"|"definition"|"defaults")` for progressive detail, and `wangp_model_settings(...)` for stored settings. This keeps routine discovery small while retaining exact model definitions and defaults on demand.
+
+`wangp_model_settings(model_type)` lists saved user settings, accelerator profiles, and presets with prefixed IDs and types. Pass one returned ID as `setting_id` to retrieve its full content.
+
 For large Markdown MCP resources, Deepy Prime uses `mcp_search_resource` to return up to five ranked section excerpts without adding the complete document to its context. It can then call `mcp_read_resource` with an optional `section` value—an exact or partial heading path, or a case-insensitive `*`/`?` glob—to load only the selected section. This mirrors Zero's `Search Doc` followed by `Load Doc Section` workflow.
 
 Because Deepy Prime runs inside the same WanGP process, its in-process MCP definition intentionally omits remote Gallery upload/download tools. It can reuse `media_id` values returned by Gallery browsing, and when filesystem access is enabled it can also use local paths. Gallery browsing returns compact summaries without paths or generation settings. `Get Media Settings` retrieves full settings on demand using `media_id`, or a mutually exclusive filesystem path when filesystem access is enabled. Media IDs observed by the MCP session remain resolvable while their files exist after `Keep Previous Generations in Gallery` trims their visible UI rows; remembered records remain discoverable with `in_gallery: false` without being reinserted into Gradio. `List Files` optionally filters extensions and returns names, paths, and byte sizes. `Query File` accepts exactly one `media_id` or `path` and returns resolution, frame count, FPS, duration and audio-track information for visual media; duration, sample rate, channels and track count for audio; or UTF-8 text up to 16,000 characters.
@@ -273,9 +277,11 @@ Deepy Zero is intended for direct requests such as generating one asset with a s
 - generate images, edit images, generate videos, generate talking videos from a still image plus speech audio, and create speech audio from a voice description or a voice sample
 - create solid-color frames for transitions, blank frames, or color cards
 - inspect images and video frames, and read local image, video, or audio details such as dimensions, duration, FPS, frame count, or audio track count
-- extract images, video clips, or audio clips; transcribe audio or video; mute videos; replace audio; resize/crop media; and merge videos
+- extract images, video clips, or audio clips; transcribe audio or video; mute videos; replace audio; resize/crop or compose media side by side; and merge videos
 - tell you which LoRAs are available for the current generation tool and which defaults a generation tool will use right now
 - answer WanGP-specific usage questions by searching the bundled docs
+
+Inspect Media accepts an optional normalized `[x_min, y_min, x_max, y_max]` `bbox` from 0 to 1000. Deepy crops that source-resolution area before applying the local or remote inspection size cap.
 
 
 ## Audio Transcription

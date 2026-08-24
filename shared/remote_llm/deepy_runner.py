@@ -56,34 +56,38 @@ def _visual_query_without_running_loop(server_config: dict[str, Any], media_reco
     records = list(media_record) if isinstance(media_record, list) else [media_record]
     max_image_edge = deepy_vision.VISION_REMOTE_MAX_IMAGE_EDGE if max_image_edge is None else int(max_image_edge)
     images, inspected = [None] * len(records), []
-    video_inputs: dict[str, list[tuple[int, int]]] = {}
+    video_inputs: dict[str, list[tuple[int, int, list[int] | None]]] = {}
     for input_index, record in enumerate(records):
         path = str(record.get("path", "") or "").strip()
         if not os.path.isfile(path):
             raise FileNotFoundError(f"Media file not found: {path}")
         media_type = str(record.get("media_type", "") or "").lower()
+        bbox = record.get("bbox", None)
         resolved_frame = None
         time_seconds = record.get("time_seconds", None)
         if media_type == "video":
             requested_frame = record.get("frame_no", frame_no)
             resolved_frame = deepy_video_tools.resolve_video_frame_no(path, frame_no=requested_frame, time_seconds=time_seconds) if requested_frame is not None or time_seconds is not None else 0
-            video_inputs.setdefault(path, []).append((input_index, resolved_frame))
+            video_inputs.setdefault(path, []).append((input_index, resolved_frame, bbox))
         else:
             with Image.open(path) as source:
-                images[input_index] = deepy_vision.resize_inspection_image(source, max_image_edge)
-        inspected.append({"media_id": record.get("media_id", ""), "media_type": media_type, "label": record.get("label", ""), "frame_no": resolved_frame, "time_seconds": time_seconds if media_type == "video" else None})
+                images[input_index] = deepy_vision.prepare_inspection_image(source, max_edge=max_image_edge, bbox=bbox)
+        inspected.append({"media_id": record.get("media_id", ""), "media_type": media_type, "label": record.get("label", ""), "frame_no": resolved_frame, "time_seconds": time_seconds if media_type == "video" else None, "bbox": bbox})
     for path, indexed_frames in video_inputs.items():
-        decoded_images = deepy_vision.decode_inspection_video_frames(path, [item[1] for item in indexed_frames], max_edge=max_image_edge)
-        for (input_index, _resolved_frame), decoded_image in zip(indexed_frames, decoded_images):
+        bboxes = [item[2] for item in indexed_frames]
+        decode_kwargs = {"max_edge": max_image_edge, **({"bboxes": bboxes} if any(bbox is not None for bbox in bboxes) else {})}
+        decoded_images = deepy_vision.decode_inspection_video_frames(path, [item[1] for item in indexed_frames], **decode_kwargs)
+        for (input_index, _resolved_frame, _bbox), decoded_image in zip(indexed_frames, decoded_images):
             images[input_index] = decoded_image
     visual_labels = []
     for index, item in enumerate(inspected):
         source_label = str(item.get("label", "") or os.path.basename(str(records[index].get("path", "")))).strip()
+        bbox_label = "" if item["bbox"] is None else f", bbox {item['bbox']}"
         if item["media_type"] == "video":
             time_label = "" if item["time_seconds"] is None else f" at {float(item['time_seconds']):.3f} seconds"
-            visual_labels.append(f"Visual {index + 1}: video {source_label}, frame {item['frame_no']}{time_label}.")
+            visual_labels.append(f"Visual {index + 1}: video {source_label}, frame {item['frame_no']}{time_label}{bbox_label}.")
         else:
-            visual_labels.append(f"Visual {index + 1}: image {source_label}.")
+            visual_labels.append(f"Visual {index + 1}: image {source_label}{bbox_label}.")
     labeled_question = "\n".join([*visual_labels, "", str(question or "").strip()])
     backend = create_backend(engine, server_config)
     try:

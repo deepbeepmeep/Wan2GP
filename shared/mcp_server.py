@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from shared.api import SessionJob
@@ -46,6 +46,7 @@ _TOOLBOX_ACTIONS = {
     "mute_video",
     "replace_audio",
     "resize_crop",
+    "side_by_side",
     "merge_videos",
     "search_doc",
     "load_doc_section",
@@ -61,6 +62,7 @@ _TOOLBOX_MEDIA_PARAMETERS = {
     "mute_video": ("media_id",),
     "replace_audio": ("video_id", "audio_id"),
     "resize_crop": ("media_id",),
+    "side_by_side": ("media_ids",),
     "merge_videos": ("video_first", "video_second"),
     "get_media_details": ("media_id",),
 }
@@ -405,6 +407,24 @@ def _compact_model_metadata(records: list[dict[str, Any]]) -> list[dict[str, Any
     return compact
 
 
+def _compact_deepy_model_metadata(record: dict[str, Any]) -> dict[str, Any]:
+    compact = {key: copy.deepcopy(record[key]) for key in ("model_type", "name", "family", "family_label", "base_model_type", "finetune", "main_output", "outputs", "inputs") if record.get(key) not in (None, "", [], {})}
+    compact["capabilities"] = [key for key, enabled in record.get("capabilities", {}).items() if enabled]
+    if record.get("sliding_window"):
+        compact["capabilities"].append("sliding_window")
+    compact["media_inputs"] = {kind: [key for key, enabled in values.items() if enabled] for kind, values in record.get("media_inputs", {}).items() if isinstance(values, dict) and any(values.values())}
+    return compact
+
+
+def _compact_deepy_model_schema(schema: dict[str, Any] | None) -> dict[str, Any] | None:
+    if schema is None:
+        return None
+    metadata = schema["metadata"]
+    compact = _compact_deepy_model_metadata(metadata)
+    compact.update({key: metadata[key] for key in ("description", "fps", "frames_minimum", "frames_steps", "frames_maximum") if metadata.get(key) not in (None, "")})
+    return {"metadata": compact}
+
+
 def _mcp_model_definition(model_def: dict[str, Any] | None) -> dict[str, Any] | None:
     if model_def is None:
         return None
@@ -479,6 +499,15 @@ def _strip_deepy_settings_metadata(settings: dict[str, Any]) -> dict[str, Any]:
     return stripped
 
 
+def _strip_deepy_fixed_image_mode(session, settings: dict[str, Any], model_type: str | None = None) -> dict[str, Any]:
+    stripped = dict(settings)
+    metadata = session.get_model_metadata(str(model_type or stripped.get("model_type", "") or "")) or {}
+    outputs = {str(output).casefold() for output in metadata.get("main_output", [])}
+    if "image" in outputs and "video" not in outputs and stripped.get("image_mode") != 2:
+        stripped.pop("image_mode", None)
+    return stripped
+
+
 def _relevant_deepy_general_properties(tool_id: str, general_properties: dict[str, Any]) -> dict[str, Any]:
     if tool_id in _DEEPY_VIDEO_TOOL_IDS:
         keys = ("width", "height", "num_frames", "seed")
@@ -504,7 +533,7 @@ def _deepy_template_settings(session, tool_id: str, template: str) -> dict[str, 
     effective_settings = session.prepare_settings_for_export(template_settings)
     if not general_properties["use_template_properties"]:
         effective_settings = _strip_deepy_general_property_settings(tool_id, effective_settings)
-    effective_settings = _strip_deepy_settings_metadata(effective_settings)
+    effective_settings = _strip_deepy_fixed_image_mode(session, _strip_deepy_settings_metadata(effective_settings))
     result = {
         "tool_id": tool_id,
         "template": resolved_template,
@@ -952,7 +981,7 @@ def _config_file_from_arg(value: str | None) -> str | None:
     return str(path)
 
 
-def build_server_for_session(session, settings: dict[str, Any] | None = None, toolbox=None, default_job_event_limit: int = 20, allow_read_file_system: bool = False, http_media_transfer: bool = False):
+def build_server_for_session(session, settings: dict[str, Any] | None = None, toolbox=None, default_job_event_limit: int = 20, allow_read_file_system: bool = False, http_media_transfer: bool = False, compact_model_tools: bool = False):
     try:
         from mcp.server.fastmcp import FastMCP
     except Exception as exc:
@@ -1021,13 +1050,45 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
     def wangp_agent_prompt() -> str:
         return _AGENT_GUIDE_PATH.read_text(encoding="utf-8")
 
+    def legacy_model_tool(function):
+        return function if compact_model_tools else mcp.tool()(function)
+
     @mcp.tool()
+    def wangp_models(query: str = "", filters: dict[str, Any] | None = None, limit: int = 10, offset: int = 0) -> dict[str, Any]:
+        """Search compact models; filters accepts family, base_model_type, finetune, model_type, main_output, inputs, or name."""
+
+        filters = dict(filters or {})
+        allowed = {"family", "base_model_type", "finetune", "model_type", "main_output", "inputs", "name"}
+        unknown = sorted(set(filters) - allowed)
+        if unknown:
+            raise ValueError(f"Unknown model filter: {unknown[0]}")
+        filters["query"] = str(query or "").strip() or None
+        matches = session.list_model_metadata(**filters)
+        offset, limit = max(0, int(offset)), max(1, min(int(limit), 50))
+        page = [_compact_deepy_model_metadata(record) for record in matches[offset:offset + limit]]
+        return {"models": page, "total": len(matches), "returned": len(page), "offset": offset, "has_more": offset + len(page) < len(matches)}
+
+    @mcp.tool()
+    def wangp_model(model_type: str, view: Literal["schema", "definition", "defaults"] = "schema") -> dict[str, Any]:
+        """Return one model's compact schema, full definition, or generation defaults."""
+
+        if view == "definition":
+            result = _mcp_model_definition(session.get_model_def(model_type))
+        elif view == "defaults":
+            result = _strip_deepy_fixed_image_mode(session, _strip_deepy_settings_metadata(session.get_exported_default_settings(model_type)), model_type)
+        else:
+            result = _compact_deepy_model_schema(session.get_model_schema(model_type))
+        if result is None:
+            raise KeyError(f"Unknown model_type: {model_type}")
+        return result
+
+    @legacy_model_tool
     def wangp_list_models(family: str | None = None, base_model_type: str | None = None, finetune: str | None = None, model_type: str | None = None, main_output: str | None = None, inputs: str | None = None, name: str | None = None, query: str | None = None, limit: int = 10, offset: int = 0, include_availability: bool = False) -> list[dict[str, Any]]:
         """List at most 10 compact model records. All string filters accept case-insensitive * and ? globs; query searches names, ids, families, and descriptions. For generation without a user-specified model, use the corresponding default template instead of browsing."""
 
         return _compact_model_metadata(session.list_model_metadata(family=family, base_model_type=base_model_type, finetune=finetune, model_type=model_type, main_output=main_output, inputs=inputs, name=name, query=query, limit=max(1, min(int(limit), 10)), offset=max(0, int(offset)), include_availability=include_availability))
 
-    @mcp.tool()
+    @legacy_model_tool
     def wangp_search_models(query: str, family: str | None = None, base_model_type: str | None = None, finetune: str | None = None, main_output: str | None = None, inputs: str | None = None, limit: int = 10, offset: int = 0, include_availability: bool = False) -> dict[str, Any]:
         """Search models by user-facing name, model id, architecture, family, or description and return a bounded page with totals. Other string filters accept * and ? globs."""
 
@@ -1039,41 +1100,50 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
         page = _compact_model_metadata(matches[offset:offset + limit])
         return {"matches": page, "total_matches": len(matches), "returned": len(page), "offset": offset, "has_more": offset + len(page) < len(matches)}
 
-    @mcp.tool()
+    @legacy_model_tool
     def wangp_list_model_defs(family: str | None = None, base_model_type: str | None = None, finetune: str | None = None, model_type: str | None = None, main_output: str | None = None, inputs: str | None = None, name: str | None = None, query: str | None = None, limit: int = 10, offset: int = 0) -> list[dict[str, Any]]:
         """List a bounded page of full WanGP model definitions. String filters accept * and ? globs. Prefer search, then fetch one selected model."""
 
         return session.list_model_defs(family=family, base_model_type=base_model_type, finetune=finetune, model_type=model_type, main_output=main_output, inputs=inputs, name=name, query=query, limit=max(1, min(int(limit), 20)), offset=max(0, int(offset)))
 
-    @mcp.tool()
+    @legacy_model_tool
     def wangp_get_model(model_type: str) -> dict[str, Any] | None:
         """Return one WanGP model definition with parameter declarations and capabilities. Embedded default values are omitted. Do not call this after a template query unless a required parameter remains absent from both template settings and the compact schema."""
 
         return _mcp_model_definition(session.get_model_def(model_type))
 
-    @mcp.tool()
+    @legacy_model_tool
     def wangp_get_model_metadata(model_type: str, include_availability: bool = False) -> dict[str, Any] | None:
         """Return one compact model metadata record."""
 
         return session.get_model_metadata(model_type, include_availability=include_availability)
 
-    @mcp.tool()
+    @legacy_model_tool
     def wangp_get_model_availability(model_type: str) -> dict[str, Any]:
         """Return local file availability for one model using the same status as the UI model selector."""
 
         return session.get_model_availability(model_type)
 
-    @mcp.tool()
+    @legacy_model_tool
     def wangp_list_model_availability(family: str | None = None, base_model_type: str | None = None, finetune: str | None = None, model_type: str | None = None, main_output: str | None = None, inputs: str | None = None, name: str | None = None, query: str | None = None, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
         """List a bounded page of local model-file availability records using the model discovery filters."""
 
         return session.list_model_availability(family=family, base_model_type=base_model_type, finetune=finetune, model_type=model_type, main_output=main_output, inputs=inputs, name=name, query=query, limit=max(1, min(int(limit), 50)), offset=max(0, int(offset)))
 
-    @mcp.tool()
+    @legacy_model_tool
     def wangp_get_default_settings(model_type: str) -> dict[str, Any]:
         """Return pristine model defaults generated from WanGP and the model handler, filtered to relevant fields and without fixed metadata such as type or settings version. User-saved UI defaults are not included. Do not call this after a template query because template settings already include these model defaults."""
 
-        return _strip_deepy_settings_metadata(session.get_exported_default_settings(model_type))
+        return _strip_deepy_fixed_image_mode(session, _strip_deepy_settings_metadata(session.get_exported_default_settings(model_type)), model_type)
+
+    @mcp.tool()
+    def wangp_model_settings(model_type: str, setting_id: str | None = None) -> dict[str, Any]:
+        """List saved settings, accelerator profiles and presets for a model, or return one by id."""
+
+        result = session.get_model_settings(model_type, setting_id)
+        if setting_id is not None and isinstance(result.get("content"), dict):
+            result["content"] = _strip_deepy_fixed_image_mode(session, result["content"], model_type)
+        return result
 
     @mcp.tool()
     def wangp_list_loras(model_type: str, name: str | None = None) -> dict[str, Any]:
@@ -1081,7 +1151,7 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
 
         return session.list_loras(model_type, name=name)
 
-    @mcp.tool()
+    @legacy_model_tool
     def wangp_get_model_schema(model_type: str) -> dict[str, Any] | None:
         """Return a compact capability and usage summary for one model. After a template query, call this only to verify a required capability or limit that the template does not establish. Use wangp_get_default_settings only for raw non-template generation requests."""
 
@@ -1240,7 +1310,7 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
 
 
 def build_inprocess_server(session, toolbox=None, default_job_event_limit: int = 20, allow_read_file_system: bool = False):
-    return build_server_for_session(session, toolbox=toolbox, default_job_event_limit=default_job_event_limit, allow_read_file_system=allow_read_file_system)
+    return build_server_for_session(session, toolbox=toolbox, default_job_event_limit=default_job_event_limit, allow_read_file_system=allow_read_file_system, compact_model_tools=True)
 
 
 def build_server(args: argparse.Namespace):

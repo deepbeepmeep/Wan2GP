@@ -102,7 +102,7 @@ def _clean_tag_name(name: str) -> str:
     return name
 
 
-def _parse_tagged_tool_call(payload: str, allow_incomplete_function: bool = False) -> dict[str, Any] | None:
+def _parse_tagged_tool_call(payload: str, allow_incomplete_function: bool = False, tool_parameters: dict[str, set[str]] | None = None) -> dict[str, Any] | None:
     function_match = _FUNCTION_TAG_RE.search(str(payload or ""))
     function_body = ""
     matched_closed_function = function_match is not None
@@ -117,25 +117,29 @@ def _parse_tagged_tool_call(payload: str, allow_incomplete_function: bool = Fals
         function_body = str(payload or "")[function_start_match.end():]
     if len(name) == 0:
         return None
+    allowed_parameters = None if tool_parameters is None else tool_parameters.get(name, set())
     arguments = {}
-    for param_name, param_value in _PARAM_TAG_RE.findall(function_body):
+    for match in _PARAM_TAG_RE.finditer(function_body):
+        param_name, param_value = match.groups()
         clean_name = _clean_tag_name(param_name)
         clean_value = str(param_value or "").strip()
-        if len(clean_name) == 0:
+        if len(clean_name) == 0 or allowed_parameters is not None and clean_name not in allowed_parameters:
             continue
         try:
             arguments[clean_name] = json.loads(clean_value)
         except Exception:
             arguments[clean_name] = clean_value
-    for param_name, param_value in _GENERIC_PARAM_TAG_RE.findall(function_body):
-        clean_name = _clean_tag_name(param_name)
-        clean_value = str(param_value or "").strip()
-        if len(clean_name) == 0 or clean_name.lower() in {"function", "parameter"} or clean_name in arguments:
-            continue
-        try:
-            arguments[clean_name] = json.loads(clean_value)
-        except Exception:
-            arguments[clean_name] = clean_value
+    if allowed_parameters is not None:
+        generic_body = _PARAM_TAG_RE.sub("", function_body)
+        for param_name, param_value in _GENERIC_PARAM_TAG_RE.findall(generic_body):
+            clean_name = _clean_tag_name(param_name)
+            clean_value = str(param_value or "").strip()
+            if clean_name not in allowed_parameters or clean_name in arguments:
+                continue
+            try:
+                arguments[clean_name] = json.loads(clean_value)
+            except Exception:
+                arguments[clean_name] = clean_value
     if not matched_closed_function and (not allow_incomplete_function or len(arguments) == 0):
         return None
     return {"name": name, "arguments": arguments}
@@ -175,17 +179,17 @@ def _extract_bare_json_tool_call(text: str) -> tuple[dict[str, Any] | None, tupl
     return None, None
 
 
-def _extract_inline_tool_call(text: str, allow_incomplete_function: bool = False) -> tuple[dict[str, Any] | None, tuple[int, int] | None]:
+def _extract_inline_tool_call(text: str, allow_incomplete_function: bool = False, tool_parameters: dict[str, set[str]] | None = None) -> tuple[dict[str, Any] | None, tuple[int, int] | None]:
     candidate = strip_trailing_stop_markup(str(text or "")).strip()
     if len(candidate) == 0:
         return None, None
-    tagged_tool_call = _parse_tagged_tool_call(candidate, allow_incomplete_function=allow_incomplete_function)
+    tagged_tool_call = _parse_tagged_tool_call(candidate, allow_incomplete_function=allow_incomplete_function, tool_parameters=tool_parameters)
     if tagged_tool_call is not None:
         return tagged_tool_call, (0, len(candidate))
     return _extract_bare_json_tool_call(candidate)
 
 
-def extract_tool_calls(raw_text: str) -> list[dict[str, Any]]:
+def extract_tool_calls(raw_text: str, tool_parameters: dict[str, set[str]] | None = None) -> list[dict[str, Any]]:
     tool_calls = []
     source_text = str(raw_text or "")
     for match in _TOOL_CALL_RE.finditer(source_text):
@@ -195,19 +199,19 @@ def extract_tool_calls(raw_text: str) -> list[dict[str, Any]]:
         try:
             parsed = json.loads(payload)
         except Exception:
-            parsed = _parse_tagged_tool_call(payload)
+            parsed = _parse_tagged_tool_call(payload, tool_parameters=tool_parameters)
         tool_call = _normalize_tool_call_dict(parsed)
         if tool_call is None:
             continue
         tool_calls.append(tool_call)
     if len(tool_calls) > 0:
         return tool_calls
-    inline_tool_call, _inline_span = _extract_inline_tool_call(source_text, allow_incomplete_function=True)
+    inline_tool_call, _inline_span = _extract_inline_tool_call(source_text, allow_incomplete_function=True, tool_parameters=tool_parameters)
     if inline_tool_call is not None:
         tool_calls.append(inline_tool_call)
         return tool_calls
     _thinking_text, answer_text = qwen35_text._split_generated_text(source_text)
-    inline_tool_call, _inline_span = _extract_inline_tool_call(answer_text, allow_incomplete_function=True)
+    inline_tool_call, _inline_span = _extract_inline_tool_call(answer_text, allow_incomplete_function=True, tool_parameters=tool_parameters)
     if inline_tool_call is not None:
         tool_calls.append(inline_tool_call)
     return tool_calls

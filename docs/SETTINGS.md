@@ -31,7 +31,7 @@ The baseline schema lives in `models/_settings.json`. Model defaults in `default
 
 | Setting | Type | Meaning |
 | --- | --- | --- |
-| `image_mode` | integer | `0` for video/audio-generation mode, `1` for image mode, `2` for image inpainting mode. The available tabs depend on `image_outputs`, `v2i_switch_supported`, and `inpaint_support` in the model definition. |
+| `image_mode` | integer | `0` for video/audio-generation mode, `1` for image mode, `2` for image inpainting mode. The available tabs depend on `image_outputs`, `v2i_switch_supported`, and `inpaint_support` in the model definition. Deepy omits a fixed normal-image value from image-only model defaults, templates, and profiles; mode `2` remains explicit. |
 | `resolution` | string | Output size as `WIDTHxHEIGHT`, for example `1280x720`. |
 | `batch_size` | integer | Number of images for image-output models. For some special image models this may have model-specific meaning. Video and audio paths usually force one sample per repeat. |
 | `video_length` | integer or seconds string | Requested output frames. Settings files, queue imports, and API/MCP requests may use a value such as `"10s"`; WanGP converts it using numeric `force_fps` when supplied, otherwise the model FPS, then selects the nearest frame count valid for the model. For audio-only models this is usually `0`; duration may come from `duration_seconds`. |

@@ -130,7 +130,7 @@ class family_handler:
                 "info": "Disabled retains only compact prompt/reference K/V and builds the active layer's attention workspace on demand. Enabled preallocates full per-layer K/V buffers for faster denoising.",
             }],
             "profiles_dir": [_PROFILE_FOLDER],
-            "resolutions_categories": ["<=4k"],
+            "resolutions_categories": ["<=4096p"],
             "skip_prompt_template": True,
             "vae_block_size": 32,
         }

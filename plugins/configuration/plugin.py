@@ -246,7 +246,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         self.enable_4k_resolutions_choice = gr.Dropdown(
                             choices=[("Off", 0), ("On", 1)],
                             value=self.server_config.get("enable_4k_resolutions", 0),
-                            label="3K/4K Resolutions are available for all models"
+                            label="3K/4K+ Resolutions are available for all models"
                         )
                     default_paths = self.fl.default_checkpoints_paths
                     checkpoints_paths_text = "\n".join(self.server_config.get("checkpoints_paths", default_paths))

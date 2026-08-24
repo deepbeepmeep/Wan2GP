@@ -3000,10 +3000,14 @@ def get_model_filename(model_type, quantization ="int8", dtype_policy = "", modu
 def get_transformer_dtype(model_type, transformer_dtype_policy):
     base_model_type = get_base_model_type(model_type)
     model_def = get_model_def(base_model_type)
+    model_family = get_model_family(base_model_type)
     dtype = model_def.get("dtype", None)
-    if dtype is not None: 
+    if dtype is not None:
+        # H3's BF16 checkpoint is substantially slower on pre-Ampere NVIDIA GPUs.
+        # Its native safe-FP16 path keeps the numerically unsafe operations in FP32.
+        if model_family == "minimax_h3" and dtype == "bf16" and transformer_dtype_policy != "bf16" and not bfloat16_supported:
+            return torch.float16
         return torch.float16 if dtype =="fp16" else torch.bfloat16
-    model_family =  get_model_family(base_model_type) 
     if not isinstance(transformer_dtype_policy, str):
         return transformer_dtype_policy
     if len(transformer_dtype_policy) == 0:

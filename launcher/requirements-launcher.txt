@@ -1,0 +1,6 @@
+# Build-time and runtime dependencies of the Windows launcher only.
+# WanGP's own dependencies live in the repository-level requirements.txt.
+pywebview==5.4
+pythonnet==3.0.5
+pyinstaller==6.11.1
+pillow==11.0.0

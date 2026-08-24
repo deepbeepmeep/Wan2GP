@@ -197,16 +197,22 @@ def _window(prompt: str, output_frames: int, overlap_frames: int, discard_last_f
 
 
 def build_extension_window(prompt: str, *, window_size: int, overlap_frames: int, discard_last_frames: int = 0, minimum: int, step: int, frame_offset: int = 1, preserve_exact_output_frames: bool = False) -> dict:
-    return _window(prompt, max(1, window_size - overlap_frames - discard_last_frames), overlap_frames, discard_last_frames, {}, minimum, step, frame_offset=frame_offset, preserve_exact_output_frames=preserve_exact_output_frames)
+    overlap_offset = overlap_frames % max(1, step)
+    return _window(prompt, max(1, window_size - overlap_frames - discard_last_frames), overlap_frames, discard_last_frames, {}, minimum, step, frame_offset=frame_offset, overlap_offset=overlap_offset, preserve_exact_output_frames=preserve_exact_output_frames)
 
 
-def build_default_window_plan(*, total_frames: int, window_size: int, default_overlap: int, discard_last_frames: int, minimum: int, step: int, frame_offset: int = 1, overlap_offset: int = 1, max_overlap: int | None = None, preserve_exact_output_frames: bool = False) -> list[dict]:
+def build_default_window_plan(*, total_frames: int, window_size: int, default_overlap: int, discard_last_frames: int, minimum: int, step: int, frame_offset: int = 1, overlap_offset: int = 1, max_overlap: int | None = None, first_window_overlap: int = 0, first_window_available_overlap: int | None = None, preserve_exact_output_frames: bool = False) -> list[dict]:
     total_frames = max(1, int(total_frames))
     window_size = normalize_frame_count(window_size, minimum, step, frame_offset)
-    sliding = total_frames > window_size
+    first_window_overlap = max(0, int(first_window_overlap))
+    if first_window_available_overlap is not None:
+        first_window_overlap = min(first_window_overlap, max(0, int(first_window_available_overlap)))
+    first_window_overlap = _floor_overlap(first_window_overlap, step, overlap_offset)
+    first_window_capacity = max(1, window_size - first_window_overlap)
+    sliding = total_frames > first_window_capacity
     first_discard = max(0, int(discard_last_frames)) if sliding else 0
-    first_output = min(total_frames, window_size - first_discard)
-    windows = [_window("", first_output, 0, first_discard, {}, minimum, step, frame_offset=frame_offset, preserve_exact_output_frames=preserve_exact_output_frames)]
+    first_output = min(total_frames, max(1, first_window_capacity - first_discard))
+    windows = [_window("", first_output, first_window_overlap, first_discard, {}, minimum, step, frame_offset=frame_offset, overlap_offset=overlap_offset, max_overlap=max_overlap, available_overlap=first_window_available_overlap, preserve_exact_output_frames=preserve_exact_output_frames)]
     consumed = windows[0]["output_frames"]
     while consumed < total_frames:
         output_frames = min(total_frames - consumed, max(1, window_size - default_overlap - discard_last_frames))

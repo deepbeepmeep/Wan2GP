@@ -144,8 +144,6 @@ MagicMaskUI.patch_image_editor()
 # dynamo.config.accumulated_recompile_limit = 2000  # or whatever limit you want
 
 STARTUP_LOCK_FILE = "startup.lock"
-PHASE_2_TILING_VIDEO_PROMPT_FLAG = "~"
-PHASE_2_TILING_GUIDANCE_VALUE = "2~"
 global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 AUTOSAVE_PATH = AUTOSAVE_FILENAME
@@ -154,7 +152,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.14"
-WanGP_version = "12.64"
+WanGP_version = "12.641"
 settings_version = 2.75
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -163,6 +161,8 @@ CUSTOM_SETTINGS_MAX = 5
 CUSTOM_SETTINGS_PER_ROW = 2
 CUSTOM_SETTING_DROPDOWN_MAX = 5
 CUSTOM_SETTING_TYPES = {"int", "float", "text", "dropdown"}
+PHASE_2_TILING_VIDEO_PROMPT_FLAG = "~"
+PHASE_2_TILING_GUIDANCE_VALUE = "2~"
 lm_decoder_engine = ""
 enable_int8_kernels = 0
 theme_text_size = Size("8.1px", "9px", "10.8px", "12.6px", "14.4px", "19.8px", "23.4px", name="wangp_text_90")
@@ -7054,6 +7054,7 @@ def generate_media(
     fps = 1 if is_image else get_computed_fps(force_fps, base_model_type , video_guide, video_source )
     gen_state = {}
     frame_scheduler = None
+    first_window_available_overlap = estimate_first_window_overlap_frames(None if fake_start_image else image_start, video_source, keep_frames_video_source, fps)
     scheduler_supported = frame_scheduler_supported(model_type, model_def, image_mode)
     if not scheduler_supported and has_slash_commands(prompts):
         raise gr.Error("Prompt slash window commands require a video model with Sliding Window support.")
@@ -7072,7 +7073,7 @@ def generate_media(
             preserve_exact_output_frames=model_def.get("image_end_frame_position", False),
             supported_model_commands=model_def.get("prompt_slash_commands", []),
             allow_new_shot=image_prompt_types_allow_t2v(model_def, image_mode),
-            first_window_overlap_frames=estimate_first_window_overlap_frames(None if fake_start_image else image_start, video_source, keep_frames_video_source, fps),
+            first_window_overlap_frames=first_window_available_overlap,
             discard_last_frames=sliding_window_discard_last_frames,
         )
         if frame_scheduler_error is not None:
@@ -7167,7 +7168,6 @@ def generate_media(
     full_audio_guide_waveform, full_audio_guide_sample_rate = None, 0
     control_video_trim = not model_def.get("control_video_trim_disabled", False) and (model_def.get("control_video_trim", False) or "|" in video_prompt_type)
 
-    if test_any_sliding_window(model_type) and video_source is not None: current_video_length +=  sliding_window_overlap - 1
     if audio_guide != None:
         from preprocessing.extract_vocals import get_vocals
         import librosa
@@ -7252,10 +7252,12 @@ def generate_media(
     if scheduler_active:
         default_windows_template = []
     elif any_sliding_window:
-        default_windows_template = build_default_window_plan(total_frames=current_video_length, window_size=sliding_window_size, default_overlap=default_reuse_frames, discard_last_frames=sliding_window_discard_last_frames, minimum=frames_minimum, step=frames_steps, frame_offset=frames_offset, overlap_offset=sliding_window_defaults.get("overlap_offset", 1), max_overlap=sliding_window_defaults.get("overlap_max"), preserve_exact_output_frames=model_def.get("image_end_frame_position", False))
+        default_windows_template = build_default_window_plan(total_frames=current_video_length, window_size=sliding_window_size, default_overlap=default_reuse_frames, discard_last_frames=sliding_window_discard_last_frames, minimum=frames_minimum, step=frames_steps, frame_offset=frames_offset, overlap_offset=sliding_window_defaults.get("overlap_offset", 1), max_overlap=sliding_window_defaults.get("overlap_max"), first_window_overlap=default_reuse_frames if video_source is not None else 0, first_window_available_overlap=first_window_available_overlap if video_source is not None else None, preserve_exact_output_frames=model_def.get("image_end_frame_position", False))
     else:
         default_windows_template = [{"output_frames": current_video_length, "overlap_frames": 0, "discard_last_frames": 0, "trim_last_frames": 0, "frame_num": current_video_length}]
     default_windows = [dict(window) for window in default_windows_template]
+    if not scheduler_active:
+        sliding_window = len(default_windows) > 1 or default_windows[0]["overlap_frames"] > 0
     seed = set_seed(seed)
 
     torch.set_grad_enabled(False) 
@@ -7407,7 +7409,7 @@ def generate_media(
                 reuse_frames, current_video_length, discard_last_frames = default_window["overlap_frames"], default_window["frame_num"], default_window["discard_last_frames"]
                 automatic_trim_last_frames = default_window["trim_last_frames"]
                 prompt =  prompts[window_no] if window_no < len(prompts) else prompts[-1]
-                sliding_window = len(default_windows) > 1
+                sliding_window = len(default_windows) > 1 or reuse_frames > 0
             gen["sliding_window"] = sliding_window
             current_alt_prompt = alt_prompts[window_no] if window_no < len(alt_prompts) else alt_prompts[-1]
             if scheduler_active:

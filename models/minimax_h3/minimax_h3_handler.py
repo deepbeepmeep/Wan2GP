@@ -117,13 +117,17 @@ See the [MiniMax H3 model card](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob
 """
 
 H3_RUNTIME_INFOS = """
-### One phase or two phases
+### How to use one phase, two phases, and tiling
 
-- **One phase (default):** H3 generates directly at the selected resolution with the chosen steps and sampler.
-- **Two phases:** H3 establishes composition and motion at half width and height, upscales the latent, then refines at the selected resolution with three Euler steps and the LightX2V Turbo v0.1 LoRA. Step skipping is always disabled for this pass. Start/end images, injected frames, and image/video references are re-encoded at the final resolution; **Rescale Internaly Image Ref** is reapplied.
-- **Phase 2 with tiling:** uses the same two-phase path with a fixed 2x2 grid. Tile dimensions adapt to the selected output resolution with at least 25% overlap. Spatially aligned conditions are cropped per tile, references retain their full targeted size, phase-one audio is reused as a frozen condition, and decoded tiles are cosine-feathered into the final 8-bit video buffer.
+Enable **Advanced Mode**, open **General**, and choose an option under **Phases**:
 
-Two phases can improve high-resolution detail but take longer and may use more peak VRAM. The required Turbo LoRA is downloaded automatically, locked to `1.0`, and cannot currently be replaced. Other selected LoRAs whose filename contains `turbo` are likewise disabled for phase two to avoid redundancy; non-Turbo LoRAs keep their phase-two multiplier. WanGP reports a disablement in the console unless its multiplier was already zero.
+- **One Phase (default):** generates directly at the selected resolution. Use it for standard resolutions or when whole-frame consistency matters more than high-resolution speed.
+- **Two Phases:** use it for faster high-resolution generation and improved fine detail. Most of the work is performed at a lower resolution before H3 enhances the result at the selected output resolution. This mode does not reduce the peak VRAM required by the final enhancement.
+- **Two Phases with Tiling:** use it when regular two-phase generation runs out of VRAM. It processes the final enhancement as four overlapping areas, reducing peak VRAM at the cost of extra processing time and a possible risk of visible seams or local inconsistencies.
+
+Start with the default **Phase 2 Noise Level Start**. Lower it to keep the result closer to the first phase and favor smoother tile blending; raise it to encourage stronger new details, with a greater risk of seams or changes between tiles.
+
+WanGP manages the required phase-two Turbo LoRA automatically. Other selected Turbo LoRAs are disabled during phase two to avoid conflicts, while non-Turbo LoRAs retain their selected phase-two multiplier.
 
 ### Speed and memory choices
 

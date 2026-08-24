@@ -1010,6 +1010,8 @@ class MiniMaxH3Pipeline:
             phase_2_keyframe_count = len(keyframes)
             phase_2_presentation.extend(phase_2_reference_presentation)
             phase_2_visual_latents.extend(phase_2_reference_latents)
+            if set_progress_status is not None:
+                set_progress_status("Encoding H3 phase 2 prompt and references")
             context, text_tags = self._encode_prompt(input_prompt, phase_2_presentation)
             self._check_abort()
             phase_2_generator = torch.Generator(device="cpu").manual_seed(int(seed))

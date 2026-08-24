@@ -86,8 +86,8 @@ class family_handler:
             "image_ref_choices": {
                 "choices": [
                     ("Generate without Reference Images", ""),
-                    ("Use Reference Images", "I"),
                     ("First Reference Image is the Main Subject / Landscape, defines Output Dimensions, and may be followed by other Reference Images", "KI"),
+                    ("Use Reference Images", "I"),
                 ],
                 "letters_filter": "KI",
                 "default": "KI",
@@ -229,6 +229,6 @@ class family_handler:
             "guidance_scale": 4.0,
             "flow_shift": 3.0,
             "batch_size": 1,
-            "video_prompt_type": "KI",
+            "video_prompt_type": "",
             "custom_settings": {_KV_CACHE_SETTING: "Disabled"},
         })

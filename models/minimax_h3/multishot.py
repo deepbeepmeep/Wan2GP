@@ -344,7 +344,9 @@ def generate_multishot(pipeline, settings, callback=None, set_progress_status=No
 
     width = int(settings.get("width", 1344))
     height = int(settings.get("height", 768))
-    frames_per_shot = int(settings.get("frames_per_shot", 243))
+    _fps_raw = settings.get("frames_per_shot", 243)
+    _fps_list = list(_fps_raw) if isinstance(_fps_raw, (list, tuple)) else None
+    frames_per_shot = int(_fps_raw) if not isinstance(_fps_raw, (list, tuple)) else int(_fps_raw[0])
     base_seed = int(settings.get("seed", 0))
     
     # Memory/presenter mode for long chains
@@ -398,6 +400,7 @@ def generate_multishot(pipeline, settings, callback=None, set_progress_status=No
 
     for si, shot_data in enumerate(parsed_shots):
         prompt = shot_data["prompt"]
+        frames_per_shot = int(_fps_list[si]) if _fps_list and si < len(_fps_list) else (int(_fps_list[-1]) if _fps_list else frames_per_shot)
         print(f"[Multishot] {pass_label} shot {si + 1}/{n} ({frames_per_shot}f @ "
               f"{width}x{height})...", flush=True)
 
@@ -458,18 +461,22 @@ def generate_multishot(pipeline, settings, callback=None, set_progress_status=No
         audio_parts.append(audio_tensor.cpu())
 
         # Last frame becomes next shot's start image
-        prev_last_frame = decoded_video[:, -1:].clone()
+        prev_last_frame = decoded_video[:, -1:].clone().cpu()  # Keep on CPU
 
         # Update memory bank for presenter mode
         if memory_mode:
             last_frame = decoded_video[:, -1:]  # [B, 1, H, W, C] or similar
-            memory_bank.append(last_frame.clone())
+            memory_bank.append(last_frame.clone().cpu())  # Keep on CPU to save VRAM
             if si == 0 and identity_anchor is None:
-                identity_anchor = decoded_video[:, 0:1].clone()
+                identity_anchor = decoded_video[:, 0:1].clone().cpu()  # Keep on CPU
                 print(f"  [Memory] Identity anchor set from shot 1 frame 0", flush=True)
 
-        print(f"[Multishot] {pass_label} shot {si + 1} done: {decoded_video.shape[1]} frames",
-              flush=True)
+        # Clean up VRAM between shots
+        del decoded_video, audio_tensor
+        torch.cuda.empty_cache()
+        import gc; gc.collect()
+
+        print(f"[Multishot] {pass_label} shot {si + 1} done", flush=True)
 
     # === PASS 2: Re-generate shots with keyframes using Pass 1 anchors ===
     if has_keyframes:
@@ -548,27 +555,89 @@ def generate_multishot(pipeline, settings, callback=None, set_progress_status=No
         frames_parts = frames_parts_p2
         audio_parts = audio_parts_p2
 
-    # Concatenate all frames
-    master_frames = torch.cat(frames_parts, dim=1)
+    # === DISK-BASED SAVE: avoid OOM on RAM-constrained machines ===
+    import os as _os
+    import tempfile as _tempfile
+    import torchvision.io as _tv_io
+    import soundfile as _sf
 
-    # Crossfade audio at seams
-    master_audio = xfade_audio(audio_parts, AUDIO_SAMPLE_RATE)
+    output_path = settings.get("output", "")
+    if not output_path:
+        import time as _time
+        output_path = f"outputs/multishot_{int(_time.time())}.mp4"
+    _os.makedirs(_os.path.dirname(output_path) or ".", exist_ok=True)
 
-    # Convert back to numpy for output
-    total_samples = round(master_frames.shape[1] / FPS * AUDIO_SAMPLE_RATE)
-    if master_audio.shape[-1] > total_samples:
-        master_audio = master_audio[..., :total_samples]
-    elif master_audio.shape[-1] < total_samples:
-        master_audio = torch.nn.functional.pad(
-            master_audio, (0, total_samples - master_audio.shape[-1]))
+    tmpdir = _tempfile.mkdtemp(prefix="multishot_")
+    shot_video_files = []
+    shot_audio_files = []
 
-    audio_numpy = master_audio.transpose(0, 1).float().cpu().numpy()
+    for si, (fp, ap) in enumerate(zip(frames_parts, audio_parts)):
+        vid = fp.permute(1, 2, 3, 0)
+        vid = (vid.add(1.0).mul_(127.5).round_().clamp_(0, 255).byte())
+        vpath = _os.path.join(tmpdir, f"shot_{si:03d}.mp4")
+        _tv_io.write_video(vpath, vid, fps=FPS, video_codec="libx264")
+        shot_video_files.append(vpath)
+        del vid, fp
 
-    print(f"[Multishot] done: {n} shots, {master_frames.shape[1]} frames "
-          f"(~{master_frames.shape[1] / FPS:.1f}s).", flush=True)
+        a_np = ap.transpose(0, 1).float().numpy()
+        apath = _os.path.join(tmpdir, f"shot_{si:03d}.wav")
+        _sf.write(apath, a_np, AUDIO_SAMPLE_RATE)
+        shot_audio_files.append(apath)
+        del ap
+
+        print(f"[Multishot] saved shot {si+1}/{n} to disk", flush=True)
+
+    frames_parts.clear()
+    audio_parts.clear()
+    import gc; gc.collect()
+
+    concat_list = _os.path.join(tmpdir, "concat.txt")
+    with open(concat_list, "w") as cl:
+        for vf in shot_video_files:
+            cl.write(f"file '{vf}'\n")
+
+    tmp_video = output_path.replace(".mp4", "_tmp.mp4")
+    _os.system(f'ffmpeg -y -f concat -safe 0 -i "{concat_list}" -c copy "{tmp_video}" 2>/dev/null')
+
+    # Crossfade audio at seams using ffmpeg acrossfade (40ms, equal-power)
+    tmp_audio = output_path.replace(".mp4", "_tmp.wav")
+    if len(shot_audio_files) == 1:
+        _os.system(f'ffmpeg -y -i "{shot_audio_files[0]}" -c:a pcm_s16le "{tmp_audio}" 2>/dev/null')
+    else:
+        # Chain acrossfade filters: xfade(s0,s1) -> xfade(result,s2) -> ...
+        xfade_dur = 0.04  # 40ms matching xfade_audio default
+        inputs = " ".join(f'-i "{af}"' for af in shot_audio_files)
+        n_af = len(shot_audio_files)
+        if n_af == 2:
+            fc = f'[0][1]acrossfade=d={xfade_dur}:c1=tri:c2=tri[out]'
+            _os.system(f'ffmpeg -y {inputs} -filter_complex "{fc}" -map "[out]" -c:a pcm_s16le "{tmp_audio}" 2>/dev/null')
+        else:
+            # Build chained filter: [0][1]xfade->t1; [t1][2]xfade->t2; ...
+            fc_parts = []
+            prev_label = "0"
+            for i in range(1, n_af):
+                out_label = f"t{i}" if i < n_af - 1 else "out"
+                fc_parts.append(f'[{prev_label}][{i}]acrossfade=d={xfade_dur}:c1=tri:c2=tri[{out_label}]')
+                prev_label = out_label
+            fc = ";".join(fc_parts)
+            _os.system(f'ffmpeg -y {inputs} -filter_complex "{fc}" -map "[out]" -c:a pcm_s16le "{tmp_audio}" 2>/dev/null')
+
+    _os.system(f'ffmpeg -y -i "{tmp_video}" -i "{tmp_audio}" -c:v copy -c:a aac -shortest "{output_path}" 2>/dev/null')
+
+    for f in shot_video_files + shot_audio_files:
+        try: _os.remove(f)
+        except: pass
+    for f in [concat_list, tmp_video, tmp_audio]:
+        try: _os.remove(f)
+        except: pass
+    try: _os.rmdir(tmpdir)
+    except: pass
+
+    print(f"[Multishot] Saved: {output_path}", flush=True)
 
     return {
-        "x": master_frames,
-        "audio": audio_numpy,
+        "x": torch.zeros(3, 1, height, width),
+        "audio": np.zeros((1, AUDIO_SAMPLE_RATE)),
         "audio_sampling_rate": AUDIO_SAMPLE_RATE,
+        "_already_saved": output_path,
     }

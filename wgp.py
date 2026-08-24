@@ -8862,22 +8862,26 @@ def process_tasks_cli(queue, state):
                 _ms_elapsed = _time.time() - _ms_start
                 print(f"  [MULTISHOT] Done in {_ms_elapsed:.1f}s")
                 _ms_out = task.get("params", {}).get("output", f"outputs/multishot_{int(_time.time())}.mp4")
-                import os as _os
-                _os.makedirs(_os.path.dirname(_ms_out) or ".", exist_ok=True)
-                import torchvision.io as _tv_io
-                import soundfile as _sf
-                _ms_vid = _ms_result["x"].permute(1, 2, 3, 0)
-                _ms_vid = (_ms_vid.add(1.0).mul_(127.5).round_().clamp_(0, 255).byte())
-                _ms_tmp_v = _ms_out.replace(".mp4", "_tmp.mp4")
-                _tv_io.write_video(_ms_tmp_v, _ms_vid.cpu(), fps=24, video_codec="libx264")
-                if _ms_result.get("audio") is not None:
-                    _ms_tmp_a = _ms_out.replace(".mp4", "_tmp.wav")
-                    _sf.write(_ms_tmp_a, _ms_result["audio"], _ms_result["audio_sampling_rate"])
-                    _os.system(f'ffmpeg -y -i "{_ms_tmp_v}" -i "{_ms_tmp_a}" -c:v copy -c:a aac -shortest "{_ms_out}" 2>/dev/null')
-                    _os.remove(_ms_tmp_v); _os.remove(_ms_tmp_a)
+                # Skip redundant save if multishot already saved to disk (RAM-safe path)
+                if _ms_result.get("_already_saved"):
+                    print(f"  [MULTISHOT] Already saved: {_ms_result['_already_saved']}")
                 else:
-                    _os.rename(_ms_tmp_v, _ms_out)
-                print(f"  [MULTISHOT] Saved: {_ms_out}")
+                    import os as _os
+                    _os.makedirs(_os.path.dirname(_ms_out) or ".", exist_ok=True)
+                    import torchvision.io as _tv_io
+                    import soundfile as _sf
+                    _ms_vid = _ms_result["x"].permute(1, 2, 3, 0)
+                    _ms_vid = (_ms_vid.add(1.0).mul_(127.5).round_().clamp_(0, 255).byte())
+                    _ms_tmp_v = _ms_out.replace(".mp4", "_tmp.mp4")
+                    _tv_io.write_video(_ms_tmp_v, _ms_vid.cpu(), fps=24, video_codec="libx264")
+                    if _ms_result.get("audio") is not None:
+                        _ms_tmp_a = _ms_out.replace(".mp4", "_tmp.wav")
+                        _sf.write(_ms_tmp_a, _ms_result["audio"], _ms_result["audio_sampling_rate"])
+                        _os.system(f'ffmpeg -y -i "{_ms_tmp_v}" -i "{_ms_tmp_a}" -c:v copy -c:a aac -shortest "{_ms_out}" 2>/dev/null')
+                        _os.remove(_ms_tmp_v); _os.remove(_ms_tmp_a)
+                    else:
+                        _os.rename(_ms_tmp_v, _ms_out)
+                    print(f"  [MULTISHOT] Saved: {_ms_out}")
                 completed += 1
                 continue
             except Exception as _ms_e:

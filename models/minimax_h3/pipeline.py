@@ -13,6 +13,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from mmgp import offload
+from shared.attention import attention_config_shared_state
 from shared.utils.loras_mutipliers import update_loras_slists
 from shared.utils.text_encoder_cache import TextEncoderCache
 from shared.utils.frame_scheduler import floor_frame_count, normalize_frame_count, normalize_overlap
@@ -290,6 +291,7 @@ class MiniMaxH3Pipeline:
         self.text_encoder_cache = TextEncoderCache()
         self._shared_offloadobj = None
         self._private_offloadobj = None
+        self._attention_split_logged = False
         self._interrupt = False
 
     def set_offload_handoff(self, shared_offloadobj, private_offloadobj):
@@ -371,7 +373,14 @@ class MiniMaxH3Pipeline:
 
     def _encode_prompt(self, prompt, presentation):
         def encode_fn(prompts):
-            return [self.text_encoder.encode(prompts[0], presentation, self.device, self.dtype)]
+            # Qwen3-VL's Sage kernel is not supported on Turing, while H3 can still
+            # use the selected backend after this context restores it.
+            if not self._attention_split_logged:
+                transformer_attention = offload.shared_state.get("_attention", "auto")
+                print(f"[MiniMax H3] Qwen attention=SDPA; transformer attention={transformer_attention}")
+                self._attention_split_logged = True
+            with attention_config_shared_state("sdpa"):
+                return [self.text_encoder.encode(prompts[0], presentation, self.device, self.dtype)]
 
         cache_key = self._prompt_cache_key(prompt, presentation)
         return self.text_encoder_cache.encode(encode_fn, prompt, device=self.device, cache_keys=cache_key)[0]

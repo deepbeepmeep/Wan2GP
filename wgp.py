@@ -130,7 +130,7 @@ from shared.api import apply_video_length_duration, get_api_output_options, stor
 from shared.utils.plugins import PluginManager, WAN2GPApplication, SYSTEM_PLUGINS
 from shared.llm_engines.nanovllm.vllm_support import resolve_lm_decoder_engine
 from shared.gradio import assistant_chat, field_help, finetune_editor, gallery_files, local_file_picker, model_infos, model_output_filter, model_selector_toolbar
-from shared.gradio.magic_mask import MagicMaskUI
+from shared.gradio.magic_mask import MagicMaskUI, video_mask_area_visible, video_mask_controls_visible, video_mask_dropdown_visible
 from shared import model_dropdowns
 from shared import settings_metadata
 from postprocessing import audio_processors as audio_processor_api
@@ -155,7 +155,7 @@ CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.14"
 WanGP_version = "12.643"
-settings_version = 2.75
+settings_version = 2.76
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -10758,8 +10758,8 @@ def update_image_mask_guide(state, image_mask_guide):
 
 def switch_image_guide_editor(image_mode, old_video_prompt_type , video_prompt_type, old_image_mask_guide_value, old_image_guide_value, old_image_mask_value ):
     if image_mode == 0: return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
-    mask_in_old = "A" in old_video_prompt_type and not "U" in old_video_prompt_type
-    mask_in_new = "A" in video_prompt_type and not "U" in video_prompt_type
+    mask_in_old = video_mask_area_visible(old_video_prompt_type)
+    mask_in_new = video_mask_area_visible(video_prompt_type)
     image_mask_guide_value, image_mask_value, image_guide_value = {}, {}, {}
     visible = "V" in video_prompt_type
     if mask_in_old != mask_in_new:
@@ -10785,7 +10785,7 @@ def refresh_video_prompt_type_video_mask(state, video_prompt_type, video_prompt_
     old_video_prompt_type = video_prompt_type
     video_prompt_type = del_in_sequence(video_prompt_type, "XYZWNA")
     video_prompt_type = add_to_sequence(video_prompt_type, video_prompt_type_video_mask)
-    visible= "A" in video_prompt_type     
+    visible = video_mask_area_visible(video_prompt_type)
     model_type = get_state_model_type(state)
     model_def = get_model_def(model_type)
     image_outputs =  image_mode > 0
@@ -10811,18 +10811,18 @@ def refresh_video_prompt_type_video_guide(state, filter_type, video_prompt_type,
         letter_filter = all_guide_processes
     video_prompt_type = del_in_sequence(video_prompt_type, letter_filter)
     video_prompt_type = add_to_sequence(video_prompt_type, video_prompt_type_video_guide)
+    mask_controls_visible = video_mask_controls_visible(video_prompt_type)
+    if not mask_controls_visible:
+        video_prompt_type = del_in_sequence(video_prompt_type, "XYZWNA")
     visible = "V" in video_prompt_type
     any_outpainting= image_mode in model_def.get("video_guide_outpainting", [])
-    mask_visible = visible and "A" in video_prompt_type and not "U" in video_prompt_type
+    mask_visible = video_mask_area_visible(video_prompt_type)
     image_outputs =  image_mode > 0
     keep_frames_video_guide_visible = not image_outputs and visible and not model_def.get("keep_frames_video_guide_not_supported", False)
     image_mask_guide, image_guide, image_mask = switch_image_guide_editor(image_mode, old_video_prompt_type , video_prompt_type, old_image_mask_guide_value, old_image_guide_value, old_image_mask_value )
-    # mask_video_input_visible =  image_mode == 0 and mask_visible
     mask_preprocessing = model_def.get("mask_preprocessing", None)
-    if mask_preprocessing  is None:
-        mask_selector_visible = False
-    else:
-        mask_selector_visible = mask_preprocessing.get("visible", True)
+    mask_selector_visible = video_mask_dropdown_visible(mask_preprocessing, video_prompt_type)
+    mask_selector_update = gr.update(visible=mask_selector_visible) if mask_controls_visible else gr.update(value="", visible=False)
     ref_images_visible = "I" in video_prompt_type
     remove_background_images_ref_visible = ref_images_visible and not model_def.get("no_background_removal", False)
     custom_options = custom_checkbox = False 
@@ -10834,7 +10834,7 @@ def refresh_video_prompt_type_video_guide(state, filter_type, video_prompt_type,
             custom_checkbox = custom_video_selection.get("type","") == "checkbox"
     mask_strength_always_enabled = model_def.get("mask_strength_always_enabled", False)  
     magic_image_btn, magic_video_btn = MagicMaskUI.button_updates(image_mode, video_prompt_type)
-    return video_prompt_type, gr.update(visible=visible and not image_outputs), gr.update(visible="+" in video_prompt_type and not image_outputs), image_guide, gr.update(visible=keep_frames_video_guide_visible), gr.update(visible=visible and "G" in video_prompt_type), gr.update(visible=mask_visible and (mask_strength_always_enabled or "G" in video_prompt_type)), gr.update(visible=(visible or injected_frames_positions_visible(video_prompt_type) or "K" in video_prompt_type) and any_outpainting), gr.update(visible=visible and mask_selector_visible and not "U" in video_prompt_type), gr.update(visible=mask_visible and not image_outputs), image_mask, image_mask_guide, gr.update(visible=mask_visible), gr.update(visible=ref_images_visible), gr.update(visible=remove_background_images_ref_visible), gr.update(visible=injected_frames_positions_visible(video_prompt_type)), gr.update(visible=custom_options and not custom_checkbox), gr.update(visible=custom_options and custom_checkbox), gr.update(visible=input_video_strength_visible(model_def, image_prompt_type, video_prompt_type)), magic_image_btn, magic_video_btn, gr.update(visible=force_control_video_trim_visible(model_def, image_mode, video_prompt_type, audio_prompt_type)), custom_settings_visibility_trigger_update(state, old_video=old_video_prompt_type, new_video=video_prompt_type)
+    return video_prompt_type, gr.update(visible=visible and not image_outputs), gr.update(visible="+" in video_prompt_type and not image_outputs), image_guide, gr.update(visible=keep_frames_video_guide_visible), gr.update(visible=visible and "G" in video_prompt_type), gr.update(visible=mask_visible and (mask_strength_always_enabled or "G" in video_prompt_type)), gr.update(visible=(visible or injected_frames_positions_visible(video_prompt_type) or "K" in video_prompt_type) and any_outpainting), mask_selector_update, gr.update(visible=mask_visible and not image_outputs), image_mask, image_mask_guide, gr.update(visible=mask_visible), gr.update(visible=ref_images_visible), gr.update(visible=remove_background_images_ref_visible), gr.update(visible=injected_frames_positions_visible(video_prompt_type)), gr.update(visible=custom_options and not custom_checkbox), gr.update(visible=custom_options and custom_checkbox), gr.update(visible=input_video_strength_visible(model_def, image_prompt_type, video_prompt_type)), magic_image_btn, magic_video_btn, gr.update(visible=force_control_video_trim_visible(model_def, image_mode, video_prompt_type, audio_prompt_type)), custom_settings_visibility_trigger_update(state, old_video=old_video_prompt_type, new_video=video_prompt_type)
 
 def refresh_video_prompt_type_video_custom_dropbox(state, video_prompt_type, video_prompt_type_video_custom_dropbox):
     model_type = get_state_model_type(state)
@@ -11490,7 +11490,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             guide_selection_context_visible = dropdown_selectable or image_ref_inpaint
             guide_selector_visible = guide_preprocessing is not None and guide_preprocessing.get("visible", True)
             guide_alt_selector_visible = guide_custom_choices is not None and guide_custom_choices.get("visible", True)
-            mask_selector_visible = mask_preprocessing is not None and "V" in video_prompt_type_value and "U" not in video_prompt_type_value and mask_preprocessing.get("visible", True)
+            mask_selector_visible = video_mask_dropdown_visible(mask_preprocessing, video_prompt_type_value)
             image_ref_selector_visible = image_ref_inpaint or image_ref_choices is not None and image_ref_choices.get("visible", True)
             custom_video_selection = model_def.get("custom_video_selection", None)
             custom_video_trigger = "" if custom_video_selection is None else custom_video_selection.get("trigger", "")
@@ -11658,7 +11658,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 video_guide2_label = model_def.get("video_guide2_label", "Control Video 2")
                 video_guide2_value = ui_defaults.get("video_guide2", None)
                 video_guide2 = gr.Video(label=video_input_label_with_info(video_guide2_label, video_guide2_value), height=gallery_height, visible=(not image_outputs) and "+" in video_prompt_type_value, value=video_guide2_value, elem_id="video_input2")
-                magic_mask_visible = "V" in video_prompt_type_value and "A" in video_prompt_type_value and "U" not in video_prompt_type_value
+                magic_mask_visible = video_mask_area_visible(video_prompt_type_value)
                 magic_mask_uis = []
                 if image_mode_value >= 1:  
                     image_guide_value = ui_defaults.get("image_guide", None)
@@ -11734,8 +11734,8 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         magic_mask_uis.append(magic_mask_ui)
                         magic_mask_video_btn = magic_mask_ui.trigger
                 mask_strength_always_enabled = model_def.get("mask_strength_always_enabled", False)  
-                masking_strength = setting_slider("masking_strength", visible=(mask_strength_always_enabled or "G" in video_prompt_type_value) and "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value)
-                mask_expand = setting_slider("mask_expand", visible="V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value)
+                masking_strength = setting_slider("masking_strength", visible=(mask_strength_always_enabled or "G" in video_prompt_type_value) and video_mask_area_visible(video_prompt_type_value))
+                mask_expand = setting_slider("mask_expand", visible=video_mask_area_visible(video_prompt_type_value))
 
                 image_refs_single_image_mode = model_def.get("one_image_ref_needed", False) or ("I" in video_prompt_type_value and (model_def.get("one_image_ref_only_with_background", False) or not any_letters(video_prompt_type_value, "KF")) and model_def.get("one_image_ref_only", False))
                 image_refs_label = "Start Image" if hunyuan_video_avatar else ("Reference Image" if image_refs_single_image_mode else "Reference Images")  + (" (each Image will be associated to a Sliding Window)" if infinitetalk else "")

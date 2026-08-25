@@ -8,6 +8,7 @@ from models.minimax_h3.minimax_h3_handler import FL2VA_ARCHITECTURE, family_hand
 from models.minimax_h3.pipeline import _build_outpainting_mask, _masking_step_mask, _resize_video_mask, _set_grouped_video_rows, _snap_video_mask_to_patch_cells
 from models.minimax_h3.transformer import MiniMaxH3Model, VISUAL_COND_TIMESTEP, _grouped_video_timestep_rows
 from shared.attention import attention_shared_state
+from shared.gradio.magic_mask import video_mask_area_visible, video_mask_dropdown_visible
 
 
 def _tiny_model():
@@ -220,6 +221,44 @@ class MiniMaxH3GroupedMaskingTests(unittest.TestCase):
         error = family_handler.validate_generative_settings(FL2VA_ARCHITECTURE, model_def, inputs)
 
         self.assertIn("not compatible with Sol Attention", error)
+
+    def test_ref2va_generic_control_exposes_masking_without_enabling_it_for_references(self):
+        model_def = family_handler.query_model_def("minimax_h3_ref2va", {})
+        self.assertIn(("Provide Generic Control Video", "GV"), model_def["guide_custom_choices"]["choices"])
+        self.assertIn(("Use One Reference Video", "V-U"), model_def["guide_custom_choices"]["choices"])
+        self.assertIn(("Use Two Reference Videos", "V+-U"), model_def["guide_custom_choices"]["choices"])
+        self.assertEqual(model_def["mask_preprocessing"]["selection"], ["", "A", "NA"])
+        mask_preprocessing = model_def["mask_preprocessing"]
+
+        self.assertTrue(video_mask_dropdown_visible(mask_preprocessing, "GV"))
+        self.assertTrue(video_mask_area_visible("GVA"))
+        self.assertFalse(video_mask_dropdown_visible(mask_preprocessing, "VU"))
+        self.assertFalse(video_mask_area_visible("VAU"))
+
+    def test_old_ref2va_generic_control_settings_receive_the_g_flag(self):
+        settings = {"video_prompt_type": "VA"}
+
+        family_handler.fix_settings("minimax_h3_ref2va", 2.75, {}, settings)
+
+        self.assertEqual(settings["video_prompt_type"], "GVA")
+
+    def test_old_ref2va_reference_settings_receive_the_u_flag(self):
+        for old_value, expected in (("V-", "V-U"), ("V+-", "V+-U")):
+            with self.subTest(old_value=old_value):
+                settings = {"video_prompt_type": old_value}
+
+                family_handler.fix_settings("minimax_h3_ref2va", 2.75, {}, settings)
+
+                self.assertEqual(settings["video_prompt_type"], expected)
+
+    def test_ref2va_generic_control_is_not_validated_as_a_reference_video(self):
+        model_def = family_handler.query_model_def("minimax_h3_ref2va", {})
+        inputs = {"sliding_window_overlap": 18, "override_attention": "sdpa", "video_prompt_type": "GVA",
+                  "video_mask": object(), "video_guide_outpainting": "", "video_guide_outpainting_ratio": "",
+                  "resolution": "832x480", "audio_prompt_type": "", "image_refs": [],
+                  "video_guide": "not-a-reference-video", "video_guide2": None, "audio_guide": None, "audio_guide2": None}
+
+        self.assertIsNone(family_handler.validate_generative_settings("minimax_h3_ref2va", model_def, inputs))
 
     def test_outpainting_builds_an_editable_margin_mask(self):
         video = torch.zeros((3, 5, 64, 96))

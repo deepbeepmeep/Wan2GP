@@ -611,7 +611,7 @@ class MiniMaxH3Pipeline:
         if target_frames <= 0:
             raise ValueError("Sliding-window overlap leaves no frames for H3 to generate")
         refinement_mode = bool(refinement_mode)
-        control_video = refinement_mode or (not self.reference_mode and "G" in (video_prompt_type or ""))
+        control_video = refinement_mode or "G" in (video_prompt_type or "")
         outpainting_mask = (_build_outpainting_mask(input_frames, outpainting_dims)
                             if control_video and not audio_from_control_video and input_frames is not None else None)
         if outpainting_mask is not None:
@@ -720,7 +720,7 @@ class MiniMaxH3Pipeline:
                 self._add_image_reference(image, width, height, image_refs_relative_size, presentation, visual_latents, refs)
 
         video_sources = []
-        if self.reference_mode and "V" in (video_prompt_type or ""):
+        if self.reference_mode and "V" in (video_prompt_type or "") and "G" not in (video_prompt_type or ""):
             video_sources.append(input_frames)
             if "+" in (video_prompt_type or ""):
                 video_sources.append(input_frames2)

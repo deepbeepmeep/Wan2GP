@@ -302,17 +302,18 @@ class family_handler:
                 "any_image_refs_relative_size": True,
                 "image_refs_relative_size": {"min": 50, "max": 400, "step": 1},
                 "guide_custom_choices": {
-                    "choices": [("Generate without a Reference or Control Video", ""), ("Use One Reference Video", "V-"),
-                                ("Use Two Reference Videos", "V+-"),
+                    "choices": [("Generate without a Reference or Control Video", ""), ("Use One Reference Video", "V-U"),
+                                ("Use Two Reference Videos", "V+-U"),
                                 # ("Transfer Human Pose From Control Video", "PV"),
                                 ("Transfer Depth Map From Control Video", "DV"),
                                 # ("Transfer Edges Map From Control Video", "EV"),
-                                ("Provide Generic Control Video", "V")],
-                    "letters_filter": "PDEV+-",
+                                ("Provide Generic Control Video", "GV")],
+                    "letters_filter": "UGPDEV+-",
                     "default": "",
                     "label": "Reference / Control Video",
                 },
                 "preprocess_video_guide2": True,
+                "mask_preprocessing": {"selection": ["", "A", "NA"]},
                 "reference_video_max_frames": 15 * 24,
                 "reference_video_max_size": (768, 1344),
                 "any_audio_prompt": True,
@@ -430,9 +431,11 @@ class family_handler:
         video_prompt_type = inputs["video_prompt_type"]
         audio_prompt_type = inputs["audio_prompt_type"]
         image_count = len(inputs["image_refs"] or [])
-        videos = [inputs["video_guide"]] if "V" in video_prompt_type else []
-        if "+" in video_prompt_type:
-            videos.append(inputs["video_guide2"])
+        videos = []
+        if "V" in video_prompt_type and "G" not in video_prompt_type:
+            videos.append(inputs["video_guide"])
+            if "+" in video_prompt_type:
+                videos.append(inputs["video_guide2"])
         audios = [inputs["audio_guide"]] if "A" in audio_prompt_type else []
         if "B" in audio_prompt_type:
             audios.append(inputs["audio_guide2"])
@@ -580,6 +583,13 @@ class family_handler:
             ui_defaults["video_prompt_type"] = ui_defaults.get("video_prompt_type", "").replace("G", "")
         if settings_version < 2.68 and "V" in ui_defaults.get("video_prompt_type", "") and "-" not in ui_defaults["video_prompt_type"]:
             ui_defaults["video_prompt_type"] += "-"
+        if settings_version < 2.76:
+            video_prompt_type = ui_defaults.get("video_prompt_type", "")
+            if "V" in video_prompt_type and not any(flag in video_prompt_type for flag in "PDEG+-"):
+                video_prompt_type = video_prompt_type.replace("V", "GV", 1)
+            elif "V" in video_prompt_type and any(flag in video_prompt_type for flag in "+-") and "U" not in video_prompt_type:
+                video_prompt_type += "U"
+            ui_defaults["video_prompt_type"] = video_prompt_type
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):

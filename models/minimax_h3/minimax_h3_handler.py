@@ -8,7 +8,8 @@ import torch
 from shared.utils.hf import build_hf_url
 from shared.utils.frame_scheduler import normalize_overlap
 
-from .constants import H3_GROUPED_MASKED_DENOISING, H3_PHASE_2_NOISE_LEVEL_START_DEFAULT
+from .constants import (H3_MASK_MODE_DEFAULT, H3_MASK_MODE_GROUPED_CELLS, H3_MASK_MODE_LATENT_PRESERVE,
+                        H3_MASK_MODE_SETTING, H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, h3_grouped_masking_enabled)
 from .minimax_h3_main import AUDIO_VAE_FILE, LATENT_UPSCALER_FILE, LATENT_UPSCALER_FOLDER, TEXT_ENCODER_FOLDER, VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE
 from .prompt_enhancer import (FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
                               REF2VA_IMAGE_SYSTEM_PROMPT, REF2VA_PROMPT_INFOS, REF2VA_TEXT_SYSTEM_PROMPT)
@@ -210,6 +211,18 @@ class family_handler:
             "visible_phases": 0,
             "lora_multiplier_phases": 2,
             "phase_2_spatial_tiling": True,
+            "custom_settings": [{
+                "id": H3_MASK_MODE_SETTING,
+                "name": "Mask Denoising Mode",
+                "label": "Mask Denoising Mode",
+                "type": "dropdown",
+                "default": H3_MASK_MODE_DEFAULT,
+                "choices": [
+                    ("Latent Preserve [shared timestep; restore source outside the mask]", H3_MASK_MODE_LATENT_PRESERVE),
+                    ("Grouped Cells [separate timesteps for fixed/editable 2x2 latent cells]", H3_MASK_MODE_GROUPED_CELLS),
+                ],
+                "video_prompt_type": "G",
+            }],
             "switch_threshold": {
                 "label": "Phase 2 Noise Level Start",
                 "type": "number",
@@ -390,13 +403,13 @@ class family_handler:
         if error:
             return error
         inputs["sliding_window_overlap"] = overlap
-        if H3_GROUPED_MASKED_DENOISING and inputs.get("override_attention") == "sol":
+        if h3_grouped_masking_enabled(inputs.get("custom_settings")) and inputs.get("override_attention") == "sol":
             from shared.utils.utils import get_outpainting_dims
 
             outpainting = get_outpainting_dims(inputs.get("video_guide_outpainting"), inputs.get("video_guide_outpainting_ratio", "")) is not None
             masked_control = inputs.get("video_mask") is not None or outpainting or "A" in (inputs.get("video_prompt_type") or "")
             if masked_control:
-                return "MiniMax H3 grouped masked denoising is not compatible with Sol Attention; select another attention mode or disable H3_GROUPED_MASKED_DENOISING"
+                return "MiniMax H3 Grouped Cells mask denoising is not compatible with Sol Attention; select Latent Preserve or another attention mode"
         if "~" in (inputs["video_prompt_type"] or ""):
             from .pipeline import H3_PHASE_2_TILE_COUNT, _spatial_tiles
 
@@ -559,6 +572,12 @@ class family_handler:
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
+        if settings_version < 2.77:
+            custom_settings = ui_defaults.get("custom_settings")
+            if not isinstance(custom_settings, dict):
+                custom_settings = {}
+                ui_defaults["custom_settings"] = custom_settings
+            custom_settings.setdefault(H3_MASK_MODE_SETTING, H3_MASK_MODE_DEFAULT)
         if settings_version < 2.75:
             ui_defaults["switch_threshold"] = H3_PHASE_2_NOISE_LEVEL_START_DEFAULT
         if settings_version < 2.74:
@@ -612,5 +631,10 @@ class family_handler:
             "video_prompt_type": "",
             "image_mode": 0,
         })
+        custom_settings = ui_defaults.get("custom_settings")
+        if not isinstance(custom_settings, dict):
+            custom_settings = {}
+            ui_defaults["custom_settings"] = custom_settings
+        custom_settings[H3_MASK_MODE_SETTING] = H3_MASK_MODE_DEFAULT
         if reference_mode:
             ui_defaults.update({"image_refs_relative_size": 100, "remove_background_images_ref": 0})

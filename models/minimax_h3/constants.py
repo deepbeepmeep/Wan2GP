@@ -1,13 +1,14 @@
 H3_PHASE_2_NOISE_LEVEL_START_DEFAULT = 0.9035
 
-# Experimental developer switch. Group masked H3 target rows by their 2x2 latent
-# patch state so each contiguous group can reuse one AdaLN timestep row.
-H3_GROUPED_MASKED_DENOISING = True
+H3_MASK_MODE_SETTING = "h3_mask_mode"
+H3_MASK_MODE_LATENT_PRESERVE = "latent_preserve"
+H3_MASK_MODE_GROUPED_CELLS = "grouped_cells"
+H3_MASK_MODE_DEFAULT = H3_MASK_MODE_LATENT_PRESERVE
+H3_MASK_MODES = (H3_MASK_MODE_LATENT_PRESERVE, H3_MASK_MODE_GROUPED_CELLS)
 
-# Select an H3 patch cell when any source-mask pixel covered by that cell is
-# editable. Disable to use majority coverage for each 16x16 latent position.
-H3_GROUPED_MASK_ANY_PIXEL_CELL = True
 
-# Expand the snapped editable mask by one complete H3 patch cell (32x32 pixels
-# with the current 16x VAE scale and 2x2 latent patch).
-H3_GROUPED_MASK_CELL_DILATION = False
+def h3_grouped_masking_enabled(custom_settings):
+    mode = H3_MASK_MODE_DEFAULT if custom_settings is None else custom_settings.get(H3_MASK_MODE_SETTING, H3_MASK_MODE_DEFAULT)
+    if mode not in H3_MASK_MODES:
+        raise ValueError(f"Unsupported MiniMax H3 mask denoising mode {mode!r}")
+    return mode == H3_MASK_MODE_GROUPED_CELLS

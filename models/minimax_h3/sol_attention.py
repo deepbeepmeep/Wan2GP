@@ -20,10 +20,12 @@ class MiniMaxH3SolAttention:
         self.sink_tokens = 0
         self.tau = 1.0
 
-    def begin_forward(self, layout, device, dtype, tau):
+    def begin_forward(self, layout, device, dtype, tau, grouped_video=False):
         self.sink_tokens = int(layout.video_indices[layout.num_condition_video_rows])
         self.tau = float(tau)
         self.enabled = offload.shared_state.get("_attention") == "sol"
+        if self.enabled and grouped_video:
+            raise ValueError("MiniMax H3 grouped masked denoising is not compatible with Sol Attention")
         if self.enabled and not self._runtime_validated:
             from shared.sol_attn import validate_runtime
             capability = validate_runtime(device, dtype)

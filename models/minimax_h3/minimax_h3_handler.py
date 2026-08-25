@@ -8,7 +8,7 @@ import torch
 from shared.utils.hf import build_hf_url
 from shared.utils.frame_scheduler import normalize_overlap
 
-from .constants import H3_PHASE_2_NOISE_LEVEL_START_DEFAULT
+from .constants import H3_GROUPED_MASKED_DENOISING, H3_PHASE_2_NOISE_LEVEL_START_DEFAULT
 from .minimax_h3_main import AUDIO_VAE_FILE, LATENT_UPSCALER_FILE, LATENT_UPSCALER_FOLDER, TEXT_ENCODER_FOLDER, VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE
 from .prompt_enhancer import (FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
                               REF2VA_IMAGE_SYSTEM_PROMPT, REF2VA_PROMPT_INFOS, REF2VA_TEXT_SYSTEM_PROMPT)
@@ -356,6 +356,9 @@ class family_handler:
                 },
                 "video_guide_label": "Control Video",
                 "mask_preprocessing": {"selection": ["", "A", "NA"]},
+                "video_guide_outpainting": [0],
+                "video_guide_outpainting_label": "Enable Spatial Outpainting on the H3 Control Video",
+                "outpainting_quantize_margins": 32,
                 "custom_frames_injection": True,
                 "one_image_ref_only": True,
                 "no_background_removal": True,
@@ -386,6 +389,13 @@ class family_handler:
         if error:
             return error
         inputs["sliding_window_overlap"] = overlap
+        if H3_GROUPED_MASKED_DENOISING and inputs.get("override_attention") == "sol":
+            from shared.utils.utils import get_outpainting_dims
+
+            outpainting = get_outpainting_dims(inputs.get("video_guide_outpainting"), inputs.get("video_guide_outpainting_ratio", "")) is not None
+            masked_control = inputs.get("video_mask") is not None or outpainting or "A" in (inputs.get("video_prompt_type") or "")
+            if masked_control:
+                return "MiniMax H3 grouped masked denoising is not compatible with Sol Attention; select another attention mode or disable H3_GROUPED_MASKED_DENOISING"
         if "~" in (inputs["video_prompt_type"] or ""):
             from .pipeline import H3_PHASE_2_TILE_COUNT, _spatial_tiles
 

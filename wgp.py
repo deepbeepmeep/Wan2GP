@@ -154,7 +154,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.14"
-WanGP_version = "12.643"
+WanGP_version = "12.644"
 settings_version = 2.77
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -174,6 +174,7 @@ app = None
 # All media attachment keys for queue save/load
 ATTACHMENT_KEYS = ["image_start", "image_end", "image_refs", "image_guide", "image_mask",
                    "video_guide", "video_guide2", "video_mask", "video_source", "audio_guide", "audio_guide2", "audio_source", "replace_voice_sample", "replace_voice_sample2", "custom_guide"]
+PRESERVE_MEDIA_ON_SETTINGS_IMPORT = True
 
 from importlib.metadata import version
 mmgp_version = version("mmgp")
@@ -823,6 +824,16 @@ def get_model_custom_settings(model_def):
         one["id"] = setting_id
         normalized.append(one)
     return normalized
+
+def apply_custom_settings_defaults(model_def, ui_defaults):
+    custom_settings = ui_defaults.get("custom_settings")
+    for setting_def in get_model_custom_settings(model_def):
+        if "default" not in setting_def:
+            continue
+        if not isinstance(custom_settings, dict):
+            custom_settings = {}
+            ui_defaults["custom_settings"] = custom_settings
+        custom_settings.setdefault(setting_def["id"], copy.deepcopy(setting_def["default"]))
 
 def get_custom_setting_slider_bounds(setting_def):
     if not isinstance(setting_def, dict) or setting_def.get("type") not in {"int", "float"} or not all(key in setting_def for key in ("min", "max", "inc")):
@@ -3164,6 +3175,7 @@ def fix_settings(model_type, ui_defaults, min_settings_version = 0):
     model_handler = get_model_handler(base_model_type)
     if hasattr(model_handler, "fix_settings"):
             model_handler.fix_settings(base_model_type, settings_version, model_def, ui_defaults)
+    apply_custom_settings_defaults(model_def, ui_defaults)
 
 def get_default_prompt(i2v):
     if i2v:
@@ -9942,6 +9954,8 @@ def use_video_settings(state, input_file_list, choice, source):
             if models_compatible:
                 model_type = current_model_type
             defaults = get_factory_settings(model_type)
+            if PRESERVE_MEDIA_ON_SETTINGS_IMPORT and (current_settings := get_model_settings(state, model_type)) is not None:
+                defaults.update({key: current_settings[key] for key in ATTACHMENT_KEYS if key not in configs and key in current_settings})
             defaults.update(configs)
             defaults["model_type"] = model_type
             prompt = configs.get("prompt", "")
@@ -10068,6 +10082,8 @@ def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, sw
     if merge_with_defaults:
         current_settings = get_model_settings(state, model_type)
         defaults = get_factory_settings(model_type) if merge_factory_defaults else (get_default_settings(model_type) if current_settings is None else current_settings.copy())
+        if PRESERVE_MEDIA_ON_SETTINGS_IMPORT and current_settings is not None:
+            defaults.update({key: current_settings[key] for key in ATTACHMENT_KEYS if key not in configs and key in current_settings})
         has_loras_without_multipliers = "activated_loras" in configs and "loras_multipliers" not in configs
         if merge_loras is not None and model_type == current_model_type:
             lora_settings = current_settings or defaults

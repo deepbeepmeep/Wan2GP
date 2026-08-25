@@ -8,7 +8,7 @@ import torch
 from shared.utils.hf import build_hf_url
 from shared.utils.frame_scheduler import normalize_overlap
 
-from .constants import (H3_MASK_MODE_DEFAULT, H3_MASK_MODE_GROUPED_CELLS, H3_MASK_MODE_LATENT_PRESERVE,
+from .constants import (H3_MASK_MODE_DEFAULT, H3_MASK_MODE_GROUPED_ROWS, H3_MASK_MODE_SHARED_TIMESTEP,
                         H3_MASK_MODE_SETTING, H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, h3_grouped_masking_enabled)
 from .minimax_h3_main import AUDIO_VAE_FILE, LATENT_UPSCALER_FILE, LATENT_UPSCALER_FOLDER, TEXT_ENCODER_FOLDER, VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE
 from .prompt_enhancer import (FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
@@ -148,6 +148,20 @@ PRUNED_INFOS = """
 The Pruned checkpoint replaces the full AdaLN timestep projection matrices with precomputed low-rank modulation curves. It accepts the same inputs and settings as its 33B counterpart while reducing checkpoint size and weight-transfer cost.
 """
 
+H3_FINETUNES_INFOS = """### H3 finetune QKV layout
+
+Most H3 checkpoints use the official **Interleaved** QKV layout. Select **Grouped** only when the checkpoint stores all Q rows, then K rows, then V rows. INT8 ConvRot uses its own layout metadata.
+"""
+
+H3_FINETUNES_PARAMS = {
+    "qkv_layout": {
+        "label": "QKV Layout",
+        "choices": [("Interleaved (official H3)", "interleaved"), ("Grouped Q / K / V", "grouped")],
+        "default": "interleaved",
+        "description": "Physical row order of fused QKV tensors in the finetune checkpoint. This does not enable or disable QKV splitting.",
+    },
+}
+
 
 class family_handler:
     @staticmethod
@@ -218,8 +232,8 @@ class family_handler:
                 "type": "dropdown",
                 "default": H3_MASK_MODE_DEFAULT,
                 "choices": [
-                    ("Latent Preserve [shared timestep; restore source outside the mask]", H3_MASK_MODE_LATENT_PRESERVE),
-                    ("Grouped Cells [separate timesteps for fixed/editable 2x2 latent cells]", H3_MASK_MODE_GROUPED_CELLS),
+                    ("Grouped Rows [conditioning timestep for fixed rows; denoising timestep for editable rows]", H3_MASK_MODE_GROUPED_ROWS),
+                    ("Shared Timestep [same denoising timestep for fixed and editable latent rows]", H3_MASK_MODE_SHARED_TIMESTEP),
                 ],
                 "video_prompt_type": "G",
             }],
@@ -267,9 +281,12 @@ class family_handler:
             "video_prompt_enhancer_max_tokens": 2048 if reference_mode else 1024,
             "profiles_dir": ["minimax_h3"],
             "finetune_custom_urls": ["video_vae_file", "audio_vae_file"],
+            "finetunes_infos": H3_FINETUNES_INFOS,
+            "finetunes_params": H3_FINETUNES_PARAMS,
             TURBO_LORA_KEY: build_hf_url(REPO_ID, "loras", TURBO_LORA_FILE),
             REF_TURBO_LORA_KEY: build_hf_url(REPO_ID, "loras", REF_TURBO_LORA_FILE),
             "qkv_splitting": True,
+            "qkv_layout": "interleaved",
             "keep_frames_video_guide_not_supported": True,
             "text_encoder_folder": TEXT_ENCODER_FOLDER,
             "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, filename) for filename in text_encoder_files],
@@ -370,8 +387,8 @@ class family_handler:
                 },
                 "video_guide_label": "Control Video",
                 "mask_preprocessing": {"selection": ["", "A", "NA"]},
-                "video_guide_outpainting": [0],
-                "video_guide_outpainting_label": "Enable Spatial Outpainting on the H3 Control Video",
+                # "video_guide_outpainting": [0],
+                # "video_guide_outpainting_label": "Enable Spatial Outpainting on the H3 Control Video",
                 "outpainting_quantize_margins": 32,
                 "custom_frames_injection": True,
                 "one_image_ref_only": True,
@@ -409,7 +426,7 @@ class family_handler:
             outpainting = get_outpainting_dims(inputs.get("video_guide_outpainting"), inputs.get("video_guide_outpainting_ratio", "")) is not None
             masked_control = inputs.get("video_mask") is not None or outpainting or "A" in (inputs.get("video_prompt_type") or "")
             if masked_control:
-                return "MiniMax H3 Grouped Cells mask denoising is not compatible with Sol Attention; select Latent Preserve or another attention mode"
+                return "MiniMax H3 Grouped Rows mask denoising is not compatible with Sol Attention; select Shared Timestep or another attention mode"
         if "~" in (inputs["video_prompt_type"] or ""):
             from .pipeline import H3_PHASE_2_TILE_COUNT, _spatial_tiles
 
@@ -548,6 +565,7 @@ class family_handler:
                                  reference_mode=base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE),
                                  save_quantized=save_quantized, model_type=model_type,
                                  qkv_splitting=model_def["qkv_splitting"],
+                                 qkv_layout=model_def["qkv_layout"],
                                  video_vae_filename=model_def.get("video_vae_file", VIDEO_VAE_FILE),
                                  audio_vae_filename=model_def.get("audio_vae_file", AUDIO_VAE_FILE), shared_h3_pipeline=shared_h3_pipeline)
         pipe = {"transformer": pipeline.transformer}
@@ -572,12 +590,6 @@ class family_handler:
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
-        if settings_version < 2.77:
-            custom_settings = ui_defaults.get("custom_settings")
-            if not isinstance(custom_settings, dict):
-                custom_settings = {}
-                ui_defaults["custom_settings"] = custom_settings
-            custom_settings.setdefault(H3_MASK_MODE_SETTING, H3_MASK_MODE_DEFAULT)
         if settings_version < 2.75:
             ui_defaults["switch_threshold"] = H3_PHASE_2_NOISE_LEVEL_START_DEFAULT
         if settings_version < 2.74:
@@ -631,10 +643,5 @@ class family_handler:
             "video_prompt_type": "",
             "image_mode": 0,
         })
-        custom_settings = ui_defaults.get("custom_settings")
-        if not isinstance(custom_settings, dict):
-            custom_settings = {}
-            ui_defaults["custom_settings"] = custom_settings
-        custom_settings[H3_MASK_MODE_SETTING] = H3_MASK_MODE_DEFAULT
         if reference_mode:
             ui_defaults.update({"image_refs_relative_size": 100, "remove_background_images_ref": 0})

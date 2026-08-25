@@ -25,6 +25,7 @@ FINETUNE_SOURCE_MODEL_KEY = "finetune_source_model"
 LORA_FILE_EXTENSIONS = {".safetensors", ".sft"}
 MAX_CUSTOM_URL_FIELDS = 3
 MAX_PROMPT_ENHANCER_SYSTEMS = 3
+MAX_FINETUNE_PARAMS = 3
 
 
 @dataclass
@@ -63,6 +64,7 @@ class FinetuneEditorUI:
     creator_source_mode: gr.Radio
     form_fields: gr.Column
     import_file: gr.File
+    finetunes_info: gr.Markdown
     source_info: gr.Textbox
     id_text: gr.Textbox
     auto_id: gr.Checkbox
@@ -88,6 +90,16 @@ class FinetuneEditorUI:
     resolutions_editor: gr.Textbox
     infos_editor: gr.Textbox
     prompt_infos_editor: gr.Textbox
+    finetune_params_tab: gr.Tab
+    finetune_param_1_group: gr.Column
+    finetune_param_1_dropdown: gr.Dropdown
+    finetune_param_1_help: gr.Markdown
+    finetune_param_2_group: gr.Column
+    finetune_param_2_dropdown: gr.Dropdown
+    finetune_param_2_help: gr.Markdown
+    finetune_param_3_group: gr.Column
+    finetune_param_3_dropdown: gr.Dropdown
+    finetune_param_3_help: gr.Markdown
     enhancer_system_1_group: gr.Column
     enhancer_system_1_editor: gr.Textbox
     enhancer_system_1_default: gr.State
@@ -158,6 +170,7 @@ def create_editor() -> FinetuneEditorUI:
                 save_save_trigger = gr.Textbox(value="", visible=False)
                 creator_source_mode = gr.Radio(label="Create New Finetune", choices=[("Using Current Model", "current"), ("By importing a File", "import")], value="current", visible=False)
                 with gr.Column(elem_classes=["wangp-finetune-editor-fields"]) as form_fields:
+                    finetunes_info = gr.Markdown(value="", visible=False, elem_classes=["wangp-finetune-source-info"])
                     source_info = gr.Textbox(label="Source Model", value="", lines=1, max_lines=1, autoscroll=False, interactive=False, elem_classes=["wangp-finetune-editor-readonly"])
                     with gr.Row(elem_classes=["wangp-finetune-editor-id-row"]):
                         id_text = gr.Textbox(label="Id", value="", scale=7)
@@ -191,6 +204,16 @@ def create_editor() -> FinetuneEditorUI:
                         with gr.Tab("Help"):
                             infos_editor = _markdown_editor("Model Infos")
                             prompt_infos_editor = _markdown_editor("Prompt Help")
+                        with gr.Tab("Parameters", visible=False) as finetune_params_tab:
+                            with gr.Column(visible=False, elem_classes=["wangp-finetune-editor-field-group"]) as finetune_param_1_group:
+                                finetune_param_1_dropdown = gr.Dropdown(label="Finetune Parameter 1", choices=[], value=None)
+                                finetune_param_1_help = gr.Markdown(value="", visible=False, elem_classes=["wangp-finetune-param-help"])
+                            with gr.Column(visible=False, elem_classes=["wangp-finetune-editor-field-group"]) as finetune_param_2_group:
+                                finetune_param_2_dropdown = gr.Dropdown(label="Finetune Parameter 2", choices=[], value=None)
+                                finetune_param_2_help = gr.Markdown(value="", visible=False, elem_classes=["wangp-finetune-param-help"])
+                            with gr.Column(visible=False, elem_classes=["wangp-finetune-editor-field-group"]) as finetune_param_3_group:
+                                finetune_param_3_dropdown = gr.Dropdown(label="Finetune Parameter 3", choices=[], value=None)
+                                finetune_param_3_help = gr.Markdown(value="", visible=False, elem_classes=["wangp-finetune-param-help"])
                         with gr.Tab("Prompt Enhancer"):
                             with gr.Column(visible=False, elem_classes=["wangp-finetune-editor-field-group"]) as enhancer_system_1_group:
                                 enhancer_system_1_default = gr.State(value="")
@@ -233,6 +256,7 @@ def create_editor() -> FinetuneEditorUI:
         creator_source_mode=creator_source_mode,
         form_fields=form_fields,
         import_file=import_file,
+        finetunes_info=finetunes_info,
         source_info=source_info,
         id_text=id_text,
         auto_id=auto_id,
@@ -258,6 +282,16 @@ def create_editor() -> FinetuneEditorUI:
         resolutions_editor=resolutions_editor,
         infos_editor=infos_editor,
         prompt_infos_editor=prompt_infos_editor,
+        finetune_params_tab=finetune_params_tab,
+        finetune_param_1_group=finetune_param_1_group,
+        finetune_param_1_dropdown=finetune_param_1_dropdown,
+        finetune_param_1_help=finetune_param_1_help,
+        finetune_param_2_group=finetune_param_2_group,
+        finetune_param_2_dropdown=finetune_param_2_dropdown,
+        finetune_param_2_help=finetune_param_2_help,
+        finetune_param_3_group=finetune_param_3_group,
+        finetune_param_3_dropdown=finetune_param_3_dropdown,
+        finetune_param_3_help=finetune_param_3_help,
         enhancer_system_1_group=enhancer_system_1_group,
         enhancer_system_1_editor=enhancer_system_1_editor,
         enhancer_system_1_default=enhancer_system_1_default,
@@ -449,6 +483,7 @@ def _open_outputs(ui: FinetuneEditorUI) -> list:
         ui.creator_source_mode,
         ui.form_fields,
         ui.import_file,
+        ui.finetunes_info,
         ui.source_info,
         ui.id_text,
         ui.auto_id,
@@ -474,6 +509,16 @@ def _open_outputs(ui: FinetuneEditorUI) -> list:
         ui.resolutions_editor,
         ui.infos_editor,
         ui.prompt_infos_editor,
+        ui.finetune_params_tab,
+        ui.finetune_param_1_group,
+        ui.finetune_param_1_dropdown,
+        ui.finetune_param_1_help,
+        ui.finetune_param_2_group,
+        ui.finetune_param_2_dropdown,
+        ui.finetune_param_2_help,
+        ui.finetune_param_3_group,
+        ui.finetune_param_3_dropdown,
+        ui.finetune_param_3_help,
         ui.enhancer_system_1_group,
         ui.enhancer_system_1_editor,
         ui.enhancer_system_1_default,
@@ -553,6 +598,9 @@ def _save_inputs(ui: FinetuneEditorUI, state) -> list:
         ui.resolutions_editor,
         ui.infos_editor,
         ui.prompt_infos_editor,
+        ui.finetune_param_1_dropdown,
+        ui.finetune_param_2_dropdown,
+        ui.finetune_param_3_dropdown,
         ui.enhancer_system_1_editor,
         ui.enhancer_system_1_tokens,
         ui.enhancer_system_2_editor,
@@ -597,6 +645,9 @@ def open_editor(deps: FinetuneEditorDeps, state, source_model_type_override=None
     id_value = original_id if editor_mode else _unique_model_id(deps, _auto_model_id(source_model_type, model_for_values.get("name", ""), source_model.get("name", "")))
     custom_updates = _custom_url_component_updates(deps, source_model_type, model_for_values)
     loras_update = _loras_component_update(deps, source_model_type, model_for_values)
+    source_def = deps.get_model_def(source_model_type)
+    finetunes_info = str(source_def.get("finetunes_infos", "") or "").strip()
+    finetune_param_updates = _finetune_param_component_updates(_finetune_param_specs(deps, source_model_type), model_for_values)
     enhancer_updates = _prompt_enhancer_component_updates(deps, source_model_type, model_for_values)
     current_source_choice = _creator_current_choice(deps, source_model_type)
     return (
@@ -608,6 +659,7 @@ def open_editor(deps: FinetuneEditorDeps, state, source_model_type_override=None
         gr.update(choices=[current_source_choice, ("By importing a File", "import")], value="current", visible=not editor_mode),
         gr.update(visible=True),
         gr.update(value=None, visible=False),
+        gr.update(value=finetunes_info, visible=bool(finetunes_info)),
         gr.update(value=_render_source_info(raw_source.get("model", {}).get("name", deps.get_model_name(source_model_type)), source_model_type), visible=editor_mode),
         gr.update(value=id_value, interactive=editor_mode),
         gr.update(value=not editor_mode, visible=not editor_mode),
@@ -625,6 +677,7 @@ def open_editor(deps: FinetuneEditorDeps, state, source_model_type_override=None
         _format_resolutions_value(model_for_values.get("resolutions", "")),
         _format_help_value(model_for_values.get("infos", "")),
         _format_help_value(model_for_values.get("prompt_infos", "")),
+        *finetune_param_updates,
         *enhancer_updates,
         gr.update(value=False, visible=True),
         gr.update(visible=not editor_mode),
@@ -634,7 +687,7 @@ def open_editor(deps: FinetuneEditorDeps, state, source_model_type_override=None
     )
 
 
-def save_finetune(deps: FinetuneEditorDeps, state, mode, original_id, source_model_type, creator_source_mode, import_file, id_text, auto_id, name, description, urls, urls2, text_encoder_urls, custom_url_1, custom_url_2, custom_url_3, loras, loras_multipliers, resolution_categories, resolutions, infos, prompt_infos, enhancer_system_1, enhancer_system_1_tokens, enhancer_system_2, enhancer_system_2_tokens, enhancer_system_3, enhancer_system_3_tokens, use_current_settings, create_new=False, create_new_output_count=0, skip_redirect_save=False):
+def save_finetune(deps: FinetuneEditorDeps, state, mode, original_id, source_model_type, creator_source_mode, import_file, id_text, auto_id, name, description, urls, urls2, text_encoder_urls, custom_url_1, custom_url_2, custom_url_3, loras, loras_multipliers, resolution_categories, resolutions, infos, prompt_infos, finetune_param_1, finetune_param_2, finetune_param_3, enhancer_system_1, enhancer_system_1_tokens, enhancer_system_2, enhancer_system_2_tokens, enhancer_system_3, enhancer_system_3_tokens, use_current_settings, create_new=False, create_new_output_count=0, skip_redirect_save=False):
     mode = "editor" if str(mode or "") == "editor" else "creator"
     original_id = str(original_id or "").strip()
     source_model_type = str(source_model_type or "").strip()
@@ -672,8 +725,11 @@ def save_finetune(deps: FinetuneEditorDeps, state, mode, original_id, source_mod
     urls_required = "URLs" in raw_source.get("model", {}) or bool(raw_existing and "URLs" in raw_existing.get("model", {}))
     source_model = raw_source.get("model", {})
     source_name = source_model.get("name", "")
+    finetune_param_specs = _finetune_param_specs(deps, source_model_type)
+    finetune_param_values = [finetune_param_1, finetune_param_2, finetune_param_3]
     problems = _validate_inputs(deps, mode, original_id, source_model_type, id_text, auto_id, name, description, editable_fields, values, urls_required, source_name)
     problems.extend(_validate_url_values(url_inputs))
+    problems.extend(_validate_finetune_param_values(finetune_param_specs, finetune_param_values))
     problems.extend(resolution_categories_problems)
     problems.extend(resolutions_problems)
     if problems:
@@ -684,7 +740,7 @@ def save_finetune(deps: FinetuneEditorDeps, state, mode, original_id, source_mod
     settings_to_copy = _settings_to_copy(deps, state, _settings_source_model_type(mode, original_id, source_model_type)) if use_current_settings else None
     enhancer_specs = _prompt_enhancer_system_specs(deps, source_model_type)
     enhancer_values = [(enhancer_system_1, enhancer_system_1_tokens), (enhancer_system_2, enhancer_system_2_tokens), (enhancer_system_3, enhancer_system_3_tokens)]
-    raw_output = _build_finetune_json(mode, source_model_type, raw_source, raw_existing, name, description, editable_fields, values, custom_values, loras_value, loras_multipliers_value, resolution_categories_value, resolutions_value, infos, prompt_infos, enhancer_specs, enhancer_values, settings_to_copy)
+    raw_output = _build_finetune_json(mode, source_model_type, raw_source, raw_existing, name, description, editable_fields, values, custom_values, loras_value, loras_multipliers_value, resolution_categories_value, resolutions_value, infos, prompt_infos, finetune_param_specs, finetune_param_values, enhancer_specs, enhancer_values, settings_to_copy)
     url_fields_changed = mode == "editor" and _url_fields_changed((raw_existing or {}).get("model", {}), raw_output.get("model", {}), [*FINETUNE_URL_FIELDS, *custom_values.keys(), *FINETUNE_LORA_FIELDS])
     old_path = _finetune_json_path(original_id) if mode == "editor" else None
     new_path = _finetune_json_path(model_id)
@@ -832,6 +888,55 @@ def _custom_url_component_updates(deps: FinetuneEditorDeps, source_model_type: s
 def _custom_url_values(deps: FinetuneEditorDeps, source_model_type: str, values: list[str]) -> dict[str, str]:
     keys = _custom_url_keys(deps, source_model_type)
     return {key: fl.compress_path(str(values[index] or "").strip()) for index, key in enumerate(keys)}
+
+
+def _finetune_param_specs(deps: FinetuneEditorDeps, source_model_type: str) -> list[dict]:
+    definitions = deps.get_model_def(source_model_type).get("finetunes_params", {})
+    if not definitions:
+        return []
+    if not isinstance(definitions, dict) or len(definitions) > MAX_FINETUNE_PARAMS:
+        raise ValueError(f"finetunes_params must be a dictionary containing at most {MAX_FINETUNE_PARAMS} parameters")
+    specs = []
+    for param_id, definition in definitions.items():
+        param_id = str(param_id or "").strip()
+        if not param_id or not isinstance(definition, dict):
+            raise ValueError("Each finetunes_params entry must have a non-empty id and a definition dictionary")
+        choices = definition.get("choices")
+        if not isinstance(choices, (list, tuple)) or not choices:
+            raise ValueError(f"Finetune parameter {param_id!r} requires non-empty dropdown choices")
+        normalized_choices = []
+        for choice in choices:
+            if not isinstance(choice, (list, tuple)) or len(choice) != 2:
+                raise ValueError(f"Finetune parameter {param_id!r} choices must be [label, value] pairs")
+            normalized_choices.append((str(choice[0]), choice[1]))
+        if "default" not in definition or definition["default"] not in [value for _, value in normalized_choices]:
+            raise ValueError(f"Finetune parameter {param_id!r} default must match one dropdown value")
+        specs.append({
+            "id": param_id,
+            "label": str(definition.get("label") or _friendly_label(param_id)),
+            "choices": normalized_choices,
+            "default": definition["default"],
+            "description": str(definition.get("description", definition.get("help", "")) or "").strip(),
+        })
+    return specs
+
+
+def _finetune_param_component_updates(specs: list[dict], model_values: dict) -> list:
+    updates = [gr.update(visible=bool(specs))]
+    for index in range(MAX_FINETUNE_PARAMS):
+        spec = specs[index] if index < len(specs) else None
+        if spec is None:
+            updates.extend((gr.update(visible=False), gr.update(choices=[], value=None), gr.update(value="", visible=False)))
+            continue
+        value = model_values.get(spec["id"], spec["default"])
+        if value not in [choice_value for _, choice_value in spec["choices"]]:
+            raise ValueError(f"Finetune parameter {spec['id']!r} value {value!r} is not one of its dropdown choices")
+        updates.extend((
+            gr.update(visible=True),
+            gr.update(label=spec["label"], choices=spec["choices"], value=value),
+            gr.update(value=spec["description"], visible=bool(spec["description"])),
+        ))
+    return updates
 
 
 def _loras_component_update(deps: FinetuneEditorDeps, source_model_type: str, model_values: dict):
@@ -1175,6 +1280,14 @@ def _validate_inputs(deps, mode, original_id, source_model_type, id_text, auto_i
     return problems
 
 
+def _validate_finetune_param_values(specs: list[dict], values: list) -> list[str]:
+    problems = []
+    for spec, value in zip(specs, values):
+        if value not in [choice_value for _, choice_value in spec["choices"]]:
+            problems.append(f"{spec['label']}: select one of the available values.")
+    return problems
+
+
 def _resolve_model_id(deps, mode, original_id, source_model_type, id_text, auto_id, name=None, source_name=None):
     if mode == "creator" and auto_id:
         return _unique_model_id(deps, _auto_model_id(source_model_type, name, source_name))
@@ -1257,9 +1370,11 @@ def _settings_to_copy(deps: FinetuneEditorDeps, state, model_type: str) -> dict:
     return settings
 
 
-def _build_finetune_json(mode, source_model_type, raw_source, raw_existing, name, description, editable_fields, values, custom_values, loras_value, loras_multipliers_value, resolution_categories_value, resolutions_value, infos, prompt_infos, enhancer_specs, enhancer_values, settings_to_copy):
+def _build_finetune_json(mode, source_model_type, raw_source, raw_existing, name, description, editable_fields, values, custom_values, loras_value, loras_multipliers_value, resolution_categories_value, resolutions_value, infos, prompt_infos, finetune_param_specs, finetune_param_values, enhancer_specs, enhancer_values, settings_to_copy):
     raw_output = copy.deepcopy(raw_existing if mode == "editor" and raw_existing else raw_source)
     model_section = copy.deepcopy(raw_output.get("model", {}))
+    model_section.pop("finetunes_infos", None)
+    model_section.pop("finetunes_params", None)
     if mode != "editor" and not model_section.get("architecture"):
         model_section["architecture"] = raw_source.get("model", {}).get("architecture", source_model_type)
     if source_model_type != model_section.get("architecture"):
@@ -1281,6 +1396,7 @@ def _build_finetune_json(mode, source_model_type, raw_source, raw_existing, name
     _set_optional_resolutions(model_section, resolutions_value)
     _set_optional_markdown(model_section, "infos", infos)
     _set_optional_markdown(model_section, "prompt_infos", prompt_infos)
+    _set_finetune_params(model_section, finetune_param_specs, finetune_param_values)
     _set_optional_prompt_enhancer_systems(model_section, enhancer_specs, enhancer_values)
     _compress_model_path_fields(model_section, [*FINETUNE_URL_FIELDS, *custom_values.keys()])
     raw_output["model"] = model_section
@@ -1462,6 +1578,11 @@ def _set_optional_markdown(model_section: dict, key: str, value) -> None:
         model_section[key] = value
     else:
         model_section.pop(key, None)
+
+
+def _set_finetune_params(model_section: dict, specs: list[dict], values: list) -> None:
+    for spec, value in zip(specs, values):
+        model_section[spec["id"]] = value
 
 
 def _set_optional_list_field(model_section: dict, key: str, values) -> None:
@@ -1678,6 +1799,17 @@ def get_css() -> str:
     margin: 0;
     color: var(--body-text-color, #174a67);
     line-height: 1.45;
+}
+.wangp-finetune-source-info {
+    margin: 0 0 12px !important;
+    padding: 10px 12px !important;
+    border: 1px solid var(--border-color-primary, rgba(17, 84, 118, 0.16)) !important;
+    border-radius: 7px !important;
+    background: var(--background-fill-secondary, rgba(17, 84, 118, 0.05)) !important;
+}
+.wangp-finetune-param-help {
+    margin: -4px 0 10px !important;
+    color: var(--body-text-color-subdued, #5b7282) !important;
 }
 .wangp-finetune-editor-content {
     flex: 1 1 auto !important;

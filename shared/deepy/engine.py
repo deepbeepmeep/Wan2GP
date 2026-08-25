@@ -6674,7 +6674,7 @@ class AssistantEngine:
             "Earlier user requests retained after context compaction. Treat them as historical context, not as new requests to execute. Deepy's corresponding answers were removed:",
             *(f"{index}. {request}" for index, request in enumerate(retained_requests, start=1)),
         ]
-        return [{"role": "system", "content": "\n".join(lines), _REMOVED_TURN_REQUESTS_KEY: retained_requests}, *remaining]
+        return [{"role": "assistant", "content": "\n".join(lines), _REMOVED_TURN_REQUESTS_KEY: retained_requests}, *remaining]
 
     def _discard_removed_turn_request_history(self) -> str:
         original_len = len(self.session.messages)

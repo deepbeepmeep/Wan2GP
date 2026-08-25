@@ -65,7 +65,9 @@ def probe_h3_checkpoint(filename):
         normalized[key] = value
     table = next((tensor for key, tensor in normalized.items() if key == "adaln_t_table"), None)
     if table is None:
-        return {"compressed_modulation": False, "adaln_curve_grid": None, "time_embed_dim": 2688}
+        return {"compressed_modulation": False, "adaln_curve_grid": None, "time_embed_dim": 2688, "adaln_dtype": None}
+    if not table.dtype.is_floating_point:
+        raise ValueError(f"H3 AdaLN curve table must use an unquantized floating-point GGUF qtype, got {table.dtype}")
     if len(table.shape) != 2 or table.shape[0] < 2:
         raise ValueError(f"Invalid H3 AdaLN curve table shape: {tuple(table.shape)}")
     rank = int(table.shape[1])
@@ -74,16 +76,16 @@ def probe_h3_checkpoint(filename):
             f"MiniMax H3 pruned checkpoint '{checkpoint_path}' uses non-official AdaLN rank {rank}; the official rank is {ADALN_CURVE_DIM}. "
             "This file may be incompatible with MiniMax H3 LoRAs. Delete it and retry so WanGP can automatically download the official replacement."
         )
-    return {"compressed_modulation": True, "adaln_curve_grid": int(table.shape[0]), "time_embed_dim": rank}
+    return {"compressed_modulation": True, "adaln_curve_grid": int(table.shape[0]), "time_embed_dim": rank, "adaln_dtype": table.dtype}
 
 
-def _load_transformer(filename, dtype, qkv_splitting=True):
+def _load_transformer(filename, dtype, qkv_splitting=True, qkv_layout="interleaved"):
     checkpoint = probe_h3_checkpoint(filename)
     with init_empty_weights(include_buffers=True):
-        transformer = MiniMaxH3Model(adaln_curve_grid=checkpoint["adaln_curve_grid"], time_embed_dim=checkpoint["time_embed_dim"],
+        transformer = MiniMaxH3Model(adaln_curve_grid=checkpoint["adaln_curve_grid"], time_embed_dim=checkpoint["time_embed_dim"], adaln_dtype=checkpoint["adaln_dtype"],
                                      dtype=dtype, device="meta")
     filenames = filename if isinstance(filename, (list, tuple)) else [filename]
-    split_map = get_linear_split_map(transformer.attention_inner_size) if qkv_splitting and not any(path.lower().endswith(".gguf") for path in filenames) else None
+    split_map = get_linear_split_map(transformer.attention_inner_size, qkv_layout=qkv_layout) if qkv_splitting and not any(path.lower().endswith(".gguf") for path in filenames) else None
     if split_map is not None:
         offload.split_linear_modules(transformer, split_map)
     transformer.requires_grad_(False)
@@ -168,8 +170,8 @@ def _load_latent_upscaler(filename):
 def model_factory(model_filename, text_encoder_filename, qkv_splitting, dtype=torch.bfloat16, VAE_dtype=torch.float32, save_quantized=False,
                   model_type="minimax_h3_fl2va", reference_mode=False, video_vae_filename=VIDEO_VAE_FILE,
                   audio_vae_filename=AUDIO_VAE_FILE, latent_upscaler_filename=os.path.join(LATENT_UPSCALER_FOLDER, LATENT_UPSCALER_FILE),
-                  shared_h3_pipeline=None):
-    transformer = _load_transformer(model_filename, dtype, qkv_splitting)
+                  shared_h3_pipeline=None, qkv_layout="interleaved"):
+    transformer = _load_transformer(model_filename, dtype, qkv_splitting, qkv_layout)
     if shared_h3_pipeline is None:
         text_encoder = _load_text_encoder(text_encoder_filename, dtype)
         video_vae_qkv_splitting = qkv_splitting and video_vae_filename == VIDEO_VAE_FILE

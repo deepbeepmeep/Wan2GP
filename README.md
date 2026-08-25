@@ -71,16 +71,18 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 - **Sense Nova U1.5**: *SenseNova-U1.5 8B MoT* is a unified image generator and editor designed for native-4K images, text-heavy layouts, and infographics. Select it from the Image model list and generate from text or one or more *Reference Images*. Its built-in *Infographic Prompt* enhancer can expand a short brief into a structured layout; native 4K can be still be generated with 8-9GB of RAM and will produce the best infographics. SenseNova comes with a 8 steps *LoRA Accelerator Profile*. Generation can be further accelerated at the cost of some VRAM by enabling the *KV Cache*.
 
+- **New H3 Grouped Row Denoising Mode for Inpainting**: available for both FL2VA & Ref2VA can be used for *Inpainting* in a *Masked Area*
+
 - **Deepy Prime for Everyone / Prompts Enhanced by Claude or ChatGPT**: use an OpenAI Codex or Anthropic Claude account, including supported free accounts, to power Deepy Prime and Prompt Enhancer without pausing a WanGP's generation. Open *Configuration / Prompt Enhancer / Deepy*, select *Codex* or *Claude Code* as the LLM engine, sign in, select *Deepy Prime*, and save. Choose models carefully and monitor the token usage shown in the chat footer; see the [Remote LLM guide](docs/REMOTE_LLMS.md) for details.
 
 - **New Deepy Capabilities**: Deepy can now analyse the content of a video, compare frames and use the new H3 Head refiner. 
 
-- **Even More Deepy Capabilities**:  (WanGP 12.643),  Deepy can create text files, create sub folders, zip multiple files and send notifications. This opens unlimited possibilities: for instance Deepy can store reference images in a dedicated folder so that these images can be used later, create zip of all generation made today, notify you when the work is done or let you known about current work progress, ...
+- **Even More Deepy Capabilities**:  (WanGP 12.643),  Deepy can create text files, create sub folders, zip multiple files and send notifications. This opens unlimited possibilities: for instance Deepy can store reference images in a dedicated folder so that these images can be used later, create zip of all generation made today, notify you when the work is done or let you know about current work progress, ...
 
 - **Remote Notifications**: (WanGP 12.643) you can now define *Apprise Destinations* in the *Config / Notification* tab and receives Queue or Deepy related notifications in WhatsApp, Discord, Ntfyn .... The easiest way is to use the *ntfy.sh* service. For instance, just open in your Web Browser https://ntfy.sh/my_unique_sequence and then enter in Apprise Destination *ntfys://my_unique_sequence*
 
 *WanGP 12.643*: Even More Deepy Capabilities, Remote Notifications
-
+*WanGP 12.644*: Masked Denoising Grouped Row
 ## 19th of August 2026: WanGP v12.61, Remember to be nice with Deepy
 
 Deepy and the WanGP Prompt Enhancer have learned some impressive new tricks (enable them from the *Configuration / Deepy* menu):

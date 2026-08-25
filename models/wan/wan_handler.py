@@ -1379,7 +1379,6 @@ class family_handler():
                 "force_fps": "control",
                 "alt_prompt": model_def["animate2_ref_prompt"],
                 "prompt_enhancer": "",
-                "custom_settings": {"animate2_kv_cache": "Disabled"},
             })
         elif base_model_type in ["vace_ditto_14B"]:
             ui_defaults.update({ 
@@ -1420,11 +1419,6 @@ class family_handler():
                 "flow_shift": 3,
                 "guidance_scale": 5.0,
                 "remove_background_images_ref": 0,
-                "custom_settings": {
-                    "scail2_animate_preprocessing": SCAIL2_ANIMATE_PREPROCESSING_RAW,
-                    "image_ref_keyword_content": "human character",
-                    SCAIL2_INJECT_REF_FRAMES_SETTING: SCAIL2_INJECT_REF_FRAMES_NO,
-                },
             })
 
         if test_svi2pro(base_model_type):

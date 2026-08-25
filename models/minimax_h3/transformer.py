@@ -86,10 +86,14 @@ def _split_interleaved_qkv(src, dim, split_sizes, context):
     return [grouped[:, index].reshape(split_sizes[index], *src.shape[1:]).contiguous() for index in range(3)]
 
 
-def get_linear_split_map(inner_size, num_attention_heads=56, attention_head_dim=128):
-    return {"qkv_proj": {"mapped_modules": ["q_proj", "k_proj", "v_proj"], "split_sizes": [inner_size] * 3,
-                         "num_attention_heads": num_attention_heads, "attention_head_dim": attention_head_dim,
-                         "split_handlers": {"weight": _split_interleaved_qkv}}}
+def get_linear_split_map(inner_size, num_attention_heads=56, attention_head_dim=128, qkv_layout="interleaved"):
+    if qkv_layout not in ("interleaved", "grouped"):
+        raise ValueError(f"Unsupported MiniMax H3 QKV layout {qkv_layout!r}")
+    split = {"mapped_modules": ["q_proj", "k_proj", "v_proj"], "split_sizes": [inner_size] * 3,
+             "num_attention_heads": num_attention_heads, "attention_head_dim": attention_head_dim}
+    if qkv_layout == "interleaved":
+        split["split_handlers"] = {"weight": _split_interleaved_qkv}
+    return {"qkv_proj": split}
 
 
 def _take(x_list):
@@ -467,7 +471,7 @@ class MiniMaxH3Model(nn.Module):
                  timestep_input_dim=256, time_embed_hidden_size=5376, time_embed_dim=2688,
                  rope_inv_freq_len=16, rope_theta=10000.0, norm_eps=1e-5, qk_norm_eps=1e-5,
                  final_norm_eps=1e-5, sigma_shift_video=12.0, sigma_shift_audio=3.0,
-                 ffn_chunk_size=2048, adaln_curve_grid=None, image_model=None,
+                 ffn_chunk_size=2048, adaln_curve_grid=None, adaln_dtype=torch.float32, image_model=None,
                  dtype=None, device=None, **kwargs):
         super().__init__()
         self._interrupt = False
@@ -484,7 +488,7 @@ class MiniMaxH3Model(nn.Module):
         self.audio_patch_proj = nn.Linear(audio_latents_dim, hidden_size, bias=True, dtype=torch.float32, device=device)
         self.condition_proj = nn.Linear(text_dim, hidden_size, bias=True, dtype=dtype, device=device)
         if self.use_adaln_curves:
-            self.register_buffer("adaln_t_table", torch.empty(adaln_curve_grid, time_embed_dim, dtype=torch.float32, device=device))
+            self.register_buffer("adaln_t_table", torch.empty(adaln_curve_grid, time_embed_dim, dtype=adaln_dtype, device=device))
         else:
             self.time_embedder = TimeEmbedder(timestep_input_dim, time_embed_hidden_size, time_embed_dim,
                                               dtype=torch.float32, device=device)
@@ -494,7 +498,7 @@ class MiniMaxH3Model(nn.Module):
                                           final_norm_eps, dtype=dtype, device=device)
         self.sol_attention = MiniMaxH3SolAttention()
         curve = {"apply_silu": not self.use_adaln_curves,
-                 "adaln_dtype": torch.float32 if self.use_adaln_curves else dtype}
+                 "adaln_dtype": adaln_dtype if self.use_adaln_curves else dtype}
         self.blocks = nn.ModuleList([DiTBlock(hidden_size, num_attention_heads, attention_head_dim, ffn_hidden_size,
                                                time_embed_dim, norm_eps, qk_norm_eps, **curve,
                                                ffn_chunk_size=ffn_chunk_size, sol_attention=self.sol_attention,
@@ -503,8 +507,8 @@ class MiniMaxH3Model(nn.Module):
                                       final_norm_eps, **curve, dtype=dtype, device=device)
         fp32_modules = [self.video_patch_proj, self.audio_patch_proj, self.final_layer.video_out, self.final_layer.audio_out]
         if self.use_adaln_curves:
-            fp32_modules.extend(block.adaln_proj.linear for block in self.blocks)
-            fp32_modules.append(self.final_layer.adaln_proj.linear)
+            for module in (*[block.adaln_proj.linear for block in self.blocks], self.final_layer.adaln_proj.linear):
+                module._lock_dtype = adaln_dtype
         else:
             fp32_modules.extend((self.time_embedder.proj_in, self.time_embedder.proj_out))
         for module in fp32_modules:
@@ -563,7 +567,7 @@ class MiniMaxH3Model(nn.Module):
         table = self.adaln_t_table
         position = timesteps.clamp(0.0, 1.0) * (table.shape[0] - 1)
         lower = position.floor().long().clamp(max=table.shape[0] - 2)
-        return torch.lerp(table[lower], table[lower + 1], (position - lower).unsqueeze(1))
+        return torch.lerp(table[lower], table[lower + 1], (position - lower).unsqueeze(1).to(table.dtype))
 
     def forward(self, video_x, audio_x, sigma_video, sigma_audio, context, payload, spectrum=None, first_block_cache=None):
         device, dtype = video_x.device, self.dtype or next(self.blocks.parameters()).dtype

@@ -82,6 +82,16 @@ _GGUF_TYPED_TENSOR_DTYPES = {
     None if gguf is None else gguf.GGMLQuantizationType.I32: np.int32,
     None if gguf is None else gguf.GGMLQuantizationType.I64: np.int64,
 }
+_GGUF_TYPED_TENSOR_TORCH_DTYPES = {
+    None if gguf is None else gguf.GGMLQuantizationType.F16: torch.float16,
+    None if gguf is None else gguf.GGMLQuantizationType.BF16: torch.bfloat16,
+    None if gguf is None else gguf.GGMLQuantizationType.F32: torch.float32,
+    None if gguf is None else gguf.GGMLQuantizationType.F64: torch.float64,
+    None if gguf is None else gguf.GGMLQuantizationType.I8: torch.int8,
+    None if gguf is None else gguf.GGMLQuantizationType.I16: torch.int16,
+    None if gguf is None else gguf.GGMLQuantizationType.I32: torch.int32,
+    None if gguf is None else gguf.GGMLQuantizationType.I64: torch.int64,
+}
 
 
 @dataclass(frozen=True)
@@ -485,7 +495,9 @@ def get_file_metadata(file_path):
     from mmgp.safetensors2 import tensor_stub
     parsed = _gguf_get_index(file_path)
     orig_shapes = dict(parsed.orig_shapes)
-    state_dict = OrderedDict((tensor.name, tensor_stub(torch.uint8, orig_shapes.get(tensor.name, tuple(reversed(tensor.raw_shape))))) for tensor in parsed.tensor_infos)
+    state_dict = OrderedDict((tensor.name, tensor_stub(_GGUF_TYPED_TENSOR_TORCH_DTYPES.get(tensor.tensor_type, torch.uint8),
+                                                       orig_shapes.get(tensor.name, tuple(reversed(tensor.raw_shape)))))
+                             for tensor in parsed.tensor_infos)
     metadata = {"config": parsed.config} if parsed.config is not None else {}
     result = (state_dict, metadata)
     _GGUF_METADATA_CACHE[cache_key] = (OrderedDict(result[0]), dict(result[1]))

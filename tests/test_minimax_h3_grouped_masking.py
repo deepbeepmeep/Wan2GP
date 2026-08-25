@@ -4,7 +4,7 @@ from unittest.mock import patch
 import torch
 from mmgp import offload
 
-from models.minimax_h3.constants import H3_MASK_MODE_DEFAULT, H3_MASK_MODE_GROUPED_CELLS, H3_MASK_MODE_SETTING
+from models.minimax_h3.constants import H3_MASK_MODE_DEFAULT, H3_MASK_MODE_GROUPED_ROWS, H3_MASK_MODE_SETTING, h3_grouped_masking_enabled
 from models.minimax_h3.minimax_h3_handler import FL2VA_ARCHITECTURE, family_handler
 from models.minimax_h3.pipeline import _build_outpainting_mask, _masking_step_mask, _resize_video_mask, _set_grouped_video_rows, _snap_video_mask_to_patch_cells
 from models.minimax_h3.transformer import MiniMaxH3Model, VISUAL_COND_TIMESTEP, _grouped_video_timestep_rows
@@ -194,7 +194,7 @@ class MiniMaxH3GroupedMaskingTests(unittest.TestCase):
         self.assertEqual(model_def["outpainting_quantize_margins"], 32)
         inputs = {"sliding_window_overlap": 0, "override_attention": "sol", "video_prompt_type": "GVA",
                   "video_mask": object(), "video_guide_outpainting": "", "video_guide_outpainting_ratio": "",
-                  "custom_settings": {H3_MASK_MODE_SETTING: H3_MASK_MODE_GROUPED_CELLS}}
+                  "custom_settings": {H3_MASK_MODE_SETTING: H3_MASK_MODE_GROUPED_ROWS}}
 
         error = family_handler.validate_generative_settings(FL2VA_ARCHITECTURE, model_def, inputs)
 
@@ -209,14 +209,15 @@ class MiniMaxH3GroupedMaskingTests(unittest.TestCase):
         self.assertEqual(setting["id"], H3_MASK_MODE_SETTING)
         self.assertEqual(setting["default"], H3_MASK_MODE_DEFAULT)
         self.assertEqual(setting["video_prompt_type"], "G")
-        self.assertEqual([value for _, value in setting["choices"]], ["latent_preserve", "grouped_cells"])
+        self.assertEqual([label for label, _ in setting["choices"]], [
+            "Shared Timestep [same denoising timestep for fixed and editable latent rows]",
+            "Grouped Rows [conditioning timestep for fixed rows; denoising timestep for editable rows]",
+        ])
+        self.assertEqual([value for _, value in setting["choices"]], ["shared_timestep", "grouped_rows"])
 
-    def test_mask_mode_is_backfilled_when_loading_old_h3_settings(self):
-        settings = {"custom_settings": {"another_setting": "kept"}}
-
-        family_handler.fix_settings(FL2VA_ARCHITECTURE, 2.76, {}, settings)
-
-        self.assertEqual(settings["custom_settings"], {"another_setting": "kept", H3_MASK_MODE_SETTING: H3_MASK_MODE_DEFAULT})
+    def test_missing_mask_mode_uses_shared_timestep(self):
+        self.assertFalse(h3_grouped_masking_enabled(None))
+        self.assertFalse(h3_grouped_masking_enabled({}))
 
     def test_ref2va_generic_control_exposes_masking_without_enabling_it_for_references(self):
         model_def = family_handler.query_model_def("minimax_h3_ref2va", {})

@@ -614,7 +614,7 @@ class MiniMaxH3Pipeline:
             input_masks = outpainting_mask if input_masks is None else torch.maximum(input_masks.float(), outpainting_mask.to(device=input_masks.device))
         video_to_video = control_video and not audio_from_control_video and (float(denoising_strength) < 1.0 or input_masks is not None)
         if grouped_masked_denoising and video_to_video and input_masks is not None and not preserve_input_mask_values and offload.shared_state.get("_attention") == "sol":
-            raise ValueError("MiniMax H3 Grouped Cells mask denoising is not compatible with Sol Attention; select Latent Preserve or another attention mode")
+            raise ValueError("MiniMax H3 Grouped Rows mask denoising is not compatible with Sol Attention; select Shared Timestep or another attention mode")
 
         waveform = self._waveform(input_waveform, input_waveform_sample_rate)
         history_waveform = None

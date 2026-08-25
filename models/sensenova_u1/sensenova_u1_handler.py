@@ -230,5 +230,4 @@ class family_handler:
             "flow_shift": 3.0,
             "batch_size": 1,
             "video_prompt_type": "",
-            "custom_settings": {_KV_CACHE_SETTING: "Disabled"},
         })

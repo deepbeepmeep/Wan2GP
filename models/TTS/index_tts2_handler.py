@@ -389,11 +389,6 @@ class family_handler:
         }
         if base_model_type == INDEX_TTS25_ARCHITECTURE:
             defaults["model_mode"] = "EN"
-            custom_settings = ui_defaults.get("custom_settings")
-            custom_settings = custom_settings.copy() if isinstance(custom_settings, dict) else {}
-            custom_settings.setdefault("speech_speed", 1.0)
-            custom_settings.setdefault("text_normalization", "Yes")
-            ui_defaults["custom_settings"] = custom_settings
         for key, value in defaults.items():
             ui_defaults.setdefault(key, value)
 
@@ -425,7 +420,6 @@ class family_handler:
                 "[disgust] They would just ignore me and pretend that I didnt exist\n"
                 "[happy] By chance I discovered this wonderful App, and now everything is different.\n"
                 "[anger] I have a new voice and now everybody will have no choice but to listen to my words !!!",
-                "custom_settings": {"speech_speed": 1.0, "text_normalization": "Yes"},
             })
 
     @staticmethod

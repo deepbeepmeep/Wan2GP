@@ -5,7 +5,7 @@ import torch
 from mmgp import offload
 
 from models.minimax_h3.minimax_h3_handler import FL2VA_ARCHITECTURE, family_handler
-from models.minimax_h3.pipeline import _build_outpainting_mask, _set_grouped_video_rows, _snap_video_mask_to_patch_cells
+from models.minimax_h3.pipeline import _build_outpainting_mask, _resize_video_mask, _set_grouped_video_rows, _snap_video_mask_to_patch_cells
 from models.minimax_h3.transformer import MiniMaxH3Model, VISUAL_COND_TIMESTEP, _grouped_video_timestep_rows
 from shared.attention import attention_shared_state
 
@@ -34,14 +34,26 @@ class MiniMaxH3GroupedMaskingTests(unittest.TestCase):
         self.attention_state.__enter__()
         self.addCleanup(self.attention_state.__exit__, None, None, None)
 
-    def test_mask_is_expanded_to_complete_2x2_latent_cells_with_a_context_margin(self):
+    def test_pixel_mask_uses_a_strict_majority_for_each_latent_position(self):
+        mask = torch.zeros((1, 1, 8, 8))
+        mask[..., :3, :3] = 1.0
+        mask[..., :2, 4:] = 1.0
+        mask[..., 4:, 4:] = 1.0
+
+        actual = _resize_video_mask(mask, (1, 2, 2), clip_length=1, temporal_ratio=1)
+
+        expected = torch.tensor([[[[[1.0, 0.0],
+                                    [0.0, 1.0]]]]])
+        torch.testing.assert_close(actual, expected)
+
+    def test_mask_is_expanded_to_complete_2x2_latent_cells_without_a_margin(self):
         mask = torch.zeros((1, 1, 1, 8, 8))
         mask[..., 2, 2] = 1.0
 
         actual = _snap_video_mask_to_patch_cells(mask)
 
         expected = torch.zeros_like(mask)
-        expected[..., :6, :6] = 1.0
+        expected[..., 2:4, 2:4] = 1.0
         torch.testing.assert_close(actual, expected)
 
     def test_grouping_places_fixed_rows_first_and_builds_an_inverse(self):

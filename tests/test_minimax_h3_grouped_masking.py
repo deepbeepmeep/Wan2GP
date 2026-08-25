@@ -46,11 +46,22 @@ class MiniMaxH3GroupedMaskingTests(unittest.TestCase):
                                     [0.0, 1.0]]]]])
         torch.testing.assert_close(actual, expected)
 
-    def test_mask_is_expanded_to_complete_2x2_latent_cells_without_a_margin(self):
+    def test_mask_is_expanded_by_one_complete_patch_cell_by_default(self):
         mask = torch.zeros((1, 1, 1, 8, 8))
         mask[..., 2, 2] = 1.0
 
         actual = _snap_video_mask_to_patch_cells(mask)
+
+        expected = torch.zeros_like(mask)
+        expected[..., :6, :6] = 1.0
+        torch.testing.assert_close(actual, expected)
+
+    def test_cell_dilation_switch_can_restore_exact_cell_snapping(self):
+        mask = torch.zeros((1, 1, 1, 8, 8))
+        mask[..., 2, 2] = 1.0
+
+        with patch("models.minimax_h3.pipeline.H3_GROUPED_MASK_CELL_DILATION", False):
+            actual = _snap_video_mask_to_patch_cells(mask)
 
         expected = torch.zeros_like(mask)
         expected[..., 2:4, 2:4] = 1.0

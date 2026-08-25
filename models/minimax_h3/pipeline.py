@@ -16,7 +16,7 @@ from mmgp import offload
 from shared.utils.loras_mutipliers import update_loras_slists
 from shared.utils.text_encoder_cache import TextEncoderCache
 from shared.utils.frame_scheduler import floor_frame_count, normalize_frame_count, normalize_overlap
-from .constants import H3_GROUPED_MASKED_DENOISING, H3_PHASE_2_NOISE_LEVEL_START_DEFAULT
+from .constants import H3_GROUPED_MASK_CELL_DILATION, H3_GROUPED_MASKED_DENOISING, H3_PHASE_2_NOISE_LEVEL_START_DEFAULT
 from .first_block_cache import MiniMaxH3FirstBlockCache
 from .interrupt import GenerationInterrupted
 from .spectrum import MiniMaxH3Spectrum
@@ -164,6 +164,8 @@ def _resize_video_mask(mask, latent_shape, clip_length, temporal_ratio, binarize
 def _snap_video_mask_to_patch_cells(mask, patch_size=(1, 2, 2)):
     patch_t, patch_h, patch_w = patch_size
     cells = F.max_pool3d(mask, kernel_size=patch_size, stride=patch_size)
+    if H3_GROUPED_MASK_CELL_DILATION:
+        cells = F.max_pool3d(cells, kernel_size=(1, 3, 3), stride=1, padding=(0, 1, 1))
     return cells.repeat_interleave(patch_t, 2).repeat_interleave(patch_h, 3).repeat_interleave(patch_w, 4)
 
 

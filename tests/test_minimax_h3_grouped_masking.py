@@ -5,7 +5,7 @@ import torch
 from mmgp import offload
 
 from models.minimax_h3.minimax_h3_handler import FL2VA_ARCHITECTURE, family_handler
-from models.minimax_h3.pipeline import _build_outpainting_mask, _resize_video_mask, _set_grouped_video_rows, _snap_video_mask_to_patch_cells
+from models.minimax_h3.pipeline import _build_outpainting_mask, _masking_step_mask, _resize_video_mask, _set_grouped_video_rows, _snap_video_mask_to_patch_cells
 from models.minimax_h3.transformer import MiniMaxH3Model, VISUAL_COND_TIMESTEP, _grouped_video_timestep_rows
 from shared.attention import attention_shared_state
 
@@ -123,6 +123,13 @@ class MiniMaxH3GroupedMaskingTests(unittest.TestCase):
         torch.testing.assert_close(payload["target_video_order"], torch.tensor([0, 3, 1, 2]))
         torch.testing.assert_close(payload["target_video_inverse_order"], torch.tensor([0, 2, 3, 1]))
         self.assertEqual(payload["target_video_fixed_rows"], 2)
+
+    def test_zero_length_masking_window_has_no_active_spatial_mask(self):
+        mask = torch.ones((1, 1, 1, 2, 2))
+
+        self.assertIsNone(_masking_step_mask(mask, step=0, denoising_start_step=0, mask_end_step=0))
+        self.assertIs(_masking_step_mask(mask, step=1, denoising_start_step=1, mask_end_step=2), mask)
+        self.assertIsNone(_masking_step_mask(mask, step=2, denoising_start_step=1, mask_end_step=2))
 
     def test_grouped_timestep_uses_two_scalar_adaln_segments(self):
         timestep = torch.tensor([0.2, 0.4])

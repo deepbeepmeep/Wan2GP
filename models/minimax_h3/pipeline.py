@@ -229,6 +229,10 @@ def _blend_video_source(video, source, editable_mask):
     target.lerp_(source.to(target), 1.0 - editable_mask.to(target))
 
 
+def _masking_step_mask(editable_mask, step, denoising_start_step, mask_end_step):
+    return editable_mask if editable_mask is not None and denoising_start_step <= step < mask_end_step else None
+
+
 def _er_sde_step(x, denoised, sigma, sigma_next, previous_sigma, previous_previous_sigma,
                  previous_denoised, previous_denoised_d, noise, stage_used):
     active = sigma > 0
@@ -822,7 +826,7 @@ class MiniMaxH3Pipeline:
         if source_latents is not None and starting_sigma is not None:
             source_video = video[:, :, :source_latents.shape[2]]
             torch.lerp(source_latents, source_noise, refinement_sigmas_video[0] if refinement_sigmas_video is not None else sigmas_video[0], out=source_buffer)
-            if refinement_sigmas_video is not None or editable_mask is None:
+            if refinement_sigmas_video is not None or editable_mask is None or float(masking_strength) <= 0.0:
                 source_video.copy_(source_buffer)
             elif preserve_input_mask_values:
                 preserved = torch.lerp(source_latents, source_noise, 1.0 - VISUAL_COND_TIMESTEP)
@@ -855,7 +859,7 @@ class MiniMaxH3Pipeline:
             spectrum = MiniMaxH3Spectrum(active_cache, stage_sigmas_video[:-1], stage_solver) if active_cache is not None and active_cache.cache_type == "spectrum" else None
             first_block_cache = MiniMaxH3FirstBlockCache(active_cache) if active_cache is not None and active_cache.cache_type == "first_block" else None
             offline_spectrum = spectrum is not None and spectrum.full_anchor_cache
-            grouped_masking = _set_grouped_video_rows(payload, editable_mask if not preserve_input_mask_values else None,
+            grouped_masking = _set_grouped_video_rows(payload, editable_mask if not preserve_input_mask_values and mask_end_step > denoising_start_step else None,
                                                        video.shape[-3:], video.device)
 
             def denoise_pass(pass_description, pass_extra):
@@ -879,17 +883,18 @@ class MiniMaxH3Pipeline:
                     sigma_video_next = effective_sigmas_video[step + 1] if effective_sigmas_video is not None else stage_sigmas_video[step + 1]
                     previous_sigma_video = (effective_sigmas_video[step - 1] if effective_sigmas_video is not None else stage_sigmas_video[step - 1]) if step else None
                     previous_previous_sigma_video = (effective_sigmas_video[step - 2] if effective_sigmas_video is not None else stage_sigmas_video[step - 2]) if step > 1 else None
-                    payload["target_video_mask_active"] = grouped_masking and denoising_start_step <= step < mask_end_step
+                    step_editable_mask = _masking_step_mask(editable_mask, step, denoising_start_step, mask_end_step)
+                    payload["target_video_mask_active"] = grouped_masking and step_editable_mask is not None
                     if payload["target_video_mask_active"] and effective_sigmas_video is None:
-                        _reinject_video_source(video[:, :, :source_latents.shape[2]], source_latents, source_noise, editable_mask,
+                        _reinject_video_source(video[:, :, :source_latents.shape[2]], source_latents, source_noise, step_editable_mask,
                                                sigma_video, source_buffer, 1.0 - VISUAL_COND_TIMESTEP)
                     video_velocity, audio_velocity = self.transformer(video, audio, sigma_video.flatten(), stage_sigmas_audio[step:step + 1], context, payload, spectrum=spectrum, first_block_cache=first_block_cache)
                     if spectrum is not None:
                         spectrum.finish_step()
                     if stage_solver == "er_sde":
                         video_denoised = video_velocity.float().mul_(sigma_video).add_(video)
-                        if effective_sigmas_video is None and source_latents is not None and editable_mask is not None:
-                            _blend_video_source(video_denoised, source_latents, editable_mask)
+                        if effective_sigmas_video is None and source_latents is not None and step_editable_mask is not None:
+                            _blend_video_source(video_denoised, source_latents, step_editable_mask)
                         audio_denoised = None
                         if audio_tail.shape[-1]:
                             audio_denoised = audio_velocity[..., target_audio_condition_latents:].float().mul_(stage_sigmas_audio[step]).add_(audio_tail)
@@ -918,8 +923,8 @@ class MiniMaxH3Pipeline:
                         video_ratio = sigma_video_next / sigma_video
                         if not target_video_condition_frames:
                             video_denoised = video_velocity.mul_(sigma_video).add_(video)
-                            if effective_sigmas_video is None and source_latents is not None and editable_mask is not None:
-                                _blend_video_source(video_denoised, source_latents, editable_mask)
+                            if effective_sigmas_video is None and source_latents is not None and step_editable_mask is not None:
+                                _blend_video_source(video_denoised, source_latents, step_editable_mask)
                             if effective_sigmas_video is None:
                                 video.mul_(video_ratio).add_(video_denoised, alpha=1.0 - video_ratio)
                             else:
@@ -933,8 +938,8 @@ class MiniMaxH3Pipeline:
                         coefficients = res_coefficients[step]
                         if not target_video_condition_frames:
                             video_denoised = video_velocity.mul_(sigma_video).add_(video)
-                            if effective_sigmas_video is None and source_latents is not None and editable_mask is not None:
-                                _blend_video_source(video_denoised, source_latents, editable_mask)
+                            if effective_sigmas_video is None and source_latents is not None and step_editable_mask is not None:
+                                _blend_video_source(video_denoised, source_latents, step_editable_mask)
                             _res_multistep_update(video, video_denoised, old_video_denoised, coefficients)
                             old_video_denoised = video_denoised
                         if audio_tail.shape[-1]:
@@ -953,9 +958,9 @@ class MiniMaxH3Pipeline:
                         carrier_stage_sigma_video = ralston_sigmas_video[step]
                         carrier_step_size = carrier_sigma_video - stage_sigmas_video[step + 1]
                         carrier_stage_size = carrier_sigma_video - carrier_stage_sigma_video
-                        if effective_sigmas_video is None and source_latents is not None and editable_mask is not None:
+                        if effective_sigmas_video is None and source_latents is not None and step_editable_mask is not None:
                             video_velocity.mul_(sigma_video).add_(video)
-                            _blend_video_source(video_velocity, source_latents, editable_mask)
+                            _blend_video_source(video_velocity, source_latents, step_editable_mask)
                             video_velocity.sub_(video).div_(sigma_video)
                         stage_video = video if target_video_condition_frames else video_velocity.clone().mul_(stage_size).add_(video)
                         if effective_sigmas_video is None and source_latents is not None and not target_video_condition_frames and (step < denoising_start_step or step < mask_end_step):
@@ -978,8 +983,8 @@ class MiniMaxH3Pipeline:
                         self._check_abort()
                         if not target_video_condition_frames:
                             stage_video_velocity.mul_(stage_sigma_video).add_(stage_video)
-                            if effective_sigmas_video is None and source_latents is not None and editable_mask is not None:
-                                _blend_video_source(stage_video_velocity, source_latents, editable_mask)
+                            if effective_sigmas_video is None and source_latents is not None and step_editable_mask is not None:
+                                _blend_video_source(stage_video_velocity, source_latents, step_editable_mask)
                             stage_video_velocity.sub_(video).div_(sigma_video)
                             video_velocity.mul_(0.25).add_(stage_video_velocity, alpha=0.75).mul_(step_size)
                             video.add_(video_velocity)
@@ -1121,8 +1126,8 @@ class MiniMaxH3Pipeline:
                 if phase_2_source_latents is not None:
                     phase_2_source_noise = phase_2_noise[:, :, :phase_2_source_latents.shape[2]]
                     phase_2_source_buffer = torch.empty_like(phase_2_source_latents)
-                    if phase_2_editable_mask is not None:
-                        torch.lerp(phase_2_source_latents, phase_2_source_noise, float(phase_2_sigmas_video[0]), out=phase_2_source_buffer)
+                    torch.lerp(phase_2_source_latents, phase_2_source_noise, float(phase_2_sigmas_video[0]), out=phase_2_source_buffer)
+                    if phase_2_editable_mask is not None and float(masking_strength) > 0.0:
                         phase_2_latent_canvas[:, :, :phase_2_source_latents.shape[2]].lerp_(phase_2_source_buffer, 1.0 - phase_2_editable_mask)
                 else:
                     phase_2_source_noise = phase_2_source_buffer = None
@@ -1159,7 +1164,7 @@ class MiniMaxH3Pipeline:
                 progress_steps = model_steps * tile_count
                 denoising_start_step = 0 if starting_sigma is not None else int(round(model_steps * (1.0 - float(denoising_strength)), 4))
                 mask_end_step = min(model_steps, denoising_start_step + math.ceil(model_steps * float(masking_strength))) if phase_2_editable_mask is not None else 0
-                grouped_masking = H3_GROUPED_MASKED_DENOISING and phase_2_editable_mask is not None and not preserve_input_mask_values
+                grouped_masking = H3_GROUPED_MASKED_DENOISING and phase_2_editable_mask is not None and not preserve_input_mask_values and mask_end_step > denoising_start_step
                 if not grouped_masking:
                     _set_grouped_video_rows(payload, None, phase_2_latent_canvas.shape[-3:], self.device)
                 if set_progress_status is not None:
@@ -1172,10 +1177,11 @@ class MiniMaxH3Pipeline:
                     payload["attention_sparsity"] = tau_start + (SOL_ATTN_TAU_END - tau_start) * step / max(1, model_steps - 1)
                     offload.set_step_no_for_lora(self.transformer, step)
                     sigma_video, sigma_video_next = phase_2_sigmas_video[step], phase_2_sigmas_video[step + 1]
-                    grouped_mask_active = grouped_masking and denoising_start_step <= step < mask_end_step
+                    step_editable_mask = _masking_step_mask(phase_2_editable_mask, step, denoising_start_step, mask_end_step)
+                    grouped_mask_active = grouped_masking and step_editable_mask is not None
                     if grouped_mask_active:
                         _reinject_video_source(phase_2_latent_canvas[:, :, :phase_2_source_latents.shape[2]], phase_2_source_latents,
-                                               phase_2_source_noise, phase_2_editable_mask, sigma_video, phase_2_source_buffer,
+                                               phase_2_source_noise, step_editable_mask, sigma_video, phase_2_source_buffer,
                                                1.0 - VISUAL_COND_TIMESTEP)
                     phase_2_accumulator = torch.zeros_like(phase_2_latent_canvas)
                     for tile_no, (latent_top, latent_left, latent_height, latent_width, weights, tile_condition_rows, spatial_context) in enumerate(phase_2_tiles, 1):
@@ -1201,8 +1207,8 @@ class MiniMaxH3Pipeline:
                         if callback is not None and tile_no < tile_count:
                             callback(progress_step - 1, None, False, denoising_extra=phase_extra, pass_no=2)
                     phase_2_accumulator.div_(phase_2_weight_sum)
-                    if phase_2_source_latents is not None and phase_2_editable_mask is not None:
-                        _blend_video_source(phase_2_accumulator, phase_2_source_latents, phase_2_editable_mask)
+                    if phase_2_source_latents is not None and step_editable_mask is not None:
+                        _blend_video_source(phase_2_accumulator, phase_2_source_latents, step_editable_mask)
                     video_ratio = float(sigma_video_next / sigma_video)
                     phase_2_latent_canvas.mul_(video_ratio).add_(phase_2_accumulator, alpha=1.0 - video_ratio)
                     if phase_2_source_latents is not None and (step < denoising_start_step or step < mask_end_step):

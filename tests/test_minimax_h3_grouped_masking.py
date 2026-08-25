@@ -46,25 +46,59 @@ class MiniMaxH3GroupedMaskingTests(unittest.TestCase):
                                     [0.0, 1.0]]]]])
         torch.testing.assert_close(actual, expected)
 
-    def test_mask_is_expanded_by_one_complete_patch_cell_by_default(self):
+    def test_temporal_mask_max_pools_every_frame_covered_by_each_latent(self):
+        mask = torch.zeros((1, 34, 2, 2))
+        mask[:, 0, 0, 0] = 1.0
+        mask[:, 1, 0, 1] = 1.0
+        mask[:, 4, 1, 0] = 1.0
+        mask[:, 5, 1, 1] = 1.0
+        mask[:, 8, 0, 0] = 1.0
+        mask[:, 17, 1, 0] = 1.0
+        mask[:, 18, 0, 0] = 1.0
+        mask[:, 21, 0, 1] = 1.0
+
+        actual = _resize_video_mask(mask, (10, 2, 2), clip_length=17, temporal_ratio=4)
+
+        expected = torch.zeros((1, 1, 10, 2, 2))
+        expected[:, :, 0, 0, 0] = 1.0
+        expected[:, :, 1, 0, 1] = 1.0
+        expected[:, :, 1, 1, 0] = 1.0
+        expected[:, :, 2, 1, 1] = 1.0
+        expected[:, :, 2, 0, 0] = 1.0
+        expected[:, :, 5, 1, 0] = 1.0
+        expected[:, :, 6, 0, 0] = 1.0
+        expected[:, :, 6, 0, 1] = 1.0
+        torch.testing.assert_close(actual, expected)
+
+    def test_temporal_mask_pooling_includes_the_short_final_interval(self):
+        mask = torch.zeros((1, 107, 1, 1))
+        mask[:, 106] = 1.0
+
+        actual = _resize_video_mask(mask, (32, 1, 1), clip_length=17, temporal_ratio=4)
+
+        self.assertEqual(tuple(actual.shape), (1, 1, 32, 1, 1))
+        torch.testing.assert_close(actual[:, :, :-1], torch.zeros_like(actual[:, :, :-1]))
+        torch.testing.assert_close(actual[:, :, -1], torch.ones_like(actual[:, :, -1]))
+
+    def test_mask_is_snapped_to_exact_patch_cells_by_default(self):
         mask = torch.zeros((1, 1, 1, 8, 8))
         mask[..., 2, 2] = 1.0
 
         actual = _snap_video_mask_to_patch_cells(mask)
 
         expected = torch.zeros_like(mask)
-        expected[..., :6, :6] = 1.0
+        expected[..., 2:4, 2:4] = 1.0
         torch.testing.assert_close(actual, expected)
 
-    def test_cell_dilation_switch_can_restore_exact_cell_snapping(self):
+    def test_cell_dilation_switch_can_add_one_complete_patch_cell(self):
         mask = torch.zeros((1, 1, 1, 8, 8))
         mask[..., 2, 2] = 1.0
 
-        with patch("models.minimax_h3.pipeline.H3_GROUPED_MASK_CELL_DILATION", False):
+        with patch("models.minimax_h3.pipeline.H3_GROUPED_MASK_CELL_DILATION", True):
             actual = _snap_video_mask_to_patch_cells(mask)
 
         expected = torch.zeros_like(mask)
-        expected[..., 2:4, 2:4] = 1.0
+        expected[..., :6, :6] = 1.0
         torch.testing.assert_close(actual, expected)
 
     def test_grouping_places_fixed_rows_first_and_builds_an_inverse(self):

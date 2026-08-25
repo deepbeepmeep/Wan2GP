@@ -147,11 +147,13 @@ def _resize_video_mask(mask, latent_shape, clip_length, temporal_ratio, binarize
     pad_frames = (-mask.shape[2]) % clip_length
     if pad_frames:
         mask = F.pad(mask, (0, 0, 0, 0, 0, pad_frames), mode="replicate")
-    offsets = torch.cat((torch.zeros(1, dtype=torch.long, device=mask.device),
-                         torch.arange(1, clip_length, temporal_ratio, device=mask.device)))
-    starts = torch.arange(0, mask.shape[2], clip_length, device=mask.device)
-    frame_indices = (starts[:, None] + offsets[None]).flatten()[:latent_t]
-    mask = mask.index_select(2, frame_indices)
+    offsets = [0, *range(1, clip_length, temporal_ratio)]
+    intervals = list(zip(offsets, [*offsets[1:], clip_length]))
+    mask = torch.stack([
+        mask[:, :, clip_start + start:clip_start + stop].amax(dim=2)
+        for clip_start in range(0, mask.shape[2], clip_length)
+        for start, stop in intervals
+    ][:latent_t], dim=2)
     if not binarize and mask.shape[-2:] == (1, 1):
         return torch.ceil(mask.clamp_(0.0, 1.0) * 256.0).div_(256.0)
     if binarize:

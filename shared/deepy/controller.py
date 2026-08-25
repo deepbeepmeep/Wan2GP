@@ -12,8 +12,6 @@ from typing import Any, Callable
 import gradio as gr
 
 from shared.deepy.config import (
-    DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT,
-    DEEPY_ALLOW_READ_FILE_SYSTEM_KEY,
     DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY,
     DEEPY_ENABLED_KEY,
     DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY,
@@ -25,7 +23,6 @@ from shared.deepy.config import (
     deepy_requirement_error,
     deepy_requirement_met,
     normalize_deepy_enabled,
-    normalize_deepy_allow_read_file_system,
     normalize_deepy_type,
     normalize_deepy_vram_mode,
     set_deepy_runtime_config,
@@ -500,17 +497,22 @@ class DeepyController:
         session = get_or_create_assistant_session(state)
         assistant_model_def = model_def
         deepy_type = self.get_deepy_type()
-        allow_read_file_system = normalize_deepy_allow_read_file_system(server_config.get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT))
+        from shared.deepy.filesystem import build_file_access_policy
+
+        file_access_policy = build_file_access_policy(server_config)
+        session.file_access_policy = file_access_policy
         system_prompt = ZERO_SYSTEM_PROMPT
         custom_system_prompt_key = DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY
         if deepy_type == DEEPY_TYPE_PRIME:
             server_instructions = tools.get_system_instructions()
             system_prompt = f"{PRIME_SYSTEM_PROMPT}\n\n{server_instructions}".strip() if server_instructions else PRIME_SYSTEM_PROMPT
             custom_system_prompt_key = DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY
-        if allow_read_file_system:
-            file_access_instructions = "Filesystem reading is enabled. Media parameters may use either Gallery/media ids or existing file paths with extensions. Use List Files and Query File when filesystem discovery or inspection is needed. Deepy runs inside WanGP, so remote Gallery upload/download tools are not needed and are intentionally unavailable."
+        if file_access_policy.read_enabled:
+            access = "read/write" if file_access_policy.write_enabled else "read-only"
+            scope = "Reading is allowed everywhere; writing remains limited to output and selected folders." if file_access_policy.read_everywhere else "Use @alias/path from wangp_io roots; plain paths use @outputs."
+            file_access_instructions = f"Filesystem {access} access is enabled. {scope} Use wangp_io for file discovery, text access, ZIP creation, and downloads."
         else:
-            file_access_instructions = "Filesystem reading is disabled. Always resolve and use Gallery/media ids for media inputs; do not reference filesystem paths."
+            file_access_instructions = "Filesystem access is disabled. Use Gallery/media ids rather than direct paths; wangp_io can only inspect or download Gallery media."
         system_prompt = f"{system_prompt}\n\n{file_access_instructions}"
         remote_engine = resolve_role_engine(server_config, "deepy")
         if is_remote_engine(remote_engine):

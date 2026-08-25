@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -27,6 +28,8 @@ DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY = "deepy_prime_custom_system_prompt"
 DEEPY_PRIME_MCP_SERVERS_KEY = "deepy_prime_mcp_servers"
 DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY = "deepy_mcp_auto_discover_paths"
 DEEPY_ALLOW_READ_FILE_SYSTEM_KEY = "deepy_allow_read_file_system"
+DEEPY_FILE_SYSTEM_PATHS_KEY = "deepy_file_system_paths"
+DEEPY_READ_EVERYWHERE_KEY = "deepy_read_everywhere"
 DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY = "deepy_auto_cancel_queue_tasks"
 DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY = "deepy_separate_requests_with_empty_line"
 DEEPY_TEMPLATE_CONFIG_MIGRATIONS = {
@@ -64,6 +67,12 @@ DEEPY_KV_CACHE_QUANTIZATION_AUTO = "auto"
 DEEPY_KV_CACHE_QUANTIZATION_DEFAULT = DEEPY_KV_CACHE_QUANTIZATION_AUTO
 DEEPY_KV_CACHE_QUANTIZATION_MIN_GGUF_KERNELS_VERSION = "1.0.11"
 DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT = False
+DEEPY_FILE_SYSTEM_ACCESS_DISABLED = "disabled"
+DEEPY_FILE_SYSTEM_ACCESS_READ = "read"
+DEEPY_FILE_SYSTEM_ACCESS_READ_WRITE = "read_write"
+DEEPY_FILE_SYSTEM_ACCESS_DEFAULT = DEEPY_FILE_SYSTEM_ACCESS_DISABLED
+DEEPY_FILE_SYSTEM_PATHS_DEFAULT: list[str] = []
+DEEPY_READ_EVERYWHERE_DEFAULT = False
 DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT = False
 DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT = True
 DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT = True
@@ -266,7 +275,72 @@ def normalize_deepy_auto_cancel_queue_tasks(value: Any) -> bool:
     return bool(value)
 
 
+def normalize_deepy_file_system_access(value: Any) -> str:
+    if isinstance(value, str):
+        normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+        if normalized in {DEEPY_FILE_SYSTEM_ACCESS_DISABLED, "", "0", "false", "off", "no"}:
+            return DEEPY_FILE_SYSTEM_ACCESS_DISABLED
+        if normalized in {DEEPY_FILE_SYSTEM_ACCESS_READ_WRITE, "readwrite", "write", "rw", "2"}:
+            return DEEPY_FILE_SYSTEM_ACCESS_READ_WRITE
+        if normalized in {DEEPY_FILE_SYSTEM_ACCESS_READ, "1", "true", "on", "yes"}:
+            return DEEPY_FILE_SYSTEM_ACCESS_READ
+        return DEEPY_FILE_SYSTEM_ACCESS_DISABLED
+    return DEEPY_FILE_SYSTEM_ACCESS_READ if bool(value) else DEEPY_FILE_SYSTEM_ACCESS_DISABLED
+
+
 def normalize_deepy_allow_read_file_system(value: Any) -> bool:
+    return normalize_deepy_file_system_access(value) != DEEPY_FILE_SYSTEM_ACCESS_DISABLED
+
+
+def normalize_deepy_file_system_paths(value: Any) -> list[str]:
+    values = value.splitlines() if isinstance(value, str) else value if isinstance(value, (list, tuple)) else []
+    paths = []
+    seen = set()
+    for item in values:
+        path = str(item or "").strip()
+        key = path.replace("\\", "/").casefold()
+        if not path or key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    return paths
+
+
+def parse_deepy_file_system_paths(value: Any) -> list[tuple[str, str]]:
+    parsed = []
+    aliases = set()
+    for entry in normalize_deepy_file_system_paths(value):
+        if entry[0] in {'"', "'"}:
+            quote = entry[0]
+            end = entry.find(quote, 1)
+            if end < 0:
+                raise ValueError(f"Additional filesystem folder has an unterminated quote: {entry}")
+            tail = entry[end + 1:]
+            if tail and not tail[0].isspace():
+                raise ValueError(f"Filesystem alias must be separated from its quoted path by a space: {entry}")
+            path, remainder = entry[1:end].strip(), tail.strip()
+            if remainder and any(character.isspace() for character in remainder):
+                raise ValueError(f"Filesystem alias must be one word: {remainder}")
+            alias = remainder
+        else:
+            parts = entry.rsplit(None, 1)
+            path, alias = (parts[0], parts[1]) if len(parts) == 2 else (entry, "")
+        if not path:
+            raise ValueError("Additional filesystem folder path is empty.")
+        if alias:
+            if re.fullmatch(r"[A-Za-z0-9_-]+", alias) is None:
+                raise ValueError(f"Filesystem alias may contain only letters, numbers, '_' and '-': {alias}")
+            key = alias.casefold()
+            if re.fullmatch(r"outputs\d*", key):
+                raise ValueError(f"Filesystem alias is reserved for WanGP output folders: {alias}")
+            if key in aliases:
+                raise ValueError(f"Filesystem alias is used more than once: {alias}")
+            aliases.add(key)
+        parsed.append((path, alias))
+    return parsed
+
+
+def normalize_deepy_read_everywhere(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "on", "yes"}
     return bool(value)
@@ -334,7 +408,9 @@ def normalize_deepy_runtime_config(server_config: dict[str, Any] | None) -> dict
     runtime_config[DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_prime_guidance(runtime_config.get(DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_GUIDANCE_DEFAULT))
     runtime_config[DEEPY_PRIME_MCP_SERVERS_KEY] = normalize_deepy_prime_mcp_servers(runtime_config.get(DEEPY_PRIME_MCP_SERVERS_KEY, {}))
     runtime_config[DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY] = normalize_deepy_mcp_auto_discover_paths(runtime_config.get(DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT))
-    runtime_config[DEEPY_ALLOW_READ_FILE_SYSTEM_KEY] = normalize_deepy_allow_read_file_system(runtime_config.get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT))
+    runtime_config[DEEPY_ALLOW_READ_FILE_SYSTEM_KEY] = normalize_deepy_file_system_access(runtime_config.get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_FILE_SYSTEM_ACCESS_DEFAULT))
+    runtime_config[DEEPY_FILE_SYSTEM_PATHS_KEY] = normalize_deepy_file_system_paths(runtime_config.get(DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_FILE_SYSTEM_PATHS_DEFAULT))
+    runtime_config[DEEPY_READ_EVERYWHERE_KEY] = normalize_deepy_read_everywhere(runtime_config.get(DEEPY_READ_EVERYWHERE_KEY, DEEPY_READ_EVERYWHERE_DEFAULT))
     runtime_config[DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY] = normalize_deepy_auto_cancel_queue_tasks(runtime_config.get(DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY, DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT))
     runtime_config[DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY] = normalize_deepy_separate_requests_with_empty_line(runtime_config.get(DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY, DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT))
     return runtime_config
@@ -360,6 +436,8 @@ def get_deepy_default_runtime_config() -> dict[str, Any]:
         DEEPY_PRIME_MCP_SERVERS_KEY: {},
         DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY: DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT,
         DEEPY_ALLOW_READ_FILE_SYSTEM_KEY: DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT,
+        DEEPY_FILE_SYSTEM_PATHS_KEY: list(DEEPY_FILE_SYSTEM_PATHS_DEFAULT),
+        DEEPY_READ_EVERYWHERE_KEY: DEEPY_READ_EVERYWHERE_DEFAULT,
         DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY: DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT,
         DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY: DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT,
     }

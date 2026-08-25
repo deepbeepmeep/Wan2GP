@@ -24,14 +24,14 @@ def _ensure_creation_metadata(configs: Any) -> Any:
     return saved_configs
 
 
-def record_file_metadata(video_path: str | list[str], configs: Any, is_image: bool, audio_only: bool, gen: dict[str, Any], *, get_processed_queue: Callable[[dict[str, Any]], tuple[list[Any], list[Any], list[Any], list[Any]]], metadata_choice: str = "metadata", embedded_images: Any = None, replace_last_file: bool = False, lock: Any = None, verbose_level: int = 0) -> None:
+def record_file_metadata(video_path: str | list[str], configs: Any, is_image: bool, audio_only: bool, gen: dict[str, Any], *, get_processed_queue: Callable[[dict[str, Any]], tuple[list[Any], list[Any], list[Any], list[Any]]], metadata_choice: str = "metadata", embedded_images: Any = None, replace_last_file: bool = False, lock: Any = None, verbose_level: int = 0, write_metadata: bool = True) -> None:
     file_list, file_settings_list, audio_file_list, audio_file_settings_list = get_processed_queue(gen)
     paths = [video_path] if not isinstance(video_path, list) else video_path
     queue_lock = lock if lock is not None else nullcontext()
     for no, path in enumerate(paths):
         previous_path = None
         saved_configs = _ensure_creation_metadata(configs)
-        if configs is not None:
+        if configs is not None and write_metadata:
             if metadata_choice == "json":
                 with open(os.path.splitext(path)[0] + ".json", "w") as f:
                     json.dump(saved_configs, f, indent=4)
@@ -43,12 +43,13 @@ def record_file_metadata(video_path: str | list[str], configs: Any, is_image: bo
                 else:
                     save_video_metadata(path, saved_configs, embedded_images, allow_inplace_update=True, verbose_level=verbose_level)
         if verbose_level > 0:
+            action = "saved to" if write_metadata else "added to gallery from"
             if audio_only:
-                print(f"New audio file saved to Path: {path}")
+                print(f"Audio file {action} Path: {path}")
             elif is_image:
-                print(f"New image saved to Path: {path}")
+                print(f"Image file {action} Path: {path}")
             else:
-                print(f"New video saved to Path: {path}")
+                print(f"Video file {action} Path: {path}")
         with queue_lock:
             if audio_only:
                 audio_file_list.append(path)

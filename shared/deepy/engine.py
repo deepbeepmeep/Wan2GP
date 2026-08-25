@@ -22,8 +22,6 @@ from shared.llm_io import known_token_ids, llm_io_enabled, log_llm_io, media_des
 from shared.utils.audio_video import extract_audio_tracks
 from shared.utils.utils import get_video_info
 from shared.deepy.config import (
-    DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT,
-    DEEPY_ALLOW_READ_FILE_SYSTEM_KEY,
     DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT,
     DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY,
     DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS,
@@ -36,7 +34,6 @@ from shared.deepy.config import (
     DEEPY_VRAM_MODE_UNLOAD,
     DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST,
     get_deepy_config_value,
-    normalize_deepy_allow_read_file_system,
     normalize_deepy_auto_cancel_queue_tasks,
     normalize_deepy_compaction_type,
     normalize_deepy_context_tokens,
@@ -425,6 +422,7 @@ class AssistantSessionState:
     runtime_max_model_len: int = 0
     chat_stats_signature: str = ""
     remote_usage_stats: dict[str, Any] | None = None
+    file_access_policy: Any | None = None
     seen_video_gallery_paths: list[str] = field(default_factory=list)
     seen_audio_gallery_paths: list[str] = field(default_factory=list)
     generated_client_ids: list[str] = field(default_factory=list)
@@ -2072,6 +2070,15 @@ class DeepyZeroTools:
             raise RuntimeError(f"Output file was not created: {output_path}")
         if not callable(self.record_file_metadata):
             raise RuntimeError("WanGP direct media recording is not available.")
+        self._trim_gallery_history(audio_only)
+        if persist_metadata:
+            self.record_file_metadata(output_path, settings, is_image, audio_only, self.gen)
+        else:
+            self.record_file_metadata(output_path, settings, is_image, audio_only, self.gen, notify_generation=False, write_metadata=False, record_notification=False)
+        self.send_cmd("refresh_gallery", {"path": output_path})
+        return self._register_tool_media(output_path, settings, label=label)
+
+    def _trim_gallery_history(self, audio_only: bool) -> None:
         path_key, settings_key, selection_key = ("audio_file_list", "audio_file_settings_list", "audio_selected") if audio_only else ("file_list", "file_settings_list", "selected")
         paths = list(self.gen.get(path_key, []))
         saved_settings = list(self.gen.get(settings_key, []))
@@ -2080,17 +2087,36 @@ class DeepyZeroTools:
         self.gen[path_key] = paths[keep_from:]
         self.gen[settings_key] = saved_settings[keep_from:]
         self.gen[selection_key] = max(int(self.gen.get(selection_key, 0)) - keep_from, 0)
-        self.record_file_metadata(output_path, settings if persist_metadata else None, is_image, audio_only, self.gen)
-        self.send_cmd("refresh_gallery", {"path": output_path})
-        return self._register_tool_media(output_path, settings, label=label)
+
+    @staticmethod
+    def _read_media_settings(path: str, media_type: str) -> dict[str, Any]:
+        try:
+            if media_type == "image":
+                from shared.utils.audio_video import read_image_metadata
+
+                settings = read_image_metadata(path)
+            elif media_type == "video":
+                from shared.utils.video_metadata import read_metadata_from_video
+
+                settings = read_metadata_from_video(path)
+            else:
+                from shared.utils.audio_metadata import read_audio_metadata
+
+                settings = read_audio_metadata(path)
+        except (OSError, TypeError, ValueError):
+            settings = None
+        return dict(settings) if isinstance(settings, dict) else {}
 
     def _server_config(self) -> dict[str, Any]:
         if callable(self.get_server_config):
             return dict(self.get_server_config() or {})
         return {}
 
+    def _file_access_policy(self):
+        return deepy_filesystem.build_file_access_policy(self._server_config())
+
     def _file_system_read_enabled(self) -> bool:
-        return normalize_deepy_allow_read_file_system(self._server_config().get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT))
+        return self._file_access_policy().read_enabled
 
     def _tool_enabled(self, metadata: dict[str, Any]) -> bool:
         return not metadata.get("requires_file_system", False) or self._file_system_read_enabled()
@@ -2129,9 +2155,12 @@ class DeepyZeroTools:
         gallery_path = self._resolve_gallery_media_path(lookup)
         if gallery_path:
             return media_registry.register_media(self.session, gallery_path, source="gallery")
-        candidate = Path(lookup).expanduser()
-        if self._file_system_read_enabled() and candidate.suffix and candidate.is_file():
-            return media_registry.register_media(self.session, str(candidate.resolve()), source="filesystem")
+        if Path(lookup).suffix:
+            try:
+                candidate = self._file_access_policy().require_read(lookup, file=True)
+            except (FileNotFoundError, PermissionError, ValueError):
+                return None
+            return media_registry.register_media(self.session, str(candidate), source="filesystem")
         return None
 
     def _get_video_output_settings(self) -> tuple[str, str]:
@@ -3376,6 +3405,91 @@ class DeepyZeroTools:
         return result
 
     @assistant_tool(
+        display_name="Add to Gallery",
+        description="Add existing media to WanGP Galleries without duplicates. Provide path or paths.",
+        parameters={
+            "path": {"type": "string", "description": "One media id or authorized path, including an output_file returned by another action.", "required": False},
+            "paths": {"type": "array", "items": {"type": "string"}, "maxItems": 50, "description": "Up to 50 media ids or authorized paths, including output_file values returned by other actions.", "required": False},
+        },
+        pause_runtime=False,
+    )
+    def add_to_gallery(self, path: str | None = None, paths: list[str] | None = None) -> dict[str, Any]:
+        inputs = ([path] if str(path or "").strip() else []) + (list(paths) if isinstance(paths, list) else [])
+        if not inputs:
+            return {"status": "error", "items": [], "paths": [], "media_ids": [], "added": 0, "already_present": 0, "failed": 0, "error": "path or paths is required."}
+        if len(inputs) > 50:
+            return {"status": "error", "items": [], "paths": [], "media_ids": [], "added": 0, "already_present": 0, "failed": len(inputs), "error": "At most 50 media files can be added at once."}
+        trimmed_galleries = set()
+        items = [self._add_to_gallery_item(value, trimmed_galleries) for value in inputs]
+        successful = [item for item in items if item["status"] == "done"]
+        if successful:
+            from shared.gradio.gallery_files import expose_gallery_files
+
+            expose_gallery_files([item["path"] for item in successful])
+        for item in successful:
+            self.send_cmd("refresh_gallery", {"path": item["path"]})
+        failed = len(items) - len(successful)
+        result = {
+            "status": "error" if not successful else "partial" if failed else "done",
+            "items": items,
+            "paths": [item["path"] for item in successful],
+            "media_ids": [item["media_id"] for item in successful],
+            "added": sum(not item["already_present"] for item in successful),
+            "already_present": sum(item["already_present"] for item in successful),
+            "failed": failed,
+            "error": "; ".join(item["error"] for item in items if item["error"]),
+        }
+        if len(items) == 1:
+            result.update({key: items[0][key] for key in ("media_id", "media_type", "already_present")})
+        return result
+
+    def _add_to_gallery_item(self, path: str, trimmed_galleries: set[bool]) -> dict[str, Any]:
+        source = self._resolve_media_record_input(path)
+        if source is None:
+            return {"status": "error", "path": str(path or "").strip(), "media_id": "", "media_type": "", "already_present": False, "error": "Not an authorized existing image, video, or audio file."}
+        output_path = os.path.abspath(os.path.normpath(str(source.get("path", "") or "")))
+        media_type = str(source.get("media_type", "") or "").strip()
+        try:
+            if media_type == "image":
+                with Image.open(output_path) as image:
+                    image.verify()
+            elif media_type == "video":
+                get_video_info(output_path)
+            elif media_type == "audio":
+                from shared.utils.audio_video import get_audio_file_sample_rate
+
+                get_audio_file_sample_rate(output_path)
+            else:
+                raise ValueError(f"Unsupported media file: {os.path.basename(output_path)}")
+        except Exception as exc:
+            return {"status": "error", "path": output_path, "media_id": str(source.get("media_id", "") or ""), "media_type": media_type, "already_present": False, "error": str(exc) or "Unable to read media file."}
+        settings = dict(source.get("settings", {}) or {}) or self._read_media_settings(output_path, media_type)
+        audio_only = media_type == "audio"
+        path_key, settings_key, selection_key = ("audio_file_list", "audio_file_settings_list", "audio_selected") if audio_only else ("file_list", "file_settings_list", "selected")
+        gallery_paths = self.gen.setdefault(path_key, [])
+        existing_index = next((index for index, gallery_path in enumerate(gallery_paths) if os.path.normcase(os.path.abspath(str(gallery_path))) == os.path.normcase(output_path)), None)
+        already_present = existing_index is not None
+        if existing_index is None:
+            if not callable(self.record_file_metadata):
+                return {"status": "error", "path": output_path, "media_id": "", "media_type": media_type, "already_present": False, "error": "WanGP Gallery recording is unavailable."}
+            if audio_only not in trimmed_galleries:
+                self._trim_gallery_history(audio_only)
+                trimmed_galleries.add(audio_only)
+            self.record_file_metadata(output_path, settings, media_type == "image", audio_only, self.gen, notify_generation=False, write_metadata=False, record_notification=False)
+            existing_index = next(index for index, gallery_path in enumerate(self.gen[path_key]) if os.path.normcase(os.path.abspath(str(gallery_path))) == os.path.normcase(output_path))
+        else:
+            saved_settings = self.gen.setdefault(settings_key, [])
+            if settings and existing_index < len(saved_settings) and not saved_settings[existing_index]:
+                saved_settings[existing_index] = settings
+        record = self._register_tool_media(output_path, settings, label=f"Imported {media_type}")
+        self.gen[selection_key] = existing_index
+        self.gen["audio_last_selected" if audio_only else "last_selected"] = existing_index + 1 >= len(self.gen[path_key])
+        self.gen["last_was_audio"] = audio_only
+        self.gen["current_gallery_source"] = "audio" if audio_only else "video"
+        self.gen["selected_video_time"] = 0.0 if media_type == "video" else None
+        return {"status": "done", "path": output_path, "media_id": "" if record is None else record.get("media_id", ""), "media_type": media_type, "already_present": already_present, "error": ""}
+
+    @assistant_tool(
         display_name="Create Color Frame",
         description="Create a solid-color image with the requested width and height, rounded to the nearest multiple of 16, and add it to WanGP galleries. Use this for blank frames, color cards, or transition plates.",
         parameters={
@@ -4285,6 +4399,21 @@ class DeepyZeroTools:
         return result
 
     @assistant_tool(
+        name="notify",
+        display_name="Send Notification",
+        description="Send a message through WanGP's configured notification destinations.",
+        parameters={"message": {"type": "string", "description": "Message."}, "title": {"type": "string", "description": "Optional title.", "required": False}},
+        pause_runtime=False,
+    )
+    def notify(self, message: str, title: str = "Deepy notification") -> dict[str, Any]:
+        from shared.notifications import send_notification
+
+        message = str(message or "").strip()
+        if not message:
+            return {"status": "error", "sent": False, "error": "message is required"}
+        return send_notification(self._server_config(), str(title or "Deepy notification").strip(), message)
+
+    @assistant_tool(
         display_name="List Files",
         description="List files directly inside a filesystem directory, optionally filtering by file extensions. Returns filenames, extensions, full paths, and byte sizes.",
         parameters={
@@ -4295,7 +4424,7 @@ class DeepyZeroTools:
         requires_file_system=True,
     )
     def list_files(self, path: str, extensions: list[str] | None = None) -> dict[str, Any]:
-        return deepy_filesystem.list_files(path, extensions)
+        return deepy_filesystem.list_files(path, extensions, self._file_access_policy())
 
     @assistant_tool(
         display_name="Query File",
@@ -4306,7 +4435,8 @@ class DeepyZeroTools:
     )
     def query_file(self, path: str) -> dict[str, Any]:
         media_record = self._resolve_media_record_input(path)
-        return deepy_filesystem.query_file(media_record["path"] if media_record is not None else path)
+        resolved = media_record["path"] if media_record is not None else str(self._file_access_policy().require_read(path, file=True))
+        return deepy_filesystem.query_file(resolved)
 
     @assistant_tool(
         display_name="Search Doc",
@@ -5900,7 +6030,19 @@ class AssistantEngine:
         if self._active_tool_context is None:
             return
         message_id, tool_id = self._active_tool_context
-        self._emit_chat_event(assistant_chat.update_tool_call(self.session, message_id, tool_id, status=status, status_text=status_text, result=result))
+        self._emit_chat_event(assistant_chat.update_tool_call(self.session, message_id, tool_id, status=status, status_text=status_text, result=self._virtualize_tool_result(result)))
+
+    def _virtualize_tool_result(self, result: dict[str, Any] | None) -> dict[str, Any] | None:
+        if result is None:
+            return None
+        policy = getattr(self.tool_box, "file_access_policy", None)
+        if policy is None:
+            policy_getter = getattr(self.tool_box, "_file_access_policy", None)
+            policy = policy_getter() if callable(policy_getter) else None
+        if policy is None:
+            return result
+        self.session.file_access_policy = policy
+        return policy.virtualize_result(result)
 
     def _acquire_runtime(self) -> Qwen35AssistantRuntime:
         acquired_here = False
@@ -7117,7 +7259,7 @@ class AssistantEngine:
         self._emit_chat_event(tool_event)
         validation_error = self.tool_box.validate_tool_call(tool_name, arguments)
         if len(validation_error) > 0:
-            result = self._build_tool_error(tool_name, arguments, validation_error)
+            result = self._virtualize_tool_result(self._build_tool_error(tool_name, arguments, validation_error))
             self._log(f"Tool validation error: {validation_error}")
             self._set_status(f"{tool_label} failed: {validation_error}", kind="error")
             self._emit_chat_event(assistant_chat.complete_tool_call(self.session, message_id, tool_id, result))
@@ -7142,6 +7284,7 @@ class AssistantEngine:
             steering_after_action = finish_assistant_action(self.session)
         if steering_after_action:
             self._set_status("Steering accepted. Applying the new instructions at the action boundary...", kind="queued")
+        result = self._virtualize_tool_result(result)
         self._log(f"Tool result: {_json_dumps(result)}")
         self._emit_chat_event(assistant_chat.complete_tool_call(self.session, message_id, tool_id, result))
         # Queue-backed tools can finish and immediately trigger another model pass; emit a full
@@ -7917,6 +8060,8 @@ class AssistantEngine:
             self._emit_stats(force=True)
         if not self.session.interrupt_requested and len(final_user_text.strip()) > 0:
             self._send_chat(final_user_text)
+        if turn_completed and not self.session.interrupt_requested:
+            self._emit_chat_event(assistant_chat.linkify_message_download_references(self.session, self._active_turn_id, getattr(self.tool_box, "file_access_policy", None)))
         if turn_completed and not self.session.interrupt_requested and len(self.session.interruption_notice.strip()) > 0:
             if self.debug_enabled:
                 self._log("Clearing interruption notice after a successful follow-up turn.")

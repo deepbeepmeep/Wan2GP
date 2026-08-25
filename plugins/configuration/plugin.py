@@ -5,12 +5,20 @@ import json
 from shared.deepy.engine import get_or_create_assistant_session
 from shared.gradio import assistant_chat, gradio_queue_focus_patch
 from shared.gradio.hierarchy_selector import HierarchySelector
+from shared import notifications
 from shared.utils import prompt_parser
 from shared.gradio.model_selector_toolbar import unload_models_from_ram
 from shared.utils.video_codecs import SDR_VIDEO_CODEC_CHOICES, VIDEO_CONTAINER_CHOICES, validate_video_output_settings
 from shared.deepy.config import (
     DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT,
     DEEPY_ALLOW_READ_FILE_SYSTEM_KEY,
+    DEEPY_FILE_SYSTEM_ACCESS_DISABLED,
+    DEEPY_FILE_SYSTEM_ACCESS_READ,
+    DEEPY_FILE_SYSTEM_ACCESS_READ_WRITE,
+    DEEPY_FILE_SYSTEM_PATHS_DEFAULT,
+    DEEPY_FILE_SYSTEM_PATHS_KEY,
+    DEEPY_READ_EVERYWHERE_DEFAULT,
+    DEEPY_READ_EVERYWHERE_KEY,
     DEEPY_COMPACTION_TYPE_DEFAULT,
     DEEPY_COMPACTION_TYPE_DISCARD,
     DEEPY_COMPACTION_TYPE_KEY,
@@ -43,7 +51,10 @@ from shared.deepy.config import (
     format_deepy_context_tokens_label,
     deepy_requirement_message,
     normalize_deepy_context_tokens,
-    normalize_deepy_allow_read_file_system,
+    normalize_deepy_file_system_access,
+    normalize_deepy_file_system_paths,
+    parse_deepy_file_system_paths,
+    normalize_deepy_read_everywhere,
     normalize_deepy_compaction_type,
     normalize_deepy_custom_system_prompt,
     normalize_deepy_enabled,
@@ -478,11 +489,27 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         visible=not deepy_remote_default,
                     )
                     prime_guidance_value = normalize_deepy_prime_guidance(self.server_config.get(DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_GUIDANCE_DEFAULT))
-                    self.deepy_allow_read_file_system_choice = gr.Checkbox(
-                        value=normalize_deepy_allow_read_file_system(self.server_config.get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT)),
-                        label="Allow Deepy to Read the Filesystem",
-                        info="Disabled by default. Allows Deepy to list, inspect, and use existing file paths in addition to WanGP Gallery ids.",
+                    deepy_file_system_access = normalize_deepy_file_system_access(self.server_config.get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT))
+                    self.deepy_allow_read_file_system_choice = gr.Dropdown(
+                        choices=[("Disabled", DEEPY_FILE_SYSTEM_ACCESS_DISABLED), ("Read Outputs + Selected Folders", DEEPY_FILE_SYSTEM_ACCESS_READ), ("Read / Write Outputs + Selected Folders", DEEPY_FILE_SYSTEM_ACCESS_READ_WRITE)],
+                        value=deepy_file_system_access,
+                        label="Deepy Filesystem Access",
+                        info="Output folders are always the default scope. Add one extra folder per line below.",
                     )
+                    self.deepy_file_system_paths_choice = gr.Textbox(
+                        value="\n".join(normalize_deepy_file_system_paths(self.server_config.get(DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_FILE_SYSTEM_PATHS_DEFAULT))),
+                        lines=4,
+                        label="Additional Filesystem Folders",
+                        info='One folder per line, optionally followed by an optional alias. Quote paths containing spaces, for example: "D:\\My Media" projects.',
+                        visible=deepy_file_system_access != DEEPY_FILE_SYSTEM_ACCESS_DISABLED,
+                    )
+                    self.deepy_read_everywhere_choice = gr.Checkbox(
+                        value=normalize_deepy_read_everywhere(self.server_config.get(DEEPY_READ_EVERYWHERE_KEY, DEEPY_READ_EVERYWHERE_DEFAULT)),
+                        label="Read Everywhere (Warning!)",
+                        info="Allows Deepy to read any server file. Writing always remains limited to output and selected folders.",
+                        visible=deepy_file_system_access != DEEPY_FILE_SYSTEM_ACCESS_DISABLED,
+                    )
+                    self.deepy_allow_read_file_system_choice.change(fn=lambda value: (gr.update(visible=value != DEEPY_FILE_SYSTEM_ACCESS_DISABLED), gr.update(visible=value != DEEPY_FILE_SYSTEM_ACCESS_DISABLED)), inputs=[self.deepy_allow_read_file_system_choice], outputs=[self.deepy_file_system_paths_choice, self.deepy_read_everywhere_choice], show_progress="hidden")
                     with gr.Tabs(selected="prime_guidance" if deepy_type_default == DEEPY_TYPE_PRIME else "zero_prompt"):
                         with gr.Tab("Deepy Zero Prompt", id="zero_prompt"):
                             self.deepy_zero_custom_system_prompt_choice = gr.Textbox(
@@ -571,6 +598,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 with gr.Tab("Notifications"):
                     self.notification_sound_enabled_choice = gr.Dropdown(choices=[("On", 1), ("Off", 0)], value=self.server_config.get("notification_sound_enabled", 0), label="Notification Sound")
                     self.notification_sound_volume_choice = gr.Slider(0, 100, value=self.server_config.get("notification_sound_volume", 50), step=5, label="Notification Volume")
+                    self.notification_config_ui = notifications.create_config_ui(gr, self.server_config)
+                    self.notification_apprise_urls_choice, self.notification_secure_storage_choice, self.notification_on_generation_choice, self.notification_on_queue_complete_choice, self.notification_on_queue_interrupted_choice = self.notification_config_ui.save_components
 
             self.msg = gr.Markdown()
             with gr.Row():
@@ -687,12 +716,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.enhancer_enabled_choice, self.enhancer_quantization_choice, self.enhancer_speculative_decoding_choice, self.enhancer_mode_choice,
             self.prompt_enhancer_temperature_choice, self.prompt_enhancer_top_p_choice, self.prompt_enhancer_randomize_seed_choice,
             self.matanyone_version_choice,
-            self.deepy_type_choice, self.deepy_vram_mode_choice, self.deepy_allow_read_file_system_choice,
+            self.deepy_type_choice, self.deepy_vram_mode_choice, self.deepy_allow_read_file_system_choice, self.deepy_file_system_paths_choice, self.deepy_read_everywhere_choice,
             self.deepy_context_tokens_choice, self.deepy_kv_cache_quantization_choice, self.deepy_compaction_type_choice, self.deepy_zero_custom_system_prompt_choice, self.deepy_prime_custom_system_prompt_choice, self.deepy_prime_mcp_servers_choice, self.deepy_mcp_auto_discover_paths_choice,
             self.video_container_choice, self.video_output_codec_choice, self.hdr_video_crf_choice, self.image_output_codec_choice, self.audio_output_codec_choice, self.audio_stand_alone_output_codec_choice,
             self.metadata_choice, self.embed_source_images_choice,
             self.video_save_path_choice, self.image_save_path_choice, self.audio_save_path_choice,
-            self.notification_sound_enabled_choice, self.notification_sound_volume_choice,
+            self.notification_sound_enabled_choice, self.notification_sound_volume_choice, self.notification_apprise_urls_choice, self.notification_secure_storage_choice, self.notification_on_generation_choice, self.notification_on_queue_complete_choice, self.notification_on_queue_interrupted_choice,
             *self.audio_processor_config_components,
             *self.temporal_upsampler_config_components,
             *self.upsampler_config_components,
@@ -772,12 +801,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
             enhancer_enabled_choice, enhancer_quantization_choice, enhancer_speculative_decoding_choice, enhancer_mode_choice,
             prompt_enhancer_temperature_choice, prompt_enhancer_top_p_choice, prompt_enhancer_randomize_seed_choice,
             matanyone_version_choice,
-            deepy_type_choice, deepy_vram_mode_choice, deepy_allow_read_file_system_choice,
+            deepy_type_choice, deepy_vram_mode_choice, deepy_allow_read_file_system_choice, deepy_file_system_paths_choice, deepy_read_everywhere_choice,
             deepy_context_tokens_choice, deepy_kv_cache_quantization_choice, deepy_compaction_type_choice, deepy_zero_custom_system_prompt_choice, deepy_prime_custom_system_prompt_choice, deepy_prime_mcp_servers_choice, deepy_mcp_auto_discover_paths_choice,
             video_container_choice, video_output_codec_choice, hdr_video_crf_choice, image_output_codec_choice, audio_output_codec_choice, audio_stand_alone_output_codec_choice,
             metadata_choice, embed_source_images_choice,
             save_path_choice, image_save_path_choice, audio_save_path_choice,
-            notification_sound_enabled_choice, notification_sound_volume_choice,
+            notification_sound_enabled_choice, notification_sound_volume_choice, notification_apprise_urls_choice, notification_secure_storage_choice, notification_on_generation_choice, notification_on_queue_complete_choice, notification_on_queue_interrupted_choice,
             last_resolution_choice
         ) = fixed_args
 
@@ -830,6 +859,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 deepy_compaction_type_choice = validate_deepy_compaction_config(deepy_compaction_type_choice, deepy_context_tokens_choice)
                 deepy_type_choice, deepy_compaction_type_choice, deepy_context_tokens_choice = validate_deepy_version_config(deepy_type_choice, deepy_compaction_type_choice, deepy_context_tokens_choice, enhancer_enabled_choice)
             deepy_prime_mcp_servers_choice = normalize_deepy_prime_mcp_servers(deepy_prime_mcp_servers_choice)
+            deepy_file_system_paths_choice = normalize_deepy_file_system_paths(deepy_file_system_paths_choice)
+            parse_deepy_file_system_paths(deepy_file_system_paths_choice)
         except ValueError as exc:
             gr.Info(f"Configuration was not saved: {exc}")
             return f"<div style='color:red; text-align:center;'>Configuration was not saved: {exc}</div>", *[gr.update()]*8
@@ -855,6 +886,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
         upsampler_config_update = upsampler_api.collect_config_update(self.upsampler_config_bindings, upsampler_config_values)
         for message in upsampler_api.validate_config_update_messages(self.upsampler_config_bindings, upsampler_config_update):
             gr.Info(message)
+
+        try:
+            notification_config_update = notifications.prepare_config_update(old_server_config, notification_apprise_urls_choice, notification_secure_storage_choice, notification_on_generation_choice, notification_on_queue_complete_choice, notification_on_queue_interrupted_choice)
+        except notifications.SecureStorageError as exc:
+            gr.Info(f"Configuration was not saved: {exc}")
+            return f"<div style='color:red; text-align:center;'>Configuration was not saved: {exc}</div>", *[gr.update()]*8
 
         new_server_config = copy.deepcopy(old_server_config)
         new_server_config.update({
@@ -883,7 +920,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
             DEEPY_ENABLED_KEY: normalize_deepy_enabled(deepy_enabled_choice),
             DEEPY_TYPE_KEY: normalize_deepy_type(deepy_type_choice),
             DEEPY_VRAM_MODE_KEY: normalize_deepy_vram_mode(deepy_vram_mode_choice),
-            DEEPY_ALLOW_READ_FILE_SYSTEM_KEY: normalize_deepy_allow_read_file_system(deepy_allow_read_file_system_choice),
+            DEEPY_ALLOW_READ_FILE_SYSTEM_KEY: normalize_deepy_file_system_access(deepy_allow_read_file_system_choice),
+            DEEPY_FILE_SYSTEM_PATHS_KEY: deepy_file_system_paths_choice,
+            DEEPY_READ_EVERYWHERE_KEY: normalize_deepy_read_everywhere(deepy_read_everywhere_choice),
             DEEPY_CONTEXT_TOKENS_KEY: normalize_deepy_context_tokens(deepy_context_tokens_choice),
             DEEPY_KV_CACHE_QUANTIZATION_KEY: normalize_deepy_kv_cache_quantization(deepy_kv_cache_quantization_choice),
             DEEPY_COMPACTION_TYPE_KEY: deepy_compaction_type_choice,
@@ -894,6 +933,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "preload_in_VRAM": preload_in_VRAM_choice, "depth_anything_v2_variant": depth_anything_v2_variant_choice,
             "notification_sound_enabled": notification_sound_enabled_choice,
             "notification_sound_volume": notification_sound_volume_choice,
+            **notification_config_update,
             "max_frames_multiplier": max_frames_multiplier_choice, "display_stats": display_stats_choice,
             "keep_resolution_on_model_switch": keep_resolution_on_model_switch_choice,
             "enable_4k_resolutions": enable_4k_resolutions_choice,
@@ -929,15 +969,19 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         with open(self.server_config_filename, "w", encoding="utf-8") as writer:
             writer.write(json.dumps(new_server_config, indent=4))
+        try:
+            notifications.cleanup_config_update(old_server_config, new_server_config)
+        except notifications.SecureStorageError as exc:
+            gr.Warning(f"Configuration was saved, but the previous credential-store entry could not be removed: {exc}")
         
         changes = [k for k, v in new_server_config.items() if v != old_server_config.get(k)]
 
         no_reload_keys = [
             "attention_mode", "vae_config", "boost", "enable_int8_kernels", "save_path", "image_save_path", "audio_save_path",
             "metadata_type", "clear_file_list", "multi_prompts_gen_type", "keep_intermediate_sliding_windows", "fit_canvas", "depth_anything_v2_variant",
-            "notification_sound_enabled", "notification_sound_volume", "audio_processors", "temporal_upsamplers", "spatial_upsamplers", "matanyone_version",
+            "notification_sound_enabled", "notification_sound_volume", *notifications.CONFIG_KEYS, "audio_processors", "temporal_upsamplers", "spatial_upsamplers", "matanyone_version",
             "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed", "prompt_enhancer_quantization", PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, "enhancer_mode",
-            DEEPY_ENABLED_KEY, DEEPY_TYPE_KEY, DEEPY_VRAM_MODE_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_KV_CACHE_QUANTIZATION_KEY, DEEPY_COMPACTION_TYPE_KEY, DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_MCP_SERVERS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY,
+            DEEPY_ENABLED_KEY, DEEPY_TYPE_KEY, DEEPY_VRAM_MODE_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_READ_EVERYWHERE_KEY, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_KV_CACHE_QUANTIZATION_KEY, DEEPY_COMPACTION_TYPE_KEY, DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_MCP_SERVERS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY,
             LLM_CONFIG_KEY,
             "max_frames_multiplier", "display_stats", "keep_resolution_on_model_switch", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "hdr_video_crf", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "audio_stand_alone_output_codec", "checkpoints_paths", "loras_root", "save_queue_if_crash",
@@ -973,7 +1017,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         enhancer_runtime_changed = LLM_CONFIG_KEY in changes or "enhancer_enabled" in changes or "prompt_enhancer_quantization" in changes or "lm_decoder_engine" in changes or DEEPY_KV_CACHE_QUANTIZATION_KEY in changes or DEEPY_ENABLED_KEY in changes or DEEPY_VRAM_MODE_KEY in changes
         deepy_type_changed = DEEPY_TYPE_KEY in changes
         deepy_prime_mcp_servers_changed = DEEPY_PRIME_MCP_SERVERS_KEY in changes or DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY in changes
-        deepy_file_access_changed = DEEPY_ALLOW_READ_FILE_SYSTEM_KEY in changes
+        deepy_file_access_changed = any(key in changes for key in (DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_READ_EVERYWHERE_KEY, "save_path", "image_save_path", "audio_save_path"))
         speculative_decoding_changed = PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY in changes
         enhancer_profile_changed = "profile" in changes or "video_profile" in changes
         if enhancer_runtime_changed:

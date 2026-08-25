@@ -63,7 +63,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-## 23rd of August 2026: WanGP v12.64, Twice the Phase, Half the Trouble
+## 23rd of August 2026: WanGP v12.643, Twice the Phase, Half the Trouble
 
 - **H3 Two-Phase Generation with Latent Upscaling**: H3 now offers an LTX2-style two-phase workflow. Under *Advanced Mode / General*, select *Two Phases* from *Phases*. H3 first generates at half the target width and height, upscales the latent, and then performs a fixed three-step refinement at the target resolution using the LightX2V Turbo LoRA. This makes high-resolution generation much faster, even when the first phase uses many steps (for example, 20), but it does not reduce peak VRAM usage. To lower peak VRAM usage, select *Two Phases with Tiling*, which divides the high-resolution video into four tiles. Tiling may introduce visible seams; adjust the new *Phase 2 Noise Level Start* slider to balance fine detail against seamless tile blending.
 
@@ -73,7 +73,13 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 - **Deepy Prime for Everyone / Prompts Enhanced by Claude or ChatGPT**: use an OpenAI Codex or Anthropic Claude account, including supported free accounts, to power Deepy Prime and Prompt Enhancer without pausing a WanGP's generation. Open *Configuration / Prompt Enhancer / Deepy*, select *Codex* or *Claude Code* as the LLM engine, sign in, select *Deepy Prime*, and save. Choose models carefully and monitor the token usage shown in the chat footer; see the [Remote LLM guide](docs/REMOTE_LLMS.md) for details.
 
-- **New Deepy Capabilities**: Deepy can now analyse the content of a video, compare frames and use the new H3 Head refiner
+- **New Deepy Capabilities**: Deepy can now analyse the content of a video, compare frames and use the new H3 Head refiner. 
+
+- **Even More Deepy Capabilities**:  (WanGP 12.643),  Deepy can create text files, create sub folders, zip multiple files and send notifications. This opens unlimited possibilities: for instance Deepy can store reference images in a dedicated folder so that these images can be used later, create zip of all generation made today, notify you when the work is done or let you known about current work progress, ...
+
+- **Remote Notifications**: (WanGP 12.643) you can now define *Apprise Destinations* in the *Config / Notification* tab and receives Queue or Deepy related notifications in WhatsApp, Discord, Ntfyn .... The easiest way is to use the *ntfy.sh* service. For instance, just open in your Web Browser https://ntfy.sh/my_unique_sequence and then enter in Apprise Destination *ntfys://my_unique_sequence*
+
+*WanGP 12.643*: Even More Deepy Capabilities, Remote Notifications
 
 ## 19th of August 2026: WanGP v12.61, Remember to be nice with Deepy
 
@@ -91,7 +97,7 @@ But the star of this release is **Deepy Prime**. Open *Configuration / Deepy* an
 - It understands WanGP's creative toolbox well enough to choose models, combine media, and plan long videos as connected sliding windows.
 - When a plan hits a wall, Prime is resourceful: it can reconsider, try another route, and keep working toward the goal. Watching its thoughts unfold can be half the fun.
 - It can connect to optional **MCP Servers** when you want outside help or interaction with another app; these connections live under **Deepy Prime Guidance** in the same settings page.
-- Enable **Allow Deepy to Read the Filesystem** and you can ask for things like *"make one video for every prompt in this text file"* or the wonderfully vague *"use the files in this folder and make something nice out of them."*
+- Set **Deepy Filesystem Access** to read or read/write and you can ask for things like *"make one video for every prompt in this text file"* or the wonderfully vague *"use the files in this folder and make something nice out of them."* Access is scoped to WanGP outputs and folders you select.
 
 There is one catch worthy of a tiny violin: for now, **Deepy Prime requires a GPU with at least 24 GB of VRAM**.
 

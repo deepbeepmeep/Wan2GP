@@ -5,6 +5,7 @@ import json
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 from PIL import Image
@@ -38,16 +39,16 @@ def _send(send_cmd, payload) -> None:
         send_cmd("chat_output", payload)
 
 
-def _visual_query(server_config: dict[str, Any], media_record, question: str, frame_no: int | None = None, max_image_edge: int | None = None) -> dict[str, Any]:
+def _visual_query(server_config: dict[str, Any], media_record, question: str, frame_no: int | None = None, max_image_edge: int | None = None, file_access_policy=None) -> dict[str, Any]:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return _visual_query_without_running_loop(server_config, media_record, question, frame_no, max_image_edge)
+        return _visual_query_without_running_loop(server_config, media_record, question, frame_no, max_image_edge, file_access_policy)
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="wangp-remote-vision") as executor:
-        return executor.submit(_visual_query_without_running_loop, server_config, media_record, question, frame_no, max_image_edge).result()
+        return executor.submit(_visual_query_without_running_loop, server_config, media_record, question, frame_no, max_image_edge, file_access_policy).result()
 
 
-def _visual_query_without_running_loop(server_config: dict[str, Any], media_record, question: str, frame_no: int | None = None, max_image_edge: int | None = None) -> dict[str, Any]:
+def _visual_query_without_running_loop(server_config: dict[str, Any], media_record, question: str, frame_no: int | None = None, max_image_edge: int | None = None, file_access_policy=None) -> dict[str, Any]:
     engine = resolve_role_engine(server_config, "visual_inspector")
     if engine == ENGINE_DISABLED:
         return {"status": "error", "question": question, "answer": "", "error": "Visual Inspector is disabled in Configuration."}
@@ -59,8 +60,11 @@ def _visual_query_without_running_loop(server_config: dict[str, Any], media_reco
     video_inputs: dict[str, list[tuple[int, int, list[int] | None]]] = {}
     for input_index, record in enumerate(records):
         path = str(record.get("path", "") or "").strip()
+        public_path = file_access_policy.virtualize_path(path) if file_access_policy is not None else ""
+        if file_access_policy is not None and file_access_policy.virtualized and not public_path.startswith("@"):
+            public_path = str(record.get("media_id", "") or public_path)
         if not os.path.isfile(path):
-            raise FileNotFoundError(f"Media file not found: {path}")
+            raise FileNotFoundError(f"Media file not found: {public_path or path}")
         media_type = str(record.get("media_type", "") or "").lower()
         bbox = record.get("bbox", None)
         resolved_frame = None
@@ -72,7 +76,11 @@ def _visual_query_without_running_loop(server_config: dict[str, Any], media_reco
         else:
             with Image.open(path) as source:
                 images[input_index] = deepy_vision.prepare_inspection_image(source, max_edge=max_image_edge, bbox=bbox)
-        inspected.append({"media_id": record.get("media_id", ""), "media_type": media_type, "label": record.get("label", ""), "frame_no": resolved_frame, "time_seconds": time_seconds if media_type == "video" else None, "bbox": bbox})
+        label = file_access_policy.virtualize_result(str(record.get("label", "") or "")) if file_access_policy is not None else record.get("label", "")
+        if file_access_policy is not None and file_access_policy.virtualized:
+            for physical_path in {path, str(Path(path).resolve()), Path(path).as_posix()}:
+                label = str(label).replace(physical_path, public_path)
+        inspected.append({"media_id": record.get("media_id", ""), "media_type": media_type, "label": label, "frame_no": resolved_frame, "time_seconds": time_seconds if media_type == "video" else None, "bbox": bbox, **({"path": public_path} if public_path else {})})
     for path, indexed_frames in video_inputs.items():
         bboxes = [item[2] for item in indexed_frames]
         decode_kwargs = {"max_edge": max_image_edge, **({"bboxes": bboxes} if any(bbox is not None for bbox in bboxes) else {})}
@@ -82,6 +90,9 @@ def _visual_query_without_running_loop(server_config: dict[str, Any], media_reco
     visual_labels = []
     for index, item in enumerate(inspected):
         source_label = str(item.get("label", "") or os.path.basename(str(records[index].get("path", "")))).strip()
+        public_path = str(item.get("path", "") or "").strip()
+        if public_path and public_path.casefold() != source_label.casefold():
+            source_label = f"{source_label} ({public_path})"
         bbox_label = "" if item["bbox"] is None else f", bbox {item['bbox']}"
         if item["media_type"] == "video":
             time_label = "" if item["time_seconds"] is None else f" at {float(item['time_seconds']):.3f} seconds"
@@ -249,7 +260,8 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
 
     def tool_progress(status=None, status_text=None, result=None):
         if active_tool.get("id"):
-            _send(send_cmd, assistant_chat.update_tool_call(session, assistant_id, active_tool["id"], status=status, status_text=status_text, result=result if result is not None else {}))
+            safe_result = toolbox.file_access_policy.virtualize_result(result if result is not None else {})
+            _send(send_cmd, assistant_chat.update_tool_call(session, assistant_id, active_tool["id"], status=status, status_text=status_text, result=safe_result))
             if status_text:
                 set_remote_status(f"tool:{active_tool['id']}:{status}:{status_text}", f"{active_tool['label']}: {status_text}", "tool")
 
@@ -274,7 +286,7 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
         try:
             result = toolbox.call(name, arguments)
         except Exception as exc:
-            result = {"status": "error", "tool": name, "error": str(exc)}
+            result = toolbox.file_access_policy.virtualize_result({"status": "error", "tool": name, "error": str(exc)})
         session.messages.append({"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(result, ensure_ascii=False)})
         checkpoint_assistant_turn(session)
         _send(send_cmd, assistant_chat.complete_tool_call(session, assistant_id, ui_tool_id, result))
@@ -284,7 +296,7 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
             set_remote_status("thinking", f"{engine_label} is thinking...", "thinking")
         return result
 
-    toolbox.bind_runtime_tools(vision_query_callback=lambda record, question, frame=None, max_image_edge=None: _visual_query(server_config, record, question, frame, max_image_edge), tool_progress_callback=tool_progress, vision_is_remote=True)
+    toolbox.bind_runtime_tools(vision_query_callback=lambda record, question, frame=None, max_image_edge=None: _visual_query(server_config, record, question, frame, max_image_edge, toolbox.file_access_policy), tool_progress_callback=tool_progress, vision_is_remote=True)
     execution_instructions_getter = getattr(toolbox, "get_remote_execution_instructions", None)
     execution_instructions = str(execution_instructions_getter() or "").strip() if callable(execution_instructions_getter) else ""
     if execution_instructions:
@@ -301,6 +313,7 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
             if final_answer:
                 session.messages.append({"role": "assistant", "content": final_answer})
                 checkpoint_assistant_turn(session)
+                _send(send_cmd, assistant_chat.linkify_message_download_references(session, assistant_id, getattr(toolbox, "file_access_policy", None)))
     except Exception as exc:
         if not bool(getattr(exc, "preserve_backend", False)):
             if backends.get(engine) is backend:

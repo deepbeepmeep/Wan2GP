@@ -19,7 +19,7 @@ import anyio
 from anyio.from_thread import start_blocking_portal
 
 from shared.api import WanGPSession
-from shared.deepy.config import DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT, DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT, DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_PRIME_MCP_SERVERS_KEY, get_deepy_config_value, normalize_deepy_allow_read_file_system, normalize_deepy_context_tokens, normalize_deepy_mcp_auto_discover_paths, normalize_deepy_prime_mcp_servers
+from shared.deepy.config import DEEPY_CONTEXT_TOKENS_DEFAULT, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT, DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_PRIME_MCP_SERVERS_KEY, get_deepy_config_value, get_deepy_runtime_config, normalize_deepy_context_tokens, normalize_deepy_mcp_auto_discover_paths, normalize_deepy_prime_mcp_servers
 from shared.gradio import assistant_chat
 from shared.mcp_server import build_inprocess_server
 
@@ -150,14 +150,18 @@ class DeepyPrimeTools:
         self.send_cmd = send_cmd
         self.assistant_session = assistant_session
         self._zero_tools = zero_tools
-        self.allow_read_file_system = normalize_deepy_allow_read_file_system(get_deepy_config_value(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT))
+        from shared.deepy.filesystem import build_file_access_policy
+
+        self.file_access_policy = zero_tools._file_access_policy() if zero_tools is not None else build_file_access_policy(get_deepy_runtime_config())
+        self.assistant_session.file_access_policy = self.file_access_policy
+        self.allow_read_file_system = self.file_access_policy.read_enabled
         from shared.utils.plugins import get_deepy_prime_plugin_tools
 
         self._plugin_tools_by_name = {definition.name: definition for definition in get_deepy_prime_plugin_tools() if not definition.requires_file_system or self.allow_read_file_system}
         self._tool_progress_callback: Callable[..., None] | None = None
         self._api_session = WanGPSession(webui_state=state, console_output=False, console_isatty=False)
         self._api_session._gradio_webui_context = {"defer_load_queue_trigger": True}
-        self._server = build_inprocess_server(self._api_session, toolbox=zero_tools, default_job_event_limit=0, allow_read_file_system=self.allow_read_file_system)
+        self._server = build_inprocess_server(self._api_session, toolbox=zero_tools, default_job_event_limit=0, file_access_policy=self.file_access_policy)
         self._external_servers = normalize_deepy_prime_mcp_servers(get_deepy_config_value(DEEPY_PRIME_MCP_SERVERS_KEY, {}))
         self._auto_discover_mcp_paths = normalize_deepy_mcp_auto_discover_paths(get_deepy_config_value(DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT))
         self._external_server_errors: dict[str, str] = {}
@@ -399,10 +403,10 @@ class DeepyPrimeTools:
         self._request_queue.put((tool_name, dict(arguments or {}), future))
         result = future.result()
         if isinstance(result, dict):
-            return self._enforce_output_budget(tool_name, result)
+            return self._enforce_output_budget(tool_name, self.file_access_policy.virtualize_result(result))
         content_text = "\n".join(str(getattr(item, "text", "") or "") for item in result.content if getattr(item, "type", "") == "text").strip()
         if result.isError:
-            return {"status": "error", "tool": tool_name, "error": content_text or f"MCP tool '{tool_name}' failed."}
+            return self.file_access_policy.virtualize_result({"status": "error", "tool": tool_name, "error": content_text or f"MCP tool '{tool_name}' failed."})
         payload = result.structuredContent
         if payload is None and content_text:
             try:
@@ -414,7 +418,7 @@ class DeepyPrimeTools:
             normalized.setdefault("status", "done")
         else:
             normalized = {"status": "done", "content": payload}
-        return self._enforce_output_budget(tool_name, normalized)
+        return self._enforce_output_budget(tool_name, self.file_access_policy.virtualize_result(normalized))
 
     @staticmethod
     def _enforce_output_budget(tool_name: str, result: dict[str, Any]) -> dict[str, Any]:
@@ -434,7 +438,7 @@ class DeepyPrimeTools:
 
     def _update_tool_progress(self, status: str, status_text: str, result: dict[str, Any]) -> None:
         if callable(self._tool_progress_callback):
-            self._tool_progress_callback(status=status, status_text=status_text, result=result)
+            self._tool_progress_callback(status=status, status_text=status_text, result=self.file_access_policy.virtualize_result(result))
 
     @staticmethod
     def _finalize_generation_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -540,6 +544,8 @@ class DeepyPrimeTools:
         plugin_tool = self._plugin_tools_by_name.get(normalized_name)
         if plugin_tool is not None:
             return plugin_tool.display_name
+        if normalized_name == "wangp_notify":
+            return "Send Notification"
         if normalized_name.startswith("wangp_"):
             normalized_name = normalized_name[len("wangp_"):]
         return normalized_name.replace("_", " ").strip().title()
@@ -605,11 +611,13 @@ class DeepyPrimeTools:
             return f"Unknown Tool - {self.get_tool_display_name(tool_name)}"
         if self._zero_tools is not None:
             arguments = self._zero_tools.resolve_tool_label_arguments(arguments)
-        if tool_name == "wangp_toolbox":
+        if tool_name in {"wangp_toolbox", "wangp_io"}:
             action = str(arguments.get("action", "") or "").strip()
+            action_arguments = arguments.get("arguments")
+            if tool_name == "wangp_io":
+                return assistant_chat.build_io_tool_call_label(action, action_arguments if "arguments" in arguments else None)
             if not action:
                 return "List Toolbox Content"
-            action_arguments = arguments.get("arguments")
             if action_arguments is None:
                 action_label = self._zero_tools.get_tool_transcript_label(action, {}) if self._zero_tools is not None else action.replace("_", " ").title()
                 return f"Get {action_label} Schema"
@@ -643,6 +651,8 @@ class DeepyPrimeTools:
             if not action or call_arguments.get("arguments") is None:
                 return {"pause_runtime": False, "pause_reason": "tool"}
             return self._zero_tools.get_tool_policy(action, call_arguments["arguments"])
+        if tool_name == "wangp_io":
+            return {"pause_runtime": False, "pause_reason": "tool"}
         return {"pause_runtime": False, "pause_reason": "tool"}
 
     def validate_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> str:

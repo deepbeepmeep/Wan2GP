@@ -17,6 +17,7 @@ from PIL import Image
 from shared.cli_args import parse_wgp_args
 from shared.llm_io import configure_llm_io, get_llm_io_path, log_llm_io
 from shared.deepy.engine import AssistantSessionState, begin_assistant_turn, clear_assistant_session
+from shared.deepy.filesystem import FileAccessPolicy
 from shared.gradio import assistant_chat
 from shared.remote_llm.codex_backend import CodexAuthenticationRequired, CodexBackend, _codex_launch_command, _resolve_codex_executable
 from shared.remote_llm.claude_backend import CLAUDE_PROGRESS_INSTRUCTIONS, ClaudeAuthenticationRequired, ClaudeBackend, _resolve_claude_executable
@@ -216,6 +217,39 @@ class RemoteLLMAdapterTests(unittest.TestCase):
         self.assertEqual(result["answer"], "Inspected.")
         self.assertEqual(submitted_sizes, [(1024, 512)])
         self.assertIn("Visual 1: image Wide.", backend.one_shot.call_args.args[0])
+
+    def test_remote_visual_query_exposes_only_the_virtual_media_path(self):
+        backend = Mock()
+        backend.one_shot.return_value = "Inspected."
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "private" / "wide.png"
+            source.parent.mkdir()
+            Image.new("RGB", (8, 8), "red").save(source)
+            policy = FileAccessPolicy(mode="read", output_roots=(Path(temp_dir).resolve(),))
+            record = {"media_id": "image_1", "media_type": "image", "path": str(source), "label": f"Source {source}"}
+            with patch("shared.remote_llm.deepy_runner.resolve_role_engine", return_value="codex"), patch("shared.remote_llm.deepy_runner.is_remote_engine", return_value=True), patch("shared.remote_llm.deepy_runner.create_backend", return_value=backend):
+                result = _visual_query({}, record, "What is shown?", file_access_policy=policy)
+
+        submitted_question = backend.one_shot.call_args.args[0]
+        self.assertIn("@outputs/private/wide.png", submitted_question)
+        self.assertNotIn(str(source), submitted_question)
+        self.assertEqual(result["path"], "@outputs/private/wide.png")
+
+    def test_remote_visual_query_uses_media_id_outside_virtual_roots(self):
+        backend = Mock()
+        backend.one_shot.return_value = "Inspected."
+        with tempfile.TemporaryDirectory() as output_dir, tempfile.TemporaryDirectory() as gallery_dir:
+            source = Path(gallery_dir) / "upload.png"
+            Image.new("RGB", (8, 8), "red").save(source)
+            policy = FileAccessPolicy(mode="read", output_roots=(Path(output_dir).resolve(),))
+            record = {"media_id": "image_7", "media_type": "image", "path": str(source), "label": "Upload"}
+            with patch("shared.remote_llm.deepy_runner.resolve_role_engine", return_value="codex"), patch("shared.remote_llm.deepy_runner.is_remote_engine", return_value=True), patch("shared.remote_llm.deepy_runner.create_backend", return_value=backend):
+                result = _visual_query({}, record, "What is shown?", file_access_policy=policy)
+
+        submitted_question = backend.one_shot.call_args.args[0]
+        self.assertIn("image_7", submitted_question)
+        self.assertNotIn(str(source), submitted_question)
+        self.assertEqual(result["path"], "image_7")
 
     def test_remote_visual_query_leaves_active_event_loop_before_starting_backend(self):
         backend = Mock()

@@ -122,6 +122,49 @@
     "url": "https://github.com/ppc2017/wan2gp-lora-organizer"
   },
   {
+    "name": "Midom Remote Worker",
+    "author": "Method Intelligence, LLC",
+    "version": "0.3.0",
+    "description": "Connects a local WanGP workstation to Midom as a scoped project media worker for curated image, audio, music, video, and local media-processing jobs.",
+    "date": "2026-08-20",
+    "wan2gp_version": "",
+	"url": "https://github.com/bsenftner/midom-wangp-bridge-plugin/"
+  },
+  {
+    "name": "MiniMax H3 Prompt Builder",
+    "author": "JedsDeadBaby",
+    "version": "2.0.0",
+    "description": "Builds MiniMax H3 prompts. Base modes write the three-field schema, a reference-mode switch writes the six-section Ref2VA format, and start/end image checkboxes add the keyframe instruction line. A button in the Audio section hands the scene to WanGP's Prompt Enhancer and has it write the soundscape and score. Beats can be action, dialogue or voiceover, with the spec's required voiceover phrasing and closed-lips clause written for you; <scenetrans> is marked at both sides of a cut with the continuity stated in words, and <cutoff> marks speech the clip ends mid-line. Per-shot on-screen text is quoted verbatim. Character creator per subject composes a physical description from name, ethnicity, gender, age, height, build, hair, eyes and clothing. Sliding-window support, combined cast and subjects list, ordered beats with intra-shot timing, per-shot lens and rig, and audio references for voice, ambience and score.",
+    "type": [
+      "extension"
+    ],
+    "date": "2026-08-19",
+    "url": "https://github.com/jedsdead/Wan2GP-Minimax-H3-Prompt-Builder",
+    "wan2gp_version": "1.0"
+  },
+  {
+    "name": "MiniMax Ref2VA Prompt Studio",
+    "author": "Tophness",
+    "version": "1.0.0",
+    "description": "Splits the different prompt sections up (subject_definitions, retention_analysis, etc.), dynamically detects when you add a reference to bring up a toolbar to one-click insert them, adds inline badges to inserted references with previews on hover, constructs template builds, etc.",
+    "type": [
+      "extension"
+    ],
+    "date": "2026-08-20",
+    "wan2gp_version": "12.50",
+    "url": "https://github.com/Tophness/wan2gp-prompt-studio"
+  },
+  {
+    "name": "MiniMax H3 RefMods",
+    "author": "ported for Wan2GP by community, original concept by Luisa (luisacaotica/ComfyUI-MiniMaxH3Mod)",
+    "version": "0.22.0",
+    "description": "No-training 'reference mods' for MiniMax H3 Ref2VA: compress an image/video reference into a small .safetensors file once, then reuse it at any strength without re-encoding it every generation.",
+    "type": ["app"],
+    "date": "2026-08-19",
+    "wan2gp_version": "",
+    "url": "https://github.com/g3n3rativ3/MiniMaxH3Mod-for-WanGP"
+  },
+  {
     "name": "Multi-Angle Prompt Helper",
     "author": "CodeBarrie",
     "version": "2.2.0",
@@ -178,39 +221,6 @@
     "date": "2026-07-03",
     "wan2gp_version": "",
     "url": "https://github.com/davidbrum25/wan2gp-prompt-manager"
-  },
-  {
-    "name": "Midom Remote Worker",
-    "author": "Method Intelligence, LLC",
-    "version": "0.3.0",
-    "description": "Connects a local WanGP workstation to Midom as a scoped project media worker for curated image, audio, music, video, and local media-processing jobs.",
-    "date": "2026-08-20",
-    "wan2gp_version": "",
-	"url": "https://github.com/bsenftner/midom-wangp-bridge-plugin/"
-  },
-  {
-    "name": "MiniMax H3 Prompt Builder",
-    "author": "JedsDeadBaby",
-    "version": "2.0.0",
-    "description": "Builds MiniMax H3 prompts. Base modes write the three-field schema, a reference-mode switch writes the six-section Ref2VA format, and start/end image checkboxes add the keyframe instruction line. A button in the Audio section hands the scene to WanGP's Prompt Enhancer and has it write the soundscape and score. Beats can be action, dialogue or voiceover, with the spec's required voiceover phrasing and closed-lips clause written for you; <scenetrans> is marked at both sides of a cut with the continuity stated in words, and <cutoff> marks speech the clip ends mid-line. Per-shot on-screen text is quoted verbatim. Character creator per subject composes a physical description from name, ethnicity, gender, age, height, build, hair, eyes and clothing. Sliding-window support, combined cast and subjects list, ordered beats with intra-shot timing, per-shot lens and rig, and audio references for voice, ambience and score.",
-    "type": [
-      "extension"
-    ],
-    "date": "2026-08-19",
-    "url": "https://github.com/jedsdead/Wan2GP-Minimax-H3-Prompt-Builder",
-    "wan2gp_version": "1.0"
-  },
-  {
-    "name": "MiniMax Ref2VA Prompt Studio",
-    "author": "Tophness",
-    "version": "1.0.0",
-    "description": "Splits the different prompt sections up (subject_definitions, retention_analysis, etc.), dynamically detects when you add a reference to bring up a toolbar to one-click insert them, adds inline badges to inserted references with previews on hover, constructs template builds, etc.",
-    "type": [
-      "extension"
-    ],
-    "date": "2026-08-20",
-    "wan2gp_version": "12.50",
-    "url": "https://github.com/Tophness/wan2gp-prompt-studio"
   },
   {
     "name": "Pulsebar",

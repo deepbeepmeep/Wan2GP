@@ -34,16 +34,14 @@ class MiniMaxH3GroupedMaskingTests(unittest.TestCase):
         self.attention_state.__enter__()
         self.addCleanup(self.attention_state.__exit__, None, None, None)
 
-    def test_mask_is_expanded_to_complete_2x2_latent_cells(self):
-        mask = torch.zeros((1, 1, 1, 4, 4))
-        mask[..., 0, 1] = 1.0
-        mask[..., 3, 2] = 1.0
+    def test_mask_is_expanded_to_complete_2x2_latent_cells_with_a_context_margin(self):
+        mask = torch.zeros((1, 1, 1, 8, 8))
+        mask[..., 2, 2] = 1.0
 
         actual = _snap_video_mask_to_patch_cells(mask)
 
         expected = torch.zeros_like(mask)
-        expected[..., :2, :2] = 1.0
-        expected[..., 2:, 2:] = 1.0
+        expected[..., :6, :6] = 1.0
         torch.testing.assert_close(actual, expected)
 
     def test_grouping_places_fixed_rows_first_and_builds_an_inverse(self):
@@ -90,6 +88,24 @@ class MiniMaxH3GroupedMaskingTests(unittest.TestCase):
         video_start = grouped_payload["layout"].sequence_length - order.numel()
         torch.testing.assert_close(grouped_payload["rope"][:, video_start:],
                                    native_payload["rope"][:, video_start:].index_select(1, order))
+
+    @torch.inference_mode()
+    def test_active_grouping_is_invariant_to_order_within_each_timestep_group(self):
+        model = _tiny_model()
+        video, audio, context, base_payload = _inputs()
+
+        def run(order):
+            inverse = torch.empty_like(order)
+            inverse[order] = torch.arange(order.numel())
+            payload = dict(base_payload, target_video_order=order, target_video_inverse_order=inverse,
+                           target_video_fixed_rows=3, target_video_mask_active=True)
+            return model(video.clone(), audio.clone(), torch.tensor([0.7]), torch.tensor([0.7]), context, payload)
+
+        first_video, first_audio = run(torch.tensor([1, 4, 6, 0, 2, 3, 5, 7]))
+        second_video, second_audio = run(torch.tensor([6, 4, 1, 7, 5, 3, 2, 0]))
+
+        torch.testing.assert_close(first_video, second_video, rtol=1e-5, atol=1e-6)
+        torch.testing.assert_close(first_audio, second_audio, rtol=1e-5, atol=1e-6)
 
     @torch.inference_mode()
     def test_grouped_masking_rejects_sol_before_kernel_validation(self):

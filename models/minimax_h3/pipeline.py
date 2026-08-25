@@ -16,7 +16,7 @@ from mmgp import offload
 from shared.utils.loras_mutipliers import update_loras_slists
 from shared.utils.text_encoder_cache import TextEncoderCache
 from shared.utils.frame_scheduler import floor_frame_count, normalize_frame_count, normalize_overlap
-from .constants import H3_GROUPED_MASK_CELL_DILATION, H3_GROUPED_MASKED_DENOISING, H3_PHASE_2_NOISE_LEVEL_START_DEFAULT
+from .constants import H3_GROUPED_MASK_ANY_PIXEL_CELL, H3_GROUPED_MASK_CELL_DILATION, H3_GROUPED_MASKED_DENOISING, H3_PHASE_2_NOISE_LEVEL_START_DEFAULT
 from .first_block_cache import MiniMaxH3FirstBlockCache
 from .interrupt import GenerationInterrupted
 from .spectrum import MiniMaxH3Spectrum
@@ -157,7 +157,11 @@ def _resize_video_mask(mask, latent_shape, clip_length, temporal_ratio, binarize
     if not binarize and mask.shape[-2:] == (1, 1):
         return torch.ceil(mask.clamp_(0.0, 1.0) * 256.0).div_(256.0)
     if binarize:
-        mask = F.interpolate(mask.ge(0.5).float(), size=(latent_t, latent_h, latent_w), mode="area")
+        mask = mask.ge(0.5).float()
+        if H3_GROUPED_MASK_ANY_PIXEL_CELL:
+            mask = F.adaptive_max_pool3d(mask, (latent_t, latent_h, latent_w))
+        else:
+            mask = F.interpolate(mask, size=(latent_t, latent_h, latent_w), mode="area")
         return mask.gt(0.5).float()
     mask = F.interpolate(mask, size=(latent_t, latent_h, latent_w), mode="nearest")
     return mask.clamp_(0.0, 1.0)

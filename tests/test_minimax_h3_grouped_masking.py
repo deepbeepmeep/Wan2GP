@@ -40,11 +40,21 @@ class MiniMaxH3GroupedMaskingTests(unittest.TestCase):
         mask[..., :2, 4:] = 1.0
         mask[..., 4:, 4:] = 1.0
 
-        actual = _resize_video_mask(mask, (1, 2, 2), clip_length=1, temporal_ratio=1)
+        with patch("models.minimax_h3.pipeline.H3_GROUPED_MASK_ANY_PIXEL_CELL", False):
+            actual = _resize_video_mask(mask, (1, 2, 2), clip_length=1, temporal_ratio=1)
 
         expected = torch.tensor([[[[[1.0, 0.0],
                                     [0.0, 1.0]]]]])
         torch.testing.assert_close(actual, expected)
+
+    def test_any_pixel_coverage_activates_the_complete_h3_cell_by_default(self):
+        mask = torch.zeros((1, 1, 32, 32))
+        mask[..., 31, 31] = 1.0
+
+        latent_mask = _resize_video_mask(mask, (1, 2, 2), clip_length=1, temporal_ratio=1)
+        actual = _snap_video_mask_to_patch_cells(latent_mask)
+
+        torch.testing.assert_close(actual, torch.ones_like(actual))
 
     def test_temporal_mask_max_pools_every_frame_covered_by_each_latent(self):
         mask = torch.zeros((1, 34, 2, 2))

@@ -63,7 +63,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-## 23rd of August 2026: WanGP v12.643, Twice the Phase, Half the Trouble
+## 26th of August 2026: WanGP v12.643, Twice the Phase, Half the Trouble
 
 - **H3 Two-Phase Generation with Latent Upscaling**: H3 now offers an LTX2-style two-phase workflow. Under *Advanced Mode / General*, select *Two Phases* from *Phases*. H3 first generates at half the target width and height, upscales the latent, and then performs a fixed three-step refinement at the target resolution using the LightX2V Turbo LoRA. This makes high-resolution generation much faster, even when the first phase uses many steps (for example, 20), but it does not reduce peak VRAM usage. To lower peak VRAM usage, select *Two Phases with Tiling*, which divides the high-resolution video into four tiles. Tiling may introduce visible seams; adjust the new *Phase 2 Noise Level Start* slider to balance fine detail against seamless tile blending.
 
@@ -81,7 +81,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 - **Remote Notifications**: (WanGP 12.643) you can now define *Apprise Destinations* in the *Config / Notification* tab and receives Queue or Deepy related notifications in WhatsApp, Discord, Ntfyn .... The easiest way is to use the *ntfy.sh* service. For instance, just open in your Web Browser https://ntfy.sh/my_unique_sequence and then enter in Apprise Destination *ntfys://my_unique_sequence*
 
-*WanGP 12.643*: Even More Deepy Capabilities, Remote Notifications
+*WanGP 12.643*: Even More Deepy Capabilities, Remote Notifications\
 *WanGP 12.644*: Masked Denoising Grouped Row
 ## 19th of August 2026: WanGP v12.61, Remember to be nice with Deepy
 

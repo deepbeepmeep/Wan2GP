@@ -69,6 +69,8 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 - **H3 Face Refiner**: detect, identity-track, and refine up to five faces with H3 Ref2VA without changing the video resolution. Select *H3 Face Refiner* under *Advanced Mode / Post Processing*, use the selected Gallery video's *Post Processing* tab for Late Post Processing, or ask Deepy. Set *Faces to Refine* to `0` for automatic selection of up to five relevant faces.
 
+- **H3 PDD LoRA Acceleration** (new WanGP 12.645): new 8-step acceleration variants are available for FL2VA and Ref2VA. This is not a mere *LoRA Accelerator*, each sequential model evaluation combines four learned denoising-interval outputs, so it why I had to create new model variants to handle this particular LoRA accelerator. Before you ask, yes when using PDD you are stuck to 8 steps and to the Euler Scheduler. 
+
 - **Sense Nova U1.5**: *SenseNova-U1.5 8B MoT* is a unified image generator and editor designed for native-4K images, text-heavy layouts, and infographics. Select it from the Image model list and generate from text or one or more *Reference Images*. Its built-in *Infographic Prompt* enhancer can expand a short brief into a structured layout; native 4K can be still be generated with 8-9GB of RAM and will produce the best infographics. SenseNova comes with a 8 steps *LoRA Accelerator Profile*. Generation can be further accelerated at the cost of some VRAM by enabling the *KV Cache*.
 
 - **New H3 Grouped Row Denoising Mode for Inpainting**: available for both FL2VA & Ref2VA can be used for *Inpainting* in a *Masked Area*
@@ -82,7 +84,8 @@ WanGP is a one-stop super app for the best open source generative models across 
 - **Remote Notifications**: (WanGP 12.643) you can now define *Apprise Destinations* in the *Config / Notification* tab and receives Queue or Deepy related notifications in WhatsApp, Discord, Ntfyn .... The easiest way is to use the *ntfy.sh* service. For instance, just open in your Web Browser https://ntfy.sh/my_unique_sequence and then enter in Apprise Destination *ntfys://my_unique_sequence*
 
 *WanGP 12.643*: Even More Deepy Capabilities, Remote Notifications\
-*WanGP 12.644*: Masked Denoising Grouped Row
+*WanGP 12.644*: Masked Denoising Grouped Row\
+*WanGP 12.645*: H3 PDD LoRA Acceleration
 ## 19th of August 2026: WanGP v12.61, Remember to be nice with Deepy
 
 Deepy and the WanGP Prompt Enhancer have learned some impressive new tricks (enable them from the *Configuration / Deepy* menu):

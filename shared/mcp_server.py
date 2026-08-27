@@ -35,6 +35,7 @@ _DOCS_DIR = Path(__file__).resolve().parents[1] / "docs"
 _DEEPY_VISUAL_TOOL_IDS = {"gen_image", "edit_image", "gen_video", "gen_video_with_speech"}
 _DEEPY_VIDEO_TOOL_IDS = {"gen_video", "gen_video_with_speech"}
 _DEEPY_AUDIO_TOOL_IDS = {"gen_song", "gen_speech_from_description", "gen_speech_from_sample"}
+_DEEPY_MODEL_DEF_STRING_LIMIT = 256
 _TOOLBOX_ACTIONS = {
     "add_to_gallery",
     "create_color_frame",
@@ -427,11 +428,19 @@ def _compact_deepy_model_schema(schema: dict[str, Any] | None) -> dict[str, Any]
     return {"metadata": compact}
 
 
-def _mcp_model_definition(model_def: dict[str, Any] | None) -> dict[str, Any] | None:
+def _mcp_model_definition(model_def: dict[str, Any] | None, property_name: str | None = None, string_limit: int | None = None) -> dict[str, Any] | None:
     if model_def is None:
         return None
     result = copy.deepcopy(model_def)
     result.pop("settings", None)
+    if property_name is not None:
+        if property_name not in result:
+            raise KeyError(f"Unknown model definition property: {property_name}")
+        return {property_name: result[property_name]}
+    if string_limit is not None:
+        for key, value in result.items():
+            if isinstance(value, str) and len(value) > string_limit:
+                result[key] = f'{value[:string_limit]} [Truncated, query property "{key}" for full {len(value)} characters]'
     return result
 
 
@@ -1143,11 +1152,13 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
         return {"models": page, "total": len(matches), "returned": len(page), "offset": offset, "has_more": offset + len(page) < len(matches)}
 
     @mcp.tool()
-    def wangp_model(model_type: str, view: Literal["schema", "definition", "defaults"] = "schema") -> dict[str, Any]:
-        """Return one model's compact schema, full definition, or generation defaults."""
+    def wangp_model(model_type: str, view: Literal["schema", "definition", "defaults"] = "schema", property: str | None = None) -> dict[str, Any]:
+        """Return one model's compact schema, definition, or generation defaults. Compact servers preview root strings longer than 256 characters; repeat view='definition' with the property named in the suffix to retrieve its full value."""
 
+        if property is not None and view != "definition":
+            raise ValueError("property is supported only with view='definition'")
         if view == "definition":
-            result = _mcp_model_definition(session.get_model_def(model_type))
+            result = _mcp_model_definition(session.get_model_def(model_type), property_name=property, string_limit=_DEEPY_MODEL_DEF_STRING_LIMIT if compact_model_tools else None)
         elif view == "defaults":
             result = _strip_deepy_fixed_image_mode(session, _strip_deepy_settings_metadata(session.get_exported_default_settings(model_type)), model_type)
         else:

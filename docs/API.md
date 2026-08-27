@@ -406,8 +406,8 @@ Tools:
 
 - `wangp_models(query="", filters=None, limit=10, offset=0)`
   - Searches models and returns compact records with supported capabilities and media roles as arrays. `filters` accepts `family`, `base_model_type`, `finetune`, `model_type`, `main_output`, `inputs`, or `name`; string filters support case-insensitive `*` and `?` globs.
-- `wangp_model(model_type, view="schema")`
-  - Returns one model's compact `schema`, full `definition`, or pristine generation `defaults`. Use the default schema first and request the definition only when exact parameters remain unclear. Availability is intentionally separate from this tool.
+- `wangp_model(model_type, view="schema", property=None)`
+  - Returns one model's compact `schema`, `definition`, or pristine generation `defaults`. Deepy's compact server previews top-level definition strings longer than 256 characters and appends the exact property name and full character count; pass that root `property` with `view="definition"` to retrieve its complete native value. Standalone MCP definitions remain unabridged. Use the default schema first and request the definition only when exact parameters remain unclear. Availability is intentionally separate from this tool.
 - `wangp_model_settings(model_type, setting_id=None)`
   - With only `model_type`, lists saved user settings, accelerator profiles, and presets. Each entry has a prefixed `id` and `type`; pass one returned id as `setting_id` to fetch its full content.
 - `wangp_list_loras(model_type, name=None)`

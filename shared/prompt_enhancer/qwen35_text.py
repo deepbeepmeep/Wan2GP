@@ -210,35 +210,44 @@ def _clean_answer_text(text: str) -> str:
     return _normalize_generated_text("\n".join(cleaned_lines))
 
 
-def _split_generated_text(text: str) -> tuple[str, str]:
+def _split_generated_parts(text: str) -> tuple[list[str], str]:
     text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    think_chunks = [match.group(1) for match in re.finditer(r"<think>\s*(.*?)\s*</think>", text, flags=re.DOTALL | re.IGNORECASE)]
-    answer_text = re.sub(r"<think>.*?</think>", "\n", text, flags=re.DOTALL | re.IGNORECASE)
-    if len(think_chunks) == 0:
-        close_matches = list(re.finditer(r"</think>", text, flags=re.IGNORECASE))
-        if len(close_matches) >= 2:
-            trailing_text = text[close_matches[-1].end():]
+    think_chunks = []
+    answer_parts = []
+    cursor = 0
+    first_open = re.search(r"<think>", text, flags=re.IGNORECASE)
+    first_close = re.search(r"</think>", text, flags=re.IGNORECASE)
+    if first_close is not None and (first_open is None or first_close.start() < first_open.start()):
+        leading_reasoning = _normalize_generated_text(text[:first_close.start()].replace("<think>", "\n"))
+        if len(leading_reasoning) > 0:
+            think_chunks.append(leading_reasoning)
+        cursor = first_close.end()
+    remaining = text[cursor:]
+    explicit_cursor = 0
+    for match in re.finditer(r"<think>\s*(.*?)\s*</think>", remaining, flags=re.DOTALL | re.IGNORECASE):
+        answer_parts.append(remaining[explicit_cursor:match.start()])
+        if len(match.group(1).strip()) > 0:
+            think_chunks.append(match.group(1))
+        explicit_cursor = match.end()
+    trailing = remaining[explicit_cursor:]
+    unmatched_open = re.search(r"<think>\s*(.*)\Z", trailing, flags=re.DOTALL | re.IGNORECASE)
+    if unmatched_open is not None:
+        answer_parts.append(trailing[:unmatched_open.start()])
+        if len(unmatched_open.group(1).strip()) > 0:
+            think_chunks.append(unmatched_open.group(1))
+    else:
+        answer_parts.append(trailing)
+    answer_text = "\n".join(answer_parts)
+    if len(think_chunks) <= 1:
+        close_matches = list(re.finditer(r"</think>", answer_text, flags=re.IGNORECASE))
+        if close_matches:
+            trailing_text = answer_text[close_matches[-1].end():]
             trailing_preview = re.sub(r"(?:<\|im_end\|>\s*|</s>\s*)+$", "", trailing_text, flags=re.IGNORECASE).lstrip()
             if len(trailing_preview) == 0 or trailing_preview.lower().startswith("<tool_call>"):
-                recovered_chunks = []
-                leading_reasoning = _normalize_generated_text(text[: close_matches[0].start()].replace("<think>", "\n"))
-                middle_reasoning = _normalize_generated_text(text[close_matches[0].end() : close_matches[-1].start()].replace("<think>", "\n"))
-                if len(leading_reasoning) > 0:
-                    recovered_chunks.append(leading_reasoning)
-                if len(middle_reasoning) > 0:
-                    recovered_chunks.append(middle_reasoning)
-                if len(recovered_chunks) > 0:
-                    think_chunks.extend(recovered_chunks)
-                    answer_text = trailing_text
-        if len(think_chunks) == 0:
-            forced_open_match = re.search(r"</think>", text, flags=re.IGNORECASE)
-            if forced_open_match is not None:
-                forced_reasoning = text[:forced_open_match.start()]
-                forced_reasoning = forced_reasoning.replace("<think>", "\n")
-                forced_reasoning = _normalize_generated_text(forced_reasoning)
-                if len(forced_reasoning) > 0:
-                    think_chunks.append(forced_reasoning)
-                answer_text = text[forced_open_match.end():]
+                recovered_reasoning = _normalize_generated_text(answer_text[:close_matches[-1].start()].replace("<think>", "\n"))
+                if len(recovered_reasoning) > 0:
+                    think_chunks.append(recovered_reasoning)
+                answer_text = trailing_text
     if len(think_chunks) == 0:
         timeline_match = re.search(r"(?mi)^\(at\s+[0-9]+(?:\.[0-9]+)?\s+seconds?\s*:", text)
         if timeline_match is not None:
@@ -246,8 +255,12 @@ def _split_generated_text(text: str) -> tuple[str, str]:
             if leading_text.lower().startswith("thinking process"):
                 think_chunks.append(leading_text)
                 answer_text = text[timeline_match.start():]
-    answer_text = re.sub(r"<think>.*$", "\n", answer_text, flags=re.DOTALL | re.IGNORECASE)
-    return _normalize_generated_text("\n\n".join(chunk for chunk in think_chunks if chunk.strip())), _clean_answer_text(answer_text)
+    return [normalized for chunk in think_chunks if len(normalized := _normalize_generated_text(chunk)) > 0], _clean_answer_text(answer_text)
+
+
+def _split_generated_text(text: str) -> tuple[str, str]:
+    think_chunks, answer_text = _split_generated_parts(text)
+    return _normalize_generated_text("\n\n".join(think_chunks)), answer_text
 
 
 def _clean_generated_text(text: str) -> str:

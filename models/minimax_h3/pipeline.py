@@ -19,6 +19,7 @@ from shared.utils.frame_scheduler import floor_frame_count, normalize_frame_coun
 from .constants import H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, h3_grouped_masking_enabled
 from .first_block_cache import MiniMaxH3FirstBlockCache
 from .interrupt import GenerationInterrupted
+from .pdd import pdd_sampling_plans, pdd_sampling_plans_for_sigmas
 from .spectrum import MiniMaxH3Spectrum
 from .transformer import VISUAL_COND_TIMESTEP, pack_audio, patchify_video, unpack_audio
 from .video_vae import LATENTS_MEAN, LATENTS_STD
@@ -379,7 +380,7 @@ class MiniMaxH3Pipeline:
         return torch.device("cuda" if torch.cuda.is_available() else next(self.transformer.parameters()).device)
 
     def get_loras_transformer(self, _get_model_recursive_prop, model_def, guidance_phases, activated_loras, **_kwargs):
-        if int(guidance_phases) <= 1:
+        if int(guidance_phases) <= 1 or "pdd_head_file" in model_def:
             return [], []
         selected_lora = next((lora for lora in activated_loras if _is_required_h3_turbo(os.path.basename(str(lora).split("|", 1)[0]))), None)
         if selected_lora is not None and H3_ALLOW_PHASE_2_TURBO_OVERRIDE:
@@ -583,6 +584,15 @@ class MiniMaxH3Pipeline:
         self._configure_tiling(VAE_tile_size)
         if sample_solver not in ("euler", "er_sde", "res_multistep", "ralston_2s"):
             raise ValueError(f"Unsupported MiniMax H3 sampler {sample_solver!r}")
+        pdd = self.transformer.pdd_num_steps is not None
+        if pdd:
+            pdd_steps = int(self.transformer.pdd_num_steps) // int(self.transformer.pdd_block_size)
+            if sample_solver != "euler":
+                raise ValueError("MiniMax H3 PDD requires the Euler sampler")
+            if int(sampling_steps) != pdd_steps:
+                raise ValueError(f"MiniMax H3 PDD requires exactly {pdd_steps} inference steps")
+            if starting_sigma is not None:
+                raise ValueError("MiniMax H3 PDD does not support partial-schedule refinement")
         if sample_solver == "ralston_2s" and self.transformer.cache is not None and self.transformer.cache.cache_type == "spectrum":
             raise ValueError("MiniMax H3 Ralston 2S does not support Spectrum Feature Forecasting; use No Skipping or First Block Cache")
         if int(sampling_steps) < 1:
@@ -639,6 +649,15 @@ class MiniMaxH3Pipeline:
 
         def apply_phase_2_lora_policy():
             if loras_slists is None:
+                return
+            if pdd:
+                for index, lora in enumerate(loras_selected or ()):
+                    name = os.path.basename(str(lora).split("|", 1)[0])
+                    if "turbo" not in name.lower():
+                        continue
+                    print(f"MiniMax H3 PDD phase 2: disabled Turbo LoRA '{name}' so it does not stack with the PDD accelerator")
+                    loras_slists["phase2"][index] = 0.0
+                    loras_slists["shared"][index] = False
                 return
             required_turbo_found = False
             for index, lora in enumerate(loras_selected or ()):
@@ -839,6 +858,12 @@ class MiniMaxH3Pipeline:
             stage_solver = stage_solver or sample_solver
             audio_on_video_schedule = stage_solver in ("res_multistep", "ralston_2s")
             model_steps = stage_sigmas_video.numel() - 1
+            if pdd:
+                stage_pdd_video_plans = pdd_sampling_plans_for_sigmas(stage_sigmas_video, shift, self.transformer.pdd_num_steps)
+                stage_pdd_audio_plans = (pdd_sampling_plans(3.0, self.transformer.pdd_num_steps, self.transformer.pdd_block_size)[-1:].expand(model_steps, -1)
+                                         if freeze_audio else pdd_sampling_plans_for_sigmas(stage_sigmas_audio, 3.0, self.transformer.pdd_num_steps))
+            else:
+                stage_pdd_video_plans = stage_pdd_audio_plans = None
             tau_denominator = max(1, model_steps - 1)
             denoising_start_step = 0 if starting_sigma is not None else int(round(model_steps * (1.0 - float(denoising_strength)), 4))
             mask_end_step = min(model_steps, denoising_start_step + math.ceil(model_steps * float(masking_strength))) if editable_mask is not None else 0
@@ -868,6 +893,9 @@ class MiniMaxH3Pipeline:
                     self._check_abort()
                     payload["attention_sparsity"] = tau_start + (SOL_ATTN_TAU_END - tau_start) * step / tau_denominator
                     offload.set_step_no_for_lora(self.transformer, step)
+                    if pdd:
+                        self.transformer.final_layer.video_out.set_plan(stage_pdd_video_plans[step:step + 1])
+                        self.transformer.final_layer.audio_out.set_plan(stage_pdd_audio_plans[step:step + 1])
                     if spectrum is not None:
                         spectrum.begin_step(step)
                     if first_block_cache is not None:
@@ -1157,6 +1185,8 @@ class MiniMaxH3Pipeline:
                 payload["target_video_condition_frames"] = 0
                 phase_extra = "Phase 2/2 Tiled"
                 model_steps = phase_2_sigmas_video.numel() - 1
+                phase_2_pdd_video_plans = pdd_sampling_plans_for_sigmas(phase_2_sigmas_video, shift, self.transformer.pdd_num_steps) if pdd else None
+                phase_2_pdd_audio_plan = pdd_sampling_plans(3.0, self.transformer.pdd_num_steps, self.transformer.pdd_block_size)[-1:] if pdd else None
                 progress_steps = model_steps * tile_count
                 denoising_start_step = 0 if starting_sigma is not None else int(round(model_steps * (1.0 - float(denoising_strength)), 4))
                 mask_end_step = min(model_steps, denoising_start_step + math.ceil(model_steps * float(masking_strength))) if phase_2_editable_mask is not None else 0
@@ -1172,6 +1202,9 @@ class MiniMaxH3Pipeline:
                     self._check_abort()
                     payload["attention_sparsity"] = tau_start + (SOL_ATTN_TAU_END - tau_start) * step / max(1, model_steps - 1)
                     offload.set_step_no_for_lora(self.transformer, step)
+                    if pdd:
+                        self.transformer.final_layer.video_out.set_plan(phase_2_pdd_video_plans[step:step + 1])
+                        self.transformer.final_layer.audio_out.set_plan(phase_2_pdd_audio_plan)
                     sigma_video, sigma_video_next = phase_2_sigmas_video[step], phase_2_sigmas_video[step + 1]
                     step_editable_mask = _masking_step_mask(phase_2_editable_mask, step, denoising_start_step, mask_end_step)
                     grouped_mask_active = grouped_masking and step_editable_mask is not None

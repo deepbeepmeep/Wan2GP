@@ -125,7 +125,7 @@ The baseline schema lives in `models/_settings.json`. Model defaults in `default
 | `film_grain_intensity` | number | Film grain amount. `0` disables. |
 | `film_grain_saturation` | number | Saturation of generated film grain. |
 | `RIFLEx_setting` | integer | RIFLEx long-video policy. `0` auto, `1` always on, `2` always off. |
-| `override_profile` | number | Per-task MMGP profile override. `-1` uses the normal selected profile. |
+| `override_profile` | number | Per-task MMGP memory/offload profile override. Allowed values are `-1`, `1`, `2`, `3`, `3.5`, `4`, `4.5`, and `5`; `-1` uses the normal Video, Image, or Audio memory profile selected in WanGP configuration. This controls RAM/VRAM placement and speed only. It is not a saved settings/accelerator profile and does not accept a `setting_id`. |
 | `override_attention` | string | Per-task attention backend override. Empty uses global auto/default selection. |
 
 ## Post-Processing Audio

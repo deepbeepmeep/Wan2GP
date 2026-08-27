@@ -15,6 +15,7 @@ DEFAULT_WINDOW_FRAMES = 81
 MAX_WINDOW_FRAMES = 481
 WINDOW_OVERLAP_FRAMES = 17
 TEMPORAL_STRIDE = 8
+SPATIAL_BLOCK_SIZE = 32
 MODEL_TYPES = {"ltx23": "ltx2_22B", "ltx25": "ltx2_25_22B_distilled"}
 FAKE_MODEL_TYPES = {"ltx23": "ltx2_upsampler_23", "ltx25": "ltx2_upsampler_25"}
 LORA_KEYS = {"ltx23": ("ltx2_lora_distilled_1_1", "ltx2_lora_pixel_spatial_upscaler"), "ltx25": ("ltx2_lora_pixel_spatial_upscaler",)}
@@ -40,6 +41,10 @@ def window_starts(frame_count: int, window_size: int = DEFAULT_WINDOW_FRAMES, wi
     if frame_count <= window_size:
         return (0,)
     return tuple(range(0, frame_count - window_overlap, window_size - window_overlap))
+
+
+def supported_spatial_size(size: int) -> int:
+    return max(SPATIAL_BLOCK_SIZE, round(int(size) / SPATIAL_BLOCK_SIZE) * SPATIAL_BLOCK_SIZE)
 
 
 def pad_window(video: torch.Tensor) -> torch.Tensor:
@@ -156,6 +161,7 @@ class LTXUpsamplerRuntime:
         if self.model is None:
             raise RuntimeError("LTX video upsampler model is not loaded")
         frame_count = int(sample.shape[1])
+        target_height, target_width = supported_spatial_size(sample.shape[-2]), supported_spatial_size(sample.shape[-1])
         starts = window_starts(frame_count, window_size, window_overlap)
         output = None
         for window_index, start in enumerate(tqdm(starts, desc=f"LTX {self.variant[3:]} upsampler windows", unit="window"), start=1):
@@ -163,6 +169,8 @@ class LTXUpsamplerRuntime:
                 return None, None
             stop = min(start + window_size, frame_count)
             input_window = pad_window(sample[:, start:stop])
+            if input_window.shape[-2:] != (target_height, target_width):
+                input_window = torch.nn.functional.interpolate(input_window.permute(1, 0, 2, 3), size=(target_height, target_width), mode="bilinear", align_corners=False, antialias=True).permute(1, 0, 2, 3).contiguous()
             audio_window, window_audio_sample_rate = slice_audio_for_window(audio_waveform, audio_sample_rate, source_audio_path, start, stop - start, int(input_window.shape[1]), fps)
             window_label = f"Window {window_index} / {len(starts)}" if len(starts) > 1 else ""
 

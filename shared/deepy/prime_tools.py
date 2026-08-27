@@ -325,11 +325,7 @@ class DeepyPrimeTools:
                         if server_name != "wangp":
                             description = f"External MCP server '{server_name}'. {description}".strip()
                         self._tool_defs.append({"type": "function", "function": {"name": exposed_name, "description": description, "parameters": dict(tool.inputSchema or {"type": "object", "properties": {}})}})
-                self._tool_defs.extend([
-                    {"type": "function", "function": {"name": "mcp_list_resources", "description": "List documentation and other resources exposed by connected MCP servers.", "parameters": {"type": "object", "properties": {"server": {"type": "string", "description": "Optional MCP server name such as wangp."}}}}},
-                    {"type": "function", "function": {"name": "mcp_search_resource", "description": "Search one Markdown MCP resource and return up to five ranked section excerpts without adding the full document to context.", "parameters": {"type": "object", "properties": {"server": {"type": "string", "description": "MCP server name, normally wangp."}, "uri": {"type": "string", "description": "Exact resource URI."}, "query": {"type": "string", "description": "Keywords or a short natural-language question."}}, "required": ["server", "uri", "query"]}}},
-                    {"type": "function", "function": {"name": "mcp_read_resource", "description": "Read one MCP resource by exact server and URI. For Markdown, optional section returns only matching heading sections.", "parameters": {"type": "object", "properties": {"server": {"type": "string", "description": "MCP server name, normally wangp."}, "uri": {"type": "string", "description": "Exact resource URI."}, "section": {"type": "string", "description": "Optional exact or partial Markdown heading path, or a case-insensitive * and ? glob."}}, "required": ["server", "uri"]}}},
-                ])
+                self._tool_defs.append({"type": "function", "function": {"name": "mcp_resource", "description": "List resources when uri is omitted. With a uri, provide query to search Markdown, or omit query to read it; optional section limits a read to matching headings. Server is optional when the uri uniquely identifies a resource.", "parameters": {"type": "object", "properties": {"server": {"type": "string", "description": "Optional MCP server name such as wangp."}, "uri": {"type": "string", "description": "Exact resource URI; omit to list resources."}, "query": {"type": "string", "description": "Keywords or a short natural-language question for Markdown search."}, "section": {"type": "string", "description": "Exact or partial Markdown heading path, or a case-insensitive * and ? glob, for a filtered read."}}}}})
                 self._ready_event.set()
 
                 while True:
@@ -338,38 +334,40 @@ class DeepyPrimeTools:
                         break
                     tool_name, arguments, future = request
                     try:
-                        if tool_name == "mcp_list_resources":
-                            requested_server = str(arguments.get("server", "") or "").strip()
-                            resources = [resource for resource in self._resource_defs if not requested_server or resource["server"] == requested_server]
-                            future.set_result({"status": "done", "resources": resources, "count": len(resources), "unavailable_servers": dict(self._external_server_errors)})
-                            continue
-                        if tool_name == "mcp_search_resource":
+                        if tool_name == "mcp_resource":
                             server_name = str(arguments.get("server", "") or "").strip()
                             uri = str(arguments.get("uri", "") or "").strip()
                             query = str(arguments.get("query", "") or "").strip()
-                            if server_name not in clients:
-                                raise ValueError(f"Unknown MCP server: {server_name}")
-                            resource_def = next((resource for resource in self._resource_defs if resource["server"] == server_name and resource["uri"] == uri), None)
-                            if resource_def is None:
-                                raise ValueError(f"Unknown MCP resource for server '{server_name}': {uri}")
-                            resource_result = await clients[server_name].read_resource(uri)
-                            matches = []
-                            for content in resource_result.contents:
-                                if not hasattr(content, "text"):
-                                    raise ValueError("Markdown resource search is only available for text resources.")
-                                matches.extend(_search_markdown_sections(str(content.text), query, title=resource_def["title"] or resource_def["name"]))
-                            matches.sort(key=lambda item: (-int(item["score"]), len(str(item["section"]))))
-                            future.set_result({"status": "done", "server": server_name, "uri": uri, "query": query, "matches": matches[:5]})
-                            continue
-                        if tool_name == "mcp_read_resource":
-                            server_name = str(arguments.get("server", "") or "").strip()
-                            uri = str(arguments.get("uri", "") or "").strip()
                             section_filter = str(arguments.get("section", "") or "").strip()
-                            if server_name not in clients:
+                            if not uri:
+                                if query or section_filter:
+                                    raise ValueError("uri is required when query or section is provided")
+                                resources = [resource for resource in self._resource_defs if not server_name or resource["server"] == server_name]
+                                future.set_result({"status": "done", "resources": resources, "count": len(resources), "unavailable_servers": dict(self._external_server_errors)})
+                                continue
+                            if query and section_filter:
+                                raise ValueError("query and section are mutually exclusive")
+                            if server_name and server_name not in clients:
                                 raise ValueError(f"Unknown MCP server: {server_name}")
-                            if not any(resource["server"] == server_name and resource["uri"] == uri for resource in self._resource_defs):
-                                raise ValueError(f"Unknown MCP resource for server '{server_name}': {uri}")
+                            resource_matches = [resource for resource in self._resource_defs if resource["uri"] == uri and (not server_name or resource["server"] == server_name)]
+                            if not resource_matches:
+                                raise ValueError(f"Unknown MCP resource{f' for server {server_name!r}' if server_name else ''}: {uri}")
+                            matching_servers = sorted({resource["server"] for resource in resource_matches})
+                            if not server_name:
+                                if len(matching_servers) != 1:
+                                    raise ValueError(f"Resource URI is exposed by multiple MCP servers; specify one of: {', '.join(matching_servers)}")
+                                server_name = matching_servers[0]
                             resource_result = await clients[server_name].read_resource(uri)
+                            if query:
+                                matches = []
+                                resource_def = resource_matches[0]
+                                for content in resource_result.contents:
+                                    if not hasattr(content, "text"):
+                                        raise ValueError("Markdown resource search is only available for text resources.")
+                                    matches.extend(_search_markdown_sections(str(content.text), query, title=resource_def["title"] or resource_def["name"]))
+                                matches.sort(key=lambda item: (-int(item["score"]), len(str(item["section"]))))
+                                future.set_result({"status": "done", "server": server_name, "uri": uri, "query": query, "matches": matches[:5]})
+                                continue
                             contents = []
                             matched_sections = []
                             for content in resource_result.contents:

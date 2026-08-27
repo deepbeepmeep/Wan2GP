@@ -25,6 +25,7 @@ import torch.nn.functional as F
 from shared.attention import pay_attention
 
 from .interrupt import GenerationInterrupted
+from .pdd import MiniMaxH3ParallelHead
 from .sol_attention import MiniMaxH3SolAttention
 from .components.packing import (
     MINIMAX_H3_AUDIO_TAG,
@@ -351,13 +352,17 @@ class DiTBlock(nn.Module):
 
 class FinalLayer(nn.Module):
     def __init__(self, hidden, time_dim, video_dim, audio_dim, eps, apply_silu=True,
-                 adaln_dtype=None, dtype=None, device=None):
+                 adaln_dtype=None, pdd_num_steps=None, dtype=None, device=None):
         super().__init__()
         self.norm = nn.RMSNorm(hidden, eps=eps, dtype=dtype, device=device)
         self.adaln_proj = AdalnProj(time_dim, hidden, 2, modalities=1, apply_silu=apply_silu,
                                     dtype=adaln_dtype or dtype, device=device)
-        self.video_out = nn.Linear(hidden, video_dim, bias=True, dtype=torch.float32, device=device)
-        self.audio_out = nn.Linear(hidden, audio_dim, bias=True, dtype=torch.float32, device=device)
+        if pdd_num_steps is None:
+            self.video_out = nn.Linear(hidden, video_dim, bias=True, dtype=torch.float32, device=device)
+            self.audio_out = nn.Linear(hidden, audio_dim, bias=True, dtype=torch.float32, device=device)
+        else:
+            self.video_out = MiniMaxH3ParallelHead(hidden, video_dim, pdd_num_steps, device=device)
+            self.audio_out = MiniMaxH3ParallelHead(hidden, audio_dim, pdd_num_steps, device=device)
 
     def _head(self, h_list, shift, scale, row, output):
         value = self.norm(_take(h_list)).to(scale.dtype)
@@ -472,7 +477,7 @@ class MiniMaxH3Model(nn.Module):
                  rope_inv_freq_len=16, rope_theta=10000.0, norm_eps=1e-5, qk_norm_eps=1e-5,
                  final_norm_eps=1e-5, sigma_shift_video=12.0, sigma_shift_audio=3.0,
                  ffn_chunk_size=2048, adaln_curve_grid=None, adaln_dtype=torch.float32, image_model=None,
-                 dtype=None, device=None, **kwargs):
+                 pdd_num_steps=None, pdd_block_size=None, dtype=None, device=None, **kwargs):
         super().__init__()
         self._interrupt = False
         self.cache = None
@@ -483,6 +488,8 @@ class MiniMaxH3Model(nn.Module):
         self.latents_dim = latents_dim
         self.audio_latents_dim = audio_latents_dim
         self.use_adaln_curves = adaln_curve_grid is not None
+        self.pdd_num_steps = pdd_num_steps
+        self.pdd_block_size = pdd_block_size
         video_dim = latents_dim * math.prod(self.patch_size)
         self.video_patch_proj = nn.Linear(video_dim, hidden_size, bias=True, dtype=torch.float32, device=device)
         self.audio_patch_proj = nn.Linear(audio_latents_dim, hidden_size, bias=True, dtype=torch.float32, device=device)
@@ -504,7 +511,7 @@ class MiniMaxH3Model(nn.Module):
                                                ffn_chunk_size=ffn_chunk_size, sol_attention=self.sol_attention,
                                                dtype=dtype, device=device) for _ in range(num_layers)])
         self.final_layer = FinalLayer(hidden_size, time_embed_dim, video_dim, audio_latents_dim,
-                                      final_norm_eps, **curve, dtype=dtype, device=device)
+                                      final_norm_eps, **curve, pdd_num_steps=pdd_num_steps, dtype=dtype, device=device)
         fp32_modules = [self.video_patch_proj, self.audio_patch_proj, self.final_layer.video_out, self.final_layer.audio_out]
         if self.use_adaln_curves:
             for module in (*[block.adaln_proj.linear for block in self.blocks], self.final_layer.adaln_proj.linear):

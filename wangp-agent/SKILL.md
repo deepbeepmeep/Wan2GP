@@ -30,7 +30,7 @@ Use `python -m shared.mcp_server --root <WanGP repo> --output-dir <output dir>` 
 1. List candidate models before generating.
    For a user-facing model name, call MCP `wangp_models(query=...)` first. Python: `session.list_model_metadata(query=...)`. Optional MCP filters are `name`, `family`, `base_model_type`, `finetune`, `model_type`, `main_output`, and `inputs`; string filters accept case-insensitive `*` and `?` globs.
 2. Pick the model from its `capabilities`, `media_inputs`, `inputs`, `main_output`, and `outputs`.
-3. `wangp_model` has only three views: `schema` (compact capabilities and limits, default), `definition` (full parameter declarations), and `defaults` (generation settings). Use `definition` only when exact parameters or choices remain unclear.
+3. `wangp_model` has only three views: `schema` (compact capabilities and limits, default), `definition` (parameter declarations), and `defaults` (generation settings). Use `definition` only when exact parameters or choices remain unclear. Compact servers preview long root strings; pass the exact root `property` named by a truncation suffix with the definition view to retrieve its full value.
 4. Fetch defaults separately when building a raw generation request, and modify only the few settings needed for the request. Preserve model-specific flags unless the user explicitly supplied an exact supported value.
    MCP: `wangp_model(model_type, view="defaults")`. Python: `session.get_default_settings(model_type)`.
    Use `wangp_model_settings(model_type)` to list saved settings, accelerator profiles and presets; pass a returned `setting_id` to read one.

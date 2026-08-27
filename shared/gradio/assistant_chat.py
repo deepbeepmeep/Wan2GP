@@ -4611,16 +4611,16 @@ def build_tool_call_label(
         reference = _humanize_tool_value(arguments.get("reference"))
         kind = _humanize_tool_value(arguments.get("media_type"))
         return _finish_tool_call_label("Resolve Media" if not reference else f"Resolve {reference}{f' {kind}' if kind and kind.casefold() != 'all' else ''}")
-    if normalized_name == "mcp_list_resources":
+    if normalized_name == "mcp_resource":
         server = _short_tool_label_value(arguments.get("server"))
-        return _finish_tool_call_label("List MCP Documents" if not server else f"List {server} Documents")
-    if normalized_name == "mcp_read_resource":
         target = _humanize_tool_value(arguments.get("uri"))
-        section = _short_tool_label_value(arguments.get("section"))
-        return _finish_tool_call_label("Read MCP Document" if not target else f"Read {section} from {target}" if section else f"Read {target}")
-    if normalized_name == "mcp_search_resource":
+        if not target:
+            return _finish_tool_call_label("List MCP Documents" if not server else f"List {server} Documents")
         query = _short_tool_label_value(arguments.get("query"))
-        return _finish_tool_call_label("Search MCP Documents" if not query else f'Search MCP Documents for “{query}”')
+        if query:
+            return _finish_tool_call_label(f'Search {target} for “{query}”')
+        section = _short_tool_label_value(arguments.get("section"))
+        return _finish_tool_call_label(f"Read {section} from {target}" if section else f"Read {target}")
 
     subjects = ("media_id", "path", "reference", "doc_id", "section", "query", "job_id", "server", "uri")
     subject = next((_short_tool_label_value(arguments.get(key)) for key in subjects if _short_tool_label_value(arguments.get(key))), "")

@@ -30,7 +30,7 @@ PLUGIN_MODEL_DEFAULTS_KEY = "defaults"
 PLUGIN_MODEL_PROFILES_KEY = "profiles"
 PENDING_DELETIONS_KEY = "pending_plugin_deletions"
 _DEEPY_TOOL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_DEEPY_PRIME_RESERVED_TOOL_NAMES = {"mcp_list_resources", "mcp_search_resource", "mcp_read_resource"}
+_DEEPY_PRIME_RESERVED_TOOL_NAMES = {"mcp_resource"}
 
 
 @dataclass

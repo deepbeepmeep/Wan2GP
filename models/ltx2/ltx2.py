@@ -1166,9 +1166,6 @@ class LTX2:
         source = sample.to(dtype=torch.float32)
         source = source.div_(127.5).sub_(1.0) if was_uint8 else source.clamp_(-1.0, 1.0)
         source = source.unsqueeze(0)
-        pad_height, pad_width = (-source_height) % 32, (-source_width) % 32
-        if pad_height or pad_width:
-            source = torch.nn.functional.pad(source, (0, pad_width, 0, pad_height), mode="replicate")
         source = source.to(device=self.device, dtype=torch.bfloat16)
         tiling_config = _build_tiling_config(VAE_tile_size, fps)
         if set_progress_status is not None:

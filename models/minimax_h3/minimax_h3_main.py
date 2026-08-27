@@ -27,7 +27,7 @@ TEXT_ENCODER_FOLDER = "Qwen3-VL-32B-Instruct"
 ADALN_CURVE_DIM = 8
 
 
-def _strip_wrappers(state_dict, quantization_map=None, tied_weights_map=None, qkv_splitting=True):
+def _strip_wrappers(state_dict, quantization_map=None, tied_weights_map=None, qkv_splitting=True, pdd=False):
     if qkv_splitting:
         restore_interleaved_h3_qkv(state_dict)
     prefixes = ("model.diffusion_model.", "diffusion_model.")
@@ -41,6 +41,11 @@ def _strip_wrappers(state_dict, quantization_map=None, tied_weights_map=None, qk
                 if key.startswith(prefix):
                     key = key[len(prefix):]
                     break
+            if pdd and (key.startswith("final_layer.video_out.") or key.startswith("final_layer.audio_out.") or
+                        key in ("final_layer.video_out", "final_layer.audio_out")):
+                continue
+            if pdd and key.startswith("pdd_heads."):
+                key = "final_layer." + key[len("pdd_heads."):]
             result[key] = value
         return result
 
@@ -79,18 +84,23 @@ def probe_h3_checkpoint(filename):
     return {"compressed_modulation": True, "adaln_curve_grid": int(table.shape[0]), "time_embed_dim": rank, "adaln_dtype": table.dtype}
 
 
-def _load_transformer(filename, dtype, qkv_splitting=True, qkv_layout="interleaved"):
+def _load_transformer(filename, dtype, qkv_splitting=True, qkv_layout="interleaved", pdd_head_filename=None,
+                      pdd_num_steps=None, pdd_block_size=None):
     checkpoint = probe_h3_checkpoint(filename)
+    pdd = pdd_head_filename is not None
+    if pdd and (int(pdd_num_steps) < 1 or int(pdd_block_size) < 1 or int(pdd_num_steps) % int(pdd_block_size)):
+        raise ValueError(f"Invalid MiniMax H3 PDD grid={pdd_num_steps}, block={pdd_block_size}")
     with init_empty_weights(include_buffers=True):
         transformer = MiniMaxH3Model(adaln_curve_grid=checkpoint["adaln_curve_grid"], time_embed_dim=checkpoint["time_embed_dim"], adaln_dtype=checkpoint["adaln_dtype"],
-                                     dtype=dtype, device="meta")
+                                     pdd_num_steps=pdd_num_steps, pdd_block_size=pdd_block_size, dtype=dtype, device="meta")
     filenames = filename if isinstance(filename, (list, tuple)) else [filename]
     split_map = get_linear_split_map(transformer.attention_inner_size, qkv_layout=qkv_layout) if qkv_splitting and not any(path.lower().endswith(".gguf") for path in filenames) else None
     if split_map is not None:
         offload.split_linear_modules(transformer, split_map)
     transformer.requires_grad_(False)
-    preprocess_sd = partial(_strip_wrappers, qkv_splitting=qkv_splitting)
-    offload.load_model_data(transformer, filename, writable_tensors=False, default_dtype=dtype, preprocess_sd=preprocess_sd,
+    preprocess_sd = partial(_strip_wrappers, qkv_splitting=qkv_splitting, pdd=pdd)
+    load_filenames = filenames + [fl.locate_file(pdd_head_filename)] if pdd else filename
+    offload.load_model_data(transformer, load_filenames, writable_tensors=False, default_dtype=dtype, preprocess_sd=preprocess_sd,
                             fused_split_map=split_map)
     transformer.eval().requires_grad_(False)
     transformer.h3_checkpoint_info = checkpoint
@@ -170,8 +180,8 @@ def _load_latent_upscaler(filename):
 def model_factory(model_filename, text_encoder_filename, qkv_splitting, dtype=torch.bfloat16, VAE_dtype=torch.float32, save_quantized=False,
                   model_type="minimax_h3_fl2va", reference_mode=False, video_vae_filename=VIDEO_VAE_FILE,
                   audio_vae_filename=AUDIO_VAE_FILE, latent_upscaler_filename=os.path.join(LATENT_UPSCALER_FOLDER, LATENT_UPSCALER_FILE),
-                  shared_h3_pipeline=None, qkv_layout="interleaved"):
-    transformer = _load_transformer(model_filename, dtype, qkv_splitting, qkv_layout)
+                  shared_h3_pipeline=None, qkv_layout="interleaved", pdd_head_filename=None, pdd_num_steps=None, pdd_block_size=None):
+    transformer = _load_transformer(model_filename, dtype, qkv_splitting, qkv_layout, pdd_head_filename, pdd_num_steps, pdd_block_size)
     if shared_h3_pipeline is None:
         text_encoder = _load_text_encoder(text_encoder_filename, dtype)
         video_vae_qkv_splitting = qkv_splitting and video_vae_filename == VIDEO_VAE_FILE

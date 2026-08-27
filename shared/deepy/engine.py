@@ -47,8 +47,13 @@ from shared.deepy import filesystem as deepy_filesystem, media_registry, tool_se
 from postprocessing import catalog as postprocessing_catalog
 from shared.gradio import assistant_chat
 from shared.prompt_enhancer import qwen35_text
+from shared.prompt_enhancer.config import PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT, PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, normalize_prompt_enhancer_speculative_decoding
 from shared.prompt_enhancer.qwen35_assistant_runtime import (
+    ASSISTANT_STATEMENT_BUDGET_TOKENS,
+    ASSISTANT_THOUGHT_BUDGET_TOKENS,
+    ASSISTANT_TOOL_BATCH_BUDGET_TOKENS,
     Qwen35AssistantRuntime,
+    extract_incomplete_tool_name,
     extract_tool_calls,
     render_assistant_messages,
     render_assistant_text_suffix,
@@ -57,6 +62,7 @@ from shared.prompt_enhancer.qwen35_assistant_runtime import (
     strip_inline_tool_call_text,
     strip_tool_blocks,
     strip_trailing_stop_markup,
+    validate_tool_call_structure,
 )
 
 
@@ -85,28 +91,39 @@ _DOC_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _DOC_TOKEN_RE = re.compile(r"[a-z0-9]+")
 _SELECTED_REFERENCE_RE = re.compile(r"\b(selected|current(?:ly)?\s+selected|current\s+(?:item|media))\b", flags=re.IGNORECASE)
 _RUNTIME_UPDATE_BLOCK_RE = re.compile(r"\s*<wangp_runtime_update>.*?</wangp_runtime_update>\s*", flags=re.DOTALL | re.IGNORECASE)
-_POST_TRIM_WINDOW_FRACTION = 0.25
-_POST_TRIM_FALLBACK_WINDOW_FRACTION = 0.50
 _GENERATION_RESERVE_TOKENS = 128
 _THINKING_HEADROOM_TOKENS = 512
-_SUMMARY_COMPACTION_TRIGGER_FRACTION = 0.85
-_SUMMARY_COMPACTION_MAX_NEW_TOKENS = 2048
-_SUMMARY_COMPACTION_BUFFER_TOKENS = 4096
 _ACTIVE_TURN_COMPACTION_KEEP_STEPS = 2
-_REMOVED_TURN_REQUEST_HISTORY_LIMIT = 5
-_REMOVED_TURN_REQUEST_MAX_CHARS = 256
-_REMOVED_TURN_REQUESTS_KEY = "_deepy_removed_turn_requests"
+_COMPACTION_TASK_LABEL_KEY = "_deepy_compaction_task_label"
+_COMPACTION_NO_TOOLS_RETRY = (
+    "The preceding compaction attempt incorrectly tried to call a tool. This is a corrected retry: return only the plain-text summary. "
+    "Do not emit tool-call markup, a function name, arguments, XML, or commentary."
+)
 _INTERRUPTION_RUNTIME_TRACE_MAX_CHARS = 12000
 _VIDEO_TOOL_RUNTIME_REINJECT_TOKENS = 2000
-_CONTEXT_LIMIT_MAX_RETRIES = 2
 _ASSISTANT_STREAM_INTERVAL_SECONDS = 0.25
 _INJECT_LAST_SELECTED_MEDIA_RUNTIME_REFERENCES = False
 _INJECT_SELECTED_MEDIA_RUNTIME_UPDATES = False
 
 
+class _CompactionCapacityError(RuntimeError):
+    def __init__(self, message: str, required_reduction_tokens: int = 1):
+        super().__init__(message)
+        self.required_reduction_tokens = max(1, int(required_reduction_tokens))
+
+
+class _CompactionToolCallError(RuntimeError):
+    pass
+
+
+def _summary_compaction_reserve_tokens() -> int:
+    return ASSISTANT_TOOL_BATCH_BUDGET_TOKENS + _GENERATION_RESERVE_TOKENS
+
+
 def _summary_compaction_trigger_tokens(kv_cache_tokens: int) -> int:
-    kv_cache_tokens = max(1, int(kv_cache_tokens))
-    return min(int(math.floor(kv_cache_tokens * _SUMMARY_COMPACTION_TRIGGER_FRACTION)), max(1, kv_cache_tokens - _SUMMARY_COMPACTION_BUFFER_TOKENS))
+    return max(1, int(kv_cache_tokens) - _summary_compaction_reserve_tokens())
+
+
 _RUNTIME_STATUS_VISUAL_KEYS = (
     "selected_visual_media_id",
     "selected_visual_media_type",
@@ -409,6 +426,7 @@ class AssistantSessionState:
     current_turn: dict[str, Any] | None = None
     interruption_notice: str = ""
     interruption_history: list[dict[str, Any]] = field(default_factory=list)
+    recorded_budget_events: list[dict[str, Any]] = field(default_factory=list)
     runtime_status_note: str = ""
     runtime_status_signature: str = ""
     rendered_system_prompt_signature: str = ""
@@ -492,6 +510,7 @@ def clear_assistant_session(session: AssistantSessionState) -> None:
     session.current_turn = None
     session.interruption_notice = ""
     session.interruption_history.clear()
+    session.recorded_budget_events.clear()
     session.runtime_status_note = ""
     session.runtime_status_signature = ""
     session.rendered_system_prompt_signature = ""
@@ -570,6 +589,7 @@ def begin_assistant_turn(session: AssistantSessionState, user_message_id: str, u
         "rendered_context_window_tokens": session.rendered_context_window_tokens,
         "assistant_message_id": "",
         "assistant_badge": str(assistant_badge or "").strip(),
+        "completed_thought_content": "",
         "interrupt_recorded": False,
         "interruption_kind": "interrupted",
         "chat_transcript": copy.deepcopy(session.chat_transcript),
@@ -588,6 +608,8 @@ def checkpoint_assistant_turn(session: AssistantSessionState) -> bool:
     checkpoint = session.current_turn
     if not isinstance(checkpoint, dict):
         return False
+    if len(session.messages) > int(checkpoint.get("committed_messages_len", len(session.messages))):
+        checkpoint["completed_thought_content"] = ""
     checkpoint["committed_messages_len"] = len(session.messages)
     return True
 
@@ -804,8 +826,10 @@ def _build_assistant_history_content(raw_text: str, tool_calls: list[dict[str, A
     if tool_calls:
         cleaned_text = strip_inline_tool_call_text(cleaned_text)
     stripped_text = strip_trailing_stop_markup(cleaned_text)
-    thinking_text, answer_text = qwen35_text._split_generated_text(stripped_text)
-    rebuilt = _build_interrupted_assistant_content(thinking_text, answer_text)
+    thinking_chunks, answer_text = qwen35_text._split_generated_parts(stripped_text)
+    combined_reasoning = "\n\n".join(thinking_chunks)
+    reasoning_blocks = f"<think>\n{combined_reasoning}\n</think>" if combined_reasoning else ""
+    rebuilt = f"{reasoning_blocks}\n\n{answer_text}".strip() if len(answer_text) > 0 else reasoning_blocks
     if len(rebuilt) > 0:
         return rebuilt
     cleaned_visible = qwen35_text._clean_generated_text(stripped_text)
@@ -891,6 +915,9 @@ def rollback_assistant_turn(session: AssistantSessionState, interrupted_badge: s
         "pending_replay_reason": session.pending_replay_reason,
     }
     committed_messages = _completed_interrupted_messages(session.messages[base_len:target_len])
+    completed_thought_content = str(checkpoint.get("completed_thought_content", "") or "").strip()
+    if completed_thought_content:
+        committed_messages.append({"role": "assistant", "content": completed_thought_content})
     committed_summary = _summarize_interrupted_committed_messages(committed_messages)
     preserved_tail_interruptions = _extract_preserved_interruption_tail(session.messages[target_len:])
     session.messages[:] = [*session.messages[:base_len], *committed_messages]
@@ -5202,9 +5229,6 @@ class AssistantEngine:
         self._resume_stream_after_context_trim = False
         self._suppress_intermediate_stream_after_context_trim = False
         self._skip_generation_context_sync_once = False
-        self._continued_segment_raw_text = ""
-        self._continued_segment_token_ids: list[int] = []
-        self._continue_generation_segment_once = False
         self._runtime_debug_signature = ""
         bind_runtime_tools = getattr(self.tool_box, "bind_runtime_tools", None)
         if callable(bind_runtime_tools):
@@ -5282,6 +5306,18 @@ class AssistantEngine:
         requested_max_new_tokens = max(1, int(self._current_requested_max_new_tokens or 1024))
         runtime_thinking_tokens = 0 if self.runtime is None else max(0, int(getattr(self.runtime, "_runtime_extra_tokens", 0) or 0))
         return max(_GENERATION_RESERVE_TOKENS, requested_max_new_tokens + max(_THINKING_HEADROOM_TOKENS, runtime_thinking_tokens))
+
+    @staticmethod
+    def _action_generation_reserve_tokens(phase: str) -> int:
+        phase = str(phase or "").strip().lower()
+        limits = {
+            "thought": ASSISTANT_THOUGHT_BUDGET_TOKENS,
+            "statement": ASSISTANT_STATEMENT_BUDGET_TOKENS,
+            "tool": ASSISTANT_TOOL_BATCH_BUDGET_TOKENS,
+        }
+        if phase not in limits:
+            raise ValueError(f"Unknown assistant action phase: {phase}")
+        return limits[phase] + _GENERATION_RESERVE_TOKENS
 
     def _resolved_chat_max_tokens(self) -> int:
         max_tokens = 0
@@ -5364,63 +5400,6 @@ class AssistantEngine:
         self._segment_generated_tokens = 0
         self._emit_stats(force=True)
 
-    def _max_tokens_hit_context_ceiling(self, result: Any) -> bool:
-        if str(getattr(result, "stop_reason", "") or "").strip().lower() != "max_tokens":
-            return False
-        try:
-            produced_tokens = int(getattr(result, "token_count", 0) or 0)
-        except Exception:
-            produced_tokens = 0
-        if produced_tokens >= max(1, int(self._current_requested_max_new_tokens or 1024)):
-            return False
-        if self.runtime is None:
-            return False
-        current_seq = self.runtime._get_active_sequence()
-        if current_seq is None:
-            return False
-        try:
-            current_tokens = int(current_seq.num_tokens or 0)
-        except Exception:
-            current_tokens = len(list(current_seq.token_ids or []))
-        return current_tokens >= max(1, self._get_context_window_tokens())
-
-    def _recover_after_generation_limit(self, result: Any, raw_text: str, retry_no: int) -> bool:
-        stop_reason = str(getattr(result, "stop_reason", "") or "").strip().lower()
-        continue_max_tokens = stop_reason == "max_tokens" and self._get_compaction_type() == DEEPY_COMPACTION_TYPE_SUMMARIZE
-        hit_context_ceiling = stop_reason == "context_limit" or self._max_tokens_hit_context_ceiling(result)
-        if not continue_max_tokens and not hit_context_ceiling:
-            return False
-        if continue_max_tokens:
-            if self._continue_live_max_tokens_segment(raw_text):
-                return True
-            self._log("Model reached max_tokens without enough room for another full segment; making room while preserving the unfinished response.")
-        elif stop_reason == "max_tokens":
-            self._log("Model hit max_tokens at the context ceiling; compacting the current turn and continuing.")
-        return self._recover_from_context_limit(raw_text, 0 if continue_max_tokens else retry_no)
-
-    def _continue_live_max_tokens_segment(self, raw_text: str) -> bool:
-        if self.runtime is None:
-            return False
-        current_seq = self.runtime._get_active_sequence()
-        if current_seq is None:
-            return False
-        remaining_tokens = self._get_context_window_tokens() - len(list(current_seq.token_ids or []))
-        if remaining_tokens < self._segment_generation_reserve_tokens():
-            return False
-        current_segment_token_ids = [int(token_id) for token_id in list(current_seq.completion_token_ids or [])]
-        accumulated_completion_token_ids = self._merge_token_continuation(self._continued_segment_token_ids, current_segment_token_ids)
-        if not accumulated_completion_token_ids:
-            return False
-        self._continued_segment_raw_text = str(raw_text or "")
-        self._continued_segment_token_ids = accumulated_completion_token_ids
-        self._continue_generation_segment_once = True
-        self._resume_stream_after_context_trim = True
-        self._suppress_intermediate_stream_after_context_trim = False
-        self._skip_generation_context_sync_once = True
-        self._emit_stats(force=True)
-        self._log(f"Model reached max_tokens with {remaining_tokens:,} context tokens still available; continuing from live KV without compaction or replay.")
-        return True
-
     def _get_custom_system_prompt(self) -> str:
         return normalize_deepy_custom_system_prompt(get_deepy_config_value(self.custom_system_prompt_key, ""))
 
@@ -5438,7 +5417,8 @@ class AssistantEngine:
         return self._build_system_prompt()
 
     def _current_reset_base_signature(self) -> str:
-        return _json_dumps({"system_prompt": self._build_reset_base_system_prompt(), "tools": self.tool_box.get_tool_schemas(), "thinking_enabled": bool(self.thinking_enabled)})
+        speculative_decoding = normalize_prompt_enhancer_speculative_decoding(get_deepy_config_value(PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT))
+        return _json_dumps({"system_prompt": self._build_reset_base_system_prompt(), "tools": self.tool_box.get_tool_schemas(), "thinking_enabled": bool(self.thinking_enabled), "speculative_decoding": speculative_decoding})
 
     def _can_preserve_reset_base(self) -> bool:
         return self.vram_mode in (DEEPY_VRAM_MODE_ALWAYS_LOADED, DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST, DEEPY_VRAM_MODE_UNLOAD)
@@ -5809,6 +5789,18 @@ class AssistantEngine:
     def _build_pending_user_message(self, user_text: str) -> dict[str, Any]:
         message = {"role": "user", "content": str(user_text or "").strip()}
         runtime_note_blocks = [str(self.session.runtime_status_note or "").strip()] if len(str(self.session.runtime_status_note or "").strip()) > 0 else []
+        if self.session.recorded_budget_events:
+            runtime_note_blocks.append(
+                "\n".join(
+                    [
+                        "<wangp_runtime_update>",
+                        "Hidden WanGP runtime state. This is environment metadata, not a user message.",
+                        *[str(event.get("message", "") or "").strip() for event in self.session.recorded_budget_events if len(str(event.get("message", "") or "").strip()) > 0],
+                        "</wangp_runtime_update>",
+                    ]
+                )
+            )
+            self.session.recorded_budget_events.clear()
         user_text_normalized = re.sub(r"\s+", " ", str(user_text or "").strip().lower())
         interruption_query = (
             "interrupt" in user_text_normalized
@@ -6420,7 +6412,7 @@ class AssistantEngine:
     def _get_compaction_type(self) -> str:
         return normalize_deepy_compaction_type(get_deepy_config_value(DEEPY_COMPACTION_TYPE_KEY, ""))
 
-    def _prepare_memory_compaction_context(self, prior_messages: list[dict[str, Any]], checkpoint: dict[str, Any], context_window_tokens: int) -> tuple[dict[str, Any], int]:
+    def _prepare_memory_compaction_context(self, prior_messages: list[dict[str, Any]], checkpoint: dict[str, Any], context_window_tokens: int, max_new_tokens: int, *, corrective_no_tools: bool = False) -> tuple[dict[str, Any], int, int]:
         if self.runtime is None:
             raise RuntimeError("Assistant runtime is not available for context summarization.")
         if int(checkpoint.get("messages_len", -1)) != len(prior_messages):
@@ -6455,14 +6447,16 @@ class AssistantEngine:
             raise RuntimeError("Deepy's pre-turn KV context could not be snapshotted for compaction rollback.")
         rollback_snapshot = original_live_snapshot or source_snapshot
 
+        compaction_prompt = f"{ASSISTANT_COMPACTION_PROMPT}\n\n{_COMPACTION_NO_TOOLS_RETRY}" if corrective_no_tools else ASSISTANT_COMPACTION_PROMPT
         try:
-            instruction_suffix = render_text_user_turn_suffix(self.runtime.tokenizer, ASSISTANT_COMPACTION_PROMPT, thinking_enabled=False)
+            instruction_suffix = render_text_user_turn_suffix(self.runtime.tokenizer, compaction_prompt, thinking_enabled=False)
             appended_tokens = [int(token_id) for token_id in instruction_suffix]
             compaction_context_tokens = len(source_tokens) + len(appended_tokens)
             block_margin_tokens = int(self.runtime._get_live_llm().config.kvcache_block_size)
-            compaction_budget = int(context_window_tokens) - _SUMMARY_COMPACTION_MAX_NEW_TOKENS - block_margin_tokens
-            if compaction_context_tokens > int(compaction_budget):
-                raise RuntimeError(f"Deepy in-memory compaction context exceeds its safe budget ({compaction_context_tokens} > {int(compaction_budget)}).")
+            available_tokens = int(context_window_tokens) - compaction_context_tokens - block_margin_tokens
+            resolved_max_new_tokens = min(max(0, int(max_new_tokens)), available_tokens)
+            if resolved_max_new_tokens <= 0:
+                raise _CompactionCapacityError(f"Deepy in-memory compaction context leaves no summary generation headroom ({compaction_context_tokens} input tokens, {block_margin_tokens} block margin, {int(context_window_tokens)} context tokens).", 1 - available_tokens)
             self._run_prefill_call(len(appended_tokens), lambda: self.runtime.append_suffix(appended_tokens), record_if=lambda result: result in ("prefilled", "chunk_prefilled"))
         except Exception:
             self.runtime.restore_snapshot(rollback_snapshot)
@@ -6470,56 +6464,52 @@ class AssistantEngine:
         if llm_io_enabled():
             log_llm_io("OUT", "local-deepy", "history-compaction", {
                 "source_messages": prior_messages,
-                "instruction": ASSISTANT_COMPACTION_PROMPT,
+                "instruction": compaction_prompt,
                 "source_token_ids": source_tokens,
                 "instruction_token_ids": appended_tokens,
                 "known_token_ids": known_token_ids(self.runtime.tokenizer),
-                "generation": {"max_new_tokens": _SUMMARY_COMPACTION_MAX_NEW_TOKENS, "seed": 0, "do_sample": False, "thinking_enabled": False},
+                "generation": {"max_new_tokens": resolved_max_new_tokens, "seed": 0, "do_sample": False, "thinking_enabled": False},
             })
-        self._log(f"Compaction reused {len(source_tokens):,} cached tokens and appended {len(appended_tokens):,} tokens for the summary instruction.")
-        return rollback_snapshot, compaction_context_tokens
+        self._log(f"Compaction reused {len(source_tokens):,} cached tokens, appended {len(appended_tokens):,} instruction tokens, and reserved up to {resolved_max_new_tokens:,} summary tokens.")
+        return rollback_snapshot, compaction_context_tokens, resolved_max_new_tokens
 
-    def _prepare_live_compaction_context(self, context_window_tokens: int) -> tuple[dict[str, Any], int]:
+    def _prepare_live_compaction_context(self, source_messages: list[dict[str, Any]], context_window_tokens: int, max_new_tokens: int, *, corrective_no_tools: bool = False) -> tuple[dict[str, Any], int, int]:
         if self.runtime is None:
             raise RuntimeError("Assistant runtime is not available for active-turn summarization.")
-        source_tokens = [int(token_id) for token_id in list(self.session.rendered_token_ids or [])]
-        active_sequence = self.runtime._get_active_sequence()
-        active_tokens = [] if active_sequence is None else [int(token_id) for token_id in list(active_sequence.token_ids or [])]
-        if not source_tokens or active_tokens != source_tokens or int(self.session.rendered_messages_len or 0) != len(self.session.messages):
-            raise RuntimeError("Deepy's active-turn summary requires an exactly synchronized live context.")
-        snapshot_sequence = None if self.session.runtime_snapshot is None else self.session.runtime_snapshot.get("sequence", None)
-        snapshot_tokens = [] if not isinstance(snapshot_sequence, dict) else [int(token_id) for token_id in list(snapshot_sequence.get("token_ids", []) or [])]
-        rollback_snapshot = self.session.runtime_snapshot if snapshot_tokens == source_tokens else self.runtime.snapshot_context()
+        rollback_snapshot = self.runtime.snapshot_context()
         if rollback_snapshot is None:
             raise RuntimeError("Deepy's active-turn context could not be snapshotted for compaction rollback.")
         active_prompt = (
             f"{ASSISTANT_COMPACTION_PROMPT}\n\n"
-            f"The current user request and the most recent {_ACTIVE_TURN_COMPACTION_KEEP_STEPS} completed assistant/tool action groups will remain verbatim. "
-            "Compact the older completed actions and prior history, preserving the exact state needed to continue the current request."
+            "The conversation above ends at a chronological summary checkpoint. Everything above the checkpoint will be replaced by your summary. "
+            "Preserve the active task and completed progress precisely. Describe remaining work as of this checkpoint and clearly distinguish planned from completed actions. "
+            "Exact retained actions will be appended after the summary and supersede the checkpoint state chronologically."
         )
+        if corrective_no_tools:
+            active_prompt = f"{active_prompt}\n\n{_COMPACTION_NO_TOOLS_RETRY}"
         try:
-            instruction_suffix = render_text_user_turn_suffix(self.runtime.tokenizer, active_prompt, thinking_enabled=False)
-            appended_tokens = [int(token_id) for token_id in instruction_suffix]
-            compaction_context_tokens = len(source_tokens) + len(appended_tokens)
+            compaction_messages = [*self._render_messages_for_delta(source_messages), {"role": "user", "content": active_prompt}]
+            compaction_tokens = render_assistant_messages(self.runtime.tokenizer, compaction_messages, self.tool_box.get_tool_schemas(), add_generation_prompt=True, thinking_enabled=False)
+            compaction_context_tokens = len(compaction_tokens)
             block_margin_tokens = int(self.runtime._get_live_llm().config.kvcache_block_size)
-            compaction_budget = int(context_window_tokens) - _SUMMARY_COMPACTION_MAX_NEW_TOKENS - block_margin_tokens
-            if compaction_context_tokens > compaction_budget:
-                raise RuntimeError(f"Deepy active-turn compaction context exceeds its safe budget ({compaction_context_tokens} > {compaction_budget}).")
-            self._run_prefill_call(len(appended_tokens), lambda: self.runtime.append_suffix(appended_tokens), record_if=lambda result: result in ("prefilled", "chunk_prefilled"))
+            available_tokens = int(context_window_tokens) - compaction_context_tokens - block_margin_tokens
+            resolved_max_new_tokens = min(max(0, int(max_new_tokens)), available_tokens)
+            if resolved_max_new_tokens <= 0:
+                raise _CompactionCapacityError(f"Deepy active-turn compaction context leaves no summary generation headroom ({compaction_context_tokens} input tokens, {block_margin_tokens} block margin, {int(context_window_tokens)} context tokens).", 1 - available_tokens)
+            self._run_prefill_call(len(compaction_tokens), lambda: self.runtime.prime_context(compaction_tokens), record_if=True)
         except Exception:
             self.runtime.restore_snapshot(rollback_snapshot)
             raise
         if llm_io_enabled():
             log_llm_io("OUT", "local-deepy", "active-turn-compaction", {
-                "source_messages": self.session.messages,
+                "source_messages": source_messages,
                 "instruction": active_prompt,
-                "source_token_ids": source_tokens,
-                "instruction_token_ids": appended_tokens,
+                "compaction_token_ids": compaction_tokens,
                 "known_token_ids": known_token_ids(self.runtime.tokenizer),
-                "generation": {"max_new_tokens": _SUMMARY_COMPACTION_MAX_NEW_TOKENS, "seed": 0, "do_sample": False, "thinking_enabled": False},
+                "generation": {"max_new_tokens": resolved_max_new_tokens, "seed": 0, "do_sample": False, "thinking_enabled": False},
             })
-        self._log(f"Active-turn compaction reused {len(source_tokens):,} cached tokens and appended {len(appended_tokens):,} tokens for the summary instruction.")
-        return rollback_snapshot, compaction_context_tokens
+        self._log(f"Active-turn compaction rendered {compaction_context_tokens:,} checkpoint tokens and reserved up to {resolved_max_new_tokens:,} summary tokens.")
+        return rollback_snapshot, compaction_context_tokens, resolved_max_new_tokens
 
     @staticmethod
     def _turn_step_ranges(messages: list[dict[str, Any]], user_index: int) -> list[tuple[int, int]]:
@@ -6539,8 +6529,8 @@ class AssistantEngine:
         return ranges
 
     @staticmethod
-    def _build_compacted_summary_messages(summary: str) -> list[dict[str, Any]]:
-        return [
+    def _build_compacted_summary_messages(summary: str, *, acknowledge: bool = True) -> list[dict[str, Any]]:
+        messages = [
             {
                 "role": "user",
                 "content": (
@@ -6552,8 +6542,10 @@ class AssistantEngine:
                     "</deepy_conversation_summary>"
                 ),
             },
-            {"role": "assistant", "content": "Understood. I will preserve the important findings, trust completed results, avoid repeating completed work, and continue from the remaining plan."},
         ]
+        if acknowledge:
+            messages.append({"role": "assistant", "content": "Understood. I will preserve the important findings, trust completed results, avoid repeating completed work, and continue from the remaining plan."})
+        return messages
 
     def _rewritten_history_token_count(self, prior_messages: list[dict[str, Any]], current_messages: list[dict[str, Any]]) -> int:
         original_messages = self.session.messages
@@ -6563,12 +6555,106 @@ class AssistantEngine:
         finally:
             self.session.messages = original_messages
 
-    def _accept_capped_compaction(self, summary_messages: list[dict[str, Any]], current_messages: list[dict[str, Any]], before_tokens: int, context_window_tokens: int) -> None:
-        candidate_tokens = self._rewritten_history_token_count(summary_messages, current_messages)
-        half_window_tokens = int(math.floor(context_window_tokens * 0.50))
-        if candidate_tokens >= int(before_tokens) or candidate_tokens >= half_window_tokens:
-            raise RuntimeError(f"Capped compaction must reduce context and finish below 50% of the window ({int(before_tokens):,} -> {candidate_tokens:,} tokens; 50%={half_window_tokens:,}).")
-        self._log(f"Accepting capped compaction because it reduces context from {int(before_tokens):,} to {candidate_tokens:,} tokens ({candidate_tokens / max(1, context_window_tokens):.1%} of window).")
+    @staticmethod
+    def _resolved_compaction_reserve_tokens(generation_reserve_tokens: int) -> int:
+        return max(_summary_compaction_reserve_tokens(), max(0, int(generation_reserve_tokens)))
+
+    def _compaction_output_budget(self, prior_messages: list[dict[str, Any]], current_messages: list[dict[str, Any]], before_tokens: int, context_window_tokens: int, generation_reserve_tokens: int) -> int:
+        fixed_tokens = self._rewritten_history_token_count(prior_messages, current_messages)
+        target_tokens = min(int(before_tokens) - 1, int(context_window_tokens) - self._resolved_compaction_reserve_tokens(generation_reserve_tokens))
+        return max(0, target_tokens - fixed_tokens)
+
+    def _validate_compaction_reduction(self, prior_messages: list[dict[str, Any]], current_messages: list[dict[str, Any]], before_tokens: int, context_window_tokens: int, generation_reserve_tokens: int) -> int:
+        candidate_tokens = self._rewritten_history_token_count(prior_messages, current_messages)
+        target_tokens = min(int(before_tokens) - 1, int(context_window_tokens) - self._resolved_compaction_reserve_tokens(generation_reserve_tokens))
+        if candidate_tokens > target_tokens:
+            raise _CompactionCapacityError(f"Completed compaction does not free the required context ({int(before_tokens):,} -> {candidate_tokens:,} tokens; target <= {target_tokens:,}).", candidate_tokens - target_tokens)
+        self._log(f"Accepting completed compaction because it reduces context from {int(before_tokens):,} to {candidate_tokens:,} tokens and preserves the next-action reserve.")
+        return candidate_tokens
+
+    @staticmethod
+    def _degrade_oldest_compaction_source_unit(messages: list[dict[str, Any]], *, preserve_latest_user: bool, turn_levels: dict[int, int]) -> str:
+        user_indexes = [idx for idx, message in enumerate(messages) if str(message.get("role", "")).strip().lower() == "user"]
+        if not user_indexes:
+            if preserve_latest_user or not messages:
+                return ""
+            dropped_count = len(messages)
+            messages.clear()
+            return f"removed oldest unstructured history ({dropped_count} messages)"
+        if len(user_indexes) == 1 and preserve_latest_user:
+            step_ranges = AssistantEngine._turn_step_ranges(messages, user_indexes[0])
+            if not step_ranges:
+                return ""
+            step_start, step_end = step_ranges[0]
+            del messages[step_start:step_end]
+            return f"removed oldest active-turn action group ({step_end - step_start} messages)"
+
+        turn_start = 0
+        user_index = user_indexes[0]
+        turn_end = user_indexes[1] if len(user_indexes) > 1 else len(messages)
+        user_message = messages[user_index]
+        turn_key = id(user_message)
+        while True:
+            level = turn_levels.get(turn_key, 0)
+            if level == 0:
+                final_answer = None
+                for message in reversed(messages[user_index + 1:turn_end]):
+                    content = str(message.get("content", "") or "").strip()
+                    if str(message.get("role", "")).strip().lower() == "assistant" and not message.get("tool_calls") and len(qwen35_text._split_generated_text(content)[1].strip()) > 0:
+                        final_answer = message
+                        break
+                retained = [user_message, *([] if final_answer is None else [final_answer])]
+                turn_levels[turn_key] = 2 if final_answer is None else 1
+                if messages[turn_start:turn_end] != retained:
+                    messages[turn_start:turn_end] = retained
+                    return "reduced oldest turn to its exact user request" if final_answer is None else "reduced oldest turn to its exact user request and final assistant answer"
+                continue
+            if level == 1:
+                turn_levels[turn_key] = 2
+                if messages[turn_start:turn_end] != [user_message]:
+                    messages[turn_start:turn_end] = [user_message]
+                    return "reduced oldest turn to its exact user request"
+                continue
+            if level == 2:
+                label = str(user_message.get(_COMPACTION_TASK_LABEL_KEY, "") or "").strip()
+                turn_levels[turn_key] = 3
+                if label:
+                    user_message["content"] = f"[Earlier request: {label}]"
+                    messages[turn_start:turn_end] = [user_message]
+                    return "reduced oldest turn to its deterministic request marker"
+                continue
+            dropped_count = turn_end - turn_start
+            del messages[turn_start:turn_end]
+            turn_levels.pop(turn_key, None)
+            return f"removed oldest turn ({dropped_count} messages)"
+
+    def _compaction_source_token_count(self, messages: list[dict[str, Any]]) -> int:
+        if self.runtime is None:
+            raise RuntimeError("Assistant runtime is not available for compaction source measurement.")
+        rendered_messages = self._render_messages_for_delta(messages)
+        return len(render_assistant_messages(self.runtime.tokenizer, rendered_messages, self.tool_box.get_tool_schemas(), add_generation_prompt=False, thinking_enabled=False))
+
+    def _degrade_compaction_source(self, messages: list[dict[str, Any]], *, preserve_latest_user: bool, turn_levels: dict[int, int], required_reduction_tokens: int) -> str:
+        before_tokens = self._compaction_source_token_count(messages)
+        reasons = []
+        while messages:
+            reason = self._degrade_oldest_compaction_source_unit(messages, preserve_latest_user=preserve_latest_user, turn_levels=turn_levels)
+            if not reason:
+                break
+            reasons.append(reason)
+            if before_tokens - self._compaction_source_token_count(messages) >= max(1, int(required_reduction_tokens)):
+                break
+        return "; ".join(reasons)
+
+    @staticmethod
+    def _clean_compaction_summary(raw_text: str) -> str:
+        raw_text = str(raw_text or "")
+        if re.search(r"</?tool_call\b|<function\b|</function\b", raw_text, flags=re.IGNORECASE):
+            raise _CompactionToolCallError("Compaction generation emitted tool-call markup instead of a plain-text summary.")
+        summary = strip_tool_blocks(qwen35_text._clean_generated_text(raw_text)).strip()
+        if not summary:
+            raise RuntimeError("Compaction generation returned an empty summary.")
+        return summary
 
     def _restore_compaction_transaction(self, rollback_snapshot: dict[str, Any] | None, original_messages: list[dict[str, Any]], original_render_state: dict[str, Any]) -> None:
         if self.runtime is None:
@@ -6591,6 +6677,7 @@ class AssistantEngine:
         if not isinstance(checkpoint, dict):
             raise RuntimeError("Assistant compaction requires an active turn checkpoint.")
         context_window_tokens = self._get_context_window_tokens()
+        generation_reserve_tokens = self._resolved_compaction_reserve_tokens(generation_reserve_tokens)
         self.session.messages = [*copy.deepcopy(prior_messages), *copy.deepcopy(current_messages)]
         target_tokens = self._render_messages(add_generation_prompt=True)
         hard_budget = max(1, context_window_tokens - max(0, int(generation_reserve_tokens)))
@@ -6624,89 +6711,6 @@ class AssistantEngine:
         self._remember_render_state()
         self._snapshot_synchronized_live_context()
 
-    @staticmethod
-    def _discard_oldest_completed_turn_step(messages: list[dict[str, Any]]) -> str:
-        user_indexes = [idx for idx, message in enumerate(messages) if str(message.get("role", "")).strip().lower() == "user"]
-        if len(user_indexes) != 1:
-            return ""
-        step_start = user_indexes[0] + 1
-        if step_start >= len(messages):
-            return ""
-        step_end = step_start + 1
-        first_role = str(messages[step_start].get("role", "") or "message").strip().lower() or "message"
-        if first_role == "assistant" and messages[step_start].get("tool_calls"):
-            while step_end < len(messages) and str(messages[step_end].get("role", "")).strip().lower() == "tool":
-                step_end += 1
-        elif first_role == "tool":
-            while step_end < len(messages) and str(messages[step_end].get("role", "")).strip().lower() == "tool":
-                step_end += 1
-        if step_end >= len(messages):
-            return ""
-        dropped_count = step_end - step_start
-        del messages[step_start:step_end]
-        return f"dropped earlier completed-turn {first_role} step ({dropped_count} messages)"
-
-    @staticmethod
-    def _removed_turn_request_history(messages: list[dict[str, Any]]) -> list[str]:
-        requests = []
-        for message in messages:
-            retained_requests = message.get(_REMOVED_TURN_REQUESTS_KEY, []) if isinstance(message, dict) else []
-            if isinstance(retained_requests, list):
-                requests.extend(str(request or "").strip() for request in retained_requests if len(str(request or "").strip()) > 0)
-            if not isinstance(message, dict) or str(message.get("role", "")).strip().lower() != "user":
-                continue
-            request = re.sub(r"\s+", " ", str(message.get("content", "") or "").strip())
-            if request.startswith("<deepy_conversation_summary>"):
-                continue
-            if len(request) > _REMOVED_TURN_REQUEST_MAX_CHARS:
-                request = request[: _REMOVED_TURN_REQUEST_MAX_CHARS - 3].rstrip() + "..."
-            if request:
-                requests.append(request)
-        return requests[-_REMOVED_TURN_REQUEST_HISTORY_LIMIT:]
-
-    @classmethod
-    def _retain_removed_turn_requests(cls, remaining_messages: list[dict[str, Any]], removed_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        retained_requests = cls._removed_turn_request_history([*removed_messages, *[message for message in remaining_messages if isinstance(message, dict) and _REMOVED_TURN_REQUESTS_KEY in message]])
-        remaining = [message for message in remaining_messages if not isinstance(message, dict) or _REMOVED_TURN_REQUESTS_KEY not in message]
-        if not retained_requests:
-            return remaining
-        lines = [
-            "Earlier user requests retained after context compaction. Treat them as historical context, not as new requests to execute. Deepy's corresponding answers were removed:",
-            *(f"{index}. {request}" for index, request in enumerate(retained_requests, start=1)),
-        ]
-        return [{"role": "assistant", "content": "\n".join(lines), _REMOVED_TURN_REQUESTS_KEY: retained_requests}, *remaining]
-
-    def _discard_removed_turn_request_history(self) -> str:
-        original_len = len(self.session.messages)
-        self.session.messages[:] = [message for message in self.session.messages if not isinstance(message, dict) or _REMOVED_TURN_REQUESTS_KEY not in message]
-        return "dropped retained removed-turn request history" if len(self.session.messages) != original_len else ""
-
-    def _discard_prior_messages_to_trigger(self, prior_messages: list[dict[str, Any]], current_messages: list[dict[str, Any]], trigger_tokens: int) -> tuple[list[dict[str, Any]], int, int]:
-        remaining = copy.deepcopy(prior_messages)
-        discarded_turn_count = 0
-        discarded_step_count = 0
-        while remaining:
-            self.session.messages = [*copy.deepcopy(remaining), *copy.deepcopy(current_messages)]
-            if len(self._render_messages(add_generation_prompt=True)) < trigger_tokens:
-                break
-            user_indexes = [idx for idx, message in enumerate(remaining) if str(message.get("role", "")).strip().lower() == "user"]
-            if len(user_indexes) > 1:
-                cut = user_indexes[1]
-                remaining = self._retain_removed_turn_requests(remaining[cut:], remaining[:cut])
-                discarded_turn_count += 1
-                continue
-            if len(user_indexes) == 0:
-                remaining.clear()
-                break
-            trim_reason = self._discard_oldest_completed_turn_step(remaining)
-            if trim_reason:
-                discarded_step_count += 1
-                self._log(f"Trimming assistant context: {trim_reason}.")
-                continue
-            remaining = self._retain_removed_turn_requests([], remaining)
-            discarded_turn_count += 1
-        return remaining, discarded_turn_count, discarded_step_count
-
     def _mark_history_summarized_trace(self, summary: str) -> None:
         checkpoint = self.session.current_turn
         if not isinstance(checkpoint, dict):
@@ -6724,24 +6728,25 @@ class AssistantEngine:
         self._emit_chat_event(assistant_chat.build_sync_event(self.session, status=self._current_status_payload, stats=self._chat_stats_payload()))
 
     def _mark_summary_fallback_trace(self, error: Exception) -> None:
-        self._log(f"Deepy context summarization failed; falling back to discarding oldest entries: {error}")
+        self._log(f"Deepy context summarization attempt failed: {error}")
 
     @staticmethod
     def _print_compaction_report(mode: str, before_tokens: int, after_tokens: int, detail: str) -> None:
         print(f"[Deepy] Context compacted: {mode}, {int(before_tokens):,} -> {int(after_tokens):,} tokens, {str(detail or '').strip()}")
 
-    def _maybe_summarize_context(self, generation_reserve_tokens: int) -> bool:
+    def _maybe_summarize_context(self, generation_reserve_tokens: int, force: bool = False) -> bool:
         if self._get_compaction_type() != DEEPY_COMPACTION_TYPE_SUMMARIZE:
             return False
         context_window_tokens = self._get_context_window_tokens()
         if context_window_tokens < DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:
             return False
+        generation_reserve_tokens = self._resolved_compaction_reserve_tokens(generation_reserve_tokens)
         checkpoint = self.session.current_turn
         if not isinstance(checkpoint, dict) or bool(checkpoint.get("summary_compaction_attempted", False)):
             return False
         target_tokens = self._render_messages(add_generation_prompt=True)
         trigger_tokens = _summary_compaction_trigger_tokens(context_window_tokens)
-        if len(target_tokens) < trigger_tokens:
+        if not force and len(target_tokens) <= trigger_tokens:
             return False
         user_indexes = [idx for idx, message in enumerate(self.session.messages) if str(message.get("role", "")).strip().lower() == "user"]
         if len(user_indexes) <= 1:
@@ -6752,10 +6757,6 @@ class AssistantEngine:
         current_messages = copy.deepcopy(self.session.messages[current_turn_start:])
         if int(checkpoint.get("rendered_messages_len", -1)) != len(prior_messages):
             self._log("Deferring summary compaction until preserved interrupted history is synchronized with live KV.")
-            return False
-        current_turn_suffix = self._render_current_turn_slice_suffix(current_messages, add_generation_prompt=True)
-        if current_turn_suffix and len(target_tokens) - len(current_turn_suffix) < trigger_tokens:
-            self._log("Skipping summary compaction because the current turn, not prior history, caused the context overflow.")
             return False
         checkpoint["summary_compaction_attempted"] = True
 
@@ -6768,78 +6769,110 @@ class AssistantEngine:
         }
 
         self._set_status("Compacting context...", kind="loading")
-        rollback_snapshot = None
-        try:
-            rollback_snapshot, _compaction_context_tokens = self._prepare_memory_compaction_context(prior_messages, checkpoint, context_window_tokens)
-            generation_started_at = time.perf_counter()
-            result = self.runtime.generate_segment(
-                max_new_tokens=_SUMMARY_COMPACTION_MAX_NEW_TOKENS,
-                seed=0,
-                do_sample=False,
-                temperature=None,
-                top_p=None,
-                top_k=None,
-                thinking_enabled=False,
-                stop_requested=lambda: bool(self.session.interrupt_requested),
-            )
-            log_llm_io("IN", "local-deepy", "history-compaction", {
-                "text": result.raw_text,
-                "stop_reason": result.stop_reason,
-                "generated_tokens": result.token_count,
-                "stop_token": token_id_descriptor(self.runtime.tokenizer, result.stop_token_id),
-            })
-            self._record_generation_metrics(result.token_count, max(0.0, time.perf_counter() - generation_started_at))
-            if self.debug_enabled:
-                raw_preview = str(result.raw_text or "").replace("\r", "\\r").replace("\n", "\\n")
-                self._log(f"Compaction generation stop_reason={result.stop_reason} tokens={result.token_count} raw_preview={raw_preview[:300]!r}")
-            if self.session.interrupt_requested or result.stop_reason == "interrupted":
-                self._restore_compaction_transaction(rollback_snapshot, original_messages, original_render_state)
-                print("[Deepy] Context compaction interrupted; original context restored.")
-                return True
-            if result.stop_reason in {"context_limit", "tool_call"}:
-                raise RuntimeError(f"Compaction generation ended with {result.stop_reason}.")
-            summary = strip_tool_blocks(qwen35_text._clean_generated_text(result.raw_text)).strip()
-            if not summary:
-                raise RuntimeError("Compaction generation returned an empty summary.")
-            summary_messages = self._build_compacted_summary_messages(summary)
-            if result.stop_reason == "max_tokens":
-                self._accept_capped_compaction(summary_messages, current_messages, len(target_tokens), context_window_tokens)
-            self._commit_rewritten_history(summary_messages, current_messages, generation_reserve_tokens)
-        except Exception as exc:
-            if rollback_snapshot is not None:
-                self._restore_compaction_transaction(rollback_snapshot, original_messages, original_render_state)
-            else:
-                self.session.messages = copy.deepcopy(original_messages)
-            if self.session.interrupt_requested:
-                return True
-            self._mark_summary_fallback_trace(exc)
-            self._set_status("Summarization failed; discarding oldest entries...", kind="loading")
-            fallback_prior_messages, discarded_turn_count, discarded_step_count = self._discard_prior_messages_to_trigger(prior_messages, current_messages, trigger_tokens)
+        working_prior_messages = copy.deepcopy(prior_messages)
+        turn_levels: dict[int, int] = {}
+        reduction_events: list[str] = []
+        corrective_no_tools = False
+        summary = ""
+        while working_prior_messages:
+            rollback_snapshot = None
             try:
-                self._commit_rewritten_history(fallback_prior_messages, current_messages, generation_reserve_tokens)
+                empty_summary_messages = self._build_compacted_summary_messages("")
+                requested_summary_tokens = self._compaction_output_budget(empty_summary_messages, current_messages, len(target_tokens), context_window_tokens, generation_reserve_tokens)
+                if requested_summary_tokens <= 0:
+                    raise _CompactionCapacityError("Compaction cannot produce a summary while preserving a net reduction and the next-action reserve.")
+                if working_prior_messages == prior_messages:
+                    rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_memory_compaction_context(working_prior_messages, checkpoint, context_window_tokens, requested_summary_tokens, corrective_no_tools=corrective_no_tools)
+                else:
+                    rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_live_compaction_context(working_prior_messages, context_window_tokens, requested_summary_tokens, corrective_no_tools=corrective_no_tools)
+                generation_started_at = time.perf_counter()
+                result = self.runtime.generate_segment(
+                    max_new_tokens=max_new_tokens,
+                    seed=0,
+                    do_sample=False,
+                    temperature=None,
+                    top_p=None,
+                    top_k=None,
+                    thinking_enabled=False,
+                    stop_requested=lambda: bool(self.session.interrupt_requested),
+                )
+                log_llm_io("IN", "local-deepy", "history-compaction", {
+                    "text": result.raw_text,
+                    "stop_reason": result.stop_reason,
+                    "generated_tokens": result.token_count,
+                    "stop_token": token_id_descriptor(self.runtime.tokenizer, result.stop_token_id),
+                })
+                self._record_generation_metrics(result.token_count, max(0.0, time.perf_counter() - generation_started_at))
+                if self.debug_enabled:
+                    raw_preview = str(result.raw_text or "").replace("\r", "\\r").replace("\n", "\\n")
+                    self._log(f"Compaction generation stop_reason={result.stop_reason} tokens={result.token_count} max_new_tokens={max_new_tokens} raw_preview={raw_preview[:300]!r}")
+                if self.session.interrupt_requested or result.stop_reason == "interrupted":
+                    self._restore_compaction_transaction(rollback_snapshot, original_messages, original_render_state)
+                    print("[Deepy] Context compaction interrupted; original context restored.")
+                    return True
+                if result.stop_reason in {"context_limit", "max_tokens"}:
+                    raise _CompactionCapacityError(f"Compaction generation ended with {result.stop_reason}; the summary was not complete.")
+                if result.stop_reason == "tool_call":
+                    raise _CompactionToolCallError("Compaction generation attempted to call a tool instead of returning a summary.")
+                summary = self._clean_compaction_summary(result.raw_text)
+                summary_messages = self._build_compacted_summary_messages(summary)
+                self._validate_compaction_reduction(summary_messages, current_messages, len(target_tokens), context_window_tokens, generation_reserve_tokens)
+                self._commit_rewritten_history(summary_messages, current_messages, generation_reserve_tokens)
+                break
+            except Exception as exc:
+                summary = ""
+                if rollback_snapshot is not None:
+                    self._restore_compaction_transaction(rollback_snapshot, original_messages, original_render_state)
+                else:
+                    self.session.messages = copy.deepcopy(original_messages)
+                if self.session.interrupt_requested:
+                    return True
+                self._mark_summary_fallback_trace(exc)
+                if isinstance(exc, _CompactionToolCallError):
+                    if corrective_no_tools:
+                        raise RuntimeError("Deepy context compaction repeatedly attempted to call a tool; original context was restored.") from exc
+                    corrective_no_tools = True
+                    self._log("Retrying the identical compaction source with a stronger plain-text/no-tools instruction.")
+                    self._set_status("Retrying context summary without tools...", kind="loading")
+                    continue
+                if not isinstance(exc, _CompactionCapacityError):
+                    raise RuntimeError("Deepy context compaction failed; original context was restored without deleting history.") from exc
+                reduction_reason = self._degrade_compaction_source(
+                    working_prior_messages,
+                    preserve_latest_user=False,
+                    turn_levels=turn_levels,
+                    required_reduction_tokens=exc.required_reduction_tokens,
+                )
+                if not reduction_reason:
+                    break
+                reduction_events.append(reduction_reason)
+                self._log(f"Capacity-limited compaction retry: {reduction_reason}.")
+                self._set_status("Summarization needs more room; reducing the oldest completed context and retrying...", kind="loading")
+
+        if not summary:
+            try:
+                self._commit_rewritten_history(working_prior_messages, current_messages, generation_reserve_tokens)
             except Exception as fallback_exc:
-                self._restore_compaction_transaction(rollback_snapshot, original_messages, original_render_state)
-                self._log(f"Early discard compaction could not be committed; deferring to the normal full-window compaction path: {fallback_exc}")
-                print("[Deepy] Context compaction: summarize failed; early discard fallback deferred to the full-window discard path.")
+                self.session.messages = copy.deepcopy(original_messages)
+                self._log(f"Early discard compaction could not be committed; deferring to active-turn compaction: {fallback_exc}")
+                print("[Deepy] Context compaction: summary retries exhausted; deferring to active-turn compaction.")
                 self._set_status("Thinking...", kind="thinking")
                 return False
-            details = []
-            if discarded_turn_count:
-                details.append(f"{discarded_turn_count} oldest turn{'s' if discarded_turn_count != 1 else ''} removed")
-            if discarded_step_count:
-                details.append(f"{discarded_step_count} earlier completed-turn step{'s' if discarded_step_count != 1 else ''} removed")
-            self._print_compaction_report("summarize failed; discard fallback", len(target_tokens), len(self.session.rendered_token_ids), ", ".join(details))
+            self._print_compaction_report("summary capacity retries exhausted; reduced-source fallback", len(target_tokens), len(self.session.rendered_token_ids), "; ".join(reduction_events))
             self._mark_history_trimmed_trace()
             self._set_status("Thinking...", kind="thinking")
             return True
 
         summarized_turn_count = sum(str(message.get("role", "")).strip().lower() == "user" for message in prior_messages)
         self._set_status("Thinking...", kind="thinking")
-        self._print_compaction_report("summarize", len(target_tokens), len(self.session.rendered_token_ids), f"{summarized_turn_count} completed turn{'s' if summarized_turn_count != 1 else ''} summarized")
+        detail = f"{summarized_turn_count} completed turn{'s' if summarized_turn_count != 1 else ''} summarized"
+        if reduction_events:
+            detail += f" after capacity reduction ({'; '.join(reduction_events)})"
+        self._print_compaction_report("summarize", len(target_tokens), len(self.session.rendered_token_ids), detail)
         self._mark_history_summarized_trace(summary)
         return True
 
-    def _maybe_summarize_active_turn(self, generation_reserve_tokens: int) -> bool:
+    def _maybe_summarize_active_turn(self, generation_reserve_tokens: int, force: bool = False) -> bool:
         if self.session.interrupt_requested:
             return False
         if self._get_compaction_type() != DEEPY_COMPACTION_TYPE_SUMMARIZE:
@@ -6847,11 +6880,12 @@ class AssistantEngine:
         context_window_tokens = self._get_context_window_tokens()
         if context_window_tokens < DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:
             return False
+        generation_reserve_tokens = self._resolved_compaction_reserve_tokens(generation_reserve_tokens)
         checkpoint = self.session.current_turn
         if not isinstance(checkpoint, dict):
             return False
         trigger_tokens = _summary_compaction_trigger_tokens(context_window_tokens)
-        if len(self.session.rendered_token_ids or []) < trigger_tokens:
+        if not force and len(self.session.rendered_token_ids or []) <= trigger_tokens:
             return False
         if int(checkpoint.get("active_summary_attempted_messages_len", -1)) == len(self.session.messages):
             return False
@@ -6865,9 +6899,8 @@ class AssistantEngine:
             return False
         preserve_start = step_ranges[-_ACTIVE_TURN_COMPACTION_KEEP_STEPS][0] if len(step_ranges) > _ACTIVE_TURN_COMPACTION_KEEP_STEPS else current_turn_start + 1
         original_messages = copy.deepcopy(self.session.messages)
-        prior_messages = copy.deepcopy(self.session.messages[:current_turn_start])
-        full_current_messages = copy.deepcopy(self.session.messages[current_turn_start:])
-        retained_current_messages = [copy.deepcopy(self.session.messages[current_turn_start]), *copy.deepcopy(self.session.messages[preserve_start:])]
+        summary_source_messages = copy.deepcopy(self.session.messages[:preserve_start])
+        retained_action_messages = copy.deepcopy(self.session.messages[preserve_start:])
         original_render_state = {
             "rendered_token_ids": list(self.session.rendered_token_ids),
             "rendered_messages_len": int(self.session.rendered_messages_len or 0),
@@ -6877,185 +6910,140 @@ class AssistantEngine:
         }
         checkpoint["active_summary_attempted_messages_len"] = len(self.session.messages)
         self._set_status("Compacting context...", kind="loading")
-        rollback_snapshot = None
-        try:
-            rollback_snapshot, _compaction_context_tokens = self._prepare_live_compaction_context(context_window_tokens)
-            generation_started_at = time.perf_counter()
-            result = self.runtime.generate_segment(
-                max_new_tokens=_SUMMARY_COMPACTION_MAX_NEW_TOKENS,
-                seed=0,
-                do_sample=False,
-                temperature=None,
-                top_p=None,
-                top_k=None,
-                thinking_enabled=False,
-                stop_requested=lambda: bool(self.session.interrupt_requested),
-            )
-            log_llm_io("IN", "local-deepy", "active-turn-compaction", {
-                "text": result.raw_text,
-                "stop_reason": result.stop_reason,
-                "generated_tokens": result.token_count,
-                "stop_token": token_id_descriptor(self.runtime.tokenizer, result.stop_token_id),
-            })
-            self._record_generation_metrics(result.token_count, max(0.0, time.perf_counter() - generation_started_at))
-            if self.debug_enabled:
-                raw_preview = str(result.raw_text or "").replace("\r", "\\r").replace("\n", "\\n")
-                self._log(f"Active-turn compaction generation stop_reason={result.stop_reason} tokens={result.token_count} raw_preview={raw_preview[:300]!r}")
-            if self.session.interrupt_requested or result.stop_reason == "interrupted":
-                self._restore_compaction_transaction(rollback_snapshot, original_messages, original_render_state)
-                print("[Deepy] Active-turn context compaction interrupted; original context restored.")
-                return True
-            if result.stop_reason in {"context_limit", "tool_call"}:
-                raise RuntimeError(f"Active-turn compaction generation ended with {result.stop_reason}.")
-            summary = strip_tool_blocks(qwen35_text._clean_generated_text(result.raw_text)).strip()
-            if not summary:
-                raise RuntimeError("Active-turn compaction generation returned an empty summary.")
-            summary_messages = self._build_compacted_summary_messages(summary)
-            if result.stop_reason == "max_tokens":
-                self._accept_capped_compaction(summary_messages, retained_current_messages, len(original_render_state["rendered_token_ids"]), context_window_tokens)
-            self._commit_rewritten_history(summary_messages, retained_current_messages, generation_reserve_tokens)
-        except Exception as exc:
-            if rollback_snapshot is not None:
-                self._restore_compaction_transaction(rollback_snapshot, original_messages, original_render_state)
-            else:
-                self.session.messages = copy.deepcopy(original_messages)
-            if self.session.interrupt_requested:
-                return True
-            self._mark_summary_fallback_trace(exc)
-            self._set_status("Summarization failed; discarding oldest entries...", kind="loading")
-            fallback_prior, discarded_turn_count, discarded_prior_step_count = self._discard_prior_messages_to_trigger(prior_messages, full_current_messages, trigger_tokens)
-            fallback_current = copy.deepcopy(full_current_messages)
-            self.session.messages = [*copy.deepcopy(fallback_prior), *copy.deepcopy(fallback_current)]
-            discarded_current_step_count = 0
-            while len(self._render_messages(add_generation_prompt=True)) >= trigger_tokens:
-                current_start = len(fallback_prior)
-                current_ranges = self._turn_step_ranges(self.session.messages, current_start)
-                if len(current_ranges) <= _ACTIVE_TURN_COMPACTION_KEEP_STEPS:
-                    break
-                step_start, step_end = current_ranges[0]
-                del self.session.messages[step_start:step_end]
-                discarded_current_step_count += 1
-            fallback_current = copy.deepcopy(self.session.messages[len(fallback_prior):])
-            if discarded_turn_count + discarded_prior_step_count + discarded_current_step_count == 0:
-                self._restore_compaction_transaction(rollback_snapshot, original_messages, original_render_state)
-                self._set_status("Thinking...", kind="thinking")
-                return False
+        working_summary_source = copy.deepcopy(summary_source_messages)
+        turn_levels: dict[int, int] = {}
+        reduction_events: list[str] = []
+        corrective_no_tools = False
+        summary = ""
+        while working_summary_source:
+            rollback_snapshot = None
             try:
-                self._commit_rewritten_history(fallback_prior, fallback_current, generation_reserve_tokens)
+                empty_summary_messages = self._build_compacted_summary_messages("", acknowledge=False)
+                empty_current_messages = [*empty_summary_messages, *retained_action_messages]
+                requested_summary_tokens = self._compaction_output_budget([], empty_current_messages, len(original_render_state["rendered_token_ids"]), context_window_tokens, generation_reserve_tokens)
+                if requested_summary_tokens <= 0:
+                    raise _CompactionCapacityError("Active-turn compaction cannot produce a summary while preserving a net reduction and the next-action reserve.")
+                rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_live_compaction_context(working_summary_source, context_window_tokens, requested_summary_tokens, corrective_no_tools=corrective_no_tools)
+                generation_started_at = time.perf_counter()
+                result = self.runtime.generate_segment(
+                    max_new_tokens=max_new_tokens,
+                    seed=0,
+                    do_sample=False,
+                    temperature=None,
+                    top_p=None,
+                    top_k=None,
+                    thinking_enabled=False,
+                    stop_requested=lambda: bool(self.session.interrupt_requested),
+                )
+                log_llm_io("IN", "local-deepy", "active-turn-compaction", {
+                    "text": result.raw_text,
+                    "stop_reason": result.stop_reason,
+                    "generated_tokens": result.token_count,
+                    "stop_token": token_id_descriptor(self.runtime.tokenizer, result.stop_token_id),
+                })
+                self._record_generation_metrics(result.token_count, max(0.0, time.perf_counter() - generation_started_at))
+                if self.debug_enabled:
+                    raw_preview = str(result.raw_text or "").replace("\r", "\\r").replace("\n", "\\n")
+                    self._log(f"Active-turn compaction generation stop_reason={result.stop_reason} tokens={result.token_count} max_new_tokens={max_new_tokens} raw_preview={raw_preview[:300]!r}")
+                if self.session.interrupt_requested or result.stop_reason == "interrupted":
+                    self._restore_compaction_transaction(rollback_snapshot, original_messages, original_render_state)
+                    print("[Deepy] Active-turn context compaction interrupted; original context restored.")
+                    return True
+                if result.stop_reason in {"context_limit", "max_tokens"}:
+                    raise _CompactionCapacityError(f"Active-turn compaction generation ended with {result.stop_reason}; the summary was not complete.")
+                if result.stop_reason == "tool_call":
+                    raise _CompactionToolCallError("Active-turn compaction generation attempted to call a tool instead of returning a summary.")
+                summary = self._clean_compaction_summary(result.raw_text)
+                summary_messages = self._build_compacted_summary_messages(summary, acknowledge=False)
+                rewritten_current_messages = [*summary_messages, *retained_action_messages]
+                self._validate_compaction_reduction([], rewritten_current_messages, len(original_render_state["rendered_token_ids"]), context_window_tokens, generation_reserve_tokens)
+                self._commit_rewritten_history([], rewritten_current_messages, generation_reserve_tokens)
+                break
+            except Exception as exc:
+                summary = ""
+                if rollback_snapshot is not None:
+                    self._restore_compaction_transaction(rollback_snapshot, original_messages, original_render_state)
+                else:
+                    self.session.messages = copy.deepcopy(original_messages)
+                if self.session.interrupt_requested:
+                    return True
+                self._mark_summary_fallback_trace(exc)
+                if isinstance(exc, _CompactionToolCallError):
+                    if corrective_no_tools:
+                        raise RuntimeError("Deepy active-turn compaction repeatedly attempted to call a tool; original context was restored.") from exc
+                    corrective_no_tools = True
+                    self._log("Retrying the identical active-turn compaction source with a stronger plain-text/no-tools instruction.")
+                    self._set_status("Retrying context summary without tools...", kind="loading")
+                    continue
+                if not isinstance(exc, _CompactionCapacityError):
+                    raise RuntimeError("Deepy active-turn compaction failed; original context was restored without deleting history.") from exc
+                reduction_reason = self._degrade_compaction_source(
+                    working_summary_source,
+                    preserve_latest_user=True,
+                    turn_levels=turn_levels,
+                    required_reduction_tokens=exc.required_reduction_tokens,
+                )
+                if not reduction_reason:
+                    break
+                reduction_events.append(reduction_reason)
+                self._log(f"Capacity-limited active-turn compaction retry: {reduction_reason}.")
+                self._set_status("Summarization needs more room; reducing the oldest completed context and retrying...", kind="loading")
+
+        if not summary:
+            fallback_current = [*working_summary_source, *retained_action_messages]
+            try:
+                self._commit_rewritten_history([], fallback_current, generation_reserve_tokens)
             except Exception as fallback_exc:
-                self._restore_compaction_transaction(rollback_snapshot, original_messages, original_render_state)
+                self.session.messages = copy.deepcopy(original_messages)
                 self._log(f"Active-turn discard fallback could not be committed; deferring to hard-window recovery: {fallback_exc}")
                 self._set_status("Thinking...", kind="thinking")
                 return False
-            details = []
-            if discarded_turn_count:
-                details.append(f"{discarded_turn_count} oldest turn{'s' if discarded_turn_count != 1 else ''} removed")
-            if discarded_prior_step_count:
-                details.append(f"{discarded_prior_step_count} earlier completed-turn step{'s' if discarded_prior_step_count != 1 else ''} removed")
-            if discarded_current_step_count:
-                details.append(f"{discarded_current_step_count} older active-turn step{'s' if discarded_current_step_count != 1 else ''} removed")
-            self._print_compaction_report("active-turn summarize failed; discard fallback", len(original_render_state["rendered_token_ids"]), len(self.session.rendered_token_ids), ", ".join(details))
+            self._print_compaction_report("active-turn summary capacity retries exhausted; reduced-source fallback", len(original_render_state["rendered_token_ids"]), len(self.session.rendered_token_ids), "; ".join(reduction_events))
             self._mark_history_trimmed_trace()
             self._set_status("Thinking...", kind="thinking")
             return True
 
         checkpoint["summary_compaction_attempted"] = True
-        detail = f"{summarized_step_count} older active-turn step{'s' if summarized_step_count != 1 else ''} summarized" if summarized_step_count else "preserved prior interrupted history summarized"
+        detail = f"prefix through {summarized_step_count} older active-turn action group{'s' if summarized_step_count != 1 else ''} summarized at the chronological checkpoint"
+        if reduction_events:
+            detail += f" after capacity reduction ({'; '.join(reduction_events)})"
         self._set_status("Thinking...", kind="thinking")
         self._print_compaction_report("active-turn summarize", len(original_render_state["rendered_token_ids"]), len(self.session.rendered_token_ids), detail)
         self._mark_history_summarized_trace(summary)
         return True
-
-    def _discard_oldest_completed_turn(self) -> str:
-        messages = self.session.messages
-        user_indexes = [idx for idx, message in enumerate(messages) if str(message.get("role", "")).strip().lower() == "user"]
-        if len(user_indexes) > 1:
-            cut = user_indexes[1]
-            messages[:] = self._retain_removed_turn_requests(messages[cut:], messages[:cut])
-            return f"dropped oldest turn ({cut} messages)"
-        return ""
-
-    def _discard_oldest_current_turn_step(self) -> str:
-        messages = self.session.messages
-        user_indexes = [idx for idx, message in enumerate(messages) if str(message.get("role", "")).strip().lower() == "user"]
-        if len(user_indexes) == 0:
-            return ""
-        current_turn_start = user_indexes[-1]
-        if current_turn_start + 1 >= len(messages):
-            return ""
-        step_start = current_turn_start + 1
-        step_end = step_start + 1
-        first_role = str(messages[step_start].get("role", "") or "message").strip().lower() or "message"
-        if first_role == "assistant" and messages[step_start].get("tool_calls"):
-            while step_end < len(messages) and str(messages[step_end].get("role", "")).strip().lower() == "tool":
-                step_end += 1
-        elif first_role == "tool":
-            while step_end < len(messages) and str(messages[step_end].get("role", "")).strip().lower() == "tool":
-                step_end += 1
-        dropped_count = step_end - step_start
-        del messages[step_start:step_end]
-        return f"dropped earlier current-turn {first_role} step ({dropped_count} messages)"
 
     def _fit_rendered_messages_to_window(self, *, add_generation_prompt: bool, reserve_tokens: int = 0) -> tuple[list[int], bool]:
         if self.runtime is None:
             raise RuntimeError("Assistant runtime is not available for context fitting.")
         max_model_len = self._get_context_window_tokens()
         hard_budget = max(1, max_model_len - max(0, int(reserve_tokens)))
-        base_token_count = len(self._render_system_prompt_tokens(add_generation_prompt))
         target_tokens = self._render_messages(add_generation_prompt=add_generation_prompt)
         initial_token_count = len(target_tokens)
-        discarded_turn_count = 0
-        discarded_step_count = 0
-        removed_request_history = False
-        trimmed_any = False
         if len(target_tokens) <= hard_budget:
             return target_tokens, False
         if self._ensure_current_turn_video_runtime_update_for_compaction():
             target_tokens = self._render_messages(add_generation_prompt=add_generation_prompt)
-        history_budget = max(0, hard_budget - base_token_count)
-        history_token_cap = int(math.ceil(history_budget * _POST_TRIM_WINDOW_FRACTION))
-        history_token_fallback_cap = int(math.ceil(history_budget * _POST_TRIM_FALLBACK_WINDOW_FRACTION))
-        while max(0, len(target_tokens) - base_token_count) > history_token_cap:
-            user_turn_count = sum(str(message.get("role", "")).strip().lower() == "user" for message in self.session.messages)
-            if user_turn_count == 2 and max(0, len(target_tokens) - base_token_count) <= history_token_fallback_cap:
-                self._log("Retaining the newest completed turn above the preferred history target because it fits within the fallback limit.")
-                break
-            trim_reason = self._discard_oldest_completed_turn()
-            if len(trim_reason) == 0:
-                break
-            trimmed_any = True
-            discarded_turn_count += 1
-            self._log(f"Trimming assistant context: {trim_reason}.")
-            target_tokens = self._render_messages(add_generation_prompt=add_generation_prompt)
+        turn_levels: dict[int, int] = {}
+        reduction_events = []
         while len(target_tokens) > hard_budget:
-            trim_reason = self._discard_oldest_current_turn_step()
-            if len(trim_reason) == 0:
-                trim_reason = self._discard_removed_turn_request_history()
-                if len(trim_reason) == 0:
-                    raise RuntimeError(f"Current assistant turn alone exceeds the model window ({len(target_tokens)} > {hard_budget}) and will not be cut further.")
-                removed_request_history = True
-            else:
-                discarded_step_count += 1
-            trimmed_any = True
+            trim_reason = self._degrade_oldest_compaction_source_unit(self.session.messages, preserve_latest_user=True, turn_levels=turn_levels)
+            if not trim_reason:
+                raise RuntimeError(f"Current assistant turn alone exceeds the model window ({len(target_tokens)} > {hard_budget}) and will not be cut further.")
+            reduction_events.append(trim_reason)
             self._log(f"Trimming assistant context: {trim_reason}.")
+            previous_token_count = len(target_tokens)
             target_tokens = self._render_messages(add_generation_prompt=add_generation_prompt)
+            if len(target_tokens) >= previous_token_count and not self.session.messages:
+                raise RuntimeError(f"Assistant context exceeds the model window ({len(target_tokens)} > {hard_budget}) and cannot be reduced further.")
         if len(target_tokens) > hard_budget:
             raise RuntimeError(f"Assistant context exceeds the model window ({len(target_tokens)} > {hard_budget}) and cannot be trimmed further without cutting the current turn.")
-        if trimmed_any:
-            details = []
-            if discarded_turn_count:
-                details.append(f"{discarded_turn_count} oldest turn{'s' if discarded_turn_count != 1 else ''} removed")
-            if discarded_step_count:
-                details.append(f"{discarded_step_count} current-turn step{'s' if discarded_step_count != 1 else ''} removed")
-            if removed_request_history:
-                details.append("retained request history removed as final fallback")
-            self._print_compaction_report("discard", initial_token_count, len(target_tokens), ", ".join(details))
-            self._mark_history_trimmed_trace()
-        return target_tokens, trimmed_any
+        self._print_compaction_report("discard", initial_token_count, len(target_tokens), "; ".join(reduction_events))
+        self._mark_history_trimmed_trace()
+        return target_tokens, True
 
-    def _sync_generation_context(self) -> None:
+    def _sync_generation_context(self, generation_reserve_tokens: int | None = None) -> None:
         runtime = self._acquire_runtime()
-        generation_reserve_tokens = self._segment_generation_reserve_tokens()
+        generation_reserve_tokens = self._segment_generation_reserve_tokens() if generation_reserve_tokens is None else max(0, int(generation_reserve_tokens))
         if self._maybe_summarize_context(generation_reserve_tokens):
             return
         had_prior_rendered_context = len(self.session.rendered_token_ids) > 0 or self.session.runtime_snapshot is not None
@@ -7243,10 +7231,50 @@ class AssistantEngine:
             "error": str(error_text),
         }
 
-    def _clear_segment_continuation_state(self) -> None:
-        self._continued_segment_raw_text = ""
-        self._continued_segment_token_ids.clear()
-        self._continue_generation_segment_once = False
+    def _record_budget_event(self, event_type: str, message: str) -> None:
+        self.session.recorded_budget_events.append({"type": str(event_type or "").strip(), "message": str(message or "").strip()})
+
+    def _append_tool_generation_error(self, raw_text: str, error_type: str, error_text: str) -> None:
+        tool_name = extract_incomplete_tool_name(raw_text)
+        tool_marker = re.search(r"<\s*tool_call\s*>", str(raw_text or ""), flags=re.IGNORECASE)
+        safe_prefix = str(raw_text or "")[:tool_marker.start()] if tool_marker is not None else str(raw_text or "")
+        payload = {
+            "status": "error",
+            "error_type": str(error_type or "tool_call_generation_error"),
+            "error": str(error_text or "").strip(),
+        }
+        if tool_name:
+            payload["tool"] = tool_name
+            stored_calls = self._append_assistant_message(safe_prefix, tool_calls=[{"name": tool_name, "arguments": {}}])
+            self._append_tool_message(payload, stored_calls[0].get("id"))
+            message_id = self._ensure_active_turn()
+            tool_label = self.tool_box.get_tool_transcript_label(tool_name, {})
+            tool_id, tool_event = assistant_chat.add_tool_call(self.session, message_id, tool_name, {}, tool_label=tool_label)
+            self._emit_chat_event(tool_event)
+            self._emit_chat_event(assistant_chat.complete_tool_call(self.session, message_id, tool_id, payload))
+        else:
+            content = _build_assistant_history_content(safe_prefix)
+            runtime_update = f"<wangp_runtime_update>\n{payload['error']} No tool was executed.\n</wangp_runtime_update>"
+            self.session.messages.append({"role": "assistant", "content": f"{content}\n\n{runtime_update}".strip()})
+        checkpoint_assistant_turn(self.session)
+        self._canonicalize_context(sync_runtime="record_only")
+        self._emit_chat_event(assistant_chat.build_sync_event(self.session, status=self._current_status_payload, stats=self._chat_stats_payload()))
+
+    def _record_tool_generation_error_step(self, recent_steps: list[tuple[str, tuple[tuple[str, str], ...]]], error_type: str) -> str:
+        error_call = {"name": "__tool_generation_error__", "arguments": {"error_type": error_type}}
+        return self._record_loop_step(recent_steps, error_type, [error_call])
+
+    def _commit_loop_stop(self, raw_text: str, loop_reason: str) -> None:
+        content = _build_assistant_history_content(raw_text)
+        runtime_update = f"<wangp_runtime_update>\n{loop_reason}\n</wangp_runtime_update>"
+        self.session.messages.append({"role": "assistant", "content": f"{content}\n\n{runtime_update}".strip()})
+        checkpoint_assistant_turn(self.session)
+        self._canonicalize_context(sync_runtime="record_only")
+        self._send_chat(loop_reason)
+
+    def _reset_action_stream_state(self) -> None:
+        self._resume_stream_after_context_trim = False
+        self._suppress_intermediate_stream_after_context_trim = False
 
     def _execute_tool(self, tool_call: dict[str, Any]) -> dict[str, Any]:
         tool_name = str(tool_call.get("name", "")).strip()
@@ -7309,22 +7337,6 @@ class AssistantEngine:
         return previous_text + current_text
 
     @staticmethod
-    def _merge_token_continuation(previous: list[int] | tuple[int, ...], current: list[int] | tuple[int, ...]) -> list[int]:
-        previous_tokens = [int(token_id) for token_id in list(previous or [])]
-        current_tokens = [int(token_id) for token_id in list(current or [])]
-        if len(previous_tokens) == 0:
-            return current_tokens
-        if len(current_tokens) == 0 or previous_tokens == current_tokens or previous_tokens[-len(current_tokens) :] == current_tokens:
-            return previous_tokens
-        if len(current_tokens) >= len(previous_tokens) and current_tokens[: len(previous_tokens)] == previous_tokens:
-            return current_tokens
-        max_overlap = min(len(previous_tokens), len(current_tokens))
-        for overlap in range(max_overlap, 0, -1):
-            if previous_tokens[-overlap:] == current_tokens[:overlap]:
-                return previous_tokens + current_tokens[overlap:]
-        return previous_tokens + current_tokens
-
-    @staticmethod
     def _deduplicate_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
         unique_calls = []
         seen = set()
@@ -7351,6 +7363,22 @@ class AssistantEngine:
         if len(recent_steps) >= 4 and recent_steps[-1] == recent_steps[-3] and recent_steps[-2] == recent_steps[-4] and recent_steps[-1] != recent_steps[-2]:
             return "Assistant stopped because the same two thought/action steps started alternating in a loop."
         return ""
+
+    @staticmethod
+    def _incremental_statement_action(previous_answer: str, current_answer: str) -> tuple[str, list[dict[str, Any]]]:
+        previous = str(previous_answer or "").strip()
+        current = str(current_answer or "").strip()
+        statement = current[len(previous):].strip() if previous and current.startswith(previous) else current
+        actions = [] if not statement else [{"name": "__statement__", "arguments": {"text": re.sub(r"\s+", " ", statement)}}]
+        return current, actions
+
+    def _checkpoint_completed_thoughts(self, raw_text: str) -> None:
+        checkpoint = self.session.current_turn
+        if not isinstance(checkpoint, dict):
+            return
+        thinking_chunks, _answer_text = qwen35_text._split_generated_parts(raw_text)
+        combined_reasoning = "\n\n".join(thinking_chunks)
+        checkpoint["completed_thought_content"] = f"<think>\n{combined_reasoning}\n</think>" if combined_reasoning else ""
 
     def _mark_history_trimmed_trace(self) -> None:
         checkpoint = self.session.current_turn
@@ -7709,73 +7737,56 @@ class AssistantEngine:
         self._record_live_context(f"Interrupted-turn context synchronized before pause. (restore={restore_mode}, sync={mode})")
         return True
 
-    def _recover_from_context_limit(self, raw_text: str, retry_no: int) -> bool:
-        if retry_no >= _CONTEXT_LIMIT_MAX_RETRIES:
-            return False
+    def _compact_action_boundary(self, next_phase: str) -> bool:
         if self.runtime is None:
             return False
         current_seq = self.runtime._get_active_sequence()
-        if current_seq is None or len(current_seq.token_ids or []) == 0:
+        if current_seq is None:
             return False
-        current_segment_token_ids = [int(token_id) for token_id in list(current_seq.completion_token_ids or [])]
-        accumulated_completion_token_ids = self._merge_token_continuation(self._continued_segment_token_ids, current_segment_token_ids)
-        if len(accumulated_completion_token_ids) == 0:
+        context_window_tokens = self._get_context_window_tokens()
+        summary_compaction = self._get_compaction_type() == DEEPY_COMPACTION_TYPE_SUMMARIZE and context_window_tokens >= DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS
+        next_action_reserve = _summary_compaction_reserve_tokens() if summary_compaction else self._action_generation_reserve_tokens(next_phase)
+        if summary_compaction:
+            if len(current_seq.token_ids or []) <= _summary_compaction_trigger_tokens(context_window_tokens):
+                return False
+        elif len(current_seq.token_ids or []) + next_action_reserve <= context_window_tokens:
             return False
-        self._set_status("Making room to continue...", kind="loading")
-        generation_reserve_tokens = self._segment_generation_reserve_tokens()
-        trimmed_generated_token_count = 0
+        completion_token_ids = [int(token_id) for token_id in list(current_seq.completion_token_ids or [])]
+        if len(completion_token_ids) == 0:
+            raise RuntimeError(f"Deepy cannot reserve enough context for the next {next_phase} action.")
+        sampling_snapshot = self.runtime.snapshot_sampling_state()
         try:
-            prompt_tokens, trimmed_any = self._fit_rendered_messages_to_window(
-                add_generation_prompt=True,
-                reserve_tokens=len(accumulated_completion_token_ids) + generation_reserve_tokens,
-            )
-            kept_completion_token_ids = list(accumulated_completion_token_ids)
-        except RuntimeError as exc:
-            prompt_tokens, trimmed_any = self._fit_rendered_messages_to_window(add_generation_prompt=True, reserve_tokens=0)
-            available_completion_tokens = max(0, self._get_context_window_tokens() - len(prompt_tokens) - generation_reserve_tokens)
-            if available_completion_tokens <= 0:
-                raise exc
-            if len(accumulated_completion_token_ids) <= available_completion_tokens:
-                kept_completion_token_ids = list(accumulated_completion_token_ids)
-            else:
-                trimmed_generated_token_count = len(accumulated_completion_token_ids) - available_completion_tokens
-                kept_completion_token_ids = accumulated_completion_token_ids[trimmed_generated_token_count:]
-                self._log(
-                    "Trimming assistant continuation context: "
-                    f"dropped {trimmed_generated_token_count} generated tokens from the current turn."
-                )
-        mode = self._extend_context_from_preserved_base(prompt_tokens)
-        if mode is None:
-            mode = self._run_prefill_call(
-                len(prompt_tokens),
-                lambda: self.runtime.prime_context(prompt_tokens),
-                record_if=True,
-            )
-        self.session.rendered_token_ids = [int(token_id) for token_id in prompt_tokens]
-        self.session.runtime_snapshot = None
-        self.session.pending_replay_reason = ""
-        self._skip_pause_snapshot = False
-        self._remember_render_state()
-        self._snapshot_synchronized_live_context()
-        continuation_mode = self._run_prefill_call(len(kept_completion_token_ids), lambda: self.runtime.append_suffix(kept_completion_token_ids), record_if=lambda result: result in ("prefilled", "chunk_prefilled"))
-        mode = f"{mode}+{continuation_mode}"
-        self._continued_segment_raw_text = str(raw_text or "")
-        self._continued_segment_token_ids = list(kept_completion_token_ids)
-        self._resume_stream_after_context_trim = True
-        self._suppress_intermediate_stream_after_context_trim = True
-        self._skip_generation_context_sync_once = True
-        self._emit_stats(force=True)
-        if trimmed_any:
-            self._log(
-                "Context limit reached; compacted live continuation and continuing the current turn. "
-                f"[{mode}{', trimmed_generated=' + str(trimmed_generated_token_count) if trimmed_generated_token_count > 0 else ''}]"
-            )
-        else:
-            self._log(
-                "Context limit reached; preserved the live continuation and continuing the current turn. "
-                f"[{mode}{', trimmed_generated=' + str(trimmed_generated_token_count) if trimmed_generated_token_count > 0 else ''}]"
-            )
-        return True
+            self._set_status("Compacting context...", kind="loading")
+            combined_reserve = len(completion_token_ids) + next_action_reserve
+            compacted = self._maybe_summarize_context(combined_reserve, force=True)
+            if self.session.interrupt_requested:
+                return True
+            if not compacted:
+                compacted = self._maybe_summarize_active_turn(combined_reserve, force=True)
+            if self.session.interrupt_requested:
+                return True
+            prompt_tokens, trimmed = self._fit_rendered_messages_to_window(add_generation_prompt=True, reserve_tokens=combined_reserve)
+            if not compacted and not trimmed:
+                self._set_status("Thinking...", kind="thinking")
+                return False
+            mode = self._extend_context_from_preserved_base(prompt_tokens)
+            if mode is None:
+                mode = self._run_prefill_call(len(prompt_tokens), lambda: self.runtime.prime_context(prompt_tokens), record_if=True)
+            continuation_mode = self._run_prefill_call(len(completion_token_ids), lambda: self.runtime.append_completion_suffix(completion_token_ids), record_if=lambda result: result in ("prefilled", "chunk_prefilled"))
+            live_seq = self.runtime._get_active_sequence()
+            if live_seq is None or len(live_seq.token_ids or []) + next_action_reserve > context_window_tokens:
+                raise RuntimeError(f"Deepy cannot reserve enough context for the next {next_phase} action without cutting the active response.")
+            self.session.rendered_token_ids = [int(token_id) for token_id in live_seq.token_ids]
+            self.session.runtime_snapshot = None
+            self.session.pending_replay_reason = ""
+            self._remember_render_state()
+            self._skip_pause_snapshot = False
+            self._set_status("Thinking...", kind="thinking")
+            self._log(f"Compacted at a semantic action boundary and replayed the active response verbatim. [{mode}+{continuation_mode}]")
+            self._emit_stats(force=True)
+            return True
+        finally:
+            self.runtime.restore_sampling_state(sampling_snapshot)
 
     def _append_assistant_message(self, raw_text: str, tool_calls: list[dict[str, Any]] | None = None, merge_with_last: bool = False) -> list[dict[str, Any]]:
         message = {"role": "assistant"}
@@ -7829,14 +7840,17 @@ class AssistantEngine:
         self.session.messages.append(self._build_pending_user_message(user_text))
         checkpoint_assistant_turn(self.session)
         recent_steps: list[tuple[str, tuple[tuple[str, str], ...]]] = []
+        pending_natural_thought = ""
+        loop_answer_checkpoint = ""
         model_passes = 0
-        context_limit_retries = 0
         incomplete_stop_retries = 0
         current_seed = seed
         final_user_text = ""
         turn_completed = False
+        action_phase = "thought" if self.thinking_enabled else "statement"
+        continuing_response = False
         self._skip_generation_context_sync_once = False
-        self._clear_segment_continuation_state()
+        self._reset_action_stream_state()
         try:
             while True:
                 if self.session.interrupt_requested:
@@ -7849,22 +7863,23 @@ class AssistantEngine:
                 if self._skip_generation_context_sync_once:
                     self._skip_generation_context_sync_once = False
                 else:
-                    self._sync_generation_context()
+                    action_reserve_tokens = self._action_generation_reserve_tokens(action_phase)
+                    self._sync_generation_context(action_reserve_tokens)
                     if self.session.interrupt_requested:
                         break
-                    self._maybe_summarize_active_turn(self._segment_generation_reserve_tokens())
+                    self._maybe_summarize_active_turn(action_reserve_tokens)
                 self._emit_stats(force=True)
                 if self.session.interrupt_requested:
                     break
                 if show_loading_status:
                     self.session.force_loading_status_once = False
                     self._set_status("Thinking...", kind="thinking")
+                if continuing_response:
+                    self._resume_stream_after_context_trim = True
                 self._start_stream_pass()
                 result = None
                 begin_assistant_thought(self.session)
                 try:
-                    continue_existing_completion = bool(self._continue_generation_segment_once)
-                    self._continue_generation_segment_once = False
                     if llm_io_enabled():
                         active_sequence = self.runtime._get_active_sequence()
                         context_token_ids = list(self.session.rendered_token_ids) if active_sequence is None else [int(token_id) for token_id in active_sequence.token_ids]
@@ -7882,11 +7897,13 @@ class AssistantEngine:
                                 "top_p": top_p,
                                 "top_k": top_k,
                                 "thinking_enabled": self.thinking_enabled,
-                                "continue_existing_completion": continue_existing_completion,
+                                "action_phase": action_phase,
+                                "action_budget_tokens": self.runtime.action_budget(action_phase),
+                                "continuing_response": continuing_response,
                             },
                         }, pass_number=model_passes + 1)
-                    result = self.runtime.generate_segment(
-                        max_new_tokens=max_new_tokens,
+                    result = self.runtime.generate_action(
+                        phase=action_phase,
                         seed=current_seed,
                         do_sample=do_sample,
                         temperature=temperature,
@@ -7896,7 +7913,7 @@ class AssistantEngine:
                         stop_requested=lambda: bool(self.session.interrupt_requested) or assistant_steering_interrupt_due(self.session),
                         stream_callback=self._stream_generation_update,
                         stream_interval_seconds=_ASSISTANT_STREAM_INTERVAL_SECONDS,
-                        continue_existing_completion=continue_existing_completion,
+                        continuing_response=continuing_response,
                     )
                 finally:
                     finish_assistant_thought(self.session)
@@ -7913,11 +7930,87 @@ class AssistantEngine:
                 model_passes += 1
                 if self.session.interrupt_requested or result.stop_reason == "interrupted":
                     break
-                segment_raw_text = result.raw_text
-                segment_thinking_text, _segment_answer_text = qwen35_text._split_generated_text(segment_raw_text)
-                raw_text = segment_raw_text
-                if len(self._continued_segment_raw_text) > 0:
-                    raw_text = self._merge_text_continuation(self._continued_segment_raw_text, raw_text)
+                raw_text = result.raw_text
+                thinking_chunks, _segment_answer_text = qwen35_text._split_generated_parts(raw_text)
+                latest_thinking_text = thinking_chunks[-1] if thinking_chunks else ""
+                if result.stop_reason in {"thought_complete", "thought_budget_exhausted"}:
+                    self._checkpoint_completed_thoughts(raw_text)
+                    pending_natural_thought = latest_thinking_text if result.stop_reason == "thought_complete" else ""
+                if self.session.steering_pending:
+                    interrupt_assistant_for_steering(self.session)
+                    break
+                if result.stop_reason in {"thought_complete", "thought_budget_exhausted"}:
+                    if result.stop_reason == "thought_budget_exhausted":
+                        loop_reason = self._record_loop_step(recent_steps, latest_thinking_text, [])
+                        if loop_reason:
+                            self._commit_loop_stop(raw_text, loop_reason)
+                            turn_completed = True
+                            break
+                    next_phase = "statement"
+                    self._compact_action_boundary(next_phase)
+                    if self.session.interrupt_requested:
+                        break
+                    action_phase = next_phase
+                    continuing_response = True
+                    self._skip_generation_context_sync_once = True
+                    continue
+                if result.stop_reason in {"tool_start", "thought_start"}:
+                    if result.stop_reason == "thought_start" and pending_natural_thought:
+                        loop_answer_checkpoint, statement_actions = self._incremental_statement_action(loop_answer_checkpoint, _segment_answer_text)
+                        loop_reason = self._record_loop_step(recent_steps, pending_natural_thought, statement_actions)
+                        pending_natural_thought = ""
+                        if loop_reason:
+                            self._commit_loop_stop(raw_text, loop_reason)
+                            turn_completed = True
+                            break
+                    next_phase = "tool" if result.stop_reason == "tool_start" else "thought"
+                    self._compact_action_boundary(next_phase)
+                    if self.session.interrupt_requested:
+                        break
+                    action_phase = next_phase
+                    continuing_response = True
+                    self._skip_generation_context_sync_once = True
+                    continue
+                if result.stop_reason == "statement_budget_exhausted":
+                    _thinking_text, answer_text = self._split_for_display(raw_text)
+                    self._append_assistant_message(raw_text)
+                    checkpoint_assistant_turn(self.session)
+                    self._canonicalize_context(sync_runtime="record_only")
+                    notice = "Deepy's answer was too long and was interrupted."
+                    self._record_budget_event("answer_budget_exhausted", "The previous Deepy answer reached its length budget and was interrupted. Continue it only if the user asks.")
+                    self._emit_chat_event(assistant_chat.set_message_end_badge(self.session, self._ensure_active_turn(), notice))
+                    final_user_text = "" if len(self._stream_answer_text.strip()) > 0 else answer_text
+                    turn_completed = True
+                    break
+                if result.stop_reason == "tool_budget_exhausted":
+                    loop_reason = self._record_tool_generation_error_step(recent_steps, "tool_call_budget_exhausted")
+                    pending_natural_thought = ""
+                    if loop_reason:
+                        self._commit_loop_stop(raw_text, loop_reason)
+                        turn_completed = True
+                        break
+                    self._append_tool_generation_error(raw_text, "tool_call_budget_exhausted", "Deepy's tool call request was too long and was interrupted before execution.")
+                    self._reset_action_stream_state()
+                    action_phase = "thought" if self.thinking_enabled else "statement"
+                    continuing_response = False
+                    loop_answer_checkpoint = ""
+                    continue
+                if result.stop_reason == "context_limit":
+                    raise RuntimeError(f"Deepy reached the context limit during an active {action_phase} action; the active response was preserved and not trimmed.")
+                tool_structure_error = validate_tool_call_structure(raw_text)
+                if tool_structure_error:
+                    loop_reason = self._record_tool_generation_error_step(recent_steps, "malformed_tool_call")
+                    pending_natural_thought = ""
+                    if loop_reason:
+                        self._commit_loop_stop(raw_text, loop_reason)
+                        turn_completed = True
+                        break
+                    self._append_tool_generation_error(raw_text, "malformed_tool_call", f"Deepy's tool call was rejected before execution: {tool_structure_error}")
+                    self._reset_action_stream_state()
+                    action_phase = "thought" if self.thinking_enabled else "statement"
+                    continuing_response = False
+                    loop_answer_checkpoint = ""
+                    continue
                 tool_parameters = {str(function.get("name", "")): set(function.get("parameters", {}).get("properties", {})) for schema in self.tool_box.get_tool_schemas() for function in [schema.get("function", {})]}
                 tool_calls = extract_tool_calls(raw_text, tool_parameters=tool_parameters)
                 if len(tool_calls) == 0:
@@ -7926,6 +8019,19 @@ class AssistantEngine:
                 if len(deduplicated_tool_calls) != len(tool_calls):
                     self._log(f"Ignored {len(tool_calls) - len(deduplicated_tool_calls)} duplicate tool call{'s' if len(tool_calls) - len(deduplicated_tool_calls) != 1 else ''} from one assistant response.")
                 tool_calls = deduplicated_tool_calls
+                if action_phase == "tool" and len(tool_calls) == 0:
+                    loop_reason = self._record_tool_generation_error_step(recent_steps, "malformed_tool_call")
+                    pending_natural_thought = ""
+                    if loop_reason:
+                        self._commit_loop_stop(raw_text, loop_reason)
+                        turn_completed = True
+                        break
+                    self._append_tool_generation_error(raw_text, "malformed_tool_call", "Deepy's tool call was rejected before execution because it did not contain a complete valid request.")
+                    self._reset_action_stream_state()
+                    action_phase = "thought" if self.thinking_enabled else "statement"
+                    continuing_response = False
+                    loop_answer_checkpoint = ""
+                    continue
                 trimmed_incomplete_stop_answer = False
                 retry_incomplete_stop_answer = False
                 if _ENABLE_INCOMPLETE_STOP_ANSWER_HEURISTICS and len(tool_calls) == 0 and result.stop_reason == "stop_token":
@@ -7951,12 +8057,14 @@ class AssistantEngine:
                             else:
                                 self._log("Trimmed an incomplete trailing answer fragment after stop_token.")
                 if retry_incomplete_stop_answer:
-                    self._clear_segment_continuation_state()
+                    self._reset_action_stream_state()
                     if self._restore_turn_start_snapshot_for_retry():
                         self._emit_chat_event(assistant_chat.clear_message_blocks(self.session, self._ensure_active_turn()))
                         incomplete_stop_retries += 1
                         current_seed = None if current_seed is None else int(current_seed) + incomplete_stop_retries
                         recent_steps.clear()
+                        pending_natural_thought = ""
+                        loop_answer_checkpoint = ""
                         self._log("Detected an incomplete stop-token answer with no safe trimmed fallback; retrying the current turn once from the clean turn-start snapshot.")
                         continue
                     if self._canonicalize_context(sync_runtime="record_only") == "recorded":
@@ -7964,6 +8072,8 @@ class AssistantEngine:
                         incomplete_stop_retries += 1
                         current_seed = None if current_seed is None else int(current_seed) + incomplete_stop_retries
                         recent_steps.clear()
+                        pending_natural_thought = ""
+                        loop_answer_checkpoint = ""
                         self._log("Detected an incomplete stop-token answer with no safe trimmed fallback; retrying the current turn once after canonicalized replay fallback.")
                         continue
                     incomplete_stop_retries += 1
@@ -7973,9 +8083,13 @@ class AssistantEngine:
                     if self._should_print_raw_debug_text(raw_text, thinking_text, answer_text):
                         print("[Assistant][Raw]")
                         print(raw_text)
-                loop_reason = self._record_loop_step(recent_steps, segment_thinking_text, tool_calls)
+                loop_actions = tool_calls
+                if not loop_actions:
+                    loop_answer_checkpoint, loop_actions = self._incremental_statement_action(loop_answer_checkpoint, answer_text)
+                loop_reason = self._record_loop_step(recent_steps, latest_thinking_text or pending_natural_thought, loop_actions)
+                pending_natural_thought = ""
                 if loop_reason:
-                    self._send_chat(loop_reason)
+                    self._commit_loop_stop(raw_text, loop_reason)
                     turn_completed = True
                     break
                 if tool_calls:
@@ -7984,7 +8098,7 @@ class AssistantEngine:
                         break
                     stored_tool_calls = self._append_assistant_message(raw_text, tool_calls=tool_calls)
                     checkpoint_assistant_turn(self.session)
-                    self._clear_segment_continuation_state()
+                    self._reset_action_stream_state()
                     self._record_live_context("Assistant tool-call context recorded from live runtime.")
                     completed_tool_calls = 0
                     for tool_call, stored_tool_call in zip(tool_calls, stored_tool_calls):
@@ -8007,14 +8121,14 @@ class AssistantEngine:
                             )
                         checkpoint_assistant_turn(self.session)
                         break
-                    continue
-                if self._recover_after_generation_limit(result, raw_text, context_limit_retries):
-                    context_limit_retries += 1
+                    action_phase = "thought" if self.thinking_enabled else "statement"
+                    continuing_response = False
+                    loop_answer_checkpoint = ""
                     continue
 
                 self._append_assistant_message(raw_text)
                 checkpoint_assistant_turn(self.session)
-                self._clear_segment_continuation_state()
+                self._reset_action_stream_state()
                 if trimmed_incomplete_stop_answer:
                     if not self._sync_trimmed_answer_from_turn_start_snapshot():
                         self._canonicalize_context(sync_runtime="record_only")
@@ -8055,7 +8169,7 @@ class AssistantEngine:
             self._segment_started_at = None
             self._segment_generated_tokens = 0
             self._skip_generation_context_sync_once = False
-            self._clear_segment_continuation_state()
+            self._reset_action_stream_state()
             self._current_requested_max_new_tokens = 1024
             self._emit_stats(force=True)
         if not self.session.interrupt_requested and len(final_user_text.strip()) > 0:

@@ -927,7 +927,7 @@ def _run_io_action(session, file_access_policy, action: str, arguments: dict[str
         if parameter not in arguments or arguments[parameter] is None:
             raise ValueError(f"{parameter} is required.")
     if action == "list":
-        return file_access_policy.virtualize_result(filesystem.list_entries(file_access_policy, path=arguments.get("path", ""), pattern=arguments.get("pattern", "*"), recursive=arguments.get("recursive", False), limit=arguments.get("limit", 200), offset=arguments.get("offset", 0)))
+        return file_access_policy.virtualize_result(filesystem.list_entries(file_access_policy, path=arguments.get("path", ""), pattern=arguments.get("pattern", "*"), recursive=arguments.get("recursive", False), limit=arguments.get("limit", 200), offset=arguments.get("offset", 0), media_type=arguments.get("media_type", "all")))
     if action == "info":
         path, _gallery = _resolve_io_source(session, file_access_policy, arguments["source"])
         return file_access_policy.virtualize_result(filesystem.file_info(path))
@@ -959,6 +959,9 @@ def _run_io_action(session, file_access_policy, action: str, arguments: dict[str
             from shared.gradio.downloads import register_file_download
             result["download"] = register_file_download(result["output_file"], "application/zip")
         return file_access_policy.virtualize_result(result)
+    if action == "unzip":
+        source, _gallery = _resolve_io_source(session, file_access_policy, arguments["source"], file=True)
+        return file_access_policy.virtualize_result(filesystem.unzip_file(file_access_policy, source, destination=arguments.get("destination", ""), overwrite=arguments.get("overwrite", False), source_authorized=True))
     if action == "download":
         if not downloads_enabled:
             raise RuntimeError("Direct WanGP downloads are unavailable for this MCP transport.")

@@ -424,6 +424,23 @@ class DeepyPrimeTools:
         max_chars = max(8000, min(normalize_deepy_context_tokens(get_deepy_config_value(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT)), 100000))
         if len(serialized) <= max_chars:
             return result
+        if tool_name == "wangp_io" and isinstance(result.get("entries"), list) and result["entries"]:
+            page = dict(result)
+            entries = page["entries"] = []
+            offset = int(page["offset"])
+            page.update(count=0, has_more=True, next_offset=offset)
+            for entry in result["entries"]:
+                entries.append(entry)
+                page.update(count=len(entries), next_offset=offset + len(entries))
+                if len(json.dumps(page, ensure_ascii=False, separators=(",", ":"), default=str)) > max_chars:
+                    entries.pop()
+                    page.update(count=len(entries), next_offset=offset + len(entries))
+                    break
+            page["has_more"] = bool(result.get("has_more")) or len(entries) < len(result["entries"])
+            if not page["has_more"]:
+                page["next_offset"] = None
+            if entries and len(json.dumps(page, ensure_ascii=False, separators=(",", ":"), default=str)) <= max_chars:
+                return page
         return {
             "status": "error",
             "tool": tool_name,

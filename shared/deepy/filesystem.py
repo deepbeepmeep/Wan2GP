@@ -4,11 +4,12 @@ import mimetypes
 import os
 import re
 import shutil
+import stat
 import time
 import uuid
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import ffmpeg
@@ -285,7 +286,7 @@ def list_files(path: str, extensions: Any = None, policy: FileAccessPolicy | Non
     return {"status": "done", "path": str(directory), "extensions": sorted(allowed), "files": files, "count": len(files), "error": ""}
 
 
-def list_entries(policy: FileAccessPolicy, path: str = "", pattern: str = "*", recursive: bool = False, limit: int = 200, offset: int = 0) -> dict[str, Any]:
+def list_entries(policy: FileAccessPolicy, path: str = "", pattern: str = "*", recursive: bool = False, limit: int = 200, offset: int = 0, media_type: str = "all") -> dict[str, Any]:
     if not str(path or "").strip():
         roots = policy.roots()
         return {"status": "done", "roots": roots, "count": len(roots), "read_everywhere": bool(policy.read_everywhere), "error": ""}
@@ -293,11 +294,24 @@ def list_entries(policy: FileAccessPolicy, path: str = "", pattern: str = "*", r
     pattern = str(pattern or "*").strip() or "*"
     limit = max(1, min(int(limit), 1000))
     offset = max(0, int(offset))
+    media_type = str(media_type or "all").strip().lower()
+    if media_type not in {"all", "image", "video", "audio", "txt", "other"}:
+        raise ValueError("media_type must be all, image, video, audio, txt, or other")
     candidates = directory.rglob(pattern) if recursive else iter(sorted(directory.glob(pattern), key=lambda entry: str(entry).casefold()))
     entries = []
     for item in candidates:
         if not policy.can_read(item):
             continue
+        if media_type != "all":
+            detected_type = detect_media_type(str(item)) if item.is_file() else ""
+            if media_type == "txt":
+                matches_type = item.suffix.lower() == ".txt"
+            elif media_type == "other":
+                matches_type = detected_type == "any" and item.suffix.lower() != ".txt"
+            else:
+                matches_type = detected_type == media_type
+            if not matches_type:
+                continue
         if len(entries) < offset:
             entries.append(None)
             continue
@@ -306,7 +320,8 @@ def list_entries(policy: FileAccessPolicy, path: str = "", pattern: str = "*", r
         if len(entries) >= offset + limit + 1:
             break
     visible = [entry for entry in entries[offset:offset + limit] if entry is not None]
-    return {"status": "done", "path": str(directory), "entries": visible, "count": len(visible), "offset": offset, "has_more": len(entries) > offset + limit, "error": ""}
+    has_more = len(entries) > offset + limit
+    return {"status": "done", "path": str(directory), "entries": visible, "count": len(visible), "offset": offset, "has_more": has_more, "next_offset": offset + len(visible) if has_more else None, "error": ""}
 
 
 def _float(value: Any) -> float | None:
@@ -616,8 +631,80 @@ def zip_files(policy: FileAccessPolicy, sources: list[str], destination: str = "
     return {"status": "done", "output_file": str(target), "filename": target.name, "source_count": len(source_paths), "file_count": len(names), "size_bytes": target.stat().st_size, "error": ""}
 
 
+def unzip_file(policy: FileAccessPolicy, source: str, destination: str = "", overwrite: bool = False, source_authorized: bool = False) -> dict[str, Any]:
+    if not isinstance(overwrite, bool):
+        raise ValueError("overwrite must be a boolean.")
+    source_path = _resolved_path(source) if source_authorized else policy.require_read(source, file=True)
+    if not source_path.is_file():
+        raise FileNotFoundError(f"ZIP source is not an existing file: {source_path}")
+    if not zipfile.is_zipfile(source_path):
+        raise ValueError(f"Source is not a valid ZIP file: {policy.virtualize_path(source_path)}")
+    if str(destination or "").strip():
+        destination_path = policy.require_write(destination)
+    else:
+        beside_source = source_path.with_suffix("")
+        destination_path = policy.require_write(beside_source if policy.can_write(beside_source) else policy.output_roots[0] / source_path.stem)
+    if destination_path.exists() and not destination_path.is_dir():
+        raise FileExistsError(f"ZIP destination is not a directory: {policy.virtualize_path(destination_path)}")
+
+    plans = []
+    overwritten_count = 0
+    with zipfile.ZipFile(source_path, "r") as archive:
+        seen = set()
+        for member in archive.infolist():
+            member_name = member.filename.replace("\\", "/")
+            member_path = PurePosixPath(member_name)
+            if not member_path.parts:
+                continue
+            if member_path.is_absolute() or ".." in member_path.parts or re.match(r"^[A-Za-z]:", member_name) or "\0" in member_name:
+                raise ValueError(f"Unsafe ZIP member path: {member.filename}")
+            if stat.S_ISLNK(member.external_attr >> 16):
+                raise ValueError(f"ZIP symlink entries are not allowed: {member.filename}")
+            if member.flag_bits & 1:
+                raise ValueError(f"Encrypted ZIP entries are not supported: {member.filename}")
+            target = destination_path.joinpath(*member_path.parts).resolve()
+            if not _inside(target, destination_path):
+                raise ValueError(f"ZIP member escapes the destination: {member.filename}")
+            if target == source_path:
+                raise ValueError("A ZIP cannot overwrite its own source archive.")
+            key = os.path.normcase(str(target))
+            if key in seen:
+                raise ValueError(f"ZIP contains duplicate destination paths: {member.filename}")
+            seen.add(key)
+            is_directory = member.is_dir() or member_name.endswith("/")
+            if is_directory and target.exists() and not target.is_dir():
+                raise FileExistsError(f"ZIP directory conflicts with an existing file: {policy.virtualize_path(target)}")
+            if not is_directory and target.exists() and (target.is_dir() or not overwrite):
+                raise FileExistsError(f"ZIP file destination already exists: {policy.virtualize_path(target)}")
+            if not is_directory and target.is_file():
+                overwritten_count += 1
+            plans.append((member, target, is_directory))
+
+        planned_files = {os.path.normcase(str(target)) for _member, target, is_directory in plans if not is_directory}
+        for member, target, _is_directory in plans:
+            for parent in target.parents:
+                if parent == destination_path:
+                    break
+                if os.path.normcase(str(parent)) in planned_files:
+                    raise ValueError(f"ZIP file/directory path conflict: {member.filename}")
+                if parent.exists() and not parent.is_dir():
+                    raise FileExistsError(f"ZIP parent path conflicts with an existing file: {policy.virtualize_path(parent)}")
+
+        destination_path.mkdir(parents=True, exist_ok=True)
+        for member, target, is_directory in plans:
+            if is_directory:
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member, "r") as reader, target.open("wb") as writer:
+                shutil.copyfileobj(reader, writer)
+
+    files = [member for member, _target, is_directory in plans if not is_directory]
+    return {"status": "done", "source": str(source_path), "path": str(destination_path), "file_count": len(files), "size_bytes": sum(member.file_size for member in files), "overwritten_count": overwritten_count, "error": ""}
+
+
 IO_ACTIONS = {
-    "list": {"description": "List authorized roots or directory entries.", "access": "read", "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Directory; omit to list authorized roots."}, "pattern": {"type": "string", "default": "*", "description": "Filename glob."}, "recursive": {"type": "boolean", "default": False}, "limit": {"type": "integer", "default": 200}, "offset": {"type": "integer", "default": 0}}}},
+    "list": {"description": "List authorized roots or a page of directory entries. When has_more is true, repeat the same filters with offset set to next_offset.", "access": "read", "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Directory; omit to list authorized roots."}, "pattern": {"type": "string", "default": "*", "description": "Filename glob."}, "media_type": {"type": "string", "enum": ["all", "image", "video", "audio", "txt", "other"], "default": "all", "description": "Implicit extension filter. Typed filters return files only; other excludes supported media and .txt files."}, "recursive": {"type": "boolean", "default": False}, "limit": {"type": "integer", "default": 200, "description": "Maximum entries to return; Deepy may shorten the page to fit its context-safe output budget."}, "offset": {"type": "integer", "default": 0, "description": "Entry offset; preserve the previous filters and use its next_offset to continue."}}}},
     "info": {"description": "Return file, directory, or media metadata.", "access": "always", "parameters": {"type": "object", "properties": {"source": {"type": "string", "description": "Authorized path or Gallery media id."}}, "required": ["source"]}},
     "read_text": {"description": "Read a line range from a UTF-8 text file.", "access": "read", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "start_line": {"type": "integer", "default": 1}, "end_line": {"type": "integer"}, "encoding": {"type": "string", "enum": ["utf-8", "utf-8-sig"], "default": "utf-8-sig"}}, "required": ["path"]}},
     "search_text": {"description": "Search authorized UTF-8 files and return matching lines.", "access": "read", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "query": {"type": "string"}, "pattern": {"type": "string", "default": "*", "description": "Filename glob."}, "recursive": {"type": "boolean", "default": False}, "regex": {"type": "boolean", "default": False}, "case_sensitive": {"type": "boolean", "default": False}, "limit": {"type": "integer", "default": 100}}, "required": ["path", "query"]}},
@@ -627,6 +714,7 @@ IO_ACTIONS = {
     "move": {"description": "Move an authorized writable file or directory to an unused destination.", "access": "write", "parameters": {"type": "object", "properties": {"source": {"type": "string"}, "destination": {"type": "string"}}, "required": ["source", "destination"]}},
     "delete": {"description": "Permanently delete an authorized writable file or directory; recursive is required for a non-empty directory.", "access": "write", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "recursive": {"type": "boolean", "default": False}}, "required": ["path"]}},
     "zip": {"description": "Create a persistent ZIP from authorized files or folders.", "access": "write", "parameters": {"type": "object", "properties": {"sources": {"type": "array", "items": {"type": "string"}, "description": "Authorized paths or Gallery media ids."}, "destination": {"type": "string", "description": "Optional folder/.zip path; plain paths use video outputs."}}, "required": ["sources"]}},
+    "unzip": {"description": "Safely extract an authorized ZIP into a writable directory without replacing existing files by default.", "access": "write", "parameters": {"type": "object", "properties": {"source": {"type": "string", "description": "Authorized ZIP file path."}, "destination": {"type": "string", "description": "Optional extraction directory; defaults to a folder named after the ZIP beside it when writable, otherwise in video outputs."}, "overwrite": {"type": "boolean", "default": False}}, "required": ["source"]}},
     "download": {"description": "Create a session-long download link for an existing file.", "access": "always", "parameters": {"type": "object", "properties": {"source": {"type": "string", "description": "Authorized file path or Gallery media id."}}, "required": ["source"]}},
 }
 
@@ -643,5 +731,5 @@ def available_io_actions(policy: FileAccessPolicy, downloads_enabled: bool = Tru
 
 __all__ = [
     "TEXT_MAX_CHARS", "FileAccessPolicy", "IO_ACTIONS", "available_io_actions", "build_file_access_policy", "copy_file", "delete_path", "file_info", "list_entries",
-    "list_files", "make_directory", "move_path", "query_file", "read_text", "search_text", "write_text", "zip_files",
+    "list_files", "make_directory", "move_path", "query_file", "read_text", "search_text", "unzip_file", "write_text", "zip_files",
 ]

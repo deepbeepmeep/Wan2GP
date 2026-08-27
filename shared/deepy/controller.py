@@ -510,7 +510,7 @@ class DeepyController:
         if file_access_policy.read_enabled:
             access = "read/write" if file_access_policy.write_enabled else "read-only"
             scope = "Reading is allowed everywhere; writing remains limited to output and selected folders." if file_access_policy.read_everywhere else "Use @alias/path from wangp_io roots; plain paths use @outputs."
-            file_access_instructions = f"Filesystem {access} access is enabled. {scope} Use wangp_io for file discovery, text access, ZIP creation, and downloads."
+            file_access_instructions = f"Filesystem {access} access is enabled. {scope} Use wangp_io for file discovery, text access, ZIP creation or extraction, and downloads. When a directory listing has_more, repeat the same filters with offset=next_offset."
         else:
             file_access_instructions = "Filesystem access is disabled. Use Gallery/media ids rather than direct paths; wangp_io can only inspect or download Gallery media."
         system_prompt = f"{system_prompt}\n\n{file_access_instructions}"

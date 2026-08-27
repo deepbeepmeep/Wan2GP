@@ -4369,7 +4369,7 @@ def build_io_tool_call_label(action: str | None = None, arguments: dict[str, Any
     action_name = str(action or "").strip()
     if not action_name:
         return "List IO Tools"
-    action_label = {"list": "List Files", "info": "Get File Information", "read_text": "Read Text", "search_text": "Search Text", "write_text": "Write Text", "mkdir": "Create Directory", "copy": "Copy File", "move": "Move File or Directory", "delete": "Delete File or Directory", "zip": "Create ZIP", "download": "Prepare Download"}.get(action_name, _humanize_tool_value(action_name))
+    action_label = {"list": "List Files", "info": "Get File Information", "read_text": "Read Text", "search_text": "Search Text", "write_text": "Write Text", "mkdir": "Create Directory", "copy": "Copy File", "move": "Move File or Directory", "delete": "Delete File or Directory", "zip": "Create ZIP", "unzip": "Extract ZIP", "download": "Prepare Download"}.get(action_name, _humanize_tool_value(action_name))
     if arguments is None:
         return _finish_tool_call_label(f"Get {action_label} Schema")
 
@@ -4413,6 +4413,8 @@ def build_io_tool_call_label(action: str | None = None, arguments: dict[str, Any
         count = len(sources) if isinstance(sources, list) else 0
         label = f"Create ZIP{f' {destination}' if destination else ''}"
         return _finish_tool_call_label(label if count == 0 else f"{label} from {count} Item{'s' if count != 1 else ''}")
+    if action_name == "unzip":
+        return _finish_tool_call_label(f"Extract {source or 'ZIP'}{f' to {destination}' if destination else ''}")
     if action_name == "download":
         return _finish_tool_call_label(action_label if not source else f"{action_label} for {source}")
     return _finish_tool_call_label(action_label)

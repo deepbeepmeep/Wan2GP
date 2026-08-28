@@ -84,10 +84,9 @@ def probe_h3_checkpoint(filename):
     return {"compressed_modulation": True, "adaln_curve_grid": int(table.shape[0]), "time_embed_dim": rank, "adaln_dtype": table.dtype}
 
 
-def _load_transformer(filename, dtype, qkv_splitting=True, qkv_layout="interleaved", pdd_head_filename=None,
+def _load_transformer(filename, dtype, qkv_splitting=True, qkv_layout="interleaved", pdd=False,
                       pdd_num_steps=None, pdd_block_size=None):
     checkpoint = probe_h3_checkpoint(filename)
-    pdd = pdd_head_filename is not None
     if pdd and (int(pdd_num_steps) < 1 or int(pdd_block_size) < 1 or int(pdd_num_steps) % int(pdd_block_size)):
         raise ValueError(f"Invalid MiniMax H3 PDD grid={pdd_num_steps}, block={pdd_block_size}")
     with init_empty_weights(include_buffers=True):
@@ -99,8 +98,7 @@ def _load_transformer(filename, dtype, qkv_splitting=True, qkv_layout="interleav
         offload.split_linear_modules(transformer, split_map)
     transformer.requires_grad_(False)
     preprocess_sd = partial(_strip_wrappers, qkv_splitting=qkv_splitting, pdd=pdd)
-    load_filenames = filenames + [fl.locate_file(pdd_head_filename)] if pdd else filename
-    offload.load_model_data(transformer, load_filenames, writable_tensors=False, default_dtype=dtype, preprocess_sd=preprocess_sd,
+    offload.load_model_data(transformer, filename, writable_tensors=False, default_dtype=dtype, preprocess_sd=preprocess_sd,
                             fused_split_map=split_map)
     transformer.eval().requires_grad_(False)
     transformer.h3_checkpoint_info = checkpoint
@@ -180,8 +178,8 @@ def _load_latent_upscaler(filename):
 def model_factory(model_filename, text_encoder_filename, qkv_splitting, dtype=torch.bfloat16, VAE_dtype=torch.float32, save_quantized=False,
                   model_type="minimax_h3_fl2va", reference_mode=False, video_vae_filename=VIDEO_VAE_FILE,
                   audio_vae_filename=AUDIO_VAE_FILE, latent_upscaler_filename=os.path.join(LATENT_UPSCALER_FOLDER, LATENT_UPSCALER_FILE),
-                  shared_h3_pipeline=None, qkv_layout="interleaved", pdd_head_filename=None, pdd_num_steps=None, pdd_block_size=None):
-    transformer = _load_transformer(model_filename, dtype, qkv_splitting, qkv_layout, pdd_head_filename, pdd_num_steps, pdd_block_size)
+                  shared_h3_pipeline=None, qkv_layout="interleaved", pdd=False, pdd_num_steps=None, pdd_block_size=None):
+    transformer = _load_transformer(model_filename, dtype, qkv_splitting, qkv_layout, pdd, pdd_num_steps, pdd_block_size)
     if shared_h3_pipeline is None:
         text_encoder = _load_text_encoder(text_encoder_filename, dtype)
         video_vae_qkv_splitting = qkv_splitting and video_vae_filename == VIDEO_VAE_FILE

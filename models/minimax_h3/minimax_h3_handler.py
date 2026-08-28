@@ -11,6 +11,7 @@ from shared.utils.frame_scheduler import normalize_overlap
 from .constants import (H3_MASK_MODE_DEFAULT, H3_MASK_MODE_GROUPED_ROWS, H3_MASK_MODE_SHARED_TIMESTEP,
                         H3_MASK_MODE_SETTING, H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, h3_grouped_masking_enabled)
 from .minimax_h3_main import AUDIO_VAE_FILE, LATENT_UPSCALER_FILE, LATENT_UPSCALER_FOLDER, TEXT_ENCODER_FOLDER, VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE
+from .pdd import PDD_BLOCK_SIZE, PDD_NUM_STEPS
 from .prompt_enhancer import (FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
                               REF2VA_IMAGE_SYSTEM_PROMPT, REF2VA_PROMPT_INFOS, REF2VA_TEXT_SYSTEM_PROMPT)
 
@@ -232,7 +233,7 @@ class family_handler:
     def query_model_def(base_model_type, model_def):
         reference_mode = base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE)
         pruned = base_model_type in (FL2VA_PRUNED_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE)
-        pdd = "pdd_head_file" in model_def
+        pdd = model_def.get("pdd", False)
         text_encoder_variant = model_def.get("text_encoder_variant")
         text_encoder_files = [TEXT_ENCODER_BF16, TEXT_ENCODER_INT8] if text_encoder_variant is None else TEXT_ENCODER_VARIANTS[text_encoder_variant]
         result = {
@@ -440,8 +441,8 @@ class family_handler:
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
-        if "pdd_head_file" in model_def:
-            required_steps = int(model_def["pdd_num_steps"]) // int(model_def["pdd_block_size"])
+        if model_def.get("pdd", False):
+            required_steps = PDD_NUM_STEPS // PDD_BLOCK_SIZE
             if inputs["sample_solver"] != "euler":
                 return "MiniMax H3 PDD requires the Euler sampler"
             inputs["num_inference_steps"] = required_steps
@@ -576,9 +577,6 @@ class family_handler:
         file_lists.append(["config.json", "tokenizer.json", "tokenizer_config.json", "preprocessor_config.json", "vocab.json"])
         source_folders.append(LATENT_UPSCALER_FOLDER)
         file_lists.append([LATENT_UPSCALER_FILE])
-        if "pdd_head_file" in model_def:
-            source_folders.append("")
-            file_lists.append([model_def["pdd_head_file"]])
         return [{
             "repoId": REPO_ID,
             "sourceFolderList": source_folders,
@@ -593,6 +591,7 @@ class family_handler:
                    disable_pinning=False, **kwargs):
         from .minimax_h3_main import model_factory
 
+        pdd = model_def.get("pdd", False)
         pipeline = model_factory(model_filename, text_encoder_filename, dtype=dtype, VAE_dtype=VAE_dtype,
                                  reference_mode=base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE),
                                  save_quantized=save_quantized, model_type=model_type,
@@ -600,8 +599,7 @@ class family_handler:
                                  qkv_layout=model_def["qkv_layout"],
                                  video_vae_filename=model_def.get("video_vae_file", VIDEO_VAE_FILE),
                                  audio_vae_filename=model_def.get("audio_vae_file", AUDIO_VAE_FILE), shared_h3_pipeline=shared_h3_pipeline,
-                                 pdd_head_filename=model_def.get("pdd_head_file"),
-                                 pdd_num_steps=model_def.get("pdd_num_steps"), pdd_block_size=model_def.get("pdd_block_size"))
+                                 pdd=pdd, pdd_num_steps=PDD_NUM_STEPS if pdd else None, pdd_block_size=PDD_BLOCK_SIZE if pdd else None)
         pipe = {"transformer": pipeline.transformer}
         if shared_h3_pipeline is None:
             pipe.update({

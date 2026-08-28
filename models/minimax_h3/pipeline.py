@@ -380,7 +380,7 @@ class MiniMaxH3Pipeline:
         return torch.device("cuda" if torch.cuda.is_available() else next(self.transformer.parameters()).device)
 
     def get_loras_transformer(self, _get_model_recursive_prop, model_def, guidance_phases, activated_loras, **_kwargs):
-        if int(guidance_phases) <= 1 or "pdd_head_file" in model_def:
+        if int(guidance_phases) <= 1 or model_def.get("pdd", False):
             return [], []
         selected_lora = next((lora for lora in activated_loras if _is_required_h3_turbo(os.path.basename(str(lora).split("|", 1)[0]))), None)
         if selected_lora is not None and H3_ALLOW_PHASE_2_TURBO_OVERRIDE:

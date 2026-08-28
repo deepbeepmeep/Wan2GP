@@ -24,12 +24,29 @@ _JSON_PARSE_FAILED = object()
 _ASSISTANT_PREFILL_CHUNK_TOKENS = 1024
 ASSISTANT_THOUGHT_BUDGET_TOKENS = 4096
 ASSISTANT_STATEMENT_BUDGET_TOKENS = 4096
-ASSISTANT_TOOL_BATCH_BUDGET_TOKENS = 8192
-ASSISTANT_ACTION_REPETITION_PENALTY_ENABLED = True
-ASSISTANT_ACTION_REPETITION_PENALTY = 1.05
-ASSISTANT_THOUGHT_BUDGET_UPDATE = """<wangp_runtime_update>
-The preceding thought reached its budget. Continue more directly: answer, call a tool, or start a fresh thought only if needed. Reuse established conclusions and avoid repeating exploration.
+ASSISTANT_TOOL_BATCH_BUDGET_TOKENS = 4096
+ASSISTANT_ACTION_BUDGET_MEDIUM_CONTEXT_TOKENS = 48000
+ASSISTANT_ACTION_BUDGET_LARGE_CONTEXT_TOKENS = 64000
+ASSISTANT_ACTION_BUDGET_MEDIUM_TOKENS = 6144
+ASSISTANT_ACTION_BUDGET_LARGE_TOKENS = 8192
+
+
+def assistant_thought_budget_update(budget_tokens: int) -> str:
+    return f"""<wangp_runtime_update>
+The preceding thought reached its budget of {int(budget_tokens)} tokens. Continue more directly: answer, call a tool, or start a fresh thought only if needed. Reuse established conclusions and avoid repeating exploration.
 </wangp_runtime_update>"""
+
+
+ASSISTANT_THOUGHT_BUDGET_UPDATE = assistant_thought_budget_update(ASSISTANT_THOUGHT_BUDGET_TOKENS)
+
+
+def assistant_action_budget_tokens(context_window_tokens: int) -> int:
+    context_window_tokens = int(context_window_tokens)
+    if context_window_tokens >= ASSISTANT_ACTION_BUDGET_LARGE_CONTEXT_TOKENS:
+        return ASSISTANT_ACTION_BUDGET_LARGE_TOKENS
+    if context_window_tokens >= ASSISTANT_ACTION_BUDGET_MEDIUM_CONTEXT_TOKENS:
+        return ASSISTANT_ACTION_BUDGET_MEDIUM_TOKENS
+    return ASSISTANT_THOUGHT_BUDGET_TOKENS
 
 
 def _tool_call_markers(text: str) -> list[tuple[int, int, bool]]:
@@ -608,6 +625,8 @@ class Qwen35AssistantRuntime:
             top_k=normalized_top_k,
             top_p=normalized_top_p,
             min_p=qwen35_text._resolve_prompt_min_p(self.model),
+            repetition_penalty=qwen35_text._resolve_prompt_repetition_penalty(self.model),
+            predictive_penalty=qwen35_text._resolve_predictive_penalty_enabled(self.model),
             ignore_eos=True,
             logits_processor=logits_processor,
             logits_processor_update_state=logits_processor_update_state,
@@ -849,6 +868,7 @@ class Qwen35AssistantRuntime:
         seq.min_p = sampling_params.min_p
         seq.cfg_scale = sampling_params.cfg_scale
         seq.repetition_penalty = sampling_params.repetition_penalty
+        seq.predictive_penalty = sampling_params.predictive_penalty
         seq.repetition_penalty_start = seq.num_prompt_tokens
         seq.logits_processor = sampling_params.logits_processor
         seq.logits_processor_update_state = sampling_params.logits_processor_update_state
@@ -856,26 +876,22 @@ class Qwen35AssistantRuntime:
         llm.model_runner.call("set_sampling_seed", sampling_params.seed)
         return seq, int(sampling_params.max_tokens)
 
-    @staticmethod
-    def action_budget(phase: str) -> int:
+    def action_budget(self, phase: str) -> int:
         normalized_phase = str(phase or "").strip().lower()
-        if normalized_phase == "thought":
-            return ASSISTANT_THOUGHT_BUDGET_TOKENS
-        if normalized_phase == "statement":
-            return ASSISTANT_STATEMENT_BUDGET_TOKENS
-        if normalized_phase == "tool":
-            return ASSISTANT_TOOL_BATCH_BUDGET_TOKENS
-        raise ValueError(f"Unknown assistant action phase: {phase}")
+        if normalized_phase not in {"thought", "statement", "tool"}:
+            raise ValueError(f"Unknown assistant action phase: {phase}")
+        return assistant_action_budget_tokens(self.get_max_model_len())
 
-    def _install_action_processors(self, seq: Sequence, phase: str, continuing_response: bool) -> None:
-        if not continuing_response or self._assistant_presence_state is None:
+    def _install_action_processors(self, seq: Sequence, phase: str, phase_limit: int, continuing_response: bool) -> None:
+        penalty_enabled = phase in {"thought", "statement"}
+        if penalty_enabled and (not continuing_response or self._assistant_presence_state is None):
             self._assistant_presence_state = qwen35_text._PresencePenaltyState(qwen35_text._resolve_prompt_presence_penalty(self.model))
-        presence_state = self._assistant_presence_state
+        presence_state = self._assistant_presence_state if penalty_enabled else qwen35_text._PresencePenaltyState(None)
         thinking_state = None
         if phase == "thought":
             thinking_state = qwen35_text._ThinkingBudgetState(
                 getattr(self.model, "_prompt_enhancer_close_think_token_id", None),
-                ASSISTANT_THOUGHT_BUDGET_TOKENS,
+                phase_limit,
                 getattr(self.model, "_prompt_enhancer_stop_token_ids", ()),
             )
         if not presence_state.enabled() and (thinking_state is None or not thinking_state.enabled()):
@@ -888,6 +904,13 @@ class Qwen35AssistantRuntime:
             if thinking_state is not None:
                 thinking_state.apply_(logits)
             return logits
+
+        if thinking_state is None or not thinking_state.enabled():
+            logits_processor_without_penalty = None
+        else:
+            def logits_processor_without_penalty(_input_ids, logits):
+                return thinking_state.apply_(logits)
+        logits_processor._without_penalty = logits_processor_without_penalty
 
         def update_state(token_id: int):
             presence_state.update(token_id)
@@ -918,10 +941,11 @@ class Qwen35AssistantRuntime:
         seq.top_p = normalized_top_p
         seq.min_p = qwen35_text._resolve_prompt_min_p(self.model)
         seq.cfg_scale = 1.0
-        seq.repetition_penalty = ASSISTANT_ACTION_REPETITION_PENALTY if ASSISTANT_ACTION_REPETITION_PENALTY_ENABLED and phase in {"thought", "statement"} else 1.0
+        seq.repetition_penalty = qwen35_text._resolve_prompt_repetition_penalty(self.model) if phase in {"thought", "statement"} else 1.0
+        seq.predictive_penalty = qwen35_text._resolve_predictive_penalty_enabled(self.model)
         seq.repetition_penalty_start = seq.num_tokens
         seq.logits_bias = qwen35_text._build_suppressed_token_logits_bias(self.model, thinking_enabled=thinking_enabled)
-        self._install_action_processors(seq, phase, continuing_response=continuing_response)
+        self._install_action_processors(seq, phase, phase_limit, continuing_response=continuing_response)
         if not continuing_response:
             llm.model_runner.call("set_sampling_seed", None if seed is None else int(seed))
         return seq, AssistantActionState(phase=phase, limit=phase_limit)
@@ -933,8 +957,8 @@ class Qwen35AssistantRuntime:
         if token_ids:
             self.append_completion_suffix([int(token_id) for token_id in token_ids])
 
-    def _close_exhausted_thought(self) -> None:
-        self._append_action_suffix(f"\n{ASSISTANT_THOUGHT_BUDGET_UPDATE}\n</think>")
+    def _close_exhausted_thought(self, budget_tokens: int) -> None:
+        self._append_action_suffix(f"\n{assistant_thought_budget_update(budget_tokens)}\n</think>")
 
     def generate_action(self, phase: str, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, stream_callback=None, stream_interval_seconds: float = 1.0, continuing_response: bool = False) -> AssistantDecodeResult:
         seq, action = self.start_generation_action(phase=phase, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled, continuing_response=continuing_response)
@@ -998,7 +1022,7 @@ class Qwen35AssistantRuntime:
                 return finish("tool_call" if action.phase == "tool" else "stop_token", last_token_id)
 
         if action.phase == "thought":
-            self._close_exhausted_thought()
+            self._close_exhausted_thought(action.limit)
             return finish("thought_budget_exhausted")
         if action.phase == "tool" and not validate_tool_call_structure(raw_text) and has_complete_tool_call(raw_text):
             return finish("tool_call")
@@ -1086,6 +1110,7 @@ class Qwen35AssistantRuntime:
                 "top_p": None if seq.top_p is None else float(seq.top_p),
                 "min_p": None if seq.min_p is None else float(seq.min_p),
                 "repetition_penalty": None if seq.repetition_penalty is None else float(seq.repetition_penalty),
+                "predictive_penalty": bool(seq.predictive_penalty),
                 "repetition_penalty_start": int(seq.repetition_penalty_start),
             },
             "block_manager": {
@@ -1198,6 +1223,7 @@ class Qwen35AssistantRuntime:
         restored_seq.top_p = None if saved_seq["top_p"] is None else float(saved_seq["top_p"])
         restored_seq.min_p = None if saved_seq["min_p"] is None else float(saved_seq["min_p"])
         restored_seq.repetition_penalty = None if saved_seq["repetition_penalty"] is None else float(saved_seq["repetition_penalty"])
+        restored_seq.predictive_penalty = bool(saved_seq["predictive_penalty"])
         restored_seq.repetition_penalty_start = int(saved_seq["repetition_penalty_start"])
         restored_seq.logits_processor = None
         restored_seq.logits_processor_update_state = None

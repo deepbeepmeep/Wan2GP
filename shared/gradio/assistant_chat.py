@@ -1531,7 +1531,8 @@ def get_css() -> str:
 .wangp-assistant-chat__structured-result th {
     position: sticky;
     top: 0;
-    background: rgba(7, 33, 48, 0.96);
+    color: var(--assistant-text) !important;
+    background: rgba(7, 33, 48, 0.96) !important;
     z-index: 1;
 }
 
@@ -4251,6 +4252,7 @@ def add_tool_call(session, message_id: str, tool_name: str, arguments: dict[str,
         "status_text": "Preparing" if request_pending else "Running",
         "request_pending": bool(request_pending),
         "attachment": None,
+        "attachments": [],
     }
     _ensure_message_blocks(record).append(tool_record)
     revision = _touch_chat(session)
@@ -4278,7 +4280,8 @@ def update_tool_call(session, message_id: str, tool_id: str, status: str | None 
             tool_record["request_pending"] = bool(request_pending)
         if result is not _UNSET:
             tool_record["result"] = None if result is None else dict(result or {})
-            tool_record["attachment"] = _attachment_from_tool_result(tool_record.get("result"), getattr(session, "file_access_policy", None))
+            tool_record["attachments"] = _attachments_from_tool_result(tool_record.get("result"), getattr(session, "file_access_policy", None))
+            tool_record["attachment"] = tool_record["attachments"][-1] if tool_record["attachments"] else None
             tool_record["presentation"] = _structured_tool_presentation(tool_record, getattr(session, "file_access_policy", None))
         revision = _touch_chat(session)
         return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
@@ -5044,9 +5047,9 @@ def _extract_attachments_from_markdown(text: str) -> tuple[str, list[dict[str, A
     return stripped, attachments
 
 
-def _attachment_from_tool_result(result: dict[str, Any] | None, file_access_policy=None) -> dict[str, Any] | None:
+def _attachments_from_tool_result(result: dict[str, Any] | None, file_access_policy=None) -> list[dict[str, Any]]:
     if not isinstance(result, dict):
-        return None
+        return []
     download = result.get("download")
     if isinstance(download, dict) and str(download.get("url", "")).strip():
         filename = str(download.get("filename", "Download file") or "Download file").strip()
@@ -5058,14 +5061,44 @@ def _attachment_from_tool_result(result: dict[str, Any] | None, file_access_poli
         preview = _attachment_from_path(source_path) if source_path and kind in {"image", "video", "audio"} else None
         bundled_thumbnail = {"audio": _AUDIO_THUMBNAIL_PATH, "archive": _ARCHIVE_THUMBNAIL_PATH}.get(kind)
         thumb_url = str(preview.get("thumb_url", "")) if preview is not None else (_bundled_thumbnail_url(bundled_thumbnail) if bundled_thumbnail else "")
-        return {"href": url, "label": f"Download {filename}", "subtitle": subtitle, "thumb_url": thumb_url, "kind": kind, "path_key": url, "download": filename}
-    output_file = str(result.get("output_file", "")).strip()
-    if len(output_file) == 0:
-        return None
-    output_file = _physical_attachment_path(output_file, file_access_policy)
-    ext = os.path.splitext(output_file)[1].lower()
-    label = "Generated image" if ext in _IMAGE_EXTENSIONS else ("Generated video" if ext in _VIDEO_EXTENSIONS else ("Generated audio" if ext in _AUDIO_EXTENSIONS else "Generated file"))
-    return _attachment_from_path(output_file, label)
+        return [{"href": url, "label": f"Download {filename}", "subtitle": subtitle, "thumb_url": thumb_url, "kind": kind, "path_key": url, "download": filename}]
+
+    output_paths = []
+
+    def collect(payload: Any) -> None:
+        if not isinstance(payload, dict):
+            return
+        for key in ("generated_files", "output_files"):
+            values = payload.get(key)
+            if isinstance(values, (list, tuple)):
+                output_paths.extend(str(value).strip() for value in values if str(value).strip())
+        nested_result = payload.get("result")
+        if isinstance(nested_result, dict):
+            collect(nested_result)
+        output_file = str(payload.get("output_file", "") or "").strip()
+        if output_file:
+            output_paths.append(output_file)
+
+    collect(result)
+    attachments = []
+    seen_paths = set()
+    for output_path in output_paths:
+        output_file = _physical_attachment_path(output_path, file_access_policy)
+        path_key = os.path.normcase(os.path.normpath(output_file))
+        if not output_file or path_key in seen_paths:
+            continue
+        seen_paths.add(path_key)
+        ext = os.path.splitext(output_file)[1].lower()
+        label = "Generated image" if ext in _IMAGE_EXTENSIONS else ("Generated video" if ext in _VIDEO_EXTENSIONS else ("Generated audio" if ext in _AUDIO_EXTENSIONS else "Generated file"))
+        attachment = _attachment_from_path(output_file, label)
+        if attachment is not None:
+            attachments.append(attachment)
+    return attachments
+
+
+def _attachment_from_tool_result(result: dict[str, Any] | None, file_access_policy=None) -> dict[str, Any] | None:
+    attachments = _attachments_from_tool_result(result, file_access_policy)
+    return attachments[-1] if attachments else None
 
 
 def _physical_attachment_path(value: Any, file_access_policy=None) -> str:
@@ -5257,7 +5290,8 @@ def _render_message_blocks(record: dict[str, Any]) -> tuple[str, set[str]]:
             continue
         if block_type == "tool":
             rendered.append(_render_tool_block(block))
-            attachment_html = _render_attachments(_dedupe_attachments([block.get("attachment")] if isinstance(block.get("attachment"), dict) else [], rendered_attachment_keys))
+            attachments = block.get("attachments") if isinstance(block.get("attachments"), list) else [block.get("attachment")] if isinstance(block.get("attachment"), dict) else []
+            attachment_html = _render_attachments(_dedupe_attachments(attachments, rendered_attachment_keys))
             if len(attachment_html) > 0:
                 rendered.append(attachment_html)
     return "".join(rendered), rendered_attachment_keys
@@ -5290,7 +5324,7 @@ def _render_context_summary_block(block: dict[str, Any]) -> str:
     return (
         f"<details class='wangp-assistant-chat__disclosure wangp-assistant-chat__disclosure--context-summary' data-context-summary-id='{html.escape(str(block.get('id', '')))}'>"
         "<summary><span class='wangp-assistant-chat__tool-title'><span class='wangp-assistant-chat__tool-chip'>Context</span>Earlier history summarized</span></summary>"
-        f"<div class='wangp-assistant-chat__disclosure-body'><div class='wangp-assistant-chat__context-summary'>{_markdown_to_html(block.get('text', ''))}</div></div>"
+        f"<div class='wangp-assistant-chat__disclosure-body'><div class='wangp-assistant-chat__context-summary'>{_markdown_to_html(block.get('text', ''))}</div>{_render_collapse_button('summary')}</div>"
         "</details>"
     )
 

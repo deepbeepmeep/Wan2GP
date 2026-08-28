@@ -380,7 +380,7 @@ class MiniMaxH3Pipeline:
         return torch.device("cuda" if torch.cuda.is_available() else next(self.transformer.parameters()).device)
 
     def get_loras_transformer(self, _get_model_recursive_prop, model_def, guidance_phases, activated_loras, **_kwargs):
-        if int(guidance_phases) <= 1 or "pdd_head_file" in model_def:
+        if int(guidance_phases) <= 1 or model_def.get("pdd", False):
             return [], []
         selected_lora = next((lora for lora in activated_loras if _is_required_h3_turbo(os.path.basename(str(lora).split("|", 1)[0]))), None)
         if selected_lora is not None and H3_ALLOW_PHASE_2_TURBO_OVERRIDE:
@@ -1027,7 +1027,7 @@ class MiniMaxH3Pipeline:
                         keep_grouped_rows_fixed = grouped_masking and denoising_start_step <= step and step + 1 < mask_end_step
                         _reinject_video_source(source_video, source_latents, source_noise, source_mask, stage_sigmas_video[step + 1], source_buffer,
                                                1.0 - VISUAL_COND_TIMESTEP if preserve_input_mask_values or keep_grouped_rows_fixed else None)
-                    video_velocity = audio_velocity = None
+                    video_velocity = audio_velocity = video_denoised = audio_velocity_tail = None
                     if callback is not None:
                         preview = video[0].detach().cpu() if not offline_spectrum or spectrum.replaying else None
                         callback(step, preview, False, denoising_extra=pass_extra, **({"pass_no": pass_no} if pass_no >= 0 else {}))

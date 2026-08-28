@@ -49,10 +49,8 @@ from shared.gradio import assistant_chat
 from shared.prompt_enhancer import qwen35_text
 from shared.prompt_enhancer.config import PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT, PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, normalize_prompt_enhancer_speculative_decoding
 from shared.prompt_enhancer.qwen35_assistant_runtime import (
-    ASSISTANT_STATEMENT_BUDGET_TOKENS,
-    ASSISTANT_THOUGHT_BUDGET_TOKENS,
-    ASSISTANT_TOOL_BATCH_BUDGET_TOKENS,
     Qwen35AssistantRuntime,
+    assistant_action_budget_tokens,
     extract_incomplete_tool_arguments,
     extract_incomplete_tool_name,
     extract_tool_calls,
@@ -100,6 +98,10 @@ _COMPACTION_NO_TOOLS_RETRY = (
     "The preceding compaction attempt incorrectly tried to call a tool. This is a corrected retry: return only the plain-text summary. "
     "Do not emit tool-call markup, a function name, arguments, XML, or commentary."
 )
+_COMPACTION_EMPTY_SUMMARY_RETRY = (
+    "The preceding compaction attempt returned no summary. This is a corrected retry: write a non-empty plain-text summary of the conversation above. "
+    "Preserve completed work, important facts and decisions, the active task, and its remaining next steps."
+)
 _INTERRUPTION_RUNTIME_TRACE_MAX_CHARS = 12000
 _VIDEO_TOOL_RUNTIME_REINJECT_TOKENS = 2000
 _ASSISTANT_STREAM_INTERVAL_SECONDS = 0.25
@@ -119,12 +121,16 @@ class _CompactionToolCallError(RuntimeError):
     pass
 
 
-def _summary_compaction_reserve_tokens() -> int:
-    return ASSISTANT_TOOL_BATCH_BUDGET_TOKENS + _GENERATION_RESERVE_TOKENS
+class _CompactionEmptySummaryError(RuntimeError):
+    pass
+
+
+def _summary_compaction_reserve_tokens(context_window_tokens: int) -> int:
+    return assistant_action_budget_tokens(context_window_tokens) + _GENERATION_RESERVE_TOKENS
 
 
 def _summary_compaction_trigger_tokens(kv_cache_tokens: int) -> int:
-    return max(1, int(kv_cache_tokens) - _summary_compaction_reserve_tokens())
+    return max(1, int(kv_cache_tokens) - _summary_compaction_reserve_tokens(kv_cache_tokens))
 
 
 _RUNTIME_STATUS_VISUAL_KEYS = (
@@ -5250,6 +5256,7 @@ class AssistantEngine:
         self._suppress_intermediate_stream_after_context_trim = False
         self._skip_generation_context_sync_once = False
         self._runtime_debug_signature = ""
+        self._action_budget_logged = False
         bind_runtime_tools = getattr(self.tool_box, "bind_runtime_tools", None)
         if callable(bind_runtime_tools):
             bind_runtime_tools(vision_query_callback=self._run_visual_query, tool_progress_callback=self._handle_tool_progress, vision_is_remote=False)
@@ -5327,17 +5334,11 @@ class AssistantEngine:
         runtime_thinking_tokens = 0 if self.runtime is None else max(0, int(getattr(self.runtime, "_runtime_extra_tokens", 0) or 0))
         return max(_GENERATION_RESERVE_TOKENS, requested_max_new_tokens + max(_THINKING_HEADROOM_TOKENS, runtime_thinking_tokens))
 
-    @staticmethod
-    def _action_generation_reserve_tokens(phase: str) -> int:
+    def _action_generation_reserve_tokens(self, phase: str) -> int:
         phase = str(phase or "").strip().lower()
-        limits = {
-            "thought": ASSISTANT_THOUGHT_BUDGET_TOKENS,
-            "statement": ASSISTANT_STATEMENT_BUDGET_TOKENS,
-            "tool": ASSISTANT_TOOL_BATCH_BUDGET_TOKENS,
-        }
-        if phase not in limits:
+        if phase not in {"thought", "statement", "tool"}:
             raise ValueError(f"Unknown assistant action phase: {phase}")
-        return limits[phase] + _GENERATION_RESERVE_TOKENS
+        return assistant_action_budget_tokens(self._get_context_window_tokens()) + _GENERATION_RESERVE_TOKENS
 
     def _resolved_chat_max_tokens(self) -> int:
         max_tokens = 0
@@ -6115,6 +6116,11 @@ class AssistantEngine:
             model._prompt_enhancer_min_model_len_hint = self._get_context_window_tokens()
             if self.runtime is None or self.runtime.model is not model:
                 self.runtime = Qwen35AssistantRuntime(model, debug_enabled=self.debug_enabled)
+            if not self._action_budget_logged:
+                context_window_tokens = self._get_context_window_tokens()
+                action_budget_tokens = assistant_action_budget_tokens(context_window_tokens)
+                print(f"[AssistantRuntime] Deepy action maximum: thought={action_budget_tokens:,}, statement={action_budget_tokens:,}, tool={action_budget_tokens:,} tokens (context_window={context_window_tokens:,}).")
+                self._action_budget_logged = True
             self._log_runtime_info(model)
             return self.runtime
         except Exception:
@@ -6476,7 +6482,7 @@ class AssistantEngine:
     def _get_compaction_type(self) -> str:
         return normalize_deepy_compaction_type(get_deepy_config_value(DEEPY_COMPACTION_TYPE_KEY, ""))
 
-    def _prepare_memory_compaction_context(self, prior_messages: list[dict[str, Any]], checkpoint: dict[str, Any], context_window_tokens: int, max_new_tokens: int, *, corrective_no_tools: bool = False) -> tuple[dict[str, Any], int, int]:
+    def _prepare_memory_compaction_context(self, prior_messages: list[dict[str, Any]], checkpoint: dict[str, Any], context_window_tokens: int, max_new_tokens: int, *, corrective_no_tools: bool = False, corrective_empty_summary: bool = False) -> tuple[dict[str, Any], int, int]:
         if self.runtime is None:
             raise RuntimeError("Assistant runtime is not available for context summarization.")
         if int(checkpoint.get("messages_len", -1)) != len(prior_messages):
@@ -6511,7 +6517,10 @@ class AssistantEngine:
             raise RuntimeError("Deepy's pre-turn KV context could not be snapshotted for compaction rollback.")
         rollback_snapshot = original_live_snapshot or source_snapshot
 
-        compaction_prompt = f"{ASSISTANT_COMPACTION_PROMPT}\n\n{_COMPACTION_NO_TOOLS_RETRY}" if corrective_no_tools else ASSISTANT_COMPACTION_PROMPT
+        corrective_prompts = [_COMPACTION_NO_TOOLS_RETRY] if corrective_no_tools else []
+        if corrective_empty_summary:
+            corrective_prompts.append(_COMPACTION_EMPTY_SUMMARY_RETRY)
+        compaction_prompt = "\n\n".join([ASSISTANT_COMPACTION_PROMPT, *corrective_prompts])
         try:
             instruction_suffix = render_text_user_turn_suffix(self.runtime.tokenizer, compaction_prompt, thinking_enabled=False)
             appended_tokens = [int(token_id) for token_id in instruction_suffix]
@@ -6537,7 +6546,7 @@ class AssistantEngine:
         self._log(f"Compaction reused {len(source_tokens):,} cached tokens, appended {len(appended_tokens):,} instruction tokens, and reserved up to {resolved_max_new_tokens:,} summary tokens.")
         return rollback_snapshot, compaction_context_tokens, resolved_max_new_tokens
 
-    def _prepare_live_compaction_context(self, source_messages: list[dict[str, Any]], context_window_tokens: int, max_new_tokens: int, *, corrective_no_tools: bool = False) -> tuple[dict[str, Any], int, int]:
+    def _prepare_live_compaction_context(self, source_messages: list[dict[str, Any]], context_window_tokens: int, max_new_tokens: int, *, corrective_no_tools: bool = False, corrective_empty_summary: bool = False) -> tuple[dict[str, Any], int, int]:
         if self.runtime is None:
             raise RuntimeError("Assistant runtime is not available for active-turn summarization.")
         rollback_snapshot = self.runtime.snapshot_context()
@@ -6551,6 +6560,8 @@ class AssistantEngine:
         )
         if corrective_no_tools:
             active_prompt = f"{active_prompt}\n\n{_COMPACTION_NO_TOOLS_RETRY}"
+        if corrective_empty_summary:
+            active_prompt = f"{active_prompt}\n\n{_COMPACTION_EMPTY_SUMMARY_RETRY}"
         try:
             source_tokens = render_assistant_messages(self.runtime.tokenizer, self._render_messages_for_delta(source_messages), self.tool_box.get_tool_schemas(), add_generation_prompt=False, thinking_enabled=self.thinking_enabled)
             instruction_suffix = render_text_user_turn_suffix(self.runtime.tokenizer, active_prompt, thinking_enabled=False)
@@ -6638,18 +6649,18 @@ class AssistantEngine:
         finally:
             self.session.messages = original_messages
 
-    @staticmethod
-    def _resolved_compaction_reserve_tokens(generation_reserve_tokens: int) -> int:
-        return max(_summary_compaction_reserve_tokens(), max(0, int(generation_reserve_tokens)))
+    def _resolved_compaction_reserve_tokens(self, generation_reserve_tokens: int, context_window_tokens: int | None = None) -> int:
+        context_window_tokens = self._get_context_window_tokens() if context_window_tokens is None else int(context_window_tokens)
+        return max(_summary_compaction_reserve_tokens(context_window_tokens), max(0, int(generation_reserve_tokens)))
 
     def _compaction_output_budget(self, prior_messages: list[dict[str, Any]], current_messages: list[dict[str, Any]], before_tokens: int, context_window_tokens: int, generation_reserve_tokens: int) -> int:
         fixed_tokens = self._rewritten_history_token_count(prior_messages, current_messages)
-        target_tokens = min(int(before_tokens) - 1, int(context_window_tokens) - self._resolved_compaction_reserve_tokens(generation_reserve_tokens))
+        target_tokens = min(int(before_tokens) - 1, int(context_window_tokens) - self._resolved_compaction_reserve_tokens(generation_reserve_tokens, context_window_tokens))
         return max(0, target_tokens - fixed_tokens)
 
     def _validate_compaction_reduction(self, prior_messages: list[dict[str, Any]], current_messages: list[dict[str, Any]], before_tokens: int, context_window_tokens: int, generation_reserve_tokens: int) -> int:
         candidate_tokens = self._rewritten_history_token_count(prior_messages, current_messages)
-        target_tokens = min(int(before_tokens) - 1, int(context_window_tokens) - self._resolved_compaction_reserve_tokens(generation_reserve_tokens))
+        target_tokens = min(int(before_tokens) - 1, int(context_window_tokens) - self._resolved_compaction_reserve_tokens(generation_reserve_tokens, context_window_tokens))
         if candidate_tokens > target_tokens:
             raise _CompactionCapacityError(f"Completed compaction does not free the required context ({int(before_tokens):,} -> {candidate_tokens:,} tokens; target <= {target_tokens:,}).", candidate_tokens - target_tokens)
         self._log(f"Accepting completed compaction because it reduces context from {int(before_tokens):,} to {candidate_tokens:,} tokens and preserves the next-action reserve.")
@@ -6736,7 +6747,7 @@ class AssistantEngine:
             raise _CompactionToolCallError("Compaction generation emitted tool-call markup instead of a plain-text summary.")
         summary = strip_tool_blocks(qwen35_text._clean_generated_text(raw_text)).strip()
         if not summary:
-            raise RuntimeError("Compaction generation returned an empty summary.")
+            raise _CompactionEmptySummaryError("Compaction generation returned an empty summary.")
         return summary
 
     def _restore_compaction_transaction(self, rollback_snapshot: dict[str, Any] | None, original_messages: list[dict[str, Any]], original_render_state: dict[str, Any]) -> None:
@@ -6760,7 +6771,7 @@ class AssistantEngine:
         if not isinstance(checkpoint, dict):
             raise RuntimeError("Assistant compaction requires an active turn checkpoint.")
         context_window_tokens = self._get_context_window_tokens()
-        generation_reserve_tokens = self._resolved_compaction_reserve_tokens(generation_reserve_tokens)
+        generation_reserve_tokens = self._resolved_compaction_reserve_tokens(generation_reserve_tokens, context_window_tokens)
         self.session.messages = [*copy.deepcopy(prior_messages), *copy.deepcopy(current_messages)]
         target_tokens = self._render_messages(add_generation_prompt=True)
         hard_budget = max(1, context_window_tokens - max(0, int(generation_reserve_tokens)))
@@ -6823,7 +6834,7 @@ class AssistantEngine:
         context_window_tokens = self._get_context_window_tokens()
         if context_window_tokens < DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:
             return False
-        generation_reserve_tokens = self._resolved_compaction_reserve_tokens(generation_reserve_tokens)
+        generation_reserve_tokens = self._resolved_compaction_reserve_tokens(generation_reserve_tokens, context_window_tokens)
         checkpoint = self.session.current_turn
         if not isinstance(checkpoint, dict) or bool(checkpoint.get("summary_compaction_attempted", False)):
             return False
@@ -6856,6 +6867,7 @@ class AssistantEngine:
         turn_levels: dict[int, int] = {}
         reduction_events: list[str] = []
         corrective_no_tools = False
+        corrective_empty_summary = False
         summary = ""
         while working_prior_messages:
             rollback_snapshot = None
@@ -6865,9 +6877,9 @@ class AssistantEngine:
                 if requested_summary_tokens <= 0:
                     raise _CompactionCapacityError("Compaction cannot produce a summary while preserving a net reduction and the next-action reserve.")
                 if working_prior_messages == prior_messages:
-                    rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_memory_compaction_context(working_prior_messages, checkpoint, context_window_tokens, requested_summary_tokens, corrective_no_tools=corrective_no_tools)
+                    rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_memory_compaction_context(working_prior_messages, checkpoint, context_window_tokens, requested_summary_tokens, corrective_no_tools=corrective_no_tools, corrective_empty_summary=corrective_empty_summary)
                 else:
-                    rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_live_compaction_context(working_prior_messages, context_window_tokens, requested_summary_tokens, corrective_no_tools=corrective_no_tools)
+                    rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_live_compaction_context(working_prior_messages, context_window_tokens, requested_summary_tokens, corrective_no_tools=corrective_no_tools, corrective_empty_summary=corrective_empty_summary)
                 generation_started_at = time.perf_counter()
                 result = self._generate_compaction_segment(max_new_tokens)
                 log_llm_io("IN", "local-deepy", "history-compaction", {
@@ -6909,6 +6921,13 @@ class AssistantEngine:
                     self._log("Retrying the identical compaction source with a stronger plain-text/no-tools instruction.")
                     self._set_status("Retrying context summary without tools...", kind="loading")
                     continue
+                if isinstance(exc, _CompactionEmptySummaryError):
+                    if not corrective_empty_summary:
+                        corrective_empty_summary = True
+                        self._log("Retrying the identical compaction source with an explicit non-empty-summary instruction.")
+                        self._set_status("Retrying empty context summary...", kind="loading")
+                        continue
+                    exc = _CompactionCapacityError("Compaction repeatedly returned an empty summary; reducing the oldest completed source before retrying.")
                 if not isinstance(exc, _CompactionCapacityError):
                     raise RuntimeError("Deepy context compaction failed; original context was restored without deleting history.") from exc
                 reduction_reason = self._degrade_compaction_source(
@@ -6954,7 +6973,7 @@ class AssistantEngine:
         context_window_tokens = self._get_context_window_tokens()
         if context_window_tokens < DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:
             return False
-        generation_reserve_tokens = self._resolved_compaction_reserve_tokens(generation_reserve_tokens)
+        generation_reserve_tokens = self._resolved_compaction_reserve_tokens(generation_reserve_tokens, context_window_tokens)
         checkpoint = self.session.current_turn
         if not isinstance(checkpoint, dict):
             return False
@@ -6989,6 +7008,7 @@ class AssistantEngine:
         turn_levels: dict[int, int] = {}
         reduction_events: list[str] = []
         corrective_no_tools = False
+        corrective_empty_summary = False
         summary = ""
         while working_summary_source:
             rollback_snapshot = None
@@ -6998,7 +7018,7 @@ class AssistantEngine:
                 requested_summary_tokens = self._compaction_output_budget([], empty_current_messages, before_tokens, context_window_tokens, generation_reserve_tokens)
                 if requested_summary_tokens <= 0:
                     raise _CompactionCapacityError("Active-turn compaction cannot produce a summary while preserving a net reduction and the next-action reserve.")
-                rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_live_compaction_context(working_summary_source, context_window_tokens, requested_summary_tokens, corrective_no_tools=corrective_no_tools)
+                rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_live_compaction_context(working_summary_source, context_window_tokens, requested_summary_tokens, corrective_no_tools=corrective_no_tools, corrective_empty_summary=corrective_empty_summary)
                 generation_started_at = time.perf_counter()
                 result = self._generate_compaction_segment(max_new_tokens)
                 log_llm_io("IN", "local-deepy", "active-turn-compaction", {
@@ -7041,6 +7061,13 @@ class AssistantEngine:
                     self._log("Retrying the identical active-turn compaction source with a stronger plain-text/no-tools instruction.")
                     self._set_status("Retrying context summary without tools...", kind="loading")
                     continue
+                if isinstance(exc, _CompactionEmptySummaryError):
+                    if not corrective_empty_summary:
+                        corrective_empty_summary = True
+                        self._log("Retrying the identical active-turn compaction source with an explicit non-empty-summary instruction.")
+                        self._set_status("Retrying empty context summary...", kind="loading")
+                        continue
+                    exc = _CompactionCapacityError("Active-turn compaction repeatedly returned an empty summary; reducing the oldest completed source before retrying.")
                 if not isinstance(exc, _CompactionCapacityError):
                     raise RuntimeError("Deepy active-turn compaction failed; original context was restored without deleting history.") from exc
                 reduction_reason = self._degrade_compaction_source(
@@ -7873,7 +7900,7 @@ class AssistantEngine:
             return False
         context_window_tokens = self._get_context_window_tokens()
         summary_compaction = self._get_compaction_type() == DEEPY_COMPACTION_TYPE_SUMMARIZE and context_window_tokens >= DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS
-        next_action_reserve = _summary_compaction_reserve_tokens() if summary_compaction else self._action_generation_reserve_tokens(next_phase)
+        next_action_reserve = _summary_compaction_reserve_tokens(context_window_tokens) if summary_compaction else self._action_generation_reserve_tokens(next_phase)
         if summary_compaction:
             if len(current_seq.token_ids or []) <= _summary_compaction_trigger_tokens(context_window_tokens):
                 return False
@@ -8116,8 +8143,8 @@ class AssistantEngine:
                     self._append_assistant_message(raw_text)
                     checkpoint_assistant_turn(self.session)
                     self._canonicalize_context(sync_runtime="record_only")
-                    notice = "Deepy's answer was too long and was interrupted."
-                    self._record_budget_event("answer_budget_exhausted", "The previous Deepy answer reached its length budget and was interrupted. Continue it only if the user asks.")
+                    notice = f"Deepy's answer reached its budget of {result.token_count} tokens and was interrupted."
+                    self._record_budget_event("answer_budget_exhausted", f"The previous Deepy answer reached its budget of {result.token_count} tokens and was interrupted. Continue it only if the user asks.")
                     self._emit_chat_event(assistant_chat.set_message_end_badge(self.session, self._ensure_active_turn(), notice))
                     final_user_text = "" if len(self._stream_answer_text.strip()) > 0 else answer_text
                     turn_completed = True
@@ -8128,7 +8155,7 @@ class AssistantEngine:
                     if loop_action == "stop":
                         self._commit_loop_stop(raw_text, loop_message)
                         break
-                    self._append_tool_generation_error(raw_text, "tool_call_budget_exhausted", "Deepy's tool call request was too long and was interrupted before execution.", runtime_update=loop_message if loop_action == "warn" else "")
+                    self._append_tool_generation_error(raw_text, "tool_call_budget_exhausted", f"Deepy's tool call request reached its budget of {result.token_count} tokens and was interrupted before execution.", runtime_update=loop_message if loop_action == "warn" else "")
                     self._reset_action_stream_state()
                     action_phase = "thought" if self.thinking_enabled else "statement"
                     continuing_response = False

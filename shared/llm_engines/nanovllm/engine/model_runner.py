@@ -774,7 +774,7 @@ class ModelRunner:
         
         return temperatures, cfg_scales, top_ks, top_ps, min_ps, repetition_penalties
 
-    def _sync_repetition_token_cache(self, seq: Sequence, vocab_size: int) -> dict:
+    def _sync_repetition_token_cache(self, seq: Sequence) -> dict:
         boundary = int(seq.repetition_penalty_start)
         completion_count = int(seq.num_tokens) - boundary
         cache = self._repetition_token_cache.get(seq.seq_id)
@@ -787,10 +787,12 @@ class ModelRunner:
             cache.update(boundary=boundary, synced_tokens=0, seen=set(), token_ids=[])
             for state in cache["device_states"].values():
                 state["count"] = 0
+                state["cursor"] = 0
         new_tokens = seq.token_ids[boundary + cache["synced_tokens"]:boundary + completion_count]
+        full_vocab_size = int(self.config.hf_config.vocab_size)
         for token_id in new_tokens:
             token_id = int(token_id)
-            if 0 <= token_id < vocab_size and token_id not in cache["seen"]:
+            if 0 <= token_id < full_vocab_size and token_id not in cache["seen"]:
                 cache["seen"].add(token_id)
                 cache["token_ids"].append(token_id)
         cache["synced_tokens"] = completion_count
@@ -811,7 +813,7 @@ class ModelRunner:
         if penalty == 1.0:
             return
         vocab_size = int(logits.shape[-1])
-        cache = self._sync_repetition_token_cache(seq, vocab_size)
+        cache = self._sync_repetition_token_cache(seq)
         virtual_ids = self._repetition_virtual_tokens(cache, virtual_tokens, vocab_size)
         device_key = (logits.device.type, logits.device.index, vocab_size)
         state = cache["device_states"].get(device_key)
@@ -821,19 +823,32 @@ class ModelRunner:
                 "indices": torch.empty(capacity, dtype=torch.long, device=logits.device),
                 "values": torch.empty(capacity, dtype=logits.dtype, device=logits.device),
                 "count": 0,
+                "cursor": 0,
             }
             cache["device_states"][device_key] = state
-        new_ids = cache["token_ids"][state["count"]:]
+        new_ids = [token_id for token_id in cache["token_ids"][state["cursor"]:] if token_id < vocab_size]
+        state["cursor"] = len(cache["token_ids"])
         if len(new_ids) > _REPETITION_INCREMENT_LIMIT:
-            state["indices"][:len(cache["token_ids"])].copy_(torch.tensor(cache["token_ids"], dtype=torch.long, device=logits.device))
-            state["count"] = len(cache["token_ids"])
+            valid_ids = [token_id for token_id in cache["token_ids"] if token_id < vocab_size]
+            state["indices"][:len(valid_ids)].copy_(torch.tensor(valid_ids, dtype=torch.long, device=logits.device))
+            state["count"] = len(valid_ids)
             new_ids = []
         apply_sparse_repetition_penalty_(logits, state["indices"], state["count"], new_ids, virtual_ids, penalty, state["values"])
         state["count"] += len(new_ids)
 
-    def _apply_speculative_logit_rules(self, seq: Sequence, logits: torch.Tensor, repetition_penalty: float, virtual_tokens: list[int], vocab_size: int | None = None) -> torch.Tensor:
+    @staticmethod
+    def _speculative_logits_processor(seq: Sequence, predictive: bool):
+        processor = seq.logits_processor
+        if predictive and not seq.predictive_penalty and processor is not None and hasattr(processor, "_without_penalty"):
+            processor = processor._without_penalty
+        return processor
+
+    def _apply_speculative_logit_rules(self, seq: Sequence, logits: torch.Tensor, repetition_penalty: float, virtual_tokens: list[int], vocab_size: int | None = None, predictive: bool = False) -> torch.Tensor:
         logits = logits.clone()
-        if vocab_size is not None and seq.logits_processor is not None:
+        logits_processor = self._speculative_logits_processor(seq, predictive)
+        if predictive and not seq.predictive_penalty:
+            repetition_penalty = 1.0
+        if vocab_size is not None and logits_processor is not None:
             expanded_logits = logits.new_full((int(self.config.hf_config.vocab_size),), float("-inf"))
             expanded_logits[:vocab_size].copy_(logits)
             logits = expanded_logits
@@ -844,9 +859,9 @@ class ModelRunner:
             if vocab_size is not None:
                 bias = bias[..., :vocab_size]
             self._apply_logits_bias(logits, bias)
-        if seq.logits_processor is not None:
+        if logits_processor is not None:
             input_ids = torch.tensor([seq.token_ids + list(virtual_tokens)], dtype=torch.long, device=logits.device)
-            logits = seq.logits_processor(input_ids, logits.unsqueeze(0).clone())[0]
+            logits = logits_processor(input_ids, logits.unsqueeze(0).clone())[0]
         return logits
 
     def _sample_speculative_target(self, seq: Sequence, logits: torch.Tensor, sample_params, virtual_tokens: list[int]) -> int:
@@ -861,10 +876,10 @@ class ModelRunner:
             seq.logits_processor_update_state(token_id)
         return token_id
 
-    def _speculative_distribution(self, seq: Sequence, logits: torch.Tensor, sample_params, virtual_tokens: list[int], vocab_size: int | None = None) -> torch.Tensor:
+    def _speculative_distribution(self, seq: Sequence, logits: torch.Tensor, sample_params, virtual_tokens: list[int], vocab_size: int | None = None, predictive: bool = False) -> torch.Tensor:
         temperatures, _cfg_scales, _top_ks, _top_ps, _min_ps, repetition_penalties = sample_params
         penalty = 1.0 if repetition_penalties is None else float(repetition_penalties[0].item())
-        logits = self._apply_speculative_logit_rules(seq, logits, penalty, virtual_tokens, vocab_size).float().div_(temperatures[0])
+        logits = self._apply_speculative_logit_rules(seq, logits, penalty, virtual_tokens, vocab_size, predictive=predictive).float().div_(temperatures[0])
         top_k = int(seq.top_k) if seq.top_k is not None and 0 < int(seq.top_k) < logits.numel() else None
         top_p = float(seq.top_p) if seq.top_p is not None and 0.0 < float(seq.top_p) < 1.0 else None
         min_p = float(seq.min_p) if seq.min_p is not None and float(seq.min_p) > 0.0 else None
@@ -1023,7 +1038,9 @@ class ModelRunner:
         rejection_sampling = seq.top_k != 1
         confidence_threshold = 0.0 if rejection_sampling else float(getattr(self.model, "_prompt_enhancer_speculative_confidence", 0.0))
         graph = getattr(self, "mtp_draft_graphs", {}).get(draft_count)
-        if graph is not None and not rejection_sampling and confidence_threshold <= 0.0 and sample_params[-1] is None and seq.logits_processor is None:
+        predictive_processor = self._speculative_logits_processor(seq, predictive=True)
+        predictive_repetition = sample_params[-1] is not None and seq.predictive_penalty
+        if graph is not None and not rejection_sampling and confidence_threshold <= 0.0 and not predictive_repetition and predictive_processor is None:
             graph_vars = self.mtp_draft_graph_vars[draft_count]
             graph_vars["initial_logits"].copy_(draft_state["logits"])
             graph_vars["hidden_states"].copy_(draft_state["hidden_states"])
@@ -1044,13 +1061,13 @@ class ModelRunner:
         draft_hidden = draft_state["hidden_states"]
         for draft_idx in range(draft_count):
             if rejection_sampling:
-                probabilities = self._speculative_distribution(seq, draft_logits, sample_params, draft_tokens, draft_vocab_size)
+                probabilities = self._speculative_distribution(seq, draft_logits, sample_params, draft_tokens, draft_vocab_size, predictive=True)
                 draft_index = self._sample_distribution(probabilities)
                 draft_distributions.append(probabilities)
             else:
                 repetition_penalties = sample_params[-1]
                 penalty = 1.0 if repetition_penalties is None else float(repetition_penalties[0].item())
-                processed_logits = self._apply_speculative_logit_rules(seq, draft_logits, penalty, draft_tokens, draft_vocab_size)
+                processed_logits = self._apply_speculative_logit_rules(seq, draft_logits, penalty, draft_tokens, draft_vocab_size, predictive=True)
                 top_logit, top_token = torch.max(processed_logits, dim=0)
                 if confidence_threshold > 0.0:
                     confidence = torch.exp(top_logit.float() - torch.logsumexp(processed_logits.float(), dim=0))

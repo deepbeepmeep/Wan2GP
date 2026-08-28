@@ -442,12 +442,21 @@ class MiniMaxH3Model(nn.Module):
             converted[key] = value
         from .lora_affine import convert_adaln_loras
 
+        if self.use_adaln_curves:
+            ignored = sorted(key for key in converted if key.startswith("time_embedder."))
+            for key in ignored:
+                converted.pop(key)
+            if ignored:
+                print("MiniMax H3 LoRA: ignored unsupported pruned timestep tensors: " + ", ".join(ignored))
+
         start = time.perf_counter()
         count, architecture, source_width, target_width = convert_adaln_loras(
-            model_type, converted, self.adaln_t_table if self.use_adaln_curves else None)
+            model_type, converted, self.adaln_t_table if self.use_adaln_curves else None,
+            self.hybrid_ref2va_blocks, self.ref2va_adaln_t_table if self.hybrid_ref2va_blocks is not None else None)
         if count:
             source = f"full AdaLN width {source_width}" if source_width == 2688 else f"{architecture.upper()} pruned AdaLN width {source_width}"
-            target = f"full AdaLN width {target_width}" if target_width == 2688 else f"{architecture.upper()} pruned AdaLN width {target_width}"
+            target_architecture = "hybrid FL2VA/REF2VA" if self.hybrid_ref2va_blocks is not None else architecture.upper()
+            target = f"full AdaLN width {target_width}" if target_width == 2688 else f"{target_architecture} pruned AdaLN width {target_width}"
             print(f"MiniMax H3 LoRA: converted {count} AdaLN adapters from {source} to {target} in {time.perf_counter() - start:.2f}s")
         if hasattr(self.blocks[0].attn, "q_proj"):
             return converted
@@ -477,7 +486,8 @@ class MiniMaxH3Model(nn.Module):
                  rope_inv_freq_len=16, rope_theta=10000.0, norm_eps=1e-5, qk_norm_eps=1e-5,
                  final_norm_eps=1e-5, sigma_shift_video=12.0, sigma_shift_audio=3.0,
                  ffn_chunk_size=2048, adaln_curve_grid=None, adaln_dtype=torch.float32, image_model=None,
-                 pdd_num_steps=None, pdd_block_size=None, dtype=None, device=None, **kwargs):
+                 hybrid_ref2va_blocks=None, pdd_num_steps=None, pdd_block_size=None,
+                 dtype=None, device=None, **kwargs):
         super().__init__()
         self._interrupt = False
         self.cache = None
@@ -488,6 +498,7 @@ class MiniMaxH3Model(nn.Module):
         self.latents_dim = latents_dim
         self.audio_latents_dim = audio_latents_dim
         self.use_adaln_curves = adaln_curve_grid is not None
+        self.hybrid_ref2va_blocks = hybrid_ref2va_blocks
         self.pdd_num_steps = pdd_num_steps
         self.pdd_block_size = pdd_block_size
         video_dim = latents_dim * math.prod(self.patch_size)
@@ -496,6 +507,8 @@ class MiniMaxH3Model(nn.Module):
         self.condition_proj = nn.Linear(text_dim, hidden_size, bias=True, dtype=dtype, device=device)
         if self.use_adaln_curves:
             self.register_buffer("adaln_t_table", torch.empty(adaln_curve_grid, time_embed_dim, dtype=adaln_dtype, device=device))
+            if hybrid_ref2va_blocks is not None:
+                self.register_buffer("ref2va_adaln_t_table", torch.empty(adaln_curve_grid, time_embed_dim, dtype=adaln_dtype, device=device))
         else:
             self.time_embedder = TimeEmbedder(timestep_input_dim, time_embed_hidden_size, time_embed_dim,
                                               dtype=torch.float32, device=device)
@@ -568,10 +581,10 @@ class MiniMaxH3Model(nn.Module):
         payload["layout_signature"], payload["layout"] = signature, layout
         return layout
 
-    def _time_embedding(self, timesteps):
+    def _time_embedding(self, timesteps, table=None):
         if not self.use_adaln_curves:
             return self.time_embedder(timesteps)
-        table = self.adaln_t_table
+        table = self.adaln_t_table if table is None else table
         position = timesteps.clamp(0.0, 1.0) * (table.shape[0] - 1)
         lower = position.floor().long().clamp(max=table.shape[0] - 2)
         return torch.lerp(table[lower], table[lower + 1], (position - lower).unsqueeze(1).to(table.dtype))
@@ -625,11 +638,14 @@ class MiniMaxH3Model(nn.Module):
             audio = _to_dtype([audio], audio_dtype)
             return (unpatchify_video_tokens(video, latent_t, latent_h, latent_w, self.latents_dim, self.patch_size),
                     unpack_audio(audio))
-
-        video_rows = patchify_video(video_x.to(torch.float32), self.patch_size)
+        video_x = video_x.to(torch.float32)
+        video_rows = patchify_video(video_x, self.patch_size)
+        video_x= None
         if target_video_order is not None:
             video_rows = video_rows.index_select(0, target_video_order)
-        audio_rows = pack_audio(audio_x.to(torch.float32))
+        audio_x = audio_x.to(torch.float32)
+        audio_rows = pack_audio(audio_x)
+        audio_x = None
         cond_video, cond_audio = payload.get("cond_video_rows"), payload.get("cond_audio_rows")
         if cond_video is not None:
             video_rows = torch.cat((cond_video.to(device), video_rows))
@@ -686,6 +702,7 @@ class MiniMaxH3Model(nn.Module):
             segments = [segment for segment in segments if segment[0] < video_start]
             segments.extend(grouped_segments)
         temb = self._time_embedding(timestep)
+        ref2va_temb = self._time_embedding(timestep, self.ref2va_adaln_t_table) if self.hybrid_ref2va_blocks is not None else None
         rope = payload.get("rope")
         if rope is None:
             positions = layout.position_ids.to(torch.float32)
@@ -703,20 +720,25 @@ class MiniMaxH3Model(nn.Module):
         self.sol_attention.begin_forward(layout, device, dtype, payload["attention_sparsity"], target_video_order is not None)
 
         if first_block_cache is None:
-            for block in self.blocks:
+            for block_index, block in enumerate(self.blocks):
                 self._check_interrupt()
                 h_list = [hidden]
                 hidden = None
-                hidden = block(h_list, temb, segments, rope)
+                block_temb = ref2va_temb if ref2va_temb is not None and self.hybrid_ref2va_blocks[0] <= block_index <= self.hybrid_ref2va_blocks[1] else temb
+                hidden = block(h_list, block_temb, segments, rope)
         else:
             self._check_interrupt()
-            hidden, signature = self.blocks[0]([hidden], temb, segments, rope,
+            block_temb = ref2va_temb if ref2va_temb is not None and self.hybrid_ref2va_blocks[0] == 0 else temb
+            hidden, signature = self.blocks[0]([hidden], block_temb, segments, rope,
                                                 residual_signature_elements=first_block_cache.MAX_SIGNATURE_ELEMENTS)
             if first_block_cache.should_compute(signature):
                 head_output = first_block_cache.capture_head_output(hidden[audio_start:])
                 for block_index in range(1, len(self.blocks)):
                     self._check_interrupt()
-                    hidden = self.blocks[block_index]([hidden], temb, segments, rope)
+                    block_temb = ref2va_temb if ref2va_temb is not None and self.hybrid_ref2va_blocks[0] <= block_index <= self.hybrid_ref2va_blocks[1] else temb
+                    h_list = [hidden]
+                    hidden = None
+                    hidden = self.blocks[block_index](h_list, block_temb, segments, rope)
                 first_block_cache.store_tail_residual(hidden[audio_start:], head_output)
             else:
                 first_block_cache.apply_tail_residual(hidden[audio_start:])
@@ -729,7 +751,7 @@ class MiniMaxH3Model(nn.Module):
         hidden = None
         video, audio = self.final_layer(h_list, temb, (video_start, layout.sequence_length, video_head_row),
                                         (audio_start, video_start, audio_row))
-        del temb, rope, timestep_indices
+        del temb, ref2va_temb, rope, timestep_indices
         if target_video_inverse_order is not None:
             video = video.index_select(0, target_video_inverse_order)
         video = _to_dtype([video], video_dtype)

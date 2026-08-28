@@ -50,8 +50,10 @@ QWEN35_GGUF_LLAMACPP_ENV = "WGP_GGUF_LLAMACPP_CUDA"
 QWEN35_PROMPT_MIN_NEW_TOKENS = 4
 QWEN35_PROMPT_DEFAULT_TOP_K = 20
 QWEN35_PROMPT_DEFAULT_MIN_P_GGUF = 0.05
-QWEN35_PROMPT_ENABLE_PRESENCE_PENALTY = True
+QWEN35_PENALTY_MODE = "repetition"  # "none", "presence", or "repetition"
+QWEN35_PREDICTIVE_PENALTY_ENABLED = False
 QWEN35_PROMPT_PRESENCE_PENALTY = 1.5
+QWEN35_PROMPT_REPETITION_PENALTY = 1.05
 QWEN35_PROMPT_SUPPRESS_LOGITS_BIAS = -1e4
 QWEN35_PROMPT_ENABLE_THINKING = False
 QWEN35_PROMPT_THINKING_EXTRA_TOKENS = 3000
@@ -404,14 +406,32 @@ def _build_chat_prompt(tokenizer, message, enable_thinking: bool = False):
     return text.rstrip() + "\n"
 
 
+def _resolve_prompt_penalty_mode(model) -> str:
+    mode = str(getattr(model, "_prompt_enhancer_penalty_mode", QWEN35_PENALTY_MODE)).strip().lower()
+    if mode not in {"none", "presence", "repetition"}:
+        raise ValueError(f"Unknown Qwen3.5 penalty mode: {mode}")
+    return mode
+
+
 def _resolve_prompt_presence_penalty(model) -> float | None:
-    if not bool(getattr(model, "_prompt_enhancer_enable_presence_penalty", QWEN35_PROMPT_ENABLE_PRESENCE_PENALTY)):
+    if _resolve_prompt_penalty_mode(model) != "presence":
         return None
     presence_penalty = getattr(model, "_prompt_enhancer_presence_penalty", QWEN35_PROMPT_PRESENCE_PENALTY)
     if presence_penalty is None:
         return None
     presence_penalty = float(presence_penalty)
     return presence_penalty if presence_penalty > 0 else None
+
+
+def _resolve_prompt_repetition_penalty(model) -> float:
+    if _resolve_prompt_penalty_mode(model) != "repetition":
+        return 1.0
+    repetition_penalty = float(getattr(model, "_prompt_enhancer_repetition_penalty", QWEN35_PROMPT_REPETITION_PENALTY))
+    return repetition_penalty if repetition_penalty > 0 else 1.0
+
+
+def _resolve_predictive_penalty_enabled(model) -> bool:
+    return bool(getattr(model, "_prompt_enhancer_predictive_penalty_enabled", QWEN35_PREDICTIVE_PENALTY_ENABLED))
 
 
 def _build_presence_penalty_logits_processor(presence_penalty: float | None):
@@ -431,6 +451,7 @@ def _build_presence_penalty_logits_processor(presence_penalty: float | None):
 
 def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None, max_thinking_tokens_override: int | None = None, suppress_token_ids: tuple[int, ...] = ()):
     processors = []
+    processors_without_penalty = []
     update_callbacks = []
 
     suppressed_ids = tuple(dict.fromkeys(int(token_id) for token_id in suppress_token_ids if int(token_id) >= 0))
@@ -442,6 +463,7 @@ def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None, 
             return logits
 
         processors.append(suppress_tokens_logits_processor)
+        processors_without_penalty.append(suppress_tokens_logits_processor)
 
     presence_processor, presence_update_state = _build_presence_penalty_logits_processor(_resolve_prompt_presence_penalty(model))
     if presence_processor is not None:
@@ -461,6 +483,7 @@ def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None, 
                 return thinking_state.apply_(logits)
 
             processors.append(thinking_logits_processor)
+            processors_without_penalty.append(thinking_logits_processor)
             update_callbacks.append(thinking_state.update)
 
     if not processors:
@@ -473,6 +496,17 @@ def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None, 
             for processor in processors:
                 logits = processor(input_ids, logits)
             return logits
+
+    if not processors_without_penalty:
+        logits_processor_without_penalty = None
+    elif len(processors_without_penalty) == 1:
+        logits_processor_without_penalty = processors_without_penalty[0]
+    else:
+        def logits_processor_without_penalty(input_ids, logits):
+            for processor in processors_without_penalty:
+                logits = processor(input_ids, logits)
+            return logits
+    logits_processor._without_penalty = logits_processor_without_penalty
 
     if len(update_callbacks) == 1:
         update_state = update_callbacks[0]
@@ -697,6 +731,8 @@ def _generate_messages_vllm(
             top_k=normalized_top_k,
             top_p=normalized_top_p,
             min_p=_resolve_prompt_min_p(self),
+            repetition_penalty=_resolve_prompt_repetition_penalty(self),
+            predictive_penalty=_resolve_predictive_penalty_enabled(self),
             ignore_eos=False,
             logits_processor=logits_processor,
             logits_processor_update_state=logits_processor_update_state,
@@ -1115,8 +1151,10 @@ def load_qwen35_text_prompt_enhancer(
     model._prompt_enhancer_suppress_logits_bias_cache = {}
     model._prompt_enhancer_default_top_k = QWEN35_PROMPT_DEFAULT_TOP_K
     model._prompt_enhancer_default_min_p = QWEN35_PROMPT_DEFAULT_MIN_P_GGUF if backend == enhancer_quantization_GGUF else None
-    model._prompt_enhancer_enable_presence_penalty = backend != enhancer_quantization_GGUF and QWEN35_PROMPT_ENABLE_PRESENCE_PENALTY
+    model._prompt_enhancer_penalty_mode = QWEN35_PENALTY_MODE
     model._prompt_enhancer_presence_penalty = QWEN35_PROMPT_PRESENCE_PENALTY
+    model._prompt_enhancer_repetition_penalty = QWEN35_PROMPT_REPETITION_PENALTY
+    model._prompt_enhancer_predictive_penalty_enabled = QWEN35_PREDICTIVE_PENALTY_ENABLED
     model._prompt_enhancer_min_model_len_hint = 8000
     model._prompt_enhancer_allow_extended_context = True
     model._prompt_enhancer_min_new_tokens = (

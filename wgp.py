@@ -2112,7 +2112,11 @@ def load_queue_action(filepath, state, evt:gr.EventData):
             newly_loaded_queue = [ {"id": 0, "params": newly_loaded_queue}]
         else:
             inline_queue_source = newly_loaded_queue
-        newly_loaded_queue, error = _parse_task_manifest(newly_loaded_queue, state, None, None, "[unpack queue]", verbose_output = verbose_output )
+        try:
+            newly_loaded_queue, error = _parse_task_manifest(newly_loaded_queue, state, None, None, "[unpack queue]", verbose_output = verbose_output )
+        except Exception as exception:
+            traceback.print_exc()
+            newly_loaded_queue, error = [], f"Inline queue validation failed: {exception}"
         if error:
             if isinstance(inline_queue_source, dict):
                 inline_queue_source = [{"id": 0, "params": inline_queue_source}]
@@ -3173,8 +3177,9 @@ def fix_settings(model_type, ui_defaults, min_settings_version = 0):
 
     model_handler = get_model_handler(base_model_type)
     if hasattr(model_handler, "fix_settings"):
-            model_handler.fix_settings(base_model_type, settings_version, model_def, ui_defaults)
-    apply_custom_settings_defaults(model_def, ui_defaults)
+        model_handler.fix_settings(base_model_type, settings_version, model_def, ui_defaults)
+
+    ui_defaults["settings_version"] = settings_version
 
 def get_default_prompt(i2v):
     if i2v:
@@ -3187,6 +3192,7 @@ def get_factory_settings(model_type):
     model_def = get_model_def(model_type)
     base_model_type = get_base_model_type(model_type)
     ui_defaults = copy.deepcopy(primary_settings)
+    apply_custom_settings_defaults(model_def, ui_defaults)
     ui_defaults.update({
         "settings_version": settings_version,
         "prompt": get_default_prompt(i2v),
@@ -3199,7 +3205,8 @@ def get_factory_settings(model_type):
         ui_defaults.update(copy.deepcopy(model_settings))
     if len(ui_defaults.get("prompt", "")) == 0:
         ui_defaults["prompt"] = get_default_prompt(i2v)
-    fix_settings(model_type, ui_defaults, settings_version)
+    # needs to implement settings md version for defaults/finetunes
+    # fix_settings(model_type, ui_defaults, settings_version)
     return ui_defaults
 
 

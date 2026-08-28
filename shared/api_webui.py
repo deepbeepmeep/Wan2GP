@@ -227,7 +227,7 @@ class WebUIQueueProbe:
         self._client_ids: list[str] = []
         self._task_index_by_client_id: dict[str, int] = {}
         self._task_id_by_client_id: dict[str, Any] = {}
-        self._outputs_by_client_id: dict[str, str] = {}
+        self._outputs_by_client_id: dict[str, list[str]] = {}
         self._artifacts_by_client_id: dict[str, GeneratedArtifact] = {}
         self._errors_by_client_id: dict[str, GenerationError] = {}
         self._admitted_client_ids: set[str] = set()
@@ -262,9 +262,9 @@ class WebUIQueueProbe:
             if self._all_clients_finished():
                 break
             time.sleep(self._POLL_INTERVAL_SECONDS)
-        generated_files = [self._outputs_by_client_id[client_id] for client_id in self._client_ids if client_id in self._outputs_by_client_id]
+        generated_files = [path for client_id in self._client_ids for path in self._outputs_by_client_id.get(client_id, [])]
         errors = [self._errors_by_client_id[client_id] for client_id in self._client_ids if client_id in self._errors_by_client_id]
-        successful_tasks = len(generated_files)
+        successful_tasks = sum(client_id in self._outputs_by_client_id for client_id in self._client_ids)
         failed_tasks = len(self._client_ids) - successful_tasks
         return GenerationResult(
             success=len(errors) == 0 and failed_tasks == 0,
@@ -396,7 +396,7 @@ class WebUIQueueProbe:
         for client_id in self._client_ids:
             if client_id in self._outputs_by_client_id or client_id in self._errors_by_client_id:
                 continue
-            output_path = self._find_output_for_client(client_id, file_list, file_settings_list, audio_file_list, audio_file_settings_list)
+            output_paths = self._find_outputs_for_client(client_id, file_list, file_settings_list, audio_file_list, audio_file_settings_list)
             pending_artifact = self._session._peek_output_artifact(client_id)
             if pending_artifact is not None and client_id not in queue_client_ids:
                 if not queue_client_ids and self._gen.get("in_progress", False):
@@ -405,14 +405,17 @@ class WebUIQueueProbe:
                         self._logged_missing_output_client_ids.add(client_id)
                     continue
                 artifact = self._session._consume_output_artifact(client_id)
-                resolved_output_path = str(output_path or (artifact.path if artifact is not None else "") or "").strip()
-                if len(resolved_output_path) == 0:
+                artifact_path = str(artifact.path if artifact is not None else "").strip()
+                resolved_output_paths = list(output_paths)
+                if artifact_path and artifact_path not in resolved_output_paths:
+                    resolved_output_paths.append(artifact_path)
+                if not resolved_output_paths:
                     self._register_error(client_id, f"Generation produced an API artifact for client_id '{client_id}' without an output path.", stage="generation")
                     continue
-                self._outputs_by_client_id[client_id] = resolved_output_path
+                self._outputs_by_client_id[client_id] = resolved_output_paths
                 if artifact is not None:
                     self._artifacts_by_client_id[client_id] = GeneratedArtifact(
-                        path=resolved_output_path,
+                        path=artifact_path or resolved_output_paths[-1],
                         media_type=artifact.media_type,
                         client_id=artifact.client_id,
                         video_tensor_uint8=artifact.video_tensor_uint8,
@@ -425,21 +428,21 @@ class WebUIQueueProbe:
                     )
                 self._missing_output_since.pop(client_id, None)
                 self._logged_missing_output_client_ids.discard(client_id)
-                print(f"WanGP API completed client_id={client_id} via artifact path={resolved_output_path}")
-                payload = {"client_id": client_id, "path": resolved_output_path}
-                self._publish("output", payload, "on_output")
+                print(f"WanGP API completed client_id={client_id} via artifact paths={resolved_output_paths}")
+                for output_path in resolved_output_paths:
+                    self._publish("output", {"client_id": client_id, "path": output_path}, "on_output")
                 continue
-            if output_path is not None and client_id not in queue_client_ids:
+            if output_paths and client_id not in queue_client_ids:
                 if not queue_client_ids and self._gen.get("in_progress", False):
                     if client_id not in self._logged_missing_output_client_ids:
                         print(f"WanGP API delaying gallery completion for client_id={client_id} until main queue settles")
                         self._logged_missing_output_client_ids.add(client_id)
                     continue
-                self._outputs_by_client_id[client_id] = output_path
+                self._outputs_by_client_id[client_id] = output_paths
                 artifact = self._session._consume_output_artifact(client_id)
                 if artifact is not None:
                     self._artifacts_by_client_id[client_id] = GeneratedArtifact(
-                        path=output_path,
+                        path=str(artifact.path or output_paths[-1]),
                         media_type=artifact.media_type,
                         client_id=artifact.client_id,
                         video_tensor_uint8=artifact.video_tensor_uint8,
@@ -452,9 +455,9 @@ class WebUIQueueProbe:
                     )
                 self._missing_output_since.pop(client_id, None)
                 self._logged_missing_output_client_ids.discard(client_id)
-                print(f"WanGP API completed client_id={client_id} via gallery path={output_path}")
-                payload = {"client_id": client_id, "path": output_path}
-                self._publish("output", payload, "on_output")
+                print(f"WanGP API completed client_id={client_id} via gallery paths={output_paths}")
+                for output_path in output_paths:
+                    self._publish("output", {"client_id": client_id, "path": output_path}, "on_output")
                 continue
             if client_id in queue_client_ids:
                 self._missing_output_since.pop(client_id, None)
@@ -644,20 +647,21 @@ class WebUIQueueProbe:
         return str(item.get("client_id", "") or "").strip() == client_id
 
     @staticmethod
-    def _find_output_for_client(
+    def _find_outputs_for_client(
         client_id: str,
         file_list: Sequence[Any],
         file_settings_list: Sequence[Any],
         audio_file_list: Sequence[Any],
         audio_file_settings_list: Sequence[Any],
-    ) -> str | None:
+    ) -> list[str]:
+        outputs = []
         for paths, settings_list in ((file_list, file_settings_list), (audio_file_list, audio_file_settings_list)):
-            for path, settings in zip(reversed(list(paths or [])), reversed(list(settings_list or []))):
+            for path, settings in zip(paths or [], settings_list or []):
                 if not isinstance(settings, dict):
                     continue
                 if str(settings.get("client_id", "") or "").strip() == client_id:
-                    return str(Path(path).resolve())
-        return None
+                    outputs.append(str(Path(path).resolve()))
+        return outputs
 
     def _register_error(self, client_id: str, message: str, *, stage: str) -> None:
         if client_id in self._errors_by_client_id or client_id in self._outputs_by_client_id:

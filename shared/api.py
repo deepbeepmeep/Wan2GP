@@ -1194,6 +1194,12 @@ class WanGPSession:
 
     @staticmethod
     def _normalize_settings_values(settings: dict[str, Any]) -> None:
+        video_length = settings.get("video_length")
+        if isinstance(video_length, str):
+            try:
+                settings["video_length"] = int(video_length.strip())
+            except ValueError as exc:
+                raise ValueError("video_length must be an integer frame count or a duration such as '10s'") from exc
         force_fps = settings.get("force_fps")
         if isinstance(force_fps, (int, float)) and not isinstance(force_fps, bool):
             if isinstance(force_fps, float) and not force_fps.is_integer():

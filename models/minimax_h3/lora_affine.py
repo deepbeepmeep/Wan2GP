@@ -86,10 +86,13 @@ def _add_bias_delta(state_dict, key, delta):
     state_dict[key] = delta
 
 
-def convert_adaln_loras(model_type, state_dict, target_table=None):
+def convert_adaln_loras(model_type, state_dict, target_table=None, hybrid_ref2va_blocks=None, ref2va_target_table=None):
     """Convert the AdaLN input width without changing the LoRA adapter rank."""
     architecture = _architecture(model_type)
     target_width = FULL_TIME_DIM if target_table is None else int(target_table.shape[1])
+    if hybrid_ref2va_blocks is not None and (target_table is None or ref2va_target_table is None or
+                                             ref2va_target_table.shape[1] != target_width):
+        raise ValueError("MiniMax H3 hybrid AdaLN conversion requires matching FL2VA and Ref2VA target tables")
     candidates = []
 
     for down_suffix, up_suffix in _LORA_SUFFIXES:
@@ -107,6 +110,11 @@ def convert_adaln_loras(model_type, state_dict, target_table=None):
                 raise ValueError(f"MiniMax H3 LoRA factors are incompatible for {module_name}: A={tuple(down.shape)}, B={tuple(up.shape)}")
             candidates.append((module_name, down_key, up_key, int(down.shape[1])))
 
+    for diff_key in [key for key in state_dict if key.endswith(".adaln_proj.linear.diff")]:
+        diff = state_dict[diff_key]
+        if diff.ndim == 2:
+            candidates.append((diff_key[:-len(".diff")], diff_key, None, int(diff.shape[1])))
+
     if not candidates:
         return 0, architecture, target_width, target_width
 
@@ -115,24 +123,38 @@ def convert_adaln_loras(model_type, state_dict, target_table=None):
         raise ValueError(f"MiniMax H3 LoRA mixes AdaLN input widths: {sorted(source_widths)}")
     source_width = source_widths.pop()
     supported_widths = (*_PRUNED_WIDTHS, FULL_TIME_DIM)
-    if source_width == target_width:
+    if source_width == target_width and hybrid_ref2va_blocks is None:
         return 0, architecture, source_width, target_width
     if source_width not in supported_widths or target_width not in supported_widths:
         raise ValueError(f"Unsupported MiniMax H3 AdaLN LoRA conversion {source_width} -> {target_width}; supported widths are {supported_widths}")
 
-    target_affine = None if target_table is None else _aligned_affine_map(architecture, target_table)
     source_affine = None if source_width == FULL_TIME_DIM else _load_affine_package(architecture, source_width)[1]
     source_encoder = None if source_width == FULL_TIME_DIM else _canonical_encoder(architecture, source_width)
+    target_tables = {architecture: target_table}
+    if hybrid_ref2va_blocks is not None:
+        target_tables = {"fl2va": target_table, "ref2va": ref2va_target_table}
+    target_affines = {target_architecture: None if table is None else _aligned_affine_map(target_architecture, table)
+                      for target_architecture, table in target_tables.items()}
 
+    converted_count = 0
     for module_name, down_key, up_key, _ in candidates:
-        down, up = state_dict[down_key], state_dict[up_key]
+        target_architecture = architecture
+        if hybrid_ref2va_blocks is not None:
+            block = int(module_name.split(".", 2)[1]) if module_name.startswith("blocks.") else -1
+            target_architecture = "ref2va" if hybrid_ref2va_blocks[0] <= block <= hybrid_ref2va_blocks[1] else "fl2va"
+        if source_width == target_width and target_architecture == architecture:
+            continue
+        down = state_dict[down_key]
         mapped = down.float() if source_encoder is None else down.float() @ source_encoder
         inner_bias = mapped.new_zeros(mapped.shape[0]) if source_affine is None else -(mapped @ source_affine[-1])
+        target_affine = target_affines[target_architecture]
         if target_affine is not None:
             mapped = mapped @ target_affine.T
             inner_bias.add_(mapped[:, target_width])
             mapped = mapped[:, :target_width]
         state_dict[down_key] = mapped
-        _add_bias_delta(state_dict, module_name + ".diff_b", up.float() @ inner_bias)
+        bias_delta = inner_bias if up_key is None else state_dict[up_key].float() @ inner_bias
+        _add_bias_delta(state_dict, module_name + ".diff_b", bias_delta)
+        converted_count += 1
 
-    return len(candidates), architecture, source_width, target_width
+    return converted_count, architecture, source_width, target_width

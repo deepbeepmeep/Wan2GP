@@ -20,10 +20,13 @@ _FUNCTION_TAG_RE = re.compile(r"<function(?:=|\s+name=)([^\s>]+)[^>]*>(.*?)</fun
 _FUNCTION_START_RE = re.compile(r"<function(?:=|\s+name=)([^\s>]+)[^>]*>", flags=re.IGNORECASE)
 _PARAM_TAG_RE = re.compile(r"<parameter(?:=|\s+name=)([^\s>]+)[^>]*>(.*?)</parameter>", flags=re.DOTALL | re.IGNORECASE)
 _GENERIC_PARAM_TAG_RE = re.compile(r"<([A-Za-z_][A-Za-z0-9_]*)>\s*(.*?)\s*</(?:parameter|\1)>", flags=re.DOTALL | re.IGNORECASE)
+_JSON_PARSE_FAILED = object()
 _ASSISTANT_PREFILL_CHUNK_TOKENS = 1024
 ASSISTANT_THOUGHT_BUDGET_TOKENS = 4096
 ASSISTANT_STATEMENT_BUDGET_TOKENS = 4096
 ASSISTANT_TOOL_BATCH_BUDGET_TOKENS = 8192
+ASSISTANT_ACTION_REPETITION_PENALTY_ENABLED = True
+ASSISTANT_ACTION_REPETITION_PENALTY = 1.05
 ASSISTANT_THOUGHT_BUDGET_UPDATE = """<wangp_runtime_update>
 The preceding thought reached its budget. Continue more directly: answer, call a tool, or start a fresh thought only if needed. Reuse established conclusions and avoid repeating exploration.
 </wangp_runtime_update>"""
@@ -148,7 +151,12 @@ def render_assistant_text_suffix(tokenizer, assistant_content: str, thinking_ena
     if len(assistant_content) == 0:
         return []
     if prompt_open:
-        suffix = ("</think>\n\n" if bool(thinking_enabled) else "") + assistant_content + "<|im_end|>\n"
+        if bool(thinking_enabled) and assistant_content.startswith("<think>"):
+            suffix = assistant_content[len("<think>") :]
+            suffix = suffix[2:] if suffix.startswith("\r\n") else suffix[1:] if suffix.startswith("\n") else suffix
+            suffix += "<|im_end|>\n"
+        else:
+            suffix = ("</think>\n\n" if bool(thinking_enabled) else "") + assistant_content + "<|im_end|>\n"
     else:
         suffix = f"<|im_start|>assistant\n<think>\n\n</think>\n\n{assistant_content}<|im_end|>\n"
     token_ids = tokenizer.encode(suffix, add_special_tokens=False)
@@ -182,6 +190,42 @@ def _clean_tag_name(name: str) -> str:
     return name
 
 
+def _load_json_with_missing_closers(source: str):
+    text = str(source or "").strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as original_error:
+        if not text or text[0] not in "{[" or original_error.pos != len(text):
+            return _JSON_PARSE_FAILED
+    expected_closers = []
+    in_string = False
+    escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            expected_closers.append("}")
+        elif char == "[":
+            expected_closers.append("]")
+        elif char in "}]":
+            if not expected_closers or expected_closers.pop() != char:
+                return _JSON_PARSE_FAILED
+    if in_string or not expected_closers or len(expected_closers) > 3:
+        return _JSON_PARSE_FAILED
+    try:
+        return json.loads(text + "".join(reversed(expected_closers)))
+    except json.JSONDecodeError:
+        return _JSON_PARSE_FAILED
+
+
 def _parse_tagged_tool_call(payload: str, allow_incomplete_function: bool = False, tool_parameters: dict[str, set[str]] | None = None) -> dict[str, Any] | None:
     function_match = _FUNCTION_TAG_RE.search(str(payload or ""))
     function_body = ""
@@ -205,10 +249,8 @@ def _parse_tagged_tool_call(payload: str, allow_incomplete_function: bool = Fals
         clean_value = str(param_value or "").strip()
         if len(clean_name) == 0 or allowed_parameters is not None and clean_name not in allowed_parameters:
             continue
-        try:
-            arguments[clean_name] = json.loads(clean_value)
-        except Exception:
-            arguments[clean_name] = clean_value
+        parsed_value = _load_json_with_missing_closers(clean_value)
+        arguments[clean_name] = clean_value if parsed_value is _JSON_PARSE_FAILED else parsed_value
     if allowed_parameters is not None:
         generic_body = _PARAM_TAG_RE.sub("", function_body)
         for param_name, param_value in _GENERIC_PARAM_TAG_RE.findall(generic_body):
@@ -216,10 +258,8 @@ def _parse_tagged_tool_call(payload: str, allow_incomplete_function: bool = Fals
             clean_value = str(param_value or "").strip()
             if clean_name not in allowed_parameters or clean_name in arguments:
                 continue
-            try:
-                arguments[clean_name] = json.loads(clean_value)
-            except Exception:
-                arguments[clean_name] = clean_value
+            parsed_value = _load_json_with_missing_closers(clean_value)
+            arguments[clean_name] = clean_value if parsed_value is _JSON_PARSE_FAILED else parsed_value
     if not matched_closed_function and (not allow_incomplete_function or len(arguments) == 0):
         return None
     return {"name": name, "arguments": arguments}
@@ -260,9 +300,8 @@ def validate_tool_call_structure(raw_text: str) -> str:
     for _start, _end, payload in spans:
         if len(payload) == 0:
             return "Tool call payload is empty."
-        try:
-            parsed = json.loads(payload)
-        except Exception:
+        parsed = _load_json_with_missing_closers(payload)
+        if parsed is _JSON_PARSE_FAILED:
             parsed = _parse_tagged_tool_call(payload)
         if _normalize_tool_call_dict(parsed) is None:
             return "Tool call payload must contain a name and an arguments object."
@@ -278,6 +317,60 @@ def extract_incomplete_tool_name(raw_text: str) -> str:
         return _clean_tag_name(json_name.group(1))
     function_start = _FUNCTION_START_RE.search(candidate)
     return "" if function_start is None else _clean_tag_name(function_start.group(1))
+
+
+def _decode_completed_object_members(source: str, open_brace_index: int) -> dict[str, Any]:
+    decoder = json.JSONDecoder()
+    values = {}
+    index = int(open_brace_index) + 1
+    while index < len(source):
+        while index < len(source) and (source[index].isspace() or source[index] == ","):
+            index += 1
+        if index >= len(source) or source[index] == "}":
+            break
+        try:
+            key, consumed = decoder.raw_decode(source[index:])
+        except json.JSONDecodeError:
+            break
+        if not isinstance(key, str):
+            break
+        index += consumed
+        while index < len(source) and source[index].isspace():
+            index += 1
+        if index >= len(source) or source[index] != ":":
+            break
+        index += 1
+        while index < len(source) and source[index].isspace():
+            index += 1
+        try:
+            value, consumed = decoder.raw_decode(source[index:])
+        except json.JSONDecodeError:
+            break
+        value_end = index + consumed
+        delimiter = value_end
+        while delimiter < len(source) and source[delimiter].isspace():
+            delimiter += 1
+        if delimiter >= len(source) or source[delimiter] not in ",}":
+            break
+        values[key] = value
+        index = delimiter
+    return values
+
+
+def extract_incomplete_tool_arguments(raw_text: str) -> dict[str, Any]:
+    """Return fully decoded leading arguments without repairing incomplete JSON."""
+
+    text = str(raw_text or "")
+    open_markers = [(start, end) for start, end, closing in _tool_call_markers(text) if not closing]
+    candidate = text if len(open_markers) == 0 else text[open_markers[-1][1]:]
+    arguments_match = re.search(r'["\']arguments["\']\s*:\s*\{', candidate, flags=re.IGNORECASE)
+    if arguments_match is not None:
+        return _decode_completed_object_members(candidate, arguments_match.end() - 1)
+    function_start = _FUNCTION_START_RE.search(candidate)
+    if function_start is None:
+        return {}
+    open_brace_index = candidate.find("{", function_start.end())
+    return {} if open_brace_index < 0 else _decode_completed_object_members(candidate, open_brace_index)
 
 
 def _extract_bare_json_tool_call(text: str) -> tuple[dict[str, Any] | None, tuple[int, int] | None]:
@@ -315,9 +408,8 @@ def extract_tool_calls(raw_text: str, tool_parameters: dict[str, set[str]] | Non
     for _start, _end, payload in _tool_call_spans(source_text):
         if len(payload) == 0:
             continue
-        try:
-            parsed = json.loads(payload)
-        except Exception:
+        parsed = _load_json_with_missing_closers(payload)
+        if parsed is _JSON_PARSE_FAILED:
             parsed = _parse_tagged_tool_call(payload, tool_parameters=tool_parameters)
         tool_call = _normalize_tool_call_dict(parsed)
         if tool_call is None:
@@ -353,9 +445,8 @@ def has_complete_tool_call(raw_text: str) -> bool:
     for _start, _end, payload in _tool_call_spans(text):
         if len(payload) == 0:
             continue
-        try:
-            parsed = json.loads(payload)
-        except Exception:
+        parsed = _load_json_with_missing_closers(payload)
+        if parsed is _JSON_PARSE_FAILED:
             parsed = _parse_tagged_tool_call(payload)
         if _normalize_tool_call_dict(parsed) is not None:
             return True
@@ -488,7 +579,7 @@ class Qwen35AssistantRuntime:
         llm.scheduler.running.clear()
         return engine, llm
 
-    def _build_sampling_params(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, available_tokens: int | None = None):
+    def _build_sampling_params(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, available_tokens: int | None = None, suppress_token_ids: tuple[int, ...] = ()):
         requested_new_tokens = max(1, int(max_new_tokens))
         resolved_available_tokens = None if available_tokens is None else max(0, int(available_tokens))
         effective_new_tokens = requested_new_tokens if resolved_available_tokens is None else min(requested_new_tokens, resolved_available_tokens)
@@ -502,6 +593,7 @@ class Qwen35AssistantRuntime:
             self.model,
             thinking_enabled=thinking_enabled,
             max_thinking_tokens_override=effective_runtime_extra if thinking_enabled else None,
+            suppress_token_ids=suppress_token_ids,
         )
         temp, normalized_top_p, normalized_top_k = qwen35_text._normalize_vllm_sampling(
             do_sample=bool(do_sample),
@@ -722,7 +814,7 @@ class Qwen35AssistantRuntime:
                 self._log("Embedded decode finished without an active assistant snapshot; releasing runtime allocations.")
                 engine.release_runtime_allocations()
 
-    def start_generation_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, continue_existing_completion: bool = False) -> tuple[Sequence, int]:
+    def start_generation_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, continue_existing_completion: bool = False, suppress_token_ids: tuple[int, ...] = ()) -> tuple[Sequence, int]:
         seq = self._get_active_sequence()
         if seq is None:
             raise RuntimeError("Assistant context is not initialized.")
@@ -737,6 +829,7 @@ class Qwen35AssistantRuntime:
             top_k=top_k,
             thinking_enabled=thinking_enabled,
             available_tokens=available_tokens,
+            suppress_token_ids=suppress_token_ids,
         )
         if budget_info["effective_new_tokens"] != budget_info["requested_new_tokens"] or budget_info["effective_runtime_extra"] != budget_info["requested_runtime_extra"]:
             self._log(
@@ -755,6 +848,8 @@ class Qwen35AssistantRuntime:
         seq.top_p = sampling_params.top_p
         seq.min_p = sampling_params.min_p
         seq.cfg_scale = sampling_params.cfg_scale
+        seq.repetition_penalty = sampling_params.repetition_penalty
+        seq.repetition_penalty_start = seq.num_prompt_tokens
         seq.logits_processor = sampling_params.logits_processor
         seq.logits_processor_update_state = sampling_params.logits_processor_update_state
         seq.logits_bias = sampling_params.logits_bias
@@ -783,6 +878,10 @@ class Qwen35AssistantRuntime:
                 ASSISTANT_THOUGHT_BUDGET_TOKENS,
                 getattr(self.model, "_prompt_enhancer_stop_token_ids", ()),
             )
+        if not presence_state.enabled() and (thinking_state is None or not thinking_state.enabled()):
+            seq.logits_processor = None
+            seq.logits_processor_update_state = None
+            return
 
         def logits_processor(_input_ids, logits):
             presence_state.apply_(logits)
@@ -819,6 +918,8 @@ class Qwen35AssistantRuntime:
         seq.top_p = normalized_top_p
         seq.min_p = qwen35_text._resolve_prompt_min_p(self.model)
         seq.cfg_scale = 1.0
+        seq.repetition_penalty = ASSISTANT_ACTION_REPETITION_PENALTY if ASSISTANT_ACTION_REPETITION_PENALTY_ENABLED and phase in {"thought", "statement"} else 1.0
+        seq.repetition_penalty_start = seq.num_tokens
         seq.logits_bias = qwen35_text._build_suppressed_token_logits_bias(self.model, thinking_enabled=thinking_enabled)
         self._install_action_processors(seq, phase, continuing_response=continuing_response)
         if not continuing_response:
@@ -903,8 +1004,8 @@ class Qwen35AssistantRuntime:
             return finish("tool_call")
         return finish(f"{action.phase}_budget_exhausted")
 
-    def generate_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, stream_callback=None, stream_interval_seconds: float = 1.0, continue_existing_completion: bool = False) -> AssistantDecodeResult:
-        seq, requested_segment_tokens = self.start_generation_segment(max_new_tokens=max_new_tokens, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled, continue_existing_completion=continue_existing_completion)
+    def generate_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, stream_callback=None, stream_interval_seconds: float = 1.0, continue_existing_completion: bool = False, suppress_token_ids: tuple[int, ...] = ()) -> AssistantDecodeResult:
+        seq, requested_segment_tokens = self.start_generation_segment(max_new_tokens=max_new_tokens, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled, continue_existing_completion=continue_existing_completion, suppress_token_ids=suppress_token_ids)
         existing_completion_tokens = int(seq.num_completion_tokens)
         requested_segment_tokens = max(0, int(requested_segment_tokens))
         seq.max_tokens = max(int(seq.max_tokens or 0), existing_completion_tokens + requested_segment_tokens + 1)
@@ -984,6 +1085,8 @@ class Qwen35AssistantRuntime:
                 "top_k": None if seq.top_k is None else int(seq.top_k),
                 "top_p": None if seq.top_p is None else float(seq.top_p),
                 "min_p": None if seq.min_p is None else float(seq.min_p),
+                "repetition_penalty": None if seq.repetition_penalty is None else float(seq.repetition_penalty),
+                "repetition_penalty_start": int(seq.repetition_penalty_start),
             },
             "block_manager": {
                 "block_size": int(llm.scheduler.block_manager.block_size),
@@ -1094,6 +1197,8 @@ class Qwen35AssistantRuntime:
         restored_seq.top_k = None if saved_seq["top_k"] is None else int(saved_seq["top_k"])
         restored_seq.top_p = None if saved_seq["top_p"] is None else float(saved_seq["top_p"])
         restored_seq.min_p = None if saved_seq["min_p"] is None else float(saved_seq["min_p"])
+        restored_seq.repetition_penalty = None if saved_seq["repetition_penalty"] is None else float(saved_seq["repetition_penalty"])
+        restored_seq.repetition_penalty_start = int(saved_seq["repetition_penalty_start"])
         restored_seq.logits_processor = None
         restored_seq.logits_processor_update_state = None
         llm.scheduler.waiting.clear()

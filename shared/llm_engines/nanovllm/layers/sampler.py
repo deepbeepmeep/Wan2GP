@@ -1,10 +1,66 @@
 import torch
 from torch import nn
+from torch.nn import functional as F
 from typing import Optional
 import os
 
+try:
+    import triton
+    import triton.language as tl
+except ImportError:
+    triton = None
+    tl = None
+
 
 _SAMPLER_NUMERIC_GUARD = os.environ.get("WAN2GP_NANOVLLM_SAMPLER_NUMERIC_GUARD", "0") == "1"
+_REPETITION_INCREMENT_LIMIT = 6
+_REPETITION_RUNTIME_SCALARS = ("stored_count", "new_count", "virtual_count", "penalty", *(f"{kind}_{index}" for kind in ("new", "virtual") for index in range(_REPETITION_INCREMENT_LIMIT)))
+
+
+if triton is not None:
+    @triton.jit(do_not_specialize=_REPETITION_RUNTIME_SCALARS, do_not_specialize_on_alignment=_REPETITION_RUNTIME_SCALARS)
+    def _sparse_repetition_penalty_kernel(logits, stored_ids, stored_count, new_count, virtual_count, penalty, new_0, new_1, new_2, new_3, new_4, new_5, virtual_0, virtual_1, virtual_2, virtual_3, virtual_4, virtual_5, BLOCK_SIZE: tl.constexpr):
+        offsets = tl.program_id(0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        stored_mask = offsets < stored_count
+        new_offsets = offsets - stored_count
+        new_mask = (new_offsets >= 0) & (new_offsets < new_count)
+        virtual_offsets = new_offsets - new_count
+        virtual_mask = (virtual_offsets >= 0) & (virtual_offsets < virtual_count)
+        stored_token = tl.load(stored_ids + offsets, mask=stored_mask, other=0)
+        new_token = tl.where(new_offsets == 0, new_0, tl.where(new_offsets == 1, new_1, tl.where(new_offsets == 2, new_2, tl.where(new_offsets == 3, new_3, tl.where(new_offsets == 4, new_4, new_5)))))
+        virtual_token = tl.where(virtual_offsets == 0, virtual_0, tl.where(virtual_offsets == 1, virtual_1, tl.where(virtual_offsets == 2, virtual_2, tl.where(virtual_offsets == 3, virtual_3, tl.where(virtual_offsets == 4, virtual_4, virtual_5)))))
+        token = tl.where(stored_mask, stored_token, tl.where(new_mask, new_token, virtual_token))
+        active = stored_mask | new_mask | virtual_mask
+        tl.store(stored_ids + offsets, token, mask=new_mask)
+        score = tl.load(logits + token, mask=active, other=0.0)
+        tl.store(logits + token, tl.where(score < 0, score * penalty, score / penalty), mask=active)
+
+
+def apply_sparse_repetition_penalty_(logits: torch.Tensor, stored_ids: torch.Tensor, stored_count: int, new_token_ids: list[int], virtual_token_ids: list[int], penalty: float, work_values: torch.Tensor | None = None) -> None:
+    """Apply one action-local repetition penalty using persistent sparse buffers."""
+
+    new_count, virtual_count = len(new_token_ids), len(virtual_token_ids)
+    if new_count > _REPETITION_INCREMENT_LIMIT or virtual_count > _REPETITION_INCREMENT_LIMIT:
+        raise ValueError(f"Sparse repetition updates support at most {_REPETITION_INCREMENT_LIMIT} new and virtual tokens per decode.")
+    total = int(stored_count) + new_count + virtual_count
+    if total == 0 or float(penalty) == 1.0:
+        return
+    if logits.is_cuda and triton is not None:
+        new_values = [*new_token_ids, *([-1] * (_REPETITION_INCREMENT_LIMIT - new_count))]
+        virtual_values = [*virtual_token_ids, *([-1] * (_REPETITION_INCREMENT_LIMIT - virtual_count))]
+        _sparse_repetition_penalty_kernel[(triton.cdiv(total, 256),)](logits, stored_ids, int(stored_count), new_count, virtual_count, float(penalty), *new_values, *virtual_values, BLOCK_SIZE=256)
+        return
+
+    if work_values is None:
+        work_values = torch.empty(total, dtype=logits.dtype, device=logits.device)
+    for index, token_id in enumerate((*new_token_ids, *virtual_token_ids)):
+        stored_ids[stored_count + index] = token_id
+    token_ids = stored_ids[:total]
+    scores = work_values[:total]
+    torch.index_select(logits, 0, token_ids, out=scores)
+    scores.div_(penalty)
+    F.leaky_relu_(scores, negative_slope=float(penalty) * float(penalty))
+    logits.index_copy_(0, token_ids, scores)
 
 
 def apply_top_k_top_p(

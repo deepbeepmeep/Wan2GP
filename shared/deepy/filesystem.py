@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import mimetypes
 import os
 import re
@@ -425,12 +426,13 @@ def read_text(policy: FileAccessPolicy, path: str, start_line: int = 1, end_line
     end_line = None if end_line is None else int(end_line)
     if start_line < 1 or end_line is not None and end_line < start_line:
         raise ValueError("Use a 1-based start_line and an end_line greater than or equal to it.")
-    chunks, character_count, last_line, next_line, truncated = [], 0, start_line - 1, None, False
+    chunks, character_count, last_line, next_line, truncated, eof = [], 0, start_line - 1, None, False, True
     with file_path.open("r", encoding=_encoding(encoding)) as reader:
         for line_no, line in enumerate(reader, 1):
             if line_no < start_line:
                 continue
             if end_line is not None and line_no > end_line:
+                next_line, eof = line_no, False
                 break
             remaining = TEXT_MAX_CHARS - character_count
             if len(line) > remaining:
@@ -439,13 +441,13 @@ def read_text(policy: FileAccessPolicy, path: str, start_line: int = 1, end_line
                     chunks.append(line[:remaining])
                     last_line = line_no
                 next_line = line_no if had_content else line_no + 1
-                truncated = True
+                truncated, eof = True, False
                 break
             chunks.append(line)
             character_count += len(line)
             last_line = line_no
     text = "".join(chunks)
-    return {"status": "done", "path": str(file_path), "start_line": start_line, "end_line": last_line, "next_line": next_line, "truncated": truncated, "character_count": len(text), "text": text, "error": ""}
+    return {"status": "done", "path": str(file_path), "start_line": start_line, "end_line": last_line, "next_line": next_line, "truncated": truncated, "eof": eof, "character_count": len(text), "text": text, "error": ""}
 
 
 def search_text(policy: FileAccessPolicy, path: str, query: str, pattern: str = "*", recursive: bool = False, regex: bool = False, case_sensitive: bool = False, limit: int = 100) -> dict[str, Any]:
@@ -489,7 +491,18 @@ def write_text(policy: FileAccessPolicy, path: str, text: str, mode: str = "crea
     content = str(text)
     with file_path.open(open_mode, encoding=_encoding(encoding)) as writer:
         writer.write(content)
-    return {"status": "done", "path": str(file_path), "filename": file_path.name, "mode": mode, "characters_written": len(content), "size_bytes": file_path.stat().st_size, "error": ""}
+    digest = hashlib.sha256()
+    with file_path.open("rb") as reader:
+        for chunk in iter(lambda: reader.read(1024 * 1024), b""):
+            digest.update(chunk)
+    headings, line_count = [], 0
+    with file_path.open("r", encoding=_encoding(encoding)) as reader:
+        for line in reader:
+            line_count += 1
+            if re.match(r"^#{1,6}\s+\S", line):
+                headings.append(line.rstrip("\r\n"))
+    lines_written = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+    return {"status": "done", "path": str(file_path), "filename": file_path.name, "mode": mode, "characters_written": len(content), "lines_written": lines_written, "line_count": line_count, "markdown_heading_count": len(headings), "first_markdown_heading": headings[0] if headings else None, "last_markdown_heading": headings[-1] if headings else None, "sha256": digest.hexdigest(), "size_bytes": file_path.stat().st_size, "error": ""}
 
 
 def make_directory(policy: FileAccessPolicy, path: str) -> dict[str, Any]:
@@ -703,17 +716,37 @@ def unzip_file(policy: FileAccessPolicy, source: str, destination: str = "", ove
     return {"status": "done", "source": str(source_path), "path": str(destination_path), "file_count": len(files), "size_bytes": sum(member.file_size for member in files), "overwritten_count": overwritten_count, "error": ""}
 
 
+_ARTIFACT_REFERENCE_SCHEMA = {
+    "type": "object",
+    "description": "A Deepy artifact reference rendered server-side; the compiled content must not be copied into the tool call. Most consumers require finalization, while write_artifact_text may export current committed progress.",
+    "properties": {
+        "$artifact": {"type": "string", "description": "Artifact ID returned by wangp_artifact."},
+        "where": {"type": "array", "items": {"type": "object"}},
+        "select": {"type": "string", "description": "Optional dotted field to extract from each record or from a ledger."},
+        "template": {"type": "string", "description": "Optional Python-style format template applied to each object record."},
+        "join": {"type": "string", "description": "Join rendered record values into one text payload."},
+        "prefix": {"type": "string"},
+        "suffix": {"type": "string"},
+        "offset": {"type": "integer", "default": 0},
+        "limit": {"type": "integer"},
+    },
+    "required": ["$artifact"],
+    "additionalProperties": False,
+}
+
+
 IO_ACTIONS = {
-    "list": {"description": "List authorized roots or a page of directory entries. When has_more is true, repeat the same filters with offset set to next_offset.", "access": "read", "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Directory; omit to list authorized roots."}, "pattern": {"type": "string", "default": "*", "description": "Filename glob."}, "media_type": {"type": "string", "enum": ["all", "image", "video", "audio", "txt", "other"], "default": "all", "description": "Implicit extension filter. Typed filters return files only; other excludes supported media and .txt files."}, "recursive": {"type": "boolean", "default": False}, "limit": {"type": "integer", "default": 200, "description": "Maximum entries to return; Deepy may shorten the page to fit its context-safe output budget."}, "offset": {"type": "integer", "default": 0, "description": "Entry offset; preserve the previous filters and use its next_offset to continue."}}}},
+    "list": {"description": "List authorized roots or a page of directory entries. When has_more is true, repeat the same filters with offset set to next_offset.", "access": "read", "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Directory; omit to list authorized roots."}, "pattern": {"type": "string", "default": "*", "description": "Filename glob."}, "media_type": {"type": "string", "enum": ["all", "image", "video", "audio", "txt", "other"], "default": "all", "description": "Implicit extension filter. Typed filters return files only; other excludes supported media and .txt files."}, "recursive": {"type": "boolean", "default": False}, "limit": {"type": "integer", "default": 200, "description": "Maximum entries to return; Deepy may shorten the page to fit its context-safe output budget."}, "offset": {"type": "integer", "default": 0, "description": "Entry offset; preserve the previous filters and use its next_offset to continue."}, "store_artifact": {"type": "boolean", "default": False, "description": "Store the exact returned page in a working artifact and return compact progress instead of echoing all entries."}, "artifact_id": {"type": "string", "description": "Existing record-set artifact to append this page to."}, "artifact_title": {"type": "string", "description": "Title used when creating a new file collection artifact."}}}},
     "info": {"description": "Return file, directory, or media metadata.", "access": "always", "parameters": {"type": "object", "properties": {"source": {"type": "string", "description": "Authorized path or Gallery media id."}}, "required": ["source"]}},
-    "read_text": {"description": "Read a line range from a UTF-8 text file.", "access": "read", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "start_line": {"type": "integer", "default": 1}, "end_line": {"type": "integer"}, "encoding": {"type": "string", "enum": ["utf-8", "utf-8-sig"], "default": "utf-8-sig"}}, "required": ["path"]}},
+    "read_text": {"description": "Read a 1-based line range from a UTF-8 text file. Use next_line to continue and eof to distinguish a completed range from the end of the file.", "access": "read", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "start_line": {"type": "integer", "default": 1}, "end_line": {"type": "integer"}, "encoding": {"type": "string", "enum": ["utf-8", "utf-8-sig"], "default": "utf-8-sig"}}, "required": ["path"], "additionalProperties": False}},
     "search_text": {"description": "Search authorized UTF-8 files and return matching lines.", "access": "read", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "query": {"type": "string"}, "pattern": {"type": "string", "default": "*", "description": "Filename glob."}, "recursive": {"type": "boolean", "default": False}, "regex": {"type": "boolean", "default": False}, "case_sensitive": {"type": "boolean", "default": False}, "limit": {"type": "integer", "default": 100}}, "required": ["path", "query"]}},
-    "write_text": {"description": "Create, overwrite, or append a UTF-8 text file.", "access": "write", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "text": {"type": "string"}, "mode": {"type": "string", "enum": ["create", "overwrite", "append"], "default": "create"}, "encoding": {"type": "string", "enum": ["utf-8", "utf-8-sig"], "default": "utf-8"}}, "required": ["path", "text"]}},
+    "write_text": {"description": "Create, overwrite, or append literal UTF-8 text already present in the request. For artifact content, use write_artifact_text instead of copying it here.", "access": "write", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "text": {"type": "string"}, "mode": {"type": "string", "enum": ["create", "overwrite", "append"], "default": "create"}, "encoding": {"type": "string", "enum": ["utf-8", "utf-8-sig"], "default": "utf-8"}}, "required": ["path", "text"]}},
+    "write_artifact_text": {"description": "Render an artifact directly to a UTF-8 file without placing the compiled payload in Deepy's context or tool call. Unfinished record sets may be exported as explicit partial progress; overwrite the file after the complete artifact is finalized.", "access": "write", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "artifact": _ARTIFACT_REFERENCE_SCHEMA, "mode": {"type": "string", "enum": ["create", "overwrite", "append"], "default": "create"}, "encoding": {"type": "string", "enum": ["utf-8", "utf-8-sig"], "default": "utf-8"}}, "required": ["path", "artifact"]}},
     "mkdir": {"description": "Create an authorized directory.", "access": "write", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
     "copy": {"description": "Copy an authorized file to a writable destination.", "access": "write", "parameters": {"type": "object", "properties": {"source": {"type": "string", "description": "Authorized path or Gallery media id."}, "destination": {"type": "string"}, "overwrite": {"type": "boolean", "default": False}}, "required": ["source", "destination"]}},
     "move": {"description": "Move an authorized writable file or directory to an unused destination.", "access": "write", "parameters": {"type": "object", "properties": {"source": {"type": "string"}, "destination": {"type": "string"}}, "required": ["source", "destination"]}},
     "delete": {"description": "Permanently delete an authorized writable file or directory; recursive is required for a non-empty directory.", "access": "write", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "recursive": {"type": "boolean", "default": False}}, "required": ["path"]}},
-    "zip": {"description": "Create a persistent ZIP from authorized files or folders.", "access": "write", "parameters": {"type": "object", "properties": {"sources": {"type": "array", "items": {"type": "string"}, "description": "Authorized paths or Gallery media ids."}, "destination": {"type": "string", "description": "Optional folder/.zip path; plain paths use video outputs."}}, "required": ["sources"]}},
+    "zip": {"description": "Create a persistent ZIP from authorized files or folders.", "access": "write", "parameters": {"type": "object", "properties": {"sources": {"oneOf": [{"type": "array", "items": {"type": "string"}}, _ARTIFACT_REFERENCE_SCHEMA], "description": "Authorized paths or Gallery media ids, or an artifact reference selecting paths."}, "destination": {"type": "string", "description": "Optional folder/.zip path; plain paths use video outputs."}}, "required": ["sources"]}},
     "unzip": {"description": "Safely extract an authorized ZIP into a writable directory without replacing existing files by default.", "access": "write", "parameters": {"type": "object", "properties": {"source": {"type": "string", "description": "Authorized ZIP file path."}, "destination": {"type": "string", "description": "Optional extraction directory; defaults to a folder named after the ZIP beside it when writable, otherwise in video outputs."}, "overwrite": {"type": "boolean", "default": False}}, "required": ["source"]}},
     "download": {"description": "Create a session-long download link for an existing file.", "access": "always", "parameters": {"type": "object", "properties": {"source": {"type": "string", "description": "Authorized file path or Gallery media id."}}, "required": ["source"]}},
 }

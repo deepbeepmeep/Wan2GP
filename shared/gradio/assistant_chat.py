@@ -1444,6 +1444,10 @@ def get_css() -> str:
     min-width: 0;
 }
 
+.wangp-assistant-chat__message--assistant .wangp-assistant-chat__tool-pending {
+    color: var(--assistant-text);
+}
+
 .wangp-assistant-chat__tool-section-header {
     display: flex;
     align-items: center;
@@ -1477,6 +1481,58 @@ def get_css() -> str:
         pointer-events: auto;
         transform: none;
     }
+}
+
+.wangp-assistant-chat__structured-result {
+    margin-top: 10px;
+    border: 1px solid rgba(116, 190, 230, 0.22);
+    border-radius: 12px;
+    overflow: hidden;
+    color: var(--assistant-text);
+    background: rgba(7, 33, 48, 0.28);
+}
+
+.wangp-assistant-chat__structured-result-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 11px;
+    font-size: calc(0.76rem * var(--dock-font-scale));
+    border-bottom: 1px solid rgba(116, 190, 230, 0.18);
+}
+
+.wangp-assistant-chat__structured-result-scroll {
+    max-height: 360px;
+    overflow: auto;
+}
+
+.wangp-assistant-chat__structured-result table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: calc(0.72rem * var(--dock-font-scale));
+    color: var(--assistant-text);
+}
+
+.wangp-assistant-chat__structured-result th,
+.wangp-assistant-chat__structured-result td {
+    padding: 7px 9px;
+    border-bottom: 1px solid rgba(116, 190, 230, 0.12);
+    text-align: left;
+    vertical-align: top;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--assistant-text);
+}
+
+.wangp-assistant-chat__structured-result a {
+    color: #bfe9ff;
+}
+
+.wangp-assistant-chat__structured-result th {
+    position: sticky;
+    top: 0;
+    background: rgba(7, 33, 48, 0.96);
+    z-index: 1;
 }
 
 .wangp-assistant-chat__attachments {
@@ -4180,7 +4236,7 @@ def upsert_reasoning_block(session, message_id: str, reasoning_id: str | None, t
     return target_id, _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
 
 
-def add_tool_call(session, message_id: str, tool_name: str, arguments: dict[str, Any], tool_label: str | None = None) -> tuple[str, str | None]:
+def add_tool_call(session, message_id: str, tool_name: str, arguments: dict[str, Any], tool_label: str | None = None, request_pending: bool = False) -> tuple[str, str | None]:
     record = _find_message(session, message_id)
     if record is None:
         return "", None
@@ -4192,7 +4248,8 @@ def add_tool_call(session, message_id: str, tool_name: str, arguments: dict[str,
         "arguments": dict(arguments or {}),
         "result": None,
         "status": "running",
-        "status_text": "Running",
+        "status_text": "Preparing" if request_pending else "Running",
+        "request_pending": bool(request_pending),
         "attachment": None,
     }
     _ensure_message_blocks(record).append(tool_record)
@@ -4200,7 +4257,7 @@ def add_tool_call(session, message_id: str, tool_name: str, arguments: dict[str,
     return tool_record["id"], _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
 
 
-def update_tool_call(session, message_id: str, tool_id: str, status: str | None = None, result: dict[str, Any] | object = _UNSET, status_text: str | None = None) -> str | None:
+def update_tool_call(session, message_id: str, tool_id: str, status: str | None = None, result: dict[str, Any] | object = _UNSET, status_text: str | None = None, tool_name: str | None = None, tool_label: str | None = None, arguments: dict[str, Any] | object = _UNSET, request_pending: bool | None = None) -> str | None:
     record = _find_message(session, message_id)
     if record is None:
         return None
@@ -4211,9 +4268,18 @@ def update_tool_call(session, message_id: str, tool_id: str, status: str | None 
             tool_record["status"] = str(status or "").strip().lower() or "running"
         if status_text is not None:
             tool_record["status_text"] = str(status_text or "").strip()
+        if tool_name is not None:
+            tool_record["name"] = str(tool_name or "").strip()
+        if tool_label is not None:
+            tool_record["label"] = str(tool_label or "").strip()
+        if arguments is not _UNSET:
+            tool_record["arguments"] = dict(arguments or {})
+        if request_pending is not None:
+            tool_record["request_pending"] = bool(request_pending)
         if result is not _UNSET:
             tool_record["result"] = None if result is None else dict(result or {})
             tool_record["attachment"] = _attachment_from_tool_result(tool_record.get("result"), getattr(session, "file_access_policy", None))
+            tool_record["presentation"] = _structured_tool_presentation(tool_record, getattr(session, "file_access_policy", None))
         revision = _touch_chat(session)
         return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
     return None
@@ -4369,7 +4435,7 @@ def build_io_tool_call_label(action: str | None = None, arguments: dict[str, Any
     action_name = str(action or "").strip()
     if not action_name:
         return "List IO Tools"
-    action_label = {"list": "List Files", "info": "Get File Information", "read_text": "Read Text", "search_text": "Search Text", "write_text": "Write Text", "mkdir": "Create Directory", "copy": "Copy File", "move": "Move File or Directory", "delete": "Delete File or Directory", "zip": "Create ZIP", "unzip": "Extract ZIP", "download": "Prepare Download"}.get(action_name, _humanize_tool_value(action_name))
+    action_label = {"list": "List Files", "info": "Get File Information", "read_text": "Read Text", "search_text": "Search Text", "write_text": "Write Text", "write_artifact_text": "Compile Artifact", "mkdir": "Create Directory", "copy": "Copy File", "move": "Move File or Directory", "delete": "Delete File or Directory", "zip": "Create ZIP", "unzip": "Extract ZIP", "download": "Prepare Download"}.get(action_name, _humanize_tool_value(action_name))
     if arguments is None:
         return _finish_tool_call_label(f"Get {action_label} Schema")
 
@@ -4400,6 +4466,8 @@ def build_io_tool_call_label(action: str | None = None, arguments: dict[str, Any
         mode = str(arguments.get("mode", "create") or "create").casefold()
         verb = "Append to" if mode == "append" else "Create" if mode == "create" else "Overwrite"
         return _finish_tool_call_label(f"{verb} Text File{f' {source}' if source else ''}")
+    if action_name == "write_artifact_text":
+        return _finish_tool_call_label(f"Compile Artifact to Text File{f' {source}' if source else ''}")
     if action_name == "mkdir":
         return _finish_tool_call_label(action_label if not source else f"{action_label} {source}")
     if action_name == "copy":
@@ -4891,6 +4959,72 @@ def linkify_message_download_references(session, message_id: str, file_access_po
     return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
 
 
+def _structured_tool_presentation(tool_record: dict[str, Any], file_access_policy) -> dict[str, Any] | None:
+    result = tool_record.get("result")
+    if not isinstance(result, dict):
+        return None
+    rows = result.get("entries") if isinstance(result.get("entries"), list) else result.get("items") if isinstance(result.get("items"), list) else None
+    if rows is None and str(tool_record.get("name", "")) == "wangp_artifact" and isinstance(result.get("data"), dict):
+        rows = [{"field": key, "value": value} for key, value in result["data"].items()]
+    if not rows or not all(isinstance(row, dict) for row in rows):
+        return None
+    preferred = ["index", "name", "title", "path", "type", "duration_seconds", "size_bytes", "modified", "outline", "prompt", "content", "field", "value"]
+    available = []
+    for key in preferred:
+        if any(key in row for row in rows):
+            available.append(key)
+    for row in rows:
+        for key in row:
+            if key not in available:
+                available.append(key)
+    columns = available[:8]
+    rendered_rows = []
+    for row in rows:
+        cells = []
+        for column in columns:
+            value = row.get(column, "")
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True) if isinstance(value, (dict, list)) else str(value if value is not None else "")
+            href = ""
+            if column == "path" and file_access_policy is not None:
+                path = _authorized_download_path(value, file_access_policy)
+                if path is not None:
+                    from shared.gradio.downloads import register_file_download
+                    href = register_file_download(path)["url"]
+            cells.append({"text": text, "href": href})
+        rendered_rows.append(cells)
+    total = result.get("matched")
+    offset = int(result.get("offset", 0) or 0)
+    end = offset + len(rows)
+    summary = f"{offset + 1}-{end} of {int(total)}" if total is not None else f"{offset + 1}-{end}" if offset else f"{len(rows)} item{'s' if len(rows) != 1 else ''}"
+    if result.get("has_more"):
+        summary += f"; next offset {result.get('next_offset')}"
+    return {"type": "records", "title": str(tool_record.get("label", "") or "Structured result"), "summary": summary, "columns": columns, "rows": rendered_rows}
+
+
+def _render_structured_tool_presentation(presentation: dict[str, Any] | None) -> str:
+    if not isinstance(presentation, dict) or presentation.get("type") != "records":
+        return ""
+    columns, rows = list(presentation.get("columns", []) or []), list(presentation.get("rows", []) or [])
+    if not columns or not rows:
+        return ""
+    header = "".join(f"<th>{html.escape(str(column).replace('_', ' ').title())}</th>" for column in columns)
+    body = []
+    for row in rows:
+        cells = []
+        for cell in list(row or []):
+            text = html.escape(str(cell.get("text", "")))
+            href = str(cell.get("href", "") or "").strip()
+            content = f"<a href='{html.escape(href)}' download>{text}</a>" if href else text
+            cells.append(f"<td>{content}</td>")
+        body.append(f"<tr>{''.join(cells)}</tr>")
+    return (
+        "<section class='wangp-assistant-chat__structured-result'>"
+        f"<div class='wangp-assistant-chat__structured-result-header'><strong>{html.escape(str(presentation.get('title', 'Structured result')))}</strong><span>{html.escape(str(presentation.get('summary', '')))}</span></div>"
+        f"<div class='wangp-assistant-chat__structured-result-scroll'><table><thead><tr>{header}</tr></thead><tbody>{''.join(body)}</tbody></table></div>"
+        "</section>"
+    )
+
+
 def _plain_text_to_html(text: str) -> str:
     escaped = html.escape(str(text or "").strip(), quote=False)
     return "" if not escaped else f"<p>{escaped.replace(chr(10), '<br>')}</p>"
@@ -5167,14 +5301,14 @@ def _render_tool_block(tool_record: dict[str, Any]) -> str:
     status = str(tool_record.get("status", "running")).strip().lower()
     status_label = str(tool_record.get("status_text", "")).strip() or {"running": "Running", "done": "Done", "error": "Error"}.get(status, status.title() or "Running")
     status_class = {"running": "running", "done": "done", "error": "error"}.get(status, "running")
+    request_pending = bool(tool_record.get("request_pending", False))
     arguments_text = html.escape(json.dumps(tool_record.get("arguments", {}), ensure_ascii=False, indent=2, sort_keys=True))
     result_payload = tool_record.get("result", {})
     result_text = html.escape(json.dumps(result_payload, ensure_ascii=False, indent=2, sort_keys=True)) if result_payload is not None else ""
     arguments_copy_button = _render_copy_button("json", f"Copy {label} arguments")
     result_copy_button = "" if result_payload is None else _render_copy_button("json", "Copy result")
-    return (
-        f"<details class='wangp-assistant-chat__disclosure wangp-assistant-chat__disclosure--tool' data-tool-id='{html.escape(str(tool_record.get('id', '')))}'>"
-        f"<summary><span class='wangp-assistant-chat__tool-title'><span class='wangp-assistant-chat__tool-chip'>Tool</span>{html.escape(label)}</span><span class='wangp-assistant-chat__tool-status wangp-assistant-chat__tool-status--{status_class}'>{html.escape(status_label)}</span></summary>"
+    pending_body = "<div class='wangp-assistant-chat__disclosure-body'><div class='wangp-assistant-chat__tool-json wangp-assistant-chat__tool-pending'>Deepy is preparing the tool request.</div></div>"
+    completed_body = (
         "<div class='wangp-assistant-chat__disclosure-body'>"
         "<div class='wangp-assistant-chat__tool-grid'>"
         f"<div class='wangp-assistant-chat__tool-json'><div class='wangp-assistant-chat__tool-section-header'><div class='wangp-assistant-chat__tool-section-title'>{html.escape(label)} Arguments</div>{arguments_copy_button}</div><pre class='wangp-assistant-chat__pre'>{arguments_text}</pre></div>"
@@ -5182,8 +5316,14 @@ def _render_tool_block(tool_record: dict[str, Any]) -> str:
         "</div>"
         f"{_render_collapse_button('tool')}"
         "</div>"
+    )
+    details = (
+        f"<details class='wangp-assistant-chat__disclosure wangp-assistant-chat__disclosure--tool' data-tool-id='{html.escape(str(tool_record.get('id', '')))}'>"
+        f"<summary><span class='wangp-assistant-chat__tool-title'><span class='wangp-assistant-chat__tool-chip'>Tool</span>{html.escape(label)}</span><span class='wangp-assistant-chat__tool-status wangp-assistant-chat__tool-status--{status_class}'>{html.escape(status_label)}</span></summary>"
+        f"{pending_body if request_pending else completed_body}"
         "</details>"
     )
+    return f"{details}{_render_structured_tool_presentation(tool_record.get('presentation'))}"
 
 
 def _render_attachments(attachments: list[dict[str, Any]]) -> str:

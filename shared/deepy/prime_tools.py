@@ -154,6 +154,9 @@ class DeepyPrimeTools:
 
         self.file_access_policy = zero_tools._file_access_policy() if zero_tools is not None else build_file_access_policy(get_deepy_runtime_config())
         self.assistant_session.file_access_policy = self.file_access_policy
+        if getattr(self.assistant_session, "artifact_workspace", None) is None:
+            from shared.deepy.artifacts import ArtifactWorkspace
+            self.assistant_session.artifact_workspace = ArtifactWorkspace()
         self.allow_read_file_system = self.file_access_policy.read_enabled
         from shared.utils.plugins import get_deepy_prime_plugin_tools
 
@@ -161,7 +164,7 @@ class DeepyPrimeTools:
         self._tool_progress_callback: Callable[..., None] | None = None
         self._api_session = WanGPSession(webui_state=state, console_output=False, console_isatty=False)
         self._api_session._gradio_webui_context = {"defer_load_queue_trigger": True}
-        self._server = build_inprocess_server(self._api_session, toolbox=zero_tools, default_job_event_limit=0, file_access_policy=self.file_access_policy)
+        self._server = build_inprocess_server(self._api_session, toolbox=zero_tools, default_job_event_limit=0, file_access_policy=self.file_access_policy, artifact_workspace=self.assistant_session.artifact_workspace)
         self._external_servers = normalize_deepy_prime_mcp_servers(get_deepy_config_value(DEEPY_PRIME_MCP_SERVERS_KEY, {}))
         self._auto_discover_mcp_paths = normalize_deepy_mcp_auto_discover_paths(get_deepy_config_value(DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT))
         self._external_server_errors: dict[str, str] = {}
@@ -441,6 +444,23 @@ class DeepyPrimeTools:
                 page["next_offset"] = None
             if entries and len(json.dumps(page, ensure_ascii=False, separators=(",", ":"), default=str)) <= max_chars:
                 return page
+        if tool_name == "wangp_artifact" and isinstance(result.get("items"), list) and result["items"]:
+            page = dict(result)
+            source_items = page["items"]
+            items = page["items"] = []
+            offset = int(page.get("offset", 0) or 0)
+            for item in source_items:
+                items.append(item)
+                page.update(count=len(items), has_more=True, next_offset=offset + len(items))
+                if len(json.dumps(page, ensure_ascii=False, separators=(",", ":"), default=str)) > max_chars:
+                    items.pop()
+                    page.update(count=len(items), next_offset=offset + len(items))
+                    break
+            page["has_more"] = bool(result.get("has_more")) or len(items) < len(source_items)
+            if not page["has_more"]:
+                page["next_offset"] = None
+            if items and len(json.dumps(page, ensure_ascii=False, separators=(",", ":"), default=str)) <= max_chars:
+                return page
         return {
             "status": "error",
             "tool": tool_name,
@@ -566,6 +586,15 @@ class DeepyPrimeTools:
         return normalized_name.replace("_", " ").strip().title()
 
     @staticmethod
+    def get_tool_stream_label_fields(tool_name: str) -> tuple[str, ...]:
+        return {
+            "wangp_generate": ("source",),
+            "wangp_toolbox": ("action", "arguments"),
+            "wangp_io": ("action", "arguments"),
+            "wangp_artifact": ("action", "arguments"),
+        }.get(str(tool_name or "").strip(), ())
+
+    @staticmethod
     def _generation_settings(source: Any) -> list[dict[str, Any]]:
         settings = []
 
@@ -626,11 +655,24 @@ class DeepyPrimeTools:
             return f"Unknown Tool - {self.get_tool_display_name(tool_name)}"
         if self._zero_tools is not None:
             arguments = self._zero_tools.resolve_tool_label_arguments(arguments)
-        if tool_name in {"wangp_toolbox", "wangp_io"}:
+        if tool_name in {"wangp_toolbox", "wangp_io", "wangp_artifact"}:
             action = str(arguments.get("action", "") or "").strip()
             action_arguments = arguments.get("arguments")
             if tool_name == "wangp_io":
                 return assistant_chat.build_io_tool_call_label(action, action_arguments if "arguments" in arguments else None)
+            if tool_name == "wangp_artifact":
+                if not action and isinstance(action_arguments, dict):
+                    nested_action = str(action_arguments.get("action", "") or "").strip()
+                    if nested_action and isinstance(action_arguments.get("arguments"), dict):
+                        action, action_arguments = nested_action, action_arguments["arguments"]
+                    elif not action_arguments:
+                        action = "list"
+                if action == "list" and isinstance(action_arguments, dict):
+                    return "List Artifacts"
+                if not action and "arguments" in arguments:
+                    return "Artifact Request"
+                action_label = {"prepare": "Load Next Workflow Item", "commit_item": "Commit Workflow Item", "query": "Query Exact Artifact Data", "update_ledger": "Update Ledger Artifact"}.get(action, action.replace("_", " ").title())
+                return "List Artifact Actions" if not action else f"Get {action_label} Schema" if "arguments" not in arguments else action_label
             if not action:
                 return "List Toolbox Content"
             if action_arguments is None:
@@ -666,7 +708,7 @@ class DeepyPrimeTools:
             if not action or call_arguments.get("arguments") is None:
                 return {"pause_runtime": False, "pause_reason": "tool"}
             return self._zero_tools.get_tool_policy(action, call_arguments["arguments"])
-        if tool_name == "wangp_io":
+        if tool_name in {"wangp_io", "wangp_artifact"}:
             return {"pause_runtime": False, "pause_reason": "tool"}
         return {"pause_runtime": False, "pause_reason": "tool"}
 
@@ -675,6 +717,21 @@ class DeepyPrimeTools:
         if schema is None:
             return f"Unknown MCP tool: {tool_name}"
         parameters = schema["function"].get("parameters", {})
+        for name, parameter in parameters.get("properties", {}).items():
+            value = arguments.get(name)
+            if parameter.get("type") != "object" or not isinstance(value, str):
+                continue
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(decoded, dict):
+                arguments[name] = decoded
+        if tool_name == "wangp_artifact" and "arguments" in arguments and not isinstance(arguments["arguments"], dict):
+            raw_arguments = arguments["arguments"]
+            if isinstance(raw_arguments, str) and "\\'" in raw_arguments:
+                return "Artifact arguments are malformed JSON: \\' is not a valid JSON escape. Write apostrophes directly inside double-quoted JSON strings, then repeat the call with arguments as an object. This is not a payload-size limit."
+            return "Artifact arguments must be a JSON object, not a JSON string. This is malformed call syntax, not a payload-size limit; repeat action and arguments as separate top-level tool parameters."
         for parameter_name in parameters.get("required", []) or []:
             if parameter_name not in arguments or arguments[parameter_name] is None:
                 return f"{parameter_name} is required."

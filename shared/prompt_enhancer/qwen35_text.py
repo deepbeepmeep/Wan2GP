@@ -429,9 +429,19 @@ def _build_presence_penalty_logits_processor(presence_penalty: float | None):
     return logits_processor, update_state
 
 
-def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None, max_thinking_tokens_override: int | None = None):
+def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None, max_thinking_tokens_override: int | None = None, suppress_token_ids: tuple[int, ...] = ()):
     processors = []
     update_callbacks = []
+
+    suppressed_ids = tuple(dict.fromkeys(int(token_id) for token_id in suppress_token_ids if int(token_id) >= 0))
+    if suppressed_ids:
+        def suppress_tokens_logits_processor(_input_ids, logits):
+            valid_ids = tuple(token_id for token_id in suppressed_ids if token_id < logits.shape[-1])
+            if valid_ids:
+                logits[..., valid_ids] = float("-inf")
+            return logits
+
+        processors.append(suppress_tokens_logits_processor)
 
     presence_processor, presence_update_state = _build_presence_penalty_logits_processor(_resolve_prompt_presence_penalty(model))
     if presence_processor is not None:

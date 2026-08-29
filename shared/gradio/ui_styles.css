@@ -422,6 +422,21 @@ user-select: text;
     margin-bottom: 0 !important;
 }
 
+.wangp-transparent-group,
+.wangp-transparent-group > .styler,
+.wangp-transparent-group .form,
+.wangp-transparent-group .block {
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+}
+.wangp-transparent-group {
+    padding: 0 !important;
+}
+.wangp-bottom-aligned-row {
+    align-items: flex-end !important;
+}
+
 .toast-wrap { max-width: min(920px, calc(100vw - 2rem)) !important; }
 .toast-wrap > div, .toast-wrap .toast-body, .gradio-container [role="alert"] { max-width: 100% !important; }
 .toast-wrap .toast-body, .gradio-container [role="alert"] { width: 100% !important; max-height: 75vh !important; overflow: auto !important; box-sizing: border-box !important; align-items: flex-start !important; }

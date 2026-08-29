@@ -29,7 +29,7 @@ except:
 ATTENTION_MODE_AVAILABILITY = {
     "sol": {
         "installed": triton_installed,
-        "supported": triton_installed and (major, minor) >= (8, 9),
+        "supported": triton_installed and (major, minor) in ((8, 6), (8, 9), (9, 0), (10, 0), (12, 0), (12, 1)),
     },
 }
 

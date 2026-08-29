@@ -30,6 +30,7 @@ class MMAudioProcessor:
             "status": {MMAUDIO_METHOD: "MMAudio Soundtrack Generation"},
             "config_key": "mmaudio",
             "pos": 20,
+            "description": "Generate and remux a soundtrack that follows the video's visual content.",
         }
 
     @classmethod

@@ -22,6 +22,9 @@ class MyTemporalUpsampler:
             "methods": [("MyTemporalUpsampler", "mytemporal")],
             "multipliers": {"mytemporal": (2.0, 4.0)},        # supported multipliers per method
             "default_temporal_upsampling": "mytemporal2",
+            "description": "Interpolate smoother video frames.", # optional discovery fallback
+            "method_descriptions": {"mytemporal": "..."},    # optional per-method descriptions
+            "method_parameters": {"mytemporal": [...]},      # optional extra parameter descriptors
         }
 
     def is_upsampling(self, value): ...                       # does this handler own the value?
@@ -33,6 +36,8 @@ class MyTemporalUpsampler:
     def query_download_def(self, *, enabled_only=True): ...    # -> one process_files definition
     def query_download_defs(self, *, enabled_only=True): ...   # -> list of process_files definitions
     def load_upsampler(self, value, **kwargs): ...             # optional pre-dispatch load hook
+    def supports_loaded_model(self, value, context): ...       # optional core-model borrowing
+    def release_private_runtime(self): ...                     # optional before borrowing core model
     def persistent_models(self): ...                          # optional, True keeps model in RAM and unloads VRAM only
     def release_vram(self): ...                               # optional Configuration-tab release hook
     def enabled(self): ...                                    # optional UI gating
@@ -57,6 +62,14 @@ Dropdown entries are sorted by method position, then by method label. A handler
 can define a default `pos` and override individual methods with `method_pos`.
 Position is independent of multiplier; expanded choices such as `mytemporal2`
 and `mytemporal4` share the `mytemporal` method position.
+
+Discovery consumers infer the required `multiplier` parameter from
+`multipliers`. Optional `description`, `method_descriptions`, and
+`method_parameters` fields add reusable presentation and parameter metadata.
+Each `method_parameters` entry is a list of dictionaries with at least `name`;
+it may also define `type`, `description`, `required`, `default`, `enum`, and a
+queue-setting override named `setting`. These fields are optional so older and
+third-party handlers remain compatible.
 
 ## Runtime Contract
 
@@ -83,6 +96,14 @@ unloads the main generation offload object before running the temporal upsampler
 and releases registered extension resources after use. If `persistent_models()`
 returns `True`, WanGP unloads the handler VRAM through the offload registry but
 keeps persistent CPU/RAM state available for the next call.
+
+A temporal handler may borrow an already loaded compatible generation model by
+implementing `supports_loaded_model(value, context)`. On a match, dispatch skips
+`load_upsampler()`, calls `release_private_runtime()` when present, and passes
+the core-owned context as `loaded_model_context` to `temporal_upsample()`. A
+non-match follows the existing private-runtime path. The handler may use the
+borrowed model and MMGP offload object for that call, but must not release them
+and must restore any temporary model state before returning.
 
 ## Registration
 

@@ -4,6 +4,9 @@ Temporal upsamplers are interchangeable handlers for frame interpolation.
 Handlers expose methods and supported multipliers through
 ``query_temporal_upsampler_def()`` and may expose config controls under
 ``wgp_config["temporal_upsamplers"][config_key]``.
+Definitions may also expose an optional ``description`` plus optional
+``method_descriptions`` and ``method_parameters`` mappings for reusable
+discovery interfaces. Existing handlers without these fields remain valid.
 
 Plugin authors can register processors from ``plugin_info.json`` with:
 
@@ -22,6 +25,7 @@ from typing import Any
 
 from shared.attention import attention_shared_state
 from shared.utils import offload_registry
+from .model_context import compatible_loaded_model
 
 
 TEMPORAL_UPSAMPLER_CONFIG_KEY = "temporal_upsamplers"
@@ -291,7 +295,7 @@ def validate_temporal_upsampling(temporal_upsampling, *, source_is_image: bool =
     return "Temporal Upsampling can not be used with an Image" if source_is_image else ""
 
 
-def temporal_upsample(temporal_upsampling, sample, previous_last_frame, fps, *, main_offloadobj=None, **kwargs):
+def temporal_upsample(temporal_upsampling, sample, previous_last_frame, fps, *, main_offloadobj=None, loaded_model_context=None, **kwargs):
     handler = find_temporal_upsampler(temporal_upsampling)
     if handler is None:
         if str(temporal_upsampling or "").strip():
@@ -299,15 +303,21 @@ def temporal_upsample(temporal_upsampling, sample, previous_last_frame, fps, *, 
         return sample, previous_last_frame, fps
     name = handler.query_temporal_upsampler_def()["name"]
     persistent = handler.persistent_models() if hasattr(handler, "persistent_models") else False
+    borrowed_context = compatible_loaded_model(handler, temporal_upsampling, loaded_model_context)
     with attention_shared_state():
         try:
-            if main_offloadobj is not None:
-                main_offloadobj.unload_all()
-            if hasattr(handler, "load_upsampler"):
+            core_offloadobj = loaded_model_context.offloadobj if loaded_model_context is not None else main_offloadobj
+            if core_offloadobj is not None:
+                core_offloadobj.unload_all()
+            if borrowed_context is not None and hasattr(handler, "release_private_runtime"):
+                handler.release_private_runtime()
+            elif borrowed_context is None and hasattr(handler, "load_upsampler"):
                 handler.load_upsampler(temporal_upsampling, **kwargs)
-            return handler.temporal_upsample(temporal_upsampling, sample, previous_last_frame, fps, **kwargs)
+            return handler.temporal_upsample(temporal_upsampling, sample, previous_last_frame, fps, loaded_model_context=borrowed_context, **kwargs)
         finally:
-            if persistent:
+            if borrowed_context is not None:
+                borrowed_context.offloadobj.unload_all()
+            elif persistent:
                 offload_registry.unload_vram([name])
             else:
                 offload_registry.release_all([name])

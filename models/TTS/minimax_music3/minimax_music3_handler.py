@@ -170,7 +170,7 @@ class family_handler:
         fl.locate_file(os.path.join(TEXT_ENCODER_FOLDER, "tokenizer_config.json"))
         fl.locate_file(os.path.join(TEXT_ENCODER_FOLDER, "chat_template.jinja"))
 
-        dtype = dtype or torch.bfloat16
+        dtype = torch.bfloat16
         pipeline = MiniMaxMusic3Pipeline(flow_weights, text_encoder_filename, asset_paths, dtype, lm_decoder_engine=lm_decoder_engine)
         if lm_decoder_engine in ("cg", "vllm"):
             pipeline.text_encoder._budget = 0

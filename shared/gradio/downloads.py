@@ -1,13 +1,18 @@
 import json
+import mimetypes
+import os
 import queue as queue_module
 import re
 import threading
 import time
 import uuid
+from pathlib import Path
 from urllib.parse import quote
 
 
 _download_jobs = {}
+_file_downloads = {}
+_file_download_tokens = {}
 _download_jobs_lock = threading.Lock()
 _download_routes_installed = False
 _download_original_create_app = None
@@ -37,6 +42,20 @@ def register_download(filename, mime_type, iterator_factory):
             "iterator_factory": iterator_factory,
         }
     return json.dumps({"url": f"/wangp_api/download/{token}", "filename": filename})
+
+
+def register_file_download(path, mime_type=None):
+    file_path = Path(path).expanduser().resolve()
+    if not file_path.is_file():
+        raise FileNotFoundError(f"Download file does not exist: {file_path}")
+    key = os.path.normcase(str(file_path))
+    with _download_jobs_lock:
+        token = _file_download_tokens.get(key)
+        if token is None:
+            token = uuid.uuid4().hex
+            _file_download_tokens[key] = token
+            _file_downloads[token] = {"path": str(file_path), "filename": file_path.name, "mime_type": mime_type or mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"}
+    return {"url": f"/wangp_api/download/{token}", "filename": file_path.name, "size_bytes": file_path.stat().st_size}
 
 
 def stream_bytes(data, chunk_size=1024 * 1024):
@@ -98,6 +117,11 @@ def _pop_download_job(token):
         return _download_jobs.pop(token, None)
 
 
+def _get_file_download(token):
+    with _download_jobs_lock:
+        return _file_downloads.get(token)
+
+
 def _install_routes_on_app(fastapi_app):
     if getattr(fastapi_app, "_wangp_download_routes_installed", False):
         return
@@ -105,12 +129,15 @@ def _install_routes_on_app(fastapi_app):
     @fastapi_app.get("/wangp_api/download/{token}")
     async def _wangp_download(token: str):
         from fastapi import Response
-        from fastapi.responses import StreamingResponse
+        from fastapi.responses import FileResponse, StreamingResponse
         job = _pop_download_job(token)
-        if job is None:
+        if job is not None:
+            headers = {"Content-Disposition": _content_disposition(job["filename"])}
+            return StreamingResponse(job["iterator_factory"](), media_type=job["mime_type"], headers=headers)
+        file_download = _get_file_download(token)
+        if file_download is None or not Path(file_download["path"]).is_file():
             return Response("Download expired or not found", status_code=404)
-        headers = {"Content-Disposition": _content_disposition(job["filename"])}
-        return StreamingResponse(job["iterator_factory"](), media_type=job["mime_type"], headers=headers)
+        return FileResponse(file_download["path"], filename=file_download["filename"], media_type=file_download["mime_type"])
 
     fastapi_app._wangp_download_routes_installed = True
 
@@ -131,4 +158,4 @@ def install_routes():
     _download_routes_installed = True
 
 
-__all__ = ["install_routes", "register_download", "stream_bytes", "stream_writer"]
+__all__ = ["install_routes", "register_download", "register_file_download", "stream_bytes", "stream_writer"]

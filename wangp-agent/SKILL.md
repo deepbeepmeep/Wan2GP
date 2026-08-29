@@ -28,28 +28,69 @@ Use `python -m shared.mcp_server --root <WanGP repo> --output-dir <output dir>` 
 ## Discovery Workflow
 
 1. List candidate models before generating.
-   MCP: `wangp_list_models`. Python: `session.list_model_metadata(...)`. Useful filters: `family`, `base_model_type`, `finetune`, `model_type`, `main_output`, `inputs`.
-2. Pick the model from `metadata.capabilities`, `metadata.media_inputs`, `metadata.inputs`, `metadata.main_output`, and `metadata.outputs`.
-3. Inspect `setting_values` before setting flag fields such as `image_prompt_type`, `video_prompt_type`, `audio_prompt_type`, `model_mode`, `sample_solver`, or `prompt_enhancer`.
-4. Fetch defaults/schema and modify the few settings needed for the request.
-   MCP: `wangp_get_model_schema` or `wangp_get_default_settings`. Python: `session.get_model_schema(model_type)` or `session.get_default_settings(model_type)`.
-5. Generate, then return artifact paths and any structured errors.
+   For a user-facing model name, call MCP `wangp_models(query=...)` first. Python: `session.list_model_metadata(query=...)`. Optional MCP filters are `name`, `family`, `base_model_type`, `finetune`, `model_type`, `main_output`, and `inputs`; string filters accept case-insensitive `*` and `?` globs.
+2. Pick the model from its `capabilities`, `media_inputs`, `inputs`, `main_output`, and `outputs`.
+3. `wangp_model` has only three views: `schema` (compact capabilities and limits, default), `definition` (parameter declarations), and `defaults` (generation settings). Use `definition` only when exact parameters or choices remain unclear. Compact servers preview long root strings; pass the exact root `property` named by a truncation suffix with the definition view to retrieve its full value.
+4. Fetch defaults separately when building a raw generation request, and modify only the few settings needed for the request. Preserve model-specific flags unless the user explicitly supplied an exact supported value.
+   MCP: `wangp_model(model_type, view="defaults")`. Python: `session.get_default_settings(model_type)`.
+   Use `wangp_model_settings(model_type)` to list saved settings, accelerator profiles and presets; pass a returned `setting_id` to read one.
+5. If the request involves LoRAs, call `wangp_list_loras(model_type)` and copy returned identifiers exactly into `activated_loras`, with corresponding values in `loras_multipliers`.
+6. Generate, then return artifact paths and any structured errors.
+
+Read `wangp://docs/settings` when the task involves model selection, prompts, output dimensions, sampling, guidance, media inputs, acceleration or cache options, post-processing, sliding windows, LoRAs, or API setting metadata. For only `image_prompt_type`, `video_prompt_type`, or `audio_prompt_type`, prefer the smaller `wangp://docs/settings/prompt-flags` resource. Read resources through the client's standard MCP resource-reading capability. WanGP also infers compatible `S`, `E`, and `V` image-source flags, the first declared reference-image mode containing `I`, and declared `A`/`B` audio-source modes when corresponding media fields are supplied without their flags.
+
+For post-processing, call `wangp_postprocess(media_id=<media_id>)` without `process` to discover compatible spatial upsampling and refiner operations (for instance face correction), temporal upscaling, soundtrack, voice replacement, and audio editing. Then call it again with an exact returned process id and parameters; the operation runs through WanGP's normal generation queue.
+
+For direct media utilities, call `wangp_toolbox()` without an action for a compact action list, then pass one action without `arguments` for its exact schema, then call it with `arguments`. It includes adding authorized media to the Gallery, frame/video/audio extraction, transcription, resize/crop, side-by-side visual composition, muting, soundtrack replacement, video merging, color-frame creation, media details, and documentation lookup. `add_to_gallery` accepts one `path` or multiple `paths`, including `output_file` values returned by other actions, and does not duplicate existing items. Use `media_id` values returned by `wangp_list_gallery` for media arguments. Direct server paths must be inside the configured read scope.
+
+For files, use the same discovery pattern with `wangp_io(action?, arguments?)`. It provides the actions allowed by the current access mode: listing, metadata, ranged text reading, text search, writing, directory creation, copying, moving, permanent deletion, persistent ZIP creation, and session-long downloads. Deleting a non-empty directory requires `recursive=true`. Use `@alias/path` from its returned roots; plain paths use `@outputs`. In a final answer, directly reference valid Gallery media ids, unique Gallery filenames, or authorized file paths: WanGP turns them into inline download links, so do not call `download` only to create a link.
+
+Use `wangp_notify(message, title?)` when the user asks to be notified; it sends only through WanGP's configured destinations and returns delivery status. Deepy Zero exposes the same operation as `notify`.
 
 ## Media Input Rules
 
-Use `metadata.media_inputs.image` to decide which image attachments can be supplied:
+Use the entries in `metadata.media_inputs.image` to decide which image attachments can be supplied:
 
-- `start`: `image_start`
-- `end`: `image_end`
-- `reference`: `image_refs`
-- `single_reference`: one `image_refs` item is expected
-- `multiple_references`: multiple `image_refs` items may be useful
-- `background`: background image role, selected through `video_prompt_type` values containing `K`
-- `injected_frames`: positioned-frame references, selected through `video_prompt_type` values containing `F` plus `frames_positions`
-- `control`: `image_guide`
-- `mask`: `image_mask`
+- `start`: set `image_start` and include `S` in `image_prompt_type`.
+- `end`: set `image_end` and include `E` in `image_prompt_type`; combine it with the source flag when needed, for example `SE`.
+- `reference`: set `image_refs` and use a model-exposed `video_prompt_type` choice containing `I`.
+- `single_reference`: use a `video_prompt_type` choice containing `I` and provide exactly one `image_refs` item.
+- `multiple_references`: use a `video_prompt_type` choice containing `I` and provide multiple `image_refs` items.
+- `background`: set `image_refs` and use a model-exposed `video_prompt_type` choice containing `K`, normally together with `I`, such as `KI`.
+- `injected_frames`: set `image_refs` and `frames_positions`, then use a model-exposed `video_prompt_type` choice containing `F`.
+- `control`: set `image_guide` and use a model-exposed `video_prompt_type` choice containing `V`; preserve any accompanying preprocessing flags in that choice.
+- `mask`: set `image_mask` and use a model-exposed `video_prompt_type` choice containing `A`; preserve any accompanying mask/control flags in that choice.
 
-Use `metadata.media_inputs.video` for `video_source`, `video_guide`, and `video_mask`. Use `metadata.media_inputs.audio.prompt` for audio prompt files and never treat it as audio output. Audio output is indicated by `metadata.outputs` containing `audio` or `metadata.capabilities.audio_output`.
+Use the entries in `metadata.media_inputs.video` for `video_source`, `video_guide`, and `video_mask`. Use audio prompt files when `metadata.media_inputs.audio` contains `prompt` and never treat that as audio output. Audio output is indicated by `metadata.outputs` containing `audio` or `metadata.capabilities` containing `audio_output`.
+
+Use `wangp_list_gallery` to discover compact summaries of existing session media; set `selected_only=true` when only the live visual/audio selections are needed. Pass its `media_id` directly in generation, post-processing, and toolbox media fields. Call `wangp_get_media_settings(media_id=...)` only when the media's full generation settings are needed; for media outside the Gallery, its mutually exclusive `path` input is available only when filesystem reads are enabled. Media IDs already observed by the MCP session remain resolvable while their files exist even if WanGP has trimmed their rows from the visible Gallery; remembered records have `in_gallery: false`. Reuse those IDs instead of recreating the media. For remote HTTP servers, use `wangp_create_gallery_upload` to obtain a short-lived PUT URL; a successful upload registers and selects the item in the Visual or Audio Gallery. Use `wangp_create_gallery_download(media_id=...)` for a short-lived GET URL when the user needs the resulting file locally. These transfer tools are not available over stdio.
+
+## Long Video Workflows
+
+A long video is any requested sequence that exceeds what the selected model should generate in one window, or that is deliberately built from several shots or continuation calls. The model must create it as multiple conditioned segments rather than one uninterrupted generation. Planning those segments matters because artifacts and character-identity drift can accumulate, transitions depend on overlap and anchors, larger windows cost more time and VRAM, and repeated continuation introduces additional lossy video encoding.
+
+For a model whose `metadata.outputs` contains `video`, call `wangp_model` and use `metadata.frames_maximum` as the suggested maximum frame count for one generation window or one continuation call. Treat a requested `video_length` greater than this value as a long-video workflow that needs an explicit window plan. Keep each window at or below `metadata.frames_maximum`; when `metadata.capabilities` contains `sliding_window`, one `video_length` request may span multiple windows.
+
+The MCP/API frontier accepts `video_length` as a seconds string such as `"10s"`, so do not calculate frames manually. Set numeric `force_fps` when the user requests a specific FPS; otherwise WanGP uses `metadata.fps` and snaps the duration to the nearest valid frame count for the selected model.
+
+Prefer one planned sliding-window generation when the complete sequence is known. Start from the filtered defaults, set `video_length` to the intended total, and keep `sliding_window_size` at or below `metadata.frames_maximum`. Set `multi_prompts_gen_type` to `W` for one non-empty prompt line per window or `PW` for one blank-line-separated paragraph per window. With `PW`, never put a blank line inside one window: keep every line and labeled section belonging to that window adjacent with single newlines, and use exactly one blank line only between complete windows. Before calling `wangp_generate`, split the prompt mentally on blank lines and verify that the resulting paragraph count equals the intended window count and, when used, the `image_end` count. Prefix a window prompt with optional commands when needed:
+
+- `[/duration=121]`, `[/duration=5s]`, or `[/duration=20%]` selects that window's contributed output length. When duration commands are present, they define the window schedule and predicted total instead of treating `video_length` as a strict final cap.
+- `[/overlap=9]` overrides the transition overlap; `[/overlap]` restores the model default.
+- `[/overlap=0]` or `[/new_shot]` creates a hard cut when `metadata.capabilities` contains `text_to_video`.
+- Combine commands when useful, for example `[/duration=4s,/new_shot]`.
+
+When `metadata.media_inputs.image` contains `end`, strongly prefer planned end-frame anchors for long videos. This is one of the most effective ways to counter progressive identity, appearance, and composition drift: instead of allowing each window to inherit every error from the previous one, an end frame steers it back toward a prepared target.
+
+- Generate the anchor images first with a suitable image model, keeping character identity, clothing, environment, style, and intended composition consistent with the corresponding video prompts.
+- Prefer a master-image workflow: generate one high-quality reference image, select an image-edit model, and run one independent edit for every planned keyframe or end frame. Always give every edit the same master-image `media_id` rather than the previous edited output; request only the pose, action, camera, environment, or composition needed for that window. Collect the edited output media IDs in chronological order.
+- Provide the ordered anchors through `image_end`, with one end frame for each planned window, and include `E` in `image_prompt_type`. Retain `S` when also using `image_start`, producing `SE`.
+- Align each window prompt with its matching end-frame target so the motion leads naturally toward that image instead of fighting it.
+- If end frames are unavailable but `metadata.media_inputs.image` contains `injected_frames`, use intermediate anchors through `image_refs`, set their locations with `frames_positions`, and select a model-exposed `video_prompt_type` value containing `F`.
+
+Use repeated continuation when the next scene should be chosen after reviewing the latest output. For each continuation, pass the latest generated video as `video_source`, include `V` in `image_prompt_type`, keep the newly generated portion within `metadata.frames_maximum`, and submit another `wangp_generate` job. The returned video already contains the source plus its generated continuation, so use that latest combined output for the next call and do not merge the same source segment again. This workflow permits improvisation but repeated video decoding and encoding can gradually reduce quality.
+
+For transition behavior, RAM and quality tradeoffs, frame-count formulas, and human-facing controls, read the **Sliding Windows For Long Videos** section of `wangp://docs/processing`.
 
 ## Generation
 
@@ -82,6 +123,6 @@ Only request `_api.return_media`, `_api.return_video_uint8`, or `_api.return_aud
 
 ## Practical Guardrails
 
-Prefer exact values exposed in `setting_values` over composing flag strings by hand. Keep prompt enhancer off unless the user explicitly asks for prompt expansion. When supplying file paths, resolve them relative to the caller workspace or pass absolute paths. If validation or generation fails, surface the structured error instead of silently changing model or media inputs.
+Read the prompt-flag resource instead of composing unfamiliar flag strings by hand. Keep prompt enhancer off unless the user explicitly asks for prompt expansion. Through MCP, prefer media IDs returned by `wangp_list_gallery` and use server filesystem paths only when the server explicitly permits them. For Python or CLI calls, resolve paths relative to the caller workspace or pass absolute paths. If validation or generation fails, surface the structured error instead of silently changing model or media inputs.
 
 When writing settings JSON for WanGP, use UTF-8 without BOM. On Windows, set `PYTHONIOENCODING=utf-8` or keep report JSON ASCII-safe (`ensure_ascii=True`) if printing MCP event payloads to the console; progress text can contain Unicode characters.

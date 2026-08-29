@@ -118,7 +118,7 @@ class MiniMaxMusic3Pipeline:
             asset_paths["rvq_weights"],
             modelClass=MiniMaxMusic3RVQDepthDecoder,
             defaultConfigPath=asset_paths["rvq_config"],
-            default_dtype=None,
+            default_dtype=dtype,
             writable_tensors=False,
         )
         self.condition_encoder = offload.fast_load_transformers_model(

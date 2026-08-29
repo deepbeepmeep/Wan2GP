@@ -63,8 +63,57 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
+## 26th of August 2026: WanGP v12.643, Twice the Phase, Half the Trouble
 
-## 12th of August 2026: WanGP v12.53, Jess is Back !
+- **H3 Two-Phase Generation with Latent Upscaling**: H3 now offers an LTX2-style two-phase workflow. Under *Advanced Mode / General*, select *Two Phases* from *Phases*. H3 first generates at half the target width and height, upscales the latent, and then performs a fixed three-step refinement at the target resolution using the LightX2V Turbo LoRA. This makes high-resolution generation much faster, even when the first phase uses many steps (for example, 20), but it does not reduce peak VRAM usage. To lower peak VRAM usage, select *Two Phases with Tiling*, which divides the high-resolution video into four tiles. Tiling may introduce visible seams; adjust the new *Phase 2 Noise Level Start* slider to balance fine detail against seamless tile blending.
+
+- **H3 Face Refiner**: detect, identity-track, and refine up to five faces with H3 Ref2VA without changing the video resolution. Select *H3 Face Refiner* under *Advanced Mode / Post Processing*, use the selected Gallery video's *Post Processing* tab for Late Post Processing, or ask Deepy. Set *Faces to Refine* to `0` for automatic selection of up to five relevant faces.
+
+- **H3 PDD LoRA Acceleration** (new WanGP 12.645): new 8-step acceleration variants are available for FL2VA and Ref2VA. This is not a mere *LoRA Accelerator*, each sequential model evaluation combines four learned denoising-interval outputs, so it why I had to create new model variants to handle this particular LoRA accelerator. Before you ask, yes when using PDD you are stuck to 8 steps and to the Euler Scheduler. 
+
+- **Sense Nova U1.5**: *SenseNova-U1.5 8B MoT* is a unified image generator and editor designed for native-4K images, text-heavy layouts, and infographics. Select it from the Image model list and generate from text or one or more *Reference Images*. Its built-in *Infographic Prompt* enhancer can expand a short brief into a structured layout; native 4K can be still be generated with 8-9GB of RAM and will produce the best infographics. SenseNova comes with a 8 steps *LoRA Accelerator Profile*. Generation can be further accelerated at the cost of some VRAM by enabling the *KV Cache*.
+
+- **New H3 Grouped Row Denoising Mode for Inpainting**: available for both FL2VA & Ref2VA can be used for *Inpainting* in a *Masked Area*
+
+- **Deepy Prime for Everyone / Prompts Enhanced by Claude or ChatGPT**: use an OpenAI Codex or Anthropic Claude account, including supported free accounts, to power Deepy Prime and Prompt Enhancer without pausing a WanGP's generation. Open *Configuration / Prompt Enhancer / Deepy*, select *Codex* or *Claude Code* as the LLM engine, sign in, select *Deepy Prime*, and save. Choose models carefully and monitor the token usage shown in the chat footer; see the [Remote LLM guide](docs/REMOTE_LLMS.md) for details.
+
+- **New Deepy Capabilities**: Deepy can now analyse the content of a video, compare frames and use the new H3 Head refiner. 
+
+- **Even More Deepy Capabilities**:  (WanGP 12.643),  Deepy can create text files, create sub folders, zip multiple files and send notifications. This opens unlimited possibilities: for instance Deepy can store reference images in a dedicated folder so that these images can be used later, create zip of all generation made today, notify you when the work is done or let you know about current work progress, ...
+
+- **Remote Notifications**: (WanGP 12.643) you can now define *Apprise Destinations* in the *Config / Notification* tab and receives Queue or Deepy related notifications in WhatsApp, Discord, Ntfyn .... The easiest way is to use the *ntfy.sh* service. For instance, just open in your Web Browser https://ntfy.sh/my_unique_sequence and then enter in Apprise Destination *ntfys://my_unique_sequence*
+
+*WanGP 12.643*: Even More Deepy Capabilities, Remote Notifications\
+*WanGP 12.644*: Masked Denoising Grouped Row\
+*WanGP 12.645*: H3 PDD LoRA Acceleration
+## 19th of August 2026: WanGP v12.61, Remember to be nice with Deepy
+
+Deepy and the WanGP Prompt Enhancer have learned some impressive new tricks (enable them from the *Configuration / Deepy* menu):
+- **Speculative Decoding** lets Deepy (and Prompt Enhancer) think up to twice as fast, so there is less waiting between ideas and actions.
+- **INT8 KV Cache Quantization** lets it remember conversations roughly twice as long for the same VRAM budget. Install **GGUF Kernels 1.11** for the best performance; see the [installation guide](docs/INSTALLATION.md).
+- **Smart context compaction** lets Deepy summarize the journey and carry on when its memory starts getting crowded, instead of suddenly forgetting the plot.
+- The new **Qwen3.8 VL 27B** model brings sharper reasoning and richer enhanced prompts. It is available in GGUF Q2 and GGUF Q4 (recommended)
+- With your permission, Deepy can browse your files and use them as part of a creative workflow.
+- Deepy could already inspect media, trim clips, and process audio; it can now reach much further into WanGP's processing toolbox, including upscaling videos on demand.
+
+But the star of this release is **Deepy Prime**. Open *Configuration / Deepy* and use the **Deepy** menu to invite either **Deepy Prime** or the original **Deepy Zero**:
+- **Deepy Zero** is the quick, lightweight companion for straightforward requests and smaller language models.
+- **Deepy Prime**, powered by **Qwen3.8 VL 27B**, is the ambitious one: give it a multi-step idea involving images, sound, and video, and it will plan the whole production.
+- It understands WanGP's creative toolbox well enough to choose models, combine media, and plan long videos as connected sliding windows.
+- When a plan hits a wall, Prime is resourceful: it can reconsider, try another route, and keep working toward the goal. Watching its thoughts unfold can be half the fun.
+- It can connect to optional **MCP Servers** when you want outside help or interaction with another app; these connections live under **Deepy Prime Guidance** in the same settings page.
+- Set **Deepy Filesystem Access** to read or read/write and you can ask for things like *"make one video for every prompt in this text file"* or the wonderfully vague *"use the files in this folder and make something nice out of them."* Access is scoped to WanGP outputs and folders you select.
+
+There is one catch worthy of a tiny violin: for now, **Deepy Prime requires a GPU with at least 24 GB of VRAM**.
+
+**Breaking News WanGP 12.61**: by selecting the newly added *Qwen3.8 VL 27B GGUF Q2*, a max *32000 KV Cache*, *Speculative Decoding Disabled*, and launching the Web Browser in *no GPU mode*, **you can now use Deepy Prime with 16GB of VRAM** !
+
+Also in the news:
+- **Sol Attention 0.6.2 for H3**: faster generations and better-looking results, according to its creators.
+- **Ralston 2S Sampler for H3**: considered one of the best-looking H3 samplers, although it likes to take roughly twice as long.
+- **IndexTTS 2.5**: a new version of this Text-to-Speech model for voices that delivers realistic emotions.
+
+## 16th of August 2026: WanGP v12.53, Jess is Back !
 
 **LTX 2.5. Jess is back, Dad is still in the garden, and this time the camera crew brought an upgrade.**
 
@@ -83,8 +132,7 @@ Dev and Distilled are available in BF16 and INT8 ConvRot, while Distilled also g
 
 - **MinaMax Music 3**: Ace Step has met its match as Minimax Music 3 generates high quality songs. WanGP implementation is optimized with a *vllm engine* for x3 faster generation. It is recommended to have 16 GB of VRAM to use profile 3/3+ for much faster generation. This implementation contains several *Prompt Enhancers* that can either generate for you lyrics and / or the music description.
 
-- **Upgraded GGUF Kernels 1.07**: lower VRAM and more accurate kernels using GGUF with a BF16 model, check the *docs/INSTALLATION.md* to upgrade to these kernels
-
+- **Upgraded GGUF Kernels 1.08**: lower VRAM, accurate native BF16, and CUDA-graph-safe Stream-K for GGUF models; check *docs/INSTALLATION.md* to upgrade.
 
 *update 12.51*: Unlocked Control Video Processes, LTX-2 video upsampler\
 *update 12.53*: MiniMax 3, LTX Upsampler 2.5 improved, upgraded GGUF Kernels
@@ -528,6 +576,7 @@ For detailed installation instructions for different GPU generations:
 
 ### Advanced Features
 - **[Deepy Assistant](docs/DEEPY.md)** - Enable Deepy, configure its tool presets, use selected media and frames, and run Deepy from the CLI
+- **[Remote LLMs](docs/REMOTE_LLMS.md)** - Configure Codex, Claude Code, and OpenCode providers for Deepy and Prompt Enhancer
 - **[Loras Guide](docs/LORAS.md)** - Using and managing Loras for customization
 - **[Finetunes](docs/FINETUNES.md)** - Add manually new models to WanGP
 - **[VACE ControlNet](docs/VACE.md)** - Advanced video control and manipulation

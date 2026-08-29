@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import copy
+import fnmatch
 import json
 import math
-import os
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -14,12 +14,15 @@ from shared.utils.loras_mutipliers import merge_loras_settings
 from shared.deepy.config import (
     DEEPY_DEFAULT_EDIT_IMAGE,
     DEEPY_DEFAULT_GEN_IMAGE,
+    DEEPY_DEFAULT_GEN_SONG,
     DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION,
     DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE,
     DEEPY_DEFAULT_GEN_VIDEO,
     DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH,
+    DEEPY_TEMPLATE_CONFIG_MIGRATIONS,
     DEEPY_TOOL_EDIT_IMAGE_KEY,
     DEEPY_TOOL_GEN_IMAGE_KEY,
+    DEEPY_TOOL_GEN_SONG_KEY,
     DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY,
     DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY,
     DEEPY_TOOL_GEN_VIDEO_KEY,
@@ -27,6 +30,7 @@ from shared.deepy.config import (
     get_deepy_config_value,
     normalize_deepy_tool_edit_image,
     normalize_deepy_tool_gen_image,
+    normalize_deepy_tool_gen_song,
     normalize_deepy_tool_gen_speech_from_description,
     normalize_deepy_tool_gen_speech_from_sample,
     normalize_deepy_tool_gen_video,
@@ -38,6 +42,7 @@ _DEEPY_DIR = Path(__file__).resolve().parent
 SETTINGS_DIR = _DEEPY_DIR / "settings"
 DEFAULT_IMAGE_EDITOR_VARIANT = DEEPY_DEFAULT_EDIT_IMAGE
 DEFAULT_VIDEO_WITH_SPEECH_VARIANT = DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH
+DEFAULT_SONG_VARIANT = DEEPY_DEFAULT_GEN_SONG
 DEFAULT_SPEECH_FROM_DESCRIPTION_VARIANT = DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION
 DEFAULT_SPEECH_FROM_SAMPLE_VARIANT = DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE
 TOOL_DISPLAY_NAMES = {
@@ -45,12 +50,14 @@ TOOL_DISPLAY_NAMES = {
     "edit_image": "Image Editor",
     "gen_video": "Media Generator",
     "gen_video_with_speech": "Video With Speech",
+    "gen_song": "Song Generator",
     "gen_speech_from_description": "Speech From Description",
     "gen_speech_from_sample": "Speech From Sample",
 }
 _TOOL_TEMPLATE_VALIDATION_ERRORS = {
     "gen_video": "The settings should generate a video",
     "gen_video_with_speech": "The settings should generate a Video and accept an Audio Prompt",
+    "gen_song": "The settings should generate music",
     "gen_image": "The settings of the model must generate an Image",
     "edit_image": "The settings of the model must generate an Image and accept an Image Ref",
     "gen_speech_from_description": "The model should generate only an audio output",
@@ -65,6 +72,7 @@ _TOOL_CONFIG_SPECS = {
         "default": DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH,
         "normalize": normalize_deepy_tool_gen_video_with_speech,
     },
+    "gen_song": {"key": DEEPY_TOOL_GEN_SONG_KEY, "default": DEEPY_DEFAULT_GEN_SONG, "normalize": normalize_deepy_tool_gen_song},
     "gen_speech_from_description": {
         "key": DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY,
         "default": DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION,
@@ -85,7 +93,8 @@ _PRESET_SOURCE_PRIORITY = {
 _LEGACY_VARIANT_ALIASES = {
     "edit_image": {"Qwen_Edit": DEEPY_DEFAULT_EDIT_IMAGE},
     "gen_image": {"Z_Image_Turbo": DEEPY_DEFAULT_GEN_IMAGE},
-    "gen_video": {"ltx2_22B_distilled": DEEPY_DEFAULT_GEN_VIDEO},
+    "gen_video": {"ltx2_22B_distilled": DEEPY_DEFAULT_GEN_VIDEO, "LTX-2 2.3 Distilled": DEEPY_DEFAULT_GEN_VIDEO, **DEEPY_TEMPLATE_CONFIG_MIGRATIONS[DEEPY_TOOL_GEN_VIDEO_KEY]},
+    "gen_video_with_speech": {"LTX-2.3 Distilled With Sound": "LTX-2.3 Distilled 1.0 With Sound", **DEEPY_TEMPLATE_CONFIG_MIGRATIONS[DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY]},
 }
 _LIVE_FILE_PRESET_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 GENERATION_TOOL_IDS = tuple(_TOOL_CONFIG_SPECS.keys())
@@ -402,20 +411,18 @@ def _resolve_tool_lora_dir(tool_name: str, variant: str) -> tuple[str, Path]:
 def _list_tool_lora_entries(tool_name: str, variant: str) -> list[tuple[str, str]]:
     lookup_name = str(tool_name or "").strip()
     if lookup_name not in GENERATION_TOOL_IDS:
-        raise ValueError(f"LoRAs are only available for the 6 generation tools: {', '.join(GENERATION_TOOL_IDS)}.")
+        raise ValueError(f"LoRAs are only available for the configured generation tools: {', '.join(GENERATION_TOOL_IDS)}.")
     _model_type, lora_dir = _resolve_tool_lora_dir(lookup_name, variant)
     if not lora_dir.is_dir():
         return []
     url_cache = _read_loras_url_cache()
     discovered: dict[str, tuple[str, str]] = {}
-    for pattern in ("*.safetensors", "*.sft"):
-        for path in sorted(lora_dir.glob(pattern)):
-            if not path.is_file():
-                continue
-            filename = path.name
-            cache_key = _normalize_lora_cache_path(lora_dir / filename)
-            original_entry = url_cache.get(cache_key, filename)
-            discovered.setdefault(_basename_lora_key(filename), (filename, original_entry))
+    paths = sorted((path for path in lora_dir.rglob("*") if path.is_file() and path.suffix.casefold() in (".safetensors", ".sft")), key=lambda path: path.relative_to(lora_dir).as_posix().casefold())
+    for path in paths:
+        identifier = path.relative_to(lora_dir).as_posix()
+        cache_key = _normalize_lora_cache_path(lora_dir / identifier)
+        original_entry = url_cache.get(cache_key, identifier)
+        discovered.setdefault(_normalize_lora_cache_path(identifier), (identifier, original_entry))
     return sorted(discovered.values(), key=lambda item: item[0].casefold())
 
 
@@ -453,12 +460,13 @@ def validate_wangp_settings_payload_for_tool(tool_name: str, payload: dict[str, 
         return None
     image_mode = _int_setting(payload, "image_mode")
     accepts_audio_prompt = "A" in str(payload.get("audio_prompt_type", "") or "")
-    has_image_refs = _sequence_setting_has_value(payload, "image_refs")
+    has_image_refs = "I" in payload.get("video_prompt_type", "")
     model_def = _get_model_def_from_settings_payload(payload)
     audio_only = bool(model_def.get("audio_only", False)) if isinstance(model_def, dict) else False
     checks = {
         "gen_video": image_mode == 0,
         "gen_video_with_speech": image_mode == 0 and accepts_audio_prompt,
+        "gen_song": audio_only and isinstance(model_def, dict) and str(model_def.get("group", "") or "").strip() == "music",
         "gen_image": image_mode == 1,
         "edit_image": image_mode == 1 and has_image_refs,
         "gen_speech_from_description": audio_only,
@@ -542,6 +550,11 @@ def get_default_video_with_speech_variant() -> str:
     return resolve_tool_variant("gen_video_with_speech", configured, default_variant=DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH)
 
 
+def get_default_song_variant() -> str:
+    configured = _get_configured_tool_variant("gen_song")
+    return resolve_tool_variant("gen_song", configured, default_variant=DEEPY_DEFAULT_GEN_SONG)
+
+
 def get_default_speech_from_description_variant() -> str:
     configured = _get_configured_tool_variant("gen_speech_from_description")
     return resolve_tool_variant("gen_speech_from_description", configured, default_variant=DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION)
@@ -619,8 +632,10 @@ def refresh_tool_presets() -> None:
     _LIVE_FILE_PRESET_CACHE.clear()
 
 
-def list_tool_loras(tool_name: str, variant: str) -> list[str]:
-    return [filename for filename, _original_entry in _list_tool_lora_entries(tool_name, variant)]
+def list_tool_loras(tool_name: str, variant: str, name: str | None = None) -> list[str]:
+    identifiers = [filename for filename, _original_entry in _list_tool_lora_entries(tool_name, variant)]
+    pattern = str(name or "").strip().casefold()
+    return identifiers if len(pattern) == 0 else [identifier for identifier in identifiers if fnmatch.fnmatchcase(identifier.casefold(), pattern)]
 
 
 def normalize_tool_loras(tool_name: str, variant: str, loras: Any) -> tuple[list[str], str]:
@@ -629,7 +644,7 @@ def normalize_tool_loras(tool_name: str, variant: str, loras: Any) -> tuple[list
     if not isinstance(loras, list):
         raise TypeError("loras must be an array of objects.")
     available_loras = _list_tool_lora_entries(tool_name, variant)
-    available_by_key = {_basename_lora_key(filename): (filename, original_entry) for filename, original_entry in available_loras}
+    available_by_key = {_normalize_lora_cache_path(filename): (filename, original_entry) for filename, original_entry in available_loras}
     normalized_loras = []
     multiplier_tokens = []
     seen_keys: set[str] = set()
@@ -642,15 +657,15 @@ def normalize_tool_loras(tool_name: str, variant: str, loras: Any) -> tuple[list
             raw_multiplier = item.get("multiplier", 1)
         else:
             raise TypeError(f"LoRA entry #{index} must be an object with a name.")
-        raw_name = Path(str(raw_name or "").strip().replace("\\", "/")).name
+        raw_name = str(raw_name or "").strip().replace("\\", "/")
         if len(raw_name) == 0:
-            raise ValueError(f"LoRA entry #{index} is missing a filename.")
-        lora_key = _basename_lora_key(raw_name)
+            raise ValueError(f"LoRA entry #{index} is missing an identifier.")
+        lora_key = _normalize_lora_cache_path(raw_name)
         if lora_key in seen_keys:
             raise ValueError(f"LoRA '{raw_name}' was provided more than once.")
         resolved_entry = available_by_key.get(lora_key, None)
         if resolved_entry is None:
-            raise ValueError(f"Unknown LoRA filename '{raw_name}' for tool '{tool_name}'. Call get_loras first.")
+            raise ValueError(f"Unknown LoRA identifier '{raw_name}' for tool '{tool_name}'. Call get_loras first.")
         _resolved_name, original_entry = resolved_entry
         normalized_loras.append(original_entry)
         multiplier_tokens.append(_format_lora_multiplier(raw_multiplier))
@@ -763,6 +778,7 @@ __all__ = [
     "find_tool_variant",
     "get_default_image_editor_variant",
     "get_default_image_generator_variant",
+    "get_default_song_variant",
     "get_default_speech_from_description_variant",
     "get_default_speech_from_sample_variant",
     "get_default_video_generator_variant",

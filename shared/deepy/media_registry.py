@@ -9,9 +9,10 @@ from shared.utils.audio_video import read_image_metadata
 
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"}
-_VIDEO_EXTENSIONS = {".mkv", ".mov", ".mp4"}
-_AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac"}
+_VIDEO_EXTENSIONS = {".mkv", ".mov", ".mp4", ".m4v", ".webm", ".avi"}
+_AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac", ".m4a", ".flac", ".ogg", ".opus", ".wma"}
 _MEDIA_TYPES = {"image", "video", "audio", "any", "all"}
+PROMPT_SUMMARY_MAX_CHARS = 128
 _TYPE_HINTS = {
     "image": ("image", "images", "picture", "photo", "photos", "pic", "pics"),
     "video": ("video", "videos", "clip", "movie", "footage"),
@@ -68,6 +69,12 @@ def normalize_media_type(media_type: str | None, reference: str | None = None) -
     return "any"
 
 
+def detect_media_type(path: str) -> str:
+    """Return the media kind inferred from a gallery file extension."""
+
+    return _detect_media_type(path)
+
+
 def get_media_record(session, media_id: str) -> dict[str, Any] | None:
     lookup_id = str(media_id or "").strip()
     if len(lookup_id) == 0:
@@ -98,7 +105,7 @@ def register_media(
         return None
     resolved_settings = _resolve_settings(path, settings)
     prompt = str((resolved_settings or {}).get("prompt", "") or "").strip()
-    prompt_summary = _summarize_prompt(prompt, detected_type)
+    prompt_summary = summarize_prompt(prompt, detected_type)
     path_key = _normalize_path_key(path)
     existing = None
     for record in session.media_registry:
@@ -332,17 +339,18 @@ def _default_label(path: str, media_type: str) -> str:
     return base_name or f"Generated {media_type}"
 
 
-def _summarize_prompt(prompt: str, media_type: str) -> str:
-    prompt = str(prompt or "").strip()
-    if len(prompt) == 0:
-        return f"Generated {media_type}"
-    first_sentence = re.split(r"[\n.;]", prompt, maxsplit=1)[0].strip()
-    first_clause = re.split(r"\s*,\s*", first_sentence, maxsplit=1)[0].strip()
-    summary = first_clause or first_sentence or prompt
-    words = summary.split()
-    if len(words) > 12:
-        summary = " ".join(words[:12])
-    return summary.strip() or f"Generated {media_type}"
+def summarize_prompt(prompt: str, media_type: str) -> str:
+    meaningful_lines = []
+    for raw_line in str(prompt or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("!"):
+            continue
+        line = re.sub(r"\[[^\]\r\n]*\]", " ", line)
+        line = re.sub(r"\s+", " ", line).strip()
+        if line:
+            meaningful_lines.append(line)
+    summary = " ".join(meaningful_lines)[:PROMPT_SUMMARY_MAX_CHARS].rstrip()
+    return summary or f"Generated {media_type}"
 
 
 def _resolve_source(settings: dict[str, Any] | None) -> str:
@@ -359,7 +367,7 @@ def _label_from_settings(settings: dict[str, Any] | None, path: str) -> str | No
     media_type = _detect_media_type(path)
     if len(prompt) == 0:
         return None
-    return _summarize_prompt(prompt, media_type)
+    return summarize_prompt(prompt, media_type)
 
 
 def _gallery_client_media_key(path: Any, settings: Any) -> tuple[str, str] | None:
@@ -381,5 +389,6 @@ __all__ = [
     "normalize_media_type",
     "register_media",
     "resolve_media_reference",
+    "summarize_prompt",
     "sync_recent_generated_media",
 ]

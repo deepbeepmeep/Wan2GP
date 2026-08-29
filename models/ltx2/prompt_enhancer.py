@@ -143,7 +143,7 @@ LTX2_PROMPT_INFOS = """
 - Keep identity, wardrobe, location, and chronology stable unless you intentionally want a transition.
 - Write the visible action in temporal order. LTX2 usually behaves better when it can follow a clear sequence instead of a pile of disconnected tags.
 - Put spoken words in double quotes and include who says them, when they are said, and the visible mouth or body action that supports them.
-- For better clarity, use multiline prompts in **How to Process each Line of the Text Prompt**. Use one line per shot, beat, character action, or generated item depending on the selected line-processing mode.
+- For better clarity, use multiline prompts (each paragraph separated by an empty line should correspond to a sliding window prompt) in **How to Process each Line of the Text Prompt**. Use one line per shot, beat, character action, or generated item depending on the selected line-processing mode.
 
 ## Relayed Prompts
 

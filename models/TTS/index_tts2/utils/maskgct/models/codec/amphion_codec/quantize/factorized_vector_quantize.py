@@ -129,9 +129,8 @@ class FactorizedVectorQuantize(nn.Module):
     def vq2emb(self, vq, out_proj=True):
         emb = self.decode_code(vq)
         if out_proj:
-            proj_device = self.out_project.weight.device
-            if emb.device != proj_device:
-                emb = emb.to(proj_device)
+            if emb.device != vq.device:
+                emb = emb.to(vq.device)
             emb = self.out_project(emb)
         return emb
 

@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any, Sequence
 
-from shared.api import GeneratedArtifact, GenerationError, GenerationResult, PreviewUpdate, SessionJob, WanGPSession, _pushd
+from shared.api import GeneratedArtifact, GenerationError, GenerationResult, PreviewUpdate, SessionJob, WanGPSession
 
 _NO_YIELDED_RESULT = object()
 _GRADIO_LOG_PATCH_LOCK = threading.Lock()
@@ -581,11 +581,8 @@ class WebUIQueueProbe:
             self._cancel_requested_at = time.time()
 
     def _queue_abort_client_id(self, client_id: str) -> None:
-        owner = getattr(self._session, "_gradio_session_proxy", None)
-        enqueue = getattr(owner, "_enqueue_abort_client_id", None)
-        if not callable(enqueue) or not enqueue(self._job, client_id):
-            self._gen["abort"] = True
-            print("WanGP API set direct abort flag because the WebUI abort trigger was unavailable.")
+        self._wgp.abort_generation(self._session._state, client_id, notify=False)
+        print(f"WanGP API dispatched abort for client_id={client_id}")
 
     def _remove_inline_queue_client_id(self, client_id: str) -> bool:
         inline_queue = self._gen.get("inline_queue")
@@ -767,6 +764,21 @@ class GradioWanGPSession:
     def get_default_settings(self, model_type: str) -> dict[str, Any]:
         return self._ensure_session().get_default_settings(model_type)
 
+    def merge_settings_with_defaults(self, settings: dict[str, Any]) -> dict[str, Any]:
+        return self._ensure_session().merge_settings_with_defaults(settings)
+
+    def prepare_settings_for_export(self, settings: dict[str, Any]) -> dict[str, Any]:
+        return self._ensure_session().prepare_settings_for_export(settings)
+
+    def get_exported_default_settings(self, model_type: str) -> dict[str, Any]:
+        return self._ensure_session().get_exported_default_settings(model_type)
+
+    def get_model_settings(self, model_type: str, setting_id: str | None = None) -> dict[str, Any]:
+        return self._ensure_session().get_model_settings(model_type, setting_id)
+
+    def list_loras(self, model_type: str, name: str | None = None) -> dict[str, Any]:
+        return self._ensure_session().list_loras(model_type, name=name)
+
     def get_model_schema(self, model_type: str) -> dict[str, Any] | None:
         return self._ensure_session().get_model_schema(model_type)
 
@@ -874,8 +886,6 @@ class GradioWanGPSession:
         return getattr(self._ensure_session(), name)
 
     def _wrap_button_click(self, original_click, button, *args, **kwargs):
-        import gradio as gr
-
         fn = kwargs.get("fn")
         if fn is None and args:
             fn = args[0]

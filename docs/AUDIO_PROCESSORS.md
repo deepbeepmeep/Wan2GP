@@ -41,6 +41,9 @@ class MyAudioProcessor:
             "config_key": "myaudio",                        # wgp_config["audio_processors"] subkey
             "pos": 100,                                     # default dropdown order for this handler's methods
             "method_pos": {"myaudio": 100},                 # optional per-method order
+            "description": "Generate a soundtrack for video.", # optional discovery fallback
+            "method_descriptions": {"myaudio": "..."},     # optional per-method descriptions
+            "method_parameters": {"myaudio": [...]},       # optional extra parameter descriptors
         }
 
     def validate_method(self, method, **kwargs): ...        # -> "" or error text
@@ -87,6 +90,14 @@ methods without changing registry behavior.
 
 `method_context_labels` lets a method show a different label in a specific UI
 context. The current late-postprocessing context key is `late_postprocessing`.
+
+Discovery consumers infer prompt, audio-source, and voice-sample parameters
+from the existing `needs_*` flags. Optional `description`,
+`method_descriptions`, and `method_parameters` fields add reusable presentation
+and parameter metadata. Each `method_parameters` entry is a list of dictionaries
+with at least `name`; it may also define `type`, `description`, `required`,
+`default`, `enum`, and a queue-setting override named `setting`. These fields
+are optional so older and third-party handlers remain compatible.
 
 `control` is an internal pseudo-method used by the generation UI to reuse a
 control video audio track. Do not register a plugin method with that id.

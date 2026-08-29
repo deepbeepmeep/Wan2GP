@@ -77,9 +77,9 @@ else:
   - Returns compact inferred metadata records with the same filters.
   - Pass `include_availability=True` to add local file availability; this performs the same filesystem scan as the UI status squares.
 - `WanGPSession.get_default_settings(model_type) -> dict`
-  - Returns generated default settings with `model_type` included.
+  - Returns pristine defaults generated from WanGP, the model handler, and the model definition, with `model_type` included. User-saved UI defaults are not included. Deepy/MCP responses omit fixed `settings_version` and display-only `type` metadata.
 - `WanGPSession.get_model_schema(model_type) -> dict | None`
-  - Returns one model definition, inferred metadata, accepted setting values, and default settings.
+  - Returns compact capability, media-role, frame-limit, prompt-guidance, and sliding-window metadata.
 - `WanGPSession.get_model_availability(model_type) -> dict`
   - Returns local file availability for one model using the same status as the UI selector.
 - `WanGPSession.list_model_availability(...) -> list[dict]`
@@ -246,6 +246,8 @@ image_models = session.list_model_defs(main_output="image")
 video_i2v_models = session.list_model_defs(main_output="video", inputs="image")
 ltx2_finetunes = session.list_model_defs(family="ltx2", finetune=True)
 one_model = session.list_model_defs(model_type="ltx2_22B_distilled")
+krea_models = session.list_model_metadata(query="Krea 2", main_output="image", limit=10)
+turbo_models = session.list_model_metadata(model_type="*_turbo*", limit=20)
 ```
 
 Agents that only need discovery data should use the compact metadata calls:
@@ -265,8 +267,12 @@ Supported filters can be combined:
 - `model_type`
 - `main_output`
 - `inputs`
+- `name`
+- `query`
+- `limit`
+- `offset`
 
-`main_output` and `inputs` accept a single value or a list. Multiple `main_output` values are OR filters; multiple `inputs` values match any requested input modality. `main_output` filters the primary generation mode, while `metadata.outputs` lists every intrinsic media output the model can produce.
+All string filters accept case-insensitive `*` and `?` glob patterns. `query` is a case-insensitive substring search across the user-facing name, model type, architecture, family id/label, and description. `main_output` and `inputs` accept a single value or a list. Multiple `main_output` values are OR filters; multiple `inputs` values match any requested input modality. `main_output` filters the primary generation mode, while `metadata.outputs` lists every intrinsic media output the model can produce. `limit` and `offset` provide bounded pagination; omit `limit` in the Python API when the complete filtered result is intentionally required.
 
 Each returned model definition is a copy of WanGP's in-memory definition with `model_type` added at the top level and a `metadata` object:
 
@@ -308,7 +314,11 @@ Each returned model definition is a copy of WanGP's in-memory definition with `m
 }
 ```
 
-`session.get_model_schema(model_type)` returns the same `metadata`, the full `model_def`, the generated `default_settings`, and a top-level `setting_values` copy for convenient tool clients.
+`session.get_model_schema(model_type)` returns one compact `metadata` object with generic capabilities and media roles plus `name`, `model_type`, `description`, FPS/frame limits, `infos`, `prompt_infos`, and sliding-window support. Call `session.get_default_settings(model_type)` separately when generation settings are needed.
+
+At task normalization, WanGP fills missing media-mode flags when the supplied model definition allows them: start images add `S`, end images add `E` without removing `S`, source-video continuation adds `V`, reference images use the first declared reference mode containing `I` (for example `I` or `KI`), and audio guides use declared `A`/`B` source modes. Explicit compatible flags remain unchanged.
+
+API and MCP tasks may provide `video_length` as a seconds string such as `"10s"`. WanGP uses a numeric `force_fps` when supplied, otherwise the model FPS, and converts the duration to the nearest frame count allowed by the model's frame minimum, step, and offset.
 
 Useful `SessionJob` handles for plugin authors:
 
@@ -362,39 +372,72 @@ This preserves normal WanGP CLI/config arguments. MCP-specific launch options ar
 ```bash
 python wgp.py --mcp --mcp-transport stdio
 python wgp.py --mcp --mcp-transport streamable-http --mcp-host 127.0.0.1 --mcp-port 7866
+python wgp.py --mcp --mcp-transport streamable-http --mcp-allow-read-file-system
 ```
 
-For Streamable HTTP, connect MCP clients to `http://<host>:<port>/mcp`. Use `--mcp-host 0.0.0.0` only on a trusted network or behind an authenticated reverse proxy.
+For Streamable HTTP, connect MCP clients to `http://<host>:<port>/mcp`. Use `--mcp-host 0.0.0.0` only on a trusted network or behind an authenticated reverse proxy. Direct server filesystem paths are rejected by default; media IDs returned by `wangp_list_gallery` remain usable. `--mcp-allow-read-file-system` explicitly permits agents to supply arbitrary existing server paths.
 
 The lower-level adapter can still be launched directly:
 
 ```bash
-python -m shared.mcp_server --root <WanGP repo> --output-dir <output dir>
+python -m shared.mcp_server --root <WanGP repo> --output-dir <output dir> --job-event-limit 20
+python -m shared.mcp_server --root <WanGP repo> --transport streamable-http --allow-read-file-system
 ```
+
+Set `--job-event-limit 0` when the MCP client only needs terminal job state/results. Deepy opens its in-process WanGP MCP session in this mode because WanGP's UI already displays live generation progress.
 
 The server keeps one warm `WanGPSession`, so agents can perform discovery and multiple generations in a row without starting a new WanGP process each time.
 
+HTTP transports expose short-lived, one-use media-transfer routes. Call `wangp_create_gallery_upload(filename)` and PUT the raw file bytes to the returned URL; WanGP validates the media, adds images/videos to the Visual Gallery or audio to the Audio Gallery, and selects the new item. Call `wangp_create_gallery_download(media_id)` and GET the returned URL to stream a Gallery item. URLs expire after ten minutes and upload size is capped at 8 GiB. Resolve relative transfer URLs against the MCP server origin. These tools are omitted for stdio transport.
+
+Prompt:
+
+- `wangp_agent`
+  - The bundled WanGP operating guide for model discovery, schema inspection, bounded searches, generation, cancellation, and media handling.
+
+Resources:
+
+- `wangp://docs/<document>`
+  - Native MCP resources for WanGP Markdown documentation under `docs/`.
+- `wangp://docs/settings/prompt-flags`
+  - Focused definitions for `image_prompt_type`, `video_prompt_type`, and `audio_prompt_type` flags.
+
 Tools:
 
-- `wangp_list_models(..., include_availability=False)`
-  - Compact metadata list with the same filters as `list_model_metadata(...)`.
-  - Set `include_availability=True` to include the optional `availability` field.
-- `wangp_list_model_defs(...)`
-  - Full model definitions with metadata.
-- `wangp_get_model(model_type)`
-- `wangp_get_model_metadata(model_type, include_availability=False)`
-- `wangp_get_model_availability(model_type)`
-  - Local file availability for one model using the same status as the UI selector: `available` (blue), `partial` (yellow), or `missing` (black).
-- `wangp_list_model_availability(...)`
-  - Availability records with the same filters as `wangp_list_models(...)`.
-- `wangp_get_default_settings(model_type)`
-- `wangp_get_model_schema(model_type)`
+- `wangp_models(query="", filters=None, limit=10, offset=0)`
+  - Searches models and returns compact records with supported capabilities and media roles as arrays. `filters` accepts `family`, `base_model_type`, `finetune`, `model_type`, `main_output`, `inputs`, or `name`; string filters support case-insensitive `*` and `?` globs.
+- `wangp_model(model_type, view="schema", property=None)`
+  - Returns one model's compact `schema`, `definition`, or pristine generation `defaults`. Deepy's compact server previews top-level definition strings longer than 256 characters and appends the exact property name and full character count; pass that root `property` with `view="definition"` to retrieve its complete native value. Standalone MCP definitions remain unabridged. Use the default schema first and request the definition only when exact parameters remain unclear. Availability is intentionally separate from this tool.
+- `wangp_model_settings(model_type, setting_id=None)`
+  - With only `model_type`, lists saved user settings, accelerator profiles, and presets. Each entry has a prefixed `id` and `type`; pass one returned id as `setting_id` to fetch its full content.
+- `wangp_list_loras(model_type, name=None)`
+  - Recursively returns locally available `.safetensors` and `.sft` LoRAs for the model family. `name` optionally filters subfolder-relative identifiers using case-insensitive `*` and `?` globs. Returned values are suitable for `activated_loras`; supply corresponding weights through `loras_multipliers`.
+- `wangp_list_gallery(media_type="all", limit=50, selected_only=False)`
+  - Lists compact summaries of the current session's image, video, and audio Gallery items with one `media_id` per item and selection state. Paths and generation settings are omitted. Set `selected_only=True` to return only the live visual and/or audio selections, including the selected video's current playback time when available.
+- `wangp_get_media_settings(media_id=None, path=None)`
+  - Returns the generation settings stored in or extracted from exactly one media file. Use `media_id` with a value returned by `wangp_list_gallery`; use the mutually exclusive `path` input only when filesystem reads are enabled.
+- `wangp_io(action=None, arguments=None)`
+  - With no action, returns the compact allowed action list and accessible roots; pass one action without arguments for its schema, then pass arguments to execute it. Actions cover listing, metadata, ranged UTF-8 reading, text search, writing, directory creation, copying, moving, permanent deletion, persistent ZIP creation, and downloads. Move and delete accept writable paths only, and deleting a non-empty directory requires `recursive=true`. Deepy's scoped mode uses `@alias/path` and resolves plain paths from `@outputs`; standalone MCP `--mcp-allow-read-file-system` permits absolute reads.
+- `wangp_create_gallery_upload(filename)` *(HTTP transports only)*
+  - Creates a short-lived HTTP PUT URL. A successful upload returns the new Gallery record and selects it.
+- `wangp_create_gallery_download(media_id)` *(HTTP transports only)*
+  - Creates a short-lived HTTP GET URL for streaming one registered Gallery item.
+- `wangp_list_deepy_templates(tool_id=None)`
+  - Lists every settings template available in Deepy's Template Settings section and marks the current default for each tool.
+- `wangp_get_deepy_template_settings(tool_id, template)`
+  - Returns merged, migrated, and model-filtered non-conflicting `settings` for any named template. Pass `template="default"` to resolve the tool's current default directly. With template properties enabled, inactive General Property defaults are omitted and dimensions, frame count or audio duration, and seed remain template-owned. With template properties disabled, those keys are removed from `settings` and the active defaults are returned separately in `general_properties`.
+- `wangp_postprocess(media_id=None, path=None, process=None, parameters=None)`
+  - Provide exactly one source: `media_id` for Gallery media, or `path` for a server file when filesystem reads are enabled. With no process, discovers compatible post-processing operations. With a returned process id, queues the operation through WanGP and returns a job id.
+- `wangp_toolbox(action=None, arguments=None)`
+  - With no action, returns a compact utility list; pass one action without arguments for its exact schema, then pass arguments to execute it. Supports adding authorized image/video/audio files to its Gallery, joint visual inspection of up to five images or video frames, extraction, transcription, resize/crop, audio replacement, video merging, media-detail, and documentation operations using media IDs. `add_to_gallery` accepts one `path` or up to 50 `paths`, including `output_file` values returned by other toolbox actions; it applies visible-history retention once per Gallery before the batch, keeps the entire batch, selects existing items without duplication, does not rewrite source metadata, and does not create generated-media chat cards. Direct paths require filesystem-read permission.
 - `wangp_generate(source, wait=False, timeout_s=None, event_limit=20)`
-  - Starts a job from a settings dict, task dict, manifest dict, or task list.
+  - Starts a job from a settings dict, task dict, manifest dict, or task list. Media fields accept media IDs returned by `wangp_list_gallery`; direct paths require filesystem-read permission. Terminal results include matching compact `gallery_items` records.
 - `wangp_get_job(job_id, event_limit=20)`
   - Polls progress/events/result.
 - `wangp_cancel_job(job_id)`
   - Requests cancellation.
+
+Deepy's in-process MCP exposes only the three compact model-data tools above. Standalone MCP clients retain the legacy granular endpoints (`wangp_list_models`, `wangp_search_models`, `wangp_list_model_defs`, `wangp_get_model`, `wangp_get_model_metadata`, `wangp_get_model_availability`, `wangp_list_model_availability`, `wangp_get_default_settings`, and `wangp_get_model_schema`) for compatibility.
 
 ## Getting Outputs In Memory
 
@@ -531,9 +574,8 @@ Convenience helpers are available for the common edit task shapes:
 ```python
 job = session.submit_media_postprocessing(
     r"C:\media\input.mp4",
-    temporal_upsampling="rife2",
-    spatial_upsampling="flashvsr2",
-    film_grain_intensity=0.15,
+    spatial_upsampling="h3facerefine",
+    spatial_upsampler_face_count=2,
     return_media=True,
 )
 
@@ -544,7 +586,8 @@ print(result.generated_files)
 Postprocessing values use the registered postprocessor value strings:
 
 - `temporal_upsampling`: registered temporal upsamplers such as `rife2` or `rife4`. Temporal upsampling is video-only.
-- `spatial_upsampling`: registered postprocessing spatial upsamplers such as `lanczos2`, `flashvsr2`, `flashvsr2pass2`, `coz4`, `flux_pid4`, `flux2_pid4`, or `qwen_pid4`. VAE upsamplers are model-pipeline features and are not accepted for late postprocessing.
+- `spatial_upsampling`: registered decoded-media upsamplers such as `lanczos2`, `flashvsr2`, `coz4`, or the no-scale visual refiner `h3facerefine`. VAE upsamplers are model-pipeline features and are not accepted for late postprocessing.
+- Method-specific values use the flat parameter ids returned by postprocessing discovery. For example, H3 accepts `spatial_upsampler_prompt`, `spatial_upsampler_reference_images`, and `spatial_upsampler_face_count`.
 - `film_grain_intensity` / `film_grain_saturation`: late film grain settings. Film grain is active when intensity is greater than `0`.
 
 At least one postprocessing operation must be selected.
@@ -611,6 +654,7 @@ settings = {
     "video_source": r"C:\media\input.mp4",
     "temporal_upsampling": "rife4",
     "spatial_upsampling": "lanczos2",
+    "spatial_upsampler_face_count": 1,
     "_api": {"return_media": True},
 }
 
@@ -621,7 +665,7 @@ Raw task modes:
 
 | Mode | Source field | Processor fields |
 | --- | --- | --- |
-| `edit_postprocessing` | `video_source` | `temporal_upsampling`, `spatial_upsampling`, `film_grain_intensity`, `film_grain_saturation` |
+| `edit_postprocessing` | `video_source` | `temporal_upsampling`, `spatial_upsampling`, flat `spatial_upsampler_*` method parameters, `film_grain_intensity`, `film_grain_saturation` |
 | `edit_remux` | `video_source` | `postprocess_audio`, `audio_source`, `postprocess_audio_prompt`, `postprocess_audio_neg_prompt`, `replace_voice_sample`, `replace_voice_sample2` |
 | `edit_audio` | `audio_source` | `postprocess_audio`, `replace_voice_sample`, `replace_voice_sample2` |
 

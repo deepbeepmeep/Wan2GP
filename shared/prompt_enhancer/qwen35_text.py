@@ -11,15 +11,18 @@ from collections import OrderedDict
 import torch
 from mmgp import offload
 from tqdm.auto import tqdm
+
+from shared.llm_io import known_token_ids, llm_io_enabled, log_llm_io
 from shared.utils import files_locator as fl
 from shared.llm_engines.nanovllm import SamplingParams
 from shared.llm_engines.nanovllm.models.qwen3_5 import Qwen3_5ForCausalLM, clear_qwen35_runtime_caches
+from shared.llm_engines.nanovllm.layers.attention import reset_attention_backend_logs
 from shared.llm_engines.nanovllm.utils.context import reset_context
 from shared.llm_engines.nanovllm.vllm_support import (
     NanoVllmTextEngine,
     resolve_lm_decoder_engine,
 )
-from shared.qtypes.gguf import GGUFWeightTensor, materialize_module_source_tensors
+from shared.qtypes.gguf import GGUFFirstRowsLinear, GGUFWeightTensor, materialize_module_source_tensors
 try:
     from optimum.quanto.tensor.weights.qbytes import WeightQBytesTensor
 except Exception:  # pragma: no cover
@@ -53,6 +56,10 @@ QWEN35_PROMPT_SUPPRESS_LOGITS_BIAS = -1e4
 QWEN35_PROMPT_ENABLE_THINKING = False
 QWEN35_PROMPT_THINKING_EXTRA_TOKENS = 3000
 QWEN35_PROMPT_THINKING_MAX_TOKENS = 2000
+# Applied only to variants that ship a native MTP block.
+QWEN35_PROMPT_ENABLE_SPECULATIVE_DECODING = False
+QWEN35_PROMPT_SPECULATIVE_TOKENS = 5
+QWEN35_PROMPT_SPECULATIVE_SAMPLING_TOKENS = 4
 
 
 def _env_enabled(name: str, default: bool = True) -> bool:
@@ -86,9 +93,23 @@ def get_qwen35_text_quanto_int8_path(assets_dir: str, variant: str | None = None
     return _resolve_qwen35_checkpoint_file(assets_dir, filename, variant=variant, error_if_none=False)
 
 
+def _add_qwen35_mtp_shared_weights(state_dict, quantization_map=None, tied_weights_map=None):
+    for source, target in (("token_embd", "mtp.embed_tokens"), ("output", "mtp.lm_head")):
+        for name in tuple(state_dict):
+            if name == source or name.startswith(source + "."):
+                state_dict[target + name[len(source):]] = state_dict[name]
+        if quantization_map is not None and source in quantization_map:
+            quantization_map[target] = dict(quantization_map[source])
+    return state_dict, quantization_map, tied_weights_map
+
+
 def _resolve_gguf_linear_attention_layout_from_filename(model_path: str) -> tuple[bool, bool, bool]:
     filename = os.path.basename(str(model_path or "")).strip().lower().replace("_", "-")
-    if filename == "qwen3.5-9b-abliterated-text-q4-k-m-bis.gguf":
+    if filename in {
+        "qwen3.5-9b-abliterated-text-q4-k-m-bis.gguf",
+        "qwen3.8-27b-uncensored-q4-k-m.gguf",
+        "qwen3.8-27b-uncensored-iq2-m.gguf",
+    }:
         return True, True, False
     if filename in {
         "qwen3.5-9b-abliterated-text-q4-k-m.gguf",
@@ -116,12 +137,28 @@ def _ensure_tied_output_weight(new_sd, tied_map):
     return tied_map
 
 
-def _build_qwen35_gguf_preprocess_sd(tie_output_to_embeddings: bool = False):
+def _build_qwen35_gguf_preprocess_sd(tie_output_to_embeddings: bool = False, num_hidden_layers: int | None = None, enable_mtp: bool = False):
     def preprocess_sd(sd, quant_map=None, tied_map=None):
         new_sd = OrderedDict()
         for name, tensor in sd.items():
-            if name.startswith("mtp.") or name.startswith("v."):
+            if name.startswith("mtp."):
+                if enable_mtp:
+                    new_sd[name] = tensor
                 continue
+            if name.startswith("v."):
+                continue
+            block_match = re.match(r"^blk\.(\d+)\.", name)
+            if block_match and num_hidden_layers is not None and int(block_match.group(1)) >= num_hidden_layers:
+                if not enable_mtp or int(block_match.group(1)) != num_hidden_layers:
+                    continue
+                suffix = name[block_match.end():]
+                mtp_names = {
+                    "nextn.eh_proj.weight": "mtp.fc.weight",
+                    "nextn.enorm.weight": "mtp.pre_fc_norm_embedding.weight",
+                    "nextn.hnorm.weight": "mtp.pre_fc_norm_hidden.weight",
+                    "nextn.shared_head_norm.weight": "mtp.norm.weight",
+                }
+                name = mtp_names.get(suffix, f"mtp.block.{suffix}")
             if name.endswith(".ssm_dt.bias"):
                 name = name[:-5]
             if name.endswith(".ssm_conv1d.weight"):
@@ -173,35 +210,44 @@ def _clean_answer_text(text: str) -> str:
     return _normalize_generated_text("\n".join(cleaned_lines))
 
 
-def _split_generated_text(text: str) -> tuple[str, str]:
+def _split_generated_parts(text: str) -> tuple[list[str], str]:
     text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    think_chunks = [match.group(1) for match in re.finditer(r"<think>\s*(.*?)\s*</think>", text, flags=re.DOTALL | re.IGNORECASE)]
-    answer_text = re.sub(r"<think>.*?</think>", "\n", text, flags=re.DOTALL | re.IGNORECASE)
-    if len(think_chunks) == 0:
-        close_matches = list(re.finditer(r"</think>", text, flags=re.IGNORECASE))
-        if len(close_matches) >= 2:
-            trailing_text = text[close_matches[-1].end():]
+    think_chunks = []
+    answer_parts = []
+    cursor = 0
+    first_open = re.search(r"<think>", text, flags=re.IGNORECASE)
+    first_close = re.search(r"</think>", text, flags=re.IGNORECASE)
+    if first_close is not None and (first_open is None or first_close.start() < first_open.start()):
+        leading_reasoning = _normalize_generated_text(text[:first_close.start()].replace("<think>", "\n"))
+        if len(leading_reasoning) > 0:
+            think_chunks.append(leading_reasoning)
+        cursor = first_close.end()
+    remaining = text[cursor:]
+    explicit_cursor = 0
+    for match in re.finditer(r"<think>\s*(.*?)\s*</think>", remaining, flags=re.DOTALL | re.IGNORECASE):
+        answer_parts.append(remaining[explicit_cursor:match.start()])
+        if len(match.group(1).strip()) > 0:
+            think_chunks.append(match.group(1))
+        explicit_cursor = match.end()
+    trailing = remaining[explicit_cursor:]
+    unmatched_open = re.search(r"<think>\s*(.*)\Z", trailing, flags=re.DOTALL | re.IGNORECASE)
+    if unmatched_open is not None:
+        answer_parts.append(trailing[:unmatched_open.start()])
+        if len(unmatched_open.group(1).strip()) > 0:
+            think_chunks.append(unmatched_open.group(1))
+    else:
+        answer_parts.append(trailing)
+    answer_text = "\n".join(answer_parts)
+    if len(think_chunks) <= 1:
+        close_matches = list(re.finditer(r"</think>", answer_text, flags=re.IGNORECASE))
+        if close_matches:
+            trailing_text = answer_text[close_matches[-1].end():]
             trailing_preview = re.sub(r"(?:<\|im_end\|>\s*|</s>\s*)+$", "", trailing_text, flags=re.IGNORECASE).lstrip()
             if len(trailing_preview) == 0 or trailing_preview.lower().startswith("<tool_call>"):
-                recovered_chunks = []
-                leading_reasoning = _normalize_generated_text(text[: close_matches[0].start()].replace("<think>", "\n"))
-                middle_reasoning = _normalize_generated_text(text[close_matches[0].end() : close_matches[-1].start()].replace("<think>", "\n"))
-                if len(leading_reasoning) > 0:
-                    recovered_chunks.append(leading_reasoning)
-                if len(middle_reasoning) > 0:
-                    recovered_chunks.append(middle_reasoning)
-                if len(recovered_chunks) > 0:
-                    think_chunks.extend(recovered_chunks)
-                    answer_text = trailing_text
-        if len(think_chunks) == 0:
-            forced_open_match = re.search(r"</think>", text, flags=re.IGNORECASE)
-            if forced_open_match is not None:
-                forced_reasoning = text[:forced_open_match.start()]
-                forced_reasoning = forced_reasoning.replace("<think>", "\n")
-                forced_reasoning = _normalize_generated_text(forced_reasoning)
-                if len(forced_reasoning) > 0:
-                    think_chunks.append(forced_reasoning)
-                answer_text = text[forced_open_match.end():]
+                recovered_reasoning = _normalize_generated_text(answer_text[:close_matches[-1].start()].replace("<think>", "\n"))
+                if len(recovered_reasoning) > 0:
+                    think_chunks.append(recovered_reasoning)
+                answer_text = trailing_text
     if len(think_chunks) == 0:
         timeline_match = re.search(r"(?mi)^\(at\s+[0-9]+(?:\.[0-9]+)?\s+seconds?\s*:", text)
         if timeline_match is not None:
@@ -209,8 +255,12 @@ def _split_generated_text(text: str) -> tuple[str, str]:
             if leading_text.lower().startswith("thinking process"):
                 think_chunks.append(leading_text)
                 answer_text = text[timeline_match.start():]
-    answer_text = re.sub(r"<think>.*$", "\n", answer_text, flags=re.DOTALL | re.IGNORECASE)
-    return _normalize_generated_text("\n\n".join(chunk for chunk in think_chunks if chunk.strip())), _clean_answer_text(answer_text)
+    return [normalized for chunk in think_chunks if len(normalized := _normalize_generated_text(chunk)) > 0], _clean_answer_text(answer_text)
+
+
+def _split_generated_text(text: str) -> tuple[str, str]:
+    think_chunks, answer_text = _split_generated_parts(text)
+    return _normalize_generated_text("\n\n".join(think_chunks)), answer_text
 
 
 def _clean_generated_text(text: str) -> str:
@@ -485,7 +535,7 @@ def _resolve_prompt_enhancer_engine(backend: str, requested_lm_engine: str, runt
         return "legacy", f"disabled by {QWEN35_TEXT_VLLM_SWITCH_ENV}", False, False
     requested_lm_engine = str(requested_lm_engine or "").strip().lower()
     requested_label = requested_lm_engine or "auto"
-    resolved_engine = resolve_lm_decoder_engine(requested_lm_engine, ["cg", "vllm"])
+    resolved_engine = resolve_lm_decoder_engine(requested_lm_engine, ["cg", "vllm"], require_flash_attention=False)
     enable_cudagraph = _env_enabled(QWEN35_TEXT_VLLM_CUDAGRAPH_ENV, default=True)
 
     if resolved_engine == "legacy":
@@ -564,6 +614,7 @@ def _get_or_create_vllm_engine(model, usage_mode: str | None = None):
         tokenizer=tokenizer,
         enforce_eager=not enable_cudagraph,
         graph_pool_handle=graph_pool_handle,
+        kv_cache_int8=usage_mode in ("assistant", "multimodal") and bool(getattr(model, "_deepy_kv_cache_int8", False)),
     )
     model._prompt_enhancer_vllm_engine = engine
     model._prompt_enhancer_vllm_mode = usage_mode
@@ -610,8 +661,10 @@ def _generate_messages_vllm(
     for idx, message in enumerate(tqdm(messages, total=len(messages), desc=progress_desc, dynamic_ncols=True, leave=False)):
         prompt = _build_chat_prompt(tokenizer, message, enable_thinking=thinking_enabled)
         try:
-            prompt_len = len(tokenizer.encode(prompt))
+            prompt_token_ids = [int(token_id) for token_id in tokenizer.encode(prompt)]
+            prompt_len = len(prompt_token_ids)
         except Exception:
+            prompt_token_ids = []
             prompt_len = 0
         generation_max_tokens = int(max_new_tokens) + runtime_extra_tokens
         engine.reserve_runtime(prompt_len=prompt_len, max_tokens=generation_max_tokens, cfg_scale=1.0)
@@ -641,6 +694,15 @@ def _generate_messages_vllm(
             seed=sample_seed,
         )
 
+        if llm_io_enabled():
+            log_llm_io("OUT", "local-prompt-enhancer", "qwen-generation", {
+                "prompt": prompt,
+                "messages": message,
+                "input_token_ids": prompt_token_ids,
+                "known_token_ids": known_token_ids(tokenizer),
+                "generation": {"max_new_tokens": generation_max_tokens, "temperature": temp, "top_p": normalized_top_p, "top_k": normalized_top_k, "seed": sample_seed, "thinking_enabled": thinking_enabled},
+            }, prompt_number=idx + 1)
+
         try:
             batch_outputs = engine._llm.generate(
                 prompts=[prompt],
@@ -663,6 +725,7 @@ def _generate_messages_vllm(
             except Exception:
                 raw_text = text
         thinking_text, answer_text = _split_generated_text(raw_text)
+        log_llm_io("IN", "local-prompt-enhancer", "qwen-generation", {"text": raw_text, "output_token_ids": [int(token_id) for token_id in token_ids], "answer": answer_text}, prompt_number=idx + 1)
         if thinking_enabled:
             _print_thinking_process(idx, len(messages), thinking_text)
         outputs.append(answer_text)
@@ -733,9 +796,13 @@ def _load_local_text_model(
     default_dtype: torch.dtype = torch.float16,
     safe_legacy_mode: bool = False,
     materialize_source_tensors: bool = True,
+    enable_mtp: bool = False,
+    modules=None,
+    postprocess_sd=None,
 ):
     config = _load_text_config(config_path)
     config._prompt_enhancer_safe_legacy = bool(safe_legacy_mode)
+    config._prompt_enhancer_enable_mtp_speculative = bool(enable_mtp)
     with torch.device("meta"):
         model = Qwen3_5ForCausalLM(config)
 
@@ -743,6 +810,8 @@ def _load_local_text_model(
         model,
         model_path,
         preprocess_sd=preprocess_sd,
+        postprocess_sd=postprocess_sd,
+        modules=modules,
         writable_tensors=False,
         default_dtype=default_dtype,
     )
@@ -873,7 +942,7 @@ def _build_fused_column_linear(modules):
     if hasattr(template, "_router_default_dtype"):
         fused_kwargs["dtype"] = template._router_default_dtype
     if hasattr(template, "weight") and torch.is_tensor(template.weight):
-        fused_kwargs.setdefault("device", template.weight.device)
+        fused_kwargs["device"] = torch.device("meta")
         fused_kwargs.setdefault("dtype", template.weight.dtype)
     try:
         fused = template.__class__(int(template.in_features), out_features, bias=all(module.bias is not None for module in modules), **fused_kwargs)
@@ -887,7 +956,7 @@ def _build_fused_column_linear(modules):
             fused.qweight = fused_weight
         except Exception:
             pass
-    for attr_name in ("weight_qtype", "activation_qtype", "optimizer", "input_scale", "output_scale", "_router_default_dtype", "_router_forward_impl"):
+    for attr_name in ("weight_qtype", "activation_qtype", "optimizer", "input_scale", "output_scale", "_router_default_dtype", "_router_forward_impl", "_convrot_group_size", "_convrot_default_dtype"):
         if hasattr(template, attr_name):
             setattr(fused, attr_name, getattr(template, attr_name))
     if hasattr(template, "_gguf_default_dtype"):
@@ -896,7 +965,11 @@ def _build_fused_column_linear(modules):
 
 
 def _apply_qwen35_projection_fusions(model) -> None:
-    for block in getattr(model, "blk", ()):
+    blocks = list(getattr(model, "blk", ()))
+    mtp = getattr(model, "mtp", None)
+    if mtp is not None:
+        blocks.append(mtp.block)
+    for block in blocks:
         if getattr(block, "ffn_gate_up", None) is None and all(
             getattr(block, name, None) is not None for name in ("ffn_gate", "ffn_up")
         ):
@@ -923,6 +996,8 @@ def load_qwen35_text_prompt_enhancer(
     attn_implementation: str = "sdpa",
     requested_lm_engine: str = "",
     variant: str | None = None,
+    speculative_decoding: bool = QWEN35_PROMPT_ENABLE_SPECULATIVE_DECODING,
+    kv_cache_int8: bool = False,
 ):
     del attn_implementation
     if assets_dir is None:
@@ -944,12 +1019,24 @@ def load_qwen35_text_prompt_enhancer(
         with open(chat_template_path, "r", encoding="utf-8") as reader:
             tokenizer.chat_template = reader.read()
 
+    engine_name, _engine_detail, enable_cudagraph, allow_vllm_kernels = _resolve_prompt_enhancer_engine(
+        backend=backend,
+        requested_lm_engine=requested_lm_engine,
+        runtime_model_path=text_assets_dir,
+    )
+    safe_legacy_mode = not allow_vllm_kernels
+    enable_mtp = bool(speculative_decoding and spec.get("supports_mtp", False))
+    mtp_filename = spec.get("text_mtp_filename") if enable_mtp else None
+    mtp_modules = [_resolve_qwen35_checkpoint_file(assets_dir, mtp_filename, variant=variant)] if mtp_filename else None
+    postprocess_sd = _add_qwen35_mtp_shared_weights if enable_mtp else None
     if backend == enhancer_quantization_GGUF:
         model_path = _resolve_gguf_model_path(model_path, assets_dir, variant=variant)
         gguf_v_head_reordered, gguf_ssm_param_reordered, gguf_interleave_ssm_ab = _resolve_gguf_linear_attention_layout_from_filename(model_path)
         quanto_log_ssm_a = False
         preprocess_sd = _build_qwen35_gguf_preprocess_sd(
             tie_output_to_embeddings=bool(spec.get("tie_word_embeddings", False)),
+            num_hidden_layers=_load_text_config(text_config_path).num_hidden_layers,
+            enable_mtp=enable_mtp,
         )
         runtime_model_path = text_assets_dir
     else:
@@ -961,13 +1048,6 @@ def load_qwen35_text_prompt_enhancer(
         quanto_log_ssm_a = _resolve_quanto_log_ssm_a(model_path, spec)
         preprocess_sd = None
         runtime_model_path = text_assets_dir
-
-    engine_name, _engine_detail, enable_cudagraph, allow_vllm_kernels = _resolve_prompt_enhancer_engine(
-        backend=backend,
-        requested_lm_engine=requested_lm_engine,
-        runtime_model_path=runtime_model_path,
-    )
-    safe_legacy_mode = not allow_vllm_kernels
 
     if not os.path.isfile(model_path):
         raise FileNotFoundError(f"Qwen3.5 text checkpoint not found: {model_path}")
@@ -990,6 +1070,9 @@ def load_qwen35_text_prompt_enhancer(
         default_dtype=default_dtype,
         safe_legacy_mode=safe_legacy_mode,
         materialize_source_tensors=backend != enhancer_quantization_GGUF,
+        enable_mtp=enable_mtp,
+        modules=mtp_modules,
+        postprocess_sd=postprocess_sd,
     )
     if backend == enhancer_quantization_QUANTO_INT8 and spec.get("text_int8_tie_word_embeddings", False):
         _tie_qwen35_output_to_embeddings(model)
@@ -1004,6 +1087,10 @@ def load_qwen35_text_prompt_enhancer(
     elif quanto_log_ssm_a:
         _configure_qwen35_text_model(model, log_ssm_a=True)
     _apply_qwen35_projection_fusions(model)
+    mtp_draft_vocab_size = spec.get("mtp_draft_vocab_size")
+    if enable_mtp and mtp_draft_vocab_size is not None:
+        model.mtp.lm_head = GGUFFirstRowsLinear(model.mtp.lm_head, mtp_draft_vocab_size)
+        model.mtp.draft_vocab_size = mtp_draft_vocab_size
 
     model._prompt_enhancer_tokenizer = tokenizer
     model._prompt_enhancer_gguf_v_head_reordered = bool(gguf_v_head_reordered)
@@ -1037,11 +1124,21 @@ def load_qwen35_text_prompt_enhancer(
     model._prompt_enhancer_vllm_mode = None
     model._prompt_enhancer_assistant_graph_pool_handle = None
     model._prompt_enhancer_safe_legacy = safe_legacy_mode
+    model._prompt_enhancer_speculative_decoding = enable_mtp
+    model._prompt_enhancer_speculative_method_logged = False
+    model._deepy_kv_cache_int8 = bool(kv_cache_int8)
+    model._prompt_enhancer_speculative_tokens = spec.get("mtp_speculative_tokens", QWEN35_PROMPT_SPECULATIVE_TOKENS)
+    model._prompt_enhancer_speculative_sampling_tokens = spec.get("mtp_speculative_sampling_tokens", QWEN35_PROMPT_SPECULATIVE_SAMPLING_TOKENS)
+    model._prompt_enhancer_speculative_confidence = spec.get("mtp_speculative_confidence", 0.30)
+    model._prompt_enhancer_reuse_speculative_mtp_cache = True
     model._prompt_enhancer_use_vllm = engine_name in ("cg", "vllm")
     model._prompt_enhancer_use_legacy_cuda_runner = engine_name == "legacy"
     if model._prompt_enhancer_use_vllm or model._prompt_enhancer_use_legacy_cuda_runner:
         model._budget = 0
+    reset_attention_backend_logs()
     print(f"[Qwen3.5VL][{spec['display_name']}] Text generation engine: {engine_name}")
+    if enable_mtp:
+        print(f"[Qwen3.5VL][{spec['display_name']}] Native MTP speculative decoder: enabled")
     model.generate_messages = types.MethodType(_generate_messages, model)
     model.unload = types.MethodType(_unload_prompt_enhancer_text_runtime, model)
     model._offload_hooks = ["forward"]
@@ -1053,6 +1150,8 @@ load_qwen35_prompt_enhancer = load_qwen35_text_prompt_enhancer
 
 
 __all__ = [
+    "QWEN35_PROMPT_ENABLE_SPECULATIVE_DECODING",
+    "QWEN35_PROMPT_SPECULATIVE_TOKENS",
     "get_qwen35_text_quanto_int8_path",
     "load_qwen35_prompt_enhancer",
     "load_qwen35_text_prompt_enhancer",

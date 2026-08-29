@@ -37,6 +37,8 @@ class family_handler():
     @staticmethod
     def query_model_def(base_model_type, model_def):
         extra_model_def = {}
+        if base_model_type != "hunyuan_avatar":
+            extra_model_def["riflex"] = True
 
         if test_hunyuan_1_5(base_model_type):
             text_encoder_folder = "Qwen2.5-VL-7B-Instruct"

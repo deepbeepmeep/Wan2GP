@@ -54,6 +54,9 @@ class AboutPlugin(WAN2GPPlugin):
         gr.Markdown("- <B>ByteDance Seed Team and the SeedVR2 authors</B>: one-step image and video restoration (https://github.com/ByteDance-Seed/SeedVR, https://arxiv.org/abs/2506.05301)")
         gr.Markdown("- <B>FlashVSR</B>: high quality video super-resolution (https://github.com/OpenImagingLab/FlashVSR)")
         gr.Markdown("- <B>NVIDIA PiD</B>: diffusion-based image super-resolution (https://github.com/nv-tlabs/PiD)")
+        gr.Markdown("- <B>Carasibana</B>: the MIT-licensed ComfyUI H3 FaceRefine workflow adapted by WanGP (https://github.com/Carasibana/ComfyUI-H3-FaceRefine)")
+        gr.Markdown("- <B>Ultralytics YOLO and Bingsu's ADetailer</B>: face and person detection used by H3 Face Refiner (https://github.com/ultralytics/ultralytics, https://github.com/Bing-su/adetailer)")
+        gr.Markdown("- <B>InsightFace</B>: face detection, landmarks, and identity embeddings used by H3 Face Refiner (https://github.com/deepinsight/insightface). Users must comply with the pretrained model licensing terms.")
 
         gr.Markdown("<BR>Special thanks to the following people for their Contributions & Support:")
         gr.Markdown("- <B>Tophness</B> : Designed & developped the Queuing Framework, Edit Mode, Windows Installation scripts and WanGP PlugIns System")

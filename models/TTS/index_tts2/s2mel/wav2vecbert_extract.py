@@ -105,7 +105,7 @@ class Extract_wav2vectbert:
         self.semantic_codec = RepCodec(cfg=cfg)
         self.semantic_codec.eval()
         self.semantic_codec.to(device)
-        safetensors.torch.load_model(self.semantic_codec, self.semantic_code_ckpt)
+        self.semantic_codec.load_state_dict(safetensors.torch.load_file(self.semantic_code_ckpt, writable_tensors=False))
 
     @torch.no_grad()
     def extract_features(self, speech): # speech [b,T]

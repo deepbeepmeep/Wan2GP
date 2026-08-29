@@ -21,7 +21,7 @@ from anyio.from_thread import start_blocking_portal
 from shared.api import WanGPSession
 from shared.deepy.config import DEEPY_CONTEXT_TOKENS_DEFAULT, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT, DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_PRIME_MCP_SERVERS_KEY, get_deepy_config_value, get_deepy_runtime_config, normalize_deepy_context_tokens, normalize_deepy_mcp_auto_discover_paths, normalize_deepy_prime_mcp_servers
 from shared.gradio import assistant_chat
-from shared.mcp_server import build_inprocess_server
+from shared.mcp_server import build_inprocess_server, resolve_gallery_media_path
 
 
 _MARKDOWN_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
@@ -404,7 +404,9 @@ class DeepyPrimeTools:
         self._request_queue.put((tool_name, dict(arguments or {}), future))
         result = future.result()
         if isinstance(result, dict):
-            return self._enforce_output_budget(tool_name, self.file_access_policy.virtualize_result(result))
+            normalized = self._enforce_output_budget(tool_name, self.file_access_policy.virtualize_result(result))
+            self._remember_gallery_download_references(tool_name, normalized)
+            return normalized
         content_text = "\n".join(str(getattr(item, "text", "") or "") for item in result.content if getattr(item, "type", "") == "text").strip()
         if result.isError:
             return self.file_access_policy.virtualize_result({"status": "error", "tool": tool_name, "error": content_text or f"MCP tool '{tool_name}' failed."})
@@ -419,7 +421,32 @@ class DeepyPrimeTools:
             normalized.setdefault("status", "done")
         else:
             normalized = {"status": "done", "content": payload}
-        return self._enforce_output_budget(tool_name, self.file_access_policy.virtualize_result(normalized))
+        normalized = self._enforce_output_budget(tool_name, self.file_access_policy.virtualize_result(normalized))
+        self._remember_gallery_download_references(tool_name, normalized)
+        return normalized
+
+    def _remember_gallery_download_references(self, tool_name: str, result: Any) -> None:
+        route = self._tool_routes.get(tool_name)
+        if route is None or route[0] != "wangp":
+            return
+        media_ids = []
+
+        def collect(value: Any, key: str = "") -> None:
+            if isinstance(value, dict):
+                for child_key, child_value in value.items():
+                    collect(child_value, str(child_key).casefold())
+            elif isinstance(value, (list, tuple)):
+                for child_value in value:
+                    collect(child_value, key)
+            elif key in {"media_id", "media_ids"} and isinstance(value, str) and re.fullmatch(r"(?:visual|audio):[a-f0-9]{12}", value.strip(), re.IGNORECASE):
+                media_ids.append(value.strip().casefold())
+
+        collect(result)
+        for media_id in dict.fromkeys(media_ids):
+            try:
+                self.assistant_session.gallery_download_registry[media_id] = resolve_gallery_media_path(self._api_session, media_id)
+            except (FileNotFoundError, KeyError, OSError, ValueError):
+                continue
 
     @staticmethod
     def _enforce_output_budget(tool_name: str, result: dict[str, Any]) -> dict[str, Any]:

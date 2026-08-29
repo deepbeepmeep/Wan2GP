@@ -412,6 +412,7 @@ class AssistantSessionState:
     discard_runtime_snapshot_on_release: bool = False
     media_registry: list[dict[str, Any]] = field(default_factory=list)
     media_registry_counter: int = 0
+    gallery_download_registry: dict[str, str] = field(default_factory=dict)
     chat_html: str = ""
     chat_transcript: list[dict[str, Any]] = field(default_factory=list)
     chat_transcript_counter: int = 0
@@ -510,6 +511,7 @@ def clear_assistant_session(session: AssistantSessionState) -> None:
     session.discard_runtime_snapshot_on_release = False
     session.media_registry.clear()
     session.media_registry_counter = 0
+    session.gallery_download_registry.clear()
     session.chat_html = ""
     session.steering_pending = False
     session.steering_deadline = 0.0

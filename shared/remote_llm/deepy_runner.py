@@ -239,6 +239,25 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
             reasoning_parts.append(event_text)
             _reasoning_id, payload = assistant_chat.upsert_reasoning_block(session, assistant_id, reasoning_block_id, "".join(reasoning_parts))
             _send(send_cmd, payload)
+        elif event.kind == "reasoning_start":
+            finish_answer_segment()
+            set_remote_status("thinking", f"{engine_label} is thinking...", "thinking")
+        elif event.kind == "tool_request_start":
+            finish_reasoning()
+            finish_answer_segment()
+            set_remote_status("tool-request", f"{engine_label} is preparing a tool request...", "tool")
+        elif event.kind == "tool_request_error":
+            finish_reasoning()
+            finish_answer_segment()
+            data = event.data if isinstance(event.data, dict) else {}
+            tool_name = str(data.get("name", "") or "").removeprefix("mcp__wangp__") or "remote_tool"
+            arguments = dict(data.get("input", {}) or {})
+            tool_label = f"{toolbox.get_tool_display_name(tool_name)} Request"
+            ui_tool_id, payload = assistant_chat.add_tool_call(session, assistant_id, tool_name, arguments, tool_label=tool_label)
+            _send(send_cmd, payload)
+            result = {"status": "error", "tool": tool_name, "error": event.text or "The remote provider rejected this tool request before execution."}
+            _send(send_cmd, assistant_chat.complete_tool_call(session, assistant_id, ui_tool_id, result))
+            set_remote_status("waiting", f"Waiting for {engine_label}...", "loading")
         elif event.kind == "usage":
             stats = build_remote_usage_stats(event.data)
             if stats is not None:
@@ -293,7 +312,7 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
         active_tool.clear()
         finish_assistant_action(session)
         if not session.interrupt_requested:
-            set_remote_status("thinking", f"{engine_label} is thinking...", "thinking")
+            set_remote_status("waiting", f"Waiting for {engine_label}...", "loading")
         return result
 
     toolbox.bind_runtime_tools(vision_query_callback=lambda record, question, frame=None, max_image_edge=None: _visual_query(server_config, record, question, frame, max_image_edge, toolbox.file_access_policy), tool_progress_callback=tool_progress, vision_is_remote=True)

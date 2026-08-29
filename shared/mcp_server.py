@@ -376,6 +376,11 @@ def _gallery_item(session, media_id: str) -> dict[str, Any]:
     raise KeyError(f"Unknown WanGP media_id: {media_id}")
 
 
+def resolve_gallery_media_path(session, media_id: str) -> str:
+    path = Path(_gallery_item(session, media_id)["path"])
+    return str((path if path.is_absolute() else Path(session._root) / path).resolve())
+
+
 def _extract_media_settings(session, path: str) -> dict[str, Any]:
     runtime = session._ensure_runtime()
     with contextlib.chdir(runtime.root):

@@ -52,6 +52,7 @@ _MARKDOWN_EXTENSIONS = ["extra", "nl2br", "sane_lists", "fenced_code", "tables"]
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<path>[^)]+)\)")
 _DOWNLOAD_MARKDOWN_TOKEN_RE = re.compile(r"(?P<fence>```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$))|(?P<link>!?\[(?:\\.|`[^`\n]*`|[^\]\n])*\]\([^\n)]*\))|(?P<code>`[^`\n]+`)")
 _DOWNLOAD_LINK_RE = re.compile(r"!?\[(?:\\.|`[^`\n]*`|[^\]\n])*\]\([^\n)]*\)")
+_GALLERY_MEDIA_ID_RE = re.compile(r"(?:visual|audio):[a-f0-9]{12}", re.IGNORECASE)
 _ABSOLUTE_PATH_START_RE = re.compile(r"(?<![\w:/])(?:[A-Za-z]:[\\/]|\\\\|/(?!/))")
 _TOOL_RESULT_PATH_KEYS = {"destination", "generated_files", "output_file", "output_files", "path", "paths", "source", "sources"}
 _DOWNLOAD_REFERENCE_LIMIT = 20
@@ -4758,6 +4759,7 @@ def _markdown_to_html(text: str) -> str:
     text = html.escape(text, quote=False)
     rendered = markdown.markdown(text, extensions=_MARKDOWN_EXTENSIONS, output_format="html5")
     rendered = re.sub(r'<a href="(https?://[^"]+)"', r'<a href="\1" target="_blank" rel="noopener noreferrer"', rendered)
+    rendered = re.sub(r'<a href="(/wangp_api/gallery/media/[^"]+)"', r'<a href="\1" target="_blank" rel="noopener noreferrer"', rendered)
     return re.sub(r'<a href="(/wangp_api/download/[a-f0-9]+)"', r'<a href="\1" download', rendered)
 
 
@@ -4831,6 +4833,10 @@ def _download_reference_targets(session, record: dict[str, Any], file_access_pol
             if not file_access_policy.virtualized:
                 add(media.get("path"), path)
                 add(path, path)
+    for media_id, media_path in dict(getattr(session, "gallery_download_registry", {}) or {}).items():
+        path = _existing_download_path(media_path)
+        if path is not None:
+            add(media_id, path)
     for block in _ensure_message_blocks(record):
         if not isinstance(block, dict) or block.get("type") != "tool":
             continue
@@ -4850,16 +4856,33 @@ def _download_reference_targets(session, record: dict[str, Any], file_access_pol
 def _markdown_download_link(label: str, path: str, state: dict[str, Any], *, code: bool = False) -> str | None:
     if state["count"] >= _DOWNLOAD_REFERENCE_LIMIT:
         return None
-    path_key = os.path.normcase(path)
+    reference = label[1:-1].strip() if code else label.strip()
+    gallery_media_id = reference.casefold() if _GALLERY_MEDIA_ID_RE.fullmatch(reference) else ""
+    path_key = f"gallery:{gallery_media_id}" if gallery_media_id else os.path.normcase(path)
     url = state["urls"].get(path_key)
     if url is None:
-        from shared.gradio.downloads import register_file_download
+        from shared.gradio.downloads import register_file_download, register_gallery_download
 
-        url = register_file_download(path)["url"]
+        url = (register_gallery_download(gallery_media_id, path) if gallery_media_id else register_file_download(path))["url"]
         state["urls"][path_key] = url
     state["count"] += 1
     escaped_label = label if code else re.sub(r"([\\`*{}\[\]()#+\-.!_|>])", r"\\\1", label)
     return f"[{escaped_label}]({url})"
+
+
+def _rewrite_sandbox_download_link(token: str, file_access_policy) -> str:
+    marker = token.rfind("](")
+    if marker < 0 or not token.endswith(")"):
+        return token
+    target = urllib.parse.unquote(token[marker + 2:-1].strip())
+    if not target.casefold().startswith("sandbox:"):
+        return token
+    path = _authorized_download_path(target[len("sandbox:"):], file_access_policy)
+    if path is None:
+        return token
+    from shared.gradio.downloads import register_file_download
+
+    return f"{token[:marker + 2]}{register_file_download(path)['url']})"
 
 
 def _absolute_path_prefix(text: str, start: int, file_access_policy) -> tuple[int, str] | None:
@@ -4934,6 +4957,8 @@ def _linkify_download_markdown(text: str, references: dict[str, str], file_acces
             value = token[1:-1].strip()
             path = lookup.get(value.casefold()) or _authorized_download_path(value, file_access_policy)
             token = _markdown_download_link(token, path, state, code=True) if path is not None else token
+        elif match.lastgroup == "link":
+            token = _rewrite_sandbox_download_link(token, file_access_policy)
         rendered.append(token)
         cursor = match.end()
     rendered.append(_linkify_plain_download_references(text[cursor:], references, file_access_policy, state))

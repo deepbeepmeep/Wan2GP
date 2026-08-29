@@ -3,6 +3,7 @@ import copy
 import asyncio
 import functools
 import inspect
+import os
 import threading
 import time
 from pathlib import Path
@@ -406,8 +407,11 @@ class WebUIQueueProbe:
                     continue
                 artifact = self._session._consume_output_artifact(client_id)
                 artifact_path = str(artifact.path if artifact is not None else "").strip()
+                if artifact_path:
+                    artifact_path = str((Path(artifact_path) if Path(artifact_path).is_absolute() else self._session._root / artifact_path).resolve())
                 resolved_output_paths = list(output_paths)
-                if artifact_path and artifact_path not in resolved_output_paths:
+                resolved_path_keys = {os.path.normcase(str(Path(path).resolve())) for path in resolved_output_paths}
+                if artifact_path and os.path.normcase(artifact_path) not in resolved_path_keys:
                     resolved_output_paths.append(artifact_path)
                 if not resolved_output_paths:
                     self._register_error(client_id, f"Generation produced an API artifact for client_id '{client_id}' without an output path.", stage="generation")

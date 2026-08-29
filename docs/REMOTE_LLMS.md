@@ -47,10 +47,10 @@ See the [Codex CLI documentation](https://learn.chatgpt.com/docs/codex/cli).
 WanGP needs both Claude Code and the compatible Python bridge. Install the bridge in WanGP's Python environment:
 
 ```powershell
-pip install claude-agent-sdk==0.1.40
+pip install --upgrade claude-agent-sdk==0.1.66
 ```
 
-Do not install an unpinned newer SDK into the WanGP environment because it can replace WanGP's MCP/Pydantic dependencies. WanGP detects Claude Code on `PATH` and compatible binaries bundled with VS Code, VS Code Insiders, Cursor, and Windsurf extensions.
+Use this exact version rather than an unpinned SDK upgrade. WanGP 0.1.66 support preserves its pinned MCP/Pydantic stack and enables summarized Claude thinking. WanGP detects Claude Code on `PATH` and compatible binaries bundled with VS Code, VS Code Insiders, Cursor, and Windsurf extensions.
 
 Authenticate once with the configured executable:
 
@@ -65,6 +65,7 @@ See the [Claude Code authentication documentation](https://code.claude.com/docs/
 - `Claude executable`: `claude` for automatic detection or an absolute path.
 - `Claude model`: an account model or alias; `Automatic` uses the account default.
 - `Reasoning effort`: sent only when explicitly selected and supported by the model.
+- Summarized Claude thinking is displayed in Deepy when Claude provides it; hidden reasoning remains hidden.
 - `Refresh`: queries Claude Code and caches its model catalog.
 
 ## OpenCode

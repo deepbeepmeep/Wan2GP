@@ -28,6 +28,7 @@ from postprocessing.pid.runtime import (
     pid_backbone_for_upsampling,
     pid_checkpoint_filename,
     pid_post_upsampling_choices,
+    pid_spatial_block_size,
     pid_version_for_upsampling,
     pid_vae_filename,
     normalize_pid_tiling_threshold,
@@ -207,12 +208,17 @@ class PiDBridge:
             process_files(**download_def)
         return True
 
-    def _prepare_sample(self, sample, device, dtype):
-        frames = sample.transpose(0, 1).contiguous().to(device=device)
+    def _prepare_sample(self, sample, device, dtype, backbone):
+        frames = sample.transpose(0, 1).contiguous()
+        block_size = pid_spatial_block_size(backbone)
+        target_height = max(block_size, round(int(frames.shape[-2]) / block_size) * block_size)
+        target_width = max(block_size, round(int(frames.shape[-1]) / block_size) * block_size)
+        if frames.shape[-2:] != (target_height, target_width):
+            frames = torch.nn.functional.interpolate(frames, size=(target_height, target_width), mode="bilinear", align_corners=False, antialias=True)
         if frames.dtype == torch.uint8:
-            frames = frames.to(dtype=dtype).div_(127.5).sub_(1.0)
+            frames = frames.to(device=device, dtype=dtype).div_(127.5).sub_(1.0)
         else:
-            frames = frames.to(dtype=dtype)
+            frames = frames.to(device=device, dtype=dtype)
         return frames
 
     def load_upsampler(
@@ -284,7 +290,7 @@ class PiDBridge:
         if session is None:
             raise RuntimeError("PiD upsampler is not loaded.")
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        images = self._prepare_sample(sample, device, session.dtype)
+        images = self._prepare_sample(sample, device, session.dtype, session.backbone)
         output = session.decode(
             images,
             None,

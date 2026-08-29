@@ -226,7 +226,7 @@ def select_pid_checkpoint_type(width, height):
     return "2kto4k" if max(int(width), int(height)) > 512 else "2k"
 
 
-def _pid_latent_downscale(backbone):
+def pid_spatial_block_size(backbone):
     return 16 if normalize_pid_backbone(backbone) == "flux2" else 8
 
 
@@ -635,7 +635,7 @@ class PiDUpsampler:
     def _decode_tiled(self, lq_image, lq_latent, caption_embs, degrade_sigma, seed, num_steps, tile_plan, abort_callback=None, progress_callback=None):
         device = lq_image.device
         batch_size, _, lq_h, lq_w = lq_image.shape
-        latent_scale = _pid_latent_downscale(self.backbone)
+        latent_scale = pid_spatial_block_size(self.backbone)
         rows = tile_plan["rows"]
         cols = tile_plan["cols"]
         tile_ckpt_type = tile_plan["ckpt_type"]
@@ -690,7 +690,7 @@ class PiDUpsampler:
         variant_label = normalize_pid_backbone(self.backbone)
         encode_label = "VAE Encode" if vae_encode or lq_latent is None else "No VAE Encode"
         tiled = self._should_tile(lq_image, resolved_threshold)
-        tile_plan = self._tile_plan(lq_image.shape[-2], lq_image.shape[-1], _pid_latent_downscale(self.backbone), resolved_threshold) if tiled else None
+        tile_plan = self._tile_plan(lq_image.shape[-2], lq_image.shape[-1], pid_spatial_block_size(self.backbone), resolved_threshold) if tiled else None
         ckpt_type = tile_plan["ckpt_type"] if tiled else self._direct_ckpt_type(lq_image, ckpt_type, resolved_threshold)
         threshold_label = pid_tiling_threshold_label(resolved_threshold)
         print(f"[PiD] variant={variant_label}, res={ckpt_type}, tiling_threshold={threshold_label}, conditioning={encode_label}, batch={batch_size}, input={int(lq_image.shape[-1])}x{int(lq_image.shape[-2])}, output={int(lq_image.shape[-1] * 4)}x{int(lq_image.shape[-2] * 4)}, tiled={tiled}")

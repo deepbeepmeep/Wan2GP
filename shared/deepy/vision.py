@@ -43,7 +43,7 @@ def normalize_inspection_bbox(bbox: Any) -> list[int] | None:
     return values
 
 
-def prepare_inspection_image(image: Any, max_edge: int | None = None, bbox: list[int] | None = None) -> Image.Image:
+def prepare_inspection_image(image: Any, max_edge: int | None = None, max_pixels: int | None = None, bbox: list[int] | None = None) -> Image.Image:
     prepared = image.convert("RGB")
     if bbox is not None:
         x_min, y_min, x_max, y_max = bbox
@@ -53,7 +53,10 @@ def prepare_inspection_image(image: Any, max_edge: int | None = None, bbox: list
         right = max(left + 1, min(width, math.ceil(x_max * width / 1000)))
         bottom = max(top + 1, min(height, math.ceil(y_max * height / 1000)))
         prepared = prepared.crop((left, top, right, bottom))
-    if max_edge is not None:
+    if max_pixels is not None and prepared.width * prepared.height > int(max_pixels):
+        scale = math.sqrt(int(max_pixels) / (prepared.width * prepared.height))
+        prepared = prepared.resize((max(1, math.floor(prepared.width * scale)), max(1, math.floor(prepared.height * scale))), Image.Resampling.LANCZOS)
+    elif max_edge is not None:
         prepared.thumbnail((int(max_edge), int(max_edge)), Image.Resampling.LANCZOS)
     return prepared
 
@@ -62,7 +65,7 @@ def resize_inspection_image(image: Any, max_edge: int) -> Image.Image:
     return prepare_inspection_image(image, max_edge=max_edge)
 
 
-def decode_inspection_video_frames(path: str, frame_indices: list[int], max_edge: int | None = None, bboxes: list[list[int] | None] | None = None) -> list[Image.Image]:
+def decode_inspection_video_frames(path: str, frame_indices: list[int], max_edge: int | None = None, max_pixels: int | None = None, bboxes: list[list[int] | None] | None = None) -> list[Image.Image]:
     if bboxes is not None and len(bboxes) != len(frame_indices):
         raise ValueError("Video frame bboxes must match the frame count.")
     images = []
@@ -73,7 +76,7 @@ def decode_inspection_video_frames(path: str, frame_indices: list[int], max_edge
             raise RuntimeError(f"Video decoder returned {len(frames)} of {len(current_indices)} requested frames.")
         for frame_index, frame in enumerate(frames):
             bbox = None if bboxes is None else bboxes[offset + frame_index]
-            images.append(prepare_inspection_image(Image.fromarray(frame), max_edge=max_edge, bbox=bbox))
+            images.append(prepare_inspection_image(Image.fromarray(frame), max_edge=max_edge, max_pixels=max_pixels, bbox=bbox))
     return images
 
 
@@ -88,7 +91,7 @@ def _inspection_image_size(processor: Any, max_pixels_per_image: int | None = No
     token_edge = int(image_processor.patch_size) * merge_size
     token_budget_pixels = VISION_MAX_VISUAL_TOKENS_PER_IMAGE * token_edge * token_edge
     max_pixels = token_budget_pixels if max_pixels_per_image is None else min(token_budget_pixels, int(max_pixels_per_image))
-    min_pixels = min(int(image_processor.size.get("shortest_edge", max_pixels)), max_pixels)
+    min_pixels = min(int(image_processor.size.get("shortest_edge", max_pixels)), max_pixels) if max_pixels_per_image is None else min(token_edge * token_edge, max_pixels)
     return {"shortest_edge": min_pixels, "longest_edge": max_pixels}, merge_size, min(VISION_MAX_VISUAL_TOKENS_PER_IMAGE, math.ceil(max_pixels / (token_edge * token_edge)))
 
 

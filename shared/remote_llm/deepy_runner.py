@@ -55,6 +55,7 @@ def _visual_query_without_running_loop(server_config: dict[str, Any], media_reco
     if not is_remote_engine(engine):
         return {"status": "error", "question": question, "answer": "", "error": "A remote Deepy engine requires a remote Visual Inspector. Choose Auto or Same as Deepy."}
     records = list(media_record) if isinstance(media_record, list) else [media_record]
+    video_max_pixels = None if max_image_edge is None else int(max_image_edge) * int(max_image_edge)
     max_image_edge = deepy_vision.VISION_REMOTE_MAX_IMAGE_EDGE if max_image_edge is None else int(max_image_edge)
     images, inspected = [None] * len(records), []
     video_inputs: dict[str, list[tuple[int, int, list[int] | None]]] = {}
@@ -83,7 +84,7 @@ def _visual_query_without_running_loop(server_config: dict[str, Any], media_reco
         inspected.append({"media_id": record.get("media_id", ""), "media_type": media_type, "label": label, "frame_no": resolved_frame, "time_seconds": time_seconds if media_type == "video" else None, "bbox": bbox, **({"path": public_path} if public_path else {})})
     for path, indexed_frames in video_inputs.items():
         bboxes = [item[2] for item in indexed_frames]
-        decode_kwargs = {"max_edge": max_image_edge, **({"bboxes": bboxes} if any(bbox is not None for bbox in bboxes) else {})}
+        decode_kwargs = {**({"max_pixels": video_max_pixels} if video_max_pixels is not None else {"max_edge": max_image_edge}), **({"bboxes": bboxes} if any(bbox is not None for bbox in bboxes) else {})}
         decoded_images = deepy_vision.decode_inspection_video_frames(path, [item[1] for item in indexed_frames], **decode_kwargs)
         for (input_index, _resolved_frame, _bbox), decoded_image in zip(indexed_frames, decoded_images):
             images[input_index] = decoded_image

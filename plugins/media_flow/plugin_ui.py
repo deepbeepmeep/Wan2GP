@@ -35,6 +35,7 @@ def create_config_ui(self, api_session):
     ratio_values = {value for _, value in ui_constants.RATIO_CHOICES}
 
     form_controller = ProcessFormController(library=library, get_model_def=get_model_def, output_resolution_values=output_resolution_values, source_audio_track_values=source_audio_track_values, ratio_values=ratio_values)
+    form_event_options = {"queue": True, "concurrency_limit": 1, "concurrency_id": f"media_flow_form_{id(self)}", "trigger_mode": "always_last", "show_progress": "hidden"}
     saved_mediaflow_settings = catalog.ensure_mediaflow_settings_migrated(catalog.load_saved_mediaflow_settings(), library.media_kind_for_user_ref)
     default_media_kind = catalog.current_media_kind(saved_mediaflow_settings)
     default_batch_mode = catalog.current_batch_mode(saved_mediaflow_settings)
@@ -344,11 +345,13 @@ def create_config_ui(self, api_session):
             "",
         )
 
-    def _change_media_kind(memory_state, current_process_name, next_media_kind, batch_mode_value, main_state, main_lset_name, refs, source_path_value, source_image_path_value, batch_source_path_value, batch_image_source_path_value, batch_name_value, process_strength_value, output_path_value, prompt_value, continue_value, source_audio_track_value, output_resolution_value, target_ratio_value, chunk_size_value, overlap_value, start_value, end_value):
+    def _change_media_kind(memory_state, current_process_name, next_media_kind, batch_mode_value, main_state, refs, source_path_value, source_image_path_value, batch_source_path_value, batch_image_source_path_value, batch_name_value, process_strength_value, output_path_value, prompt_value, continue_value, source_audio_track_value, output_resolution_value, chunk_size_value, overlap_value, start_value, end_value):
         next_media_kind = catalog.normalize_media_kind(next_media_kind)
         current_process_media_kind = library.media_kind_for_process(current_process_name, main_state, refs)
         next_batch_mode = catalog.normalize_batch_mode(batch_mode_value)
-        values = _form_values(current_process_media_kind, next_batch_mode, source_path_value, source_image_path_value, batch_source_path_value, batch_image_source_path_value, process_strength_value, output_path_value, prompt_value, continue_value, source_audio_track_value, output_resolution_value, target_ratio_value, chunk_size_value, overlap_value, start_value, end_value)
+        current_memory = memory_state.get(form_controller.memory_key(current_process_name, current_process_media_kind, next_batch_mode)) if isinstance(memory_state, dict) else None
+        remembered_target_ratio = current_memory.get("target_ratio") if isinstance(current_memory, dict) else None
+        values = _form_values(current_process_media_kind, next_batch_mode, source_path_value, source_image_path_value, batch_source_path_value, batch_image_source_path_value, process_strength_value, output_path_value, prompt_value, continue_value, source_audio_track_value, output_resolution_value, remembered_target_ratio, chunk_size_value, overlap_value, start_value, end_value)
         updated_memory = form_controller.store_memory(memory_state, current_process_name, main_state, refs, values, current_process_media_kind, next_batch_mode)
         updated_memory = _store_batch_name(updated_memory, current_process_media_kind, next_batch_mode, batch_name_value)
         saved_settings = catalog.load_saved_mediaflow_settings()
@@ -383,6 +386,11 @@ def create_config_ui(self, api_session):
             gr.update(visible=not image_process),
             gr.update(value=status_ui.render_process_status_html("Idle", "Waiting to start...") if image_process else status_ui.render_chunk_status_html(0, 0, 0, "Idle", "Waiting to start...")),
         )
+
+    def _restore_active_form(memory_state, process_name_value, media_kind, batch_mode_value, main_state, refs, source_path_value, source_image_path_value, batch_source_path_value, batch_image_source_path_value):
+        active_source_path = _active_source_value(media_kind, batch_mode_value, source_path_value, source_image_path_value, batch_source_path_value, batch_image_source_path_value)
+        restored = form_controller.restore_state(memory_state, process_name_value, active_source_path, main_state, refs, media_kind, batch_mode_value)
+        return (*_active_source_outputs(media_kind, batch_mode_value, restored[0]), *restored[1:])
 
     process_form_memory = gr.State(initial_process_form_memory)
     active_process_name_state = gr.State(default_process_name)
@@ -594,91 +602,85 @@ def create_config_ui(self, api_session):
 
     gr.on(
         [
-            source_path.change,
-            source_image_path.change,
-            process_strength.change,
-            output_path.change,
-            prompt_text.change,
-            continue_enabled.change,
-            source_audio_track.change,
-            output_resolution.change,
-            target_ratio.change,
-            chunk_size_seconds.change,
-            sliding_window_overlap.change,
-            start_seconds.change,
-            end_seconds.change,
-            batch_source_path.change,
-            batch_image_source_path.change,
-            batch_name.change,
+            source_path.input,
+            source_image_path.input,
+            process_strength.input,
+            output_path.input,
+            prompt_text.input,
+            continue_enabled.input,
+            source_audio_track.input,
+            output_resolution.input,
+            target_ratio.input,
+            chunk_size_seconds.input,
+            sliding_window_overlap.input,
+            start_seconds.input,
+            end_seconds.input,
+            batch_source_path.input,
+            batch_image_source_path.input,
+            batch_name.input,
         ],
         fn=_store_memory,
         inputs=[process_form_memory, active_process_name_state, process_media_kind, batch_mode, self.state, user_process_refs, source_path, source_image_path, batch_source_path, batch_image_source_path, batch_name, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         outputs=[process_form_memory],
-        queue=False,
-        show_progress="hidden",
+        **form_event_options,
     )
     process_mode_event = process_mode_tabs.select(
         fn=_change_batch_mode,
         inputs=[process_form_memory, active_process_name_state, process_media_kind, batch_mode, self.state, self.lset_name, user_process_refs, source_path, source_image_path, batch_source_path, batch_image_source_path, batch_name, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         outputs=[process_form_memory, batch_mode, process_model_type, process_name, process_user_settings_hint_row, active_process_name_state, settings_actions_column, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, source_image_path, batch_source_path, batch_image_source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds, batch_name, batch_name_row, batch_status_html],
-        queue=False,
-        show_progress="hidden",
+        **form_event_options,
     )
-    process_mode_event.then(fn=_media_visibility_updates, inputs=[process_name, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], queue=False, show_progress="hidden")
-    process_media_kind_event = process_media_kind.change(
+    process_mode_event.then(fn=_media_visibility_updates, inputs=[active_process_name_state, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], **form_event_options)
+    process_media_kind_event = process_media_kind.input(
         fn=_change_media_kind,
-        inputs=[process_form_memory, active_process_name_state, process_media_kind, batch_mode, self.state, self.lset_name, user_process_refs, source_path, source_image_path, batch_source_path, batch_image_source_path, batch_name, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+        inputs=[process_form_memory, active_process_name_state, process_media_kind, batch_mode, self.state, user_process_refs, source_path, source_image_path, batch_source_path, batch_image_source_path, batch_name, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         outputs=[user_process_refs, process_model_type, process_name, process_user_settings_hint_row, process_form_memory, active_process_name_state, settings_actions_column, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, source_image_path, batch_source_path, batch_image_source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds, batch_name, batch_name_row],
-        queue=False,
-        show_progress="hidden",
+        **form_event_options,
     )
-    process_media_kind_event.then(fn=_media_visibility_updates, inputs=[process_name, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], queue=False, show_progress="hidden")
-    process_model_type_event = process_model_type.change(
+    process_media_kind_event.then(fn=_media_visibility_updates, inputs=[active_process_name_state, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], **form_event_options)
+    process_model_type_event = process_model_type.input(
         fn=_change_process_model_type,
         inputs=[process_form_memory, active_process_name_state, process_media_kind, batch_mode, process_model_type, self.state, self.lset_name, user_process_refs, source_path, source_image_path, batch_source_path, batch_image_source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         outputs=[process_form_memory, active_process_name_state, process_name, process_user_settings_hint_row, settings_actions_column, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, source_image_path, batch_source_path, batch_image_source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
-        queue=False,
-        show_progress="hidden",
+        **form_event_options,
     )
-    process_model_type_event.then(fn=_media_visibility_updates, inputs=[process_name, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], queue=False, show_progress="hidden")
-    process_name_event = process_name.change(
+    process_model_type_event.then(fn=_media_visibility_updates, inputs=[active_process_name_state, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], **form_event_options)
+    process_name_event = process_name.input(
         fn=_change_process_name,
         inputs=[process_form_memory, active_process_name_state, process_media_kind, batch_mode, process_name, process_model_type, self.state, user_process_refs, source_path, source_image_path, batch_source_path, batch_image_source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         outputs=[process_form_memory, active_process_name_state, settings_actions_column, delete_user_settings_btn, settings_actions_placeholder, source_path, source_image_path, batch_source_path, batch_image_source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
-        queue=False,
-        show_progress="hidden",
+        **form_event_options,
     )
-    process_name_event.then(fn=_media_visibility_updates, inputs=[process_name, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], queue=False, show_progress="hidden")
+    process_name_event.then(fn=_media_visibility_updates, inputs=[active_process_name_state, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], **form_event_options)
     add_user_settings_event = add_user_settings_btn.click(
         fn=_add_user_process_link,
         inputs=[process_name, process_media_kind, self.state, self.lset_name, user_process_refs],
         outputs=[user_process_refs, process_model_type, process_name, process_user_settings_hint_row, active_process_name_state, settings_actions_column, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder],
-        show_progress="hidden",
+        **form_event_options,
     )
-    add_user_settings_event.then(fn=_media_visibility_updates, inputs=[process_name, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], queue=False, show_progress="hidden")
+    add_user_settings_restore_event = add_user_settings_event.then(fn=_restore_active_form, inputs=[process_form_memory, active_process_name_state, process_media_kind, batch_mode, self.state, user_process_refs, source_path, source_image_path, batch_source_path, batch_image_source_path], outputs=[source_path, source_image_path, batch_source_path, batch_image_source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds], **form_event_options)
+    add_user_settings_restore_event.then(fn=_media_visibility_updates, inputs=[active_process_name_state, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], **form_event_options)
     delete_user_settings_event = delete_user_settings_btn.click(
         fn=_delete_user_process_link,
         inputs=[process_form_memory, process_media_kind, batch_mode, process_name, self.state, user_process_refs, source_path, source_image_path, batch_source_path, batch_image_source_path],
         outputs=[user_process_refs, process_model_type, process_name, process_user_settings_hint_row, active_process_name_state, settings_actions_column, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, source_image_path, batch_source_path, batch_image_source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
-        show_progress="hidden",
+        **form_event_options,
     )
-    delete_user_settings_event.then(fn=_media_visibility_updates, inputs=[process_name, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], queue=False, show_progress="hidden")
+    delete_user_settings_event.then(fn=_media_visibility_updates, inputs=[active_process_name_state, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], **form_event_options)
     refresh_form_event = self.refresh_form_trigger.change(
         fn=_refresh_from_main,
         inputs=[self.refresh_form_trigger, process_form_memory, active_process_name_state, process_media_kind, batch_mode, process_model_type, self.state, self.lset_name, user_process_refs, source_path, source_image_path, batch_source_path, batch_image_source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         outputs=[process_model_type, process_name, process_user_settings_hint_row, process_form_memory, active_process_name_state, settings_actions_column, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, source_image_path, batch_source_path, batch_image_source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
-        queue=False,
-        show_progress="hidden",
+        **form_event_options,
     )
-    refresh_form_event.then(fn=_media_visibility_updates, inputs=[process_name, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], queue=False, show_progress="hidden")
+    refresh_form_event.then(fn=_media_visibility_updates, inputs=[active_process_name_state, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], **form_event_options)
     tab_refresh_event = tab_refresh_trigger.change(
         fn=_refresh_from_main,
         inputs=[tab_refresh_trigger, process_form_memory, active_process_name_state, process_media_kind, batch_mode, process_model_type, self.state, self.lset_name, user_process_refs, source_path, source_image_path, batch_source_path, batch_image_source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
         outputs=[process_model_type, process_name, process_user_settings_hint_row, process_form_memory, active_process_name_state, settings_actions_column, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, source_image_path, batch_source_path, batch_image_source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
-        queue=False,
-        show_progress="hidden",
+        **form_event_options,
     )
-    tab_refresh_event.then(fn=_media_visibility_updates, inputs=[process_name, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], queue=False, show_progress="hidden")
+    tab_refresh_event.then(fn=_media_visibility_updates, inputs=[active_process_name_state, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], **form_event_options)
     start_btn.click(
         fn=process_runner.start_process,
         inputs=[self.state, process_name, user_process_refs, source_path, source_image_path, process_strength, output_path, prompt_text, continue_enabled, preview_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds, batch_mode, batch_name, batch_source_path, batch_image_source_path],

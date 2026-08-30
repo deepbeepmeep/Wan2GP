@@ -4971,7 +4971,7 @@ class DeepyZeroTools:
             },
             "mid_res_sampling": {
                 "type": "boolean",
-                "description": "Optional mid-resolution mode that uses one-quarter as many frames fitted within 512x512 instead of 256x256.",
+                "description": "Optional mid-resolution mode that uses one-quarter as many frames with a 512²-pixel budget instead of a 256²-pixel budget.",
                 "required": False,
             },
             "min_frames_between_samples": {
@@ -5063,7 +5063,7 @@ class DeepyZeroTools:
         progress = {
             "status": "running", "media_id": media_record.get("media_id", ""), "question": question,
             "start_time_seconds": start_time_seconds, "end_time_seconds": sampled_end_seconds, "sample_count": sample_count,
-            "max_image_edge": max_image_edge, "mid_res_sampling": mid_res_sampling,
+            "max_pixels_per_image": max_image_edge * max_image_edge, "mid_res_sampling": mid_res_sampling,
             "min_frames_between_samples": min_frames_between_samples, "min_seconds_between_samples": min_seconds_between_samples,
         }
         self._update_tool_progress("running", f"Inspecting {sample_count} video frames", progress)
@@ -5075,7 +5075,7 @@ class DeepyZeroTools:
                 "media_id": media_record.get("media_id", ""), "start_frame_no": start_frame, "end_frame_no": end_frame,
                 "start_time_seconds": start_time_seconds, "end_time_seconds": sampled_end_seconds,
                 "requested_end_time_seconds": end_time_seconds, "sample_count": sample_count,
-                "max_image_edge": max_image_edge, "mid_res_sampling": mid_res_sampling,
+                "max_pixels_per_image": max_image_edge * max_image_edge, "mid_res_sampling": mid_res_sampling,
                 "min_frames_between_samples": min_frames_between_samples, "min_seconds_between_samples": min_seconds_between_samples,
             })
         return result
@@ -5104,8 +5104,8 @@ class DeepyZeroTools:
             elif metadata["name"] == "inspect_video":
                 high_count = deepy_vision.video_inspection_sample_count(remote=self._vision_is_remote, mid_res_sampling=False)
                 mid_count = deepy_vision.video_inspection_sample_count(remote=self._vision_is_remote, mid_res_sampling=True)
-                properties["mid_res_sampling"]["description"] = f"When true, sample up to {mid_count} frames fitted within 512x512 instead of the default up to {high_count} frames fitted within 256x256."
-                description = f"Inspect a video time range with up to {high_count} automatically selected frames fitted within 256x256, capped at two samples per second, or up to {mid_count} frames fitted within 512x512 when mid_res_sampling is true."
+                properties["mid_res_sampling"]["description"] = f"When true, sample up to {mid_count} frames using a 512²-pixel budget instead of the default up to {high_count} frames using a 256²-pixel budget."
+                description = f"Inspect a video time range with up to {high_count} automatically selected frames using a 256²-pixel budget, capped at two samples per second, or up to {mid_count} frames using a 512²-pixel budget when mid_res_sampling is true."
             schemas.append(
                 {
                     "type": "function",
@@ -6168,7 +6168,7 @@ class AssistantEngine:
             inspected_media.append({"input_index": input_index + 1, "media_id": current_record.get("media_id", ""), "media_type": media_type, "label": current_record.get("label", ""), "frame_no": resolved_frame_no, "time_seconds": time_seconds, "bbox": bbox})
         for media_path, indexed_frames in video_inputs.items():
             bboxes = [item[2] for item in indexed_frames]
-            decode_kwargs = {"max_edge": max_image_edge, **({"bboxes": bboxes} if any(bbox is not None for bbox in bboxes) else {})}
+            decode_kwargs = {**({"max_pixels": max_image_edge * max_image_edge} if max_image_edge is not None else {}), **({"bboxes": bboxes} if any(bbox is not None for bbox in bboxes) else {})}
             decoded_images = deepy_vision.decode_inspection_video_frames(media_path, [item[1] for item in indexed_frames], **decode_kwargs)
             for (input_index, _resolved_frame_no, _bbox), decoded_image in zip(indexed_frames, decoded_images):
                 images[input_index] = decoded_image

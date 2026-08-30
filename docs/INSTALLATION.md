@@ -2,7 +2,7 @@
 
 This guide covers manual installation for different GPU generations and operating systems. Alternatively you may use the 1 click install / update scripts (please check the repo readme for instructions).
 
-It is recommended to use Python 3.10.9, PyTorch 2.7.1 with Cuda 12.8 for GTX 10XX and Python 3.11.14, PyTorch 2.10 with Cuda 13.0/13.1 for RTX 30XX - RTX 50XX as both these configs are well-tested and stable.
+It is recommended to use Python 3.10.9, PyTorch 2.7.1 with Cuda 12.8 for GTX 10XX and Python 3.11.14, PyTorch 2.10 with Cuda 13.0/13.1 for RTX 20XX - RTX 50XX as both these configs are well-tested and stable.
 
 It is not recommended to use either PytTorch 2.8.0 as some System RAM memory leaks have been observed when switching models or 2.9.0 which has some Convolution 3D perf issues (VAE VRAM requirements explode).
 
@@ -58,30 +58,34 @@ pip install triton-windows
 Triton library should be automatically installed when installing pytorch.
 
 ## Sage Attention
-Sage Attention accelerates a Video / Image Generation up to x2 with very little quality loss. Sage doesnt support GTX 10xx.
+Sage Attention accelerates Video / Image Generation up to x2 with very little quality loss. Sage does not support GTX 10XX in WanGP.
 
-#### Windows Install Sage Attention for RTX 30XX Only
-Only Sage attention 1 is supported for these GPUs 
+Use the version matching your GPU generation:
+
+- **RTX 20XX (Turing):** SageAttention 1.0.6. SageAttention 2 is not supported.
+- **RTX 30XX or newer (Ampere, Ada, and Blackwell):** SageAttention 2.2.0.
+
+#### Windows: Install SageAttention 1 for RTX 20XX
 ```
 pip install sageattention==1.0.6
 ```
-#### Windows Install Sage2 Attention for RTX 40XX-50xx 
+
+#### Windows: Install SageAttention 2 for RTX 30XX-50XX
 ```
 pip install https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post4/sageattention-2.2.0+cu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl
 ```
 
-#### Linux Install Sage Attention for RTX 30XX Only
-Only Sage attention 1 is supported for these GPUs 
+#### Linux: Install SageAttention 1 for RTX 20XX
 ```
 pip install sageattention==1.0.6
 ```
 
-#### Linux Install Sage Attention for RTX 40XX, 50XX Only. Make sure it's Sage 2.2.0
+#### Linux: Install SageAttention 2 for RTX 30XX-50XX
 ```
 python -m pip install "setuptools<=75.8.2" --force-reinstall
 git clone https://github.com/thu-ml/SageAttention
 cd SageAttention 
-pip install -e .
+pip install --no-build-isolation -e .
 ```
 
 ## Sparge Attention

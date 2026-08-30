@@ -461,6 +461,8 @@ pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 --index-url htt
 pip install -r requirements.txt
 ```
 
+For optimized attention, install **SageAttention 1.0.6 on RTX 20XX** and **SageAttention 2.2.0 on RTX 30XX or newer**. SageAttention 2 requires an Ampere-or-newer GPU; GTX 10XX should use SDPA. See the **[Installation Guide](docs/INSTALLATION.md#sage-attention)** for the platform-specific commands.
+
 ### Manual installation: (for GTX 10xx)
 
 ```bash

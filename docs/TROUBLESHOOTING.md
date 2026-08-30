@@ -110,19 +110,24 @@ python wgp.py --profile 3
 
 #### GPU-Specific Optimizations
 
-**RTX 10XX/20XX Series**:
+**GTX 10XX Series**:
 ```bash
 python wgp.py --attention sdpa --profile 4 --teacache 1.5
 ```
 
+**RTX 20XX Series (SageAttention 1.0.6)**:
+```bash
+python wgp.py --attention sage --profile 4 --teacache 1.5
+```
+
 **RTX 30XX/40XX Series**:
 ```bash
-python wgp.py --compile --attention sage --profile 3 --teacache 2.0
+python wgp.py --compile --attention sage2 --profile 3 --teacache 2.0
 ```
 
 **RTX 50XX Series**:
 ```bash
-python wgp.py --attention sage --profile 4 --fp16
+python wgp.py --attention sage2 --profile 4 --fp16
 ```
 
 ### Attention Mechanism Issues
@@ -291,9 +296,10 @@ python wgp.py --profile 4 --perc-reserved-mem-max 0.2
 ### Performance Profiling
 ```bash
 # Test different configurations
-python wgp.py --attention sdpa --profile 4  # Baseline
-python wgp.py --attention sage --profile 3  # Performance
-python wgp.py --compile --teacache 2.0      # Maximum speed
+python wgp.py --attention sdpa --profile 4   # Baseline / GTX 10XX
+python wgp.py --attention sage --profile 3   # RTX 20XX with SageAttention 1
+python wgp.py --attention sage2 --profile 3  # RTX 30XX+ with SageAttention 2
+python wgp.py --compile --teacache 2.0       # Maximum speed
 ```
 
 ## Getting Help

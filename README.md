@@ -18,7 +18,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 ### Run More Models on More Hardware
 
 - **Low VRAM requirements**: run select models with as little as **6 GB of VRAM**.
-- **Older Nvidia GPU support**: use RTX 10XX, 20XX, and newer cards.
+- **Older Nvidia GPU support**: use GTX 10XX, RTX 20XX, and newer cards.
 - **AMD GPU support**: run on RDNA 4, 3, 3.5, and 2 hardware; see the Installation section below.
 - **Fast latest-GPU performance**: take advantage of modern GPU acceleration.
 - **Full web interface**: generate, manage, and reuse outputs from an easy browser UI.

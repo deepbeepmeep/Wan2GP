@@ -266,6 +266,7 @@ python wgp.py --attention sdpa
 python wgp.py --attention sage
 ```
 - Requires Triton installation
+- On RTX 20XX, install SageAttention 1.0.6
 - 30% faster than SDPA
 - Small quality cost
 
@@ -274,6 +275,7 @@ python wgp.py --attention sage
 python wgp.py --attention sage2
 ```
 - Requires Triton and SageAttention 2.x
+- Requires RTX 30XX or newer (Ampere or newer)
 - 40% faster than SDPA
 - Best performance option
 

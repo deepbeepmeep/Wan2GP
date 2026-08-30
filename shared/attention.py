@@ -62,8 +62,20 @@ try:
             cu_seqlens_kv,
             max_seqlen_q,
             max_seqlen_kv,
+            is_causal=False,
+            sm_scale=None,
         ):
-        return sageattn_varlen(q, k, v, cu_seqlens_q, cu_seqlens_kv, max_seqlen_q, max_seqlen_kv)
+        return sageattn_varlen(
+            q,
+            k,
+            v,
+            cu_seqlens_q,
+            cu_seqlens_kv,
+            max_seqlen_q,
+            max_seqlen_kv,
+            is_causal=is_causal,
+            sm_scale=sm_scale,
+        )
     
 except ImportError:
     sageattn_varlen_wrapper = None
@@ -502,6 +514,8 @@ def pay_attention(
             cu_seqlens_kv= cu_seqlens_k,
             max_seqlen_q=lq,
             max_seqlen_kv=lk,
+            is_causal=causal,
+            sm_scale=softmax_scale,
         ).unflatten(0, (b, lq))
     elif attn=="sage3":
         qkv_list = [q,k,v]

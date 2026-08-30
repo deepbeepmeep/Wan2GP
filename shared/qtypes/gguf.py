@@ -1270,6 +1270,43 @@ class GGUFWeightTensor(QTensor):
         raw = self._data if self._data.device == device else self._data.to(device)
         return _gguf_dequantize_tensor(raw, self._tensor_type, self._tensor_shape, dtype=dtype)
 
+    def embedding(self, input, dtype=None):
+        if dtype is None:
+            dtype = self.dtype
+        if len(self._tensor_shape) != 2:
+            return None
+
+        num_embeddings, embedding_dim = self._tensor_shape
+        raw = self._data.reshape(num_embeddings, -1)
+        flat_input = input.reshape(-1)
+        if flat_input.numel() == 0:
+            return torch.empty((*input.shape, embedding_dim), dtype=dtype, device=input.device)
+
+        # GGUF blocks are row-aligned, so gather each requested packed row before dequantizing it.
+        source_input = flat_input if flat_input.device == raw.device else flat_input.to(raw.device)
+        unique_input, inverse = torch.unique(source_input, sorted=False, return_inverse=True)
+        unique_count = unique_input.shape[0]
+        raw_rows = raw.index_select(0, unique_input)
+        del unique_input, source_input
+
+        if raw_rows.device != input.device:
+            raw_rows = raw_rows.to(input.device)
+        dense_rows = _gguf_dequantize_tensor(
+            raw_rows,
+            self._tensor_type,
+            (unique_count, embedding_dim),
+            dtype=dtype,
+        )
+        del raw_rows
+        if dense_rows.device != input.device:
+            dense_rows = dense_rows.to(input.device)
+
+        if inverse.device != input.device:
+            inverse = inverse.to(input.device)
+        output = dense_rows.index_select(0, inverse)
+        del dense_rows, inverse
+        return output.reshape(*input.shape, embedding_dim)
+
     def linear(self, input, bias=None):
         if torch.is_tensor(input):
             target_dtype = _resolve_default_dtype(self._gguf_default_dtype, fallback=input.dtype)
@@ -1793,6 +1830,9 @@ class QEmbedding(BaseQEmbedding):
                     fast_out = _try_llamacpp_cuda_embedding(qweight, input, target_dtype)
                     if fast_out is not None:
                         return self._apply_embed_scale(fast_out)
+                output = qweight.embedding(input, dtype=target_dtype)
+                if output is not None:
+                    return self._apply_embed_scale(output)
             weight = qweight.dequantize(dtype=target_dtype, device=input.device)
             output = torch.nn.functional.embedding(
                 input,

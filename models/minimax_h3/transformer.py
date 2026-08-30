@@ -416,6 +416,8 @@ class MiniMaxH3Model(nn.Module):
             if key.startswith("lora_unet_"):
                 path, suffix = key[len("lora_unet_"):].split(".", 1)
                 key = path.replace("blocks_", "blocks.", 1).replace("_attn_", ".attn.").replace("_mlp_", ".mlp.") + "." + suffix
+            if key.startswith("token_refiner_blocks."):
+                key = "token_refiner.blocks." + key[len("token_refiner_blocks."):]
             if diffusers_format:
                 diffusers_fc1 = ".ff.net.0.proj." in key
                 for source, target in (("token_refiner.refiner_blocks.", "token_refiner.blocks."),

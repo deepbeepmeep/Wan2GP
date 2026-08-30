@@ -335,6 +335,10 @@ class MiniMaxH3Pipeline:
         self.vae = video_vae
         self.video_encoder = torch.nn.ModuleDict({"encoder": video_vae.encoder, "quant_conv": video_vae.quant_conv})
         self.video_decoder = torch.nn.ModuleDict({"post_quant_conv": video_vae.post_quant_conv, "decoder": video_vae.decoder})
+        # These are profiled as separate MMGP models. Preserve the dtype selected
+        # while loading the VAE instead of applying the transformer's global dtype.
+        self.video_encoder._convertWeightsFloatTo = None
+        self.video_decoder._convertWeightsFloatTo = None
         if torch.cuda.is_available() and torch.cuda.get_device_properties(None).total_memory >= 10 * 1024**3:
             self.video_decoder._budget = 0
         self.audio_vae = audio_vae

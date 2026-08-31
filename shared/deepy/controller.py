@@ -12,6 +12,8 @@ from typing import Any, Callable
 import gradio as gr
 
 from shared.deepy.config import (
+    DEEPY_CONTEXT_TOKENS_DEFAULT,
+    DEEPY_CONTEXT_TOKENS_KEY,
     DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY,
     DEEPY_ENABLED_KEY,
     DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY,
@@ -23,6 +25,7 @@ from shared.deepy.config import (
     deepy_requirement_error,
     deepy_requirement_met,
     normalize_deepy_enabled,
+    normalize_deepy_context_tokens,
     normalize_deepy_type,
     normalize_deepy_vram_mode,
     set_deepy_runtime_config,
@@ -270,6 +273,7 @@ class DeepyController:
             from shared.prompt_enhancer import qwen35_text
 
             if qwen35_text._use_vllm_prompt_enhancer(model):
+                model._prompt_enhancer_min_model_len_hint = normalize_deepy_context_tokens(self._server_config().get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
                 engine = qwen35_text._get_or_create_vllm_engine(model, usage_mode="assistant")
                 engine.reserve_runtime(prompt_len=64, max_tokens=1, cfg_scale=1.0)
                 engine._ensure_llm()

@@ -43,7 +43,7 @@ def find_available_port(start_port: int = 2333, max_attempts: int = 100) -> int:
 
 class ModelRunner:
 
-    _MAX_SPECULATIVE_DRAFT_TOKENS = 5
+    _MAX_SPECULATIVE_DRAFT_TOKENS = 2
 
     def __init__(self, config: Config, rank: int, event: Event | list[Event], model_object=None, graph_pool_handle=None):
         # Enable capturing scalar outputs to avoid graph breaks from Tensor.item() calls

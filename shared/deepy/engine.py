@@ -468,6 +468,14 @@ class AssistantSessionState:
     artifact_workspace: Any | None = None
     remote_backends: dict[str, Any] = field(default_factory=dict)
 
+    def __repr__(self) -> str:
+        return (
+            f"AssistantSessionState(session_id={self.chat_session_id!r}, messages={len(self.messages)}, "
+            f"transcript={len(self.chat_transcript)}, media={len(self.media_registry)}, "
+            f"revision={self.chat_revision}, epoch={self.chat_epoch}, worker_active={self.worker_active}, "
+            f"queued_jobs={self.queued_job_count}, interrupt_requested={self.interrupt_requested})"
+        )
+
 
 @dataclass(slots=True)
 class AssistantRuntimeHooks:

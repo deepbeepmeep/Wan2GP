@@ -1183,20 +1183,20 @@ class Qwen35AssistantRuntime:
             self._log(f"Assistant KV cache snapshot mismatch saved_shape={saved_shape} live_shape={live_shape}")
             raise RuntimeError("Assistant KV cache snapshot shape does not match current runtime.")
         with torch.inference_mode():
-            runner.kv_cache.copy_(kv_cache.to(device=runner.kv_cache.device, dtype=runner.kv_cache.dtype))
+            runner.kv_cache.copy_(kv_cache)
             if hasattr(runner, "kv_cache_scales"):
                 kv_cache_scales = snapshot.get("kv_cache_scales")
                 if kv_cache_scales is None or tuple(kv_cache_scales.shape) != tuple(runner.kv_cache_scales.shape):
                     raise RuntimeError("Assistant KV cache scale snapshot does not match current runtime.")
-                runner.kv_cache_scales.copy_(kv_cache_scales.to(device=runner.kv_cache_scales.device, dtype=runner.kv_cache_scales.dtype))
+                runner.kv_cache_scales.copy_(kv_cache_scales)
         linear_modules = self._get_linear_state_modules()
         linear_states = snapshot.get("linear_states", [])
         if len(linear_modules) != len(linear_states):
             raise RuntimeError("Assistant linear-state snapshot does not match runtime layer count.")
         with torch.inference_mode():
             for module, saved_state in zip(linear_modules, linear_states):
-                saved_conv = saved_state["conv"].to(device=module.conv_state_buffer.device, dtype=module.conv_state_buffer.dtype)
-                saved_recurrent = saved_state["recurrent"].to(device=module.recurrent_state_buffer.device, dtype=module.recurrent_state_buffer.dtype)
+                saved_conv = saved_state["conv"]
+                saved_recurrent = saved_state["recurrent"]
                 if tuple(saved_conv.shape) != tuple(module.conv_state_buffer.shape) or tuple(saved_recurrent.shape) != tuple(module.recurrent_state_buffer.shape):
                     raise RuntimeError("Assistant linear-state snapshot tensor shape mismatch.")
                 module.conv_state_buffer.copy_(saved_conv)

@@ -314,7 +314,8 @@ class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
         if not tracked_faces:
             print("[H3FaceRefine] Auto selection found no relevant face tracks; leaving the source video unchanged")
             return sample, None
-        hybrid_h3 = loaded_model_context is not None and loaded_model_context.model_family == "minimax_h3" and not loaded_model_context.model.reference_mode
+        hybrid_h3 = (loaded_model_context is not None and loaded_model_context.model_family == "minimax_h3"
+                     and (not loaded_model_context.model.reference_mode or loaded_model_context.model.transformer.pdd_num_steps is not None))
         if loaded_model_context is None or hybrid_h3:
             load_model(loaded_model_context if hybrid_h3 else None)
             pipeline = RUNTIME.model

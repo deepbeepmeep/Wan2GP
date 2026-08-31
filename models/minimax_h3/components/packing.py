@@ -103,7 +103,7 @@ def _unpack_keyframe_anchor(entry):
     return (*entry, None) if len(entry) == 2 else entry
 
 
-ef _cumulative_t_span(latent_idx):
+def _cumulative_t_span(latent_idx):
     """Time position at the START of latent frame latent_idx.
     
     Generalizes the first/last keyframe position calculation so that
@@ -118,7 +118,6 @@ ef _cumulative_t_span(latent_idx):
 
 def _reference_t_span(length):
     return sum(_FRAME_RESCALE * _FRAME_PER_TOKEN[index % len(_FRAME_PER_TOKEN)] for index in range(length))
-(feat: multishot interior keyframes, memory mode, and condition strength)
 
 
 def _reference_t_span(length, time_scale=1.0):
@@ -210,7 +209,6 @@ def build_packed_sequence(text_token_tags, num_latent_frames, latent_height, lat
             raise ValueError(f"Unknown MiniMax H3 keyframe anchor {anchor!r} (expected first, last, or int)")
         condition[:, :, 1:] = frame_grid[None]
         condition_cursor = rows.stop
-(feat: multishot interior keyframes, memory mode, and condition strength)
 
     _fill_audio_condition_positions(position_ids, condition_audio_start, audio_condition_anchors,
                                     float(text_len), target_origin, width_grid)

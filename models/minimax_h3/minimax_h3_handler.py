@@ -240,7 +240,7 @@ class family_handler:
         result = {
             "dtype": "bf16",
             "fps": 24,
-            "frames_minimum": 107,
+            "frames_minimum": 56,
             "frames_steps": 17,
             "frames_offset": 5,
             "block_size": 32,

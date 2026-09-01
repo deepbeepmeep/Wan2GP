@@ -154,7 +154,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.14"
-WanGP_version = "12.647"
+WanGP_version = "12.648"
 settings_version = 2.77
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -4991,7 +4991,7 @@ def select_media(state, current_gallery_tab, input_file_list, file_selected, aud
             video_loras_multipliers += [""] * len(video_activated_loras)
             lora_dir = None if video_model_type is None else get_lora_dir(video_model_type)
             video_activated_loras = [ f"<span class='copy-swap' tabindex=0><SPAN class='copy-swap__trunc' >{get_lora_local_path(None, lora)}</span><span class='copy-swap__full'>{get_lora_URL(lora_dir, lora) .split('|')[0]}</span></span>" for lora in video_activated_loras] 
-            video_activated_loras = [ f"<TR><TD style='padding-top:0px;padding-left:0px;width:100%;max-width:0'>{lora}</TD><TD style='width:1%;white-space:nowrap;vertical-align:top'>x{multiplier if len(multiplier)>0 else '1'}</TD></TR>" for lora, multiplier in zip(video_activated_loras, video_loras_multipliers) ]
+            video_activated_loras = [ f"<TR><TD style='padding-top:0px;padding-left:0px;width:100%;max-width:0'>{lora}</TD><TD style='width:1%;white-space:nowrap;vertical-align:top'>x{str(multiplier).strip() or '1'}</TD></TR>" for lora, multiplier in zip(video_activated_loras, video_loras_multipliers) ]
             video_activated_loras_str = "<TABLE style='border:0px;padding:0px;width:100%;table-layout:fixed'>" + "".join(video_activated_loras) + "</TABLE>" if len(video_activated_loras) > 0 else ""
             video_duration_seconds = configs.get("duration_seconds", 0)
             if model_def.get("duration_slider", None) is not None and video_duration_seconds > 0:
@@ -5963,7 +5963,8 @@ def edit_media(
 
     if mode == "edit_postprocessing":
         if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 or film_grain_intensity > 0:
-            send_cmd("progress", [0, get_latest_status(state,"Upsampling - Starting" if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 else "Adding Film Grain"  )])
+            spatial_status = upsampler_api.method_progress_label(spatial_upsampling)
+            send_cmd("progress", [0, get_latest_status(state, spatial_status if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 else "Adding Film Grain")])
             if source_is_image:
                 sample = torch.from_numpy(np.array(image).astype(np.uint8)).unsqueeze(0).permute(-1,0,1,2)
             else:
@@ -5980,7 +5981,7 @@ def edit_media(
 
         if len(spatial_upsampling) > 0:
             def flashvsr_progress(phase, current_step=None, total_steps=None):
-                phase_text = f"Upsampling - {phase}"
+                phase_text = str(phase)
                 gen["progress_phase"] = (phase_text, int(current_step) if current_step is not None else -1)
                 status_msg = get_latest_status(state, phase_text)
                 if current_step is not None and total_steps is not None and int(total_steps) > 0:
@@ -8152,7 +8153,8 @@ def generate_media(
 
 
                 if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 and (not upsampler_api.is_vae_upsampling(spatial_upsampling) or upsampler_api.has_post_model_process_vae_upsampling(spatial_upsampling)):
-                    send_cmd("progress", [0, get_latest_status(state,"Upsampling - Starting")])
+                    spatial_status = upsampler_api.method_progress_label(spatial_upsampling)
+                    send_cmd("progress", [0, merge_status_context(status, spatial_status)])
                 
                 output_fps  = fps
                 if len(temporal_upsampling) > 0:
@@ -8160,9 +8162,9 @@ def generate_media(
 
                 if len(spatial_upsampling) > 0:
                     def flashvsr_progress(phase, current_step=None, total_steps=None):
-                        phase_text = f"Upsampling - {phase}"
+                        phase_text = str(phase)
                         gen["progress_phase"] = (phase_text, int(current_step) if current_step is not None else -1)
-                        status_msg = get_latest_status(state, phase_text)
+                        status_msg = merge_status_context(status, phase_text)
                         if current_step is not None and total_steps is not None and int(total_steps) > 0:
                             send_cmd("progress", [(int(current_step), int(total_steps)), status_msg, int(total_steps)])
                         else:

@@ -208,7 +208,8 @@ def refine_video(video: torch.Tensor | None, strengths: torch.Tensor, *, pipelin
                  seed: int, fps: float, window_size: int, window_overlap: int, frame_offset: int = 0,
                  audio_waveform=None, audio_sample_rate: int = 0, source_audio_path: str | None = None,
                  reference_images=None, image_refs_relative_size: float = 100.0,
-                 vae_tile_size=None, abort_callback=None, progress_callback=None, frame_count=None, video_window_loader=None):
+                 vae_tile_size=None, abort_callback=None, progress_callback=None, frame_count=None, video_window_loader=None,
+                 window_index_offset: int = 0, window_count_total: int | None = None):
     frame_count = int(video.shape[1]) if video_window_loader is None else int(frame_count)
     starts = window_starts(frame_count, window_size, window_overlap)
     output = None
@@ -223,7 +224,8 @@ def refine_video(video: torch.Tensor | None, strengths: torch.Tensor, *, pipelin
                 input_window = _uint8_to_signed(input_window)
             input_window, strength_window = pad_window(input_window, strengths[start:stop])
             audio_window, window_audio_rate = slice_audio_for_window(audio_waveform, audio_sample_rate, source_audio_path, frame_offset + start, stop - start, int(input_window.shape[1]), fps)
-            label = f"Window {window_index}/{len(starts)}" if len(starts) > 1 else ""
+            total_windows = len(starts) if window_count_total is None else int(window_count_total)
+            label = f"Window {int(window_index_offset) + window_index}/{total_windows}" if total_windows > 1 else ""
 
             def status_callback(phase):
                 _report(progress_callback, f"{label} - {phase}" if label else phase)

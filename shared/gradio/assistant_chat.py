@@ -3081,7 +3081,7 @@ WAC.submitQueuedRequestAction = function (messageNode, action, text) {
   const messageId = String(messageNode.getAttribute('data-message-id') || '');
   const normalizedAction = String(action || '').trim().toLowerCase();
   const content = String(text || '').trim();
-  if (!messageId || !['edit', 'remove'].includes(normalizedAction) || (normalizedAction === 'edit' && !content)) return;
+  if (!messageId || !['edit', 'remove', 'steer'].includes(normalizedAction) || (normalizedAction === 'edit' && !content)) return;
   if (WAC.queuedEditMessageId === messageId) WAC.finishQueuedRequestEdit();
   messageNode.classList.add('is-pending-queue-action');
   if (!WAC.queuedRequestAction(normalizedAction, messageId, content)) {
@@ -3103,6 +3103,7 @@ WAC.handleQueuedRequestClick = function (event) {
   const action = String(messageAction.getAttribute('data-message-action') || '');
   if (action === 'edit') WAC.startQueuedRequestEdit(messageNode);
   else if (action === 'remove') WAC.submitQueuedRequestAction(messageNode, 'remove', '');
+  else if (action === 'steer') WAC.submitQueuedRequestAction(messageNode, 'steer', '');
   return true;
 };
 
@@ -4215,6 +4216,57 @@ def add_context_summary(session, message_id: str, text: str) -> tuple[str, str |
     return block_id, _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
 
 
+def upsert_context_summary(session, message_id: str, summary_id: str | None, text: str, streaming: bool = False) -> tuple[str, str | None]:
+    summary_text = str(text or "").strip()
+    if len(summary_text) == 0:
+        return "", None
+    record = _find_message(session, message_id)
+    if record is None:
+        return "", None
+    blocks = _ensure_message_blocks(record)
+    target_id = str(summary_id or "").strip()
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "context_summary" or block.get("id", "") != target_id:
+            continue
+        if str(block.get("text", "")).strip() == summary_text and bool(block.get("streaming", False)) == bool(streaming):
+            return target_id, None
+        block["text"] = summary_text
+        block["streaming"] = bool(streaming)
+        revision = _touch_chat(session)
+        return target_id, _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
+    target_id = target_id or _next_block_id("context_summary")
+    blocks.append({"id": target_id, "type": "context_summary", "text": summary_text, "streaming": bool(streaming)})
+    revision = _touch_chat(session)
+    return target_id, _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
+
+
+def remove_message_block(session, message_id: str, block_id: str) -> str | None:
+    record = _find_message(session, message_id)
+    if record is None:
+        return None
+    target_id = str(block_id or "").strip()
+    blocks = _ensure_message_blocks(record)
+    retained = [block for block in blocks if not isinstance(block, dict) or str(block.get("id", "")) != target_id]
+    if len(retained) == len(blocks):
+        return None
+    record["blocks"] = retained
+    revision = _touch_chat(session)
+    return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)}, session, revision)
+
+
+def steer_queued_message(session, message_id: str) -> str | None:
+    record = _find_message(session, message_id)
+    if record is None or str(record.get("role", "")).strip() != "user" or not bool(record.get("queued", False)):
+        return None
+    records = session.chat_transcript
+    records.remove(record)
+    record["badge"] = "Steered"
+    record["assistant_badge"] = "Steered"
+    records.insert(_queued_tail_insert_index(session), record)
+    _touch_chat(session)
+    return build_sync_event(session, status={"visible": True, "kind": "queued", "text": "Steering accepted. Applying this request at the current boundary..."})
+
+
 def upsert_reasoning_block(session, message_id: str, reasoning_id: str | None, text: str) -> tuple[str, str | None]:
     reasoning_text = str(text or "").strip()
     if len(reasoning_text) == 0:
@@ -5224,9 +5276,13 @@ def _render_copy_button(source: str, label: str, text: str | None = None) -> str
 
 
 def _render_queued_request_actions() -> str:
+    steer_label = html.escape("Steer with this queued request", quote=True)
     edit_label = html.escape("Edit queued request", quote=True)
     remove_label = html.escape("Remove queued request", quote=True)
     return (
+        f"<button type='button' class='wangp-assistant-chat__message-action-button' data-message-action='steer' aria-label='{steer_label}' title='{steer_label}'>"
+        "<svg viewBox='0 0 16 16' aria-hidden='true' focusable='false'><path d='M2.5 8h9M8.5 4l4 4-4 4'></path></svg>"
+        "</button>"
         f"<button type='button' class='wangp-assistant-chat__message-action-button' data-message-action='edit' aria-label='{edit_label}' title='{edit_label}'>"
         "<svg viewBox='0 0 16 16' aria-hidden='true' focusable='false'><path d='M3 11.8 3.5 9l6.8-6.8a1.4 1.4 0 0 1 2 0l1.5 1.5a1.4 1.4 0 0 1 0 2L7 12.5l-2.8.5Z'></path><path d='m9.4 3.1 3.5 3.5'></path></svg>"
         "</button>"
@@ -5346,9 +5402,10 @@ def _render_reasoning_block(block: dict[str, Any], block_no: int, total_blocks: 
 
 
 def _render_context_summary_block(block: dict[str, Any]) -> str:
+    open_attr = " open" if bool(block.get("streaming", False)) else ""
     return (
-        f"<details class='wangp-assistant-chat__disclosure wangp-assistant-chat__disclosure--context-summary' data-context-summary-id='{html.escape(str(block.get('id', '')))}'>"
-        "<summary><span class='wangp-assistant-chat__tool-title'><span class='wangp-assistant-chat__tool-chip'>Context</span>Earlier history summarized</span></summary>"
+        f"<details class='wangp-assistant-chat__disclosure wangp-assistant-chat__disclosure--context-summary' data-context-summary-id='{html.escape(str(block.get('id', '')))}'{open_attr}>"
+        f"<summary><span class='wangp-assistant-chat__tool-title'><span class='wangp-assistant-chat__tool-chip'>Context</span>{'Summarizing earlier history…' if bool(block.get('streaming', False)) else 'Earlier history summarized'}</span></summary>"
         f"<div class='wangp-assistant-chat__disclosure-body'><div class='wangp-assistant-chat__context-summary'>{_markdown_to_html(block.get('text', ''))}</div>{_render_collapse_button('summary')}</div>"
         "</details>"
     )

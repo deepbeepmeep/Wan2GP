@@ -24,11 +24,25 @@ FALLBACK_DETECTOR_PATH = f"{ASSET_FOLDER}/{FALLBACK_DETECTOR_FILE}"
 INSIGHTFACE_FILES = ("det_10g.onnx", "2d106det.onnx", "w600k_r50.onnx")
 
 
-def _face_progress_callback(callback, face_index: int, face_count: int):
-    if face_count <= 1 or not callable(callback):
+def _face_progress_callback(callback, face_index: int | None = None, face_count: int = 1):
+    if not callable(callback):
         return callback
-    prefix = f"{face_index + 1}/{face_count} Faces, "
-    return lambda phase, current=None, total=None: callback(prefix + phase, current, total)
+
+    def report(phase, current=None, total=None):
+        phase = str(phase)
+        status = "Face Refiner"
+        if face_index is not None and face_count > 1:
+            status += f", Face {face_index + 1}/{face_count}"
+        window_pos = phase.find("Window ")
+        if window_pos >= 0:
+            window, separator, phase = phase[window_pos:].partition(" - ")
+            status += f", {window}"
+            phase = phase if separator else ""
+        if phase:
+            status += f" - {phase}"
+        callback(status, current, total)
+
+    return report
 
 
 class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
@@ -144,6 +158,7 @@ class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
             "vae_methods": [],
             "default_spatial_upsampling": METHOD,
             "postprocessing_category": POSTPROCESSING_CATEGORY_REFINER,
+            "progress_label": "Face Refiner",
             "default_prompt": DEFAULT_PROMPT,
             "source_audio_conditioning": True,
             "description": "Detect and identity-track up to five faces through a video, refine stabilized crops with MiniMax H3 Ref2VA, and feather-stitch them back without changing output resolution. A uniform refinement strength controls source fidelity, while sliding windows keep longer clips temporally coherent.",
@@ -289,11 +304,13 @@ class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
             raise ValueError(error)
         import wgp
         from .face import crop_face_track, frames_to_sample, sample_to_frames, select_reference_frame, stitch, track_faces
-        from .runtime import RUNTIME, load_model, refine_video
+        from .runtime import RUNTIME, load_model, refine_video, window_starts
 
         config = self.config()
         if config["denoising_strength"] == 0.0 or config["blend"] == 0.0 or config["strength"] == 0.0:
             return sample, None
+        raw_progress_callback = progress_callback
+        progress_callback = _face_progress_callback(raw_progress_callback)
         frames, source_format = sample_to_frames(sample)
         reference_images = wgp.clean_image_list(reference_images or []) or []
         detector_path = self.files_locator.locate_file(DETECTOR_PATH)
@@ -314,7 +331,10 @@ class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
         if not tracked_faces:
             print("[H3FaceRefine] Auto selection found no relevant face tracks; leaving the source video unchanged")
             return sample, None
-        hybrid_h3 = loaded_model_context is not None and loaded_model_context.model_family == "minimax_h3" and not loaded_model_context.model.reference_mode
+        if callable(progress_callback):
+            progress_callback("Loading Model")
+        hybrid_h3 = (loaded_model_context is not None and loaded_model_context.model_family == "minimax_h3"
+                     and (not loaded_model_context.model.reference_mode or loaded_model_context.model.transformer.pdd_num_steps is not None))
         if loaded_model_context is None or hybrid_h3:
             load_model(loaded_model_context if hybrid_h3 else None)
             pipeline = RUNTIME.model
@@ -342,6 +362,8 @@ class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
                 track_prompt = refinement_prompt if not track_references or "<Picture 1>" in refinement_prompt else REFERENCE_BINDING + "\n" + refinement_prompt
                 track_jobs.append((transform, strengths, track_references, track_prompt))
             if hasattr(pipeline, "prewarm_refinement_prompt"):
+                if callable(progress_callback):
+                    progress_callback("Encoding Prompt")
                 print(f"[H3FaceRefine] Pre-encoding prompt/reference conditioning for {len(track_jobs)} face track(s) before denoising")
                 for transform, _strengths, track_references, track_prompt in track_jobs:
                     canvas_width, canvas_height = transform["canvas"]
@@ -351,8 +373,11 @@ class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
             source_frames = frames
             output = frames.clone()
             for track_index, (transform, strengths, track_references, track_prompt) in enumerate(track_jobs):
-                track_progress_callback = _face_progress_callback(progress_callback, track_index, len(track_jobs))
+                track_progress_callback = _face_progress_callback(raw_progress_callback, track_index, len(track_jobs))
                 segments = transform["segments"]
+                segment_window_counts = [len(window_starts(stop - start, config["window_size"], config["window_overlap"])) for start, stop in segments]
+                total_segment_windows = sum(segment_window_counts)
+                window_index_offset = 0
                 excluded = len(transform["active"]) - sum(stop - start for start, stop in segments)
                 print(f"[H3FaceRefine] Face track {track_index + 1}: refining {len(segments)} presence segment(s); excluded {excluded} absent frame(s) from H3 temporal attention")
                 for segment_index, (start, stop) in enumerate(segments, start=1):
@@ -370,17 +395,22 @@ class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
                                            reference_images=track_references if reference_mode else None,
                                            image_refs_relative_size=image_refs_relative_size, vae_tile_size=vae_tile_size,
                                            abort_callback=abort_callback, progress_callback=track_progress_callback,
-                                           frame_count=stop - start, video_window_loader=load_crop_window)
+                                           frame_count=stop - start, video_window_loader=load_crop_window,
+                                           window_index_offset=window_index_offset, window_count_total=total_segment_windows)
                     if refined is None:
                         return None, None
+                    window_index_offset += segment_window_counts[segment_index - 1]
                     segment_transform = transform.copy()
                     for key in ("boxes", "face_rect", "weights", "detected", "active"):
                         segment_transform[key] = transform[key][start:stop]
                     segment_transform["frames"] = stop - start
+                    stitch_progress_callback = track_progress_callback
+                    if total_segment_windows > 1 and callable(track_progress_callback):
+                        stitch_progress_callback = lambda phase, current=None, total=None: track_progress_callback(f"Window {window_index_offset}/{total_segment_windows} - {phase}", current, total)
                     stitched = stitch(output[start:stop], refined, segment_transform, paste_region=config["paste_region"], mask_dilation=config["mask_dilation"],
                                       feather=config["feather"], colour_match=config["colour_match"], blend=config["blend"],
                                       undetected_frames=config["undetected_frames"], feather_scales_with_crop=config["feather_scales_with_crop"],
-                                      abort_callback=abort_callback, progress_callback=track_progress_callback)
+                                      abort_callback=abort_callback, progress_callback=stitch_progress_callback)
                     if stitched is None:
                         return None, None
                     refined = stitched = None

@@ -122,8 +122,8 @@
             "gguf": { 
                 "label": "GGUF llama.cpp CUDA Kernels", 
                 "cmd": {
-                    "win": "https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.8+torch210cu13py311-cp311-cp311-win_amd64.whl",
-                    "linux": "https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.8+torch210cu13py311-cp311-cp311-linux_x86_64.whl"
+                    "win": "https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.13+torch210cu130py311-cp311-cp311-win_amd64.whl",
+                    "linux": "https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.13+torch210cu130py311-cp311-cp311-linux_x86_64.whl"
                 }
             }
         }

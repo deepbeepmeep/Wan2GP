@@ -38,6 +38,11 @@ H3_PHASE_2_TILING_FLAG = "~"
 H3_TURBO_LORA_KEY = "minimax_h3_lora_turbo"
 H3_REQUIRED_TURBO_TOKENS = ("minimax_h3", "fl2v", "turbo", "4step", "v0.1")
 H3_ALLOW_PHASE_2_TURBO_OVERRIDE = False
+# Official MiniMax-H3 Ref2VA reference-image resolution (SGLang minimax_h3_resolve_reference_image_shape):
+# each ref image keeps its display ratio, targets a 2048px short edge (upscaling allowed), and rounds
+# both dimensions to the nearest 32px grid with no area cap.
+MINIMAX_H3_REFERENCE_IMAGE_SHORT_EDGE = 2048
+MINIMAX_H3_REFERENCE_IMAGE_MULTIPLE = 32
 
 
 def _is_required_h3_turbo(name):
@@ -496,9 +501,20 @@ class MiniMaxH3Pipeline:
         if image is None:
             return None
         image = _to_pil(image)
-        ratio = image.width / image.height
-        pixel_budget = target_width * target_height * image_refs_relative_size / 100
-        target_h, target_w = _resolve_canvas(*image.size, math.sqrt(pixel_budget / max(ratio, 1 / ratio)))
+        # Official MiniMax-H3 Ref2VA resolves each reference image INDEPENDENTLY of the
+        # target canvas: keep the display ratio, target a 2048px short edge (upscaling
+        # allowed), round both dims to the nearest 32px grid, no area cap. Ported from
+        # SGLang minimax_h3_resolve_reference_image_shape / minimax_h3_resize_reference_image.
+        # The previous implementation downscaled refs to target_W*H*rel_size/100 pixels,
+        # which corrupted multi-image visual identity binding (issue #2066).
+        source_w, source_h = float(image.width), float(image.height)
+        if not (source_w > 0 and source_h > 0):
+            raise ValueError("MiniMax H3 reference image must have positive dimensions")
+        if source_w > 4.0 * source_h or source_h > 4.0 * source_w:
+            raise ValueError(f"MiniMax H3 reference image ratio must be within 1:4 to 4:1, got {image.width}x{image.height}")
+        scale = MINIMAX_H3_REFERENCE_IMAGE_SHORT_EDGE / min(source_w, source_h)
+        target_w = max(32, int(round(source_w * scale / MINIMAX_H3_REFERENCE_IMAGE_MULTIPLE)) * MINIMAX_H3_REFERENCE_IMAGE_MULTIPLE)
+        target_h = max(32, int(round(source_h * scale / MINIMAX_H3_REFERENCE_IMAGE_MULTIPLE)) * MINIMAX_H3_REFERENCE_IMAGE_MULTIPLE)
         if image.size != (target_w, target_h):
             image = image.resize((target_w, target_h), Image.Resampling.LANCZOS)
         return _pil_to_video(image)

@@ -981,7 +981,7 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         else:
             latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
 
-            image = self.vae.decode(latents, return_dict=False)[0]
+            image = self.vae.decode(latents.to(self.vae.dtype), return_dict=False)[0]
             if vae_upsampler is not None:
                 if vae_upsampler_progress_callback is not None:
                     vae_upsampler_progress_callback("VAE")

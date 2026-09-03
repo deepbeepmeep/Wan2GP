@@ -28,6 +28,8 @@ from shared.deepy.config import (
     DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS,
     DEEPY_COMPACTION_TYPE_KEY,
     DEEPY_COMPACTION_TYPE_SUMMARIZE,
+    DEEPY_REPETITION_PENALTY_DEFAULT,
+    DEEPY_REPETITION_PENALTY_KEY,
     DEEPY_CONTEXT_TOKENS_DEFAULT,
     DEEPY_CONTEXT_TOKENS_KEY,
     DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY,
@@ -37,6 +39,7 @@ from shared.deepy.config import (
     get_deepy_config_value,
     normalize_deepy_auto_cancel_queue_tasks,
     normalize_deepy_compaction_type,
+    normalize_deepy_repetition_penalty,
     normalize_deepy_context_tokens,
     normalize_deepy_custom_system_prompt,
     normalize_deepy_vram_mode,
@@ -44,7 +47,7 @@ from shared.deepy.config import (
 from shared.deepy import DEFAULT_COMPACTION_PROMPT as ASSISTANT_COMPACTION_PROMPT, ZERO_SYSTEM_PROMPT as ASSISTANT_SYSTEM_PROMPT
 from shared.deepy.debug_bootstrap import capture_external_logs
 from shared import extra_settings
-from shared.deepy import filesystem as deepy_filesystem, media_registry, tool_settings as deepy_tool_settings, transcription as deepy_transcription, ui_settings as deepy_ui_settings, video_tools as deepy_video_tools, vision as deepy_vision
+from shared.deepy import filesystem as deepy_filesystem, long_text as deepy_long_text, media_registry, tool_settings as deepy_tool_settings, transcription as deepy_transcription, ui_settings as deepy_ui_settings, video_tools as deepy_video_tools, vision as deepy_vision
 from postprocessing import catalog as postprocessing_catalog
 from shared.gradio import assistant_chat
 from shared.prompt_enhancer import qwen35_text
@@ -68,6 +71,8 @@ from shared.prompt_enhancer.qwen35_assistant_runtime import (
 
 ASSISTANT_DEBUG = False
 _ENABLE_INCOMPLETE_STOP_ANSWER_HEURISTICS = False
+_THROUGHPUT_BUCKET_SECONDS = 1.0
+_THROUGHPUT_BUCKET_COUNT = 5
 
 _TOOL_TYPE_MAP = {
     "str": "string",
@@ -207,6 +212,8 @@ def assistant_tool(
     pause_runtime: bool = True,
     pause_reason: str = "tool",
     requires_file_system: bool = False,
+    requires_file_system_write: bool = False,
+    requires_long_text_tools: bool = False,
 ):
     def decorator(func):
         func._assistant_tool = {
@@ -217,6 +224,8 @@ def assistant_tool(
             "pause_runtime": bool(pause_runtime),
             "pause_reason": str(pause_reason or "tool").strip() or "tool",
             "requires_file_system": bool(requires_file_system),
+            "requires_file_system_write": bool(requires_file_system_write),
+            "requires_long_text_tools": bool(requires_long_text_tools),
         }
         return func
 
@@ -368,6 +377,40 @@ def _format_avg_tokens_per_second(value: float) -> str:
     return f"{speed:.1f}"
 
 
+@dataclass(slots=True)
+class ActiveComputeSpeedWindow:
+    bucket_seconds: float = _THROUGHPUT_BUCKET_SECONDS
+    bucket_count: int = _THROUGHPUT_BUCKET_COUNT
+    buckets: list[list[float]] = field(default_factory=list)
+
+    def _with_sample(self, tokens: float, seconds: float) -> list[list[float]]:
+        buckets = [[float(bucket[0]), float(bucket[1])] for bucket in self.buckets]
+        remaining_seconds = max(0.0, float(seconds or 0.0))
+        if remaining_seconds <= 0.0:
+            return buckets
+        rate = max(0.0, float(tokens or 0.0)) / remaining_seconds
+        while remaining_seconds > 1e-9:
+            if not buckets or buckets[-1][1] >= self.bucket_seconds - 1e-9:
+                buckets.append([0.0, 0.0])
+                if len(buckets) > self.bucket_count:
+                    del buckets[: len(buckets) - self.bucket_count]
+            consumed_seconds = min(remaining_seconds, self.bucket_seconds - buckets[-1][1])
+            buckets[-1][0] += rate * consumed_seconds
+            buckets[-1][1] += consumed_seconds
+            remaining_seconds -= consumed_seconds
+        return buckets
+
+    def add(self, tokens: int, seconds: float) -> None:
+        self.buckets = self._with_sample(tokens, seconds)
+
+    def totals(self, live_tokens: int = 0, live_seconds: float = 0.0) -> tuple[float, float]:
+        buckets = self._with_sample(live_tokens, live_seconds)
+        return sum(bucket[0] for bucket in buckets), sum(bucket[1] for bucket in buckets)
+
+    def clear(self) -> None:
+        self.buckets.clear()
+
+
 def build_assistant_chat_stats(
     session: AssistantSessionState,
     *,
@@ -388,10 +431,8 @@ def build_assistant_chat_stats(
                 consumed_tokens = len(snapshot_token_ids)
     if consumed_tokens is None:
         consumed_tokens = len(session.rendered_token_ids or [])
-    total_prefill_tokens = max(0, int(session.prefill_token_total or 0)) + max(0, int(live_prefill_tokens or 0))
-    total_prefill_seconds = max(0.0, float(session.prefill_seconds_total or 0.0)) + max(0.0, float(live_prefill_seconds or 0.0))
-    total_generated_tokens = max(0, int(session.generated_token_total or 0)) + max(0, int(live_generated_tokens or 0))
-    total_generation_seconds = max(0.0, float(session.generated_seconds_total or 0.0)) + max(0.0, float(live_generation_seconds or 0.0))
+    total_prefill_tokens, total_prefill_seconds = session.prefill_speed_window.totals(live_prefill_tokens, live_prefill_seconds)
+    total_generated_tokens, total_generation_seconds = session.generation_speed_window.totals(live_generated_tokens, live_generation_seconds)
     avg_prefill_tokens_per_second = (float(total_prefill_tokens) / float(total_prefill_seconds)) if total_prefill_seconds > 1e-9 else 0.0
     avg_generated_tokens_per_second = (float(total_generated_tokens) / float(total_generation_seconds)) if total_generation_seconds > 1e-9 else 0.0
     return {
@@ -418,6 +459,7 @@ class AssistantSessionState:
     chat_transcript: list[dict[str, Any]] = field(default_factory=list)
     chat_transcript_counter: int = 0
     chat_revision: int = 0
+    chat_event_sequence: int = 0
     chat_session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     turn_lock: Any = field(default_factory=threading.RLock)
     interrupt_requested: bool = False
@@ -427,6 +469,7 @@ class AssistantSessionState:
     assistant_action_active: bool = False
     drop_state_requested: bool = False
     worker_active: bool = False
+    worker_idle_event: Any = field(default_factory=threading.Event)
     control_queue: Any | None = None
     queued_job_count: int = 0
     queued_cancel_count: int = 0
@@ -445,12 +488,11 @@ class AssistantSessionState:
     rendered_context_window_tokens: int = 0
     pending_replay_reason: str = ""
     tool_ui_settings: dict[str, Any] = field(default_factory=dict)
-    prefill_token_total: int = 0
-    prefill_seconds_total: float = 0.0
-    generated_token_total: int = 0
-    generated_seconds_total: float = 0.0
+    prefill_speed_window: ActiveComputeSpeedWindow = field(default_factory=ActiveComputeSpeedWindow)
+    generation_speed_window: ActiveComputeSpeedWindow = field(default_factory=ActiveComputeSpeedWindow)
     runtime_max_model_len: int = 0
     chat_stats_signature: str = ""
+    chat_status: dict[str, Any] | None = None
     remote_usage_stats: dict[str, Any] | None = None
     file_access_policy: Any | None = None
     seen_video_gallery_paths: list[str] = field(default_factory=list)
@@ -469,6 +511,10 @@ class AssistantSessionState:
     prime_toolbox: Any | None = None
     artifact_workspace: Any | None = None
     remote_backends: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.worker_active:
+            self.worker_idle_event.set()
 
     def __repr__(self) -> str:
         return (
@@ -543,12 +589,11 @@ def clear_assistant_session(session: AssistantSessionState) -> None:
     session.rendered_context_window_tokens = 0
     session.pending_replay_reason = ""
     session.tool_ui_settings = {}
-    session.prefill_token_total = 0
-    session.prefill_seconds_total = 0.0
-    session.generated_token_total = 0
-    session.generated_seconds_total = 0.0
+    session.prefill_speed_window.clear()
+    session.generation_speed_window.clear()
     session.runtime_max_model_len = 0
     session.chat_stats_signature = ""
+    session.chat_status = None
     session.remote_usage_stats = None
     session.seen_video_gallery_paths = []
     session.seen_audio_gallery_paths = []
@@ -1224,7 +1269,7 @@ class DeepyZeroTools:
         return result
 
     def _set_status(self, text: str | None, kind: str = "working") -> None:
-        self.send_cmd("chat_output", assistant_chat.build_status_event(text, kind=kind, visible=text is not None and len(str(text).strip()) > 0))
+        self.send_cmd("chat_output", assistant_chat.build_status_event(text, kind=kind, visible=text is not None and len(str(text).strip()) > 0, session=self.session))
 
     def bind_runtime_tools(self, vision_query_callback: Callable[..., dict[str, Any]] | None = None, tool_progress_callback: Callable[..., None] | None = None, vision_is_remote: bool = False) -> None:
         self._vision_query_callback = vision_query_callback
@@ -1738,8 +1783,11 @@ class DeepyZeroTools:
     def _build_generation_task(self, tool_name: str, variant: str, *, prompt: str, client_id: str, **kwargs) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         self._remember_generated_client_id(client_id)
         try:
+            policy = self._file_access_policy()
+            prompt = deepy_long_text.resolve_prompt_file(prompt, policy)
+            kwargs = deepy_long_text.resolve_prompt_references(kwargs, policy)
             task = deepy_tool_settings.build_generation_task(tool_name, variant, prompt=prompt, client_id=client_id, **kwargs)
-        except ValueError as exc:
+        except (OSError, ValueError) as exc:
             return None, {
                 "status": "error",
                 "client_id": client_id,
@@ -2170,13 +2218,24 @@ class DeepyZeroTools:
         return {}
 
     def _file_access_policy(self):
-        return deepy_filesystem.build_file_access_policy(self._server_config())
+        policy = deepy_filesystem.build_file_access_policy(self._server_config())
+        if self.session is not None:
+            policy = deepy_long_text.add_session_workspace(policy, self.session.chat_session_id)
+            self.session.file_access_policy = policy
+        return policy
 
     def _file_system_read_enabled(self) -> bool:
         return self._file_access_policy().read_enabled
 
     def _tool_enabled(self, metadata: dict[str, Any]) -> bool:
-        return not metadata.get("requires_file_system", False) or self._file_system_read_enabled()
+        policy = self._file_access_policy()
+        if metadata.get("requires_file_system", False) and not policy.read_enabled:
+            return False
+        if metadata.get("requires_file_system_write", False) and not policy.write_enabled:
+            return False
+        if metadata.get("requires_long_text_tools", False) and (not deepy_long_text.long_text_tools_active(policy) or deepy_long_text.workspace_mount(policy) is None):
+            return False
+        return True
 
     def _iter_tools(self):
         for attr_name in dir(self):
@@ -4471,6 +4530,50 @@ class DeepyZeroTools:
         return send_notification(self._server_config(), str(title or "Deepy notification").strip(), message)
 
     @assistant_tool(
+        name="rg",
+        display_name="Search Long Text",
+        description="Search authorized UTF-8 files with ripgrep. Pass rg arguments only: supported options and one pattern, followed by `--` and optional @alias paths. Paths are validated before rg runs; with no paths, the temporary workspace is searched.",
+        parameters={"arguments": {"type": "string", "description": "For example: `-n -F \"character name\" -- @workspace/story.md`. Use `--files -- @workspace` to list searchable files."}},
+        pause_runtime=False,
+        requires_file_system_write=True,
+        requires_long_text_tools=True,
+    )
+    def rg(self, arguments: str) -> dict[str, Any]:
+        return deepy_long_text.run_rg(self._file_access_policy(), arguments)
+
+    @assistant_tool(
+        name="edit",
+        display_name="Edit Long Text",
+        description="Replace an exact string in one authorized UTF-8 file. The old string must occur exactly once unless replace_all is true. Whitespace and line endings are matched literally.",
+        parameters={
+            "file_path": {"type": "string", "description": "Authorized @alias file path."},
+            "old_string": {"type": "string", "description": "Exact text to replace, including enough surrounding context to make it unique."},
+            "new_string": {"type": "string", "description": "Exact replacement text. May be empty to remove old_string."},
+            "replace_all": {"type": "boolean", "description": "Replace every exact occurrence instead of requiring a unique match.", "required": False},
+        },
+        pause_runtime=False,
+        requires_file_system_write=True,
+        requires_long_text_tools=True,
+    )
+    def edit(self, file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict[str, Any]:
+        return deepy_long_text.edit_text(self._file_access_policy(), file_path, old_string, new_string, replace_all)
+
+    @assistant_tool(
+        name="append_text",
+        display_name="Append Long Text",
+        description="Append exact literal UTF-8 text to an authorized file, creating it when absent. No newline or prefix is added implicitly.",
+        parameters={
+            "file_path": {"type": "string", "description": "Authorized @alias file path."},
+            "text": {"type": "string", "description": "Exact text to append, including every intended newline. Do not add patch prefixes such as `+`."},
+        },
+        pause_runtime=False,
+        requires_file_system_write=True,
+        requires_long_text_tools=True,
+    )
+    def append_text(self, file_path: str, text: str) -> dict[str, Any]:
+        return deepy_long_text.append_text(self._file_access_policy(), file_path, text)
+
+    @assistant_tool(
         display_name="List Files",
         description="List files directly inside a filesystem directory, optionally filtering by file extensions. Returns filenames, extensions, full paths, and byte sizes.",
         parameters={
@@ -5250,6 +5353,7 @@ class AssistantEngine:
         self._active_turn_id = ""
         self._active_tool_context: tuple[str, str] | None = None
         self._stream_answer_text = ""
+        self._stream_answer_block_id = ""
         self._stream_reasoning_text = ""
         self._stream_reasoning_block_id = ""
         self._stream_thinking_unknown = False
@@ -5264,8 +5368,9 @@ class AssistantEngine:
         self._compaction_summary_message_id = ""
         self._prefill_started_at: float | None = None
         self._live_prefill_tokens = 0
-        self._segment_started_at: float | None = None
         self._segment_generated_tokens = 0
+        self._segment_metrics_checkpoint_at: float | None = None
+        self._segment_metrics_recorded_tokens = 0
         self._current_requested_max_new_tokens = 1024
         self._current_status_payload: dict[str, Any] | None = None
         self._resume_stream_after_context_trim = False
@@ -5318,12 +5423,12 @@ class AssistantEngine:
 
     def _set_status(self, text: str | None, kind: str = "thinking") -> None:
         self._current_status_payload = None if text is None or len(str(text).strip()) == 0 else {"visible": True, "kind": str(kind or "status"), "text": str(text or "").strip()}
-        self._emit_chat_event(assistant_chat.build_status_event(text, kind=kind, visible=text is not None and len(str(text).strip()) > 0))
+        self._emit_chat_event(assistant_chat.build_status_event(text, kind=kind, visible=text is not None and len(str(text).strip()) > 0, session=self.session))
         self._emit_stats()
 
     def _hide_status(self) -> None:
         self._current_status_payload = None
-        self._emit_chat_event(assistant_chat.build_status_event(None, visible=False))
+        self._emit_chat_event(assistant_chat.build_status_event(None, visible=False, session=self.session))
         self._emit_stats(force=True)
 
     def _get_context_window_tokens(self) -> int:
@@ -5374,14 +5479,15 @@ class AssistantEngine:
 
     def _chat_stats_payload(self) -> dict[str, Any]:
         live_prefill_seconds = 0.0 if self._prefill_started_at is None else max(0.0, time.perf_counter() - self._prefill_started_at)
-        live_generation_seconds = 0.0 if self._segment_started_at is None else max(0.0, time.perf_counter() - self._segment_started_at)
+        live_generation_seconds = 0.0 if self._segment_metrics_checkpoint_at is None else max(0.0, time.perf_counter() - self._segment_metrics_checkpoint_at)
+        live_generated_tokens = max(0, int(self._segment_generated_tokens or 0) - int(self._segment_metrics_recorded_tokens or 0))
         return build_assistant_chat_stats(
             self.session,
             max_tokens=self._resolved_chat_max_tokens(),
             active_sequence_token_count=self._active_sequence_token_count(),
             live_prefill_tokens=self._live_prefill_tokens,
             live_prefill_seconds=live_prefill_seconds,
-            live_generated_tokens=self._segment_generated_tokens,
+            live_generated_tokens=live_generated_tokens,
             live_generation_seconds=live_generation_seconds,
         )
 
@@ -5398,16 +5504,33 @@ class AssistantEngine:
         elapsed = max(0.0, float(elapsed_seconds or 0.0))
         if tokens <= 0 or elapsed <= 0.0:
             return
-        self.session.prefill_token_total += tokens
-        self.session.prefill_seconds_total += elapsed
+        self.session.prefill_speed_window.add(tokens, elapsed)
 
     def _record_generation_metrics(self, token_count: int, elapsed_seconds: float) -> None:
         tokens = max(0, int(token_count or 0))
         elapsed = max(0.0, float(elapsed_seconds or 0.0))
-        if tokens <= 0 or elapsed <= 0.0:
+        if elapsed <= 0.0:
             return
-        self.session.generated_token_total += tokens
-        self.session.generated_seconds_total += elapsed
+        self.session.generation_speed_window.add(tokens, elapsed)
+
+    def _start_generation_metrics(self) -> None:
+        started_at = time.perf_counter()
+        self._segment_generated_tokens = 0
+        self._segment_metrics_checkpoint_at = started_at
+        self._segment_metrics_recorded_tokens = 0
+
+    def _checkpoint_generation_metrics(self, token_count: int, *, final: bool = False) -> None:
+        current_tokens = max(int(self._segment_generated_tokens or 0), max(0, int(token_count or 0)))
+        self._segment_generated_tokens = current_tokens
+        if self._segment_metrics_checkpoint_at is None:
+            return
+        delta_tokens = max(0, current_tokens - int(self._segment_metrics_recorded_tokens or 0))
+        if delta_tokens <= 0 and not final:
+            return
+        now = time.perf_counter()
+        self._record_generation_metrics(delta_tokens, max(0.0, now - self._segment_metrics_checkpoint_at))
+        self._segment_metrics_checkpoint_at = now
+        self._segment_metrics_recorded_tokens = current_tokens
 
     def _run_prefill_call(self, token_count: int, callback: Callable[[], Any], *, record_if: bool | Callable[[Any], bool] = True) -> Any:
         tokens = max(0, int(token_count or 0))
@@ -5430,11 +5553,11 @@ class AssistantEngine:
             self._emit_stats(force=True)
 
     def _finish_stream_pass(self, token_count: int | None = None) -> None:
-        elapsed_seconds = 0.0 if self._segment_started_at is None else max(0.0, time.perf_counter() - self._segment_started_at)
         recorded_tokens = max(max(0, int(token_count or 0)), max(0, int(self._segment_generated_tokens or 0)))
-        self._record_generation_metrics(recorded_tokens, elapsed_seconds)
-        self._segment_started_at = None
+        self._checkpoint_generation_metrics(recorded_tokens, final=True)
         self._segment_generated_tokens = 0
+        self._segment_metrics_checkpoint_at = None
+        self._segment_metrics_recorded_tokens = 0
         self._emit_stats(force=True)
 
     def _get_custom_system_prompt(self) -> str:
@@ -5932,7 +6055,7 @@ class AssistantEngine:
                 self._active_turn_id = assistant_chat.create_assistant_turn(self.session)
                 assistant_badge = str(checkpoint.get("assistant_badge", "") or "").strip() if isinstance(checkpoint, dict) else ""
                 if assistant_badge:
-                    assistant_chat.set_message_badge(self.session, self._active_turn_id, assistant_badge)
+                    self._emit_chat_event(assistant_chat.set_message_badge(self.session, self._active_turn_id, assistant_badge))
                 mark_assistant_turn_message(self.session, self._active_turn_id)
         return self._active_turn_id
 
@@ -5969,12 +6092,12 @@ class AssistantEngine:
         thinking_stream_enabled = self.runtime is not None and qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
         if not preserve_existing:
             self._stream_answer_text = ""
+            self._stream_answer_block_id = ""
             self._stream_reasoning_text = ""
             self._stream_reasoning_block_id = ""
             self._stream_thinking_unknown = False
             self._stream_thinking_open = bool(thinking_stream_enabled)
-        self._segment_started_at = time.perf_counter()
-        self._segment_generated_tokens = 0
+        self._start_generation_metrics()
         self._stream_action_phase = str(action_phase or "").strip().lower()
 
     def _current_stream_content(self) -> str:
@@ -6069,7 +6192,7 @@ class AssistantEngine:
         self._emit_chat_event(assistant_chat.update_tool_call(self.session, self._stream_tool_message_id, self._stream_tool_id, tool_name=tool_name, tool_label=label))
 
     def _stream_generation_update(self, *, raw_text: str, token_count: int, stop_reason: str | None, is_final: bool) -> None:
-        self._segment_generated_tokens = max(int(self._segment_generated_tokens or 0), max(0, int(token_count or 0)))
+        self._checkpoint_generation_metrics(token_count)
         if self._stream_action_phase == "tool":
             self._stream_tool_request_update(raw_text, token_count, is_final)
         if self._suppress_intermediate_stream_after_context_trim and not is_final:
@@ -6091,7 +6214,7 @@ class AssistantEngine:
             thinking_text = self._stream_reasoning_text
         if not is_final and len(answer_text) < len(self._stream_answer_text):
             answer_text = self._stream_answer_text
-        needs_output = (reclaimed_answer_as_reasoning and len(self._stream_answer_text) > 0) or (thinking_text != self._stream_reasoning_text and len(thinking_text) > 0) or (answer_text != self._stream_answer_text and len(answer_text) > 0)
+        needs_output = (reclaimed_answer_as_reasoning and len(self._stream_answer_text) > 0) or (thinking_text != self._stream_reasoning_text and len(thinking_text) > 0) or (answer_text != self._stream_answer_text and len(answer_text) > 0) or (is_final and (bool(self._stream_reasoning_block_id) or bool(self._stream_answer_block_id)))
         if not needs_output:
             if self.thinking_enabled and re.search(r"</think>", str(raw_text or ""), flags=re.IGNORECASE):
                 interrupt_assistant_for_steering(self.session)
@@ -6100,14 +6223,19 @@ class AssistantEngine:
         turn_id = self._ensure_active_turn()
         if reclaimed_answer_as_reasoning and len(self._stream_answer_text) > 0:
             self._stream_answer_text = ""
+            self._stream_answer_block_id = ""
             self._emit_chat_event(assistant_chat.clear_assistant_content(self.session, turn_id))
         if thinking_text != self._stream_reasoning_text and len(thinking_text) > 0:
-            self._stream_reasoning_block_id, reasoning_event = assistant_chat.upsert_reasoning_block(self.session, turn_id, self._stream_reasoning_block_id, thinking_text)
+            self._stream_reasoning_block_id, reasoning_event = assistant_chat.upsert_reasoning_block(self.session, turn_id, self._stream_reasoning_block_id, thinking_text, streaming=not is_final)
             self._stream_reasoning_text = thinking_text
             self._emit_chat_event(reasoning_event)
-        if answer_text != self._stream_answer_text and len(answer_text) > 0:
+        elif is_final and self._stream_reasoning_block_id:
+            self._stream_reasoning_block_id, reasoning_event = assistant_chat.upsert_reasoning_block(self.session, turn_id, self._stream_reasoning_block_id, self._stream_reasoning_text, streaming=False)
+            self._emit_chat_event(reasoning_event)
+        if (answer_text != self._stream_answer_text and len(answer_text) > 0) or (is_final and self._stream_answer_block_id):
             self._stream_answer_text = answer_text
-            self._emit_chat_event(assistant_chat.set_assistant_content(self.session, turn_id, self._stream_answer_text))
+            self._stream_answer_block_id, answer_event = assistant_chat.upsert_assistant_content_block(self.session, turn_id, self._stream_answer_block_id, self._stream_answer_text, streaming=not is_final)
+            self._emit_chat_event(answer_event)
         if self.thinking_enabled and re.search(r"</think>", str(raw_text or ""), flags=re.IGNORECASE):
             interrupt_assistant_for_steering(self.session)
         self._emit_stats()
@@ -6645,7 +6773,7 @@ class AssistantEngine:
         return rollback_snapshot, compaction_context_tokens, resolved_max_new_tokens
 
     def _stream_compaction_update(self, *, raw_text: str, token_count: int, stop_reason: str | None, is_final: bool) -> None:
-        self._segment_generated_tokens = max(int(self._segment_generated_tokens or 0), max(0, int(token_count or 0)))
+        self._checkpoint_generation_metrics(token_count)
         summary_text = strip_tool_blocks(qwen35_text._clean_generated_text(str(raw_text or ""))).strip()
         if not summary_text:
             self._emit_stats()
@@ -6665,8 +6793,7 @@ class AssistantEngine:
 
     def _generate_compaction_segment(self, max_new_tokens: int):
         tool_call_token_id = int(self.runtime.tokenizer.convert_tokens_to_ids("<tool_call>"))
-        self._segment_started_at = time.perf_counter()
-        self._segment_generated_tokens = 0
+        self._start_generation_metrics()
         result = None
         try:
             result = self.runtime.generate_segment(
@@ -6677,6 +6804,7 @@ class AssistantEngine:
                 top_p=None,
                 top_k=None,
                 thinking_enabled=False,
+                apply_repetition_penalty=normalize_deepy_repetition_penalty(get_deepy_config_value(DEEPY_REPETITION_PENALTY_KEY, DEEPY_REPETITION_PENALTY_DEFAULT)),
                 suppress_token_ids=(tool_call_token_id,),
                 stop_requested=lambda: bool(self.session.interrupt_requested),
                 stream_callback=self._stream_compaction_update,
@@ -6819,7 +6947,8 @@ class AssistantEngine:
             if not reason:
                 break
             reasons.append(reason)
-            if before_tokens - self._compaction_source_token_count(messages) >= max(1, int(required_reduction_tokens)):
+            remaining_tokens = self._compaction_source_token_count(messages) if messages else 0
+            if before_tokens - remaining_tokens >= max(1, int(required_reduction_tokens)):
                 break
         return "; ".join(reasons)
 
@@ -6908,7 +7037,7 @@ class AssistantEngine:
         self._compaction_summary_block_id = ""
         self._compaction_summary_message_id = ""
         self._emit_chat_event(summary_event)
-        self._emit_chat_event(assistant_chat.build_sync_event(self.session, status=self._current_status_payload, stats=self._chat_stats_payload()))
+        self._emit_stats(force=True)
 
     def _mark_summary_fallback_trace(self, error: Exception) -> None:
         self._log(f"Deepy context summarization attempt failed: {error}")
@@ -8155,6 +8284,7 @@ class AssistantEngine:
                         top_p=top_p,
                         top_k=top_k,
                         thinking_enabled=self.thinking_enabled,
+                        apply_repetition_penalty=normalize_deepy_repetition_penalty(get_deepy_config_value(DEEPY_REPETITION_PENALTY_KEY, DEEPY_REPETITION_PENALTY_DEFAULT)),
                         stop_requested=lambda: bool(self.session.interrupt_requested) or assistant_steering_interrupt_due(self.session),
                         stream_callback=self._stream_generation_update,
                         stream_interval_seconds=_ASSISTANT_STREAM_INTERVAL_SECONDS,
@@ -8416,7 +8546,7 @@ class AssistantEngine:
             if steering_requested:
                 self._set_status("Steering accepted. Deepy is applying the new instructions...", kind="queued")
             else:
-                self._hide_status()
+                self._set_status("Preparing the next request..." if self.session.queued_job_count > 0 else "Finishing Deepy...", kind="loading")
             preserve_interrupted_snapshot = False
             with self.session.turn_lock:
                 if self.session.interrupt_requested:
@@ -8439,12 +8569,15 @@ class AssistantEngine:
             self.session.runtime_status_note = ""
             self._prefill_started_at = None
             self._live_prefill_tokens = 0
-            self._segment_started_at = None
             self._segment_generated_tokens = 0
+            self._segment_metrics_checkpoint_at = None
+            self._segment_metrics_recorded_tokens = 0
             self._skip_generation_context_sync_once = False
             self._reset_action_stream_state()
             self._current_requested_max_new_tokens = 1024
             self._emit_stats(force=True)
+            if not steering_requested and self.session.queued_job_count <= 0:
+                self._hide_status()
         if not self.session.interrupt_requested and len(final_user_text.strip()) > 0:
             self._send_chat(final_user_text)
         if turn_completed and not self.session.interrupt_requested:

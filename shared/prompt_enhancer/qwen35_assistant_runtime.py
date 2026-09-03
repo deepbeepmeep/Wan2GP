@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import statistics
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -30,6 +32,8 @@ ASSISTANT_ACTION_BUDGET_MEDIUM_CONTEXT_TOKENS = 48000
 ASSISTANT_ACTION_BUDGET_LARGE_CONTEXT_TOKENS = 64000
 ASSISTANT_ACTION_BUDGET_MEDIUM_TOKENS = 6144
 ASSISTANT_ACTION_BUDGET_LARGE_TOKENS = 8192
+DEEPY_TELEMETRY_ENV = "WAN2GP_DEEPY_TELEMETRY"
+_DEEPY_TELEMETRY_ENABLED = str(os.environ.get(DEEPY_TELEMETRY_ENV, "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def assistant_thought_budget_update(budget_tokens: int) -> str:
@@ -482,12 +486,358 @@ class Qwen35AssistantRuntime:
         if self.tokenizer is None:
             raise RuntimeError("Prompt enhancer tokenizer is missing for assistant runtime.")
         self.debug_enabled = bool(debug_enabled)
+        self.telemetry_enabled = self.debug_enabled and _DEEPY_TELEMETRY_ENABLED
         self._runtime_extra_tokens = getattr(model, "_prompt_enhancer_thinking_extra_tokens", 0)
         self._assistant_presence_state = None
+        self._nvml_handle = None
+        self._nvml_module = None
+        self._nvml_failed = False
+        self._nvml_clock_event_counters = None
+        self._nvml_process_names = {}
+        self._last_decode_window = None
 
     def _log(self, message: str) -> None:
         if self.debug_enabled:
             print(f"[AssistantRuntime] {message}")
+
+    def _gpu_telemetry(self) -> str:
+        if self._nvml_failed:
+            return "gpu=unavailable"
+        try:
+            if self._nvml_handle is None:
+                import pynvml
+
+                pynvml.nvmlInit()
+                self._nvml_module = pynvml
+                self._nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(torch.cuda.current_device())
+            nvml = self._nvml_module
+            utilization = nvml.nvmlDeviceGetUtilizationRates(self._nvml_handle)
+            temperature = nvml.nvmlDeviceGetTemperature(self._nvml_handle, nvml.NVML_TEMPERATURE_GPU)
+            sm_clock = nvml.nvmlDeviceGetClockInfo(self._nvml_handle, nvml.NVML_CLOCK_SM)
+            max_sm_clock = nvml.nvmlDeviceGetMaxClockInfo(self._nvml_handle, nvml.NVML_CLOCK_SM)
+            memory_clock = nvml.nvmlDeviceGetClockInfo(self._nvml_handle, nvml.NVML_CLOCK_MEM)
+            pstate = nvml.nvmlDeviceGetPerformanceState(self._nvml_handle)
+            power = nvml.nvmlDeviceGetPowerUsage(self._nvml_handle) / 1000.0
+            power_limit = nvml.nvmlDeviceGetPowerManagementLimit(self._nvml_handle) / 1000.0
+            memory = nvml.nvmlDeviceGetMemoryInfo(self._nvml_handle)
+            throttle_mask = int(nvml.nvmlDeviceGetCurrentClocksThrottleReasons(self._nvml_handle))
+            throttle_names = []
+            reason_bits = (
+                (0x001, "idle"),
+                (0x002, "app_clock"),
+                (0x004, "power"),
+                (0x008, "hw_slowdown"),
+                (0x010, "sync_boost"),
+                (0x020, "thermal"),
+                (0x040, "hw_thermal"),
+                (0x080, "power_brake"),
+                (0x100, "display_clock"),
+                (0x200, "board_limit"),
+                (0x400, "reliability"),
+            )
+            for reason_bit, label in reason_bits:
+                if throttle_mask & reason_bit:
+                    throttle_names.append(label)
+            known_mask = sum(reason_bit for reason_bit, _label in reason_bits)
+            unknown_mask = throttle_mask & ~known_mask
+            if unknown_mask:
+                throttle_names.append(f"unknown:{unknown_mask:#x}")
+            throttle = ",".join(throttle_names) if throttle_names else "none"
+            clock_event_summary = ""
+            try:
+                counter_fields = (
+                    (int(nvml.NVML_FI_DEV_PERF_POLICY_POWER), "power"),
+                    (int(nvml.NVML_FI_DEV_PERF_POLICY_THERMAL), "thermal"),
+                    (int(nvml.NVML_FI_DEV_PERF_POLICY_SYNC_BOOST), "sync_boost"),
+                    (int(nvml.NVML_FI_DEV_PERF_POLICY_BOARD_LIMIT), "board_limit"),
+                    (int(nvml.NVML_FI_DEV_PERF_POLICY_LOW_UTILIZATION), "low_util"),
+                    (int(nvml.NVML_FI_DEV_PERF_POLICY_RELIABILITY), "reliability"),
+                )
+                field_values = nvml.nvmlDeviceGetFieldValues(self._nvml_handle, [field_id for field_id, _label in counter_fields])
+                counters = {label: int(field.value.ullVal) for field, (_field_id, label) in zip(field_values, counter_fields) if int(field.nvmlReturn) == int(nvml.NVML_SUCCESS)}
+                previous_counters = self._nvml_clock_event_counters
+                self._nvml_clock_event_counters = counters
+                if previous_counters is not None:
+                    deltas = [f"{label}:{max(0, value - previous_counters.get(label, value)) / 1000.0:.0f}" for label, value in counters.items() if value > previous_counters.get(label, value)]
+                    clock_event_summary = f" clock_event_ms={','.join(deltas) if deltas else 'none'}"
+            except Exception:
+                self._nvml_clock_event_counters = None
+            process_summary = ""
+            try:
+                processes = {}
+                for query in (nvml.nvmlDeviceGetComputeRunningProcesses, nvml.nvmlDeviceGetGraphicsRunningProcesses):
+                    for process in query(self._nvml_handle):
+                        processes[int(process.pid)] = process
+                process_names = []
+                for pid in sorted(processes):
+                    name = self._nvml_process_names.get(pid)
+                    if name is None:
+                        try:
+                            name = nvml.nvmlSystemGetProcessName(pid)
+                            if isinstance(name, bytes):
+                                name = name.decode(errors="replace")
+                            name = str(name).replace("\\", "/").rsplit("/", 1)[-1]
+                        except Exception:
+                            name = "unknown"
+                        self._nvml_process_names[pid] = name
+                    process_names.append(f"{name}:{pid}{'*' if pid == os.getpid() else ''}")
+                process_summary = f" gpu_processes=[{','.join(process_names)}]"
+            except Exception:
+                pass
+            return (
+                f"gpu={int(utilization.gpu)}% memctl={int(utilization.memory)}% "
+                f"clocks={int(sm_clock)}/{int(max_sm_clock)}sm,{int(memory_clock)}memMHz pstate=P{int(pstate)} "
+                f"temp={int(temperature)}C power={power:.1f}/{power_limit:.0f}W "
+                f"device_mem={int(memory.used) / (1 << 20):.0f}/{int(memory.total) / (1 << 20):.0f}MiB "
+                f"throttle={throttle}({throttle_mask:#x}){clock_event_summary}{process_summary}"
+            )
+        except Exception as exc:
+            self._nvml_failed = True
+            return f"gpu=unavailable:{type(exc).__name__}"
+
+    def _start_decode_telemetry(self, seq, label: str) -> dict | None:
+        if not self.telemetry_enabled:
+            return None
+        runner = self._get_live_llm().model_runner
+        set_mtp_profile = getattr(runner, "set_mtp_stage_profile_enabled", None)
+        if callable(set_mtp_profile):
+            set_mtp_profile(bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False)))
+        now = time.perf_counter()
+        allocator_retries = int(torch.cuda.memory_stats().get("num_alloc_retries", 0))
+        return {
+            "label": label,
+            "last_at": now,
+            "thread_cpu_at": time.thread_time(),
+            "process_cpu_at": time.process_time(),
+            "allocator_retries": allocator_retries,
+            "mtp_profile_samples": 0,
+            "emitted": 0,
+            "calls": 0,
+            "runner_seconds": 0.0,
+            "scheduler_seconds": 0.0,
+            "postprocess_seconds": 0.0,
+            "decode_seconds": 0.0,
+            "parse_seconds": 0.0,
+            "stream_seconds": 0.0,
+            "stream_checks": 0,
+            "stream_callbacks": 0,
+            "speculative": self._speculative_telemetry(seq),
+        }
+
+    def _log_mtp_stage_profile(self, label: str) -> None:
+        if not self.telemetry_enabled:
+            return
+        runner = self._get_live_llm().model_runner
+        get_samples = getattr(runner, "mtp_stage_profile_samples", None)
+        if not callable(get_samples):
+            return
+        samples = get_samples()
+        if not samples:
+            return
+
+        def percentiles(group: str) -> str:
+            names = sorted({name for sample in samples for name in sample[group]})
+            values = []
+            for name in names:
+                ordered = sorted(float(sample[group][name]) for sample in samples if name in sample[group])
+                p50 = ordered[len(ordered) // 2]
+                p90 = ordered[min(len(ordered) - 1, int(0.9 * len(ordered)))]
+                values.append(f"{name}={p50:.3f}/{p90:.3f}")
+            return " ".join(values)
+
+        outcomes = {}
+        distributions = {}
+        for sample in samples:
+            key = f"a{sample['accepted_count']}e{sample['emitted_count']}c{sample['commit_start']}"
+            outcomes[key] = outcomes.get(key, 0) + 1
+            for distribution in sample.get("distributions", ()):
+                values = distributions.setdefault(distribution["role"], {"vocab": distribution["vocab"], "min_p": [], "top_p": [], "excluded": []})
+                values["min_p"].append(distribution["min_p_survivors"])
+                values["top_p"].append(distribution["top_p_survivors"])
+                values["excluded"].append(distribution["excluded_mass"])
+        context_min = min(sample["context_tokens"] for sample in samples)
+        context_max = max(sample["context_tokens"] for sample in samples)
+        distribution_summary = " ".join(
+            f"{role}=v{values['vocab']} min_p:{int(statistics.median(values['min_p']))} top_p:{int(statistics.median(values['top_p']))} excluded:{statistics.median(values['excluded']):.4f}"
+            for role, values in distributions.items()
+        )
+        self._log(
+            f"MTP stage telemetry {label}: samples={len(samples)} context={context_min}-{context_max} "
+            f"outcomes={outcomes} cpu_ms_p50/p90=[{percentiles('cpu_ms')}] "
+            f"cuda_ms_p50/p90=[{percentiles('gpu_ms')}] distributions=[{distribution_summary}]"
+        )
+
+    def _update_decode_telemetry(self, state: dict | None, seq, emitted_tokens: int = 0, runner_seconds: float = 0.0, scheduler_seconds: float = 0.0, postprocess_seconds: float = 0.0, decode_seconds: float = 0.0, parse_seconds: float = 0.0, stream_seconds: float = 0.0, stream_checked: bool = False, stream_callback: bool = False, force: bool = False) -> None:
+        if state is None:
+            return
+        state["emitted"] += int(emitted_tokens)
+        state["calls"] += int(runner_seconds > 0.0)
+        state["runner_seconds"] += float(runner_seconds)
+        state["scheduler_seconds"] += float(scheduler_seconds)
+        state["postprocess_seconds"] += float(postprocess_seconds)
+        state["decode_seconds"] += float(decode_seconds)
+        state["parse_seconds"] += float(parse_seconds)
+        state["stream_seconds"] += float(stream_seconds)
+        state["stream_checks"] += int(stream_checked)
+        state["stream_callbacks"] += int(stream_callback)
+        now = time.perf_counter()
+        elapsed = now - state["last_at"]
+        if not force and elapsed < 2.0:
+            return
+        if state["calls"] == 0 and state["emitted"] == 0:
+            return
+        current = self._speculative_telemetry(seq)
+        speculative = state["speculative"]
+        mtp = "mtp=disabled"
+        passes = 0
+        if current is not None and speculative is not None:
+            drafted = current["drafted"] - speculative["drafted"]
+            accepted = current["accepted"] - speculative["accepted"]
+            passes = current["target_passes"] - speculative["target_passes"]
+            drafted_by_position = [current_value - previous_value for current_value, previous_value in zip(current["drafted_by_position"], speculative["drafted_by_position"])]
+            accepted_by_position = [current_value - previous_value for current_value, previous_value in zip(current["accepted_by_position"], speculative["accepted_by_position"])]
+            position_acceptance = ",".join(f"{accepted_count}/{drafted_count}" for accepted_count, drafted_count in zip(accepted_by_position, drafted_by_position))
+            mtp = (
+                f"mtp_accept={accepted}/{drafted}({100.0 * accepted / drafted if drafted else 0.0:.1f}%) "
+                f"mtp_pos=[{position_acceptance}] tok/pass={state['emitted'] / passes if passes else 0.0:.3f} "
+                f"mtp_cache={current['mtp_cache_tokens']} sync_delta={current['sync_delta']:+d} "
+                f"pending={current['pending']} draft={current['draft']}"
+            )
+        throughput = state["emitted"] / elapsed if elapsed > 0.0 else 0.0
+        passes_per_second = passes / elapsed if elapsed > 0.0 else 0.0
+        tokens_per_pass = state["emitted"] / passes if passes else 0.0
+        runner_ms_per_pass = 1000.0 * state["runner_seconds"] / state["calls"] if state["calls"] else 0.0
+        accounted = state["runner_seconds"] + state["scheduler_seconds"] + state["postprocess_seconds"] + state["decode_seconds"] + state["parse_seconds"] + state["stream_seconds"]
+        host_ms_per_pass = 1000.0 * max(0.0, elapsed - state["runner_seconds"]) / state["calls"] if state["calls"] else 0.0
+        thread_cpu_now = time.thread_time()
+        process_cpu_now = time.process_time()
+        thread_cpu = thread_cpu_now - state["thread_cpu_at"]
+        process_cpu = process_cpu_now - state["process_cpu_at"]
+        allocator_stats = torch.cuda.memory_stats()
+        allocator_retries = int(allocator_stats.get("num_alloc_retries", 0))
+        allocator_retry_delta = allocator_retries - state["allocator_retries"]
+        runner = self._get_live_llm().model_runner
+        get_stage_samples = getattr(runner, "mtp_stage_profile_samples", None)
+        stage_samples = get_stage_samples() if callable(get_stage_samples) else []
+        new_stage_samples = stage_samples[state["mtp_profile_samples"]:]
+        state["mtp_profile_samples"] = len(stage_samples)
+        stage_summary = "mtp_cuda=none"
+        if new_stage_samples:
+            stage_names = ("draft", "verify_setup", "verify", "sampling", "commit", "mtp_advance")
+            sample_summaries = []
+            for sample in new_stage_samples:
+                outcome = f"a{sample['accepted_count']}e{sample['emitted_count']}c{sample['commit_start']}"
+                values = " ".join(f"{stage_name}:{float(sample['gpu_ms'][stage_name]):.3f}" for stage_name in stage_names if stage_name in sample["gpu_ms"])
+                distributions = ",".join(
+                    f"{distribution['role']}:{distribution['min_p_survivors']}/{distribution['top_p_survivors']}/{distribution['vocab']}"
+                    for distribution in sample.get("distributions", ())
+                )
+                sample_summaries.append(f"{outcome}[{values} dist={distributions}]")
+            stage_summary = f"mtp_cuda={' '.join(sample_summaries)}"
+        gpu_telemetry_started = time.perf_counter()
+        gpu_telemetry = self._gpu_telemetry()
+        gpu_telemetry_ms = 1000.0 * (time.perf_counter() - gpu_telemetry_started)
+        window = {
+            "label": state["label"],
+            "throughput": throughput,
+            "passes_per_second": passes_per_second,
+            "tokens_per_pass": tokens_per_pass,
+            "runner_ms_per_pass": runner_ms_per_pass,
+            "host_ms_per_pass": host_ms_per_pass,
+            "context": len(seq.token_ids),
+        }
+        previous_window = self._last_decode_window
+        perf_delta = "perf_delta=initial"
+        if previous_window is not None:
+            def relative_delta(name: str) -> float:
+                previous = float(previous_window[name])
+                return 100.0 * (float(window[name]) / previous - 1.0) if previous > 0.0 else 0.0
+
+            throughput_delta = relative_delta("throughput")
+            passes_delta = relative_delta("passes_per_second")
+            tokens_per_pass_delta = relative_delta("tokens_per_pass")
+            runner_delta = relative_delta("runner_ms_per_pass")
+            host_delta = relative_delta("host_ms_per_pass")
+            cause = "stable"
+            if throughput_delta <= -10.0:
+                if tokens_per_pass_delta <= -7.5 and passes_delta > -7.5:
+                    cause = "mtp_acceptance"
+                elif runner_delta >= 7.5:
+                    cause = "gpu_runner"
+                elif host_delta >= 25.0 and window["host_ms_per_pass"] - previous_window["host_ms_per_pass"] >= 0.25:
+                    cause = "host_gap"
+                else:
+                    cause = "mixed"
+            perf_delta = (
+                f"perf_delta=from:{previous_window['label']} tok/s:{throughput_delta:+.1f}% "
+                f"passes/s:{passes_delta:+.1f}% tok/pass:{tokens_per_pass_delta:+.1f}% "
+                f"runner/pass:{runner_delta:+.1f}% host/pass:{host_delta:+.1f}% "
+                f"context:{window['context'] - previous_window['context']:+d} cause:{cause}"
+            )
+        self._last_decode_window = window
+        self._log(
+            f"Decode telemetry {state['label']}: emitted={state['emitted']} calls={state['calls']} "
+            f"elapsed={elapsed:.3f}s throughput={throughput:.2f} tok/s "
+            f"passes={passes} passes/s={passes_per_second:.2f} runner_ms/pass={runner_ms_per_pass:.3f} host_ms/pass={host_ms_per_pass:.3f} "
+            f"runner={state['runner_seconds']:.3f}s scheduler={state['scheduler_seconds']:.3f}s "
+            f"postprocess={state['postprocess_seconds']:.3f}s decode={state['decode_seconds']:.3f}s "
+            f"parse={state['parse_seconds']:.3f}s stream={state['stream_seconds']:.3f}s "
+            f"callbacks={state['stream_callbacks']}/{state['stream_checks']} other={max(0.0, elapsed - accounted):.3f}s "
+            f"cpu_thread={thread_cpu:.3f}s cpu_other={max(0.0, process_cpu - thread_cpu):.3f}s "
+            f"cuda_mem={torch.cuda.memory_allocated() / (1 << 20):.0f}/{torch.cuda.memory_reserved() / (1 << 20):.0f}MiB alloc_retries=+{allocator_retry_delta} "
+            f"context={len(seq.token_ids)} {mtp} {perf_delta} {stage_summary} {gpu_telemetry} telemetry_ms={gpu_telemetry_ms:.3f}"
+        )
+        state.update(
+            last_at=time.perf_counter(),
+            thread_cpu_at=time.thread_time(),
+            process_cpu_at=time.process_time(),
+            allocator_retries=allocator_retries,
+            emitted=0,
+            calls=0,
+            runner_seconds=0.0,
+            scheduler_seconds=0.0,
+            postprocess_seconds=0.0,
+            decode_seconds=0.0,
+            parse_seconds=0.0,
+            stream_seconds=0.0,
+            stream_checks=0,
+            stream_callbacks=0,
+            speculative=current,
+        )
+
+    def _speculative_telemetry(self, seq, baseline: dict | None = None, label: str = "generation") -> dict | None:
+        if not self.telemetry_enabled or not bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False)):
+            return None
+        runner = self._get_live_llm().model_runner
+        current = runner.speculative_telemetry(seq.seq_id, len(seq.token_ids))
+        if baseline is None:
+            return current
+        drafted = current["drafted"] - baseline["drafted"]
+        accepted = current["accepted"] - baseline["accepted"]
+        target_passes = current["target_passes"] - baseline["target_passes"]
+        emitted = current["emitted_tokens"] - baseline["emitted_tokens"]
+        drafted_by_position = [value - old for value, old in zip(current["drafted_by_position"], baseline["drafted_by_position"])]
+        accepted_by_position = [value - old for value, old in zip(current["accepted_by_position"], baseline["accepted_by_position"])]
+        position_rates = [f"{accepted_count}/{drafted_count}" for accepted_count, drafted_count in zip(accepted_by_position, drafted_by_position)]
+        acceptance = 100.0 * accepted / drafted if drafted else 0.0
+        tokens_per_pass = emitted / target_passes if target_passes else 0.0
+        self._log(
+            f"MTP telemetry {label}: accepted={accepted}/{drafted} ({acceptance:.1f}%) "
+            f"by_position={position_rates} emitted={emitted} target_passes={target_passes} "
+            f"tokens_per_pass={tokens_per_pass:.3f} sequence={current['sequence_tokens']} "
+            f"mtp_cache={current['mtp_cache_tokens']} sync_delta={current['sync_delta']:+d} "
+            f"pending={current['pending']} draft={current['draft']}"
+        )
+        return current
+
+    def _log_speculative_alignment(self, seq, label: str) -> None:
+        telemetry = self._speculative_telemetry(seq)
+        if telemetry is not None:
+            self._log(
+                f"MTP state {label}: sequence={telemetry['sequence_tokens']} "
+                f"mtp_cache={telemetry['mtp_cache_tokens']} sync_delta={telemetry['sync_delta']:+d} "
+                f"pending={telemetry['pending']} draft={telemetry['draft']}"
+            )
 
     @staticmethod
     def _format_preview(text: str, limit: int = 120) -> str:
@@ -598,7 +948,7 @@ class Qwen35AssistantRuntime:
         llm.scheduler.running.clear()
         return engine, llm
 
-    def _build_sampling_params(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, available_tokens: int | None = None, suppress_token_ids: tuple[int, ...] = ()):
+    def _build_sampling_params(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, available_tokens: int | None = None, suppress_token_ids: tuple[int, ...] = (), apply_repetition_penalty: bool = True):
         requested_new_tokens = max(1, int(max_new_tokens))
         resolved_available_tokens = None if available_tokens is None else max(0, int(available_tokens))
         effective_new_tokens = requested_new_tokens if resolved_available_tokens is None else min(requested_new_tokens, resolved_available_tokens)
@@ -627,7 +977,7 @@ class Qwen35AssistantRuntime:
             top_k=normalized_top_k,
             top_p=normalized_top_p,
             min_p=qwen35_text._resolve_prompt_min_p(self.model),
-            repetition_penalty=qwen35_text._resolve_prompt_repetition_penalty(self.model),
+            repetition_penalty=qwen35_text._resolve_prompt_repetition_penalty(self.model) if apply_repetition_penalty else 1.0,
             predictive_penalty=qwen35_text._resolve_predictive_penalty_enabled(self.model),
             ignore_eos=True,
             logits_processor=logits_processor,
@@ -678,6 +1028,7 @@ class Qwen35AssistantRuntime:
         seq = scheduled[0]
         seq = self._chunk_prefill_suffix(seq, normalized_token_ids[len(initial_token_ids):])
         self._seal_sequence(seq)
+        self._log_speculative_alignment(seq, "after context prefill")
         self._log(f"Primed assistant context with {len(normalized_token_ids)} tokens.")
         return seq
 
@@ -721,6 +1072,7 @@ class Qwen35AssistantRuntime:
                     f"Chunk-prefilled assistant suffix chunk {chunk_index}/{total_chunks} "
                     f"with {len(chunk)} tokens in {time.perf_counter() - chunk_started_at:.3f}s (context={int(seq.num_tokens)})."
                 )
+                self._log_speculative_alignment(seq, f"after suffix chunk {chunk_index}/{total_chunks}")
         finally:
             seq.logits_processor = original_processor
             seq.logits_processor_update_state = original_update
@@ -839,7 +1191,7 @@ class Qwen35AssistantRuntime:
                 self._log("Embedded decode finished without an active assistant snapshot; releasing multimodal runtime allocations.")
                 engine.release_runtime_allocations()
 
-    def start_generation_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, continue_existing_completion: bool = False, suppress_token_ids: tuple[int, ...] = ()) -> tuple[Sequence, int]:
+    def start_generation_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, continue_existing_completion: bool = False, suppress_token_ids: tuple[int, ...] = (), apply_repetition_penalty: bool = True) -> tuple[Sequence, int]:
         seq = self._get_active_sequence()
         if seq is None:
             raise RuntimeError("Assistant context is not initialized.")
@@ -855,6 +1207,7 @@ class Qwen35AssistantRuntime:
             thinking_enabled=thinking_enabled,
             available_tokens=available_tokens,
             suppress_token_ids=suppress_token_ids,
+            apply_repetition_penalty=apply_repetition_penalty,
         )
         if budget_info["effective_new_tokens"] != budget_info["requested_new_tokens"] or budget_info["effective_runtime_extra"] != budget_info["requested_runtime_extra"]:
             self._log(
@@ -917,6 +1270,11 @@ class Qwen35AssistantRuntime:
             def logits_processor_without_penalty(_input_ids, logits):
                 return thinking_state.apply_(logits)
         logits_processor._without_penalty = logits_processor_without_penalty
+        logits_processor._requires_input_ids = False
+        logits_processor._supports_partial_vocab = lambda: thinking_state is None or not thinking_state.in_thinking or thinking_state.generated_thinking_tokens < thinking_state.max_thinking_tokens
+        if logits_processor_without_penalty is not None:
+            logits_processor_without_penalty._requires_input_ids = False
+            logits_processor_without_penalty._supports_partial_vocab = logits_processor._supports_partial_vocab
 
         def update_state(token_id: int):
             presence_state.update(token_id)
@@ -926,7 +1284,7 @@ class Qwen35AssistantRuntime:
         seq.logits_processor = logits_processor
         seq.logits_processor_update_state = update_state
 
-    def start_generation_action(self, phase: str, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, continuing_response: bool = False) -> tuple[Sequence, AssistantActionState]:
+    def start_generation_action(self, phase: str, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, continuing_response: bool = False, apply_repetition_penalty: bool = True) -> tuple[Sequence, AssistantActionState]:
         phase = str(phase or "").strip().lower()
         phase_limit = self.action_budget(phase)
         seq = self._get_active_sequence()
@@ -947,7 +1305,7 @@ class Qwen35AssistantRuntime:
         seq.top_p = normalized_top_p
         seq.min_p = qwen35_text._resolve_prompt_min_p(self.model)
         seq.cfg_scale = 1.0
-        seq.repetition_penalty = qwen35_text._resolve_prompt_repetition_penalty(self.model) if phase in {"thought", "statement"} else 1.0
+        seq.repetition_penalty = qwen35_text._resolve_prompt_repetition_penalty(self.model) if apply_repetition_penalty else 1.0
         seq.predictive_penalty = qwen35_text._resolve_predictive_penalty_enabled(self.model)
         seq.repetition_penalty_start = seq.num_tokens
         seq.logits_bias = qwen35_text._build_suppressed_token_logits_bias(self.model, thinking_enabled=thinking_enabled)
@@ -966,17 +1324,20 @@ class Qwen35AssistantRuntime:
     def _close_exhausted_thought(self, budget_tokens: int) -> None:
         self._append_action_suffix(f"\n{assistant_thought_budget_update(budget_tokens)}\n</think>")
 
-    def generate_action(self, phase: str, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, stream_callback=None, stream_interval_seconds: float = 1.0, continuing_response: bool = False) -> AssistantDecodeResult:
-        seq, action = self.start_generation_action(phase=phase, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled, continuing_response=continuing_response)
+    def generate_action(self, phase: str, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, stream_callback=None, stream_interval_seconds: float = 1.0, continuing_response: bool = False, apply_repetition_penalty: bool = True) -> AssistantDecodeResult:
+        seq, action = self.start_generation_action(phase=phase, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled, continuing_response=continuing_response, apply_repetition_penalty=apply_repetition_penalty)
         stop_token_ids = {int(token_id) for token_id in getattr(self.model, "_prompt_enhancer_stop_token_ids", []) or [] if int(token_id) >= 0}
         speculative = bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False))
+        boundary_markers = ["</think>"] if action.phase == "thought" else ["<tool_call>", *(["<think>"] if thinking_enabled else [])] if action.phase == "statement" else ["</tool_call>"]
+        boundary_token_sequences = []
+        for marker in boundary_markers:
+            marker_token_ids = self.tokenizer.encode(marker, add_special_tokens=False)
+            if torch.is_tensor(marker_token_ids):
+                marker_token_ids = marker_token_ids.tolist()
+            boundary_token_sequences.append(tuple(int(token_id) for token_id in marker_token_ids))
         if speculative:
             boundary_token_ids = set(stop_token_ids)
-            boundary_markers = ["</think>"] if action.phase == "thought" else ["<tool_call>", *(["<think>"] if thinking_enabled else [])] if action.phase == "statement" else ["</tool_call>"]
-            for marker in boundary_markers:
-                marker_token_ids = self.tokenizer.encode(marker, add_special_tokens=False)
-                if torch.is_tensor(marker_token_ids):
-                    marker_token_ids = marker_token_ids.tolist()
+            for marker_token_ids in boundary_token_sequences:
                 if len(marker_token_ids) == 1:
                     boundary_token_ids.add(int(marker_token_ids[0]))
             seq.speculative_stop_token_ids = boundary_token_ids
@@ -985,11 +1346,24 @@ class Qwen35AssistantRuntime:
         baseline_close_think = len(re.findall(r"</think>", raw_text, flags=re.IGNORECASE))
         baseline_open_think = len(re.findall(r"<think>", raw_text, flags=re.IGNORECASE))
         baseline_open_tool = len(re.findall(r"<tool_call>", raw_text, flags=re.IGNORECASE))
+        boundary_tail_size = max((len(token_ids) for token_ids in boundary_token_sequences), default=1) - 1
+        boundary_tail_tokens = list(seq.completion_token_ids[-boundary_tail_size:]) if boundary_tail_size else []
+        telemetry_baseline = self._speculative_telemetry(seq)
+        decode_telemetry = self._start_decode_telemetry(seq, f"action={action.phase}")
 
-        def finish(stop_reason: str, stop_token_id: int | None = None) -> AssistantDecodeResult:
-            current_text = self.tokenizer.decode(seq.completion_token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+        def finish(stop_reason: str, stop_token_id: int | None = None, current_text: str | None = None) -> AssistantDecodeResult:
+            decode_started = time.perf_counter() if decode_telemetry is not None and current_text is None else 0.0
+            if current_text is None:
+                current_text = self.tokenizer.decode(seq.completion_token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+            decode_seconds = time.perf_counter() - decode_started if decode_started else 0.0
+            stream_started = time.perf_counter() if decode_telemetry is not None and stream_emitter is not None else 0.0
+            stream_callback_called = False
             if stream_emitter is not None:
-                stream_emitter.emit(stream_callback, raw_text=current_text, token_count=action.generated_tokens, stop_reason=stop_reason, is_final=True, force=True)
+                stream_callback_called = stream_emitter.emit(stream_callback, raw_text=current_text, token_count=action.generated_tokens, stop_reason=stop_reason, is_final=True, force=True)
+            stream_seconds = time.perf_counter() - stream_started if stream_started else 0.0
+            self._update_decode_telemetry(decode_telemetry, seq, decode_seconds=decode_seconds, stream_seconds=stream_seconds, stream_checked=stream_emitter is not None, stream_callback=stream_callback_called, force=True)
+            self._speculative_telemetry(seq, telemetry_baseline, f"action={action.phase} stop={stop_reason}")
+            self._log_mtp_stage_profile(f"action={action.phase} stop={stop_reason}")
             return AssistantDecodeResult(raw_text=current_text, stop_reason=stop_reason, token_count=action.generated_tokens, stop_token_id=stop_token_id, phase=action.phase)
 
         while action.remaining_tokens > 0:
@@ -998,44 +1372,72 @@ class Qwen35AssistantRuntime:
             llm = self._get_live_llm()
             if len(seq.token_ids) >= int(llm.config.max_model_len):
                 return finish("context_limit")
+            scheduler_started = time.perf_counter() if decode_telemetry is not None else 0.0
             try:
                 scheduled, is_prefill = llm.scheduler.schedule()
             except AssertionError:
                 if len(seq.token_ids) >= int(llm.config.max_model_len):
                     return finish("context_limit")
                 raise
+            scheduler_seconds = time.perf_counter() - scheduler_started if decode_telemetry is not None else 0.0
             if speculative:
                 scheduled[0].speculative_max_emission = action.remaining_tokens
+            runner_started = time.perf_counter() if decode_telemetry is not None else 0.0
             sampled_token_ids = llm.model_runner.call("run", scheduled, is_prefill)
+            runner_seconds = time.perf_counter() - runner_started if decode_telemetry is not None else 0.0
+            postprocess_started = time.perf_counter() if decode_telemetry is not None else 0.0
             emitted_tokens = llm.scheduler.postprocess(scheduled, sampled_token_ids)
+            postprocess_seconds = time.perf_counter() - postprocess_started if decode_telemetry is not None else 0.0
             seq = scheduled[0]
             action.generated_tokens += emitted_tokens
-            raw_text = self.tokenizer.decode(seq.completion_token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
             sampled_tokens = sampled_token_ids[0] if isinstance(sampled_token_ids[0], list) else [sampled_token_ids[0]]
+            sampled_tokens = [int(token_id) for token_id in sampled_tokens]
             last_token_id = int(sampled_tokens[-1])
-            if stream_emitter is not None:
-                stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=action.generated_tokens, stop_reason=None, is_final=False)
-            if action.phase == "tool" and not validate_tool_call_structure(raw_text) and has_complete_tool_call(raw_text):
-                return finish("tool_call", last_token_id)
-            if action.phase == "thought" and len(re.findall(r"</think>", raw_text, flags=re.IGNORECASE)) > baseline_close_think:
-                return finish("thought_complete", last_token_id)
-            if action.phase == "statement":
+            combined_boundary_tokens = boundary_tail_tokens + sampled_tokens
+            canonical_boundary = any(marker_tokens and any(combined_boundary_tokens[index:index + len(marker_tokens)] == list(marker_tokens) for index in range(len(combined_boundary_tokens) - len(marker_tokens) + 1)) for marker_tokens in boundary_token_sequences)
+            boundary_tail_tokens = combined_boundary_tokens[-boundary_tail_size:] if boundary_tail_size else []
+            decode_started = time.perf_counter() if decode_telemetry is not None else 0.0
+            probe_text = "" if canonical_boundary else self.tokenizer.decode(sampled_tokens, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+            boundary_candidate = canonical_boundary or ">" in probe_text or action.phase == "tool" and "}" in probe_text
+            stream_due = stream_emitter is not None and stream_emitter.is_due()
+            if boundary_candidate or stream_due:
+                raw_text = self.tokenizer.decode(seq.completion_token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+            decode_seconds = time.perf_counter() - decode_started if decode_telemetry is not None else 0.0
+            stream_started = time.perf_counter() if decode_telemetry is not None and stream_due else 0.0
+            stream_callback_called = False
+            if stream_due:
+                stream_callback_called = stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=action.generated_tokens, stop_reason=None, is_final=False)
+            stream_seconds = time.perf_counter() - stream_started if stream_started else 0.0
+            parse_started = time.perf_counter() if decode_telemetry is not None else 0.0
+            stop_reason = None
+            if boundary_candidate and action.phase == "tool" and not validate_tool_call_structure(raw_text) and has_complete_tool_call(raw_text):
+                stop_reason = "tool_call"
+            elif boundary_candidate and action.phase == "thought" and len(re.findall(r"</think>", raw_text, flags=re.IGNORECASE)) > baseline_close_think:
+                stop_reason = "thought_complete"
+            elif boundary_candidate and action.phase == "statement":
                 if len(re.findall(r"<tool_call>", raw_text, flags=re.IGNORECASE)) > baseline_open_tool:
-                    return finish("tool_start", last_token_id)
-                if thinking_enabled and len(re.findall(r"<think>", raw_text, flags=re.IGNORECASE)) > baseline_open_think:
-                    return finish("thought_start", last_token_id)
-            if any(int(token_id) in stop_token_ids for token_id in sampled_tokens):
-                return finish("tool_call" if action.phase == "tool" else "stop_token", last_token_id)
+                    stop_reason = "tool_start"
+                elif thinking_enabled and len(re.findall(r"<think>", raw_text, flags=re.IGNORECASE)) > baseline_open_think:
+                    stop_reason = "thought_start"
+            if stop_reason is None and any(int(token_id) in stop_token_ids for token_id in sampled_tokens):
+                stop_reason = "tool_call" if action.phase == "tool" else "stop_token"
+            parse_seconds = time.perf_counter() - parse_started if decode_telemetry is not None else 0.0
+            self._update_decode_telemetry(decode_telemetry, seq, emitted_tokens, runner_seconds, scheduler_seconds, postprocess_seconds, decode_seconds, parse_seconds, stream_seconds, stream_emitter is not None, stream_callback_called)
+            if stop_reason is not None:
+                return finish(stop_reason, last_token_id, raw_text)
 
         if action.phase == "thought":
             self._close_exhausted_thought(action.limit)
             return finish("thought_budget_exhausted")
-        if action.phase == "tool" and not validate_tool_call_structure(raw_text) and has_complete_tool_call(raw_text):
-            return finish("tool_call")
+        if action.phase == "tool":
+            raw_text = self.tokenizer.decode(seq.completion_token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+            if not validate_tool_call_structure(raw_text) and has_complete_tool_call(raw_text):
+                return finish("tool_call", current_text=raw_text)
+            return finish("tool_budget_exhausted", current_text=raw_text)
         return finish(f"{action.phase}_budget_exhausted")
 
-    def generate_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, stream_callback=None, stream_interval_seconds: float = 1.0, continue_existing_completion: bool = False, suppress_token_ids: tuple[int, ...] = ()) -> AssistantDecodeResult:
-        seq, requested_segment_tokens = self.start_generation_segment(max_new_tokens=max_new_tokens, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled, continue_existing_completion=continue_existing_completion, suppress_token_ids=suppress_token_ids)
+    def generate_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, stream_callback=None, stream_interval_seconds: float = 1.0, continue_existing_completion: bool = False, suppress_token_ids: tuple[int, ...] = (), apply_repetition_penalty: bool = True) -> AssistantDecodeResult:
+        seq, requested_segment_tokens = self.start_generation_segment(max_new_tokens=max_new_tokens, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled, continue_existing_completion=continue_existing_completion, suppress_token_ids=suppress_token_ids, apply_repetition_penalty=apply_repetition_penalty)
         existing_completion_tokens = int(seq.num_completion_tokens)
         requested_segment_tokens = max(0, int(requested_segment_tokens))
         seq.max_tokens = max(int(seq.max_tokens or 0), existing_completion_tokens + requested_segment_tokens + 1)
@@ -1043,51 +1445,86 @@ class Qwen35AssistantRuntime:
         speculative = bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False))
         if speculative:
             seq.speculative_stop_token_ids = stop_token_ids
+        boundary_token_ids = self.tokenizer.encode("</tool_call>", add_special_tokens=False)
+        if torch.is_tensor(boundary_token_ids):
+            boundary_token_ids = boundary_token_ids.tolist()
+        boundary_token_ids = tuple(int(token_id) for token_id in boundary_token_ids)
+        boundary_tail_size = max(0, len(boundary_token_ids) - 1)
+        boundary_tail_tokens = list(seq.completion_token_ids[-boundary_tail_size:]) if boundary_tail_size else []
         stream_emitter = ThrottledStreamEmitter(stream_interval_seconds) if callable(stream_callback) else None
         raw_text = ""
         generated_tokens = 0
+        telemetry_baseline = self._speculative_telemetry(seq)
+        decode_telemetry = self._start_decode_telemetry(seq, "segment")
+
+        def finish(stop_reason: str, stop_token_id: int | None = None, token_count: int | None = None, current_text: str | None = None) -> AssistantDecodeResult:
+            nonlocal raw_text
+            decode_started = time.perf_counter() if decode_telemetry is not None and current_text is None else 0.0
+            if current_text is None:
+                current_text = self.tokenizer.decode(seq.completion_token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+            raw_text = current_text
+            decode_seconds = time.perf_counter() - decode_started if decode_started else 0.0
+            stream_started = time.perf_counter() if decode_telemetry is not None and stream_emitter is not None else 0.0
+            stream_callback_called = False
+            if stream_emitter is not None:
+                stream_callback_called = stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=generated_tokens if token_count is None else token_count, stop_reason=stop_reason, is_final=True, force=True)
+            stream_seconds = time.perf_counter() - stream_started if stream_started else 0.0
+            self._update_decode_telemetry(decode_telemetry, seq, decode_seconds=decode_seconds, stream_seconds=stream_seconds, stream_checked=stream_emitter is not None, stream_callback=stream_callback_called, force=True)
+            self._speculative_telemetry(seq, telemetry_baseline, f"segment stop={stop_reason}")
+            self._log_mtp_stage_profile(f"segment stop={stop_reason}")
+            return AssistantDecodeResult(raw_text=raw_text, stop_reason=stop_reason, token_count=generated_tokens if token_count is None else token_count, stop_token_id=stop_token_id)
+
         while generated_tokens < requested_segment_tokens:
             if callable(stop_requested) and stop_requested():
-                if stream_emitter is not None:
-                    stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=generated_tokens, stop_reason="interrupted", is_final=True, force=True)
-                return AssistantDecodeResult(raw_text=raw_text, stop_reason="interrupted", token_count=generated_tokens)
+                return finish("interrupted")
             llm = self._get_live_llm()
             if len(seq.token_ids) >= int(llm.config.max_model_len):
-                if stream_emitter is not None:
-                    stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=generated_tokens, stop_reason="context_limit", is_final=True, force=True)
-                return AssistantDecodeResult(raw_text=raw_text, stop_reason="context_limit", token_count=generated_tokens)
+                return finish("context_limit")
+            scheduler_started = time.perf_counter() if decode_telemetry is not None else 0.0
             try:
                 scheduled, is_prefill = llm.scheduler.schedule()
             except AssertionError:
                 if len(seq.token_ids) >= int(llm.config.max_model_len):
-                    if stream_emitter is not None:
-                        stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=generated_tokens, stop_reason="context_limit", is_final=True, force=True)
-                    return AssistantDecodeResult(raw_text=raw_text, stop_reason="context_limit", token_count=generated_tokens)
+                    return finish("context_limit")
                 raise
+            scheduler_seconds = time.perf_counter() - scheduler_started if decode_telemetry is not None else 0.0
             if speculative:
                 scheduled[0].speculative_max_emission = requested_segment_tokens - generated_tokens
+            runner_started = time.perf_counter() if decode_telemetry is not None else 0.0
             sampled_token_ids = llm.model_runner.call("run", scheduled, is_prefill)
+            runner_seconds = time.perf_counter() - runner_started if decode_telemetry is not None else 0.0
+            postprocess_started = time.perf_counter() if decode_telemetry is not None else 0.0
             emitted_tokens = llm.scheduler.postprocess(scheduled, sampled_token_ids)
+            postprocess_seconds = time.perf_counter() - postprocess_started if decode_telemetry is not None else 0.0
             seq = scheduled[0]
             generated_tokens += emitted_tokens
-            raw_text = self.tokenizer.decode(seq.completion_token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
             sampled_tokens = sampled_token_ids[0] if isinstance(sampled_token_ids[0], list) else [sampled_token_ids[0]]
+            sampled_tokens = [int(token_id) for token_id in sampled_tokens]
             last_token_id = int(sampled_tokens[-1])
-            if stream_emitter is not None:
-                stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=generated_tokens, stop_reason=None, is_final=False)
-            if has_complete_tool_call(raw_text):
-                if stream_emitter is not None:
-                    stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=generated_tokens, stop_reason="tool_call", is_final=True, force=True)
-                return AssistantDecodeResult(raw_text=raw_text, stop_reason="tool_call", token_count=generated_tokens, stop_token_id=last_token_id)
-            if last_token_id in stop_token_ids:
-                if stream_emitter is not None:
-                    stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=generated_tokens, stop_reason="stop_token", is_final=True, force=True)
-                return AssistantDecodeResult(raw_text=raw_text, stop_reason="stop_token", token_count=generated_tokens, stop_token_id=last_token_id)
+            combined_boundary_tokens = boundary_tail_tokens + sampled_tokens
+            canonical_boundary = bool(boundary_token_ids) and any(combined_boundary_tokens[index:index + len(boundary_token_ids)] == list(boundary_token_ids) for index in range(len(combined_boundary_tokens) - len(boundary_token_ids) + 1))
+            boundary_tail_tokens = combined_boundary_tokens[-boundary_tail_size:] if boundary_tail_size else []
+            decode_started = time.perf_counter() if decode_telemetry is not None else 0.0
+            probe_text = "" if canonical_boundary else self.tokenizer.decode(sampled_tokens, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+            boundary_candidate = canonical_boundary or ">" in probe_text or "}" in probe_text
+            stream_due = stream_emitter is not None and stream_emitter.is_due()
+            if boundary_candidate or stream_due:
+                raw_text = self.tokenizer.decode(seq.completion_token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+            decode_seconds = time.perf_counter() - decode_started if decode_telemetry is not None else 0.0
+            stream_started = time.perf_counter() if decode_telemetry is not None and stream_due else 0.0
+            stream_callback_called = False
+            if stream_due:
+                stream_callback_called = stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=generated_tokens, stop_reason=None, is_final=False)
+            stream_seconds = time.perf_counter() - stream_started if stream_started else 0.0
+            parse_started = time.perf_counter() if decode_telemetry is not None else 0.0
+            stop_reason = "tool_call" if boundary_candidate and has_complete_tool_call(raw_text) else "stop_token" if last_token_id in stop_token_ids else None
+            parse_seconds = time.perf_counter() - parse_started if decode_telemetry is not None else 0.0
+            self._update_decode_telemetry(decode_telemetry, seq, emitted_tokens, runner_seconds, scheduler_seconds, postprocess_seconds, decode_seconds, parse_seconds, stream_seconds, stream_emitter is not None, stream_callback_called)
+            if stop_reason is not None:
+                return finish(stop_reason, last_token_id, current_text=raw_text)
         seq.max_tokens = existing_completion_tokens + requested_segment_tokens
         raw_text = self.tokenizer.decode(seq.completion_token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
-        if stream_emitter is not None:
-            stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=requested_segment_tokens, stop_reason="max_tokens", is_final=True, force=True)
-        return AssistantDecodeResult(raw_text=raw_text, stop_reason="max_tokens", token_count=requested_segment_tokens)
+        return finish("max_tokens", token_count=requested_segment_tokens, current_text=raw_text)
 
     def snapshot_context(self) -> dict[str, Any] | None:
         seq = self._get_active_sequence()
@@ -1312,6 +1749,7 @@ class Qwen35AssistantRuntime:
             if speculative_state is None:
                 raise RuntimeError("Assistant snapshot does not contain predictive decoder state.")
             runner.restore_speculative_state(restored_seq.seq_id, speculative_state)
+            self._log_speculative_alignment(restored_seq, "after snapshot restore")
         llm.scheduler.block_manager.normalize_tail_after_prefill(restored_seq)
         self._log(
             f"Restored assistant context with {len(restored_seq.token_ids)} tokens. "

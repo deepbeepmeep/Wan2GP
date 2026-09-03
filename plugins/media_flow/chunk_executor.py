@@ -280,7 +280,7 @@ class ChunkExecutor:
                     source_audio_duration_seconds=source_audio_duration_seconds,
                 )
                 if context.continued_mode and progress.write_state.output_path_for_write != context.output_path and callable(getattr(context.system_handler, "move_continue_cache", None)):
-                    context.system_handler.move_continue_cache(context.output_path, progress.write_state.output_path_for_write)
+                    context.system_handler.move_continue_cache(context.output_path, progress.write_state.mux_output_path)
                 if blended_overlap is not None:
                     last_frame_tensor = progress.write_state.write_chunk(process_is_hdr=False, video_tensor_hdr=None, video_tensor_uint8=blended_overlap, start_frame=0, frame_count=plan_overlap_frames)
                 remaining_write_start = plan_overlap_frames if blended_overlap is not None else write_start
@@ -291,7 +291,7 @@ class ChunkExecutor:
                 if self._preview_enabled():
                     self.preview_state["image"] = video.frame_to_image(last_frame_tensor)
                 if progress.continue_cache is not None and hasattr(context.system_handler, "save_continue_cache"):
-                    context.system_handler.save_continue_cache(progress.continue_cache, progress.write_state.output_path_for_write, metadata={"written_unique_frames": int(context.resumed_unique_frames + progress.written_unique_frames), "chunk": int(chunk_index)})
+                    context.system_handler.save_continue_cache(progress.continue_cache, progress.write_state.mux_output_path, metadata={"written_unique_frames": int(context.resumed_unique_frames + progress.written_unique_frames), "chunk": int(chunk_index)})
                 release_output_payload = getattr(job, "release_output_payload", None)
                 if callable(release_output_payload):
                     release_output_payload()

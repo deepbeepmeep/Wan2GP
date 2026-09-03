@@ -54,12 +54,22 @@ class _TaskRunner:
         return func
 
     def promote_task(self, task) -> bool:
+        return self.promote_tasks([task])
+
+    def promote_tasks(self, tasks) -> bool:
+        targets = list(tasks)
+        if not targets:
+            return False
         with self.lock:
-            for index, queued_task in enumerate(self.task_queue):
-                if queued_task[0] is task:
-                    self.task_queue.insert(0, self.task_queue.pop(index))
-                    return True
-        return False
+            remaining = list(self.task_queue)
+            promoted = []
+            for task in targets:
+                index = next((index for index, queued_task in enumerate(remaining) if queued_task[0] is task), None)
+                if index is None:
+                    return False
+                promoted.append(remaining.pop(index))
+            self.task_queue[:] = promoted + remaining
+            return True
 
 
 class Listener:
@@ -84,6 +94,10 @@ class Listener:
     def promote_task(cls, task, runner_name="default"):
         return cls._get_runner(runner_name).promote_task(task)
 
+    @classmethod
+    def promote_tasks(cls, tasks, runner_name="default"):
+        return cls._get_runner(runner_name).promote_tasks(tasks)
+
 
 def async_run(func, *args, thread_name=None, **kwargs):
     Listener.add_task(func, *args, thread_name=thread_name, **kwargs)
@@ -95,6 +109,10 @@ def async_run_in(runner_name, func, *args, thread_name=None, **kwargs):
 
 def promote_async_task(runner_name, task):
     return Listener.promote_task(task, runner_name=runner_name)
+
+
+def promote_async_tasks(runner_name, tasks):
+    return Listener.promote_tasks(tasks, runner_name=runner_name)
 
 
 class FIFOQueue:

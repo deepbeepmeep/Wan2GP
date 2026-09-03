@@ -144,16 +144,22 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
         if status_phase == phase:
             return
         status_phase = phase
-        _send(send_cmd, assistant_chat.build_status_event(text, kind=kind))
+        _send(send_cmd, assistant_chat.build_status_event(text, kind=kind, session=session))
 
     def finish_reasoning() -> None:
         nonlocal reasoning_active
         if reasoning_active:
+            if reasoning_block_id and reasoning_parts:
+                _reasoning_id, payload = assistant_chat.upsert_reasoning_block(session, assistant_id, reasoning_block_id, "".join(reasoning_parts), streaming=False)
+                _send(send_cmd, payload)
             finish_assistant_thought(session)
             reasoning_active = False
 
     def finish_answer_segment() -> None:
         nonlocal answer_block_id
+        if answer_block_id and answer_segment_parts:
+            answer_block_id, payload = assistant_chat.upsert_assistant_content_block(session, assistant_id, answer_block_id, "".join(answer_segment_parts), streaming=False)
+            _send(send_cmd, payload)
         answer_block_id = ""
         answer_segment_parts.clear()
 
@@ -191,11 +197,11 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
             item_id = str(data.get("item_id", "") or "").strip() or "commentary_stream"
             commentary = commentary_messages.pop(item_id, None)
             if commentary is None:
-                _block_id, payload = assistant_chat.upsert_assistant_content_block(session, assistant_id, None, event.text)
+                _block_id, payload = assistant_chat.upsert_assistant_content_block(session, assistant_id, None, event.text, streaming=False)
                 _send(send_cmd, payload)
             else:
                 commentary["parts"][:] = [event.text]
-                commentary["block_id"], payload = assistant_chat.upsert_assistant_content_block(session, assistant_id, commentary["block_id"], event.text)
+                commentary["block_id"], payload = assistant_chat.upsert_assistant_content_block(session, assistant_id, commentary["block_id"], event.text, streaming=False)
                 _send(send_cmd, payload)
             answer_parts.append(event.text)
             set_remote_status("responding", f"{engine_label} is responding...", "status")
@@ -326,8 +332,14 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
         answer = backend.run_turn(text, system_prompt=system_prompt, tools=toolbox.get_tool_schemas(), images=[], on_event=on_event, call_tool=call_tool, should_stop=lambda: bool(session.interrupt_requested or assistant_steering_interrupt_due(session)))
         if answer and not answer_parts:
             answer_parts.append(answer)
-            _answer_block_id, payload = assistant_chat.upsert_assistant_content_block(session, assistant_id, None, answer)
+            _answer_block_id, payload = assistant_chat.upsert_assistant_content_block(session, assistant_id, None, answer, streaming=False)
             _send(send_cmd, payload)
+        finish_reasoning()
+        finish_answer_segment()
+        for commentary in commentary_messages.values():
+            if commentary["block_id"] and commentary["parts"]:
+                commentary["block_id"], payload = assistant_chat.upsert_assistant_content_block(session, assistant_id, commentary["block_id"], "".join(commentary["parts"]), streaming=False)
+                _send(send_cmd, payload)
         if not session.interrupt_requested:
             final_answer = "".join(answer_parts).strip()
             if final_answer:
@@ -348,4 +360,4 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
                 rollback_assistant_turn(session)
             finish_assistant_turn(session)
             clear_assistant_steering(session)
-        _send(send_cmd, assistant_chat.build_status_event(None, visible=False))
+        _send(send_cmd, assistant_chat.build_status_event(None, visible=False, session=session))

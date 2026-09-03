@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import threading
@@ -33,6 +34,7 @@ from shared.deepy.config import (
 from shared.deepy import PRIME_SYSTEM_PROMPT, ZERO_SYSTEM_PROMPT
 from shared.deepy import ui_settings as deepy_ui_settings
 from shared.deepy.debug_bootstrap import deepy_log_scope
+from shared.deepy.publication import DeepyPublicationQueue
 from shared.deepy.engine import (
     AssistantEngine,
     AssistantRuntimeHooks,
@@ -51,12 +53,28 @@ from shared.deepy.engine import (
     DeepyZeroTools,
 )
 from shared.gradio import assistant_chat
-from shared.utils.thread_utils import AsyncStream, async_run_in, promote_async_task
+from shared.utils.thread_utils import AsyncStream, async_run_in, promote_async_task, promote_async_tasks
 from shared.remote_llm.config import is_remote_engine, resolve_role_engine
 
 
 _DEEPY_GPU_PROCESS_ID = "deepy"
 _DEEPY_DISABLED_TEXT = "Deepy is disabled in Configuration > Deepy."
+_CHAT_BATCH_MAX_EVENTS = 16
+_CHAT_BATCH_MAX_SECONDS = 0.05
+DEEPY_STREAM_TRACE_ENV = "WAN2GP_DEEPY_STREAM_TRACE"
+_DEEPY_STREAM_TRACE_ENABLED = str(os.environ.get(DEEPY_STREAM_TRACE_ENV, "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _drain_chat_output_batch(output_queue, first_payload: str) -> str:
+    payloads = [first_payload]
+    time.sleep(_CHAT_BATCH_MAX_SECONDS)
+    while len(payloads) < _CHAT_BATCH_MAX_EVENTS:
+        next_item = output_queue.top()
+        if not isinstance(next_item, tuple) or len(next_item) < 1 or next_item[0] != "chat_output":
+            break
+        _cmd, next_payload = output_queue.pop()
+        payloads.append(next_payload)
+    return assistant_chat.build_event_batch(payloads)
 
 
 @dataclass(slots=True)
@@ -182,6 +200,7 @@ class DeepyController:
         if action not in {"edit", "remove", "steer"} or len(message_id) == 0 or (action == "edit" and len(text) == 0):
             return gr.update(), gr.update(), gr.update(), gr.update()
         with self._queue_state_lock:
+            message_id = assistant_chat.resolve_message_id(session, message_id)
             record = assistant_chat._find_message(session, message_id)
             if record is None or str(record.get("role", "")).strip() != "user" or str(record.get("badge", "")).strip() != "Queued":
                 return gr.update(), gr.update(), gr.update(), gr.update()
@@ -198,8 +217,11 @@ class DeepyController:
                 session.cancelled_queued_message_ids.add(message_id)
                 session.queued_job_count = max(0, int(session.queued_job_count or 0) - 1)
                 chat_event = assistant_chat.remove_message(session, message_id)
+            control_queue = session.control_queue if session.control_queue is not None and (session.worker_active or session.queued_job_count > 0) else None
+            if control_queue is not None and chat_event is not None:
+                control_queue.push("chat_output", chat_event)
         self._debug_log(f"Queued request {action} user_message_id={message_id} queued_jobs={int(session.queued_job_count or 0)}")
-        return chat_event if chat_event is not None else gr.update(), gr.update(), gr.update(), gr.update()
+        return chat_event if chat_event is not None and control_queue is None else gr.update(), gr.update(), gr.update(), gr.update()
 
     def _cancel_active_prime_job(self, session, action: str) -> str:
         cancel_active_job = getattr(session.prime_toolbox, "cancel_active_job", None)
@@ -253,6 +275,15 @@ class DeepyController:
 
     def release_vram(self, state, clear_session_state = False, discard_runtime_snapshot = False):
         session = get_or_create_assistant_session(state)
+        if clear_session_state:
+            with self._queue_state_lock:
+                worker_active = bool(session.worker_active)
+                if worker_active or session.queued_job_count > 0 or session.control_queue is not None:
+                    session.discard_runtime_snapshot_on_release = bool(discard_runtime_snapshot)
+                    request_assistant_reset(session)
+            if worker_active:
+                self._debug_log("Waiting for the active Deepy worker before clearing its runtime.")
+                session.worker_idle_event.wait()
         release_callback = session.release_vram_callback
         session.release_vram_callback = None
         session.discard_runtime_snapshot_on_release = bool(discard_runtime_snapshot)
@@ -268,6 +299,10 @@ class DeepyController:
             session.discard_runtime_snapshot_on_release = False
         if clear_session_state:
             clear_assistant_session(session)
+            session.interrupt_requested = False
+            session.drop_state_requested = False
+            session.control_queue = None
+            session.worker_idle_event.set()
 
     def preload_cli_runtime(self, state, override_profile=None) -> dict[str, Any]:
         self._sync_debug_enabled()
@@ -352,13 +387,21 @@ class DeepyController:
             return [normalized_request]
         return self._split_request_blocks(normalized_request) or [normalized_request]
 
-    def _queue_assistant_request(self, state, session, output_queue, ask_request: str, queued_epoch: int, *, queued: bool, client_submission_id: str = "", assistant_badge: str = "") -> None:
+    def _queue_assistant_request(self, state, session, output_queue, ask_request: str, queued_epoch: int, *, queued: bool, client_submission_id: str = "", assistant_badge: str = ""):
         raw_send_cmd = output_queue.push
         assistant_badge = str(assistant_badge or "").strip()
 
         def send_cmd(cmd, data=None):
             if queued_epoch != session.chat_epoch and cmd in {"chat_output", "load_queue_trigger", "refresh_gallery", "error"}:
                 return
+            if _DEEPY_STREAM_TRACE_ENABLED and self.get_verbose_level() >= 2 and cmd == "chat_output" and isinstance(data, str):
+                try:
+                    event = json.loads(data).get("event", {})
+                    event_type = str(event.get("type", ""))
+                    if event_type in {"sync", "reset", "upsert_message", "remove_message", "upsert_block", "append_block_text", "replace_block_text", "finalize_block", "remove_block"}:
+                        self._debug_log(f"Chat event type={event_type} sequence={event.get('sequence', '-')} sequence_start={event.get('sequence_start', '-')} revision={event.get('revision', '-')} message={event.get('message_id', event.get('message', {}).get('id', '-'))} block={event.get('block_id', '-')}")
+                except Exception:
+                    pass
             raw_send_cmd(cmd, data)
 
         with self._queue_state_lock:
@@ -401,13 +444,16 @@ class DeepyController:
                         clear_assistant_steering(session)
                         session.control_queue = output_queue
                         session.worker_active = True
+                        session.worker_idle_event.clear()
                         self._active_assistant_session = session
                         begin_assistant_turn(session, user_message_id, active_request, assistant_badge=runtime_assistant_badge)
                         started_turn = True
-                        assistant_chat._find_message(session, user_message_id)["queued"] = False
-                        assistant_chat.set_message_badge(session, user_message_id, None)
-                        starting_status = {"visible": True, "kind": "queued" if runtime_assistant_badge else "loading", "text": "Steering accepted. Deepy is applying the new instructions..." if runtime_assistant_badge else "Starting Deepy..."}
-                        starting_sync = assistant_chat.build_sync_event(session, status=starting_status)
+                        starting_sync = None
+                        if queued:
+                            assistant_chat._find_message(session, user_message_id)["queued"] = False
+                            assistant_chat.set_message_badge(session, user_message_id, None)
+                            starting_status = {"visible": True, "kind": "queued" if runtime_assistant_badge else "loading", "text": "Steering accepted. Deepy is applying the new instructions..." if runtime_assistant_badge else "Starting Deepy..."}
+                            starting_sync = assistant_chat.build_sync_event(session, status=starting_status)
                 if stale_request:
                     self._debug_log(f"Worker skipped stale request user_message_id={user_message_id} queued_epoch={queued_epoch} chat_epoch={session.chat_epoch}")
                     raw_send_cmd("exit", None)
@@ -416,13 +462,14 @@ class DeepyController:
                     self._debug_log(f"Worker cancelled queued request user_message_id={user_message_id}")
                     raw_send_cmd("chat_output", cancelled_sync)
                     if cancelled_has_more_work:
-                        raw_send_cmd("chat_output", assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued"))
+                        raw_send_cmd("chat_output", assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued", session=session))
                     else:
-                        raw_send_cmd("chat_output", assistant_chat.build_status_event(None, visible=False))
+                        raw_send_cmd("chat_output", assistant_chat.build_status_event(None, visible=False, session=session))
                         raw_send_cmd("exit", None)
                     return
                 self._debug_log(f"Worker starting user_message_id={user_message_id} queued_jobs={int(session.queued_job_count or 0)}")
-                send_cmd("chat_output", starting_sync)
+                if starting_sync is not None:
+                    send_cmd("chat_output", starting_sync)
                 my_tools = self.create_tools(state, send_cmd, session=session)
                 try:
                     self._debug_log(f"Prompt enhancer dispatch starting user_message_id={user_message_id}")
@@ -438,7 +485,7 @@ class DeepyController:
                     error_event = assistant_chat.set_assistant_content(session, error_turn_id, str(e) if user_action_required else f"Assistant crashed: {e}")
                     if error_event is not None:
                         send_cmd("chat_output", error_event)
-                    send_cmd("chat_output", assistant_chat.build_status_event(None, visible=False))
+                    send_cmd("chat_output", assistant_chat.build_status_event(None, visible=False, session=session))
                 finally:
                     with self._queue_state_lock:
                         if self._active_assistant_session is session:
@@ -450,20 +497,25 @@ class DeepyController:
                             session.control_queue = None
                         pending_steering = has_more_work and any(str(record.get("role", "")).strip() == "user" and bool(record.get("queued", False)) and str(record.get("assistant_badge", "")).strip() == "Steered" for record in session.chat_transcript)
                         final_status = None if not has_more_work else {"visible": True, "kind": "queued", "text": "Steering accepted. Deepy is applying the new instructions..." if pending_steering else "Queued behind the current assistant task."}
-                        final_sync = None if stale_turn else assistant_chat.build_sync_event(session, status=final_status)
+                        final_sync = assistant_chat.build_sync_event(session, status=final_status) if has_more_work else None
                         session.interrupt_requested = False
                     if stale_turn:
                         if started_turn:
                             raw_send_cmd("chat_output", assistant_chat.build_reset_event(session))
-                    else:
+                    elif has_more_work:
                         raw_send_cmd("chat_output", final_sync)
                     self._debug_log(f"Worker finished user_message_id={user_message_id} stale={bool(stale_turn)} has_more_work={bool(has_more_work)} queued_jobs={int(session.queued_job_count or 0)}")
                     if not has_more_work:
+                        if not output_queue.wait_for_chat_publication():
+                            self._debug_log(f"Timed out waiting for the final Deepy UI publication for user_message_id={user_message_id}.")
                         raw_send_cmd("exit", None)
+                        self._debug_log(f"Terminal publication queued for user_message_id={user_message_id}: {output_queue.metrics()}")
+                    session.worker_idle_event.set()
 
         task_handle = async_run_in("assistant", queue_worker_func)
         if queued:
             session.queued_task_handles[user_message_id] = task_handle
+        return user_message_id, task_handle
 
     def store_selected_video_time(self, state, current_time):
         gen = self._deps.get_gen_info(state)
@@ -516,14 +568,16 @@ class DeepyController:
         assistant_model_def = model_def
         deepy_type = self.get_deepy_type()
         from shared.deepy.filesystem import build_file_access_policy
+        from shared.deepy.long_text import add_session_workspace, hide_legacy_artifact_guidance, long_text_system_instructions, long_text_tools_active
 
-        file_access_policy = build_file_access_policy(server_config)
+        file_access_policy = add_session_workspace(build_file_access_policy(server_config), session.chat_session_id)
         session.file_access_policy = file_access_policy
         system_prompt = ZERO_SYSTEM_PROMPT
         custom_system_prompt_key = DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY
         if deepy_type == DEEPY_TYPE_PRIME:
             server_instructions = tools.get_system_instructions()
-            system_prompt = f"{PRIME_SYSTEM_PROMPT}\n\n{server_instructions}".strip() if server_instructions else PRIME_SYSTEM_PROMPT
+            prime_system_prompt = hide_legacy_artifact_guidance(PRIME_SYSTEM_PROMPT) if long_text_tools_active(file_access_policy) else PRIME_SYSTEM_PROMPT
+            system_prompt = f"{prime_system_prompt}\n\n{server_instructions}".strip() if server_instructions else prime_system_prompt
             custom_system_prompt_key = DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY
         if file_access_policy.read_enabled:
             access = "read/write" if file_access_policy.write_enabled else "read-only"
@@ -532,6 +586,9 @@ class DeepyController:
         else:
             file_access_instructions = "Filesystem access is disabled. Use Gallery/media ids rather than direct paths; wangp_io can only inspect or download Gallery media."
         system_prompt = f"{system_prompt}\n\n{file_access_instructions}"
+        experimental_instructions = long_text_system_instructions(file_access_policy)
+        if experimental_instructions:
+            system_prompt = f"{system_prompt}\n\n{experimental_instructions}"
         remote_engine = resolve_role_engine(server_config, "deepy")
         if is_remote_engine(remote_engine):
             from shared.deepy.config import normalize_deepy_custom_system_prompt
@@ -581,16 +638,6 @@ class DeepyController:
         def get_refresh_id():
             return str(time.time()) + "_" + str(self._deps.get_new_refresh_id())
 
-        def drain_chat_output_batch(first_payload):
-            payloads = [first_payload]
-            while True:
-                next_item = com_stream.output_queue.top()
-                if not isinstance(next_item, tuple) or len(next_item) < 1 or next_item[0] != "chat_output":
-                    break
-                _cmd, next_payload = com_stream.output_queue.pop()
-                payloads.append(next_payload)
-            return assistant_chat.build_event_batch(payloads)
-
         session = get_or_create_assistant_session(state)
         foreign_session_reset = self._reset_foreign_active_session(session)
         request_blocks = self._expand_assistant_requests(session, ask_request)
@@ -623,43 +670,78 @@ class DeepyController:
                     with session.turn_lock:
                         checkpoint = session.current_turn
                         steered_current_turn = isinstance(checkpoint, dict)
-                        if steered_current_turn:
-                            request_assistant_steering(session)
+                    steered_message_ids = []
+                    steered_tasks = []
                     for index, request_block in enumerate(request_blocks):
-                        self._queue_assistant_request(state, session, output_queue, request_block, queued_epoch, queued=True, client_submission_id=submission_id, assistant_badge="Steered" if steered_current_turn and index == 0 else "")
+                        message_id, task = self._queue_assistant_request(state, session, output_queue, request_block, queued_epoch, queued=True, client_submission_id=submission_id, assistant_badge="Steered" if steered_current_turn and index == 0 else "")
+                        if steered_current_turn:
+                            steered_message_ids.append(message_id)
+                            steered_tasks.append(task)
                     if steered_current_turn:
+                        if not promote_async_tasks("assistant", steered_tasks):
+                            raise RuntimeError("New steering request batch was not present in the assistant task queue.")
+                        if not request_assistant_steering(session):
+                            raise RuntimeError("Active assistant turn disappeared while applying steering.")
                         if session.assistant_action_active:
                             steering_text = "Steering accepted. Steering will apply once the current tool action is done."
                         elif session.assistant_thought_active:
                             steering_text = "Steering accepted. Waiting for the current thought to finish..."
                         else:
                             steering_text = "Steering accepted. Applying the new instructions at the current boundary..."
+                        steering_sync = assistant_chat.steer_queued_messages(session, steered_message_ids, status_text=steering_text, acknowledged_submission_ids=acknowledged_submission_ids)
+                        if steering_sync is None:
+                            raise RuntimeError("New steering request batch could not be promoted in the assistant transcript.")
                     else:
                         steering_text = "Queued behind the current assistant task."
-                    steering_status = {"visible": True, "kind": "queued", "text": steering_text}
-                    steering_sync = assistant_chat.build_sync_event(session, status=steering_status, acknowledged_submission_ids=acknowledged_submission_ids)
+                        steering_sync = assistant_chat.build_sync_event(session, status={"visible": True, "kind": "queued", "text": steering_text}, acknowledged_submission_ids=acknowledged_submission_ids)
             if steering_active:
                 self._debug_log(f"Steering requested worker_active=True active_turn={steered_current_turn} thought_active={bool(session.assistant_thought_active)} action_active={bool(session.assistant_action_active)} queued_jobs={int(session.queued_job_count or 0)}")
-                yield steering_sync, gr.update(), gr.update(value=""), gr.update(), gr.update()
+                output_queue.push("chat_output", steering_sync)
+                yield gr.update(), gr.update(), gr.update(value=""), gr.update(), gr.update()
                 return
+        with self._queue_state_lock:
+            existing_output_queue = session.control_queue
+            enqueue_active = existing_output_queue is not None and (session.worker_active or session.queued_job_count > 0)
+            if enqueue_active:
+                queued_epoch = session.chat_epoch
+                for request_block in request_blocks:
+                    self._queue_assistant_request(state, session, existing_output_queue, request_block, queued_epoch, queued=True, client_submission_id=submission_id)
+                queued_sync = assistant_chat.build_sync_event(session, status={"visible": True, "kind": "queued", "text": "Queued behind the current assistant task."}, acknowledged_submission_ids=acknowledged_submission_ids)
+        if enqueue_active:
+            existing_output_queue.push("chat_output", queued_sync)
+            yield gr.update(), gr.update(), gr.update(value=""), gr.update(), gr.update()
+            return
         com_stream = AsyncStream()
+        com_stream.output_queue = DeepyPublicationQueue(lambda: assistant_chat.build_sync_event(session))
         output_queue = com_stream.output_queue
         with self._queue_state_lock:
             queued = foreign_session_reset or session.worker_active or session.queued_job_count > 0
             queued_epoch = session.chat_epoch
+            session.control_queue = output_queue
             for index, request_block in enumerate(request_blocks):
                 self._queue_assistant_request(state, session, output_queue, request_block, queued_epoch, queued=queued or index > 0, client_submission_id=submission_id)
             accepted_status = None if queued else {"visible": True, "kind": "loading", "text": "Starting Deepy..."}
             accepted_sync = assistant_chat.build_sync_event(session, status=accepted_status, acknowledged_submission_ids=acknowledged_submission_ids)
-        yield accepted_sync, gr.update(), gr.update(value=""), gr.update(), gr.update()
-        if queued or len(request_blocks) > 1:
-            yield assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued"), gr.update(), gr.update(), gr.update(), gr.update()
+            output_queue.push("chat_output", accepted_sync)
+            if queued or len(request_blocks) > 1:
+                output_queue.push("chat_output", assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued", session=session))
+        first_chat_publication = True
         while True:
             cmd, data = com_stream.output_queue.next()
             if cmd == "console_output":
                 print(data)
             elif cmd == "chat_output":
-                yield drain_chat_output_batch(data), gr.update(), gr.update(), gr.update(), gr.update()
+                payload = _drain_chat_output_batch(com_stream.output_queue, data)
+                if debug_enabled and _DEEPY_STREAM_TRACE_ENABLED:
+                    envelope = json.loads(payload)
+                    published = envelope.get("batch", [envelope])
+                    descriptors = [f"{item.get('event', {}).get('type', '?')}:{item.get('event', {}).get('sequence', '-')}" for item in published]
+                    self._debug_log(f"Publishing chat batch: {descriptors}")
+                try:
+                    yield payload, gr.update(), gr.update(value="") if first_chat_publication else gr.update(), gr.update(), gr.update()
+                finally:
+                    first_chat_publication = False
+                    com_stream.output_queue.complete_publication()
             elif cmd == "load_queue_trigger":
                 yield gr.update(), str(get_refresh_id()), gr.update(), gr.update(), gr.update()
             elif cmd == "abort_client_id":
@@ -671,6 +753,7 @@ class DeepyController:
                 error_event = assistant_chat.set_assistant_content(session, error_turn_id, str(data or "Assistant error."))
                 yield error_event if error_event is not None else gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
             elif cmd == "exit":
+                self._debug_log(f"Publication metrics: {com_stream.output_queue.metrics()}")
                 break
 
     def enqueue_ai_while_busy(self, state, ask_request, client_submission_id: str = ""):
@@ -701,7 +784,8 @@ class DeepyController:
                 status = {"visible": True, "kind": "queued", "text": "Queued behind the current assistant task."}
                 queued_sync = assistant_chat.build_sync_event(session, status=status, acknowledged_submission_ids=acknowledged_submission_ids)
         if enqueue_active:
-            yield queued_sync, gr.update(), gr.update(value=""), gr.update(), gr.update()
+            output_queue.push("chat_output", queued_sync)
+            yield gr.update(), gr.update(), gr.update(value=""), gr.update(), gr.update()
             return
         yield from self.ask_ai(state, ask_request, client_submission_id=submission_id)
 
@@ -736,7 +820,7 @@ class DeepyController:
             print("[Assistant] Reset requested during an active turn; the chat will reset after the current work stops.")
             request_assistant_reset(session)
             session.chat_html = ""
-            return assistant_chat.build_status_event("Resetting after the current work stops...", kind="queued"), gr.update(), gr.update(value=""), gr.update()
+            return assistant_chat.build_status_event("Resetting after the current work stops...", kind="queued", session=session), gr.update(), gr.update(value=""), gr.update()
         else:
             reset_to_base_callback = session.reset_to_base_callback
             reset_applied = False
@@ -762,7 +846,7 @@ class DeepyController:
             return gr.update(), gr.update(), gr.update(), gr.update()
         request_assistant_reset(session)
         session.chat_html = ""
-        return assistant_chat.build_status_event("Resetting after the current work stops...", kind="queued"), gr.update(), gr.update(value=""), gr.update()
+        return assistant_chat.build_status_event("Resetting after the current work stops...", kind="queued", session=session), gr.update(), gr.update(value=""), gr.update()
 
 
 def create_controller(**deps_kwargs) -> DeepyController:

@@ -90,7 +90,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 Deepy and the WanGP Prompt Enhancer have learned some impressive new tricks (enable them from the *Configuration / Deepy* menu):
 - **Speculative Decoding** lets Deepy (and Prompt Enhancer) think up to twice as fast, so there is less waiting between ideas and actions.
-- **INT8 KV Cache Quantization** lets it remember conversations roughly twice as long for the same VRAM budget. Install **GGUF Kernels 1.11** for the best performance; see the [installation guide](docs/INSTALLATION.md).
+- **INT8 KV Cache Quantization** lets it remember conversations roughly twice as long for the same VRAM budget. Install **GGUF Kernels 1.0.14** for the best performance; see the [installation guide](docs/INSTALLATION.md).
 - **Smart context compaction** lets Deepy summarize the journey and carry on when its memory starts getting crowded, instead of suddenly forgetting the plot.
 - The new **Qwen3.8 VL 27B** model brings sharper reasoning and richer enhanced prompts. It is available in GGUF Q2 and GGUF Q4 (recommended)
 - With your permission, Deepy can browse your files and use them as part of a creative workflow.

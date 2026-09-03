@@ -340,3 +340,4 @@ While not command line options, these environment variables can affect behavior:
 - `CUDA_VISIBLE_DEVICES` - Limit visible GPUs
 - `PYTORCH_CUDA_ALLOC_CONF` - CUDA memory allocation settings
 - `TRITON_CACHE_DIR` - Triton cache directory (for Sage attention) 
+- `WAN2GP_DEEPY_TELEMETRY=1` - Enable detailed Deepy decode, MTP, CUDA-memory, and GPU telemetry when verbose level 2 is active (disabled by default)

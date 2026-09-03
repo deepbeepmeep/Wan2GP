@@ -127,6 +127,25 @@ class ProcessRunner:
         return kept_paths, str(time.time_ns()) if gallery_changed else self.ui_skip
 
     @staticmethod
+    def _preserve_failed_mux_output(write_state: MuxSession, system_handler) -> str:
+        write_state.cleanup_partial_outputs()
+        working_path = write_state.mux_output_path
+        if not working_path or not os.path.isfile(working_path) or os.path.getsize(working_path) <= 0:
+            return ""
+        try:
+            cache_source_path, preserved_path = write_state.promote_output(notify=common.plugin_info)
+        except Exception as exc:
+            common.plugin_info(f"Unable to promote the partial output; preserving it at {working_path}. {exc}")
+            return working_path
+        if cache_source_path != preserved_path and system_handler is not None and callable(getattr(system_handler, "move_continue_cache", None)):
+            try:
+                system_handler.move_continue_cache(cache_source_path, preserved_path)
+            except Exception as exc:
+                common.plugin_info(f"Unable to move the continuation cache beside {preserved_path}; it remains beside {cache_source_path}. {exc}")
+        common.plugin_info(f"Preserved partial output at {preserved_path}")
+        return preserved_path
+
+    @staticmethod
     def _batch_completed_count(state: dict) -> int:
         return sum(1 for item in list(state.get("items") or []) if str(item.get("status") or "") in {"success", "failed"})
 
@@ -705,6 +724,11 @@ class ProcessRunner:
         total_chunks_display = 1
         completed_chunks = 0
         resumed_unique_frames = 0
+        continuation_output_path = ""
+        ffprobe_path = ""
+        fps_float = 0.0
+        merged_continuation_signatures = []
+        verbose_level = 0
         self.active_job["cancel_requested"] = False
         self.active_job["write_state"] = write_state
         self.active_job["running"] = True
@@ -793,7 +817,6 @@ class ProcessRunner:
                     return
             last_frame_image = None
             last_segment_path = None
-            continuation_output_path = ""
             chunk_output_paths: list[str] = []
             written_unique_frames = 0
             resumed_unique_frames = 0
@@ -972,6 +995,22 @@ class ProcessRunner:
             planning_text = f"Resuming from {resumed_unique_frames} frame(s) already written." if resumed_unique_frames > 0 else f"Preparing {len(plans)} chunk(s)..."
             yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_display, completed_chunks, current_chunk_display, "Planning", planning_text, continued=continued_mode, **_timing_kwargs()), output_path, str(time.time_ns()))
 
+            write_state.set_initial_metadata({
+                "video_length": int(resumed_unique_frames),
+                "frame_count": int(resumed_unique_frames),
+                process_metadata.PROCESS_FULL_VIDEO_METADATA_KEY: {
+                    "process": process_display_name,
+                    "written_unique_frames": int(resumed_unique_frames),
+                    "chunks": int(total_chunks_display),
+                    "sliding_window_overlap": int(overlap_frames),
+                    "start_seconds": float(start_seconds),
+                    "end_seconds": float(start_seconds + (resumed_unique_frames / float(fps_float))),
+                    "source_video": source_path,
+                    "source_segment": requested_source_segment,
+                    "merged_continuations": process_metadata.normalize_merged_continuation_signatures(merged_continuation_signatures),
+                },
+            })
+
             chunk_progress = ChunkProgress(
                 completed_chunks=completed_chunks,
                 current_chunk_display=current_chunk_display,
@@ -1049,23 +1088,27 @@ class ProcessRunner:
                 raise gr.Error("Processing completed without creating an output file.")
             if self.active_job.get("cancel_requested"):
                 write_state.stopped = True
-            finalizing_message = "Finalizing written output before merge..." if continuation_output_path and os.path.isfile(write_state.output_path_for_write) else "Finalizing written output..."
+            finalizing_message = "Finalizing written output before merge..." if continuation_output_path and os.path.isfile(write_state.mux_output_path) else "Finalizing written output..."
             yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_display, completed_chunks, current_chunk_display, "Finalizing Output", finalizing_message, continued=continued_mode, **_timing_kwargs()), output_path if os.path.isfile(output_path) else self.ui_skip, str(time.time_ns()), start_enabled=False, abort_enabled=False)
             return_code, stderr, forced_termination = write_state.finalize()
             if self.active_job.get("cancel_requested"):
                 write_state.stopped = True
             if forced_termination:
                 raise gr.Error("ffmpeg did not finalize the partial output in time.")
-            if return_code != 0 and not (write_state.stopped and os.path.isfile(write_state.output_path_for_write if use_live_av_mux else write_state.video_only_output_path)):
+            if return_code != 0 and not (write_state.stopped and os.path.isfile(write_state.mux_output_path)):
                 raise gr.Error(stderr or "ffmpeg failed while assembling the processed video.")
-            if use_live_av_mux and os.path.isfile(write_state.output_path_for_write) and os.path.getsize(write_state.output_path_for_write) <= 0:
-                media.delete_file_if_exists(write_state.output_path_for_write, label="continuation output")
+            if os.path.isfile(write_state.mux_output_path) and os.path.getsize(write_state.mux_output_path) <= 0:
+                media.delete_file_if_exists(write_state.mux_output_path, label="empty working output")
                 raise gr.Error("ffmpeg created an empty continuation file.")
-            if not use_live_av_mux and os.path.isfile(write_state.video_only_output_path):
-                try:
-                    os.replace(write_state.video_only_output_path, write_state.output_path_for_write)
-                except OSError as exc:
-                    raise gr.Error(f"Unable to finalize the written video-only segment: {write_state.output_path_for_write}") from exc
+            if os.path.isfile(write_state.mux_output_path):
+                requested_write_path = write_state.output_path_for_write
+                cache_source_path, promoted_path = write_state.promote_output(notify=common.plugin_info)
+                if cache_source_path != promoted_path and system_handler is not None and callable(getattr(system_handler, "move_continue_cache", None)):
+                    system_handler.move_continue_cache(cache_source_path, promoted_path)
+                if continuation_output_path:
+                    continuation_output_path = promoted_path
+                elif requested_write_path == output_path:
+                    output_path = promoted_path
             undeleted_merged_continuation_paths: list[str] = []
             if continuation_output_path and os.path.isfile(write_state.output_path_for_write):
                 continuation_signature = process_metadata.make_continuation_signature(write_state.output_path_for_write)
@@ -1180,8 +1223,14 @@ class ProcessRunner:
             write_state.cleanup_partial_outputs()
         except gr.Error as exc:
             self.active_job["job"] = None
-            write_state.cleanup_partial_outputs()
+            preserved_output_path = self._preserve_failed_mux_output(write_state, system_handler)
+            if preserved_output_path and not continuation_output_path:
+                recovered_frame_count, _ = media.probe_resume_frame_count(ffprobe_path, preserved_output_path, fps_float)
+                if recovered_frame_count > 0:
+                    process_metadata.store_process_progress(preserved_output_path, written_unique_frames=recovered_frame_count, merged_signatures=merged_continuation_signatures, verbose_level=verbose_level)
             status_message = common.get_error_message(exc) or "Processing failed."
+            if preserved_output_path:
+                status_message = f"{status_message} Partial output preserved at {preserved_output_path}"
             if not started_ui:
                 gr.Info(status_message)
                 return
@@ -1190,24 +1239,32 @@ class ProcessRunner:
                 completed_value = completed_chunks
                 current_value = completed_chunks + 1 if completed_chunks < total_chunks_display else total_chunks_display
                 continued_value = resumed_unique_frames > 0
-                output_value = output_path if isinstance(output_path, str) and os.path.isfile(output_path) else self.ui_skip
+                output_value = preserved_output_path or (output_path if isinstance(output_path, str) and os.path.isfile(output_path) else self.ui_skip)
                 if preflight_stage:
                     gr.Info(status_message)
                 yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_value, completed_value, current_value, "Info" if preflight_stage else "Error", status_message, continued=continued_value), output_value, self.ui_skip, start_enabled=True, abort_enabled=False)
-            self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path if isinstance(output_path, str) else "", success=False, message=status_message, chunks_completed=completed_chunks, chunks_total=total_chunks_display))
+            failed_output_path = preserved_output_path or (output_path if isinstance(output_path, str) else "")
+            self._record_process_result(ProcessRunResult(source_path=source_path, output_path=failed_output_path, success=False, message=status_message, chunks_completed=completed_chunks, chunks_total=total_chunks_display))
             return
         except BaseException as exc:
             self.active_job["job"] = None
-            write_state.cleanup_partial_outputs()
+            preserved_output_path = self._preserve_failed_mux_output(write_state, system_handler)
+            if preserved_output_path and not continuation_output_path:
+                recovered_frame_count, _ = media.probe_resume_frame_count(ffprobe_path, preserved_output_path, fps_float)
+                if recovered_frame_count > 0:
+                    process_metadata.store_process_progress(preserved_output_path, written_unique_frames=recovered_frame_count, merged_signatures=merged_continuation_signatures, verbose_level=verbose_level)
             status_message = common.get_error_message(exc) or exc.__class__.__name__
+            if preserved_output_path:
+                status_message = f"{status_message} Partial output preserved at {preserved_output_path}"
             if started_ui:
                 total_chunks_value = total_chunks_display
                 completed_value = completed_chunks
                 current_value = completed_chunks + 1 if completed_chunks < total_chunks_display else total_chunks_display
                 continued_value = resumed_unique_frames > 0
-                output_value = output_path if isinstance(output_path, str) and os.path.isfile(output_path) else self.ui_skip
+                output_value = preserved_output_path or (output_path if isinstance(output_path, str) and os.path.isfile(output_path) else self.ui_skip)
                 yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_value, completed_value, current_value, "Error", status_message, continued=continued_value), output_value, self.ui_skip, start_enabled=True, abort_enabled=False)
-            self._record_process_result(ProcessRunResult(source_path=source_path, output_path=output_path if isinstance(output_path, str) else "", success=False, message=status_message, chunks_completed=completed_chunks, chunks_total=total_chunks_display))
+            failed_output_path = preserved_output_path or (output_path if isinstance(output_path, str) else "")
+            self._record_process_result(ProcessRunResult(source_path=source_path, output_path=failed_output_path, success=False, message=status_message, chunks_completed=completed_chunks, chunks_total=total_chunks_display))
             raise
         finally:
             self.active_job["running"] = False

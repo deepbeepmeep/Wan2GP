@@ -405,8 +405,15 @@ Resources:
   - On-demand methodology for bounded batch construction, revision-safe updates, finalization, compact references, and persistent ledgers.
 - `wangp://skills/long-form-story`
   - On-demand methodology for chapter artifacts and a story-continuity ledger.
+- `wangp://skills/long-story-writing`
+  - Experimental long-story workflow using the transient workspace, bounded ripgrep searches, exact edits, and literal appends. Exposed only when the long-text experiment and Deepy read/write access are enabled; the legacy artifact skills are hidden in that mode.
+- `wangp://skills/long-generation-prompts`
+  - Experimental workflow for prompts longer than 4096 characters or tokens, including blank-line-separated sliding windows. Exposed under the same conditions as `long-story-writing`.
 
 Tools:
+
+- `rg(arguments)`, `edit(file_path, old_string, new_string, replace_all=False)`, `append_text(file_path, text)`
+  - Experimental long-document primitives exposed only with the long-text experiment and Deepy read/write access. `rg` runs bounded searches within authorized writable roots; `edit` performs literal exact-match replacement and requires a unique match by default; `append_text` appends literal UTF-8 text and creates a missing file. No patch-line prefixes or implicit newlines are added.
 
 - `wangp_models(query="", filters=None, limit=10, offset=0)`
   - Searches models and returns compact records with supported capabilities and media roles as arrays. `filters` accepts `family`, `base_model_type`, `finetune`, `model_type`, `main_output`, `inputs`, or `name`; string filters support case-insensitive `*` and `?` globs.

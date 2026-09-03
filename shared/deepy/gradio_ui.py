@@ -84,6 +84,7 @@ class DeepyChatUI:
     settings_save_btn: Any
     html_output: Any
     chat_event: Any
+    sync_btn: Any
     submission_id: Any
     busy_queue_request: Any
     busy_queue_submission_id: Any
@@ -291,6 +292,7 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
             settings_launcher_host = gr.HTML(assistant_chat.render_settings_launcher_html(), elem_id=assistant_chat.SETTINGS_LAUNCHER_HOST_ID)
             html_output = gr.HTML(assistant_chat.render_shell_html(normalize_deepy_type(get_deepy_config_value(DEEPY_TYPE_KEY, ""))), elem_id=assistant_chat.CHAT_BLOCK_ID)
             chat_event = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.CHAT_EVENT_ID)
+            sync_btn = gr.Button("Synchronize Deepy Chat", visible=False, elem_id=assistant_chat.SYNC_BUTTON_ID)
             submission_id = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.SUBMISSION_ID)
             busy_queue_request = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.BUSY_QUEUE_INPUT_ID)
             busy_queue_submission_id = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.BUSY_QUEUE_SUBMISSION_ID)
@@ -412,6 +414,7 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
         settings_save_btn=settings_save_btn,
         html_output=html_output,
         chat_event=chat_event,
+        sync_btn=sync_btn,
         submission_id=submission_id,
         busy_queue_request=busy_queue_request,
         busy_queue_submission_id=busy_queue_submission_id,
@@ -492,6 +495,11 @@ def bind_deepy_chat_ui(
     def toggle_override_controls(use_template_properties):
         interactive = not deepy_ui_settings.normalize_assistant_use_template_properties(use_template_properties)
         return gr.update(interactive=interactive), gr.update(interactive=interactive), gr.update(interactive=interactive), gr.update(interactive=interactive), gr.update(interactive=interactive)
+
+    def recover_chat(state_value):
+        from shared.deepy.engine import get_or_create_assistant_session
+
+        return assistant_chat.build_sync_event(get_or_create_assistant_session(state_value))
 
     def track_template_selection(tool_name, selection_history, current_video_generator, current_video_with_speech, current_image_generator, current_image_editor, current_song, current_speech_from_description, current_speech_from_sample):
         raw_history = selection_history if isinstance(selection_history, dict) else {}
@@ -1015,6 +1023,7 @@ def bind_deepy_chat_ui(
         trigger_mode="multiple",
     )
     ui.queued_action_btn.click(fn=queued_request_action_with_ui, inputs=[state, ui.queued_action_input], outputs=[ui.chat_event, load_queue_trigger, ui.request, abort_client_id], show_progress="hidden", queue=False, trigger_mode="multiple")
+    ui.sync_btn.click(fn=recover_chat, inputs=[state], outputs=[ui.chat_event], show_progress="hidden", queue=False, trigger_mode="multiple")
     ui.stop_btn.click(fn=stop_ai_with_ui, inputs=[state], outputs=[ui.chat_event, load_queue_trigger, ui.request, abort_client_id], show_progress="hidden", queue=False, trigger_mode="multiple")
     ui.reset_btn.click(fn=reset_ai_with_ui, inputs=[state], outputs=[ui.chat_event, load_queue_trigger, ui.request, abort_client_id], show_progress="hidden")
 

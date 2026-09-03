@@ -227,6 +227,21 @@ class FileAccessPolicy:
     def roots(self) -> list[dict[str, Any]]:
         return [{"path": self.virtualize_path(path), "exists": path.is_dir(), "writable": self.can_write(path)} for path in self.read_roots]
 
+    def with_root(self, path: Any, alias: str) -> "FileAccessPolicy":
+        root = _resolved_path(path)
+        normalized_alias = _alias_component(alias)
+        if not normalized_alias:
+            raise ValueError("Filesystem root alias is empty.")
+        if any(name.casefold() == normalized_alias.casefold() for name in self.aliases):
+            raise ValueError(f"Filesystem root alias already exists: {normalized_alias}")
+        return FileAccessPolicy(
+            mode=self.mode,
+            output_roots=self.output_roots,
+            selected_roots=tuple([*self.selected_roots, root]),
+            read_everywhere=self.read_everywhere,
+            root_aliases=tuple([*self.aliases, normalized_alias]),
+        )
+
 
 def build_file_access_policy(server_config: dict[str, Any] | None, *, unrestricted_read: bool = False) -> FileAccessPolicy:
     from shared.deepy.config import (

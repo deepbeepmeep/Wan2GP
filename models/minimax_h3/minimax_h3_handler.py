@@ -289,6 +289,7 @@ class family_handler:
             "returns_audio": True,
             "multimedia_generation": True,
             "image_end_frame_position": True,
+            "frame_scheduler_output_policy": "nearest",
             "control_video_trim_disabled": True,
             "infos": (REF2VA_INFOS if reference_mode else FL2VA_INFOS) + (H3_PDD_RUNTIME_INFOS if pdd else H3_RUNTIME_INFOS) + (PRUNED_INFOS if pruned else ""),
             "prompt_infos": REF2VA_PROMPT_INFOS if reference_mode else FL2VA_PROMPT_INFOS,

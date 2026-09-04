@@ -10,13 +10,27 @@ DLSS 5 support is optional and is not installed by the normal WanGP installer. I
 - the optional legacy no-depth worker from the MIT-licensed Merserk [dlss5-visual-enhancer](https://github.com/Merserk/dlss5-visual-enhancer);
 - separately obtained NVIDIA DLSS runtimes, ReShade with full add-on support, and the RenoDX DLSS 5 add-on.
 
+## Automatic installation
+
+Close WanGP, then double-click `scripts\install_dlss5.bat`. From a command prompt, the equivalent command is:
+
+```bat
+scripts\install_dlss5.bat
+```
+
+Read the warning and type `I ACCEPT` to continue. The script downloads all required workers and runtime components, verifies their pinned SHA-256 checksums, extracts them into the root `dlss5` folder, and verifies the NVIDIA signatures on the standard DLSS and Frame Generation DLLs. It does not execute any downloaded installer or runtime during installation. Worker v1.1.2 also suppresses ReShade's unnecessary GitHub update check inside the worker process, so media processing does not need network access.
+
+Existing matching files are kept. If different files already exist, the script changes nothing and asks you to stop WanGP and rerun `scripts\install_dlss5.bat -Force`; that mode backs up every replaced file first. Add `-AcceptThirdPartyRisk` only after reviewing the warning and this document if you need to skip the consent prompt.
+
+The remaining sections document the same installation manually and provide integrity and troubleshooting information.
+
 ## Install the worker bundle
 
-Download [WanGP-DLSS5-workers-v1.1.1.zip](https://github.com/DeepBeepMeep/dlss5-visual-enhancer/releases/download/wangp-v1.1.1/WanGP-DLSS5-workers-v1.1.1.zip) from the [DeepBeepMeep dlss5-visual-enhancer fork release](https://github.com/DeepBeepMeep/dlss5-visual-enhancer/releases/tag/wangp-v1.1.1). The ZIP contains the two buildable WanGP workers, the optional legacy Merserk no-depth worker, attribution/license notices, and the required directory structure. It intentionally does **not** contain NVIDIA, ReShade, or RenoDX binaries.
+Download [WanGP-DLSS5-workers-v1.1.2.zip](https://github.com/DeepBeepMeep/dlss5-visual-enhancer/releases/download/wangp-v1.1.2/WanGP-DLSS5-workers-v1.1.2.zip) from the [DeepBeepMeep dlss5-visual-enhancer fork release](https://github.com/DeepBeepMeep/dlss5-visual-enhancer/releases/tag/wangp-v1.1.2). The ZIP contains the two buildable WanGP workers, the optional legacy Merserk no-depth worker, attribution/license notices, and the required directory structure. It intentionally does **not** contain NVIDIA, ReShade, or RenoDX binaries.
 
 ```text
-Size:   132132 bytes
-SHA256: 6A6288C304251AB0D21C17267F6FA3EE148F706555459859E753A6B1390C47FC
+Size:   132598 bytes
+SHA256: 89FEEA2C4AF3EE65D7158D8AD478E6F53B71F6E7B0232FA51A405D503A23E7A9
 ```
 
 Create `WanGP/dlss5`, then extract the **contents** of the ZIP into that folder. Do not extract it into `postprocessing/dlss5`, which contains Python source only. The archive entries begin with `host/`, `dlss/`, and `dlssg/`, so the result must look like this after the separately sourced dependencies are added:
@@ -83,12 +97,13 @@ The script writes `dlss5/host/nr-depth-worker.exe` and `dlss5/dlssg/dlssg-worker
 
 ## Tested component integrity
 
-These hashes identify the exact files tested with the v1.1.1 worker bundle. They do not establish safety or redistribution rights.
+These hashes identify the exact files tested with the v1.1.2 worker bundle. They do not establish safety or redistribution rights.
 
 | File | SHA-256 | Windows signature |
 | --- | --- | --- |
 | `dlss/nvngx_dlss.dll` | `C85F971CE023C9F3492FC7455F0B01A24BA18EA39636407A846902C4360B0B7E` | Valid, NVIDIA Corporation |
 | `dlssg/nvngx_dlssg.dll` | `135EAF0733C1E37381A8C28ABCF7A862404A54132B81787C04E35D09EFC5E36F` | Valid, NVIDIA Corporation |
+| `host/nr-depth-worker.exe` | `0D267C770ED74DFAFEA26CB5CB14146EF6320F26B3E0B576CD42CBDC7F2CB1F1` | Unsigned, buildable from the fork source |
 | `dlssg/dlssg-worker.exe` | `D93084633E0AAB4A08C43A5EE240176716EF73D87F06F35C2293509FBFC8BD00` | Unsigned, buildable from the fork source |
 | `host/dxgi.dll` | `0CEE63F9C9F13F3AC909C5B4903F4DBB4B719A7AB3B4F13B0DEAF83C814B94F7` | Unsigned |
 | `host/nvngx.dll` | `58191F4D38288C6BFBDA47EF56911D32052A9789E65714F4583F426E01464638` | Unsigned |
@@ -104,6 +119,8 @@ Before installation, scan the downloaded archives and the extracted directory wi
 Neural Rendering requires Windows 11 and GeForce RTX 30 or newer; RTX 30 is experimental, while RTX 40/50 are the primary targets. Frame Generation requires GeForce RTX 40 or newer, a compatible driver, and Hardware-accelerated GPU scheduling (HAGS). WanGP offers 2x through 4x on compatible RTX 40/50 GPUs and only offers 5x and 6x on RTX 50 GPUs when supported by the installed runtime.
 
 Restart WanGP after installing or replacing the runtime. Unavailable modes are labelled with the missing requirement in their dropdown. For additional Frame Generation diagnostics, run `dlss5/dlssg/dlssg-worker.exe --probe` from the `dlss5/dlssg` directory. Neural Rendering writes diagnostic information to `dlss5/host/ReShade.log`.
+
+`nr-depth-worker.exe` v1.1.2 or newer does not require network access while processing media and may safely be denied outbound access. Older workers appear to contact GitHub because ReShade performs an automatic version check inside the worker process; v1.1.2 disables that check.
 
 ## Recorded-video depth and motion guides
 

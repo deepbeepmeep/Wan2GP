@@ -271,6 +271,11 @@ def method_category(method) -> str:
     return category if category in POSTPROCESSING_CATEGORIES else POSTPROCESSING_CATEGORY_UPSAMPLER
 
 
+def method_progress_label(method, default="Upsampling - Starting") -> str:
+    _handler, handler_def, _method = method_definition(method)
+    return str(handler_def.get("progress_label", default) or default)
+
+
 def method_parameters(method, *, ui_context: str | None = None) -> list[dict[str, Any]]:
     _handler, handler_def, method = method_definition(method)
     parameters = handler_def.get("method_parameters", {})

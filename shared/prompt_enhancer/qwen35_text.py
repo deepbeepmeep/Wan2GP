@@ -46,8 +46,11 @@ from .qwen35_vl import (
 
 QWEN35_TEXT_VLLM_SWITCH_ENV = "WGP_QWEN35_PROMPT_ENHANCER_VLLM"
 QWEN35_TEXT_VLLM_CUDAGRAPH_ENV = "WGP_QWEN35_PROMPT_ENHANCER_VLLM_CUDAGRAPH"
+# Debug switch: keep vLLM kernels active while forcing eager execution.
+QWEN35_TEXT_VLLM_DISABLE_CUDAGRAPH = False #True
 QWEN35_GGUF_LLAMACPP_ENV = "WGP_GGUF_LLAMACPP_CUDA"
 QWEN35_PROMPT_MIN_NEW_TOKENS = 4
+QWEN35_PROMPT_MIN_MODEL_LEN = 8000
 QWEN35_PROMPT_DEFAULT_TOP_K = 20
 QWEN35_PROMPT_DEFAULT_MIN_P_GGUF = 0.05
 QWEN35_PENALTY_MODE = "repetition"  # "none", "presence", or "repetition"
@@ -60,8 +63,8 @@ QWEN35_PROMPT_THINKING_EXTRA_TOKENS = 3000
 QWEN35_PROMPT_THINKING_MAX_TOKENS = 2000
 # Applied only to variants that ship a native MTP block.
 QWEN35_PROMPT_ENABLE_SPECULATIVE_DECODING = False
-QWEN35_PROMPT_SPECULATIVE_TOKENS = 5
-QWEN35_PROMPT_SPECULATIVE_SAMPLING_TOKENS = 4
+QWEN35_PROMPT_SPECULATIVE_TOKENS = 2
+QWEN35_PROMPT_SPECULATIVE_SAMPLING_TOKENS = 2
 
 
 def _env_enabled(name: str, default: bool = True) -> bool:
@@ -594,7 +597,8 @@ def _resolve_prompt_enhancer_engine(backend: str, requested_lm_engine: str, runt
             detail = f"lm_decoder_engine={requested_label} -> cg" #; {detail}"
         return "cg", detail, enable_cudagraph, False
 
-    detail = "cuda graph + vllm kernels" if enable_cudagraph else f"eager + vllm kernels; disabled by {QWEN35_TEXT_VLLM_CUDAGRAPH_ENV}"
+    enable_cudagraph = enable_cudagraph and not QWEN35_TEXT_VLLM_DISABLE_CUDAGRAPH
+    detail = "cuda graph + vllm kernels" if enable_cudagraph else "eager + vllm kernels"
     if requested_lm_engine == "":
         detail = f"lm_decoder_engine=auto -> vllm" #; {detail}"
     return "vllm", detail, enable_cudagraph, True
@@ -615,7 +619,7 @@ def _use_legacy_cuda_runner_prompt_enhancer(model) -> bool:
 
 
 def _get_assistant_graph_pool_handle(model, usage_mode: str | None, enable_cudagraph: bool):
-    if usage_mode != "assistant" or not enable_cudagraph or not torch.cuda.is_available():
+    if usage_mode not in ("assistant", "multimodal") or not enable_cudagraph or not torch.cuda.is_available():
         return None
     handle = getattr(model, "_prompt_enhancer_assistant_graph_pool_handle", None)
     if handle is None:
@@ -1155,7 +1159,7 @@ def load_qwen35_text_prompt_enhancer(
     model._prompt_enhancer_presence_penalty = QWEN35_PROMPT_PRESENCE_PENALTY
     model._prompt_enhancer_repetition_penalty = QWEN35_PROMPT_REPETITION_PENALTY
     model._prompt_enhancer_predictive_penalty_enabled = QWEN35_PREDICTIVE_PENALTY_ENABLED
-    model._prompt_enhancer_min_model_len_hint = 8000
+    model._prompt_enhancer_min_model_len_hint = QWEN35_PROMPT_MIN_MODEL_LEN
     model._prompt_enhancer_allow_extended_context = True
     model._prompt_enhancer_min_new_tokens = (
         QWEN35_PROMPT_MIN_NEW_TOKENS

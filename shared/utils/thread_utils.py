@@ -51,6 +51,15 @@ class _TaskRunner:
 
         if thread is not None:
             thread.start()
+        return func
+
+    def promote_task(self, task) -> bool:
+        with self.lock:
+            for index, queued_task in enumerate(self.task_queue):
+                if queued_task[0] is task:
+                    self.task_queue.insert(0, self.task_queue.pop(index))
+                    return True
+        return False
 
 
 class Listener:
@@ -69,7 +78,11 @@ class Listener:
 
     @classmethod
     def add_task(cls, func, *args, runner_name="default", thread_name=None, **kwargs):
-        cls._get_runner(runner_name).add_task(func, *args, thread_name=thread_name, **kwargs)
+        return cls._get_runner(runner_name).add_task(func, *args, thread_name=thread_name, **kwargs)
+
+    @classmethod
+    def promote_task(cls, task, runner_name="default"):
+        return cls._get_runner(runner_name).promote_task(task)
 
 
 def async_run(func, *args, thread_name=None, **kwargs):
@@ -77,7 +90,11 @@ def async_run(func, *args, thread_name=None, **kwargs):
 
 
 def async_run_in(runner_name, func, *args, thread_name=None, **kwargs):
-    Listener.add_task(func, *args, runner_name=runner_name, thread_name=thread_name, **kwargs)
+    return Listener.add_task(func, *args, runner_name=runner_name, thread_name=thread_name, **kwargs)
+
+
+def promote_async_task(runner_name, task):
+    return Listener.promote_task(task, runner_name=runner_name)
 
 
 class FIFOQueue:

@@ -12,6 +12,8 @@ from typing import Any, Callable
 import gradio as gr
 
 from shared.deepy.config import (
+    DEEPY_CONTEXT_TOKENS_DEFAULT,
+    DEEPY_CONTEXT_TOKENS_KEY,
     DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY,
     DEEPY_ENABLED_KEY,
     DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY,
@@ -23,6 +25,7 @@ from shared.deepy.config import (
     deepy_requirement_error,
     deepy_requirement_met,
     normalize_deepy_enabled,
+    normalize_deepy_context_tokens,
     normalize_deepy_type,
     normalize_deepy_vram_mode,
     set_deepy_runtime_config,
@@ -48,7 +51,7 @@ from shared.deepy.engine import (
     DeepyZeroTools,
 )
 from shared.gradio import assistant_chat
-from shared.utils.thread_utils import AsyncStream, async_run_in
+from shared.utils.thread_utils import AsyncStream, async_run_in, promote_async_task
 from shared.remote_llm.config import is_remote_engine, resolve_role_engine
 
 
@@ -176,7 +179,7 @@ class DeepyController:
         action = str(payload.get("action", "") or "").strip().lower()
         message_id = str(payload.get("message_id", "") or "").strip()
         text = str(payload.get("text", "") or "").strip()
-        if action not in {"edit", "remove"} or len(message_id) == 0 or (action == "edit" and len(text) == 0):
+        if action not in {"edit", "remove", "steer"} or len(message_id) == 0 or (action == "edit" and len(text) == 0):
             return gr.update(), gr.update(), gr.update(), gr.update()
         with self._queue_state_lock:
             record = assistant_chat._find_message(session, message_id)
@@ -184,6 +187,13 @@ class DeepyController:
                 return gr.update(), gr.update(), gr.update(), gr.update()
             if action == "edit":
                 chat_event = assistant_chat.set_user_message_content(session, message_id, text)
+            elif action == "steer":
+                task = session.queued_task_handles.get(message_id)
+                if task is None or not promote_async_task("assistant", task):
+                    return gr.update(), gr.update(), gr.update(), gr.update()
+                chat_event = assistant_chat.steer_queued_message(session, message_id)
+                if session.worker_active and isinstance(session.current_turn, dict):
+                    request_assistant_steering(session)
             else:
                 session.cancelled_queued_message_ids.add(message_id)
                 session.queued_job_count = max(0, int(session.queued_job_count or 0) - 1)
@@ -270,6 +280,7 @@ class DeepyController:
             from shared.prompt_enhancer import qwen35_text
 
             if qwen35_text._use_vllm_prompt_enhancer(model):
+                model._prompt_enhancer_min_model_len_hint = normalize_deepy_context_tokens(self._server_config().get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
                 engine = qwen35_text._get_or_create_vllm_engine(model, usage_mode="assistant")
                 engine.reserve_runtime(prompt_len=64, max_tokens=1, cfg_scale=1.0)
                 engine._ensure_llm()
@@ -363,6 +374,7 @@ class DeepyController:
             with deepy_log_scope(start_if_needed=True):
                 started_turn = False
                 active_request = ask_request
+                runtime_assistant_badge = ""
                 with self._queue_state_lock:
                     stale_request = queued_epoch != session.chat_epoch
                     targeted_cancelled = not stale_request and user_message_id in session.cancelled_queued_message_ids
@@ -371,6 +383,7 @@ class DeepyController:
                         if session.control_queue is output_queue:
                             session.control_queue = None
                     elif cancelled_request:
+                        session.queued_task_handles.pop(user_message_id, None)
                         if targeted_cancelled:
                             session.cancelled_queued_message_ids.discard(user_message_id)
                         else:
@@ -379,6 +392,9 @@ class DeepyController:
                         cancelled_sync = assistant_chat.build_sync_event(session)
                         cancelled_has_more_work = session.queued_job_count > 0
                     else:
+                        session.queued_task_handles.pop(user_message_id, None)
+                        user_record = assistant_chat._find_message(session, user_message_id)
+                        runtime_assistant_badge = str(user_record.get("assistant_badge", "") or "").strip()
                         active_request = assistant_chat.get_message_content(session, user_message_id)
                         session.queued_job_count = max(0, session.queued_job_count - 1)
                         session.interrupt_requested = False
@@ -386,11 +402,11 @@ class DeepyController:
                         session.control_queue = output_queue
                         session.worker_active = True
                         self._active_assistant_session = session
-                        begin_assistant_turn(session, user_message_id, active_request, assistant_badge=assistant_badge)
+                        begin_assistant_turn(session, user_message_id, active_request, assistant_badge=runtime_assistant_badge)
                         started_turn = True
                         assistant_chat._find_message(session, user_message_id)["queued"] = False
                         assistant_chat.set_message_badge(session, user_message_id, None)
-                        starting_status = {"visible": True, "kind": "queued" if assistant_badge else "loading", "text": "Steering accepted. Deepy is applying the new instructions..." if assistant_badge else "Starting Deepy..."}
+                        starting_status = {"visible": True, "kind": "queued" if runtime_assistant_badge else "loading", "text": "Steering accepted. Deepy is applying the new instructions..." if runtime_assistant_badge else "Starting Deepy..."}
                         starting_sync = assistant_chat.build_sync_event(session, status=starting_status)
                 if stale_request:
                     self._debug_log(f"Worker skipped stale request user_message_id={user_message_id} queued_epoch={queued_epoch} chat_epoch={session.chat_epoch}")
@@ -416,8 +432,8 @@ class DeepyController:
                     if not user_action_required:
                         traceback.print_exc()
                     error_turn_id = assistant_chat.create_assistant_turn(session)
-                    if assistant_badge:
-                        assistant_chat.set_message_badge(session, error_turn_id, assistant_badge)
+                    if runtime_assistant_badge:
+                        assistant_chat.set_message_badge(session, error_turn_id, runtime_assistant_badge)
                     mark_assistant_turn_message(session, error_turn_id)
                     error_event = assistant_chat.set_assistant_content(session, error_turn_id, str(e) if user_action_required else f"Assistant crashed: {e}")
                     if error_event is not None:
@@ -445,7 +461,9 @@ class DeepyController:
                     if not has_more_work:
                         raw_send_cmd("exit", None)
 
-        async_run_in("assistant", queue_worker_func)
+        task_handle = async_run_in("assistant", queue_worker_func)
+        if queued:
+            session.queued_task_handles[user_message_id] = task_handle
 
     def store_selected_video_time(self, state, current_time):
         gen = self._deps.get_gen_info(state)

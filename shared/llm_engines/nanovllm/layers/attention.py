@@ -119,6 +119,57 @@ if triton is not None and tl is not None:
         tl.store(v_scale_ptr + scale_offset, value_scale)
 
 
+    @triton.jit
+    def q8_paged_prefill_kernel(
+        q_ptr, k_ptr, v_ptr, ks_ptr, vs_ptr, block_tables_ptr, cu_q_ptr, cu_k_ptr, out_ptr,
+        q_stride_t: tl.constexpr, q_stride_h: tl.constexpr, cache_stride_block: tl.constexpr,
+        cache_stride_token: tl.constexpr, cache_stride_head: tl.constexpr, scale_stride_block: tl.constexpr,
+        scale_stride_token: tl.constexpr, scale_stride_head: tl.constexpr, bt_stride: tl.constexpr,
+        out_stride_t: tl.constexpr, out_stride_h: tl.constexpr, softmax_scale: tl.constexpr,
+        H_Q: tl.constexpr, H_KV: tl.constexpr, D: tl.constexpr, PAGE: tl.constexpr,
+        BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+    ):
+        sequence = tl.program_id(0)
+        query_head = tl.program_id(1)
+        query_block = tl.program_id(2)
+        q_start = tl.load(cu_q_ptr + sequence)
+        q_end = tl.load(cu_q_ptr + sequence + 1)
+        k_end = tl.load(cu_k_ptr + sequence + 1) - tl.load(cu_k_ptr + sequence)
+        q_len = q_end - q_start
+        prefix_len = k_end - q_len
+        rows = query_block * BLOCK_M + tl.arange(0, BLOCK_M)
+        dims = tl.arange(0, D)
+        row_mask = rows < q_len
+        q = tl.load(q_ptr + (q_start + rows[:, None]) * q_stride_t + query_head * q_stride_h + dims[None, :], mask=row_mask[:, None]).to(tl.float32)
+        maximum = tl.full((BLOCK_M,), -float("inf"), tl.float32)
+        denominator = tl.zeros((BLOCK_M,), tl.float32)
+        accumulator = tl.zeros((BLOCK_M, D), tl.float32)
+        kv_head = query_head // (H_Q // H_KV)
+
+        for key_start in tl.range(0, k_end, BLOCK_N):
+            columns = key_start + tl.arange(0, BLOCK_N)
+            column_mask = columns < k_end
+            physical_block = tl.load(block_tables_ptr + sequence * bt_stride + columns // PAGE, mask=column_mask, other=0)
+            physical_token = columns % PAGE
+            cache_base = physical_block * cache_stride_block + physical_token * cache_stride_token + kv_head * cache_stride_head
+            scale_base = physical_block * scale_stride_block + physical_token * scale_stride_token + kv_head * scale_stride_head
+            k = tl.load(k_ptr + cache_base[None, :] + dims[:, None], mask=column_mask[None, :], other=0.0).to(tl.float32)
+            k *= tl.load(ks_ptr + scale_base[None, :] + (dims[:, None] // 32), mask=column_mask[None, :], other=0.0).to(tl.float32)
+            scores = tl.dot(q, k, input_precision="ieee") * softmax_scale
+            causal = columns[None, :] <= prefix_len + rows[:, None]
+            scores = tl.where(row_mask[:, None] & column_mask[None, :] & causal, scores, -float("inf"))
+            tile_maximum = tl.maximum(maximum, tl.max(scores, axis=1))
+            correction = tl.exp2((maximum - tile_maximum) * 1.4426950408889634)
+            probabilities = tl.exp2((scores - tile_maximum[:, None]) * 1.4426950408889634)
+            denominator = denominator * correction + tl.sum(probabilities, axis=1)
+            v = tl.load(v_ptr + cache_base[:, None] + dims[None, :], mask=column_mask[:, None], other=0.0).to(tl.float32)
+            v *= tl.load(vs_ptr + scale_base[:, None] + (dims[None, :] // 32), mask=column_mask[:, None], other=0.0).to(tl.float32)
+            accumulator = accumulator * correction[:, None] + tl.dot(probabilities, v, input_precision="ieee")
+            maximum = tile_maximum
+        output = accumulator / denominator[:, None]
+        tl.store(out_ptr + (q_start + rows[:, None]) * out_stride_t + query_head * out_stride_h + dims[None, :], output, mask=row_mask[:, None])
+
+
 def _repeat_kv(hidden_states: torch.Tensor, num_repeats: int) -> torch.Tensor:
     if num_repeats == 1:
         return hidden_states
@@ -360,6 +411,23 @@ def _dequantize_kvcache(cache: torch.Tensor, scale: torch.Tensor, dtype: torch.d
     return cache.reshape(*cache.shape[:-1], scale.shape[-1], _Q8_KV_BLOCK_SIZE).to(dtype).mul_(scale.to(dtype).unsqueeze(-1)).reshape_as(cache)
 
 
+def _q8_paged_prefill(q: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tensor, k_scale: torch.Tensor, v_scale: torch.Tensor, context, softmax_scale: float) -> torch.Tensor:
+    output = torch.empty_like(q)
+    query_lengths = context.cu_seqlens_q[1:] - context.cu_seqlens_q[:-1]
+    grid = (query_lengths.numel(), q.shape[1], triton.cdiv(q.shape[0], 32))
+    q8_paged_prefill_kernel[grid](
+        q, k_cache, v_cache, k_scale, v_scale, context.block_tables, context.cu_seqlens_q, context.cu_seqlens_k, output,
+        q.stride(0), q.stride(1), k_cache.stride(0), k_cache.stride(1), k_cache.stride(2),
+        k_scale.stride(0), k_scale.stride(1), k_scale.stride(2), context.block_tables.stride(0), output.stride(0), output.stride(1), softmax_scale,
+        q.shape[1], k_cache.shape[2], q.shape[2], k_cache.shape[1], BLOCK_M=32, BLOCK_N=16, num_warps=8, num_stages=1,
+    )
+    return output
+
+
+def _q8_paged_speculative(q: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tensor, k_scale: torch.Tensor, v_scale: torch.Tensor, context_lens: torch.Tensor, block_tables: torch.Tensor, softmax_scale: float) -> torch.Tensor:
+    return _Q8_PAGED_ATTENTION(q, k_cache, v_cache, k_scale, v_scale, block_tables, context_lens, softmax_scale).squeeze(1)
+
+
 class Attention(nn.Module):
 
     def __init__(
@@ -379,6 +447,7 @@ class Attention(nn.Module):
         self.use_triton_kv_cache = _DEFAULT_USE_TRITON_KV_CACHE
         self.k_cache = self.v_cache = torch.tensor([])
         self.k_scale = self.v_scale = torch.tensor([])
+        self._q8_speculative_metadata = {}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
         context = get_context()
@@ -387,11 +456,29 @@ class Attention(nn.Module):
             store_kvcache(k, v, k_cache, v_cache, context.slot_mapping, self.k_scale, self.v_scale, use_triton_kv_cache=self.use_triton_kv_cache)
         quantized_cache = k_cache.dtype == torch.int8
         reads_cache = context.speculative_verify or not context.is_prefill or context.block_tables is not None
-        q8_attention = _Q8_PAGED_ATTENTION if quantized_cache and (context.speculative_verify or not context.is_prefill) else None
-        if q8_attention is not None and q.is_cuda and q.is_contiguous() and q.dtype in (torch.float16, torch.bfloat16) and self.head_dim <= 256 and self.head_dim % _Q8_KV_BLOCK_SIZE == 0:
+        q8_attention = _Q8_PAGED_ATTENTION if quantized_cache and not context.speculative_verify and not context.is_prefill else None
+        q8_prefill = quantized_cache and context.is_prefill and context.block_tables is not None and triton is not None
+        q8_speculative = quantized_cache and context.speculative_verify and _Q8_PAGED_ATTENTION is not None
+        if (q8_attention is not None or q8_prefill or q8_speculative) and q.is_cuda and q.is_contiguous() and q.dtype in (torch.float16, torch.bfloat16) and self.head_dim <= 256 and self.head_dim % _Q8_KV_BLOCK_SIZE == 0:
             dtype_name = "BF16" if q.dtype == torch.bfloat16 else "FP16"
             if context.speculative_verify:
-                _log_kv_attention_backend_once("speculative_llamacpp_q8", f"[Deepy][Speculative] verification backend=llama.cpp fattn-vec Q8 paged attention ({dtype_name} I/O, FP32 accumulation).")
+                _log_kv_attention_backend_once("speculative_llamacpp_q8", f"[Deepy][Speculative] verification backend=batched llama.cpp fattn-vec Q8 paged attention ({dtype_name} I/O, FP32 accumulation, no dense KV materialization).")
+                query_count = q.shape[0]
+                metadata = self._q8_speculative_metadata.get(query_count)
+                if metadata is None:
+                    metadata = (
+                        torch.arange(1, query_count + 1, dtype=torch.int32, device=q.device),
+                        torch.empty(query_count, dtype=torch.int32, device=q.device),
+                        torch.empty(query_count, context.block_tables.shape[1], dtype=torch.int32, device=q.device),
+                    )
+                    self._q8_speculative_metadata[query_count] = metadata
+                query_offsets, context_lens, block_tables = metadata
+                context_lens.copy_(query_offsets).add_(context.cu_seqlens_k[1] - query_count)
+                block_tables.copy_(context.block_tables.expand(query_count, -1))
+                return _q8_paged_speculative(q, k_cache, v_cache, self.k_scale, self.v_scale, context_lens, block_tables, self.scale)
+            elif context.is_prefill:
+                _log_kv_attention_backend_once("prefill_triton_q8", f"[Deepy][KV cache] prefix prefill backend=tiled Triton Q8 paged attention ({dtype_name} I/O, FP32 accumulation, no dense KV materialization).")
+                return _q8_paged_prefill(q, k_cache, v_cache, self.k_scale, self.v_scale, context, self.scale)
             else:
                 _log_kv_attention_backend_once("llamacpp_q8", f"[Deepy][KV cache] decode backend=llama.cpp fattn-vec Q8 paged adapter ({dtype_name} I/O, FP32 accumulation).")
             context_lens = context.cu_seqlens_k[1:] if context.speculative_verify else context.context_lens

@@ -154,7 +154,7 @@ def _floor_overlap(frame_count: int, step: int, offset: int) -> int:
     return 0 if frame_count < offset else (frame_count - offset) // step * step + offset
 
 
-def resolve_window_geometry(output_frames: int, overlap_frames: int, discard_last_frames: int, minimum: int, step: int, *, frame_offset: int = 1, overlap_offset: int = 1, max_overlap: int | None = None, available_overlap: int | None = None, preserve_exact_output_frames: bool = False) -> dict:
+def resolve_window_geometry(output_frames: int, overlap_frames: int, discard_last_frames: int, minimum: int, step: int, *, frame_offset: int = 1, overlap_offset: int = 1, max_overlap: int | None = None, available_overlap: int | None = None, preserve_exact_output_frames: bool = False, output_frame_policy: str | None = None) -> dict:
     output_frames = max(1, int(output_frames))
     overlap_frames = max(0, int(overlap_frames))
     discard_last_frames = max(0, int(discard_last_frames))
@@ -168,13 +168,24 @@ def resolve_window_geometry(output_frames: int, overlap_frames: int, discard_las
         preferred_overlap = _floor_overlap(min(overlap_frames, overlap_limit), step, overlap_offset)
         overlaps = list(range(preferred_overlap, overlap_limit + 1, max(1, int(step)))) if preferred_overlap > 0 else [0]
 
+    output_frame_policy = output_frame_policy or ("exact" if preserve_exact_output_frames else "expand")
+    if output_frame_policy not in {"exact", "expand", "nearest"}:
+        raise ValueError(f"Unknown frame scheduler output policy {output_frame_policy!r}")
     candidates = []
     for overlap in overlaps:
-        frame_num = normalize_frame_count(output_frames + overlap + discard_last_frames, minimum, step, frame_offset)
-        trim_last_frames = frame_num - overlap - discard_last_frames - output_frames
-        candidates.append((trim_last_frames, frame_num, overlap))
-    trim_last_frames, frame_num, overlap_frames = min(candidates)
-    if not preserve_exact_output_frames:
+        requested_frame_num = output_frames + overlap + discard_last_frames
+        frame_num = normalize_output_frame_count(requested_frame_num, minimum, step, frame_offset) if output_frame_policy == "nearest" else normalize_frame_count(requested_frame_num, minimum, step, frame_offset)
+        if frame_num <= overlap + discard_last_frames:
+            frame_num = normalize_frame_count(overlap + discard_last_frames + 1, minimum, step, frame_offset)
+        adjusted_output_frames = frame_num - overlap - discard_last_frames
+        trim_last_frames = adjusted_output_frames - output_frames
+        score = (abs(trim_last_frames), abs(overlap - overlap_frames), frame_num)
+        candidates.append((score, trim_last_frames, frame_num, overlap, adjusted_output_frames))
+    _, trim_last_frames, frame_num, overlap_frames, adjusted_output_frames = min(candidates)
+    if output_frame_policy == "nearest":
+        output_frames = adjusted_output_frames
+        trim_last_frames = 0
+    elif output_frame_policy == "expand":
         output_frames += trim_last_frames
         trim_last_frames = 0
     return {
@@ -186,22 +197,26 @@ def resolve_window_geometry(output_frames: int, overlap_frames: int, discard_las
     }
 
 
-def _window(prompt: str, output_frames: int, overlap_frames: int, discard_last_frames: int, model_options: dict | None, minimum: int, step: int, *, frame_offset: int = 1, overlap_offset: int = 1, max_overlap: int | None = None, available_overlap: int | None = None, new_shot: bool = False, preserve_exact_output_frames: bool = False) -> dict:
-    geometry = resolve_window_geometry(output_frames, 0 if new_shot else overlap_frames, discard_last_frames, minimum, step, frame_offset=frame_offset, overlap_offset=overlap_offset, max_overlap=max_overlap, available_overlap=available_overlap, preserve_exact_output_frames=preserve_exact_output_frames)
-    return {
+def _window(prompt: str, output_frames: int, overlap_frames: int, discard_last_frames: int, model_options: dict | None, minimum: int, step: int, *, frame_offset: int = 1, overlap_offset: int = 1, max_overlap: int | None = None, available_overlap: int | None = None, new_shot: bool = False, preserve_exact_output_frames: bool = False, output_frame_policy: str | None = None) -> dict:
+    requested_output_frames = output_frames
+    geometry = resolve_window_geometry(output_frames, 0 if new_shot else overlap_frames, discard_last_frames, minimum, step, frame_offset=frame_offset, overlap_offset=overlap_offset, max_overlap=max_overlap, available_overlap=available_overlap, preserve_exact_output_frames=preserve_exact_output_frames, output_frame_policy=output_frame_policy)
+    window = {
         "prompt": prompt,
         **geometry,
         "new_shot": bool(new_shot),
         "model_options": dict(model_options or {}),
     }
+    if geometry["output_frames"] != requested_output_frames:
+        window["requested_output_frames"] = requested_output_frames
+    return window
 
 
-def build_extension_window(prompt: str, *, window_size: int, overlap_frames: int, discard_last_frames: int = 0, minimum: int, step: int, frame_offset: int = 1, preserve_exact_output_frames: bool = False) -> dict:
+def build_extension_window(prompt: str, *, window_size: int, overlap_frames: int, discard_last_frames: int = 0, minimum: int, step: int, frame_offset: int = 1, preserve_exact_output_frames: bool = False, output_frame_policy: str | None = None) -> dict:
     overlap_offset = overlap_frames % max(1, step)
-    return _window(prompt, max(1, window_size - overlap_frames - discard_last_frames), overlap_frames, discard_last_frames, {}, minimum, step, frame_offset=frame_offset, overlap_offset=overlap_offset, preserve_exact_output_frames=preserve_exact_output_frames)
+    return _window(prompt, max(1, window_size - overlap_frames - discard_last_frames), overlap_frames, discard_last_frames, {}, minimum, step, frame_offset=frame_offset, overlap_offset=overlap_offset, preserve_exact_output_frames=preserve_exact_output_frames, output_frame_policy=output_frame_policy)
 
 
-def build_default_window_plan(*, total_frames: int, window_size: int, default_overlap: int, discard_last_frames: int, minimum: int, step: int, frame_offset: int = 1, overlap_offset: int = 1, max_overlap: int | None = None, first_window_overlap: int = 0, first_window_available_overlap: int | None = None, preserve_exact_output_frames: bool = False) -> list[dict]:
+def build_default_window_plan(*, total_frames: int, window_size: int, default_overlap: int, discard_last_frames: int, minimum: int, step: int, frame_offset: int = 1, overlap_offset: int = 1, max_overlap: int | None = None, first_window_overlap: int = 0, first_window_available_overlap: int | None = None, preserve_exact_output_frames: bool = False, output_frame_policy: str | None = None) -> list[dict]:
     total_frames = max(1, int(total_frames))
     window_size = normalize_frame_count(window_size, minimum, step, frame_offset)
     first_window_overlap = max(0, int(first_window_overlap))
@@ -212,13 +227,15 @@ def build_default_window_plan(*, total_frames: int, window_size: int, default_ov
     sliding = total_frames > first_window_capacity
     first_discard = max(0, int(discard_last_frames)) if sliding else 0
     first_output = min(total_frames, max(1, first_window_capacity - first_discard))
-    windows = [_window("", first_output, first_window_overlap, first_discard, {}, minimum, step, frame_offset=frame_offset, overlap_offset=overlap_offset, max_overlap=max_overlap, available_overlap=first_window_available_overlap, preserve_exact_output_frames=preserve_exact_output_frames)]
-    consumed = windows[0]["output_frames"]
-    while consumed < total_frames:
-        output_frames = min(total_frames - consumed, max(1, window_size - default_overlap - discard_last_frames))
-        window = _window("", output_frames, default_overlap, discard_last_frames, {}, minimum, step, frame_offset=frame_offset, overlap_offset=overlap_offset, max_overlap=max_overlap, available_overlap=consumed, preserve_exact_output_frames=preserve_exact_output_frames)
+    windows = [_window("", first_output, first_window_overlap, first_discard, {}, minimum, step, frame_offset=frame_offset, overlap_offset=overlap_offset, max_overlap=max_overlap, available_overlap=first_window_available_overlap, preserve_exact_output_frames=preserve_exact_output_frames, output_frame_policy=output_frame_policy)]
+    requested_consumed = first_output
+    actual_consumed = windows[0]["output_frames"]
+    while requested_consumed < total_frames:
+        output_frames = min(total_frames - requested_consumed, max(1, window_size - default_overlap - discard_last_frames))
+        window = _window("", output_frames, default_overlap, discard_last_frames, {}, minimum, step, frame_offset=frame_offset, overlap_offset=overlap_offset, max_overlap=max_overlap, available_overlap=actual_consumed, preserve_exact_output_frames=preserve_exact_output_frames, output_frame_policy=output_frame_policy)
         windows.append(window)
-        consumed += window["output_frames"]
+        requested_consumed += output_frames
+        actual_consumed += window["output_frames"]
     return windows
 
 
@@ -270,6 +287,7 @@ def build_frame_scheduler(
     first_window_overlap_frames: int = 0,
     discard_last_frames: int = 0,
     preserve_exact_output_frames: bool = False,
+    output_frame_policy: str | None = None,
 ) -> tuple[dict, str | None]:
     supported_model_commands = {str(command).strip().lower().lstrip("/") for command in supported_model_commands or [] if str(command).strip()}
     default_overlap, error = normalize_overlap(default_overlap, step, overlap_offset)
@@ -293,27 +311,30 @@ def build_frame_scheduler(
         return {"active": False, "prompts": parsed_prompts, "model_commands": sorted(supported_model_commands)}, None
 
     windows = []
-    consumed = 0
+    requested_consumed = 0
+    actual_consumed = 0
     for idx, (prompt, wgp_options, model_options) in enumerate(parsed, start=1):
         overlap = wgp_options.get("overlap_frames", default_overlap)
         if idx == 1:
             overlap = min(overlap, first_window_overlap_frames)
         duration = wgp_options.get("duration_frames")
         if duration is None:
-            remaining = total_frames - consumed
+            remaining = total_frames - requested_consumed
             if remaining <= 0:
                 return {}, f"Sliding window {idx} would generate no frame because previous windows already consume the requested frame count. Unable to start generation: please specify shorter /duration values for the previous sliding windows or increase the total number of frames."
             duration = min(remaining, max(1, window_size - overlap - discard_last_frames))
-        window = _window(prompt, duration, overlap, discard_last_frames, model_options, minimum, step, frame_offset=frame_offset, overlap_offset=overlap_offset, max_overlap=max_overlap, available_overlap=first_window_overlap_frames if idx == 1 else consumed, new_shot=bool(wgp_options.get("new_shot", False)), preserve_exact_output_frames=preserve_exact_output_frames)
+        window = _window(prompt, duration, overlap, discard_last_frames, model_options, minimum, step, frame_offset=frame_offset, overlap_offset=overlap_offset, max_overlap=max_overlap, available_overlap=first_window_overlap_frames if idx == 1 else actual_consumed, new_shot=bool(wgp_options.get("new_shot", False)), preserve_exact_output_frames=preserve_exact_output_frames, output_frame_policy=output_frame_policy)
         if "loras_multipliers" in wgp_options:
             window["loras_multipliers"] = wgp_options["loras_multipliers"]
         windows.append(window)
-        consumed += window["output_frames"]
+        requested_consumed += duration
+        actual_consumed += window["output_frames"]
 
-    while not any_duration and consumed < total_frames and windows:
-        duration = min(total_frames - consumed, max(1, window_size - default_overlap - discard_last_frames))
-        windows.append(_window(windows[-1]["prompt"], duration, default_overlap, discard_last_frames, {}, minimum, step, frame_offset=frame_offset, overlap_offset=overlap_offset, max_overlap=max_overlap, available_overlap=consumed, preserve_exact_output_frames=preserve_exact_output_frames))
-        consumed += windows[-1]["output_frames"]
+    while not any_duration and requested_consumed < total_frames and windows:
+        duration = min(total_frames - requested_consumed, max(1, window_size - default_overlap - discard_last_frames))
+        windows.append(_window(windows[-1]["prompt"], duration, default_overlap, discard_last_frames, {}, minimum, step, frame_offset=frame_offset, overlap_offset=overlap_offset, max_overlap=max_overlap, available_overlap=actual_consumed, preserve_exact_output_frames=preserve_exact_output_frames, output_frame_policy=output_frame_policy))
+        requested_consumed += duration
+        actual_consumed += windows[-1]["output_frames"]
 
     return {
         "active": True,

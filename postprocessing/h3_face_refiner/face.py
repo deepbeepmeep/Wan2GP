@@ -7,6 +7,7 @@ Adapted from Carasibana/ComfyUI-H3-FaceRefine at commit
 from __future__ import annotations
 
 import gc
+import heapq
 import json
 import math
 import os
@@ -556,7 +557,7 @@ def _flow_missing_boxes(frames, boxes, max_gap=18):
     return result, propagated
 
 
-def _associate_tracks(detections, frame_embeddings, identity_threshold=0.28, shot_boundaries=()):
+def _associate_tracks(detections, frame_embeddings, identity_threshold=0.28, shot_boundaries=(), progress_callback=None):
     frame_count = len(detections)
     shot_boundaries = set(shot_boundaries)
     shot_index = 0
@@ -607,38 +608,72 @@ def _associate_tracks(detections, frame_embeddings, identity_threshold=0.28, sho
                            "last_box": box, "last_frame": frame_index, "shot": shot_index})
             tracks[-1]["boxes"][frame_index] = box
 
-    merged = True
-    while merged:
-        merged = False
-        candidates = []
-        for first in range(len(tracks)):
-            for second in range(first + 1, len(tracks)):
-                if any(a is not None and b is not None for a, b in zip(tracks[first]["boxes"], tracks[second]["boxes"])):
-                    continue
-                similarity = _track_similarity(tracks[first], tracks[second])
-                if similarity is not None and similarity >= float(identity_threshold):
-                    candidates.append((10.0 + similarity, first, second))
-                    continue
-                first_frames = [index for index, box in enumerate(tracks[first]["boxes"]) if box is not None]
-                second_frames = [index for index, box in enumerate(tracks[second]["boxes"]) if box is not None]
-                earlier, later = (first, second) if first_frames[-1] < second_frames[0] else (second, first)
-                earlier_frames = first_frames if earlier == first else second_frames
-                later_frames = second_frames if later == second else first_frames
-                gap = later_frames[0] - earlier_frames[-1]
-                continuity = _normalized_continuity_cost(tracks[later]["boxes"][later_frames[0]], tracks[earlier]["boxes"][earlier_frames[-1]])
-                empty_gap = not any(detections[earlier_frames[-1] + 1:later_frames[0]])
-                if gap <= 60 and continuity <= 1.5 and empty_gap and (similarity is None or similarity >= float(identity_threshold) * 0.5):
-                    candidates.append((5.0 - continuity - gap * 0.001, first, second))
-        if candidates:
-            _similarity, first, second = max(candidates)
-            for frame_index, box in enumerate(tracks[second]["boxes"]):
-                if box is not None:
-                    tracks[first]["boxes"][frame_index] = box
-            tracks[first]["embeddings"] += tracks[second]["embeddings"]
-            tracks[first]["last_frame"] = max(tracks[first]["last_frame"], tracks[second]["last_frame"])
-            tracks[first]["last_box"] = tracks[first]["boxes"][tracks[first]["last_frame"]]
-            del tracks[second]
-            merged = True
+    def merge_score(first, second):
+        first_track, second_track = tracks[first], tracks[second]
+        if any(a is not None and b is not None for a, b in zip(first_track["boxes"], second_track["boxes"])):
+            return None
+        similarity = _track_similarity(first_track, second_track)
+        if similarity is not None and similarity >= float(identity_threshold):
+            return 10.0 + similarity
+        first_frames = [index for index, box in enumerate(first_track["boxes"]) if box is not None]
+        second_frames = [index for index, box in enumerate(second_track["boxes"]) if box is not None]
+        earlier, later = (first, second) if first_frames[-1] < second_frames[0] else (second, first)
+        earlier_frames = first_frames if earlier == first else second_frames
+        later_frames = second_frames if later == second else first_frames
+        gap = later_frames[0] - earlier_frames[-1]
+        continuity = _normalized_continuity_cost(tracks[later]["boxes"][later_frames[0]], tracks[earlier]["boxes"][earlier_frames[-1]])
+        empty_gap = not any(detections[earlier_frames[-1] + 1:later_frames[0]])
+        if gap <= 60 and continuity <= 1.5 and empty_gap and (similarity is None or similarity >= float(identity_threshold) * 0.5):
+            return 5.0 - continuity - gap * 0.001
+        return None
+
+    track_ids = list(range(len(tracks)))
+    track_positions = {track_id: track_id for track_id in track_ids}
+    versions = [0] * len(tracks)
+    alive = [True] * len(tracks)
+    candidates = []
+    comparison_count = 0
+    comparison_total = max((len(tracks) - 1) ** 2, 1)
+    last_progress = -1
+
+    def add_candidate(first_id, second_id):
+        nonlocal comparison_count, last_progress
+        first, second = track_positions[first_id], track_positions[second_id]
+        score = merge_score(first, second)
+        if score is not None:
+            heapq.heappush(candidates, (-score, -first_id, -second_id, versions[first_id], versions[second_id]))
+        comparison_count += 1
+        progress = min(comparison_count * 100 // comparison_total, 99)
+        if callable(progress_callback) and progress != last_progress:
+            last_progress = progress
+            progress_callback("Associating face tracks", comparison_count, comparison_total)
+
+    for first in range(len(tracks)):
+        for second in range(first + 1, len(tracks)):
+            add_candidate(first, second)
+
+    while candidates:
+        _negative_score, negative_first_id, negative_second_id, first_version, second_version = heapq.heappop(candidates)
+        first_id, second_id = -negative_first_id, -negative_second_id
+        if not alive[first_id] or not alive[second_id] or versions[first_id] != first_version or versions[second_id] != second_version:
+            continue
+        first, second = track_positions[first_id], track_positions[second_id]
+        for frame_index, box in enumerate(tracks[second]["boxes"]):
+            if box is not None:
+                tracks[first]["boxes"][frame_index] = box
+        tracks[first]["embeddings"] += tracks[second]["embeddings"]
+        tracks[first]["last_frame"] = max(tracks[first]["last_frame"], tracks[second]["last_frame"])
+        tracks[first]["last_box"] = tracks[first]["boxes"][tracks[first]["last_frame"]]
+        del tracks[second]
+        del track_ids[second]
+        track_positions.update((track_id, index) for index, track_id in enumerate(track_ids[second:], start=second))
+        versions[first_id] += 1
+        alive[second_id] = False
+        for other_id in track_ids:
+            if other_id != first_id:
+                add_candidate(min(first_id, other_id), max(first_id, other_id))
+    if callable(progress_callback):
+        progress_callback("Associating face tracks", comparison_total, comparison_total)
     for track in tracks:
         heights = [box[3] - box[1] for box in track["boxes"] if box is not None]
         track["anchor"] = _track_anchor(track)
@@ -649,7 +684,8 @@ def _associate_tracks(detections, frame_embeddings, identity_threshold=0.28, sho
 
 
 def _select_tracks(frames, detections, face_count=1, identity_threshold=0.28, reference_images=None,
-                   auto_min_face_height=32, auto_min_presence=0.2, insightface_model_dir=None):
+                   auto_min_face_height=32, auto_min_presence=0.2, insightface_model_dir=None,
+                   abort_callback=None, progress_callback=None):
     app = None
     shot_boundaries = _shot_boundaries(frames)
     if shot_boundaries:
@@ -659,16 +695,20 @@ def _select_tracks(frames, detections, face_count=1, identity_threshold=0.28, re
     try:
         app = _insightface_app(model_dir=insightface_model_dir)
         for frame_index, boxes in enumerate(detections):
+            if callable(abort_callback) and abort_callback():
+                return None
             if boxes:
                 frame_embeddings[frame_index] = _aligned_embeddings(app, frames[frame_index], boxes)
-        tracks = _associate_tracks(detections, frame_embeddings, identity_threshold, shot_boundaries)
+            if callable(progress_callback):
+                progress_callback("Matching face identities", frame_index + 1, len(detections))
+        tracks = _associate_tracks(detections, frame_embeddings, identity_threshold, shot_boundaries, progress_callback)
         reference_embeddings = []
         for reference in references:
             candidates = _embeddings(app, reference)
             reference_embeddings.append(None if not candidates else max(candidates, key=lambda item: item[0][3] - item[0][1])[1])
     except Exception as error:
         print(f"[H3FaceRefine] multi-face identity matching unavailable ({error}); using geometric tracks")
-        tracks = _associate_tracks(detections, frame_embeddings, identity_threshold, shot_boundaries)
+        tracks = _associate_tracks(detections, frame_embeddings, identity_threshold, shot_boundaries, progress_callback)
         reference_embeddings = [None] * len(references)
     finally:
         released = _release_insightface(app)
@@ -885,7 +925,10 @@ def track_faces(frames, detector_path, *, face_count=1, reference_images=None, c
     detections = _detect(frames, detector_path, confidence, abort_callback, progress_callback)
     if detections is None:
         return None
-    tracks = _select_tracks(frames, detections, face_count, identity_threshold, reference_images, auto_min_face_height, auto_min_presence, insightface_model_dir)
+    tracks = _select_tracks(frames, detections, face_count, identity_threshold, reference_images, auto_min_face_height, auto_min_presence, insightface_model_dir,
+                            abort_callback, progress_callback)
+    if tracks is None:
+        return None
     if not tracks:
         if int(face_count) == 0:
             return []

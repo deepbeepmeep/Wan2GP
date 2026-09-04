@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
@@ -522,10 +523,11 @@ class Qwen35AssistantRuntime:
             f"kv_cache={self._describe_tensor(kv_cache)}"
         )
 
-    def _get_engine(self, max_context_tokens: int, max_new_tokens: int, usage_mode: str = "assistant"):
+    def _get_engine(self, max_context_tokens: int, max_new_tokens: int, usage_mode: str = "assistant", min_model_len: int | None = None):
         engine = qwen35_text._get_or_create_vllm_engine(self.model, usage_mode=usage_mode)
         desired_model_len, desired_num_seqs, desired_num_batched_tokens = engine._compute_runtime_hints(prompt_len=max_context_tokens, max_tokens=max_new_tokens, cfg_scale=1.0)
-        desired_model_len = max(desired_model_len, engine._get_min_model_len_hint())
+        min_model_len = engine._get_min_model_len_hint() if usage_mode == "assistant" else int(min_model_len or qwen35_text.QWEN35_PROMPT_MIN_MODEL_LEN)
+        desired_model_len = max(desired_model_len, min_model_len)
         desired_num_batched_tokens = max(desired_num_batched_tokens, desired_model_len * desired_num_seqs)
         live_llm = getattr(engine, "_llm", None)
         self._log(
@@ -543,7 +545,7 @@ class Qwen35AssistantRuntime:
             engine._max_model_len_hint = None
             engine._max_num_seqs_hint = None
             engine._max_num_batched_tokens_hint = None
-        engine.reserve_runtime(prompt_len=max_context_tokens, max_tokens=max_new_tokens, cfg_scale=1.0)
+        engine.reserve_runtime(prompt_len=max_context_tokens, max_tokens=max_new_tokens, cfg_scale=1.0, min_model_len=min_model_len)
         engine._ensure_llm()
         if engine._llm is None:
             raise RuntimeError("Assistant NanoVLLM runtime is not available.")
@@ -695,6 +697,7 @@ class Qwen35AssistantRuntime:
             total_suffix_tokens = len(suffix)
             total_chunks = (total_suffix_tokens + chunk_tokens - 1) // chunk_tokens
             for chunk_index, chunk_start in enumerate(range(0, total_suffix_tokens, chunk_tokens), start=1):
+                chunk_started_at = time.perf_counter()
                 chunk = suffix[chunk_start : chunk_start + chunk_tokens]
                 old_num_tokens = int(seq.num_tokens)
                 seq.token_ids.extend(chunk)
@@ -716,7 +719,7 @@ class Qwen35AssistantRuntime:
                 seq.num_cached_tokens = seq.num_tokens
                 self._log(
                     f"Chunk-prefilled assistant suffix chunk {chunk_index}/{total_chunks} "
-                    f"with {len(chunk)} tokens (context={int(seq.num_tokens)})."
+                    f"with {len(chunk)} tokens in {time.perf_counter() - chunk_started_at:.3f}s (context={int(seq.num_tokens)})."
                 )
         finally:
             seq.logits_processor = original_processor
@@ -787,6 +790,8 @@ class Qwen35AssistantRuntime:
         temperature: float | None,
         top_p: float | None,
         top_k: int | None,
+        min_model_len: int | None = None,
+        restore_snapshot: dict[str, Any] | None = None,
     ) -> str:
         self._log(
             "Embedded decode request "
@@ -794,11 +799,12 @@ class Qwen35AssistantRuntime:
             f"prompt_position_ids={self._describe_tensor(prompt_position_ids)} position_offset={int(position_offset or 0)} "
             f"max_new={int(max_new_tokens)} seed={seed} do_sample={bool(do_sample)}"
         )
-        snapshot = self.snapshot_context()
+        snapshot = self.snapshot_context() or restore_snapshot
         engine = self._get_engine(
             max_context_tokens=len(prompt_token_ids),
             max_new_tokens=max_new_tokens,
             usage_mode="assistant" if snapshot is not None else "multimodal",
+            min_model_len=min_model_len,
         )
         try:
             temp, normalized_top_p, normalized_top_k = qwen35_text._normalize_vllm_sampling(
@@ -830,7 +836,7 @@ class Qwen35AssistantRuntime:
                 self._log("Embedded decode finished; restoring assistant snapshot.")
                 self.restore_snapshot(snapshot)
             else:
-                self._log("Embedded decode finished without an active assistant snapshot; releasing runtime allocations.")
+                self._log("Embedded decode finished without an active assistant snapshot; releasing multimodal runtime allocations.")
                 engine.release_runtime_allocations()
 
     def start_generation_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, continue_existing_completion: bool = False, suppress_token_ids: tuple[int, ...] = ()) -> tuple[Sequence, int]:
@@ -1145,6 +1151,73 @@ class Qwen35AssistantRuntime:
         )
         return snapshot
 
+    def snapshot_rewind_state(self) -> dict[str, Any] | None:
+        seq = self._get_active_sequence()
+        if seq is None:
+            return None
+        llm = self._get_live_llm()
+        runner = llm.model_runner
+        torch.cuda.synchronize()
+        return {
+            "runtime_signature": runner._get_graph_capture_signature(),
+            "kv_cache_ptr": int(runner.kv_cache.data_ptr()),
+            "token_ids": [int(token_id) for token_id in seq.token_ids],
+            "num_prompt_tokens": int(seq.num_prompt_tokens),
+            "num_cached_tokens": int(seq.num_cached_tokens),
+            "block_table": [int(block_id) for block_id in seq.block_table],
+            "linear_states": [
+                {
+                    "conv": module.conv_state_buffer.detach().to("cpu").as_subclass(torch.Tensor).clone(),
+                    "recurrent": module.recurrent_state_buffer.detach().to("cpu").as_subclass(torch.Tensor).clone(),
+                }
+                for module in self._get_linear_state_modules()
+            ],
+            "speculative_state": runner.snapshot_speculative_rewind_state(seq.seq_id) if bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False)) else None,
+        }
+
+    def restore_rewind_state(self, snapshot: dict[str, Any]) -> None:
+        llm = self._get_live_llm()
+        runner = llm.model_runner
+        seq = self._get_active_sequence()
+        if seq is None or runner._get_graph_capture_signature() != snapshot["runtime_signature"] or int(runner.kv_cache.data_ptr()) != int(snapshot["kv_cache_ptr"]):
+            raise RuntimeError("Assistant semantic-boundary checkpoint no longer belongs to the live runtime.")
+        token_ids = [int(token_id) for token_id in snapshot["token_ids"]]
+        if list(seq.token_ids[:len(token_ids)]) != token_ids:
+            raise RuntimeError("Assistant live context no longer contains the semantic-boundary prefix.")
+        block_manager = llm.scheduler.block_manager
+        kept_block_table = [int(block_id) for block_id in snapshot["block_table"]]
+        for block_id in reversed(seq.block_table[len(kept_block_table):]):
+            block = block_manager.blocks[int(block_id)]
+            block.ref_count -= 1
+            if block.ref_count == 0:
+                if block.hash != -1 and block_manager.hash_to_block_id.get(block.hash) == block.block_id:
+                    del block_manager.hash_to_block_id[block.hash]
+                block_manager._deallocate_block(block.block_id)
+        seq.token_ids = token_ids
+        seq.last_token = token_ids[-1]
+        seq.num_tokens = len(token_ids)
+        seq.num_prompt_tokens = min(int(snapshot["num_prompt_tokens"]), len(token_ids))
+        seq.num_cached_tokens = min(int(snapshot["num_cached_tokens"]), len(token_ids))
+        seq.block_table = kept_block_table
+        if kept_block_table:
+            tail = block_manager.blocks[kept_block_table[-1]]
+            if tail.hash != -1 and block_manager.hash_to_block_id.get(tail.hash) == tail.block_id:
+                del block_manager.hash_to_block_id[tail.hash]
+            tail.hash = -1
+            tail.token_ids = []
+        linear_modules = self._get_linear_state_modules()
+        linear_states = snapshot["linear_states"]
+        if len(linear_modules) != len(linear_states):
+            raise RuntimeError("Assistant semantic-boundary recurrent state layout changed.")
+        with torch.inference_mode():
+            for module, saved_state in zip(linear_modules, linear_states):
+                module.conv_state_buffer.copy_(saved_state["conv"])
+                module.recurrent_state_buffer.copy_(saved_state["recurrent"])
+        speculative_state = snapshot.get("speculative_state")
+        if speculative_state is not None:
+            runner.restore_speculative_rewind_state(seq.seq_id, speculative_state)
+        torch.cuda.synchronize()
+
     def restore_snapshot(self, snapshot: dict[str, Any]) -> None:
         engine = qwen35_text._get_or_create_vllm_engine(self.model, usage_mode="assistant")
         saved_model_len = int(snapshot.get("max_model_len_hint", 0) or snapshot.get("runner_max_model_len", 0) or 0)
@@ -1183,20 +1256,20 @@ class Qwen35AssistantRuntime:
             self._log(f"Assistant KV cache snapshot mismatch saved_shape={saved_shape} live_shape={live_shape}")
             raise RuntimeError("Assistant KV cache snapshot shape does not match current runtime.")
         with torch.inference_mode():
-            runner.kv_cache.copy_(kv_cache.to(device=runner.kv_cache.device, dtype=runner.kv_cache.dtype))
+            runner.kv_cache.copy_(kv_cache)
             if hasattr(runner, "kv_cache_scales"):
                 kv_cache_scales = snapshot.get("kv_cache_scales")
                 if kv_cache_scales is None or tuple(kv_cache_scales.shape) != tuple(runner.kv_cache_scales.shape):
                     raise RuntimeError("Assistant KV cache scale snapshot does not match current runtime.")
-                runner.kv_cache_scales.copy_(kv_cache_scales.to(device=runner.kv_cache_scales.device, dtype=runner.kv_cache_scales.dtype))
+                runner.kv_cache_scales.copy_(kv_cache_scales)
         linear_modules = self._get_linear_state_modules()
         linear_states = snapshot.get("linear_states", [])
         if len(linear_modules) != len(linear_states):
             raise RuntimeError("Assistant linear-state snapshot does not match runtime layer count.")
         with torch.inference_mode():
             for module, saved_state in zip(linear_modules, linear_states):
-                saved_conv = saved_state["conv"].to(device=module.conv_state_buffer.device, dtype=module.conv_state_buffer.dtype)
-                saved_recurrent = saved_state["recurrent"].to(device=module.recurrent_state_buffer.device, dtype=module.recurrent_state_buffer.dtype)
+                saved_conv = saved_state["conv"]
+                saved_recurrent = saved_state["recurrent"]
                 if tuple(saved_conv.shape) != tuple(module.conv_state_buffer.shape) or tuple(saved_recurrent.shape) != tuple(module.recurrent_state_buffer.shape):
                     raise RuntimeError("Assistant linear-state snapshot tensor shape mismatch.")
                 module.conv_state_buffer.copy_(saved_conv)

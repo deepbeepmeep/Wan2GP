@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from copy import copy
+from types import MethodType
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -40,6 +41,47 @@ _DEFAULT_FAST_CHUNK_GATED_DELTA_RULE = fast_chunk_gated_delta_rule
 _DEFAULT_FAST_RECURRENT_GATED_DELTA_RULE = fast_recurrent_gated_delta_rule
 _DEFAULT_FUSED_RMSNORM_GATED = FusedRMSNormGated
 _DEFAULT_SHORT_CONVOLUTION = ShortConvolution
+_FLA_PREFILL_AUTOTUNE_CONFIGURED = False
+
+
+def configure_qwen35_fla_prefill_autotune(device: torch.device) -> None:
+    """Share upstream FLA norm autotuning across representative prefill ranges."""
+    global _FLA_PREFILL_AUTOTUNE_CONFIGURED
+    if _FLA_PREFILL_AUTOTUNE_CONFIGURED or _DEFAULT_FUSED_RMSNORM_GATED is None:
+        return
+    from fla.modules.l2norm import l2norm_fwd_kernel
+    from fla.modules.fused_norm_gate import layer_norm_gated_fwd_kernel
+
+    def range_key(nb: int) -> int:
+        return 1 if nb == 1 else 2 if nb <= 15 else 16 if nb <= 24 else 25
+
+    def install(autotuner) -> None:
+        original_run = autotuner.run
+        original_bench = autotuner._bench
+        tuning = {"active": False, "range": 0}
+
+        def bench(_self, *args, **kwargs):
+            if not tuning["active"]:
+                tuning["active"] = True
+                print(f"[Deepy][Triton] Autotuning {autotuner.base_fn.__name__} for NB range {tuning['range']}...")
+            return original_bench(*args, **kwargs)
+
+        def run(_self, *args, **kwargs):
+            kwargs["NB"] = range_key(int(kwargs["NB"]))
+            tuning["active"] = False
+            tuning["range"] = kwargs["NB"]
+            result = original_run(*args, **kwargs)
+            if tuning["active"]:
+                print(f"[Deepy][Triton] Autotuned {autotuner.base_fn.__name__} for NB range {tuning['range']} in {autotuner.bench_time:.2f}s: {autotuner.best_config}.")
+            return result
+
+        autotuner._bench = MethodType(bench, autotuner)
+        autotuner.run = MethodType(run, autotuner)
+
+    install(l2norm_fwd_kernel)
+    install(layer_norm_gated_fwd_kernel.fn)
+    _FLA_PREFILL_AUTOTUNE_CONFIGURED = True
+    print("[Deepy][Triton] FLA norm kernels use upstream autotuning shared across NB ranges 1, 2-15, 16-24, and 25+.")
 
 
 def configure_qwen35_safe_legacy_kernels(enabled: bool) -> None:

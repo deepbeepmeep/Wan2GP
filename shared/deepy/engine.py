@@ -9,6 +9,7 @@ import re
 import sys
 import threading
 import time
+import traceback
 import uuid
 import ffmpeg
 from datetime import datetime
@@ -430,6 +431,7 @@ class AssistantSessionState:
     queued_job_count: int = 0
     queued_cancel_count: int = 0
     cancelled_queued_message_ids: set[str] = field(default_factory=set)
+    queued_task_handles: dict[str, Any] = field(default_factory=dict)
     chat_epoch: int = 0
     release_vram_callback: Callable[[], None] | None = None
     force_loading_status_once: bool = False
@@ -467,6 +469,14 @@ class AssistantSessionState:
     prime_toolbox: Any | None = None
     artifact_workspace: Any | None = None
     remote_backends: dict[str, Any] = field(default_factory=dict)
+
+    def __repr__(self) -> str:
+        return (
+            f"AssistantSessionState(session_id={self.chat_session_id!r}, messages={len(self.messages)}, "
+            f"transcript={len(self.chat_transcript)}, media={len(self.media_registry)}, "
+            f"revision={self.chat_revision}, epoch={self.chat_epoch}, worker_active={self.worker_active}, "
+            f"queued_jobs={self.queued_job_count}, interrupt_requested={self.interrupt_requested})"
+        )
 
 
 @dataclass(slots=True)
@@ -520,6 +530,7 @@ def clear_assistant_session(session: AssistantSessionState) -> None:
     session.queued_job_count = 0
     session.queued_cancel_count = 0
     session.cancelled_queued_message_ids.clear()
+    session.queued_task_handles.clear()
     session.release_vram_callback = None
     session.force_loading_status_once = False
     session.current_turn = None
@@ -609,6 +620,7 @@ def begin_assistant_turn(session: AssistantSessionState, user_message_id: str, u
         "interruption_kind": "interrupted",
         "chat_transcript": copy.deepcopy(session.chat_transcript),
         "chat_transcript_counter": int(session.chat_transcript_counter or 0),
+        "semantic_boundaries": [],
     }
 
 
@@ -4859,7 +4871,7 @@ class DeepyZeroTools:
             },
             "bbox": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 1000}, "minItems": 4, "maxItems": 4, "description": "Optional normalized [x_min,y_min,x_max,y_max] crop, applied before resize.", "required": False},
         },
-        pause_runtime=False,
+        pause_runtime=True,
         pause_reason="vision",
     )
     def inspect_media(self, media_id: str | None = None, question: str = "", frame_no: int | None = None, media_ids: list[str] | None = None, media_inputs: list[dict[str, Any]] | None = None, bbox: list[int] | None = None) -> dict[str, Any]:
@@ -4987,7 +4999,7 @@ class DeepyZeroTools:
                 "required": False,
             },
         },
-        pause_runtime=False,
+        pause_runtime=True,
         pause_reason="vision",
     )
     def inspect_video(self, media_id: str, start_time_seconds: float, end_time_seconds: float, question: str, mid_res_sampling: bool = False, min_frames_between_samples: int | None = None, min_seconds_between_samples: float | None = None) -> dict[str, Any]:
@@ -5248,6 +5260,8 @@ class AssistantEngine:
         self._stream_tool_name = ""
         self._stream_tool_label = ""
         self._stream_tool_next_poll_tokens = _TOOL_REQUEST_STREAM_INTERVAL_TOKENS
+        self._compaction_summary_block_id = ""
+        self._compaction_summary_message_id = ""
         self._prefill_started_at: float | None = None
         self._live_prefill_tokens = 0
         self._segment_started_at: float | None = None
@@ -5885,9 +5899,22 @@ class AssistantEngine:
         self._skip_pause_snapshot = False
         self._remember_render_state()
         self._snapshot_synchronized_live_context()
+        self._capture_semantic_boundary()
         self._log(log_message)
         self._emit_stats(force=True)
         return "recorded"
+
+    def _capture_semantic_boundary(self) -> None:
+        checkpoint = self.session.current_turn
+        if self.runtime is None or not isinstance(checkpoint, dict):
+            return
+        boundary = self.runtime.snapshot_rewind_state()
+        if boundary is None:
+            return
+        boundary["messages_len"] = len(self.session.messages)
+        boundaries = [item for item in checkpoint.setdefault("semantic_boundaries", []) if int(item["messages_len"]) != len(self.session.messages)]
+        boundaries.append(boundary)
+        checkpoint["semantic_boundaries"] = boundaries[-(_ACTIVE_TURN_COMPACTION_KEEP_STEPS + 1):]
 
     def _send_chat(self, text: str) -> None:
         text = str(text or "").strip()
@@ -6116,6 +6143,11 @@ class AssistantEngine:
                 print(f"[AssistantRuntime] Ensuring Deepy text runtime is loaded vram_mode={self.vram_mode} context_window={int(self._get_context_window_tokens())}")
             model, _tokenizer = self.runtime_hooks.ensure_loaded()
             model._prompt_enhancer_min_model_len_hint = self._get_context_window_tokens()
+            engine = getattr(model, "_prompt_enhancer_vllm_engine", None)
+            llm = None if engine is None else getattr(engine, "_llm", None)
+            runner = None if llm is None else getattr(llm, "model_runner", None)
+            if runner is not None:
+                runner.invalidate_graphs_if_model_storage_changed()
             if self.runtime is None or self.runtime.model is not model:
                 self.runtime = Qwen35AssistantRuntime(model, debug_enabled=self.debug_enabled)
             if not self._action_budget_logged:
@@ -6182,15 +6214,21 @@ class AssistantEngine:
             else:
                 visual_labels.append(f"Visual {index + 1}: image {source_label}{bbox_label}.")
         caption_model, caption_processor = self._ensure_vision_loaded()
-        prompt_token_ids, prompt_embeds, prompt_position_ids, position_offset = deepy_vision.build_image_question_prompt(
-            caption_model,
-            caption_processor,
-            images,
-            question,
-            image_labels=visual_labels,
-            max_images=deepy_vision.VISION_MAX_IMAGES if max_image_edge is None else len(images),
-            max_pixels_per_image=None if max_image_edge is None else max_image_edge * max_image_edge,
-        )
+        try:
+            prompt_token_ids, prompt_embeds, prompt_position_ids, position_offset = deepy_vision.build_image_question_prompt(
+                caption_model,
+                caption_processor,
+                images,
+                question,
+                image_labels=visual_labels,
+                max_images=deepy_vision.VISION_MAX_IMAGES if max_image_edge is None else len(images),
+                max_pixels_per_image=None if max_image_edge is None else max_image_edge * max_image_edge,
+            )
+            prompt_embeds = prompt_embeds.detach().to("cpu")
+            prompt_position_ids = prompt_position_ids.detach().to("cpu")
+        finally:
+            self.runtime_hooks.unload_weights()
+            del caption_model, caption_processor
         if self.debug_enabled:
             prompt_embeds_shape = None if prompt_embeds is None else tuple(int(x) for x in prompt_embeds.shape)
             prompt_position_shape = None if prompt_position_ids is None else tuple(int(x) for x in prompt_position_ids.shape)
@@ -6205,6 +6243,7 @@ class AssistantEngine:
                 f"position_offset={int(position_offset or 0)}"
             )
         runtime = self._acquire_runtime()
+        vision_context_tokens = min(int(runtime.model._prompt_enhancer_min_model_len_hint), self._get_context_window_tokens())
         if llm_io_enabled():
             log_llm_io("OUT", "local-deepy", "visual-query", {
                 "question": str(question or "").strip(),
@@ -6228,6 +6267,8 @@ class AssistantEngine:
             temperature=None,
             top_p=None,
             top_k=None,
+            min_model_len=vision_context_tokens,
+            restore_snapshot=self.session.runtime_snapshot,
         )
         log_llm_io("IN", "local-deepy", "visual-query", {"text": answer})
         result = {
@@ -6314,7 +6355,12 @@ class AssistantEngine:
         finally:
             try:
                 if not keep_loaded:
-                    self.runtime_hooks.unload_runtime()
+                    if pause_reason == "vision" and self.runtime is not None:
+                        engine = getattr(self.runtime.model, "_prompt_enhancer_vllm_engine", None)
+                        if engine is not None:
+                            engine.release_runtime_allocations()
+                    else:
+                        self.runtime_hooks.unload_runtime()
             finally:
                 try:
                     if not keep_loaded:
@@ -6548,7 +6594,7 @@ class AssistantEngine:
         self._log(f"Compaction reused {len(source_tokens):,} cached tokens, appended {len(appended_tokens):,} instruction tokens, and reserved up to {resolved_max_new_tokens:,} summary tokens.")
         return rollback_snapshot, compaction_context_tokens, resolved_max_new_tokens
 
-    def _prepare_live_compaction_context(self, source_messages: list[dict[str, Any]], context_window_tokens: int, max_new_tokens: int, *, corrective_no_tools: bool = False, corrective_empty_summary: bool = False) -> tuple[dict[str, Any], int, int]:
+    def _prepare_live_compaction_context(self, source_messages: list[dict[str, Any]], context_window_tokens: int, max_new_tokens: int, *, boundary_snapshot: dict[str, Any] | None = None, corrective_no_tools: bool = False, corrective_empty_summary: bool = False) -> tuple[dict[str, Any], int, int]:
         if self.runtime is None:
             raise RuntimeError("Assistant runtime is not available for active-turn summarization.")
         rollback_snapshot = self.runtime.snapshot_context()
@@ -6565,7 +6611,11 @@ class AssistantEngine:
         if corrective_empty_summary:
             active_prompt = f"{active_prompt}\n\n{_COMPACTION_EMPTY_SUMMARY_RETRY}"
         try:
-            source_tokens = render_assistant_messages(self.runtime.tokenizer, self._render_messages_for_delta(source_messages), self.tool_box.get_tool_schemas(), add_generation_prompt=False, thinking_enabled=self.thinking_enabled)
+            source_tokens = (
+                [int(token_id) for token_id in boundary_snapshot["token_ids"]]
+                if boundary_snapshot is not None
+                else render_assistant_messages(self.runtime.tokenizer, self._render_messages_for_delta(source_messages), self.tool_box.get_tool_schemas(), add_generation_prompt=False, thinking_enabled=self.thinking_enabled)
+            )
             instruction_suffix = render_text_user_turn_suffix(self.runtime.tokenizer, active_prompt, thinking_enabled=False)
             compaction_tokens = [*source_tokens, *instruction_suffix]
             compaction_context_tokens = len(compaction_tokens)
@@ -6574,7 +6624,11 @@ class AssistantEngine:
             resolved_max_new_tokens = min(max(0, int(max_new_tokens)), available_tokens)
             if resolved_max_new_tokens <= 0:
                 raise _CompactionCapacityError(f"Deepy active-turn compaction context leaves no summary generation headroom ({compaction_context_tokens} input tokens, {block_margin_tokens} block margin, {int(context_window_tokens)} context tokens).", 1 - available_tokens)
-            if self._extend_context_from_preserved_base(compaction_tokens) is None:
+            if boundary_snapshot is not None:
+                self.runtime.restore_rewind_state(boundary_snapshot)
+                self._run_prefill_call(len(instruction_suffix), lambda: self.runtime.append_suffix(instruction_suffix), record_if=lambda result: result in ("prefilled", "chunk_prefilled"))
+                self._log(f"Active-turn compaction rewound to the cached {len(source_tokens):,}-token semantic boundary and appended {len(instruction_suffix):,} instruction tokens without replaying the source.")
+            elif self._extend_context_from_preserved_base(compaction_tokens) is None:
                 self._run_prefill_call(len(compaction_tokens), lambda: self.runtime.prime_context(compaction_tokens), record_if=True)
         except Exception:
             self.runtime.restore_snapshot(rollback_snapshot)
@@ -6590,19 +6644,46 @@ class AssistantEngine:
         self._log(f"Active-turn compaction rendered {compaction_context_tokens:,} checkpoint tokens and reserved up to {resolved_max_new_tokens:,} summary tokens.")
         return rollback_snapshot, compaction_context_tokens, resolved_max_new_tokens
 
+    def _stream_compaction_update(self, *, raw_text: str, token_count: int, stop_reason: str | None, is_final: bool) -> None:
+        self._segment_generated_tokens = max(int(self._segment_generated_tokens or 0), max(0, int(token_count or 0)))
+        summary_text = strip_tool_blocks(qwen35_text._clean_generated_text(str(raw_text or ""))).strip()
+        if not summary_text:
+            self._emit_stats()
+            return
+        message_id = self._ensure_active_turn()
+        block_id, event = assistant_chat.upsert_context_summary(self.session, message_id, self._compaction_summary_block_id, summary_text, streaming=not is_final)
+        self._compaction_summary_message_id = message_id
+        self._compaction_summary_block_id = block_id
+        self._emit_chat_event(event)
+        self._emit_stats()
+
+    def _discard_compaction_stream(self) -> None:
+        if self._compaction_summary_message_id and self._compaction_summary_block_id:
+            self._emit_chat_event(assistant_chat.remove_message_block(self.session, self._compaction_summary_message_id, self._compaction_summary_block_id))
+        self._compaction_summary_message_id = ""
+        self._compaction_summary_block_id = ""
+
     def _generate_compaction_segment(self, max_new_tokens: int):
         tool_call_token_id = int(self.runtime.tokenizer.convert_tokens_to_ids("<tool_call>"))
-        return self.runtime.generate_segment(
-            max_new_tokens=max_new_tokens,
-            seed=0,
-            do_sample=False,
-            temperature=None,
-            top_p=None,
-            top_k=None,
-            thinking_enabled=False,
-            suppress_token_ids=(tool_call_token_id,),
-            stop_requested=lambda: bool(self.session.interrupt_requested),
-        )
+        self._segment_started_at = time.perf_counter()
+        self._segment_generated_tokens = 0
+        result = None
+        try:
+            result = self.runtime.generate_segment(
+                max_new_tokens=max_new_tokens,
+                seed=0,
+                do_sample=False,
+                temperature=None,
+                top_p=None,
+                top_k=None,
+                thinking_enabled=False,
+                suppress_token_ids=(tool_call_token_id,),
+                stop_requested=lambda: bool(self.session.interrupt_requested),
+                stream_callback=self._stream_compaction_update,
+            )
+            return result
+        finally:
+            self._finish_stream_pass(None if result is None else result.token_count)
 
     @staticmethod
     def _turn_step_ranges(messages: list[dict[str, Any]], user_index: int) -> list[tuple[int, int]]:
@@ -6765,6 +6846,7 @@ class AssistantEngine:
         self.session.rendered_context_window_tokens = int(original_render_state["rendered_context_window_tokens"])
         self.session.pending_replay_reason = str(original_render_state["pending_replay_reason"])
         self._skip_pause_snapshot = False
+        self._discard_compaction_stream()
 
     def _commit_rewritten_history(self, prior_messages: list[dict[str, Any]], current_messages: list[dict[str, Any]], generation_reserve_tokens: int) -> None:
         if self.runtime is None:
@@ -6806,6 +6888,8 @@ class AssistantEngine:
         self._skip_pause_snapshot = False
         self._remember_render_state()
         self._snapshot_synchronized_live_context()
+        checkpoint["semantic_boundaries"] = []
+        self._capture_semantic_boundary()
 
     def _mark_history_summarized_trace(self, summary: str) -> None:
         checkpoint = self.session.current_turn
@@ -6819,7 +6903,10 @@ class AssistantEngine:
             print("[Deepy] Compaction summary begin")
             print(summary_text)
             print("[Deepy] Compaction summary end")
-        summary_event = assistant_chat.add_context_summary(self.session, self._ensure_active_turn(), summary_text)[1]
+        summary_message_id = self._compaction_summary_message_id or self._ensure_active_turn()
+        _summary_id, summary_event = assistant_chat.upsert_context_summary(self.session, summary_message_id, self._compaction_summary_block_id, summary_text, streaming=False)
+        self._compaction_summary_block_id = ""
+        self._compaction_summary_message_id = ""
         self._emit_chat_event(summary_event)
         self._emit_chat_event(assistant_chat.build_sync_event(self.session, status=self._current_status_payload, stats=self._chat_stats_payload()))
 
@@ -6882,7 +6969,6 @@ class AssistantEngine:
                     rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_memory_compaction_context(working_prior_messages, checkpoint, context_window_tokens, requested_summary_tokens, corrective_no_tools=corrective_no_tools, corrective_empty_summary=corrective_empty_summary)
                 else:
                     rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_live_compaction_context(working_prior_messages, context_window_tokens, requested_summary_tokens, corrective_no_tools=corrective_no_tools, corrective_empty_summary=corrective_empty_summary)
-                generation_started_at = time.perf_counter()
                 result = self._generate_compaction_segment(max_new_tokens)
                 log_llm_io("IN", "local-deepy", "history-compaction", {
                     "text": result.raw_text,
@@ -6890,7 +6976,6 @@ class AssistantEngine:
                     "generated_tokens": result.token_count,
                     "stop_token": token_id_descriptor(self.runtime.tokenizer, result.stop_token_id),
                 })
-                self._record_generation_metrics(result.token_count, max(0.0, time.perf_counter() - generation_started_at))
                 if self.debug_enabled:
                     raw_preview = str(result.raw_text or "").replace("\r", "\\r").replace("\n", "\\n")
                     self._log(f"Compaction generation stop_reason={result.stop_reason} tokens={result.token_count} max_new_tokens={max_new_tokens} raw_preview={raw_preview[:300]!r}")
@@ -7005,6 +7090,7 @@ class AssistantEngine:
             "pending_replay_reason": self.session.pending_replay_reason,
         }
         checkpoint["active_summary_attempted_messages_len"] = len(self.session.messages)
+        boundary_snapshot = next((item for item in reversed(checkpoint.get("semantic_boundaries", [])) if int(item["messages_len"]) == preserve_start), None)
         self._set_status("Compacting context...", kind="loading")
         working_summary_source = copy.deepcopy(summary_source_messages)
         turn_levels: dict[int, int] = {}
@@ -7020,8 +7106,8 @@ class AssistantEngine:
                 requested_summary_tokens = self._compaction_output_budget([], empty_current_messages, before_tokens, context_window_tokens, generation_reserve_tokens)
                 if requested_summary_tokens <= 0:
                     raise _CompactionCapacityError("Active-turn compaction cannot produce a summary while preserving a net reduction and the next-action reserve.")
-                rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_live_compaction_context(working_summary_source, context_window_tokens, requested_summary_tokens, corrective_no_tools=corrective_no_tools, corrective_empty_summary=corrective_empty_summary)
-                generation_started_at = time.perf_counter()
+                use_boundary_snapshot = boundary_snapshot if working_summary_source == summary_source_messages else None
+                rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_live_compaction_context(working_summary_source, context_window_tokens, requested_summary_tokens, boundary_snapshot=use_boundary_snapshot, corrective_no_tools=corrective_no_tools, corrective_empty_summary=corrective_empty_summary)
                 result = self._generate_compaction_segment(max_new_tokens)
                 log_llm_io("IN", "local-deepy", "active-turn-compaction", {
                     "text": result.raw_text,
@@ -7029,7 +7115,6 @@ class AssistantEngine:
                     "generated_tokens": result.token_count,
                     "stop_token": token_id_descriptor(self.runtime.tokenizer, result.stop_token_id),
                 })
-                self._record_generation_metrics(result.token_count, max(0.0, time.perf_counter() - generation_started_at))
                 if self.debug_enabled:
                     raw_preview = str(result.raw_text or "").replace("\r", "\\r").replace("\n", "\\n")
                     self._log(f"Active-turn compaction generation stop_reason={result.stop_reason} tokens={result.token_count} max_new_tokens={max_new_tokens} raw_preview={raw_preview[:300]!r}")
@@ -7926,7 +8011,9 @@ class AssistantEngine:
             if not compacted and not trimmed:
                 self._set_status("Thinking...", kind="thinking")
                 return False
-            mode = self._extend_context_from_preserved_base(prompt_tokens)
+            mode = self._append_target_suffix_from_live_runtime(prompt_tokens) if compacted else None
+            if mode is None:
+                mode = self._extend_context_from_preserved_base(prompt_tokens)
             if mode is None:
                 mode = self._run_prefill_call(len(prompt_tokens), lambda: self.runtime.prime_context(prompt_tokens), record_if=True)
             continuation_mode = self._run_prefill_call(len(completion_token_ids), lambda: self.runtime.append_completion_suffix(completion_token_ids), record_if=lambda result: result in ("prefilled", "chunk_prefilled"))
@@ -8315,7 +8402,8 @@ class AssistantEngine:
                 final_user_text = "" if len(self._stream_answer_text.strip()) > 0 else (answer_text or qwen35_text._clean_generated_text(raw_text))
                 turn_completed = True
                 break
-        except BaseException:
+        except BaseException as exc:
+            self._log(f"Unhandled {type(exc).__name__} escaped Deepy turn: {exc!r}\n{''.join(traceback.format_exception(type(exc), exc, exc.__traceback__)).rstrip()}")
             checkpoint = self.session.current_turn
             if isinstance(checkpoint, dict) and not self.session.interrupt_requested:
                 checkpoint["interruption_notice_override"] = "Deepy's previous request stopped after an internal runtime failure. Completed actions were preserved at the last safe checkpoint."

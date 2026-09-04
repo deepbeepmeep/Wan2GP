@@ -66,21 +66,9 @@ WanGP is a one-stop super app for the best open source generative models across 
 ## 4th of September 2026: WanGP v12.70 — Power Up, Polish, Pause
 - **H3 VDN**: at least 20% Faster and even more on larger / longer videos, requires a bit more VRAM and Triton must be installed
 
-- **DLSS 5 Neural Rendering — More Than an Upscale**: give finished images and
-videos an AI polish that can enrich lighting and material appearance, improve
-fine features such as skin, hair, fabric, and foliage, and keep enhancements
-stable over time. Use x1 for native-resolution refinement or x1.5–x3 to refine
-and enlarge, with adjustable intensity. WanGP estimates depth and motion for
-recorded media, so results remain content-dependent. See the
-**[DLSS 5 overview](https://research.nvidia.com/labs/adlr/DLSS5/)** and
-**[installation guide](docs/DLSS5.md)**.
+- **DLSS 5 Neural Rendering — More Than an Upscale**: give finished images and videos an AI polish that can enrich lighting and material appearance, improve fine features such as skin, hair, fabric, and foliage, and keep enhancements stable over time. Use x1 for native-resolution refinement or x1.5–x3 to refine and enlarge, with adjustable intensity. WanGP estimates depth and motion for recorded media, so results remain content-dependent. See the **[DLSS 5 overview](https://research.nvidia.com/labs/adlr/DLSS5/)** and **[installation guide](docs/DLSS5.md)**.
 
-- **Fast Temporal Upsampling up to x6**: DLSS Frame Generation uses a native
-RTX path designed for real-time multi-frame generation, so it should generally
-run faster than RIFE on supported hardware while turning low-FPS footage into
-smoother video. It supports x2–x4 on compatible RTX 40/50 GPUs and x5/x6 where
-supported on RTX 50. **RIFE v4.26 now adds x3 temporal upsampling** alongside
-x2/x4, with no extra native DLSS runtime.
+- **Fast Temporal Upsampling up to x6**: DLSS Frame Generation uses a native RTX path designed for real-time multi-frame generation, so it should generally run faster than RIFE on supported hardware while turning low-FPS footage into smoother video. It supports x2–x4 on compatible RTX 40/50 GPUs and x5/x6 where supported on RTX 50. **RIFE v4.26 now adds x3 temporal upsampling** alongside x2/x4, with no extra native DLSS runtime.
 
 - **H3 Voice Audio**: a new TTS preset reuses MiniMax H3 Ref2VA Pruned for voice cloning and general audio generation. It accepts one or two audio references, under the hood it denoises a hidden 32x32 video for speed, skips video decoding, and saves only 32 kHz stereo audio.
 

@@ -97,6 +97,7 @@ POSTPROCESSING_CATEGORIES = (POSTPROCESSING_CATEGORY_UPSAMPLER, POSTPROCESSING_C
 PARAMETER_PREFIX = "spatial_upsampler_"
 PARAMETER_UI_POSTPROCESSING = "postprocessing"
 PARAMETER_UI_LATE_POSTPROCESSING = "late_postprocessing"
+PARAMETER_UI_MEDIA_FLOW = "media_flow"
 UPSAMPLER_PROFILE_VIDEO = "video"
 UPSAMPLER_PROFILE_IMAGE = "image"
 UPSAMPLER_PROFILE_AUDIO = "audio"
@@ -109,6 +110,7 @@ _SHARED_PERSISTENCE_BINDING_KEY = "__shared_persistence__"
 
 spatial_upsampler_handlers = [
     "postprocessing.lanczos.wgp_bridge.LanczosUpsampler",
+    "postprocessing.dlss5.spatial_upsampler.DLSS5SpatialUpsampler",
     "postprocessing.flashvsr.wgp_bridge.FlashVSRBridge",
     "postprocessing.seedvr2.wgp_bridge.SeedVR2Bridge",
     "postprocessing.pid.wgp_bridge.PiDBridge",
@@ -654,13 +656,13 @@ def ui_parameter_definitions(ui_context: str) -> list[dict[str, Any]]:
     return list(definitions.values())
 
 
-def _parameter_component_type(parameter: dict[str, Any]) -> str:
+def parameter_component_type(parameter: dict[str, Any]) -> str:
     component_type = str(parameter.get("component", "") or "").strip().lower()
     return component_type or {"boolean": "checkbox", "integer": "number", "number": "number", "array": "images"}.get(str(parameter.get("type", "string")), "textbox")
 
 
-def _parameter_default(parameter: dict[str, Any]):
-    value = parameter.get("default", [] if _parameter_component_type(parameter) == "images" else None)
+def parameter_default(parameter: dict[str, Any]):
+    value = parameter.get("default", [] if parameter_component_type(parameter) == "images" else None)
     return list(value) if isinstance(value, list) else value
 
 
@@ -668,7 +670,7 @@ def parameter_ui_state(method, ui_context: str, parameter_values=None) -> dict[s
     definitions = ui_parameter_definitions(ui_context)
     active = {str(parameter["name"]) for parameter in method_parameters(method, ui_context=ui_context)}
     current = parameter_values if isinstance(parameter_values, dict) else {}
-    values = {str(parameter["name"]): current.get(str(parameter["name"]), _parameter_default(parameter)) if str(parameter["name"]) in active else _parameter_default(parameter) for parameter in definitions}
+    values = {str(parameter["name"]): current.get(str(parameter["name"]), parameter_default(parameter)) if str(parameter["name"]) in active else parameter_default(parameter) for parameter in definitions}
     return {"definitions": definitions, "active": active, "values": values}
 
 
@@ -732,7 +734,7 @@ def create_generation_spatial_ui(gr, spatial_upsampling, *, image_outputs: bool 
     parameter_components, parameter_rows, parameter_extras = {}, {}, []
     for parameter in parameter_defs:
         name = str(parameter["name"])
-        component_type = _parameter_component_type(parameter)
+        component_type = parameter_component_type(parameter)
         visible = name in parameter_state["active"]
         initial = parameter_state["values"][name]
         label = str(parameter.get("label", name.removeprefix(PARAMETER_PREFIX).replace("_", " ").title()))
@@ -784,7 +786,7 @@ def create_generation_spatial_ui(gr, spatial_upsampling, *, image_outputs: bool 
         if parameter_components:
             gr.on(triggers=[component.change for component in parameter_components.values()], fn=collect_parameters, inputs=list(parameter_components.values()), outputs=parameters_component, show_progress="hidden")
     return {"value": value_component, "method": method_component, "ratio": ratio_component, "parameters": parameters_component, "help": help_component, "help_target_id": help_target_id or method_component.elem_id,
-            "parameter_components": parameter_components, "parameter_rows": parameter_rows, "extra_components": [help_component, *parameter_extras],
+            "parameter_components": parameter_components, "parameter_rows": parameter_rows, "extra_components": [help_component, *parameter_extras, parameters_component],
             "media_outputs": [help_component, *parameter_rows.values(), *parameter_components.values(), parameters_component]}
 
 

@@ -40,6 +40,12 @@ pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https
 pip install -r requirements.txt
 ```
 
+## Optional DLSS 5 upsamplers
+
+WanGP can expose NVIDIA DLSS 5 Neural Rendering as a native-resolution refiner or spatial upsampler, and DLSS Frame Generation as a temporal upsampler. These optional Windows components are not installed by the normal WanGP installer and include closed-source third-party binaries with separate licenses and security implications.
+
+Read the full **[DLSS 5 runtime installation, directory layout, copyright, and safety instructions](DLSS5.md)** before downloading or running them. The WanGP worker release ZIP is extracted into the root `dlss5` folder; NVIDIA, ReShade, and RenoDX dependencies must be obtained separately from their authoritative sources.
+
 
 ## Triton Installation
 The Triton library is required for Pytorch compilation and Sage Attention and by various kernels to accelerate tensors processing.

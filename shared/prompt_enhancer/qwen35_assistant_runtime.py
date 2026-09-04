@@ -923,7 +923,7 @@ class Qwen35AssistantRuntime:
     def snapshot_sampling_state(self) -> tuple[bool, torch.Tensor | None]:
         runner = self._get_live_llm().model_runner
         generator = getattr(runner, "_sampling_generator", None)
-        return generator is not None, None if generator is None else generator.get_state().clone()
+        return generator is not None, None if generator is None else generator.get_state().detach().to("cpu").clone()
 
     def restore_sampling_state(self, snapshot: tuple[bool, torch.Tensor | None]) -> None:
         enabled, state = snapshot
@@ -934,6 +934,28 @@ class Qwen35AssistantRuntime:
         generator = torch.Generator(device=runner._get_runtime_device())
         generator.set_state(state)
         runner._sampling_generator = generator
+
+    def snapshot_action_replay_state(self) -> dict[str, Any]:
+        sampling_enabled, sampling_state = self.snapshot_sampling_state()
+        presence = self._assistant_presence_state
+        return {
+            "sampling_enabled": sampling_enabled,
+            "sampling_state": [] if sampling_state is None else sampling_state.tolist(),
+            "presence": None if presence is None else {"penalty": presence.penalty, "seen_token_ids": sorted(int(token_id) for token_id in presence._seen_token_ids)},
+        }
+
+    def restore_action_replay_state(self, state: dict[str, Any]) -> None:
+        sampling_enabled = bool(state["sampling_enabled"])
+        sampling_values = list(state["sampling_state"])
+        sampling_state = torch.tensor(sampling_values, dtype=torch.uint8) if sampling_enabled else None
+        self.restore_sampling_state((sampling_enabled, sampling_state))
+        presence = state["presence"]
+        if presence is None:
+            self._assistant_presence_state = None
+            return
+        self._assistant_presence_state = qwen35_text._PresencePenaltyState(presence["penalty"])
+        for token_id in presence["seen_token_ids"]:
+            self._assistant_presence_state.update(int(token_id))
 
     def _ensure_clean_runtime(self, max_context_tokens: int, max_new_tokens: int, seed: int | None = None):
         engine = self._get_engine(max_context_tokens=max_context_tokens, max_new_tokens=max_new_tokens)
@@ -1191,7 +1213,7 @@ class Qwen35AssistantRuntime:
                 self._log("Embedded decode finished without an active assistant snapshot; releasing multimodal runtime allocations.")
                 engine.release_runtime_allocations()
 
-    def start_generation_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, continue_existing_completion: bool = False, suppress_token_ids: tuple[int, ...] = (), apply_repetition_penalty: bool = True) -> tuple[Sequence, int]:
+    def start_generation_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, continue_existing_completion: bool = False, suppress_token_ids: tuple[int, ...] = (), apply_repetition_penalty: bool = True, resume_segment: bool = False) -> tuple[Sequence, int]:
         seq = self._get_active_sequence()
         if seq is None:
             raise RuntimeError("Assistant context is not initialized.")
@@ -1232,7 +1254,11 @@ class Qwen35AssistantRuntime:
         seq.logits_processor = sampling_params.logits_processor
         seq.logits_processor_update_state = sampling_params.logits_processor_update_state
         seq.logits_bias = sampling_params.logits_bias
-        llm.model_runner.call("set_sampling_seed", sampling_params.seed)
+        if resume_segment and callable(seq.logits_processor_update_state):
+            for token_id in seq.completion_token_ids:
+                seq.logits_processor_update_state(token_id)
+        if not resume_segment:
+            llm.model_runner.call("set_sampling_seed", sampling_params.seed)
         return seq, int(sampling_params.max_tokens)
 
     def action_budget(self, phase: str) -> int:
@@ -1284,21 +1310,22 @@ class Qwen35AssistantRuntime:
         seq.logits_processor = logits_processor
         seq.logits_processor_update_state = update_state
 
-    def start_generation_action(self, phase: str, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, continuing_response: bool = False, apply_repetition_penalty: bool = True) -> tuple[Sequence, AssistantActionState]:
+    def start_generation_action(self, phase: str, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, continuing_response: bool = False, apply_repetition_penalty: bool = True, remaining_action_tokens: int | None = None, resume_action: bool = False) -> tuple[Sequence, AssistantActionState]:
         phase = str(phase or "").strip().lower()
         phase_limit = self.action_budget(phase)
+        generation_limit = phase_limit if remaining_action_tokens is None else min(phase_limit, max(0, int(remaining_action_tokens)))
         seq = self._get_active_sequence()
         if seq is None:
             raise RuntimeError("Assistant context is not initialized.")
         llm = self._get_live_llm()
         available_tokens = max(0, int(llm.config.max_model_len) - int(seq.num_tokens))
-        if available_tokens < phase_limit:
-            raise RuntimeError(f"Assistant {phase} action requires {phase_limit} reserved tokens but only {available_tokens} remain.")
+        if available_tokens < generation_limit:
+            raise RuntimeError(f"Assistant {phase} action requires {generation_limit} reserved tokens but only {available_tokens} remain.")
         temp, normalized_top_p, normalized_top_k = qwen35_text._normalize_vllm_sampling(do_sample=bool(do_sample), temperature=temperature, top_p=top_p, top_k=top_k)
         existing_completion_tokens = int(seq.num_completion_tokens) if continuing_response else 0
         if not continuing_response:
             seq.num_prompt_tokens = seq.num_tokens
-        seq.max_tokens = existing_completion_tokens + phase_limit + 1
+        seq.max_tokens = existing_completion_tokens + generation_limit + 1
         seq.temperature = temp
         seq.ignore_eos = True
         seq.top_k = normalized_top_k
@@ -1307,12 +1334,13 @@ class Qwen35AssistantRuntime:
         seq.cfg_scale = 1.0
         seq.repetition_penalty = qwen35_text._resolve_prompt_repetition_penalty(self.model) if apply_repetition_penalty else 1.0
         seq.predictive_penalty = qwen35_text._resolve_predictive_penalty_enabled(self.model)
-        seq.repetition_penalty_start = seq.num_tokens
+        if not resume_action:
+            seq.repetition_penalty_start = seq.num_tokens
         seq.logits_bias = qwen35_text._build_suppressed_token_logits_bias(self.model, thinking_enabled=thinking_enabled)
-        self._install_action_processors(seq, phase, phase_limit, continuing_response=continuing_response)
+        self._install_action_processors(seq, phase, generation_limit, continuing_response=continuing_response)
         if not continuing_response:
             llm.model_runner.call("set_sampling_seed", None if seed is None else int(seed))
-        return seq, AssistantActionState(phase=phase, limit=phase_limit)
+        return seq, AssistantActionState(phase=phase, limit=generation_limit)
 
     def _append_action_suffix(self, text: str) -> None:
         token_ids = self.tokenizer.encode(str(text or ""), add_special_tokens=False)
@@ -1324,8 +1352,8 @@ class Qwen35AssistantRuntime:
     def _close_exhausted_thought(self, budget_tokens: int) -> None:
         self._append_action_suffix(f"\n{assistant_thought_budget_update(budget_tokens)}\n</think>")
 
-    def generate_action(self, phase: str, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, stream_callback=None, stream_interval_seconds: float = 1.0, continuing_response: bool = False, apply_repetition_penalty: bool = True) -> AssistantDecodeResult:
-        seq, action = self.start_generation_action(phase=phase, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled, continuing_response=continuing_response, apply_repetition_penalty=apply_repetition_penalty)
+    def generate_action(self, phase: str, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, stream_callback=None, stream_interval_seconds: float = 1.0, continuing_response: bool = False, apply_repetition_penalty: bool = True, remaining_action_tokens: int | None = None, resume_action: bool = False, pause_requested=None) -> AssistantDecodeResult:
+        seq, action = self.start_generation_action(phase=phase, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled, continuing_response=continuing_response, apply_repetition_penalty=apply_repetition_penalty, remaining_action_tokens=remaining_action_tokens, resume_action=resume_action)
         stop_token_ids = {int(token_id) for token_id in getattr(self.model, "_prompt_enhancer_stop_token_ids", []) or [] if int(token_id) >= 0}
         speculative = bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False))
         boundary_markers = ["</think>"] if action.phase == "thought" else ["<tool_call>", *(["<think>"] if thinking_enabled else [])] if action.phase == "statement" else ["</tool_call>"]
@@ -1369,6 +1397,8 @@ class Qwen35AssistantRuntime:
         while action.remaining_tokens > 0:
             if callable(stop_requested) and stop_requested():
                 return finish("interrupted")
+            if callable(pause_requested) and pause_requested():
+                return finish("paused")
             llm = self._get_live_llm()
             if len(seq.token_ids) >= int(llm.config.max_model_len):
                 return finish("context_limit")
@@ -1427,7 +1457,7 @@ class Qwen35AssistantRuntime:
                 return finish(stop_reason, last_token_id, raw_text)
 
         if action.phase == "thought":
-            self._close_exhausted_thought(action.limit)
+            self._close_exhausted_thought(self.action_budget(action.phase))
             return finish("thought_budget_exhausted")
         if action.phase == "tool":
             raw_text = self.tokenizer.decode(seq.completion_token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
@@ -1436,8 +1466,8 @@ class Qwen35AssistantRuntime:
             return finish("tool_budget_exhausted", current_text=raw_text)
         return finish(f"{action.phase}_budget_exhausted")
 
-    def generate_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, stream_callback=None, stream_interval_seconds: float = 1.0, continue_existing_completion: bool = False, suppress_token_ids: tuple[int, ...] = (), apply_repetition_penalty: bool = True) -> AssistantDecodeResult:
-        seq, requested_segment_tokens = self.start_generation_segment(max_new_tokens=max_new_tokens, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled, continue_existing_completion=continue_existing_completion, suppress_token_ids=suppress_token_ids, apply_repetition_penalty=apply_repetition_penalty)
+    def generate_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, stream_callback=None, stream_interval_seconds: float = 1.0, continue_existing_completion: bool = False, suppress_token_ids: tuple[int, ...] = (), apply_repetition_penalty: bool = True, resume_segment: bool = False, pause_requested=None) -> AssistantDecodeResult:
+        seq, requested_segment_tokens = self.start_generation_segment(max_new_tokens=max_new_tokens, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled, continue_existing_completion=continue_existing_completion, suppress_token_ids=suppress_token_ids, apply_repetition_penalty=apply_repetition_penalty, resume_segment=resume_segment)
         existing_completion_tokens = int(seq.num_completion_tokens)
         requested_segment_tokens = max(0, int(requested_segment_tokens))
         seq.max_tokens = max(int(seq.max_tokens or 0), existing_completion_tokens + requested_segment_tokens + 1)
@@ -1477,6 +1507,8 @@ class Qwen35AssistantRuntime:
         while generated_tokens < requested_segment_tokens:
             if callable(stop_requested) and stop_requested():
                 return finish("interrupted")
+            if callable(pause_requested) and pause_requested():
+                return finish("paused")
             llm = self._get_live_llm()
             if len(seq.token_ids) >= int(llm.config.max_model_len):
                 return finish("context_limit")
@@ -1580,6 +1612,13 @@ class Qwen35AssistantRuntime:
                 for module in linear_modules
             ],
             "speculative_state": runner.snapshot_speculative_state(seq.seq_id) if bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False)) else None,
+            "generation_state": {
+                "sampling": self.snapshot_sampling_state(),
+                "presence": None if self._assistant_presence_state is None else {
+                    "penalty": self._assistant_presence_state.penalty,
+                    "seen_token_ids": sorted(int(token_id) for token_id in self._assistant_presence_state._seen_token_ids),
+                },
+            },
         }
         self._log(
             f"Snapshotted assistant context with {len(seq.token_ids)} tokens. "
@@ -1750,6 +1789,15 @@ class Qwen35AssistantRuntime:
                 raise RuntimeError("Assistant snapshot does not contain predictive decoder state.")
             runner.restore_speculative_state(restored_seq.seq_id, speculative_state)
             self._log_speculative_alignment(restored_seq, "after snapshot restore")
+        generation_state = snapshot["generation_state"]
+        self.restore_sampling_state(generation_state["sampling"])
+        saved_presence = generation_state["presence"]
+        if saved_presence is None:
+            self._assistant_presence_state = None
+        else:
+            self._assistant_presence_state = qwen35_text._PresencePenaltyState(saved_presence["penalty"])
+            for token_id in saved_presence["seen_token_ids"]:
+                self._assistant_presence_state.update(token_id)
         llm.scheduler.block_manager.normalize_tail_after_prefill(restored_seq)
         self._log(
             f"Restored assistant context with {len(restored_seq.token_ids)} tokens. "

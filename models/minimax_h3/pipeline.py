@@ -16,7 +16,8 @@ from mmgp import offload
 from shared.utils.loras_mutipliers import update_loras_slists
 from shared.utils.text_encoder_cache import TextEncoderCache
 from shared.utils.frame_scheduler import floor_frame_count, normalize_frame_count, normalize_overlap
-from .constants import H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, h3_grouped_masking_enabled
+from .constants import (H3_AUDIO_REFINEMENT_SETTING, H3_AUDIO_REFINEMENT_STEPS, H3_PHASE_2_NOISE_LEVEL_START_DEFAULT,
+                        h3_grouped_masking_enabled)
 from .first_block_cache import MiniMaxH3FirstBlockCache
 from .interrupt import GenerationInterrupted
 from .pdd import pdd_sampling_plans, pdd_sampling_plans_for_sigmas
@@ -577,7 +578,8 @@ class MiniMaxH3Pipeline:
                  callback=None, VAE_tile_size=None, audio_prompt_type="", video_prompt_type="", fps=24,
                  sample_solver="euler", attention_sparsity=1.0,
                  guide_phases=1, switch_threshold=H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, loras_slists=None, loras_selected=None, set_progress_status=None,
-                 starting_sigma=None, preserve_input_mask_values=False, refinement_mode=False, custom_settings=None, **kwargs):
+                 starting_sigma=None, preserve_input_mask_values=False, refinement_mode=False, audio_refinement_mode=False, locked_video=None,
+                 custom_settings=None, **kwargs):
         self._use_shared_components()
         grouped_masked_denoising = h3_grouped_masking_enabled(custom_settings)
         fps = float(fps)
@@ -610,8 +612,9 @@ class MiniMaxH3Pipeline:
         continuation_count = min(prefix_frames_count, continuation.shape[1]) if continuation is not None and image_start is None else 0
         if continuation_count and continuation_count < prefix_frames_count:
             continuation_count = floor_frame_count(continuation_count, 1, 17, 1)
-        frozen_control_video = (_build_frozen_control_video(input_frames, continuation, frame_num, continuation_count)
-                                if audio_from_control_video else None)
+        frozen_video_source = locked_video if audio_refinement_mode else input_frames
+        frozen_control_video = (_build_frozen_control_video(frozen_video_source, continuation, frame_num, continuation_count)
+                                if audio_from_control_video or audio_refinement_mode else None)
         if frozen_control_video is not None:
             frame_num = frozen_control_video.shape[1]
         history_frames = continuation[:, -continuation_count:-1] if continuation_count > 1 else None
@@ -772,7 +775,7 @@ class MiniMaxH3Pipeline:
         source_latents = editable_mask = None
         if video_to_video:
             if set_progress_status is not None:
-                set_progress_status("Encoding H3 control video")
+                set_progress_status("Audio Refinement Extra Phase" if audio_refinement_mode else "Encoding H3 control video")
             self._check_abort()
             source_video = _resize_video(_as_video(input_frames)[:, history_count:history_count + aligned_target_frames], height, width)
             source_latents = self.vae.encode(source_video.unsqueeze(0).to(device=self.device, dtype=self.vae._model_dtype)).cpu()
@@ -785,7 +788,7 @@ class MiniMaxH3Pipeline:
             source_video = source_mask = None
 
         if set_progress_status is not None:
-            set_progress_status("Encoding H3 prompt and references")
+            set_progress_status("Audio Refinement Extra Phase" if audio_refinement_mode else "Encoding H3 prompt and references")
         context, text_tags = self._encode_prompt(input_prompt, presentation)
         self._check_abort()
         self._use_transformer()
@@ -1063,10 +1066,11 @@ class MiniMaxH3Pipeline:
                 if audio_on_video_schedule:
                     audio[..., target_audio_condition_latents:].div_(audio_scale)
 
-        phase_1_extra = "Phase 1/2 Low Resolution" if two_phase else ""
+        phase_1_extra = "Audio Refinement Extra Phase" if audio_refinement_mode else ("Phase 1/2 Low Resolution" if two_phase else "")
         if set_progress_status is not None:
             set_progress_status(phase_1_extra or "Denoising")
-        run_denoising(sigmas_video, sigmas_audio, "H3 phase 1 denoising" if two_phase else "H3 denoising", phase_1_extra, 1 if two_phase else -1,
+        denoising_description = "Audio Refinement Extra Phase" if audio_refinement_mode else ("H3 phase 1 denoising" if two_phase else "H3 denoising")
+        run_denoising(sigmas_video, sigmas_audio, denoising_description, phase_1_extra, 1 if two_phase else -1,
                       effective_sigmas_video=refinement_sigmas_video)
 
         decoded_video = None
@@ -1297,7 +1301,7 @@ class MiniMaxH3Pipeline:
             phase_2_presentation = phase_2_visual_latents = phase_2_reference_presentation = phase_2_reference_latents = phase_2_refs = None
 
         if set_progress_status is not None:
-            set_progress_status("Decoding H3 stereo audio" if decoded_video is not None or frozen_target_video is not None else "VAE Decoding of Video and Audio")
+            set_progress_status("Audio Refinement Extra Phase" if audio_refinement_mode else ("Decoding H3 stereo audio" if decoded_video is not None or frozen_target_video is not None else "VAE Decoding of Video and Audio"))
         self._check_abort()
         self._use_shared_components()
         context = payload = presentation = visual_latents = audio_latents = refs = keyframes = audio_keyframes = source_latents = source_noise = source_buffer = editable_mask = None
@@ -1332,6 +1336,33 @@ class MiniMaxH3Pipeline:
 
         total_samples = round(frame_num / fps * AUDIO_SAMPLE_RATE)
         decoded_audio = decoded_audio[:, :total_samples].transpose(0, 1).float().cpu().numpy()
+        audio_refinement = (custom_settings or {}).get(H3_AUDIO_REFINEMENT_SETTING, "none")
+        if pdd or not self.reference_mode and any(flag in (audio_prompt_type or "") for flag in "AK"):
+            audio_refinement = "none"
+        if not audio_refinement_mode and audio_refinement != "none":
+            refinement_steps = H3_AUDIO_REFINEMENT_STEPS[audio_refinement]
+            refinement_height = max(32, round(decoded_video.shape[-2] / 4 / 32) * 32)
+            refinement_width = max(32, round(decoded_video.shape[-1] / 4 / 32) * 32)
+            if set_progress_status is not None:
+                set_progress_status(f"Audio Refinement Extra Phase ({refinement_steps} steps at {refinement_width}x{refinement_height})")
+            refinement_video = _resize_video(decoded_video, refinement_height, refinement_width)
+            active_loras = list(getattr(self.transformer, "_loras_active_adapters", ()))
+            lora_scaling = dict(getattr(self.transformer, "_loras_scaling", {}) or {})
+            lora_step = getattr(self.transformer, "_lora_step_no", 0)
+            try:
+                offload.activate_loras(self.transformer, [])
+                refined = self.generate(input_prompt=input_prompt, frame_num=frame_num, height=refinement_height,
+                                        width=refinement_width, shift=shift, sampling_steps=refinement_steps, seed=seed,
+                                        callback=callback, VAE_tile_size=VAE_tile_size, audio_prompt_type="", video_prompt_type="",
+                                        fps=fps, sample_solver="euler", attention_sparsity=attention_sparsity,
+                                        guide_phases=1, loras_slists=None, set_progress_status=set_progress_status,
+                                        audio_refinement_mode=True, locked_video=refinement_video, custom_settings=None)
+            finally:
+                offload.activate_loras(self.transformer, active_loras, [lora_scaling[name] for name in active_loras])
+                offload.set_step_no_for_lora(self.transformer, lora_step)
+            if refined is None:
+                return None
+            decoded_audio = refined["audio"]
         return {"x": decoded_video, "audio": decoded_audio, "audio_sampling_rate": AUDIO_SAMPLE_RATE}
 
     def refine_video(self, video, *, prompt, strengths, denoising_strength=0.45, sampling_steps=4, shift=12.0,

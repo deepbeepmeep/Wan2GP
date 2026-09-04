@@ -15,6 +15,8 @@ _ARCHITECTURES = {
     "minimax_h3_fl2va_pruned": "fl2va",
     "minimax_h3_ref2va": "ref2va",
     "minimax_h3_ref2va_pruned": "ref2va",
+    "minimax_h3_vdn": "fl2va",
+    "minimax_h3_vdn_pruned": "fl2va",
 }
 _LORA_SUFFIXES = (
     ("lora_A.weight", "lora_B.weight"),

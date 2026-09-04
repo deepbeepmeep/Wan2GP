@@ -8,6 +8,7 @@ import gradio as gr
 
 from shared.utils.utils import get_outpainting_dims
 from shared.utils.settings_bundle import SETTINGS_BUNDLE_ATTACHMENT_KEYS, WAN_GP_SETTINGS_SUFFIXES, is_wangp_settings_filename, load_first_settings_from_queue_zip
+from postprocessing import spatial_upsamplers as spatial_upsampler_api
 
 from . import common
 from . import constants
@@ -259,6 +260,20 @@ class ProcessLibrary:
 
     def system_handler_for_process(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None):
         return self.system_handler_for_definition(self.process_definition(process_name, main_state, user_refs))
+
+    def spatial_upsampler_method(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> str:
+        process_definition = self.process_definition(process_name, main_state, user_refs)
+        handler = self.system_handler_for_definition(process_definition)
+        if handler is not None:
+            return "" if bool(getattr(handler, "temporal", False)) else str(getattr(handler, "method", "") or "")
+        settings = process_definition.get("settings", {}) if isinstance(process_definition, dict) else {}
+        value = str(settings.get("spatial_upsampling") or settings.get("spatial_upsampling_method") or "").strip()
+        split = spatial_upsampler_api.split_upsampling_value(value)
+        return split[0] if split is not None else value if spatial_upsampler_api.find_upsampler_by_method(value) is not None else ""
+
+    def spatial_upsampler_parameter_state(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None, parameter_values=None) -> dict:
+        method = self.spatial_upsampler_method(process_name, main_state, user_refs)
+        return spatial_upsampler_api.parameter_ui_state(method, spatial_upsampler_api.PARAMETER_UI_MEDIA_FLOW, parameter_values)
 
     def target_control_choices(self, process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> list[tuple[str, str]]:
         process_definition = self.process_definition(process_name, main_state, user_refs)

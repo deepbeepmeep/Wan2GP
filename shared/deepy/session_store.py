@@ -1,0 +1,1333 @@
+from __future__ import annotations
+
+import atexit
+import copy
+import hashlib
+import json
+import os
+import re
+import shutil
+import tempfile
+import threading
+import urllib.parse
+import uuid
+import zipfile
+from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+SESSION_SCHEMA_VERSION = 1
+CONTEXT_SCHEMA_VERSION = 1
+UI_JOURNAL_SCHEMA_VERSION = 1
+DEFAULT_SESSIONS_FOLDER = "deepy_sessions"
+UI_JOURNAL_FILENAME = "cards.jsonl"
+GALLERY_MEDIA_LINK = "link"
+GALLERY_MEDIA_COPY = "copy"
+RESET_MODE_NEW = "new_session"
+RESET_MODE_RESET = "reset_session"
+_MEDIA_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".jfif", ".pjpeg", ".mkv", ".mov", ".mp4", ".m4v", ".webm", ".avi", ".wav", ".mp3", ".aac", ".m4a", ".flac", ".ogg", ".opus", ".wma"}
+_URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+_WINDOWS_PATH_RE = re.compile(r"(?<!\w)(?:[A-Za-z]:[\\/]|\\\\)[^\s\]\[(){}<>\"']+")
+_POSIX_PATH_RE = re.compile(r"(?<!\w)/(?:[^\s\]\[(){}<>\"']+/)*[^\s\]\[(){}<>\"']+")
+_MARKDOWN_LINK_RE = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+_ATTACHMENT_RE = re.compile(r"(?:@file\([^)]*\)|<attachment\b[^>]*>|\[attachment[^\]]*\])", re.IGNORECASE)
+_SESSION_ID_RE = re.compile(r"^\d{8}-\d{6}-[a-f0-9]{8}$")
+_ROOT_LOCK = threading.RLock()
+_SESSIONS_ROOT = (Path.cwd() / DEFAULT_SESSIONS_FOLDER).resolve()
+_WRITER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="deepy-session-save")
+_OWNED_LOCKS: dict[str, tuple[str, Path]] = {}
+_UI_JOURNAL_STATES: dict[str, dict[str, Any]] = {}
+
+
+class SessionStoreError(RuntimeError):
+    pass
+
+
+class SessionLockedError(SessionStoreError):
+    pass
+
+
+def configure_sessions_root(path: str | os.PathLike[str] | None) -> Path:
+    global _SESSIONS_ROOT
+    candidate = Path(path).expanduser() if str(path or "").strip() else Path.cwd() / DEFAULT_SESSIONS_FOLDER
+    with _ROOT_LOCK:
+        _SESSIONS_ROOT = candidate.resolve()
+        _UI_JOURNAL_STATES.clear()
+    return _SESSIONS_ROOT
+
+
+def sessions_root() -> Path:
+    with _ROOT_LOCK:
+        return _SESSIONS_ROOT
+
+
+def normalize_gallery_media_mode(value: Any) -> str:
+    return GALLERY_MEDIA_COPY if str(value or "").strip().lower() == GALLERY_MEDIA_COPY else GALLERY_MEDIA_LINK
+
+
+def normalize_reset_mode(value: Any) -> str:
+    return RESET_MODE_RESET if str(value or "").strip().lower() == RESET_MODE_RESET else RESET_MODE_NEW
+
+
+def automatic_title(first_request: str, max_words: int = 10, max_chars: int = 60) -> str:
+    text = _ATTACHMENT_RE.sub(" ", str(first_request or ""))
+    text = _MARKDOWN_LINK_RE.sub(lambda match: f" {match.group(1)} ", text)
+    text = _URL_RE.sub(" ", text)
+    text = _WINDOWS_PATH_RE.sub(" ", text)
+    text = _POSIX_PATH_RE.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip(" \t\r\n-–—:;,.!?…")
+    if not text:
+        return "Deepy session"
+    clause = re.split(r"(?:[.!?…]+|\s+[–—]\s+|\n)", text, maxsplit=1)[0].strip()
+    words = clause.split()
+    title = " ".join(words[:max(1, int(max_words))]).strip()
+    if len(title) > max_chars:
+        title = title[:max_chars].rsplit(" ", 1)[0].rstrip(" -–—:;,.!?") or title[:max_chars].rstrip()
+    return title or "Deepy session"
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _new_storage_id(root: Path | None = None) -> str:
+    root = sessions_root() if root is None else root
+    while True:
+        candidate = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+        if not (root / candidate).exists():
+            return candidate
+
+
+def _validated_session_dir(storage_id: str, *, must_exist: bool = True) -> Path:
+    storage_id = str(storage_id or "").strip()
+    if not _SESSION_ID_RE.fullmatch(storage_id):
+        raise SessionStoreError("Invalid Deepy session identifier.")
+    root = sessions_root()
+    path = (root / storage_id).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise SessionStoreError("Deepy session path escapes the sessions root.") from exc
+    if must_exist and not path.is_dir():
+        raise SessionStoreError(f"Deepy session does not exist: {storage_id}")
+    return path
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_safe(child) for key, child in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(child) for child in value]
+    if isinstance(value, os.PathLike):
+        return str(value)
+    return str(value)
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise SessionStoreError(f"Cannot read Deepy session file: {path.name}") from exc
+    if not isinstance(value, dict):
+        raise SessionStoreError(f"Invalid Deepy session file: {path.name}")
+    return value
+
+
+def _atomic_json(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(_json_safe(value), ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _clean_ui_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _clean_ui_value(child) for key, child in value.items() if str(key) != "_published_text"}
+    if isinstance(value, (list, tuple)):
+        return [_clean_ui_value(child) for child in value]
+    return _json_safe(value)
+
+
+_REPLAY_EVENT_TYPES = {"upsert_message", "remove_message", "upsert_block", "remove_block"}
+_LEGACY_CHAT_CLASS_PREFIX = "wangp-assistant-chat"
+_CHAT_CLASS_ATTRIBUTE_RE = re.compile(r"(\bclass\s*=\s*)(?P<quote>['\"])(?P<classes>[^'\"]*)(?P=quote)", re.IGNORECASE)
+
+
+def _compact_replay_html_classes(markup: str) -> str:
+    if _LEGACY_CHAT_CLASS_PREFIX not in markup:
+        return markup
+
+    def compact_attribute(match: re.Match) -> str:
+        classes = []
+        for class_name in match.group("classes").split():
+            if class_name == _LEGACY_CHAT_CLASS_PREFIX or class_name.startswith(f"{_LEGACY_CHAT_CLASS_PREFIX}__") or class_name.startswith(f"{_LEGACY_CHAT_CLASS_PREFIX}--"):
+                class_name = f"chat{class_name[len(_LEGACY_CHAT_CLASS_PREFIX):]}"
+            classes.append(class_name)
+        quote = match.group("quote")
+        return f"{match.group(1)}{quote}{' '.join(classes)}{quote}"
+
+    return _CHAT_CLASS_ATTRIBUTE_RE.sub(compact_attribute, markup)
+
+
+def _compact_replay_event_classes(event: dict[str, Any]) -> dict[str, Any]:
+    if str(event.get("type", "") or "") == "upsert_message" and isinstance(event.get("message"), dict):
+        message = event["message"]
+        if isinstance(message.get("html"), str):
+            message["html"] = _compact_replay_html_classes(message["html"])
+    if str(event.get("type", "") or "") == "upsert_block" and isinstance(event.get("html"), str):
+        event["html"] = _compact_replay_html_classes(event["html"])
+    return event
+
+
+def _read_ui_journal(directory: Path, *, max_sequence: int | None = None) -> tuple[list[dict[str, Any]], int, int]:
+    path = directory / UI_JOURNAL_FILENAME
+    if not path.is_file():
+        return [], 0, 0
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise SessionStoreError("Cannot read Deepy cards journal.") from exc
+    commands: list[dict[str, Any]] = []
+    previous_sequence = 0
+    applied_sequence = 0
+    nonempty_indices = [index for index, line in enumerate(lines) if line.strip()]
+    final_nonempty_index = nonempty_indices[-1] if nonempty_indices else -1
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            operation = json.loads(line)
+        except ValueError as exc:
+            if index == final_nonempty_index:
+                break
+            raise SessionStoreError("Deepy cards journal contains invalid JSON.") from exc
+        if not isinstance(operation, dict):
+            raise SessionStoreError("Deepy cards journal contains an invalid operation.")
+        schema_version = int(operation.get("schema_version", 0) or 0)
+        sequence = int(operation.get("sequence", 0) or 0)
+        if schema_version > UI_JOURNAL_SCHEMA_VERSION:
+            raise SessionStoreError("This Deepy cards journal was created by a newer format.")
+        if sequence != previous_sequence + 1:
+            raise SessionStoreError("Deepy cards journal sequence is not contiguous.")
+        previous_sequence = sequence
+        if max_sequence is not None and sequence > max_sequence:
+            continue
+        if str(operation.get("cmd", "") or "") != "chat_output" or not isinstance(operation.get("event"), dict):
+            raise SessionStoreError("Deepy cards journal contains an invalid client command.")
+        if str(operation["event"].get("type", "") or "") not in _REPLAY_EVENT_TYPES:
+            raise SessionStoreError("Deepy cards journal contains an unsupported client command.")
+        commands.append({"cmd": "chat_output", "event": _compact_replay_event_classes(_clean_ui_value(operation["event"]))})
+        applied_sequence = sequence
+    return commands, applied_sequence, previous_sequence
+
+
+def _truncate_ui_journal(directory: Path, last_sequence: int) -> None:
+    path = directory / UI_JOURNAL_FILENAME
+    if not path.is_file():
+        return
+    try:
+        with path.open("rb+") as journal:
+            keep_offset = 0
+            while True:
+                line = journal.readline()
+                if not line:
+                    break
+                if not line.strip():
+                    continue
+                try:
+                    operation = json.loads(line.decode("utf-8"))
+                    sequence = int(operation.get("sequence", 0) or 0) if isinstance(operation, dict) else 0
+                except (UnicodeDecodeError, ValueError):
+                    break
+                if sequence > last_sequence:
+                    break
+                keep_offset = journal.tell()
+            journal.seek(0, os.SEEK_END)
+            changed = journal.tell() != keep_offset
+            if changed:
+                journal.truncate(keep_offset)
+            if keep_offset > 0:
+                journal.seek(keep_offset - 1)
+                if journal.read(1) != b"\n":
+                    journal.seek(keep_offset)
+                    journal.write(b"\n")
+                    changed = True
+            if changed:
+                journal.flush()
+                os.fsync(journal.fileno())
+    except OSError as exc:
+        raise SessionStoreError("Cannot recover Deepy cards journal.") from exc
+
+
+def _message_frame(record: dict[str, Any]) -> dict[str, Any]:
+    return {key: _clean_ui_value(value) for key, value in record.items() if key != "blocks"}
+
+
+def _message_replay_event(record: dict[str, Any], message_index: int) -> dict[str, Any]:
+    from shared.gradio import assistant_chat
+
+    return {"type": "upsert_message", "message": assistant_chat._render_message_payload(record), "message_index": int(message_index)}
+
+
+def _block_replay_event(record: dict[str, Any], block: dict[str, Any], message_index: int, block_index: int) -> dict[str, Any]:
+    from shared.gradio import assistant_chat
+
+    block_type = str(block.get("type", "markdown") or "markdown")
+    return {
+        "type": "upsert_block",
+        "message_id": str(record.get("id", "") or ""),
+        "message": assistant_chat._message_frame_payload(record),
+        "message_index": int(message_index),
+        "block_id": str(block.get("id", "") or ""),
+        "block_type": block_type,
+        "block_index": int(block_index),
+        "html": assistant_chat._render_block_html(record, block, streaming=False),
+        "text": str(block.get("text", "") or "") if block_type in {"markdown", "reasoning", "context_summary"} else "",
+        "streaming": False,
+    }
+
+
+def _consolidated_ui_transcript(previous: list[dict[str, Any]], current: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    previous_by_id = {str(record.get("id", "")): record for record in previous if isinstance(record, dict) and str(record.get("id", ""))}
+    consolidated = []
+    for raw_record in current:
+        if not isinstance(raw_record, dict):
+            continue
+        record = _clean_ui_value(raw_record)
+        message_id = str(record.get("id", "") or "")
+        previous_record = previous_by_id.get(message_id, {})
+        previous_blocks = {str(block.get("id", "")): block for block in list(previous_record.get("blocks", []) or []) if isinstance(block, dict) and str(block.get("id", ""))}
+        blocks = []
+        for block in list(record.get("blocks", []) or []):
+            if not isinstance(block, dict):
+                continue
+            block_id = str(block.get("id", "") or "")
+            block_type = str(block.get("type", "markdown") or "markdown")
+            incomplete_text = block_type in {"markdown", "reasoning", "context_summary"} and bool(block.get("streaming", False))
+            incomplete_tool = block_type == "tool" and (bool(block.get("request_pending", False)) or str(block.get("status", "") or "").strip().lower() not in {"done", "error", "failed", "interrupted", "cancelled"})
+            if incomplete_text or incomplete_tool:
+                if block_id in previous_blocks:
+                    blocks.append(_clean_ui_value(previous_blocks[block_id]))
+                continue
+            blocks.append(block)
+        record["blocks"] = blocks
+        renderable = str(record.get("role", "") or "") != "assistant" or bool(blocks) or bool(record.get("attachments"))
+        if renderable:
+            consolidated.append(record)
+    return consolidated
+
+
+def _build_ui_replay_commands(previous: list[dict[str, Any]], current: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    commands = []
+    previous_by_id = {str(record.get("id", "")): record for record in previous if isinstance(record, dict) and str(record.get("id", ""))}
+    current_by_id = {str(record.get("id", "")): record for record in current if isinstance(record, dict) and str(record.get("id", ""))}
+    for message_id in previous_by_id.keys() - current_by_id.keys():
+        commands.append({"cmd": "chat_output", "event": {"type": "remove_message", "message_id": message_id}})
+    previous_order = [str(record.get("id", "")) for record in previous if isinstance(record, dict) and str(record.get("id", ""))]
+    previous_indices = {message_id: index for index, message_id in enumerate(previous_order)}
+    for message_index, record in enumerate(current):
+        message_id = str(record.get("id", "") or "").strip()
+        if not message_id:
+            continue
+        previous_record = previous_by_id.get(message_id)
+        moved = previous_indices.get(message_id, message_index) != message_index
+        if previous_record is None or moved or _message_frame(record) != _message_frame(previous_record):
+            commands.append({"cmd": "chat_output", "event": _message_replay_event(record, message_index)})
+            continue
+        previous_blocks = {str(block.get("id", "")): block for block in list(previous_record.get("blocks", []) or []) if isinstance(block, dict) and str(block.get("id", ""))}
+        current_blocks = {str(block.get("id", "")): block for block in list(record.get("blocks", []) or []) if isinstance(block, dict) and str(block.get("id", ""))}
+        for block_id in previous_blocks.keys() - current_blocks.keys():
+            commands.append({"cmd": "chat_output", "event": {"type": "remove_block", "message_id": message_id, "block_id": block_id, "block_type": str(previous_blocks[block_id].get("type", "markdown") or "markdown")}})
+        for block_index, block in enumerate(list(record.get("blocks", []) or [])):
+            if not isinstance(block, dict):
+                continue
+            block_id = str(block.get("id", "") or "").strip()
+            if block_id and _clean_ui_value(block) != _clean_ui_value(previous_blocks.get(block_id)):
+                commands.append({"cmd": "chat_output", "event": _block_replay_event(record, block, message_index, block_index)})
+    return commands
+
+
+def _append_ui_journal(directory: Path, transcript: list[dict[str, Any]]) -> tuple[int, int, list[dict[str, Any]]]:
+    cache_key = str(directory.resolve())
+    state = _UI_JOURNAL_STATES.get(cache_key)
+    if state is None:
+        previous = []
+        committed_sequence = 0
+        context_path = directory / "context.json"
+        if context_path.is_file():
+            stored_context = _read_json(context_path)
+            stored_transcript = list(stored_context.get("chat", {}).get("transcript", []) or [])
+            replay = stored_context.get("ui", {}).get("replay", {})
+            if replay and not isinstance(replay, dict):
+                raise SessionStoreError("Invalid Deepy UI replay descriptor.")
+            if isinstance(replay, dict) and replay:
+                if str(replay.get("path", "") or "") != UI_JOURNAL_FILENAME:
+                    raise SessionStoreError("Invalid Deepy UI replay journal path.")
+                committed_sequence = int(replay.get("last_sequence", 0) or 0)
+                _commands, applied_sequence, _physical_sequence = _read_ui_journal(directory, max_sequence=committed_sequence)
+                if applied_sequence != committed_sequence:
+                    raise SessionStoreError("Deepy UI replay journal is incomplete.")
+                previous = stored_transcript
+                if committed_sequence == 0 and _consolidated_ui_transcript([], previous):
+                    previous = []
+        _truncate_ui_journal(directory, committed_sequence)
+        state = {"transcript": _clean_ui_value(previous), "sequence": committed_sequence}
+    current = _consolidated_ui_transcript(state["transcript"], transcript)
+    commands = _build_ui_replay_commands(state["transcript"], current)
+    sequence = int(state["sequence"] or 0)
+    if commands:
+        with (directory / UI_JOURNAL_FILENAME).open("a", encoding="utf-8", newline="\n") as writer:
+            for command in commands:
+                sequence += 1
+                payload = {"schema_version": UI_JOURNAL_SCHEMA_VERSION, "sequence": sequence, **_clean_ui_value(command)}
+                writer.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+            writer.flush()
+            os.fsync(writer.fileno())
+    _UI_JOURNAL_STATES[cache_key] = {"transcript": current, "sequence": sequence}
+    return sequence, len(current), current
+
+
+def _forget_ui_journal(directory: Path) -> None:
+    _UI_JOURNAL_STATES.pop(str(directory.resolve()), None)
+
+
+def _process_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        open_process.restype = wintypes.HANDLE
+        get_exit_code = kernel32.GetExitCodeProcess
+        get_exit_code.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        get_exit_code.restype = wintypes.BOOL
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = (wintypes.HANDLE,)
+        close_handle.restype = wintypes.BOOL
+        handle = open_process(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            error = ctypes.get_last_error()
+            if error == 5:  # ERROR_ACCESS_DENIED: the process exists but cannot be queried.
+                return True
+            if error == 87:  # ERROR_INVALID_PARAMETER: no process owns this PID.
+                return False
+            raise ctypes.WinError(error)
+        exit_code = wintypes.DWORD()
+        try:
+            if not get_exit_code(handle, ctypes.byref(exit_code)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return exit_code.value == 259  # STILL_ACTIVE
+        finally:
+            close_handle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _acquire_session_lock(session, directory: Path) -> None:
+    current_path = str(session.session_lock_path or "")
+    if current_path and Path(current_path) == directory / ".session.lock":
+        return
+    lock_path = directory / ".session.lock"
+    token = uuid.uuid4().hex
+    payload = {"pid": os.getpid(), "token": token, "created_at": _utc_now()}
+    try:
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        try:
+            existing = _read_json(lock_path)
+            existing_pid = int(existing.get("pid", 0) or 0)
+        except Exception:
+            existing_pid = 0
+        if _process_alive(existing_pid):
+            raise SessionLockedError(f"Deepy session is already open by process {existing_pid}.")
+        lock_path.unlink(missing_ok=True)
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as writer:
+        json.dump(payload, writer)
+    session.session_lock_path = str(lock_path)
+    session.session_lock_token = token
+    with _ROOT_LOCK:
+        _OWNED_LOCKS[token] = (str(directory), lock_path)
+
+
+def release_session_lock(session) -> None:
+    pending = session.pending_session_save
+    if isinstance(pending, Future) and not pending.done():
+        try:
+            pending.result()
+        except Exception as exc:
+            session.session_save_error = str(exc)
+    lock_path = Path(str(session.session_lock_path)) if str(session.session_lock_path or "") else None
+    token = str(session.session_lock_token or "")
+    if lock_path is not None and lock_path.is_file():
+        try:
+            payload = _read_json(lock_path)
+        except SessionStoreError:
+            payload = {}
+        if str(payload.get("token", "")) == token:
+            lock_path.unlink(missing_ok=True)
+    with _ROOT_LOCK:
+        _OWNED_LOCKS.pop(token, None)
+    if str(session.storage_session_dir or ""):
+        _forget_ui_journal(Path(session.storage_session_dir))
+    session.session_lock_path = ""
+    session.session_lock_token = ""
+
+
+def _release_all_locks() -> None:
+    with _ROOT_LOCK:
+        owned = list(_OWNED_LOCKS.items())
+        _OWNED_LOCKS.clear()
+    for token, (_directory, lock_path) in owned:
+        try:
+            payload = _read_json(lock_path)
+            if str(payload.get("token", "")) == token:
+                lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+atexit.register(_release_all_locks)
+
+
+def bind_session_persistence(session) -> None:
+    session.safe_checkpoint_callback = schedule_autosave
+
+
+def ensure_session(session, first_request: str, deepy_type: str, gallery_media_mode: str, environment: dict[str, Any] | None = None) -> dict[str, Any]:
+    deepy_type = str(deepy_type or "").strip().lower()
+    if session.storage_session_id:
+        if session.storage_deepy_type != deepy_type:
+            raise SessionStoreError("A Deepy session cannot change between Prime and Zero.")
+        session.gallery_media_mode = normalize_gallery_media_mode(gallery_media_mode or session.gallery_media_mode)
+        session.session_environment = _json_safe(environment or session.session_environment)
+        bind_session_persistence(session)
+        return session_metadata(session)
+    request = str(first_request or "").strip()
+    if not request:
+        raise SessionStoreError("A Deepy session is created only when its first request is sent.")
+    root = sessions_root()
+    root.mkdir(parents=True, exist_ok=True)
+    storage_id = _new_storage_id(root)
+    directory = root / storage_id
+    directory.mkdir()
+    (directory / "workspace").mkdir()
+    _acquire_session_lock(session, directory)
+    now = _utc_now()
+    session.storage_session_id = storage_id
+    session.storage_session_dir = str(directory)
+    session.storage_title = automatic_title(request)
+    session.storage_deepy_type = deepy_type
+    session.storage_created_at = now
+    session.storage_updated_at = now
+    session.gallery_media_mode = normalize_gallery_media_mode(gallery_media_mode)
+    session.session_environment = _json_safe(environment or {})
+    session.chat_session_id = storage_id
+    bind_session_persistence(session)
+    return session_metadata(session)
+
+
+def session_metadata(session) -> dict[str, Any]:
+    return {
+        "id": str(session.storage_session_id or ""),
+        "title": str(session.storage_title or ""),
+        "deepy_type": str(session.storage_deepy_type or ""),
+        "created_at": str(session.storage_created_at or ""),
+        "updated_at": str(session.storage_updated_at or ""),
+        "gallery_media_mode": normalize_gallery_media_mode(session.gallery_media_mode),
+    }
+
+
+def session_workspace(session) -> Path | None:
+    if not session.storage_session_dir:
+        return None
+    return Path(session.storage_session_dir) / "workspace"
+
+
+def _artifact_snapshot(session) -> dict[str, Any]:
+    workspace = session.artifact_workspace
+    return workspace.snapshot_state() if workspace is not None else {}
+
+
+def _pending_action_from_runtime(runtime: Any) -> dict[str, Any] | None:
+    if not isinstance(runtime, dict):
+        raise SessionStoreError("Invalid Deepy runtime context.")
+    replay = runtime.get("pending_action")
+    if replay is None:
+        return None
+    if not isinstance(replay, dict) or int(replay.get("schema_version", 0) or 0) != 1:
+        raise SessionStoreError("Invalid Deepy pending-action replay descriptor.")
+    required = {
+        "phase", "completion_prefix", "generation_state", "max_new_tokens", "seed", "do_sample", "temperature", "top_p", "top_k", "thinking_enabled",
+        "user_message_id", "user_text", "turn_messages_len", "assistant_message_id", "assistant_badge", "completed_thought_content",
+        "selected_visual_media_snapshot", "selected_audio_media_snapshot", "stream_answer_text", "stream_answer_block_id", "stream_reasoning_text",
+        "stream_reasoning_block_id", "recent_steps", "pending_natural_thought", "loop_answer_checkpoint", "model_passes", "incomplete_stop_retries",
+    }
+    if not required.issubset(replay) or str(replay["phase"]) not in {"thought", "statement", "tool"} or not isinstance(replay["generation_state"], dict):
+        raise SessionStoreError("Incomplete Deepy pending-action replay descriptor.")
+    generation_state = replay["generation_state"]
+    if not {"sampling_enabled", "sampling_state", "presence"}.issubset(generation_state) or not isinstance(generation_state["sampling_state"], list):
+        raise SessionStoreError("Invalid Deepy pending-action generation state.")
+    return _json_safe(copy.deepcopy(replay))
+
+
+def _capture_snapshot(session) -> dict[str, Any] | None:
+    if not session.storage_session_id or not session.storage_session_dir:
+        return None
+    with session.turn_lock:
+        checkpoint = session.current_turn
+        pending_action = copy.deepcopy(session.pending_action_replay)
+        if pending_action is not None:
+            saved_messages = copy.deepcopy(session.pending_action_replay_messages)
+            saved_transcript = copy.deepcopy(session.pending_action_replay_transcript)
+        elif isinstance(checkpoint, dict):
+            message_limit = max(0, min(int(checkpoint.get("persisted_messages_len", len(session.messages)) or 0), len(session.messages)))
+            saved_messages = copy.deepcopy(session.messages[:message_limit])
+            completed_thought = str(checkpoint.get("completed_thought_content", "") or "").strip()
+            if completed_thought:
+                saved_messages.append({"role": "assistant", "content": completed_thought})
+            saved_transcript = copy.deepcopy(session.chat_transcript)
+        else:
+            saved_messages = copy.deepcopy(session.messages)
+            saved_transcript = copy.deepcopy(session.chat_transcript)
+        context = {
+            "schema_version": CONTEXT_SCHEMA_VERSION,
+            "session_id": session.storage_session_id,
+            "chat": {
+                "messages": saved_messages,
+                "transcript": saved_transcript,
+                "transcript_counter": int(session.chat_transcript_counter or 0),
+                "revision": int(session.chat_revision or 0),
+                "interruption_notice": str(session.interruption_notice or ""),
+                "interruption_history": copy.deepcopy(session.interruption_history),
+            },
+            "media": copy.deepcopy(session.media_registry),
+            "artifacts": _artifact_snapshot(session),
+            "ui": {"tool_settings": copy.deepcopy(session.tool_ui_settings)},
+            "runtime": {
+                "generated_client_ids": list(session.generated_client_ids),
+                "selected_visual_signature": str(session.selected_visual_runtime_signature or ""),
+                "selected_audio_signature": str(session.selected_audio_runtime_signature or ""),
+                "pending_action": pending_action,
+            },
+            "environment": copy.deepcopy(session.session_environment),
+            "workspace": {"path": "workspace", "media": []},
+        }
+        revision = int(session.safe_checkpoint_revision or 0)
+        metadata = session_metadata(session)
+        lock_token = str(session.session_lock_token or "")
+    return {"directory": str(session.storage_session_dir), "context": _json_safe(context), "metadata": metadata, "revision": revision, "lock_token": lock_token}
+
+
+def _fingerprint(path: Path) -> str:
+    stat = path.stat()
+    return f"{stat.st_size:x}:{stat.st_mtime_ns:x}"
+
+
+def _workspace_media(directory: Path) -> list[dict[str, Any]]:
+    workspace = directory / "workspace"
+    if not workspace.is_dir():
+        return []
+    records = []
+    for path in sorted(workspace.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in _MEDIA_EXTENSIONS:
+            continue
+        relative = path.relative_to(directory).as_posix()
+        digest = hashlib.sha1(relative.casefold().encode("utf-8")).hexdigest()[:12]
+        records.append({"media_id": f"workspace_{digest}", "media_type": _detect_media_type(path), "path": str(path), "path_key": os.path.normcase(str(path.resolve())), "source": "workspace", "client_id": "", "settings": {}, "label": path.stem.replace("_", " "), "prompt_summary": "", "prompt": "", "filename": path.name, "access": ["write"], "fingerprint": _fingerprint(path), "session_relative_path": relative})
+    return records
+
+
+def _prepare_media(directory: Path, records: list[dict[str, Any]], mode: str) -> list[dict[str, Any]]:
+    prepared = []
+    known_paths = set()
+    for raw_record in records:
+        if not isinstance(raw_record, dict):
+            continue
+        record = _json_safe(copy.deepcopy(raw_record))
+        accesses = {str(value).strip().lower() for value in list(record.get("access", []) or [])}
+        if not accesses and str(record.get("source", "")).strip().lower() == "deepy":
+            accesses.add("write")
+        if not accesses:
+            continue
+        record["access"] = sorted(accesses)
+        raw_path = str(record.get("path", "") or "").strip()
+        path = Path(raw_path) if raw_path else None
+        if path is not None and path.is_file():
+            try:
+                record["fingerprint"] = _fingerprint(path)
+            except OSError:
+                pass
+            if mode == GALLERY_MEDIA_COPY and str(record.get("source", "")) != "workspace":
+                safe_id = re.sub(r"[^A-Za-z0-9_-]+", "_", str(record.get("media_id", "media"))).strip("_") or "media"
+                destination = directory / "media" / f"{safe_id}_{path.name}"
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if not destination.is_file() or destination.stat().st_size != path.stat().st_size or destination.stat().st_mtime_ns != path.stat().st_mtime_ns:
+                    shutil.copy2(path, destination)
+                record["session_copy_path"] = destination.relative_to(directory).as_posix()
+        path_key = os.path.normcase(str(path.resolve())) if path is not None else ""
+        if path_key and path_key in known_paths:
+            continue
+        if path_key:
+            known_paths.add(path_key)
+        prepared.append(record)
+    for record in _workspace_media(directory):
+        if record["path_key"] not in known_paths:
+            prepared.append(record)
+    return prepared
+
+
+def _write_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    directory = Path(snapshot["directory"])
+    if not directory.is_dir():
+        raise SessionStoreError("Deepy session directory disappeared while it was being saved.")
+    lock_path = directory / ".session.lock"
+    lock = _read_json(lock_path)
+    if str(lock.get("token", "")) != snapshot["lock_token"]:
+        raise SessionLockedError("Deepy session lock changed before the save completed.")
+    context = snapshot["context"]
+    metadata = snapshot["metadata"]
+    replay_sequence, card_count, consolidated_transcript = _append_ui_journal(directory, list(context["chat"].get("transcript", []) or []))
+    context["chat"]["transcript"] = consolidated_transcript
+    context["ui"]["replay"] = {"schema_version": UI_JOURNAL_SCHEMA_VERSION, "path": UI_JOURNAL_FILENAME, "last_sequence": replay_sequence, "card_count": card_count}
+    mode = normalize_gallery_media_mode(metadata["gallery_media_mode"])
+    media = _prepare_media(directory, list(context.get("media", []) or []), mode)
+    context["media"] = media
+    context["workspace"]["media"] = [record for record in media if record.get("source") == "workspace"]
+    updated_at = _utc_now()
+    manifest = {
+        "schema_version": SESSION_SCHEMA_VERSION,
+        "id": metadata["id"],
+        "title": metadata["title"],
+        "deepy_type": metadata["deepy_type"],
+        "created_at": metadata["created_at"],
+        "updated_at": updated_at,
+        "gallery_media_mode": mode,
+        "context_revision": int(snapshot["revision"]),
+        "message_count": len(context["chat"]["messages"]),
+        "card_count": card_count,
+        "replay_sequence": replay_sequence,
+        "media_count": len(media),
+    }
+    context["saved_at"] = updated_at
+    context["checkpoint_revision"] = int(snapshot["revision"])
+    _atomic_json(directory / "context.json", context)
+    _atomic_json(directory / "session.json", manifest)
+    return {"manifest": manifest, "revision": int(snapshot["revision"]), "replay_sequence": replay_sequence}
+
+
+def _save_completed(session, storage_id: str, future: Future) -> None:
+    try:
+        result = future.result()
+    except Exception as exc:
+        if session.storage_session_id == storage_id:
+            session.session_save_error = str(exc)
+            print(f"[Assistant] Continuous session save failed: {exc}")
+    else:
+        if session.storage_session_id == storage_id == result["manifest"]["id"]:
+            session.storage_updated_at = str(result["manifest"]["updated_at"])
+            session.saved_checkpoint_revision = max(int(session.saved_checkpoint_revision or 0), int(result["revision"]))
+            session.ui_replay_sequence = int(result.get("replay_sequence", getattr(session, "ui_replay_sequence", 0)) or 0)
+            session.session_save_error = ""
+
+
+def schedule_autosave(session) -> Future | None:
+    snapshot = _capture_snapshot(session)
+    if snapshot is None:
+        return None
+    future = _WRITER.submit(_write_snapshot, snapshot)
+    session.pending_session_save = future
+    storage_id = str(snapshot["metadata"]["id"])
+    future.add_done_callback(lambda completed: _save_completed(session, storage_id, completed))
+    return future
+
+
+def flush_session(session) -> dict[str, Any] | None:
+    future = schedule_autosave(session)
+    if future is None:
+        return None
+    result = future.result()
+    return result["manifest"]
+
+
+def list_sessions(deepy_type: str | None = None) -> list[dict[str, Any]]:
+    root = sessions_root()
+    if not root.is_dir():
+        return []
+    normalized_type = str(deepy_type or "").strip().lower()
+    sessions = []
+    for directory in root.iterdir():
+        if not directory.is_dir() or not _SESSION_ID_RE.fullmatch(directory.name):
+            continue
+        manifest_path = directory / "session.json"
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = _read_json(manifest_path)
+        except SessionStoreError:
+            continue
+        if str(manifest.get("id", "")) != directory.name:
+            continue
+        if normalized_type and str(manifest.get("deepy_type", "")).strip().lower() != normalized_type:
+            continue
+        sessions.append({key: manifest.get(key) for key in ("id", "title", "deepy_type", "created_at", "updated_at", "gallery_media_mode", "message_count", "media_count")})
+    sessions.sort(key=lambda item: str(item.get("updated_at", "")), reverse=True)
+    return sessions
+
+
+def _replace_paths(value: Any, replacements: dict[str, str]) -> Any:
+    if isinstance(value, dict):
+        return {key: _replace_paths(child, replacements) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_replace_paths(child, replacements) for child in value]
+    if isinstance(value, str):
+        if value in replacements:
+            return replacements[value]
+        updated = value
+        for original, replacement in replacements.items():
+            updated = updated.replace(original, replacement)
+        return updated
+    return value
+
+
+def _register_path_replacement(replacements: dict[str, str], original: str, replacement: str) -> None:
+    if not original or original == replacement:
+        return
+    replacements[original] = replacement
+    normalized_original = os.path.normpath(original).replace("\\", "/")
+    normalized_replacement = os.path.normpath(replacement).replace("\\", "/")
+    replacements[normalized_original] = normalized_replacement
+    replacements[urllib.parse.quote(normalized_original, safe="/")] = urllib.parse.quote(normalized_replacement, safe="/")
+
+
+def _session_member_path(directory: Path, relative_path: str) -> Path:
+    candidate = (directory / str(relative_path or "").replace("\\", "/")).resolve()
+    try:
+        candidate.relative_to(directory)
+    except ValueError as exc:
+        raise SessionStoreError("Deepy session context contains an unsafe relative path.") from exc
+    return candidate
+
+
+def _session_replay_commands(directory: Path, context: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+    replay = context.get("ui", {}).get("replay", {})
+    if replay and not isinstance(replay, dict):
+        raise SessionStoreError("Invalid Deepy UI replay descriptor.")
+    if isinstance(replay, dict) and replay:
+        if str(replay.get("path", "") or "") != UI_JOURNAL_FILENAME:
+            raise SessionStoreError("Invalid Deepy UI replay journal path.")
+        expected_sequence = int(replay.get("last_sequence", 0) or 0)
+        commands, applied_sequence, _last_sequence = _read_ui_journal(directory, max_sequence=expected_sequence)
+        if applied_sequence != expected_sequence:
+            raise SessionStoreError("Deepy UI replay journal is incomplete.")
+        return commands, applied_sequence
+    transcript = list(context.get("chat", {}).get("transcript", []) or [])
+    return _build_ui_replay_commands([], _consolidated_ui_transcript([], transcript)), 0
+
+
+def validate_session(storage_id: str, deepy_type: str, active_session=None) -> dict[str, Any]:
+    directory = _validated_session_dir(storage_id)
+    manifest = _read_json(directory / "session.json")
+    context = _read_json(directory / "context.json")
+    if str(manifest.get("id", "")) != storage_id or str(context.get("session_id", "")) != storage_id:
+        raise SessionStoreError("Deepy session identifiers do not match its directory.")
+    if int(manifest.get("schema_version", 0) or 0) > SESSION_SCHEMA_VERSION or int(context.get("schema_version", 0) or 0) > CONTEXT_SCHEMA_VERSION:
+        raise SessionStoreError("This Deepy session was created by a newer format.")
+    requested_type = str(deepy_type or "").strip().lower()
+    stored_type = str(manifest.get("deepy_type", "")).strip().lower()
+    if requested_type != stored_type:
+        raise SessionStoreError(f"This is a Deepy {stored_type.title()} session and cannot be opened in Deepy {requested_type.title()}.")
+    if not isinstance(context.get("chat", {}), dict):
+        raise SessionStoreError("Invalid Deepy session chat context.")
+    _pending_action_from_runtime(context.get("runtime", {}))
+    _session_replay_commands(directory, context)
+    for record in list(context.get("media", []) or []):
+        if not isinstance(record, dict):
+            continue
+        for key in ("session_relative_path", "session_copy_path"):
+            relative_path = str(record.get(key, "") or "")
+            if relative_path:
+                _session_member_path(directory, relative_path)
+    from shared.deepy.artifacts import ArtifactWorkspace
+
+    ArtifactWorkspace().restore_state(context.get("artifacts", {}))
+    lock_path = directory / ".session.lock"
+    active_lock = active_session is not None and active_session.storage_session_id == storage_id and Path(str(active_session.session_lock_path or "")) == lock_path
+    if lock_path.is_file() and not active_lock:
+        lock = _read_json(lock_path)
+        if _process_alive(int(lock.get("pid", 0) or 0)):
+            raise SessionLockedError(f"Deepy session is already open by process {int(lock.get('pid', 0) or 0)}.")
+    return manifest
+
+
+def load_session(session, storage_id: str, deepy_type: str) -> dict[str, Any]:
+    directory = _validated_session_dir(storage_id)
+    manifest = _read_json(directory / "session.json")
+    context = _read_json(directory / "context.json")
+    if str(manifest.get("id", "")) != storage_id or str(context.get("session_id", "")) != storage_id:
+        raise SessionStoreError("Deepy session identifiers do not match its directory.")
+    if int(manifest.get("schema_version", 0) or 0) > SESSION_SCHEMA_VERSION or int(context.get("schema_version", 0) or 0) > CONTEXT_SCHEMA_VERSION:
+        raise SessionStoreError("This Deepy session was created by a newer format.")
+    requested_type = str(deepy_type or "").strip().lower()
+    stored_type = str(manifest.get("deepy_type", "")).strip().lower()
+    if requested_type != stored_type:
+        raise SessionStoreError(f"This is a Deepy {stored_type.title()} session and cannot be opened in Deepy {requested_type.title()}.")
+    replacements = {}
+    media_records = list(context.get("media", []) or [])
+    missing_media = []
+    for record in media_records:
+        if not isinstance(record, dict):
+            continue
+        original = str(record.get("path", "") or "")
+        session_relative = str(record.get("session_relative_path", "") or "")
+        if session_relative:
+            relative_path = _session_member_path(directory, session_relative)
+            if relative_path.is_file():
+                if original and original != str(relative_path):
+                    _register_path_replacement(replacements, original, str(relative_path))
+                record["path"] = str(relative_path)
+                record["path_key"] = os.path.normcase(str(relative_path))
+                continue
+        if original and Path(original).is_file():
+            continue
+        copied = str(record.get("session_copy_path", "") or "")
+        copied_path = _session_member_path(directory, copied) if copied else None
+        if copied_path is not None and copied_path.is_file():
+            if original:
+                _register_path_replacement(replacements, original, str(copied_path))
+            record["path"] = str(copied_path)
+            record["path_key"] = os.path.normcase(str(copied_path.resolve()))
+        elif original:
+            missing_media.append(original)
+    context = _replace_paths(context, replacements)
+    replay_commands, replay_sequence = _session_replay_commands(directory, context)
+    replay_commands = _replace_paths(replay_commands, replacements)
+    chat = context.get("chat", {})
+    if not isinstance(chat, dict):
+        raise SessionStoreError("Invalid Deepy session chat context.")
+    from shared.deepy.artifacts import ArtifactWorkspace
+
+    artifact_workspace = ArtifactWorkspace()
+    artifact_workspace.restore_state(context.get("artifacts", {}))
+    _acquire_session_lock(session, directory)
+    session.storage_session_id = storage_id
+    session.storage_session_dir = str(directory)
+    session.storage_title = str(manifest.get("title", "") or "Deepy session")
+    session.storage_deepy_type = stored_type
+    session.storage_created_at = str(manifest.get("created_at", "") or "")
+    session.storage_updated_at = str(manifest.get("updated_at", "") or "")
+    session.gallery_media_mode = normalize_gallery_media_mode(manifest.get("gallery_media_mode"))
+    session.session_environment = _json_safe(context.get("environment", {}))
+    session.chat_session_id = storage_id
+    session.messages = list(chat.get("messages", []) or [])
+    session.chat_transcript = list(chat.get("transcript", []) or [])
+    for record_index, record in enumerate(session.chat_transcript):
+        if isinstance(record, dict) and record.get("queued"):
+            record["queued"] = False
+            record["badge"] = "Not run"
+            replay_commands.append({"cmd": "chat_output", "event": _message_replay_event(record, record_index)})
+    session.chat_transcript_counter = int(chat.get("transcript_counter", 0) or 0)
+    session.chat_revision = int(chat.get("revision", 0) or 0) + 1
+    session.chat_event_sequence = 0
+    session.ui_replay_commands = replay_commands
+    session.ui_replay_sequence = replay_sequence
+    session.interruption_notice = str(chat.get("interruption_notice", "") or "")
+    session.interruption_history = list(chat.get("interruption_history", []) or [])
+    session.media_registry = list(context.get("media", []) or [])
+    session.media_registry_counter = max([int(str(record.get("media_id", "_0")).rsplit("_", 1)[-1]) for record in session.media_registry if str(record.get("media_id", "")).rsplit("_", 1)[-1].isdigit()] or [0])
+    session.tool_ui_settings = dict(context.get("ui", {}).get("tool_settings", {}) or {})
+    runtime = context.get("runtime", {})
+    pending_action = _pending_action_from_runtime(runtime)
+    session.generated_client_ids = list(runtime.get("generated_client_ids", []) or [])
+    session.selected_visual_runtime_signature = str(runtime.get("selected_visual_signature", "") or "")
+    session.selected_audio_runtime_signature = str(runtime.get("selected_audio_signature", "") or "")
+    session.rendered_token_ids = []
+    session.rendered_messages_len = 0
+    session.runtime_snapshot = None
+    session.paused_runtime_snapshot = None
+    session.pending_action_replay = pending_action
+    session.pending_action_replay_messages = copy.deepcopy(session.messages) if pending_action is not None else []
+    session.pending_action_replay_transcript = copy.deepcopy(session.chat_transcript) if pending_action is not None else []
+    session.pending_replay_reason = "restored session requires a full context prefill"
+    session.safe_checkpoint_revision = int(context.get("checkpoint_revision", 0) or 0)
+    session.saved_checkpoint_revision = session.safe_checkpoint_revision
+    session.chat_epoch = int(session.chat_epoch or 0) + 1
+    session.active_skills = list(session.session_environment.get("skills", []) or [])
+    session.artifact_workspace = artifact_workspace
+    bind_session_persistence(session)
+    return {"manifest": manifest, "missing_media": missing_media, "environment": session.session_environment, "replay_commands": replay_commands}
+
+
+def inject_session_media(session, gen: dict[str, Any]) -> dict[str, Any]:
+    from shared.deepy import media_registry
+
+    media_registry.sync_tool_call_gallery_media(session, gen)
+    visual_paths = gen.setdefault("file_list", [])
+    visual_settings = gen.setdefault("file_settings_list", [])
+    audio_paths = gen.setdefault("audio_file_list", [])
+    audio_settings = gen.setdefault("audio_file_settings_list", [])
+    canonical_paths = {os.path.normcase(str(Path(str(path)).resolve())) for path in [*visual_paths, *audio_paths] if str(path or "").strip()}
+    client_keys = set()
+    fingerprints = set()
+    for path, settings in [*zip(visual_paths, visual_settings), *zip(audio_paths, audio_settings)]:
+        settings = settings if isinstance(settings, dict) else {}
+        client_id = str(settings.get("client_id", "") or "")
+        if client_id:
+            client_keys.add((_detect_media_type(Path(str(path))), client_id))
+        fingerprint = str(settings.get("deepy_media_fingerprint", "") or "")
+        existing_path = Path(str(path or ""))
+        if not fingerprint and existing_path.is_file():
+            fingerprint = _fingerprint(existing_path)
+        if fingerprint:
+            fingerprints.add(fingerprint)
+    injected = 0
+    missing = []
+    for record in session.media_registry:
+        if not isinstance(record, dict):
+            continue
+        path = Path(str(record.get("path", "") or ""))
+        if not path.is_file():
+            missing.append(str(path))
+            continue
+        media_type = str(record.get("media_type", "") or _detect_media_type(path))
+        canonical = os.path.normcase(str(path.resolve()))
+        client_id = str(record.get("client_id", "") or "")
+        fingerprint = str(record.get("fingerprint", "") or "")
+        if canonical in canonical_paths or client_id and (media_type, client_id) in client_keys or fingerprint and fingerprint in fingerprints:
+            continue
+        settings = dict(record.get("settings", {}) or {})
+        settings.update({"deepy_session_id": session.storage_session_id, "deepy_media_id": record.get("media_id", ""), "deepy_media_fingerprint": fingerprint})
+        if client_id:
+            settings["client_id"] = client_id
+        if media_type == "audio":
+            audio_paths.append(str(path))
+            audio_settings.append(settings)
+        else:
+            visual_paths.append(str(path))
+            visual_settings.append(settings)
+        canonical_paths.add(canonical)
+        if client_id:
+            client_keys.add((media_type, client_id))
+        if fingerprint:
+            fingerprints.add(fingerprint)
+        injected += 1
+    session.seen_video_gallery_paths = [str(path) for path in visual_paths]
+    session.seen_audio_gallery_paths = [str(path) for path in audio_paths]
+    return {"injected": injected, "missing": missing}
+
+
+def rename_session(session, title: str) -> dict[str, Any]:
+    title = re.sub(r"\s+", " ", str(title or "")).strip()
+    if not title:
+        raise SessionStoreError("Session title cannot be empty.")
+    session.storage_title = title[:120]
+    manifest = flush_session(session)
+    return manifest or session_metadata(session)
+
+
+def rename_stored_session(storage_id: str, title: str, active_session=None) -> dict[str, Any]:
+    if active_session is not None and active_session.storage_session_id == storage_id:
+        return rename_session(active_session, title)
+    directory = _validated_session_dir(storage_id)
+    if (directory / ".session.lock").is_file():
+        lock = _read_json(directory / ".session.lock")
+        if _process_alive(int(lock.get("pid", 0) or 0)):
+            raise SessionLockedError("Close this Deepy session before renaming it.")
+    normalized_title = re.sub(r"\s+", " ", str(title or "")).strip()
+    if not normalized_title:
+        raise SessionStoreError("Session title cannot be empty.")
+    manifest = _read_json(directory / "session.json")
+    manifest["title"] = normalized_title[:120]
+    manifest["updated_at"] = _utc_now()
+    _atomic_json(directory / "session.json", manifest)
+    return manifest
+
+
+def duplicate_stored_session(storage_id: str, active_session=None) -> dict[str, Any]:
+    if active_session is not None and active_session.storage_session_id == storage_id:
+        flush_session(active_session)
+    directory = _validated_session_dir(storage_id)
+    manifest = validate_session(storage_id, str(_read_json(directory / "session.json").get("deepy_type", "")), active_session=active_session)
+    context = _read_json(directory / "context.json")
+    root = sessions_root()
+    new_id = _new_storage_id(root)
+    destination = root / new_id
+    existing_titles = {str(item.get("title", "") or "").casefold() for item in list_sessions()}
+    base_title = re.sub(r"\s+\(copy(?: \d+)?\)$", "", str(manifest.get("title", "") or "Deepy session"), flags=re.IGNORECASE).strip()
+    copy_number = 1
+    while True:
+        suffix = " (copy)" if copy_number == 1 else f" (copy {copy_number})"
+        duplicate_title = f"{base_title[: max(1, 120 - len(suffix))].rstrip()}{suffix}"
+        if duplicate_title.casefold() not in existing_titles:
+            break
+        copy_number += 1
+    now = _utc_now()
+    manifest.update(id=new_id, title=duplicate_title, created_at=now, updated_at=now)
+    context["session_id"] = new_id
+    context["saved_at"] = now
+    replacements: dict[str, str] = {}
+    _register_path_replacement(replacements, str(directory), str(destination))
+    context = _replace_paths(context, replacements)
+    try:
+        shutil.copytree(directory, destination, ignore=shutil.ignore_patterns(".session.lock"))
+        journal = destination / UI_JOURNAL_FILENAME
+        if journal.is_file():
+            journal_text = journal.read_text(encoding="utf-8")
+            for original, replacement in replacements.items():
+                journal_text = journal_text.replace(original, replacement)
+            journal.write_text(journal_text, encoding="utf-8", newline="\n")
+        _atomic_json(destination / "session.json", manifest)
+        _atomic_json(destination / "context.json", context)
+    except Exception:
+        if destination.is_dir():
+            shutil.rmtree(destination)
+        raise
+    return manifest
+
+
+def set_gallery_media_mode(session, mode: str) -> dict[str, Any] | None:
+    session.gallery_media_mode = normalize_gallery_media_mode(mode)
+    return flush_session(session) if session.storage_session_id else None
+
+
+def start_new_session(session, *, save_current: bool = True) -> None:
+    if save_current and session.storage_session_id:
+        flush_session(session)
+    release_session_lock(session)
+    session.storage_session_id = ""
+    session.storage_session_dir = ""
+    session.storage_title = ""
+    session.storage_deepy_type = ""
+    session.storage_created_at = ""
+    session.storage_updated_at = ""
+    session.session_environment = {}
+    session.safe_checkpoint_revision = 0
+    session.saved_checkpoint_revision = 0
+    session.pending_session_save = None
+    session.session_save_error = ""
+    session.safe_checkpoint_callback = None
+    session.ui_replay_commands = []
+    session.ui_replay_sequence = 0
+    session.pending_action_replay = None
+    session.pending_action_replay_messages = []
+    session.pending_action_replay_transcript = []
+    session.chat_session_id = uuid.uuid4().hex
+    session.chat_epoch = int(session.chat_epoch or 0) + 1
+
+
+def reset_session_files(session) -> None:
+    if not session.storage_session_id:
+        return
+    directory = _validated_session_dir(session.storage_session_id)
+    _forget_ui_journal(directory)
+    (directory / UI_JOURNAL_FILENAME).unlink(missing_ok=True)
+    _UI_JOURNAL_STATES[str(directory.resolve())] = {"transcript": [], "sequence": 0}
+    session.ui_replay_commands = []
+    session.ui_replay_sequence = 0
+    for child_name in ("workspace", "media"):
+        child = (directory / child_name).resolve()
+        child.relative_to(directory)
+        if child.is_dir():
+            shutil.rmtree(child)
+        if child_name == "workspace" or session.gallery_media_mode == GALLERY_MEDIA_COPY:
+            child.mkdir()
+    session.safe_checkpoint_revision = int(session.safe_checkpoint_revision or 0) + 1
+    flush_session(session)
+
+
+def delete_session(storage_id: str, active_session=None) -> Path:
+    directory = _validated_session_dir(storage_id)
+    _forget_ui_journal(directory)
+    if active_session is not None and active_session.storage_session_id == storage_id:
+        release_session_lock(active_session)
+    elif (directory / ".session.lock").is_file():
+        lock = _read_json(directory / ".session.lock")
+        if _process_alive(int(lock.get("pid", 0) or 0)):
+            raise SessionLockedError("Close this Deepy session before deleting it.")
+        (directory / ".session.lock").unlink(missing_ok=True)
+    trash = sessions_root() / ".trash"
+    trash.mkdir(parents=True, exist_ok=True)
+    destination = trash / f"{storage_id}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    shutil.move(str(directory), str(destination))
+    return destination
+
+
+def export_session(session) -> Path:
+    if not session.storage_session_id:
+        raise SessionStoreError("There is no materialized Deepy session to export.")
+    flush_session(session)
+    return export_stored_session(session.storage_session_id, active_session=session)
+
+
+def export_stored_session(storage_id: str, active_session=None) -> Path:
+    if active_session is not None and active_session.storage_session_id == storage_id:
+        flush_session(active_session)
+    directory = _validated_session_dir(storage_id)
+    lock_path = directory / ".session.lock"
+    active_lock = active_session is not None and active_session.storage_session_id == storage_id and Path(str(active_session.session_lock_path or "")) == lock_path
+    if lock_path.is_file() and not active_lock:
+        lock = _read_json(lock_path)
+        if _process_alive(int(lock.get("pid", 0) or 0)):
+            raise SessionLockedError("Close this Deepy session before exporting it.")
+    exports = sessions_root() / "_exports"
+    exports.mkdir(parents=True, exist_ok=True)
+    destination = exports / f"{directory.name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+    manifest = _read_json(directory / "session.json")
+    context = _read_json(directory / "context.json")
+    directory_files = [path for path in directory.rglob("*") if path.is_file() and path.name not in {".session.lock", "context.json", "session.json"}]
+    archive_names = {path.relative_to(directory).as_posix() for path in directory_files}
+    external_files: list[tuple[Path, str]] = []
+    missing_media = []
+    for record in list(context.get("media", []) or []):
+        if not isinstance(record, dict) or str(record.get("source", "")) == "workspace":
+            continue
+        copied = str(record.get("session_copy_path", "") or "")
+        if copied and _session_member_path(directory, copied).is_file():
+            continue
+        source_text = str(record.get("path", "") or "").strip()
+        source = Path(source_text) if source_text else None
+        if source is None or not source.is_file():
+            if source_text:
+                missing_media.append(source_text)
+            continue
+        safe_id = re.sub(r"[^A-Za-z0-9_-]+", "_", str(record.get("media_id", "media"))).strip("_") or "media"
+        stem = f"{safe_id}_{source.name}"
+        archive_name = f"media/{stem}"
+        suffix = 2
+        while archive_name in archive_names:
+            archive_name = f"media/{safe_id}_{suffix}_{source.name}"
+            suffix += 1
+        archive_names.add(archive_name)
+        record["session_copy_path"] = archive_name
+        external_files.append((source, archive_name))
+    context["export"] = {"packaged_at": _utc_now(), "missing_media": missing_media}
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+        archive.writestr("session.json", json.dumps(_json_safe(manifest), ensure_ascii=False, indent=2))
+        archive.writestr("context.json", json.dumps(_json_safe(context), ensure_ascii=False, indent=2))
+        for path in directory_files:
+            archive.write(path, path.relative_to(directory).as_posix(), compress_type=zipfile.ZIP_STORED if path.suffix.lower() in _MEDIA_EXTENSIONS else zipfile.ZIP_DEFLATED)
+        for path, archive_name in external_files:
+            archive.write(path, archive_name, compress_type=zipfile.ZIP_STORED)
+    return destination
+
+
+def import_session(archive_path: str | os.PathLike[str]) -> dict[str, Any]:
+    archive_path = Path(archive_path).expanduser().resolve()
+    if not archive_path.is_file() or not zipfile.is_zipfile(archive_path):
+        raise SessionStoreError("Select a valid Deepy session ZIP archive.")
+    root = sessions_root()
+    root.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive_path) as archive:
+        members = archive.infolist()
+        if len(members) > 10000 or sum(max(0, member.file_size) for member in members) > 50 * 1024 * 1024 * 1024:
+            raise SessionStoreError("Deepy session archive is too large.")
+        for member in members:
+            member_path = Path(member.filename.replace("\\", "/"))
+            if member_path.is_absolute() or ".." in member_path.parts:
+                raise SessionStoreError("Deepy session archive contains an unsafe path.")
+        with tempfile.TemporaryDirectory(prefix=".deepy-import-", dir=root) as temporary_name:
+            temporary = Path(temporary_name)
+            archive.extractall(temporary)
+            content_root = temporary
+            if not (content_root / "session.json").is_file():
+                candidates = [path.parent for path in content_root.rglob("session.json") if path.parent.joinpath("context.json").is_file()]
+                if len(candidates) != 1:
+                    raise SessionStoreError("Archive does not contain one Deepy session.")
+                content_root = candidates[0]
+            manifest = _read_json(content_root / "session.json")
+            context = _read_json(content_root / "context.json")
+            original_id = str(manifest.get("id", "") or "")
+            if int(manifest.get("schema_version", 0) or 0) > SESSION_SCHEMA_VERSION or int(context.get("schema_version", 0) or 0) > CONTEXT_SCHEMA_VERSION:
+                raise SessionStoreError("This Deepy session archive was created by a newer format.")
+            if str(manifest.get("deepy_type", "")).strip().lower() not in {"prime", "zero"} or not isinstance(context.get("chat", {}), dict):
+                raise SessionStoreError("Archive contains an invalid Deepy session context.")
+            _session_replay_commands(content_root, context)
+            if original_id and str(context.get("session_id", "") or "") != original_id:
+                raise SessionStoreError("Archive contains inconsistent Deepy session identifiers.")
+            for record in list(context.get("media", []) or []):
+                if not isinstance(record, dict):
+                    continue
+                for key in ("session_relative_path", "session_copy_path"):
+                    relative_path = str(record.get(key, "") or "")
+                    if relative_path:
+                        _session_member_path(content_root, relative_path)
+            from shared.deepy.artifacts import ArtifactWorkspace
+
+            ArtifactWorkspace().restore_state(context.get("artifacts", {}))
+            storage_id = original_id if _SESSION_ID_RE.fullmatch(original_id) and not (root / original_id).exists() else _new_storage_id(root)
+            manifest["id"] = storage_id
+            manifest["title"] = str(manifest.get("title", "") or "Imported Deepy session")
+            manifest["updated_at"] = _utc_now()
+            context["session_id"] = storage_id
+            destination = root / storage_id
+            shutil.copytree(content_root, destination, ignore=shutil.ignore_patterns(".session.lock"))
+            _atomic_json(destination / "session.json", manifest)
+            _atomic_json(destination / "context.json", context)
+    return manifest
+
+
+def _detect_media_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".wav", ".mp3", ".aac", ".m4a", ".flac", ".ogg", ".opus", ".wma"}:
+        return "audio"
+    if suffix in {".mkv", ".mov", ".mp4", ".m4v", ".webm", ".avi"}:
+        return "video"
+    return "image"
+
+
+__all__ = [
+    "CONTEXT_SCHEMA_VERSION",
+    "DEFAULT_SESSIONS_FOLDER",
+    "GALLERY_MEDIA_COPY",
+    "GALLERY_MEDIA_LINK",
+    "RESET_MODE_NEW",
+    "RESET_MODE_RESET",
+    "SESSION_SCHEMA_VERSION",
+    "UI_JOURNAL_FILENAME",
+    "UI_JOURNAL_SCHEMA_VERSION",
+    "SessionLockedError",
+    "SessionStoreError",
+    "automatic_title",
+    "bind_session_persistence",
+    "configure_sessions_root",
+    "delete_session",
+    "duplicate_stored_session",
+    "ensure_session",
+    "export_session",
+    "export_stored_session",
+    "flush_session",
+    "import_session",
+    "inject_session_media",
+    "list_sessions",
+    "load_session",
+    "normalize_gallery_media_mode",
+    "normalize_reset_mode",
+    "release_session_lock",
+    "rename_session",
+    "rename_stored_session",
+    "reset_session_files",
+    "schedule_autosave",
+    "session_metadata",
+    "session_workspace",
+    "sessions_root",
+    "set_gallery_media_mode",
+    "start_new_session",
+    "validate_session",
+]

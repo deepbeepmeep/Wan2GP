@@ -136,13 +136,14 @@ item.
 Each `method_parameters` entry is a list of dictionaries with at least `name`,
 `type`, `description`, and `required`. It may also define `default`, `enum`,
 `minimum`, `maximum`, and a runtime keyword override named `setting`. UI-exposed
-parameter names must use the shared `spatial_upsampler_` prefix. Built-in
-parameters must also declare their default as a separate top-level entry in
-`models/_settings.json`; do not group method parameters inside one settings
-dictionary. `ui` selects
-one or both UI contexts: `postprocessing` means the normal generation-time Post
-Processing section, while `late_postprocessing` means the Post Processing tab
-for an existing gallery item. A parameter can still be inferred and passed by
+parameter names must use the shared `spatial_upsampler_` prefix. Method
+parameters travel in the generic `spatial_upsampler_parameters` task dictionary;
+they are not per-model settings and do not belong in `models/_settings.json`.
+Their defaults are owned by the descriptors. `ui` selects one or more UI
+contexts: `postprocessing` means the normal generation-time Post Processing
+section, `late_postprocessing` means the Post Processing tab for an existing
+gallery item, and `media_flow` exposes scalar controls for the currently selected
+Media Flow spatial process. A parameter can still be inferred and passed by
 WanGP when it is absent from a UI context; H3, for example, receives generation
 prompt/reference data without showing redundant controls during generation.
 
@@ -154,8 +155,8 @@ for one image. Deepy receives only the call-relevant fields (`name`, `type`,
 `media_type`), so UI/runtime fields such as `component`, `ui`, `label`, `step`,
 and `setting` do not consume assistant context. Parameters with `media_type:
 "image"` are resolved from media ids to paths. Each runtime value remains a flat
-queue setting under its generic parameter `name`; dispatch maps it to the
-`upscale()` keyword named by `setting`.
+entry in `spatial_upsampler_parameters`; dispatch filters it for the selected
+method and maps it to the `upscale()` keyword named by `setting`.
 
 Registration is owned by `postprocessing/spatial_upsamplers.py`. Add the handler class path
 to `spatial_upsampler_handlers`:

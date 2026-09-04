@@ -33,6 +33,9 @@ DEEPY_FILE_SYSTEM_PATHS_KEY = "deepy_file_system_paths"
 DEEPY_READ_EVERYWHERE_KEY = "deepy_read_everywhere"
 DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY = "deepy_auto_cancel_queue_tasks"
 DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY = "deepy_separate_requests_with_empty_line"
+DEEPY_SESSION_RESET_MODE_KEY = "deepy_session_reset_mode"
+DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY = "deepy_session_gallery_media_mode"
+DEEPY_MULTI_SESSION_KEY = "deepy_multi_session"
 DEEPY_TEMPLATE_CONFIG_MIGRATIONS = {
     DEEPY_TOOL_GEN_VIDEO_KEY: {
         "MiniMax H3 FL2VA Turbo Lightx2v 8 Steps": "MiniMax H3 FL2VA Pruned Turbo Lightx2v 8 Steps",
@@ -78,6 +81,9 @@ DEEPY_READ_EVERYWHERE_DEFAULT = False
 DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT = False
 DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT = True
 DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT = True
+DEEPY_SESSION_RESET_MODE_DEFAULT = "new_session"
+DEEPY_SESSION_GALLERY_MEDIA_MODE_DEFAULT = "link"
+DEEPY_MULTI_SESSION_DEFAULT = False
 DEEPY_CONFIG_FILENAME = "wgp_config.json"
 
 # Experimental, intentionally not user-configurable yet. The tools remain gated by
@@ -374,6 +380,20 @@ def normalize_deepy_separate_requests_with_empty_line(value: Any) -> bool:
     return bool(value)
 
 
+def normalize_deepy_session_reset_mode(value: Any) -> str:
+    return "reset_session" if str(value or "").strip().lower() == "reset_session" else "new_session"
+
+
+def normalize_deepy_session_gallery_media_mode(value: Any) -> str:
+    return "copy" if str(value or "").strip().lower() == "copy" else "link"
+
+
+def normalize_deepy_multi_session(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "on", "yes"}
+    return bool(value)
+
+
 def estimate_deepy_kv_cache_mb(enhancer_enabled: Any, context_tokens: Any, kv_cache_quantization: Any = "") -> tuple[str | None, int | None]:
     try:
         enhancer_no = int(enhancer_enabled or 0)
@@ -426,6 +446,9 @@ def normalize_deepy_runtime_config(server_config: dict[str, Any] | None) -> dict
     runtime_config[DEEPY_READ_EVERYWHERE_KEY] = normalize_deepy_read_everywhere(runtime_config.get(DEEPY_READ_EVERYWHERE_KEY, DEEPY_READ_EVERYWHERE_DEFAULT))
     runtime_config[DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY] = normalize_deepy_auto_cancel_queue_tasks(runtime_config.get(DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY, DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT))
     runtime_config[DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY] = normalize_deepy_separate_requests_with_empty_line(runtime_config.get(DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY, DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT))
+    runtime_config[DEEPY_SESSION_RESET_MODE_KEY] = normalize_deepy_session_reset_mode(runtime_config.get(DEEPY_SESSION_RESET_MODE_KEY, DEEPY_SESSION_RESET_MODE_DEFAULT))
+    runtime_config[DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY] = normalize_deepy_session_gallery_media_mode(runtime_config.get(DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY, DEEPY_SESSION_GALLERY_MEDIA_MODE_DEFAULT))
+    runtime_config[DEEPY_MULTI_SESSION_KEY] = normalize_deepy_multi_session(runtime_config.get(DEEPY_MULTI_SESSION_KEY, DEEPY_MULTI_SESSION_DEFAULT))
     return runtime_config
 
 
@@ -454,6 +477,9 @@ def get_deepy_default_runtime_config() -> dict[str, Any]:
         DEEPY_READ_EVERYWHERE_KEY: DEEPY_READ_EVERYWHERE_DEFAULT,
         DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY: DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT,
         DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY: DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT,
+        DEEPY_SESSION_RESET_MODE_KEY: DEEPY_SESSION_RESET_MODE_DEFAULT,
+        DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY: DEEPY_SESSION_GALLERY_MEDIA_MODE_DEFAULT,
+        DEEPY_MULTI_SESSION_KEY: DEEPY_MULTI_SESSION_DEFAULT,
     }
 
 

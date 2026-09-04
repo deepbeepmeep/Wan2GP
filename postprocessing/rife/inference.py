@@ -26,7 +26,7 @@ def add_frame(frames, frame, h, w):
     frame = frame.unsqueeze(1)
     frames.append(frame.cpu())
 
-def process_frames(model, device, frames, exp):
+def process_frames(model, device, frames, multiplier):
     pos = 0
     output_frames = []
 
@@ -104,10 +104,10 @@ def process_frames(model, device, frames, exp):
         
         if ssim < 0.2:
             output = []
-            for _ in range((2 ** exp) - 1):
+            for _ in range(multiplier - 1):
                 output.append(I0)
         else:
-            output = make_inference(I0, I1, 2**exp-1) if exp else []
+            output = make_inference(I0, I1, multiplier - 1) if multiplier > 1 else []
 
         add_frame(output_frames, lastframe, h, w)
         for mid in output:
@@ -119,7 +119,7 @@ def process_frames(model, device, frames, exp):
     add_frame(output_frames, lastframe, h, w)
     return torch.cat( output_frames, dim=1)
 
-def temporal_interpolation(model_path, frames, exp, device ="cuda", rife_version="v3"):
+def temporal_interpolation(model_path, frames, multiplier, device ="cuda", rife_version="v3"):
 
     input_was_uint8 = frames.dtype == torch.uint8
     if rife_version == "v4":
@@ -132,7 +132,7 @@ def temporal_interpolation(model_path, frames, exp, device ="cuda", rife_version
     model.to(device=device)
 
     with torch.no_grad():    
-        output = process_frames(model, device, frames, exp)
+        output = process_frames(model, device, frames, multiplier)
 
     if input_was_uint8:
         output = output.add_(1.0).mul_(127.5).clamp_(0, 255).to(torch.uint8)

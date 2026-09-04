@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import gc
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -35,6 +36,13 @@ USER_PROCESS_OUTPUT_KEYS = {
 
 def system_chunk_write_range(*, plan_overlap_frames: int, plan_requested_frames: int, next_overlap_frames: int, leading_overlap_already_written: bool) -> tuple[int, int]:
     return (plan_overlap_frames if leading_overlap_already_written else 0), plan_requested_frames - next_overlap_frames
+
+
+def system_chunk_output_write_range(handler, returned_frame_count: int, *, source_write_start: int, source_write_end: int, next_overlap_frames: int) -> tuple[int, int]:
+    output_write_range = getattr(handler, "output_write_range", None)
+    if callable(output_write_range):
+        return output_write_range(returned_frame_count, source_write_start=source_write_start, source_write_end=source_write_end, next_overlap_frames=next_overlap_frames)
+    return source_write_start, source_write_end
 
 
 @torch.inference_mode()
@@ -95,6 +103,7 @@ class ProcessContext:
     timing_kwargs: Callable
     system_handler: Any = None
     system_target_control: str = ""
+    spatial_upsampler_parameters: dict[str, Any] | None = None
 
 
 @dataclass
@@ -168,6 +177,7 @@ class ChunkExecutor:
                     progress.write_state.stopped = True
                     break
                 settings = context.system_handler.build_queue_settings(context.process_settings, source_path=context.source_path, start_frame=actual_control_start_frame, frame_count=plan_requested_frames, target_control=context.system_target_control, seed=chunk_index, continue_cache=progress.continue_cache, audio_track_no=context.selected_audio_track)
+                settings["spatial_upsampler_parameters"] = dict(context.spatial_upsampler_parameters or {})
                 self.reset_live_chunk_status(context.state)
                 job = self.api_session.submit_task(settings, callbacks=callbacks)
                 self.active_job["job"] = job
@@ -239,6 +249,11 @@ class ChunkExecutor:
                 gc.collect()
                 returned_frame_count = int(video_tensor_uint8.shape[1])
                 print(f"[MediaFlow] Chunk {chunk_index}: returned video tensor has {returned_frame_count} frame(s); control video lasts {plan_requested_frames} frame(s)")
+                expected_output_frame_count = getattr(context.system_handler, "expected_output_frame_count", None)
+                if callable(expected_output_frame_count):
+                    expected_frame_count = int(expected_output_frame_count(plan_requested_frames, context.system_target_control))
+                    if returned_frame_count != expected_frame_count:
+                        raise gr.Error(f"Chunk {chunk_index} returned {returned_frame_count} frame(s), but {expected_frame_count} frame(s) were expected.")
                 chunk_width, chunk_height = video.get_video_tensor_resolution(video_tensor_uint8)
                 chunk_resolution = f"{chunk_width}x{chunk_height}"
                 print(f"[MediaFlow] Chunk {chunk_index}: generated chunk resolution {chunk_resolution}")
@@ -253,17 +268,25 @@ class ChunkExecutor:
                 leading_overlap_already_written = chunk_index == 1 and context.resumed_unique_frames > 0
                 crossfade_overlap_outputs = bool(getattr(context.system_handler, "crossfade_overlap_outputs", False))
                 blended_overlap = crossfade_video_overlap(progress.overlap_tail, video_tensor_uint8[:, :plan_overlap_frames]) if crossfade_overlap_outputs and progress.overlap_tail is not None else None
-                write_start, write_end = system_chunk_write_range(plan_overlap_frames=plan_overlap_frames, plan_requested_frames=plan_requested_frames, next_overlap_frames=next_overlap_frames, leading_overlap_already_written=leading_overlap_already_written)
-                frames_to_write = write_end - write_start
-                if frames_to_write <= 0:
+                source_write_start, source_write_end = system_chunk_write_range(plan_overlap_frames=plan_overlap_frames, plan_requested_frames=plan_requested_frames, next_overlap_frames=next_overlap_frames, leading_overlap_already_written=leading_overlap_already_written)
+                source_frames_to_write = source_write_end - source_write_start
+                output_write_start, output_write_end = system_chunk_output_write_range(context.system_handler, returned_frame_count, source_write_start=source_write_start, source_write_end=source_write_end, next_overlap_frames=next_overlap_frames)
+                output_frames_to_write = output_write_end - output_write_start
+                if source_frames_to_write <= 0 or output_frames_to_write <= 0:
                     raise gr.Error(f"Chunk {chunk_index} has no new frame to write after applying its overlap.")
-                if frames_to_write > remaining_unique_frames:
-                    raise gr.Error(f"Chunk {chunk_index} would write {frames_to_write} frame(s), but only {remaining_unique_frames} frame(s) remain.")
-                if returned_frame_count < write_end:
-                    raise gr.Error(f"Chunk {chunk_index} returned {returned_frame_count} frame(s), but {write_end} frame(s) were required.")
+                if source_frames_to_write > remaining_unique_frames:
+                    raise gr.Error(f"Chunk {chunk_index} would consume {source_frames_to_write} source frame(s), but only {remaining_unique_frames} frame(s) remain.")
+                if output_write_start < 0 or output_write_end > returned_frame_count:
+                    raise gr.Error(f"Chunk {chunk_index} returned {returned_frame_count} frame(s), but output range [{output_write_start}..{output_write_end}) was required.")
                 with torch.inference_mode():
                     progress.overlap_tail = video_tensor_uint8[:, -next_overlap_frames:].clone() if crossfade_overlap_outputs and next_overlap_frames > 0 else None
 
+                output_fps = float(context.fps_float)
+                resolve_output_fps = getattr(context.system_handler, "output_fps", None)
+                if callable(resolve_output_fps):
+                    output_fps = float(resolve_output_fps(context.fps_float, context.system_target_control))
+                if returned_video_item.fps is not None and not math.isclose(float(returned_video_item.fps), output_fps, rel_tol=1e-6, abs_tol=1e-6):
+                    raise gr.Error(f"Chunk {chunk_index} returned {float(returned_video_item.fps):g} FPS, but {output_fps:g} FPS were expected.")
                 source_audio_duration_seconds = float(frames.count_planned_unique_frames(context.plans)) / float(context.fps_float) if context.use_live_av_mux else None
                 progress.write_state.ensure_started(
                     server_config=self.plugin.server_config,
@@ -276,18 +299,18 @@ class ChunkExecutor:
                     selected_audio_track=context.selected_audio_track,
                     resolved_width=progress.resolved_width,
                     resolved_height=progress.resolved_height,
-                    fps_float=context.fps_float,
+                    fps_float=output_fps,
                     source_audio_duration_seconds=source_audio_duration_seconds,
                 )
                 if context.continued_mode and progress.write_state.output_path_for_write != context.output_path and callable(getattr(context.system_handler, "move_continue_cache", None)):
                     context.system_handler.move_continue_cache(context.output_path, progress.write_state.mux_output_path)
                 if blended_overlap is not None:
                     last_frame_tensor = progress.write_state.write_chunk(process_is_hdr=False, video_tensor_hdr=None, video_tensor_uint8=blended_overlap, start_frame=0, frame_count=plan_overlap_frames)
-                remaining_write_start = plan_overlap_frames if blended_overlap is not None else write_start
-                remaining_frames_to_write = frames_to_write - plan_overlap_frames if blended_overlap is not None else frames_to_write
+                remaining_write_start = plan_overlap_frames if blended_overlap is not None else output_write_start
+                remaining_frames_to_write = output_frames_to_write - plan_overlap_frames if blended_overlap is not None else output_frames_to_write
                 if remaining_frames_to_write > 0:
                     last_frame_tensor = progress.write_state.write_chunk(process_is_hdr=False, video_tensor_hdr=None, video_tensor_uint8=video_tensor_uint8, start_frame=remaining_write_start, frame_count=remaining_frames_to_write)
-                progress.written_unique_frames += frames_to_write
+                progress.written_unique_frames += source_frames_to_write
                 if self._preview_enabled():
                     self.preview_state["image"] = video.frame_to_image(last_frame_tensor)
                 if progress.continue_cache is not None and hasattr(context.system_handler, "save_continue_cache"):
@@ -302,13 +325,14 @@ class ChunkExecutor:
                 progress.chunk_output_paths, gallery_refresh = self._prune_generated_artifacts(context.state, progress.chunk_output_paths, preserve_paths=[progress.last_segment_path] if progress.last_segment_path else None)
                 if chunk_index < len(context.plans):
                     progress.current_chunk_display = progress.completed_chunks + 1
-                    yield self.ui_update(status_ui.render_chunk_status_html(context.total_chunks_display, progress.completed_chunks, progress.current_chunk_display, "Starting new Chunk", f"Chunk {progress.completed_chunks} finished with {frames_to_write} written frame(s). Preparing next chunk...", continued=context.continued_mode, **context.timing_kwargs(progress.completed_chunks)), self.ui_skip, str(time.time_ns()), gallery_refresh=gallery_refresh)
+                    yield self.ui_update(status_ui.render_chunk_status_html(context.total_chunks_display, progress.completed_chunks, progress.current_chunk_display, "Starting new Chunk", f"Chunk {progress.completed_chunks} finished with {output_frames_to_write} output frame(s) from {source_frames_to_write} source frame(s). Preparing next chunk...", continued=context.continued_mode, **context.timing_kwargs(progress.completed_chunks)), self.ui_skip, str(time.time_ns()), gallery_refresh=gallery_refresh)
                 else:
                     progress.current_chunk_display = progress.completed_chunks
-                    yield self.ui_update(status_ui.render_chunk_status_html(context.total_chunks_display, progress.completed_chunks, progress.current_chunk_display, "Chunk Completed", f"Chunk {progress.completed_chunks} finished with {frames_to_write} written frame(s).", continued=context.continued_mode, **context.timing_kwargs(progress.completed_chunks)), self.ui_skip, str(time.time_ns()), gallery_refresh=gallery_refresh)
+                    yield self.ui_update(status_ui.render_chunk_status_html(context.total_chunks_display, progress.completed_chunks, progress.current_chunk_display, "Chunk Completed", f"Chunk {progress.completed_chunks} finished with {output_frames_to_write} output frame(s) from {source_frames_to_write} source frame(s).", continued=context.continued_mode, **context.timing_kwargs(progress.completed_chunks)), self.ui_skip, str(time.time_ns()), gallery_refresh=gallery_refresh)
                 continue
 
             settings = build_task_settings(context.process_settings, is_user_process=context.is_user_process)
+            settings["spatial_upsampler_parameters"] = dict(context.spatial_upsampler_parameters or {})
             chunk_prompt_start_seconds = float(actual_done) / float(context.fps_float)
             settings["model_type"] = context.model_type
             settings["prompt"] = prompts.resolve_prompt_for_chunk(context.prompt_schedule, chunk_prompt_start_seconds, context.default_prompt_text)

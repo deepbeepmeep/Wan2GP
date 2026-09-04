@@ -25,7 +25,7 @@ except Exception:  # pragma: no cover
     KeyBindings = None
 
 from shared.deepy import media_registry, tool_settings as deepy_tool_settings, ui_settings as deepy_ui_settings
-from shared.deepy.engine import begin_assistant_turn, get_or_create_assistant_session
+from shared.deepy.engine import get_or_create_assistant_session
 from shared.gradio import assistant_chat
 from shared.utils.thread_utils import AsyncStream, async_run_in
 from shared.utils.utils import get_video_info
@@ -824,6 +824,69 @@ class DeepyCliSession:
         self._assistant_live_print_state.clear()
         self._reset_status()
 
+    def _saved_sessions(self) -> list[dict[str, Any]]:
+        return list(self._deps.controller.list_saved_sessions() or [])
+
+    def _resolve_saved_session(self, reference: str) -> dict[str, Any] | None:
+        sessions = self._saved_sessions()
+        value = str(reference or "").strip()
+        if value.isdigit() and 1 <= int(value) <= len(sessions):
+            return sessions[int(value) - 1]
+        folded = value.casefold()
+        exact = [item for item in sessions if str(item.get("id", "")).casefold() == folded or str(item.get("title", "")).casefold() == folded]
+        if len(exact) == 1:
+            return exact[0]
+        partial = [item for item in sessions if folded and folded in str(item.get("title", "")).casefold()]
+        return partial[0] if len(partial) == 1 else None
+
+    def _list_saved_sessions(self) -> None:
+        sessions = self._saved_sessions()
+        if not sessions:
+            self._print("No saved Deepy sessions.")
+            return
+        active_id = str(self._session.storage_session_id or "")
+        for index, item in enumerate(sessions, 1):
+            marker = " *" if str(item.get("id", "")) == active_id else ""
+            self._print(f"  {index}. {item.get('title', 'Deepy session')} [{item.get('id', '')}]{marker}")
+
+    def _resume_saved_session(self, reference: str) -> None:
+        if not self._deps.controller.multi_session_enabled():
+            self._print("[ERROR] Enable multi-session mode in Deepy Settings and restart WanGP first.")
+            return
+        selected = self._resolve_saved_session(reference)
+        if selected is None:
+            self._print("[ERROR] Select a unique session by number, exact title, or session id. Use /sessions to list them.")
+            return
+        try:
+            result = self._deps.controller.resume_saved_session(self._state, str(selected.get("id", "")))
+        except Exception as exc:
+            self._print(f"[ERROR] {exc}")
+            return
+        self._assistant_live_print_state.clear()
+        self._reset_status()
+        self._print(f"Resumed {selected.get('title', 'Deepy session')} ({result['prefill_tokens']:,} context tokens; {result['injected']} Gallery item(s) injected).")
+        for warning in result.get("warnings", []):
+            self._print(f"[WARN] {warning}")
+        if self._session.pending_action_replay is not None:
+            transcript_start = len(self._session.chat_transcript)
+            self._print("Replaying the interrupted action from its beginning...")
+            for _update in self._deps.controller.resume_restored_action(self._state, command_callback=self._send_cmd):
+                pass
+            self._print_new_assistant_messages(transcript_start)
+
+    def _start_new_saved_session(self) -> None:
+        if not self._deps.controller.multi_session_enabled():
+            self._print("[ERROR] Enable multi-session mode in Deepy Settings and restart WanGP first.")
+            return
+        try:
+            self._deps.controller.start_new_session(self._state)
+        except Exception as exc:
+            self._print(f"[ERROR] {exc}")
+            return
+        self._assistant_live_print_state.clear()
+        self._reset_status()
+        self._print("New Deepy session ready. Its folder will be created with the first request.")
+
     def _print_new_assistant_messages(self, transcript_start: int) -> None:
         printed_any = False
         show_reasoning = int(getattr(self._deps.controller, "get_verbose_level", lambda: 0)() or 0) <= 1
@@ -943,8 +1006,7 @@ class DeepyCliSession:
             self._print(self._deps.controller.requirement_error_text())
             return
         transcript_start = len(self._session.chat_transcript)
-        user_message_id, _event = assistant_chat.add_user_message(self._session, prompt, queued=False)
-        begin_assistant_turn(self._session, user_message_id, prompt)
+        self._deps.controller.begin_direct_request(self._state, prompt)
         self._reset_status()
         tools = self._deps.controller.create_tools(self._state, self._send_cmd, session=self._session)
         completed = False
@@ -1013,6 +1075,9 @@ class DeepyCliSession:
             self._print("  /template <tool> <variant>  Set the preset for any Deepy generation tool")
             self._print("  /templates [tool]  List available preset variants")
             self._print("  /template-props [on|off]  Show or toggle template resolution/frame properties")
+            self._print("  /sessions       List saved sessions (* marks the active session)")
+            self._print("  /resume <ref>   Resume a saved session by number, title, or id")
+            self._print("  /new            Start a new persistent session")
             self._print("  /reset          Clear the Deepy conversation but keep media")
             self._print("  /clear-media    Remove all virtual gallery media")
             self._print("  /quit           Exit the session")
@@ -1220,9 +1285,20 @@ class DeepyCliSession:
             else:
                 self._print(f"Template properties {'enabled' if settings['use_template_properties'] else 'disabled'}.")
             return True
+        if command == "/sessions":
+            self._list_saved_sessions()
+            return True
+        if command == "/resume":
+            self._resume_saved_session(argument)
+            return True
+        if command == "/new":
+            self._start_new_saved_session()
+            return True
         if command == "/reset":
             self._reset_conversation()
-            self._print("Deepy conversation reset.")
+            settings = self._deps.controller.get_session_ui_settings()
+            started_new = bool(settings["effective_multi_session"] and settings["reset_mode"] == "new_session")
+            self._print("New Deepy session ready." if started_new else "Deepy conversation reset.")
             return True
         if command == "/clear-media":
             self._gallery.clear_media()

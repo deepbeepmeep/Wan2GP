@@ -148,8 +148,8 @@ def is_finetune_model(deps: FinetuneEditorDeps, model_type: str | None) -> bool:
 def create_editor() -> FinetuneEditorUI:
     with gr.Column(visible=False, elem_classes=["wangp-finetune-editor-popup"]) as popup:
         with gr.Column(elem_classes=["wangp-model-info-card", "wangp-finetune-editor-card"]):
-            with gr.Row(elem_classes=["wangp-assistant-chat__template-modal-titlebar", "wangp-finetune-editor-titlebar"]):
-                title = gr.HTML("<div class='wangp-assistant-chat__template-modal-heading'>Finetune Creator</div>")
+            with gr.Row(elem_classes=["chat__template-modal-titlebar", "wangp-finetune-editor-titlebar"]):
+                title = gr.HTML("<div class='chat__template-modal-heading'>Finetune Creator</div>")
                 close_button = gr.Button("x", elem_id="wangp_finetune_editor_close", elem_classes=["wangp-model-info-close"], min_width=1, scale=0)
             with gr.Column(elem_classes=["wangp-finetune-editor-content"]):
                 gr.HTML(
@@ -237,16 +237,16 @@ def create_editor() -> FinetuneEditorUI:
             with gr.Column(elem_classes=["wangp-finetune-editor-footer"]):
                 use_current_settings = gr.Checkbox(label="Use Current Model Settings as Default Settings", value=False)
                 with gr.Row(elem_classes=["wangp-finetune-editor-actions"]) as creator_actions:
-                    create_button = gr.Button("Create", variant="primary", size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn", "wangp-assistant-chat__template-modal-btn--primary"])
-                    create_new_button = gr.Button("Create & New", size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn"])
-                    cancel_button = gr.Button("Cancel", size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn"])
+                    create_button = gr.Button("Create", variant="primary", size="sm", elem_classes=["chat__template-modal-btn", "chat__template-modal-btn--primary"])
+                    create_new_button = gr.Button("Create & New", size="sm", elem_classes=["chat__template-modal-btn"])
+                    cancel_button = gr.Button("Cancel", size="sm", elem_classes=["chat__template-modal-btn"])
                 with gr.Row(visible=False, elem_classes=["wangp-finetune-editor-actions"]) as editor_actions:
-                    save_button = gr.Button("Save", variant="primary", size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn", "wangp-assistant-chat__template-modal-btn--primary"])
-                    export_button = gr.DownloadButton("Export", value=None, size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn"])
-                    delete_button = gr.Button("Delete", variant="stop", size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn"])
+                    save_button = gr.Button("Save", variant="primary", size="sm", elem_classes=["chat__template-modal-btn", "chat__template-modal-btn--primary"])
+                    export_button = gr.DownloadButton("Export", value=None, size="sm", elem_classes=["chat__template-modal-btn"])
+                    delete_button = gr.Button("Delete", variant="stop", size="sm", elem_classes=["chat__template-modal-btn"])
                 with gr.Row(visible=False, elem_classes=["wangp-finetune-editor-actions", "wangp-finetune-editor-delete-confirm"]) as delete_confirm:
-                    confirm_delete_button = gr.Button("Confirm Delete", variant="stop", size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn"])
-                    cancel_delete_button = gr.Button("Cancel", size="sm", elem_classes=["wangp-assistant-chat__template-modal-btn"])
+                    confirm_delete_button = gr.Button("Confirm Delete", variant="stop", size="sm", elem_classes=["chat__template-modal-btn"])
+                    cancel_delete_button = gr.Button("Cancel", size="sm", elem_classes=["chat__template-modal-btn"])
     ui = FinetuneEditorUI(
         popup=popup,
         title=title,
@@ -652,7 +652,7 @@ def open_editor(deps: FinetuneEditorDeps, state, source_model_type_override=None
     current_source_choice = _creator_current_choice(deps, source_model_type)
     return (
         gr.update(visible=True),
-        f"<div class='wangp-assistant-chat__template-modal-heading'>{title}</div>",
+        f"<div class='chat__template-modal-heading'>{title}</div>",
         "editor" if editor_mode else "creator",
         source_model_type,
         original_id,

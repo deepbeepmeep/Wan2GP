@@ -14,16 +14,21 @@ from shared.deepy import vision as deepy_vision
 from shared.deepy import video_tools as deepy_video_tools
 from shared.deepy.engine import (
     assistant_steering_interrupt_due,
+    begin_assistant_pause,
     begin_assistant_action,
     begin_assistant_thought,
+    checkpoint_assistant_thought,
     checkpoint_assistant_turn,
+    clear_assistant_pause,
     clear_assistant_steering,
     finish_assistant_action,
     finish_assistant_thought,
     finish_assistant_turn,
+    mark_assistant_paused,
     mark_assistant_turn_message,
     rollback_assistant_turn,
     interrupt_assistant_for_steering,
+    wait_for_assistant_resume,
 )
 from shared.gradio import assistant_chat
 
@@ -126,6 +131,7 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
     if assistant_badge:
         _send(send_cmd, assistant_chat.set_message_badge(session, assistant_id, assistant_badge))
     session.messages.append({"role": "user", "content": text})
+    checkpoint_assistant_turn(session)
     answer_parts: list[str] = []
     answer_segment_parts: list[str] = []
     answer_block_id = ""
@@ -146,14 +152,32 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
         status_phase = phase
         _send(send_cmd, assistant_chat.build_status_event(text, kind=kind, session=session))
 
+    def wait_while_paused() -> bool:
+        nonlocal status_phase
+        if not session.pause_requested:
+            return not session.interrupt_requested
+        if not begin_assistant_pause(session):
+            return not session.interrupt_requested
+        if not mark_assistant_paused(session):
+            return not session.interrupt_requested
+        _send(send_cmd, assistant_chat.build_status_event("Deepy is paused.", kind="paused", session=session))
+        if not wait_for_assistant_resume(session):
+            return False
+        _send(send_cmd, assistant_chat.build_status_event(f"Resuming {engine_label}...", kind="resuming", session=session))
+        status_phase = ""
+        return True
+
     def finish_reasoning() -> None:
         nonlocal reasoning_active
         if reasoning_active:
+            completed_reasoning = "".join(reasoning_parts).strip()
             if reasoning_block_id and reasoning_parts:
-                _reasoning_id, payload = assistant_chat.upsert_reasoning_block(session, assistant_id, reasoning_block_id, "".join(reasoning_parts), streaming=False)
+                _reasoning_id, payload = assistant_chat.upsert_reasoning_block(session, assistant_id, reasoning_block_id, completed_reasoning, streaming=False)
                 _send(send_cmd, payload)
             finish_assistant_thought(session)
             reasoning_active = False
+            if completed_reasoning:
+                checkpoint_assistant_thought(session, f"<think>\n{completed_reasoning}\n</think>")
 
     def finish_answer_segment() -> None:
         nonlocal answer_block_id
@@ -165,7 +189,7 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
 
     def on_event(event: BackendEvent) -> None:
         nonlocal answer_block_id, reasoning_active, reasoning_source, reasoning_block_id, reasoning_block_no, reasoning_parts
-        if session.interrupt_requested:
+        if not wait_while_paused():
             return
         if event.kind in {"commentary_delta", "commentary_replace"} and event.text:
             finish_reasoning()
@@ -264,6 +288,7 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
             _send(send_cmd, payload)
             result = {"status": "error", "tool": tool_name, "error": event.text or "The remote provider rejected this tool request before execution."}
             _send(send_cmd, assistant_chat.complete_tool_call(session, assistant_id, ui_tool_id, result))
+            checkpoint_assistant_turn(session)
             set_remote_status("waiting", f"Waiting for {engine_label}...", "loading")
         elif event.kind == "usage":
             stats = build_remote_usage_stats(event.data)
@@ -282,6 +307,7 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
             detail = "The remote LLM compacted earlier conversation context. Its internal summary is not exposed to WanGP." + before_label
             _block_id, payload = assistant_chat.add_context_summary(session, assistant_id, detail)
             _send(send_cmd, payload)
+            checkpoint_assistant_turn(session)
             set_remote_status("compaction", f"{engine_label} compacted its context...", "loading")
 
     def tool_progress(status=None, status_text=None, result=None):
@@ -293,10 +319,11 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
 
     def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         nonlocal reasoning_active
+        if not wait_while_paused():
+            return {"status": "interrupted", "tool": name, "cancelled": True, "error": "The user interrupted before this action started."}
         finish_answer_segment()
         if reasoning_active:
-            finish_assistant_thought(session)
-            reasoning_active = False
+            finish_reasoning()
         validation_error = toolbox.validate_tool_call(name, arguments)
         if validation_error:
             return {"status": "error", "tool": name, "error": validation_error}
@@ -314,10 +341,11 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
         except Exception as exc:
             result = toolbox.file_access_policy.virtualize_result({"status": "error", "tool": name, "error": str(exc)})
         session.messages.append({"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(result, ensure_ascii=False)})
-        checkpoint_assistant_turn(session)
         _send(send_cmd, assistant_chat.complete_tool_call(session, assistant_id, ui_tool_id, result))
+        checkpoint_assistant_turn(session)
         active_tool.clear()
         finish_assistant_action(session)
+        wait_while_paused()
         if not session.interrupt_requested:
             set_remote_status("waiting", f"Waiting for {engine_label}...", "loading")
         return result
@@ -360,4 +388,5 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
                 rollback_assistant_turn(session)
             finish_assistant_turn(session)
             clear_assistant_steering(session)
+            clear_assistant_pause(session)
         _send(send_cmd, assistant_chat.build_status_event(None, visible=False, session=session))

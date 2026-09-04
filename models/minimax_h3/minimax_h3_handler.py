@@ -8,8 +8,9 @@ import torch
 from shared.utils.hf import build_hf_url
 from shared.utils.frame_scheduler import normalize_overlap
 
-from .constants import (H3_MASK_MODE_DEFAULT, H3_MASK_MODE_GROUPED_ROWS, H3_MASK_MODE_SHARED_TIMESTEP,
-                        H3_MASK_MODE_SETTING, H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, h3_grouped_masking_enabled)
+from .constants import (H3_AUDIO_REFINEMENT_SETTING, H3_MASK_MODE_DEFAULT, H3_MASK_MODE_GROUPED_ROWS,
+                        H3_MASK_MODE_SHARED_TIMESTEP, H3_MASK_MODE_SETTING, H3_PHASE_2_NOISE_LEVEL_START_DEFAULT,
+                        h3_grouped_masking_enabled)
 from .minimax_h3_main import (AUDIO_VAE_FILE, LATENT_UPSCALER_FILE, LATENT_UPSCALER_FOLDER, TEXT_ENCODER_FOLDER,
                               VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE)
 from .pdd import PDD_BLOCK_SIZE, PDD_NUM_STEPS
@@ -148,6 +149,18 @@ H3_STANDARD_SAMPLER_INFOS = """
 - **Ralston 2S:** in **Sampler Solver / Scheduler**, select **Ralston 2S** to use the anchored deterministic second-order Runge-Kutta sampler. It evaluates H3 at the start and two-thirds point of every interval, anchors the second prediction to the interval start, then combines both predictions with Ralston's `1/4, 3/4` weights. This can reduce numerical integration error and may improve fine-detail retention, motion stability, and audio/video coherence. Perceptual improvements are prompt-dependent and are not guaranteed. Its second prediction depends on the first, so they cannot run in parallel: Ralston performs two full transformer predictions per step and sampling is approximately **2x slower** than Euler or RES Multistep at the same step count. Spectrum Feature Forecasting is unsupported with Ralston 2S.
 """
 
+H3_AUDIO_REFINEMENT_INFOS = """
+### Audio Refinement Extra Phase
+
+Use **Audio Refinement Extra Phase** to regenerate the soundtrack after video generation with more denoising steps and without LoRAs. WanGP locks the completed video, reduces its width and height to approximately one quarter for a much faster audio-only pass, then keeps the original full-resolution video and replaces only its soundtrack. This extra phase runs after all video phases, so it is the second phase after normal generation and the third phase after two-phase video generation.
+
+- **High Quality:** 40 steps; slowest option.
+- **Medium Quality:** 30 steps.
+- **Low Quality:** 20 steps; fastest option.
+
+The extra phase uses the prompt and the reduced locked video only. Reference images, reference video or audio, Control Video, and selected LoRAs are not injected again. FL2VA hides this option when an input soundtrack controls the result, and PDD variants do not offer it because their denoising schedule is fixed to 8 steps.
+"""
+
 H3_COMMON_RUNTIME_INFOS = """
 - **Sol-Attn:** in **Advanced Mode > Misc. > Override Attention Mode**, select **sol**. The **Start Tau** slider then appears below the attention selector and shows that End Tau is fixed at `0.8`. H3 defaults to `1.3`; this value is used on the first denoising step and decreases linearly to `0.8` on the final step. Use `1.0` for the Sol-Attn paper starting value, increase it to route more attention blocks through the approximate path for greater speed, or lower it for denser attention and higher fidelity. It uses sparse attention only on large visual sequences and requires BF16, Triton 3.6 or newer, and a CUDA NVIDIA GPU using SM86, SM89, SM90, SM100, SM120, or SM121 (such as RTX 30/40/50-series, H100/H200, B100/B200, or DGX Spark); the dropdown reports whether it is available on the current system.
 - **Text Encoder:** at the bottom of **Misc.**, use the **Text Encoder** configuration to reduce system RAM. **Qwen3-VL BF16** uses the most memory; **Quanto INT8** is a balanced lower-memory choice; **NVFP4 AWQ**, **GGUF Q4_K_M**, and especially **GGUF Q2_K** reduce it further. More aggressive quantization can slightly affect prompt interpretation.
@@ -162,7 +175,7 @@ At each step, PDD merges four learned denoising-interval outputs into one predic
 This model requires exactly **8 inference steps** and the **Euler** sampler. Two-phase generation is disabled. Use the FL2VA PDD weights only with FL2VA and the Ref2VA PDD weights only with Ref2VA.
 """
 
-H3_RUNTIME_INFOS = H3_PHASE_INFOS + H3_PHASE_TURBO_INFOS + H3_SPEED_INFOS + H3_STANDARD_SAMPLER_INFOS + H3_COMMON_RUNTIME_INFOS
+H3_RUNTIME_INFOS = H3_PHASE_INFOS + H3_PHASE_TURBO_INFOS + H3_AUDIO_REFINEMENT_INFOS + H3_SPEED_INFOS + H3_STANDARD_SAMPLER_INFOS + H3_COMMON_RUNTIME_INFOS
 H3_PDD_RUNTIME_INFOS = PDD_INFOS + H3_SPEED_INFOS + H3_COMMON_RUNTIME_INFOS
 
 PRUNED_INFOS = """
@@ -234,6 +247,7 @@ class family_handler:
     def query_model_def(base_model_type, model_def):
         reference_mode = base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE)
         pruned = base_model_type in (FL2VA_PRUNED_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE)
+        vdn = model_def.get("vdn", False)
         pdd = model_def.get("pdd", False)
         text_encoder_variant = model_def.get("text_encoder_variant")
         text_encoder_files = [TEXT_ENCODER_BF16, TEXT_ENCODER_INT8] if text_encoder_variant is None else TEXT_ENCODER_VARIANTS[text_encoder_variant]
@@ -261,6 +275,19 @@ class family_handler:
                     ("Shared Timestep [same denoising timestep for fixed and editable latent rows]", H3_MASK_MODE_SHARED_TIMESTEP),
                 ],
                 "video_prompt_type": "G",
+            }, {
+                "id": H3_AUDIO_REFINEMENT_SETTING,
+                "name": "Audio Refinement Extra Phase",
+                "label": "Audio Refinement Extra Phase",
+                "type": "dropdown",
+                "default": "none",
+                "choices": [
+                    ("None", "none"),
+                    ("High Quality (40 steps, much slower)", "high"),
+                    ("Medium Quality (30 steps, slower)", "medium"),
+                    ("Low Quality (20 steps, faster)", "low"),
+                ],
+                **({"audio_prompt_type_not": "AK"} if not reference_mode else {}),
             }],
             "switch_threshold": {
                 "label": "Phase 2 Noise Level Start",
@@ -277,7 +304,13 @@ class family_handler:
             "skip_steps_multiplier_choices": FIRST_BLOCK_CACHE_STRENGTHS,
             "skip_steps_multiplier_label": "First Block Cache Threshold",
             "first_block_cache_thresholds": FIRST_BLOCK_CACHE_THRESHOLDS,
-            "sol_attention": True,
+            "custom_attention_modes": {
+                "vdn": {"label": "VDN hybrid attention", "supports_sparsity": False, "installed": True, "supported": True},
+            } if vdn else {
+                "sol": {"label": "Sol sparse attention, requires Triton and RTX 30xx or newer", "supports_sparsity": True},
+            },
+            "default_attention_modes_supported": not vdn,
+            "attention": {">=0": "vdn"} if vdn else None,
             "attention_sparsity": {
                 "label": "Start Tau (higher = more sparse/faster; lower = more faithful; End Tau = 0.8)",
                 "start": 0.0,
@@ -306,7 +339,7 @@ class family_handler:
             "video_prompt_enhancer_instructions": REF2VA_IMAGE_SYSTEM_PROMPT if reference_mode else FL2VA_IMAGE_SYSTEM_PROMPT,
             "text_prompt_enhancer_max_tokens": 2048 if reference_mode else 1024,
             "video_prompt_enhancer_max_tokens": 2048 if reference_mode else 1024,
-            "profiles_dir": ["minimax_h3"],
+            "profiles_dir": ["minimax_h3_vdn"] if vdn else ["minimax_h3"],
             "finetune_custom_urls": ["video_vae_file", "audio_vae_file"],
             "finetunes_infos": H3_FINETUNES_INFOS,
             "finetunes_params": H3_FINETUNES_PARAMS,
@@ -336,6 +369,8 @@ class family_handler:
                 "lower_ram": {"name": "Lower RAM", "qkv_splitting": False},
             },
         }
+        if pdd:
+            result["custom_settings"] = result["custom_settings"][:1]
         if reference_mode:
             result.update({
                 "sliding_window": True,
@@ -601,7 +636,8 @@ class family_handler:
                                  qkv_layout=model_def["qkv_layout"],
                                  video_vae_filename=model_def.get("video_vae_file", VIDEO_VAE_FILE),
                                  audio_vae_filename=model_def.get("audio_vae_file", AUDIO_VAE_FILE), shared_h3_pipeline=shared_h3_pipeline,
-                                 pdd=pdd, pdd_num_steps=PDD_NUM_STEPS if pdd else None, pdd_block_size=PDD_BLOCK_SIZE if pdd else None)
+                                 pdd=pdd, pdd_num_steps=PDD_NUM_STEPS if pdd else None, pdd_block_size=PDD_BLOCK_SIZE if pdd else None,
+                                 vdn=model_def.get("vdn", False))
         pipe = {"transformer": pipeline.transformer}
         if shared_h3_pipeline is None:
             pipe.update({

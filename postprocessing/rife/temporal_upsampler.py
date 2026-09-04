@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import torch
@@ -29,9 +28,9 @@ class RifeTemporalUpsampler(temporal_upsampler_api.SimpleScaleSuffixMixin):
             "pos": 10,
             "method_pos": {cls.METHOD: 10},
             "methods": [("RIFE", cls.METHOD)],
-            "multipliers": {cls.METHOD: (2.0, 4.0)},
+            "multipliers": {cls.METHOD: (2.0, 3.0, 4.0)},
             "default_temporal_upsampling": "rife2",
-            "description": "Increase video frame rate by interpolating smooth intermediate frames.",
+            "description": "Increase video frame rate by interpolating smooth intermediate frames. The x3 mode uses RIFE v4 for exact one-third temporal positions.",
         }
 
     @classmethod
@@ -46,8 +45,8 @@ class RifeTemporalUpsampler(temporal_upsampler_api.SimpleScaleSuffixMixin):
     def config(self, server_config: dict[str, Any] | None = None) -> dict[str, Any]:
         return temporal_upsampler_api.read_config_section(self.server_config if server_config is None else server_config, self)
 
-    def query_download_def(self, *, enabled_only: bool = True) -> dict[str, Any]:
-        return {"repoId": "DeepBeepMeep/Wan2.1", "sourceFolderList": [""], "fileList": [[self._filename_for_version(self.config()["version"])]]}
+    def query_download_def(self, *, enabled_only: bool = True, temporal_upsampling: str = "") -> dict[str, Any]:
+        return {"repoId": "DeepBeepMeep/Wan2.1", "sourceFolderList": [""], "fileList": [[self._filename_for_version(self._version_for_value(temporal_upsampling))]]}
 
     def query_download_defs(self, *, enabled_only: bool = True) -> list[dict[str, Any]]:
         return [self.query_download_def(enabled_only=enabled_only)]
@@ -55,12 +54,12 @@ class RifeTemporalUpsampler(temporal_upsampler_api.SimpleScaleSuffixMixin):
     def download(self, process_files, *, send_cmd=None, status_text: str | None = None, temporal_upsampling: str = ""):
         from shared.utils.download import process_files_def_if_needed
 
-        return process_files_def_if_needed(self.query_download_def(enabled_only=True), send_cmd=send_cmd, status_text=status_text or "Downloading RIFE temporal upsampling model files...")
+        return process_files_def_if_needed(self.query_download_def(enabled_only=True, temporal_upsampling=temporal_upsampling), send_cmd=send_cmd, status_text=status_text or "Downloading RIFE temporal upsampling model files...")
 
     def create_config_ui(self, gr, config: dict[str, Any], *, lock_config: bool = False):
         with gr.Group():
             rife_version = gr.Dropdown(
-                choices=[("RIFE HDv3 (default)", self.VERSION_V3), ("RIFE v4.26 (latest)", self.VERSION_V4)],
+                choices=[("RIFE HDv3", self.VERSION_V3), ("RIFE v4.26 (default, required for x3)", self.VERSION_V4)],
                 value=self.normalize_config_section(config)["version"],
                 label="RIFE Temporal Upsampling Model",
                 interactive=not lock_config,
@@ -79,10 +78,12 @@ class RifeTemporalUpsampler(temporal_upsampler_api.SimpleScaleSuffixMixin):
             return sample, previous_last_frame, fps
         if split[1] not in self.query_temporal_upsampler_def()["multipliers"][self.METHOD]:
             raise ValueError(f"Unknown temporal upsampling mode: {temporal_upsampling}")
-        exp = int(round(math.log2(split[1])))
-        if exp <= 0:
+        multiplier = int(split[1])
+        if multiplier <= 1:
             return sample, previous_last_frame, fps
-        rife_version = self.config()["version"]
+        rife_version = self._version_for_value(temporal_upsampling)
+        if multiplier == 3 and self.config()["version"] != self.VERSION_V4:
+            print("[RIFE] x3 uses RIFE v4.26 because HDv3 cannot evaluate exact one-third timesteps")
         rife_model_path = self.files_locator.locate_file(self._filename_for_version(rife_version))
         if previous_last_frame is not None and previous_last_frame.dtype != sample.dtype:
             if sample.dtype == torch.uint8:
@@ -96,12 +97,16 @@ class RifeTemporalUpsampler(temporal_upsampler_api.SimpleScaleSuffixMixin):
         if previous_last_frame is not None:
             sample = torch.cat([previous_last_frame, sample], dim=1)
             previous_last_frame = sample[:, -1:].clone()
-            sample = temporal_interpolation(rife_model_path, sample, exp, device=processing_device, rife_version=rife_version)
+            sample = temporal_interpolation(rife_model_path, sample, multiplier, device=processing_device, rife_version=rife_version)
             sample = sample[:, 1:]
         else:
-            sample = temporal_interpolation(rife_model_path, sample, exp, device=processing_device, rife_version=rife_version)
+            sample = temporal_interpolation(rife_model_path, sample, multiplier, device=processing_device, rife_version=rife_version)
             previous_last_frame = sample[:, -1:].clone()
-        return sample, previous_last_frame, fps * 2**exp
+        return sample, previous_last_frame, fps * multiplier
+
+    def _version_for_value(self, temporal_upsampling: str) -> str:
+        split = self.split_value(temporal_upsampling)
+        return self.VERSION_V4 if split is not None and split[1] == 3.0 else self.config()["version"]
 
     def _filename_for_version(self, version: str) -> str:
         return RIFE_V4_FILENAME if version == self.VERSION_V4 else RIFE_V3_FILENAME

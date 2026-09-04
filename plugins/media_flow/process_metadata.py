@@ -165,7 +165,7 @@ def log_existing_output_metadata(output_path: str, verbose_level: int) -> None:
     print(f"[MediaFlow] Existing output metadata found: creation_date={creation_date}, generation_time={generation_time_text}")
 
 
-def store_output_metadata(output_path: str, last_segment_path: str | None, *, source_path: str, process_name: str, source_start_seconds: float, start_frame: int, fps_float: float, selected_audio_track: int | None, total_generation_time: float, actual_frame_count: int, process_metadata: dict | None = None, verbose_level: int = 0) -> bool:
+def store_output_metadata(output_path: str, last_segment_path: str | None, *, source_path: str, process_name: str, source_start_seconds: float, start_frame: int, fps_float: float, selected_audio_track: int | None, total_generation_time: float, actual_frame_count: int, source_frame_count: int | None = None, process_metadata: dict | None = None, verbose_level: int = 0) -> bool:
     if not os.path.isfile(output_path):
         return False
     metadata = {}
@@ -179,9 +179,10 @@ def store_output_metadata(output_path: str, last_segment_path: str | None, *, so
         print(f"[MediaFlow] Warning: no segment metadata source was available for {output_path}")
     final_metadata = metadata.copy()
     source_name = os.path.basename(source_path)
-    end_frame = max(int(start_frame), int(start_frame) + max(0, int(actual_frame_count)) - 1)
+    source_frame_count = int(actual_frame_count) if source_frame_count is None else int(source_frame_count)
+    end_frame = max(int(start_frame), int(start_frame) + max(0, source_frame_count) - 1)
     start_seconds = max(0.0, float(source_start_seconds or 0.0))
-    end_seconds = start_seconds + max(0, int(actual_frame_count)) / float(fps_float)
+    end_seconds = start_seconds + max(0, source_frame_count) / float(fps_float)
     final_metadata["video_guide"] = build_virtual_media_path(source_path, start_frame=start_frame, end_frame=end_frame, audio_track_no=selected_audio_track)
     final_metadata["video_length"] = int(actual_frame_count)
     final_metadata["frame_count"] = int(actual_frame_count)

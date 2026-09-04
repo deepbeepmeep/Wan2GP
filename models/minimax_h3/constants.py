@@ -1,4 +1,6 @@
 H3_PHASE_2_NOISE_LEVEL_START_DEFAULT = 0.9035
+H3_AUDIO_REFINEMENT_SETTING = "audio_refinement"
+H3_AUDIO_REFINEMENT_STEPS = {"high": 40, "medium": 30, "low": 20}
 
 H3_MASK_MODE_SETTING = "h3_mask_mode"
 H3_MASK_MODE_SHARED_TIMESTEP = "shared_timestep"

@@ -50,6 +50,7 @@ def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default
     add("--profile", type=str, default=-1, help="Profile No")
     add("--verbose", type=str, default=1, help="Verbose level")
     add("--debug-deepy", type=str, default=None, help="Enable Deepy verbose debug logging and write it to the given folder")
+    add("--deepy-sessions-dir", type=str, default="", metavar="FOLDER", help="Store persistent Deepy sessions in FOLDER (default: ./deepy_sessions)")
     add("--llm-io", type=str, default="", metavar="FOLDER", help="Write a plain-text transcript of all local and remote LLM input/output to FOLDER")
     add("--steps", type=int, default=0, help="default denoising steps")
     add("--frames", type=int, default=0, help="default number of frames")

@@ -16,31 +16,6 @@ except ImportError:
 _SAMPLER_NUMERIC_GUARD = os.environ.get("WAN2GP_NANOVLLM_SAMPLER_NUMERIC_GUARD", "0") == "1"
 _REPETITION_INCREMENT_LIMIT = 6
 _REPETITION_RUNTIME_SCALARS = ("stored_count", "new_count", "virtual_count", "penalty", *(f"{kind}_{index}" for kind in ("new", "virtual") for index in range(_REPETITION_INCREMENT_LIMIT)))
-_MIN_P_TUNED_BUCKETS = set()
-
-
-def _min_p_size_bucket(n_elements: int) -> int:
-    if n_elements <= 65_536:
-        return 0
-    if n_elements <= 131_072:
-        return 1
-    if n_elements <= 262_144:
-        return 2
-    return 3
-
-
-def _min_p_size_range_label(size_bucket: int) -> str:
-    return ("<= 65,536", "65,537-131,072", "131,073-262,144", "> 262,144")[size_bucket]
-
-
-def _triton_min_p_autotune(configs):
-    extras = {}
-    try:
-        triton.autotune(configs=[], key=["_probe"], cache_results=True)
-        extras["cache_results"] = True
-    except TypeError:
-        pass
-    return triton.autotune(configs=configs, key=["SIZE_BUCKET"], **extras)
 
 
 if triton is not None:
@@ -62,16 +37,8 @@ if triton is not None:
         tl.store(logits + token, tl.where(score < 0, score * penalty, score / penalty), mask=active)
 
 
-    @_triton_min_p_autotune([
-        triton.Config({"BLOCK_SIZE": 128}, num_warps=4),
-        triton.Config({"BLOCK_SIZE": 256}, num_warps=4),
-        triton.Config({"BLOCK_SIZE": 256}, num_warps=8),
-        triton.Config({"BLOCK_SIZE": 512}, num_warps=4),
-        triton.Config({"BLOCK_SIZE": 512}, num_warps=8),
-        triton.Config({"BLOCK_SIZE": 1024}, num_warps=8),
-    ])
     @triton.jit(do_not_specialize=("n_elements", "log_min_p"), do_not_specialize_on_alignment=("n_elements", "log_min_p"))
-    def _min_p_mask_kernel(logits, max_logit, n_elements, log_min_p, SIZE_BUCKET: tl.constexpr, BLOCK_SIZE: tl.constexpr):
+    def _min_p_mask_kernel(logits, max_logit, n_elements, log_min_p, BLOCK_SIZE: tl.constexpr):
         offsets = tl.program_id(0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
         mask = offsets < n_elements
         scores = tl.load(logits + offsets, mask=mask, other=-float("inf"))
@@ -113,14 +80,7 @@ def apply_min_p_mask_(logits: torch.Tensor, min_p: float, use_triton: bool = Fal
     log_min_p = math.log(float(min_p))
     if use_triton and logits.is_cuda and logits.is_contiguous() and triton is not None:
         n_elements = logits.numel()
-        size_bucket = _min_p_size_bucket(n_elements)
-        tuning = size_bucket not in _MIN_P_TUNED_BUCKETS
-        if tuning:
-            print(f"[Deepy][Triton] Autotuning MTP min-p mask for vocabulary range {_min_p_size_range_label(size_bucket)}...")
-        _min_p_mask_kernel[lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)](logits, max_logit, n_elements, log_min_p, SIZE_BUCKET=size_bucket)
-        if tuning:
-            _MIN_P_TUNED_BUCKETS.add(size_bucket)
-            print(f"[Deepy][Triton] Autotuned MTP min-p mask for vocabulary range {_min_p_size_range_label(size_bucket)}: {_min_p_mask_kernel.best_config}.")
+        _min_p_mask_kernel[(triton.cdiv(n_elements, 256),)](logits, max_logit, n_elements, log_min_p, BLOCK_SIZE=256, num_warps=8, num_stages=3)
     else:
         logits.masked_fill_(logits < max_logit + log_min_p, float("-inf"))
     return logits

@@ -32,6 +32,7 @@ TEMPORAL_UPSAMPLER_CONFIG_KEY = "temporal_upsamplers"
 
 temporal_upsampler_handlers = [
     "postprocessing.rife.temporal_upsampler.RifeTemporalUpsampler",
+    "postprocessing.dlss5.temporal_upsampler.DLSSGTemporalUpsampler",
 ]
 _temporal_upsampler_handlers: list[Any] = []
 _registered_temporal_upsampler_handler_paths: set[str] = set()

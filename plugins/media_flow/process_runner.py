@@ -11,6 +11,7 @@ from PIL import Image
 
 from shared.utils.hdr import VIDEO_PROMPT_HDR_OUTPUT_FLAG
 from shared.utils.utils import has_image_file_extension
+from postprocessing.spatial_upsamplers import PARAMETER_PREFIX
 
 from .chunk_executor import ChunkExecutor, ChunkProgress, ProcessContext, build_task_settings
 from . import batch_queue
@@ -46,6 +47,7 @@ class RunRequest:
     sliding_window_overlap: object = 1
     start_seconds: str = ""
     end_seconds: str = ""
+    spatial_upsampler_parameters: dict = field(default_factory=dict)
 
     @classmethod
     def from_gradio(
@@ -65,6 +67,7 @@ class RunRequest:
         sliding_window_overlap=1,
         start_seconds="",
         end_seconds="",
+        spatial_upsampler_parameters=None,
     ) -> "RunRequest":
         return cls(
             state=state,
@@ -82,6 +85,7 @@ class RunRequest:
             sliding_window_overlap=sliding_window_overlap,
             start_seconds="" if start_seconds in (None, "") else str(start_seconds),
             end_seconds="" if end_seconds in (None, "") else str(end_seconds),
+            spatial_upsampler_parameters={str(key): value for key, value in dict(spatial_upsampler_parameters or {}).items() if str(key).startswith(PARAMETER_PREFIX)},
         )
 
 
@@ -211,7 +215,7 @@ class ProcessRunner:
     def _is_spatial_upsampling_task(settings: dict) -> bool:
         return len(str(settings.get("spatial_upsampling") or settings.get("spatial_upsampling_method") or "").strip()) > 0
 
-    def _build_image_task_settings(self, process_definition: dict, system_handler, *, source_path: str, prompt_text: str, process_strength: float, use_lora_strength_override: bool, system_target_control: str, target_ratio: str, output_resolution: str) -> dict:
+    def _build_image_task_settings(self, process_definition: dict, system_handler, *, source_path: str, prompt_text: str, process_strength: float, use_lora_strength_override: bool, system_target_control: str, target_ratio: str, output_resolution: str, spatial_upsampler_parameters: dict) -> dict:
         process_settings = process_definition["settings"]
         if system_handler is not None and callable(getattr(system_handler, "build_image_queue_settings", None)):
             seed = int(time.time_ns() % 2_147_483_647)
@@ -230,6 +234,7 @@ class ProcessRunner:
                 settings["video_guide_outpainting_ratio"] = str(target_ratio or "").strip()
         if not self._is_spatial_upsampling_task(settings):
             settings["resolution"] = output_paths.choose_resolution(output_resolution)
+        settings["spatial_upsampler_parameters"] = dict(spatial_upsampler_parameters)
         api_settings = settings.get("_api")
         settings["_api"] = dict(api_settings) if isinstance(api_settings, dict) else {}
         for key in ("return_media", "return_video_uint8", "return_audio", "return_flashvsr_continue_cache", "flashvsr_continue_cache"):
@@ -282,6 +287,7 @@ class ProcessRunner:
                     "sliding_window_overlap": request.sliding_window_overlap,
                     "start_seconds": request.start_seconds,
                     "end_seconds": request.end_seconds,
+                    "spatial_upsampler_parameters": request.spatial_upsampler_parameters,
                     catalog.PRESERVE_ARTIFACTS_STORAGE_KEY: self._preserve_artifact_count(),
                     catalog.PREVIEW_OUTPUT_STORAGE_KEY: self._preview_enabled(),
                 }, "image", "single")
@@ -307,6 +313,7 @@ class ProcessRunner:
             system_target_control=system_target_control,
             target_ratio=active_target_ratio,
             output_resolution=request.output_resolution,
+            spatial_upsampler_parameters=request.spatial_upsampler_parameters,
         )
         try:
             yield self.ui_update(status_ui.render_process_status_html("Initializing", "Preparing image processing job..."), self.ui_skip, str(time.time_ns()) if not batch_internal else self.ui_skip, start_enabled=False, abort_enabled=False)
@@ -383,7 +390,7 @@ class ProcessRunner:
         finally:
             self.active_job["running"] = False
 
-    def start_batch_process(self, state=None, process_name="", user_refs=None, source_path="", process_strength=None, output_path="", prompt_text="", continue_enabled=True, preview_enabled=True, source_audio_track="", output_resolution="720p", target_ratio="", chunk_size_seconds=10.0, sliding_window_overlap=1, start_seconds="", end_seconds="", batch_name="", batch_source_path=""):
+    def start_batch_process(self, state=None, process_name="", user_refs=None, source_path="", process_strength=None, output_path="", prompt_text="", continue_enabled=True, preview_enabled=True, source_audio_track="", output_resolution="720p", target_ratio="", chunk_size_seconds=10.0, sliding_window_overlap=1, start_seconds="", end_seconds="", batch_name="", batch_source_path="", spatial_upsampler_parameters=None):
         if self.active_job.get("running") or self.active_job.get("batch_running"):
             yield self.info_exit("A process is already running.")
             return
@@ -395,7 +402,7 @@ class ProcessRunner:
             yield self.info_exit("Batch Name is required in batch mode.")
             return
         requested_batch_name = batch_name
-        request = RunRequest.from_gradio(state, process_name, user_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds)
+        request = RunRequest.from_gradio(state, process_name, user_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds, spatial_upsampler_parameters)
         process_definition = self.library.process_definition(request.process_name, request.state, request.user_refs)
         if process_definition is None:
             yield self.info_exit(f"Unsupported process: {request.process_name}")
@@ -446,6 +453,7 @@ class ProcessRunner:
                 "sliding_window_overlap": sliding_window_overlap,
                 "start_seconds": start_seconds,
                 "end_seconds": end_seconds,
+                "spatial_upsampler_parameters": request.spatial_upsampler_parameters,
                 catalog.PRESERVE_ARTIFACTS_STORAGE_KEY: self._preserve_artifact_count(),
                 catalog.PREVIEW_OUTPUT_STORAGE_KEY: self._preview_enabled(),
             }, media_kind, "batch")
@@ -530,6 +538,7 @@ class ProcessRunner:
                         batch_mode="single",
                         batch_name=batch_name,
                         batch_source_path=batch_source_path,
+                        spatial_upsampler_parameters=request.spatial_upsampler_parameters,
                         batch_internal=True,
                     )
                     result = self.active_job.get("last_process_result")
@@ -579,7 +588,7 @@ class ProcessRunner:
         finally:
             self.active_job["batch_running"] = False
 
-    def start_process(self, state=None, process_name="", user_refs=None, source_path="", source_image_path=None, process_strength=None, output_path="", prompt_text="", continue_enabled=True, preview_enabled=True, source_audio_track="", output_resolution="720p", target_ratio="", chunk_size_seconds=10.0, sliding_window_overlap=1, start_seconds="", end_seconds="", batch_mode="single", batch_name="", batch_source_path="", batch_image_source_path=None, batch_internal=False):
+    def start_process(self, state=None, process_name="", user_refs=None, source_path="", source_image_path=None, process_strength=None, output_path="", prompt_text="", continue_enabled=True, preview_enabled=True, source_audio_track="", output_resolution="720p", target_ratio="", chunk_size_seconds=10.0, sliding_window_overlap=1, start_seconds="", end_seconds="", batch_mode="single", batch_name="", batch_source_path="", batch_image_source_path=None, spatial_upsampler_parameters=None, batch_internal=False):
         self.active_job[catalog.PREVIEW_OUTPUT_STORAGE_KEY] = catalog.normalize_preview_enabled(preview_enabled)
         if not self._preview_enabled():
             self.preview_state["image"] = None
@@ -590,7 +599,7 @@ class ProcessRunner:
             selected_source_path = source_image_path if source_image_path is not None else source_path
             selected_batch_source_path = batch_image_source_path if batch_image_source_path is not None else batch_source_path
         if str(batch_mode or "").strip() == "batch" and not batch_internal:
-            yield from self.start_batch_process(state, process_name, user_refs, selected_source_path, process_strength, output_path, prompt_text, continue_enabled, self._preview_enabled(), source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds, batch_name, selected_batch_source_path)
+            yield from self.start_batch_process(state, process_name, user_refs, selected_source_path, process_strength, output_path, prompt_text, continue_enabled, self._preview_enabled(), source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds, batch_name, selected_batch_source_path, spatial_upsampler_parameters)
             return
         if self.active_job.get("running") or (self.active_job.get("batch_running") and not batch_internal):
             yield self.info_exit("A process is already running.")
@@ -599,7 +608,7 @@ class ProcessRunner:
         if not batch_internal:
             self._reset_generated_artifacts()
         self.active_job["last_process_result"] = None
-        request = RunRequest.from_gradio(state, process_name, user_refs, selected_source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds)
+        request = RunRequest.from_gradio(state, process_name, user_refs, selected_source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds, spatial_upsampler_parameters)
         if process_definition is None:
             yield self.info_exit(f"Unsupported process: {request.process_name}")
             self._record_process_result(ProcessRunResult(source_path=selected_source_path, output_path=output_path, success=False, message=f"Unsupported process: {request.process_name}"))
@@ -643,6 +652,7 @@ class ProcessRunner:
             target_ratio = self.library.normalize_outpaint_target_ratio(process_settings, target_ratio)
         system_supports_continue_cache = system_handler is not None and (not callable(getattr(system_handler, "supports_continue_cache_for_target", None)) or system_handler.supports_continue_cache_for_target(system_target_control))
         system_crossfades_overlap_outputs = system_handler is not None and bool(getattr(system_handler, "crossfade_overlap_outputs", False))
+        effective_continue_enabled = request.continue_enabled and not bool(getattr(system_handler, "disable_continuation", False))
         if self._process_is_image(process_definition):
             yield from self._start_image_process(
                 request,
@@ -687,6 +697,7 @@ class ProcessRunner:
                     "sliding_window_overlap": sliding_window_overlap,
                     "start_seconds": start_seconds,
                     "end_seconds": end_seconds,
+                    "spatial_upsampler_parameters": request.spatial_upsampler_parameters,
                     catalog.PRESERVE_ARTIFACTS_STORAGE_KEY: self._preserve_artifact_count(),
                     catalog.PREVIEW_OUTPUT_STORAGE_KEY: self._preview_enabled(),
                 }, "video", "single")
@@ -746,7 +757,7 @@ class ProcessRunner:
                     output_path=output_path,
                     output_resolution=output_resolution,
                     active_target_ratio=active_target_ratio,
-                    continue_enabled=request.continue_enabled,
+                    continue_enabled=effective_continue_enabled,
                     source_audio_track=source_audio_track,
                     chunk_size_seconds=chunk_size_seconds,
                     sliding_window_overlap=sliding_window_overlap,
@@ -1064,6 +1075,7 @@ class ProcessRunner:
                 timing_kwargs=_timing_kwargs,
                 system_handler=system_handler,
                 system_target_control=system_target_control,
+                spatial_upsampler_parameters=request.spatial_upsampler_parameters,
             ), chunk_progress)
             written_unique_frames = chunk_result.written_unique_frames
             completed_chunks = chunk_result.completed_chunks
@@ -1188,7 +1200,7 @@ class ProcessRunner:
             }
             if process_is_hdr:
                 output_process_metadata["hdr"] = True
-            metadata_written = process_metadata.store_output_metadata(metadata_target_path, metadata_source_path, source_path=source_path, process_name=process_display_name, source_start_seconds=start_seconds, start_frame=start_frame, fps_float=fps_float, selected_audio_track=selected_audio_track, total_generation_time=total_generation_time, actual_frame_count=actual_output_frames, process_metadata=output_process_metadata, verbose_level=verbose_level)
+            metadata_written = process_metadata.store_output_metadata(metadata_target_path, metadata_source_path, source_path=source_path, process_name=process_display_name, source_start_seconds=start_seconds, start_frame=start_frame, fps_float=fps_float, selected_audio_track=selected_audio_track, total_generation_time=total_generation_time, actual_frame_count=actual_output_frames, source_frame_count=total_written_unique_frames, process_metadata=output_process_metadata, verbose_level=verbose_level)
             completed_output = not write_state.stopped and (total_written_unique_frames >= requested_unique_frames or completed_chunks >= total_chunks_display)
             if system_handler is not None and completed_output and callable(getattr(system_handler, "delete_continue_cache", None)):
                 for cache_output_path in dict.fromkeys([metadata_target_path, output_path, write_state.output_path_for_write]):

@@ -149,6 +149,8 @@ Dev and Distilled are available in BF16 and INT8 ConvRot, while Distilled also g
 
 - **Audio Source:** FL2VA can create everything from text, follow an uploaded soundtrack, use a Control Video with its original audio, or keep the video unchanged while composing a new soundtrack. Full-length source audio is preserved in the final file; if it runs out early, H3 takes over instead of serving silence.
 
+- **Audio Refinement Extra Phase:** optionally regenerate the soundtrack after FL2VA or Ref2VA video generation using 20, 30, or 40 denoising steps without LoRAs. WanGP locks the completed video, reduces both visual dimensions to approximately one quarter for this faster extra pass, and replaces only the audio in the full-resolution result. The pass deliberately does not re-inject reference media or the original Control Video. It is unavailable when an FL2VA soundtrack controls generation and on fixed 8-step PDD variants.
+
 - **Spectrum v0.2.1 with offline replay:** H3 Spectrum now captures a clean accelerated trajectory and performs a transformer-free smoothing replay. Video and audio are reconstructed independently for better audio quality.
 
 - **Control Video / Denoising Strength:** FL2VA can stay close to a Control Video or wander further from it as the strength increases. At `1.0` with *Whole Frame*, the visual control is unnecessary, so WanGP skips the extra work—your GPU may now take a very short coffee break.
@@ -564,6 +566,7 @@ This automated script will:
 ### Nvidia
 For detailed installation instructions for different GPU generations:
 - **[Installation Guide](docs/INSTALLATION.md)** - Complete setup instructions for GTX 10XX, RTX 20XX to RTX 50XX
+- **[Optional DLSS 5 Upsamplers](docs/DLSS5.md)** - Native-resolution refinement, spatial upsampling, and Frame Generation runtime setup
 
 ### AMD
 For detailed installation instructions for different GPU generations:

@@ -14,6 +14,8 @@ This guide covers:
 - general guidelines
 - enabling Deepy
 - configuring Deepy in the web UI
+- pausing and resuming work without ending the current turn
+- keeping and managing persistent Deepy sessions
 - linking WanGP settings files to Deepy generation tools
 - using selected and previous media naturally
 - understanding which generation settings Deepy can override directly
@@ -42,11 +44,26 @@ For Deepy Prime, every derived generation step follows the same rule. If a video
 
 WanGP comes with builtin templates ready to use but you may as well link presaved settings. You can access Deepy settings by clicking the `Settings` control on the right of the Deepy chat window.
 
-In the web UI, Deepy settings changes take effect for the current Deepy session as soon as you make them. Click `Save Deepy Settings` at the bottom of the settings panel when you want to write those settings to disk for future WanGP sessions.
+In the web UI, most Deepy settings changes take effect for the current Deepy session as soon as you make them. Enabling or disabling multi-session mode is the exception: after Deepy has started, that change takes effect the next time WanGP starts. Click `Save Deepy Settings` at the bottom of the settings panel when you want to write those settings to disk for future WanGP sessions.
 
 You can also define default width, height, frame count, audio duration, and seed in the Deepy Settings window. Select `Use by Default Always Dimensions / Durations / Seed Below` to apply them instead of the corresponding template properties without editing the templates.
 
 You can also ask Deepy directly to override supported template settings such as width, height, frame count, audio duration, FPS, LoRAs, or inference steps.
+
+## Pause and Resume
+
+While Deepy is working, the chat status bar displays `Pause` immediately to the left of `Stop`.
+
+Use `Pause` when you want to suspend the current turn without cancelling it. If Deepy is thinking, writing a response, or preparing a tool action, it pauses immediately. If a tool is already running, Deepy lets that operation finish and pauses before starting anything else. Its completed result is kept in the conversation.
+
+Once paused, Deepy temporarily releases GPU and RAM resources according to the same policy used when it is idle between requests. Depending on `Deepy VRAM Loading Mode`, this can include unloading the local language model from VRAM. WanGP jobs or other components waiting for those GPU resources can then proceed. A remotely hosted Deepy model does not occupy the local GPU, but pausing still suspends the current workflow.
+
+The button changes to `Resume` while the turn is paused. Resuming requests the required resources again and continues the same turn from the point where it stopped; you do not need to repeat the request. If another operation is using the GPU, Deepy waits for the resources in the same way it would for a new request.
+
+`Pause` and `Stop` serve different purposes:
+
+- `Pause` preserves the in-progress turn so it can continue.
+- `Stop` ends the current turn. Depending on `Auto-abort or remove Deepy-started generation on Stop/Reset`, it can also cancel or remove generation work started by Deepy.
 
 ## Enabling Deepy
 
@@ -89,7 +106,7 @@ Deepy Prime submits generation jobs through the normal WanGP queue. Jobs and com
 
 ### Long projects
 
-For large file collections, long sliding-window videos, or multi-chapter writing, Deepy Prime can keep exact items and a small durable project ledger in session working data instead of trying to hold everything in the visible conversation. Each managed item and its corresponding ledger update are saved together, so an interruption cannot advance one without the other. This working data survives automatic conversation summarization, but `Reset` clears it.
+For large file collections, long sliding-window videos, or multi-chapter writing, Deepy Prime can keep exact items and a small durable project ledger in session working data instead of trying to hold everything in the visible conversation. Each managed item and its corresponding ledger update are saved together, so an interruption cannot advance one without the other. This working data survives automatic conversation summarization. In multi-session mode, `Reset Current Session` clears it, while `Start New Session` leaves the saved session available for later use.
 
 You can state the complete outcome normally, for example `plan the prompts for a ten-minute sliding-window video` or `write a twelve-chapter story and save it as one Markdown file`. Deepy divides the work into manageable batches, retrieves exact earlier data only when needed, checks that the collection is complete, and passes the completed plan directly to the generation or file-writing operation. For a large text deliverable, the final file is assembled from the stored chapters without making Deepy reproduce the whole document in a final answer or tool request.
 
@@ -113,12 +130,13 @@ External server configuration example:
 
 Open `Ask Deepy`, then open the `Settings` panel.
 
-The settings panel contains two expanded sections:
+The settings panel contains three tabs:
 
 - `Generation Properties`
 - `Template Settings used by Tools`
+- `Sessions`
 
-All changes in this panel are used immediately by the current Deepy web session. To keep them for future sessions, click `Save Deepy Settings` at the bottom of the panel.
+Most changes in this panel are used immediately by the current Deepy web session. A change to `Enable multi-session mode` requires a WanGP restart if Deepy has already started. To keep settings for future sessions, click `Save Deepy Settings` at the bottom of the panel.
 
 ### Generation Properties
 
@@ -169,6 +187,63 @@ Generate Image [Z Image Turbo]
 Generate Video [LTX-2 2.3 Distilled 1.0]
 Edit Image [Flux Klein 9B]
 ```
+
+### Sessions
+
+Persistent sessions are optional. `Enable multi-session mode` is disabled by default, so existing users keep the traditional behavior: Deepy uses one temporary conversation and `Reset` clears it.
+
+To use persistent sessions:
+
+1. Enable `Enable multi-session mode` in the `Sessions` tab.
+2. Click `Save Deepy Settings`.
+3. Restart WanGP if Deepy has already been started. Enabling or disabling multi-session mode does not change a conversation that is already running.
+
+No empty session directory is created merely by opening Deepy or clicking `New Session`. A session is created only when you send its first request. Deepy automatically derives a short initial name from that request; you can rename it later.
+
+#### Continuous saving
+
+There is no manual Save Session action. Deepy keeps the current session up to date automatically at suitable completed points throughout the conversation. This includes completed thoughts, response sections, tool actions, and turns. Partial streaming fragments are not treated as completed work, so continuous saving does not interrupt normal text generation.
+
+A saved session keeps the information needed to continue the work and rebuild the chat, including:
+
+- the conversation, completed actions, tool results, and displayed chat cards
+- the session workspace and its generated artifacts
+- Gallery media that Deepy generated or used
+- the Deepy skills and MCP services associated with the session, when applicable
+
+If Deepy was preparing an action when the session stopped, resuming can restart that unfinished action from its beginning. An action that had already been issued and was subsequently interrupted remains marked as interrupted; it is not silently run again.
+
+#### Gallery media
+
+`Gallery Media` controls how a session keeps its media:
+
+- `Keep links to Gallery files`, the default, records the existing media locations without making another copy. This saves disk space, but a session cannot recover a linked file that you later move or delete.
+- `Copy Gallery files into each session` keeps a separate copy with the session. This uses more disk space but makes the session less dependent on the original Gallery files.
+
+When you resume a session, its image, video, and audio media are returned to the appropriate Galleries before Deepy prepares the conversation for continuation. Files that are already present are reused rather than duplicated.
+
+#### Starting, resetting, and switching sessions
+
+`Reset Button` selects what the main chat button does while multi-session mode is active:
+
+- `Start New Session` changes the button to `New Session`. It leaves the current saved session available and opens a blank conversation. The new session is not actually created until you send its first request.
+- `Reset Current Session` keeps the button labelled `Reset` and clears the current session instead of creating another one.
+
+After clicking `New Session`, you may either send a request to begin a new session or select an existing session and resume it. You do not have to create an unused session first.
+
+Saved sessions can be selected from the bottom of Deepy's home screen and resumed with the adjacent `Resume` button. The `Sessions` settings tab provides the same selector plus actions to:
+
+- resume the selected session
+- rename it
+- duplicate it as an independent session
+- export it as a portable archive
+- import a previously exported archive
+- delete it after confirmation
+
+When resuming, Deepy first restores the visible conversation and Gallery content, then prepares the saved context. Long sessions can therefore become visible before they are fully ready to continue. If the session cannot be opened, WanGP displays the reason, such as a missing or damaged session, an incompatible Deepy type, or a context that does not fit the current configuration. Missing linked media are reported separately and do not necessarily prevent the rest of the session from opening.
+
+By default, persistent sessions are stored in the `deepy_sessions` folder at the WanGP installation root. Use `--deepy-sessions-dir FOLDER` when starting WanGP to place them elsewhere.
+
 ### Save Deepy Settings
 
 Click `Save Deepy Settings` at the bottom of the Deepy settings panel to persist the current web settings to disk.
@@ -177,6 +252,7 @@ That save includes:
 
 - generation-property values such as auto-abort behavior, template-property usage, width, height, frame count, audio duration, and seed
 - the currently selected Deepy template for each generation tool
+- multi-session, Gallery-media, and Reset-button preferences
 
 
 ## Linking WanGP Settings to Deepy Tools
@@ -451,6 +527,7 @@ Examples:
 - If you want Deepy to use the current video moment, scrub the selected video first, then refer to `this frame` or `the selected frame`.
 - For transcription, mention if you want word timestamps or a specific audio track.
 - If a tool fails, Deepy will tell you rather than inventing a result.
+- Use `Pause` when you want to free Deepy's local resources temporarily and continue the same turn later.
 - Stopping a turn requests cancellation of active Deepy-started work according to the `Auto-abort` setting. Completed work remains in the conversation; an unfinished action is not resumed automatically.
 - For WanGP-specific questions, you can ask Deepy directly instead of searching the docs manually.
 - Install GGUF kernels for fast inference and low VRAM.

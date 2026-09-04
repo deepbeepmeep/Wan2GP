@@ -64,7 +64,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 ## 🔥 Latest Updates : 
 ## 4th of September 2026: WanGP v12.70 — Power Up, Polish, Pause
-- **H3 VDN**: at least 20% Faster and even more on larger / longer videos, requires a bit more VRAM and Triton must be installedsi l 
+- **H3 VDN**: at least 20% Faster and even more on larger / longer videos, requires a bit more VRAM and Triton must be installed
 
 - **DLSS 5 Neural Rendering — More Than an Upscale**: give finished images and
 videos an AI polish that can enrich lighting and material appearance, improve

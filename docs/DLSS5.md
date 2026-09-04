@@ -43,15 +43,32 @@ Keep every runtime component in the indicated subfolder under the single root `d
 
 The worker ZIP is not a complete third-party runtime pack. Obtain and place these files yourself:
 
-| Destination | Component | Authoritative source |
+> [!WARNING]
+> The two version-pinned RHI links below are community mirrors provided for convenience. They are not NVIDIA or RenoDX official releases. In particular, `nvngx_dlssnr.dll` 310.8.SF-v2 is a modified, unsigned NVIDIA-derived runtime; it is **not** included in the public NVIDIA DLSS SDK. Download and use it only if you accept the security, copyright, and licensing risks and its use is permitted in your jurisdiction. Otherwise, copy a genuine NVIDIA-signed `nvngx_dlssnr.dll` from licensed software you own that includes it. Never use random DLL download sites.
+
+| Destination | Component | Download or source |
 | --- | --- | --- |
 | `dlss5/host/dxgi.dll` | ReShade 64-bit **with full add-on support** | [reshade.me](https://reshade.me/) |
-| `dlss5/host/renodx-dlss5.addon64` | RenoDX DLSS 5 add-on | [RenoDX releases](https://github.com/clshortfuse/renodx/releases) |
-| `dlss5/host/nvngx_dlssnr.dll` | NVIDIA DLSS Neural Rendering | A genuine NVIDIA SDK, driver, or licensed game distribution |
+| `dlss5/host/renodx-dlss5.addon64` | RenoDX DLSS 5 add-on 4.70 | [Direct ZIP: `renodx-dlss5_4.70.zip`](https://github.com/RankFTW/rhi-repo/releases/download/renodx-dlss5-4.70/renodx-dlss5_4.70.zip) (community RHI mirror) |
+| `dlss5/host/nvngx_dlssnr.dll` | DLSS Neural Rendering 310.8.SF-v2 | [Direct ZIP: `nvngx_dlssnr_310.8.SF-v2.zip`](https://github.com/RankFTW/rhi-repo/releases/download/dlssnr-310.8.SF-v2/nvngx_dlssnr_310.8.SF-v2.zip) (community-modified, unsigned) |
 | `dlss5/dlss/nvngx_dlss.dll` | NVIDIA DLSS Super Resolution | [NVIDIA DLSS SDK](https://github.com/NVIDIA/DLSS) or another authorized NVIDIA distribution |
 | `dlss5/dlssg/nvngx_dlssg.dll` | NVIDIA DLSS Frame Generation | [NVIDIA DLSS SDK](https://github.com/NVIDIA/DLSS) or another authorized NVIDIA distribution |
 
-Do not download individual DLLs from unofficial mirrors. NVIDIA components are governed by the [NVIDIA RTX SDK License](https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt). Review ReShade and RenoDX licensing at their source before copying or redistributing their binaries.
+For the tested Neural Rendering setup:
+
+1. Extract `renodx-dlss5.addon64` from `renodx-dlss5_4.70.zip` into `WanGP/dlss5/host`.
+2. Extract `nvngx_dlssnr.dll` from `nvngx_dlssnr_310.8.SF-v2.zip` into the same folder.
+
+The archive SHA-256 values are:
+
+```text
+renodx-dlss5_4.70.zip:          D6E356D01B429AF6288F488A4926C44F1D779A7D4586EE8C79D04D3A09A536E6
+nvngx_dlssnr_310.8.SF-v2.zip:  1DA35941894994EB087E017577829E492454E9BAE3A6A9397027069CEB74955C
+```
+
+The file names on the public [RenoDX GitHub releases](https://github.com/clshortfuse/renodx/releases) do not currently include this generic DLSS 5 add-on. Newer development builds are announced in the [official RenoDX Discord](https://discord.com/invite/renodx); the links above stay pinned to the versions WanGP tested.
+
+NVIDIA components are governed by the [NVIDIA RTX SDK License](https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt). Review ReShade, RenoDX, and RHI licensing at their source before copying or redistributing their binaries.
 
 ## Build the WanGP workers yourself
 
@@ -75,8 +92,8 @@ These hashes identify the exact files tested with the v1.1.1 worker bundle. They
 | `dlssg/dlssg-worker.exe` | `D93084633E0AAB4A08C43A5EE240176716EF73D87F06F35C2293509FBFC8BD00` | Unsigned, buildable from the fork source |
 | `host/dxgi.dll` | `0CEE63F9C9F13F3AC909C5B4903F4DBB4B719A7AB3B4F13B0DEAF83C814B94F7` | Unsigned |
 | `host/nvngx.dll` | `58191F4D38288C6BFBDA47EF56911D32052A9789E65714F4583F426E01464638` | Unsigned |
-| `host/nvngx_dlssnr.dll` | `6EB209E764F39872625DEBD6ABAF45E2BB6322F6F270F781F70C059AE30B3927` | Unsigned |
-| `host/renodx-dlss5.addon64` | `D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C8593952` | Unsigned |
+| `host/nvngx_dlssnr.dll` | `6EB209E764F39872625DEBD6ABAF45E2BB6322F6F270F781F70C059AE30B3927` | Unsigned, community-modified SF-v2 |
+| `host/renodx-dlss5.addon64` | `D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C8593952` | Unsigned, RenoDX 4.70 community mirror |
 
 `nr-depth-worker.exe` is compiled from the included source and has a release-specific hash in the worker ZIP's `SHA256SUMS.txt`. Prefer rebuilding it yourself when you need source-to-binary assurance.
 

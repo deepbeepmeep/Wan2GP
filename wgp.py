@@ -82,6 +82,7 @@ from shared.utils.process_locks import (
 )
 from shared.utils.model_unload import model_unload_guard, wait_for_model_unload
 from shared.deepy.config import DEEPY_KV_CACHE_QUANTIZATION_DEFAULT, DEEPY_KV_CACHE_QUANTIZATION_KEY, get_deepy_default_runtime_config, set_deepy_runtime_config
+from shared.deepy.onboarding import apply_first_launch_deepy_prime_defaults
 from shared.remote_llm.config import LLM_CONFIG_KEY, is_remote_engine, normalize_llm_config, resolve_role_engine
 from shared.loras_migration import migrate_loras_layout
 from shared.utils.wgp_config_migration import migrate_extension_defaults
@@ -155,8 +156,8 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.14"
-WanGP_version = "12.648"
-settings_version = 2.77
+WanGP_version = "12.70"
+settings_version = 2.78
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -554,8 +555,10 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
             video_source = inputs["video_source"]
             source_is_image = has_image_file_extension(video_source)
             source_is_video = has_video_file_extension(video_source)
-            temporal_upsampling = inputs.get("temporal_upsampling","")
-            spatial_upsampling = inputs.get("spatial_upsampling","")
+            temporal_upsampling = temporal_upsampler_api.normalize_temporal_upsampling_value(inputs.get("temporal_upsampling", ""))
+            spatial_upsampling = upsampler_api.normalize_upsampling_value(inputs.get("spatial_upsampling", ""))
+            inputs["temporal_upsampling"] = temporal_upsampling
+            inputs["spatial_upsampling"] = spatial_upsampling
             validation_error = ""
             if not media_source_exists(video_source):
                 validation_error = "Selected video or image file is missing"
@@ -1144,8 +1147,10 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
     switch_threshold2 = inputs["switch_threshold2"]
     video_guide_outpainting = inputs["video_guide_outpainting"]
     video_guide_outpainting_ratio = inputs.get("video_guide_outpainting_ratio", "")
-    spatial_upsampling = inputs["spatial_upsampling"]
-    temporal_upsampling = inputs.get("temporal_upsampling", "") or ""
+    spatial_upsampling = upsampler_api.normalize_upsampling_value(inputs["spatial_upsampling"])
+    temporal_upsampling = temporal_upsampler_api.normalize_temporal_upsampling_value(inputs.get("temporal_upsampling", ""))
+    inputs["spatial_upsampling"] = spatial_upsampling
+    inputs["temporal_upsampling"] = temporal_upsampling
     motion_amplitude = inputs["motion_amplitude"]
     self_refiner_setting = inputs["self_refiner_setting"]
     self_refiner_plan = inputs["self_refiner_plan"]
@@ -2650,6 +2655,7 @@ if not Path(config_load_filename).is_file():
         "audio_save_path": "outputs",
         **notifications.default_config(),
     }
+    apply_first_launch_deepy_prime_defaults(server_config)
 
     with open(server_config_filename, "w", encoding="utf-8") as writer:
         writer.write(json.dumps(server_config))
@@ -3115,6 +3121,11 @@ def fix_settings(model_type, ui_defaults, min_settings_version = 0):
             ui_defaults["prompt_enhancer"] = "TIK"
 
     audio_prompt_type = fix_postprocess_audio_settings(ui_defaults, settings_version)
+    if settings_version < 2.78:
+        if "spatial_upsampling" in ui_defaults:
+            ui_defaults["spatial_upsampling"] = upsampler_api.normalize_upsampling_value(ui_defaults["spatial_upsampling"])
+        if "temporal_upsampling" in ui_defaults:
+            ui_defaults["temporal_upsampling"] = temporal_upsampler_api.normalize_temporal_upsampling_value(ui_defaults["temporal_upsampling"])
     if settings_version < 2.2: 
         if audio_prompt_type == None :
             if any_audio_track(base_model_type):
@@ -4788,8 +4799,8 @@ def select_media(state, current_gallery_tab, input_file_list, file_selected, aud
             if model_modes_def is not None and "model_mode" in configs and configs.get("image_mode", 0) in model_modes_def.get("image_modes", [0, 1, 2]):
                 misc_values += [next((label for label, value in model_modes_def["choices"] if value == configs["model_mode"]), configs["model_mode"])]
                 misc_labels += [model_modes_def["label"]]
-            video_temporal_upsampling = temporal_upsampler_api.format_temporal_upsampling_label(configs.get("temporal_upsampling", ""))
-            video_spatial_upsampling = upsampler_api.format_upsampling_label(configs.get("spatial_upsampling", ""))
+            video_temporal_upsampling = temporal_upsampler_api.format_temporal_upsampling_label(temporal_upsampler_api.normalize_temporal_upsampling_value(configs.get("temporal_upsampling", "")))
+            video_spatial_upsampling = upsampler_api.format_upsampling_label(upsampler_api.normalize_upsampling_value(configs.get("spatial_upsampling", "")))
             video_film_grain_intensity = configs.get("film_grain_intensity", 0)
             video_film_grain_saturation = configs.get("film_grain_saturation", 0.5)
             video_postprocess_audio = audio_processor_api.normalize_method(configs.get("postprocess_audio", "") or "")
@@ -5969,8 +5980,10 @@ def edit_media(
         width, height = image.size
         fps, frames_count = 1, 1
     else:
-        from shared.utils.utils import get_video_info
-        fps, width, height, frames_count = get_video_info(video_source)
+        from shared.utils.utils import get_video_info_details
+        media_info = get_video_info_details(video_source)
+        fps = float(media_info["fps_float"] or media_info["fps"])
+        width, height, frames_count = media_info["display_width"], media_info["display_height"], media_info["frame_count"]
     frames_count = min(frames_count, max_source_video_frames)
     sample = None
     download_requested_postprocessing_assets(
@@ -5988,7 +6001,7 @@ def edit_media(
             if source_is_image:
                 sample = torch.from_numpy(np.array(image).astype(np.uint8)).unsqueeze(0).permute(-1,0,1,2)
             else:
-                sample = get_resampled_video(video_source, 0, max_source_video_frames, fps)
+                sample = get_resampled_video(video_source, 0, max_source_video_frames, None)
                 sample = sample.permute(-1,0,1,2)
             frames_count = sample.shape[1] 
 
@@ -7237,10 +7250,14 @@ def generate_media(
         combination_type = "add"
         clean_audio_files = "V" in audio_prompt_type
         if audio_guide2 is not None:
-            if "N" in audio_prompt_type:
-                audio_guide, audio_guide2, _ = normalize_audio_pair_volumes_to_temp_files(audio_guide, audio_guide2, output_dir=save_path, prefix="audio_norm_")
-                temp_filenames_list += [audio_guide, audio_guide2]
             duration2 = librosa.get_duration(path=audio_guide2)
+            if "N" in audio_prompt_type:
+                max_total_duration = model_def.get("audio_reference_max_total_duration", None)
+                normalization_max_duration = float(max_total_duration) / 2 if max_total_duration is not None and duration + duration2 > float(max_total_duration) else None
+                audio_guide, audio_guide2, _ = normalize_audio_pair_volumes_to_temp_files(audio_guide, audio_guide2, output_dir=save_path, prefix="audio_norm_", max_duration_seconds=normalization_max_duration)
+                temp_filenames_list += [audio_guide, audio_guide2]
+                if normalization_max_duration is not None:
+                    duration, duration2 = min(duration, normalization_max_duration), min(duration2, normalization_max_duration)
             if "C" in audio_prompt_type: duration += duration2
             else: duration = min(duration, duration2)
             combination_type = "para" if "P" in audio_prompt_type else "add" 

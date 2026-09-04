@@ -113,6 +113,7 @@ def _resolve_gguf_linear_attention_layout_from_filename(model_path: str) -> tupl
     if filename in {
         "qwen3.5-9b-abliterated-text-q4-k-m-bis.gguf",
         "qwen3.8-27b-uncensored-q4-k-m.gguf",
+        "qwen3.8-27b-uncensored-nomtp-iq3-s.gguf",
         "qwen3.8-27b-uncensored-iq2-m.gguf",
     }:
         return True, True, False
@@ -1100,7 +1101,9 @@ def load_qwen35_text_prompt_enhancer(
     )
     safe_legacy_mode = not allow_vllm_kernels
     enable_mtp = bool(speculative_decoding and spec.get("supports_mtp", False))
-    mtp_filename = spec.get("text_mtp_filename") if enable_mtp else None
+    q3_filename = spec.get("text_gguf_q3_filename")
+    uses_separate_q3_mtp = backend == enhancer_quantization_GGUF and q3_filename and os.path.basename(str(model_path or "")).lower() == q3_filename.lower()
+    mtp_filename = spec.get("text_gguf_q3_mtp_filename" if uses_separate_q3_mtp else "text_mtp_filename") if enable_mtp else None
     mtp_modules = [_resolve_qwen35_checkpoint_file(assets_dir, mtp_filename, variant=variant)] if mtp_filename else None
     postprocess_sd = _add_qwen35_mtp_shared_weights if enable_mtp else None
     if backend == enhancer_quantization_GGUF:

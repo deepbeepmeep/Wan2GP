@@ -436,6 +436,17 @@ user-select: text;
 .wangp-bottom-aligned-row {
     align-items: flex-end !important;
 }
+.deepy-prime-recommendation {
+    margin: 0 0 calc(8px * var(--wangp-ui-scale)) !important;
+    padding: calc(8px * var(--wangp-ui-scale)) calc(12px * var(--wangp-ui-scale)) !important;
+    border: 1px solid var(--color-accent) !important;
+    border-left-width: 4px !important;
+    border-radius: calc(6px * var(--wangp-ui-scale)) !important;
+    background: var(--color-accent-soft) !important;
+}
+.deepy-prime-recommendation .prose p {
+    margin: 0 !important;
+}
 
 .toast-wrap { max-width: min(920px, calc(100vw - 2rem)) !important; }
 .toast-wrap > div, .toast-wrap .toast-body, .gradio-container [role="alert"] { max-width: 100% !important; }

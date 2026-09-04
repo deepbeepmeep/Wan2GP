@@ -5,6 +5,6 @@
   "media_type": "image",
   "image_mode": 1,
   "spatial_upsampling_method": "lanczos",
-  "target_ratio": "lanczos2",
+  "target_ratio": "lanczos*2",
   "prompt": ""
 }

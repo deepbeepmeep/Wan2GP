@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import collections
 import argparse
+import json
 import math
 import os
 import re
@@ -103,6 +104,18 @@ def _missing(files: tuple[Path, ...]) -> list[Path]:
 
 
 @lru_cache(maxsize=1)
+def dlssg_capabilities() -> dict:
+    if _missing(DLSSG_FILES) or os.name != "nt":
+        return {}
+    try:
+        result = subprocess.run([str(DLSSG_WORKER), "--probe"], cwd=str(DLSSG_DIR), capture_output=True, text=True, timeout=15, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        capabilities = json.loads(result.stdout.strip())
+        return capabilities if result.returncode == 0 and capabilities.get("available") else {}
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return {}
+
+
+@lru_cache(maxsize=1)
 def _gpu_series() -> int:
     if os.name != "nt":
         return 0
@@ -112,6 +125,10 @@ def _gpu_series() -> int:
         return 0
     series = [int(match.group(1)) for match in re.finditer(r"GeForce\s+RTX\s+(\d{2})\d{2}", result.stdout, re.IGNORECASE)]
     return max(series, default=0)
+
+
+def is_rtx_50_series() -> bool:
+    return _gpu_series() == 50
 
 
 @lru_cache(maxsize=1)
@@ -338,19 +355,21 @@ class NeuralRenderingSession(Worker):
     FRAME_MAGIC = 0x314D5246
     OUT_MAGIC = 0x3154554F
 
-    def __init__(self, width: int, height: int, frames: int, scale: float):
+    def __init__(self, width: int, height: int, frames: int, scale: float, intensity: float = 1.0):
         output_width = max(2, math.floor(width * scale / 2 + 0.5) * 2)
         output_height = max(2, math.floor(height * scale / 2 + 0.5) * 2)
         if max(output_width, output_height) > 7680 or min(output_width, output_height) > 4320:
             raise ValueError(f"DLSS output {output_width}x{output_height} exceeds the 7680x4320 limit")
-        super().__init__([str(NR_WORKER), "--wangp-video" if USE_DEPTH_GUIDE else "--video"], HOST_DIR)
+        intensity = max(0.0, min(2.0, float(intensity)))
+        command = [str(NR_WORKER), "--nr-intensity", f"{intensity:.4f}", "--wangp-video"] if USE_DEPTH_GUIDE else [str(NR_WORKER), "--video"]
+        super().__init__(command, HOST_DIR)
         self.output_width, self.output_height = output_width, output_height
         assert self.process.stdin is not None and self.process.stdout is not None
         if USE_DEPTH_GUIDE:
             self.process.stdin.write(struct.pack("<10I", self.DEPTH_VIDEO_MAGIC, width, height, output_width, output_height, frames, 0, 60, 0, 0))
         else:
             _name, perf_quality = NR_MODES[scale]
-            self.process.stdin.write(struct.pack("<14I4f", self.VIDEO_MAGIC, width, height, output_width, output_height, 0, frames, perf_quality, 0, 0, 0, 0, 0, 0, 1.0, 1.0, 1.0, -1.0))
+            self.process.stdin.write(struct.pack("<14I4f", self.VIDEO_MAGIC, width, height, output_width, output_height, 0, frames, perf_quality, 0, 0, 0, 0, 0, 0, intensity, 1.0, 1.0, -1.0))
         self.process.stdin.flush()
         if USE_DEPTH_GUIDE:
             response = struct.unpack("<6I", _read_exact(self.process.stdout, struct.calcsize("<6I")))
@@ -387,11 +406,10 @@ class NeuralRenderingSession(Worker):
         return _read_array(self.process.stdout, (self.output_height, self.output_width, 4), output)
 
 
-def neural_render(sample: torch.Tensor, scale: float, *, still_image: bool, depth_resolution: str, motion_vector: str, strength: float = 1.0, abort_callback=None, progress_callback=None) -> torch.Tensor | None:
+def neural_render(sample: torch.Tensor, scale: float, *, still_image: bool, depth_resolution: str, motion_vector: str, intensity: float = 1.0, abort_callback=None, progress_callback=None) -> torch.Tensor | None:
     require_runtime(temporal=False)
     dtype, device, channels, frame_count, height, width = _sample_info(sample)
-    strength = max(0.0, min(1.0, float(strength)))
-    session = NeuralRenderingSession(width, height, frame_count, scale)
+    session = NeuralRenderingSession(width, height, frame_count, scale, intensity)
     output = np.empty((frame_count, session.output_height, session.output_width, 4), dtype=np.uint8)
     try:
         flow_guides = None if still_image else FlowGuides(session.render_width, session.render_height, motion_vector)
@@ -406,10 +424,6 @@ def neural_render(sample: torch.Tensor, scale: float, *, still_image: bool, dept
             motion, reset = (zero_motion, True) if still_image else flow_guides.process(render_frame)
             depth = depth_guides.process(render_frame, reset) if depth_guides is not None else None
             processed = session.process_frame(index, render_frame, motion, reset, output[index], depth=depth)
-            if strength < 1.0:
-                source_output = frame if (width, height) == (session.output_width, session.output_height) else cv2.resize(frame, (session.output_width, session.output_height), interpolation=cv2.INTER_LANCZOS4)
-                cv2.addWeighted(processed, strength, source_output, 1.0 - strength, 0.0, dst=processed)
-                del source_output
             if channels == 4:
                 processed[..., 3] = cv2.resize(frame[..., 3], (session.output_width, session.output_height), interpolation=cv2.INTER_LANCZOS4)
             if progress_callback is not None:
@@ -491,50 +505,6 @@ def _interpolate(frame_count: int, width: int, height: int, frame_getter, fps: f
     return output
 
 
-def _interpolate_x4(frame_count: int, width: int, height: int, frame_getter, fps: float, motion_vector: str, abort_callback=None, progress_callback=None) -> np.ndarray | None:
-    sessions = (FrameGenerationSession(width, height, frame_count, 1), FrameGenerationSession(width, height, (frame_count - 1) * 2 + 1, 1))
-    guides = (FlowGuides(width, height, motion_vector), FlowGuides(width, height, motion_vector))
-    output = np.empty(((frame_count - 1) * 4 + 1, height, width, 4), dtype=np.uint8)
-    stage_indices = [0, 0]
-    previous = [None, None]
-    output_index = 0
-
-    def push(stage: int, frame: np.ndarray, timestamp: Fraction) -> list[tuple[np.ndarray, Fraction]]:
-        motion, reset = guides[stage].process(frame)
-        generated_buffer = np.empty((1, height, width, 4), dtype=np.uint8) if previous[stage] is not None else None
-        generated = sessions[stage].process_frame(stage_indices[stage], frame, motion, timestamp, reset, generated_buffer)
-        stage_indices[stage] += 1
-        items = []
-        if previous[stage] is not None:
-            midpoint = (previous[stage][1] + timestamp) / 2
-            items.append((generated_buffer[0] if generated and not reset else previous[stage][0], midpoint))
-        items.append((frame, timestamp))
-        previous[stage] = (frame, timestamp)
-        return items
-
-    try:
-        rate = Fraction(str(fps))
-        for index in range(frame_count):
-            if abort_callback is not None and abort_callback():
-                for session in sessions:
-                    session.close(abort=True)
-                return None
-            items = push(0, frame_getter(index), Fraction(index, 1) / rate)
-            for item, timestamp in items:
-                for final_frame, _timestamp in push(1, item, timestamp):
-                    output[output_index] = final_frame
-                    output_index += 1
-            if progress_callback is not None:
-                progress_callback("DLSS Frame Generation", index + 1, frame_count)
-        for session in sessions:
-            session.close()
-    except Exception:
-        for session in sessions:
-            session.close(abort=True)
-        raise
-    return output
-
-
 def frame_generate(sample: torch.Tensor, previous_last_frame: torch.Tensor | None, fps: float, scale: int, *, motion_vector: str, abort_callback=None, progress_callback=None) -> tuple[torch.Tensor | None, torch.Tensor, float]:
     require_runtime(temporal=True)
     dtype, device, channels, frame_count, height, width = _sample_info(sample)
@@ -545,7 +515,7 @@ def frame_generate(sample: torch.Tensor, previous_last_frame: torch.Tensor | Non
     def input_frame(index):
         return _frame_to_rgba(previous_last_frame if has_previous and index == 0 else sample, index - 1 if has_previous else index)
 
-    output = (_interpolate_x4(input_count, width, height, input_frame, fps, motion_vector, abort_callback=abort_callback, progress_callback=progress_callback) if scale == 4 else _interpolate(input_count, width, height, input_frame, fps, scale, motion_vector, abort_callback=abort_callback, progress_callback=progress_callback))
+    output = _interpolate(input_count, width, height, input_frame, fps, scale, motion_vector, abort_callback=abort_callback, progress_callback=progress_callback)
     if output is None:
         return None, next_previous, fps * scale
     if has_previous:

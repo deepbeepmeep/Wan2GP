@@ -21,8 +21,6 @@ from shared.deepy.config import (
     DEEPY_PRIME_MCP_SERVERS_KEY,
     DEEPY_SESSION_GALLERY_MEDIA_MODE_DEFAULT,
     DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY,
-    DEEPY_SESSION_RESET_MODE_DEFAULT,
-    DEEPY_SESSION_RESET_MODE_KEY,
     DEEPY_MULTI_SESSION_DEFAULT,
     DEEPY_MULTI_SESSION_KEY,
     DEEPY_TYPE_KEY,
@@ -37,7 +35,6 @@ from shared.deepy.config import (
     normalize_deepy_type,
     normalize_deepy_prime_mcp_servers,
     normalize_deepy_session_gallery_media_mode,
-    normalize_deepy_session_reset_mode,
     normalize_deepy_multi_session,
     normalize_deepy_vram_mode,
     set_deepy_runtime_config,
@@ -178,42 +175,51 @@ class DeepyController:
 
     def get_session_ui_settings(self) -> dict[str, Any]:
         settings = deepy_ui_settings.get_persisted_assistant_session_ui_settings(self._server_config())
-        settings.update(effective_multi_session=self._multi_session_enabled, restart_required=settings["multi_session"] != self._multi_session_enabled)
+        settings["reset_mode"] = session_store.RESET_MODE_NEW if settings["multi_session"] else session_store.RESET_MODE_RESET
+        if not settings["multi_session"]:
+            settings["gallery_media_mode"] = session_store.GALLERY_MEDIA_LINK
+        settings.update(effective_multi_session=self._multi_session_enabled, restart_required=settings["multi_session"] != self._multi_session_enabled, unsaved_changes=False)
         return settings
 
     def update_session_ui_settings(self, state, *, multi_session, reset_mode, gallery_media_mode, persist=False) -> dict[str, Any]:
         requested_multi_session = normalize_deepy_multi_session(multi_session)
+        persisted = deepy_ui_settings.get_persisted_assistant_session_ui_settings(self._server_config())
         if not self._multi_session_latched:
             self._multi_session_enabled = requested_multi_session
+        normalized_gallery_mode = normalize_deepy_session_gallery_media_mode(gallery_media_mode) if requested_multi_session else session_store.GALLERY_MEDIA_LINK
         normalized = {
             "multi_session": requested_multi_session,
             "effective_multi_session": self._multi_session_enabled,
             "restart_required": requested_multi_session != self._multi_session_enabled,
-            "reset_mode": normalize_deepy_session_reset_mode(reset_mode),
-            "gallery_media_mode": normalize_deepy_session_gallery_media_mode(gallery_media_mode),
+            "reset_mode": session_store.RESET_MODE_NEW if requested_multi_session else session_store.RESET_MODE_RESET,
+            "gallery_media_mode": normalized_gallery_mode,
+            "unsaved_changes": requested_multi_session != persisted["multi_session"] or (requested_multi_session and normalized_gallery_mode != persisted["gallery_media_mode"]),
         }
         session = get_or_create_assistant_session(state)
-        session.gallery_media_mode = normalized["gallery_media_mode"]
+        session.gallery_media_mode = normalize_deepy_session_gallery_media_mode(gallery_media_mode) if self._multi_session_enabled else session_store.GALLERY_MEDIA_LINK
         if session.storage_session_id and not session.worker_active:
             session_store.schedule_autosave(session)
         if persist:
             server_config = self._server_config()
             deepy_ui_settings.store_assistant_session_ui_settings(server_config, multi_session=requested_multi_session, reset_mode=normalized["reset_mode"], gallery_media_mode=normalized["gallery_media_mode"])
             self._write_server_config(server_config)
+            normalized["unsaved_changes"] = False
         return normalized
 
     def multi_session_enabled(self) -> bool:
         return self._multi_session_enabled
 
     def _complete_session_reset(self, state, session, reset_mode: str) -> None:
-        reset_mode = normalize_deepy_session_reset_mode(reset_mode)
+        reset_mode = session_store.RESET_MODE_NEW if self._multi_session_enabled else session_store.RESET_MODE_RESET
         with session.turn_lock:
             if session.storage_session_id:
                 session_store.flush_session(session)
-            if reset_mode == session_store.RESET_MODE_NEW:
+            if reset_mode == session_store.RESET_MODE_NEW or not self._multi_session_enabled:
                 session_store.start_new_session(session, save_current=False)
             self.release_vram(state, True, discard_runtime_snapshot=True, preserve_reset_base=True)
-            if reset_mode == session_store.RESET_MODE_RESET and session.storage_session_id:
+            if not self._multi_session_enabled:
+                session_store.ensure_mono_session_workspace(session.chat_session_id)
+            elif reset_mode == session_store.RESET_MODE_RESET and session.storage_session_id:
                 session_store.reset_session_files(session)
             session.pending_reset_mode = ""
 
@@ -674,7 +680,8 @@ class DeepyController:
         from shared.deepy.filesystem import build_file_access_policy
         from shared.deepy.long_text import add_session_workspace, hide_legacy_artifact_guidance, long_text_system_instructions, long_text_tools_active
 
-        file_access_policy = add_session_workspace(build_file_access_policy(server_config), session.chat_session_id, session_store.session_workspace(session))
+        workspace = session_store.session_workspace(session) if self._multi_session_enabled else session_store.ensure_mono_session_workspace(session.chat_session_id)
+        file_access_policy = add_session_workspace(build_file_access_policy(server_config), session.chat_session_id, workspace)
         session.file_access_policy = file_access_policy
         system_prompt = ZERO_SYSTEM_PROMPT
         custom_system_prompt_key = DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY
@@ -1131,7 +1138,7 @@ class DeepyController:
 
     def reset_ai(self, state, reset_mode=None):
         session = get_or_create_assistant_session(state)
-        reset_mode = normalize_deepy_session_reset_mode(reset_mode if reset_mode is not None else self._server_config().get(DEEPY_SESSION_RESET_MODE_KEY, DEEPY_SESSION_RESET_MODE_DEFAULT)) if self._multi_session_enabled else session_store.RESET_MODE_RESET
+        reset_mode = session_store.RESET_MODE_NEW if self._multi_session_enabled else session_store.RESET_MODE_RESET
         if session.worker_active:
             session.pending_reset_mode = reset_mode
             action = "new session" if reset_mode == session_store.RESET_MODE_NEW else "reset"

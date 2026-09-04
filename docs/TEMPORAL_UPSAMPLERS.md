@@ -21,7 +21,7 @@ class MyTemporalUpsampler:
             "method_pos": {"mytemporal": 100},                # optional per-method order
             "methods": [("MyTemporalUpsampler", "mytemporal")],
             "multipliers": {"mytemporal": (2.0, 4.0)},        # supported multipliers per method
-            "default_temporal_upsampling": "mytemporal2",
+            "default_temporal_upsampling": "mytemporal*2",
             "description": "Interpolate smoother video frames.", # optional discovery fallback
             "method_descriptions": {"mytemporal": "..."},    # optional per-method descriptions
             "method_parameters": {"mytemporal": [...]},      # optional extra parameter descriptors
@@ -50,8 +50,13 @@ class MyTemporalUpsampler:
 ```
 
 `SimpleScaleSuffixMixin` provides `is_upsampling` / `split_value` / `build_value`
-for the common `<method><multiplier>` value encoding, for example `rife2` or
-`mytemporal4`.
+for the common `<method>*<multiplier>` value encoding, for example `rife*2` or
+`mytemporal*4`. Its parser also accepts the former concatenated encoding so
+existing settings and queues continue to work, while `build_value()` always
+emits the `*` form.
+The `*` character is reserved and must not appear inside a method id. Custom
+handlers can use the registry's `format_multiplier_value()` and
+`parse_multiplier_suffix()` helpers to follow the same mapping rule.
 
 Handler-exposed method ids in `methods`, `multipliers`, and `method_pos` must be
 multiplier-free. The multiplier only appears in serialized
@@ -60,12 +65,15 @@ multiplier-free. The multiplier only appears in serialized
 
 Dropdown entries are sorted by method position, then by method label. A handler
 can define a default `pos` and override individual methods with `method_pos`.
-Position is independent of multiplier; expanded choices such as `mytemporal2`
-and `mytemporal4` share the `mytemporal` method position.
+Position is independent of multiplier; expanded choices such as `mytemporal*2`
+and `mytemporal*4` share the `mytemporal` method position.
 
 Discovery consumers infer the required `multiplier` parameter from
 `multipliers`. Optional `description`, `method_descriptions`, and
 `method_parameters` fields add reusable presentation and parameter metadata.
+The Post Processing and Late Postprocessing information popup automatically
+lists registered handlers using `description` and any per-method details from
+`method_descriptions`.
 Each `method_parameters` entry is a list of dictionaries with at least `name`;
 it may also define `type`, `description`, `required`, `default`, `enum`, and a
 queue-setting override named `setting`. These fields are optional so older and
@@ -154,12 +162,17 @@ If a config change requires releasing loaded runtime state, implement either
 
 ## Built-In Example
 
-RIFE is implemented by `postprocessing/rife/temporal_upsampler.py`:
+RIFE v4.26 is implemented by `postprocessing/rife/temporal_upsampler.py`:
 
 - method id: `rife`
-- serialized values: `rife2`, `rife4`
-- config key: `rife`
-- config section: `wgp_config["temporal_upsamplers"]["rife"]`
+- serialized values: `rife*2`, `rife*3`, `rife*4`
+- model file: `rife4.26.pkl` from `DeepBeepMeep/Wan2.1`
+- no model-version configuration; all multipliers use RIFE v4.26
+
+For a minimal external handler, see the
+[Temporal Blend reference plugin](https://github.com/deepbeepmeep/wan2gp-blender-upsampler).
+It exposes `blend*2` and supplies the description displayed by the Temporal
+Upsampling information button.
 
 ## Extension Offload Object Registry
 

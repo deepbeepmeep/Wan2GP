@@ -108,6 +108,8 @@ class DeepyChatUI:
     ask_btn: Any
     reset_btn: Any
     multi_session: Any
+    multi_session_options: Any
+    mono_session_options: Any
     session_dropdown: Any
     session_resume_btn: Any
     session_rename_btn: Any
@@ -329,7 +331,10 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
     session_choices = [(str(item.get("title", "") or "Deepy session"), str(item.get("id", "") or "")) for item in saved_sessions] or [("No saved sessions", "")]
     session_value = session_choices[0][1]
     multi_session_enabled = bool(session_ui_state["multi_session"])
-    reset_label = "New Session" if multi_session_enabled and session_ui_state["reset_mode"] == session_store.RESET_MODE_NEW else "Reset"
+    session_ui_state["reset_mode"] = session_store.RESET_MODE_NEW if multi_session_enabled else session_store.RESET_MODE_RESET
+    if not multi_session_enabled:
+        session_ui_state["gallery_media_mode"] = session_store.GALLERY_MEDIA_LINK
+    reset_label = "New" if multi_session_enabled else "Reset"
     initial_tool_values = _tool_values_from_ui_settings(tool_ui_state)
     template_controls: list[DeepyTemplateToolControl] = []
     controls_by_tool: dict[str, DeepyTemplateToolControl] = {}
@@ -447,20 +452,21 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
                                                 template_controls.append(control)
                             with gr.Tab("Sessions"):
                                 multi_session = gr.Checkbox(value=multi_session_enabled, label="Enable multi-session mode")
-                                gr.Markdown("Persistent sessions are created only when the first request is sent. Continuous saves run at safe action boundaries.")
-                                with gr.Row(elem_classes=["chat__session-selector"]):
-                                    session_dropdown = gr.Dropdown(choices=session_choices, value=session_value, label="Saved Sessions", interactive=multi_session_enabled, elem_id="deepy_session_dropdown")
-                                with gr.Row(equal_height=True, elem_classes=["chat__session-action-buttons"]):
-                                    session_resume_btn = gr.Button("↩️", scale=1, size="sm", min_width=1, interactive=multi_session_enabled, elem_id=assistant_chat.SESSION_RESUME_BUTTON_ID, elem_classes=["chat__template-tool-icon-btn"])
-                                    session_rename_btn = gr.Button("✏️", scale=1, size="sm", min_width=1, interactive=multi_session_enabled, elem_id=assistant_chat.SESSION_RENAME_BUTTON_ID, elem_classes=["chat__template-tool-icon-btn"])
-                                    session_duplicate_btn = gr.Button("⧉", scale=1, size="sm", min_width=1, interactive=multi_session_enabled, elem_id=assistant_chat.SESSION_DUPLICATE_BUTTON_ID, elem_classes=["chat__template-tool-icon-btn"])
-                                    session_export_btn = gr.Button("📦", scale=1, size="sm", min_width=1, interactive=multi_session_enabled, elem_id=assistant_chat.SESSION_EXPORT_BUTTON_ID, elem_classes=["chat__template-tool-icon-btn"])
-                                    session_import_file = gr.UploadButton("📥", file_types=[".zip"], type="filepath", scale=1, size="sm", min_width=1, interactive=multi_session_enabled, elem_id=assistant_chat.SESSION_IMPORT_BUTTON_ID, elem_classes=["chat__template-tool-icon-btn"])
-                                    session_delete_btn = gr.Button("🗑️", scale=1, size="sm", min_width=1, interactive=multi_session_enabled, elem_id=assistant_chat.SESSION_DELETE_BUTTON_ID, elem_classes=["chat__template-tool-icon-btn", "chat__template-tool-icon-btn--danger"])
-                                session_export_file = gr.File(label="Exported Session Archive", visible=False, interactive=False)
-                                with gr.Row(elem_classes=["chat__session-options"]):
+                                with gr.Column(visible=multi_session_enabled) as multi_session_options:
+                                    gr.Markdown("Persistent sessions are created only when the first request is sent. Continuous saves run at safe action boundaries.")
+                                    with gr.Row(elem_classes=["chat__session-selector"]):
+                                        session_dropdown = gr.Dropdown(choices=session_choices, value=session_value, label="Saved Sessions", interactive=multi_session_enabled, elem_id="deepy_session_dropdown")
+                                    with gr.Row(equal_height=True, elem_classes=["chat__session-action-buttons"]):
+                                        session_resume_btn = gr.Button("↩️", scale=1, size="sm", min_width=1, interactive=multi_session_enabled, elem_id=assistant_chat.SESSION_RESUME_BUTTON_ID, elem_classes=["chat__template-tool-icon-btn"])
+                                        session_rename_btn = gr.Button("✏️", scale=1, size="sm", min_width=1, interactive=multi_session_enabled, elem_id=assistant_chat.SESSION_RENAME_BUTTON_ID, elem_classes=["chat__template-tool-icon-btn"])
+                                        session_duplicate_btn = gr.Button("⧉", scale=1, size="sm", min_width=1, interactive=multi_session_enabled, elem_id=assistant_chat.SESSION_DUPLICATE_BUTTON_ID, elem_classes=["chat__template-tool-icon-btn"])
+                                        session_export_btn = gr.Button("📦", scale=1, size="sm", min_width=1, interactive=multi_session_enabled, elem_id=assistant_chat.SESSION_EXPORT_BUTTON_ID, elem_classes=["chat__template-tool-icon-btn"])
+                                        session_import_file = gr.UploadButton("📥", file_types=[".zip"], type="filepath", scale=1, size="sm", min_width=1, interactive=multi_session_enabled, elem_id=assistant_chat.SESSION_IMPORT_BUTTON_ID, elem_classes=["chat__template-tool-icon-btn"])
+                                        session_delete_btn = gr.Button("🗑️", scale=1, size="sm", min_width=1, interactive=multi_session_enabled, elem_id=assistant_chat.SESSION_DELETE_BUTTON_ID, elem_classes=["chat__template-tool-icon-btn", "chat__template-tool-icon-btn--danger"])
+                                    session_export_file = gr.File(label="Exported Session Archive", visible=False, interactive=False)
                                     session_gallery_media_mode = gr.Dropdown(choices=[("Keep links to Gallery files", "link"), ("Copy Gallery files into each session", "copy")], value=session_ui_state["gallery_media_mode"], label="Gallery Media", interactive=multi_session_enabled)
-                                    session_reset_mode = gr.Dropdown(choices=[("Start New Session", "new_session"), ("Reset Current Session", "reset_session")], value=session_ui_state["reset_mode"], label="Reset Button", interactive=multi_session_enabled)
+                                with gr.Column(visible=not multi_session_enabled) as mono_session_options:
+                                    session_reset_mode = gr.Dropdown(choices=[("Reset Current Session", session_store.RESET_MODE_RESET)], value=session_store.RESET_MODE_RESET, label="Reset Button", interactive=False)
                                 session_status = gr.Markdown("")
                         with gr.Row(elem_classes=["chat__settings-actions"]):
                             settings_save_btn = gr.Button("Save Deepy Settings", variant="primary", elem_id=assistant_chat.SAVE_SETTINGS_BUTTON_ID)
@@ -507,6 +513,8 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
         ask_btn=ask_btn,
         reset_btn=reset_btn,
         multi_session=multi_session,
+        multi_session_options=multi_session_options,
+        mono_session_options=mono_session_options,
         session_dropdown=session_dropdown,
         session_resume_btn=session_resume_btn,
         session_rename_btn=session_rename_btn,
@@ -609,9 +617,13 @@ def bind_deepy_chat_ui(
         from shared.deepy.engine import get_or_create_assistant_session
 
         session = get_or_create_assistant_session(state_value)
-        published_id = str(session.storage_session_id or "")
+        published_id = None
         for response in responses:
             current_id = str(session.storage_session_id or "")
+            if published_id is None and not current_id:
+                published_id = ""
+                yield *response, gr.update()
+                continue
             if current_id == published_id:
                 yield *response, gr.update()
                 continue
@@ -627,9 +639,23 @@ def bind_deepy_chat_ui(
 
     def _session_preference_updates(settings):
         effective = bool(settings["effective_multi_session"])
-        reset_label = "New Session" if effective and settings["reset_mode"] == session_store.RESET_MODE_NEW else "Reset"
-        status = "Save Deepy Settings, then restart WanGP for this mode change to take effect." if settings["restart_required"] else ("Multi-session mode is active." if effective else "Multi-session mode is disabled; Reset clears the current temporary conversation.")
-        return gr.update(value=status), gr.update(value=reset_label), *(gr.update(interactive=effective) for _component in range(9))
+        requested = bool(settings["multi_session"])
+        enabled = effective and requested
+        reset_label = "New" if effective else "Reset"
+        mode_status = "Multi-session mode is active." if effective else "Single-session mode is active; Reset clears the current temporary conversation."
+        if settings["restart_required"]:
+            status = "This change is not saved. Click Save Deepy Settings, then restart WanGP for it to take effect." if settings["unsaved_changes"] else "Deepy session settings are saved. Restart WanGP for this mode change to take effect."
+        else:
+            status = f"{mode_status} Changes are not saved yet; click Save Deepy Settings." if settings["unsaved_changes"] else f"{mode_status} Session settings are saved."
+        return (
+            gr.update(value=status),
+            gr.update(value=reset_label),
+            gr.update(visible=requested),
+            gr.update(visible=not requested),
+            *(gr.update(interactive=enabled) for _component in range(7)),
+            gr.update(value=settings["gallery_media_mode"], interactive=enabled),
+            gr.update(value=session_store.RESET_MODE_RESET, interactive=False),
+        )
 
     def update_session_preferences(state_value, multi_session, reset_mode, gallery_media_mode, persist=False):
         settings = handlers.update_session_ui_settings(state_value, multi_session=multi_session, reset_mode=reset_mode, gallery_media_mode=gallery_media_mode, persist=persist)
@@ -1223,6 +1249,8 @@ def bind_deepy_chat_ui(
         ui.chat_event,
         ui.session_status,
         ui.reset_btn,
+        ui.multi_session_options,
+        ui.mono_session_options,
         ui.session_dropdown,
         ui.session_resume_btn,
         ui.session_rename_btn,

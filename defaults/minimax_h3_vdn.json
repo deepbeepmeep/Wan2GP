@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "MiniMax H3 VDN 50-Step 33B",
+        "name": "MiniMax H3 VDN 33B",
         "architecture": "minimax_h3_fl2va",
         "description": "MiniMax H3 FL2VA with trained VDN hybrid window/linear attention for faster long-video generation. Triton is required for optimal performance; use the VDN Turbo 8 Steps profile for faster generation.",
         "URLs": "minimax_h3_fl2va",

@@ -79,6 +79,7 @@ from shared.prompt_enhancer.config import (
     normalize_prompt_enhancer_speculative_decoding,
     validate_prompt_enhancer_speculative_decoding,
 )
+from shared.deepy.onboarding import deepy_prime_upgrade_message
 from shared.remote_llm.config import (
     DEEPY_ENGINE_CHOICES,
     ENGINE_CLAUDE,
@@ -110,15 +111,15 @@ from shared.utils.wgp_config_migration import (
 QWEN35_PROMPT_ENHANCER_IDS = (3, 4)
 QWEN38_PROMPT_ENHANCER_ID = 5
 QWEN35_QUANTIZATION_CHOICES = [("Quanto Int8 (recommended, better quality)", "quanto_int8"), ("GGUF Q4 (less VRAM/RAM & faster if kernels are installed, but worse quality)", "gguf")]
-QWEN38_QUANTIZATION_CHOICES = [("GGUF Q4 (default, higher quality, requires at least 24 GB of VRAM)", "gguf"), ("GGUF Q2 (lower VRAM/RAM,  requires at least 16 GB of VRAM, lower quality)", "gguf_q2")]
+QWEN38_QUANTIZATION_CHOICES = [("GGUF Q4 (default, highest quality and VRAM/RAM use)", "gguf"), ("GGUF IQ3_S (recommended Q3, middle quality and VRAM/RAM use)", "gguf_q3"), ("GGUF Q2 (lowest quality and VRAM/RAM use)", "gguf_q2")]
 
 
 def prompt_enhancer_quantization_ui_state(enhancer_enabled, quantization):
     enhancer_enabled = int(enhancer_enabled)
     if enhancer_enabled == QWEN38_PROMPT_ENHANCER_ID:
-        value = quantization if quantization in ("gguf", "gguf_q2") else "gguf"
+        value = quantization if quantization in ("gguf", "gguf_q3", "gguf_q2") else "gguf"
         return QWEN38_QUANTIZATION_CHOICES, value, True
-    value = "gguf" if quantization in ("gguf", "gguf_q2") else "quanto_int8"
+    value = "gguf" if quantization in ("gguf", "gguf_q3", "gguf_q2") else "quanto_int8"
     return QWEN35_QUANTIZATION_CHOICES, value, enhancer_enabled in QWEN35_PROMPT_ENHANCER_IDS
 
 
@@ -195,6 +196,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
         set_deepy_runtime_config(self.server_config, self.server_config_filename)
         prompt_enhancer_default_mode = get_prompt_enhancer_default_mode()
         with gr.Column():
+            deepy_prime_recommendation = deepy_prime_upgrade_message(self.server_config)
+            self.deepy_prime_recommendation = gr.Markdown(value=deepy_prime_recommendation, visible=bool(deepy_prime_recommendation), elem_classes=["deepy-prime-recommendation"])
             with gr.Tabs():
                 with gr.Tab("General"):
                     self.transformer_types_choices = HierarchySelector(
@@ -645,9 +648,10 @@ class ConfigTabPlugin(WAN2GPPlugin):
             runtime_config[DEEPY_COMPACTION_TYPE_KEY] = deepy_compaction_type_choice
             runtime_config[LLM_CONFIG_KEY] = {**normalize_llm_config(runtime_config), "deepy": deepy_llm_engine_choice}
             context_label = format_deepy_context_tokens_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice)
-            return gr.update(value=deepy_context_tokens_choice, label=context_label), gr.update(value=deepy_compaction_type_choice), deepy_requirement_message(runtime_config), deepy_mode_from_config(deepy_enabled_choice, deepy_type_choice)
+            recommendation = deepy_prime_upgrade_message(runtime_config)
+            return gr.update(value=deepy_context_tokens_choice, label=context_label), gr.update(value=deepy_compaction_type_choice), deepy_requirement_message(runtime_config), deepy_mode_from_config(deepy_enabled_choice, deepy_type_choice), gr.update(value=recommendation, visible=bool(recommendation))
 
-        self.deepy_type_choice.input(fn=enforce_deepy_prime_requirements, inputs=[self.deepy_type_choice, self.deepy_context_tokens_choice, self.deepy_compaction_type_choice, self.enhancer_enabled_choice, self.deepy_kv_cache_quantization_choice, self.deepy_llm_engine_choice], outputs=[self.deepy_context_tokens_choice, self.deepy_compaction_type_choice, self.deepy_requirement_md, self.deepy_type_value], show_progress="hidden")
+        self.deepy_type_choice.input(fn=enforce_deepy_prime_requirements, inputs=[self.deepy_type_choice, self.deepy_context_tokens_choice, self.deepy_compaction_type_choice, self.enhancer_enabled_choice, self.deepy_kv_cache_quantization_choice, self.deepy_llm_engine_choice], outputs=[self.deepy_context_tokens_choice, self.deepy_compaction_type_choice, self.deepy_requirement_md, self.deepy_type_value, self.deepy_prime_recommendation], show_progress="hidden")
 
         def update_deepy_context_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice):
             return gr.update(label=format_deepy_context_tokens_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice))
@@ -853,8 +857,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
         else:
             enhancer_enabled_choice = local_enhancer_id(deepy_llm_engine_choice, enhancer_enabled_choice)
 
-        if not deepy_remote and int(enhancer_enabled_choice) == QWEN38_PROMPT_ENHANCER_ID and enhancer_quantization_choice not in ("gguf", "gguf_q2"):
-            error = "Qwen3.8-27B is available only as GGUF. Select GGUF Q2 or Q4 as the Qwen LLM quantization."
+        if not deepy_remote and int(enhancer_enabled_choice) == QWEN38_PROMPT_ENHANCER_ID and enhancer_quantization_choice not in ("gguf", "gguf_q3", "gguf_q2"):
+            error = "Qwen3.8-27B is available only as GGUF. Select GGUF Q2, Q3, or Q4 as the Qwen LLM quantization."
             gr.Info(f"Configuration was not saved: {error}")
             return f"<div style='color:red; text-align:center;'>Configuration was not saved: {error}</div>", *[gr.update()]*8
         if not deepy_remote and int(enhancer_enabled_choice) in QWEN35_PROMPT_ENHANCER_IDS and enhancer_quantization_choice not in ("quanto_int8", "gguf"):

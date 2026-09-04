@@ -42,7 +42,7 @@ class MyUpsampler:
             "methods": [("MyUpsampler", "myup")],          # method dropdown entries
             "vae_methods": [],                             # VAE entries (manual integration)
             "multipliers": {"myup": (2.0, 4.0)},           # supported multipliers per method
-            "default_spatial_upsampling": "myup2",
+            "default_spatial_upsampling": "myup*2",
             "postprocessing_category": "upsampler",       # "upsampler" or "refiner"
             "description": "Upscale while restoring detail.", # processor-owned help/discovery text
             "media_descriptions": {"video": "Uses overlapping windows."}, # optional media-specific help
@@ -90,7 +90,12 @@ class MyUpsampler:
 ```
 
 `SimpleScaleSuffixMixin` provides `is_upsampling`/`split_value`/`build_value` for the
-common `<method><multiplier>` value encoding (e.g. `lanczos2`, `coz4`).
+common `<method>*<multiplier>` value encoding (e.g. `lanczos*2`, `coz*4`). Its
+parser also accepts the former concatenated encoding so existing settings and
+queues continue to work, while `build_value()` always emits the `*` form.
+The `*` character is reserved and must not appear inside a method id. Custom
+handlers can use the registry's `format_multiplier_value()` and
+`parse_multiplier_suffix()` helpers to follow the same mapping rule.
 Handler-exposed method ids in `methods`, `vae_methods`, `multipliers`,
 `method_pos`, `model_def["vae_upsamplers"]`, and
 `model_def["excluded_spatial_upsamplers"]` must be multiplier-free. The multiplier
@@ -99,8 +104,8 @@ or stored as `default_spatial_upsampling`.
 
 Dropdown entries are sorted by method position, then by method label. A handler
 can define a default `pos` and override individual methods with `method_pos`.
-Position is independent of multiplier; expanded choices such as `myup2` and
-`myup4` share the `myup` method position.
+Position is independent of multiplier; expanded choices such as `myup*2` and
+`myup*4` share the `myup` method position.
 
 ### Borrowing the loaded generation model
 
@@ -169,6 +174,11 @@ spatial_upsampler_handlers = [
 
 `wgp.py` only calls `upsampler_api.register_spatial_upsamplers(server_config, fl)`;
 it should not import or keep one explicit variable per spatial upsampler.
+
+For a minimal external handler, see the
+[Spatial Pixel Duplicate reference plugin](https://github.com/deepbeepmeep/wan2gp-pixel-upsampler).
+It exposes `pixel*1` through `pixel*4` and supplies the description displayed by
+the Spatial Upsampling information button.
 
 Enabled plugins can expose upsamplers without editing core code by adding
 `spatial_upsampler_handlers` to `plugin_info.json`. Entries that start with `.`

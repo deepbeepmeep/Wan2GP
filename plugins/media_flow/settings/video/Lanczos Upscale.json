@@ -3,7 +3,7 @@
   "model_label": "WanGP System Video Postprocessing",
   "system_handler": "flashvsr",
   "spatial_upsampling_method": "lanczos",
-  "target_ratio": "lanczos2",
+  "target_ratio": "lanczos*2",
   "chunk_size_seconds": 3.0,
   "sliding_window_overlap": 0,
   "prompt": ""

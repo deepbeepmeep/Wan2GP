@@ -91,6 +91,7 @@ def _session_picker_markup(sessions: list[dict[str, Any]] | None, active_id: str
     options = "".join(choices) if choices else "<option value=''>No saved sessions</option>"
     return (
         "<div class='chat__session-picker'>"
+        "<div class='chat__session-picker-spacer' aria-hidden='true'></div>"
         "<label><span>Saved sessions</span><span class='chat__session-picker-controls'>"
         f"<select aria-label='Deepy session' data-wac-session-picker{disabled}>{options}</select>"
         f"<button type='button' data-wac-session-resume aria-label='Resume selected session' title='Resume selected session'{disabled}>Resume</button>"
@@ -933,6 +934,10 @@ def get_css() -> str:
     margin: 8px 3px 0;
     padding-top: 8px;
     border-top: 1px solid rgba(31, 94, 132, 0.12);
+}
+
+.chat__session-picker-spacer {
+    height: calc(0.72rem * var(--dock-font-scale));
 }
 
 .chat__session-picker label {
@@ -3194,7 +3199,7 @@ WAC.sessionPickerMarkup = function () {
   }
   const disabled = options.length === 0 ? ' disabled' : '';
   const choices = options.length ? options.join('') : '<option value="">No saved sessions</option>';
-  return `<div class="chat__session-picker"><label><span>Saved sessions</span><span class="chat__session-picker-controls"><select aria-label="Deepy session" data-wac-session-picker${disabled}>${choices}</select><button type="button" data-wac-session-resume aria-label="Resume selected session" title="Resume selected session"${disabled}>Resume</button></span></label></div>`;
+  return `<div class="chat__session-picker"><div class="chat__session-picker-spacer" aria-hidden="true"></div><label><span>Saved sessions</span><span class="chat__session-picker-controls"><select aria-label="Deepy session" data-wac-session-picker${disabled}>${choices}</select><button type="button" data-wac-session-resume aria-label="Resume selected session" title="Resume selected session"${disabled}>Resume</button></span></label></div>`;
 };
 
 WAC.resumeSelectedSession = function (trigger) {

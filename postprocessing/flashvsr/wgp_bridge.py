@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
+from postprocessing.spatial_upsamplers import format_multiplier_value, parse_multiplier_suffix
 from postprocessing.flashvsr.sparse_backend_config import (
     SPARSE_BACKEND_AUTO,
     SPARSE_BACKEND_CHOICES,
@@ -131,22 +132,17 @@ class FlashVSRBridge:
 
     @classmethod
     def upsampling_value(cls, scale: float) -> str:
-        return f"{cls.UPSAMPLING_VALUE_PREFIX}{cls.format_ratio(scale)}"
+        return format_multiplier_value(cls.UPSAMPLING_VALUE_PREFIX, scale)
 
     @classmethod
     def upsampling_two_pass_value(cls, scale: float) -> str:
-        return f"{cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX}{cls.format_ratio(scale)}"
+        return format_multiplier_value(cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX, scale)
 
     @classmethod
     def scale_for_upsampling(cls, spatial_upsampling) -> float | None:
         text = str(spatial_upsampling or "").strip().lower()
         prefix = cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX if text.startswith(cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX) else cls.UPSAMPLING_VALUE_PREFIX
-        if not text.startswith(prefix):
-            return None
-        try:
-            scale = float(text[len(prefix):])
-        except ValueError:
-            return None
+        scale = parse_multiplier_suffix(text, prefix, 2.0)
         return scale if scale in cls.UPSAMPLING_RATIOS else None
 
     @classmethod

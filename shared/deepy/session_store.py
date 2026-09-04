@@ -22,6 +22,7 @@ SESSION_SCHEMA_VERSION = 1
 CONTEXT_SCHEMA_VERSION = 1
 UI_JOURNAL_SCHEMA_VERSION = 1
 DEFAULT_SESSIONS_FOLDER = "deepy_sessions"
+MONO_SESSION_POINTER_FILENAME = ".mono-session"
 UI_JOURNAL_FILENAME = "cards.jsonl"
 GALLERY_MEDIA_LINK = "link"
 GALLERY_MEDIA_COPY = "copy"
@@ -34,6 +35,7 @@ _POSIX_PATH_RE = re.compile(r"(?<!\w)/(?:[^\s\]\[(){}<>\"']+/)*[^\s\]\[(){}<>\"'
 _MARKDOWN_LINK_RE = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
 _ATTACHMENT_RE = re.compile(r"(?:@file\([^)]*\)|<attachment\b[^>]*>|\[attachment[^\]]*\])", re.IGNORECASE)
 _SESSION_ID_RE = re.compile(r"^\d{8}-\d{6}-[a-f0-9]{8}$")
+_MONO_SESSION_DIR_RE = re.compile(r"^mono-[a-f0-9]{32}$")
 _ROOT_LOCK = threading.RLock()
 _SESSIONS_ROOT = (Path.cwd() / DEFAULT_SESSIONS_FOLDER).resolve()
 _WRITER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="deepy-session-save")
@@ -61,6 +63,37 @@ def configure_sessions_root(path: str | os.PathLike[str] | None) -> Path:
 def sessions_root() -> Path:
     with _ROOT_LOCK:
         return _SESSIONS_ROOT
+
+
+def ensure_mono_session_workspace(chat_session_id: str) -> Path:
+    directory_name = f"mono-{str(chat_session_id or '').strip().lower()}"
+    if not _MONO_SESSION_DIR_RE.fullmatch(directory_name):
+        raise SessionStoreError("Invalid temporary Deepy session identifier.")
+    with _ROOT_LOCK:
+        root = _SESSIONS_ROOT
+        root.mkdir(parents=True, exist_ok=True)
+        pointer = root / MONO_SESSION_POINTER_FILENAME
+        try:
+            previous_name = pointer.read_text(encoding="utf-8").strip()
+        except OSError:
+            previous_name = ""
+        if previous_name != directory_name and _MONO_SESSION_DIR_RE.fullmatch(previous_name):
+            try:
+                shutil.rmtree(root / previous_name)
+            except OSError:
+                pass
+        workspace = root / directory_name / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        temporary = pointer.with_name(f".{pointer.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(directory_name, encoding="utf-8")
+            os.replace(temporary, pointer)
+        except OSError:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return workspace
 
 
 def normalize_gallery_media_mode(value: Any) -> str:
@@ -1297,6 +1330,7 @@ __all__ = [
     "DEFAULT_SESSIONS_FOLDER",
     "GALLERY_MEDIA_COPY",
     "GALLERY_MEDIA_LINK",
+    "MONO_SESSION_POINTER_FILENAME",
     "RESET_MODE_NEW",
     "RESET_MODE_RESET",
     "SESSION_SCHEMA_VERSION",
@@ -1309,6 +1343,7 @@ __all__ = [
     "configure_sessions_root",
     "delete_session",
     "duplicate_stored_session",
+    "ensure_mono_session_workspace",
     "ensure_session",
     "export_session",
     "export_stored_session",

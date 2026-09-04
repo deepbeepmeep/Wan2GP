@@ -611,8 +611,8 @@ print(result.generated_files)
 
 Postprocessing values use the registered postprocessor value strings:
 
-- `temporal_upsampling`: registered temporal upsamplers such as `rife2` or `rife4`. Temporal upsampling is video-only.
-- `spatial_upsampling`: registered decoded-media upsamplers such as `lanczos2`, `flashvsr2`, `coz4`, or the no-scale visual refiner `h3facerefine`. VAE upsamplers are model-pipeline features and are not accepted for late postprocessing.
+- `temporal_upsampling`: registered temporal upsamplers such as `rife*2` or `dlssg*4`. Temporal upsampling is video-only.
+- `spatial_upsampling`: registered decoded-media upsamplers such as `lanczos*2`, `flashvsr*2`, `coz*4`, or the no-scale visual refiner `h3facerefine`. VAE upsamplers are model-pipeline features and are not accepted for late postprocessing.
 - Method-specific values use the flat parameter ids returned by postprocessing discovery. For example, H3 accepts `spatial_upsampler_prompt`, `spatial_upsampler_reference_images`, and `spatial_upsampler_face_count`.
 - `film_grain_intensity` / `film_grain_saturation`: late film grain settings. Film grain is active when intensity is greater than `0`.
 
@@ -678,8 +678,8 @@ All helper calls build normal task settings, so plugins, Deepy, saved queues, ma
 settings = {
     "mode": "edit_postprocessing",
     "video_source": r"C:\media\input.mp4",
-    "temporal_upsampling": "rife4",
-    "spatial_upsampling": "lanczos2",
+    "temporal_upsampling": "rife*4",
+    "spatial_upsampling": "lanczos*2",
     "spatial_upsampler_face_count": 1,
     "_api": {"return_media": True},
 }

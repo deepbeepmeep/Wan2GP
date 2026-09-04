@@ -53,11 +53,11 @@ class DLSS5SpatialUpsampler(api.SimpleScaleSuffixMixin):
             "method_pos": {cls.METHOD: 10_000},
             "methods": [(label, cls.METHOD)],
             "multipliers": {cls.METHOD: tuple(NR_MODES)},
-            "default_spatial_upsampling": "dlss51",
+            "default_spatial_upsampling": "dlss5*1",
             "postprocessing_category": api.POSTPROCESSING_CATEGORY_UPSAMPLER,
             "description": "DLSS 5 Neural Rendering. At x1 it refines at native resolution; higher modes refine and upscale. Windows and a compatible NVIDIA RTX GPU are required.",
             "method_parameters": {cls.METHOD: [
-                {"name": "spatial_upsampler_dlss_strength", "setting": "strength", "type": "number", "component": "slider", "ui": (api.PARAMETER_UI_POSTPROCESSING, api.PARAMETER_UI_LATE_POSTPROCESSING, api.PARAMETER_UI_MEDIA_FLOW), "required": False, "default": 1.0, "minimum": 0.0, "maximum": 1.0, "step": 0.05, "label": "DLSS 5 Refinement Strength", "description": "Blends the DLSS reconstruction with the conventionally resized source. 1 uses full DLSS output; lower values retain more source appearance."},
+                {"name": "spatial_upsampler_dlss_strength", "setting": "intensity", "type": "number", "component": "slider", "ui": (api.PARAMETER_UI_POSTPROCESSING, api.PARAMETER_UI_LATE_POSTPROCESSING, api.PARAMETER_UI_MEDIA_FLOW), "required": False, "default": 1.0, "minimum": 0.0, "maximum": 2.0, "step": 0.05, "label": "DLSS 5 NR Intensity", "description": "Controls the native Neural Rendering intensity. 1 is the native default; values up to 2 strengthen the effect."},
             ]},
         }
 
@@ -68,12 +68,12 @@ class DLSS5SpatialUpsampler(api.SimpleScaleSuffixMixin):
         reason = unavailable_reason(temporal=False)
         return f"DLSS 5 Neural Rendering is unavailable: {reason}. See docs/DLSS5.md." if reason else ""
 
-    def upscale(self, sample, spatial_upsampling, *, still_image=False, strength=1.0, abort_callback=None, progress_callback=None, **kwargs):
+    def upscale(self, sample, spatial_upsampling, *, still_image=False, intensity=1.0, abort_callback=None, progress_callback=None, **kwargs):
         error = self.validate_upsampling(spatial_upsampling, int(still_image))
         if error:
             raise RuntimeError(error)
         config = self.config()
-        output = neural_render(sample, self.split_value(spatial_upsampling)[1], still_image=still_image, depth_resolution=config["depth_resolution"], motion_vector=config["motion_vector"], strength=strength, abort_callback=abort_callback, progress_callback=progress_callback)
+        output = neural_render(sample, self.split_value(spatial_upsampling)[1], still_image=still_image, depth_resolution=config["depth_resolution"], motion_vector=config["motion_vector"], intensity=intensity, abort_callback=abort_callback, progress_callback=progress_callback)
         return output, None
 
     def release_vram(self):

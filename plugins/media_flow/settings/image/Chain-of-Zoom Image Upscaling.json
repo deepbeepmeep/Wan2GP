@@ -5,6 +5,6 @@
   "media_type": "image",
   "image_mode": 1,
   "spatial_upsampling_method": "coz",
-  "target_ratio": "coz4",
+  "target_ratio": "coz*4",
   "prompt": ""
 }

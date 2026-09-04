@@ -20,6 +20,7 @@ Plugin authors can register processors from ``plugin_info.json`` with:
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import importlib
 from typing import Any
 
@@ -29,6 +30,7 @@ from .model_context import compatible_loaded_model
 
 
 TEMPORAL_UPSAMPLER_CONFIG_KEY = "temporal_upsamplers"
+MULTIPLIER_SEPARATOR = "*"
 
 temporal_upsampler_handlers = [
     "postprocessing.rife.temporal_upsampler.RifeTemporalUpsampler",
@@ -52,6 +54,28 @@ def format_multiplier(scale: float) -> str:
 
 def format_multiplier_label(scale: float) -> str:
     return f"x{format_multiplier(scale)}"
+
+
+def format_multiplier_value(method: str, scale: float) -> str:
+    return f"{str(method or '').strip().lower()}{MULTIPLIER_SEPARATOR}{format_multiplier(scale)}"
+
+
+def parse_multiplier_suffix(value, method: str, default_scale: float) -> float | None:
+    text = str(value or "").strip().lower()
+    method = str(method or "").strip().lower()
+    if not text.startswith(method):
+        return None
+    suffix = text[len(method):]
+    if suffix.startswith(MULTIPLIER_SEPARATOR):
+        suffix = suffix[len(MULTIPLIER_SEPARATOR):]
+        if not suffix:
+            return None
+    elif MULTIPLIER_SEPARATOR in suffix:
+        return None
+    try:
+        return float(suffix or default_scale)
+    except ValueError:
+        return None
 
 
 def format_method_scale_label(label: str, scale: float) -> str:
@@ -214,6 +238,18 @@ def build_temporal_upsampling_value(method, scale) -> str | None:
     return None if handler is None else handler.build_value(method, scale)
 
 
+def normalize_temporal_upsampling_value(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    split = split_temporal_upsampling_value(text)
+    if split is None:
+        return text
+    handler = find_temporal_upsampler_by_method(split[0])
+    normalized = None if handler is None else handler.build_value(*split)
+    return normalized or text
+
+
 def format_temporal_upsampling_label(value) -> str:
     text = str(value or "").strip()
     if not text:
@@ -251,6 +287,38 @@ def query_method_choices(enabled_only: bool = False) -> list[tuple[str, str]]:
     return [(label, method) for _, _, _, label, method in sorted(choices)]
 
 
+def temporal_help_markdown(method_choices, *, field_help=None) -> str:
+    intro = getattr(field_help, "TEMPORAL_UPSAMPLER_HELP_INTRO", "Temporal upsamplers increase frame rate by generating intermediate frames.")
+    sections = [intro]
+    handler_choices = {}
+    for label, method in method_choices:
+        handler = find_temporal_upsampler_by_method(method)
+        if handler is not None:
+            handler_choices.setdefault(handler, []).append((label, method))
+    for handler, choices in handler_choices.items():
+        handler_def = handler.query_temporal_upsampler_def()
+        name = str(handler_def.get("name", choices[0][0]))
+        description = str(handler_def.get("description", "") or "").strip()
+        lines = [f"### {name}"]
+        if description:
+            lines.append(description)
+        method_descriptions = handler_def.get("method_descriptions", {})
+        if isinstance(method_descriptions, dict):
+            details = [(str(label), str(method_descriptions.get(method, "") or "").strip()) for label, method in choices]
+            lines += [f"- **{label}:** {detail}" for label, detail in details if detail and detail != description]
+        sections.append("\n\n".join(lines))
+    return "\n\n".join(sections)
+
+
+def temporal_help_popup(method_choices, *, field_help=None) -> tuple[str, str]:
+    return "Temporal Upsampler", temporal_help_markdown(method_choices, field_help=field_help)
+
+
+def temporal_help_id(method_choices) -> str:
+    signature = "|".join(str(method) for _label, method in method_choices)
+    return f"temporal_upsampling_{hashlib.sha1(signature.encode('utf-8')).hexdigest()[:12]}"
+
+
 def dropdown_state(temporal_upsampling, *, late_postprocessing: bool = False) -> dict[str, Any]:
     method, scale = split_temporal_upsampling_value(temporal_upsampling) or ("", 2.0)
     method_choices = [("None", "")] + query_method_choices(enabled_only=not late_postprocessing)
@@ -265,7 +333,8 @@ def create_generation_temporal_ui(gr, temporal_upsampling, *, visible: bool = Tr
     with gr.Row():
         method = gr.Dropdown(choices=state["method_choices"], value=state["method"], visible=visible, scale=3, label="Temporal Upsampling", elem_classes=elem_classes)
         if field_help is not None:
-            field_help.bind(method, "temporal_upsampling")
+            help_title, help_markdown = temporal_help_popup(state["method_choices"], field_help=field_help)
+            field_help.bind(method, temporal_help_id(state["method_choices"]), title=help_title, markdown=help_markdown)
         multiplier = gr.Dropdown(choices=state["multiplier_choices"], value=state["scale"], visible=visible and state["method"] != "", scale=1, label="Multiplier", elem_classes=elem_classes)
     value = gr.Textbox(value=state["value"], visible=False, elem_classes=elem_classes)
 
@@ -453,7 +522,7 @@ def release_changed_config_temporal_upsamplers(old_config: dict[str, Any], new_c
 
 
 class SimpleScaleSuffixMixin:
-    """Value helpers for temporal upsamplers encoding values as '<method><multiplier>'."""
+    """Value helpers writing '<method>*<multiplier>' while accepting the legacy concatenated form."""
 
     def _method_keys(self):
         return [key for _, key in _method_choices(self.query_temporal_upsampler_def())]
@@ -462,10 +531,8 @@ class SimpleScaleSuffixMixin:
         text = str(value or "").strip().lower()
         for method in sorted(self._method_keys(), key=len, reverse=True):
             if text.startswith(method):
-                try:
-                    return method, float(text[len(method):] or 2.0)
-                except ValueError:
-                    return None
+                scale = parse_multiplier_suffix(text, method, 2.0)
+                return None if scale is None else (method, scale)
         return None
 
     def build_value(self, method, scale):
@@ -476,7 +543,7 @@ class SimpleScaleSuffixMixin:
         scale = float(scale or 0)
         if scale not in multipliers:
             scale = _default_multiplier_from_def(self.query_temporal_upsampler_def(), method) or 0
-        return f"{method}{format_multiplier(scale)}"
+        return format_multiplier_value(method, scale)
 
     def is_upsampling(self, value) -> bool:
         return self.split_value(value) is not None

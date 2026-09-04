@@ -75,7 +75,7 @@ class LTXVideoUpsamplerBridge(SimpleScaleSuffixMixin):
             "methods": list(cls.METHODS),
             "vae_methods": [],
             "multipliers": cls.MULTIPLIERS,
-            "default_spatial_upsampling": "ltx232",
+            "default_spatial_upsampling": "ltx23*2",
             "default_prompt": DEFAULT_PROMPT,
             "source_audio_conditioning": True,
             "postprocessing_category": "upsampler",

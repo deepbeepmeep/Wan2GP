@@ -11,10 +11,12 @@ from shared.utils.frame_scheduler import normalize_overlap
 from .constants import (H3_AUDIO_REFINEMENT_SETTING, H3_MASK_MODE_DEFAULT, H3_MASK_MODE_GROUPED_ROWS,
                         H3_MASK_MODE_SHARED_TIMESTEP, H3_MASK_MODE_SETTING, H3_PHASE_2_NOISE_LEVEL_START_DEFAULT,
                         h3_grouped_masking_enabled)
+from .dialogue import H3_DIALOGUE_GENERATION, H3_DIALOGUE_MAX_TOTAL_SECONDS, H3_DIALOGUE_PROMPT_INFOS, load_dialogue_whisper
 from .minimax_h3_main import (AUDIO_VAE_FILE, LATENT_UPSCALER_FILE, LATENT_UPSCALER_FOLDER, TEXT_ENCODER_FOLDER,
                               VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE)
 from .pdd import PDD_BLOCK_SIZE, PDD_NUM_STEPS
 from .prompt_enhancer import (FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
+                              H3_AUDIO_DIALOGUE_SYSTEM_PROMPT, H3_AUDIO_MONOLOGUE_SYSTEM_PROMPT,
                               REF2VA_IMAGE_SYSTEM_PROMPT, REF2VA_PROMPT_INFOS, REF2VA_TEXT_SYSTEM_PROMPT)
 
 
@@ -37,6 +39,7 @@ FL2VA_ARCHITECTURE = "minimax_h3_fl2va"
 FL2VA_PRUNED_ARCHITECTURE = "minimax_h3_fl2va_pruned"
 REF2VA_ARCHITECTURE = "minimax_h3_ref2va"
 REF2VA_PRUNED_ARCHITECTURE = "minimax_h3_ref2va_pruned"
+TTS_REF2VA_PRUNED_ARCHITECTURE = "minimax_h3_tts_ref2va_pruned"
 FIRST_BLOCK_CACHE_THRESHOLDS = (0.06, 0.08, 0.10, 0.12, 0.14)
 LEGACY_FIRST_BLOCK_CACHE_THRESHOLDS = {1.5: 0.06, 1.75: 0.08, 2.0: 0.10, 2.25: 0.12, 2.5: 0.14}
 FIRST_BLOCK_CACHE_STRENGTHS = [
@@ -88,7 +91,7 @@ Ref2VA generates a new video with native 32 kHz stereo audio from text plus mult
 
 - **Images:** up to 9.
 - **Videos in WanGP:** up to 2 clips; each source must be at least 2 seconds, inputs longer than 15 seconds are truncated, and the prepared clips may total at most 15 seconds. The H3 model itself documents support for 3 video clips.
-- **Audio in WanGP:** up to 2 inputs; each clip must be 2–15 seconds, with at most 15 seconds of reference audio in total. The H3 model itself documents support for 3 audio clips.
+- **Audio in WanGP:** up to 2 inputs, each at least 2 seconds long. When their combined duration exceeds 15 seconds, WanGP limits one reference to 15 seconds or each of two references to 7.5 seconds. The H3 model itself documents support for 3 audio clips.
 - **Audio requires matching visual references:** the combined number of reference images and videos must be at least the number of reference audio clips.
 - **Video soundtracks:** selecting reference-video soundtracks uses one audio-reference slot per selected video. A soundtrack shares its video's uploaded file, so it does not add another file to the mixed-input count.
 - **Mixed references:** at most 12 files across images, videos, and audio.
@@ -152,19 +155,31 @@ H3_STANDARD_SAMPLER_INFOS = """
 H3_AUDIO_REFINEMENT_INFOS = """
 ### Audio Refinement Extra Phase
 
-Use **Audio Refinement Extra Phase** to regenerate the soundtrack after video generation with more denoising steps and without LoRAs. WanGP locks the completed video, reduces its width and height to approximately one quarter for a much faster audio-only pass, then keeps the original full-resolution video and replaces only its soundtrack. This extra phase runs after all video phases, so it is the second phase after normal generation and the third phase after two-phase video generation.
+Use **Audio Refinement Extra Phase** to improve the soundtrack after video generation without LoRAs. WanGP preserves the completed video latent exactly, partially re-noises the existing audio latent at 0.5 denoising strength, and runs a few additional audio steps before decoding both streams. Keeping the original full-resolution video and audio latents preserves fine lip motion and the first pass's timing. This extra phase runs after all video phases, so it is the second phase after normal generation and the third phase after two-phase video generation.
 
-- **High Quality:** 40 steps; slowest option.
-- **Medium Quality:** 30 steps.
-- **Low Quality:** 20 steps; fastest option.
+When enabled, the refinement uses 6 extra steps at 0.5 denoising strength.
 
-The extra phase uses the prompt and the reduced locked video only. Reference images, reference video or audio, Control Video, and selected LoRAs are not injected again. FL2VA hides this option when an input soundtrack controls the result, and PDD variants do not offer it because their denoising schedule is fixed to 8 steps.
+The extra phase uses the text prompt and the locked final video only. Reference images, reference video or audio, Control Video, and selected LoRAs are not injected again. Each extra step still processes the full-resolution packed sequence so that audio can attend to the video; the video output of those steps is discarded. FL2VA hides this option when an input soundtrack controls the result, and PDD variants do not offer it because their denoising schedule is fixed to 8 steps.
 """
 
 H3_COMMON_RUNTIME_INFOS = """
 - **Sol-Attn:** in **Advanced Mode > Misc. > Override Attention Mode**, select **sol**. The **Start Tau** slider then appears below the attention selector and shows that End Tau is fixed at `0.8`. H3 defaults to `1.3`; this value is used on the first denoising step and decreases linearly to `0.8` on the final step. Use `1.0` for the Sol-Attn paper starting value, increase it to route more attention blocks through the approximate path for greater speed, or lower it for denser attention and higher fidelity. It uses sparse attention only on large visual sequences and requires BF16, Triton 3.6 or newer, and a CUDA NVIDIA GPU using SM86, SM89, SM90, SM100, SM120, or SM121 (such as RTX 30/40/50-series, H100/H200, B100/B200, or DGX Spark); the dropdown reports whether it is available on the current system.
 - **Text Encoder:** at the bottom of **Misc.**, use the **Text Encoder** configuration to reduce system RAM. **Qwen3-VL BF16** uses the most memory; **Quanto INT8** is a balanced lower-memory choice; **NVFP4 AWQ**, **GGUF Q4_K_M**, and especially **GGUF Q2_K** reduce it further. More aggressive quantization can slightly affect prompt interpretation.
 - **Priority:** beside the Text Encoder configuration, choose which memory limit matters most. **Lower VRAM** uses all code optimizations and reduces greatly VRAM consumption while **Lower RAM** uses only VRAM optimizations that doesnt consume extra RAM.
+"""
+
+H3_AUDIO_GENERATOR_INFOS = """## MiniMax H3 audio generator
+
+This audio-only preset reuses the pruned Ref2VA checkpoint. H3 still jointly denoises a tiny 32x32 video internally, but WanGP skips the video decode and saves only the generated 32 kHz stereo audio.
+
+- **No reference:** generate speech, ambience, Foley, or music from the prompt alone.
+- **One audio reference:** use `<Audio 1>` in the prompt to describe the voice, delivery, music, or sound characteristics to retain.
+- **Two audio references:** use `<Audio 1>` and `<Audio 2>` independently, for example as two cloned speaker voices.
+- Each reference must be at least 2 seconds long. Above a combined 15 seconds, one reference is limited to 15 seconds or each of two references is limited to 7.5 seconds.
+- **Maximum Total Audio Duration** is the cumulative limit for the assembled monologue or dialogue. Each speaker turn is generated separately; individual segments above H3's official 15-second range remain experimental.
+- **Early Stop** finishes the H3 segment currently being generated, then assembles and returns all completed segments.
+
+H3 remains an audiovisual model even though this preset discards the video. A structured H3 prompt that describes the hidden scene and binds each speaker to a stable ID such as `(S1)` or `(S2)` can improve audio coherence. Put exact dialogue inside `<d>[Language] ...</d>`.
 """
 
 PDD_INFOS = """
@@ -199,11 +214,113 @@ H3_FINETUNES_PARAMS = {
 }
 
 
+def _notify_audio_reference_limit(audio_durations):
+    total_duration = sum(audio_durations)
+    if total_duration <= 15 or not audio_durations:
+        return
+    limit = 15 / len(audio_durations)
+    gr.Info(f"MiniMax H3 reference audio totals {total_duration:.2f}s, above the 15s limit. Each reference will be limited to at most {limit:g}s.")
+
+
+def _get_audio_generator_model_def(model_def):
+    text_encoder_variant = model_def.get("text_encoder_variant")
+    text_encoder_files = [TEXT_ENCODER_BF16, TEXT_ENCODER_INT8] if text_encoder_variant is None else TEXT_ENCODER_VARIANTS[text_encoder_variant]
+    return {
+        "audio_only": True,
+        "image_outputs": False,
+        "profile_type": "video",
+        "preserve_empty_prompt_lines": True,
+        "sliding_window": False,
+        "guidance_max_phases": 1,
+        "visible_phases": 0,
+        "no_negative_prompt": True,
+        "inference_steps": True,
+        "temperature": False,
+        "flow_shift": True,
+        "fps": 24,
+        "supports_early_stop": True,
+        "profiles_dir": ["minimax_h3_tts"],
+        "duration_slider": {
+            "label": "Maximum Total Audio Duration (seconds)",
+            "min": 4,
+            "max": int(H3_DIALOGUE_MAX_TOTAL_SECONDS),
+            "increment": 1,
+            "default": 15,
+        },
+        "any_audio_prompt": True,
+        "audio_prompt_choices": True,
+        "audio_reference_max_total_duration": 15,
+        "audio_guide_label": "Voice / Audio Reference 1",
+        "audio_guide2_label": "Voice / Audio Reference 2",
+        "audio_prompt_type_sources": {
+            "selection": ["", "A", "AB"],
+            "labels": {
+                "": "Generate without an Audio Reference",
+                "A": "Use One Voice / Audio Reference",
+                "AB": "Use Two Voice / Audio References",
+            },
+            "letters_filter": "AB",
+            "label": "Voice / Audio References",
+            "show_label": True,
+            "default": "A",
+        },
+        "enabled_audio_lora": True,
+        "lora_multiplier_phases": 1,
+        "custom_settings": [],
+        "spectrum_cache": True,
+        "first_block_cache": True,
+        "skip_steps_multiplier_choices": FIRST_BLOCK_CACHE_STRENGTHS,
+        "skip_steps_multiplier_label": "First Block Cache Threshold",
+        "first_block_cache_thresholds": FIRST_BLOCK_CACHE_THRESHOLDS,
+        "custom_attention_modes": {
+            "sol": {"label": "Sol sparse attention, requires Triton and RTX 30xx or newer", "supports_sparsity": True},
+        },
+        "default_attention_modes_supported": True,
+        "attention_sparsity": {
+            "label": "Start Tau (higher = more sparse/faster; lower = more faithful; End Tau = 0.8)",
+            "start": 0.0,
+            "end": 4.0,
+            "inc": 0.05,
+        },
+        "sample_solvers": [("Euler", "euler"), ("RES Multistep", "res_multistep"), ("Ralston 2S (~2x slower)", "ralston_2s")],
+        "infos": H3_AUDIO_GENERATOR_INFOS + H3_SPEED_INFOS + H3_STANDARD_SAMPLER_INFOS + H3_COMMON_RUNTIME_INFOS + PRUNED_INFOS,
+        "prompt_infos": (H3_DIALOGUE_PROMPT_INFOS if H3_DIALOGUE_GENERATION else "") + REF2VA_PROMPT_INFOS,
+        "prompt_enhancer_button_label": "Write",
+        "prompt_enhancer_def": {
+            "selection": ["T", "T1"],
+            "labels": {"T": "A Monologue from Text", "T1": "A Dialogue from Text"},
+            "default": "",
+        },
+        "text_prompt_enhancer_instructions": H3_AUDIO_MONOLOGUE_SYSTEM_PROMPT,
+        "text_prompt_enhancer_instructions1": H3_AUDIO_DIALOGUE_SYSTEM_PROMPT,
+        "text_prompt_enhancer_max_tokens": 1024,
+        "text_prompt_enhancer_max_tokens1": 2048,
+        "dtype": "bf16",
+        "qkv_splitting": True,
+        "qkv_layout": "interleaved",
+        "text_encoder_folder": TEXT_ENCODER_FOLDER,
+        "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, filename) for filename in text_encoder_files],
+        "system_configs": {
+            "_name": "Text Encoder",
+            "bf16": {"name": "Qwen3-VL BF16", "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_BF16)]},
+            "int8": {"name": "Qwen3-VL Quanto INT8", "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_INT8)]},
+            "nvfp4_awq": {"name": "Qwen3-VL NVFP4 AWQ", "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_NVFP4)]},
+            "gguf_q4_k_m": {"name": "Qwen3-VL GGUF Q4_K_M", "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_GGUF_Q4)]},
+            "gguf_q2_k": {"name": "Qwen3-VL GGUF Q2_K", "text_encoder_URLs": [build_hf_url(REPO_ID, TEXT_ENCODER_FOLDER, TEXT_ENCODER_GGUF_Q2)]},
+        },
+        "system_configs2": {
+            "_name": "DiT Denoising Priority",
+            "_default_label": "Lower VRAM",
+            "lower_ram": {"name": "Lower RAM", "qkv_splitting": False},
+        },
+    }
+
+
 class family_handler:
     @staticmethod
     def query_supported_types():
         return [FL2VA_ARCHITECTURE, FL2VA_PRUNED_ARCHITECTURE,
-                REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE]
+                REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE, TTS_REF2VA_PRUNED_ARCHITECTURE]
 
     @staticmethod
     def query_family_maps():
@@ -245,6 +362,8 @@ class family_handler:
 
     @staticmethod
     def query_model_def(base_model_type, model_def):
+        if base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE:
+            return _get_audio_generator_model_def(model_def)
         reference_mode = base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE)
         pruned = base_model_type in (FL2VA_PRUNED_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE)
         vdn = model_def.get("vdn", False)
@@ -283,9 +402,7 @@ class family_handler:
                 "default": "none",
                 "choices": [
                     ("None", "none"),
-                    ("High Quality (40 steps, much slower)", "high"),
-                    ("Medium Quality (30 steps, slower)", "medium"),
-                    ("Low Quality (20 steps, faster)", "low"),
+                    ("Enabled (6 extra steps, denoising 0.5)", "enabled"),
                 ],
                 **({"audio_prompt_type_not": "AK"} if not reference_mode else {}),
             }],
@@ -410,6 +527,7 @@ class family_handler:
                 "reference_video_max_size": (768, 1344),
                 "any_audio_prompt": True,
                 "audio_prompt_choices": True,
+                "audio_reference_max_total_duration": 15,
                 "video_guide_label": "Reference / Control Video 1",
                 "video_guide2_label": "Reference Video 2",
                 "audio_guide_label": "Audio Reference 1",
@@ -478,6 +596,31 @@ class family_handler:
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
+        audio_generator = base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE
+        if audio_generator:
+            try:
+                duration = float(inputs["duration_seconds"])
+            except (TypeError, ValueError):
+                return f"MiniMax H3 maximum total audio duration must be a number between 4 and {H3_DIALOGUE_MAX_TOTAL_SECONDS:g} seconds"
+            if not 4 <= duration <= H3_DIALOGUE_MAX_TOTAL_SECONDS:
+                return f"MiniMax H3 maximum total audio duration must be between 4 and {H3_DIALOGUE_MAX_TOTAL_SECONDS:g} seconds"
+            audio_prompt_type = inputs["audio_prompt_type"]
+            audios = [inputs["audio_guide"]] if "A" in audio_prompt_type else []
+            if "B" in audio_prompt_type:
+                audios.append(inputs["audio_guide2"])
+            import librosa
+
+            audio_durations = []
+            for index, audio in enumerate(audios, 1):
+                try:
+                    audio_duration = float(librosa.get_duration(path=os.fspath(audio)))
+                except Exception as error:
+                    return f"Unable to read Audio Reference {index}: {error}"
+                if not audio_duration >= 2:
+                    return f"Audio Reference {index} must be at least 2 seconds long (found {audio_duration:.2f}s)"
+                audio_durations.append(audio_duration)
+            _notify_audio_reference_limit(audio_durations)
+            return None
         if model_def.get("pdd", False):
             required_steps = PDD_NUM_STEPS // PDD_BLOCK_SIZE
             if inputs["sample_solver"] != "euler":
@@ -580,15 +723,14 @@ class family_handler:
                     duration = float(librosa.get_duration(path=os.fspath(audio)))
                 except Exception as error:
                     return f"Unable to read Audio Reference {index}: {error}"
-                if not 2 <= duration <= 15:
-                    return f"Audio Reference {index} must be between 2 and 15 seconds long (found {duration:.2f}s)"
+                if not duration >= 2:
+                    return f"Audio Reference {index} must be at least 2 seconds long (found {duration:.2f}s)"
                 audio_durations.append(duration)
             audio_count = len(audios)
 
         if audio_count > 2:
             return "WanGP accepts at most 2 MiniMax H3 audio references"
-        if sum(audio_durations) > 15:
-            return f"Audio references must total at most 15 seconds (found {sum(audio_durations):.2f}s)"
+        _notify_audio_reference_limit(audio_durations)
         visual_count = image_count + len(videos)
         if audio_count > visual_count:
             return f"MiniMax H3 requires at least as many reference images and videos as audio references (found {visual_count} visual and {audio_count} audio)"
@@ -614,11 +756,16 @@ class family_handler:
         file_lists.append(["config.json", "tokenizer.json", "tokenizer_config.json", "preprocessor_config.json", "vocab.json"])
         source_folders.append(LATENT_UPSCALER_FOLDER)
         file_lists.append([LATENT_UPSCALER_FILE])
-        return [{
+        downloads = [{
             "repoId": REPO_ID,
             "sourceFolderList": source_folders,
             "fileList": file_lists,
         }]
+        if base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE and H3_DIALOGUE_GENERATION:
+            from shared.deepy.assets import query_deepy_download_defs
+
+            downloads.extend(query_deepy_download_defs())
+        return downloads
 
     @staticmethod
     def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer=False,
@@ -630,15 +777,18 @@ class family_handler:
 
         pdd = model_def.get("pdd", False)
         pipeline = model_factory(model_filename, text_encoder_filename, dtype=dtype, VAE_dtype=VAE_dtype,
-                                 reference_mode=base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE),
+                                 reference_mode=base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE, TTS_REF2VA_PRUNED_ARCHITECTURE),
                                  save_quantized=save_quantized, model_type=model_type,
                                  qkv_splitting=model_def["qkv_splitting"],
                                  qkv_layout=model_def["qkv_layout"],
                                  video_vae_filename=model_def.get("video_vae_file", VIDEO_VAE_FILE),
                                  audio_vae_filename=model_def.get("audio_vae_file", AUDIO_VAE_FILE), shared_h3_pipeline=shared_h3_pipeline,
                                  pdd=pdd, pdd_num_steps=PDD_NUM_STEPS if pdd else None, pdd_block_size=PDD_BLOCK_SIZE if pdd else None,
-                                 vdn=model_def.get("vdn", False))
+                                 vdn=model_def.get("vdn", False), audio_only=base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE)
         pipe = {"transformer": pipeline.transformer}
+        if base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE and H3_DIALOGUE_GENERATION:
+            pipeline.dialogue_whisper = load_dialogue_whisper()
+            pipe["dialogue_whisper"] = pipeline.dialogue_whisper
         if shared_h3_pipeline is None:
             pipe.update({
                 "text_encoder": pipeline.text_encoder.language_model,
@@ -660,6 +810,8 @@ class family_handler:
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
+        if base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE:
+            return
         if settings_version < 2.75:
             ui_defaults["switch_threshold"] = H3_PHASE_2_NOISE_LEVEL_START_DEFAULT
         if settings_version < 2.74:
@@ -694,6 +846,22 @@ class family_handler:
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
+        if base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE:
+            ui_defaults.update({
+                "video_length": 0,
+                "duration_seconds": 15,
+                "num_inference_steps": 20,
+                "guidance_phases": 1,
+                "guidance_scale": 1.0,
+                "flow_shift": 12.0,
+                "sample_solver": "euler",
+                "attention_sparsity": 1.3,
+                "skip_steps_start_step_perc": 25,
+                "skip_steps_multiplier": 0.08,
+                "audio_prompt_type": "A",
+                "multi_prompts_gen_type": "FG",
+            })
+            return
         reference_mode = base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE)
         ui_defaults.update({
             "video_length": 124,

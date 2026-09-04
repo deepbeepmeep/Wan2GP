@@ -85,6 +85,7 @@ Supported local Prompt Enhancer modes:
 Deepy settings in that tab:
 
 - `Model used to power Prompt Enhancer / Deepy`: selects the shared language/vision model.
+- `Qwen LLM quantization`: for Qwen3.8, selects Q4 for the highest quality, the recommended IQ3_S variant for a Q3 middle ground, or Q2 for the lowest VRAM and RAM use. IQ3_S remains compatible with Speculative Decoding through the same Q4 MTP weights, managed separately and automatically.
 - `Speculative Decoding`: `Auto` enables it for Qwen3.5 9B with at least 12 GB VRAM or Qwen3.8 27B with at least 24 GB VRAM. Explicit `Yes` and `No` remain available.
 - `Deepy`: selects `Disabled`, `Deepy Zero` for lightweight, straightforward work with curated WanGP tools and templates, or `Deepy Prime (requires Qwen3.8 VL 27B LLM)` for advanced planning, model discovery, multimedia workflows, and optional external MCP capabilities. Selecting Prime raises the context window to at least 32,000 tokens and selects Summarize compaction.
 - `Deepy Filesystem Access`: disabled by default. Select read-only or read/write access to WanGP output folders and additional folders. In this scoped mode, tools expose `@outputs`, `@outputs2`, and custom aliases instead of physical paths; plain relative paths use `@outputs`.
@@ -106,7 +107,7 @@ Deepy Prime submits generation jobs through the normal WanGP queue. Jobs and com
 
 ### Long projects
 
-For large file collections, long sliding-window videos, or multi-chapter writing, Deepy Prime can keep exact items and a small durable project ledger in session working data instead of trying to hold everything in the visible conversation. Each managed item and its corresponding ledger update are saved together, so an interruption cannot advance one without the other. This working data survives automatic conversation summarization. In multi-session mode, `Reset Current Session` clears it, while `Start New Session` leaves the saved session available for later use.
+For large file collections, long sliding-window videos, or multi-chapter writing, Deepy Prime can keep exact items and a small durable project ledger in session working data instead of trying to hold everything in the visible conversation. Each managed item and its corresponding ledger update are saved together, so an interruption cannot advance one without the other. This working data survives automatic conversation summarization. In multi-session mode, `New` leaves the saved session available for later use and opens a blank conversation.
 
 You can state the complete outcome normally, for example `plan the prompts for a ten-minute sliding-window video` or `write a twelve-chapter story and save it as one Markdown file`. Deepy divides the work into manageable batches, retrieves exact earlier data only when needed, checks that the collection is complete, and passes the completed plan directly to the generation or file-writing operation. For a large text deliverable, the final file is assembled from the stored chapters without making Deepy reproduce the whole document in a final answer or tool request.
 
@@ -190,7 +191,7 @@ Edit Image [Flux Klein 9B]
 
 ### Sessions
 
-Persistent sessions are optional. `Enable multi-session mode` is disabled by default, so existing users keep the traditional behavior: Deepy uses one temporary conversation and `Reset` clears it.
+Persistent sessions are optional. `Enable multi-session mode` is disabled by default, so existing users keep the traditional behavior: Deepy uses one temporary conversation and `Reset` clears it. Each reset creates a fresh temporary workspace and Deepy makes a best-effort attempt to remove the preceding one. Gallery media remain linked to their original files in this mode.
 
 To use persistent sessions:
 
@@ -224,12 +225,9 @@ When you resume a session, its image, video, and audio media are returned to the
 
 #### Starting, resetting, and switching sessions
 
-`Reset Button` selects what the main chat button does while multi-session mode is active:
+In single-session mode, the settings tab shows only the `Reset Button` behavior: the main button is labelled `Reset`, clears the temporary conversation, and rotates its workspace. Saved-session and Gallery-media controls stay hidden.
 
-- `Start New Session` changes the button to `New Session`. It leaves the current saved session available and opens a blank conversation. The new session is not actually created until you send its first request.
-- `Reset Current Session` keeps the button labelled `Reset` and clears the current session instead of creating another one.
-
-After clicking `New Session`, you may either send a request to begin a new session or select an existing session and resume it. You do not have to create an unused session first.
+In multi-session mode, the main button is labelled `New`. It leaves the current saved session available and opens a blank conversation. The new session is not actually created until you send its first request, at which point it is named and selected automatically in the settings list. You may instead select an existing session and resume it without creating an unused session first.
 
 Saved sessions can be selected from the bottom of Deepy's home screen and resumed with the adjacent `Resume` button. The `Sessions` settings tab provides the same selector plus actions to:
 
@@ -252,7 +250,7 @@ That save includes:
 
 - generation-property values such as auto-abort behavior, template-property usage, width, height, frame count, audio duration, and seed
 - the currently selected Deepy template for each generation tool
-- multi-session, Gallery-media, and Reset-button preferences
+- the selected session mode and its applicable session options
 
 
 ## Linking WanGP Settings to Deepy Tools

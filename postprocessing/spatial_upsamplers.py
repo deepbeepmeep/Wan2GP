@@ -16,7 +16,7 @@ Every spatial upsampler (built-in or extension) class is listed in
     "methods": [("FlashVSR", "flashvsr")],   # interchangeable post-processing methods (label, method key)
     "vae_methods": [],                       # VAE methods (label, method key); model-pipeline integration
     "multipliers": {"flashvsr": (2.0, 4.0)}, # optional; omit when a refiner has no scale
-    "default_spatial_upsampling": "flashvsr2",
+    "default_spatial_upsampling": "flashvsr*2",
     "postprocessing_category": "upsampler",   # "upsampler" or "refiner"
     "source_audio_conditioning": False,        # request a decoded source-audio input without changing final remux audio
     "description": "Restore detail while spatially upscaling media.", # processor-owned help/discovery description
@@ -107,6 +107,7 @@ PERSIST_UNLOAD = 1
 PERSIST_RAM = 2
 PERSISTENCE_CHOICES = [("Unload after use", PERSIST_UNLOAD), ("Persistent in RAM", PERSIST_RAM)]
 _SHARED_PERSISTENCE_BINDING_KEY = "__shared_persistence__"
+MULTIPLIER_SEPARATOR = "*"
 
 spatial_upsampler_handlers = [
     "postprocessing.lanczos.wgp_bridge.LanczosUpsampler",
@@ -139,6 +140,28 @@ def format_multiplier(scale: float) -> str:
 
 def format_multiplier_label(scale: float) -> str:
     return f"x{format_multiplier(scale)}"
+
+
+def format_multiplier_value(method: str, scale: float) -> str:
+    return f"{str(method or '').strip().lower()}{MULTIPLIER_SEPARATOR}{format_multiplier(scale)}"
+
+
+def parse_multiplier_suffix(value, method: str, default_scale: float) -> float | None:
+    text = str(value or "").strip().lower()
+    method = str(method or "").strip().lower()
+    if not text.startswith(method):
+        return None
+    suffix = text[len(method):]
+    if suffix.startswith(MULTIPLIER_SEPARATOR):
+        suffix = suffix[len(MULTIPLIER_SEPARATOR):]
+        if not suffix:
+            return None
+    elif MULTIPLIER_SEPARATOR in suffix:
+        return None
+    try:
+        return float(suffix or default_scale)
+    except ValueError:
+        return None
 
 
 def format_method_label(label: str) -> str:
@@ -561,6 +584,18 @@ def split_upsampling_value(value) -> tuple[str, float] | None:
 def build_upsampling_value(method, scale) -> str | None:
     handler = find_upsampler_by_method(method)
     return None if handler is None else handler.build_value(method, scale)
+
+
+def normalize_upsampling_value(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    split = split_upsampling_value(text)
+    if split is None:
+        return text
+    handler = find_upsampler_by_method(split[0])
+    normalized = None if handler is None else handler.build_value(*split)
+    return normalized or text
 
 
 def format_upsampling_label(value) -> str:
@@ -1013,7 +1048,7 @@ def release_changed_config_upsamplers(old_config: dict[str, Any], new_config: di
 
 
 class SimpleScaleSuffixMixin:
-    """Value helpers for upsamplers encoding values as '<method><multiplier>' (e.g. 'lanczos2', 'coz4')."""
+    """Value helpers writing '<method>*<multiplier>' while accepting the legacy concatenated form."""
 
     def _method_keys(self):
         handler_def = self.query_upsampler_def()
@@ -1021,19 +1056,14 @@ class SimpleScaleSuffixMixin:
 
     def split_value(self, value):
         text = str(value or "").strip().lower()
-        # longest prefix first so 'flashvsr2pass' wins over 'flashvsr'
         for method in sorted(self._method_keys(), key=len, reverse=True):
             if text.startswith(method):
                 suffix = text[len(method):]
                 multipliers = tuple(self.query_upsampler_def().get("multipliers", {}).get(method, ()))
                 if not multipliers:
                     return (method, 1.0) if not suffix else None
-                try:
-                    # declared multipliers are UI capabilities; out-of-list scales are
-                    # still parsed and rejected by validate_upsampling when unsupported
-                    return method, float(suffix or 2.0)
-                except ValueError:
-                    return None
+                scale = parse_multiplier_suffix(text, method, 2.0)
+                return None if scale is None else (method, scale)
         return None
 
     def build_value(self, method, scale):
@@ -1046,7 +1076,7 @@ class SimpleScaleSuffixMixin:
         scale = float(scale or 0)
         if scale not in multipliers:
             scale = _default_multiplier_from_def(self.query_upsampler_def(), method) or 0
-        return f"{method}{format_multiplier(scale)}"
+        return format_multiplier_value(method, scale)
 
     def is_upsampling(self, value) -> bool:
         return self.split_value(value) is not None
@@ -1075,7 +1105,7 @@ class WanVaeUpsampler(SimpleScaleSuffixMixin):
             "methods": [],
             "vae_methods": [("VAE Upscaling", "vae")],
             "multipliers": {"vae": (1.0, 2.0)},
-            "default_spatial_upsampling": "vae2",
+            "default_spatial_upsampling": "vae*2",
             "postprocessing_category": POSTPROCESSING_CATEGORY_UPSAMPLER,
             "description": "Runs through the compatible generation model's existing VAE path, so it adds no separate decoded-media pass and has little extra VRAM impact. It can create more detail than Lanczos.",
         }

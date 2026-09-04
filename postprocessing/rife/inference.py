@@ -4,7 +4,6 @@ from torch.nn import functional as F
 # from .model.pytorch_msssim import ssim_matlab
 from .ssim import ssim_matlab
 
-from .RIFE_HDv3 import Model as ModelV3
 from .RIFE_V4 import Model as ModelV4
 
 def get_frame(frames, frame_no):
@@ -34,23 +33,12 @@ def process_frames(model, device, frames, multiplier):
     _,  h, w = lastframe.shape
     scale = 1
     fp16 = False
-    supports_timestep = getattr(model, "supports_timestep", False)
-    pad_mod = getattr(model, "pad_mod", 32)
+    pad_mod = model.pad_mod
 
     def make_inference(I0, I1, n):
         if n <= 0:
             return []
-        if supports_timestep:
-            return [model.inference(I0, I1, (i + 1) / (n + 1), scale) for i in range(n)]
-        middle = model.inference(I0, I1, scale)
-        if n == 1:
-            return [middle]
-        first_half = make_inference(I0, middle, n=n//2)
-        second_half = make_inference(middle, I1, n=n//2)
-        if n%2:
-            return [*first_half, middle, *second_half]
-        else:
-            return [*first_half, *second_half]
+        return [model.inference(I0, I1, (i + 1) / (n + 1), scale) for i in range(n)]
 
     tmp = max(pad_mod, int(pad_mod / scale))
     ph = ((h - 1) // tmp + 1) * tmp
@@ -94,10 +82,7 @@ def process_frames(model, device, frames, multiplier):
                 temp = frame
             I1 = frame.to(device, non_blocking=True).unsqueeze(0)
             I1 = pad_image(I1)
-            if supports_timestep:
-                I1 = model.inference(I0, I1, 0.5, scale)
-            else:
-                I1 = model.inference(I0, I1, scale)
+            I1 = model.inference(I0, I1, 0.5, scale)
             I1_small = F.interpolate(I1, (32, 32), mode='bilinear', align_corners=False)
             ssim = ssim_matlab(I0_small[:, :3], I1_small[:, :3])
             frame = I1[0][:, :h, :w]
@@ -119,13 +104,10 @@ def process_frames(model, device, frames, multiplier):
     add_frame(output_frames, lastframe, h, w)
     return torch.cat( output_frames, dim=1)
 
-def temporal_interpolation(model_path, frames, multiplier, device ="cuda", rife_version="v3"):
+def temporal_interpolation(model_path, frames, multiplier, device="cuda"):
 
     input_was_uint8 = frames.dtype == torch.uint8
-    if rife_version == "v4":
-        model = ModelV4()
-    else:
-        model = ModelV3()
+    model = ModelV4()
     model.load_model(model_path, -1, device=device)
 
     model.eval()

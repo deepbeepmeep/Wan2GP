@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 import torch
 
+from postprocessing.spatial_upsamplers import format_multiplier_value
 from postprocessing.pid.runtime import (
     PID_TEXT_ENCODER_FILES,
     PID_TEXT_ENCODER_FOLDER,
@@ -112,7 +113,7 @@ class PiDBridge:
             "methods": post_methods,
             "vae_methods": vae_methods,
             "multipliers": {method: cls.UPSAMPLING_RATIOS for method in cls.UPSAMPLING_METHODS},
-            "default_spatial_upsampling": "flux_pid4",
+            "default_spatial_upsampling": "flux_pid*4",
             "postprocessing_category": "upsampler",
             "description": "Uses a dedicated x4 diffusion upsampler for strong detail recovery.",
             "method_descriptions": {
@@ -132,7 +133,7 @@ class PiDBridge:
     def build_value(cls, method, scale) -> str | None:
         method = str(method or "").strip().lower()
         scale = float(scale or 4.0)
-        return f"{method}{scale:g}" if method in cls.UPSAMPLING_METHODS and scale == 4.0 else None
+        return format_multiplier_value(method, scale) if method in cls.UPSAMPLING_METHODS and scale == 4.0 else None
 
     def validate_upsampling(self, spatial_upsampling, image_mode: int) -> str:
         if not self.is_upsampling(spatial_upsampling):

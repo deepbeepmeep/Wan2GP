@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import time
@@ -52,6 +53,8 @@ _REFERENCE_STOPWORDS = {
     "video",
 }
 _SEARCH_LIMIT = 5
+_GALLERY_MEDIA_ID_RE = re.compile(r"(?:visual|audio):[a-f0-9]{12}", re.IGNORECASE)
+_VIRTUAL_MEDIA_PATH_RE = re.compile(r"@[A-Za-z0-9_-]+/[^\r\n<>]*?\.(?:png|jpe?g|webp|bmp|gif|tiff?|jfif|pjpeg|mkv|mov|mp4|m4v|webm|avi|wav|mp3|aac|m4a|flac|ogg|opus|wma)(?=$|[\s\]\[(){}\"'`,.;:!?])", re.IGNORECASE)
 
 
 def normalize_media_type(media_type: str | None, reference: str | None = None) -> str:
@@ -96,6 +99,7 @@ def register_media(
     client_id: str = "",
     label: str | None = None,
     media_type: str | None = None,
+    access: str = "",
 ) -> dict[str, Any] | None:
     path = str(path or "").strip()
     if len(path) == 0:
@@ -122,6 +126,9 @@ def register_media(
     else:
         session.media_registry.remove(existing)
         session.media_registry.insert(0, existing)
+    accesses = {str(value).strip().lower() for value in list(existing.get("access", []) or []) if str(value).strip().lower() in {"read", "write"}}
+    if str(access or "").strip().lower() in {"read", "write"}:
+        accesses.add(str(access).strip().lower())
     existing.update(
         {
             "media_type": detected_type,
@@ -134,9 +141,114 @@ def register_media(
             "prompt": prompt,
             "filename": os.path.basename(path),
             "updated_at": float(time.time()),
+            "access": sorted(accesses),
         }
     )
     return existing
+
+
+def mark_media_access(record: dict[str, Any] | None, access: str) -> dict[str, Any] | None:
+    if not isinstance(record, dict):
+        return record
+    normalized = str(access or "").strip().lower()
+    if normalized not in {"read", "write"}:
+        raise ValueError(f"Unsupported media access kind: {access}")
+    accesses = {str(value).strip().lower() for value in list(record.get("access", []) or []) if str(value).strip().lower() in {"read", "write"}}
+    accesses.add(normalized)
+    record["access"] = sorted(accesses)
+    record["updated_at"] = float(time.time())
+    return record
+
+
+def record_media_access(
+    session,
+    path: str,
+    settings: dict[str, Any] | None = None,
+    *,
+    source: str = "wangp",
+    client_id: str = "",
+    access: str,
+) -> dict[str, Any] | None:
+    path_key = _normalize_path_key(path)
+    existing = next((record for record in session.media_registry if record.get("path_key") == path_key), None)
+    if existing is not None:
+        return mark_media_access(existing, access)
+    return register_media(session, path, settings=settings, source=source, client_id=client_id, access=access)
+
+
+def sync_tool_call_gallery_media(session, gen: dict[str, Any]) -> list[dict[str, Any]]:
+    gallery_records = {}
+    gallery_defs = (
+        ("visual", list(gen.get("file_list", []) or []), list(gen.get("file_settings_list", []) or [])),
+        ("audio", list(gen.get("audio_file_list", []) or []), list(gen.get("audio_file_settings_list", []) or [])),
+    )
+    for gallery, paths, settings_list in gallery_defs:
+        for index, path in enumerate(paths):
+            normalized_path = str(path or "").strip()
+            if not normalized_path:
+                continue
+            digest = hashlib.sha1(normalized_path.replace("\\", "/").casefold().encode("utf-8")).hexdigest()[:12]
+            settings = settings_list[index] if index < len(settings_list) and isinstance(settings_list[index], dict) else None
+            gallery_records[f"{gallery}:{digest}"] = (normalized_path, settings)
+
+    referenced_ids = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            for child in value.values():
+                collect(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                collect(child)
+        elif isinstance(value, str) and _GALLERY_MEDIA_ID_RE.fullmatch(value.strip()):
+            referenced_ids.append(value.strip().casefold())
+
+    for message in list(session.messages or []):
+        if not isinstance(message, dict) or str(message.get("role", "")).strip().lower() != "assistant":
+            continue
+        for tool_call in list(message.get("tool_calls", []) or []):
+            if isinstance(tool_call, dict):
+                collect(tool_call.get("function", {}).get("arguments", {}))
+
+    synced = []
+    for media_id in dict.fromkeys(referenced_ids):
+        gallery_record = gallery_records.get(media_id)
+        if gallery_record is None:
+            continue
+        path, settings = gallery_record
+        client_id = str((settings or {}).get("client_id", "") or "").strip()
+        record = record_media_access(session, path, settings=settings, source=_resolve_source(settings), client_id=client_id, access="read")
+        if record is not None:
+            synced.append(record)
+    return synced
+
+
+def sync_context_media_paths(session, file_access_policy) -> list[dict[str, Any]]:
+    references = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            for child in value.values():
+                collect(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                collect(child)
+        elif isinstance(value, str):
+            references.extend(match.group(0) for match in _VIRTUAL_MEDIA_PATH_RE.finditer(value))
+
+    collect(list(session.messages or []))
+    synced = []
+    for reference in dict.fromkeys(references):
+        try:
+            path = file_access_policy.resolve_path(reference)
+        except (OSError, PermissionError, ValueError):
+            continue
+        if not path.is_file() or detect_media_type(str(path)) == "any":
+            continue
+        record = record_media_access(session, str(path), source="wangp", access="read")
+        if record is not None:
+            synced.append(record)
+    return synced
 
 
 def collapse_gallery_media(file_list: list[Any], file_settings_list: list[Any]) -> tuple[list[Any], list[Any]]:
@@ -215,9 +327,11 @@ def resolve_media_reference(session, reference: str, media_type: str = "any", li
         return {"status": "not_found", "media_type": resolved_type, "reference": reference_text, "matches": []}
     alias_record = _resolve_alias(filtered, reference_text)
     if alias_record is not None:
+        mark_media_access(alias_record, "read")
         return {"status": "resolved", "media_type": resolved_type, "reference": reference_text, "media": _compact_media(alias_record, why="matched recent alias")}
     direct_record = get_media_record(session, reference_text)
     if direct_record is not None and (resolved_type == "any" or direct_record.get("media_type") == resolved_type):
+        mark_media_access(direct_record, "read")
         return {"status": "resolved", "media_type": resolved_type, "reference": reference_text, "media": _compact_media(direct_record, why="matched media id")}
     ranked = _rank_records(filtered, reference_text)
     if len(ranked) == 0:
@@ -228,6 +342,7 @@ def resolve_media_reference(session, reference: str, media_type: str = "any", li
             "matches": [_compact_media(record, why="recent") for record in filtered[: max(1, limit)]],
         }
     if len(ranked) == 1:
+        mark_media_access(ranked[0][0], "read")
         return {"status": "resolved", "media_type": resolved_type, "reference": reference_text, "media": _compact_media(ranked[0][0], why=ranked[0][1])}
     return {
         "status": "candidates",
@@ -386,9 +501,13 @@ __all__ = [
     "collapse_gallery_media",
     "find_last_gallery_media_by_client",
     "get_media_record",
+    "mark_media_access",
     "normalize_media_type",
+    "record_media_access",
     "register_media",
     "resolve_media_reference",
     "summarize_prompt",
+    "sync_context_media_paths",
+    "sync_tool_call_gallery_media",
     "sync_recent_generated_media",
 ]

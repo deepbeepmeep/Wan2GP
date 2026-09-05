@@ -1,4 +1,4 @@
-RIFE_TEMPORAL_UPSAMPLING_MODES = ("", "rife2", "rife4")
+RIFE_TEMPORAL_UPSAMPLING_MODES = ("", "rife*2", "rife*3", "rife*4", "rife2", "rife3", "rife4")
 
 
 def validate_temporal_upsampling(temporal_upsampling, *, source_is_image: bool = False) -> str:

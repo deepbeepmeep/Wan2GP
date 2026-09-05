@@ -82,6 +82,7 @@ from shared.utils.process_locks import (
 )
 from shared.utils.model_unload import model_unload_guard, wait_for_model_unload
 from shared.deepy.config import DEEPY_KV_CACHE_QUANTIZATION_DEFAULT, DEEPY_KV_CACHE_QUANTIZATION_KEY, get_deepy_default_runtime_config, set_deepy_runtime_config
+from shared.deepy.onboarding import apply_first_launch_deepy_prime_defaults
 from shared.remote_llm.config import LLM_CONFIG_KEY, is_remote_engine, normalize_llm_config, resolve_role_engine
 from shared.loras_migration import migrate_loras_layout
 from shared.utils.wgp_config_migration import migrate_extension_defaults
@@ -92,6 +93,7 @@ from shared.deepy import controller as deepy_controller
 from shared.deepy import filesystem as deepy_filesystem
 from shared.deepy import cli as deepy_cli
 from shared.deepy import gradio_ui as deepy_gradio_ui
+from shared.deepy import session_store as deepy_session_store
 from shared import extra_settings
 from shared import config_groups as model_config_groups
 from shared import resolutions as resolution_utils
@@ -154,8 +156,8 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.14"
-WanGP_version = "12.648"
-settings_version = 2.77
+WanGP_version = "12.71"
+settings_version = 2.78
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -454,6 +456,10 @@ def edit_task_in_queue( state ):
 
     return task_to_edit_index -1, gr.Tabs(selected="media_gen"), gr.update(visible=False), update_queue_data(queue)
 
+def remember_spatial_upsampler_parameters(state, parameter_values):
+    state["spatial_upsampler_parameters"] = dict(parameter_values or {})
+
+
 def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
     def ret():
         return gr.update(), gr.update()
@@ -475,6 +481,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
     
     inputs["state"] =  state
     inputs["model_type"] = model_type
+    inputs["spatial_upsampler_parameters"] = dict(state.get("spatial_upsampler_parameters", {}))
     inputs.pop("lset_name", None)
     if inputs == None:
         gr.Warning("Internal state error: Could not retrieve inputs for the model.")
@@ -548,8 +555,10 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
             video_source = inputs["video_source"]
             source_is_image = has_image_file_extension(video_source)
             source_is_video = has_video_file_extension(video_source)
-            temporal_upsampling = inputs.get("temporal_upsampling","")
-            spatial_upsampling = inputs.get("spatial_upsampling","")
+            temporal_upsampling = temporal_upsampler_api.normalize_temporal_upsampling_value(inputs.get("temporal_upsampling", ""))
+            spatial_upsampling = upsampler_api.normalize_upsampling_value(inputs.get("spatial_upsampling", ""))
+            inputs["temporal_upsampling"] = temporal_upsampling
+            inputs["spatial_upsampling"] = spatial_upsampling
             validation_error = ""
             if not media_source_exists(video_source):
                 validation_error = "Selected video or image file is missing"
@@ -1064,6 +1073,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
             supported_model_commands=model_def.get("prompt_slash_commands", []),
             allow_new_shot=image_prompt_types_allow_t2v(model_def, inputs.get("image_mode", 0)),
             first_window_overlap_frames=estimate_first_window_overlap_frames(inputs.get("image_start"), inputs.get("video_source"), inputs.get("keep_frames_video_source", ""), schedule_fps),
+            initial_shared_frames=1 if inputs.get("image_start") is not None or inputs.get("video_source") is not None else 0,
             discard_last_frames=int(inputs.get("sliding_window_discard_last_frames", 0) or 0) // latent_size * latent_size,
         )
         if frame_scheduler_error is not None:
@@ -1138,8 +1148,10 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
     switch_threshold2 = inputs["switch_threshold2"]
     video_guide_outpainting = inputs["video_guide_outpainting"]
     video_guide_outpainting_ratio = inputs.get("video_guide_outpainting_ratio", "")
-    spatial_upsampling = inputs["spatial_upsampling"]
-    temporal_upsampling = inputs.get("temporal_upsampling", "") or ""
+    spatial_upsampling = upsampler_api.normalize_upsampling_value(inputs["spatial_upsampling"])
+    temporal_upsampling = temporal_upsampler_api.normalize_temporal_upsampling_value(inputs.get("temporal_upsampling", ""))
+    inputs["spatial_upsampling"] = spatial_upsampling
+    inputs["temporal_upsampling"] = temporal_upsampling
     motion_amplitude = inputs["motion_amplitude"]
     self_refiner_setting = inputs["self_refiner_setting"]
     self_refiner_plan = inputs["self_refiner_plan"]
@@ -2557,6 +2569,7 @@ with open("models/_settings.json", "r", encoding="utf-8") as f:
     primary_settings = json.load(f)
 
 wgp_root = os.path.abspath(os.getcwd())
+deepy_session_store.configure_sessions_root(args.deepy_sessions_dir or os.path.join(wgp_root, deepy_session_store.DEFAULT_SESSIONS_FOLDER))
 config_dir = args.config.strip()
 server_config_filename = CONFIG_FILENAME
 server_config_fallback = server_config_filename
@@ -2643,6 +2656,7 @@ if not Path(config_load_filename).is_file():
         "audio_save_path": "outputs",
         **notifications.default_config(),
     }
+    apply_first_launch_deepy_prime_defaults(server_config)
 
     with open(server_config_filename, "w", encoding="utf-8") as writer:
         writer.write(json.dumps(server_config))
@@ -3108,6 +3122,11 @@ def fix_settings(model_type, ui_defaults, min_settings_version = 0):
             ui_defaults["prompt_enhancer"] = "TIK"
 
     audio_prompt_type = fix_postprocess_audio_settings(ui_defaults, settings_version)
+    if settings_version < 2.78:
+        if "spatial_upsampling" in ui_defaults:
+            ui_defaults["spatial_upsampling"] = upsampler_api.normalize_upsampling_value(ui_defaults["spatial_upsampling"])
+        if "temporal_upsampling" in ui_defaults:
+            ui_defaults["temporal_upsampling"] = temporal_upsampler_api.normalize_temporal_upsampling_value(ui_defaults["temporal_upsampling"])
     if settings_version < 2.2: 
         if audio_prompt_type == None :
             if any_audio_track(base_model_type):
@@ -3964,7 +3983,7 @@ def setup_prompt_enhancer(pipe, kwargs):
         reset_prompt_enhancer()
 
 
-def ensure_prompt_enhancer_loaded(override_profile=None, progress=None, send_cmd=None):
+def ensure_prompt_enhancer_loaded(override_profile=-1, progress=None, send_cmd=None):
     global enhancer_offloadobj
 
     reset_prompt_enhancer_if_requested()
@@ -4165,9 +4184,16 @@ def generate_header(model_type, compile, attention_mode, override_attention=""):
     overridden_attention = override_attention or model_attention
     attn_mode = attention_mode if overridden_attention is None else overridden_attention
     header = "<DIV style='align:right;width:100%'><FONT SIZE=2>Attention mode <B>" + (attn_mode if attn_mode!="auto" else "auto/" + get_auto_attention() )
-    if attn_mode not in override_attention_modes_installed:
+    custom_attention = model_def.get("custom_attention_modes", {}).get(attn_mode)
+    if custom_attention is not None:
+        custom_status = ATTENTION_MODE_AVAILABILITY.get(attn_mode, {})
+        custom_installed = custom_attention.get("installed", custom_status.get("installed", True))
+        custom_supported = custom_attention.get("supported", custom_status.get("supported", custom_installed))
+    else:
+        custom_installed = custom_supported = False
+    if attn_mode not in override_attention_modes_installed and not custom_installed:
         header += " -NOT INSTALLED-"
-    elif attn_mode not in override_attention_modes_supported:
+    elif attn_mode not in override_attention_modes_supported and not custom_supported:
         header += " -NOT SUPPORTED-"
     elif not override_attention and model_attention is not None and attention_mode != model_attention:
         header += " -MODEL SPECIFIC-"
@@ -4774,8 +4800,8 @@ def select_media(state, current_gallery_tab, input_file_list, file_selected, aud
             if model_modes_def is not None and "model_mode" in configs and configs.get("image_mode", 0) in model_modes_def.get("image_modes", [0, 1, 2]):
                 misc_values += [next((label for label, value in model_modes_def["choices"] if value == configs["model_mode"]), configs["model_mode"])]
                 misc_labels += [model_modes_def["label"]]
-            video_temporal_upsampling = temporal_upsampler_api.format_temporal_upsampling_label(configs.get("temporal_upsampling", ""))
-            video_spatial_upsampling = upsampler_api.format_upsampling_label(configs.get("spatial_upsampling", ""))
+            video_temporal_upsampling = temporal_upsampler_api.format_temporal_upsampling_label(temporal_upsampler_api.normalize_temporal_upsampling_value(configs.get("temporal_upsampling", "")))
+            video_spatial_upsampling = upsampler_api.format_upsampling_label(upsampler_api.normalize_upsampling_value(configs.get("spatial_upsampling", "")))
             video_film_grain_intensity = configs.get("film_grain_intensity", 0)
             video_film_grain_saturation = configs.get("film_grain_saturation", 0.5)
             video_postprocess_audio = audio_processor_api.normalize_method(configs.get("postprocess_audio", "") or "")
@@ -5780,18 +5806,22 @@ def get_loaded_model_context():
     return LoadedModelContext(model=wan_model, offloadobj=offloadobj, model_type=transformer_type, base_model_type=get_base_model_type(transformer_type), model_family=get_model_family(transformer_type), model_def=get_model_def(transformer_type), profile=loaded_profile, config_id=loaded_config)
 
 
-def perform_temporal_upsampling(sample, previous_last_frame, temporal_upsampling, fps):
+def perform_temporal_upsampling(sample, previous_last_frame, temporal_upsampling, fps, abort_callback=None, progress_callback=None):
     wait_for_model_unload()
-    return temporal_upsampler_api.temporal_upsample(temporal_upsampling, sample, previous_last_frame, fps, main_offloadobj=offloadobj, loaded_model_context=get_loaded_model_context(), processing_device=processing_device, to_uint8_callback=convert_video_tensor_to_uint8_chunked, process_files=process_files_def, init_pipe=init_pipe, profile=loaded_profile if loaded_profile >= 0 else get_default_profile("video"))
+    return temporal_upsampler_api.temporal_upsample(temporal_upsampling, sample, previous_last_frame, fps, main_offloadobj=offloadobj, loaded_model_context=get_loaded_model_context(), processing_device=processing_device, to_uint8_callback=convert_video_tensor_to_uint8_chunked, process_files=process_files_def, init_pipe=init_pipe, profile=loaded_profile if loaded_profile >= 0 else get_default_profile("video"), abort_callback=abort_callback, progress_callback=progress_callback)
 
 
-def perform_spatial_upsampling(sample, spatial_upsampling, seed=0, flashvsr_continue_cache=None, return_flashvsr_continue_cache=False, vae_tile_size=None, still_image=False, abort_callback=None, progress_callback=None, fps=24.0, frame_offset=0, prompt="", negative_prompt="", audio_waveform=None, audio_sample_rate=0, source_audio_path=None, reference_images=None, image_refs_relative_size=100.0, spatial_upsampler_prompt="", spatial_upsampler_reference_images=None, spatial_upsampler_face_count=1):
+def perform_spatial_upsampling(sample, spatial_upsampling, seed=0, flashvsr_continue_cache=None, return_flashvsr_continue_cache=False, vae_tile_size=None, still_image=False, abort_callback=None, progress_callback=None, fps=24.0, frame_offset=0, prompt="", negative_prompt="", audio_waveform=None, audio_sample_rate=0, source_audio_path=None, reference_images=None, image_refs_relative_size=100.0, spatial_upsampler_prompt="", spatial_upsampler_reference_images=None, spatial_upsampler_face_count=1, spatial_upsampler_parameters=None):
     wait_for_model_unload()
     if upsampler_api.is_vae_upsampling(spatial_upsampling):
         sample = upsampler_api.post_model_process_vae_upsampling(sample, spatial_upsampling)
         return (sample, None) if return_flashvsr_continue_cache else sample
     edit_upsampler = upsampler_api.find_postprocessing_upsampler(spatial_upsampling)
     if edit_upsampler is not None:
+        parameter_values = dict(spatial_upsampler_parameters or {})
+        parameter_values.setdefault("spatial_upsampler_prompt", spatial_upsampler_prompt)
+        parameter_values.setdefault("spatial_upsampler_reference_images", spatial_upsampler_reference_images)
+        parameter_values.setdefault("spatial_upsampler_face_count", spatial_upsampler_face_count)
         profile_type = upsampler_api.profile_type_for_handler(edit_upsampler)
         if profile_type == upsampler_api.UPSAMPLER_PROFILE_IMAGE:
             profile = get_default_profile("image")
@@ -5799,20 +5829,20 @@ def perform_spatial_upsampling(sample, spatial_upsampling, seed=0, flashvsr_cont
             profile = get_default_profile("audio")
         else:
             profile = loaded_profile if loaded_profile >= 0 else get_default_profile("video")
-        sample, upsampler_cache = upsampler_api.upscale_postprocessing(edit_upsampler, sample, spatial_upsampling, main_offloadobj=offloadobj, loaded_model_context=get_loaded_model_context(), seed=seed, continue_cache=flashvsr_continue_cache, return_continue_cache=return_flashvsr_continue_cache, vae_tile_size=vae_tile_size, process_files=process_files_def, vae_config=vae_config, init_pipe=init_pipe, profile=profile, still_image=still_image, fps=fps, frame_offset=frame_offset, prompt=prompt, negative_prompt=negative_prompt, audio_waveform=audio_waveform, audio_sample_rate=audio_sample_rate, source_audio_path=source_audio_path, reference_images=reference_images, image_refs_relative_size=image_refs_relative_size, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_face_count=spatial_upsampler_face_count, abort_callback=abort_callback, progress_callback=progress_callback)
+        sample, upsampler_cache = upsampler_api.upscale_postprocessing(edit_upsampler, sample, spatial_upsampling, main_offloadobj=offloadobj, loaded_model_context=get_loaded_model_context(), seed=seed, continue_cache=flashvsr_continue_cache, return_continue_cache=return_flashvsr_continue_cache, vae_tile_size=vae_tile_size, process_files=process_files_def, vae_config=vae_config, init_pipe=init_pipe, profile=profile, still_image=still_image, fps=fps, frame_offset=frame_offset, prompt=prompt, negative_prompt=negative_prompt, audio_waveform=audio_waveform, audio_sample_rate=audio_sample_rate, source_audio_path=source_audio_path, reference_images=reference_images, image_refs_relative_size=image_refs_relative_size, abort_callback=abort_callback, progress_callback=progress_callback, **parameter_values)
         return (sample, upsampler_cache) if return_flashvsr_continue_cache else sample
     raise ValueError(f"No spatial upsampler registered for '{spatial_upsampling}'")
 
 
-def perform_image_spatial_upsampling(sample, spatial_upsampling, seed=0, vae_tile_size=None, abort_callback=None, progress_callback=None, fps=24.0, prompt="", negative_prompt="", spatial_upsampler_prompt="", spatial_upsampler_reference_images=None, spatial_upsampler_face_count=1):
+def perform_image_spatial_upsampling(sample, spatial_upsampling, seed=0, vae_tile_size=None, abort_callback=None, progress_callback=None, fps=24.0, prompt="", negative_prompt="", spatial_upsampler_prompt="", spatial_upsampler_reference_images=None, spatial_upsampler_face_count=1, spatial_upsampler_parameters=None):
     edit_upsampler = upsampler_api.find_postprocessing_upsampler(spatial_upsampling)
     if edit_upsampler is None or sample.shape[1] <= 1 or getattr(edit_upsampler, "batch_image_inputs", False):
-        return perform_spatial_upsampling(sample, spatial_upsampling, seed=seed, vae_tile_size=vae_tile_size, still_image=True, fps=fps, prompt=prompt, negative_prompt=negative_prompt, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_face_count=spatial_upsampler_face_count, abort_callback=abort_callback, progress_callback=progress_callback)
+        return perform_spatial_upsampling(sample, spatial_upsampling, seed=seed, vae_tile_size=vae_tile_size, still_image=True, fps=fps, prompt=prompt, negative_prompt=negative_prompt, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_face_count=spatial_upsampler_face_count, spatial_upsampler_parameters=spatial_upsampler_parameters, abort_callback=abort_callback, progress_callback=progress_callback)
     frames = []
     for frame_no in range(sample.shape[1]):
         if abort_callback is not None and abort_callback():
             return None
-        frames.append(perform_spatial_upsampling(sample[:, frame_no:frame_no + 1], spatial_upsampling, seed=seed, vae_tile_size=vae_tile_size, still_image=True, fps=fps, prompt=prompt, negative_prompt=negative_prompt, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_face_count=spatial_upsampler_face_count, abort_callback=abort_callback, progress_callback=progress_callback))
+        frames.append(perform_spatial_upsampling(sample[:, frame_no:frame_no + 1], spatial_upsampling, seed=seed, vae_tile_size=vae_tile_size, still_image=True, fps=fps, prompt=prompt, negative_prompt=negative_prompt, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_face_count=spatial_upsampler_face_count, spatial_upsampler_parameters=spatial_upsampler_parameters, abort_callback=abort_callback, progress_callback=progress_callback))
     return torch.cat(frames, dim=1)
 
 
@@ -5871,6 +5901,7 @@ def edit_media(
                 spatial_upsampler_prompt="",
                 spatial_upsampler_reference_images=None,
                 spatial_upsampler_face_count=1,
+                spatial_upsampler_parameters=None,
                 client_id="",
                 plugin_data=None,
                 **kwargs
@@ -5954,8 +5985,10 @@ def edit_media(
         width, height = image.size
         fps, frames_count = 1, 1
     else:
-        from shared.utils.utils import get_video_info
-        fps, width, height, frames_count = get_video_info(video_source)
+        from shared.utils.utils import get_video_info_details
+        media_info = get_video_info_details(video_source)
+        fps = float(media_info["fps_float"] or media_info["fps"])
+        width, height, frames_count = media_info["display_width"], media_info["display_height"], media_info["frame_count"]
     frames_count = min(frames_count, max_source_video_frames)
     sample = None
     download_requested_postprocessing_assets(
@@ -5973,37 +6006,39 @@ def edit_media(
             if source_is_image:
                 sample = torch.from_numpy(np.array(image).astype(np.uint8)).unsqueeze(0).permute(-1,0,1,2)
             else:
-                sample = get_resampled_video(video_source, 0, max_source_video_frames, fps)
+                sample = get_resampled_video(video_source, 0, max_source_video_frames, None)
                 sample = sample.permute(-1,0,1,2)
             frames_count = sample.shape[1] 
 
         output_fps = fps
+        def upsampler_progress(phase, current_step=None, total_steps=None):
+            phase_text = str(phase)
+            gen["progress_phase"] = (phase_text, int(current_step) if current_step is not None else -1)
+            status_msg = get_latest_status(state, phase_text)
+            if current_step is not None and total_steps is not None and int(total_steps) > 0:
+                send_cmd("progress", [(int(current_step), int(total_steps)), status_msg, int(total_steps)])
+            else:
+                send_cmd("progress", [0, status_msg])
         if len(temporal_upsampling) > 0:
-            sample, previous_last_frame, output_fps = perform_temporal_upsampling(sample, None, temporal_upsampling, fps)
+            sample, previous_last_frame, output_fps = perform_temporal_upsampling(sample, None, temporal_upsampling, fps, abort_callback=lambda: gen.get("abort", False), progress_callback=upsampler_progress)
+            if gen.get("abort", False) or sample is None:
+                return
             configs["temporal_upsampling"] = temporal_upsampling
             frames_count = sample.shape[1] 
 
 
         if len(spatial_upsampling) > 0:
-            def flashvsr_progress(phase, current_step=None, total_steps=None):
-                phase_text = str(phase)
-                gen["progress_phase"] = (phase_text, int(current_step) if current_step is not None else -1)
-                status_msg = get_latest_status(state, phase_text)
-                if current_step is not None and total_steps is not None and int(total_steps) > 0:
-                    send_cmd("progress", [(int(current_step), int(total_steps)), status_msg, int(total_steps)])
-                else:
-                    send_cmd("progress", [0, status_msg])
             if source_is_image:
-                sample = perform_image_spatial_upsampling(sample, spatial_upsampling, seed=seed, fps=output_fps, prompt=spatial_upsampling_prompt, negative_prompt=str(configs.get("negative_prompt", "")), spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_face_count=spatial_upsampler_face_count, abort_callback=lambda: gen.get("abort", False), progress_callback=flashvsr_progress)
+                sample = perform_image_spatial_upsampling(sample, spatial_upsampling, seed=seed, fps=output_fps, prompt=spatial_upsampling_prompt, negative_prompt=str(configs.get("negative_prompt", "")), spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_face_count=spatial_upsampler_face_count, spatial_upsampler_parameters=spatial_upsampler_parameters, abort_callback=lambda: gen.get("abort", False), progress_callback=upsampler_progress)
                 flashvsr_continue_cache = None
             else:
-                sample = perform_spatial_upsampling(sample, spatial_upsampling, seed=seed, flashvsr_continue_cache=flashvsr_continue_cache, return_flashvsr_continue_cache=return_flashvsr_continue_cache, fps=output_fps, frame_offset=upsampler_frame_offset, prompt=spatial_upsampling_prompt, negative_prompt=str(configs.get("negative_prompt", "")), source_audio_path=conditioning_audio_path, reference_images=reference_images, image_refs_relative_size=image_refs_relative_size, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_face_count=spatial_upsampler_face_count, abort_callback=lambda: gen.get("abort", False), progress_callback=flashvsr_progress)
+                sample = perform_spatial_upsampling(sample, spatial_upsampling, seed=seed, flashvsr_continue_cache=flashvsr_continue_cache, return_flashvsr_continue_cache=return_flashvsr_continue_cache, fps=output_fps, frame_offset=upsampler_frame_offset, prompt=spatial_upsampling_prompt, negative_prompt=str(configs.get("negative_prompt", "")), source_audio_path=conditioning_audio_path, reference_images=reference_images, image_refs_relative_size=image_refs_relative_size, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_face_count=spatial_upsampler_face_count, spatial_upsampler_parameters=spatial_upsampler_parameters, abort_callback=lambda: gen.get("abort", False), progress_callback=upsampler_progress)
             if return_flashvsr_continue_cache and not source_is_image:
                 sample, flashvsr_continue_cache = sample
             if gen.get("abort", False) or sample is None:
                 return
             configs["spatial_upsampling"] = spatial_upsampling
-            configs.update(spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images or [], spatial_upsampler_face_count=spatial_upsampler_face_count)
+            configs.update(spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images or [], spatial_upsampler_face_count=spatial_upsampler_face_count, spatial_upsampler_parameters=dict(spatial_upsampler_parameters or {}))
 
         if film_grain_intensity > 0:
             from postprocessing.film_grain import add_film_grain
@@ -6259,7 +6294,10 @@ def get_overridden_attention(model_type):
     attention_list = match_nvidia_architecture(override_attention, gpu_version) 
     if len(attention_list ) == 0: return None
     override_attention = attention_list[0]
-    if override_attention is not None and override_attention not in attention_modes_supported: return None
+    custom = model_def.get("custom_attention_modes", {}).get(override_attention)
+    custom_status = ATTENTION_MODE_AVAILABILITY.get(override_attention, {})
+    custom_supported = custom and custom.get("supported", custom_status.get("supported", custom.get("installed", custom_status.get("installed", True))))
+    if override_attention is not None and override_attention not in attention_modes_supported and not custom_supported: return None
     return override_attention
 
 def get_transformer_loras(model_type):
@@ -6783,6 +6821,7 @@ def generate_media(
     model_type,
     mode,
     plugin_data=None,
+    spatial_upsampler_parameters=None,
 ):
     wait_for_model_unload()
 
@@ -6812,7 +6851,7 @@ def generate_media(
         edit_audio(send_cmd, state, audio_source, postprocess_audio, replace_voice_sample, replace_voice_sample2, client_id=client_id, plugin_data=plugin_data)
         return True
     if mode.startswith("edit_"):
-        edit_media(send_cmd, state, mode, video_source, seed, temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, postprocess_audio, postprocess_audio_prompt, postprocess_audio_neg_prompt, repeat_generation, audio_source, replace_voice_method, replace_voice_sample, replace_voice_sample2, prompt=prompt, image_refs=image_refs, image_refs_relative_size=image_refs_relative_size, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_face_count=spatial_upsampler_face_count, client_id=client_id, plugin_data=plugin_data)
+        edit_media(send_cmd, state, mode, video_source, seed, temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, postprocess_audio, postprocess_audio_prompt, postprocess_audio_neg_prompt, repeat_generation, audio_source, replace_voice_method, replace_voice_sample, replace_voice_sample2, prompt=prompt, image_refs=image_refs, image_refs_relative_size=image_refs_relative_size, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_face_count=spatial_upsampler_face_count, spatial_upsampler_parameters=spatial_upsampler_parameters, client_id=client_id, plugin_data=plugin_data)
         return True
     enhancer_mode = server_config.get("enhancer_mode", 1)
     auto_prompt_enhancer_requested = server_config.get("enhancer_enabled", 0) > 0 and enhancer_mode == 0 and prompt_enhancer is not None and len(prompt_enhancer) > 0
@@ -6929,12 +6968,15 @@ def generate_media(
     attn = overridden_attention if overridden_attention is not None else attention_mode
     if attn == "auto":
         attn = get_auto_attention()
-    elif attn not in override_attention_modes_supported:
+    elif attn not in override_attention_modes_supported and not (
+        (custom := model_def.get("custom_attention_modes", {}).get(attn)) and
+        custom.get("supported", ATTENTION_MODE_AVAILABILITY.get(attn, {}).get("supported", custom.get("installed", ATTENTION_MODE_AVAILABILITY.get(attn, {}).get("installed", True))))
+    ):
         send_cmd("info", f"You have selected attention mode '{attn}'. However it is not installed or supported on your system. You should either install it or switch to the default 'sdpa' attention.")
         send_cmd("exit")
         return True
-    elif attn == "sol" and not model_def.get("sol_attention", False):
-        send_cmd("info", f"Sol Attention is not implemented for model type '{model_type}'.")
+    elif attn in ATTENTION_MODE_AVAILABILITY and attn not in model_def.get("custom_attention_modes", {}):
+        send_cmd("info", f"Attention mode '{attn}' is not implemented for model type '{model_type}'.")
         send_cmd("exit")
         return True
     
@@ -7112,6 +7154,7 @@ def generate_media(
             supported_model_commands=model_def.get("prompt_slash_commands", []),
             allow_new_shot=image_prompt_types_allow_t2v(model_def, image_mode),
             first_window_overlap_frames=first_window_available_overlap,
+            initial_shared_frames=1 if (not fake_start_image and image_start is not None) or video_source is not None else 0,
             discard_last_frames=sliding_window_discard_last_frames,
         )
         if frame_scheduler_error is not None:
@@ -7213,10 +7256,14 @@ def generate_media(
         combination_type = "add"
         clean_audio_files = "V" in audio_prompt_type
         if audio_guide2 is not None:
-            if "N" in audio_prompt_type:
-                audio_guide, audio_guide2, _ = normalize_audio_pair_volumes_to_temp_files(audio_guide, audio_guide2, output_dir=save_path, prefix="audio_norm_")
-                temp_filenames_list += [audio_guide, audio_guide2]
             duration2 = librosa.get_duration(path=audio_guide2)
+            if "N" in audio_prompt_type:
+                max_total_duration = model_def.get("audio_reference_max_total_duration", None)
+                normalization_max_duration = float(max_total_duration) / 2 if max_total_duration is not None and duration + duration2 > float(max_total_duration) else None
+                audio_guide, audio_guide2, _ = normalize_audio_pair_volumes_to_temp_files(audio_guide, audio_guide2, output_dir=save_path, prefix="audio_norm_", max_duration_seconds=normalization_max_duration)
+                temp_filenames_list += [audio_guide, audio_guide2]
+                if normalization_max_duration is not None:
+                    duration, duration2 = min(duration, normalization_max_duration), min(duration2, normalization_max_duration)
             if "C" in audio_prompt_type: duration += duration2
             else: duration = min(duration, duration2)
             combination_type = "para" if "P" in audio_prompt_type else "add" 
@@ -7290,7 +7337,8 @@ def generate_media(
     if scheduler_active:
         default_windows_template = []
     elif any_sliding_window:
-        default_windows_template = build_default_window_plan(total_frames=current_video_length, window_size=sliding_window_size, default_overlap=default_reuse_frames, discard_last_frames=sliding_window_discard_last_frames, minimum=frames_minimum, step=frames_steps, frame_offset=frames_offset, overlap_offset=sliding_window_defaults.get("overlap_offset", 1), max_overlap=sliding_window_defaults.get("overlap_max"), first_window_overlap=default_reuse_frames if video_source is not None else 0, first_window_available_overlap=first_window_available_overlap if video_source is not None else None, preserve_exact_output_frames=model_def.get("image_end_frame_position", False), output_frame_policy=model_def.get("frame_scheduler_output_policy"))
+        first_window_overlap = min(max(1, default_reuse_frames), first_window_available_overlap) if video_source is not None else min(1, first_window_available_overlap)
+        default_windows_template = build_default_window_plan(total_frames=current_video_length, window_size=sliding_window_size, default_overlap=default_reuse_frames, discard_last_frames=sliding_window_discard_last_frames, minimum=frames_minimum, step=frames_steps, frame_offset=frames_offset, overlap_offset=sliding_window_defaults.get("overlap_offset", 1), max_overlap=sliding_window_defaults.get("overlap_max"), first_window_overlap=first_window_overlap, first_window_available_overlap=first_window_available_overlap, initial_shared_frames=1 if first_window_overlap > 0 else 0, preserve_exact_output_frames=model_def.get("image_end_frame_position", False), output_frame_policy=model_def.get("frame_scheduler_output_policy"))
     else:
         default_windows_template = [{"output_frames": current_video_length, "overlap_frames": 0, "discard_last_frames": 0, "trim_last_frames": 0, "frame_num": current_video_length}]
     default_windows = [dict(window) for window in default_windows_template]
@@ -7434,8 +7482,8 @@ def generate_media(
                 frame_window_options = scheduled_windows[window_no]
                 prompt, reuse_frames, current_video_length, new_shot, discard_last_frames = frame_window_options["prompt"], frame_window_options["overlap_frames"], frame_window_options["frame_num"], frame_window_options["new_shot"], frame_window_options["discard_last_frames"]
                 automatic_trim_last_frames = frame_window_options["trim_last_frames"]
-                if "requested_output_frames" in frame_window_options:
-                    print(f"Requested duration adjusted from {frame_window_options['requested_output_frames']} to {frame_window_options['output_frames']} frames for model-compatible scheduling (Sliding Window {window_no + 1}).")
+                if "requested_output_frames" in frame_window_options and abs(frame_window_options["requested_output_frames"] - frame_window_options["output_frames"]) > 1:
+                    print(f"Requested frame contribution adjusted from {frame_window_options['requested_output_frames']} to {frame_window_options['output_frames']} for model-compatible scheduling (Sliding Window {window_no + 1}).")
                 current_loras_slists = frame_window_options.get("loras_slists", loras_slists)
                 sliding_window = True
             else:
@@ -7448,8 +7496,8 @@ def generate_media(
                 default_window = default_windows[window_no]
                 reuse_frames, current_video_length, discard_last_frames = default_window["overlap_frames"], default_window["frame_num"], default_window["discard_last_frames"]
                 automatic_trim_last_frames = default_window["trim_last_frames"]
-                if "requested_output_frames" in default_window:
-                    print(f"Requested duration adjusted from {default_window['requested_output_frames']} to {default_window['output_frames']} frames for model-compatible scheduling (Sliding Window {window_no + 1}).")
+                if "requested_output_frames" in default_window and abs(default_window["requested_output_frames"] - default_window["output_frames"]) > 1:
+                    print(f"Requested frame contribution adjusted from {default_window['requested_output_frames']} to {default_window['output_frames']} for model-compatible scheduling (Sliding Window {window_no + 1}).")
                 prompt =  prompts[window_no] if window_no < len(prompts) else prompts[-1]
                 sliding_window = len(default_windows) > 1 or reuse_frames > 0
             gen["sliding_window"] = sliding_window
@@ -7582,7 +7630,7 @@ def generate_media(
             video_guide_processed = video_mask_processed = video_guide_processed2 = video_mask_processed2 = sparse_video_image = None
             skip_video_guide_preprocess = bool(model_def.get("skip_video_guide_preprocess", False))
             if video_guide is not None and not skip_video_guide_preprocess:
-                guide_frames_limit = round(model_def["reference_video_max_frames"] * fps / model_def["fps"]) if reference_videos else source_video_frames_count - source_video_overlap_frames_count + requested_frames_to_generate
+                guide_frames_limit = round(model_def["reference_video_max_frames"] * fps / model_def["fps"]) if reference_videos else max(aligned_guide_end_frame, source_video_frames_count - source_video_overlap_frames_count + requested_frames_to_generate)
                 keep_frames_parsed_full, error = parse_keep_frames_video_guide(keep_frames_video_guide, guide_frames_limit)
                 if len(error) > 0:
                     raise gr.Error(f"invalid keep frames {keep_frames_video_guide}")
@@ -7620,6 +7668,8 @@ def generate_media(
                             preprocess_type = process_map_video_guide.get(process_letter, "raw")
                         else:
                             preprocess_type2 = process_map_video_guide.get(process_letter, None)
+                    if reference_videos and preprocess_type == "identity":
+                        preprocess_type = "raw"
                     custom_preprocessor = model_def.get("custom_preprocessor", None) 
                     if custom_preprocessor is not None:
                         status_info = custom_preprocessor
@@ -8167,20 +8217,23 @@ def generate_media(
                     send_cmd("progress", [0, merge_status_context(status, spatial_status)])
                 
                 output_fps  = fps
+                def upsampler_progress(phase, current_step=None, total_steps=None):
+                    phase_text = str(phase)
+                    gen["progress_phase"] = (phase_text, int(current_step) if current_step is not None else -1)
+                    status_msg = merge_status_context(status, phase_text)
+                    if current_step is not None and total_steps is not None and int(total_steps) > 0:
+                        send_cmd("progress", [(int(current_step), int(total_steps)), status_msg, int(total_steps)])
+                    else:
+                        send_cmd("progress", [0, status_msg])
                 if len(temporal_upsampling) > 0:
-                    sample, previous_last_frame, output_fps = perform_temporal_upsampling(sample, previous_last_frame if sliding_window and window_no > 1 else None, temporal_upsampling, fps)
+                    sample, previous_last_frame, output_fps = perform_temporal_upsampling(sample, previous_last_frame if sliding_window and window_no > 1 else None, temporal_upsampling, fps, abort_callback=lambda: gen.get("abort", False), progress_callback=upsampler_progress)
+                    if gen.get("abort", False) or sample is None:
+                        abort = True
+                        break
 
                 if len(spatial_upsampling) > 0:
-                    def flashvsr_progress(phase, current_step=None, total_steps=None):
-                        phase_text = str(phase)
-                        gen["progress_phase"] = (phase_text, int(current_step) if current_step is not None else -1)
-                        status_msg = merge_status_context(status, phase_text)
-                        if current_step is not None and total_steps is not None and int(total_steps) > 0:
-                            send_cmd("progress", [(int(current_step), int(total_steps)), status_msg, int(total_steps)])
-                        else:
-                            send_cmd("progress", [0, status_msg])
                     if is_image:
-                        sample = perform_image_spatial_upsampling(sample, spatial_upsampling, seed=seed, vae_tile_size=VAE_tile_size, fps=output_fps, prompt=prompt, negative_prompt=negative_prompt, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_face_count=spatial_upsampler_face_count, abort_callback=lambda: gen.get("abort", False), progress_callback=flashvsr_progress)
+                        sample = perform_image_spatial_upsampling(sample, spatial_upsampling, seed=seed, vae_tile_size=VAE_tile_size, fps=output_fps, prompt=prompt, negative_prompt=negative_prompt, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_face_count=spatial_upsampler_face_count, spatial_upsampler_parameters=spatial_upsampler_parameters, abort_callback=lambda: gen.get("abort", False), progress_callback=upsampler_progress)
                         flashvsr_continue_cache = None
                     else:
                         late_upsampler = upsampler_api.find_postprocessing_upsampler(spatial_upsampling)
@@ -8194,7 +8247,7 @@ def generate_media(
                             else:
                                 upsampler_audio = upsampler_audio[-required_audio_samples:]
                         upsampler_reference_images = original_image_refs[nb_frames_positions:] if original_image_refs is not None else None
-                        sample = perform_spatial_upsampling(sample, spatial_upsampling, seed=seed, flashvsr_continue_cache=flashvsr_continue_cache, return_flashvsr_continue_cache=return_flashvsr_continue_cache, vae_tile_size=VAE_tile_size, fps=output_fps, prompt=prompt, negative_prompt=negative_prompt, audio_waveform=upsampler_audio, audio_sample_rate=upsampler_audio_sample_rate, reference_images=upsampler_reference_images, image_refs_relative_size=image_refs_relative_size, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_face_count=spatial_upsampler_face_count, abort_callback=lambda: gen.get("abort", False), progress_callback=flashvsr_progress)
+                        sample = perform_spatial_upsampling(sample, spatial_upsampling, seed=seed, flashvsr_continue_cache=flashvsr_continue_cache, return_flashvsr_continue_cache=return_flashvsr_continue_cache, vae_tile_size=VAE_tile_size, fps=output_fps, prompt=prompt, negative_prompt=negative_prompt, audio_waveform=upsampler_audio, audio_sample_rate=upsampler_audio_sample_rate, reference_images=upsampler_reference_images, image_refs_relative_size=image_refs_relative_size, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_face_count=spatial_upsampler_face_count, spatial_upsampler_parameters=spatial_upsampler_parameters, abort_callback=lambda: gen.get("abort", False), progress_callback=upsampler_progress)
                     if return_flashvsr_continue_cache and not is_image:
                         sample, flashvsr_continue_cache = sample
                     if gen.get("abort", False) or sample is None:
@@ -9649,7 +9702,7 @@ def audio_to_source_set(state, input_file_list, choice, target_name):
 
 
 def apply_post_processing(state, input_file_list, choice, PP_temporal_upsampling, PP_spatial_upsampling, PP_film_grain_intensity, PP_film_grain_saturation,
-                          PP_spatial_upsampler_prompt, PP_spatial_upsampler_reference_images, PP_spatial_upsampler_face_count, seed):
+                          PP_spatial_upsampler_parameters, PP_spatial_upsampler_prompt, PP_spatial_upsampler_reference_images, PP_spatial_upsampler_face_count, seed):
     gen = get_gen_info(state)
     file_list, file_settings_list = get_file_list(state, input_file_list)
     if len(file_list) == 0 or choice == None or choice < 0 or choice >= len(file_list)  :
@@ -9659,6 +9712,7 @@ def apply_post_processing(state, input_file_list, choice, PP_temporal_upsampling
     overrides = {
         "temporal_upsampling":PP_temporal_upsampling,
         "spatial_upsampling":PP_spatial_upsampling,
+        "spatial_upsampler_parameters": dict(PP_spatial_upsampler_parameters or {}),
         "image_refs_relative_size": 100.0,
         "seed": seed,
         "film_grain_intensity": PP_film_grain_intensity, 
@@ -12266,6 +12320,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
 
                             return temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, temporal_upsampling_method, temporal_upsampling_multiplier, spatial_upsampling_method, spatial_upsampling_ratio, spatial_upsampler_parameter_state, spatial_upsampler_prompt, spatial_upsampler_reference_images, spatial_upsampler_face_count, spatial_upsampler_extra, spatial_upsampler_media_outputs, spatial_upsampler_help_target_id
                         spatial_parameter_values = {name: ui_get(name) for name in ("spatial_upsampler_prompt", "spatial_upsampler_reference_images", "spatial_upsampler_face_count")}
+                        spatial_parameter_values.update(state_dict.get("spatial_upsampler_parameters", {}))
                         temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, temporal_upsampling_method, temporal_upsampling_multiplier, spatial_upsampling_method, spatial_upsampling_ratio, spatial_upsampler_parameter_state, spatial_upsampler_prompt, spatial_upsampler_reference_images, spatial_upsampler_face_count, spatial_upsampler_extra, spatial_upsampler_media_outputs, spatial_upsampler_help_target_id = gen_upsampling_dropdowns(ui_get("temporal_upsampling"), ui_get("spatial_upsampling"), ui_get("film_grain_intensity"), ui_get("film_grain_saturation"), image_outputs=image_outputs, spatial_parameter_values=spatial_parameter_values)
 
                 with gr.Tab("Audio", visible = not (image_outputs or audio_only)) as audio_tab:
@@ -12512,17 +12567,25 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     )
 
                     gr.Markdown("<B>You can set a different Attention Mode to improve the quality / compatibility<B>")
-                    override_attention_choices = [("Default Attention Mode", "")] + attention_modes_choices
-                    if model_def.get("sol_attention", False):
-                        sol_status = ATTENTION_MODE_AVAILABILITY["sol"]
-                        sol_label = "AVAILABLE" if sol_status["supported"] else ("NOT SUPPORTED" if sol_status["installed"] else "NOT INSTALLED")
-                        override_attention_choices.append((f"sol ({sol_label}): Sol sparse attention, requires Triton and RTX 30xx or newer", "sol"))
+                    default_attention_modes_supported = model_def.get("default_attention_modes_supported", True)
+                    override_attention_choices = [("Default Attention Mode", "")] + attention_modes_choices if default_attention_modes_supported else []
+                    custom_attention_modes = model_def.get("custom_attention_modes", {})
+                    for mode, definition in custom_attention_modes.items():
+                        status = ATTENTION_MODE_AVAILABILITY.get(mode, {})
+                        installed = definition.get("installed", status.get("installed", True))
+                        supported = definition.get("supported", status.get("supported", installed))
+                        status_label = "AVAILABLE" if supported else ("NOT SUPPORTED" if installed else "NOT INSTALLED")
+                        override_attention_choices.append((f"{mode} ({status_label}): {definition['label']}", mode))
+                    selected_attention = ui_get("override_attention")
+                    choice_values = [choice[1] if isinstance(choice, tuple) else choice for choice in override_attention_choices]
+                    if selected_attention not in choice_values:
+                        selected_attention = choice_values[0]
                     override_attention = gr.Dropdown(
                         choices=override_attention_choices,
-                        value=ui_get("override_attention"),
+                        value=selected_attention,
                         label=f"Override Attention Mode"
                     )
-                    attention_sparsity = setting_slider("attention_sparsity", visible=ui_get("override_attention") == "sol")
+                    attention_sparsity = setting_slider("attention_sparsity", visible=custom_attention_modes.get(selected_attention, {}).get("supports_sparsity", False))
                     with gr.Column():
                         gr.Markdown('<B>Customize the Output Filename using Settings Values (<I>date, seed, resolution, num_inference_steps, prompt, flow_shift, video_length, guidance_scale</I>). For Instance:<BR>"<I>{date(YYYY-MM-DD_HH-mm-ss)}_{seed}_{prompt(50)}, {num_inference_steps}</I>"</B>')
                         output_filename = gr.Text( label= " Output Filename ( Leave Blank for Auto Naming)", value= ui_get("output_filename"))
@@ -12564,10 +12627,12 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 assistant_ui = None
                 assistant_launcher_host = None
                 assistant_panel = None
+                assistant_chat_event = None
                 if tab_id == 'generate':
                     assistant_ui = deepy_gradio_ui.build_deepy_chat_ui(deepy_visible=_deepy.is_available())
                     assistant_launcher_host = assistant_ui.launcher_host
                     assistant_panel = assistant_ui.panel
+                    assistant_chat_event = assistant_ui.chat_event
 
             mode = gr.Text(value="", visible = False)
 
@@ -12576,7 +12641,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 state = default_state if default_state is not None else gr.State(state_dict)
                 if tab_id == "generate" and header is not None:
                     override_attention.change(fn=refresh_attention_header, inputs=[state, override_attention], outputs=[header], show_progress="hidden")
-                override_attention.change(fn=lambda value: gr.update(visible=value == "sol"), inputs=[override_attention], outputs=[attention_sparsity], show_progress="hidden")
+                override_attention.change(fn=lambda value, modes=custom_attention_modes: gr.update(visible=modes.get(value, {}).get("supports_sparsity", False)), inputs=[override_attention], outputs=[attention_sparsity], show_progress="hidden")
                 gen_status = gr.Text(interactive=False, label="Status", lines=1, max_lines=1, autoscroll=False)
                 main_bridge_elem_ids = tab_id == 'generate'
                 status_trigger = gr.Text(interactive= False, visible=False, elem_id="wangp_main_status_trigger" if main_bridge_elem_ids else None)
@@ -12739,6 +12804,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             target_settings = gr.Text(value = "settings", interactive= False, visible= False)
             last_choice = gr.Number(value =-1, interactive= False, visible= False)
             PP_spatial_upsampler_help_target = gr.State(PP_spatial_upsampler_help_target_id)
+            spatial_upsampler_parameter_state.change(fn=remember_spatial_upsampler_parameters, inputs=[state, spatial_upsampler_parameter_state], outputs=None, show_progress="hidden")
 
             resolution_group.input(fn=change_resolution_group, inputs=[state, resolution_group], outputs=[resolution], show_progress="hidden")
             resolution.change(fn=record_last_resolution, inputs=[state, resolution])
@@ -12938,6 +13004,16 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         enqueue_ai=_deepy.enqueue_ai_while_busy,
                         stop_ai=_deepy.stop_ai,
                         reset_ai=_deepy.reset_ai,
+                        get_session_ui_settings=_deepy.get_session_ui_settings,
+                        update_session_ui_settings=_deepy.update_session_ui_settings,
+                        list_saved_sessions=_deepy.list_saved_sessions,
+                        resume_saved_session=_deepy.resume_saved_session,
+                        prefill_restored_session_context=_deepy.prefill_restored_session_context,
+                        rename_saved_session=_deepy.rename_saved_session,
+                        duplicate_saved_session=_deepy.duplicate_saved_session,
+                        export_saved_session=_deepy.export_saved_session,
+                        import_saved_session=_deepy.import_saved_session,
+                        delete_saved_session=_deepy.delete_saved_session,
                     ),
                 )
                 main.load(
@@ -12961,7 +13037,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             video_info_to_audio_guide2_btn.click(fn=audio_to_source_set, inputs =[state, audio_files_paths, audio_file_selected, gr.State("Audio Source 2")], outputs = [audio_guide2] )
             video_info_to_audio_source_btn.click(fn=audio_to_source_set, inputs =[state, audio_files_paths, audio_file_selected, gr.State("Custom Audio")], outputs = [audio_source] )
 
-            video_info_postprocessing_btn.click(fn=apply_post_processing, inputs =[state, output, last_choice, PP_temporal_upsampling, PP_spatial_upsampling, PP_film_grain_intensity, PP_film_grain_saturation, PP_spatial_upsampler_prompt, PP_spatial_upsampler_reference_images, PP_spatial_upsampler_face_count, seed], outputs = [mode, generate_trigger, add_to_queue_trigger ] )
+            video_info_postprocessing_btn.click(fn=apply_post_processing, inputs =[state, output, last_choice, PP_temporal_upsampling, PP_spatial_upsampling, PP_film_grain_intensity, PP_film_grain_saturation, PP_spatial_upsampler_parameter_state, PP_spatial_upsampler_prompt, PP_spatial_upsampler_reference_images, PP_spatial_upsampler_face_count, seed], outputs = [mode, generate_trigger, add_to_queue_trigger ] )
             video_info_audio_postprocessing_btn.click(fn=postprocess_audio_file, inputs =[state, audio_files_paths, audio_file_selected, PP_late_audio_postprocess, PP_late_audio_replace_voice_sample, PP_late_audio_replace_voice_sample2], outputs = [mode, generate_trigger, add_to_queue_trigger ] )
             video_info_remux_audio_btn.click(fn=remux_audio, inputs =[state, output, last_choice, PP_postprocess_audio, PP_postprocess_audio_prompt, PP_postprocess_audio_neg_prompt, PP_postprocess_audio_seed, PP_repeat_generation, PP_custom_audio, PP_replace_voice_sample, PP_replace_voice_sample2], outputs = [mode, generate_trigger, add_to_queue_trigger ] )
             save_lset_btn.click(validate_save_lset, inputs=[state, lset_name], outputs=[apply_lset_btn, refresh_lora_btn, delete_lset_btn, save_lset_btn,confirm_save_lset_btn, cancel_lset_btn, save_lset_prompt_drop])

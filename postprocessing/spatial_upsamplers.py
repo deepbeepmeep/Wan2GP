@@ -16,7 +16,7 @@ Every spatial upsampler (built-in or extension) class is listed in
     "methods": [("FlashVSR", "flashvsr")],   # interchangeable post-processing methods (label, method key)
     "vae_methods": [],                       # VAE methods (label, method key); model-pipeline integration
     "multipliers": {"flashvsr": (2.0, 4.0)}, # optional; omit when a refiner has no scale
-    "default_spatial_upsampling": "flashvsr2",
+    "default_spatial_upsampling": "flashvsr*2",
     "postprocessing_category": "upsampler",   # "upsampler" or "refiner"
     "source_audio_conditioning": False,        # request a decoded source-audio input without changing final remux audio
     "description": "Restore detail while spatially upscaling media.", # processor-owned help/discovery description
@@ -61,6 +61,11 @@ additionally implement ``upscale(sample, value, **kwargs)`` and may implement
 existing media. VAE ("vae") handlers are plugged into model pipelines through
 the generic VAE upsampler hooks below; model defs declare support.
 
+Discovery tests the existing optional ``enabled()`` method first. When it is
+absent, handlers may expose a ``status`` property containing ``"enabled"`` or
+``"disabled"``. Discovery reports ``"unknown"`` only when neither contract
+provides a valid status. Disabled handlers may expose ``reason_disabled``.
+
 Handlers may also expose Config-tab controls with ``create_config_ui(...)`` and
 normalize their own nested section under ``wgp_config["spatial_upsamplers"]``.
 Model persistence is shared by all handlers through
@@ -85,6 +90,7 @@ from typing import Any
 from shared.attention import attention_shared_state
 from shared.utils import offload_registry
 from .model_context import compatible_loaded_model
+from .processor_status import PROCESSOR_STATUS_DISABLED, PROCESSOR_STATUS_ENABLED, PROCESSOR_STATUS_UNKNOWN, handler_reason_disabled, handler_status
 
 # Backward compatibility for external plugins written against the old module name.
 sys.modules.setdefault("postprocessing.upsamplers", sys.modules[__name__])
@@ -97,6 +103,7 @@ POSTPROCESSING_CATEGORIES = (POSTPROCESSING_CATEGORY_UPSAMPLER, POSTPROCESSING_C
 PARAMETER_PREFIX = "spatial_upsampler_"
 PARAMETER_UI_POSTPROCESSING = "postprocessing"
 PARAMETER_UI_LATE_POSTPROCESSING = "late_postprocessing"
+PARAMETER_UI_MEDIA_FLOW = "media_flow"
 UPSAMPLER_PROFILE_VIDEO = "video"
 UPSAMPLER_PROFILE_IMAGE = "image"
 UPSAMPLER_PROFILE_AUDIO = "audio"
@@ -106,9 +113,11 @@ PERSIST_UNLOAD = 1
 PERSIST_RAM = 2
 PERSISTENCE_CHOICES = [("Unload after use", PERSIST_UNLOAD), ("Persistent in RAM", PERSIST_RAM)]
 _SHARED_PERSISTENCE_BINDING_KEY = "__shared_persistence__"
+MULTIPLIER_SEPARATOR = "*"
 
 spatial_upsampler_handlers = [
     "postprocessing.lanczos.wgp_bridge.LanczosUpsampler",
+    "postprocessing.dlss5.spatial_upsampler.DLSS5SpatialUpsampler",
     "postprocessing.flashvsr.wgp_bridge.FlashVSRBridge",
     "postprocessing.seedvr2.wgp_bridge.SeedVR2Bridge",
     "postprocessing.pid.wgp_bridge.PiDBridge",
@@ -137,6 +146,28 @@ def format_multiplier(scale: float) -> str:
 
 def format_multiplier_label(scale: float) -> str:
     return f"x{format_multiplier(scale)}"
+
+
+def format_multiplier_value(method: str, scale: float) -> str:
+    return f"{str(method or '').strip().lower()}{MULTIPLIER_SEPARATOR}{format_multiplier(scale)}"
+
+
+def parse_multiplier_suffix(value, method: str, default_scale: float) -> float | None:
+    text = str(value or "").strip().lower()
+    method = str(method or "").strip().lower()
+    if not text.startswith(method):
+        return None
+    suffix = text[len(method):]
+    if suffix.startswith(MULTIPLIER_SEPARATOR):
+        suffix = suffix[len(MULTIPLIER_SEPARATOR):]
+        if not suffix:
+            return None
+    elif MULTIPLIER_SEPARATOR in suffix:
+        return None
+    try:
+        return float(suffix or default_scale)
+    except ValueError:
+        return None
 
 
 def format_method_label(label: str) -> str:
@@ -561,6 +592,18 @@ def build_upsampling_value(method, scale) -> str | None:
     return None if handler is None else handler.build_value(method, scale)
 
 
+def normalize_upsampling_value(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    split = split_upsampling_value(text)
+    if split is None:
+        return text
+    handler = find_upsampler_by_method(split[0])
+    normalized = None if handler is None else handler.build_value(*split)
+    return normalized or text
+
+
 def format_upsampling_label(value) -> str:
     text = str(value or "").strip()
     if not text:
@@ -654,13 +697,13 @@ def ui_parameter_definitions(ui_context: str) -> list[dict[str, Any]]:
     return list(definitions.values())
 
 
-def _parameter_component_type(parameter: dict[str, Any]) -> str:
+def parameter_component_type(parameter: dict[str, Any]) -> str:
     component_type = str(parameter.get("component", "") or "").strip().lower()
     return component_type or {"boolean": "checkbox", "integer": "number", "number": "number", "array": "images"}.get(str(parameter.get("type", "string")), "textbox")
 
 
-def _parameter_default(parameter: dict[str, Any]):
-    value = parameter.get("default", [] if _parameter_component_type(parameter) == "images" else None)
+def parameter_default(parameter: dict[str, Any]):
+    value = parameter.get("default", [] if parameter_component_type(parameter) == "images" else None)
     return list(value) if isinstance(value, list) else value
 
 
@@ -668,7 +711,7 @@ def parameter_ui_state(method, ui_context: str, parameter_values=None) -> dict[s
     definitions = ui_parameter_definitions(ui_context)
     active = {str(parameter["name"]) for parameter in method_parameters(method, ui_context=ui_context)}
     current = parameter_values if isinstance(parameter_values, dict) else {}
-    values = {str(parameter["name"]): current.get(str(parameter["name"]), _parameter_default(parameter)) if str(parameter["name"]) in active else _parameter_default(parameter) for parameter in definitions}
+    values = {str(parameter["name"]): current.get(str(parameter["name"]), parameter_default(parameter)) if str(parameter["name"]) in active else parameter_default(parameter) for parameter in definitions}
     return {"definitions": definitions, "active": active, "values": values}
 
 
@@ -732,7 +775,7 @@ def create_generation_spatial_ui(gr, spatial_upsampling, *, image_outputs: bool 
     parameter_components, parameter_rows, parameter_extras = {}, {}, []
     for parameter in parameter_defs:
         name = str(parameter["name"])
-        component_type = _parameter_component_type(parameter)
+        component_type = parameter_component_type(parameter)
         visible = name in parameter_state["active"]
         initial = parameter_state["values"][name]
         label = str(parameter.get("label", name.removeprefix(PARAMETER_PREFIX).replace("_", " ").title()))
@@ -784,7 +827,7 @@ def create_generation_spatial_ui(gr, spatial_upsampling, *, image_outputs: bool 
         if parameter_components:
             gr.on(triggers=[component.change for component in parameter_components.values()], fn=collect_parameters, inputs=list(parameter_components.values()), outputs=parameters_component, show_progress="hidden")
     return {"value": value_component, "method": method_component, "ratio": ratio_component, "parameters": parameters_component, "help": help_component, "help_target_id": help_target_id or method_component.elem_id,
-            "parameter_components": parameter_components, "parameter_rows": parameter_rows, "extra_components": [help_component, *parameter_extras],
+            "parameter_components": parameter_components, "parameter_rows": parameter_rows, "extra_components": [help_component, *parameter_extras, parameters_component],
             "media_outputs": [help_component, *parameter_rows.values(), *parameter_components.values(), parameters_component]}
 
 
@@ -1011,7 +1054,7 @@ def release_changed_config_upsamplers(old_config: dict[str, Any], new_config: di
 
 
 class SimpleScaleSuffixMixin:
-    """Value helpers for upsamplers encoding values as '<method><multiplier>' (e.g. 'lanczos2', 'coz4')."""
+    """Value helpers writing '<method>*<multiplier>' while accepting the legacy concatenated form."""
 
     def _method_keys(self):
         handler_def = self.query_upsampler_def()
@@ -1019,19 +1062,14 @@ class SimpleScaleSuffixMixin:
 
     def split_value(self, value):
         text = str(value or "").strip().lower()
-        # longest prefix first so 'flashvsr2pass' wins over 'flashvsr'
         for method in sorted(self._method_keys(), key=len, reverse=True):
             if text.startswith(method):
                 suffix = text[len(method):]
                 multipliers = tuple(self.query_upsampler_def().get("multipliers", {}).get(method, ()))
                 if not multipliers:
                     return (method, 1.0) if not suffix else None
-                try:
-                    # declared multipliers are UI capabilities; out-of-list scales are
-                    # still parsed and rejected by validate_upsampling when unsupported
-                    return method, float(suffix or 2.0)
-                except ValueError:
-                    return None
+                scale = parse_multiplier_suffix(text, method, 2.0)
+                return None if scale is None else (method, scale)
         return None
 
     def build_value(self, method, scale):
@@ -1044,7 +1082,7 @@ class SimpleScaleSuffixMixin:
         scale = float(scale or 0)
         if scale not in multipliers:
             scale = _default_multiplier_from_def(self.query_upsampler_def(), method) or 0
-        return f"{method}{format_multiplier(scale)}"
+        return format_multiplier_value(method, scale)
 
     def is_upsampling(self, value) -> bool:
         return self.split_value(value) is not None
@@ -1073,7 +1111,7 @@ class WanVaeUpsampler(SimpleScaleSuffixMixin):
             "methods": [],
             "vae_methods": [("VAE Upscaling", "vae")],
             "multipliers": {"vae": (1.0, 2.0)},
-            "default_spatial_upsampling": "vae2",
+            "default_spatial_upsampling": "vae*2",
             "postprocessing_category": POSTPROCESSING_CATEGORY_UPSAMPLER,
             "description": "Runs through the compatible generation model's existing VAE path, so it adds no separate decoded-media pass and has little extra VRAM impact. It can create more detail than Lanczos.",
         }

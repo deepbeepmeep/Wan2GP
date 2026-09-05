@@ -42,7 +42,7 @@ class MyUpsampler:
             "methods": [("MyUpsampler", "myup")],          # method dropdown entries
             "vae_methods": [],                             # VAE entries (manual integration)
             "multipliers": {"myup": (2.0, 4.0)},           # supported multipliers per method
-            "default_spatial_upsampling": "myup2",
+            "default_spatial_upsampling": "myup*2",
             "postprocessing_category": "upsampler",       # "upsampler" or "refiner"
             "description": "Upscale while restoring detail.", # processor-owned help/discovery text
             "media_descriptions": {"video": "Uses overlapping windows."}, # optional media-specific help
@@ -73,6 +73,10 @@ class MyUpsampler:
     def release_private_runtime(self): ...                    # optional before borrowing core model
     def release_vram(self): ...
     def enabled(self): ...                                 # optional UI gating
+    @property
+    def status(self): ...                                  # optional: "enabled" or "disabled"
+    @property
+    def reason_disabled(self): ...                         # optional user-facing reason
     # VAE type only:
     def supports_model_vae_method(self, method, model_type, model_def, image_mode): ...
     def prepare_vae_upsampler(self, value, *, send_cmd, process_files, init_pipe, profile, attention_mode=None): ...
@@ -89,8 +93,21 @@ class MyUpsampler:
     def config_requires_release(self, old, new, changed_keys): ...
 ```
 
+Discovery evaluates the historical `enabled()` method first: `True` maps to
+`enabled` and `False` to `disabled`. Only handlers without `enabled()` use the
+optional `status` property. Discovery always emits `enabled`, `disabled`, or
+`unknown`; `unknown` means neither mechanism supplied a valid status.
+`reason_disabled` is included only when the normalized status is `disabled` and
+the handler provides a non-empty reason. Deepy includes these fields for every
+discovered process and will not dispatch a process reported as disabled.
+
 `SimpleScaleSuffixMixin` provides `is_upsampling`/`split_value`/`build_value` for the
-common `<method><multiplier>` value encoding (e.g. `lanczos2`, `coz4`).
+common `<method>*<multiplier>` value encoding (e.g. `lanczos*2`, `coz*4`). Its
+parser also accepts the former concatenated encoding so existing settings and
+queues continue to work, while `build_value()` always emits the `*` form.
+The `*` character is reserved and must not appear inside a method id. Custom
+handlers can use the registry's `format_multiplier_value()` and
+`parse_multiplier_suffix()` helpers to follow the same mapping rule.
 Handler-exposed method ids in `methods`, `vae_methods`, `multipliers`,
 `method_pos`, `model_def["vae_upsamplers"]`, and
 `model_def["excluded_spatial_upsamplers"]` must be multiplier-free. The multiplier
@@ -99,8 +116,8 @@ or stored as `default_spatial_upsampling`.
 
 Dropdown entries are sorted by method position, then by method label. A handler
 can define a default `pos` and override individual methods with `method_pos`.
-Position is independent of multiplier; expanded choices such as `myup2` and
-`myup4` share the `myup` method position.
+Position is independent of multiplier; expanded choices such as `myup*2` and
+`myup*4` share the `myup` method position.
 
 ### Borrowing the loaded generation model
 
@@ -136,13 +153,14 @@ item.
 Each `method_parameters` entry is a list of dictionaries with at least `name`,
 `type`, `description`, and `required`. It may also define `default`, `enum`,
 `minimum`, `maximum`, and a runtime keyword override named `setting`. UI-exposed
-parameter names must use the shared `spatial_upsampler_` prefix. Built-in
-parameters must also declare their default as a separate top-level entry in
-`models/_settings.json`; do not group method parameters inside one settings
-dictionary. `ui` selects
-one or both UI contexts: `postprocessing` means the normal generation-time Post
-Processing section, while `late_postprocessing` means the Post Processing tab
-for an existing gallery item. A parameter can still be inferred and passed by
+parameter names must use the shared `spatial_upsampler_` prefix. Method
+parameters travel in the generic `spatial_upsampler_parameters` task dictionary;
+they are not per-model settings and do not belong in `models/_settings.json`.
+Their defaults are owned by the descriptors. `ui` selects one or more UI
+contexts: `postprocessing` means the normal generation-time Post Processing
+section, `late_postprocessing` means the Post Processing tab for an existing
+gallery item, and `media_flow` exposes scalar controls for the currently selected
+Media Flow spatial process. A parameter can still be inferred and passed by
 WanGP when it is absent from a UI context; H3, for example, receives generation
 prompt/reference data without showing redundant controls during generation.
 
@@ -154,8 +172,8 @@ for one image. Deepy receives only the call-relevant fields (`name`, `type`,
 `media_type`), so UI/runtime fields such as `component`, `ui`, `label`, `step`,
 and `setting` do not consume assistant context. Parameters with `media_type:
 "image"` are resolved from media ids to paths. Each runtime value remains a flat
-queue setting under its generic parameter `name`; dispatch maps it to the
-`upscale()` keyword named by `setting`.
+entry in `spatial_upsampler_parameters`; dispatch filters it for the selected
+method and maps it to the `upscale()` keyword named by `setting`.
 
 Registration is owned by `postprocessing/spatial_upsamplers.py`. Add the handler class path
 to `spatial_upsampler_handlers`:
@@ -168,6 +186,11 @@ spatial_upsampler_handlers = [
 
 `wgp.py` only calls `upsampler_api.register_spatial_upsamplers(server_config, fl)`;
 it should not import or keep one explicit variable per spatial upsampler.
+
+For a minimal external handler, see the
+[Spatial Pixel Duplicate reference plugin](https://github.com/deepbeepmeep/wan2gp-pixel-upsampler).
+It exposes `pixel*1` through `pixel*4` and supplies the description displayed by
+the Spatial Upsampling information button.
 
 Enabled plugins can expose upsamplers without editing core code by adding
 `spatial_upsampler_handlers` to `plugin_info.json`. Entries that start with `.`

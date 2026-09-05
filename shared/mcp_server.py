@@ -91,7 +91,7 @@ def _read_markdown_section(path: Path, start_heading: str, end_heading: str) -> 
     return text[start:] if end < 0 else text[start:end].rstrip()
 
 
-def _register_documentation_resources(mcp) -> None:
+def _register_documentation_resources(mcp, file_access_policy=None, long_text_active: bool = False) -> None:
     def document_reader(document_path: Path):
         def read_document() -> str:
             return document_path.read_text(encoding="utf-8")
@@ -106,6 +106,13 @@ def _register_documentation_resources(mcp) -> None:
 
     for path in sorted(_AGENT_SKILLS_DIR.glob("*/SKILL.md")):
         skill_name = path.parent.name
+        if skill_name in {"long-story-writing", "long-generation-prompts"} and not long_text_active:
+            continue
+        if file_access_policy is not None:
+            from shared.deepy.long_text import legacy_skill_hidden
+
+            if legacy_skill_hidden(skill_name, file_access_policy):
+                continue
         resource_uri = f"wangp://skills/{skill_name}"
         read_skill = document_reader(path)
         read_skill.__name__ = f"read_{skill_name.replace('-', '_')}_skill"
@@ -1096,14 +1103,17 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
 
     jobs = _JobStore(session)
     mcp = FastMCP("WanGP", **dict(settings or {}))
-    _register_documentation_resources(mcp)
-    if artifact_workspace is None:
-        from shared.deepy.artifacts import ArtifactWorkspace
-        artifact_workspace = ArtifactWorkspace()
     default_job_event_limit = max(0, min(int(default_job_event_limit), _MAX_STORED_EVENTS))
     if file_access_policy is None:
         from shared.deepy.filesystem import build_file_access_policy
         file_access_policy = build_file_access_policy({}, unrestricted_read=bool(allow_read_file_system))
+    from shared.deepy import long_text as deepy_long_text
+
+    long_text_active = deepy_long_text.long_text_tools_active(file_access_policy) and deepy_long_text.workspace_mount(file_access_policy) is not None
+    _register_documentation_resources(mcp, file_access_policy, long_text_active=long_text_active)
+    if artifact_workspace is None:
+        from shared.deepy.artifacts import ArtifactWorkspace
+        artifact_workspace = ArtifactWorkspace()
     allow_read_file_system = file_access_policy.read_enabled
     transfer_store = _MediaTransferStore(session) if http_media_transfer else None
     toolbox_instance = toolbox
@@ -1161,7 +1171,8 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
 
     @mcp.prompt(name="wangp_agent", title="WanGP Agent Guide", description="Instructions for discovering WanGP models, building settings, running jobs, and handling media.")
     def wangp_agent_prompt() -> str:
-        return _AGENT_GUIDE_PATH.read_text(encoding="utf-8")
+        guide = _AGENT_GUIDE_PATH.read_text(encoding="utf-8")
+        return deepy_long_text.hide_legacy_artifact_guidance(guide) if long_text_active else guide
 
     def legacy_model_tool(function):
         return function if compact_model_tools else mcp.tool()(function)
@@ -1287,7 +1298,6 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
 
         return _media_settings(session, media_id=media_id, path=path, allow_read_file_system=allow_read_file_system, file_access_policy=file_access_policy)
 
-    @mcp.tool()
     def wangp_artifact(action: str | None = None, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         """Manage external working collections and persistent project ledgers. Pass action and arguments as separate top-level tool parameters. Omit both for discovery; pass action alone for its schema. Prefer inline work for at most 10 simple items and about 2,048 payload tokens."""
 
@@ -1303,6 +1313,28 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
             return {"status": "schema", "action": {"name": action_name, **copy.deepcopy(ARTIFACT_ACTIONS[action_name])}, "next": f"Repeat top-level action='{action_name}' and pass a separate top-level arguments object matching action.parameters. Payload size does not change this call shape."}
         return run_artifact_action(artifact_workspace, action_name, dict(arguments))
 
+    if not long_text_active:
+        mcp.tool()(wangp_artifact)
+
+    if long_text_active:
+        @mcp.tool()
+        def rg(arguments: str) -> dict[str, Any]:
+            """Search authorized UTF-8 files with ripgrep. Pass supported rg options and one pattern, then `--` and optional @alias paths; omitted paths search the temporary workspace."""
+
+            return deepy_long_text.run_rg(file_access_policy, arguments)
+
+        @mcp.tool()
+        def edit(file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict[str, Any]:
+            """Replace exact text in one authorized UTF-8 file. old_string must be unique unless replace_all is true; whitespace and line endings are literal."""
+
+            return deepy_long_text.edit_text(file_access_policy, file_path, old_string, new_string, replace_all)
+
+        @mcp.tool()
+        def append_text(file_path: str, text: str) -> dict[str, Any]:
+            """Append exact literal UTF-8 text to an authorized file, creating the file when it does not exist. No newline or prefix is added implicitly."""
+
+            return deepy_long_text.append_text(file_access_policy, file_path, text)
+
     @mcp.tool()
     def wangp_io(action: str | None = None, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         """Discover or run filesystem utilities. Use @alias/path; plain paths use video outputs. Omit action for actions; pass action alone for its schema."""
@@ -1311,6 +1343,21 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
 
         action_name = str(action or "").strip()
         actions = available_io_actions(file_access_policy, downloads_enabled=io_downloads)
+        if long_text_active:
+            sanitized_actions = []
+            for candidate in actions:
+                if candidate["name"] == "write_artifact_text":
+                    continue
+                candidate = copy.deepcopy(candidate)
+                if candidate["name"] == "list":
+                    for parameter in ("store_artifact", "artifact_id", "artifact_title"):
+                        candidate["parameters"]["properties"].pop(parameter, None)
+                elif candidate["name"] == "write_text":
+                    candidate["description"] = "Create, overwrite, or append literal UTF-8 text already present in the request."
+                elif candidate["name"] == "zip":
+                    candidate["parameters"]["properties"]["sources"] = {"type": "array", "items": {"type": "string"}, "description": "Authorized paths or Gallery media ids."}
+                sanitized_actions.append(candidate)
+            actions = sanitized_actions
         if not action_name:
             compact = [{"name": candidate["name"], "description": candidate["description"]} for candidate in actions]
             roots = [root["path"] for root in file_access_policy.roots()] if file_access_policy.read_enabled else []
@@ -1321,6 +1368,10 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
         if arguments is None:
             return {"status": "schema", "action": action_defs[0]}
         action_arguments = dict(arguments)
+        if long_text_active and action_name == "list" and any(name in action_arguments for name in ("store_artifact", "artifact_id", "artifact_title")):
+            raise ValueError("Artifact-backed file listings are unavailable while the long-text experiment is active.")
+        if long_text_active and action_name == "zip" and isinstance(action_arguments.get("sources"), dict):
+            raise ValueError("Artifact-backed ZIP sources are unavailable while the long-text experiment is active.")
         store_artifact, target_artifact_id, artifact_title = False, "", ""
         if action_name == "list":
             store_artifact = bool(action_arguments.pop("store_artifact", False))
@@ -1459,6 +1510,8 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
             raise TypeError("source must be a settings dict, task dict, manifest dict, or task list")
         _gallery_records(session, limit=500)
         resolved_source = _resolve_artifact_references(source, artifact_workspace, require_finalized=True)
+        if long_text_active:
+            resolved_source = deepy_long_text.resolve_prompt_references(resolved_source, file_access_policy)
         record = jobs.submit(_resolve_generation_media(session, resolved_source, allow_read_file_system, file_access_policy))
         if wait:
             record.job.result(timeout=timeout_s)

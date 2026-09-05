@@ -118,6 +118,16 @@ WanGP creates a timestamped `.log` file in the supplied folder. Each record is l
 
 The transcript can contain prompts, conversation history, tool arguments/results, and model output. Enable it only while diagnosing a problem and treat the resulting file as private data.
 
+## Deepy Session Location
+
+```bash
+--deepy-sessions-dir FOLDER          # Override the persistent Deepy sessions folder
+```
+
+The default is `deepy_sessions` in the WanGP installation root. The folder is created just in time, only after multi-session mode is enabled and Deepy receives its first request (or when a session archive is explicitly imported).
+
+Each materialized session keeps its canonical decoder context in `context.json` and an append-only `cards.jsonl` journal of consolidated Web-client commands. Streaming token fragments are not written: a thought, response section, or tool card is journaled once it reaches a safe completed boundary, then those commands are replayed when the session is resumed. During replay, the Web client keeps the transcript hidden and suppresses per-command layout, disclosure, animation, and scroll work before one final refresh.
+
 ## Model and Performance Options
 
 ### Model Configuration
@@ -340,3 +350,4 @@ While not command line options, these environment variables can affect behavior:
 - `CUDA_VISIBLE_DEVICES` - Limit visible GPUs
 - `PYTORCH_CUDA_ALLOC_CONF` - CUDA memory allocation settings
 - `TRITON_CACHE_DIR` - Triton cache directory (for Sage attention) 
+- `WAN2GP_DEEPY_TELEMETRY=1` - Enable detailed Deepy decode, MTP, CUDA-memory, and GPU telemetry when verbose level 2 is active (disabled by default)

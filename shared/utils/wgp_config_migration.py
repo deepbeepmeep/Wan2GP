@@ -3,7 +3,6 @@ from decimal import Decimal, InvalidOperation
 
 from postprocessing.mmaudio import MMAUDIO_DEFAULT_MODE
 from postprocessing.mmaudio.audio_processor import MMAudioProcessor
-from postprocessing.rife.temporal_upsampler import RifeTemporalUpsampler
 from postprocessing.seedvc.audio_processor import SeedVCProcessor
 from shared.deepy.config import DEEPY_ENABLED_KEY, DEEPY_TEMPLATE_CONFIG_MIGRATIONS
 
@@ -20,7 +19,7 @@ PROMPT_ENHANCER_CHOICES = [
     ("Florence 2 (image captioning) + Llama Joy 8B (uncensored, richer)", 2),
     ("Qwen3.5VL Abliterated 4B (recommended, captioning + uncensored text enhancement, vllm accelerated if available)", 3),
     ("Qwen3.5VL Abliterated 9B (captioning + uncensored high end text enhancement, vllm accelerated if available)", 4),
-    ("Qwen3.8VL Uncensored 27B by Jonathan Coletti (highest quality, choose GGUF Q2 or Q4 below)", 5),
+    ("Qwen3.8VL Uncensored 27B by Jonathan Coletti (highest quality, choose GGUF Q2, Q3 or Q4 below)", 5),
 ]
 
 SEEDVC_DEFAULT_MODE = 2
@@ -181,8 +180,10 @@ def _migrate_temporal_upsamplers_config(server_config) -> bool:
     else:
         server_config.setdefault(temporal_upsampler_api.TEMPORAL_UPSAMPLER_CONFIG_KEY, sections)
     if "rife_version" in server_config:
-        sections["rife"] = RifeTemporalUpsampler.normalize_config_section({"version": server_config["rife_version"]})
         del server_config["rife_version"]
+        changed = True
+    if "rife" in sections:
+        del sections["rife"]
         changed = True
     changed = temporal_upsampler_api.migrate_temporal_upsampler_config(server_config) or changed
     return changed

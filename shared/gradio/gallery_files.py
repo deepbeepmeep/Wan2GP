@@ -42,7 +42,7 @@ def _is_authorized_gallery_path(path: Any) -> bool:
         return False
     with _lock:
         policy = _file_access_policy
-    return candidate.is_file() and detect_media_type(str(candidate)) in {"image", "video", "audio"} and policy is not None and policy.can_read(candidate)
+    return detect_media_type(str(candidate)) in {"image", "video", "audio"} and policy is not None and policy.can_read(candidate)
 
 
 def _is_gallery_static_file(path: Any) -> bool:

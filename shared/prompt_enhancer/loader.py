@@ -164,6 +164,7 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
         from .qwen35_text import load_qwen35_text_prompt_enhancer
         from .qwen35_vl import (
             enhancer_quantization_GGUF,
+            enhancer_quantization_GGUF_Q3,
             enhancer_quantization_GGUF_Q2,
             enhancer_quantization_QUANTO_INT8,
             alias_qwen35_text_embedding_for_mmgp,
@@ -178,7 +179,7 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
         qwen35_variant = get_qwen35_prompt_enhancer_variant(enhancer_enabled)
         spec = get_qwen35_variant_spec(qwen35_variant)
         quantization = get_qwen35_quantization(qwen_backend or enhancer_quantization_QUANTO_INT8, variant=qwen35_variant)
-        backend = enhancer_quantization_GGUF if quantization == enhancer_quantization_GGUF_Q2 else quantization
+        backend = enhancer_quantization_GGUF if quantization in (enhancer_quantization_GGUF_Q3, enhancer_quantization_GGUF_Q2) else quantization
         assets_dir_name = get_qwen35_assets_dir_name(qwen35_variant)
         assets_dir = fl.locate_folder(assets_dir_name, error_if_none=False) or fl.get_download_location(assets_dir_name)
         if backend == enhancer_quantization_GGUF:

@@ -24,6 +24,8 @@ from shared.deepy.config import (
     DEEPY_COMPACTION_TYPE_KEY,
     DEEPY_COMPACTION_TYPE_SUMMARIZE,
     DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS,
+    DEEPY_REPETITION_PENALTY_DEFAULT,
+    DEEPY_REPETITION_PENALTY_KEY,
     DEEPY_CONTEXT_TOKENS_MIN,
     DEEPY_CONTEXT_TOKENS_DEFAULT,
     DEEPY_CONTEXT_TOKENS_KEY,
@@ -56,6 +58,7 @@ from shared.deepy.config import (
     parse_deepy_file_system_paths,
     normalize_deepy_read_everywhere,
     normalize_deepy_compaction_type,
+    normalize_deepy_repetition_penalty,
     normalize_deepy_custom_system_prompt,
     normalize_deepy_enabled,
     normalize_deepy_kv_cache_quantization,
@@ -76,6 +79,7 @@ from shared.prompt_enhancer.config import (
     normalize_prompt_enhancer_speculative_decoding,
     validate_prompt_enhancer_speculative_decoding,
 )
+from shared.deepy.onboarding import deepy_prime_upgrade_message
 from shared.remote_llm.config import (
     DEEPY_ENGINE_CHOICES,
     ENGINE_CLAUDE,
@@ -107,15 +111,15 @@ from shared.utils.wgp_config_migration import (
 QWEN35_PROMPT_ENHANCER_IDS = (3, 4)
 QWEN38_PROMPT_ENHANCER_ID = 5
 QWEN35_QUANTIZATION_CHOICES = [("Quanto Int8 (recommended, better quality)", "quanto_int8"), ("GGUF Q4 (less VRAM/RAM & faster if kernels are installed, but worse quality)", "gguf")]
-QWEN38_QUANTIZATION_CHOICES = [("GGUF Q4 (default, higher quality, requires at least 24 GB of VRAM)", "gguf"), ("GGUF Q2 (lower VRAM/RAM,  requires at least 16 GB of VRAM, lower quality)", "gguf_q2")]
+QWEN38_QUANTIZATION_CHOICES = [("GGUF Q4 (default, highest quality and VRAM/RAM use)", "gguf"), ("GGUF IQ3_S (recommended Q3, middle quality and VRAM/RAM use)", "gguf_q3"), ("GGUF Q2 (lowest quality and VRAM/RAM use)", "gguf_q2")]
 
 
 def prompt_enhancer_quantization_ui_state(enhancer_enabled, quantization):
     enhancer_enabled = int(enhancer_enabled)
     if enhancer_enabled == QWEN38_PROMPT_ENHANCER_ID:
-        value = quantization if quantization in ("gguf", "gguf_q2") else "gguf"
+        value = quantization if quantization in ("gguf", "gguf_q3", "gguf_q2") else "gguf"
         return QWEN38_QUANTIZATION_CHOICES, value, True
-    value = "gguf" if quantization in ("gguf", "gguf_q2") else "quanto_int8"
+    value = "gguf" if quantization in ("gguf", "gguf_q3", "gguf_q2") else "quanto_int8"
     return QWEN35_QUANTIZATION_CHOICES, value, enhancer_enabled in QWEN35_PROMPT_ENHANCER_IDS
 
 
@@ -179,6 +183,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_component("resolution")
         self.request_component("assistant_launcher_host")
         self.request_component("assistant_panel")
+        self.request_component("assistant_chat_event")
 
         self.add_tab(
             tab_id="configuration",
@@ -191,6 +196,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
         set_deepy_runtime_config(self.server_config, self.server_config_filename)
         prompt_enhancer_default_mode = get_prompt_enhancer_default_mode()
         with gr.Column():
+            deepy_prime_recommendation = deepy_prime_upgrade_message(self.server_config)
+            self.deepy_prime_recommendation = gr.Markdown(value=deepy_prime_recommendation, visible=bool(deepy_prime_recommendation), elem_classes=["deepy-prime-recommendation"])
             with gr.Tabs():
                 with gr.Tab("General"):
                     self.transformer_types_choices = HierarchySelector(
@@ -481,13 +488,21 @@ class ConfigTabPlugin(WAN2GPPlugin):
                                 label="KV Cache Quantization",
                                 visible=not deepy_remote_default,
                             )
-                    self.deepy_compaction_type_choice = gr.Dropdown(
-                        choices=[("Discard Oldest Entries", DEEPY_COMPACTION_TYPE_DISCARD), ("Summarize", DEEPY_COMPACTION_TYPE_SUMMARIZE)],
-                        value=deepy_compaction_type_default,
-                        label="Compaction Type When Cache is Full",
-                        info="Summarize starts at the lower of 85% usage and 4,096 tokens before the KV-cache limit, and requires at least 32,000 context tokens.",
-                        visible=not deepy_remote_default,
-                    )
+                    with gr.Row():
+                        self.deepy_compaction_type_choice = gr.Dropdown(
+                            choices=[("Discard Oldest Entries", DEEPY_COMPACTION_TYPE_DISCARD), ("Summarize", DEEPY_COMPACTION_TYPE_SUMMARIZE)],
+                            value=deepy_compaction_type_default,
+                            label="Compaction Type When Cache is Full",
+                            info="Summarize starts at the lower of 85% usage and 4,096 tokens before the KV-cache limit, and requires at least 32,000 context tokens.",
+                            visible=not deepy_remote_default,
+                        )
+                        self.deepy_repetition_penalty_choice = gr.Dropdown(
+                            choices=[("Disabled", False), ("Enabled", True)],
+                            value=normalize_deepy_repetition_penalty(self.server_config.get(DEEPY_REPETITION_PENALTY_KEY, DEEPY_REPETITION_PENALTY_DEFAULT)),
+                            label="Repetition Penalty",
+                            info="Enabled is about 10% slower but reduces rambling and repeated phrases across Deepy's generation phases.",
+                            visible=not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID),
+                        )
                     prime_guidance_value = normalize_deepy_prime_guidance(self.server_config.get(DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_GUIDANCE_DEFAULT))
                     deepy_file_system_access = normalize_deepy_file_system_access(self.server_config.get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT))
                     self.deepy_allow_read_file_system_choice = gr.Dropdown(
@@ -633,9 +648,10 @@ class ConfigTabPlugin(WAN2GPPlugin):
             runtime_config[DEEPY_COMPACTION_TYPE_KEY] = deepy_compaction_type_choice
             runtime_config[LLM_CONFIG_KEY] = {**normalize_llm_config(runtime_config), "deepy": deepy_llm_engine_choice}
             context_label = format_deepy_context_tokens_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice)
-            return gr.update(value=deepy_context_tokens_choice, label=context_label), gr.update(value=deepy_compaction_type_choice), deepy_requirement_message(runtime_config), deepy_mode_from_config(deepy_enabled_choice, deepy_type_choice)
+            recommendation = deepy_prime_upgrade_message(runtime_config)
+            return gr.update(value=deepy_context_tokens_choice, label=context_label), gr.update(value=deepy_compaction_type_choice), deepy_requirement_message(runtime_config), deepy_mode_from_config(deepy_enabled_choice, deepy_type_choice), gr.update(value=recommendation, visible=bool(recommendation))
 
-        self.deepy_type_choice.input(fn=enforce_deepy_prime_requirements, inputs=[self.deepy_type_choice, self.deepy_context_tokens_choice, self.deepy_compaction_type_choice, self.enhancer_enabled_choice, self.deepy_kv_cache_quantization_choice, self.deepy_llm_engine_choice], outputs=[self.deepy_context_tokens_choice, self.deepy_compaction_type_choice, self.deepy_requirement_md, self.deepy_type_value], show_progress="hidden")
+        self.deepy_type_choice.input(fn=enforce_deepy_prime_requirements, inputs=[self.deepy_type_choice, self.deepy_context_tokens_choice, self.deepy_compaction_type_choice, self.enhancer_enabled_choice, self.deepy_kv_cache_quantization_choice, self.deepy_llm_engine_choice], outputs=[self.deepy_context_tokens_choice, self.deepy_compaction_type_choice, self.deepy_requirement_md, self.deepy_type_value, self.deepy_prime_recommendation], show_progress="hidden")
 
         def update_deepy_context_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice):
             return gr.update(label=format_deepy_context_tokens_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice))
@@ -654,6 +670,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         self.enhancer_enabled_choice.input(fn=update_enhancer_quantization_choice, inputs=[self.enhancer_enabled_choice, self.enhancer_quantization_choice], outputs=[self.enhancer_quantization_choice], show_progress="hidden")
         self.enhancer_enabled_choice.input(fn=update_speculative_decoding_choice, inputs=[self.enhancer_enabled_choice, self.enhancer_speculative_decoding_choice], outputs=[self.enhancer_speculative_decoding_choice], show_progress="hidden")
+        self.enhancer_enabled_choice.input(fn=lambda enhancer: gr.update(visible=int(enhancer) in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)), inputs=[self.enhancer_enabled_choice], outputs=[self.deepy_repetition_penalty_choice], show_progress="hidden")
 
         def update_remote_engine_ui(deepy_engine, enhancer_quantization):
             view = normalize_llm_config(self.server_config)
@@ -669,6 +686,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 gr.update(value=local_enhancer_id(deepy_engine), visible=False), gr.update(choices=quantization_choices, value=quantization_value, visible=quantization_visible and not deepy_remote), gr.update(visible=not deepy_remote),
                 gr.update(visible=not deepy_remote), gr.update(visible=not deepy_remote), gr.update(visible=not deepy_remote),
                 gr.update(visible=not deepy_remote), gr.update(visible=not deepy_remote), gr.update(visible=not deepy_remote), gr.update(visible=not deepy_remote),
+                gr.update(visible=not deepy_remote and local_enhancer_id(deepy_engine) in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)),
             )
 
         remote_engine_state_inputs = [self.deepy_llm_engine_choice, self.enhancer_quantization_choice]
@@ -676,7 +694,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.remote_llm_warning_md, self.remote_llm_auth_md, self.codex_config_ui.group, self.claude_config_ui.group, self.opencode_config_ui.group,
             self.enhancer_enabled_choice, self.enhancer_quantization_choice, self.enhancer_speculative_decoding_choice,
             self.prompt_enhancer_temperature_choice, self.prompt_enhancer_top_p_choice, self.prompt_enhancer_randomize_seed_choice,
-            self.deepy_vram_mode_choice, self.deepy_context_tokens_choice, self.deepy_kv_cache_quantization_choice, self.deepy_compaction_type_choice,
+            self.deepy_vram_mode_choice, self.deepy_context_tokens_choice, self.deepy_kv_cache_quantization_choice, self.deepy_compaction_type_choice, self.deepy_repetition_penalty_choice,
         ]
         self.deepy_llm_engine_choice.input(fn=update_remote_engine_ui, inputs=remote_engine_state_inputs, outputs=remote_engine_outputs, show_progress="hidden")
 
@@ -717,7 +735,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.prompt_enhancer_temperature_choice, self.prompt_enhancer_top_p_choice, self.prompt_enhancer_randomize_seed_choice,
             self.matanyone_version_choice,
             self.deepy_type_choice, self.deepy_vram_mode_choice, self.deepy_allow_read_file_system_choice, self.deepy_file_system_paths_choice, self.deepy_read_everywhere_choice,
-            self.deepy_context_tokens_choice, self.deepy_kv_cache_quantization_choice, self.deepy_compaction_type_choice, self.deepy_zero_custom_system_prompt_choice, self.deepy_prime_custom_system_prompt_choice, self.deepy_prime_mcp_servers_choice, self.deepy_mcp_auto_discover_paths_choice,
+            self.deepy_context_tokens_choice, self.deepy_kv_cache_quantization_choice, self.deepy_compaction_type_choice, self.deepy_repetition_penalty_choice, self.deepy_zero_custom_system_prompt_choice, self.deepy_prime_custom_system_prompt_choice, self.deepy_prime_mcp_servers_choice, self.deepy_mcp_auto_discover_paths_choice,
             self.video_container_choice, self.video_output_codec_choice, self.hdr_video_crf_choice, self.image_output_codec_choice, self.audio_output_codec_choice, self.audio_stand_alone_output_codec_choice,
             self.metadata_choice, self.embed_source_images_choice,
             self.video_save_path_choice, self.image_save_path_choice, self.audio_save_path_choice,
@@ -740,7 +758,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 self.model_choice,
                 self.refresh_form_trigger,
                 self.assistant_launcher_host,
-                self.assistant_panel
+                self.assistant_panel,
+                self.assistant_chat_event,
             ]
         )
 
@@ -802,7 +821,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             prompt_enhancer_temperature_choice, prompt_enhancer_top_p_choice, prompt_enhancer_randomize_seed_choice,
             matanyone_version_choice,
             deepy_type_choice, deepy_vram_mode_choice, deepy_allow_read_file_system_choice, deepy_file_system_paths_choice, deepy_read_everywhere_choice,
-            deepy_context_tokens_choice, deepy_kv_cache_quantization_choice, deepy_compaction_type_choice, deepy_zero_custom_system_prompt_choice, deepy_prime_custom_system_prompt_choice, deepy_prime_mcp_servers_choice, deepy_mcp_auto_discover_paths_choice,
+            deepy_context_tokens_choice, deepy_kv_cache_quantization_choice, deepy_compaction_type_choice, deepy_repetition_penalty_choice, deepy_zero_custom_system_prompt_choice, deepy_prime_custom_system_prompt_choice, deepy_prime_mcp_servers_choice, deepy_mcp_auto_discover_paths_choice,
             video_container_choice, video_output_codec_choice, hdr_video_crf_choice, image_output_codec_choice, audio_output_codec_choice, audio_stand_alone_output_codec_choice,
             metadata_choice, embed_source_images_choice,
             save_path_choice, image_save_path_choice, audio_save_path_choice,
@@ -838,8 +857,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
         else:
             enhancer_enabled_choice = local_enhancer_id(deepy_llm_engine_choice, enhancer_enabled_choice)
 
-        if not deepy_remote and int(enhancer_enabled_choice) == QWEN38_PROMPT_ENHANCER_ID and enhancer_quantization_choice not in ("gguf", "gguf_q2"):
-            error = "Qwen3.8-27B is available only as GGUF. Select GGUF Q2 or Q4 as the Qwen LLM quantization."
+        if not deepy_remote and int(enhancer_enabled_choice) == QWEN38_PROMPT_ENHANCER_ID and enhancer_quantization_choice not in ("gguf", "gguf_q3", "gguf_q2"):
+            error = "Qwen3.8-27B is available only as GGUF. Select GGUF Q2, Q3, or Q4 as the Qwen LLM quantization."
             gr.Info(f"Configuration was not saved: {error}")
             return f"<div style='color:red; text-align:center;'>Configuration was not saved: {error}</div>", *[gr.update()]*8
         if not deepy_remote and int(enhancer_enabled_choice) in QWEN35_PROMPT_ENHANCER_IDS and enhancer_quantization_choice not in ("quanto_int8", "gguf"):
@@ -926,6 +945,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             DEEPY_CONTEXT_TOKENS_KEY: normalize_deepy_context_tokens(deepy_context_tokens_choice),
             DEEPY_KV_CACHE_QUANTIZATION_KEY: normalize_deepy_kv_cache_quantization(deepy_kv_cache_quantization_choice),
             DEEPY_COMPACTION_TYPE_KEY: deepy_compaction_type_choice,
+            DEEPY_REPETITION_PENALTY_KEY: normalize_deepy_repetition_penalty(deepy_repetition_penalty_choice),
             DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY: normalize_deepy_custom_system_prompt(deepy_zero_custom_system_prompt_choice),
             DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY: normalize_deepy_prime_guidance(deepy_prime_custom_system_prompt_choice),
             DEEPY_PRIME_MCP_SERVERS_KEY: deepy_prime_mcp_servers_choice,
@@ -981,7 +1001,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "metadata_type", "clear_file_list", "multi_prompts_gen_type", "keep_intermediate_sliding_windows", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", *notifications.CONFIG_KEYS, "audio_processors", "temporal_upsamplers", "spatial_upsamplers", "matanyone_version",
             "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed", "prompt_enhancer_quantization", PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, "enhancer_mode",
-            DEEPY_ENABLED_KEY, DEEPY_TYPE_KEY, DEEPY_VRAM_MODE_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_READ_EVERYWHERE_KEY, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_KV_CACHE_QUANTIZATION_KEY, DEEPY_COMPACTION_TYPE_KEY, DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_MCP_SERVERS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY,
+            DEEPY_ENABLED_KEY, DEEPY_TYPE_KEY, DEEPY_VRAM_MODE_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_READ_EVERYWHERE_KEY, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_KV_CACHE_QUANTIZATION_KEY, DEEPY_COMPACTION_TYPE_KEY, DEEPY_REPETITION_PENALTY_KEY, DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_MCP_SERVERS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY,
             LLM_CONFIG_KEY,
             "max_frames_multiplier", "display_stats", "keep_resolution_on_model_switch", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "hdr_video_crf", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "audio_stand_alone_output_codec", "checkpoints_paths", "loras_root", "save_queue_if_crash",
@@ -1020,11 +1040,14 @@ class ConfigTabPlugin(WAN2GPPlugin):
         deepy_file_access_changed = any(key in changes for key in (DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_READ_EVERYWHERE_KEY, "save_path", "image_save_path", "audio_save_path"))
         speculative_decoding_changed = PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY in changes
         enhancer_profile_changed = "profile" in changes or "video_profile" in changes
+        chat_event_update = gr.update()
         if enhancer_runtime_changed:
-            get_or_create_assistant_session(state).force_loading_status_once = True
+            session = get_or_create_assistant_session(state)
             self.release_deepy_vram(state, clear_session_state=True, discard_runtime_snapshot=True)
+            session.force_loading_status_once = True
             self.reset_prompt_enhancer()
             self.reset_prompt_enhancer_if_requested()
+            chat_event_update = assistant_chat.build_reset_event(session)
         elif speculative_decoding_changed:
             get_or_create_assistant_session(state).force_loading_status_once = True
             self.release_deepy_vram(state, clear_session_state=False, discard_runtime_snapshot=True)
@@ -1036,6 +1059,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.reset_prompt_enhancer_if_requested()
         elif deepy_type_changed or deepy_prime_mcp_servers_changed or deepy_file_access_changed:
             self.release_deepy_vram(state, clear_session_state=True, discard_runtime_snapshot=True)
+            chat_event_update = assistant_chat.build_reset_event(get_or_create_assistant_session(state))
         audio_processor_api.release_changed_config_processors(old_server_config, new_server_config, changes)
         temporal_upsampler_api.release_changed_config_temporal_upsamplers(old_server_config, new_server_config, changes)
         upsampler_api.release_changed_config_upsamplers(old_server_config, new_server_config, changes)
@@ -1066,4 +1090,5 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.get_unique_id(),
             launcher_update,
             panel_update,
+            chat_event_update,
         )

@@ -41,6 +41,7 @@ from .qwen3_5 import load_qwen35_model_class
 
 UPSTREAM_MODELING_FILENAME = "modeling_qwen3_5.py"
 enhancer_quantization_GGUF = "gguf"
+enhancer_quantization_GGUF_Q3 = "gguf_q3"
 enhancer_quantization_GGUF_Q2 = "gguf_q2"
 enhancer_quantization_SAFETENSORS = "safetensors"
 enhancer_quantization_QUANTO_INT8 = "quanto_int8"
@@ -84,11 +85,21 @@ def get_qwen35_prompt_enhancer_variant(model_no) -> str:
 
 def get_qwen35_quantization(backend: str, variant: str | None = None) -> str:
     spec = get_qwen35_variant_spec(variant)
-    if backend == enhancer_quantization_GGUF_Q2:
-        if "text_gguf_q2_filename" not in spec:
-            raise ValueError(f"{spec['display_name']} does not provide a GGUF Q2 checkpoint.")
+    if backend in (enhancer_quantization_GGUF_Q2, enhancer_quantization_GGUF_Q3):
+        quantization = backend.rsplit("_", 1)[-1]
+        if f"text_gguf_{quantization}_filename" not in spec:
+            raise ValueError(f"{spec['display_name']} does not provide a GGUF {quantization.upper()} checkpoint.")
         return backend
     return spec.get("backend", backend)
+
+
+def _get_qwen35_gguf_filename(spec: dict, backend: str) -> str:
+    key = {
+        enhancer_quantization_GGUF: "text_gguf_filename",
+        enhancer_quantization_GGUF_Q3: "text_gguf_q3_filename",
+        enhancer_quantization_GGUF_Q2: "text_gguf_q2_filename",
+    }[backend]
+    return spec[key]
 
 
 def _resolve_qwen35_assets_dir(assets_dir: str | None, variant: str | None = None, error_if_none: bool = True) -> str | None:
@@ -146,20 +157,24 @@ def ensure_qwen35_prompt_enhancer_assets(process_files_def, backend: str = enhan
     qwen35_shared_files = list(spec["root_files"])
     if spec["root_repo"] == spec.get("gguf_repo"):
         checkpoint_filename = spec["text_int8_filename"]
-        if backend in (enhancer_quantization_GGUF, enhancer_quantization_GGUF_Q2):
-            checkpoint_filename = spec["text_gguf_q2_filename" if backend == enhancer_quantization_GGUF_Q2 else "text_gguf_filename"]
+        if backend in (enhancer_quantization_GGUF, enhancer_quantization_GGUF_Q3, enhancer_quantization_GGUF_Q2):
+            checkpoint_filename = _get_qwen35_gguf_filename(spec, backend)
         qwen35_shared_files += [spec["vision_filename"], checkpoint_filename]
-        if speculative_decoding and spec.get("text_mtp_filename"):
-            qwen35_shared_files.append(spec["text_mtp_filename"])
+        if speculative_decoding:
+            mtp_filename = spec.get("text_gguf_q3_mtp_filename" if backend == enhancer_quantization_GGUF_Q3 else "text_mtp_filename")
+            if mtp_filename:
+                qwen35_shared_files.append(mtp_filename)
     download_def = {"repoId": spec["root_repo"], "sourceFolderList": [repo_subfolder], "fileList": [qwen35_shared_files]}
     if len(repo_subfolder) == 0:
         download_def["targetFolderList"] = [spec["assets_dir_name"]]
     process_files_def(**download_def)
     if spec["root_repo"] != spec.get("gguf_repo"):
-        if backend not in (enhancer_quantization_GGUF, enhancer_quantization_GGUF_Q2):
+        if backend not in (enhancer_quantization_GGUF, enhancer_quantization_GGUF_Q3, enhancer_quantization_GGUF_Q2):
             raise ValueError(f"{spec['display_name']} supports only the GGUF backend.")
-        gguf_filename = spec["text_gguf_q2_filename" if backend == enhancer_quantization_GGUF_Q2 else "text_gguf_filename"]
-        process_files_def(repoId=spec["gguf_repo"], sourceFolderList=[spec.get("gguf_repo_subfolder", "")], fileList=[[spec["vision_filename"], gguf_filename]])
+        gguf_files = [spec["vision_filename"], _get_qwen35_gguf_filename(spec, backend)]
+        if speculative_decoding and backend == enhancer_quantization_GGUF_Q3:
+            gguf_files.append(spec["text_gguf_q3_mtp_filename"])
+        process_files_def(repoId=spec["gguf_repo"], sourceFolderList=[spec.get("gguf_repo_subfolder", "")], fileList=[gguf_files])
     if spec.get("text_repo") and spec.get("text_required_files"):
         process_files_def(repoId=spec["text_repo"], sourceFolderList=[repo_subfolder], fileList=[list(spec["text_required_files"])])
     qwen35_modeling_path = get_qwen35_modeling_path()
@@ -232,7 +247,7 @@ def _load_qwen35_image_processor(assets_dir: str):
 
 def get_qwen35_text_gguf_path(assets_dir: str, variant: str | None = None, backend: str = enhancer_quantization_GGUF) -> str:
     spec = get_qwen35_variant_spec(variant)
-    filename = spec["text_gguf_q2_filename" if get_qwen35_quantization(backend, variant=variant) == enhancer_quantization_GGUF_Q2 else "text_gguf_filename"]
+    filename = _get_qwen35_gguf_filename(spec, get_qwen35_quantization(backend, variant=variant))
     return _resolve_qwen35_checkpoint_file(assets_dir, filename, variant=variant, error_if_none=False)
 
 
@@ -1036,6 +1051,7 @@ __all__ = [
     "QWEN35_VARIANT_9B",
     "QWEN35_VARIANT_4B",
     "enhancer_quantization_GGUF",
+    "enhancer_quantization_GGUF_Q3",
     "enhancer_quantization_GGUF_Q2",
     "enhancer_quantization_SAFETENSORS",
     "enhancer_quantization_QUANTO_INT8",

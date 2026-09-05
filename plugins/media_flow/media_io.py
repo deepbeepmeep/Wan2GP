@@ -413,17 +413,17 @@ def _reserve_sidecar_path(preferred_path: Path, fallback_path_factory) -> str:
     raise gr.Error(f"Unable to reserve a scratch filename near {preferred_path.parent}")
 
 
-def reserve_video_only_output_path(output_path: str) -> str:
+def reserve_working_output_path(output_path: str) -> str:
     output = Path(output_path).resolve()
-    preferred = output.with_name(f"{output.stem}_videoonly{output.suffix}")
-    return _reserve_sidecar_path(preferred, lambda token: output.with_name(f"{output.stem}_videoonly_{token}{output.suffix}"))
+    preferred = output.with_name(f"{output.stem}_working{output.suffix}")
+    return _reserve_sidecar_path(preferred, lambda token: output.with_name(f"{output.stem}_working_{token}{output.suffix}"))
 
 
-def create_reserved_metadata_file(output_path: str) -> str:
+def create_reserved_metadata_file(output_path: str, metadata: dict | None = None) -> str:
     output = Path(output_path).resolve()
     preferred = output.with_name(f"{output.name}.ffmeta")
     reserved_metadata_path = _reserve_sidecar_path(preferred, lambda token: output.with_name(f"{output.name}.{token}.ffmeta"))
-    write_reserved_video_ffmetadata(reserved_metadata_path, DEFAULT_RESERVED_VIDEO_METADATA_BYTES)
+    write_reserved_video_ffmetadata(reserved_metadata_path, DEFAULT_RESERVED_VIDEO_METADATA_BYTES, metadata)
     return reserved_metadata_path
 
 

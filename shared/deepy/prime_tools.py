@@ -19,6 +19,7 @@ import anyio
 from anyio.from_thread import start_blocking_portal
 
 from shared.api import WanGPSession
+from shared.deepy import media_registry
 from shared.deepy.config import DEEPY_CONTEXT_TOKENS_DEFAULT, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT, DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_PRIME_MCP_SERVERS_KEY, get_deepy_config_value, get_deepy_runtime_config, normalize_deepy_context_tokens, normalize_deepy_mcp_auto_discover_paths, normalize_deepy_prime_mcp_servers
 from shared.gradio import assistant_chat
 from shared.mcp_server import build_inprocess_server, resolve_gallery_media_path
@@ -400,6 +401,7 @@ class DeepyPrimeTools:
             logger.setLevel(previous_level)
 
     def _call_mcp_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self._remember_gallery_input_references(tool_name, arguments)
         future = Future()
         self._request_queue.put((tool_name, dict(arguments or {}), future))
         result = future.result()
@@ -424,6 +426,54 @@ class DeepyPrimeTools:
         normalized = self._enforce_output_budget(tool_name, self.file_access_policy.virtualize_result(normalized))
         self._remember_gallery_download_references(tool_name, normalized)
         return normalized
+
+    def _remember_gallery_input_references(self, tool_name: str, arguments: Any) -> None:
+        route = self._tool_routes.get(tool_name)
+        if route is None or route[0] != "wangp":
+            return
+        media_ids = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, dict):
+                for child_value in value.values():
+                    collect(child_value)
+            elif isinstance(value, (list, tuple)):
+                for child_value in value:
+                    collect(child_value)
+            elif isinstance(value, str) and re.fullmatch(r"(?:visual|audio):[a-f0-9]{12}", value.strip(), re.IGNORECASE):
+                media_ids.append(value.strip().casefold())
+
+        collect(arguments)
+        for media_id in dict.fromkeys(media_ids):
+            try:
+                path = resolve_gallery_media_path(self._api_session, media_id)
+            except (FileNotFoundError, KeyError, OSError, ValueError):
+                continue
+            self.assistant_session.gallery_download_registry[media_id] = path
+            media_registry.record_media_access(self.assistant_session, path, source="wangp", access="read")
+
+    def _remember_generated_media(self, result: Any) -> None:
+        output_paths = []
+
+        def collect(value: Any, key: str = "") -> None:
+            if isinstance(value, dict):
+                for child_key, child_value in value.items():
+                    collect(child_value, str(child_key).casefold())
+            elif isinstance(value, (list, tuple)):
+                for child_value in value:
+                    collect(child_value, key)
+            elif key in {"output_file", "generated_files"} and isinstance(value, str):
+                output_paths.append(value.strip())
+
+        collect(result)
+        for output_path in dict.fromkeys(path for path in output_paths if path):
+            try:
+                path = self.file_access_policy.resolve_path(output_path)
+            except (FileNotFoundError, OSError, PermissionError, ValueError):
+                continue
+            if not path.is_file():
+                continue
+            media_registry.record_media_access(self.assistant_session, str(path), source="deepy", access="write")
 
     def _remember_gallery_download_references(self, tool_name: str, result: Any) -> None:
         route = self._tool_routes.get(tool_name)
@@ -776,9 +826,13 @@ class DeepyPrimeTools:
                 call_arguments["wait"] = False
             initial = self._call_mcp_tool(tool_name, call_arguments)
             if initial.get("job_id") and self._remote_llm and not REMOTE_LLM_GENERATION_JOB_POLLING:
-                return self._wait_for_generation_blocking(initial)
-            return self._wait_for_generation(initial) if initial.get("job_id") else initial
-        return self._call_mcp_tool(tool_name, arguments)
+                result = self._wait_for_generation_blocking(initial)
+            else:
+                result = self._wait_for_generation(initial) if initial.get("job_id") else initial
+        else:
+            result = self._call_mcp_tool(tool_name, arguments)
+        self._remember_generated_media(result)
+        return result
 
     def _get_selected_media_record_from_source(self, source: str, requested_media_type: str = "all"):
         return None, None

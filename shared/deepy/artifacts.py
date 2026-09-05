@@ -149,6 +149,38 @@ class ArtifactWorkspace:
             self._workflows.clear()
             self._operation_results.clear()
 
+    def snapshot_state(self) -> dict[str, Any]:
+        with self._lock:
+            operations = [
+                {"artifact_id": artifact_id, "operation_id": operation_id, "signature": signature, "result": _json_copy(result)}
+                for (artifact_id, operation_id), (signature, result) in self._operation_results.items()
+            ]
+            return {"schema_version": 1, "artifacts": _json_copy(self._artifacts), "workflows": _json_copy(self._workflows), "operations": operations}
+
+    def restore_state(self, state: Any) -> None:
+        payload = _json_copy(state if isinstance(state, dict) else {})
+        artifacts = payload.get("artifacts", {})
+        workflows = payload.get("workflows", {})
+        operations = payload.get("operations", [])
+        if not isinstance(artifacts, dict) or not isinstance(workflows, dict) or not isinstance(operations, list):
+            raise TypeError("Invalid saved Deepy artifact workspace.")
+        if len(artifacts) > _MAX_ARTIFACTS:
+            raise ValueError("Saved Deepy artifact workspace exceeds its artifact limit.")
+        restored_operations = {}
+        for item in operations:
+            if not isinstance(item, dict):
+                raise TypeError("Invalid saved Deepy artifact operation.")
+            artifact_id = str(item.get("artifact_id", "") or "").strip()
+            operation_id = str(item.get("operation_id", "") or "").strip()
+            signature = str(item.get("signature", "") or "")
+            result = item.get("result", {})
+            if artifact_id and operation_id and isinstance(result, dict):
+                restored_operations[(artifact_id, operation_id)] = (signature, _json_copy(result))
+        with self._lock:
+            self._artifacts = _json_copy(artifacts)
+            self._workflows = _json_copy(workflows)
+            self._operation_results = restored_operations
+
     def _artifact(self, artifact_id: str) -> dict[str, Any]:
         artifact_id = str(artifact_id or "").strip()
         try:

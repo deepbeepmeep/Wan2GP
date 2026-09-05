@@ -253,9 +253,11 @@ def normalize_audio_pair_volumes(audio1, audio2, active_mask1=None, active_mask2
     return np.clip(audio1 * float(gain1), -1.0, 1.0), np.clip(audio2 * float(gain2), -1.0, 1.0), stats
 
 
-def normalize_audio_pair_volumes_to_temp_files(audio_path1, audio_path2, output_dir=None, prefix="audio_norm_", active_mask1=None, active_mask2=None):
-    audio1, sr1 = sf.read(os.fspath(audio_path1), dtype="float32", always_2d=False)
-    audio2, sr2 = sf.read(os.fspath(audio_path2), dtype="float32", always_2d=False)
+def normalize_audio_pair_volumes_to_temp_files(audio_path1, audio_path2, output_dir=None, prefix="audio_norm_", active_mask1=None, active_mask2=None, max_duration_seconds=None):
+    frames1 = -1 if max_duration_seconds is None else round(float(max_duration_seconds) * sf.info(os.fspath(audio_path1)).samplerate)
+    frames2 = -1 if max_duration_seconds is None else round(float(max_duration_seconds) * sf.info(os.fspath(audio_path2)).samplerate)
+    audio1, sr1 = sf.read(os.fspath(audio_path1), frames=frames1, dtype="float32", always_2d=False)
+    audio2, sr2 = sf.read(os.fspath(audio_path2), frames=frames2, dtype="float32", always_2d=False)
     norm1, norm2, stats = normalize_audio_pair_volumes(audio1, audio2, active_mask1=active_mask1, active_mask2=active_mask2)
 
     if output_dir is not None:

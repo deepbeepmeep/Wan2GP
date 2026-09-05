@@ -23,6 +23,7 @@ DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY = "deepy_tool_gen_speech_from_sample"
 DEEPY_CONTEXT_TOKENS_KEY = "deepy_context_tokens"
 DEEPY_KV_CACHE_QUANTIZATION_KEY = "deepy_kv_cache_quantization"
 DEEPY_COMPACTION_TYPE_KEY = "deepy_compaction_type"
+DEEPY_REPETITION_PENALTY_KEY = "deepy_repetition_penalty"
 DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY = "deepy_zero_custom_system_prompt"
 DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY = "deepy_prime_custom_system_prompt"
 DEEPY_PRIME_MCP_SERVERS_KEY = "deepy_prime_mcp_servers"
@@ -32,6 +33,9 @@ DEEPY_FILE_SYSTEM_PATHS_KEY = "deepy_file_system_paths"
 DEEPY_READ_EVERYWHERE_KEY = "deepy_read_everywhere"
 DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY = "deepy_auto_cancel_queue_tasks"
 DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY = "deepy_separate_requests_with_empty_line"
+DEEPY_SESSION_RESET_MODE_KEY = "deepy_session_reset_mode"
+DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY = "deepy_session_gallery_media_mode"
+DEEPY_MULTI_SESSION_KEY = "deepy_multi_session"
 DEEPY_TEMPLATE_CONFIG_MIGRATIONS = {
     DEEPY_TOOL_GEN_VIDEO_KEY: {
         "MiniMax H3 FL2VA Turbo Lightx2v 8 Steps": "MiniMax H3 FL2VA Pruned Turbo Lightx2v 8 Steps",
@@ -63,6 +67,7 @@ DEEPY_CONTEXT_TOKENS_MAX = 256000
 DEEPY_CONTEXT_TOKENS_DEFAULT = 16386
 DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS = 32000
 DEEPY_COMPACTION_TYPE_DEFAULT = DEEPY_COMPACTION_TYPE_DISCARD
+DEEPY_REPETITION_PENALTY_DEFAULT = True
 DEEPY_KV_CACHE_QUANTIZATION_AUTO = "auto"
 DEEPY_KV_CACHE_QUANTIZATION_DEFAULT = DEEPY_KV_CACHE_QUANTIZATION_AUTO
 DEEPY_KV_CACHE_QUANTIZATION_MIN_GGUF_KERNELS_VERSION = "1.0.13"
@@ -76,7 +81,14 @@ DEEPY_READ_EVERYWHERE_DEFAULT = False
 DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT = False
 DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT = True
 DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT = True
+DEEPY_SESSION_RESET_MODE_DEFAULT = "new_session"
+DEEPY_SESSION_GALLERY_MEDIA_MODE_DEFAULT = "link"
+DEEPY_MULTI_SESSION_DEFAULT = False
 DEEPY_CONFIG_FILENAME = "wgp_config.json"
+
+# Experimental, intentionally not user-configurable yet. The tools remain gated by
+# Deepy's existing read/write filesystem permission in addition to this switch.
+DEEPY_LONG_TEXT_TOOLS_EXPERIMENT = True
 
 DEEPY_QWEN_ENHANCER_IDS = {3, 4, 5}
 _DEEPY_QWEN_VARIANT_LABELS = {3: "Qwen3.5-4B", 4: "Qwen3.5-9B", 5: "Qwen3.8-27B"}
@@ -205,6 +217,12 @@ def resolve_deepy_kv_cache_quantization(value: Any) -> tuple[str, str]:
 
 def normalize_deepy_compaction_type(value: Any) -> str:
     return DEEPY_COMPACTION_TYPE_SUMMARIZE if str(value or "").strip().lower() == DEEPY_COMPACTION_TYPE_SUMMARIZE else DEEPY_COMPACTION_TYPE_DISCARD
+
+
+def normalize_deepy_repetition_penalty(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+    return bool(value)
 
 
 def validate_deepy_compaction_config(compaction_type: Any, context_tokens: Any) -> str:
@@ -362,6 +380,20 @@ def normalize_deepy_separate_requests_with_empty_line(value: Any) -> bool:
     return bool(value)
 
 
+def normalize_deepy_session_reset_mode(value: Any) -> str:
+    return "reset_session" if str(value or "").strip().lower() == "reset_session" else "new_session"
+
+
+def normalize_deepy_session_gallery_media_mode(value: Any) -> str:
+    return "copy" if str(value or "").strip().lower() == "copy" else "link"
+
+
+def normalize_deepy_multi_session(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "on", "yes"}
+    return bool(value)
+
+
 def estimate_deepy_kv_cache_mb(enhancer_enabled: Any, context_tokens: Any, kv_cache_quantization: Any = "") -> tuple[str | None, int | None]:
     try:
         enhancer_no = int(enhancer_enabled or 0)
@@ -404,6 +436,7 @@ def normalize_deepy_runtime_config(server_config: dict[str, Any] | None) -> dict
     runtime_config[DEEPY_CONTEXT_TOKENS_KEY] = normalize_deepy_context_tokens(runtime_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
     runtime_config[DEEPY_KV_CACHE_QUANTIZATION_KEY] = normalize_deepy_kv_cache_quantization(runtime_config.get(DEEPY_KV_CACHE_QUANTIZATION_KEY, DEEPY_KV_CACHE_QUANTIZATION_DEFAULT))
     runtime_config[DEEPY_COMPACTION_TYPE_KEY] = normalize_deepy_compaction_type(runtime_config.get(DEEPY_COMPACTION_TYPE_KEY, DEEPY_COMPACTION_TYPE_DEFAULT))
+    runtime_config[DEEPY_REPETITION_PENALTY_KEY] = normalize_deepy_repetition_penalty(runtime_config.get(DEEPY_REPETITION_PENALTY_KEY, DEEPY_REPETITION_PENALTY_DEFAULT))
     runtime_config[DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_custom_system_prompt(runtime_config.get(DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY, ""))
     runtime_config[DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_prime_guidance(runtime_config.get(DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_GUIDANCE_DEFAULT))
     runtime_config[DEEPY_PRIME_MCP_SERVERS_KEY] = normalize_deepy_prime_mcp_servers(runtime_config.get(DEEPY_PRIME_MCP_SERVERS_KEY, {}))
@@ -413,6 +446,9 @@ def normalize_deepy_runtime_config(server_config: dict[str, Any] | None) -> dict
     runtime_config[DEEPY_READ_EVERYWHERE_KEY] = normalize_deepy_read_everywhere(runtime_config.get(DEEPY_READ_EVERYWHERE_KEY, DEEPY_READ_EVERYWHERE_DEFAULT))
     runtime_config[DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY] = normalize_deepy_auto_cancel_queue_tasks(runtime_config.get(DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY, DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT))
     runtime_config[DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY] = normalize_deepy_separate_requests_with_empty_line(runtime_config.get(DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY, DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT))
+    runtime_config[DEEPY_SESSION_RESET_MODE_KEY] = normalize_deepy_session_reset_mode(runtime_config.get(DEEPY_SESSION_RESET_MODE_KEY, DEEPY_SESSION_RESET_MODE_DEFAULT))
+    runtime_config[DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY] = normalize_deepy_session_gallery_media_mode(runtime_config.get(DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY, DEEPY_SESSION_GALLERY_MEDIA_MODE_DEFAULT))
+    runtime_config[DEEPY_MULTI_SESSION_KEY] = normalize_deepy_multi_session(runtime_config.get(DEEPY_MULTI_SESSION_KEY, DEEPY_MULTI_SESSION_DEFAULT))
     return runtime_config
 
 
@@ -431,6 +467,7 @@ def get_deepy_default_runtime_config() -> dict[str, Any]:
         DEEPY_CONTEXT_TOKENS_KEY: DEEPY_CONTEXT_TOKENS_DEFAULT,
         DEEPY_KV_CACHE_QUANTIZATION_KEY: DEEPY_KV_CACHE_QUANTIZATION_DEFAULT,
         DEEPY_COMPACTION_TYPE_KEY: DEEPY_COMPACTION_TYPE_DEFAULT,
+        DEEPY_REPETITION_PENALTY_KEY: DEEPY_REPETITION_PENALTY_DEFAULT,
         DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY: "",
         DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY: DEEPY_PRIME_GUIDANCE_DEFAULT,
         DEEPY_PRIME_MCP_SERVERS_KEY: {},
@@ -440,6 +477,9 @@ def get_deepy_default_runtime_config() -> dict[str, Any]:
         DEEPY_READ_EVERYWHERE_KEY: DEEPY_READ_EVERYWHERE_DEFAULT,
         DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY: DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT,
         DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY: DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT,
+        DEEPY_SESSION_RESET_MODE_KEY: DEEPY_SESSION_RESET_MODE_DEFAULT,
+        DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY: DEEPY_SESSION_GALLERY_MEDIA_MODE_DEFAULT,
+        DEEPY_MULTI_SESSION_KEY: DEEPY_MULTI_SESSION_DEFAULT,
     }
 
 

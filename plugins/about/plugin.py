@@ -57,6 +57,7 @@ class AboutPlugin(WAN2GPPlugin):
         gr.Markdown("- <B>Carasibana</B>: the MIT-licensed ComfyUI H3 FaceRefine workflow adapted by WanGP (https://github.com/Carasibana/ComfyUI-H3-FaceRefine)")
         gr.Markdown("- <B>Ultralytics YOLO and Bingsu's ADetailer</B>: face and person detection used by H3 Face Refiner (https://github.com/ultralytics/ultralytics, https://github.com/Bing-su/adetailer)")
         gr.Markdown("- <B>InsightFace</B>: face detection, landmarks, and identity embeddings used by H3 Face Refiner (https://github.com/deepinsight/insightface). Users must comply with the pretrained model licensing terms.")
+        gr.Markdown("- <B>Merserk</B> and <B>DLSS5-Feeder</B>: foundations for the DLSS 5 video-processing integration (https://github.com/Merserk/dlss5-visual-enhancer, https://github.com/jlrouzies-fr/DLSS5-Feeder)")
 
         gr.Markdown("<BR>Special thanks to the following people for their Contributions & Support:")
         gr.Markdown("- <B>Tophness</B> : Designed & developped the Queuing Framework, Edit Mode, Windows Installation scripts and WanGP PlugIns System")

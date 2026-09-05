@@ -34,7 +34,9 @@ QWEN38_27B_ASSETS_REPO = "Qwen/Qwen3.8-27B"
 QWEN38_27B_GGUF_REPO = QWEN35_ABLITERATED_REPO
 QWEN38_27B_GGUF_REPO_SUBFOLDER = "Qwen3_8_27B_Uncensored"
 QWEN38_27B_TEXT_GGUF_FILENAME = "Qwen3.8-27B-Uncensored-Q4_K_M.gguf"
+QWEN38_27B_TEXT_GGUF_Q3_FILENAME = "Qwen3.8-27B-Uncensored-noMTP-IQ3_S.gguf"
 QWEN38_27B_TEXT_GGUF_Q2_FILENAME = "Qwen3.8-27B-Uncensored-IQ2_M.gguf"
+QWEN38_27B_MTP_GGUF_FILENAME = "Qwen3.8-27B-Uncensored-MTP-Q4_K_M.gguf"
 QWEN38_27B_VISION_FILENAME = "Qwen3.8-27B-Uncensored-vision-f16.gguf"
 QWEN35_VARIANT_SPECS = {
     QWEN35_VARIANT_9B: {
@@ -110,7 +112,9 @@ QWEN35_VARIANT_SPECS = {
         "gguf_repo": QWEN38_27B_GGUF_REPO,
         "gguf_repo_subfolder": QWEN38_27B_GGUF_REPO_SUBFOLDER,
         "text_gguf_filename": QWEN38_27B_TEXT_GGUF_FILENAME,
+        "text_gguf_q3_filename": QWEN38_27B_TEXT_GGUF_Q3_FILENAME,
         "text_gguf_q2_filename": QWEN38_27B_TEXT_GGUF_Q2_FILENAME,
+        "text_gguf_q3_mtp_filename": QWEN38_27B_MTP_GGUF_FILENAME,
         "vision_filename": QWEN38_27B_VISION_FILENAME,
         "backend": "gguf",
         "supports_mtp": True,
@@ -128,7 +132,7 @@ QWEN35_VARIANT_SPECS = {
 
 def _qwen35_variant_files(variant: str) -> list[str]:
     spec = QWEN35_VARIANT_SPECS[variant]
-    return list(spec["root_files"]) + [spec[key] for key in ("vision_filename", "text_int8_filename", "text_gguf_filename", "text_gguf_q2_filename", "text_mtp_filename") if key in spec]
+    return list(spec["root_files"]) + [spec[key] for key in ("vision_filename", "text_int8_filename", "text_gguf_filename", "text_gguf_q3_filename", "text_gguf_q2_filename", "text_mtp_filename", "text_gguf_q3_mtp_filename") if key in spec]
 
 
 def query_prompt_enhancer_download_defs() -> list[dict[str, Any]]:
@@ -160,6 +164,6 @@ def query_prompt_enhancer_download_defs() -> list[dict[str, Any]]:
         {
             "repoId": QWEN38_27B_GGUF_REPO,
             "sourceFolderList": [QWEN38_27B_GGUF_REPO_SUBFOLDER],
-            "fileList": [[QWEN38_27B_TEXT_GGUF_FILENAME, QWEN38_27B_TEXT_GGUF_Q2_FILENAME, QWEN38_27B_VISION_FILENAME]],
+            "fileList": [[QWEN38_27B_TEXT_GGUF_FILENAME, QWEN38_27B_TEXT_GGUF_Q3_FILENAME, QWEN38_27B_TEXT_GGUF_Q2_FILENAME, QWEN38_27B_MTP_GGUF_FILENAME, QWEN38_27B_VISION_FILENAME]],
         },
     ]

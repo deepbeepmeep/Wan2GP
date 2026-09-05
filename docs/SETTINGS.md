@@ -120,8 +120,8 @@ The baseline schema lives in `models/_settings.json`. Model defaults in `default
 | `skip_steps_cache_type` | string | Step-skipping cache type. Empty disables. Known values are `tea` and `mag` when the model exposes TeaCache or MagCache. |
 | `skip_steps_multiplier` | number | Cache speed/skip multiplier. The meaning is model/cache dependent. |
 | `skip_steps_start_step_perc` | integer | Percentage of denoising steps before cache skipping starts. |
-| `temporal_upsampling` | string | Combined temporal post-processing method and multiplier. Built-in values include `rife2` and `rife4`; plugins may register more temporal upsamplers. |
-| `spatial_upsampling` | string | Spatial post-processing mode. Empty disables; values include `vae1`, `vae2`, `lanczos<scale>`, and registered edit upsamplers such as FlashVSR. |
+| `temporal_upsampling` | string | Temporal post-processing method and multiplier encoded as `<method>*<multiplier>`, for example `rife*2` or `dlssg*4`. The former concatenated format remains accepted when loading older settings. |
+| `spatial_upsampling` | string | Spatial post-processing method and multiplier encoded as `<method>*<multiplier>`, for example `vae*2`, `lanczos*2`, or `dlss5*1`. Empty disables; refiners without a multiplier retain their bare method id. The former concatenated format remains accepted when loading older settings. |
 | `film_grain_intensity` | number | Film grain amount. `0` disables. |
 | `film_grain_saturation` | number | Saturation of generated film grain. |
 | `RIFLEx_setting` | integer | RIFLEx long-video policy. `0` auto, `1` always on, `2` always off. |

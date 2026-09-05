@@ -51,3 +51,13 @@ plugins_local.json
 /plugins/wangp-*/
 loras_url_cache.json
 loras_url_cache_v2.json
+
+# --- Windows launcher (launcher/README.md) ---
+# The repository ignores dotfiles and *.html wholesale; re-include the launcher
+# sources and the CI workflow that builds the installer.
+!.github/
+!launcher/web/*.html
+# Generated at build time by launcher/build_assets.py, and PyInstaller output.
+launcher/assets/
+launcher/build/
+launcher/dist/

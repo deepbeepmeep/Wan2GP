@@ -5621,7 +5621,7 @@ def preprocess_video_with_mask(pre_video_guide, input_video_path, input_mask_pat
             processed_img = np.full((height, width, 3), processed_img, dtype=np.uint8)
         if isinstance(processed_img_outside, (list, tuple)):
             processed_img_outside = np.full((height, width, 3), processed_img_outside, dtype=np.uint8)
-        if any_mask:
+        if any_mask :
             if process_type == "pose_align":
                 masked_frame = processed_img
                 mask = np.full_like(mask, 0)
@@ -5630,26 +5630,22 @@ def preprocess_video_with_mask(pre_video_guide, input_video_path, input_mask_pat
             if process_outside_mask != None:
                 mask = np.full_like(mask, 255)
             mask = torch.from_numpy(mask)
-            
-            # --- FIX: Ensure mask is 3D [H, W, 1] before channel slicing/repeating ---
-            if mask.ndim == 2:
-                mask = mask.unsqueeze(-1)
             if RGB_Mask:
-                mask = mask.repeat(1, 1, 3) if mask.shape[-1] == 1 else mask
+                mask =  mask.unsqueeze(-1).repeat(1,1,3)
             if outpainting_dims != None:
-                full_frame = torch.full((final_height, final_width, mask.shape[-1]), 255, dtype=torch.uint8, device=mask.device)
+                full_frame= torch.full( (final_height, final_width, mask.shape[-1]), 255, dtype= torch.uint8, device= mask.device)
                 full_frame[margin_top:margin_top+height, margin_left:margin_left+width] = mask
                 mask = full_frame 
-            masks.append(mask[..., :1].clone())
+            masks.append(mask[:, :, 0:1].clone())
         else:
             masked_frame = processed_img
 
         if isinstance(masked_frame, (int, float, np.integer)) or (isinstance(masked_frame, (list, tuple)) and len(masked_frame) == 3):
-            masked_frame = np.full((height, width, 3), inpaint_color_np, dtype=np.uint8)
+            masked_frame= np.full( (height, width, 3), inpaint_color_np, dtype= np.uint8)
 
         masked_frame = torch.from_numpy(masked_frame)
         if masked_frame.shape[-1] == 1:
-            masked_frame = masked_frame.repeat(1, 1, 3).to(torch.uint8)
+            masked_frame =  masked_frame.repeat(1,1,3).to(torch.uint8)
 
         if outpainting_dims != None:
             color = inpaint_color.to(masked_frame.device).view(1, 1, 3)
@@ -5659,6 +5655,7 @@ def preprocess_video_with_mask(pre_video_guide, input_video_path, input_mask_pat
 
         masked_frames.append(masked_frame)
         proc_list[frame_no] = proc_list_outside[frame_no] = proc_mask[frame_no] = None
+
 
     # if args.save_masks:
     #     from preprocessing.dwpose.pose import save_one_video
@@ -5672,11 +5669,10 @@ def preprocess_video_with_mask(pre_video_guide, input_video_path, input_mask_pat
     gc.collect()
     torch.cuda.empty_cache()
     if pad_frames > 0:
-        masked_frames = [masked_frames[0]] * pad_frames + masked_frames
-        if any_mask:
-            masks = [masks[0]] * pad_frames + masks
-    masked_frames = torch.stack(masked_frames).permute(-1, 0, 1, 2).float().div_(127.5).sub_(1.)
-    masks = torch.stack(masks).permute(-1, 0, 1, 2).float().div_(255) if any_mask else None
+        masked_frames = masked_frames[0] * pad_frames + masked_frames
+        if any_mask: masked_frames = masks[0] * pad_frames + masks
+    masked_frames = torch.stack(masked_frames).permute(-1,0,1,2).float().div_(127.5).sub_(1.)
+    masks = torch.stack(masks).permute(-1,0,1,2).float().div_(255) if any_mask else None
 
     return masked_frames, masks
 
@@ -7718,7 +7714,7 @@ def generate_media(
                             if reference_videos:
                                 guide2_height, guide2_width = get_reference_video_dimensions(video_guide2, *image_size, model_def["reference_video_max_size"], block_size)
                                 guide2_fit_canvas = None
-                            video_guide_processed2, video_mask_processed2 = preprocess_video_with_mask(None, video_guide2, None, height=guide2_height, width=guide2_width, max_frames=guide_frames_extract_count, start_frame=guide_frames_extract_start, fit_canvas=guide2_fit_canvas, fit_crop=fit_crop, target_fps=fps, process_type=preprocess_type, RGB_Mask=True, proc_no=2, block_size=block_size)
+                            video_guide_processed2, video_mask_processed2 = preprocess_video_with_mask(None, video_guide2, None, height=guide2_height, width=guide2_width, max_frames=guide_frames_extract_count, start_frame=guide_frames_extract_start, fit_canvas=guide2_fit_canvas, fit_crop=fit_crop, target_fps=fps, process_type=preprocess_type, proc_no=2, block_size=block_size)
                         elif preprocess_type2 != None:
                             video_guide_processed2, video_mask_processed2 = preprocess_video_with_mask(ref_pose_tensor, video_guide, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type2, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, outpainting_ratio = video_guide_outpainting_ratio, proc_no =2, block_size = block_size, to_bbox = "H" in video_prompt_type, outpainting_quantize_margins = outpainting_quantize_margins)
 

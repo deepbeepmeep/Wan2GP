@@ -1,0 +1,20 @@
+{
+    "model": {
+        "name": "TTS MiniMax H3 Voice Clone 20B",
+        "architecture": "minimax_h3_tts_ref2va_pruned",
+        "description": "Experimental 32 kHz stereo dialogue generation with one segment per speaker turn, one or two cloned voices, and Whisper boundary cleanup. Reuses the pruned H3 Ref2VA checkpoint, jointly denoises a hidden 32x32 video, and saves only audio.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/MiniMax-H3-Ref2VA-pruned_rank8_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/MiniMax-H3-Ref2VA-pruned_rank8_int8_convrot.safetensors"
+        ],
+        "group": "tts"
+    },
+    "prompt": "Speaker 1:\n[English, thoughtful and close to the microphone] I thought the hardest part would be finding the right words.\n\nSpeaker 2:\n[English, warm and reassuring] Sometimes the right voice is what helps the words arrive.",
+    "audio_prompt_type": "AB",
+    "video_length": 0,
+    "duration_seconds": 15,
+    "num_inference_steps": 20,
+    "guidance_phases": 1,
+    "sample_solver": "euler",
+    "multi_prompts_gen_type": "FG"
+}

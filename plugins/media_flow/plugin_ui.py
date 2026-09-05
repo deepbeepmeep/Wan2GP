@@ -7,6 +7,7 @@ from pathlib import Path
 import gradio as gr
 from PIL import Image
 
+from postprocessing import spatial_upsamplers as spatial_upsampler_api
 from shared.gradio.local_file_picker import IMAGE_FILE_EXTENSIONS, LocalFilePickerTextbox, VIDEO_FILE_EXTENSIONS
 
 from . import common
@@ -28,13 +29,15 @@ def create_config_ui(self, api_session):
     get_lora_dir = self.get_lora_dir
     get_base_model_type = self.get_base_model_type
     library = ProcessLibrary(get_model_def=get_model_def, get_lora_dir=get_lora_dir, get_base_model_type=get_base_model_type)
-    output_resolution_choices = [("1080p", "1080p"), ("900p", "900p"), ("720p", "720p"), ("540p", "540p"), ("480p", "480p"), ("384p", "384p"), ("320p", "320p"), ("256p", "256p")]
-    output_resolution_values = {value for _, value in output_resolution_choices}
+    high_output_resolution_choices = [("2160p", "2160p"), ("1440p", "1440p")]
+    standard_output_resolution_choices = [("1080p", "1080p"), ("900p", "900p"), ("720p", "720p"), ("540p", "540p"), ("480p", "480p"), ("384p", "384p"), ("320p", "320p"), ("256p", "256p")]
+    output_resolution_choices = high_output_resolution_choices + standard_output_resolution_choices if self.server_config.get("enable_4k_resolutions", 0) == 1 else standard_output_resolution_choices
+    output_resolution_values = {value for _, value in high_output_resolution_choices + standard_output_resolution_choices}
     source_audio_track_choices = [("Auto", "")] + [(f"Audio Track {track_no}", str(track_no)) for track_no in range(1, 10)]
     source_audio_track_values = {value for _, value in source_audio_track_choices}
     ratio_values = {value for _, value in ui_constants.RATIO_CHOICES}
 
-    form_controller = ProcessFormController(library=library, get_model_def=get_model_def, output_resolution_values=output_resolution_values, source_audio_track_values=source_audio_track_values, ratio_values=ratio_values)
+    form_controller = ProcessFormController(library=library, get_model_def=get_model_def, output_resolution_values=output_resolution_values, output_resolution_choices=output_resolution_choices, source_audio_track_values=source_audio_track_values, ratio_values=ratio_values)
     form_event_options = {"queue": True, "concurrency_limit": 1, "concurrency_id": f"media_flow_form_{id(self)}", "trigger_mode": "always_last", "show_progress": "hidden"}
     saved_mediaflow_settings = catalog.ensure_mediaflow_settings_migrated(catalog.load_saved_mediaflow_settings(), library.media_kind_for_user_ref)
     default_media_kind = catalog.current_media_kind(saved_mediaflow_settings)
@@ -57,6 +60,7 @@ def create_config_ui(self, api_session):
     default_batch_source_path = str(saved_ui_settings.get("batch_source_path") or "").strip()
     default_preserve_artifact_count = catalog.normalize_preserve_artifact_count(saved_ui_settings.get(catalog.PRESERVE_ARTIFACTS_STORAGE_KEY))
     default_preview_enabled = catalog.normalize_preview_enabled(saved_ui_settings.get(catalog.PREVIEW_OUTPUT_STORAGE_KEY))
+    initial_spatial_parameter_state = library.spatial_upsampler_parameter_state(default_process_name, self.state.value, initial_user_refs, saved_ui_settings.get("spatial_upsampler_parameters"))
     initial_image_process = default_media_kind == "image"
     active_job = {"job": None, "running": False, "batch_running": False, "cancel_requested": False, "write_state": None, catalog.PRESERVE_ARTIFACTS_STORAGE_KEY: default_preserve_artifact_count, catalog.PREVIEW_OUTPUT_STORAGE_KEY: default_preview_enabled, "generated_artifact_paths": []}
     preview_state = {"image": None}
@@ -504,9 +508,9 @@ def create_config_ui(self, api_session):
         )
         with gr.Column():
             gr.Markdown(
-                """Media Flow processes videos or images one item at a time or as a resumable batch:<BR>
--Video processes can have unlimited duration and their original Audio is preserved without reencoding<BR>
--Image processes can be applied on multiple files at same time"""
+                """Media Flow processes individual videos or images, or entire collections as **resumable batches**. Its **streaming and chunked workflow** keeps RAM usage low while handling **large volumes of media** and **videos of virtually unlimited duration**.
+
+**Stop and resume long-running jobs** whenever needed, even when they take hours. Original video audio is preserved without re-encoding."""
             )
         with gr.Tabs(selected=default_batch_mode, elem_id="mediaflow-process-mode-tabs") as process_mode_tabs:
             with gr.Tab("One item", id="single", elem_classes="compact_tab"):
@@ -521,8 +525,8 @@ def create_config_ui(self, api_session):
             process_model_type = gr.Dropdown(model_type_choices, value=default_model_type, label="Model", scale=1)
             process_name = gr.Dropdown(default_process_choices, value=default_process_name, label="Process", scale=3)
             with gr.Column(scale=0, min_width=34, visible=default_model_type == ui_constants.ADD_USER_SETTINGS_MODEL_TYPE or catalog.is_user_process_value(default_process_name), elem_id="mediaflow-settings-actions") as settings_actions_column:
-                add_user_settings_btn = gr.Button("\u2795", size="sm", min_width=1, visible=default_model_type == ui_constants.ADD_USER_SETTINGS_MODEL_TYPE, elem_classes=["wangp-assistant-chat__template-tool-icon-btn"])
-                delete_user_settings_btn = gr.Button("\U0001F5D1\uFE0F", size="sm", min_width=1, visible=catalog.is_user_process_value(default_process_name), elem_classes=["wangp-assistant-chat__template-tool-icon-btn", "wangp-assistant-chat__template-tool-icon-btn--danger"])
+                add_user_settings_btn = gr.Button("\u2795", size="sm", min_width=1, visible=default_model_type == ui_constants.ADD_USER_SETTINGS_MODEL_TYPE, elem_classes=["chat__template-tool-icon-btn"])
+                delete_user_settings_btn = gr.Button("\U0001F5D1\uFE0F", size="sm", min_width=1, visible=catalog.is_user_process_value(default_process_name), elem_classes=["chat__template-tool-icon-btn", "chat__template-tool-icon-btn--danger"])
                 settings_actions_placeholder = gr.HTML("<div class='mediaflow-settings-action-placeholder'></div>", visible=False)
         with gr.Row(visible=library.process_choices_have_user_settings(default_process_choices), elem_id="mediaflow-user-settings-hint-row") as process_user_settings_hint_row:
             gr.HTML(value=ui_constants.USER_SETTINGS_HINT_HTML)
@@ -539,13 +543,37 @@ def create_config_ui(self, api_session):
             continue_enabled = gr.Checkbox(label="Continue", value=default_state.continue_enabled, elem_classes="cbx_bottom", scale=1, visible=not initial_image_process or default_batch_mode == "batch")
             preview_enabled = gr.Checkbox(label="Preview", value=default_preview_enabled, elem_classes="cbx_bottom", scale=1)
         with gr.Row():
-            output_resolution = gr.Dropdown(output_resolution_choices, value=default_state.output_resolution, label="Output Resolution", visible=initial_form.output_resolution_visible)
+            initial_output_resolution_choices = list(output_resolution_choices)
+            if default_state.output_resolution not in {value for _, value in initial_output_resolution_choices}:
+                initial_output_resolution_choices.insert(0, (default_state.output_resolution, default_state.output_resolution))
+            output_resolution = gr.Dropdown(initial_output_resolution_choices, value=default_state.output_resolution, label="Output Resolution", visible=initial_form.output_resolution_visible)
             default_process_strength = 1.0 if initial_form.target_ratio_visible else default_state.process_strength
             process_strength = gr.Slider(label="Process Strength (LoRA Multiplier)", minimum=min(0.0, default_process_strength), maximum=max(3.0, default_process_strength), step=0.01, value=default_process_strength, visible=initial_form.process_strength_visible)
         with gr.Row():
             chunk_size_seconds = gr.Number(label="Chunk Size (seconds)", value=default_state.chunk_size_seconds, precision=2, visible=initial_form.chunk_size_visible)
             target_ratio = gr.Dropdown(initial_form.target_ratio_choices if initial_form.target_ratio_visible else ui_constants.RATIO_CHOICES_WITH_EMPTY, value=default_state.target_ratio if initial_form.target_ratio_visible else "", label=initial_form.target_ratio_label, visible=initial_form.target_ratio_visible)
             sliding_window_overlap = gr.Slider(label="Sliding Window Overlap", minimum=0 if not initial_form.overlap_visible else 1, maximum=initial_form.overlap_max, step=initial_form.overlap_step, value=default_state.sliding_window_overlap, visible=initial_form.overlap_visible)
+        spatial_parameter_components = {}
+        spatial_parameter_rows = {}
+        for parameter in initial_spatial_parameter_state["definitions"]:
+            name = str(parameter["name"])
+            component_type = spatial_upsampler_api.parameter_component_type(parameter)
+            with gr.Row(visible=name in initial_spatial_parameter_state["active"]) as parameter_row:
+                component_args = {"value": initial_spatial_parameter_state["values"][name], "label": str(parameter.get("label", name)), "info": str(parameter.get("description", "") or "") or None}
+                if component_type == "slider":
+                    component = gr.Slider(minimum=parameter.get("minimum", 0), maximum=parameter.get("maximum", 1), step=parameter.get("step", 1), **component_args)
+                elif component_type == "dropdown":
+                    component = gr.Dropdown(choices=parameter.get("choices", parameter.get("enum", ())), **component_args)
+                elif component_type == "checkbox":
+                    component_args["value"] = bool(component_args["value"])
+                    component = gr.Checkbox(**component_args)
+                elif component_type == "number":
+                    component = gr.Number(**component_args)
+                else:
+                    component = gr.Textbox(lines=int(parameter.get("lines", 1)), **component_args)
+            spatial_parameter_components[name] = component
+            spatial_parameter_rows[name] = parameter_row
+        spatial_upsampler_parameter_state = gr.State(initial_spatial_parameter_state["values"])
         with gr.Row():
             start_seconds = gr.Textbox(label="Start (s/MM:SS(.xx)/HH:MM:SS(.xx))", value=default_state.start_seconds, placeholder="seconds, MM:SS(.xx), or HH:MM:SS(.xx)", visible=not initial_image_process)
             end_seconds = gr.Textbox(label="End (s/MM:SS(.xx)/HH:MM:SS(.xx))", value=default_state.end_seconds, placeholder="seconds, MM:SS(.xx), or HH:MM:SS(.xx)", visible=not initial_image_process)
@@ -599,6 +627,21 @@ def create_config_ui(self, api_session):
         queue=False,
         show_progress="hidden",
     )
+
+    def _refresh_spatial_upsampler_parameters(process_name_value, main_state, refs, current_values):
+        parameter_state = library.spatial_upsampler_parameter_state(process_name_value, main_state, refs, current_values)
+        return (
+            *(gr.update(visible=name in parameter_state["active"]) for name in spatial_parameter_components),
+            *(gr.update(value=parameter_state["values"][name]) for name in spatial_parameter_components),
+            parameter_state["values"],
+        )
+
+    def _collect_spatial_upsampler_parameters(*values):
+        return dict(zip(spatial_parameter_components, values))
+
+    if spatial_parameter_components:
+        gr.on([component.change for component in spatial_parameter_components.values()], fn=_collect_spatial_upsampler_parameters, inputs=list(spatial_parameter_components.values()), outputs=[spatial_upsampler_parameter_state], **form_event_options)
+        process_name.change(fn=_refresh_spatial_upsampler_parameters, inputs=[process_name, self.state, user_process_refs, spatial_upsampler_parameter_state], outputs=[*spatial_parameter_rows.values(), *spatial_parameter_components.values(), spatial_upsampler_parameter_state], **form_event_options)
 
     gr.on(
         [
@@ -683,7 +726,7 @@ def create_config_ui(self, api_session):
     tab_refresh_event.then(fn=_media_visibility_updates, inputs=[active_process_name_state, self.state, user_process_refs, batch_mode], outputs=[source_video_column, source_image_column, batch_video_source_column, batch_image_source_column, continue_enabled, source_audio_track, chunk_size_seconds, start_seconds, end_seconds, status_html], **form_event_options)
     start_btn.click(
         fn=process_runner.start_process,
-        inputs=[self.state, process_name, user_process_refs, source_path, source_image_path, process_strength, output_path, prompt_text, continue_enabled, preview_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds, batch_mode, batch_name, batch_source_path, batch_image_source_path],
+        inputs=[self.state, process_name, user_process_refs, source_path, source_image_path, process_strength, output_path, prompt_text, continue_enabled, preview_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds, batch_mode, batch_name, batch_source_path, batch_image_source_path, spatial_upsampler_parameter_state],
         outputs=[status_html, batch_status_html, output_file, preview_refresh, start_btn, abort_btn, batch_name, self.output_trigger],
         queue=False,
         show_progress="hidden",

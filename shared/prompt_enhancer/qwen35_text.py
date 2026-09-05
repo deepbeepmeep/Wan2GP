@@ -113,6 +113,7 @@ def _resolve_gguf_linear_attention_layout_from_filename(model_path: str) -> tupl
     if filename in {
         "qwen3.5-9b-abliterated-text-q4-k-m-bis.gguf",
         "qwen3.8-27b-uncensored-q4-k-m.gguf",
+        "qwen3.8-27b-uncensored-nomtp-iq3-s.gguf",
         "qwen3.8-27b-uncensored-iq2-m.gguf",
     }:
         return True, True, False
@@ -190,7 +191,7 @@ def _normalize_generated_text(text: str) -> str:
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n")]
-    return "\n".join(line for line in lines if line).strip()
+    return "\n".join(lines).strip()
 
 
 def _clean_answer_text(text: str) -> str:
@@ -207,8 +208,6 @@ def _clean_answer_text(text: str) -> str:
     cleaned_lines = []
     for line in text.split("\n"):
         stripped = line.strip()
-        if len(stripped) == 0:
-            continue
         if stripped.lower() == "code interpreter":
             break
         cleaned_lines.append(line)
@@ -370,6 +369,17 @@ class _ThinkingBudgetState:
             for token_id in {int(token_id) for token_id in tuple(stop_token_ids or ()) if int(token_id) >= 0}
             if token_id != self.close_think_token_id
         )
+        self._stop_index_cache = {}
+        self._close_index_cache = {}
+
+    @staticmethod
+    def _token_index(logits: torch.Tensor, token_ids: tuple[int, ...], cache: dict) -> torch.Tensor:
+        cache_key = (logits.shape[-1], logits.device)
+        index = cache.get(cache_key)
+        if index is None:
+            index = torch.tensor([token_id for token_id in token_ids if token_id < logits.shape[-1]], dtype=torch.long, device=logits.device)
+            cache[cache_key] = index
+        return index
 
     def enabled(self) -> bool:
         return self.in_thinking
@@ -388,12 +398,13 @@ class _ThinkingBudgetState:
             return logits
         if self.generated_thinking_tokens < self.max_thinking_tokens:
             if self.stop_token_ids:
-                blocked_ids = [token_id for token_id in self.stop_token_ids if token_id < logits.shape[-1]]
-                if blocked_ids:
-                    logits[..., blocked_ids] = float("-inf")
+                blocked_ids = self._token_index(logits, self.stop_token_ids, self._stop_index_cache)
+                if blocked_ids.numel():
+                    logits.index_fill_(-1, blocked_ids, float("-inf"))
             return logits
         logits.fill_(float("-inf"))
-        logits[..., self.close_think_token_id] = 0
+        close_id = self._token_index(logits, (self.close_think_token_id,), self._close_index_cache)
+        logits.index_fill_(-1, close_id, 0)
         return logits
 
 
@@ -446,6 +457,8 @@ def _build_presence_penalty_logits_processor(presence_penalty: float | None):
         state.apply_(logits)
         return logits
 
+    logits_processor._requires_input_ids = False
+
     def update_state(token_id: int):
         state.update(token_id)
 
@@ -456,13 +469,20 @@ def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None, 
     processors = []
     processors_without_penalty = []
     update_callbacks = []
+    thinking_state = None
 
     suppressed_ids = tuple(dict.fromkeys(int(token_id) for token_id in suppress_token_ids if int(token_id) >= 0))
     if suppressed_ids:
+        suppressed_index_cache = {}
+
         def suppress_tokens_logits_processor(_input_ids, logits):
-            valid_ids = tuple(token_id for token_id in suppressed_ids if token_id < logits.shape[-1])
-            if valid_ids:
-                logits[..., valid_ids] = float("-inf")
+            cache_key = (logits.shape[-1], logits.device)
+            valid_ids = suppressed_index_cache.get(cache_key)
+            if valid_ids is None:
+                valid_ids = torch.tensor([token_id for token_id in suppressed_ids if token_id < logits.shape[-1]], dtype=torch.long, device=logits.device)
+                suppressed_index_cache[cache_key] = valid_ids
+            if valid_ids.numel():
+                logits.index_fill_(-1, valid_ids, float("-inf"))
             return logits
 
         processors.append(suppress_tokens_logits_processor)
@@ -510,6 +530,11 @@ def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None, 
                 logits = processor(input_ids, logits)
             return logits
     logits_processor._without_penalty = logits_processor_without_penalty
+    logits_processor._requires_input_ids = False
+    logits_processor._supports_partial_vocab = lambda: thinking_state is None or not thinking_state.in_thinking or thinking_state.generated_thinking_tokens < thinking_state.max_thinking_tokens
+    if logits_processor_without_penalty is not None:
+        logits_processor_without_penalty._requires_input_ids = False
+        logits_processor_without_penalty._supports_partial_vocab = logits_processor._supports_partial_vocab
 
     if len(update_callbacks) == 1:
         update_state = update_callbacks[0]
@@ -1076,7 +1101,9 @@ def load_qwen35_text_prompt_enhancer(
     )
     safe_legacy_mode = not allow_vllm_kernels
     enable_mtp = bool(speculative_decoding and spec.get("supports_mtp", False))
-    mtp_filename = spec.get("text_mtp_filename") if enable_mtp else None
+    q3_filename = spec.get("text_gguf_q3_filename")
+    uses_separate_q3_mtp = backend == enhancer_quantization_GGUF and q3_filename and os.path.basename(str(model_path or "")).lower() == q3_filename.lower()
+    mtp_filename = spec.get("text_gguf_q3_mtp_filename" if uses_separate_q3_mtp else "text_mtp_filename") if enable_mtp else None
     mtp_modules = [_resolve_qwen35_checkpoint_file(assets_dir, mtp_filename, variant=variant)] if mtp_filename else None
     postprocess_sd = _add_qwen35_mtp_shared_weights if enable_mtp else None
     if backend == enhancer_quantization_GGUF:

@@ -62,7 +62,8 @@ Example:
 
 Reference plugins:
 *   [Stable Diffusion 1.4 Model Plugin](https://github.com/deepbeepmeep/wan2gp-stable-diffusion-1-4): compact model plugin template that adds Stable Diffusion 1.4 using MMGP-managed UNet, text encoder, and VAE components.
-*   [Pixel Upsampler Template](https://github.com/deepbeepmeep/wan2gp-pixel-upsampler): compact spatial upsampler template that duplicates pixels and documents the upsampler handler contract.
+*   [Spatial Pixel Duplicate](https://github.com/deepbeepmeep/wan2gp-pixel-upsampler): compact reference spatial upsampler that performs exact nearest-neighbor pixel duplication and documents the handler contract.
+*   [Temporal Blend](https://github.com/deepbeepmeep/wan2gp-blender-upsampler): compact reference temporal upsampler that averages neighboring frames for model-free x2 interpolation and documents the handler contract.
 
 Specialized plugin APIs:
 *   Spatial upsamplers are documented in [Spatial Upsampler Plugin API](SPATIAL_UPSAMPLERS.md). Use this guide for post-processing upsamplers, VAE upsampler capability declarations, plugin-discovered `spatial_upsampler_handlers`, and extension offload object registration.

@@ -491,7 +491,7 @@ For Qwen3.5-based enhancers, WanGP can use different backends.
 
 Qwen3.5 can be greatly accelerated if `Config / Performance / Language Models Decoder Engine` option is set to *cg* or *vllm*.
 
-Qwen3.8 uses GGUF weights and offers Q4 (default, higher quality) or Q2 (lower RAM and VRAM use). The quantization selector is shown only when a Qwen3.5 or Qwen3.8 enhancer is selected.
+Qwen3.8 uses GGUF weights and offers Q4 (default and highest quality), IQ3_S (the recommended Q3 middle ground), or Q2 (lowest RAM and VRAM use). The IQ3_S checkpoint uses the Q4_K embedding and the same Q4 MTP weights as the Q4 model so that WanGP can keep using its accelerated kernels. WanGP automatically loads those MTP weights separately when speculative decoding is enabled; the main Q3 checkpoint itself contains no MTP weights. The quantization selector is shown only when a Qwen3.5 or Qwen3.8 enhancer is selected.
 
 ### The Main Prompt Enhancer Choices
 

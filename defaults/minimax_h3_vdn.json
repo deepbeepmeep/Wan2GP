@@ -1,0 +1,22 @@
+{
+    "model": {
+        "name": "MiniMax H3 VDN 33B",
+        "architecture": "minimax_h3_fl2va",
+        "description": "MiniMax H3 FL2VA with trained VDN hybrid window/linear attention for faster long-video generation. Triton is required for optimal performance; use the VDN Turbo 8 Steps profile for faster generation.",
+        "URLs": "minimax_h3_fl2va",
+        "modules": [[
+            "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/modules/minimax_h3_vdn_module_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/modules/minimax_h3_vdn_module_int8_convrot.safetensors"
+        ]],
+        "loras": [
+            "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/loras/minimax_h3_vdn_default_lora_bf16.safetensors"
+        ],
+        "loras_multipliers": ["1"],
+        "vdn": true
+    },
+    "num_inference_steps": 50,
+    "guidance_phases": 1,
+    "sample_solver": "euler",
+    "flow_shift": 12.0,
+    "prompt": "integrated_multimodal_description: [Shot 1] A continuous cinematic tracking shot races alongside a vintage red convertible crossing a vast desert at golden hour. The camera begins close to the spinning front wheel, rises past the driver, then sweeps outward as the car enters a field of towering wind turbines. Dust streams behind the tires, warm sunlight flashes across the chrome, and distant storm clouds gather while the road curves toward the horizon.\noverall_soundscape: The steady growl of the engine, tires humming over asphalt, rushing wind, faint radio music from inside the car, and a distant roll of thunder near the end."
+}

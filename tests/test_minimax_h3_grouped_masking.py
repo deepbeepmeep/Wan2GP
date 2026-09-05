@@ -4,9 +4,9 @@ from unittest.mock import patch
 import torch
 from mmgp import offload
 
-from models.minimax_h3.constants import H3_MASK_MODE_DEFAULT, H3_MASK_MODE_GROUPED_ROWS, H3_MASK_MODE_SETTING, h3_grouped_masking_enabled
+from models.minimax_h3.constants import H3_MASK_MODE_DEFAULT, H3_MASK_MODE_GROUPED_ROWS, H3_MASK_MODE_SETTING, H3_MASK_MODE_SHARED_TIMESTEP, h3_grouped_masking_enabled
 from models.minimax_h3.minimax_h3_handler import FL2VA_ARCHITECTURE, family_handler
-from models.minimax_h3.pipeline import _build_outpainting_mask, _masking_step_mask, _resize_video_mask, _set_grouped_video_rows, _snap_video_mask_to_patch_cells
+from models.minimax_h3.pipeline import _build_outpainting_mask, _encode_video_source, _masking_step_mask, _resize_video_mask, _set_grouped_video_rows, _snap_video_mask_to_patch_cells
 from models.minimax_h3.transformer import MiniMaxH3Model, VISUAL_COND_TIMESTEP, _grouped_video_timestep_rows
 from shared.attention import attention_shared_state
 from shared.gradio.magic_mask import video_mask_area_visible, video_mask_dropdown_visible
@@ -199,25 +199,36 @@ class MiniMaxH3GroupedMaskingTests(unittest.TestCase):
         error = family_handler.validate_generative_settings(FL2VA_ARCHITECTURE, model_def, inputs)
 
         self.assertIn("not compatible with Sol Attention", error)
-        inputs.update(audio_prompt_type="", custom_settings={H3_MASK_MODE_SETTING: H3_MASK_MODE_DEFAULT})
+        inputs.update(audio_prompt_type="", custom_settings={H3_MASK_MODE_SETTING: H3_MASK_MODE_SHARED_TIMESTEP})
         self.assertIsNone(family_handler.validate_generative_settings(FL2VA_ARCHITECTURE, model_def, inputs))
 
-    def test_handler_exposes_g_only_mask_mode_with_legacy_default(self):
+    def test_outpainting_requires_grouped_rows_mask_mode(self):
+        model_def = family_handler.query_model_def(FL2VA_ARCHITECTURE, {})
+        inputs = {"sliding_window_overlap": 18, "override_attention": "sdpa", "video_prompt_type": "GV",
+                  "video_mask": None, "video_guide_outpainting": "0 0 0 0", "video_guide_outpainting_ratio": "16:9",
+                  "custom_settings": {H3_MASK_MODE_SETTING: H3_MASK_MODE_SHARED_TIMESTEP}, "audio_prompt_type": ""}
+
+        error = family_handler.validate_generative_settings(FL2VA_ARCHITECTURE, model_def, inputs)
+
+        self.assertIn("requires Mask Denoising Mode to be set to Grouped Rows", error)
+
+    def test_handler_exposes_g_only_mask_mode_with_grouped_rows_default(self):
         model_def = family_handler.query_model_def(FL2VA_ARCHITECTURE, {})
         setting = model_def["custom_settings"][0]
 
         self.assertEqual(setting["id"], H3_MASK_MODE_SETTING)
         self.assertEqual(setting["default"], H3_MASK_MODE_DEFAULT)
+        self.assertEqual(setting["default"], H3_MASK_MODE_GROUPED_ROWS)
         self.assertEqual(setting["video_prompt_type"], "G")
         self.assertEqual([label for label, _ in setting["choices"]], [
-            "Shared Timestep [same denoising timestep for fixed and editable latent rows]",
             "Grouped Rows [conditioning timestep for fixed rows; denoising timestep for editable rows]",
+            "Shared Timestep [same denoising timestep for fixed and editable latent rows]",
         ])
-        self.assertEqual([value for _, value in setting["choices"]], ["shared_timestep", "grouped_rows"])
+        self.assertEqual([value for _, value in setting["choices"]], ["grouped_rows", "shared_timestep"])
 
-    def test_missing_mask_mode_uses_shared_timestep(self):
-        self.assertFalse(h3_grouped_masking_enabled(None))
-        self.assertFalse(h3_grouped_masking_enabled({}))
+    def test_missing_mask_mode_uses_grouped_rows_default(self):
+        self.assertTrue(h3_grouped_masking_enabled(None))
+        self.assertTrue(h3_grouped_masking_enabled({}))
 
     def test_ref2va_generic_control_exposes_masking_without_enabling_it_for_references(self):
         model_def = family_handler.query_model_def("minimax_h3_ref2va", {})
@@ -266,6 +277,24 @@ class MiniMaxH3GroupedMaskingTests(unittest.TestCase):
         torch.testing.assert_close(mask[..., 32:64], torch.zeros_like(mask[..., 32:64]))
         torch.testing.assert_close(mask[..., :32], torch.ones_like(mask[..., :32]))
         torch.testing.assert_close(mask[..., 64:], torch.ones_like(mask[..., 64:]))
+
+    def test_outpainting_encodes_only_the_fixed_source_and_pastes_its_latents(self):
+        class RecordingVAE:
+            _model_dtype = torch.float32
+            spatial_compression_ratio = 16
+
+            def encode(self, video):
+                self.encoded_shape = tuple(video.shape)
+                return torch.ones((video.shape[0], 24, video.shape[2], video.shape[3] // 16, video.shape[4] // 16))
+
+        vae = RecordingVAE()
+        latents = _encode_video_source(vae, torch.zeros((3, 5, 64, 96)), torch.device("cpu"), [0, 0, 50, 50])
+
+        self.assertEqual(vae.encoded_shape, (1, 3, 5, 64, 32))
+        self.assertEqual(tuple(latents.shape), (1, 24, 5, 4, 6))
+        torch.testing.assert_close(latents[..., :2], torch.zeros_like(latents[..., :2]))
+        torch.testing.assert_close(latents[..., 2:4], torch.ones_like(latents[..., 2:4]))
+        torch.testing.assert_close(latents[..., 4:], torch.zeros_like(latents[..., 4:]))
 
 
 if __name__ == "__main__":

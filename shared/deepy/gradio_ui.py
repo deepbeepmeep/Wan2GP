@@ -570,6 +570,7 @@ def bind_deepy_chat_ui(
     abort_client_id: Any,
     handlers: DeepyChatHandlers,
 ) -> None:
+    cached_gallery = gr.State(None)
     template_modal_outputs = [
         ui.template_modal_state,
         ui.template_modal,
@@ -1306,7 +1307,7 @@ def bind_deepy_chat_ui(
         fn=ask_ai_with_ui_settings,
         inputs=[
             state,
-            output,
+            cached_gallery,
             last_choice,
             audio_files_paths,
             audio_file_selected,
@@ -1336,7 +1337,7 @@ def bind_deepy_chat_ui(
         fn=enqueue_ai_with_ui_settings,
         inputs=[
             state,
-            output,
+            cached_gallery,
             last_choice,
             audio_files_paths,
             audio_file_selected,
@@ -1366,7 +1367,7 @@ def bind_deepy_chat_ui(
         fn=steer_ai_with_ui_settings,
         inputs=[
             state,
-            output,
+            cached_gallery,
             last_choice,
             audio_files_paths,
             audio_file_selected,

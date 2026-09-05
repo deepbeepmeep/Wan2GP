@@ -16,6 +16,14 @@ class DLSSGTemporalUpsampler(api.SimpleScaleSuffixMixin):
     def config(self):
         return DLSS5SpatialUpsampler.normalize_config_section(spatial_api.read_config_section_by_key(self.server_config, "dlss5"))
 
+    @property
+    def status(self):
+        return api.PROCESSOR_STATUS_DISABLED if self.reason_disabled else api.PROCESSOR_STATUS_ENABLED
+
+    @property
+    def reason_disabled(self):
+        return unavailable_reason(temporal=True)
+
     def query_temporal_upsampler_def(self):
         reason = unavailable_reason(temporal=True)
         capabilities = dlssg_capabilities() if not reason else {}

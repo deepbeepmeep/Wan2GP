@@ -340,7 +340,7 @@ class ChunkExecutor:
             settings["video_length"] = model_video_length
             settings["sliding_window_overlap"] = plan_overlap_frames if plan_overlap_frames > 0 else 1
             settings["image_prompt_type"] = "V" if needs_video_source else ""
-            settings["audio_prompt_type"] = "K"
+            settings["audio_prompt_type"] = "K" if context.selected_audio_track is not None else ""
             if context.is_user_process:
                 settings["force_fps"] = "control"
             settings["video_guide"] = build_virtual_media_path(context.source_path, start_frame=actual_control_start_frame, end_frame=actual_control_end_frame, audio_track_no=context.selected_audio_track)

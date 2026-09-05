@@ -61,6 +61,11 @@ additionally implement ``upscale(sample, value, **kwargs)`` and may implement
 existing media. VAE ("vae") handlers are plugged into model pipelines through
 the generic VAE upsampler hooks below; model defs declare support.
 
+Discovery tests the existing optional ``enabled()`` method first. When it is
+absent, handlers may expose a ``status`` property containing ``"enabled"`` or
+``"disabled"``. Discovery reports ``"unknown"`` only when neither contract
+provides a valid status. Disabled handlers may expose ``reason_disabled``.
+
 Handlers may also expose Config-tab controls with ``create_config_ui(...)`` and
 normalize their own nested section under ``wgp_config["spatial_upsamplers"]``.
 Model persistence is shared by all handlers through
@@ -85,6 +90,7 @@ from typing import Any
 from shared.attention import attention_shared_state
 from shared.utils import offload_registry
 from .model_context import compatible_loaded_model
+from .processor_status import PROCESSOR_STATUS_DISABLED, PROCESSOR_STATUS_ENABLED, PROCESSOR_STATUS_UNKNOWN, handler_reason_disabled, handler_status
 
 # Backward compatibility for external plugins written against the old module name.
 sys.modules.setdefault("postprocessing.upsamplers", sys.modules[__name__])

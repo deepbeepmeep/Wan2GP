@@ -41,6 +41,10 @@ class MyTemporalUpsampler:
     def persistent_models(self): ...                          # optional, True keeps model in RAM and unloads VRAM only
     def release_vram(self): ...                               # optional Configuration-tab release hook
     def enabled(self): ...                                    # optional UI gating
+    @property
+    def status(self): ...                                     # optional: "enabled" or "disabled"
+    @property
+    def reason_disabled(self): ...                            # optional user-facing reason
     # optional Configuration tab integration:
     def default_config(self): ...                             # -> dict
     def normalize_config_section(self, section): ...          # -> normalized dict
@@ -48,6 +52,13 @@ class MyTemporalUpsampler:
     def validate_config_section(self, section): ...           # -> "" or message/list
     def config_requires_release(self, old, new, changed_keys): ...
 ```
+
+Discovery evaluates the historical `enabled()` method first: `True` maps to
+`enabled` and `False` to `disabled`. Only handlers without `enabled()` use the
+optional `status` property. `unknown` means neither mechanism supplied a valid
+status. A non-empty `reason_disabled` is exposed only for disabled handlers.
+Deepy lists all registered temporal processors with this metadata and refuses
+dispatch when the status is disabled.
 
 `SimpleScaleSuffixMixin` provides `is_upsampling` / `split_value` / `build_value`
 for the common `<method>*<multiplier>` value encoding, for example `rife*2` or

@@ -68,6 +68,8 @@ def _check_triton():
         import triton.language as tl  # noqa: F401
     except Exception as exc:
         return False, f"Triton import failed: {exc}"
+    from shared.kernels.triton_compilation_log import install_triton_compilation_logger
+    install_triton_compilation_logger()
     if _env_enabled("WGP_VLLM_TRITON_SMOKE", default=True):
         smoke_ok, smoke_msg = _check_triton_runtime_smoke()
         if not smoke_ok:

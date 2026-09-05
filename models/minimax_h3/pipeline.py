@@ -193,7 +193,7 @@ def _set_grouped_video_rows(payload, editable_mask, latent_shape, device):
     return True
 
 
-def _build_outpainting_mask(video, outpainting_dims):
+def _outpainting_frame_location(video, outpainting_dims):
     if outpainting_dims is None:
         return None
     if not isinstance(outpainting_dims, (list, tuple)) or len(outpainting_dims) != 4:
@@ -204,10 +204,32 @@ def _build_outpainting_mask(video, outpainting_dims):
     from shared.utils.utils import get_outpainting_frame_location
 
     height, width = video.shape[-2:]
-    inner_height, inner_width, top, left = get_outpainting_frame_location(height, width, dims, 1, quantize_margins=32)
+    return get_outpainting_frame_location(height, width, dims, 1, quantize_margins=32)
+
+
+def _build_outpainting_mask(video, outpainting_dims):
+    location = _outpainting_frame_location(video, outpainting_dims)
+    if location is None:
+        return None
+    inner_height, inner_width, top, left = location
+    height, width = video.shape[-2:]
     mask = torch.ones((1, video.shape[1], height, width), dtype=torch.float32, device=video.device)
     mask[:, :, top:top + inner_height, left:left + inner_width] = 0.0
     return mask
+
+
+def _encode_video_source(vae, video, device, outpainting_dims=None):
+    location = _outpainting_frame_location(video, outpainting_dims)
+    if location is None:
+        return vae.encode(video.unsqueeze(0).to(device=device, dtype=vae._model_dtype))
+    inner_height, inner_width, top, left = location
+    source = video[..., top:top + inner_height, left:left + inner_width]
+    source_latents = vae.encode(source.unsqueeze(0).to(device=device, dtype=vae._model_dtype))
+    ratio = vae.spatial_compression_ratio
+    latents = source_latents.new_zeros((*source_latents.shape[:-2], math.ceil(video.shape[-2] / ratio), math.ceil(video.shape[-1] / ratio)))
+    latent_top, latent_left = top // ratio, left // ratio
+    latents[..., latent_top:latent_top + source_latents.shape[-2], latent_left:latent_left + source_latents.shape[-1]].copy_(source_latents)
+    return latents
 
 
 def _uniform_latent_frame_sigma_schedule(sigmas, strength, latent_frames):
@@ -834,7 +856,7 @@ class MiniMaxH3Pipeline:
                 set_progress_status("Encoding H3 control video")
             self._check_abort()
             source_video = _resize_video(_as_video(input_frames)[:, history_count:history_count + aligned_target_frames], height, width)
-            source_latents = self.vae.encode(source_video.unsqueeze(0).to(device=self.device, dtype=self.vae._model_dtype)).cpu()
+            source_latents = _encode_video_source(self.vae, source_video, self.device, outpainting_dims).cpu()
             self._check_abort()
             if input_masks is not None:
                 source_mask = input_masks[:, history_count:history_count + source_video.shape[1]]
@@ -1197,7 +1219,7 @@ class MiniMaxH3Pipeline:
                 tile_count = H3_PHASE_2_TILE_COUNT
                 if video_to_video:
                     phase_2_source_video = _resize_video(_as_video(input_frames)[:, history_count:history_count + aligned_target_frames], target_height, target_width)
-                    phase_2_source_latents = self.vae.encode(phase_2_source_video.unsqueeze(0).to(device=self.device, dtype=self.vae._model_dtype))
+                    phase_2_source_latents = _encode_video_source(self.vae, phase_2_source_video, self.device, outpainting_dims)
                     phase_2_source_latents = phase_2_source_latents[:, :, :latent_t].to(device="cpu", dtype=phase_2_latent_canvas.dtype, non_blocking=False)
                     if input_masks is not None:
                         phase_2_source_mask = input_masks[:, history_count:history_count + phase_2_source_video.shape[1]]
@@ -1337,7 +1359,7 @@ class MiniMaxH3Pipeline:
                 if video_to_video:
                     self._use_shared_components()
                     source_video = _resize_video(_as_video(input_frames)[:, history_count:history_count + aligned_target_frames], target_height, target_width)
-                    source_latents = self.vae.encode(source_video.unsqueeze(0).to(device=self.device, dtype=self.vae._model_dtype)).cpu()[:, :, :latent_t].to(video)
+                    source_latents = _encode_video_source(self.vae, source_video, self.device, outpainting_dims).cpu()[:, :, :latent_t].to(video)
                     source_noise = phase_2_noise[:, :, :source_latents.shape[2]]
                     source_buffer = torch.empty_like(source_latents)
                     if input_masks is not None:

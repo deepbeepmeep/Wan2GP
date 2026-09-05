@@ -7,6 +7,10 @@ Handlers expose methods and supported multipliers through
 Definitions may also expose an optional ``description`` plus optional
 ``method_descriptions`` and ``method_parameters`` mappings for reusable
 discovery interfaces. Existing handlers without these fields remain valid.
+Discovery tests the existing optional ``enabled()`` method first. When it is
+absent, handlers may expose a ``status`` property containing ``"enabled"`` or
+``"disabled"``. Discovery reports ``"unknown"`` only when neither contract
+provides a valid status. Disabled handlers may expose ``reason_disabled``.
 
 Plugin authors can register processors from ``plugin_info.json`` with:
 
@@ -26,6 +30,7 @@ from typing import Any
 
 from shared.attention import attention_shared_state
 from shared.utils import offload_registry
+from .processor_status import PROCESSOR_STATUS_DISABLED, PROCESSOR_STATUS_ENABLED, PROCESSOR_STATUS_UNKNOWN, handler_reason_disabled, handler_status
 from .model_context import compatible_loaded_model
 
 

@@ -73,6 +73,10 @@ class MyUpsampler:
     def release_private_runtime(self): ...                    # optional before borrowing core model
     def release_vram(self): ...
     def enabled(self): ...                                 # optional UI gating
+    @property
+    def status(self): ...                                  # optional: "enabled" or "disabled"
+    @property
+    def reason_disabled(self): ...                         # optional user-facing reason
     # VAE type only:
     def supports_model_vae_method(self, method, model_type, model_def, image_mode): ...
     def prepare_vae_upsampler(self, value, *, send_cmd, process_files, init_pipe, profile, attention_mode=None): ...
@@ -88,6 +92,14 @@ class MyUpsampler:
     def validate_config_section(self, section): ...        # -> "" or message/list
     def config_requires_release(self, old, new, changed_keys): ...
 ```
+
+Discovery evaluates the historical `enabled()` method first: `True` maps to
+`enabled` and `False` to `disabled`. Only handlers without `enabled()` use the
+optional `status` property. Discovery always emits `enabled`, `disabled`, or
+`unknown`; `unknown` means neither mechanism supplied a valid status.
+`reason_disabled` is included only when the normalized status is `disabled` and
+the handler provides a non-empty reason. Deepy includes these fields for every
+discovered process and will not dispatch a process reported as disabled.
 
 `SimpleScaleSuffixMixin` provides `is_upsampling`/`split_value`/`build_value` for the
 common `<method>*<multiplier>` value encoding (e.g. `lanczos*2`, `coz*4`). Its

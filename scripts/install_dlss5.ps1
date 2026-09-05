@@ -137,7 +137,7 @@ function New-InstallItem([string]$Source, [string]$RelativeDestination, [string]
 }
 
 $packages = @(
-    [pscustomobject]@{ Id = "workers"; Name = "WanGP DLSS 5 workers v1.1.2"; File = "WanGP-DLSS5-workers-v1.1.2.zip"; Url = "https://github.com/DeepBeepMeep/dlss5-visual-enhancer/releases/download/wangp-v1.1.2/WanGP-DLSS5-workers-v1.1.2.zip"; Sha256 = "89FEEA2C4AF3EE65D7158D8AD478E6F53B71F6E7B0232FA51A405D503A23E7A9" }
+    [pscustomobject]@{ Id = "workers"; Name = "WanGP DLSS 5 workers v1.1.3"; File = "WanGP-DLSS5-workers-v1.1.3.zip"; Url = "https://github.com/DeepBeepMeep/dlss5-visual-enhancer/releases/download/wangp-v1.1.3/WanGP-DLSS5-workers-v1.1.3.zip"; Sha256 = "EC470D8EB990CC04FE142C037B2F9E84C1D59A70B111DF51F110767897F5B0C2" }
     [pscustomobject]@{ Id = "reshade"; Name = "ReShade 6.8.0 full add-on setup"; File = "ReShade_Setup_6.8.0_Addon.exe"; Url = "https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe"; Sha256 = "AFE4C8F13048306307983B8B3D41D5BF00A86820440B0E57DEA10950E1176445" }
     [pscustomobject]@{ Id = "renodx"; Name = "RenoDX DLSS5 4.70"; File = "renodx-dlss5_4.70.zip"; Url = "https://github.com/RankFTW/rhi-repo/releases/download/renodx-dlss5-4.70/renodx-dlss5_4.70.zip"; Sha256 = "D6E356D01B429AF6288F488A4926C44F1D779A7D4586EE8C79D04D3A09A536E6" }
     [pscustomobject]@{ Id = "dlssnr"; Name = "DLSSNR 310.8.SF-v2"; File = "nvngx_dlssnr_310.8.SF-v2.zip"; Url = "https://github.com/RankFTW/rhi-repo/releases/download/dlssnr-310.8.SF-v2/nvngx_dlssnr_310.8.SF-v2.zip"; Sha256 = "1DA35941894994EB087E017577829E492454E9BAE3A6A9397027069CEB74955C" }
@@ -174,7 +174,7 @@ try {
     Extract-ReShade64 $downloads.reshade $reshade64 $temporaryRoot
 
     $installItems = @(
-        New-InstallItem (Join-Path $workers "host\nr-depth-worker.exe") "host\nr-depth-worker.exe" "0D267C770ED74DFAFEA26CB5CB14146EF6320F26B3E0B576CD42CBDC7F2CB1F1"
+        New-InstallItem (Join-Path $workers "host\nr-depth-worker.exe") "host\nr-depth-worker.exe" "F8E2967912E5D596E8E36049370487B83620B0CB5845937B681CF835BAFC6D0B"
         New-InstallItem (Join-Path $workers "host\nvngx.dll") "host\nvngx.dll" "58191F4D38288C6BFBDA47EF56911D32052A9789E65714F4583F426E01464638"
         New-InstallItem (Join-Path $workers "dlssg\dlssg-worker.exe") "dlssg\dlssg-worker.exe" "D93084633E0AAB4A08C43A5EE240176716EF73D87F06F35C2293509FBFC8BD00"
         New-InstallItem $reshade64 "host\dxgi.dll" "0CEE63F9C9F13F3AC909C5B4903F4DBB4B719A7AB3B4F13B0DEAF83C814B94F7"

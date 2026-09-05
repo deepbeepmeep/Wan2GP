@@ -168,7 +168,7 @@ def resolve_window_geometry(output_frames: int, overlap_frames: int, discard_las
         preferred_overlap = _floor_overlap(min(overlap_frames, overlap_limit), step, overlap_offset)
         overlaps = list(range(preferred_overlap, overlap_limit + 1, max(1, int(step)))) if preferred_overlap > 0 else [0]
 
-    output_frame_policy = output_frame_policy or ("exact" if preserve_exact_output_frames else "expand")
+    output_frame_policy = output_frame_policy or "nearest"
     if output_frame_policy not in {"exact", "expand", "nearest"}:
         raise ValueError(f"Unknown frame scheduler output policy {output_frame_policy!r}")
     candidates = []
@@ -216,13 +216,14 @@ def build_extension_window(prompt: str, *, window_size: int, overlap_frames: int
     return _window(prompt, max(1, window_size - overlap_frames - discard_last_frames), overlap_frames, discard_last_frames, {}, minimum, step, frame_offset=frame_offset, overlap_offset=overlap_offset, preserve_exact_output_frames=preserve_exact_output_frames, output_frame_policy=output_frame_policy)
 
 
-def build_default_window_plan(*, total_frames: int, window_size: int, default_overlap: int, discard_last_frames: int, minimum: int, step: int, frame_offset: int = 1, overlap_offset: int = 1, max_overlap: int | None = None, first_window_overlap: int = 0, first_window_available_overlap: int | None = None, preserve_exact_output_frames: bool = False, output_frame_policy: str | None = None) -> list[dict]:
+def build_default_window_plan(*, total_frames: int, window_size: int, default_overlap: int, discard_last_frames: int, minimum: int, step: int, frame_offset: int = 1, overlap_offset: int = 1, max_overlap: int | None = None, first_window_overlap: int = 0, first_window_available_overlap: int | None = None, initial_shared_frames: int = 0, preserve_exact_output_frames: bool = False, output_frame_policy: str | None = None) -> list[dict]:
     total_frames = max(1, int(total_frames))
     window_size = normalize_frame_count(window_size, minimum, step, frame_offset)
     first_window_overlap = max(0, int(first_window_overlap))
     if first_window_available_overlap is not None:
         first_window_overlap = min(first_window_overlap, max(0, int(first_window_available_overlap)))
     first_window_overlap = _floor_overlap(first_window_overlap, step, overlap_offset)
+    total_frames = max(1, total_frames - min(max(0, int(initial_shared_frames)), first_window_overlap))
     first_window_capacity = max(1, window_size - first_window_overlap)
     sliding = total_frames > first_window_capacity
     first_discard = max(0, int(discard_last_frames)) if sliding else 0
@@ -285,6 +286,7 @@ def build_frame_scheduler(
     supported_model_commands=(),
     allow_new_shot: bool = False,
     first_window_overlap_frames: int = 0,
+    initial_shared_frames: int = 0,
     discard_last_frames: int = 0,
     preserve_exact_output_frames: bool = False,
     output_frame_policy: str | None = None,
@@ -310,16 +312,21 @@ def build_frame_scheduler(
     if not any_options:
         return {"active": False, "prompts": parsed_prompts, "model_commands": sorted(supported_model_commands)}, None
 
+    initial_shared_frames = min(max(0, int(initial_shared_frames)), first_window_overlap_frames)
+    if parsed and parsed[0][1].get("new_shot", False):
+        initial_shared_frames = 0
+    target_output_frames = max(1, total_frames - initial_shared_frames)
     windows = []
     requested_consumed = 0
     actual_consumed = 0
     for idx, (prompt, wgp_options, model_options) in enumerate(parsed, start=1):
         overlap = wgp_options.get("overlap_frames", default_overlap)
         if idx == 1:
+            overlap = max(overlap, initial_shared_frames)
             overlap = min(overlap, first_window_overlap_frames)
         duration = wgp_options.get("duration_frames")
         if duration is None:
-            remaining = total_frames - requested_consumed
+            remaining = target_output_frames - requested_consumed
             if remaining <= 0:
                 return {}, f"Sliding window {idx} would generate no frame because previous windows already consume the requested frame count. Unable to start generation: please specify shorter /duration values for the previous sliding windows or increase the total number of frames."
             duration = min(remaining, max(1, window_size - overlap - discard_last_frames))
@@ -330,8 +337,8 @@ def build_frame_scheduler(
         requested_consumed += duration
         actual_consumed += window["output_frames"]
 
-    while not any_duration and requested_consumed < total_frames and windows:
-        duration = min(total_frames - requested_consumed, max(1, window_size - default_overlap - discard_last_frames))
+    while not any_duration and requested_consumed < target_output_frames and windows:
+        duration = min(target_output_frames - requested_consumed, max(1, window_size - default_overlap - discard_last_frames))
         windows.append(_window(windows[-1]["prompt"], duration, default_overlap, discard_last_frames, {}, minimum, step, frame_offset=frame_offset, overlap_offset=overlap_offset, max_overlap=max_overlap, available_overlap=actual_consumed, preserve_exact_output_frames=preserve_exact_output_frames, output_frame_policy=output_frame_policy))
         requested_consumed += duration
         actual_consumed += windows[-1]["output_frames"]

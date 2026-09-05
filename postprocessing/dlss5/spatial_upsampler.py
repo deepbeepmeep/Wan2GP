@@ -32,6 +32,14 @@ class DLSS5SpatialUpsampler(api.SimpleScaleSuffixMixin):
     def config(self):
         return api.read_config_section(self.server_config, self)
 
+    @property
+    def status(self):
+        return api.PROCESSOR_STATUS_DISABLED if self.reason_disabled else api.PROCESSOR_STATUS_ENABLED
+
+    @property
+    def reason_disabled(self):
+        return unavailable_reason(temporal=False)
+
     def create_config_ui(self, gr, config, *, lock_config=False):
         with gr.Group():
             with gr.Row():

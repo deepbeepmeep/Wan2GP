@@ -948,6 +948,7 @@ class ProcessRunner:
                             frame_step=frame_plan_rules.frame_step,
                             minimum_requested_frames=frame_plan_rules.minimum_requested_frames,
                             initial_overlap_frames=resume_overlap_frames,
+                            frame_offset=frame_plan_rules.frame_offset,
                         )
                         if remaining_resume_unique_frames <= 0:
                             trailing_frames = requested_unique_frames - resumed_unique_frames
@@ -966,6 +967,7 @@ class ProcessRunner:
                                     chunk_frames,
                                     frame_step=frame_plan_rules.frame_step,
                                     minimum_requested_frames=frame_plan_rules.minimum_requested_frames,
+                                    frame_offset=frame_plan_rules.frame_offset,
                                     overlap_frames=overlap_frames,
                                     initial_overlap_frames=resume_overlap_frames,
                                 )

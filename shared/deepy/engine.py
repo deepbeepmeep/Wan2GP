@@ -2986,7 +2986,7 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Postprocessing",
-        description="Discover compatible post-processing operations for a gallery media id, or run one discovered operation and wait for its new gallery output.",
+        description="Discover compatible post-processing operations and their enabled, disabled, or unknown availability for a gallery media id, or run one enabled/unknown operation and wait for its new gallery output.",
         parameters={
             "media_id": {
                 "type": "string",
@@ -3015,7 +3015,7 @@ class DeepyZeroTools:
         media_type = media_registry.detect_media_type(str(source_media.get("path", "") or ""))
         if media_type not in {"image", "video", "audio"}:
             return {"status": "error", "media_id": str(source_media["media_id"]), "media_type": media_type, "error": "The gallery media file extension is not supported for post-processing."}
-        available_processes = postprocessing_catalog.query_processes(media_type)
+        available_processes = postprocessing_catalog.query_processes(media_type, enabled_only=False)
         discovered_processes = postprocessing_catalog.call_processes(available_processes)
         process_id = str(process or "").strip()
         if not process_id:
@@ -3033,6 +3033,12 @@ class DeepyZeroTools:
         if len(matches) > 1:
             return {"status": "error", "media_id": str(source_media["media_id"]), "media_type": media_type, "process": process_id, "error": "The requested process id is ambiguous for this media."}
         process_def = matches[0]
+        if process_def["status"] == postprocessing_catalog.PROCESSOR_STATUS_DISABLED:
+            reason = str(process_def.get("reason_disabled", "") or "").strip()
+            result = {"status": "error", "media_id": str(source_media["media_id"]), "media_type": media_type, "process": process_id, "process_status": process_def["status"], "error": f"{process_def['label']} is disabled" + (f": {reason}" if reason else "")}
+            if reason:
+                result["reason_disabled"] = reason
+            return result
         normalized_parameters, error = postprocessing_catalog.normalize_parameters(process_def, parameters)
         if error:
             return {"status": "error", "media_id": str(source_media["media_id"]), "media_type": media_type, "process": process_id, "expected_parameters": postprocessing_catalog.call_parameters(process_def["parameters"]), "error": error}

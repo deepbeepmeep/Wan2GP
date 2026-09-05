@@ -439,7 +439,6 @@ class family_handler:
             "returns_audio": True,
             "multimedia_generation": True,
             "image_end_frame_position": True,
-            "frame_scheduler_output_policy": "nearest",
             "control_video_trim_disabled": True,
             "infos": (REF2VA_INFOS if reference_mode else FL2VA_INFOS) + (H3_PDD_RUNTIME_INFOS if pdd else H3_RUNTIME_INFOS) + (PRUNED_INFOS if pruned else ""),
             "prompt_infos": REF2VA_PROMPT_INFOS if reference_mode else FL2VA_PROMPT_INFOS,
@@ -567,8 +566,8 @@ class family_handler:
                 },
                 "video_guide_label": "Control Video",
                 "mask_preprocessing": {"selection": ["", "A", "NA"]},
-                # "video_guide_outpainting": [0],
-                # "video_guide_outpainting_label": "Enable Spatial Outpainting on the H3 Control Video",
+                "video_guide_outpainting": [0],
+                "video_guide_outpainting_label": "Enable Spatial Outpainting on the H3 Control Video",
                 "outpainting_quantize_margins": 32,
                 "custom_frames_injection": True,
                 "one_image_ref_only": True,
@@ -630,10 +629,13 @@ class family_handler:
         if error:
             return error
         inputs["sliding_window_overlap"] = overlap
-        if h3_grouped_masking_enabled(inputs.get("custom_settings")) and inputs.get("override_attention") == "sol":
-            from shared.utils.utils import get_outpainting_dims
+        from shared.utils.utils import get_outpainting_dims
 
-            outpainting = get_outpainting_dims(inputs.get("video_guide_outpainting"), inputs.get("video_guide_outpainting_ratio", "")) is not None
+        grouped_masking = h3_grouped_masking_enabled(inputs.get("custom_settings"))
+        outpainting = get_outpainting_dims(inputs.get("video_guide_outpainting"), inputs.get("video_guide_outpainting_ratio", "")) is not None
+        if outpainting and not grouped_masking:
+            return "MiniMax H3 outpainting requires Mask Denoising Mode to be set to Grouped Rows"
+        if grouped_masking and inputs.get("override_attention") == "sol":
             masked_control = inputs.get("video_mask") is not None or outpainting or "A" in (inputs.get("video_prompt_type") or "")
             if masked_control:
                 return "MiniMax H3 Grouped Rows mask denoising is not compatible with Sol Attention; select Shared Timestep or another attention mode"

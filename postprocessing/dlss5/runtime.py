@@ -110,7 +110,7 @@ def dlssg_capabilities() -> dict:
     try:
         result = subprocess.run([str(DLSSG_WORKER), "--probe"], cwd=str(DLSSG_DIR), capture_output=True, text=True, timeout=15, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         capabilities = json.loads(result.stdout.strip())
-        return capabilities if result.returncode == 0 and capabilities.get("available") else {}
+        return capabilities if isinstance(capabilities, dict) and "available" in capabilities else {}
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
         return {}
 
@@ -132,17 +132,17 @@ def is_rtx_50_series() -> bool:
 
 
 @lru_cache(maxsize=1)
-def _hags_enabled() -> bool:
+def _hags_enabled() -> bool | None:
     if os.name != "nt":
-        return False
+        return None
     try:
         import winreg
 
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers") as key:
             value, _kind = winreg.QueryValueEx(key, "HwSchMode")
-        return int(value) == 2
+        return {1: False, 2: True}.get(int(value))
     except (OSError, ValueError):
-        return False
+        return None
 
 
 def unavailable_reason(*, temporal: bool) -> str:
@@ -155,8 +155,13 @@ def unavailable_reason(*, temporal: bool) -> str:
     minimum = 40 if temporal else 30
     if series < minimum:
         return f"RTX {minimum}+ required"
-    if temporal and not _hags_enabled():
-        return "HAGS disabled"
+    if temporal:
+        hags_enabled = _hags_enabled()
+        if hags_enabled is False:
+            return "HAGS disabled"
+        capabilities = dlssg_capabilities()
+        if capabilities and not capabilities["available"]:
+            return "DLSS Frame Generation unavailable (check HAGS and NVIDIA driver)"
     return ""
 
 
@@ -202,6 +207,21 @@ class Worker:
 
     def error(self) -> str:
         return "\n".join(self.logs)
+
+    def read_exact(self, size: int, operation: str) -> bytes:
+        assert self.process.stdout is not None
+        try:
+            return _read_exact(self.process.stdout, size)
+        except (OSError, RuntimeError) as error:
+            self.close(abort=True)
+            code = self.process.returncode
+            code_text = "unknown" if code is None else f"{code} (0x{code & 0xFFFFFFFF:08X})"
+            details = self.error()
+            if code is not None and (code & 0xFFFFFFFF) == 0xC0000135:
+                details = f"Windows could not load a DLL dependency. Install the current DLSS 5 worker bundle.\n{details}".rstrip()
+            elif not details:
+                details = "The worker produced no diagnostic output. Reinstall the current DLSS 5 worker bundle and verify dlss5/host/ReShade.log."
+            raise RuntimeError(f"{operation}: {Path(self.process.args[0]).name} exited before replying (exit code {code_text}).\n{details}") from error
 
     def close(self, *, abort: bool = False):
         process = self.process
@@ -372,14 +392,14 @@ class NeuralRenderingSession(Worker):
             self.process.stdin.write(struct.pack("<14I4f", self.VIDEO_MAGIC, width, height, output_width, output_height, 0, frames, perf_quality, 0, 0, 0, 0, 0, 0, intensity, 1.0, 1.0, -1.0))
         self.process.stdin.flush()
         if USE_DEPTH_GUIDE:
-            response = struct.unpack("<6I", _read_exact(self.process.stdout, struct.calcsize("<6I")))
+            response = struct.unpack("<6I", self.read_exact(struct.calcsize("<6I"), "DLSS Neural Rendering setup"))
             if response[0] != self.DEPTH_SETUP_MAGIC or response[1]:
                 self.close(abort=True)
                 raise RuntimeError(f"DLSS Neural Rendering depth setup failed (NGX 0x{response[1]:08X}).\n{self.error()}")
             self.render_width, self.render_height = response[2], response[3]
             negotiated_output = response[4], response[5]
         else:
-            response = struct.unpack("<12I", _read_exact(self.process.stdout, struct.calcsize("<12I")))
+            response = struct.unpack("<12I", self.read_exact(struct.calcsize("<12I"), "DLSS Neural Rendering setup"))
             if response[0] != self.SETUP_MAGIC or not response[1]:
                 self.close(abort=True)
                 raise RuntimeError(f"DLSS Neural Rendering setup failed (NGX 0x{response[2]:08X}).\n{self.error()}")
@@ -399,7 +419,7 @@ class NeuralRenderingSession(Worker):
                 raise ValueError("DLSS Neural Rendering depth mode requires a depth guide")
             self.process.stdin.write(memoryview(np.ascontiguousarray(depth, dtype=np.float32)).cast("B"))
         self.process.stdin.flush()
-        magic, out_index, ok, byte_count, ngx_result, _pts = struct.unpack("<5Iq", _read_exact(self.process.stdout, struct.calcsize("<5Iq")))
+        magic, out_index, ok, byte_count, ngx_result, _pts = struct.unpack("<5Iq", self.read_exact(struct.calcsize("<5Iq"), f"DLSS Neural Rendering frame {index}"))
         expected = self.output_width * self.output_height * 4
         if magic != self.OUT_MAGIC or out_index != index or not ok or byte_count != expected or ngx_result != 1:
             raise RuntimeError(f"DLSS Neural Rendering failed on frame {index} (NGX 0x{ngx_result:08X}).\n{self.error()}")
@@ -449,7 +469,7 @@ class FrameGenerationSession(Worker):
         assert self.process.stdin is not None and self.process.stdout is not None
         self.process.stdin.write(struct.pack("<5I", self.SETUP_MAGIC, width, height, max(1, frames), generated_count))
         self.process.stdin.flush()
-        magic, status, maximum, _reserved = struct.unpack("<4I", _read_exact(self.process.stdout, struct.calcsize("<4I")))
+        magic, status, maximum, _reserved = struct.unpack("<4I", self.read_exact(struct.calcsize("<4I"), "DLSS Frame Generation setup"))
         if magic != self.SETUP_OUT_MAGIC or status or maximum < generated_count:
             self.close(abort=True)
             raise RuntimeError(f"DLSS Frame Generation {generated_count + 1}x setup failed (status {status}, runtime maximum {maximum + 1}x).\n{self.error()}")
@@ -460,7 +480,7 @@ class FrameGenerationSession(Worker):
         self.process.stdin.write(memoryview(np.ascontiguousarray(rgba, dtype=np.uint8)).cast("B"))
         self.process.stdin.write(memoryview(np.ascontiguousarray(motion, dtype=np.float16)).cast("B"))
         self.process.stdin.flush()
-        magic, status, generated, disabled = struct.unpack("<4I", _read_exact(self.process.stdout, struct.calcsize("<4I")))
+        magic, status, generated, disabled = struct.unpack("<4I", self.read_exact(struct.calcsize("<4I"), f"DLSS Frame Generation frame {index}"))
         if magic != self.FRAME_OUT_MAGIC or status:
             raise RuntimeError(f"DLSS Frame Generation failed on frame {index} (status {status}).\n{self.error()}")
         if disabled or generated == 0:

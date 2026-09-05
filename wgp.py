@@ -156,7 +156,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.14"
-WanGP_version = "12.70"
+WanGP_version = "12.71"
 settings_version = 2.78
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -1073,6 +1073,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
             supported_model_commands=model_def.get("prompt_slash_commands", []),
             allow_new_shot=image_prompt_types_allow_t2v(model_def, inputs.get("image_mode", 0)),
             first_window_overlap_frames=estimate_first_window_overlap_frames(inputs.get("image_start"), inputs.get("video_source"), inputs.get("keep_frames_video_source", ""), schedule_fps),
+            initial_shared_frames=1 if inputs.get("image_start") is not None or inputs.get("video_source") is not None else 0,
             discard_last_frames=int(inputs.get("sliding_window_discard_last_frames", 0) or 0) // latent_size * latent_size,
         )
         if frame_scheduler_error is not None:
@@ -7149,6 +7150,7 @@ def generate_media(
             supported_model_commands=model_def.get("prompt_slash_commands", []),
             allow_new_shot=image_prompt_types_allow_t2v(model_def, image_mode),
             first_window_overlap_frames=first_window_available_overlap,
+            initial_shared_frames=1 if (not fake_start_image and image_start is not None) or video_source is not None else 0,
             discard_last_frames=sliding_window_discard_last_frames,
         )
         if frame_scheduler_error is not None:
@@ -7331,7 +7333,8 @@ def generate_media(
     if scheduler_active:
         default_windows_template = []
     elif any_sliding_window:
-        default_windows_template = build_default_window_plan(total_frames=current_video_length, window_size=sliding_window_size, default_overlap=default_reuse_frames, discard_last_frames=sliding_window_discard_last_frames, minimum=frames_minimum, step=frames_steps, frame_offset=frames_offset, overlap_offset=sliding_window_defaults.get("overlap_offset", 1), max_overlap=sliding_window_defaults.get("overlap_max"), first_window_overlap=default_reuse_frames if video_source is not None else 0, first_window_available_overlap=first_window_available_overlap if video_source is not None else None, preserve_exact_output_frames=model_def.get("image_end_frame_position", False), output_frame_policy=model_def.get("frame_scheduler_output_policy"))
+        first_window_overlap = min(max(1, default_reuse_frames), first_window_available_overlap) if video_source is not None else min(1, first_window_available_overlap)
+        default_windows_template = build_default_window_plan(total_frames=current_video_length, window_size=sliding_window_size, default_overlap=default_reuse_frames, discard_last_frames=sliding_window_discard_last_frames, minimum=frames_minimum, step=frames_steps, frame_offset=frames_offset, overlap_offset=sliding_window_defaults.get("overlap_offset", 1), max_overlap=sliding_window_defaults.get("overlap_max"), first_window_overlap=first_window_overlap, first_window_available_overlap=first_window_available_overlap, initial_shared_frames=1 if first_window_overlap > 0 else 0, preserve_exact_output_frames=model_def.get("image_end_frame_position", False), output_frame_policy=model_def.get("frame_scheduler_output_policy"))
     else:
         default_windows_template = [{"output_frames": current_video_length, "overlap_frames": 0, "discard_last_frames": 0, "trim_last_frames": 0, "frame_num": current_video_length}]
     default_windows = [dict(window) for window in default_windows_template]
@@ -7475,8 +7478,8 @@ def generate_media(
                 frame_window_options = scheduled_windows[window_no]
                 prompt, reuse_frames, current_video_length, new_shot, discard_last_frames = frame_window_options["prompt"], frame_window_options["overlap_frames"], frame_window_options["frame_num"], frame_window_options["new_shot"], frame_window_options["discard_last_frames"]
                 automatic_trim_last_frames = frame_window_options["trim_last_frames"]
-                if "requested_output_frames" in frame_window_options:
-                    print(f"Requested duration adjusted from {frame_window_options['requested_output_frames']} to {frame_window_options['output_frames']} frames for model-compatible scheduling (Sliding Window {window_no + 1}).")
+                if "requested_output_frames" in frame_window_options and abs(frame_window_options["requested_output_frames"] - frame_window_options["output_frames"]) > 1:
+                    print(f"Requested frame contribution adjusted from {frame_window_options['requested_output_frames']} to {frame_window_options['output_frames']} for model-compatible scheduling (Sliding Window {window_no + 1}).")
                 current_loras_slists = frame_window_options.get("loras_slists", loras_slists)
                 sliding_window = True
             else:
@@ -7489,8 +7492,8 @@ def generate_media(
                 default_window = default_windows[window_no]
                 reuse_frames, current_video_length, discard_last_frames = default_window["overlap_frames"], default_window["frame_num"], default_window["discard_last_frames"]
                 automatic_trim_last_frames = default_window["trim_last_frames"]
-                if "requested_output_frames" in default_window:
-                    print(f"Requested duration adjusted from {default_window['requested_output_frames']} to {default_window['output_frames']} frames for model-compatible scheduling (Sliding Window {window_no + 1}).")
+                if "requested_output_frames" in default_window and abs(default_window["requested_output_frames"] - default_window["output_frames"]) > 1:
+                    print(f"Requested frame contribution adjusted from {default_window['requested_output_frames']} to {default_window['output_frames']} for model-compatible scheduling (Sliding Window {window_no + 1}).")
                 prompt =  prompts[window_no] if window_no < len(prompts) else prompts[-1]
                 sliding_window = len(default_windows) > 1 or reuse_frames > 0
             gen["sliding_window"] = sliding_window
@@ -7623,7 +7626,7 @@ def generate_media(
             video_guide_processed = video_mask_processed = video_guide_processed2 = video_mask_processed2 = sparse_video_image = None
             skip_video_guide_preprocess = bool(model_def.get("skip_video_guide_preprocess", False))
             if video_guide is not None and not skip_video_guide_preprocess:
-                guide_frames_limit = round(model_def["reference_video_max_frames"] * fps / model_def["fps"]) if reference_videos else source_video_frames_count - source_video_overlap_frames_count + requested_frames_to_generate
+                guide_frames_limit = round(model_def["reference_video_max_frames"] * fps / model_def["fps"]) if reference_videos else max(aligned_guide_end_frame, source_video_frames_count - source_video_overlap_frames_count + requested_frames_to_generate)
                 keep_frames_parsed_full, error = parse_keep_frames_video_guide(keep_frames_video_guide, guide_frames_limit)
                 if len(error) > 0:
                     raise gr.Error(f"invalid keep frames {keep_frames_video_guide}")

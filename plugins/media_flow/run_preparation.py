@@ -106,18 +106,20 @@ def prepare_run(
         budget_resolution = output_paths.choose_resolution(output_resolution)
         output_resolution_token = output_resolution
     else:
-        frame_plan_rules = frames.FramePlanRules(frame_step=int(getattr(system_handler, "frame_step", 1)), minimum_requested_frames=int(getattr(system_handler, "minimum_requested_frames", 1)))
+        frame_plan_rules = frames.FramePlanRules(frame_step=int(getattr(system_handler, "frame_step", 1)), minimum_requested_frames=int(getattr(system_handler, "minimum_requested_frames", 1)), frame_offset=int(getattr(system_handler, "frame_offset", 1)))
         budget_resolution = ""
         output_resolution_token = system_handler.output_resolution_token(system_target_control) if hasattr(system_handler, "output_resolution_token") else output_resolution
     try:
         chunk_frame_step = int(getattr(system_handler, "chunk_frame_step", frame_plan_rules.frame_step)) if system_handler is not None else frame_plan_rules.frame_step
         get_chunk_frames = getattr(system_handler, "get_chunk_frames", None) if system_handler is not None else None
-        chunk_frames = int(get_chunk_frames(end_frame_exclusive - start_frame)) if callable(get_chunk_frames) else frames.normalize_chunk_frames(chunk_size_seconds, processing_fps, frame_step=chunk_frame_step, minimum_requested_frames=frame_plan_rules.minimum_requested_frames)
+        chunk_frames = int(get_chunk_frames(end_frame_exclusive - start_frame)) if callable(get_chunk_frames) else frames.normalize_chunk_frames(chunk_size_seconds, processing_fps, frame_step=chunk_frame_step, minimum_requested_frames=frame_plan_rules.minimum_requested_frames, frame_offset=frame_plan_rules.frame_offset)
         if system_handler is not None:
             get_overlap_frames = getattr(system_handler, "get_overlap_frames", None)
             overlap_frames = int(get_overlap_frames(chunk_frames)) if callable(get_overlap_frames) else int(getattr(system_handler, "overlap_frames", 0))
         else:
             overlap_frames = frames.normalize_overlap_frames(sliding_window_overlap, frame_step=frame_plan_rules.frame_step)
+    except frames.ChunkSizeBelowMinimumError as exc:
+        raise ProcessInfoExit(str(exc)) from exc
     except frames.FramePlanningError as exc:
         raise gr.Error(str(exc)) from exc
     if overlap_frames >= chunk_frames:
@@ -131,6 +133,7 @@ def prepare_run(
             chunk_frames,
             frame_step=frame_plan_rules.frame_step,
             minimum_requested_frames=frame_plan_rules.minimum_requested_frames,
+            frame_offset=frame_plan_rules.frame_offset,
             overlap_frames=overlap_frames,
         )
     except frames.FramePlanningError as exc:

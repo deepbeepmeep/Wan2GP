@@ -326,7 +326,7 @@ class ProcessLibrary:
         process_definition = self.process_definition_or_default(process_name, main_state, user_refs)
         handler = self.system_handler_for_definition(process_definition)
         if handler is not None:
-            return frames.FramePlanRules(frame_step=int(getattr(handler, "frame_step", 1)), minimum_requested_frames=int(getattr(handler, "minimum_requested_frames", 1)))
+            return frames.FramePlanRules(frame_step=int(getattr(handler, "frame_step", 1)), minimum_requested_frames=int(getattr(handler, "minimum_requested_frames", 1)), frame_offset=int(getattr(handler, "frame_offset", 1)))
         model_type = self.process_definition_model_type(process_definition)
         return frames.get_frame_plan_rules(model_type, self.get_model_def)
 

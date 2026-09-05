@@ -516,7 +516,7 @@ class family_handler:
                                 ("Transfer Depth Map From Control Video", "DV"),
                                 # ("Transfer Edges Map From Control Video", "EV"),
                                 ("Provide Generic Control Video", "GV")],
-                    "letters_filter": "UGPDEV+-",
+                    "letters_filter": "GPDEV+-U",
                     "default": "",
                     "label": "Reference / Control Video",
                 },

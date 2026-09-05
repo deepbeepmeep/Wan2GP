@@ -16,6 +16,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
+from mmgp import offload
+from shared.utils import offload_registry
 
 
 RUNTIME = Path(__file__).resolve().parents[2] / "dlss5"
@@ -51,11 +53,18 @@ MOTION_VECTOR_METHODS = ("original", "raft")
 RAFT_ITERATIONS = 20
 _RAFT_MODELS = {}
 _DEPTH_MODELS = {}
+_GUIDE_OFFLOADS = {}
 
 
 def configure_depth_estimator(server_config):
     global DEPTH_MODEL_VARIANT
     DEPTH_MODEL_VARIANT = server_config.get("depth_anything_v2_variant", "vitl")
+
+
+def _offload_guide_model(name, model):
+    offloadobj = offload.profile({"model": model}, profile_no=3, quantizeTransformer=False, convertWeightsFloatTo=None, pinnedMemory=False, verboseLevel=-1)
+    _GUIDE_OFFLOADS[name] = offloadobj
+    offload_registry.register_offloadobj(name, offloadobj, release_flow_model)
 
 
 def _raft_model(device: torch.device):
@@ -67,11 +76,17 @@ def _raft_model(device: torch.device):
         model = RAFT(argparse.Namespace(small=False, mixed_precision=False, alternate_corr=False))
         weights = torch.load(fl.locate_file("flow/raft-things.pth"), map_location="cpu", weights_only=True)
         model.load_state_dict({name.removeprefix("module."): value for name, value in weights.items()})
-        _RAFT_MODELS[key] = model.to(device).eval()
+        _RAFT_MODELS[key] = model.eval()
+        if device.type == "cuda":
+            _offload_guide_model("DLSS Motion Vectors", model)
     return _RAFT_MODELS[key]
 
 
 def release_flow_model():
+    for name, offloadobj in _GUIDE_OFFLOADS.items():
+        offload_registry.unregister_offloadobj(name, offloadobj)
+        offloadobj.release()
+    _GUIDE_OFFLOADS.clear()
     for annotator in _DEPTH_MODELS.values():
         if hasattr(annotator, "close"):
             annotator.close()
@@ -90,12 +105,14 @@ def _depth_model(device: torch.device):
         if variant == "da3_metric_large":
             from preprocessing.depth_anything_v3.depth import DepthV3VideoAnnotator
 
-            _DEPTH_MODELS[key] = DepthV3VideoAnnotator({"PRETRAINED_MODEL": fl.locate_file("depth/depth_anything_v3_metric_large_bf16.safetensors"), "MODEL_NAME": "da3metric-large", "PROCESS_RES": 0, "CHUNK_SIZE": 1, "CHUNK_OVERLAP": 8}, device=device)
+            _DEPTH_MODELS[key] = DepthV3VideoAnnotator({"PRETRAINED_MODEL": fl.locate_file("depth/depth_anything_v3_metric_large_bf16.safetensors"), "MODEL_NAME": "da3metric-large", "PROCESS_RES": 0, "CHUNK_SIZE": 1, "CHUNK_OVERLAP": 8}, device=torch.device("cpu"))
         else:
             from preprocessing.depth_anything_v2.depth import DepthV2Annotator
 
             filename = f"depth/depth_anything_v2_{variant}.pth"
-            _DEPTH_MODELS[key] = DepthV2Annotator({"PRETRAINED_MODEL": fl.locate_file(filename), "MODEL_VARIANT": variant}, device=device)
+            _DEPTH_MODELS[key] = DepthV2Annotator({"PRETRAINED_MODEL": fl.locate_file(filename), "MODEL_VARIANT": variant}, device=torch.device("cpu"))
+        if device.type == "cuda":
+            _offload_guide_model(f"DLSS Depth ({variant})", _DEPTH_MODELS[key].model)
     return _DEPTH_MODELS[key]
 
 
@@ -430,29 +447,35 @@ def neural_render(sample: torch.Tensor, scale: float, *, still_image: bool, dept
     require_runtime(temporal=False)
     dtype, device, channels, frame_count, height, width = _sample_info(sample)
     session = NeuralRenderingSession(width, height, frame_count, scale, intensity)
-    output = np.empty((frame_count, session.output_height, session.output_width, 4), dtype=np.uint8)
+    completed = False
     try:
+        output = np.empty((frame_count, session.output_height, session.output_width, 4), dtype=np.uint8)
         flow_guides = None if still_image else FlowGuides(session.render_width, session.render_height, motion_vector)
         zero_motion = np.zeros((session.render_height, session.render_width, 2), dtype=np.float16) if still_image else None
         depth_guides = DepthGuides(session.render_width, session.render_height, depth_resolution) if USE_DEPTH_GUIDE else None
         for index in range(frame_count):
             if abort_callback is not None and abort_callback():
-                session.close(abort=True)
                 return None
             frame = _frame_to_rgba(sample, index)
             render_frame = frame if (width, height) == (session.render_width, session.render_height) else cv2.resize(frame, (session.render_width, session.render_height), interpolation=cv2.INTER_LANCZOS4)
             motion, reset = (zero_motion, True) if still_image else flow_guides.process(render_frame)
             depth = depth_guides.process(render_frame, reset) if depth_guides is not None else None
+            if abort_callback is not None and abort_callback():
+                return None
             processed = session.process_frame(index, render_frame, motion, reset, output[index], depth=depth)
             if channels == 4:
                 processed[..., 3] = cv2.resize(frame[..., 3], (session.output_width, session.output_height), interpolation=cv2.INTER_LANCZOS4)
             if progress_callback is not None:
                 progress_callback("DLSS 5 Neural Rendering", index + 1, frame_count)
             del frame, render_frame, motion, depth, processed
-        session.close()
-    except Exception:
-        session.close(abort=True)
-        raise
+        if abort_callback is not None and abort_callback():
+            return None
+        completed = True
+    finally:
+        try:
+            session.close(abort=not completed)
+        finally:
+            offload_registry.unload_vram(list(_GUIDE_OFFLOADS))
     return _from_rgba_frames(output, dtype, device, channels)
 
 
@@ -497,12 +520,12 @@ class FrameGenerationSession(Worker):
 def _interpolate(frame_count: int, width: int, height: int, frame_getter, fps: float, scale: int, motion_vector: str, abort_callback=None, progress_callback=None) -> np.ndarray | None:
     generated_count = scale - 1
     session = FrameGenerationSession(width, height, frame_count, generated_count)
-    guides = FlowGuides(width, height, motion_vector)
-    output = np.empty(((frame_count - 1) * scale + 1, height, width, 4), dtype=np.uint8)
+    completed = False
     try:
+        guides = FlowGuides(width, height, motion_vector)
+        output = np.empty(((frame_count - 1) * scale + 1, height, width, 4), dtype=np.uint8)
         for index in range(frame_count):
             if abort_callback is not None and abort_callback():
-                session.close(abort=True)
                 return None
             frame = frame_getter(index)
             motion, reset = guides.process(frame)
@@ -518,10 +541,14 @@ def _interpolate(frame_count: int, width: int, height: int, frame_getter, fps: f
             if progress_callback is not None:
                 progress_callback("DLSS Frame Generation", index + 1, frame_count)
             del frame, motion
-        session.close()
-    except Exception:
-        session.close(abort=True)
-        raise
+        if abort_callback is not None and abort_callback():
+            return None
+        completed = True
+    finally:
+        try:
+            session.close(abort=not completed)
+        finally:
+            offload_registry.unload_vram(list(_GUIDE_OFFLOADS))
     return output
 
 

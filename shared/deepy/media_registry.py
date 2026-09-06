@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import time
 from typing import Any
 
 from shared.utils.audio_video import read_image_metadata
+from shared.utils.gallery_media import gallery_media_ids
 
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"}
@@ -126,6 +126,10 @@ def register_media(
     else:
         session.media_registry.remove(existing)
         session.media_registry.insert(0, existing)
+    gallery = "audio" if detected_type == "audio" else "visual"
+    ids = gallery_media_ids(path, gallery, existing.get("settings"))
+    if (resolved_settings or {}).get("gallery_media_ids"):
+        ids = list(dict.fromkeys([*gallery_media_ids(path, gallery, resolved_settings), *ids]))
     accesses = {str(value).strip().lower() for value in list(existing.get("access", []) or []) if str(value).strip().lower() in {"read", "write"}}
     if str(access or "").strip().lower() in {"read", "write"}:
         accesses.add(str(access).strip().lower())
@@ -135,7 +139,7 @@ def register_media(
             "path": path,
             "source": str(source or "wangp").strip() or "wangp",
             "client_id": str(client_id or "").strip(),
-            "settings": dict(resolved_settings or {}),
+            "settings": {**(resolved_settings or {}), "gallery_media_ids": ids},
             "label": str(label or prompt_summary or _default_label(path, detected_type)).strip() or _default_label(path, detected_type),
             "prompt_summary": prompt_summary,
             "prompt": prompt,
@@ -187,9 +191,9 @@ def sync_tool_call_gallery_media(session, gen: dict[str, Any]) -> list[dict[str,
             normalized_path = str(path or "").strip()
             if not normalized_path:
                 continue
-            digest = hashlib.sha1(normalized_path.replace("\\", "/").casefold().encode("utf-8")).hexdigest()[:12]
             settings = settings_list[index] if index < len(settings_list) and isinstance(settings_list[index], dict) else None
-            gallery_records[f"{gallery}:{digest}"] = (normalized_path, settings)
+            for media_id in gallery_media_ids(normalized_path, gallery, settings):
+                gallery_records[media_id] = (normalized_path, settings)
 
     referenced_ids = []
 

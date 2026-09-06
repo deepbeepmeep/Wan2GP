@@ -46,19 +46,24 @@ if triton is not None:
         tl.store(logits + offsets, tl.where(scores >= threshold, scores, -float("inf")), mask=mask)
 
 
-def apply_sparse_repetition_penalty_(logits: torch.Tensor, stored_ids: torch.Tensor, stored_count: int, new_token_ids: list[int], virtual_token_ids: list[int], penalty: float, work_values: torch.Tensor | None = None) -> None:
+def apply_sparse_repetition_penalty_(logits: torch.Tensor, stored_ids: torch.Tensor, stored_count: int, new_token_ids: list[int], virtual_token_ids: list[int], penalty: float, work_values: torch.Tensor | None = None, use_triton: bool = True) -> None:
     """Apply one action-local repetition penalty using persistent sparse buffers."""
 
     new_count, virtual_count = len(new_token_ids), len(virtual_token_ids)
-    if new_count > _REPETITION_INCREMENT_LIMIT or virtual_count > _REPETITION_INCREMENT_LIMIT:
-        raise ValueError(f"Sparse repetition updates support at most {_REPETITION_INCREMENT_LIMIT} new and virtual tokens per decode.")
+    if new_count > _REPETITION_INCREMENT_LIMIT:
+        raise ValueError(f"Sparse repetition updates support at most {_REPETITION_INCREMENT_LIMIT} new tokens per decode.")
     total = int(stored_count) + new_count + virtual_count
     if total == 0 or float(penalty) == 1.0:
         return
-    if logits.is_cuda and triton is not None:
+    if use_triton and logits.is_cuda and triton is not None:
         new_values = [*new_token_ids, *([-1] * (_REPETITION_INCREMENT_LIMIT - new_count))]
-        virtual_values = [*virtual_token_ids, *([-1] * (_REPETITION_INCREMENT_LIMIT - virtual_count))]
-        _sparse_repetition_penalty_kernel[(triton.cdiv(total, 256),)](logits, stored_ids, int(stored_count), new_count, virtual_count, float(penalty), *new_values, *virtual_values, BLOCK_SIZE=256)
+        first_virtual_count = min(virtual_count, _REPETITION_INCREMENT_LIMIT)
+        virtual_values = [*virtual_token_ids[:first_virtual_count], *([-1] * (_REPETITION_INCREMENT_LIMIT - first_virtual_count))]
+        _sparse_repetition_penalty_kernel[(triton.cdiv(int(stored_count) + new_count + first_virtual_count, 256),)](logits, stored_ids, int(stored_count), new_count, first_virtual_count, float(penalty), *new_values, *virtual_values, BLOCK_SIZE=256)
+        for start in range(_REPETITION_INCREMENT_LIMIT, virtual_count, _REPETITION_INCREMENT_LIMIT):
+            chunk = virtual_token_ids[start:start + _REPETITION_INCREMENT_LIMIT]
+            virtual_values = [*chunk, *([-1] * (_REPETITION_INCREMENT_LIMIT - len(chunk)))]
+            _sparse_repetition_penalty_kernel[(1,)](logits, stored_ids, 0, 0, len(chunk), float(penalty), *new_values, *virtual_values, BLOCK_SIZE=256)
         return
 
     if work_values is None:
@@ -243,3 +248,9 @@ class Sampler(nn.Module):
         noise = torch.empty_like(probs).exponential_(1, generator=generator).clamp_min_(1e-10)
         sample_tokens = probs.div_(noise).argmax(dim=-1).reshape(-1)
         return sample_tokens
+
+
+# Register after definitions to preserve Triton's line-number-sensitive cache keys.
+if triton is not None:
+    from shared.kernels.triton_compilation_log import install_triton_compilation_logger
+    install_triton_compilation_logger()

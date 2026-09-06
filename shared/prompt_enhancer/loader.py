@@ -199,6 +199,9 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
             speculative_decoding=bool(speculative_decoding),
             kv_cache_int8=deepy_kv_cache_quantization == "int8",
         )
+        if speculative_decoding > 2:
+            runtime.llm_model._prompt_enhancer_speculative_tokens = speculative_decoding
+            runtime.llm_model._prompt_enhancer_speculative_sampling_tokens = speculative_decoding
         runtime.llm_tokenizer = getattr(runtime.llm_model, "_prompt_enhancer_tokenizer", None)
         runtime.llm_model.eval()
         caption_embedding_model = alias_qwen35_text_embedding_for_mmgp(runtime.llm_model)

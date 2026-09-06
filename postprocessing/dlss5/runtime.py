@@ -360,17 +360,43 @@ def _sample_info(sample: torch.Tensor) -> tuple[torch.dtype, torch.device, int, 
     return sample.dtype, sample.device, channels, frames, height, width
 
 
-def _frame_to_rgba(sample: torch.Tensor, index: int) -> np.ndarray:
+def _scaled_dimension(size: int, scale: float) -> int:
+    return max(2, math.floor(size * scale / 2 + 0.5) * 2)
+
+
+def _nr_canvas_size(width: int, height: int, scale: float) -> tuple[int, int, int, int, float]:
+    """Align the RenoDX NR output texture width while preserving the requested crop."""
+    target_width, target_height = _scaled_dimension(width, scale), _scaled_dimension(height, scale)
+    if target_width % 64 == 0:
+        return target_width, target_height, width, height, scale
+    output_width = math.ceil(target_width / 64) * 64
+    render_width = round(output_width * width / target_width)
+    worker_scale = output_width / render_width
+    render_height = height
+    while _scaled_dimension(render_height, worker_scale) < target_height:
+        render_height += 1
+    return target_width, target_height, render_width, render_height, worker_scale
+
+
+def _frame_to_rgba(sample: torch.Tensor, index: int, width: int | None = None, height: int | None = None) -> np.ndarray:
     channels = sample.shape[0]
     frame = sample[:, index].detach()
     if frame.dtype != torch.uint8:
         frame = frame.add(1).mul(127.5).clamp(0, 255).to(torch.uint8)
     data = frame.to(device="cpu").permute(1, 2, 0).contiguous().numpy()
+    source_height, source_width = data.shape[:2]
+    width, height = width or source_width, height or source_height
+    if channels == 4 and (width, height) == (source_width, source_height):
+        return data
+    rgba = np.empty((height, width, 4), dtype=np.uint8)
+    rgba[:source_height, :source_width, :channels] = data
     if channels == 3:
-        rgba = np.empty((*data.shape[:2], 4), dtype=np.uint8)
-        rgba[..., :3], rgba[..., 3] = data, 255
-        return rgba
-    return data
+        rgba[..., 3] = 255
+    if width > source_width:
+        rgba[:source_height, source_width:] = rgba[:source_height, source_width - 1:source_width]
+    if height > source_height:
+        rgba[source_height:] = rgba[source_height - 1:source_height]
+    return rgba
 
 
 def _from_rgba_frames(data: np.ndarray, dtype: torch.dtype, device: torch.device, channels: int) -> torch.Tensor:
@@ -392,9 +418,9 @@ class NeuralRenderingSession(Worker):
     FRAME_MAGIC = 0x314D5246
     OUT_MAGIC = 0x3154554F
 
-    def __init__(self, width: int, height: int, frames: int, scale: float, intensity: float = 1.0):
-        output_width = max(2, math.floor(width * scale / 2 + 0.5) * 2)
-        output_height = max(2, math.floor(height * scale / 2 + 0.5) * 2)
+    def __init__(self, width: int, height: int, frames: int, scale: float, intensity: float = 1.0, quality_scale: float | None = None):
+        output_width = _scaled_dimension(width, scale)
+        output_height = _scaled_dimension(height, scale)
         if max(output_width, output_height) > 7680 or min(output_width, output_height) > 4320:
             raise ValueError(f"DLSS output {output_width}x{output_height} exceeds the 7680x4320 limit")
         intensity = max(0.0, min(2.0, float(intensity)))
@@ -405,7 +431,7 @@ class NeuralRenderingSession(Worker):
         if USE_DEPTH_GUIDE:
             self.process.stdin.write(struct.pack("<10I", self.DEPTH_VIDEO_MAGIC, width, height, output_width, output_height, frames, 0, 60, 0, 0))
         else:
-            _name, perf_quality = NR_MODES[scale]
+            _name, perf_quality = NR_MODES[scale if quality_scale is None else quality_scale]
             self.process.stdin.write(struct.pack("<14I4f", self.VIDEO_MAGIC, width, height, output_width, output_height, 0, frames, perf_quality, 0, 0, 0, 0, 0, 0, intensity, 1.0, 1.0, -1.0))
         self.process.stdin.flush()
         if USE_DEPTH_GUIDE:
@@ -446,28 +472,33 @@ class NeuralRenderingSession(Worker):
 def neural_render(sample: torch.Tensor, scale: float, *, still_image: bool, depth_resolution: str, motion_vector: str, intensity: float = 1.0, abort_callback=None, progress_callback=None) -> torch.Tensor | None:
     require_runtime(temporal=False)
     dtype, device, channels, frame_count, height, width = _sample_info(sample)
-    session = NeuralRenderingSession(width, height, frame_count, scale, intensity)
+    output_width, output_height, render_width, render_height, worker_scale = _nr_canvas_size(width, height, scale)
+    session = NeuralRenderingSession(render_width, render_height, frame_count, worker_scale, intensity, scale)
     completed = False
     try:
-        output = np.empty((frame_count, session.output_height, session.output_width, 4), dtype=np.uint8)
+        output = np.empty((frame_count, output_height, output_width, 4), dtype=np.uint8)
+        work_output = None if (session.output_width, session.output_height) == (output_width, output_height) else np.empty((session.output_height, session.output_width, 4), dtype=np.uint8)
+        if (render_width, render_height) != (width, height):
+            print(f"[DLSS 5] Edge padding render canvas {width}x{height} -> {render_width}x{render_height}; output canvas {session.output_width}x{session.output_height} is cropped to {output_width}x{output_height}")
         flow_guides = None if still_image else FlowGuides(session.render_width, session.render_height, motion_vector)
         zero_motion = np.zeros((session.render_height, session.render_width, 2), dtype=np.float16) if still_image else None
         depth_guides = DepthGuides(session.render_width, session.render_height, depth_resolution) if USE_DEPTH_GUIDE else None
         for index in range(frame_count):
             if abort_callback is not None and abort_callback():
                 return None
-            frame = _frame_to_rgba(sample, index)
-            render_frame = frame if (width, height) == (session.render_width, session.render_height) else cv2.resize(frame, (session.render_width, session.render_height), interpolation=cv2.INTER_LANCZOS4)
+            render_frame = _frame_to_rgba(sample, index, session.render_width, session.render_height)
             motion, reset = (zero_motion, True) if still_image else flow_guides.process(render_frame)
             depth = depth_guides.process(render_frame, reset) if depth_guides is not None else None
             if abort_callback is not None and abort_callback():
                 return None
-            processed = session.process_frame(index, render_frame, motion, reset, output[index], depth=depth)
+            processed = session.process_frame(index, render_frame, motion, reset, output[index] if work_output is None else work_output, depth=depth)
             if channels == 4:
-                processed[..., 3] = cv2.resize(frame[..., 3], (session.output_width, session.output_height), interpolation=cv2.INTER_LANCZOS4)
+                processed[..., 3] = cv2.resize(render_frame[..., 3], (session.output_width, session.output_height), interpolation=cv2.INTER_LANCZOS4)
+            if work_output is not None:
+                output[index] = processed[:output_height, :output_width]
             if progress_callback is not None:
                 progress_callback("DLSS 5 Neural Rendering", index + 1, frame_count)
-            del frame, render_frame, motion, depth, processed
+            del render_frame, motion, depth, processed
         if abort_callback is not None and abort_callback():
             return None
         completed = True

@@ -18,7 +18,7 @@ from shared.prompt_enhancer import qwen35_text
 from shared.prompt_enhancer.streaming import ThrottledStreamEmitter
 
 
-_TRAILING_STOP_RE = re.compile(r"(?:<\|im_end\|>\s*|</s>\s*)+$", flags=re.IGNORECASE)
+_TRAILING_STOP_RE = re.compile(r"(?:<\|im_end\|>\s*|<\|endoftext\|>\s*|</s>\s*)+$", flags=re.IGNORECASE)
 _FUNCTION_TAG_RE = re.compile(r"<function(?:=|\s+name=)([^\s>]+)[^>]*>(.*?)</function>", flags=re.DOTALL | re.IGNORECASE)
 _FUNCTION_START_RE = re.compile(r"<function(?:=|\s+name=)([^\s>]+)[^>]*>", flags=re.IGNORECASE)
 _PARAM_TAG_RE = re.compile(r"<parameter(?:=|\s+name=)([^\s>]+)[^>]*>(.*?)</parameter>", flags=re.DOTALL | re.IGNORECASE)
@@ -58,6 +58,7 @@ def _tool_call_markers(text: str) -> list[tuple[int, int, bool]]:
     source = str(text or "")
     markers = []
     inside_tool = False
+    json_payload = False
     in_string = False
     escaped = False
     index = 0
@@ -72,16 +73,23 @@ def _tool_call_markers(text: str) -> list[tuple[int, int, bool]]:
                 in_string = False
             index += 1
             continue
-        if inside_tool and char == '"':
+        if inside_tool and json_payload and char == '"':
             in_string = True
             index += 1
             continue
         if char == "<":
+            if inside_tool and not json_payload:
+                # Tagged parameter values are plain text, including quotes and literal tool markers.
+                parameter = _PARAM_TAG_RE.match(source, index)
+                if parameter is not None:
+                    index = parameter.end()
+                    continue
             match = re.match(r"<\s*(/?)\s*tool_call\s*>", source[index:], flags=re.IGNORECASE)
             if match is not None:
                 closing = bool(match.group(1))
                 markers.append((index, index + match.end(), closing))
                 inside_tool = not closing
+                json_payload = inside_tool and source[index + match.end():].lstrip().startswith(("{", "["))
                 in_string = False
                 escaped = False
                 index += match.end()

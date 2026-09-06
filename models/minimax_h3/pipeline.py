@@ -40,6 +40,7 @@ H3_PHASE_2_TILING_FLAG = "~"
 H3_TURBO_LORA_KEY = "minimax_h3_lora_turbo"
 H3_REQUIRED_TURBO_TOKENS = ("minimax_h3", "fl2v", "turbo", "4step", "v0.1")
 H3_ALLOW_PHASE_2_TURBO_OVERRIDE = False
+VDN_TURBO_LORA = "minimax_h3_vdn_turbo_8step_lora_bf16.safetensors"
 
 
 def _is_required_h3_turbo(name):
@@ -353,9 +354,10 @@ def _pil_to_video(image):
 class MiniMaxH3Pipeline:
     refinement_api = "masked_video_sigma_v1"
 
-    def __init__(self, transformer, text_encoder, video_vae, audio_vae, latent_upscaler=None, reference_mode=False, audio_only=False, dtype=torch.bfloat16):
+    def __init__(self, transformer, text_encoder, video_vae, audio_vae, latent_upscaler=None, reference_mode=False, audio_only=False, dtype=torch.bfloat16, fixed_prompt=None):
         self.transformer = transformer
         self.text_encoder = text_encoder
+        self.fixed_prompt = fixed_prompt
         self.vae = video_vae
         self.video_encoder = torch.nn.ModuleDict({"encoder": video_vae.encoder, "quant_conv": video_vae.quant_conv})
         self.video_decoder = torch.nn.ModuleDict({"post_quant_conv": video_vae.post_quant_conv, "decoder": video_vae.decoder})
@@ -410,7 +412,15 @@ class MiniMaxH3Pipeline:
     def device(self):
         return torch.device("cuda" if torch.cuda.is_available() else next(self.transformer.parameters()).device)
 
-    def get_loras_transformer(self, _get_model_recursive_prop, model_def, guidance_phases, activated_loras, **_kwargs):
+    def get_loras_transformer(self, _get_model_recursive_prop, model_type, model_def, guidance_phases, activated_loras, **_kwargs):
+        if model_def.get("vdn", False):
+            selected_loras = {os.path.basename(str(lora).split("|", 1)[0]).lower() for lora in activated_loras}
+            if VDN_TURBO_LORA.lower() in selected_loras:
+                print(f"Default system '{VDN_TURBO_LORA}' LoRA and corresponding multiplier will be ignored as the user has provided it")
+                return [], []
+            preload_urls = _get_model_recursive_prop(model_type, "preload_URLs", return_list=True)
+            turbo_lora = next(url.split("|", 1)[0] for url in preload_urls if os.path.basename(url.split("|", 1)[0]).lower() == VDN_TURBO_LORA.lower())
+            return [turbo_lora], [1.0]
         if int(guidance_phases) <= 1 or model_def.get("pdd", False):
             return [], []
         selected_lora = next((lora for lora in activated_loras if _is_required_h3_turbo(os.path.basename(str(lora).split("|", 1)[0]))), None)
@@ -434,7 +444,8 @@ class MiniMaxH3Pipeline:
 
     def _set_interrupt_state(self):
         self.transformer._interrupt = self._interrupt
-        self.text_encoder._interrupt = self._interrupt
+        if self.text_encoder is not None:
+            self.text_encoder._interrupt = self._interrupt
         self.vae._interrupt = self._interrupt
         self.audio_vae._interrupt = self._interrupt
         if self.latent_upscaler is not None:
@@ -463,6 +474,9 @@ class MiniMaxH3Pipeline:
         return "minimax_h3", str(self.dtype), prompt, digest.digest()
 
     def _encode_prompt(self, prompt, presentation):
+        if self.fixed_prompt is not None:
+            return self.fixed_prompt.prompt_embeds.to(device=self.device, dtype=self.dtype), self.fixed_prompt.text_token_tags
+
         def encode_fn(prompts):
             return [self.text_encoder.encode(prompts[0], presentation, self.device, self.dtype)]
 
@@ -571,7 +585,8 @@ class MiniMaxH3Pipeline:
         if video is None:
             return
         latent = self._encode_video(video)
-        presentation.append({"type": "image", "frames": _qwen_frames(video.clone())})
+        if self.fixed_prompt is None:
+            presentation.append({"type": "image", "frames": _qwen_frames(video.clone())})
         visual_latents.append(latent)
         refs.append({"kind": "image", "latent_h": latent.shape[-2], "latent_w": latent.shape[-1]})
 
@@ -600,13 +615,14 @@ class MiniMaxH3Pipeline:
         if audio_latent is not None:
             presentation.append({"type": "audio"})
             audio_latents.append(audio_latent)
-        sample_indices, cursor = [], 0.0
-        while round(cursor) < video.shape[1]:
-            if not sample_indices or round(cursor) > sample_indices[-1]:
-                sample_indices.append(round(cursor))
-            cursor += fps / 2
-        presentation.append({"type": "video", "frames": _qwen_frames(video[:, sample_indices].clone()),
-                             "timestamps": [index / fps for index in sample_indices]})
+        if self.fixed_prompt is None:
+            sample_indices, cursor = [], 0.0
+            while round(cursor) < video.shape[1]:
+                if not sample_indices or round(cursor) > sample_indices[-1]:
+                    sample_indices.append(round(cursor))
+                cursor += fps / 2
+            presentation.append({"type": "video", "frames": _qwen_frames(video[:, sample_indices].clone()),
+                                 "timestamps": [index / fps for index in sample_indices]})
         visual_latents.append(latent)
         refs.append({"kind": "video_audio" if audio_latent is not None else "video", "latent_t": latent.shape[2],
                      "latent_h": latent.shape[-2], "latent_w": latent.shape[-1],
@@ -811,7 +827,7 @@ class MiniMaxH3Pipeline:
                 self._add_audio_condition(continuation_audio[..., history_latents:], "first", audio_latents, audio_keyframes)
         if frozen_target_video is not None:
             target_video_condition = self._encode_video(_resize_video(frozen_target_video, height, width), keep_all_latents=True)
-        if self.reference_mode:
+        if self.reference_mode and self.fixed_prompt is None:
             for image in input_ref_images or []:
                 self._add_image_reference(image, width, height, image_refs_relative_size, presentation, visual_latents, refs)
 
@@ -821,22 +837,26 @@ class MiniMaxH3Pipeline:
             if "+" in (video_prompt_type or ""):
                 video_sources.append(input_frames2)
         video_sources = [_as_video(source) for source in video_sources]
+        if self.fixed_prompt is not None:
+            video_sources = [source[:, history_count:] for source in video_sources]
         total_reference_duration = sum(video.shape[1] for video in video_sources) / fps
         if total_reference_duration > 15:
             raise ValueError(f"MiniMax H3 reference videos must total at most 15 seconds (found {total_reference_duration:.2f}s)")
-        soundtrack_sources = (audio_guide, audio_guide2) if "K" in (audio_prompt_type or "") else (None, None)
+        soundtrack_sources = (audio_guide, audio_guide2) if self.fixed_prompt is None and "K" in (audio_prompt_type or "") else (None, None)
         soundtracks = [self._load_audio_reference(soundtrack_sources[index]) if soundtrack_sources[index] is not None else None for index in range(len(video_sources))]
         soundtracks = self._limit_audio_references(soundtracks)
         for index, source in enumerate(video_sources):
             self._add_video_reference(_resize_video(source, height, width), soundtracks[index], fps, presentation, visual_latents, audio_latents, refs)
+        if self.fixed_prompt is not None:
+            self._add_image_reference(input_ref_images[0], width, height, 100, presentation, visual_latents, refs)
         reference_sources = []
-        if self.reference_mode and not refinement_mode and "A" in (audio_prompt_type or ""):
+        if self.reference_mode and self.fixed_prompt is None and not refinement_mode and "A" in (audio_prompt_type or ""):
             reference_sources.append(audio_guide if audio_guide is not None else waveform)
-        if self.reference_mode and not refinement_mode and "B" in (audio_prompt_type or ""):
+        if self.reference_mode and self.fixed_prompt is None and not refinement_mode and "B" in (audio_prompt_type or ""):
             reference_sources.append(audio_guide2)
         for reference_audio in self._prepare_audio_references(reference_sources):
             self._add_audio_reference(reference_audio, presentation, audio_latents, refs)
-        if (refinement_mode or not self.reference_mode) and any(flag in (audio_prompt_type or "") for flag in "AK") and waveform is not None:
+        if (refinement_mode or not self.reference_mode or self.fixed_prompt is not None) and any(flag in (audio_prompt_type or "") for flag in "AK") and waveform is not None:
             condition_start = round(history_count / fps * AUDIO_SAMPLE_RATE)
             condition_samples = round(target_frames / fps * AUDIO_SAMPLE_RATE)
             condition_waveform = waveform[..., condition_start:condition_start + condition_samples]

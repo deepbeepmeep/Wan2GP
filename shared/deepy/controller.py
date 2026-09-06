@@ -374,6 +374,8 @@ class DeepyController:
                     session.pending_replay_reason = ""
             session.discard_runtime_snapshot_on_release = False
         if clear_session_state:
+            if session.storage_session_id and session.storage_deepy_type != self.get_deepy_type():
+                session_store.start_new_session(session)
             reset_to_base = session.reset_to_base_callback
             preserved_reset_base = bool(reset_to_base()) if preserve_reset_base and callable(reset_to_base) else False
             if not preserved_reset_base:
@@ -714,6 +716,7 @@ class DeepyController:
                 unload_runtime=self._deps.unload_prompt_enhancer_runtime,
                 unload_weights=self._unload_weights,
                 ensure_vision_loaded=lambda: self._ensure_vision_loaded(override_profile=override_profile),
+                get_offload_manager=self._deps.get_enhancer_offloadobj,
             ),
             tools,
             send_cmd,

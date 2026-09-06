@@ -63,4 +63,4 @@ def deepy_prime_upgrade_message(server_config: dict[str, Any], vram_gb: float | 
     if profile is None or deepy_mode_from_config(server_config.get(DEEPY_ENABLED_KEY, 0), server_config.get(DEEPY_TYPE_KEY)) == DEEPY_TYPE_PRIME:
         return ""
     label, _quantization, reported_vram_gb = profile
-    return f"✨ **Switch to Deepy Prime {label}** — your NVIDIA GPU ({reported_vram_gb} GB VRAM) is eligible. Gain multi-step planning, image/video/audio tool chaining, and end-to-end handling of long creations. Open the Prompt Enhancer / Deepy tab below to switch."
+    return f"✨ **Switch to Deepy Prime {label}** — your NVIDIA GPU ({reported_vram_gb} GB VRAM) is eligible. Gain multi-step planning, image/video/audio tool chaining, and end-to-end handling of long creations. Select Deepy Prime below to switch."

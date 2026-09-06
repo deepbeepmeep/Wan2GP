@@ -43,7 +43,7 @@ def find_available_port(start_port: int = 2333, max_attempts: int = 100) -> int:
 
 class ModelRunner:
 
-    _MAX_SPECULATIVE_DRAFT_TOKENS = 2
+    _MAX_SPECULATIVE_DRAFT_TOKENS = 8
 
     def __init__(self, config: Config, rank: int, event: Event | list[Event], model_object=None, graph_pool_handle=None):
         # Enable capturing scalar outputs to avoid graph breaks from Tensor.item() calls
@@ -98,6 +98,7 @@ class ModelRunner:
         self._graph_cache_order = []
         self._logits_bias_cache = {}
         self._repetition_token_cache = {}
+        self._speculative_sampling_graphs = {}
         self._sampling_generator = None
         self._runtime_signature = None
         self._model_storage_signature = None
@@ -115,7 +116,6 @@ class ModelRunner:
         self._mtp_profile_event_sets = None
         self._mtp_profile_pending = []
         self._mtp_profile_samples = []
-        self.speculative_stats = self._new_speculative_stats()
         torch.set_default_dtype(config_dtype)
         if model_object is None:
             raise RuntimeError(
@@ -123,6 +123,8 @@ class ModelRunner:
                 "Pass model_object=... when creating LLM."
             )
         self.model = model_object
+        self._max_speculative_draft_tokens = min(self._MAX_SPECULATIVE_DRAFT_TOKENS, max(1, int(getattr(self.model, "_prompt_enhancer_speculative_tokens", 2))))
+        self.speculative_stats = self._new_speculative_stats()
         self.sampler = Sampler()
         
         # Pre-allocate buffers for sampling (optimization: avoid repeated tensor creation)
@@ -186,15 +188,14 @@ class ModelRunner:
         self.speculative_stats = self._new_speculative_stats()
         reset_context()
 
-    @classmethod
-    def _new_speculative_stats(cls) -> dict:
+    def _new_speculative_stats(self) -> dict:
         return {
             "drafted": 0,
             "accepted": 0,
             "target_passes": 0,
             "emitted_tokens": 0,
-            "drafted_by_position": [0] * cls._MAX_SPECULATIVE_DRAFT_TOKENS,
-            "accepted_by_position": [0] * cls._MAX_SPECULATIVE_DRAFT_TOKENS,
+            "drafted_by_position": [0] * self._max_speculative_draft_tokens,
+            "accepted_by_position": [0] * self._max_speculative_draft_tokens,
         }
 
     def speculative_telemetry(self, seq_id: int, sequence_tokens: int) -> dict:
@@ -294,7 +295,7 @@ class ModelRunner:
         if self.model is None:
             return
         runtime_device = self._get_runtime_device()
-        if self.model.__class__.__name__ == "Qwen3_5ForCausalLM":
+        if self.model.__class__.__name__ == "Qwen3_5ForCausalLM" and self.use_triton_sampling:
             from ..models.qwen3_5 import configure_qwen35_fla_prefill_autotune
             configure_qwen35_fla_prefill_autotune(runtime_device)
         for module in self.model.modules():
@@ -310,12 +311,12 @@ class ModelRunner:
         for module in self.model.blk:
             prepare_speculative_state = getattr(module, "prepare_speculative_state", None)
             if callable(prepare_speculative_state):
-                prepare_speculative_state(self._MAX_SPECULATIVE_DRAFT_TOKENS + 1)
+                prepare_speculative_state(self._max_speculative_draft_tokens + 1)
         stateful_modules = [module for module in self.model.blk if getattr(module, "layer_type", None) == "linear_attention"]
         self._speculative_commit_destinations = [tensor for module in stateful_modules for tensor in (module.conv_state_buffer, module.recurrent_state_buffer)]
         self._speculative_commit_sources = {
-            processed_tokens: [tensor for module in stateful_modules for tensor in (module.speculative_conv_state_buffer[processed_tokens], module.speculative_recurrent_state_buffer[processed_tokens])]
-            for processed_tokens in range(1, self._MAX_SPECULATIVE_DRAFT_TOKENS + 2)
+            processed_tokens: [tensor for module in stateful_modules for tensor in (module.speculative_conv_state_buffer[processed_tokens - 1], module.speculative_recurrent_state_buffer[processed_tokens - 1])]
+            for processed_tokens in range(1, self._max_speculative_draft_tokens + 1)
         }
 
     def _get_tied_embeddings(self):
@@ -398,7 +399,7 @@ class ModelRunner:
         except Exception:
             pass
         try:
-            for attr_name in ("graphs", "graph_vars", "graph_bs", "graph_pool", "speculative_graphs", "speculative_graph_vars", "mtp_graph", "mtp_graph_pool", "mtp_graph_vars"):
+            for attr_name in ("graphs", "graph_vars", "graph_bs", "graph_pool", "speculative_graphs", "speculative_graph_vars", "mtp_graph", "mtp_graph_pool", "mtp_graph_vars", "mtp_refresh_graphs"):
                 if hasattr(self, attr_name):
                     delattr(self, attr_name)
         except Exception:
@@ -464,7 +465,7 @@ class ModelRunner:
                 kv_ptr = int(self.kv_cache.data_ptr())
         except Exception:
             pass
-        return (model_ptr, kv_ptr, int(self.config.max_model_len), int(self.config.max_num_seqs))
+        return (model_ptr, kv_ptr, int(self.config.max_model_len), int(self.config.max_num_seqs), self._max_speculative_draft_tokens)
 
     def _get_model_device(self) -> torch.device:
         try:
@@ -502,10 +503,12 @@ class ModelRunner:
             entry.pop("mtp_graph", None)
             entry.pop("mtp_pool", None)
             entry.pop("mtp_vars", None)
+            entry.pop("mtp_refresh_graphs", None)
         except Exception:
             pass
 
     def clear_graph_cache(self):
+        self._speculative_sampling_graphs.clear()
         if self._graph_cache:
             for key in list(self._graph_cache.keys()):
                 self._drop_graph_cache_entry(key)
@@ -577,7 +580,7 @@ class ModelRunner:
         
         # Pre-allocate decode buffers on CPU with pinned memory
         self._cpu_input_ids = torch.zeros(max_bs, dtype=torch.int64, device="cpu", pin_memory=pin_memory)
-        self._cpu_speculative_input_ids = torch.zeros(self._MAX_SPECULATIVE_DRAFT_TOKENS + 1, dtype=torch.int64, device="cpu", pin_memory=pin_memory)
+        self._cpu_speculative_input_ids = torch.zeros(self._max_speculative_draft_tokens + 1, dtype=torch.int64, device="cpu", pin_memory=pin_memory)
         self._cpu_positions = torch.zeros(max_bs, dtype=torch.int64, device="cpu", pin_memory=pin_memory)
         self._cpu_slot_mapping = torch.zeros(max_bs, dtype=torch.int32, device="cpu", pin_memory=pin_memory)
         self._cpu_context_lens = torch.zeros(max_bs, dtype=torch.int32, device="cpu", pin_memory=pin_memory)
@@ -871,6 +874,22 @@ class ModelRunner:
             seq.clear_prompt_data()
         reset_context()
 
+    def _prefill_prefix_chunks(self, seq: Sequence, chunk_tokens: int) -> None:
+        """Prefill all but the final chunk without sampling or retaining logits."""
+        num_tokens = seq.num_tokens
+        token_ids = seq.token_ids
+        try:
+            for chunk_end in range(seq.num_cached_tokens + chunk_tokens, num_tokens, chunk_tokens):
+                seq.num_tokens = chunk_end
+                seq.token_ids = token_ids[:chunk_end]
+                input_ids, positions, inputs_embeds = self.prepare_prefill([seq])
+                self.model(input_ids=input_ids, positions=positions, inputs_embeds=inputs_embeds)
+                seq.num_cached_tokens = chunk_end
+                reset_context()
+        finally:
+            seq.num_tokens = num_tokens
+            seq.token_ids = token_ids
+
     def prepare_decode(self, seqs: list[Sequence]):
         """Optimized decode preparation using pre-allocated buffers."""
         bs = len(seqs)
@@ -990,7 +1009,7 @@ class ModelRunner:
             state["indices"][:len(valid_ids)].copy_(torch.tensor(valid_ids, dtype=torch.long, device=logits.device))
             state["count"] = len(valid_ids)
             new_ids = []
-        apply_sparse_repetition_penalty_(logits, state["indices"], state["count"], new_ids, virtual_ids, penalty, state["values"])
+        apply_sparse_repetition_penalty_(logits, state["indices"], state["count"], new_ids, virtual_ids, penalty, state["values"], use_triton=self.use_triton_sampling)
         state["count"] += len(new_ids)
 
     @staticmethod
@@ -1051,6 +1070,32 @@ class ModelRunner:
             threshold = torch.topk(logits, top_k).values[-1]
             universe_ids = torch.nonzero(logits >= threshold, as_tuple=False).flatten()
             universe_logits = logits[universe_ids]
+        if self.enforce_eager or not logits.is_cuda or profile is not None:
+            return self._filter_speculative_distribution(logits, universe_logits, universe_ids, top_p, min_p, profile, profile_role, predictive)
+        # Retain compact candidates, including top-k ties. Sorting a padded full
+        # vocabulary changes PyTorch's tie order at the nucleus cutoff.
+        key = (logits.device, logits.numel(), universe_logits.numel(), universe_ids is None, top_p, min_p)
+        state = self._speculative_sampling_graphs.pop(key, None)
+        if state is None:
+            if len(self._speculative_sampling_graphs) >= 8:
+                self._speculative_sampling_graphs.pop(next(iter(self._speculative_sampling_graphs)))
+            values = universe_logits.clone()
+            ids = None if universe_ids is None else universe_ids.clone()
+            self._filter_speculative_distribution(logits, values, ids, top_p, min_p)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                probabilities = self._filter_speculative_distribution(logits, values, ids, top_p, min_p)
+            state = graph, values, ids, probabilities
+        self._speculative_sampling_graphs[key] = state
+        graph, values, ids, probabilities = state
+        values.copy_(universe_logits)
+        if ids is not None:
+            ids.copy_(universe_ids)
+        graph.replay()
+        # Draft distributions remain live while later drafts use the same graph.
+        return probabilities.clone()
+
+    def _filter_speculative_distribution(self, logits: torch.Tensor, universe_logits: torch.Tensor, universe_ids: torch.Tensor | None, top_p: float | None, min_p: float | None, profile: dict | None = None, profile_role: str = "target", predictive: bool = False) -> torch.Tensor:
         log_normalizer = torch.logsumexp(universe_logits, dim=0) if top_p is not None else None
         candidate_logits = apply_min_p_mask_(universe_logits, min_p, use_triton=self.use_triton_sampling) if min_p is not None else universe_logits
         candidate_ids = universe_ids
@@ -1094,7 +1139,9 @@ class ModelRunner:
     def _sample_distribution(self, probabilities: torch.Tensor) -> int:
         return int(self._sample_distribution_tensor(probabilities).item())
 
-    def _commit_speculative_target_state(self, processed_tokens: int) -> None:
+    def _commit_speculative_target_state(self, processed_tokens: int, verified_tokens: int) -> None:
+        if processed_tokens == verified_tokens:
+            return
         torch._foreach_copy_(self._speculative_commit_destinations, self._speculative_commit_sources[int(processed_tokens)])
 
     def _store_speculative_pending(self, seq: Sequence, target_logits: torch.Tensor, hidden_states: torch.Tensor, positions: torch.Tensor) -> None:
@@ -1107,6 +1154,10 @@ class ModelRunner:
         }
 
     def _prime_mtp_context(self, seq: Sequence) -> None:
+        chunk_tokens = int(getattr(self.model, "_prefill_chunk_tokens", 0))
+        if chunk_tokens and seq.prompt_embeds is not None and len(seq) > chunk_tokens:
+            self._prime_embedded_mtp_chunks(seq, chunk_tokens)
+            return
         self.model.mtp.reset_sequence_state()
         input_ids, positions, inputs_embeds = self.prepare_prefill([seq])
         hidden_states = self.model(input_ids=input_ids, positions=positions, inputs_embeds=inputs_embeds)
@@ -1121,6 +1172,46 @@ class ModelRunner:
         seq.clear_prompt_data()
         reset_context()
         self.speculative_stats["target_passes"] += 1
+
+    def _prime_embedded_mtp_chunks(self, seq: Sequence, chunk_tokens: int) -> None:
+        self.model.mtp.reset_sequence_state()
+        self._prepare_target_speculative_state()
+        token_ids = seq.token_ids
+        num_tokens = seq.num_tokens
+        previous_hidden = previous_positions = None
+        try:
+            for start in range(0, num_tokens, chunk_tokens):
+                end = min(start + chunk_tokens, num_tokens)
+                seq.token_ids = token_ids[:end]
+                seq.num_tokens = end
+                seq.num_cached_tokens = start
+                input_ids, positions, inputs_embeds = self.prepare_prefill([seq])
+                hidden_states = self.model(input_ids=input_ids, positions=positions, inputs_embeds=inputs_embeds)
+                if previous_hidden is None:
+                    mtp_hidden = hidden_states[:, :-1]
+                    mtp_positions = positions[..., :-1]
+                    mtp_embeds = inputs_embeds[:, 1:]
+                    shifted_ids = token_ids[start + 1:end]
+                else:
+                    # Carry the preceding target hidden state and its full 3D position.
+                    # Pair each target state with the next token's visual embedding.
+                    mtp_hidden = torch.cat((previous_hidden, hidden_states[:, :-1]), dim=1)
+                    mtp_positions = torch.cat((previous_positions, positions[..., :-1]), dim=-1)
+                    mtp_embeds = inputs_embeds
+                    shifted_ids = token_ids[start:end]
+                if shifted_ids:
+                    shifted_ids = torch.tensor(shifted_ids, dtype=torch.long, device=hidden_states.device).unsqueeze(0)
+                    self.model.mtp(shifted_ids, mtp_positions, mtp_hidden, inputs_embeds=mtp_embeds, compute_logits=False)
+                previous_hidden = hidden_states[:, -1:].clone()
+                previous_positions = positions[..., -1:].clone()
+                reset_context()
+            self._store_speculative_pending(seq, self.model.compute_logits(hidden_states[:, -1:])[0], hidden_states, positions)
+            seq.clear_prompt_data()
+            self.speculative_stats["target_passes"] += 1
+        finally:
+            seq.token_ids = token_ids
+            seq.num_tokens = num_tokens
+            reset_context()
 
     @torch.inference_mode()
     def prefill_mtp_only(self, seqs: list[Sequence]) -> None:
@@ -1219,9 +1310,9 @@ class ModelRunner:
                     cpu_input_ids[index] = token_id
                 input_ids.copy_(cpu_input_ids, non_blocking=cpu_input_ids.is_pinned())
             positions = graph_vars["positions"]
-            torch.arange(start_position, start_position + verify_length, out=positions)
+            torch.arange(start_position, start_position + verify_length, device=positions.device, out=positions)
             slot_mapping = graph_vars["slot_mapping"]
-            torch.arange(current_slot, current_slot + verify_length, out=slot_mapping)
+            torch.arange(current_slot, current_slot + verify_length, device=slot_mapping.device, out=slot_mapping)
             cu_seqlens_q = graph_vars["cu_seqlens_q"]
             cu_seqlens_k = graph_vars["cu_seqlens_k"]
             cu_seqlens_k[1].fill_(len(seq) + len(draft_tokens))
@@ -1237,34 +1328,36 @@ class ModelRunner:
         return input_ids, positions
 
     def _run_mtp_forward(self, input_ids: torch.Tensor, positions: torch.Tensor, hidden_states: torch.Tensor, inputs_embeds: torch.Tensor | None = None, compute_logits: bool = True, last_logits_only: bool = False):
-        if self.enforce_eager or inputs_embeds is not None or input_ids.numel() != 1 or positions.numel() != 1 or getattr(self, "mtp_graph", None) is None:
+        if self.enforce_eager or inputs_embeds is not None or positions.numel() != input_ids.numel() or getattr(self, "mtp_graph", None) is None:
             return self.model.mtp(input_ids, positions, hidden_states, inputs_embeds=inputs_embeds, compute_logits=compute_logits, last_logits_only=last_logits_only)
-        graph_vars = self.mtp_graph_vars
+        count = input_ids.numel()
+        graph_vars = self.mtp_graph_vars if count == 1 else self.mtp_refresh_graphs[count]
         if input_ids is not graph_vars["input_ids"]:
             graph_vars["input_ids"].copy_(input_ids.reshape_as(graph_vars["input_ids"]))
         if positions is not graph_vars["positions"]:
             graph_vars["positions"].copy_(positions.reshape_as(graph_vars["positions"]))
         graph_vars["hidden_states"].copy_(hidden_states.reshape_as(graph_vars["hidden_states"]))
         self.model.mtp._cache.prepare_append()
-        self.mtp_graph.replay()
-        self.model.mtp._cache.advance(1)
+        graph = self.mtp_graph if count == 1 else graph_vars["graph"]
+        graph.replay()
+        self.model.mtp._cache.advance(count)
         return graph_vars["outputs"], graph_vars["logits"]
 
     def _advance_mtp(self, seq: Sequence, token_ids: list[int], positions: torch.Tensor, hidden_states: torch.Tensor) -> None:
-        mtp_hidden = mtp_logits = None
-        graph_vars = self.mtp_graph_vars if getattr(self, "mtp_graph", None) is not None and not self.enforce_eager else None
-        for token_index, token_id in enumerate(token_ids):
-            source_position = positions[..., token_index:token_index + 1] if positions.ndim == 3 else positions[token_index:token_index + 1]
-            if graph_vars is None:
-                mtp_input_ids = torch.tensor([[token_id]], dtype=torch.long, device=hidden_states.device)
-                mtp_positions = source_position
+        count = len(token_ids)
+        graph_vars = None
+        if not self.enforce_eager and positions.numel() == count and getattr(self, "mtp_graph", None) is not None:
+            graph_vars = self.mtp_graph_vars if count == 1 else self.mtp_refresh_graphs[count]
+        if graph_vars is None:
+            mtp_input_ids = torch.tensor([token_ids], dtype=torch.long, device=hidden_states.device)
+        else:
+            mtp_input_ids = graph_vars["input_ids"]
+            if count == 1:
+                mtp_input_ids.fill_(token_ids[0])
             else:
-                mtp_input_ids = graph_vars["input_ids"]
-                mtp_input_ids.fill_(token_id)
-                mtp_positions = graph_vars["positions"]
-                mtp_positions.copy_(source_position.reshape_as(mtp_positions))
-            mtp_hidden, mtp_logits = self._run_mtp_forward(mtp_input_ids, mtp_positions, hidden_states[:, token_index:token_index + 1], last_logits_only=True)
-        next_token = self.mtp_graph_vars["next_token"] if getattr(self, "mtp_graph", None) is not None and not self.enforce_eager else torch.argmax(mtp_logits[0, -1]).reshape(1)
+                mtp_input_ids.copy_(torch.tensor([token_ids], dtype=torch.long, device="cpu"))
+        mtp_hidden, mtp_logits = self._run_mtp_forward(mtp_input_ids, positions, hidden_states, last_logits_only=True)
+        next_token = graph_vars["next_token"] if graph_vars is not None else torch.argmax(mtp_logits[0, -1]).reshape(1)
         self._speculative_drafts[seq.seq_id] = {"logits": mtp_logits[0, -1].clone(), "hidden_states": mtp_hidden[:, -1:].clone(), "next_token": next_token.clone()}
 
     def _build_mtp_drafts(self, seq: Sequence, sample_params, draft_count: int, start_position: int, profile: dict | None = None) -> tuple[list[int] | torch.Tensor, int, list[torch.Tensor] | None]:
@@ -1377,7 +1470,7 @@ class ModelRunner:
 
         max_emission = int(getattr(seq, "speculative_max_emission", seq.max_tokens - seq.num_completion_tokens))
         remaining_tokens = min(seq.max_tokens - seq.num_completion_tokens, max_emission)
-        max_drafts = min(self._MAX_SPECULATIVE_DRAFT_TOKENS, max(1, int(getattr(self.model, "_prompt_enhancer_speculative_tokens", 1))))
+        max_drafts = min(self._max_speculative_draft_tokens, max(1, int(getattr(self.model, "_prompt_enhancer_speculative_tokens", 1))))
         if seq.top_k != 1:
             max_drafts = min(max_drafts, max(1, int(getattr(self.model, "_prompt_enhancer_speculative_sampling_tokens", max_drafts))))
         draft_count = min(max_drafts, remaining_tokens - 1, self.block_size - seq.last_block_num_tokens - 1)
@@ -1451,19 +1544,12 @@ class ModelRunner:
             emitted.append(greedy_target_tokens[len(draft_token_ids)] if greedy_target_tokens is not None else self._sample_speculative_target(seq, logits[len(draft_token_ids)], sample_params, emitted, profile=profile, profile_role="bonus"))
         self._mark_mtp_stage_profile(profile, 6, "sampling", stage_started)
         stage_started = time.perf_counter()
-        self._commit_speculative_target_state(len(emitted))
+        self._commit_speculative_target_state(len(emitted), len(draft_token_ids) + 1)
         self._mark_mtp_stage_profile(profile, 7, "commit", stage_started)
         stage_started = time.perf_counter()
-        if bool(getattr(self.model, "_prompt_enhancer_reuse_speculative_mtp_cache", False)) and not stopped:
-            if accepted_count < len(draft_token_ids):
-                self.model.mtp.truncate_cache(mtp_cache_length + accepted_count)
-                commit_start = accepted_count
-            else:
-                self.model.mtp.truncate_cache(mtp_cache_length + len(draft_token_ids) - 1)
-                commit_start = len(draft_token_ids) - 1
-        else:
-            self.model.mtp.truncate_cache(mtp_cache_length)
-            commit_start = 0
+        # Replace all speculative MTP entries with the verified target states.
+        self.model.mtp.truncate_cache(mtp_cache_length)
+        commit_start = 0
         self._mark_mtp_stage_profile(profile, 8, "truncate", stage_started)
         mtp_positions = positions[..., commit_start:len(emitted)] if positions.ndim == 3 else positions[commit_start:len(emitted)]
         stage_started = time.perf_counter()
@@ -1640,6 +1726,9 @@ class ModelRunner:
         else:
             # Normal batch (non-CFG)
             if is_prefill:
+                chunk_tokens = int(getattr(self.model, "_prefill_chunk_tokens", 0))
+                if chunk_tokens and len(seqs) == 1:
+                    self._prefill_prefix_chunks(seqs[0], chunk_tokens)
                 input_ids, positions, inputs_embeds = self.prepare_prefill(seqs)
             else:
                 input_ids, positions = self.prepare_decode(seqs)
@@ -1705,7 +1794,7 @@ class ModelRunner:
             self.enforce_eager = True
             return
         config = self.config
-        cache_key = (config.max_model_len, config.max_num_seqs)
+        cache_key = (config.max_model_len, config.max_num_seqs, self._max_speculative_draft_tokens)
         model_device = torch.device("cuda") if torch.cuda.is_available() else self._get_model_device()
         cached = self._graph_cache.get(cache_key)
         if cached is not None:
@@ -1720,6 +1809,7 @@ class ModelRunner:
                 self.mtp_graph = cached.get("mtp_graph")
                 self.mtp_graph_pool = cached.get("mtp_pool")
                 self.mtp_graph_vars = cached.get("mtp_vars", {})
+                self.mtp_refresh_graphs = cached["mtp_refresh_graphs"]
                 if cache_key in self._graph_cache_order:
                     self._graph_cache_order.remove(cache_key)
                 self._graph_cache_order.append(cache_key)
@@ -1780,9 +1870,10 @@ class ModelRunner:
         self.mtp_graph = None
         self.mtp_graph_pool = None
         self.mtp_graph_vars = {}
+        self.mtp_refresh_graphs = {}
         if getattr(self.model, "mtp", None) is not None and bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False)):
             dummy_block = config.num_kvcache_blocks - 1
-            for verify_length in reversed(range(2, self._MAX_SPECULATIVE_DRAFT_TOKENS + 2)):
+            for verify_length in reversed(range(2, self._max_speculative_draft_tokens + 2)):
                 speculative_input_ids = torch.zeros(verify_length, dtype=torch.int64, device=model_device)
                 speculative_positions = torch.arange(verify_length, dtype=torch.int64, device=model_device)
                 speculative_slot_mapping = torch.arange(dummy_block * self.block_size, dummy_block * self.block_size + verify_length, dtype=torch.int32, device=model_device)
@@ -1829,6 +1920,26 @@ class ModelRunner:
                 "logits": mtp_logits,
                 "next_token": mtp_next_token,
             }
+            for count in reversed(range(2, self._max_speculative_draft_tokens + 2)):
+                refresh_ids = torch.zeros((1, count), dtype=torch.int64, device=model_device)
+                refresh_positions = torch.arange(count, dtype=torch.int64, device=model_device)
+                refresh_hidden = torch.zeros((1, count, hf_config.hidden_size), dtype=self.dtype, device=model_device)
+                self.model.mtp._cache.cache_seqlens.zero_()
+                self.model.mtp(refresh_ids, refresh_positions, refresh_hidden, last_logits_only=True, cache_prepared=True)
+                refresh_graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(refresh_graph, self.mtp_graph_pool):
+                    refresh_outputs, refresh_logits = self.model.mtp(refresh_ids, refresh_positions, refresh_hidden, last_logits_only=True, cache_prepared=True)
+                    refresh_next_token = refresh_logits[0, -1].argmax().reshape(1)
+                self.mtp_refresh_graphs[count] = {
+                    "graph": refresh_graph,
+                    "input_ids": refresh_ids,
+                    "positions": refresh_positions,
+                    "hidden_states": refresh_hidden,
+                    "outputs": refresh_outputs,
+                    "logits": refresh_logits,
+                    "next_token": refresh_next_token,
+                }
+            torch.cuda.synchronize()
             self.model.mtp._cache.cache_seqlens.zero_()
         self._graph_cache[cache_key] = {
             "graphs": self.graphs,
@@ -1840,6 +1951,7 @@ class ModelRunner:
             "mtp_graph": self.mtp_graph,
             "mtp_pool": self.mtp_graph_pool,
             "mtp_vars": self.mtp_graph_vars,
+            "mtp_refresh_graphs": self.mtp_refresh_graphs,
             "sig": self._get_graph_capture_signature(),
         }
         if cache_key in self._graph_cache_order:

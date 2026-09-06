@@ -729,7 +729,7 @@ def _generate_and_decode(
         ]
 
 
-def _prepare_multimodal_vllm_prompt(self, model_inputs):
+def _prepare_multimodal_vllm_prompt(self, model_inputs, image_features=None):
     runtime_model = self._caption_runtime_model
     model_inputs = _move_batch_to_device(model_inputs, _resolve_execution_device(self, model_inputs))
     input_ids = model_inputs["input_ids"]
@@ -744,13 +744,20 @@ def _prepare_multimodal_vllm_prompt(self, model_inputs):
         pixel_values_videos = model_inputs.get("pixel_values_videos")
         if pixel_values is not None:
             image_outputs = runtime_model.model.get_image_features(pixel_values, image_grid_thw, return_dict=True)
+            image_features = image_outputs.pooler_output
         if pixel_values_videos is not None:
             video_outputs = runtime_model.model.get_video_features(pixel_values_videos, video_grid_thw, return_dict=True)
         inputs_embeds = runtime_model.model.get_input_embeddings()(input_ids)
-        if pixel_values is not None:
-            image_embeds = torch.cat(image_outputs.pooler_output, dim=0).to(inputs_embeds.device, inputs_embeds.dtype)
-            image_mask, _ = runtime_model.model.get_placeholder_mask(input_ids, inputs_embeds=inputs_embeds, image_features=image_embeds)
-            inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
+        if image_features is not None:
+            image_embeds = torch.cat(image_features, dim=0).to(inputs_embeds.device, inputs_embeds.dtype)
+            if pixel_values is None:
+                # Precomputed Deepy features replace whole token rows. Avoid expanding
+                # the mask over hidden channels and materializing huge nonzero indices.
+                inputs_embeds[input_ids == runtime_model.config.image_token_id] = image_embeds
+                del image_embeds
+            else:
+                image_mask, _ = runtime_model.model.get_placeholder_mask(input_ids, inputs_embeds=inputs_embeds, image_features=image_embeds)
+                inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
         if pixel_values_videos is not None:
             video_embeds = torch.cat(video_outputs.pooler_output, dim=0).to(inputs_embeds.device, inputs_embeds.dtype)
             _, video_mask = runtime_model.model.get_placeholder_mask(input_ids, inputs_embeds=inputs_embeds, video_features=video_embeds)

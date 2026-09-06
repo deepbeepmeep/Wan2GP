@@ -15,6 +15,7 @@ from .dialogue import H3_DIALOGUE_GENERATION, H3_DIALOGUE_MAX_TOTAL_SECONDS, H3_
 from .minimax_h3_main import (AUDIO_VAE_FILE, LATENT_UPSCALER_FILE, LATENT_UPSCALER_FOLDER, TEXT_ENCODER_FOLDER,
                               VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE)
 from .pdd import PDD_BLOCK_SIZE, PDD_NUM_STEPS
+from .viggle import VIGGLE_ARCHITECTURE, VIGGLE_ASSET_FOLDER, VIGGLE_INFOS, VIGGLE_PROMPT_FILE, VIGGLE_REPO_ID
 from .prompt_enhancer import (FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
                               H3_AUDIO_DIALOGUE_SYSTEM_PROMPT, H3_AUDIO_MONOLOGUE_SYSTEM_PROMPT,
                               REF2VA_IMAGE_SYSTEM_PROMPT, REF2VA_PROMPT_INFOS, REF2VA_TEXT_SYSTEM_PROMPT)
@@ -320,7 +321,7 @@ class family_handler:
     @staticmethod
     def query_supported_types():
         return [FL2VA_ARCHITECTURE, FL2VA_PRUNED_ARCHITECTURE,
-                REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE, TTS_REF2VA_PRUNED_ARCHITECTURE]
+                REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE, TTS_REF2VA_PRUNED_ARCHITECTURE, VIGGLE_ARCHITECTURE]
 
     @staticmethod
     def query_family_maps():
@@ -328,6 +329,7 @@ class family_handler:
             FL2VA_PRUNED_ARCHITECTURE: FL2VA_ARCHITECTURE,
             REF2VA_ARCHITECTURE: FL2VA_ARCHITECTURE,
             REF2VA_PRUNED_ARCHITECTURE: FL2VA_ARCHITECTURE,
+            VIGGLE_ARCHITECTURE: FL2VA_ARCHITECTURE,
         }, {}
 
     @staticmethod
@@ -362,6 +364,35 @@ class family_handler:
 
     @staticmethod
     def query_model_def(base_model_type, model_def):
+        if base_model_type == VIGGLE_ARCHITECTURE:
+            result = family_handler.query_model_def(REF2VA_PRUNED_ARCHITECTURE, model_def)
+            result.update({
+                "profiles_dir": [VIGGLE_ARCHITECTURE],
+                "infos": VIGGLE_INFOS,
+                "prompt_infos": "Viggle uses a fixed prompt. Prepare the character replacement in the Edited Reference Frame; generation prompt text is ignored.",
+                "text_encoder_URLs": [], "text_encoder_folder": None, "system_configs": {},
+                "prompt_enhancer_def": {"selection": [], "labels": {}, "default": ""},
+                "image_outputs": False, "sliding_window": True, "video_continuation": False,
+                "frames_selection_maximum": 124, "sliding_window_size_locked": True,
+                "sliding_window_defaults": {**result["sliding_window_defaults"], "window_max": 124, "window_default": 124, "overlap_default": 18},
+                "extract_guide_from_window_start": True, "control_video_trim_disabled": False, "control_video_trim": False,
+                "image_prompt_types_allowed": "T", "end_frames_always_enabled": False, "image_end_frame_position": False,
+                "guidance_max_phases": 1, "lock_guidance_phases": True, "lora_multiplier_phases": 1,
+                "phase_2_spatial_tiling": False, "custom_settings": [], "sample_solvers": [("Euler", "euler")],
+                "spectrum_cache": False, "first_block_cache": False,
+                "one_image_ref_needed": True, "no_background_removal": True, "any_image_refs_relative_size": False, "fit_into_canvas_image_refs": 1,
+                "image_ref_choices": {"choices": [("Use Edited Reference Frame", "I")], "letters_filter": "I", "default": "I", "label": "Edited Reference Frame"},
+                "guide_custom_choices": {"choices": [("Use Control Video", "VU")], "letters_filter": "V-U", "default": "VU", "label": "Control Video"},
+                "video_guide_label": "Control Video", "preprocess_video_guide2": False,
+                "any_audio_prompt": True, "audio_prompt_choices": True, "output_audio_is_input_audio": True,
+                "audio_guide_label": "Custom Audio",
+                "audio_prompt_type_sources": {
+                    "selection": ["", "A", "K"],
+                    "labels": {"": "No Input Audio", "A": "Use Custom Audio", "K": "Reuse Control Video Audio"},
+                    "letters_filter": "AK", "label": "Control Audio", "show_label": True, "default": "",
+                },
+            })
+            return result
         if base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE:
             return _get_audio_generator_model_def(model_def)
         reference_mode = base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE)
@@ -440,7 +471,7 @@ class family_handler:
             "multimedia_generation": True,
             "image_end_frame_position": True,
             "control_video_trim_disabled": True,
-            "infos": (REF2VA_INFOS if reference_mode else FL2VA_INFOS) + (H3_PDD_RUNTIME_INFOS if pdd else H3_RUNTIME_INFOS) + (PRUNED_INFOS if pruned else ""),
+            "infos": (REF2VA_INFOS if reference_mode else FL2VA_INFOS) + (H3_PDD_RUNTIME_INFOS if pdd else H3_RUNTIME_INFOS) + (PRUNED_INFOS if pruned else "") + model_def.get("infos", ""),
             "prompt_infos": REF2VA_PROMPT_INFOS if reference_mode else FL2VA_PROMPT_INFOS,
             "prompt_enhancer_button_label": "Write H3 Prompt",
             "prompt_enhancer_def": {
@@ -595,6 +626,13 @@ class family_handler:
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
+        if base_model_type == VIGGLE_ARCHITECTURE:
+            if inputs["video_guide"] is None:
+                return "Viggle-Animate requires a Control Video and one edited frame from that video"
+            inputs["video_prompt_type"] = inputs["video_prompt_type"].replace("-", "")
+            scheduler = inputs.get("frame_scheduler")
+            if inputs["sliding_window_size"] > 124 or (scheduler is not None and scheduler["active"] and any(window["frame_num"] > 124 for window in scheduler["windows"])):
+                return "Viggle-Animate supports at most 124 frames per sliding window"
         audio_generator = base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE
         if audio_generator:
             try:
@@ -645,7 +683,7 @@ class family_handler:
             width, height = map(int, inputs["resolution"].split("x"))
             rows, columns = _spatial_tiles(height), _spatial_tiles(width)
             gr.Info(f"MiniMax H3 phase 2 tiling: {H3_PHASE_2_TILE_COUNT} tiles of {columns[0][1]}x{rows[0][1]} pixels (2x2 grid) for a {width}x{height} output.")
-        if base_model_type not in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE):
+        if base_model_type not in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE, VIGGLE_ARCHITECTURE):
             video_prompt_type = inputs["video_prompt_type"]
             audio_prompt_type = inputs["audio_prompt_type"]
             if "F" in inputs["video_prompt_type"]:
@@ -678,7 +716,7 @@ class family_handler:
             videos.append(inputs["video_guide"])
             if "+" in video_prompt_type:
                 videos.append(inputs["video_guide2"])
-        audios = [inputs["audio_guide"]] if "A" in audio_prompt_type else []
+        audios = [inputs["audio_guide"]] if "A" in audio_prompt_type and base_model_type != VIGGLE_ARCHITECTURE else []
         if "B" in audio_prompt_type:
             audios.append(inputs["audio_guide2"])
 
@@ -754,15 +792,18 @@ class family_handler:
         if vae_files:
             source_folders.append("")
             file_lists.append(vae_files)
-        source_folders.append(TEXT_ENCODER_FOLDER)
-        file_lists.append(["config.json", "tokenizer.json", "tokenizer_config.json", "preprocessor_config.json", "vocab.json"])
-        source_folders.append(LATENT_UPSCALER_FOLDER)
-        file_lists.append([LATENT_UPSCALER_FILE])
+        if base_model_type != VIGGLE_ARCHITECTURE:
+            source_folders.append(TEXT_ENCODER_FOLDER)
+            file_lists.append(["config.json", "tokenizer.json", "tokenizer_config.json", "preprocessor_config.json", "vocab.json"])
+            source_folders.append(LATENT_UPSCALER_FOLDER)
+            file_lists.append([LATENT_UPSCALER_FILE])
         downloads = [{
             "repoId": REPO_ID,
             "sourceFolderList": source_folders,
             "fileList": file_lists,
         }]
+        if base_model_type == VIGGLE_ARCHITECTURE:
+            downloads.append({"repoId": VIGGLE_REPO_ID, "sourceFolderList": [VIGGLE_ASSET_FOLDER], "fileList": [[VIGGLE_PROMPT_FILE]]})
         if base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE and H3_DIALOGUE_GENERATION:
             from shared.deepy.assets import query_deepy_download_defs
 
@@ -778,28 +819,30 @@ class family_handler:
         from .minimax_h3_main import model_factory
 
         pdd = model_def.get("pdd", False)
+        viggle = base_model_type == VIGGLE_ARCHITECTURE
         pipeline = model_factory(model_filename, text_encoder_filename, dtype=dtype, VAE_dtype=VAE_dtype,
-                                 reference_mode=base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE, TTS_REF2VA_PRUNED_ARCHITECTURE),
+                                 reference_mode=base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE, TTS_REF2VA_PRUNED_ARCHITECTURE, VIGGLE_ARCHITECTURE),
                                  save_quantized=save_quantized, model_type=model_type,
                                  qkv_splitting=model_def["qkv_splitting"],
                                  qkv_layout=model_def["qkv_layout"],
                                  video_vae_filename=model_def.get("video_vae_file", VIDEO_VAE_FILE),
                                  audio_vae_filename=model_def.get("audio_vae_file", AUDIO_VAE_FILE), shared_h3_pipeline=shared_h3_pipeline,
                                  pdd=pdd, pdd_num_steps=PDD_NUM_STEPS if pdd else None, pdd_block_size=PDD_BLOCK_SIZE if pdd else None,
-                                 vdn=model_def.get("vdn", False), audio_only=base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE)
+                                 vdn=model_def.get("vdn", False), audio_only=base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE,
+                                 fixed_prompt_filename=os.path.join(VIGGLE_ASSET_FOLDER, VIGGLE_PROMPT_FILE) if viggle else None)
         pipe = {"transformer": pipeline.transformer}
         if base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE and H3_DIALOGUE_GENERATION:
             pipeline.dialogue_whisper = load_dialogue_whisper()
             pipe["dialogue_whisper"] = pipeline.dialogue_whisper
         if shared_h3_pipeline is None:
             pipe.update({
-                "text_encoder": pipeline.text_encoder.language_model,
-                "vision_encoder": pipeline.text_encoder.visual,
                 "vae": pipeline.video_decoder,
                 "video_encoder": pipeline.video_encoder,
                 "audio_vae": pipeline.audio_vae,
-                "latent_upscaler": pipeline.latent_upscaler,
             })
+            if not viggle:
+                pipe.update({"text_encoder": pipeline.text_encoder.language_model, "vision_encoder": pipeline.text_encoder.visual,
+                             "latent_upscaler": pipeline.latent_upscaler})
         else:
             class BorrowingPipe(dict):
                 pass
@@ -831,6 +874,10 @@ class family_handler:
         if settings_version < 2.69:
             encoder, priority, _, finetune = (str(ui_defaults.get("config", "")).split(",") + [""] * 4)[:4]
             ui_defaults["config"] = ",".join((encoder, "", priority, finetune)).rstrip(",")
+        if base_model_type == VIGGLE_ARCHITECTURE:
+            ui_defaults["sliding_window_size"] = 124
+            ui_defaults["sliding_window_overlap"] = ui_defaults.get("sliding_window_overlap", 18) or 18
+            ui_defaults["video_prompt_type"] = ui_defaults.get("video_prompt_type", "IVU").replace("-", "")
         if base_model_type not in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE):
             return
         if settings_version < 2.67:
@@ -848,6 +895,11 @@ class family_handler:
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
+        if base_model_type == VIGGLE_ARCHITECTURE:
+            family_handler.update_default_settings(REF2VA_PRUNED_ARCHITECTURE, model_def, ui_defaults)
+            ui_defaults.update({"num_inference_steps": 3, "flow_shift": 3.0, "video_prompt_type": "IVU",
+                                "sliding_window_size": 124, "sliding_window_overlap": 18, "prompt_enhancer": ""})
+            return
         if base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE:
             ui_defaults.update({
                 "video_length": 0,

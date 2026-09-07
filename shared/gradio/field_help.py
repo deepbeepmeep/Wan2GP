@@ -11,11 +11,16 @@ _COUNTER = itertools.count()
 
 
 SPATIAL_UPSAMPLER_HELP_INTRO = """Spatial upsamplers increase resolution. Visual refiners improve targeted content and may leave the dimensions unchanged. Scale is shown only for methods that support multipliers."""
+TEMPORAL_UPSAMPLER_HELP_INTRO = """Temporal upsamplers increase frame rate by generating intermediate frames. WanGP multiplies the output frame rate by the selected factor so video duration and audio synchronization are preserved."""
 
 SYSTEM_HELP = {
     "spatial_upsampling": {
         "title": "Spatial Upsampler / Visual Refiner",
         "markdown": SPATIAL_UPSAMPLER_HELP_INTRO,
+    },
+    "temporal_upsampling": {
+        "title": "Temporal Upsampler",
+        "markdown": TEMPORAL_UPSAMPLER_HELP_INTRO,
     },
 }
 
@@ -174,6 +179,9 @@ def get_css():
     white-space: nowrap;
     margin-block: -2px !important;
     line-height: 0 !important;
+}
+.wangp-field-help-inline {
+    margin-left: 6px !important;
 }
 .wangp-field-help-inline-host,
 .wangp-field-help-inline-host > *,

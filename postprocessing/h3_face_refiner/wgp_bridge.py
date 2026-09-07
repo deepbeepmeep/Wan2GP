@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from PIL import Image
 
-from postprocessing.spatial_upsamplers import PARAMETER_UI_LATE_POSTPROCESSING, PARAMETER_UI_POSTPROCESSING, POSTPROCESSING_CATEGORY_REFINER, SimpleScaleSuffixMixin, UPSAMPLER_PROFILE_VIDEO, UPSAMPLER_TYPE_POSTPROCESSING
+from postprocessing.spatial_upsamplers import PARAMETER_UI_LATE_POSTPROCESSING, PARAMETER_UI_MEDIA_FLOW, PARAMETER_UI_POSTPROCESSING, POSTPROCESSING_CATEGORY_REFINER, SimpleScaleSuffixMixin, UPSAMPLER_PROFILE_VIDEO, UPSAMPLER_TYPE_POSTPROCESSING
 
 from .runtime import DEFAULT_MODEL_TYPE, DEFAULT_WINDOW_FRAMES, DEFAULT_WINDOW_OVERLAP, MAX_WINDOW_FRAMES, RUNTIME_NAME, TEMPORAL_STRIDE, TEXT_ENCODER_CONFIG
 
@@ -24,14 +24,30 @@ FALLBACK_DETECTOR_PATH = f"{ASSET_FOLDER}/{FALLBACK_DETECTOR_FILE}"
 INSIGHTFACE_FILES = ("det_10g.onnx", "2d106det.onnx", "w600k_r50.onnx")
 
 
-def _face_progress_callback(callback, face_index: int, face_count: int):
-    if face_count <= 1 or not callable(callback):
+def _face_progress_callback(callback, face_index: int | None = None, face_count: int = 1):
+    if not callable(callback):
         return callback
-    prefix = f"{face_index + 1}/{face_count} Faces, "
-    return lambda phase, current=None, total=None: callback(prefix + phase, current, total)
+
+    def report(phase, current=None, total=None):
+        phase = str(phase)
+        status = "Face Refiner"
+        if face_index is not None and face_count > 1:
+            status += f", Face {face_index + 1}/{face_count}"
+        window_pos = phase.find("Window ")
+        if window_pos >= 0:
+            window, separator, phase = phase[window_pos:].partition(" - ")
+            status += f", {window}"
+            phase = phase if separator else ""
+        if phase:
+            status += f" - {phase}"
+        callback(status, current, total)
+
+    return report
 
 
 class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
+    CONFIGURABLE_FIELDS = ("model_mode", "undetected_frames", "window_size", "window_overlap")
+
     def __init__(self, server_config: dict[str, Any], files_locator):
         self.server_config = server_config
         self.files_locator = files_locator
@@ -74,56 +90,23 @@ class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
     @classmethod
     def normalize_config_section(cls, config: dict[str, Any]) -> dict[str, Any]:
         values = cls.default_config()
-        values.update(config or {})
-        values.pop("version", None)
-
-        def number(key, cast):
-            try:
-                values[key] = cast(values[key])
-            except (TypeError, ValueError):
-                values[key] = cls.default_config()[key]
-
-        for key in ("canvas_width", "canvas_height", "smooth_window", "size_smooth_window", "auto_min_face_height", "sampling_steps",
-                    "mask_dilation", "feather", "window_size", "window_overlap"):
-            number(key, int)
-        for key in ("detector_confidence", "crop_factor", "identity_threshold", "auto_min_presence", "denoising_strength", "flow_shift",
-                    "turbo_lora_strength", "strength", "fallback_head_frac",
-                    "colour_match", "blend"):
-            number(key, float)
+        config = dict(config or {})
+        values.update({key: config[key] for key in cls.CONFIGURABLE_FIELDS if key in config})
         if values["model_mode"] not in ("h3", "current"):
             values["model_mode"] = "h3"
-        if values["canvas_mode"] not in ("manual", "auto_no_downscale", "auto_capped_768"):
-            values["canvas_mode"] = "manual"
-        if values["smooth_method"] not in ("gaussian", "savgol", "moving_average"):
-            values["smooth_method"] = "gaussian"
-        if values["size_mode"] not in ("per_frame", "max_of_clip"):
-            values["size_mode"] = "per_frame"
-        if values["fallback_detector"] not in ("none", FALLBACK_DETECTOR_FILE):
-            values["fallback_detector"] = "none"
-        if values["sample_solver"] not in ("er_sde", "euler", "res_multistep", "ralston_2s"):
-            values["sample_solver"] = "er_sde"
-        if values["paste_region"] not in ("face_only", "face_ellipse", "full_crop"):
-            values["paste_region"] = "face_only"
         if values["undetected_frames"] not in ("fade_out", "skip", "composite_anyway"):
             values["undetected_frames"] = "fade_out"
-        for key in ("identity_threshold", "denoising_strength", "turbo_lora_strength", "strength", "colour_match", "blend"):
-            values[key] = max(0.0, min(1.0, values[key]))
-        values["detector_confidence"] = max(0.05, min(0.95, values["detector_confidence"]))
-        values["crop_factor"] = max(1.2, min(8.0, values["crop_factor"]))
-        values["auto_min_face_height"] = max(8, min(512, values["auto_min_face_height"]))
-        values["auto_min_presence"] = max(0.0, min(1.0, values["auto_min_presence"]))
-        values["flow_shift"] = max(0.01, values["flow_shift"])
-        values["fallback_head_frac"] = max(0.0, min(1.5, values["fallback_head_frac"]))
-        for key in ("canvas_width", "canvas_height"):
-            values[key] = max(128, min(1344, round(int(values[key]) / 32) * 32))
-        for key in ("smooth_window", "size_smooth_window"):
-            values[key] = max(1, values[key])
-        values["mask_dilation"] = max(0, min(256, values["mask_dilation"]))
-        values["feather"] = max(0, min(256, values["feather"]))
-        values["window_size"] = max(5, min(MAX_WINDOW_FRAMES, int(values["window_size"])))
+        try:
+            values["window_size"] = int(values["window_size"])
+        except (TypeError, ValueError):
+            values["window_size"] = DEFAULT_WINDOW_FRAMES
+        values["window_size"] = max(5, min(MAX_WINDOW_FRAMES, values["window_size"]))
         values["window_size"] = ((values["window_size"] - 5) // TEMPORAL_STRIDE) * TEMPORAL_STRIDE + 5
-        values["window_overlap"] = max(1, min(int(values["window_overlap"]), values["window_size"] - 1))
-        values["sampling_steps"] = max(1, int(values["sampling_steps"]))
+        try:
+            values["window_overlap"] = int(values["window_overlap"])
+        except (TypeError, ValueError):
+            values["window_overlap"] = DEFAULT_WINDOW_OVERLAP
+        values["window_overlap"] = max(1, min(values["window_overlap"], values["window_size"] - 1))
         return values
 
     def config(self) -> dict[str, Any]:
@@ -144,11 +127,13 @@ class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
             "vae_methods": [],
             "default_spatial_upsampling": METHOD,
             "postprocessing_category": POSTPROCESSING_CATEGORY_REFINER,
+            "progress_label": "Face Refiner",
             "default_prompt": DEFAULT_PROMPT,
             "source_audio_conditioning": True,
             "description": "Detect and identity-track up to five faces through a video, refine stabilized crops with MiniMax H3 Ref2VA, and feather-stitch them back without changing output resolution. A uniform refinement strength controls source fidelity, while sliding windows keep longer clips temporally coherent.",
             "method_parameters": {METHOD: [
-                {"name": "spatial_upsampler_face_count", "setting": "face_count", "type": "integer", "component": "slider", "ui": (PARAMETER_UI_POSTPROCESSING, PARAMETER_UI_LATE_POSTPROCESSING), "required": False, "default": 1, "minimum": 0, "maximum": 5, "step": 1, "label": "Faces to Refine (0 = Auto, up to 5)", "description": "Choose an exact maximum from 1 to 5, or 0 for automatic selection. Runtime increases approximately linearly with the selected face count."},
+                {"name": "spatial_upsampler_face_count", "setting": "face_count", "type": "integer", "component": "slider", "ui": (PARAMETER_UI_POSTPROCESSING, PARAMETER_UI_LATE_POSTPROCESSING, PARAMETER_UI_MEDIA_FLOW), "required": False, "default": 1, "minimum": 0, "maximum": 5, "step": 1, "label": "Faces to Refine (0 = Auto, up to 5)", "description": "Choose an exact maximum from 1 to 5, or 0 for automatic selection. Runtime increases approximately linearly with the selected face count."},
+                {"name": "spatial_upsampler_h3_strength", "setting": "strength", "type": "number", "component": "slider", "ui": (PARAMETER_UI_POSTPROCESSING, PARAMETER_UI_LATE_POSTPROCESSING, PARAMETER_UI_MEDIA_FLOW), "required": False, "default": 0.75, "minimum": 0.0, "maximum": 1.0, "step": 0.05, "label": "Face Refinement Strength", "description": "Controls how strongly H3 replaces source facial detail. Lower values preserve more of the original face."},
                 {"name": "spatial_upsampler_prompt", "setting": "prompt", "type": "string", "component": "textbox", "ui": (PARAMETER_UI_LATE_POSTPROCESSING,), "required": False, "default": "", "label": "Refiner Prompt", "description": "Optional description of the source clip and desired facial restoration. The source metadata prompt or a neutral restoration prompt is used when omitted.", "lines": 1},
                 {"name": "spatial_upsampler_reference_images", "setting": "reference_images", "type": "array", "component": "images", "ui": (PARAMETER_UI_LATE_POSTPROCESSING,), "required": False, "default": [], "label": "Optional Face Reference Images", "description": "Optional reference-image media ids. InsightFace matches them to detected identities irrespective of order; unmatched tracks use an automatically selected source frame.", "multiple": True, "media_type": "image"},
             ]},
@@ -158,40 +143,7 @@ class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
         with gr.Group():
             model_mode = gr.Dropdown(choices=[("Force/reuse H3", "h3"), ("Use current compatible model, fall back to H3", "current")], value=config["model_mode"], label="Face Refiner Model", interactive=not lock_config)
             with gr.Row():
-                detector_confidence = gr.Slider(0.05, 0.95, value=config["detector_confidence"], step=0.05, label="Face Detection Confidence", interactive=not lock_config)
-                identity_threshold = gr.Slider(0.0, 1.0, value=config["identity_threshold"], step=0.01, label="Identity Similarity Threshold", interactive=not lock_config)
-                auto_min_face_height = gr.Slider(8, 512, value=config["auto_min_face_height"], step=1, label="Auto Minimum Face Height", info="Minimum maximum detected face-box height, in source pixels, for automatic selection.", interactive=not lock_config)
-                auto_min_presence = gr.Slider(0.0, 1.0, value=config["auto_min_presence"], step=0.05, label="Auto Minimum Frame Presence", info="Minimum fraction of source frames in which the identity must be detected.", interactive=not lock_config)
-            with gr.Row():
-                crop_factor = gr.Slider(1.2, 8.0, value=config["crop_factor"], step=0.1, label="Face Crop Factor", interactive=not lock_config)
-                canvas_mode = gr.Dropdown(choices=[("Manual", "manual"), ("Auto, no downscale", "auto_no_downscale"), ("Auto, capped at 768", "auto_capped_768")], value=config["canvas_mode"], label="Crop Canvas", interactive=not lock_config)
-                canvas_width = gr.Slider(128, 1344, value=config["canvas_width"], step=32, label="Manual Canvas Width", interactive=not lock_config)
-                canvas_height = gr.Slider(128, 1344, value=config["canvas_height"], step=32, label="Manual Canvas Height", interactive=not lock_config)
-            with gr.Row():
-                smooth_window = gr.Slider(1, 201, value=config["smooth_window"], step=2, label="Position Smoothing", interactive=not lock_config)
-                size_smooth_window = gr.Slider(1, 201, value=config["size_smooth_window"], step=2, label="Size Smoothing", interactive=not lock_config)
-                smooth_method = gr.Dropdown(choices=[("Gaussian", "gaussian"), ("Savitzky-Golay", "savgol"), ("Moving average", "moving_average")], value=config["smooth_method"], label="Smoothing Method", interactive=not lock_config)
-                size_mode = gr.Dropdown(choices=[("Per frame", "per_frame"), ("Maximum of clip", "max_of_clip")], value=config["size_mode"], label="Crop Size Mode", interactive=not lock_config)
-            with gr.Row():
-                fallback_detector = gr.Dropdown(choices=[("None", "none"), ("Person YOLOv8 fallback", FALLBACK_DETECTOR_FILE)], value=config["fallback_detector"], label="Missing-face Fallback", interactive=not lock_config)
-                fallback_head_frac = gr.Slider(0.0, 1.5, value=config["fallback_head_frac"], step=0.05, label="Fallback Head Position", interactive=not lock_config)
-            with gr.Row():
-                denoising_strength = gr.Slider(0.0, 1.0, value=config["denoising_strength"], step=0.01, label="BasicScheduler Denoise", interactive=not lock_config)
-                sampling_steps = gr.Slider(1, 30, value=config["sampling_steps"], step=1, label="Refinement Steps", interactive=not lock_config)
-                flow_shift = gr.Slider(1.0, 20.0, value=config["flow_shift"], step=0.1, label="Flow Shift", interactive=not lock_config)
-                sample_solver = gr.Dropdown(choices=[("ER-SDE (upstream workflow)", "er_sde"), ("Euler", "euler"), ("RES Multistep", "res_multistep"), ("Ralston 2S", "ralston_2s")], value=config["sample_solver"], label="Sampler", interactive=not lock_config)
-                turbo_lora_strength = gr.Slider(0.0, 2.0, value=config["turbo_lora_strength"], step=0.05, label="Turbo LoRA Strength", interactive=not lock_config)
-                strength = gr.Slider(0.0, 1.0, value=config["strength"], step=0.01, label="Refinement Strength", interactive=not lock_config)
-            with gr.Row():
-                paste_region = gr.Dropdown(choices=[("Face rectangle", "face_only"), ("Face ellipse", "face_ellipse"), ("Full crop", "full_crop")], value=config["paste_region"], label="Paste Region", interactive=not lock_config)
-                mask_dilation = gr.Slider(0, 256, value=config["mask_dilation"], step=2, label="Mask Dilation", interactive=not lock_config)
-                feather = gr.Slider(0, 256, value=config["feather"], step=2, label="Mask Feather", interactive=not lock_config)
-                colour_match = gr.Slider(0.0, 1.0, value=config["colour_match"], step=0.05, label="Colour Match", interactive=not lock_config)
-                blend = gr.Slider(0.0, 1.0, value=config["blend"], step=0.05, label="Blend", interactive=not lock_config)
-            with gr.Row():
                 undetected_frames = gr.Dropdown(choices=[("Fade out", "fade_out"), ("Skip", "skip"), ("Composite anyway", "composite_anyway")], value=config["undetected_frames"], label="Undetected Frames", interactive=not lock_config)
-                feather_scales_with_crop = gr.Checkbox(value=config["feather_scales_with_crop"], label="Legacy Canvas-relative Feather", interactive=not lock_config)
-            with gr.Row():
                 window_size = gr.Slider(5, MAX_WINDOW_FRAMES, value=config["window_size"], step=TEMPORAL_STRIDE, label="H3 Refiner Sliding Window Size", info="Frames processed per H3 refinement window. Larger windows use more VRAM.", interactive=not lock_config)
                 window_overlap = gr.Slider(1, config["window_size"] - 1, value=config["window_overlap"], step=1, label="H3 Refiner Sliding Window Overlap", info="Frames shared and crossfaded between consecutive windows.", interactive=not lock_config)
 
@@ -201,8 +153,7 @@ class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
 
         window_size.change(update_overlap_limit, inputs=[window_size, window_overlap], outputs=window_overlap)
         controls = locals().copy()
-        field_names = tuple(self.default_config())
-        return [(name, controls[name]) for name in field_names if name in controls]
+        return [(name, controls[name]) for name in self.CONFIGURABLE_FIELDS]
 
     def enabled(self) -> bool:
         return True
@@ -280,7 +231,7 @@ class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
 
     def upscale(self, sample, spatial_upsampling, *, loaded_model_context=None, prompt="", seed=0, fps=24.0, frame_offset=0,
                 audio_waveform=None, audio_sample_rate=0, source_audio_path=None, vae_tile_size=None, still_image=False,
-                reference_images=None, image_refs_relative_size=100.0, face_count=1,
+                reference_images=None, image_refs_relative_size=100.0, face_count=1, strength=0.75,
                 abort_callback=None, progress_callback=None, profile=-1, **kwargs):
         if still_image:
             raise ValueError("H3 Face Refiner is available for videos only")
@@ -289,11 +240,14 @@ class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
             raise ValueError(error)
         import wgp
         from .face import crop_face_track, frames_to_sample, sample_to_frames, select_reference_frame, stitch, track_faces
-        from .runtime import RUNTIME, load_model, refine_video
+        from .runtime import RUNTIME, load_model, refine_video, window_starts
 
         config = self.config()
-        if config["denoising_strength"] == 0.0 or config["blend"] == 0.0 or config["strength"] == 0.0:
+        strength = max(0.0, min(1.0, float(strength)))
+        if config["denoising_strength"] == 0.0 or config["blend"] == 0.0 or strength == 0.0:
             return sample, None
+        raw_progress_callback = progress_callback
+        progress_callback = _face_progress_callback(raw_progress_callback)
         frames, source_format = sample_to_frames(sample)
         reference_images = wgp.clean_image_list(reference_images or []) or []
         detector_path = self.files_locator.locate_file(DETECTOR_PATH)
@@ -306,15 +260,18 @@ class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
                                     smooth_window=config["smooth_window"], size_smooth_window=config["size_smooth_window"], smooth_method=config["smooth_method"],
                                     size_mode=config["size_mode"], identity_threshold=config["identity_threshold"], auto_min_face_height=config["auto_min_face_height"],
                                     auto_min_presence=config["auto_min_presence"], fallback_detector_path=fallback_detector_path, insightface_model_dir=insightface_model_dir,
-                                    fallback_head_frac=config["fallback_head_frac"], strength_small_face=config["strength"],
-                                    strength_large_face=config["strength"], strength_smooth_frames=1, abort_callback=abort_callback,
+                                    fallback_head_frac=config["fallback_head_frac"], strength_small_face=strength,
+                                    strength_large_face=strength, strength_smooth_frames=1, abort_callback=abort_callback,
                                     progress_callback=progress_callback)
         if tracked_faces is None:
             return None, None
         if not tracked_faces:
             print("[H3FaceRefine] Auto selection found no relevant face tracks; leaving the source video unchanged")
             return sample, None
-        hybrid_h3 = loaded_model_context is not None and loaded_model_context.model_family == "minimax_h3" and not loaded_model_context.model.reference_mode
+        if callable(progress_callback):
+            progress_callback("Loading Model")
+        hybrid_h3 = (loaded_model_context is not None and loaded_model_context.model_family == "minimax_h3"
+                     and (not loaded_model_context.model.reference_mode or loaded_model_context.model.transformer.pdd_num_steps is not None))
         if loaded_model_context is None or hybrid_h3:
             load_model(loaded_model_context if hybrid_h3 else None)
             pipeline = RUNTIME.model
@@ -342,6 +299,8 @@ class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
                 track_prompt = refinement_prompt if not track_references or "<Picture 1>" in refinement_prompt else REFERENCE_BINDING + "\n" + refinement_prompt
                 track_jobs.append((transform, strengths, track_references, track_prompt))
             if hasattr(pipeline, "prewarm_refinement_prompt"):
+                if callable(progress_callback):
+                    progress_callback("Encoding Prompt")
                 print(f"[H3FaceRefine] Pre-encoding prompt/reference conditioning for {len(track_jobs)} face track(s) before denoising")
                 for transform, _strengths, track_references, track_prompt in track_jobs:
                     canvas_width, canvas_height = transform["canvas"]
@@ -351,13 +310,16 @@ class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
             source_frames = frames
             output = frames.clone()
             for track_index, (transform, strengths, track_references, track_prompt) in enumerate(track_jobs):
-                track_progress_callback = _face_progress_callback(progress_callback, track_index, len(track_jobs))
+                track_progress_callback = _face_progress_callback(raw_progress_callback, track_index, len(track_jobs))
                 segments = transform["segments"]
+                segment_window_counts = [len(window_starts(stop - start, config["window_size"], config["window_overlap"])) for start, stop in segments]
+                total_segment_windows = sum(segment_window_counts)
+                window_index_offset = 0
                 excluded = len(transform["active"]) - sum(stop - start for start, stop in segments)
                 print(f"[H3FaceRefine] Face track {track_index + 1}: refining {len(segments)} presence segment(s); excluded {excluded} absent frame(s) from H3 temporal attention")
                 for segment_index, (start, stop) in enumerate(segments, start=1):
                     print(f"[H3FaceRefine] Face track {track_index + 1}, segment {segment_index}/{len(segments)}: source frames {start + 1}-{stop}")
-                    uniform_strengths = strengths.new_full((stop - start,), config["strength"])
+                    uniform_strengths = strengths.new_full((stop - start,), strength)
                     def load_crop_window(window_start, window_stop):
                         return crop_face_track(source_frames, transform, start + window_start, start + window_stop)
 
@@ -370,17 +332,22 @@ class H3FaceRefinerBridge(SimpleScaleSuffixMixin):
                                            reference_images=track_references if reference_mode else None,
                                            image_refs_relative_size=image_refs_relative_size, vae_tile_size=vae_tile_size,
                                            abort_callback=abort_callback, progress_callback=track_progress_callback,
-                                           frame_count=stop - start, video_window_loader=load_crop_window)
+                                           frame_count=stop - start, video_window_loader=load_crop_window,
+                                           window_index_offset=window_index_offset, window_count_total=total_segment_windows)
                     if refined is None:
                         return None, None
+                    window_index_offset += segment_window_counts[segment_index - 1]
                     segment_transform = transform.copy()
                     for key in ("boxes", "face_rect", "weights", "detected", "active"):
                         segment_transform[key] = transform[key][start:stop]
                     segment_transform["frames"] = stop - start
+                    stitch_progress_callback = track_progress_callback
+                    if total_segment_windows > 1 and callable(track_progress_callback):
+                        stitch_progress_callback = lambda phase, current=None, total=None: track_progress_callback(f"Window {window_index_offset}/{total_segment_windows} - {phase}", current, total)
                     stitched = stitch(output[start:stop], refined, segment_transform, paste_region=config["paste_region"], mask_dilation=config["mask_dilation"],
                                       feather=config["feather"], colour_match=config["colour_match"], blend=config["blend"],
                                       undetected_frames=config["undetected_frames"], feather_scales_with_crop=config["feather_scales_with_crop"],
-                                      abort_callback=abort_callback, progress_callback=track_progress_callback)
+                                      abort_callback=abort_callback, progress_callback=stitch_progress_callback)
                     if stitched is None:
                         return None, None
                     refined = stitched = None

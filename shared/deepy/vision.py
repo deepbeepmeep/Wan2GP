@@ -1,20 +1,25 @@
 from __future__ import annotations
 
 import math
+from contextlib import contextmanager
 from typing import Any
 
+import torch
 from PIL import Image
 
+from shared.llm_engines.nanovllm.models.qwen3_5 import Qwen3_5ForCausalLM
 from shared.prompt_enhancer.qwen35_vl import _prepare_multimodal_vllm_prompt
 from shared.utils.video_decode import decode_video_frame_indices_ffmpeg
 
 
-VISION_MAX_IMAGES = 5
+VISION_MAX_IMAGES = 8
 VISION_REMOTE_MAX_IMAGES = 10
 VISION_MAX_VISUAL_TOKENS_PER_IMAGE = 1024
 VISION_ANSWER_MAX_NEW_TOKENS = 1024
+VISION_LOCAL_ANSWER_MAX_NEW_TOKENS = 4096
+VISION_MIN_MODEL_LEN = 16384
 VISION_REMOTE_MAX_IMAGE_EDGE = 1024
-VISION_VIDEO_MAX_IMAGES = 80
+VISION_VIDEO_MAX_IMAGES = 128
 VISION_VIDEO_REMOTE_MAX_IMAGES = 160
 VISION_VIDEO_MAX_IMAGE_EDGE = 256
 VISION_VIDEO_MID_RES_MAX_IMAGE_EDGE = 512
@@ -22,6 +27,88 @@ VISION_VIDEO_MID_RES_SAMPLE_DIVISOR = 4
 VISION_VIDEO_MAX_SAMPLES_PER_SECOND = 2
 VISION_VIDEO_DECODE_BATCH_SIZE = 8
 VISION_QA_SYSTEM_PROMPT = "Answer the user's question about the labeled visual inputs accurately and concisely. Inputs may be images or ordered frames from one or more videos. If the answer is uncertain, say so."
+_TEXT_MODEL_ID = "prompt_enhancer_llm_model"
+_VISION_MODEL_ID = "prompt_enhancer_image_caption_vision_tower_model"
+
+
+def can_keep_text_resident(runtime, manager) -> bool:
+    if runtime is None or manager is None or not isinstance(runtime.model, Qwen3_5ForCausalLM):
+        return False
+    if manager.models.get(_TEXT_MODEL_ID) is not runtime.model or _TEXT_MODEL_ID not in manager.active_models_ids:
+        return False
+    prefix = _TEXT_MODEL_ID + "/"
+    preloaded = manager.preloaded_blocks_per_model[_TEXT_MODEL_ID]
+    if not all(name[len(prefix):] in preloaded for name in manager.blocks_of_modules if name.startswith(prefix)) or not all(parameter.is_cuda for parameter in runtime.model.parameters()):
+        return False
+    runner = runtime._get_live_llm().model_runner
+    cache_bytes = runner.kv_cache.nbytes
+    if hasattr(runner, "kv_cache_scales"):
+        cache_bytes += runner.kv_cache_scales.nbytes
+    vision_prefix = _VISION_MODEL_ID + "/"
+    vision_bytes = sum(size for name, size in manager.blocks_of_modules_sizes.items() if name == _VISION_MODEL_ID or name.startswith(vision_prefix))
+    # Small Q8 caches (e.g. 9B at 32K) cannot even cover the tower's weights.
+    # Keep the established unload path instead of knowingly increasing its footprint.
+    return cache_bytes >= vision_bytes
+
+
+@contextmanager
+def resident_inspection(runtime, caption_model, manager, semantic_boundaries):
+    """Lend the assistant's cache memory to vision without moving its weights."""
+    from shared.prompt_enhancer.qwen35_assistant_runtime import _ASSISTANT_PREFILL_CHUNK_TOKENS
+
+    model = runtime.model
+    snapshot = runtime.snapshot_context()
+    signature = runtime._get_live_llm().model_runner._get_graph_capture_signature()
+    boundaries = [item for item in semantic_boundaries if item["runtime_signature"] == signature]
+    min_model_len = model._prompt_enhancer_min_model_len_hint
+    prefill_chunk_tokens = model.__dict__.get("_prefill_chunk_tokens")
+    cotenants = manager.cotenants_map
+    adapter = caption_model.model.language_model
+    input_embedding = adapter._input_embedding_model
+
+    def unload_vision():
+        if _VISION_MODEL_ID not in manager.active_models_ids:
+            return
+        torch.cuda.synchronize()
+        # MMGP owns the CPU originals, including any streamed vision blocks.
+        prefix = _VISION_MODEL_ID + "/"
+        for name in manager.blocks_of_modules:
+            if name == _VISION_MODEL_ID or name.startswith(prefix):
+                manager.gpu_unload_blocks(_VISION_MODEL_ID, None if name == _VISION_MODEL_ID else name[len(prefix):])
+        index = manager.active_models_ids.index(_VISION_MODEL_ID)
+        manager.active_models_ids.pop(index)
+        manager.active_models.pop(index)
+        torch.cuda.empty_cache()
+
+    try:
+        # Teardown synchronizes in-flight graphs and releases their KV/state pointers.
+        # The tower has no decoder cache; allocate the smaller QA cache after encoding.
+        model._prompt_enhancer_vllm_engine.close()
+        model._prompt_enhancer_min_model_len_hint = VISION_MIN_MODEL_LEN
+        model._prefill_chunk_tokens = _ASSISTANT_PREFILL_CHUNK_TOKENS
+        manager.cotenants_map = {**cotenants, _TEXT_MODEL_ID: [*cotenants.get(_TEXT_MODEL_ID, []), _VISION_MODEL_ID], _VISION_MODEL_ID: [*cotenants.get(_VISION_MODEL_ID, []), _TEXT_MODEL_ID]}
+        # The enhancer's separate MMGP embedding alias would load a second copy.
+        object.__setattr__(adapter, "_input_embedding_model", model.token_embd)
+        runtime._log("Inspection: keeping Qwen weights resident; lending assistant cache memory to vision.")
+        yield unload_vision
+    finally:
+        unload_vision()
+        object.__setattr__(adapter, "_input_embedding_model", input_embedding)
+        manager.cotenants_map = cotenants
+        model._prompt_enhancer_vllm_engine.close()
+        model._prompt_enhancer_min_model_len_hint = min_model_len
+        if prefill_chunk_tokens is None:
+            del model._prefill_chunk_tokens
+        else:
+            model._prefill_chunk_tokens = prefill_chunk_tokens
+        if snapshot is not None:
+            runtime.restore_snapshot(snapshot)
+            runner = runtime._get_live_llm().model_runner
+            # Exact KV/block-table restoration preserves these prefixes, even though
+            # the replacement cache and its newly captured graphs have new addresses.
+            for boundary in boundaries:
+                boundary["runtime_signature"] = runner._get_graph_capture_signature()
+                boundary["kv_cache_ptr"] = int(runner.kv_cache.data_ptr())
 
 
 def normalize_inspection_bbox(bbox: Any) -> list[int] | None:
@@ -43,7 +130,7 @@ def normalize_inspection_bbox(bbox: Any) -> list[int] | None:
     return values
 
 
-def prepare_inspection_image(image: Any, max_edge: int | None = None, bbox: list[int] | None = None) -> Image.Image:
+def prepare_inspection_image(image: Any, max_edge: int | None = None, max_pixels: int | None = None, bbox: list[int] | None = None) -> Image.Image:
     prepared = image.convert("RGB")
     if bbox is not None:
         x_min, y_min, x_max, y_max = bbox
@@ -53,7 +140,10 @@ def prepare_inspection_image(image: Any, max_edge: int | None = None, bbox: list
         right = max(left + 1, min(width, math.ceil(x_max * width / 1000)))
         bottom = max(top + 1, min(height, math.ceil(y_max * height / 1000)))
         prepared = prepared.crop((left, top, right, bottom))
-    if max_edge is not None:
+    if max_pixels is not None and prepared.width * prepared.height > int(max_pixels):
+        scale = math.sqrt(int(max_pixels) / (prepared.width * prepared.height))
+        prepared = prepared.resize((max(1, math.floor(prepared.width * scale)), max(1, math.floor(prepared.height * scale))), Image.Resampling.LANCZOS)
+    elif max_edge is not None:
         prepared.thumbnail((int(max_edge), int(max_edge)), Image.Resampling.LANCZOS)
     return prepared
 
@@ -62,7 +152,7 @@ def resize_inspection_image(image: Any, max_edge: int) -> Image.Image:
     return prepare_inspection_image(image, max_edge=max_edge)
 
 
-def decode_inspection_video_frames(path: str, frame_indices: list[int], max_edge: int | None = None, bboxes: list[list[int] | None] | None = None) -> list[Image.Image]:
+def decode_inspection_video_frames(path: str, frame_indices: list[int], max_edge: int | None = None, max_pixels: int | None = None, bboxes: list[list[int] | None] | None = None) -> list[Image.Image]:
     if bboxes is not None and len(bboxes) != len(frame_indices):
         raise ValueError("Video frame bboxes must match the frame count.")
     images = []
@@ -73,7 +163,7 @@ def decode_inspection_video_frames(path: str, frame_indices: list[int], max_edge
             raise RuntimeError(f"Video decoder returned {len(frames)} of {len(current_indices)} requested frames.")
         for frame_index, frame in enumerate(frames):
             bbox = None if bboxes is None else bboxes[offset + frame_index]
-            images.append(prepare_inspection_image(Image.fromarray(frame), max_edge=max_edge, bbox=bbox))
+            images.append(prepare_inspection_image(Image.fromarray(frame), max_edge=max_edge, max_pixels=max_pixels, bbox=bbox))
     return images
 
 
@@ -88,11 +178,11 @@ def _inspection_image_size(processor: Any, max_pixels_per_image: int | None = No
     token_edge = int(image_processor.patch_size) * merge_size
     token_budget_pixels = VISION_MAX_VISUAL_TOKENS_PER_IMAGE * token_edge * token_edge
     max_pixels = token_budget_pixels if max_pixels_per_image is None else min(token_budget_pixels, int(max_pixels_per_image))
-    min_pixels = min(int(image_processor.size.get("shortest_edge", max_pixels)), max_pixels)
+    min_pixels = min(int(image_processor.size.get("shortest_edge", max_pixels)), max_pixels) if max_pixels_per_image is None else min(token_edge * token_edge, max_pixels)
     return {"shortest_edge": min_pixels, "longest_edge": max_pixels}, merge_size, min(VISION_MAX_VISUAL_TOKENS_PER_IMAGE, math.ceil(max_pixels / (token_edge * token_edge)))
 
 
-def build_image_question_prompt(caption_model: Any, processor: Any, image: Any, question: str, system_prompt: str | None = None, image_labels: list[str] | None = None, *, max_images: int = VISION_MAX_IMAGES, max_pixels_per_image: int | None = None):
+def build_image_question_prompt(caption_model: Any, processor: Any, image: Any, question: str, system_prompt: str | None = None, image_labels: list[str] | None = None, *, max_images: int = VISION_MAX_IMAGES, max_pixels_per_image: int | None = None, resident: bool = False):
     question = str(question or "").strip()
     if len(question) == 0:
         raise ValueError("Vision question is empty.")
@@ -128,7 +218,27 @@ def build_image_question_prompt(caption_model: Any, processor: Any, image: Any, 
         raise RuntimeError("Vision processor returned an unexpected image grid count.")
     if any(int(grid[0]) * int(grid[1]) * int(grid[2]) // (merge_size * merge_size) > max_visual_tokens for grid in image_grids):
         raise RuntimeError("Vision processor exceeded the per-image visual token limit.")
-    return _prepare_multimodal_vllm_prompt(caption_model, model_inputs)
+    image_features = None
+    if resident:
+        # Each image is independent in the tower. Bound its activation workspace by
+        # the existing single-image token budget, including video inspection frames.
+        pixel_values = model_inputs.pop("pixel_values")
+        image_features = []
+        patch_limit = VISION_MAX_VISUAL_TOKENS_PER_IMAGE * merge_size * merge_size
+        first_image = first_patch = batch_patches = 0
+        with torch.inference_mode():
+            for index, grid in enumerate(image_grids):
+                patch_count = math.prod(grid)
+                if batch_patches and batch_patches + patch_count > patch_limit:
+                    output = caption_model.model.get_image_features(pixel_values[first_patch:first_patch + batch_patches], image_grid_thw[first_image:index], return_dict=True)
+                    image_features.extend(output.pooler_output)
+                    del output
+                    first_image, first_patch, batch_patches = index, first_patch + batch_patches, 0
+                batch_patches += patch_count
+            output = caption_model.model.get_image_features(pixel_values[first_patch:first_patch + batch_patches], image_grid_thw[first_image:], return_dict=True)
+            image_features.extend(output.pooler_output)
+            del output
+    return _prepare_multimodal_vllm_prompt(caption_model, model_inputs, image_features=image_features)
 
 
 __all__ = [

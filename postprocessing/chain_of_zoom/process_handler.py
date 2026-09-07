@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from postprocessing import spatial_upsamplers as upsampler_api
 from postprocessing.chain_of_zoom.wgp_bridge import ChainOfZoomBridge
 
 
@@ -8,7 +9,7 @@ class ChainOfZoomProcessHandler:
     model_type = "__system_image_postprocessing"
     model_label = "WanGP System Image Postprocessing"
     target_control_label = "Upscaling"
-    default_target_control = f"{ChainOfZoomBridge.UPSAMPLING_VALUE_PREFIX}4"
+    default_target_control = upsampler_api.format_multiplier_value(ChainOfZoomBridge.UPSAMPLING_VALUE_PREFIX, 4)
     hide_output_resolution = True
     hide_prompt = True
 
@@ -19,11 +20,11 @@ class ChainOfZoomProcessHandler:
         return True
 
     def _value_for_scale(self, scale: float) -> str:
-        return f"{ChainOfZoomBridge.UPSAMPLING_VALUE_PREFIX}{_format_ratio_label(scale)}"
+        return upsampler_api.format_multiplier_value(ChainOfZoomBridge.UPSAMPLING_VALUE_PREFIX, scale)
 
     def normalize_target_control(self, value: str | None) -> str:
-        value = str(value or "").strip().lower()
-        return value if value in [self._value_for_scale(scale) for scale in self.supported_upsampling_ratios()] else self.default_target_control
+        scale = upsampler_api.parse_multiplier_suffix(value, ChainOfZoomBridge.UPSAMPLING_VALUE_PREFIX, 4.0)
+        return self._value_for_scale(scale) if scale in self.supported_upsampling_ratios() else self.default_target_control
 
     def target_control_choices_for_process(self, process_settings: dict) -> list[tuple[str, str]]:
         return [(f"x{_format_ratio_label(scale)}", self._value_for_scale(scale)) for scale in self.supported_upsampling_ratios(process_settings)]

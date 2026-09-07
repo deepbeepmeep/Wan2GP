@@ -4,7 +4,6 @@ import argparse
 import contextlib
 import copy
 import dataclasses
-import hashlib
 import io
 import mimetypes
 import sys
@@ -13,6 +12,8 @@ import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+
+from shared.utils.gallery_media import disambiguate_gallery_media_ids, gallery_media_ids
 
 if TYPE_CHECKING:
     from shared.api import SessionJob
@@ -31,6 +32,7 @@ _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", "
 _AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac", ".m4a", ".flac", ".ogg", ".opus"}
 _VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
 _AGENT_GUIDE_PATH = Path(__file__).resolve().parents[1] / "wangp-agent" / "SKILL.md"
+_AGENT_SKILLS_DIR = _AGENT_GUIDE_PATH.parent / "skills"
 _DOCS_DIR = Path(__file__).resolve().parents[1] / "docs"
 _DEEPY_VISUAL_TOOL_IDS = {"gen_image", "edit_image", "gen_video", "gen_video_with_speech"}
 _DEEPY_VIDEO_TOOL_IDS = {"gen_video", "gen_video_with_speech"}
@@ -90,7 +92,7 @@ def _read_markdown_section(path: Path, start_heading: str, end_heading: str) -> 
     return text[start:] if end < 0 else text[start:end].rstrip()
 
 
-def _register_documentation_resources(mcp) -> None:
+def _register_documentation_resources(mcp, file_access_policy=None, long_text_active: bool = False) -> None:
     def document_reader(document_path: Path):
         def read_document() -> str:
             return document_path.read_text(encoding="utf-8")
@@ -102,6 +104,20 @@ def _register_documentation_resources(mcp) -> None:
         read_document.__name__ = f"read_{path.stem.casefold()}_documentation"
         description = "WanGP generation settings: model selection, prompts, output dimensions, sampling and guidance, media inputs, acceleration and caching, post-processing, sliding windows, LoRAs, flags, and model API metadata." if path.stem.casefold() == "settings" else f"WanGP {path.stem} documentation."
         mcp.resource(resource_uri, name=path.stem.casefold(), title=path.stem.replace("_", " ").title(), description=description, mime_type="text/markdown")(read_document)
+
+    for path in sorted(_AGENT_SKILLS_DIR.glob("*/SKILL.md")):
+        skill_name = path.parent.name
+        if skill_name in {"long-story-writing", "long-generation-prompts"} and not long_text_active:
+            continue
+        if file_access_policy is not None:
+            from shared.deepy.long_text import legacy_skill_hidden
+
+            if legacy_skill_hidden(skill_name, file_access_policy):
+                continue
+        resource_uri = f"wangp://skills/{skill_name}"
+        read_skill = document_reader(path)
+        read_skill.__name__ = f"read_{skill_name.replace('-', '_')}_skill"
+        mcp.resource(resource_uri, name=skill_name, title=skill_name.replace("-", " ").title(), description=f"Trusted on-demand WanGP methodology for {skill_name.replace('-', ' ')}.", mime_type="text/markdown")(read_skill)
 
     @mcp.resource("wangp://docs/settings/prompt-flags", name="prompt_flags", title="WanGP Prompt-Type Flags", description="Exact image_prompt_type, video_prompt_type, and audio_prompt_type flag definitions.", mime_type="text/markdown")
     def read_prompt_flags() -> str:
@@ -254,16 +270,16 @@ def _gallery_records(session, media_type: str = "all", limit: int = 50) -> list[
             resolved_path = str(path or "").strip()
             item_type = _gallery_media_type(resolved_path, gallery)
             settings = settings_list[index] if index < len(settings_list) and isinstance(settings_list[index], dict) else {}
-            gallery_key = hashlib.sha1(resolved_path.replace("\\", "/").casefold().encode("utf-8")).hexdigest()[:12]
+            ids = gallery_media_ids(resolved_path, gallery, settings, root=session._root)
             record = {
-                "media_id": f"{gallery}:{gallery_key}",
+                "media_id": ids[0],
                 "gallery": gallery,
                 "index": index,
                 "path": resolved_path,
                 "media_type": item_type,
                 "selected": index == selected_index,
                 "in_gallery": True,
-                "settings": _json_safe(settings),
+                "settings": {**_json_safe(settings), "gallery_media_ids": ids},
             }
             if record["selected"] and gallery == "visual" and item_type == "video":
                 record["current_time_seconds"] = gen.get("selected_video_time")
@@ -276,8 +292,14 @@ def _gallery_records(session, media_type: str = "all", limit: int = 50) -> list[
                 continue
             record.update({"index": None, "selected": False, "in_gallery": False})
             record.pop("current_time_seconds", None)
-        for record in current_records:
-            history.pop(record["media_id"], None)
+        combined_records = [*history.values(), *current_records]
+        id_lists = disambiguate_gallery_media_ids([(record["path"], record["gallery"], record["settings"]) for record in combined_records], root=session._root)
+        history.clear()
+        for record, ids in zip(combined_records, id_lists):
+            record["media_id"] = ids[0]
+            record["settings"]["gallery_media_ids"] = ids
+            for media_id in ids:
+                history.pop(media_id, None)
             history[record["media_id"]] = copy.deepcopy(record)
         records = [copy.deepcopy(record) for record in history.values() if requested_type == "all" or record["media_type"] == requested_type]
     return records[-limit:]
@@ -320,16 +342,15 @@ def _compact_gallery_stats(settings: dict[str, Any], media_type: str, path: str)
             stats["duration_seconds"] = int(duration) if duration.is_integer() else round(duration, 3)
         return stats
 
-    stats = {}
     if media_type == "image":
-        resolution = str(settings.get("resolution", "") or "").strip()
-        if not resolution:
-            width, height = positive_number("width"), positive_number("height")
-            if width is not None and height is not None:
-                resolution = f"{int(width)}x{int(height)}"
-        if resolution:
-            stats["resolution"] = resolution
-    elif media_type == "audio":
+        from PIL import Image
+
+        with Image.open(path) as image:
+            width, height = image.size
+        return {"resolution": f"{int(width)}x{int(height)}"}
+
+    stats = {}
+    if media_type == "audio":
         duration = positive_number("duration_seconds", "audio_duration")
         if duration is not None:
             stats["duration_seconds"] = int(duration) if duration.is_integer() else round(duration, 3)
@@ -363,10 +384,15 @@ def _gallery_item(session, media_id: str) -> dict[str, Any]:
     lookup = str(media_id or "").strip().lower()
     _gallery_records(session, limit=500)
     with _GALLERY_LOCK:
-        record = _gallery_history(session).get(lookup)
+        record = next((record for record in _gallery_history(session).values() if lookup in record["settings"]["gallery_media_ids"]), None)
         if record is not None and _gallery_path_exists(session, record.get("path", "")):
             return copy.deepcopy(record)
     raise KeyError(f"Unknown WanGP media_id: {media_id}")
+
+
+def resolve_gallery_media_path(session, media_id: str) -> str:
+    path = Path(_gallery_item(session, media_id)["path"])
+    return str((path if path.is_absolute() else Path(session._root) / path).resolve())
 
 
 def _extract_media_settings(session, path: str) -> dict[str, Any]:
@@ -647,6 +673,10 @@ def _resolve_generation_media(session, source: dict[str, Any] | list[dict[str, A
     return resolved
 
 
+def _resolve_artifact_references(value: Any, artifact_workspace, *, require_finalized: bool = True) -> Any:
+    return artifact_workspace.resolve_references(copy.deepcopy(value), require_finalized=require_finalized)
+
+
 def _register_gallery_media(session, path: str) -> dict[str, Any]:
     resolved_path = _resolve_existing_path(path, "uploaded media")
     media_type = _mcp_media_type(resolved_path)
@@ -923,11 +953,16 @@ def _run_io_action(session, file_access_policy, action: str, arguments: dict[str
     from shared.deepy import filesystem
 
     definition = filesystem.IO_ACTIONS[action]
+    if action == "read_text":
+        allowed = set(definition["parameters"]["properties"])
+        unknown = sorted(set(arguments) - allowed)
+        if unknown:
+            raise ValueError(f"Unsupported read_text argument: {unknown[0]}. Use start_line and end_line for a bounded read.")
     for parameter in definition["parameters"].get("required", []):
         if parameter not in arguments or arguments[parameter] is None:
             raise ValueError(f"{parameter} is required.")
     if action == "list":
-        return file_access_policy.virtualize_result(filesystem.list_entries(file_access_policy, path=arguments.get("path", ""), pattern=arguments.get("pattern", "*"), recursive=arguments.get("recursive", False), limit=arguments.get("limit", 200), offset=arguments.get("offset", 0)))
+        return file_access_policy.virtualize_result(filesystem.list_entries(file_access_policy, path=arguments.get("path", ""), pattern=arguments.get("pattern", "*"), recursive=arguments.get("recursive", False), limit=arguments.get("limit", 200), offset=arguments.get("offset", 0), media_type=arguments.get("media_type", "all")))
     if action == "info":
         path, _gallery = _resolve_io_source(session, file_access_policy, arguments["source"])
         return file_access_policy.virtualize_result(filesystem.file_info(path))
@@ -935,8 +970,11 @@ def _run_io_action(session, file_access_policy, action: str, arguments: dict[str
         return file_access_policy.virtualize_result(filesystem.read_text(file_access_policy, arguments["path"], start_line=arguments.get("start_line", 1), end_line=arguments.get("end_line"), encoding=arguments.get("encoding", "utf-8-sig")))
     if action == "search_text":
         return file_access_policy.virtualize_result(filesystem.search_text(file_access_policy, arguments["path"], arguments["query"], pattern=arguments.get("pattern", "*"), recursive=arguments.get("recursive", False), regex=arguments.get("regex", False), case_sensitive=arguments.get("case_sensitive", False), limit=arguments.get("limit", 100)))
-    if action == "write_text":
-        return file_access_policy.virtualize_result(filesystem.write_text(file_access_policy, arguments["path"], arguments["text"], mode=arguments.get("mode", "create"), encoding=arguments.get("encoding", "utf-8")))
+    if action in {"write_text", "write_artifact_text"}:
+        text = arguments["text"] if action == "write_text" else arguments["artifact"]
+        if not isinstance(text, str):
+            raise TypeError("write_artifact_text requires an artifact reference that resolves to text; use select or template with join when rendering record sets.")
+        return file_access_policy.virtualize_result(filesystem.write_text(file_access_policy, arguments["path"], text, mode=arguments.get("mode", "create"), encoding=arguments.get("encoding", "utf-8")))
     if action == "mkdir":
         return file_access_policy.virtualize_result(filesystem.make_directory(file_access_policy, arguments["path"]))
     if action == "copy":
@@ -959,6 +997,9 @@ def _run_io_action(session, file_access_policy, action: str, arguments: dict[str
             from shared.gradio.downloads import register_file_download
             result["download"] = register_file_download(result["output_file"], "application/zip")
         return file_access_policy.virtualize_result(result)
+    if action == "unzip":
+        source, _gallery = _resolve_io_source(session, file_access_policy, arguments["source"], file=True)
+        return file_access_policy.virtualize_result(filesystem.unzip_file(file_access_policy, source, destination=arguments.get("destination", ""), overwrite=arguments.get("overwrite", False), source_authorized=True))
     if action == "download":
         if not downloads_enabled:
             raise RuntimeError("Direct WanGP downloads are unavailable for this MCP transport.")
@@ -1061,7 +1102,7 @@ def _config_file_from_arg(value: str | None) -> str | None:
     return str(path)
 
 
-def build_server_for_session(session, settings: dict[str, Any] | None = None, toolbox=None, default_job_event_limit: int = 20, allow_read_file_system: bool = False, http_media_transfer: bool = False, compact_model_tools: bool = False, file_access_policy=None, io_downloads: bool = False):
+def build_server_for_session(session, settings: dict[str, Any] | None = None, toolbox=None, default_job_event_limit: int = 20, allow_read_file_system: bool = False, http_media_transfer: bool = False, compact_model_tools: bool = False, file_access_policy=None, io_downloads: bool = False, artifact_workspace=None):
     try:
         from mcp.server.fastmcp import FastMCP
     except Exception as exc:
@@ -1069,11 +1110,17 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
 
     jobs = _JobStore(session)
     mcp = FastMCP("WanGP", **dict(settings or {}))
-    _register_documentation_resources(mcp)
     default_job_event_limit = max(0, min(int(default_job_event_limit), _MAX_STORED_EVENTS))
     if file_access_policy is None:
         from shared.deepy.filesystem import build_file_access_policy
         file_access_policy = build_file_access_policy({}, unrestricted_read=bool(allow_read_file_system))
+    from shared.deepy import long_text as deepy_long_text
+
+    long_text_active = deepy_long_text.long_text_tools_active(file_access_policy) and deepy_long_text.workspace_mount(file_access_policy) is not None
+    _register_documentation_resources(mcp, file_access_policy, long_text_active=long_text_active)
+    if artifact_workspace is None:
+        from shared.deepy.artifacts import ArtifactWorkspace
+        artifact_workspace = ArtifactWorkspace()
     allow_read_file_system = file_access_policy.read_enabled
     transfer_store = _MediaTransferStore(session) if http_media_transfer else None
     toolbox_instance = toolbox
@@ -1131,7 +1178,8 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
 
     @mcp.prompt(name="wangp_agent", title="WanGP Agent Guide", description="Instructions for discovering WanGP models, building settings, running jobs, and handling media.")
     def wangp_agent_prompt() -> str:
-        return _AGENT_GUIDE_PATH.read_text(encoding="utf-8")
+        guide = _AGENT_GUIDE_PATH.read_text(encoding="utf-8")
+        return deepy_long_text.hide_legacy_artifact_guidance(guide) if long_text_active else guide
 
     def legacy_model_tool(function):
         return function if compact_model_tools else mcp.tool()(function)
@@ -1257,6 +1305,43 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
 
         return _media_settings(session, media_id=media_id, path=path, allow_read_file_system=allow_read_file_system, file_access_policy=file_access_policy)
 
+    def wangp_artifact(action: str | None = None, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Manage external working collections and persistent project ledgers. Pass action and arguments as separate top-level tool parameters. Omit both for discovery; pass action alone for its schema. Prefer inline work for at most 10 simple items and about 2,048 payload tokens."""
+
+        from shared.deepy.artifacts import ARTIFACT_ACTIONS, ARTIFACT_INLINE_ITEM_THRESHOLD, ARTIFACT_INLINE_TOKEN_THRESHOLD, ARTIFACT_LIMITS, normalize_artifact_invocation, run_artifact_action
+
+        action_name, arguments = normalize_artifact_invocation(action, arguments)
+        if not action_name:
+            actions = [{"name": name, "description": definition["description"]} for name, definition in ARTIFACT_ACTIONS.items()]
+            return {"status": "discovery", "actions": actions, "count": len(actions), "inline_threshold": {"items": ARTIFACT_INLINE_ITEM_THRESHOLD, "tokens": ARTIFACT_INLINE_TOKEN_THRESHOLD}, "limits": dict(ARTIFACT_LIMITS), "skills": ["wangp://skills/large-artifact-workflows", "wangp://skills/long-form-story"], "next": "Choose an action. Pass action alone for its schema, then repeat that top-level action with a top-level arguments object to execute it."}
+        if action_name not in ARTIFACT_ACTIONS:
+            raise ValueError(f"Artifact action '{action_name}' is unavailable. Call without action to list actions.")
+        if arguments is None:
+            return {"status": "schema", "action": {"name": action_name, **copy.deepcopy(ARTIFACT_ACTIONS[action_name])}, "next": f"Repeat top-level action='{action_name}' and pass a separate top-level arguments object matching action.parameters. Payload size does not change this call shape."}
+        return run_artifact_action(artifact_workspace, action_name, dict(arguments))
+
+    if not long_text_active:
+        mcp.tool()(wangp_artifact)
+
+    if long_text_active:
+        @mcp.tool()
+        def rg(arguments: str) -> dict[str, Any]:
+            """Search authorized UTF-8 files with ripgrep. Pass supported rg options and one pattern, then `--` and optional @alias paths; omitted paths search the temporary workspace."""
+
+            return deepy_long_text.run_rg(file_access_policy, arguments)
+
+        @mcp.tool()
+        def edit(file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict[str, Any]:
+            """Replace exact text in one authorized UTF-8 file. old_string must be unique unless replace_all is true; whitespace and line endings are literal."""
+
+            return deepy_long_text.edit_text(file_access_policy, file_path, old_string, new_string, replace_all)
+
+        @mcp.tool()
+        def append_text(file_path: str, text: str) -> dict[str, Any]:
+            """Append exact literal UTF-8 text to an authorized file, creating the file when it does not exist. No newline or prefix is added implicitly."""
+
+            return deepy_long_text.append_text(file_access_policy, file_path, text)
+
     @mcp.tool()
     def wangp_io(action: str | None = None, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         """Discover or run filesystem utilities. Use @alias/path; plain paths use video outputs. Omit action for actions; pass action alone for its schema."""
@@ -1265,6 +1350,21 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
 
         action_name = str(action or "").strip()
         actions = available_io_actions(file_access_policy, downloads_enabled=io_downloads)
+        if long_text_active:
+            sanitized_actions = []
+            for candidate in actions:
+                if candidate["name"] == "write_artifact_text":
+                    continue
+                candidate = copy.deepcopy(candidate)
+                if candidate["name"] == "list":
+                    for parameter in ("store_artifact", "artifact_id", "artifact_title"):
+                        candidate["parameters"]["properties"].pop(parameter, None)
+                elif candidate["name"] == "write_text":
+                    candidate["description"] = "Create, overwrite, or append literal UTF-8 text already present in the request."
+                elif candidate["name"] == "zip":
+                    candidate["parameters"]["properties"]["sources"] = {"type": "array", "items": {"type": "string"}, "description": "Authorized paths or Gallery media ids."}
+                sanitized_actions.append(candidate)
+            actions = sanitized_actions
         if not action_name:
             compact = [{"name": candidate["name"], "description": candidate["description"]} for candidate in actions]
             roots = [root["path"] for root in file_access_policy.roots()] if file_access_policy.read_enabled else []
@@ -1274,7 +1374,46 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
             raise ValueError(f"IO action '{action_name}' is unavailable. Call without action to list allowed actions.")
         if arguments is None:
             return {"status": "schema", "action": action_defs[0]}
-        return _run_io_action(session, file_access_policy, action_name, dict(arguments), io_downloads)
+        action_arguments = dict(arguments)
+        if long_text_active and action_name == "list" and any(name in action_arguments for name in ("store_artifact", "artifact_id", "artifact_title")):
+            raise ValueError("Artifact-backed file listings are unavailable while the long-text experiment is active.")
+        if long_text_active and action_name == "zip" and isinstance(action_arguments.get("sources"), dict):
+            raise ValueError("Artifact-backed ZIP sources are unavailable while the long-text experiment is active.")
+        store_artifact, target_artifact_id, artifact_title = False, "", ""
+        if action_name == "list":
+            store_artifact = bool(action_arguments.pop("store_artifact", False))
+            target_artifact_id = str(action_arguments.pop("artifact_id", "") or "").strip()
+            artifact_title = str(action_arguments.pop("artifact_title", "") or "").strip()
+        exported_artifact_id = ""
+        exported_artifact_reference = None
+        if action_name == "write_artifact_text":
+            artifact_reference = action_arguments.get("artifact")
+            if not isinstance(artifact_reference, dict) or not str(artifact_reference.get("$artifact", "") or "").strip():
+                raise TypeError("write_artifact_text requires an artifact reference; literal text is not accepted.")
+            exported_artifact_id = str(artifact_reference["$artifact"]).strip()
+            exported_artifact_reference = copy.deepcopy(artifact_reference)
+        action_arguments = _resolve_artifact_references(action_arguments, artifact_workspace, require_finalized=action_name != "write_artifact_text")
+        result = _run_io_action(session, file_access_policy, action_name, action_arguments, io_downloads)
+        if exported_artifact_id:
+            result["artifact_id"] = exported_artifact_id
+            verification = artifact_workspace.reference_status(exported_artifact_reference)
+            verification.update({key: result[key] for key in ("characters_written", "lines_written", "line_count", "markdown_heading_count", "first_markdown_heading", "last_markdown_heading", "sha256", "size_bytes") if key in result})
+            verification["partial_export"] = verification["kind"] == "record_set" and not verification["finalized"]
+            if verification.get("expected_items") is not None:
+                verification["remaining_items"] = max(0, int(verification["expected_items"]) - int(verification.get("source_items", 0)))
+            verification["readback_required"] = False
+            result["verification"] = verification
+        if action_name != "list" or not store_artifact:
+            return result
+        entries = list(result.get("entries", []) or [])
+        if target_artifact_id:
+            artifact = artifact_workspace.append(target_artifact_id, entries, operation_id=f"io-list:{result.get('path', '')}:{action_arguments.get('pattern', '*')}:{action_arguments.get('media_type', 'all')}:{int(result.get('offset', 0))}") if entries else artifact_workspace.status(target_artifact_id)
+        else:
+            schema = {"type": "object", "required": ["name", "path", "type"], "properties": {"name": {"type": "string"}, "path": {"type": "string"}, "type": {"type": "string"}}}
+            artifact = artifact_workspace.create(title=artifact_title or f"Files from {result.get('path', '@outputs')}", schema=schema, initial_items=entries)
+        compact = {key: value for key, value in result.items() if key != "entries"}
+        compact.update(artifact=artifact, stored_count=len(entries), preview=[{key: entry.get(key) for key in ("name", "path", "type")} for entry in entries[:3]])
+        return compact
 
     @mcp.tool()
     def wangp_notify(message: str, title: str = "Deepy notification") -> dict[str, Any]:
@@ -1363,7 +1502,8 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
             raise ValueError(f"Toolbox action '{action_name}' is unavailable in this WanGP runtime.")
         if arguments is None:
             return {"status": "schema", "action": action_defs[0]}
-        resolved_arguments = _resolve_toolbox_arguments(session, sandbox_toolbox, action_name, dict(arguments or {}), allow_read_file_system, file_access_policy)
+        artifact_arguments = _resolve_artifact_references(dict(arguments or {}), artifact_workspace, require_finalized=True)
+        resolved_arguments = _resolve_toolbox_arguments(session, sandbox_toolbox, action_name, artifact_arguments, allow_read_file_system, file_access_policy)
         validation_error = sandbox_toolbox.validate_tool_call(action_name, resolved_arguments)
         if validation_error:
             raise ValueError(validation_error)
@@ -1376,7 +1516,10 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
         if not isinstance(source, (dict, list)):
             raise TypeError("source must be a settings dict, task dict, manifest dict, or task list")
         _gallery_records(session, limit=500)
-        record = jobs.submit(_resolve_generation_media(session, source, allow_read_file_system, file_access_policy))
+        resolved_source = _resolve_artifact_references(source, artifact_workspace, require_finalized=True)
+        if long_text_active:
+            resolved_source = deepy_long_text.resolve_prompt_references(resolved_source, file_access_policy)
+        record = jobs.submit(_resolve_generation_media(session, resolved_source, allow_read_file_system, file_access_policy))
         if wait:
             record.job.result(timeout=timeout_s)
         return record.snapshot(event_limit=default_job_event_limit if event_limit is None else event_limit)
@@ -1407,8 +1550,8 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
     return mcp
 
 
-def build_inprocess_server(session, toolbox=None, default_job_event_limit: int = 20, allow_read_file_system: bool = False, file_access_policy=None):
-    return build_server_for_session(session, toolbox=toolbox, default_job_event_limit=default_job_event_limit, allow_read_file_system=allow_read_file_system, compact_model_tools=True, file_access_policy=file_access_policy, io_downloads=True)
+def build_inprocess_server(session, toolbox=None, default_job_event_limit: int = 20, allow_read_file_system: bool = False, file_access_policy=None, artifact_workspace=None):
+    return build_server_for_session(session, toolbox=toolbox, default_job_event_limit=default_job_event_limit, allow_read_file_system=allow_read_file_system, compact_model_tools=True, file_access_policy=file_access_policy, io_downloads=True, artifact_workspace=artifact_workspace)
 
 
 def build_server(args: argparse.Namespace):

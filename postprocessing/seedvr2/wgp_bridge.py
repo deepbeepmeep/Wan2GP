@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
-from postprocessing.spatial_upsamplers import SimpleScaleSuffixMixin, UPSAMPLER_PROFILE_VIDEO, UPSAMPLER_TYPE_POSTPROCESSING
+from postprocessing.spatial_upsamplers import SimpleScaleSuffixMixin, UPSAMPLER_PROFILE_VIDEO, UPSAMPLER_TYPE_POSTPROCESSING, format_multiplier_value
 
 
 class SeedVR2Bridge(SimpleScaleSuffixMixin):
@@ -69,7 +69,7 @@ class SeedVR2Bridge(SimpleScaleSuffixMixin):
 
     @classmethod
     def upsampling_value(cls, scale: float) -> str:
-        return f"{cls.UPSAMPLING_VALUE_PREFIX}{cls.format_ratio(scale)}"
+        return format_multiplier_value(cls.UPSAMPLING_VALUE_PREFIX, scale)
 
     @classmethod
     def query_upsampler_def(cls) -> dict[str, Any]:

@@ -179,3 +179,9 @@ class RMSNorm(nn.Module):
         x, residual = state_list
         state_list.clear()
         return self.forward(x, residual)
+
+
+# Register after definitions to preserve Triton's line-number-sensitive cache keys.
+if triton is not None:
+    from shared.kernels.triton_compilation_log import install_triton_compilation_logger
+    install_triton_compilation_logger()

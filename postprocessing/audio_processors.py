@@ -6,6 +6,12 @@ expose config controls under ``wgp_config["audio_processors"][config_key]``.
 Definitions may also expose an optional ``description`` plus optional
 ``method_descriptions`` and ``method_parameters`` mappings for reusable
 discovery interfaces. Existing handlers without these fields remain valid.
+Discovery tests the existing optional ``enabled()`` method first. When it is
+absent, handlers may expose a ``status`` property containing ``"enabled"`` or
+``"disabled"``. Discovery reports ``"unknown"`` only when neither contract
+provides a valid status. Disabled handlers may expose ``reason_disabled``. This
+instance property is separate from the definition's existing per-method
+``status`` progress labels.
 Model persistence is shared through
 ``wgp_config["audio_processors"]["persistence"]``. Dispatch retains at most one
 audio processor handler and releases it before another handler runs.
@@ -29,6 +35,7 @@ import importlib
 from typing import Any, Callable
 
 from shared.utils import offload_registry
+from .processor_status import PROCESSOR_STATUS_DISABLED, PROCESSOR_STATUS_ENABLED, PROCESSOR_STATUS_UNKNOWN, handler_reason_disabled, handler_status
 
 
 AUDIO_PROCESSOR_TYPE_SOUNDTRACK = "soundtrack"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from copy import copy
+from types import MethodType
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -40,6 +41,47 @@ _DEFAULT_FAST_CHUNK_GATED_DELTA_RULE = fast_chunk_gated_delta_rule
 _DEFAULT_FAST_RECURRENT_GATED_DELTA_RULE = fast_recurrent_gated_delta_rule
 _DEFAULT_FUSED_RMSNORM_GATED = FusedRMSNormGated
 _DEFAULT_SHORT_CONVOLUTION = ShortConvolution
+_FLA_PREFILL_AUTOTUNE_CONFIGURED = False
+
+
+def configure_qwen35_fla_prefill_autotune(device: torch.device) -> None:
+    """Share upstream FLA norm autotuning across representative prefill ranges."""
+    global _FLA_PREFILL_AUTOTUNE_CONFIGURED
+    if _FLA_PREFILL_AUTOTUNE_CONFIGURED or _DEFAULT_FUSED_RMSNORM_GATED is None:
+        return
+    from fla.modules.l2norm import l2norm_fwd_kernel
+    from fla.modules.fused_norm_gate import layer_norm_gated_fwd_kernel
+
+    def range_key(nb: int) -> int:
+        return 1 if nb == 1 else 2 if nb <= 15 else 16 if nb <= 24 else 25
+
+    def install(autotuner) -> None:
+        original_run = autotuner.run
+        original_bench = autotuner._bench
+        tuning = {"active": False, "range": 0}
+
+        def bench(_self, *args, **kwargs):
+            if not tuning["active"]:
+                tuning["active"] = True
+                print(f"[Deepy][Triton] Autotuning {autotuner.base_fn.__name__} for NB range {tuning['range']}...")
+            return original_bench(*args, **kwargs)
+
+        def run(_self, *args, **kwargs):
+            kwargs["NB"] = range_key(int(kwargs["NB"]))
+            tuning["active"] = False
+            tuning["range"] = kwargs["NB"]
+            result = original_run(*args, **kwargs)
+            if tuning["active"]:
+                print(f"[Deepy][Triton] Autotuned {autotuner.base_fn.__name__} for NB range {tuning['range']} in {autotuner.bench_time:.2f}s: {autotuner.best_config}.")
+            return result
+
+        autotuner._bench = MethodType(bench, autotuner)
+        autotuner.run = MethodType(run, autotuner)
+
+    install(l2norm_fwd_kernel)
+    install(layer_norm_gated_fwd_kernel.fn)
+    _FLA_PREFILL_AUTOTUNE_CONFIGURED = True
+    print("[Deepy][Triton] FLA norm kernels use upstream autotuning shared across NB ranges 1, 2-15, 16-24, and 25+.")
 
 
 def configure_qwen35_safe_legacy_kernels(enabled: bool) -> None:
@@ -678,7 +720,7 @@ class Qwen3_5Block(nn.Module):
         self.ffn_up = ColumnParallelLinear(int(config.hidden_size), int(config.intermediate_size), bias=False)
         self.ffn_gate_up = None
         self.ffn_down = RowParallelLinear(int(config.intermediate_size), int(config.hidden_size), bias=False)
-        self.mlp_act_fn = SiluAndMul()
+        self.mlp_act_fn = SiluAndMul(use_triton=not safe_legacy_kernels)
 
         if self.layer_type == "full_attention":
             tp_size = _get_tp_size()
@@ -813,18 +855,20 @@ class Qwen3_5Block(nn.Module):
     def prepare_speculative_state(self, max_verify_tokens: int) -> None:
         if self.layer_type != "linear_attention":
             return
-        conv_shape = (int(max_verify_tokens) + 1, *self.conv_state_buffer.shape)
-        recurrent_shape = (int(max_verify_tokens) + 1, *self.recurrent_state_buffer.shape)
+        # Final verification states are written to the live buffers. Only
+        # prefixes before a rejected suffix need separate snapshots.
+        conv_shape = (int(max_verify_tokens) - 1, *self.conv_state_buffer.shape)
+        recurrent_shape = (int(max_verify_tokens) - 1, *self.recurrent_state_buffer.shape)
         if tuple(self.speculative_conv_state_buffer.shape) != conv_shape or self.speculative_conv_state_buffer.device != self.conv_state_buffer.device or self.speculative_conv_state_buffer.dtype != self.conv_state_buffer.dtype:
             self.speculative_conv_state_buffer = torch.empty(conv_shape, device=self.conv_state_buffer.device, dtype=self.conv_state_buffer.dtype)
         if tuple(self.speculative_recurrent_state_buffer.shape) != recurrent_shape or self.speculative_recurrent_state_buffer.device != self.recurrent_state_buffer.device or self.speculative_recurrent_state_buffer.dtype != self.recurrent_state_buffer.dtype:
             self.speculative_recurrent_state_buffer = torch.empty(recurrent_shape, device=self.recurrent_state_buffer.device, dtype=self.recurrent_state_buffer.dtype)
 
-    def commit_speculative_state(self, processed_tokens: int) -> None:
-        if self.layer_type != "linear_attention":
+    def commit_speculative_state(self, processed_tokens: int, verified_tokens: int) -> None:
+        if self.layer_type != "linear_attention" or processed_tokens == verified_tokens:
             return
-        self.conv_state_buffer.copy_(self.speculative_conv_state_buffer[int(processed_tokens)])
-        self.recurrent_state_buffer.copy_(self.speculative_recurrent_state_buffer[int(processed_tokens)])
+        self.conv_state_buffer.copy_(self.speculative_conv_state_buffer[int(processed_tokens) - 1])
+        self.recurrent_state_buffer.copy_(self.speculative_recurrent_state_buffer[int(processed_tokens) - 1])
 
     def release_sequence_state(self):
         if self.layer_type != "linear_attention":
@@ -955,10 +999,8 @@ class Qwen3_5Block(nn.Module):
         use_precomputed_states = has_previous_state and seq_len == 1
         speculative_verify = context.speculative_verify and cache_params is None and has_previous_state and seq_len > 1
         if speculative_verify:
-            if self.speculative_conv_state_buffer.shape[0] <= seq_len or self.speculative_recurrent_state_buffer.shape[0] <= seq_len:
+            if self.speculative_conv_state_buffer.shape[0] < seq_len - 1 or self.speculative_recurrent_state_buffer.shape[0] < seq_len - 1:
                 raise RuntimeError(f"Predictive state buffers do not cover a {seq_len}-token verification pass.")
-            self.speculative_conv_state_buffer[0].copy_(conv_state)
-            self.speculative_recurrent_state_buffer[0].copy_(recurrent_state)
 
         mixed_qkv_input = self.attn_qkv(hidden_states)
         if self.attn_gate_ab is None:
@@ -1002,12 +1044,16 @@ class Qwen3_5Block(nn.Module):
             and isinstance(self.ssm_conv1d, self._short_convolution_cls)
         )
 
-        if speculative_verify and use_short_convolution:
+        if speculative_verify and use_short_convolution and is_cuda:
+            from shared.llm_engines.nanovllm.layers.speculative_state import conv_verify
+            mixed_qkv, last_conv_state = conv_verify(mixed_qkv_input, conv_state, self.ssm_conv1d.weight, self.ssm_conv1d.bias, self.speculative_conv_state_buffer)
+        elif speculative_verify and use_short_convolution:
             conv_outputs = []
             for token_idx in range(seq_len):
                 conv_output, _ = self.ssm_conv1d(mixed_qkv_input[:, token_idx:token_idx + 1], cache=conv_state, output_final_state=True)
                 conv_outputs.append(conv_output)
-                self.speculative_conv_state_buffer[token_idx + 1].copy_(conv_state)
+                if token_idx + 1 < seq_len:
+                    self.speculative_conv_state_buffer[token_idx].copy_(conv_state)
             mixed_qkv = torch.cat(conv_outputs, dim=1)
             last_conv_state = conv_state
         elif use_short_convolution:
@@ -1030,7 +1076,8 @@ class Qwen3_5Block(nn.Module):
                     else:
                         conv_output = torch_causal_conv1d_update(conv_input, conv_state, conv_kernel, self.ssm_conv1d.bias)
                     conv_outputs.append(conv_output)
-                    self.speculative_conv_state_buffer[token_idx + 1].copy_(conv_state)
+                    if token_idx + 1 < seq_len:
+                        self.speculative_conv_state_buffer[token_idx].copy_(conv_state)
                 mixed_qkv = torch.cat(conv_outputs, dim=-1)
             elif use_precomputed_states:
                 if use_fast_causal_conv:
@@ -1132,7 +1179,10 @@ class Qwen3_5Block(nn.Module):
             query = query.repeat_interleave(repeat_factor, dim=2)
             key = key.repeat_interleave(repeat_factor, dim=2)
 
-        if speculative_verify:
+        if speculative_verify and self._fast_recurrent_gated_delta_rule is not None and is_cuda:
+            from shared.llm_engines.nanovllm.layers.speculative_state import recurrent_verify
+            core_attn_out, last_recurrent_state = recurrent_verify(query, key, value, g, beta, recurrent_state, self.speculative_recurrent_state_buffer)
+        elif speculative_verify:
             recurrent_outputs = []
             current_recurrent_state = recurrent_state
             for token_idx in range(seq_len):
@@ -1158,7 +1208,8 @@ class Qwen3_5Block(nn.Module):
                         output_final_state=True,
                     )
                 recurrent_outputs.append(recurrent_output)
-                self.speculative_recurrent_state_buffer[token_idx + 1].copy_(current_recurrent_state)
+                if token_idx + 1 < seq_len:
+                    self.speculative_recurrent_state_buffer[token_idx].copy_(current_recurrent_state)
             core_attn_out = torch.cat(recurrent_outputs, dim=1)
             last_recurrent_state = current_recurrent_state
         elif use_precomputed_states:

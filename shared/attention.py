@@ -62,8 +62,20 @@ try:
             cu_seqlens_kv,
             max_seqlen_q,
             max_seqlen_kv,
+            is_causal=False,
+            sm_scale=None,
         ):
-        return sageattn_varlen(q, k, v, cu_seqlens_q, cu_seqlens_kv, max_seqlen_q, max_seqlen_kv)
+        return sageattn_varlen(
+            q,
+            k,
+            v,
+            cu_seqlens_q,
+            cu_seqlens_kv,
+            max_seqlen_q,
+            max_seqlen_kv,
+            is_causal=is_causal,
+            sm_scale=sm_scale,
+        )
     
 except ImportError:
     sageattn_varlen_wrapper = None
@@ -379,7 +391,7 @@ def pay_attention(
         raise ValueError("pay_attention received both attention_mask and causal=True; build a combined mask once and pass causal=False.")
     if attention_mask != None:
         requested_attn = offload.shared_state["_attention"] if force_attention == None else force_attention
-        requested_attn = get_default_attention_mode() if requested_attn == "sol" else requested_attn
+        requested_attn = get_default_attention_mode() if requested_attn in ("sol", "vdn") else requested_attn
         requested_attn = "sage2" if requested_attn == "radial" else requested_attn
         support_reason = None
         if _is_mps:
@@ -397,7 +409,7 @@ def pay_attention(
         if  attention_mask.dtype == torch.bfloat16 and not bfloat16_supported:
             attention_mask = attention_mask.to(torch.float16)
     attn = offload.shared_state["_attention"] if force_attention== None else force_attention
-    attn = get_default_attention_mode() if attn == "sol" else attn
+    attn = get_default_attention_mode() if attn in ("sol", "vdn") else attn
 
     q,k,v = qkv_list
     qkv_list.clear()
@@ -502,6 +514,8 @@ def pay_attention(
             cu_seqlens_kv= cu_seqlens_k,
             max_seqlen_q=lq,
             max_seqlen_kv=lk,
+            is_causal=causal,
+            sm_scale=softmax_scale,
         ).unflatten(0, (b, lq))
     elif attn=="sage3":
         qkv_list = [q,k,v]

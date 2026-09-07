@@ -18,8 +18,22 @@ from .usage import aggregate_usage_data, claude_context_window, claude_usage_dat
 
 
 CLAUDE_AUTH_DOCS_URL = "https://code.claude.com/docs/en/authentication"
-CLAUDE_SDK_INSTALL_SPEC = "claude-agent-sdk==0.1.40"
+CLAUDE_SDK_INSTALL_SPEC = "claude-agent-sdk==0.1.66"
 CLAUDE_PROGRESS_INSTRUCTIONS = """For work with multiple meaningful steps, send concise user-facing progress updates as short text messages before and between tool calls. Keep progress updates separate from the final answer, and do not reveal hidden reasoning."""
+
+
+def _restore_mcp_content_contract(server_config: dict[str, Any], sdk_tools: Sequence[Any]) -> None:
+    server = server_config.get("instance")
+    if server is None:
+        return
+    from mcp.types import TextContent
+
+    tool_map = {tool_def.name: tool_def for tool_def in sdk_tools}
+
+    @server.call_tool()
+    async def call_tool(name: str, arguments: dict[str, Any]):
+        result = await tool_map[name].handler(arguments)
+        return [TextContent(type="text", text=item["text"]) for item in result.get("content", []) if item.get("type") == "text"]
 
 
 class ClaudeSetupRequired(RuntimeError):
@@ -91,6 +105,8 @@ class ClaudeBackend:
             detected = _resolve_claude_executable(str(self.profile.get("executable", "claude") or "claude"))
             detected_note = " WanGP found your Claude Code executable and will reuse it once the SDK bridge is installed." if detected else ""
             raise ClaudeSetupRequired(f"Claude Agent SDK is not installed.{detected_note} Run `pip install {CLAUDE_SDK_INSTALL_SPEC}` in WanGP's Python environment, then authenticate once with Claude Code. Do not install the unpinned latest SDK because it replaces WanGP's MCP/Pydantic stack. [Authentication help]({CLAUDE_AUTH_DOCS_URL})") from exc
+        if str(getattr(sdk, "__version__", "") or "") != CLAUDE_SDK_INSTALL_SPEC.rsplit("==", 1)[-1]:
+            raise ClaudeSetupRequired(f"WanGP requires {CLAUDE_SDK_INSTALL_SPEC} for compatible thought summaries and MCP tools. Run `pip install --upgrade {CLAUDE_SDK_INSTALL_SPEC}` in WanGP's Python environment.")
         return sdk
 
     def _options(self, sdk, system_prompt: str, mcp_servers: dict[str, Any], allowed_tools: list[str]) -> Any:
@@ -143,6 +159,8 @@ class ClaudeBackend:
             sdk_tools.append(sdk.tool(name, str(function.get("description", "") or ""), dict(function.get("parameters", {}) or {}))(handler))
             allowed_tools.append(f"mcp__wangp__{name}")
         mcp_servers = {"wangp": sdk.create_sdk_mcp_server(name="wangp", version="1", tools=sdk_tools)} if sdk_tools else {}
+        if mcp_servers:
+            _restore_mcp_content_contract(mcp_servers["wangp"], sdk_tools)
         prompt: Any = str(text or "")
         if images:
             async def multimodal_prompt():
@@ -161,6 +179,7 @@ class ClaudeBackend:
         streamed_text_ids: set[str] = set()
         streamed_text_parts: dict[str, list[str]] = {}
         streamed_reasoning_ids: set[str] = set()
+        tool_requests: dict[str, dict[str, Any]] = {}
         pending_text_messages: list[tuple[str, str]] = []
         streamed_usage_by_message: dict[str, dict[str, Any]] = {}
         last_context_tokens = 0
@@ -232,6 +251,12 @@ class ClaudeBackend:
                             block = dict(event.get("content_block", {}) or {})
                             block_type = str(block.get("type", "") or "")
                             current_block_types[index] = block_type
+                            if block_type == "thinking":
+                                on_event(BackendEvent("reasoning_start"))
+                            elif block_type == "tool_use":
+                                tool_use_id = str(block.get("id", "") or "")
+                                tool_requests[tool_use_id] = {"name": str(block.get("name", "") or ""), "input": dict(block.get("input", {}) or {})}
+                                on_event(BackendEvent("tool_request_start", data={"id": tool_use_id, "name": tool_requests[tool_use_id]["name"]}))
                             initial_text = str(block.get("thinking", "") if block_type == "thinking" else block.get("text", "") if block_type == "text" else "")
                             if initial_text:
                                 item_id = f"{current_message_id}:{block_type}:{index}"
@@ -309,6 +334,16 @@ class ClaudeBackend:
                                 if item_id not in streamed_text_ids:
                                     on_event(BackendEvent("commentary_delta", block_text, {"item_id": item_id}))
                                 pending_text_messages.append((item_id, block_text))
+                        elif "tooluse" in block_type:
+                            tool_use_id = str(getattr(block, "id", "") or "")
+                            tool_requests[tool_use_id] = {"name": str(getattr(block, "name", "") or ""), "input": dict(getattr(block, "input", {}) or {})}
+                        elif "toolresult" in block_type:
+                            tool_use_id = str(getattr(block, "tool_use_id", "") or "")
+                            request = tool_requests.pop(tool_use_id, {})
+                            if bool(getattr(block, "is_error", False)):
+                                content = getattr(block, "content", "")
+                                error = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+                                on_event(BackendEvent("tool_request_error", error, {"id": tool_use_id, "name": str(request.get("name", "") or ""), "input": dict(request.get("input", {}) or {})}))
                     if has_tool:
                         # A completed text-only AssistantMessage immediately before
                         # tool use is a progress report, not part of the final answer.

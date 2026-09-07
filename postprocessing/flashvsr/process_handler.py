@@ -8,6 +8,7 @@ import gradio as gr
 import torch
 from safetensors.torch import save_file
 
+from postprocessing import spatial_upsamplers as upsampler_api
 from postprocessing.flashvsr.wgp_bridge import FlashVSRBridge
 from shared.utils.virtual_media import build_virtual_media_path
 
@@ -33,8 +34,13 @@ class FlashVSRProcessHandler:
 
     def normalize_target_control(self, value: str | None) -> str:
         value = str(value or "").strip()
-        if scale_for_lanczos(value) is not None or FlashVSRBridge.scale_for_upsampling(value) is not None:
-            return value
+        scale = scale_for_lanczos(value)
+        if scale is not None:
+            return upsampling_value("lanczos", scale)
+        scale = FlashVSRBridge.scale_for_upsampling(value)
+        if scale is not None:
+            method = FlashVSRBridge.UPSAMPLING_TWO_PASS_VALUE_PREFIX if FlashVSRBridge.is_two_pass_upsampling(value) else FlashVSRBridge.UPSAMPLING_VALUE_PREFIX
+            return upsampling_value(method, scale)
         scale = scale_for_any(value)
         return FlashVSRBridge.upsampling_value(scale) if scale is not None else self.default_target_control
 
@@ -207,13 +213,7 @@ def _load_tail_tensor(handle, key: str, sidecar_path: str) -> torch.Tensor:
 
 
 def scale_for_lanczos(value: str | None) -> float | None:
-    text = str(value or "").strip().lower()
-    if not text.startswith("lanczos"):
-        return None
-    try:
-        scale = float(text[len("lanczos"):])
-    except ValueError:
-        return None
+    scale = upsampler_api.parse_multiplier_suffix(value, "lanczos", 2.0)
     return scale if scale in FlashVSRBridge.UPSAMPLING_RATIOS else None
 
 
@@ -245,7 +245,7 @@ def upsampling_prefix_for_process(process_settings: dict | None) -> str:
 
 
 def upsampling_value(prefix: str, scale: float) -> str:
-    return f"{prefix}{FlashVSRBridge.format_ratio(scale)}"
+    return upsampler_api.format_multiplier_value(prefix, scale)
 
 
 HANDLER = FlashVSRProcessHandler()

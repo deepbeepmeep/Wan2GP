@@ -7,6 +7,7 @@ import math
 from typing import Any
 
 from postprocessing import audio_processors, spatial_upsamplers, temporal_upsamplers
+from postprocessing.processor_status import PROCESSOR_STATUS_DISABLED, PROCESSOR_STATUS_ENABLED, PROCESSOR_STATUS_UNKNOWN
 
 
 PROCESS_TYPE_SPATIAL_UPSAMPLING = "spatial_upsampling"
@@ -81,7 +82,7 @@ def _multiplier_parameter(multipliers) -> dict[str, Any]:
     }
 
 
-def _process(process_id: str, label: str, description: str, process_type: str, media: tuple[str, ...], parameters: list[dict[str, Any]], category: str | None = None) -> dict[str, Any]:
+def _process(process_id: str, label: str, description: str, process_type: str, media: tuple[str, ...], parameters: list[dict[str, Any]], category: str | None = None, *, status: str, reason_disabled: str) -> dict[str, Any]:
     process = {
         "id": str(process_id),
         "label": str(label),
@@ -89,9 +90,12 @@ def _process(process_id: str, label: str, description: str, process_type: str, m
         "type": str(process_type),
         "media": list(media),
         "parameters": parameters,
+        "status": status,
     }
     if category:
         process["category"] = str(category)
+    if reason_disabled:
+        process["reason_disabled"] = reason_disabled
     return process
 
 
@@ -99,6 +103,8 @@ def _spatial_processes(media_type: str, enabled_only: bool) -> list[dict[str, An
     processes = []
     for handler in spatial_upsamplers.upsampler_handlers(spatial_upsamplers.UPSAMPLER_TYPE_POSTPROCESSING, enabled_only):
         handler_def = handler.query_upsampler_def()
+        status = spatial_upsamplers.handler_status(handler)
+        reason_disabled = spatial_upsamplers.handler_reason_disabled(handler)
         media = tuple(handler_def.get("media", ("video", "image")))
         if media_type not in media:
             continue
@@ -111,7 +117,7 @@ def _spatial_processes(media_type: str, enabled_only: bool) -> list[dict[str, An
             inferred = [_multiplier_parameter(multipliers)] if multipliers else []
             description = _method_description(handler_def, method, f"Spatially upscale the {media_type} with {display_label}.")
             category = spatial_upsamplers.method_category(method)
-            processes.append((_method_position(handler_def, method), _process(method, display_label, description, PROCESS_TYPE_SPATIAL_UPSAMPLING, media, _merge_parameters(inferred, _method_parameters(handler_def, method)), category)))
+            processes.append((_method_position(handler_def, method), _process(method, display_label, description, PROCESS_TYPE_SPATIAL_UPSAMPLING, media, _merge_parameters(inferred, _method_parameters(handler_def, method)), category, status=status, reason_disabled=reason_disabled)))
     return [process for _, process in sorted(processes, key=lambda item: (item[0], item[1]["label"].casefold(), item[1]["id"]))]
 
 
@@ -121,12 +127,14 @@ def _temporal_processes(media_type: str, enabled_only: bool) -> list[dict[str, A
     processes = []
     for handler in temporal_upsamplers.registered_temporal_upsamplers(enabled_only):
         handler_def = handler.query_temporal_upsampler_def()
+        status = temporal_upsamplers.handler_status(handler)
+        reason_disabled = temporal_upsamplers.handler_reason_disabled(handler)
         multipliers_by_method = handler_def.get("multipliers", {})
         for label, method in handler_def.get("methods", ()):
             multipliers = tuple(multipliers_by_method.get(method, ()))
             inferred = [_multiplier_parameter(multipliers)] if multipliers else []
             description = _method_description(handler_def, method, f"Increase the video frame rate with {label} frame interpolation.")
-            processes.append((_method_position(handler_def, method), _process(method, label, description, PROCESS_TYPE_TEMPORAL_UPSAMPLING, ("video",), _merge_parameters(inferred, _method_parameters(handler_def, method)))))
+            processes.append((_method_position(handler_def, method), _process(method, label, description, PROCESS_TYPE_TEMPORAL_UPSAMPLING, ("video",), _merge_parameters(inferred, _method_parameters(handler_def, method)), status=status, reason_disabled=reason_disabled)))
     return [process for _, process in sorted(processes, key=lambda item: (item[0], item[1]["label"].casefold(), item[1]["id"]))]
 
 
@@ -164,6 +172,8 @@ def _audio_processes(media_type: str, enabled_only: bool) -> list[dict[str, Any]
     for processor_type in requested_types:
         for handler in audio_processors.processor_handlers(processor_type, enabled_only):
             handler_def = handler.query_audio_processor_def()
+            status = audio_processors.handler_status(handler)
+            reason_disabled = audio_processors.handler_reason_disabled(handler)
             for label, method in handler_def.get("methods", ()):
                 metadata = audio_processors.method_metadata(method)
                 if processor_type not in metadata["types"] or method in seen:
@@ -172,7 +182,7 @@ def _audio_processes(media_type: str, enabled_only: bool) -> list[dict[str, Any]
                 process_type = process_types[processor_type]
                 description = _method_description(handler_def, method, f"Apply {label} to the {media_type}.")
                 parameters = _merge_parameters(_audio_parameters(metadata, process_type), _method_parameters(handler_def, method))
-                processes.append((_method_position(handler_def, method), _process(method, audio_processors.format_method_label(method, audio_processors.AUDIO_PROCESSOR_LABEL_CONTEXT_LATE_POSTPROCESSING), description, process_type, (media_type,), parameters)))
+                processes.append((_method_position(handler_def, method), _process(method, audio_processors.format_method_label(method, audio_processors.AUDIO_PROCESSOR_LABEL_CONTEXT_LATE_POSTPROCESSING), description, process_type, (media_type,), parameters, status=status, reason_disabled=reason_disabled)))
     return [process for _, process in sorted(processes, key=lambda item: (item[0], item[1]["label"].casefold(), item[1]["id"]))]
 
 

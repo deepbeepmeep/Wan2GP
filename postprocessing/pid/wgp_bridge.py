@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 import torch
 
+from postprocessing.spatial_upsamplers import format_multiplier_value
 from postprocessing.pid.runtime import (
     PID_TEXT_ENCODER_FILES,
     PID_TEXT_ENCODER_FOLDER,
@@ -28,6 +29,7 @@ from postprocessing.pid.runtime import (
     pid_backbone_for_upsampling,
     pid_checkpoint_filename,
     pid_post_upsampling_choices,
+    pid_spatial_block_size,
     pid_version_for_upsampling,
     pid_vae_filename,
     normalize_pid_tiling_threshold,
@@ -111,7 +113,7 @@ class PiDBridge:
             "methods": post_methods,
             "vae_methods": vae_methods,
             "multipliers": {method: cls.UPSAMPLING_RATIOS for method in cls.UPSAMPLING_METHODS},
-            "default_spatial_upsampling": "flux_pid4",
+            "default_spatial_upsampling": "flux_pid*4",
             "postprocessing_category": "upsampler",
             "description": "Uses a dedicated x4 diffusion upsampler for strong detail recovery.",
             "method_descriptions": {
@@ -131,7 +133,7 @@ class PiDBridge:
     def build_value(cls, method, scale) -> str | None:
         method = str(method or "").strip().lower()
         scale = float(scale or 4.0)
-        return f"{method}{scale:g}" if method in cls.UPSAMPLING_METHODS and scale == 4.0 else None
+        return format_multiplier_value(method, scale) if method in cls.UPSAMPLING_METHODS and scale == 4.0 else None
 
     def validate_upsampling(self, spatial_upsampling, image_mode: int) -> str:
         if not self.is_upsampling(spatial_upsampling):
@@ -207,12 +209,17 @@ class PiDBridge:
             process_files(**download_def)
         return True
 
-    def _prepare_sample(self, sample, device, dtype):
-        frames = sample.transpose(0, 1).contiguous().to(device=device)
+    def _prepare_sample(self, sample, device, dtype, backbone):
+        frames = sample.transpose(0, 1).contiguous()
+        block_size = pid_spatial_block_size(backbone)
+        target_height = max(block_size, round(int(frames.shape[-2]) / block_size) * block_size)
+        target_width = max(block_size, round(int(frames.shape[-1]) / block_size) * block_size)
+        if frames.shape[-2:] != (target_height, target_width):
+            frames = torch.nn.functional.interpolate(frames, size=(target_height, target_width), mode="bilinear", align_corners=False, antialias=True)
         if frames.dtype == torch.uint8:
-            frames = frames.to(dtype=dtype).div_(127.5).sub_(1.0)
+            frames = frames.to(device=device, dtype=dtype).div_(127.5).sub_(1.0)
         else:
-            frames = frames.to(dtype=dtype)
+            frames = frames.to(device=device, dtype=dtype)
         return frames
 
     def load_upsampler(
@@ -284,7 +291,7 @@ class PiDBridge:
         if session is None:
             raise RuntimeError("PiD upsampler is not loaded.")
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        images = self._prepare_sample(sample, device, session.dtype)
+        images = self._prepare_sample(sample, device, session.dtype, session.backbone)
         output = session.decode(
             images,
             None,

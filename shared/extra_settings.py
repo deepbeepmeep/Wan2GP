@@ -37,6 +37,7 @@ class _SettingSpec:
     max: int | float | None | _Resolver = None
     step: int | float | None | _Resolver = None
     visible: bool | _Resolver = True
+    active_when: bool | _Resolver = True
     custom: bool = False
     containers: tuple[str, ...] = ()
 
@@ -109,6 +110,7 @@ def _resolve_model_def(configs: dict[str, Any] | None, model_def: dict[str, Any]
 def _with_data_context(data: dict[str, Any] | None, **context: Any) -> dict[str, Any]:
     merged = dict(context)
     if isinstance(data, dict):
+        merged.setdefault("settings", data)
         model_type = str(data.get("model_type", "") or "").strip()
         if len(model_type) > 0 and "model_type" not in merged:
             merged["model_type"] = model_type
@@ -127,6 +129,13 @@ def _context_model_type(context: dict[str, Any]) -> str:
 def _context_model_type_contains(context: dict[str, Any], *parts: str) -> bool:
     model_type = _context_model_type(context)
     return any(part.lower() in model_type for part in parts)
+
+
+def _context_setting(context: dict[str, Any], key: str, default: Any = None) -> Any:
+    if key in context:
+        return context[key]
+    settings = context.get("settings", None)
+    return settings.get(key, default) if isinstance(settings, dict) else default
 
 
 def _find_custom_setting(model_def: dict[str, Any] | None, setting_id: str) -> dict[str, Any] | None:
@@ -184,6 +193,17 @@ def _show_if(predicate: Callable[[dict[str, Any]], bool]) -> _Resolver:
 
 def _show_if_guidance_phase(phase: int) -> _Resolver:
     return _show_if(lambda model_def: int(model_def.get("guidance_max_phases", 0) or 0) >= phase and int(model_def.get("visible_phases", phase) or 0) >= phase)
+
+
+def _active_if_guidance_phase(phase: int) -> _Resolver:
+    def resolver(model_def: dict[str, Any] | None, context: dict[str, Any]) -> bool:
+        if bool((model_def or {}).get("lock_guidance_phases", False)):
+            return int((model_def or {}).get("guidance_max_phases", 0) or 0) >= phase
+        value = _context_setting(context, "guidance_phases", None)
+        if value is None:
+            return True
+        return int(value) >= phase
+    return resolver
 
 
 def _show_if_custom(setting_id: str) -> _Resolver:
@@ -372,10 +392,11 @@ def _add_setting(
     max: int | float | None | _Resolver = None,
     step: int | float | None | _Resolver = None,
     visible: bool | _Resolver = True,
+    active_when: bool | _Resolver = True,
     custom: bool = False,
     containers: tuple[str, ...] | list[str] = (),
 ) -> None:
-    _SETTING_SPECS[key] = _SettingSpec(key, label, type, min=min, max=max, step=step, visible=visible, custom=custom, containers=tuple(containers))
+    _SETTING_SPECS[key] = _SettingSpec(key, label, type, min=min, max=max, step=step, visible=visible, active_when=active_when, custom=custom, containers=tuple(containers))
     _SETTING_ORDER.append(key)
 
 
@@ -386,7 +407,7 @@ def get_container_def(key: str, model_def: dict[str, Any] | None = None, **conte
 
 def get_def(key: str, model_def: dict[str, Any] | None = None, **context: Any) -> SettingDef:
     spec = _SETTING_SPECS[key]
-    visible = bool(_resolve(spec.visible, model_def, context))
+    visible = bool(_resolve(spec.visible, model_def, context)) and bool(_resolve(spec.active_when, model_def, context))
     for container_key in spec.containers:
         visible = visible and get_container_def(container_key, model_def, **context).visible
     return SettingDef(
@@ -510,7 +531,7 @@ _add_container("motion_amplitude_col", visible=_show_if_flag("motion_amplitude")
 _add_setting("guidance_scale", "Guidance (CFG)", "number", min=1.0, max=20.0, step=0.1, visible=_show_if_guidance_phase(1), containers=("guidance_row",))
 _add_setting("guidance2_scale", "Guidance2 (CFG)", "number", min=1.0, max=20.0, step=0.1, visible=_show_if_guidance_phase(2), containers=("guidance_row",))
 _add_setting("guidance3_scale", "Guidance3 (CFG)", "number", min=1.0, max=20.0, step=0.1, visible=_show_if_guidance_phase(3), containers=("guidance_row",))
-_add_setting("switch_threshold", _switch_threshold_label, _model_setting_type("switch_threshold", "integer"), min=_model_setting_bound("switch_threshold", "min", 0), max=_model_setting_bound("switch_threshold", "max", 1000), step=_model_setting_bound("switch_threshold", "step", 1), visible=_show_if_int_at_least("guidance_max_phases", 2), containers=("guidance_phases_row",))
+_add_setting("switch_threshold", _switch_threshold_label, _model_setting_type("switch_threshold", "integer"), min=_model_setting_bound("switch_threshold", "min", 0), max=_model_setting_bound("switch_threshold", "max", 1000), step=_model_setting_bound("switch_threshold", "step", 1), visible=_show_if_int_at_least("guidance_max_phases", 2), active_when=_active_if_guidance_phase(2), containers=("guidance_phases_row",))
 _add_setting("switch_threshold2", "Phase 2-3", "integer", min=0, max=1000, step=1, visible=_show_if_int_at_least("guidance_max_phases", 3), containers=("guidance_phases_row",))
 _add_setting("alt_guidance_scale", _model_label("alt_guidance", "Alternate Guidance"), "number", min=1.0, max=20.0, step=0.5, visible=_show_if_not_none("alt_guidance"), containers=("embedded_guidance_row",))
 _add_setting("alt_scale", _model_label("alt_scale", "Alt Scale"), "number", min=0.0, max=1.0, step=0.05, visible=_show_if_not_none("alt_scale"), containers=("embedded_guidance_row",))
@@ -526,7 +547,7 @@ _add_setting("control_net_weight_alt", _control_net_alt_label, "number", min=0.0
 _add_setting("motion_amplitude", "Motion Amplitude", "number", min=1.0, max=1.4, step=0.01, visible=_show_if_flag("motion_amplitude"), containers=("motion_amplitude_col",))
 _add_setting("mask_expand", "Expand / Shrink Mask Area", "integer", min=-10, max=50, step=1, visible=_show_if(_guide_setting_visible))
 _add_setting("input_video_strength", _model_setting_label("input_video_strength", "Input Video Strength"), "number", min=0.0, max=1.0, step=0.01, visible=_show_if_model_setting_label("input_video_strength"))
-_add_setting("attention_sparsity", _model_setting_label("attention_sparsity", "Attention Sparsity"), "number", min=_model_setting_bound("attention_sparsity", "start", 0.0), max=_model_setting_bound("attention_sparsity", "end", 4.0), step=_model_setting_bound("attention_sparsity", "inc", 0.05), visible=_show_if_flag("sol_attention"))
+_add_setting("attention_sparsity", _model_setting_label("attention_sparsity", "Attention Sparsity"), "number", min=_model_setting_bound("attention_sparsity", "start", 0.0), max=_model_setting_bound("attention_sparsity", "end", 4.0), step=_model_setting_bound("attention_sparsity", "inc", 0.05), visible=_show_if(lambda model_def: any(mode.get("supports_sparsity", False) for mode in model_def.get("custom_attention_modes", {}).values())))
 _add_setting("image_refs_relative_size", _model_setting_label("image_refs_relative_size", "Rescale Internaly Image Ref (% in relation to Output Video) to change Output Composition"), "integer", min=_model_setting_bound("image_refs_relative_size", "min", 20), max=_model_setting_bound("image_refs_relative_size", "max", 100), step=_model_setting_bound("image_refs_relative_size", "step", 1), visible=_show_if_flag("any_image_refs_relative_size"))
 _add_setting("sliding_window_size", "Sliding Window Size", "integer", min=_sliding_window_size_min, max=_sliding_window_size_max, step=_sliding_window_size_step, visible=_show_if(_sliding_window_visible))
 _add_setting("sliding_window_overlap", "Windows Frames Overlap (needed to maintain continuity between windows, a higher value will require more windows)", "integer", min=_sliding_window_overlap_bound("overlap_min", 1), max=_sliding_window_overlap_bound("overlap_max", 97), step=_sliding_window_overlap_bound("overlap_step", 4), visible=_show_if(_sliding_window_visible))

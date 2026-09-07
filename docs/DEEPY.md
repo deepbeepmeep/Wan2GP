@@ -4,20 +4,23 @@ Deepy is WanGP's conversational media assistant. It can generate, inspect, edit,
 
 Deepy comes in two versions:
 
-- **Deepy Zero** is the lightweight, fast version for straightforward requests. It should spent less time thinking and is designed to work well with a smaller LLM (for instance Qwen3.5 4B or 9B).
+- **Deepy Zero** is the lightweight, fast version for straightforward requests. It should spend less time thinking and is designed to work well with a smaller LLM (for instance Qwen3.5 4B or 9B).
 - **Deepy Prime** is the advanced version for ambitious, multi-step work. It can discover available models and capabilities, plan connected actions, combine several image, video, and audio assets, and use external MCP services when configured. It requires Qwen3.8 VL 27B when run locally, or it can use a configured remote LLM.
 
-Both versions share the same chat, default deepy settings and templates, Gallery integration, VRAM policy, context window, compaction, and interruption handling.
+Both versions share the same chat, Deepy settings and templates, Gallery integration, and interruption controls.
 
 This guide covers:
 
 - general guidelines
 - enabling Deepy
 - configuring Deepy in the web UI
+- pausing and resuming work without ending the current turn
+- keeping and managing persistent Deepy sessions
 - linking WanGP settings files to Deepy generation tools
 - using selected and previous media naturally
 - understanding which generation settings Deepy can override directly
 - asking Deepy about available LoRAs and current defaults
+- using Deepy Prime for long, multi-step projects
 - using Deepy from the CLI
 
 **Deepy can make mistakes, so verify important results.**
@@ -41,11 +44,26 @@ For Deepy Prime, every derived generation step follows the same rule. If a video
 
 WanGP comes with builtin templates ready to use but you may as well link presaved settings. You can access Deepy settings by clicking the `Settings` control on the right of the Deepy chat window.
 
-In the web UI, Deepy settings changes take effect for the current Deepy session as soon as you make them. Click `Save Deepy Settings` at the bottom of the settings panel when you want to write those settings to disk for future WanGP sessions.
+In the web UI, most Deepy settings changes take effect for the current Deepy session as soon as you make them. Enabling or disabling multi-session mode is the exception: after Deepy has started, that change takes effect the next time WanGP starts. Click `Save Deepy Settings` at the bottom of the settings panel when you want to write those settings to disk for future WanGP sessions.
 
 You can also define default width, height, frame count, audio duration, and seed in the Deepy Settings window. Select `Use by Default Always Dimensions / Durations / Seed Below` to apply them instead of the corresponding template properties without editing the templates.
 
 You can also ask Deepy directly to override supported template settings such as width, height, frame count, audio duration, FPS, LoRAs, or inference steps.
+
+## Pause and Resume
+
+While Deepy is working, the chat status bar displays `Pause` immediately to the left of `Stop`.
+
+Use `Pause` when you want to suspend the current turn without cancelling it. If Deepy is thinking, writing a response, or preparing a tool action, it pauses immediately. If a tool is already running, Deepy lets that operation finish and pauses before starting anything else. Its completed result is kept in the conversation.
+
+Once paused, Deepy temporarily releases GPU and RAM resources according to the same policy used when it is idle between requests. Depending on `Deepy VRAM Loading Mode`, this can include unloading the local language model from VRAM. WanGP jobs or other components waiting for those GPU resources can then proceed. A remotely hosted Deepy model does not occupy the local GPU, but pausing still suspends the current workflow.
+
+The button changes to `Resume` while the turn is paused. Resuming requests the required resources again and continues the same turn from the point where it stopped; you do not need to repeat the request. If another operation is using the GPU, Deepy waits for the resources in the same way it would for a new request.
+
+`Pause` and `Stop` serve different purposes:
+
+- `Pause` preserves the in-progress turn so it can continue.
+- `Stop` ends the current turn. Depending on `Auto-abort or remove Deepy-started generation on Stop/Reset`, it can also cancel or remove generation work started by Deepy.
 
 ## Enabling Deepy
 
@@ -62,39 +80,36 @@ Supported local Prompt Enhancer modes:
 
 - `Qwen3.5VL Abliterated 4B`
 - `Qwen3.5VL Abliterated 9B`
+- `Qwen3.8VL Uncensored 27B` (required for local Deepy Prime)
 
 Deepy settings in that tab:
 
 - `Model used to power Prompt Enhancer / Deepy`: selects the shared language/vision model.
+- `Qwen LLM quantization`: for Qwen3.8, selects Q4 for the highest quality, the recommended IQ3_S variant for a Q3 middle ground, or Q2 for the lowest VRAM and RAM use. IQ3_S remains compatible with Speculative Decoding through the same Q4 MTP weights, managed separately and automatically.
 - `Speculative Decoding`: `Auto` enables it for Qwen3.5 9B with at least 12 GB VRAM or Qwen3.8 27B with at least 24 GB VRAM. Explicit `Yes` and `No` remain available.
 - `Deepy`: selects `Disabled`, `Deepy Zero` for lightweight, straightforward work with curated WanGP tools and templates, or `Deepy Prime (requires Qwen3.8 VL 27B LLM)` for advanced planning, model discovery, multimedia workflows, and optional external MCP capabilities. Selecting Prime raises the context window to at least 32,000 tokens and selects Summarize compaction.
 - `Deepy Filesystem Access`: disabled by default. Select read-only or read/write access to WanGP output folders and additional folders. In this scoped mode, tools expose `@outputs`, `@outputs2`, and custom aliases instead of physical paths; plain relative paths use `@outputs`.
 - `Additional Filesystem Folders`: one folder per line. Append a unique alias after the path, quoting paths that contain spaces (for example `"D:\My Media" projects`), or let WanGP derive a unique alias.
 - `Read Everywhere (Warning!)`: permits absolute-path reads and physical paths in results. It does not expand write access beyond output and additional folders.
 - `Deepy VRAM Loading Mode`: controls whether Deepy stays in VRAM, unloads when idle, or unloads only when another WanGP component needs VRAM. The more Deepy stays in VRAM, the more responsive.
-- `Context Window Tokens`: how much conversation and tool history Deepy tries to keep live
-- `KV Cache Quantization`: `Auto` enables fast INT8 KV cache when GGUF kernels 1.0.11 or newer are installed; explicit BF16 and INT8 choices remain available.
-- `Compaction Type When Cache is Full`: either discard the oldest conversation entries at the limit or summarize older completed turns and completed action groups at the lower of 85% context usage and 4,096 tokens before the KV-cache limit. Summarize requires at least 32,000 context tokens and generates directly from synchronized KV memory, appending only a short internal instruction instead of replaying serialized history. The summary is durable working memory: it preserves goal-critical findings and decisions, clearly separates completed work from remaining work, and instructs Deepy to trust successful results instead of repeating completed actions. During a long active turn, summarization runs only at a safe boundary after a complete tool result and before the next model decode; it preserves the original user request and two newest assistant/tool action groups verbatim while summarizing older work. Unfinished decoded output is never summarized. During summarization or current-turn space recovery, the status bar is the only transient UI notification. Only a successfully committed summary creates a chat entry: an expandable `Context` block at its chronological position inside the active turn. Verbose level 2 also prints the complete summary to the console. In Summarize mode, reaching one decoder segment's `max_tokens` is never considered the end of the turn. If another complete segment fits, Deepy continues immediately from live KV without compaction, replay, or a summary entry, preserving the same unfinished Thought block. It shows `Making room to continue...` and rebuilds context only when another full segment cannot fit. If summarization genuinely fails, Deepy progressively removes older assistant/tool steps while retaining the newest two; dropping a whole turn is the final fallback. Whenever complete turns must be deleted, Deepy retains a compact system record of the five most recent removed user requests, truncating each to 256 characters and stating that their corresponding answers were removed. This record is discarded only if the active request otherwise cannot fit.
+- `Context Window Tokens`: how much conversation and tool history Deepy tries to keep live. Thought, statement, and aggregate tool-call actions each receive up to 4,096 tokens below a 48,000-token context, 6,144 tokens from 48,000 through 63,999, and 8,192 tokens from 64,000 upward. Deepy prints the selected maximum when its local runtime starts.
+- `KV Cache Quantization`: `Auto` enables fast INT8 KV cache when GGUF kernels 1.0.14 or newer are installed; explicit BF16 and INT8 choices remain available.
+- `Compaction Type When Cache is Full`: `Summarize` lets Deepy preserve the important goals, decisions, completed work, and next steps from a long conversation when the full history no longer fits. `Discard` removes the oldest history. Local Deepy Prime requires `Summarize` and a context window of at least 32,000 tokens. Successful summaries appear as expandable `Context` entries in the chat.
+- `Repetition Penalty`: controls repetition filtering across thought, statement, tool-call, and compaction-summary generation with a local Qwen3.5/3.8 model. It is enabled by default to reduce rambling and repeated phrases, at an estimated 10% generation-speed cost.
 - `Deepy Zero Prompt`: edits independent extra instructions for Deepy Zero.
 - `Deepy Prime Guidance`: edits standing user guidance directly. It is prefilled to prefer the highest-quality base or full model unless the user prioritizes speed or names another model, and is appended to Deepy Prime's trusted system instructions rather than replacing them.
 - `External MCP Servers (JSON)`: optional stdio, SSE, or Streamable HTTP MCP server definitions used only by Deepy Prime. External tool names are prefixed with their server name to avoid collisions.
-- `Allow Searching for Changed MCP Executable Paths`: disabled by default. When enabled, a missing versioned stdio command in a `<runtime>/<version>/bin/<executable>` layout may resolve to the newest exact executable name in a sibling version folder under the same runtime root. References to the old `bin` folder in that server's environment values are adjusted for the launched process only; saved JSON is not rewritten.
+- `Allow Searching for Changed MCP Executable Paths`: when enabled, Deepy can find an external MCP executable again after its versioned installation folder changes. The saved server definition is not rewritten.
 
 When the requirement is met, the `Ask Deepy` launcher appears in the WanGP web UI.
 
-Deepy Prime always includes WanGP's in-process MCP server and automatically loads its trusted `wangp_agent` operating guide. Its WanGP generation calls use the active browser session's Gradio queue, so jobs and generated media remain visible in the normal queue and Galleries while Deepy stays unloaded from VRAM. External servers extend that tool set; their prompts are not loaded automatically.
+Deepy Prime submits generation jobs through the normal WanGP queue. Jobs and completed media therefore remain visible in the usual queue and Galleries. Filesystem access and external MCP servers extend what Prime can work with according to the permissions you configure.
 
-Its compact model-data surface is `wangp_models(...)` for search, `wangp_model(model_type, view="schema"|"definition"|"defaults")` for progressive detail, and `wangp_model_settings(...)` for stored settings. This keeps routine discovery small while retaining exact model definitions and defaults on demand.
+### Long projects
 
-`wangp_model_settings(model_type)` lists saved user settings, accelerator profiles, and presets with prefixed IDs and types. Pass one returned ID as `setting_id` to retrieve its full content.
+For large file collections, long sliding-window videos, or multi-chapter writing, Deepy Prime can keep exact items and a small durable project ledger in session working data instead of trying to hold everything in the visible conversation. Each managed item and its corresponding ledger update are saved together, so an interruption cannot advance one without the other. This working data survives automatic conversation summarization. In multi-session mode, `New` leaves the saved session available for later use and opens a blank conversation.
 
-Deepy Prime uses one progressive `mcp_resource` tool for MCP resources: omit `uri` to list them, provide `uri` and `query` to return up to five ranked Markdown section excerpts, or provide `uri` without `query` to read it. An optional `section` value—an exact or partial heading path, or a case-insensitive `*`/`?` glob—loads only matching sections. This mirrors Zero's `Search Doc` followed by `Load Doc Section` workflow.
-
-Because Deepy Prime runs inside the same WanGP process, its in-process MCP definition intentionally omits remote Gallery upload/download tools. It can reuse `media_id` values returned by Gallery browsing and, when filesystem access is enabled, virtual paths returned by `wangp_io`. Gallery browsing returns compact summaries without paths or generation settings. `Get Media Settings` retrieves full settings on demand using `media_id`, or a mutually exclusive authorized path. Media IDs observed by the MCP session remain resolvable while their files exist after `Keep Previous Generations in Gallery` trims their visible UI rows; remembered records remain discoverable with `in_gallery: false` without being reinserted into Gradio. `wangp_io` uses compact discovery followed by an action schema and provides listing, metadata, ranged UTF-8 reading, text search, writing, directory creation, copying, moving, permanent deletion, persistent ZIP creation, and session-long downloads according to the selected access level. Move and delete accept writable paths only; deleting a non-empty directory requires `recursive=true`.
-
-The media toolbox's `add_to_gallery` action adds one authorized existing image, video, or audio with `path`, or up to 50 at once with `paths`. It accepts `output_file` values returned by manipulation actions, preserves embedded settings without rewriting source files, and selects rather than duplicates existing items. WanGP trims older visible Gallery history once before a batch according to *Keep Previous Generations in Gallery*, while keeping every item from that batch; Deepy's registered media history remains available. Files outside WanGP's output folders are exposed to Gradio individually rather than making their entire parent folders web-accessible. Gallery imports do not create generated-media cards in Deepy chat.
-
-Deepy Prime receives the current `Deepy Settings > General Properties` precedence as system-level guidance at session startup. With `Use by Default Dimensions / Durations / Seed defined in Templates Settings Used`, inactive panel defaults are not injected or returned, and the template query keeps those template-owned fields in `settings`. With `Use by Default Always Dimensions / Durations / Seed Below`, the standing defaults relevant to the requested tool are injected and returned separately as `general_properties`, while conflicting resolution, frame-count, duration, and seed keys are removed from template `settings`. Explicit user overrides still take precedence. Changes to these General Properties change the system-prompt signature and are injected on the next turn.
+You can state the complete outcome normally, for example `plan the prompts for a ten-minute sliding-window video` or `write a twelve-chapter story and save it as one Markdown file`. Deepy divides the work into manageable batches, retrieves exact earlier data only when needed, checks that the collection is complete, and passes the completed plan directly to the generation or file-writing operation. For a large text deliverable, the final file is assembled from the stored chapters without making Deepy reproduce the whole document in a final answer or tool request.
 
 External server configuration example:
 
@@ -116,12 +131,13 @@ External server configuration example:
 
 Open `Ask Deepy`, then open the `Settings` panel.
 
-The settings panel contains two expanded sections:
+The settings panel contains three tabs:
 
 - `Generation Properties`
 - `Template Settings used by Tools`
+- `Sessions`
 
-All changes in this panel are used immediately by the current Deepy web session. To keep them for future sessions, click `Save Deepy Settings` at the bottom of the panel.
+Most changes in this panel are used immediately by the current Deepy web session. A change to `Enable multi-session mode` requires a WanGP restart if Deepy has already started. To keep settings for future sessions, click `Save Deepy Settings` at the bottom of the panel.
 
 ### Generation Properties
 
@@ -172,6 +188,60 @@ Generate Image [Z Image Turbo]
 Generate Video [LTX-2 2.3 Distilled 1.0]
 Edit Image [Flux Klein 9B]
 ```
+
+### Sessions
+
+Persistent sessions are optional. `Enable multi-session mode` is disabled by default, so existing users keep the traditional behavior: Deepy uses one temporary conversation and `Reset` clears it. Each reset creates a fresh temporary workspace and Deepy makes a best-effort attempt to remove the preceding one. Gallery media remain linked to their original files in this mode.
+
+To use persistent sessions:
+
+1. Enable `Enable multi-session mode` in the `Sessions` tab.
+2. Click `Save Deepy Settings`.
+3. Restart WanGP if Deepy has already been started. Enabling or disabling multi-session mode does not change a conversation that is already running.
+
+No empty session directory is created merely by opening Deepy or clicking `New Session`. A session is created only when you send its first request. Deepy automatically derives a short initial name from that request; you can rename it later.
+
+#### Continuous saving
+
+There is no manual Save Session action. Deepy keeps the current session up to date automatically at suitable completed points throughout the conversation. This includes completed thoughts, response sections, tool actions, and turns. Partial streaming fragments are not treated as completed work, so continuous saving does not interrupt normal text generation.
+
+A saved session keeps the information needed to continue the work and rebuild the chat, including:
+
+- the conversation, completed actions, tool results, and displayed chat cards
+- the session workspace and its generated artifacts
+- Gallery media that Deepy generated or used
+- the Deepy skills and MCP services associated with the session, when applicable
+
+If Deepy was preparing an action when the session stopped, resuming can restart that unfinished action from its beginning. An action that had already been issued and was subsequently interrupted remains marked as interrupted; it is not silently run again.
+
+#### Gallery media
+
+`Gallery Media` controls how a session keeps its media:
+
+- `Keep links to Gallery files`, the default, records the existing media locations without making another copy. This saves disk space, but a session cannot recover a linked file that you later move or delete.
+- `Copy Gallery files into each session` keeps a separate copy with the session. This uses more disk space but makes the session less dependent on the original Gallery files.
+
+When you resume a session, its image, video, and audio media are returned to the appropriate Galleries before Deepy prepares the conversation for continuation. Files that are already present are reused rather than duplicated.
+
+#### Starting, resetting, and switching sessions
+
+In single-session mode, the settings tab shows only the `Reset Button` behavior: the main button is labelled `Reset`, clears the temporary conversation, and rotates its workspace. Saved-session and Gallery-media controls stay hidden.
+
+In multi-session mode, the main button is labelled `New`. It leaves the current saved session available and opens a blank conversation. The new session is not actually created until you send its first request, at which point it is named and selected automatically in the settings list. You may instead select an existing session and resume it without creating an unused session first.
+
+Saved sessions can be selected from the bottom of Deepy's home screen and resumed with the adjacent `Resume` button. The `Sessions` settings tab provides the same selector plus actions to:
+
+- resume the selected session
+- rename it
+- duplicate it as an independent session
+- export it as a portable archive
+- import a previously exported archive
+- delete it after confirmation
+
+When resuming, Deepy first restores the visible conversation and Gallery content, then prepares the saved context. Long sessions can therefore become visible before they are fully ready to continue. If the session cannot be opened, WanGP displays the reason, such as a missing or damaged session, an incompatible Deepy type, or a context that does not fit the current configuration. Missing linked media are reported separately and do not necessarily prevent the rest of the session from opening.
+
+By default, persistent sessions are stored in the `deepy_sessions` folder at the WanGP installation root. Use `--deepy-sessions-dir FOLDER` when starting WanGP to place them elsewhere.
+
 ### Save Deepy Settings
 
 Click `Save Deepy Settings` at the bottom of the Deepy settings panel to persist the current web settings to disk.
@@ -180,6 +250,7 @@ That save includes:
 
 - generation-property values such as auto-abort behavior, template-property usage, width, height, frame count, audio duration, and seed
 - the currently selected Deepy template for each generation tool
+- the selected session mode and its applicable session options
 
 
 ## Linking WanGP Settings to Deepy Tools
@@ -454,6 +525,7 @@ Examples:
 - If you want Deepy to use the current video moment, scrub the selected video first, then refer to `this frame` or `the selected frame`.
 - For transcription, mention if you want word timestamps or a specific audio track.
 - If a tool fails, Deepy will tell you rather than inventing a result.
-- Stopping a turn immediately requests cancellation of any active Deepy Prime MCP generation job. Deepy preserves every fully completed message and assistant/tool group exactly, discards only an unfinished trailing decode fragment or incomplete tool group, and records that the request was interrupted so it is not resumed automatically. It retains the latest compatible safe KV boundary; messages completed after that boundary are appended on the next request. Normal summarization handles the preserved turn if it later approaches the context threshold, and selection or deletion occurs only when the complete state genuinely cannot fit.
+- Use `Pause` when you want to free Deepy's local resources temporarily and continue the same turn later.
+- Stopping a turn requests cancellation of active Deepy-started work according to the `Auto-abort` setting. Completed work remains in the conversation; an unfinished action is not resumed automatically.
 - For WanGP-specific questions, you can ask Deepy directly instead of searching the docs manually.
 - Install GGUF kernels for fast inference and low VRAM.

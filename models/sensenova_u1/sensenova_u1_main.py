@@ -84,7 +84,6 @@ class model_factory:
         custom_settings=None,
         callback=None,
         loras_slists=None,
-        set_progress_status=None,
         **kwargs,
     ):
         if loras_slists is not None:
@@ -102,8 +101,6 @@ class model_factory:
             callback(-1, None, True, override_num_inference_steps=sampling_steps)
 
         def step_callback(step_idx, image):
-            if callable(set_progress_status):
-                set_progress_status(f"SenseNova-U1 denoising ({step_idx + 1}/{sampling_steps})")
             if callback is not None:
                 preview_height = min(200, image.shape[-2])
                 preview_width = max(1, round(image.shape[-1] * preview_height / image.shape[-2]))

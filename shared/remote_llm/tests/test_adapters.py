@@ -20,7 +20,7 @@ from shared.deepy.engine import AssistantSessionState, begin_assistant_turn, cle
 from shared.deepy.filesystem import FileAccessPolicy
 from shared.gradio import assistant_chat
 from shared.remote_llm.codex_backend import CodexAuthenticationRequired, CodexBackend, _codex_launch_command, _resolve_codex_executable
-from shared.remote_llm.claude_backend import CLAUDE_PROGRESS_INSTRUCTIONS, ClaudeAuthenticationRequired, ClaudeBackend, _resolve_claude_executable
+from shared.remote_llm.claude_backend import CLAUDE_PROGRESS_INSTRUCTIONS, ClaudeAuthenticationRequired, ClaudeBackend, _resolve_claude_executable, _restore_mcp_content_contract
 from shared.remote_llm.images import temporary_image_paths
 from shared.remote_llm.mcp_bridge import build_tool_proxy
 from shared.remote_llm.opencode_backend import OpenCodeBackend
@@ -65,6 +65,29 @@ class _ReasoningBackend(_ClosableBackend):
         on_event(BackendEvent("reasoning_delta", " Compare the results.", {"item_id": "reasoning-1", "summary_index": 1}))
         on_event(BackendEvent("text_delta", "The second is larger."))
         return "The second is larger."
+
+    def interrupt(self):
+        pass
+
+
+class _HiddenReasoningToolBackend(_ClosableBackend):
+    def run_turn(self, _text, *, on_event, call_tool, **_kwargs):
+        on_event(BackendEvent("reasoning_start"))
+        on_event(BackendEvent("tool_request_start", data={"name": "wangp_generate"}))
+        call_tool("wangp_generate", {"prompt": "sunset"})
+        on_event(BackendEvent("reasoning_start"))
+        on_event(BackendEvent("text_delta", "Done."))
+        return "Done."
+
+    def interrupt(self):
+        pass
+
+
+class _RejectedToolBackend(_ClosableBackend):
+    def run_turn(self, _text, *, on_event, **_kwargs):
+        on_event(BackendEvent("tool_request_start", data={"id": "tool-1", "name": "mcp__wangp__wangp_artifact"}))
+        on_event(BackendEvent("tool_request_error", "InputValidationError: JSON parse failed (42 bytes)", {"id": "tool-1", "name": "mcp__wangp__wangp_artifact", "input": {"__unparsedToolInput": {"raw": "{\"action\":\"commit", "len": 42}}}))
+        return ""
 
     def interrupt(self):
         pass
@@ -131,6 +154,9 @@ class _FakeToolbox:
 
     def get_tool_transcript_label(self, _name, _arguments):
         return "Generate - sunset"
+
+    def get_tool_display_name(self, name):
+        return name.removeprefix("wangp_").replace("_", " ").title()
 
     def call(self, name, _arguments):
         return {"status": "done", "tool": name, "output_file": "done.png"}
@@ -399,6 +425,84 @@ class RemoteLLMAdapterTests(unittest.TestCase):
         self.assertEqual(claude_context_window("claude-haiku-4-5-20251001"), 200_000)
         self.assertEqual(claude_context_window(""), 0)
 
+    def test_claude_mcp_compat_returns_unwrapped_content(self):
+        class Server:
+            def call_tool(self):
+                def register(handler):
+                    self.handler = handler
+                    return handler
+                return register
+
+        async def handler(_arguments):
+            return {"content": [{"type": "text", "text": "done"}]}
+
+        server = Server()
+        _restore_mcp_content_contract({"instance": server}, [SimpleNamespace(name="echo", handler=handler)])
+        result = asyncio.run(server.handler("echo", {}))
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].text, "done")
+
+    def test_claude_surfaces_predispatch_tool_json_error(self):
+        class ClaudeAgentOptions:
+            __dataclass_fields__ = {"thinking": None, "effort": None}
+
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        class ToolUseBlock:
+            id = "tool-1"
+            name = "mcp__wangp__wangp_artifact"
+            input = {"__unparsedToolInput": {"raw": "{\"action\":\"commit", "len": 42}}
+
+        class ToolResultBlock:
+            tool_use_id = "tool-1"
+            content = "InputValidationError: JSON parse failed (42 bytes)"
+            is_error = True
+
+        class AssistantMessage:
+            content = [ToolUseBlock()]
+            session_id = "session-1"
+            message_id = "message-1"
+            stop_reason = "tool_use"
+
+        class UserMessage:
+            content = [ToolResultBlock()]
+            session_id = "session-1"
+            message_id = "message-2"
+            stop_reason = ""
+
+        class ClaudeSDKClient:
+            def __init__(self, options):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def query(self, _prompt):
+                pass
+
+            async def interrupt(self):
+                pass
+
+            async def receive_response(self):
+                yield AssistantMessage()
+                yield UserMessage()
+
+        sdk = SimpleNamespace(ClaudeAgentOptions=ClaudeAgentOptions, ClaudeSDKClient=ClaudeSDKClient)
+        backend = ClaudeBackend({})
+        events = []
+        try:
+            with patch.object(backend, "_sdk", return_value=sdk):
+                backend.run_turn("hello", system_prompt="system", tools=[], images=[], on_event=events.append, call_tool=lambda _name, _args: {}, should_stop=lambda: False)
+            error = next(event for event in events if event.kind == "tool_request_error")
+            self.assertEqual(error.text, "InputValidationError: JSON parse failed (42 bytes)")
+            self.assertEqual(error.data["input"]["__unparsedToolInput"]["raw"], "{\"action\":\"commit")
+        finally:
+            backend.close()
+
     def test_codex_requests_concise_reasoning_summaries(self):
         backend = CodexBackend({})
         backend._start = Mock()
@@ -472,6 +576,7 @@ class RemoteLLMAdapterTests(unittest.TestCase):
             StreamEvent({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Checking the inputs."}}),
             StreamEvent({"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}),
             StreamEvent({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "Checking inputs"}}),
+            StreamEvent({"type": "content_block_start", "index": 2, "content_block": {"type": "tool_use", "id": "tool-1", "name": "mcp__wangp__wangp_generate", "input": {}}}),
             AssistantMessage([ThinkingBlock("Checking the inputs."), TextBlock("Checking inputs."), ToolUseBlock()], "tool_use"),
             StreamEvent({"type": "message_start", "message": {"id": "message-2"}}),
             StreamEvent({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
@@ -508,8 +613,9 @@ class RemoteLLMAdapterTests(unittest.TestCase):
             with patch.object(backend, "_sdk", return_value=sdk):
                 answer = backend.run_turn("hello", system_prompt="system", tools=[], images=[], on_event=events.append, call_tool=lambda _name, _args: {}, should_stop=lambda: False)
             self.assertEqual(answer, "Done.")
-            self.assertEqual([event.kind for event in events], ["reasoning_delta", "commentary_delta", "commentary_replace", "commentary_delta", "commentary_promote"])
-            self.assertEqual(events[0].text, "Checking the inputs.")
+            self.assertEqual([event.kind for event in events], ["reasoning_start", "reasoning_delta", "commentary_delta", "tool_request_start", "commentary_replace", "commentary_delta", "commentary_promote"])
+            self.assertEqual(events[1].text, "Checking the inputs.")
+            self.assertEqual(events[3].data, {"id": "tool-1", "name": "mcp__wangp__wangp_generate"})
             self.assertEqual(ClaudeSDKClient.options.kwargs["thinking"], {"type": "adaptive", "display": "summarized"})
             self.assertEqual(ClaudeSDKClient.options.kwargs["effort"], "high")
             self.assertNotIn("strict_mcp_config", ClaudeSDKClient.options.kwargs)
@@ -682,8 +788,8 @@ class RemoteLLMAdapterTests(unittest.TestCase):
             with patch.object(backend, "_sdk", return_value=sdk):
                 answer = backend.run_turn("hello", system_prompt="system", tools=[], images=[], on_event=events.append, call_tool=lambda _name, _args: {}, should_stop=lambda: False)
             self.assertEqual(answer, "Done.")
-            self.assertEqual([event.kind for event in events], ["commentary_delta", "commentary_delta", "commentary_remove", "commentary_delta", "commentary_promote"])
-            self.assertEqual(events[2].data, {"item_id": "message-2:text:1"})
+            self.assertEqual([event.kind for event in events], ["reasoning_start", "commentary_delta", "reasoning_start", "commentary_delta", "commentary_remove", "reasoning_start", "commentary_delta", "commentary_promote"])
+            self.assertEqual(events[4].data, {"item_id": "message-2:text:1"})
         finally:
             backend.close()
 
@@ -1079,6 +1185,38 @@ class RemoteLLMAdapterTests(unittest.TestCase):
         self.assertIn({"visible": True, "kind": "thinking", "text": "Codex is thinking..."}, status_events)
         self.assertIn({"visible": True, "kind": "status", "text": "Codex is responding..."}, status_events)
         self.assertIsNone(status_events[-1])
+
+    def test_remote_deepy_separates_hidden_reasoning_from_tool_lifecycle(self):
+        session = AssistantSessionState()
+        user_id, _event = assistant_chat.add_user_message(session, "make a sunset")
+        begin_assistant_turn(session, user_id, "make a sunset")
+        sent = []
+        with patch("shared.remote_llm.deepy_runner.create_backend", return_value=_HiddenReasoningToolBackend()):
+            run_remote_deepy_turn({"llm_engines": {"deepy": "claude"}}, session, "make a sunset", "system", _FakeToolbox(), lambda command, payload=None: sent.append((command, payload)))
+        assistant_record = next(record for record in session.chat_transcript if record["role"] == "assistant")
+        tool_record = next(block for block in assistant_record["blocks"] if block["type"] == "tool")
+        self.assertEqual(tool_record["status"], "done")
+        self.assertFalse(any(block["type"] == "reasoning" for block in assistant_record["blocks"]))
+        statuses = [json.loads(payload)["event"].get("status") for command, payload in sent if command == "chat_output" and json.loads(payload)["event"]["type"] == "status"]
+        labels = [status["text"] if status else None for status in statuses]
+        self.assertLess(labels.index("Claude Code is thinking..."), labels.index("Claude Code is preparing a tool request..."))
+        tool_index = labels.index("Generate - sunset...")
+        waiting_index = labels.index("Waiting for Claude Code...", tool_index)
+        self.assertLess(tool_index, waiting_index)
+        self.assertEqual(labels[waiting_index + 1], "Claude Code is thinking...")
+
+    def test_remote_deepy_displays_rejected_tool_with_raw_input(self):
+        session = AssistantSessionState()
+        user_id, _event = assistant_chat.add_user_message(session, "write the chapter")
+        begin_assistant_turn(session, user_id, "write the chapter")
+        with patch("shared.remote_llm.deepy_runner.create_backend", return_value=_RejectedToolBackend()):
+            run_remote_deepy_turn({"llm_engines": {"deepy": "claude"}}, session, "write the chapter", "system", _FakeToolbox(), lambda _command, _payload=None: None)
+        assistant_record = next(record for record in session.chat_transcript if record["role"] == "assistant")
+        tool_record = next(block for block in assistant_record["blocks"] if block["type"] == "tool")
+        self.assertEqual(tool_record["name"], "wangp_artifact")
+        self.assertEqual(tool_record["status"], "error")
+        self.assertEqual(tool_record["arguments"]["__unparsedToolInput"]["raw"], "{\"action\":\"commit")
+        self.assertIn("JSON parse failed", tool_record["result"]["error"])
 
     def test_remote_deepy_renders_commentary_inside_deepy_turn(self):
         session = AssistantSessionState()

@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WanGP</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0f1115;
+    --panel: #161a21;
+    --border: #262c37;
+    --text: #e6e9ef;
+    --muted: #8b93a3;
+    --accent: #6ea8fe;
+    --danger: #ff7b72;
+    --ok: #7ee787;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+  }
+  .card {
+    width: min(860px, 100%);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 28px 30px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    max-height: 100%;
+  }
+  header { display: flex; align-items: baseline; gap: 12px; }
+  h1 { font-size: 20px; margin: 0; letter-spacing: .2px; }
+  .version { color: var(--muted); font-size: 12px; }
+  .phase { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 600; }
+  .detail { color: var(--muted); margin-top: -10px; }
+  .spinner {
+    width: 15px; height: 15px; flex: none;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner.done { animation: none; border: 2px solid var(--ok); }
+  .spinner.failed { animation: none; border: 2px solid var(--danger); }
+  .bar { height: 4px; background: var(--border); border-radius: 999px; overflow: hidden; }
+  .bar > i {
+    display: block; height: 100%; width: 35%; border-radius: 999px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    animation: slide 1.6s ease-in-out infinite;
+  }
+  @keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(320%); } }
+  .bar.stopped > i { animation: none; width: 100%; background: var(--border); }
+  pre {
+    margin: 0; flex: 1; min-height: 220px; overflow: auto;
+    background: #0b0d11; border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; font: 12px/1.6 "Cascadia Mono", Consolas, monospace;
+    color: #c7cede; white-space: pre-wrap; word-break: break-word;
+  }
+  .error {
+    background: rgba(255, 123, 114, .09);
+    border: 1px solid rgba(255, 123, 114, .35);
+    border-radius: 10px; padding: 12px 14px; color: #ffb3ad; white-space: pre-wrap;
+  }
+  footer { display: flex; gap: 10px; justify-content: flex-end; align-items: center; }
+  button {
+    font: inherit; padding: 8px 16px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--border); background: #1d222b; color: var(--text);
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #0b0d11; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <header>
+      <h1>WanGP</h1>
+      <span class="version" id="version"></span>
+    </header>
+
+    <div class="phase"><span class="spinner" id="spinner"></span><span id="title">Starting…</span></div>
+    <div class="detail" id="detail"></div>
+    <div class="bar" id="bar"><i></i></div>
+
+    <div class="error" id="error" hidden></div>
+    <pre id="console"></pre>
+
+    <footer>
+      <button id="logs">Open logs</button>
+      <button id="retry" class="primary" hidden>Retry</button>
+      <button id="quit" hidden>Quit</button>
+    </footer>
+  </div>
+
+<script>
+  const el = (id) => document.getElementById(id);
+  const consoleBox = el("console");
+  let lastCount = 0;
+  let ready = false;
+
+  function api() {
+    return (window.pywebview && window.pywebview.api) ? window.pywebview.api : null;
+  }
+
+  function render(state) {
+    el("version").textContent = state.version ? "v" + state.version : "";
+    el("title").textContent = state.title || "";
+    el("detail").textContent = state.detail || "";
+
+    const lines = state.lines || [];
+    if (lines.length !== lastCount) {
+      // The backend hands us the whole tail buffer; redraw and stick to bottom.
+      const atBottom = consoleBox.scrollHeight - consoleBox.scrollTop - consoleBox.clientHeight < 40;
+      consoleBox.textContent = lines.join("\n");
+      lastCount = lines.length;
+      if (atBottom) consoleBox.scrollTop = consoleBox.scrollHeight;
+    }
+
+    const failed = Boolean(state.error);
+    el("error").hidden = !failed;
+    if (failed) el("error").textContent = state.error;
+
+    el("spinner").className = "spinner" + (failed ? " failed" : (state.done ? " done" : ""));
+    el("bar").className = "bar" + (failed || state.done ? " stopped" : "");
+    el("retry").hidden = !state.can_retry;
+    el("quit").hidden = !failed;
+  }
+
+  async function poll() {
+    const bridge = api();
+    if (bridge) {
+      ready = true;
+      try {
+        render(await bridge.get_state());
+      } catch (err) {
+        /* the window is closing; nothing useful to do */
+      }
+    } else if (!ready) {
+      el("detail").textContent = "Connecting to the launcher…";
+    }
+    setTimeout(poll, 400);
+  }
+
+  el("logs").addEventListener("click", () => api() && api().open_logs());
+  el("retry").addEventListener("click", () => {
+    el("retry").disabled = true;
+    lastCount = -1;
+    api() && api().retry();
+    setTimeout(() => { el("retry").disabled = false; }, 1500);
+  });
+  el("quit").addEventListener("click", () => api() && api().quit());
+
+  window.addEventListener("pywebviewready", poll);
+  poll();
+</script>
+</body>
+</html>

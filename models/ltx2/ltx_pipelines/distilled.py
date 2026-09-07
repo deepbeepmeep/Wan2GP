@@ -547,12 +547,20 @@ class DistilledPipeline:
                 else:
                     contexts = [(video_context, audio_context)]
             elif float(NAG_scale) > 1.0:
-                contexts = self.text_encoder_cache.encode(
+                context_pos = self.text_encoder_cache.encode(
                     encode_fn,
-                    [prompt, negative_prompt],
+                    [prompt],
                     device=self.device,
                     parallel=True,
-                )
+                )[0]
+                cleanup_memory()
+                context_neg = self.text_encoder_cache.encode(
+                    encode_fn,
+                    [negative_prompt],
+                    device=self.device,
+                    parallel=True,
+                )[0]
+                contexts = [context_pos, context_neg]
                 video_context_mask_builder = None
                 audio_context_mask_builder = None
             else:

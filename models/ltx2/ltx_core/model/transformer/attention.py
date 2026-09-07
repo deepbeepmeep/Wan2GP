@@ -219,67 +219,100 @@ class Attention(torch.nn.Module):
         q = self.to_q(x)
         context = x if context is None else context
         x = None
+        # Low-VRAM NAG path: when context is doubled (pos+neg concatenated),
+        # project and attend each half SEPARATELY to avoid the full doubled allocation.
+        _nag_cap = 0
+        if cross_attn and NAG is not None:
+            _nag_cap = int(NAG.get("cap_embed_len", 0) or 0)
+        _ctx_seq = context.shape[0] if context.dim() == 2 else context.shape[1]
+        if _nag_cap > 0 and _ctx_seq == _nag_cap * 2:
+            _dim = 0 if context.dim() == 2 else 1
+            ctx_pos = context.narrow(_dim, 0, _nag_cap)
+            ctx_neg = context.narrow(_dim, _nag_cap, _nag_cap)
+            context = None
+
+            # --- Positive half: project, norm, reshape, attend ---
+            k_pos = self.to_k(ctx_pos)
+            v_pos = self.to_v(ctx_pos)
+            ctx_pos = None
+            self.q_norm(q)
+            self.k_norm(k_pos)
+            if pe is not None:
+                apply_rotary_emb_inplace(q, pe, self.rope_type)
+                apply_rotary_emb_inplace(k_pos, pe if k_pe is None else k_pe, self.rope_type)
+            q_4d = q.view(q.shape[0], -1, self.heads, self.dim_head)
+            k_pos = k_pos.view(k_pos.shape[0], -1, self.heads, self.dim_head)
+            v_pos = v_pos.view(v_pos.shape[0], -1, self.heads, self.dim_head)
+            force_attention, attention_version = self._resolve_attention_override()
+            pos_mask = None if mask is None else mask[..., :_nag_cap]
+            qkv_list = [q_4d, k_pos, v_pos]
+            k_pos = v_pos = None
+            x_pos = pay_attention(
+                qkv_list,
+                attention_mask=pos_mask,
+                force_attention=force_attention,
+                version=attention_version,
+            )
+
+            # --- Negative half: project, norm (k only, q already normed), reshape, attend ---
+            k_neg = self.to_k(ctx_neg)
+            v_neg = self.to_v(ctx_neg)
+            ctx_neg = None
+            self.k_norm(k_neg)
+            if pe is not None:
+                apply_rotary_emb_inplace(k_neg, pe if k_pe is None else k_pe, self.rope_type)
+            k_neg = k_neg.view(k_neg.shape[0], -1, self.heads, self.dim_head)
+            v_neg = v_neg.view(v_neg.shape[0], -1, self.heads, self.dim_head)
+            neg_mask = None if mask is None else mask[..., _nag_cap : _nag_cap * 2]
+            qkv_list = [q_4d, k_neg, v_neg]
+            q = q_4d = k_neg = v_neg = None
+            out = pay_attention(
+                qkv_list,
+                attention_mask=neg_mask,
+                force_attention=force_attention,
+                version=attention_version,
+                recycle_q=True,
+            )
+
+            # --- NAG merge (identical to original) ---
+            nag_scale = float(NAG["scale"])
+            nag_alpha = float(NAG["alpha"])
+            nag_tau = float(NAG["tau"])
+            out.mul_(1 - nag_scale)
+            out.add_(x_pos, alpha=nag_scale)
+            norm_positive = torch.sum(torch.abs(x_pos), dim=(2, 3), keepdim=True)
+            norm_guidance = torch.sum(torch.abs(out), dim=(2, 3), keepdim=True)
+            scale = norm_guidance / norm_positive
+            torch.nan_to_num(scale, nan=10.0, posinf=10.0, neginf=10.0, out=scale)
+            factor = (norm_positive * nag_tau) / (norm_guidance + 1e-7)
+            out = torch.where(scale > nag_tau, out * factor, out)
+            del norm_positive, norm_guidance, scale, factor
+            x_pos.mul_(1 - nag_alpha)
+            out.mul_(nag_alpha)
+            out.add_(x_pos)
+            x_pos = None
+            if self.to_gate_logits is not None:
+                gate_logits = self.to_gate_logits(gate_input)
+                gates = 2.0 * torch.sigmoid(gate_logits).to(dtype=out.dtype)
+                out.mul_(gates.unsqueeze(-1))
+            gate_input = None
+            out = out.flatten(2, 3)
+            out = self.to_out(out)
+            return out
+
+        # --- Normal (non-NAG) path ---
         k = self.to_k(context)
         v = self.to_v(context)
         context = None
         self.q_norm(q)
         self.k_norm(k)
-
         if pe is not None:
             apply_rotary_emb_inplace(q, pe, self.rope_type)
             apply_rotary_emb_inplace(k, pe if k_pe is None else k_pe, self.rope_type)
-
         q = q.view(q.shape[0], -1, self.heads, self.dim_head)
         k = k.view(k.shape[0], -1, self.heads, self.dim_head)
         v = v.view(v.shape[0], -1, self.heads, self.dim_head)
         force_attention, attention_version = self._resolve_attention_override()
-
-        if cross_attn and NAG is not None:
-            cap_len = int(NAG.get("cap_embed_len", 0) or 0)
-            if cap_len > 0 and k.shape[1] == cap_len * 2:
-                pos_mask = None if mask is None else mask[..., :cap_len]
-                neg_mask = None if mask is None else mask[..., cap_len : cap_len * 2]
-                qkv_list = [q, k[:, :cap_len], v[:, :cap_len]]
-                # Keep the merge in attention-output space with in-place ops, following the Wan low-allocation path.
-                x_pos = pay_attention(
-                    qkv_list,
-                    attention_mask=pos_mask,
-                    force_attention=force_attention,
-                    version=attention_version,
-                )
-                qkv_list = [q, k[:, cap_len : cap_len * 2], v[:, cap_len : cap_len * 2]]
-                q = k = v = None
-                out = pay_attention(
-                    qkv_list,
-                    attention_mask=neg_mask,
-                    force_attention=force_attention,
-                    version=attention_version,
-                    recycle_q=True,
-                )
-                nag_scale = float(NAG["scale"])
-                nag_alpha = float(NAG["alpha"])
-                nag_tau = float(NAG["tau"])
-                out.mul_(1 - nag_scale)
-                out.add_(x_pos, alpha=nag_scale)
-                norm_positive = torch.sum(torch.abs(x_pos), dim=(2, 3), keepdim=True)
-                norm_guidance = torch.sum(torch.abs(out), dim=(2, 3), keepdim=True)
-                scale = norm_guidance / norm_positive
-                torch.nan_to_num(scale, nan=10.0, posinf=10.0, neginf=10.0, out=scale)
-                factor = (norm_positive * nag_tau) / (norm_guidance + 1e-7)
-                out = torch.where(scale > nag_tau, out * factor, out)
-                del norm_positive, norm_guidance, scale, factor
-                x_pos.mul_(1 - nag_alpha)
-                out.mul_(nag_alpha)
-                out.add_(x_pos)
-                x_pos = None
-                if self.to_gate_logits is not None:
-                    gate_logits = self.to_gate_logits(gate_input)
-                    gates = 2.0 * torch.sigmoid(gate_logits).to(dtype=out.dtype)
-                    out.mul_(gates.unsqueeze(-1))
-                gate_input = None
-                out = out.flatten(2, 3)
-                out = self.to_out(out)
-                return out
 
         qkv_list = [q, k, v]
         q = k = v = None

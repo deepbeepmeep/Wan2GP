@@ -23,6 +23,7 @@ DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY = "deepy_tool_gen_speech_from_sample"
 DEEPY_CONTEXT_TOKENS_KEY = "deepy_context_tokens"
 DEEPY_KV_CACHE_QUANTIZATION_KEY = "deepy_kv_cache_quantization"
 DEEPY_COMPACTION_TYPE_KEY = "deepy_compaction_type"
+DEEPY_COMPACTION_THINKING_KEY = "deepy_compaction_thinking"
 DEEPY_REPETITION_PENALTY_KEY = "deepy_repetition_penalty"
 DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY = "deepy_zero_custom_system_prompt"
 DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY = "deepy_prime_custom_system_prompt"
@@ -52,9 +53,11 @@ DEEPY_TYPE_ZERO = "zero"
 DEEPY_TYPE_PRIME = "prime"
 DEEPY_TYPE_DISABLED = "disabled"
 DEEPY_TYPE_DEFAULT = DEEPY_TYPE_ZERO
-DEEPY_PRIME_GUIDANCE_DEFAULT = "When several models can satisfy the request, prefer the highest-quality base or full model unless the user explicitly prioritizes speed or names another model."
+DEEPY_PRIME_GUIDANCE_DEFAULT = "When choosing a model at the user's explicit request or because the configured template lacks a required capability, prefer the highest-quality base or full model unless the user prioritizes speed."
+_DEEPY_PRIME_GUIDANCE_OLD_DEFAULT = "When several models can satisfy the request, prefer the highest-quality base or full model unless the user explicitly prioritizes speed or names another model."
 DEEPY_COMPACTION_TYPE_DISCARD = "discard"
 DEEPY_COMPACTION_TYPE_SUMMARIZE = "summarize"
+DEEPY_COMPACTION_CHOICE_THINKING = "summarize_thinking"
 DEEPY_DEFAULT_GEN_IMAGE = "Krea 2 Turbo (8 Steps)"
 DEEPY_DEFAULT_EDIT_IMAGE = "Flux Klein 9B"
 DEEPY_DEFAULT_GEN_VIDEO = "LTX-2 2.5 Distilled"
@@ -66,7 +69,9 @@ DEEPY_CONTEXT_TOKENS_MIN = 8192
 DEEPY_CONTEXT_TOKENS_MAX = 256000
 DEEPY_CONTEXT_TOKENS_DEFAULT = 16386
 DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS = 32000
+DEEPY_COMPACTION_THINKING_MIN_TOKENS = 48000
 DEEPY_COMPACTION_TYPE_DEFAULT = DEEPY_COMPACTION_TYPE_DISCARD
+DEEPY_COMPACTION_THINKING_DEFAULT = False
 DEEPY_REPETITION_PENALTY_DEFAULT = True
 DEEPY_KV_CACHE_QUANTIZATION_AUTO = "auto"
 DEEPY_KV_CACHE_QUANTIZATION_DEFAULT = DEEPY_KV_CACHE_QUANTIZATION_AUTO
@@ -216,7 +221,13 @@ def resolve_deepy_kv_cache_quantization(value: Any) -> tuple[str, str]:
 
 
 def normalize_deepy_compaction_type(value: Any) -> str:
-    return DEEPY_COMPACTION_TYPE_SUMMARIZE if str(value or "").strip().lower() == DEEPY_COMPACTION_TYPE_SUMMARIZE else DEEPY_COMPACTION_TYPE_DISCARD
+    return DEEPY_COMPACTION_TYPE_SUMMARIZE if str(value or "").strip().lower() in {DEEPY_COMPACTION_TYPE_SUMMARIZE, DEEPY_COMPACTION_CHOICE_THINKING} else DEEPY_COMPACTION_TYPE_DISCARD
+
+
+def normalize_deepy_compaction_thinking(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "on", "yes"}
+    return bool(value)
 
 
 def normalize_deepy_repetition_penalty(value: Any) -> bool:
@@ -225,15 +236,22 @@ def normalize_deepy_repetition_penalty(value: Any) -> bool:
     return bool(value)
 
 
-def validate_deepy_compaction_config(compaction_type: Any, context_tokens: Any) -> str:
+def deepy_compaction_min_tokens(compaction_type: Any, compaction_thinking: Any = False) -> int:
+    thinking = str(compaction_type or "").strip().lower() == DEEPY_COMPACTION_CHOICE_THINKING or normalize_deepy_compaction_thinking(compaction_thinking)
+    return DEEPY_COMPACTION_THINKING_MIN_TOKENS if thinking else DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS
+
+
+def validate_deepy_compaction_config(compaction_type: Any, context_tokens: Any, *, compaction_thinking: Any = False) -> str:
     normalized_type = normalize_deepy_compaction_type(compaction_type)
     normalized_tokens = normalize_deepy_context_tokens(context_tokens)
-    if normalized_type == DEEPY_COMPACTION_TYPE_SUMMARIZE and normalized_tokens < DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:
-        raise ValueError(f"Deepy Summarize compaction requires at least {DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:,} context tokens.")
+    minimum_tokens = deepy_compaction_min_tokens(compaction_type, compaction_thinking)
+    if normalized_type == DEEPY_COMPACTION_TYPE_SUMMARIZE and normalized_tokens < minimum_tokens:
+        mode = "Summarize with Thinking" if minimum_tokens == DEEPY_COMPACTION_THINKING_MIN_TOKENS else "Summarize"
+        raise ValueError(f"Deepy {mode} compaction requires at least {minimum_tokens:,} context tokens.")
     return normalized_type
 
 
-def validate_deepy_version_config(deepy_type: Any, compaction_type: Any, context_tokens: Any, enhancer_enabled: Any) -> tuple[str, str, int]:
+def validate_deepy_version_config(deepy_type: Any, compaction_type: Any, context_tokens: Any, enhancer_enabled: Any, *, compaction_thinking: Any = False) -> tuple[str, str, int]:
     normalized_type = normalize_deepy_type(deepy_type)
     normalized_compaction = normalize_deepy_compaction_type(compaction_type)
     normalized_tokens = normalize_deepy_context_tokens(context_tokens)
@@ -244,8 +262,9 @@ def validate_deepy_version_config(deepy_type: Any, compaction_type: Any, context
     if normalized_type == DEEPY_TYPE_PRIME:
         if enhancer_no != 5:
             raise ValueError("Deepy Prime requires the Qwen3.8 VL 27B model.")
-        if normalized_compaction != DEEPY_COMPACTION_TYPE_SUMMARIZE or normalized_tokens < DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:
-            raise ValueError(f"Deepy Prime requires Summarize compaction and at least {DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:,} context tokens.")
+        if normalized_compaction != DEEPY_COMPACTION_TYPE_SUMMARIZE:
+            raise ValueError("Deepy Prime requires Summarize compaction.")
+    validate_deepy_compaction_config(compaction_type, normalized_tokens, compaction_thinking=compaction_thinking)
     return normalized_type, normalized_compaction, normalized_tokens
 
 
@@ -255,7 +274,8 @@ def normalize_deepy_custom_system_prompt(value: Any) -> str:
 
 
 def normalize_deepy_prime_guidance(value: Any) -> str:
-    return normalize_deepy_custom_system_prompt(value) or DEEPY_PRIME_GUIDANCE_DEFAULT
+    text = normalize_deepy_custom_system_prompt(value)
+    return DEEPY_PRIME_GUIDANCE_DEFAULT if not text or text == _DEEPY_PRIME_GUIDANCE_OLD_DEFAULT else text
 
 
 def normalize_deepy_prime_mcp_servers(value: Any) -> dict[str, dict[str, Any]]:
@@ -436,6 +456,7 @@ def normalize_deepy_runtime_config(server_config: dict[str, Any] | None) -> dict
     runtime_config[DEEPY_CONTEXT_TOKENS_KEY] = normalize_deepy_context_tokens(runtime_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
     runtime_config[DEEPY_KV_CACHE_QUANTIZATION_KEY] = normalize_deepy_kv_cache_quantization(runtime_config.get(DEEPY_KV_CACHE_QUANTIZATION_KEY, DEEPY_KV_CACHE_QUANTIZATION_DEFAULT))
     runtime_config[DEEPY_COMPACTION_TYPE_KEY] = normalize_deepy_compaction_type(runtime_config.get(DEEPY_COMPACTION_TYPE_KEY, DEEPY_COMPACTION_TYPE_DEFAULT))
+    runtime_config[DEEPY_COMPACTION_THINKING_KEY] = normalize_deepy_compaction_thinking(runtime_config.get(DEEPY_COMPACTION_THINKING_KEY, DEEPY_COMPACTION_THINKING_DEFAULT))
     runtime_config[DEEPY_REPETITION_PENALTY_KEY] = normalize_deepy_repetition_penalty(runtime_config.get(DEEPY_REPETITION_PENALTY_KEY, DEEPY_REPETITION_PENALTY_DEFAULT))
     runtime_config[DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_custom_system_prompt(runtime_config.get(DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY, ""))
     runtime_config[DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_prime_guidance(runtime_config.get(DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_GUIDANCE_DEFAULT))
@@ -467,6 +488,7 @@ def get_deepy_default_runtime_config() -> dict[str, Any]:
         DEEPY_CONTEXT_TOKENS_KEY: DEEPY_CONTEXT_TOKENS_DEFAULT,
         DEEPY_KV_CACHE_QUANTIZATION_KEY: DEEPY_KV_CACHE_QUANTIZATION_DEFAULT,
         DEEPY_COMPACTION_TYPE_KEY: DEEPY_COMPACTION_TYPE_DEFAULT,
+        DEEPY_COMPACTION_THINKING_KEY: DEEPY_COMPACTION_THINKING_DEFAULT,
         DEEPY_REPETITION_PENALTY_KEY: DEEPY_REPETITION_PENALTY_DEFAULT,
         DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY: "",
         DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY: DEEPY_PRIME_GUIDANCE_DEFAULT,
@@ -539,7 +561,7 @@ def deepy_requirement_error(server_config: dict[str, Any] | None) -> str:
     if enhancer_enabled not in DEEPY_QWEN_ENHANCER_IDS:
         return "Deepy requires Prompt Enhancer to be set to a Qwen3.5VL Abliterated or Qwen3.8VL Uncensored mode in the Extensions tab."
     try:
-        validate_deepy_version_config(runtime_config.get(DEEPY_TYPE_KEY, DEEPY_TYPE_DEFAULT), runtime_config.get(DEEPY_COMPACTION_TYPE_KEY, DEEPY_COMPACTION_TYPE_DEFAULT), runtime_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT), enhancer_enabled)
+        validate_deepy_version_config(runtime_config.get(DEEPY_TYPE_KEY, DEEPY_TYPE_DEFAULT), runtime_config.get(DEEPY_COMPACTION_TYPE_KEY, DEEPY_COMPACTION_TYPE_DEFAULT), runtime_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT), enhancer_enabled, compaction_thinking=runtime_config.get(DEEPY_COMPACTION_THINKING_KEY, DEEPY_COMPACTION_THINKING_DEFAULT))
     except ValueError as exc:
         return str(exc)
     return ""

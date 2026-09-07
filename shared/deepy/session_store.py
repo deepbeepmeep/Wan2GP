@@ -325,7 +325,7 @@ def _block_replay_event(record: dict[str, Any], block: dict[str, Any], message_i
         "block_type": block_type,
         "block_index": int(block_index),
         "html": assistant_chat._render_block_html(record, block, streaming=False),
-        "text": str(block.get("text", "") or "") if block_type in {"markdown", "reasoning", "context_summary"} else "",
+        "text": str(block.get("text", "") or "") if block_type in {"markdown", "reasoning", "context_summary", "context_thinking"} else "",
         "streaming": False,
     }
 
@@ -346,7 +346,7 @@ def _consolidated_ui_transcript(previous: list[dict[str, Any]], current: list[di
                 continue
             block_id = str(block.get("id", "") or "")
             block_type = str(block.get("type", "markdown") or "markdown")
-            incomplete_text = block_type in {"markdown", "reasoning", "context_summary"} and bool(block.get("streaming", False))
+            incomplete_text = block_type in {"markdown", "reasoning", "context_summary", "context_thinking"} and bool(block.get("streaming", False))
             incomplete_tool = block_type == "tool" and (bool(block.get("request_pending", False)) or str(block.get("status", "") or "").strip().lower() not in {"done", "error", "failed", "interrupted", "cancelled"})
             if incomplete_text or incomplete_tool:
                 if block_id in previous_blocks:
@@ -1060,7 +1060,8 @@ def inject_session_media(session, gen: dict[str, Any]) -> dict[str, Any]:
                 fingerprints[fingerprint] = entry
     injected = 0
     missing = []
-    for record in session.media_registry:
+    # The registry is newest-first; Gallery appends in chronological order.
+    for record in reversed(session.media_registry):
         if not isinstance(record, dict):
             continue
         path = Path(str(record.get("path", "") or ""))
@@ -1075,7 +1076,18 @@ def inject_session_media(session, gen: dict[str, Any]) -> dict[str, Any]:
         settings.update({"deepy_session_id": session.storage_session_id, "deepy_media_id": record.get("media_id", ""), "deepy_media_fingerprint": fingerprint})
         gallery = "audio" if media_type == "audio" else "visual"
         settings["gallery_media_ids"] = gallery_media_ids(str(path), gallery, settings)
-        existing = canonical_paths.get(canonical) or client_keys.get((media_type, client_id)) or fingerprints.get(fingerprint)
+        existing = canonical_paths.get(canonical)
+        candidate = client_keys.get((media_type, client_id)) or fingerprints.get(fingerprint)
+        # A job can produce several files; matching size/mtime also does not establish identity.
+        if existing is None and candidate is not None and Path(candidate[0]).is_file():
+            with path.open("rb") as source_file, open(candidate[0], "rb") as candidate_file:
+                while True:
+                    chunk = source_file.read(1024 * 1024)
+                    if chunk != candidate_file.read(1024 * 1024):
+                        break
+                    if not chunk:
+                        existing = candidate
+                        break
         if existing is not None:
             existing_path, existing_settings = existing
             ids = gallery_media_ids(existing_path, gallery, existing_settings)

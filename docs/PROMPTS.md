@@ -1,5 +1,7 @@
 # Prompts Guide
 
+> Applies to: Prompt writing, comments, line/paragraph splitting, window commands, image pairing, optional enhancement and macros. Follow the selected model's returned prompt guidance for its specific syntax.
+
 This page explains how WanGP interprets the main text prompt: how multiline prompts are split or preserved, how prompt lines can be paired with multiple images, how the Prompt Enhancer changes the text, and how macros generate prompt variations.
 
 ## Prompt Types In Practice
@@ -152,7 +154,7 @@ Turn the whole video into a black-and-white film look while keeping the original
 Replace the material of all visible statues with polished gold.
 ```
 
-For `Wan2.1 Chrono Edit 14B`, it is usually best to enable the Prompt Enhancer, because that model is stricter than Qwen Edit or Flux Kontext about prompt format.
+For `Wan2.1 Chrono Edit 14B`, the optional Prompt Enhancer can help with its stricter prompt format. Enable it when the user requests prompt enhancement; otherwise write the model's required format directly.
 
 ## Text Prompt Basics
 
@@ -162,7 +164,7 @@ WanGP reads the prompt line by line before generation.
 - A line starting with `!` is a macro line (see Macro section below).
 - Other lines are prompt content.
 
-Empty lines are usually ignored, but some speech models keep them because they are useful as manual split markers for long speeches or dialogue.
+Blank lines separate complete prompts in paragraph modes `PG` and `PW`; single newlines stay inside each paragraph. In line modes `G` and `W`, empty lines are ignored. Full-prompt mode `FG` preserves multiline content, and some speech models also preserve empty lines as speech/dialogue split markers. Full-line `#` comments are removed before prompt splitting.
 
 This is especially practical with:
 
@@ -179,10 +181,14 @@ The dropdown `How to Process each Line of the Text Prompt` changes how WanGP int
 The UI shows these choices:
 
 - `Each New Line Will Add a new Video/Image/Audio Request to the Generation Queue`
+- `Each new Paragraph separated by an Empty Line Will Add a new Video/Image/Audio Request to the Generation Queue`
 - `Each Line Will be used for a new Sliding Window of the same Video Generation`
+- `Each Paragraph Separated by an Empty line will be used for a new Sliding Window of the same Video Generation`
 - `All the Lines are Part of the Same Prompt`
 
 Which wording you see depends on the current model and whether it outputs video, image, or audio.
+
+These choices correspond to `G`, `PG`, `W`, `PW`, and `FG` in `multi_prompts_gen_type`. Use `PW` for structured multi-line window prompts: exactly one blank line between complete windows, single newlines within each window. A searchable `# WINDOW 01 — ...` title can precede its duration command without a blank line between them.
 
 ### 1. Each New Line Adds A New Queue Item
 
@@ -515,7 +521,7 @@ Practical examples:
 
 So the safest rule is:
 
-- use the generic `T`, `I`, and `TI` logic when those are the options you see
+- use the supported `prompt_enhancer` choices: `T` enables enhancement, and `I` adds image context to form `TI`
 - prefer the model-specific labels when WanGP exposes them, because they were defined for that model on purpose
 
 ### Based On Text Prompt Content

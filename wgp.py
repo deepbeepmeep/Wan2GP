@@ -58,7 +58,7 @@ from shared.utils.loras_mutipliers import preparse_loras_multipliers, parse_lora
 from shared.utils.utils import convert_tensor_to_image, convert_video_tensor_to_uint8_chunked, save_image, get_video_info, get_file_creation_date, convert_image_to_video, calculate_new_dimensions, convert_image_to_tensor, calculate_dimensions_and_resize_image, rescale_and_crop, get_video_frame, resize_and_remove_background, rgb_bw_to_rgba_mask, image_editor_layer_to_rgb_mask, to_rgb_tensor, get_resampled_video_transparent, get_video_summary_extras
 from shared.utils.utils import calculate_new_dimensions, get_outpainting_dims, get_outpainting_frame_location, get_outpainting_full_area_dimensions, resolve_outpainting_dims
 from shared.utils.utils import has_video_file_extension, has_image_file_extension, has_audio_file_extension
-from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files, normalize_audio_pair_volumes_to_temp_files, save_video, save_hdr_video, save_image
+from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files, normalize_audio_pair_volumes_to_temp_files, save_video, save_hdr_video, save_image, get_image_format
 from shared.utils.audio_video import append_sliding_window_audio, read_image_metadata, extract_audio_track_to_wav, write_wav_file, save_audio_file, get_audio_codec_extension, create_silent_wav_file
 from shared.utils.audio_video import truncate_audio, shift_audio_trim_ranges, trim_audio_ranges, trim_audio_file_ranges, slice_audio_window, resolve_mux_audio_sampling_rate
 from shared.utils.audio_metadata import read_audio_metadata, extract_creation_datetime_from_metadata, resolve_audio_creation_datetime
@@ -156,7 +156,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.14"
-WanGP_version = "12.72"
+WanGP_version = "12.73"
 settings_version = 2.78
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -6058,10 +6058,11 @@ def edit_media(
     api_video_tensor = None
     if sample != None:
         if source_is_image:
-            image_path = get_available_filename(image_save_path, video_source, "_post")
+            image_extension = get_image_format(server_config.get("image_output_codec", None), rgba=sample.shape[0] == 4)["ext"]
+            image_path = get_available_filename(image_save_path, video_source, "_post", force_extension=image_extension)
             image_paths = []
             for no, img in enumerate(sample.transpose(1,0)):
-                img_path = os.path.splitext(image_path)[0] + ("" if no == 0 else f"_{no}") + ".jpg"
+                img_path = get_available_filename(image_save_path, image_path, "" if no == 0 else f"_{no}")
                 image_paths.append(save_image(img, save_file=img_path, quality=server_config.get("image_output_codec", None)))
             video_path = image_paths if len(image_paths) > 1 else image_paths[0]
             print(f"Postprocessed image saved to Path: {video_path}")
@@ -8277,7 +8278,7 @@ def generate_media(
                     extension = get_audio_codec_extension(audio_codec)
                     output_dir = audio_save_path
                 elif is_image:
-                    extension = "jpg"
+                    extension = get_image_format(server_config.get("image_output_codec", None), rgba=sample.shape[0] == 4)["ext"][1:]
                     output_dir = image_save_path
                 else:
                     container = server_config.get("video_container", "mp4")
@@ -8309,7 +8310,7 @@ def generate_media(
                     sample =  sample.transpose(1,0)  #c f h w -> f c h w 
                     new_image_path = []
                     for no, img in enumerate(sample):  
-                        img_path = os.path.splitext(image_path)[0] + ("" if no==0 else f"_{no}") + ".jpg" 
+                        img_path = get_available_filename(output_dir, image_path, "" if no == 0 else f"_{no}")
                         new_image_path.append(save_image(img, save_file = img_path, quality = server_config.get("image_output_codec", None)))
 
                     video_path= new_image_path
@@ -12585,7 +12586,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     attention_sparsity = setting_slider("attention_sparsity", visible=custom_attention_modes.get(selected_attention, {}).get("supports_sparsity", False))
                     with gr.Column():
                         gr.Markdown('<B>Customize the Output Filename using Settings Values (<I>date, seed, resolution, num_inference_steps, prompt, flow_shift, video_length, guidance_scale</I>). For Instance:<BR>"<I>{date(YYYY-MM-DD_HH-mm-ss)}_{seed}_{prompt(50)}, {num_inference_steps}</I>"</B>')
-                        output_filename = gr.Text( label= " Output Filename ( Leave Blank for Auto Naming)", value= ui_get("output_filename"))
+                        output_filename = gr.Text( label= " Output Filename (Leave Blank for Auto Naming)", value= ui_get("output_filename"))
 
                     config_groups = get_model_config_groups(model_type, model_def)
                     grouped_model_configs = [model_config_groups.get_config_items(configs) for configs in config_groups]
@@ -13721,14 +13722,14 @@ def clear_startup_lock():
             pass
 
 def _mcp_forwarded_wgp_args():
-    mcp_value_args = {"--mcp-transport", "--mcp-host", "--mcp-port"}
+    mcp_value_args = {"--mcp-transport", "--mcp-host", "--mcp-port", "--mcp-api-version"}
     forwarded = []
     skip_next = False
     for arg in sys.argv[1:]:
         if skip_next:
             skip_next = False
             continue
-        if arg in {"--mcp", "--mcp-console-output", "--mcp-allow-read-file-system"}:
+        if arg in {"--mcp", "--mcp-console-output", "--mcp-allow-read-file-system", "--mcp-async"}:
             continue
         if arg in mcp_value_args:
             skip_next = True
@@ -13750,6 +13751,8 @@ def run_mcp_server():
         cli_arg=_mcp_forwarded_wgp_args(),
         console_output=args.mcp_console_output,
         transport=args.mcp_transport,
+        mcp_api_version=args.mcp_api_version,
+        mcp_async=args.mcp_async,
         host=args.mcp_host.strip() or None,
         port=args.mcp_port,
         allow_read_file_system=args.mcp_allow_read_file_system,

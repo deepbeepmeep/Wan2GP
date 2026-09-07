@@ -1,5 +1,7 @@
 # AMD Installation Guide for Windows (TheRock)
 
+> Applies to: Installation on AMD GPUs under Windows with TheRock. These dependency and driver steps apply to that platform, not NVIDIA/CUDA installations or generation task settings.
+
 This guide covers installation for AMD GPUs running under Windows using TheRock's official PyTorch wheels.
 
 ## Supported GPUs

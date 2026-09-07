@@ -1,5 +1,7 @@
 # Wan2GP Plugin System
 
+> Applies to: Installing and developing WanGP plugins. Python registration and handler examples belong in plugin code; callable tools are those registered in the current Deepy session.
+
 This system allows you to extend and customize the Wan2GP user interface and functionality without modifying the core application code. This document will guide you through the process of creating and installing your own plugins.
 
 ## Table of Contents

@@ -1,5 +1,7 @@
 # Loras Guide
 
+> Applies to: LoRA installation, selection, multiplier syntax and presets. Accelerator examples apply to the named architecture; a selected model's current accelerator profile supplies its actual values.
+
 Loras (Low-Rank Adaptations) allow you to customize video generation models by adding specific styles, characters, or effects to your videos.
 
 ## Directory Structure
@@ -155,7 +157,7 @@ A Lora Preset is a text file of only of few kilobytes and can be easily shared b
 A ohnvx character is driving a car through the city
 ```
 
-Using a macro (check the doc below), the user will just have to enter two words and the Prompt will be generated for him:
+Using a macro (see the [Prompts guide](PROMPTS.md#macro-system)), the user will just have to enter two words and the Prompt will be generated for him:
 ```
 ! {Person}="man" : {Object}="car"
 This {Person} is cleaning his {Object}.
@@ -218,7 +220,7 @@ If you need just one Lora accelerator use this one. It is a combination of multi
    - Set Guidance Scale = 1
    - Set Shift Scale = 2
 4. In Advanced Lora Tab:
-   - Select CausVid Lora
+   - Select the matching FusioniX Lora
    - Set multiplier to 1
 5. Set generation steps from 8-10
 6. Generate!
@@ -287,7 +289,7 @@ You need to select these two loras and set the following Loras multipliers:
 Don't forget to set guidance to 1 !
 ## Qwen Image Lightning 4 steps / Lightning 8 steps
 Very powerful lora that you can use to reduce the number of steps from 30 to only 4 !
-Just install the lora in *lora_qwen* folder, select the lora and set Guidance to 1 and the number of steps to 4 or 8
+Install the matching LoRA in `loras/qwen/` (or the configured Qwen LoRA directory), select it, and use its accelerator profile's guidance and step count. For the named Lightning variants, this is commonly guidance 1 and 4 or 8 steps.
 
 
 

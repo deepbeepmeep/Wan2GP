@@ -1,5 +1,7 @@
 # Command Line Reference
 
+> Applies to: Launching WanGP and processing saved queues from a shell. These command-line options configure a process; they are not Deepy tool arguments or per-model generation settings.
+
 This document covers all available command line options for WanGP.
 
 ## Basic Usage
@@ -87,11 +89,15 @@ Queue completed: 3/3 tasks in 5m 23s
 --mcp-transport TRANSPORT          # stdio, sse, or streamable-http
 --mcp-host HOST                    # Host for HTTP transports
 --mcp-port PORT                    # Port for HTTP transports
+--mcp-api-version {1,2}            # WanGP API contract; latest (2) by default, 1 for compatibility
+--mcp-async                        # Permit wait=false in v2; disabled by default
 --mcp-console-output               # Mirror WanGP output while serving MCP
 --mcp-allow-read-file-system       # Allow agents to submit arbitrary server file paths (disabled by default)
 ```
 
 Media IDs returned by the Gallery remain usable when filesystem reads are disabled. Streamable HTTP and SSE servers also expose short-lived Gallery upload/download URLs; stdio does not provide HTTP media transfer.
+
+The default MCP interface is now v2. Existing clients that use historical tool names or parameters must launch with `python wgp.py --mcp --mcp-api-version 1`. Use `--mcp-api-version 2` to pin v2 explicitly. Both `--mcp-api-version` and `--mcp-async` also work with `python -m shared.mcp_server`. The number selects the WanGP tool API, not the MCP protocol version; unsupported numbers are rejected. API v1 retains its original wait behavior. In v2, generation and post-processing wait by default; `--mcp-async` enables optional asynchronous calls without changing that default. See [API migration](API.md#mcp-api-v2-and-migration).
 
 ### Examples
 ```bash

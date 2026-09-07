@@ -286,7 +286,8 @@ class DeepyController:
                 task = session.queued_task_handles.get(message_id)
                 if task is None or not promote_async_task("assistant", task):
                     return gr.update(), gr.update(), gr.update(), gr.update()
-                chat_event = assistant_chat.steer_queued_message(session, message_id)
+                status_text = "Steering accepted. Waiting for context compaction to finish..." if session.assistant_compaction_active else "Steering accepted. Applying this request at the current boundary..."
+                chat_event = assistant_chat.steer_queued_message(session, message_id, status_text=status_text)
                 if session.worker_active and isinstance(session.current_turn, dict):
                     request_assistant_steering(session)
             else:
@@ -579,6 +580,8 @@ class DeepyController:
                     if cancelled_has_more_work:
                         raw_send_cmd("chat_output", assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued", session=session))
                     else:
+                        if self.get_vram_mode() == DEEPY_VRAM_MODE_UNLOAD:
+                            self.release_vram(state)
                         raw_send_cmd("chat_output", assistant_chat.build_status_event(None, visible=False, session=session))
                         raw_send_cmd("exit", None)
                     return
@@ -632,6 +635,8 @@ class DeepyController:
                         raw_send_cmd("chat_output", final_sync)
                     self._debug_log(f"Worker finished user_message_id={user_message_id} stale={bool(stale_turn)} has_more_work={bool(has_more_work)} queued_jobs={int(session.queued_job_count or 0)}")
                     if not has_more_work:
+                        if self.get_vram_mode() == DEEPY_VRAM_MODE_UNLOAD:
+                            self.release_vram(state)
                         if not output_queue.wait_for_chat_publication():
                             self._debug_log(f"Timed out waiting for the final Deepy UI publication for user_message_id={user_message_id}.")
                         raw_send_cmd("exit", None)
@@ -679,6 +684,11 @@ class DeepyController:
 
     def _build_session_system_prompt(self, session, tools) -> tuple[str, str]:
         server_config = self._server_config()
+        if self.get_deepy_type() == DEEPY_TYPE_PRIME:
+            session.file_access_policy = tools.file_access_policy
+            scope = "Reading may extend outside these roots; writing does not." if tools.file_access_policy.read_everywhere else "Use authorized @alias paths from IO discovery."
+            access = f"Filesystem access outside the session workspace is configured as {tools.file_access_policy.mode}. {scope}"
+            return f"{PRIME_SYSTEM_PROMPT}\n\n{tools.get_system_instructions()}\n\n{access}", DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY
         from shared.deepy.filesystem import build_file_access_policy
         from shared.deepy.long_text import add_session_workspace, hide_legacy_artifact_guidance, long_text_system_instructions, long_text_tools_active
 
@@ -687,11 +697,6 @@ class DeepyController:
         session.file_access_policy = file_access_policy
         system_prompt = ZERO_SYSTEM_PROMPT
         custom_system_prompt_key = DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY
-        if self.get_deepy_type() == DEEPY_TYPE_PRIME:
-            server_instructions = tools.get_system_instructions()
-            prime_system_prompt = hide_legacy_artifact_guidance(PRIME_SYSTEM_PROMPT) if long_text_tools_active(file_access_policy) else PRIME_SYSTEM_PROMPT
-            system_prompt = f"{prime_system_prompt}\n\n{server_instructions}".strip() if server_instructions else prime_system_prompt
-            custom_system_prompt_key = DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY
         if file_access_policy.read_enabled:
             access = "read/write" if file_access_policy.write_enabled else "read-only"
             scope = "Reading is allowed everywhere; writing remains limited to output and selected folders." if file_access_policy.read_everywhere else "Use @alias/path from wangp_io roots; plain paths use @outputs."
@@ -823,7 +828,9 @@ class DeepyController:
                             raise RuntimeError("New steering request batch was not present in the assistant task queue.")
                         if not request_assistant_steering(session):
                             raise RuntimeError("Active assistant turn disappeared while applying steering.")
-                        if session.assistant_action_active:
+                        if session.assistant_compaction_active:
+                            steering_text = "Steering accepted. Waiting for context compaction to finish..."
+                        elif session.assistant_action_active:
                             steering_text = "Steering accepted. Steering will apply once the current tool action is done."
                         elif session.assistant_thought_active:
                             steering_text = "Steering accepted. Waiting for the current thought to finish..."

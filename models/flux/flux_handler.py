@@ -153,6 +153,12 @@ class family_handler():
             extra_model_def["text_encoder_folder"] = text_encoder_folder
         if flux2_klein:
             extra_model_def["profiles_dir"] = ["flux2_klein_4b"] if flux2_klein_4b else ["flux2_klein_9b"]
+            extra_model_def.update({
+                "deepy_infos": "Text-to-image or editing with ordered `image_refs`. Preserve `video_prompt_type`: `KI` = first image is the main scene, then people/objects; `I` = people/objects. Inpainting combines source, mask and prompt.",
+                "deepy_prompt_infos": "Text-only: describe the finished image. Editing: give a precise change and state what to preserve, e.g. 'Replace the woman in image 1 with the man from image 2; keep pose, lighting and background.' Number references in upload order and assign each a role. Quote exact visible text.",
+                "infos": "Generate from text alone, or combine the Text Prompt (`prompt`) with ordered Reference Images (`image_refs`) for editing and composition. Reference mode `KI` treats the first image as the main scene, followed by people/objects; `I` supplies people/objects. Describe each image's role in the prompt. Inpainting combines the source image, mask and prompt to target a region.",
+                "prompt_infos": 'For text-only generation, describe the finished image. For editing, give a precise instruction and identify what to retain: "Replace the woman in image 1 with the man from image 2; keep the pose, camera angle, lighting and background." For a new composition, describe the final scene and assign each reference a role, such as the person from image 1 wearing the coat from image 2. Image numbers follow upload order. Keep instructions compatible and quote exact visible text.',
+            })
         else:
             extra_model_def["profiles_dir"] = [] if (flux_schnell or flux2) else ["flux"]
         if flux_chroma_radiance:

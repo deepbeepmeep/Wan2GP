@@ -352,6 +352,9 @@ class family_handler:
         if _is_ace_step15(base_model_type):
             extra_model_def = {
                 "group": "music",
+                "infos": "Generate music by combining Lyrics (`prompt`) with Music Caption (`alt_prompt`): the lyrics supply words and song sections; the caption supplies style, instruments, mood and vocal character. Audio Task selects text-only generation, a cover from Source Audio (`audio_guide`, mode `A`), Reference Timbre (`audio_guide2`, mode `B`), or both (`AB`). For a cover, supply the source lyrics and use Source Audio Strength to control adherence. Duration, BPM, key, meter and language are separate controls.",
+                "deepy_infos": "Lyrics `prompt` + sound/style caption `alt_prompt` generate music. `audio_prompt_type`: `A` = cover from `audio_guide` (use source lyrics; Source Audio Strength controls adherence), `B` = timbre from `audio_guide2`, `AB` = both. Duration/BPM/key/meter/language have separate controls.",
+                "deepy_prompt_infos": "Put actual lyrics in `prompt`, with short lines and [Verse], [Chorus], [Bridge] tags separated by blank lines. Keep repeated choruses consistent. Put genre, instruments, mood and vocal character in `alt_prompt`. For instrumental music use `[Instrumental]` as lyrics and describe the sound in the caption.",
                 "audio_only": True,
                 "image_outputs": False,
                 "sliding_window": False,
@@ -373,7 +376,7 @@ class family_handler:
                 "enabled_audio_lora": True,
                 "lm_engines": ["vllm"],
                 "prompt_class": "Lyrics",
-                "prompt_infos": ACE_STEP_LYRICS_PROMPT_INFOS,
+                "prompt_infos": "Write the actual lyrics in `prompt`, not an instruction to write a song. Describe the desired sound in `alt_prompt`, for example: warm acoustic folk, fingerpicked guitar, soft female vocals, restrained percussion. For instrumental music, use `[Instrumental]` in `prompt` and describe the instruments in the caption.\n\n" + ACE_STEP_LYRICS_PROMPT_INFOS,
                 "alt_guidance": "LM Guidance (CFG)",
                 "prompt_description": "Lyrics / Prompt (Write [Instrumental] for Instrumental Generation only)",
                 "audio_prompt_type_sources": {

@@ -184,37 +184,39 @@ def _resolve_quanto_log_ssm_a(model_path: str, spec: dict) -> bool:
     return filename in log_ssm_a_filenames or (bool(spec.get("text_int8_log_ssm_a", False)) and filename == selected_filename)
 
 
-def _normalize_generated_text(text: str) -> str:
+def _normalize_generated_text(text: str, *, keep_trailing_newlines: bool = False) -> str:
     text = str(text or "")
     text = text.replace("<|im_end|>", "").replace("<|im_start|>", "")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n")]
-    return "\n".join(lines).strip()
+    text = "\n".join(lines)
+    return text.lstrip() if keep_trailing_newlines else text.strip()
 
 
-def _clean_answer_text(text: str) -> str:
+def _clean_answer_text(text: str, *, keep_trailing_newlines: bool = False) -> str:
     text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"^(?:\s*</think>\s*)+", "", text, flags=re.IGNORECASE)
     text = text.replace("<think>", "\n").replace("</think>", "\n")
     text = re.sub(r"^\s*assistant\s*:?\s*", "", text, flags=re.IGNORECASE)
-    text = re.split(
+    parts = re.split(
         r"(?:<\|im_start\|>\s*(?:assistant|user|system|tool)\b|<tool_call>\s*|<tool_response>\s*|<tools>\s*|\n\s*(?:assistant|user|system|tool)\s*:)",
         text,
         maxsplit=1,
         flags=re.IGNORECASE,
-    )[0]
+    )
+    text = parts[0]
     cleaned_lines = []
     for line in text.split("\n"):
         stripped = line.strip()
         if stripped.lower() == "code interpreter":
             break
         cleaned_lines.append(line)
-    return _normalize_generated_text("\n".join(cleaned_lines))
+    return _normalize_generated_text("\n".join(cleaned_lines), keep_trailing_newlines=keep_trailing_newlines and len(parts) == 1)
 
 
-def _split_generated_parts(text: str) -> tuple[list[str], str]:
+def _split_generated_parts(text: str, *, keep_trailing_newlines: bool = False) -> tuple[list[str], str]:
     text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     think_chunks = []
     answer_parts = []
@@ -259,11 +261,11 @@ def _split_generated_parts(text: str) -> tuple[list[str], str]:
             if leading_text.lower().startswith("thinking process"):
                 think_chunks.append(leading_text)
                 answer_text = text[timeline_match.start():]
-    return [normalized for chunk in think_chunks if len(normalized := _normalize_generated_text(chunk)) > 0], _clean_answer_text(answer_text)
+    return [normalized for chunk in think_chunks if len(normalized := _normalize_generated_text(chunk)) > 0], _clean_answer_text(answer_text, keep_trailing_newlines=keep_trailing_newlines)
 
 
-def _split_generated_text(text: str) -> tuple[str, str]:
-    think_chunks, answer_text = _split_generated_parts(text)
+def _split_generated_text(text: str, *, keep_trailing_newlines: bool = False) -> tuple[str, str]:
+    think_chunks, answer_text = _split_generated_parts(text, keep_trailing_newlines=keep_trailing_newlines)
     return _normalize_generated_text("\n\n".join(think_chunks)), answer_text
 
 

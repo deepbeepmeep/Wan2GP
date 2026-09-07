@@ -57,6 +57,13 @@ class family_handler:
          
         extra_model_def["flow_shift"] = z_image_base
         extra_model_def["NAG"] = base_model_type in ["z_image"]
+        if base_model_type in ("z_image", "z_image_base"):
+            extra_model_def.update({
+                "deepy_infos": "Text-to-image: `prompt` describes the image; `resolution` sets its dimensions.",
+                "deepy_prompt_infos": "Describe the finished image: subject/action, composition, setting, lighting and style. Put key details first and exact visible text in quotes. English and Chinese are supported.",
+                "infos": "Generate an image from the Text Prompt (`prompt`) at the selected resolution. The prompt supplies the subjects, composition, setting and visual style together.",
+                "prompt_infos": 'Write a description of the finished image in natural language: subject and action, composition, background, lighting, colors and medium. For example: "A man in a red coat stands beside a rainy bus stop, reflected neon on the pavement, documentary photograph." Put important details first and spell visible text exactly in quotes. English and Chinese descriptions are supported.',
+            })
         return extra_model_def
 
     @staticmethod

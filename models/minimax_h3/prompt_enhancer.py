@@ -20,6 +20,20 @@ Commands can be combined, for example `[/duration=5s,/overlap=18]` for a connect
 """
 
 
+FL2VA_DEEPY_PROMPT_INFOS = """Describe the resulting audiovisual scene chronologically in English: subjects, actions, camera, light and sound. Preserve exact requested speech/lettering in its original language. With control video, describe the desired result and retained context; with start/end images, describe the motion connecting them.
+
+Use these three fields together, with no blank lines inside a window:
+integrated_multimodal_description: [Shot 1] The courier stops, turns to camera and says (S1) <d>[English] Made it.</d>
+overall_soundscape: Rain on the awning and wet footsteps.
+non_diegetic_music: N/A
+
+For supplied frame anchors, prepend: `For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.` Start-only uses Picture 1 at zero; end-only uses Picture 1 at the exact end and final shot; both use Picture 1 at zero and Picture 2 at the end. Keep identity, clothes, layout and lighting consistent.
+
+Shot 1 has no timestamp. Later cuts use `[Shot N] At MM:SS.mmm, ...` with increasing times. Keep speaker IDs stable and exact speech/lyrics inside `<d>[Language] ...</d>`. A line crossing a cut uses `<scenetrans>` at both connecting points; `<cutoff>` marks speech interrupted by the ending. Quote visible lettering separately. Ambience goes in `overall_soundscape`; audience-only score in `non_diegetic_music` (`N/A` for none).
+
+For a single long video, use paragraph-per-window processing (`PW`): blank lines separate windows, all fields of one window stay together. Each window restarts at Shot 1 and time zero. Overlap is Picture 1; its end anchor is Picture 2. Without a start/overlap, an end-only anchor is Picture 1. Optional navigation titles must start with `#`. Consult the long-video guide for window scheduling and slash commands.
+"""
+
 FL2VA_PROMPT_INFOS = f"""## H3 FL2VA prompt structure
 
 FL2VA uses the same three-part audiovisual prompt for text-only, first-frame, last-frame, and first-and-last-frame generation:
@@ -80,6 +94,32 @@ non_diegetic_music: Low sustained cellos with a restrained frame-drum pulse, ope
 Adapted from MiniMax's [official base prompt-writing guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md).
 """
 
+
+REF2VA_DEEPY_PROMPT_INFOS = """Describe the resulting audiovisual scene and how each reference contributes; use English descriptions, retaining the original language of speech/lyrics and visible lettering. Use six sections in order:
+subject_definitions: Bind recurring content to references, e.g. <Subject 1> is the violinist from <Picture 1>.
+summary: Start with the applicable task tags, e.g. [reference generation + audio reference], then state the target scene.
+retention_analysis: State what transfers, where it appears and what changes. Visual modes: fully_preserved, partially_preserved, attribute_transfer, weak_reference. Audio modes: fully_copy, partially_copy, reference, weak_reference.
+detailed_description: Describe the actual scene, action, camera, light and sound in playback order, starting [Shot 1].
+overall_soundscape: Ambience, physical sounds and voices.
+non_diegetic_music: Audience-only score, or N/A.
+
+Keep labels stable: <Subject N> = reusable person/object/setting/style; <Picture N> = concrete image; <Video N> = video role; <Audio N> = sound or voice. Number each asset type independently. Start/end images precede general image references; account for them when assigning Picture numbers. Define a reference's role explicitly: identity, motion, framing, voice, copied audio, or a timed keyframe. State its use at the relevant point in the timeline.
+
+Shot 1 has no timestamp; later cuts use [Shot N] At MM:SS.mmm with increasing times. Use stable speaker IDs (S1), with exact speech in <d>[Language] ...</d>. Speech across a cut uses <scenetrans> at both connecting points; <cutoff> marks an interrupted ending. Quote visible lettering. Preserve identity, props, geography and cause/effect.
+
+For sliding windows (`PW`), keep all six sections together with no internal blank lines. Blank lines separate windows; restart each window at Shot 1 and time zero, and remap Picture numbers to that window's anchors/references. Navigation titles start with #. Read the long-video guide for scheduling.
+"""
+
+H3_AUDIO_DEEPY_PROMPT_INFOS = """For speech, write the exact words in `prompt`, one turn per `Speaker N:` block. Put language, emotion, pace and acting directions in square brackets; these are not spoken. Example:
+Speaker 1:
+[English, warm and quiet] You found the right place.
+Speaker 2:
+[English, excited] I knew you would be here.
+
+Use Speaker 1 alone for a monologue. Audio Reference 1 supplies Speaker 1's voice and Audio Reference 2 supplies Speaker 2's. Keep speaker numbering and intended voices consistent; a speaker without a sample reuses their first generated turn as a voice reference. WanGP compiles the H3 prompt and joins the turns automatically.
+
+For non-script sound generation, describe the sound and its evolution in H3's six sections: subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music. Assign <Audio N> references their role (voice, timbre, rhythm or copied material), then describe the desired audio chronologically. Exact speech uses <d>[Language] ...</d>; use N/A for an unneeded music score.
+"""
 
 REF2VA_PROMPT_INFOS = f"""## H3 Ref2VA prompt structure
 

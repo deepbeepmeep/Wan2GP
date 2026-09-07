@@ -23,7 +23,11 @@ from shared.deepy.config import (
     DEEPY_COMPACTION_TYPE_DISCARD,
     DEEPY_COMPACTION_TYPE_KEY,
     DEEPY_COMPACTION_TYPE_SUMMARIZE,
+    DEEPY_COMPACTION_CHOICE_THINKING,
     DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS,
+    DEEPY_COMPACTION_THINKING_MIN_TOKENS,
+    DEEPY_COMPACTION_THINKING_DEFAULT,
+    DEEPY_COMPACTION_THINKING_KEY,
     DEEPY_REPETITION_PENALTY_DEFAULT,
     DEEPY_REPETITION_PENALTY_KEY,
     DEEPY_CONTEXT_TOKENS_MIN,
@@ -58,6 +62,7 @@ from shared.deepy.config import (
     parse_deepy_file_system_paths,
     normalize_deepy_read_everywhere,
     normalize_deepy_compaction_type,
+    normalize_deepy_compaction_thinking,
     normalize_deepy_repetition_penalty,
     normalize_deepy_custom_system_prompt,
     normalize_deepy_enabled,
@@ -69,7 +74,7 @@ from shared.deepy.config import (
     normalize_deepy_type,
     set_deepy_runtime_config,
     split_deepy_mode,
-    validate_deepy_compaction_config,
+    deepy_compaction_min_tokens,
     validate_deepy_version_config,
 )
 from shared.prompt_enhancer.config import (
@@ -121,6 +126,21 @@ def prompt_enhancer_quantization_ui_state(enhancer_enabled, quantization):
         return QWEN38_QUANTIZATION_CHOICES, value, True
     value = "gguf" if quantization in ("gguf", "gguf_q3", "gguf_q2") else "quanto_int8"
     return QWEN35_QUANTIZATION_CHOICES, value, enhancer_enabled in QWEN35_PROMPT_ENHANCER_IDS
+
+
+def deepy_filesystem_ui_state(deepy_type):
+    prime = normalize_deepy_type(deepy_type) == DEEPY_TYPE_PRIME
+    labels = ("Outputs only (read)", "Read outputs + selected folders", "Read + create in outputs; read/write selected folders") if prime else ("Disabled", "Read Outputs + Selected Folders", "Read / Write Outputs + Selected Folders")
+    access = {
+        "choices": list(zip(labels, (DEEPY_FILE_SYSTEM_ACCESS_DISABLED, DEEPY_FILE_SYSTEM_ACCESS_READ, DEEPY_FILE_SYSTEM_ACCESS_READ_WRITE))),
+        "label": "Filesystem access outside workspace" if prime else "Deepy Filesystem Access",
+        "info": "Deepy freely manages its workspace for drafts and experiments. Write access allows new files in outputs and subfolders; existing output files cannot be modified, overwritten, deleted, renamed or moved." if prime else "Output folders are always the default scope. Add one extra folder per line below.",
+    }
+    everywhere = {
+        "label": "Read Everywhere" if prime else "Read Everywhere (Warning!)",
+        "info": "Allows reading any server file. Writing stays limited to the workspace, new output files with write access, and selected RW folders." if prime else "Allows Deepy to read any server file. Writing always remains limited to output and selected folders.",
+    }
+    return access, everywhere
 
 
 class ConfigTabPlugin(WAN2GPPlugin):
@@ -452,7 +472,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         choices=[("Disabled", DEEPY_TYPE_DISABLED), ("Deepy Zero", DEEPY_TYPE_ZERO), ("Deepy Prime", DEEPY_TYPE_PRIME)],
                         value=deepy_type_default,
                         label="Deepy",
-                        info="Deepy Zero is lightweight and local-only. Deepy Prime plans advanced workflows and is required for every external LLM because it exposes WanGP's MCP tools. With a local LLM, Prime requires Qwen3.8 VL 27B, Summarize compaction, and at least 32,000 context tokens.",
+                        info=f"Deepy Zero is lightweight and local-only. Deepy Prime plans advanced workflows and is required for every external LLM because it exposes WanGP's MCP tools. With a local LLM, Prime requires Qwen3.8 VL 27B and Summarize compaction: at least {DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:,} context tokens, or {DEEPY_COMPACTION_THINKING_MIN_TOKENS:,} with Thinking.",
                         elem_id="deepy_type_choice",
                     )
                     self.deepy_type_value = gr.HTML(value=deepy_type_default, elem_id="deepy_type_value")
@@ -468,11 +488,15 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     )
                     deepy_context_tokens_default = normalize_deepy_context_tokens(self.server_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
                     if deepy_type_default == DEEPY_TYPE_PRIME:
-                        deepy_context_tokens_default = max(DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS, deepy_context_tokens_default)
+                        deepy_context_tokens_default = max(deepy_compaction_min_tokens(self.server_config.get(DEEPY_COMPACTION_TYPE_KEY), self.server_config.get(DEEPY_COMPACTION_THINKING_KEY, DEEPY_COMPACTION_THINKING_DEFAULT)), deepy_context_tokens_default)
                     deepy_kv_cache_quantization_default = normalize_deepy_kv_cache_quantization(self.server_config.get(DEEPY_KV_CACHE_QUANTIZATION_KEY, DEEPY_KV_CACHE_QUANTIZATION_DEFAULT))
-                    deepy_compaction_type_default = normalize_deepy_compaction_type(self.server_config.get(DEEPY_COMPACTION_TYPE_KEY, DEEPY_COMPACTION_TYPE_DEFAULT))
-                    if deepy_type_default == DEEPY_TYPE_PRIME:
-                        deepy_compaction_type_default = DEEPY_COMPACTION_TYPE_SUMMARIZE
+                    def current_compaction_choice():
+                        compaction_type = normalize_deepy_compaction_type(self.server_config.get(DEEPY_COMPACTION_TYPE_KEY, DEEPY_COMPACTION_TYPE_DEFAULT))
+                        if deepy_mode_from_config(self.server_config.get(DEEPY_ENABLED_KEY, 0), self.server_config.get(DEEPY_TYPE_KEY, DEEPY_TYPE_DEFAULT)) == DEEPY_TYPE_PRIME:
+                            compaction_type = DEEPY_COMPACTION_TYPE_SUMMARIZE
+                        if compaction_type == DEEPY_COMPACTION_TYPE_SUMMARIZE and normalize_deepy_compaction_thinking(self.server_config.get(DEEPY_COMPACTION_THINKING_KEY, DEEPY_COMPACTION_THINKING_DEFAULT)):
+                            return DEEPY_COMPACTION_CHOICE_THINKING
+                        return compaction_type
                     with gr.Row():
                         with gr.Column(scale=2):
                             self.deepy_context_tokens_choice = gr.Slider(
@@ -492,10 +516,10 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             )
                     with gr.Row():
                         self.deepy_compaction_type_choice = gr.Dropdown(
-                            choices=[("Discard Oldest Entries", DEEPY_COMPACTION_TYPE_DISCARD), ("Summarize", DEEPY_COMPACTION_TYPE_SUMMARIZE)],
-                            value=deepy_compaction_type_default,
+                            choices=[("Discard Oldest Entries", DEEPY_COMPACTION_TYPE_DISCARD), ("Summarize", DEEPY_COMPACTION_TYPE_SUMMARIZE), ("Summarize with Thinking", DEEPY_COMPACTION_CHOICE_THINKING)],
+                            value=current_compaction_choice,
                             label="Compaction Type When Cache is Full",
-                            info="Summarize starts at the lower of 85% usage and 4,096 tokens before the KV-cache limit, and requires at least 32,000 context tokens.",
+                            info=f"Summarize requires at least {DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:,} context tokens; Summarize with Thinking requires {DEEPY_COMPACTION_THINKING_MIN_TOKENS:,}. Compaction reserves one action budget plus 128 tokens; With Thinking reserves 50% more and starts earlier. Thoughts appear in a separate expandable section and are excluded from the compacted context.",
                             visible=not deepy_remote_default,
                         )
                         self.deepy_repetition_penalty_choice = gr.Dropdown(
@@ -507,11 +531,10 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         )
                     prime_guidance_value = normalize_deepy_prime_guidance(self.server_config.get(DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_GUIDANCE_DEFAULT))
                     deepy_file_system_access = normalize_deepy_file_system_access(self.server_config.get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT))
+                    access_ui, everywhere_ui = deepy_filesystem_ui_state(deepy_type_default)
                     self.deepy_allow_read_file_system_choice = gr.Dropdown(
-                        choices=[("Disabled", DEEPY_FILE_SYSTEM_ACCESS_DISABLED), ("Read Outputs + Selected Folders", DEEPY_FILE_SYSTEM_ACCESS_READ), ("Read / Write Outputs + Selected Folders", DEEPY_FILE_SYSTEM_ACCESS_READ_WRITE)],
                         value=deepy_file_system_access,
-                        label="Deepy Filesystem Access",
-                        info="Output folders are always the default scope. Add one extra folder per line below.",
+                        **access_ui,
                     )
                     self.deepy_file_system_paths_choice = gr.Textbox(
                         value="\n".join(normalize_deepy_file_system_paths(self.server_config.get(DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_FILE_SYSTEM_PATHS_DEFAULT))),
@@ -522,11 +545,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     )
                     self.deepy_read_everywhere_choice = gr.Checkbox(
                         value=normalize_deepy_read_everywhere(self.server_config.get(DEEPY_READ_EVERYWHERE_KEY, DEEPY_READ_EVERYWHERE_DEFAULT)),
-                        label="Read Everywhere (Warning!)",
-                        info="Allows Deepy to read any server file. Writing always remains limited to output and selected folders.",
                         visible=deepy_file_system_access != DEEPY_FILE_SYSTEM_ACCESS_DISABLED,
+                        **everywhere_ui,
                     )
                     self.deepy_allow_read_file_system_choice.change(fn=lambda value: (gr.update(visible=value != DEEPY_FILE_SYSTEM_ACCESS_DISABLED), gr.update(visible=value != DEEPY_FILE_SYSTEM_ACCESS_DISABLED)), inputs=[self.deepy_allow_read_file_system_choice], outputs=[self.deepy_file_system_paths_choice, self.deepy_read_everywhere_choice], show_progress="hidden")
+                    self.deepy_type_choice.change(fn=lambda value: tuple(gr.update(**settings) for settings in deepy_filesystem_ui_state(value)), inputs=[self.deepy_type_choice], outputs=[self.deepy_allow_read_file_system_choice, self.deepy_read_everywhere_choice], show_progress="hidden")
                     with gr.Tabs(selected="prime_guidance" if deepy_type_default == DEEPY_TYPE_PRIME else "zero_prompt"):
                         with gr.Tab("Deepy Zero Prompt", id="zero_prompt"):
                             self.deepy_zero_custom_system_prompt_choice = gr.Textbox(
@@ -630,6 +653,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             runtime_config[DEEPY_TYPE_KEY] = deepy_type_choice
             runtime_config[DEEPY_CONTEXT_TOKENS_KEY] = deepy_context_tokens_choice
             runtime_config[DEEPY_COMPACTION_TYPE_KEY] = deepy_compaction_type_choice
+            runtime_config[DEEPY_COMPACTION_THINKING_KEY] = deepy_compaction_type_choice == DEEPY_COMPACTION_CHOICE_THINKING
             runtime_config[LLM_CONFIG_KEY] = {**normalize_llm_config(runtime_config), "deepy": deepy_llm_engine_choice}
             return deepy_requirement_message(runtime_config)
 
@@ -644,10 +668,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
             runtime_config[DEEPY_ENABLED_KEY] = deepy_enabled_choice
             runtime_config[DEEPY_TYPE_KEY] = deepy_type_choice
             if normalize_deepy_type(deepy_type_choice) == DEEPY_TYPE_PRIME:
-                deepy_context_tokens_choice = max(DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS, normalize_deepy_context_tokens(deepy_context_tokens_choice))
-                deepy_compaction_type_choice = DEEPY_COMPACTION_TYPE_SUMMARIZE
+                deepy_context_tokens_choice = max(deepy_compaction_min_tokens(deepy_compaction_type_choice), normalize_deepy_context_tokens(deepy_context_tokens_choice))
+                if normalize_deepy_compaction_type(deepy_compaction_type_choice) != DEEPY_COMPACTION_TYPE_SUMMARIZE:
+                    deepy_compaction_type_choice = DEEPY_COMPACTION_TYPE_SUMMARIZE
             runtime_config[DEEPY_CONTEXT_TOKENS_KEY] = deepy_context_tokens_choice
             runtime_config[DEEPY_COMPACTION_TYPE_KEY] = deepy_compaction_type_choice
+            runtime_config[DEEPY_COMPACTION_THINKING_KEY] = deepy_compaction_type_choice == DEEPY_COMPACTION_CHOICE_THINKING
             runtime_config[LLM_CONFIG_KEY] = {**normalize_llm_config(runtime_config), "deepy": deepy_llm_engine_choice}
             context_label = format_deepy_context_tokens_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice)
             recommendation = deepy_prime_upgrade_message(runtime_config)
@@ -791,7 +817,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         # return "<div style='color:red; text-align:center;'>Unable to change config when a generation is in progress.</div>", *[gr.update()]*5
 
         if self.args.lock_config:
-            return "<div style='color:red; text-align:center;'>Configuration is locked by command-line arguments.</div>", *[gr.update()]*8
+            return "<div style='color:red; text-align:center;'>Configuration is locked by command-line arguments.</div>", *[gr.update()]*9
 
         old_server_config = copy.deepcopy(self.server_config)
         audio_processor_component_count = len(getattr(self, "audio_processor_config_components", []))
@@ -836,6 +862,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             notification_sound_enabled_choice, notification_sound_volume_choice, notification_apprise_urls_choice, notification_secure_storage_choice, notification_on_generation_choice, notification_on_queue_complete_choice, notification_on_queue_interrupted_choice,
             last_resolution_choice
         ) = fixed_args
+        deepy_compaction_thinking_choice = deepy_compaction_type_choice == DEEPY_COMPACTION_CHOICE_THINKING
+        deepy_compaction_type_choice = normalize_deepy_compaction_type(deepy_compaction_type_choice)
 
         llm_config_choice = {
             "deepy": deepy_llm_engine_choice,
@@ -852,7 +880,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             llm_config_choice = validate_llm_config(validation_config, deepy_enabled=deepy_enabled_choice, deepy_type=deepy_type_choice)
         except ValueError as exc:
             gr.Info(f"Configuration was not saved: {exc}")
-            return f"<div style='color:red; text-align:center;'>Configuration was not saved: {exc}</div>", *[gr.update()]*8
+            return f"<div style='color:red; text-align:center;'>Configuration was not saved: {exc}</div>", *[gr.update()]*9
 
         deepy_remote = is_remote_engine(deepy_llm_engine_choice)
         if deepy_remote:
@@ -868,29 +896,28 @@ class ConfigTabPlugin(WAN2GPPlugin):
         if not deepy_remote and int(enhancer_enabled_choice) == QWEN38_PROMPT_ENHANCER_ID and enhancer_quantization_choice not in ("gguf", "gguf_q3", "gguf_q2"):
             error = "Qwen3.8-27B is available only as GGUF. Select GGUF Q2, Q3, or Q4 as the Qwen LLM quantization."
             gr.Info(f"Configuration was not saved: {error}")
-            return f"<div style='color:red; text-align:center;'>Configuration was not saved: {error}</div>", *[gr.update()]*8
+            return f"<div style='color:red; text-align:center;'>Configuration was not saved: {error}</div>", *[gr.update()]*9
         if not deepy_remote and int(enhancer_enabled_choice) in QWEN35_PROMPT_ENHANCER_IDS and enhancer_quantization_choice not in ("quanto_int8", "gguf"):
             error = "Qwen3.5 is available as Quanto Int8 or GGUF Q4."
             gr.Info(f"Configuration was not saved: {error}")
-            return f"<div style='color:red; text-align:center;'>Configuration was not saved: {error}</div>", *[gr.update()]*8
+            return f"<div style='color:red; text-align:center;'>Configuration was not saved: {error}</div>", *[gr.update()]*9
 
         if not deepy_remote:
             try:
                 enhancer_speculative_decoding_choice = validate_prompt_enhancer_speculative_decoding(enhancer_enabled_choice, enhancer_speculative_decoding_choice)
             except ValueError as exc:
                 gr.Info(f"Configuration was not saved: {exc}")
-                return f"<div style='color:red; text-align:center;'>Configuration was not saved: {exc}</div>", *[gr.update()]*8
+                return f"<div style='color:red; text-align:center;'>Configuration was not saved: {exc}</div>", *[gr.update()]*9
 
         try:
             if not deepy_remote:
-                deepy_compaction_type_choice = validate_deepy_compaction_config(deepy_compaction_type_choice, deepy_context_tokens_choice)
-                deepy_type_choice, deepy_compaction_type_choice, deepy_context_tokens_choice = validate_deepy_version_config(deepy_type_choice, deepy_compaction_type_choice, deepy_context_tokens_choice, enhancer_enabled_choice)
+                deepy_type_choice, deepy_compaction_type_choice, deepy_context_tokens_choice = validate_deepy_version_config(deepy_type_choice, deepy_compaction_type_choice, deepy_context_tokens_choice, enhancer_enabled_choice, compaction_thinking=deepy_compaction_thinking_choice)
             deepy_prime_mcp_servers_choice = normalize_deepy_prime_mcp_servers(deepy_prime_mcp_servers_choice)
             deepy_file_system_paths_choice = normalize_deepy_file_system_paths(deepy_file_system_paths_choice)
             parse_deepy_file_system_paths(deepy_file_system_paths_choice)
         except ValueError as exc:
             gr.Info(f"Configuration was not saved: {exc}")
-            return f"<div style='color:red; text-align:center;'>Configuration was not saved: {exc}</div>", *[gr.update()]*8
+            return f"<div style='color:red; text-align:center;'>Configuration was not saved: {exc}</div>", *[gr.update()]*9
 
         if len(checkpoints_paths_choice.strip()) == 0:
             checkpoints_paths = self.fl.default_checkpoints_paths
@@ -900,7 +927,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         video_output_error = validate_video_output_settings(video_output_codec_choice, video_container_choice, audio_output_codec_choice)
         if video_output_error is not None:
             gr.Info(f"Configuration was not saved: {video_output_error}")
-            return f"<div style='color:red; text-align:center;'>Configuration was not saved: {video_output_error}</div>", *[gr.update()]*8
+            return f"<div style='color:red; text-align:center;'>Configuration was not saved: {video_output_error}</div>", *[gr.update()]*9
 
         self.fl.set_checkpoints_paths(checkpoints_paths)
 
@@ -918,7 +945,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             notification_config_update = notifications.prepare_config_update(old_server_config, notification_apprise_urls_choice, notification_secure_storage_choice, notification_on_generation_choice, notification_on_queue_complete_choice, notification_on_queue_interrupted_choice)
         except notifications.SecureStorageError as exc:
             gr.Info(f"Configuration was not saved: {exc}")
-            return f"<div style='color:red; text-align:center;'>Configuration was not saved: {exc}</div>", *[gr.update()]*8
+            return f"<div style='color:red; text-align:center;'>Configuration was not saved: {exc}</div>", *[gr.update()]*9
 
         new_server_config = copy.deepcopy(old_server_config)
         new_server_config.update({
@@ -953,6 +980,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             DEEPY_CONTEXT_TOKENS_KEY: normalize_deepy_context_tokens(deepy_context_tokens_choice),
             DEEPY_KV_CACHE_QUANTIZATION_KEY: normalize_deepy_kv_cache_quantization(deepy_kv_cache_quantization_choice),
             DEEPY_COMPACTION_TYPE_KEY: deepy_compaction_type_choice,
+            DEEPY_COMPACTION_THINKING_KEY: deepy_compaction_thinking_choice,
             DEEPY_REPETITION_PENALTY_KEY: normalize_deepy_repetition_penalty(deepy_repetition_penalty_choice),
             DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY: normalize_deepy_custom_system_prompt(deepy_zero_custom_system_prompt_choice),
             DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY: normalize_deepy_prime_guidance(deepy_prime_custom_system_prompt_choice),
@@ -1009,7 +1037,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "metadata_type", "clear_file_list", "multi_prompts_gen_type", "keep_intermediate_sliding_windows", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", *notifications.CONFIG_KEYS, "audio_processors", "temporal_upsamplers", "spatial_upsamplers", "matanyone_version",
             "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed", "prompt_enhancer_quantization", PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, "enhancer_mode",
-            DEEPY_ENABLED_KEY, DEEPY_TYPE_KEY, DEEPY_VRAM_MODE_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_READ_EVERYWHERE_KEY, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_KV_CACHE_QUANTIZATION_KEY, DEEPY_COMPACTION_TYPE_KEY, DEEPY_REPETITION_PENALTY_KEY, DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_MCP_SERVERS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY,
+            DEEPY_ENABLED_KEY, DEEPY_TYPE_KEY, DEEPY_VRAM_MODE_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_READ_EVERYWHERE_KEY, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_KV_CACHE_QUANTIZATION_KEY, DEEPY_COMPACTION_TYPE_KEY, DEEPY_COMPACTION_THINKING_KEY, DEEPY_REPETITION_PENALTY_KEY, DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_MCP_SERVERS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY,
             LLM_CONFIG_KEY,
             "max_frames_multiplier", "display_stats", "keep_resolution_on_model_switch", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "hdr_video_crf", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "audio_stand_alone_output_codec", "checkpoints_paths", "loras_root", "save_queue_if_crash",

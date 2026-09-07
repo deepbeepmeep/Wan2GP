@@ -1,5 +1,7 @@
 # FINETUNES
 
+> Applies to: Creating and managing custom model definitions and weights. Model-definition keys and conversion commands belong to model setup, not directly to generation settings.
+
 A Finetuned model is model that shares the same architecture of one specific model but has derived weights from this model. Some finetuned models have been created by combining multiple finetuned models.
 
 As there are potentially an infinite number of finetunes, specific finetuned models are not known by default by WanGP. However you can create a finetuned model definition that will tell WanGP about the existence of this finetuned model and WanGP will do as usual all the work for you: autodownload the model and build the user interface.

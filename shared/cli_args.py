@@ -81,6 +81,8 @@ def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default
     add("--mcp-transport", type=str, default="stdio", help="MCP transport: stdio, sse, or streamable-http")
     add("--mcp-host", type=str, default="", help="Optional MCP host for non-stdio transports")
     add("--mcp-port", type=int, default=None, help="Optional MCP port for non-stdio transports")
+    add("--mcp-api-version", type=int, choices=(1, 2), default=2, help="WanGP MCP API version (latest: 2); use 1 for historical compatibility")
+    add("--mcp-async", action="store_true", help="Allow asynchronous generation/post-processing in MCP API v2; disabled by default")
     add("--mcp-console-output", action="store_true", help="Mirror WanGP stdout/stderr while serving MCP requests")
     add("--mcp-allow-read-file-system", action="store_true", help="Allow MCP agents to reference arbitrary server filesystem paths; disabled by default")
     add("--dry-run", action="store_true", help="Validate file without generating (use with --process)")

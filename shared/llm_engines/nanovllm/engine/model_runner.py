@@ -1241,13 +1241,13 @@ class ModelRunner:
         reset_context()
         self.speculative_stats["target_passes"] += 1
 
-    def snapshot_speculative_state(self, seq_id: int) -> dict:
+    def snapshot_speculative_state(self, seq_id: int, previous: dict | None = None, reuse_tokens: int = 0) -> dict:
         pending = self._speculative_pending.get(seq_id)
         draft = self._speculative_drafts.get(seq_id)
         return {
-            "mtp_cache": self.model.mtp.snapshot_sequence_state(),
-            "draft": None if draft is None else {name: tensor.detach().to("cpu").as_subclass(torch.Tensor).clone() for name, tensor in draft.items()},
-            "pending": None if pending is None else {name: tensor.detach().to("cpu").as_subclass(torch.Tensor).clone() for name, tensor in pending.items()},
+            "mtp_cache": self.model.mtp.snapshot_sequence_state(previous=None if previous is None else previous["mtp_cache"], reuse_tokens=reuse_tokens),
+            "draft": None if draft is None else {name: tensor.detach().as_subclass(torch.Tensor).to("cpu", copy=True) for name, tensor in draft.items()},
+            "pending": None if pending is None else {name: tensor.detach().as_subclass(torch.Tensor).to("cpu", copy=True) for name, tensor in pending.items()},
         }
 
     def restore_speculative_state(self, seq_id: int, snapshot: dict) -> None:
@@ -1267,8 +1267,8 @@ class ModelRunner:
         draft = self._speculative_drafts.get(seq_id)
         return {
             "mtp_cache_length": self.model.mtp.get_cache_length(),
-            "draft": None if draft is None else {name: tensor.detach().to("cpu").as_subclass(torch.Tensor).clone() for name, tensor in draft.items()},
-            "pending": None if pending is None else {name: tensor.detach().to("cpu").as_subclass(torch.Tensor).clone() for name, tensor in pending.items()},
+            "draft": None if draft is None else {name: tensor.detach().as_subclass(torch.Tensor).to("cpu", copy=True) for name, tensor in draft.items()},
+            "pending": None if pending is None else {name: tensor.detach().as_subclass(torch.Tensor).to("cpu", copy=True) for name, tensor in pending.items()},
         }
 
     def restore_speculative_rewind_state(self, seq_id: int, snapshot: dict) -> None:

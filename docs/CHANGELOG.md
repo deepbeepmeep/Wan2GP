@@ -1,5 +1,7 @@
 # Changelog
 
+> Applies to: Historical release notes. Dates and versions describe changes at release time; current product guides and runtime contracts describe present behavior.
+
 ### 21st of May 2026: WanGP v11.77, I can hear Voices
 It has never been easier to do voice cloning directly in video models:
 

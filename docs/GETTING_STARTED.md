@@ -1,5 +1,7 @@
 # Getting Started with WanGP
 
+> Applies to: First installation, launch and basic UI use. Example models/settings are starting points; keep a user's selected model and Deepy templates for their actual generation.
+
 This guide will help you get started with WanGP video generation quickly and easily.
 
 ## Prerequisites

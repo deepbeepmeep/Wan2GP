@@ -1,5 +1,7 @@
 # Troubleshooting Guide
 
+> Applies to: Diagnosing installation, GPU memory, performance, networking and generation problems. Apply the section matching the observed failure and platform; shell examples configure the WanGP process.
+
 This guide covers common issues and their solutions when using WanGP.
 
 ## Installation Issues

@@ -122,6 +122,15 @@ Result: the reference voice workflow uses your ID-LoRA file and weight.
 
 LTX2_25_INFOS = LTX2_INFOS
 
+LTX2_25_DEEPY_INFOS = """Generate video and synchronized sound from `prompt`. `image_start` / `image_end` anchor the opening / ending; `video_source` continues video. Sliding windows carry overlapping video and audio forward.
+
+Control Video (`video_guide`) supplies raw frames or a selected pose/depth/edge guide; higher Control Video Strength follows it more closely. Inpainting uses source + mask: Control Video Strength 1 and Unmasked Area Strength 0 preserve unmasked content. Inject Frames places ordered `image_refs` at explicit positions (`1` = first frame, `L` = last in the window). Ingredients uses one composite reference sheet for characters, objects and setting.
+
+`audio_prompt_type`: empty = generate soundtrack; `A` = condition on `audio_guide`; `K` = control video and its audio; `2` = generate audio for control frames; `A1OF` = reference voice through ID-LoRA. A complete input soundtrack is normally reused; a shorter one allows audio continuation. Make action and speech agree with soundtrack timing.
+
+For continuation, the alignment selector places controls/injected frames relative to source-video time zero or the new continuation. Use capabilities for window limits and `prompt_infos` for speech and timed prompting.
+"""
+
 LTX2_MSR_INFOS = """
 # LTX2 Multiple Subject Reference
 

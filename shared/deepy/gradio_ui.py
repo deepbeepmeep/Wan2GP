@@ -598,7 +598,14 @@ def bind_deepy_chat_ui(
     def recover_chat(state_value):
         from shared.deepy.engine import get_or_create_assistant_session
 
-        return assistant_chat.build_sync_event(get_or_create_assistant_session(state_value))
+        session = get_or_create_assistant_session(state_value)
+        output_queue = session.control_queue
+        if output_queue is not None:
+            with output_queue.condition:
+                if session.control_queue is output_queue:
+                    output_queue.push("chat_output", assistant_chat.build_sync_event(session))
+                    return gr.update()
+        return assistant_chat.build_sync_event(session)
 
     def _session_catalog(active_id="", active_session=None):
         sessions = handlers.list_saved_sessions()

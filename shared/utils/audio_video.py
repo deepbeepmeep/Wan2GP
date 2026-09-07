@@ -837,11 +837,9 @@ def save_image(tensor,
     """Save tensor as image with configurable format and quality."""
 
     RGBA = tensor.shape[0] == 4
-    if RGBA:
-        quality = "png"
 
     # Get format and quality settings
-    format_info = _get_format_info(quality)
+    format_info = get_image_format(quality, rgba=RGBA)
     
     # Rename file extension to match requested format
     save_file = osp.splitext(save_file)[0] + format_info['ext']
@@ -872,13 +870,15 @@ def save_image(tensor,
             error = e
             continue
     else:
-        print(f'cache_image failed, error: {error}', flush=True)
+        raise OSError(f"Failed to save image '{save_file}' after {retry} attempts: {error}") from error
     
     return save_file
 
 
-def _get_format_info(quality):
-    """Get format extension and parameters."""
+def get_image_format(quality, rgba=False):
+    """Get the saved format and parameters; transparent images require PNG."""
+    if rgba:
+        quality = "png"
     formats = {
         # JPEG with PIL (so 'quality' works)
         'jpeg_95': {'ext': '.jpg', 'params': {'quality': 95}, 'use_pil': True},

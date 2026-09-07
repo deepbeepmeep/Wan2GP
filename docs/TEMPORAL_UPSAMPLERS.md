@@ -1,5 +1,7 @@
 # Temporal Upsampler Plugin API
 
+> Applies to: Developing temporal upsampler plugins: handlers, registration and shared configuration. For using installed frame interpolation, discover the current post-processing tool actions.
+
 Temporal upsamplers (RIFE, frame interpolation plugins, ...) are registered in
 `postprocessing/temporal_upsamplers.py`. Each upsampler declares its methods and
 supported multipliers through a handler object; the registry owns dropdown state,
@@ -57,8 +59,10 @@ Discovery evaluates the historical `enabled()` method first: `True` maps to
 `enabled` and `False` to `disabled`. Only handlers without `enabled()` use the
 optional `status` property. `unknown` means neither mechanism supplied a valid
 status. A non-empty `reason_disabled` is exposed only for disabled handlers.
-Deepy lists all registered temporal processors with this metadata and refuses
-dispatch when the status is disabled.
+The internal catalog includes all registered temporal processors with this
+metadata. Prime's post-processing toolbox omits disabled processors from
+callable discovery; internal/compatibility views may include them for
+diagnostics. A processor with disabled status cannot be dispatched.
 
 `SimpleScaleSuffixMixin` provides `is_upsampling` / `split_value` / `build_value`
 for the common `<method>*<multiplier>` value encoding, for example `rife*2` or

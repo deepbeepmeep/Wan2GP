@@ -1,5 +1,7 @@
 # Audio Processor Plugin API
 
+> Applies to: Developing audio processor plugins: handler methods, registration and shared configuration. For using installed processors, discover the current post-processing tool actions.
+
 Audio processors (custom soundtrack remuxing, MMAudio, PrismAudio, SeedVC,
 background removal, ...) are registered in `postprocessing/audio_processors.py`.
 Each processor declares one or more methods and their capabilities through a
@@ -75,8 +77,10 @@ per-method progress text. Discovery evaluates the historical `enabled()` method
 first: `True` maps to `enabled` and `False` to `disabled`. Only handlers without
 `enabled()` use the optional instance `status` property; `unknown` means neither
 mechanism supplied a valid status.
-`reason_disabled` is returned only for disabled handlers. Deepy lists all
-registered audio processors with this metadata and refuses disabled ones.
+`reason_disabled` is returned only for disabled handlers. The internal processor
+catalog includes this availability metadata. Prime's post-processing toolbox
+omits disabled processors from callable discovery; internal/compatibility views
+may include them for diagnostics, but disabled processors cannot be dispatched.
 
 The supported processor type constants are:
 

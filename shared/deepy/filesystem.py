@@ -224,6 +224,15 @@ class FileAccessPolicy:
             raise PermissionError(f"Filesystem write is not authorized for: {self.virtualize_path(target)}")
         return target
 
+    def create_only(self, path: Any) -> bool:
+        return False
+
+    def require_mutation(self, path: Any) -> Path:
+        target = self.require_write(path)
+        if target in self.write_roots:
+            raise PermissionError(f"A filesystem root cannot be moved or deleted: {self.virtualize_path(target)}")
+        return target
+
     def roots(self) -> list[dict[str, Any]]:
         return [{"path": self.virtualize_path(path), "exists": path.is_dir(), "writable": self.can_write(path)} for path in self.read_roots]
 
@@ -503,6 +512,8 @@ def write_text(policy: FileAccessPolicy, path: str, text: str, mode: str = "crea
     open_mode = {"create": "x", "overwrite": "w", "append": "a"}.get(mode)
     if open_mode is None:
         raise ValueError("mode must be create, overwrite, or append.")
+    if policy.create_only(file_path):
+        open_mode = "x"
     content = str(text)
     with file_path.open(open_mode, encoding=_encoding(encoding)) as writer:
         writer.write(content)
@@ -539,19 +550,17 @@ def copy_file(policy: FileAccessPolicy, source: str, destination: str, overwrite
         raise FileNotFoundError(f"Destination directory does not exist: {destination_path.parent}")
     if destination_path.exists() and not overwrite:
         raise FileExistsError(f"Destination already exists: {destination_path}")
-    shutil.copy2(source_path, destination_path)
+    if policy.create_only(destination_path):
+        with source_path.open("rb") as reader, destination_path.open("xb") as writer:
+            shutil.copyfileobj(reader, writer)
+        shutil.copystat(source_path, destination_path)
+    else:
+        shutil.copy2(source_path, destination_path)
     return {"status": "done", "source": str(source_path), "path": str(destination_path), "filename": destination_path.name, "size_bytes": destination_path.stat().st_size, "error": ""}
 
 
-def _mutable_path(policy: FileAccessPolicy, path: str) -> Path:
-    target = policy.require_write(path)
-    if any(os.path.normcase(str(target)) == os.path.normcase(str(root)) for root in policy.write_roots):
-        raise PermissionError(f"A filesystem root cannot be moved or deleted: {policy.virtualize_path(target)}")
-    return target
-
-
 def move_path(policy: FileAccessPolicy, source: str, destination: str) -> dict[str, Any]:
-    source_path = _mutable_path(policy, source)
+    source_path = policy.require_mutation(source)
     if not source_path.exists():
         raise FileNotFoundError(f"Source does not exist: {policy.virtualize_path(source_path)}")
     destination_path = policy.resolve_path(destination)
@@ -567,12 +576,20 @@ def move_path(policy: FileAccessPolicy, source: str, destination: str) -> dict[s
     if source_path.is_dir() and _inside(destination_path, source_path):
         raise ValueError("A directory cannot be moved inside itself.")
     item_type = "directory" if source_path.is_dir() else "file"
-    shutil.move(str(source_path), str(destination_path))
+    if policy.create_only(destination_path):
+        if item_type == "directory":
+            shutil.copytree(source_path, destination_path, symlinks=True, copy_function=lambda source, target: copy_file(policy, Path(source), Path(target))["path"])
+            shutil.rmtree(source_path)
+        else:
+            copy_file(policy, source_path, destination_path)
+            source_path.unlink()
+    else:
+        shutil.move(str(source_path), str(destination_path))
     return {"status": "done", "source": str(source_path), "path": str(destination_path), "filename": destination_path.name, "type": item_type, "size_bytes": destination_path.stat().st_size if destination_path.is_file() else None, "error": ""}
 
 
 def delete_path(policy: FileAccessPolicy, path: str, recursive: bool = False) -> dict[str, Any]:
-    target = _mutable_path(policy, path)
+    target = policy.require_mutation(path)
     if not target.exists():
         raise FileNotFoundError(f"Path does not exist: {policy.virtualize_path(target)}")
     item_type = "directory" if target.is_dir() else "file"
@@ -624,7 +641,7 @@ def zip_files(policy: FileAccessPolicy, sources: list[str], destination: str = "
         same_parent = next(iter(parents)) if len(parents) == 1 else None
         default_folder = same_parent if same_parent is not None and policy.can_write(same_parent / default_name) else policy.output_roots[0]
         target = default_folder / default_name
-    target = _available_zip_path(policy.require_write(target))
+    target = policy.require_write(_available_zip_path(target))
     if not target.parent.is_dir():
         raise FileNotFoundError(f"ZIP destination directory does not exist: {target.parent}")
     temp_path = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
@@ -652,7 +669,10 @@ def zip_files(policy: FileAccessPolicy, sources: list[str], destination: str = "
                         index += 1
                     names.add(unique_name.casefold())
                     archive.write(item, unique_name)
-        os.replace(temp_path, target)
+        if policy.create_only(target):
+            os.link(temp_path, target)
+        else:
+            os.replace(temp_path, target)
     finally:
         if temp_path.exists():
             temp_path.unlink()
@@ -693,6 +713,9 @@ def unzip_file(policy: FileAccessPolicy, source: str, destination: str = "", ove
             target = destination_path.joinpath(*member_path.parts).resolve()
             if not _inside(target, destination_path):
                 raise ValueError(f"ZIP member escapes the destination: {member.filename}")
+            from shared.deepy.prime_filesystem import PrimeFileAccessPolicy
+            if isinstance(policy, PrimeFileAccessPolicy):
+                policy.require_write(target)
             if target == source_path:
                 raise ValueError("A ZIP cannot overwrite its own source archive.")
             key = os.path.normcase(str(target))
@@ -724,7 +747,7 @@ def unzip_file(policy: FileAccessPolicy, source: str, destination: str = "", ove
                 target.mkdir(parents=True, exist_ok=True)
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(member, "r") as reader, target.open("wb") as writer:
+            with archive.open(member, "r") as reader, target.open("xb" if policy.create_only(target) else "wb") as writer:
                 shutil.copyfileobj(reader, writer)
 
     files = [member for member, _target, is_directory in plans if not is_directory]

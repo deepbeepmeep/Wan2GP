@@ -1,5 +1,7 @@
 # Remote LLMs
 
+> Applies to: Setting up WanGP's remote Codex, Claude Code and OpenCode engines, authentication and troubleshooting. These provider/setup instructions do not change the active media-tool contracts.
+
 WanGP can use Codex, Claude Code, or OpenCode as the shared LLM engine for Deepy and Prompt Enhancer. Remote engines run outside WanGP's local model runtime, so they do not occupy the VRAM reserved for media generation and do not require WanGP to unload a diffusion model before an LLM turn.
 
 Remote engines require **Deepy Prime** because Prime exposes WanGP's MCP tools. The selected engine is also used for on-demand prompt enhancement and visual inspection. There are no separate engine selectors for those roles.

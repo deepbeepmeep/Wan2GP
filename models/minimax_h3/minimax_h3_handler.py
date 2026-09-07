@@ -16,9 +16,9 @@ from .minimax_h3_main import (AUDIO_VAE_FILE, LATENT_UPSCALER_FILE, LATENT_UPSCA
                               VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE)
 from .pdd import PDD_BLOCK_SIZE, PDD_NUM_STEPS
 from .viggle import VIGGLE_ARCHITECTURE, VIGGLE_ASSET_FOLDER, VIGGLE_INFOS, VIGGLE_PROMPT_FILE, VIGGLE_REPO_ID
-from .prompt_enhancer import (FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
-                              H3_AUDIO_DIALOGUE_SYSTEM_PROMPT, H3_AUDIO_MONOLOGUE_SYSTEM_PROMPT,
-                              REF2VA_IMAGE_SYSTEM_PROMPT, REF2VA_PROMPT_INFOS, REF2VA_TEXT_SYSTEM_PROMPT)
+from .prompt_enhancer import (FL2VA_DEEPY_PROMPT_INFOS, FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
+                              H3_AUDIO_DEEPY_PROMPT_INFOS, H3_AUDIO_DIALOGUE_SYSTEM_PROMPT, H3_AUDIO_MONOLOGUE_SYSTEM_PROMPT,
+                              REF2VA_DEEPY_PROMPT_INFOS, REF2VA_IMAGE_SYSTEM_PROMPT, REF2VA_PROMPT_INFOS, REF2VA_TEXT_SYSTEM_PROMPT)
 
 
 REPO_ID = "DeepBeepMeep/MiniMax-H3"
@@ -51,6 +51,15 @@ FIRST_BLOCK_CACHE_STRENGTHS = [
     ("Maximum (0.14)", 0.14),
 ]
 
+FL2VA_DEEPY_INFOS = """Generate video and stereo sound from `prompt`. `image_start` / `image_end` anchor the opening / ending; together they constrain the transition. `video_source` continues an existing video; sliding windows carry overlapping video and audio forward.
+
+Control Video (`video_guide`) guides frames: lower Denoising Strength preserves more source content; Whole Frame at strength 1 gives full freedom. A mask selects the edited area. Inject Frames uses ordered `image_refs` and explicit positions (`1` = first frame, `L` = last frame of the window).
+
+`audio_prompt_type`: empty = generate video and audio; `A` = condition on `audio_guide`; `K` = control video plus its soundtrack; `2` = keep control frames and generate their audio. A complete input soundtrack is reused; a shorter one permits generated sound afterward. Match visible action and speech to supplied audio.
+
+Use `capabilities` for window limits. WanGP rounds overlap to compatible values (1, 18, 35, ...); `video_length` sets total duration across windows. Read `prompt_infos` for H3's structured prompt syntax.
+"""
+
 FL2VA_INFOS = """## FL2VA — First/Last Frame to Video and Audio
 
 FL2VA creates a video with stereo sound from your text prompt. You can optionally provide a start image, an end image, a control video, injected frames, or a soundtrack.
@@ -82,6 +91,15 @@ Start and end images are placed at those exact points in the video. For general 
 Sliding windows can continue a video beyond one generation. Choose any overlap amount and WanGP will round it to the nearest H3-compatible value (1, 18, 35, 52...). It automatically reuses the overlapping video and audio to make the join smoother.
 
 H3 is designed for 24 FPS, although WanGP can generate at another frame rate. MiniMax documents an official duration of 4–15 seconds per generation window; longer videos are possible through sliding windows.
+"""
+
+REF2VA_DEEPY_INFOS = """Generate video and 32 kHz stereo audio from `prompt` and references. Ordered `image_refs` guide identity, objects or setting; reference flags in `video_prompt_type`: `I` preserves chosen output dimensions, `KI` derives them from the first image. `image_start` / `image_end` are timeline anchors shown before general image references. `video_source` and sliding windows provide continuation.
+
+`video_guide` / `video_guide2` supply up to two reference videos for appearance, motion or camera; choose the corresponding video mode. Reference videos preserve the chosen output size. Depth or Generic Control uses the control video's aspect ratio; describe the intended transformation in the prompt.
+
+`audio_prompt_type`: empty = no audio reference; `A` = `audio_guide`; `AB` = both audio guides; `K` = reference-video soundtracks. The prompt defines whether audio is copied or used as a voice/sound reference.
+
+Limits: 9 reference images; 2 videos, each at least 2s, truncated to 15s and totaling at most 15s; 2 audio references, each at least 2s. Audio above 15s combined is limited to 15s for one reference or 7.5s each for two. Image + video reference count must cover audio reference count. At most 12 uploaded reference files; a video soundtrack shares its video's file. Keep backgrounds when scene context matters; optional background removal isolates subjects. Read `prompt_infos` for Ref2VA's six-section syntax.
 """
 
 REF2VA_INFOS = """## Ref2VA — Reference to Video and Audio
@@ -191,6 +209,8 @@ At each step, PDD merges four learned denoising-interval outputs into one predic
 This model requires exactly **8 inference steps** and the **Euler** sampler. Two-phase generation is disabled. Use the FL2VA PDD weights only with FL2VA and the Ref2VA PDD weights only with Ref2VA.
 """
 
+H3_VDN_INFOS = "\n\n### Automatic 8-step acceleration\nThe VDN 8-step acceleration LoRA is automatically loaded and generation defaults to 8 steps."
+
 H3_RUNTIME_INFOS = H3_PHASE_INFOS + H3_PHASE_TURBO_INFOS + H3_AUDIO_REFINEMENT_INFOS + H3_SPEED_INFOS + H3_STANDARD_SAMPLER_INFOS + H3_COMMON_RUNTIME_INFOS
 H3_PDD_RUNTIME_INFOS = PDD_INFOS + H3_SPEED_INFOS + H3_COMMON_RUNTIME_INFOS
 
@@ -286,6 +306,8 @@ def _get_audio_generator_model_def(model_def):
         "sample_solvers": [("Euler", "euler"), ("RES Multistep", "res_multistep"), ("Ralston 2S (~2x slower)", "ralston_2s")],
         "infos": H3_AUDIO_GENERATOR_INFOS + H3_SPEED_INFOS + H3_STANDARD_SAMPLER_INFOS + H3_COMMON_RUNTIME_INFOS + PRUNED_INFOS,
         "prompt_infos": (H3_DIALOGUE_PROMPT_INFOS if H3_DIALOGUE_GENERATION else "") + REF2VA_PROMPT_INFOS,
+        "deepy_infos": "Generate 32 kHz stereo audio from `prompt`. `audio_prompt_type`: empty = no sample; `A` = voice/audio from `audio_guide`; `AB` = both audio guides. For Speaker scripts, samples map to speakers 1 and 2. Each sample must be at least 2s; above 15s combined, one is limited to 15s or two to 7.5s each. `duration_seconds` caps the assembled audio. Speaker turns are generated and joined automatically; Early Stop finishes the current turn and returns completed turns.",
+        "deepy_prompt_infos": H3_AUDIO_DEEPY_PROMPT_INFOS if H3_DIALOGUE_GENERATION else REF2VA_DEEPY_PROMPT_INFOS,
         "prompt_enhancer_button_label": "Write",
         "prompt_enhancer_def": {
             "selection": ["T", "T1"],
@@ -370,6 +392,8 @@ class family_handler:
                 "profiles_dir": [VIGGLE_ARCHITECTURE],
                 "infos": VIGGLE_INFOS,
                 "prompt_infos": "Viggle uses a fixed prompt. Prepare the character replacement in the Edited Reference Frame; generation prompt text is ignored.",
+                "deepy_infos": "Viggle combines `video_guide` with one edited frame from that video in `image_refs` (reference mode `I`, Control Video mode `VU`). Edit the character while preserving that frame's pose, props, background, framing and dimensions; any clear source frame works. The video supplies motion/camera, the edited frame supplies appearance. Windows are fixed at 124 frames with 18-frame overlap by default. `audio_prompt_type`: empty = model audio; `A` = `audio_guide`; `K` = control-video soundtrack. Audio conditioning is experimental: use synchronized audio. A full input track is reused; a shorter one allows generated audio afterward.",
+                "deepy_prompt_infos": "Express the replacement through the Edited Reference Frame. Viggle uses a fixed built-in prompt; generation text is ignored.",
                 "text_encoder_URLs": [], "text_encoder_folder": None, "system_configs": {},
                 "prompt_enhancer_def": {"selection": [], "labels": {}, "default": ""},
                 "image_outputs": False, "sliding_window": True, "video_continuation": False,
@@ -471,7 +495,7 @@ class family_handler:
             "multimedia_generation": True,
             "image_end_frame_position": True,
             "control_video_trim_disabled": True,
-            "infos": (REF2VA_INFOS if reference_mode else FL2VA_INFOS) + (H3_PDD_RUNTIME_INFOS if pdd else H3_RUNTIME_INFOS) + (PRUNED_INFOS if pruned else "") + model_def.get("infos", ""),
+            "infos": (REF2VA_INFOS if reference_mode else FL2VA_INFOS) + (H3_PDD_RUNTIME_INFOS if pdd else H3_RUNTIME_INFOS) + (PRUNED_INFOS if pruned else "") + (H3_VDN_INFOS if vdn else "") + model_def.get("infos", ""),
             "prompt_infos": REF2VA_PROMPT_INFOS if reference_mode else FL2VA_PROMPT_INFOS,
             "prompt_enhancer_button_label": "Write H3 Prompt",
             "prompt_enhancer_def": {
@@ -522,6 +546,8 @@ class family_handler:
             result.update({
                 "sliding_window": True,
                 "video_continuation": True,
+                "deepy_infos": REF2VA_DEEPY_INFOS,
+                "deepy_prompt_infos": REF2VA_DEEPY_PROMPT_INFOS,
                 "sliding_window_defaults": {"window_min": 124, "window_max": 481, "window_step": 17, "window_default": 362,
                                             "overlap_min": 1, "overlap_max": 120, "overlap_step": 17, "overlap_offset": 1, "overlap_default": 18},
                 "frames_selection_maximum": 737,
@@ -582,6 +608,8 @@ class family_handler:
             result.update({
                 "sliding_window": True,
                 "video_continuation": True,
+                "deepy_infos": FL2VA_DEEPY_INFOS,
+                "deepy_prompt_infos": FL2VA_DEEPY_PROMPT_INFOS,
                 "sliding_window_defaults": {"window_min": 124, "window_max": 481, "window_step": 17, "window_default": 362,
                                             "overlap_min": 1, "overlap_max": 120, "overlap_step": 17, "overlap_offset": 1, "overlap_default": 18},
                 "image_prompt_types_allowed": "TSEVL",
@@ -622,6 +650,10 @@ class family_handler:
                 "video_length_not_limited_by_audio": True,
                 "output_audio_is_input_audio": True,
             })
+        if pdd:
+            result["deepy_infos"] += " PDD requires exactly 8 inference steps and the Euler sampler."
+        if vdn:
+            result["deepy_infos"] += " VDN loads its acceleration LoRA automatically and defaults to 8 steps."
         return result
 
     @staticmethod

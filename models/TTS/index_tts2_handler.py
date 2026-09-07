@@ -148,6 +148,13 @@ def _get_index_tts2_model_def(base_model_type):
         "lm_engines": ["legacy", "cg", "vllm"],
         "compile": False,
     }
+    if not is_v25:
+        model_def.update({
+            "deepy_infos": "`prompt` = speech; `audio_guide` = required speaker sample. `audio_prompt_type`: `A` uses its voice/emotion; `AB` adds emotion from `audio_guide2`; `AB2` uses that second sample as speaker 2. `alt_prompt` sets default emotion. Max duration caps output.",
+            "deepy_prompt_infos": "Write exact English/Chinese speech. Inline cues persist until replaced: '[happy] Hello. [calm] We have time.' `alt_prompt` applies where no inline cue exists; text emotion overrides audio emotion. Keep delivery directions in cues or `alt_prompt`. For `AB2`, label dialogue `Speaker 1:` / `Speaker 2:` matching sample order.",
+            "infos": "Generate speech from Text Prompt (`prompt`) and a required Speaker reference voice (`audio_guide`). In audio mode `A`, the sample supplies the speaker and emotion. Mode `AB` uses the second sample (`audio_guide2`) as an emotion reference; `AB2` uses it as a second speaker for dialogue. Default Emotion Instruction (`alt_prompt`) and inline emotion cues control delivery separately from the spoken words. Max duration caps the assembled audio.",
+            "prompt_infos": 'Write the exact words to speak, with natural punctuation, in English or Chinese. WanGP reads `[happy] Hello there. [calm] We have time.` as emotion cues followed by speech; each cue stays active until replaced. `alt_prompt` supplies the default emotion where no inline cue applies. Keep directions inside these cues or the emotion field. For `AB2` dialogue, use `Speaker 1:` and `Speaker 2:` sections matching the two samples. Inline/text emotion overrides the audio emotion for that segment.',
+        })
     if is_v25:
         model_def.update({
             "model_modes": {

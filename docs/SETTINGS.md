@@ -1,8 +1,10 @@
 # WanGP Settings
 
+> Applies to: Generation setting meanings: image_mode, image_start/image_end, image_refs, video duration, audio inputs, flags, sampling, LoRAs and sliding windows. The API metadata appendix describes internal model records.
+
 WanGP generation settings are JSON-serializable values consumed by `wgp.py` and by the Python API in `shared/api.py`.
 
-Topics: [model selection](#model-selection), [prompts](#prompt-settings), [output dimensions and duration](#output-shape), [sampling](#core-sampling), [guidance](#guidance), [image and video inputs](#image-and-video-inputs), [audio inputs](#audio-inputs), [acceleration and caching](#acceleration-and-cache), [audio post-processing](#post-processing-audio), [advanced sampling](#advanced-sampling), [sliding windows](#sliding-window), [LoRAs](#loras), [flag settings](#flag-settings), and [model API metadata](#api-metadata-about-models).
+Topics: [model selection](#model-selection), [prompts](#prompt-settings), [output dimensions and duration](#output-shape), [sampling](#core-sampling), [guidance](#guidance), [image and video inputs](#image-and-video-inputs), [audio inputs](#audio-inputs), [acceleration and caching](#acceleration-and-cache), [audio post-processing](#post-processing-audio), [advanced sampling](#advanced-sampling), [sliding windows](#sliding-window), [LoRAs](#loras), and [flag settings](#flag-settings).
 
 The baseline schema lives in `models/_settings.json`. Model defaults in `defaults/*.json` and `finetunes/*.json` override those values, then handler code can update or hide settings according to the selected model definition. In practice, an exported settings file is the safest template for a specific model.
 
@@ -78,9 +80,9 @@ The baseline schema lives in `models/_settings.json`. Model defaults in `default
 | Setting | Type | Meaning |
 | --- | --- | --- |
 | `image_prompt_type` | string flags | Start/end/source continuation mode. See flag details below. |
-| `image_start` | image or list | Start image(s) for image-to-video or image-conditioned generation. |
-| `image_end` | image or list | End image(s) when the model supports end frames. |
-| `image_refs` | image or list | Reference images selected by `video_prompt_type` flags such as `I`, `K`, `F`, or `J`. |
+| `image_start` | image or list | Start image(s) for image-to-video or image-conditioned generation. MCP accepts Gallery media IDs or authorized paths, including returned output paths. |
+| `image_end` | image or list | End image(s) when the model supports end frames. MCP accepts Gallery media IDs or authorized paths; sliding-window anchors are an ordered list, one per window. |
+| `image_refs` | image or list | Reference images; MCP accepts a list of Gallery media IDs or authorized paths. Use the complete model/template `video_prompt_type` reference choice, such as `KI`; `K` describes a model-specific reference role. Positioned frames also use `frames_positions`. |
 | `image_refs_relative_size` | integer | Relative internal size for reference images on models exposing `any_image_refs_relative_size`. |
 | `remove_background_images_ref` | integer | Background-removal mode for reference images. Usually `0` off, `1` auto/on, with older values migrated by `fix_settings`. |
 | `frames_positions` | string | Positions for `F` positioned-frame references. Syntax is model-specific but usually frame indexes or ranges. |
@@ -285,6 +287,8 @@ Examples: `T`, `TI`, `T1`, and `TI1`. Older saved values `I` and `IK` are migrat
 If the selected model does not support sliding windows, `W` modes are migrated to queue-task modes.
 
 ## API Metadata About Models
+
+This appendix describes internal Python/model-definition records, not the shape of every Deepy tool response. Compact model capabilities expose supported `capabilities` and `media_inputs` roles as lists and omit `setting_values`; use the returned contract and the relevant model-definition property for exact choices. The generation setting names documented above are shared across these presentations.
 
 Each in-memory model definition now includes a `metadata` object inferred after handler initialization:
 

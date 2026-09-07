@@ -1,3 +1,7 @@
+# WanGP Model Overview
+
+> Applies to: Curated model comparisons for choosing a model. Use the current model selector or discovery for installed variants; these recommendations do not replace the user's chosen Deepy templates.
+
 **WanGP** supports many different models. Some of them are just better. You will find below a curated selection.
 
 Hit a model name below to load that model in WanGP instantly.

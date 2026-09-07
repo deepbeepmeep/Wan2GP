@@ -8,7 +8,7 @@ from shared.utils.loras_mutipliers import parse_loras_multipliers
 import gradio as gr
 from pathlib import Path
 
-from .infos import LTX2_25_INFOS, LTX2_INFOS, LTX2_MSR_INFOS, LTX2_MSR_V2_INFOS
+from .infos import LTX2_25_DEEPY_INFOS, LTX2_25_INFOS, LTX2_INFOS, LTX2_MSR_INFOS, LTX2_MSR_V2_INFOS
 from .lora_utils import control_video_phase2_message
 from .ltx2_runtime import LTX2_OUTPAINTING_METHOD
 
@@ -614,7 +614,10 @@ class family_handler:
                 }
             )
         else:
-            from .prompt_enhancer import LTX2_PROMPT_INFOS, LTX2_RELAYED_IMAGE_PROMPT, LTX2_RELAYED_PROMPT
+            from .prompt_enhancer import LTX2_25_DEEPY_PROMPT_INFOS, LTX2_PROMPT_INFOS, LTX2_RELAYED_IMAGE_PROMPT, LTX2_RELAYED_PROMPT
+
+            if ltx25 and not (msr or editanything_ref):
+                extra_model_def.update({"deepy_infos": LTX2_25_DEEPY_INFOS, "deepy_prompt_infos": LTX2_25_DEEPY_PROMPT_INFOS})
 
             if msr:
                 audio_prompt_selection = ["", "A"]

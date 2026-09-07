@@ -1,5 +1,7 @@
 # Manual Installation Guide For Windows & Linux
 
+> Applies to: Manual installation and dependencies. Follow the section matching the operating system and GPU; these setup commands are separate from an existing session's generation settings.
+
 This guide covers manual installation for different GPU generations and operating systems. Alternatively you may use the 1 click install / update scripts (please check the repo readme for instructions).
 
 It is recommended to use Python 3.10.9, PyTorch 2.7.1 with Cuda 12.8 for GTX 10XX and Python 3.11.14, PyTorch 2.10 with Cuda 13.0/13.1 for RTX 20XX - RTX 50XX as both these configs are well-tested and stable.

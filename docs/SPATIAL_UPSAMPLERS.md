@@ -1,5 +1,7 @@
 # Spatial Upsampler / Visual Refiner Plugin API
 
+> Applies to: Developing spatial upsampler/refiner plugins: handlers, registration and shared configuration. For using installed processors, discover the current post-processing tool actions.
+
 Spatial upsamplers and visual refiners (Lanczos, FlashVSR, PiD, H3 Face Refiner,
 Chain-of-Zoom, VAE upscalers, ...) are
 registered in `postprocessing/spatial_upsamplers.py`. Each upsampler declares itself and its
@@ -98,8 +100,10 @@ Discovery evaluates the historical `enabled()` method first: `True` maps to
 optional `status` property. Discovery always emits `enabled`, `disabled`, or
 `unknown`; `unknown` means neither mechanism supplied a valid status.
 `reason_disabled` is included only when the normalized status is `disabled` and
-the handler provides a non-empty reason. Deepy includes these fields for every
-discovered process and will not dispatch a process reported as disabled.
+the handler provides a non-empty reason. This describes the internal catalog;
+Prime's post-processing toolbox omits disabled processors from callable
+discovery. Internal/compatibility views may include them for diagnostics,
+but a process reported as disabled cannot be dispatched.
 
 `SimpleScaleSuffixMixin` provides `is_upsampling`/`split_value`/`build_value` for the
 common `<method>*<multiplier>` value encoding (e.g. `lanczos*2`, `coz*4`). Its

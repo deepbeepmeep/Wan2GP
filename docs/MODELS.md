@@ -1,5 +1,7 @@
 # Models
 
+> Applies to: Comparing model families and choosing models when requested. Examples do not enumerate installed variants or override selected Deepy templates; runtime discovery supplies current capabilities.
+
 WanGP supports video, image, speech, music, and sound-generation models through a common interface. This page is a practical guide to the main model families, not an exhaustive list of every checkpoint, quantization, accelerator, or finetune.
 
 The model selector in WanGP is the source of truth for the models available in your installation. It includes descriptions, model-specific help, and settings suited to each checkpoint. You can also use the toolbar search to switch models quickly.

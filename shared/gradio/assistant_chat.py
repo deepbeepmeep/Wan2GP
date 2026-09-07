@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import markdown
+from markdown.extensions.tables import TableExtension, TableProcessor
 
 from shared.deepy import video_tools as deepy_video_tools
 from shared.utils.gallery_media import gallery_media_ids
@@ -61,7 +62,35 @@ _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", "
 _VIDEO_EXTENSIONS = deepy_video_tools.VIDEO_EXTENSIONS
 _AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac", ".m4a", ".flac", ".ogg", ".opus"}
 _ARCHIVE_EXTENSIONS = {".zip", ".7z", ".rar", ".tar", ".gz", ".bz2", ".xz"}
-_MARKDOWN_EXTENSIONS = ["extra", "nl2br", "sane_lists", "fenced_code", "tables"]
+
+
+class _ChatTableProcessor(TableProcessor):
+    """Allow a table to start immediately after prose, as in generated answers."""
+
+    def test(self, parent, block):
+        lines = block.split("\n")
+        for start in range(len(lines) - 1):
+            if super().test(parent, "\n".join(lines[start:start + 2])) and super().test(parent, "\n".join(lines[start:])):
+                self._table_start = start
+                return True
+        return False
+
+    def run(self, parent, blocks):
+        start = self._table_start
+        if start == 0:
+            return super().run(parent, blocks)
+        lines = blocks.pop(0).split("\n")
+        self.parser.parseBlocks(parent, ["\n".join(lines[:start]), "\n".join(lines[start:])])
+        return True
+
+
+class _ChatTableExtension(TableExtension):
+    def extendMarkdown(self, md):
+        super().extendMarkdown(md)
+        md.parser.blockprocessors.register(_ChatTableProcessor(md.parser, self.getConfigs()), "table", 75)
+
+
+_MARKDOWN_EXTENSIONS = ["extra", "nl2br", "sane_lists", "fenced_code", _ChatTableExtension()]
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<path>[^)]+)\)")
 _DOWNLOAD_MARKDOWN_TOKEN_RE = re.compile(r"(?P<fence>```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$))|(?P<link>!?\[(?:\\.|`[^`\n]*`|[^\]\n])*\]\([^\n)]*\))|(?P<code>`[^`\n]+`)")
 _DOWNLOAD_LINK_RE = re.compile(r"!?\[(?:\\.|`[^`\n]*`|[^\]\n])*\]\([^\n)]*\)")
@@ -1451,6 +1480,10 @@ def get_css() -> str:
 .chat__body pre,
 .chat__body blockquote {
     margin: 0 0 0.85em;
+}
+
+.chat__body p {
+    line-height: inherit;
 }
 
 .chat__body ul,
@@ -3775,10 +3808,9 @@ WAC.consumePayload = function (payload) {
   if (event.type !== 'sync' && hasSequence) {
     if (sequence <= WAC.chatSequence) return [];
     if (WAC.chatSequence >= 0 && sequenceStart > WAC.chatSequence + 1) {
-      if (event.type !== 'upsert_block' && event.type !== 'finalize_block') {
-        WAC.markSyncRequired(event);
-        return [];
-      }
+      // Recover missing earlier blocks without stalling a self-contained update.
+      WAC.markSyncRequired(event);
+      if (event.type !== 'upsert_block' && event.type !== 'finalize_block') return [];
     }
     WAC.chatSequence = sequence;
   }
@@ -4312,7 +4344,7 @@ WAC.appendStreamingInlineMarkdown = function (parent, value) {
 
 WAC.resetStreamingMarkdown = function (node) {
   node.replaceChildren();
-  const state = { source: '', buffer: '', inFence: false, code: null, list: null, listType: '', blockBoundary: true, tail: null };
+  const state = { source: '', buffer: '', inFence: false, fence: '', code: null, list: null, listType: '', table: null, tableHeader: null, blockBoundary: true, tail: null };
   node.__wangpStreamingMarkdown = state;
   return state;
 };
@@ -4337,11 +4369,55 @@ WAC.appendStreamingListItem = function (node, state, line) {
   return item;
 };
 
+WAC.splitStreamingTableRow = function (line) {
+  const text = line.trim();
+  const cells = [];
+  let cell = '';
+  let code = '';
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === '\\' && index + 1 < text.length) {
+      cell += char + text[++index];
+    } else if (char === '`') {
+      const marker = text.slice(index).match(/^\x60+/)[0];
+      if (code === marker) code = '';
+      else if (!code && text.indexOf(marker, index + marker.length) >= 0) code = marker;
+      cell += marker;
+      index += marker.length - 1;
+    } else if (char === '|' && !code) {
+      cells.push(cell.trim());
+      cell = '';
+    } else {
+      cell += char;
+    }
+  }
+  if (!cells.length) return null;
+  cells.push(cell.trim());
+  if (text.startsWith('|')) cells.shift();
+  if (cells[cells.length - 1] === '' && text.endsWith('|')) cells.pop();
+  return cells;
+};
+
+WAC.appendStreamingTableRow = function (parent, cells, alignments, header) {
+  const row = document.createElement('tr');
+  alignments.forEach((alignment, index) => {
+    const cell = document.createElement(header ? 'th' : 'td');
+    if (alignment) cell.style.textAlign = alignment;
+    WAC.appendStreamingInlineMarkdown(cell, cells[index] || '');
+    row.appendChild(cell);
+  });
+  parent.appendChild(row);
+  return row;
+};
+
 WAC.renderStreamingMarkdownLine = function (node, state, line) {
-  const fence = line.match(/^\s*```\s*([^\s`]*)\s*$/);
+  const header = state.tableHeader;
+  state.tableHeader = null;
+  const fence = line.match(/^ {0,3}(\x60{3,}|~{3,})(.*)$/);
   if (state.inFence) {
-    if (fence) {
+    if (fence && fence[1][0] === state.fence[0] && fence[1].length >= state.fence.length && !fence[2].trim()) {
       state.inFence = false;
+      state.fence = '';
       state.code = null;
       state.blockBoundary = true;
     } else {
@@ -4350,16 +4426,40 @@ WAC.renderStreamingMarkdownLine = function (node, state, line) {
     return;
   }
   if (fence) {
+    state.table = null;
     state.list = null;
     state.listType = '';
     const pre = document.createElement('pre');
     const code = document.createElement('code');
-    if (fence[1]) code.className = `language-${fence[1].replace(/[^a-z0-9_-]/gi, '')}`;
+    if (fence[2].trim()) code.className = `language-${fence[2].trim().replace(/[^a-z0-9_-]/gi, '')}`;
     pre.appendChild(code);
     node.appendChild(pre);
     state.inFence = true;
+    state.fence = fence[1];
     state.code = code;
     state.blockBoundary = true;
+    return;
+  }
+  const cells = WAC.splitStreamingTableRow(line);
+  if (state.table && line.trim()) {
+    WAC.appendStreamingTableRow(state.table.body, cells || [line.trim()], state.table.alignments, false);
+    return;
+  }
+  state.table = null;
+  const separators = cells || [line.trim()];
+  if (header && separators.length === header.cells.length && separators.every((cell) => /^:?-+:?$/.test(cell))) {
+    const alignments = separators.map((cell) => cell.startsWith(':') ? (cell.endsWith(':') ? 'center' : 'left') : (cell.endsWith(':') ? 'right' : ''));
+    const table = document.createElement('table');
+    const head = document.createElement('thead');
+    const body = document.createElement('tbody');
+    WAC.appendStreamingTableRow(head, header.cells, alignments, true);
+    table.appendChild(head);
+    table.appendChild(body);
+    header.span.remove();
+    header.break.remove();
+    node.appendChild(table);
+    state.table = { body, alignments };
+    state.blockBoundary = false;
     return;
   }
   const heading = line.match(/^(#{1,6})\s+(.+)$/);
@@ -4399,7 +4499,9 @@ WAC.renderStreamingMarkdownLine = function (node, state, line) {
   const span = document.createElement('span');
   WAC.appendStreamingInlineMarkdown(span, line);
   node.appendChild(span);
-  node.appendChild(document.createElement('br'));
+  const lineBreak = document.createElement('br');
+  node.appendChild(lineBreak);
+  if (cells && cells.length && !/^(?: {4}|\t)/.test(line)) state.tableHeader = { cells, span, break: lineBreak };
   state.blockBoundary = false;
 };
 
@@ -4407,8 +4509,8 @@ WAC.renderStreamingMarkdown = function (node, value) {
   if (!node) return;
   const text = String(value || '');
   let state = node.__wangpStreamingMarkdown;
-  if (!state || !text.startsWith(state.source)) state = WAC.resetStreamingMarkdown(node);
-  if (text === state.source) return;
+  if (state && text === state.source) return;
+  if (!state || !text.startsWith(state.source) || state.tablePending) state = WAC.resetStreamingMarkdown(node);
   const delta = text.slice(state.source.length);
   const previousBuffer = state.buffer;
   state.buffer += delta;
@@ -4423,15 +4525,29 @@ WAC.renderStreamingMarkdown = function (node, value) {
     state.buffer = state.buffer.slice(newline + 1);
     newline = state.buffer.indexOf('\n');
   }
+  if (!state.inFence && state.tableHeader) {
+    const separators = WAC.splitStreamingTableRow(state.buffer) || [state.buffer.trim()];
+    if (separators.length === state.tableHeader.cells.length && separators.every((cell) => /^:?-{3,}:?$/.test(cell))) {
+      if (state.tail) state.tail.remove();
+      state.tail = null;
+      WAC.renderStreamingMarkdownLine(node, state, state.buffer);
+      state.tablePending = true;
+      return;
+    }
+  }
   const delimiterArrived = ['\\', '`', '*', '_', '[', ']', '(', ')', '!'].some((marker) => delta.includes(marker)) || previousBuffer.endsWith('\\');
   const listMarker = /^[ \t]*(?:[-+*]|\d+\.)[ \t]+/;
   const listMarkerArrived = listMarker.test(state.buffer) && !listMarker.test(previousBuffer);
-  if (state.tail && !completedLine && !delimiterArrived && !listMarkerArrived && state.buffer === previousBuffer + delta) {
+  if (state.tail && !state.table && !completedLine && !delimiterArrived && !listMarkerArrived && state.buffer === previousBuffer + delta) {
     const target = ['OL', 'UL'].includes(state.tail.tagName) ? state.tail.lastElementChild : state.tail;
     target.appendChild(document.createTextNode(delta));
     return;
   }
   if (state.tail) state.tail.remove();
+  if (state.table && state.buffer.trim()) {
+    state.tail = WAC.appendStreamingTableRow(state.table.body, WAC.splitStreamingTableRow(state.buffer) || [state.buffer.trim()], state.table.alignments, false);
+    return;
+  }
   if (!state.inFence) {
     const preview = { ...state };
     const item = WAC.appendStreamingListItem(node, preview, state.buffer);
@@ -4930,7 +5046,10 @@ WAC.installObserver = function () {
   if (WAC.observer) return;
   const target = document.querySelector('gradio-app') || document.body;
   if (!target) return;
-  WAC.observer = new MutationObserver(() => {
+  WAC.observer = new MutationObserver((mutations) => {
+      const input = WAC.requestInput();
+      // Gradio measures the textarea on every key; its input handler already owns composer layout.
+      if (mutations.every((mutation) => mutation.type === 'attributes' && mutation.attributeName === 'style' && mutation.target === input)) return;
       if (WAC.observerScheduled) return;
       WAC.observerScheduled = true;
       window.requestAnimationFrame(() => {
@@ -5205,7 +5324,7 @@ def build_session_catalog_event(sessions: list[dict[str, Any]], active_session_i
 
 
 def build_session_resume_ready_event(request_id: str, session=None) -> str:
-    return _event_payload({"type": "session_resume_ready", "request_id": str(request_id or "")}, session)
+    return _event_payload({"type": "session_resume_ready", "request_id": str(request_id or "")})
 
 
 def build_event_batch(payloads: list[str], *, replay: bool = False) -> str:
@@ -5389,7 +5508,7 @@ def clear_message_blocks(session, message_id: str) -> str | None:
     if record is None:
         return None
     blocks = _ensure_message_blocks(record)
-    retained_blocks = [block for block in blocks if isinstance(block, dict) and block.get("type") == "context_summary"]
+    retained_blocks = [block for block in blocks if isinstance(block, dict) and block.get("type") in {"context_summary", "context_thinking"}]
     if len(retained_blocks) == len(blocks) and not record.get("attachments"):
         return None
     record["blocks"] = retained_blocks
@@ -5435,6 +5554,10 @@ def add_context_summary(session, message_id: str, text: str) -> tuple[str, str |
 
 def upsert_context_summary(session, message_id: str, summary_id: str | None, text: str, streaming: bool = False) -> tuple[str, str | None]:
     return _upsert_text_block(session, message_id, summary_id, "context_summary", text, streaming=streaming)
+
+
+def upsert_context_thinking(session, message_id: str, thinking_id: str | None, text: str, streaming: bool = False) -> tuple[str, str | None]:
+    return _upsert_text_block(session, message_id, thinking_id, "context_thinking", text, streaming=streaming)
 
 
 def remove_message_block(session, message_id: str, block_id: str) -> str | None:
@@ -5618,8 +5741,8 @@ def _block_upsert_event(session, record: dict[str, Any], block: dict[str, Any], 
 
 
 def _upsert_text_block(session, message_id: str, block_id: str | None, block_type: str, text: str, *, streaming: bool) -> tuple[str, str | None]:
-    canonical_text = str(text or "").strip()
-    if len(canonical_text) == 0:
+    canonical_text = str(text or "").lstrip() if streaming else str(text or "").strip()
+    if not canonical_text.strip():
         return "", None
     record = _find_message(session, message_id)
     if record is None:
@@ -6632,7 +6755,7 @@ def _render_message_blocks(record: dict[str, Any]) -> tuple[str, set[str]]:
             reasoning_no += 1
             rendered.append(_render_reasoning_block(block, reasoning_no, reasoning_total, streaming=bool(block.get("streaming", False))))
             continue
-        if block_type == "context_summary":
+        if block_type in {"context_summary", "context_thinking"}:
             summary_text = str(block.get("text", "")).strip()
             if len(summary_text) > 0:
                 rendered.append(_render_context_summary_block(block))
@@ -6673,7 +6796,7 @@ def _render_block_html(record: dict[str, Any], block: dict[str, Any], *, streami
         return _render_markdown_block(record, block, rendered_attachment_keys, streaming=streaming)
     if block_type == "reasoning":
         return _render_reasoning_block(block, 1, 1, streaming=streaming)
-    if block_type == "context_summary":
+    if block_type in {"context_summary", "context_thinking"}:
         return _render_context_summary_block(block, streaming=streaming)
     if block_type == "tool":
         attachments = block.get("attachments") if isinstance(block.get("attachments"), list) else [block.get("attachment")] if isinstance(block.get("attachment"), dict) else []
@@ -6709,10 +6832,12 @@ def _render_reasoning_block(block: dict[str, Any], block_no: int, total_blocks: 
 def _render_context_summary_block(block: dict[str, Any], streaming: bool | None = None) -> str:
     streaming = bool(block.get("streaming", False)) if streaming is None else bool(streaming)
     block_id = html.escape(str(block.get("id", "")), quote=True)
+    thinking = block["type"] == "context_thinking"
+    label = "Compaction thoughts" if thinking else "Summarizing earlier history…" if streaming else "Earlier history summarized"
     content_html = f"<div class='chat__stream-text'>{html.escape(str(block.get('text', '')))}</div>" if streaming else _markdown_to_html(block.get("text", ""))
     return (
-        f"<details class='chat__disclosure chat__disclosure--context-summary' data-block-id='{block_id}' data-block-type='context_summary' data-context-summary-id='{block_id}'>"
-        f"<summary><span class='chat__tool-title'><span class='chat__tool-chip'>Context</span>{'Summarizing earlier history…' if streaming else 'Earlier history summarized'}</span></summary>"
+        f"<details class='chat__disclosure chat__disclosure--context-summary' data-block-id='{block_id}' data-block-type='{block['type']}' data-context-summary-id='{block_id}'>"
+        f"<summary><span class='chat__tool-title'><span class='chat__tool-chip'>{'Thought' if thinking else 'Context'}</span>{label}</span></summary>"
         f"<div class='chat__disclosure-body'><div class='chat__context-summary'>{content_html}</div>{_render_collapse_button('summary')}</div>"
         "</details>"
     )

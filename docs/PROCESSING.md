@@ -1,5 +1,7 @@
 # Processing
 
+> Applies to: Control media, masks, reference preparation, long-video sliding windows, duration schedules, overlaps and post-processing. UI steps describe product controls; use exposed actions for tool execution.
+
 Processing is everything WanGP does around generation to prepare inputs, control what the model produces, or refine media after it exists.
 
 Use this guide when you are deciding how to prepare a Control Video, build masks, use reference images, extend a video, or apply late postprocessing.

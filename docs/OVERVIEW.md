@@ -1,7 +1,5 @@
 # WanGP Model Overview
 
-> Applies to: Curated model comparisons for choosing a model. Use the current model selector or discovery for installed variants; these recommendations do not replace the user's chosen Deepy templates.
-
 **WanGP** supports many different models. Some of them are just better. You will find below a curated selection.
 
 Hit a model name below to load that model in WanGP instantly.
@@ -19,3 +17,7 @@ Hit a model name below to load that model in WanGP instantly.
 | Flexible speech generation | [Qwen3 TTS](modeltype:qwen3_tts_base) | Pick this when you want a general-purpose speech tool that can clone a voice, generate two-speaker dialogue, or serve as a clean starting point before switching to Custom Voice or Voice Design variants. It stays fast, works well on modest VRAM, and fits both narration and conversational workflows. |
 | Emotional voice cloning & dialogue | [Index TTS 2](modeltype:index_tts2) | Pick this when you want expressive voice cloning instead of flat narration. It handles two-speaker cloned dialogue, automatic or tagged emotions, and very long conversations, while still remaining usable on lower-VRAM setups. |
 | Lyrics-first song generation | [Ace Step 1.5 XL](modeltype:ace_step_v1_5_xl) | A high-quality song generator for full tracks with lyrics, a must use when lyric adherence matters as much as audio quality: you will get cleaner vocals, and better control over the style and mood of the song. |
+
+---
+
+> Applies to: Curated model comparisons and workflow recommendations. The model selector and API provide the current catalogue; recommendations are general and do not replace project-specific choices or saved templates.

@@ -1008,6 +1008,9 @@ def load_session(session, storage_id: str, deepy_type: str) -> dict[str, Any]:
     session.interruption_notice = str(chat.get("interruption_notice", "") or "")
     session.interruption_history = list(chat.get("interruption_history", []) or [])
     session.media_registry = list(context.get("media", []) or [])
+    from shared.deepy.media_links import restore_media_links
+
+    restore_media_links(session.chat_transcript, replay_commands, session.media_registry)
     session.media_registry_counter = max([int(str(record.get("media_id", "_0")).rsplit("_", 1)[-1]) for record in session.media_registry if str(record.get("media_id", "")).rsplit("_", 1)[-1].isdigit()] or [0])
     session.tool_ui_settings = dict(context.get("ui", {}).get("tool_settings", {}) or {})
     runtime = context.get("runtime", {})
@@ -1110,6 +1113,10 @@ def inject_session_media(session, gen: dict[str, Any]) -> dict[str, Any]:
         if fingerprint:
             fingerprints[fingerprint] = entry
         injected += 1
+    gen["selected"] = len(visual_paths) - 1
+    gen["audio_selected"] = len(audio_paths) - 1
+    gen["last_selected"] = gen["audio_last_selected"] = True
+    gen["selected_video_time"] = 0.0 if visual_paths and _detect_media_type(Path(visual_paths[-1])) == "video" else None
     media_registry.sync_tool_call_gallery_media(session, gen)
     session.seen_video_gallery_paths = [str(path) for path in visual_paths]
     session.seen_audio_gallery_paths = [str(path) for path in audio_paths]

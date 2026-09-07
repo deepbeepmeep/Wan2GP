@@ -1,7 +1,5 @@
 # FINETUNES
 
-> Applies to: Creating and managing custom model definitions and weights. Model-definition keys and conversion commands belong to model setup, not directly to generation settings.
-
 A Finetuned model is model that shares the same architecture of one specific model but has derived weights from this model. Some finetuned models have been created by combining multiple finetuned models.
 
 As there are potentially an infinite number of finetunes, specific finetuned models are not known by default by WanGP. However you can create a finetuned model definition that will tell WanGP about the existence of this finetuned model and WanGP will do as usual all the work for you: autodownload the model and build the user interface.
@@ -238,3 +236,7 @@ In **Editor** mode:
 4) Click **Save** to update the finetune, **Export** to download/share its JSON definition, or **Delete** to remove it. Delete shows a confirmation row in place of the editor action buttons.
 
 After creation, import, save, or delete, WanGP refreshes the model list automatically.
+
+---
+
+> Applies to: Creating and managing custom model definitions and weights. Model-definition fields and conversion commands concern model setup; per-generation settings are specified separately.

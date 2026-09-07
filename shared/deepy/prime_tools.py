@@ -78,6 +78,7 @@ def _mcp_connection_error_message(error: BaseException) -> str:
 
 def _extract_markdown_sections(markdown: str) -> list[dict[str, Any]]:
     content = str(markdown or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    content = re.sub(r"\n\n---\n\n> Applies to: [^\n]*\Z", "", content)
     lines = content.split("\n") if content else []
     headings = []
     in_code_block = False
@@ -426,7 +427,7 @@ class DeepyPrimeTools:
                                 future.set_result(page)
                                 continue
                             resource_result = await clients[server_name].read_resource(uri)
-                            scope = {"applicability": resource_matches[0]["description"]} if server_name == "wangp" and uri.startswith("wangp://docs/") and (query or section_filter) else {}
+                            scope = {"applicability": resource_matches[0]["description"]} if server_name == "wangp" and uri.startswith("wangp://docs/") else {}
                             if query:
                                 matches = []
                                 resource_def = resource_matches[0]

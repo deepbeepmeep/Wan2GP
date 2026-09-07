@@ -16,12 +16,7 @@ from shared.deepy import session_store
 from shared.gradio import assistant_chat
 
 
-_TEMPLATE_TOOL_LAYOUT = (
-    ("gen_video", "gen_video_with_speech"),
-    ("gen_image", "edit_image"),
-    ("gen_song",),
-    ("gen_speech_from_description", "gen_speech_from_sample"),
-)
+_TEMPLATE_TOOL_LAYOUT = deepy_ui_settings.TEMPLATE_TOOL_LAYOUT
 _TEMPLATE_TOOL_ORDER = tuple(tool_name for row in _TEMPLATE_TOOL_LAYOUT for tool_name in row)
 _TEMPLATE_TOOL_SELECTOR_CHOICE_KEY = {
     "gen_video": "video_generator_choices",
@@ -41,15 +36,7 @@ _TEMPLATE_TOOL_SELECTOR_SELECTED_KEY = {
     "gen_speech_from_description": "selected_speech_from_description",
     "gen_speech_from_sample": "selected_speech_from_sample",
 }
-_TEMPLATE_TOOL_UI_KEY = {
-    "gen_video": "video_generator_variant",
-    "gen_video_with_speech": "video_with_speech_variant",
-    "gen_image": "image_generator_variant",
-    "gen_song": "song_variant",
-    "edit_image": "image_editor_variant",
-    "gen_speech_from_description": "speech_from_description_variant",
-    "gen_speech_from_sample": "speech_from_sample_variant",
-}
+_TEMPLATE_TOOL_UI_KEY = deepy_ui_settings.TEMPLATE_TOOL_UI_KEY
 _TEMPLATE_TOOL_DEFAULT_GETTER = {
     "gen_video": deepy_tool_settings.get_default_video_generator_variant,
     "gen_video_with_speech": deepy_tool_settings.get_default_video_with_speech_variant,
@@ -381,55 +368,17 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
                                     label="Auto-abort or remove Deepy-started generation on Stop/Reset.",
                                 )
                                 use_template_properties = gr.Dropdown(
-                                    choices=[
-                                        ("Use by Default Dimensions / Durations / Seed defined in Templates Settings Used", True),
-                                        ("Use by Default Always Dimensions / Durations / Seed Below", False),
-                                    ],
+                                    choices=deepy_ui_settings.PROPERTY_MODE_CHOICES,
                                     value=tool_ui_state["use_template_properties"],
                                     label="Default Dimensions / Durations / Seed",
                                 )
-                                with gr.Row():
-                                    override_width = gr.Slider(
-                                        deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MIN,
-                                        deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MAX,
-                                        value=tool_ui_state["width"],
-                                        step=deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_STEP,
-                                        label="Default Width",
-                                        interactive=not tool_ui_state["use_template_properties"],
-                                    )
-                                    override_height = gr.Slider(
-                                        deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MIN,
-                                        deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MAX,
-                                        value=tool_ui_state["height"],
-                                        step=deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_STEP,
-                                        label="Default Height",
-                                        interactive=not tool_ui_state["use_template_properties"],
-                                    )
-                                with gr.Row():
-                                    override_num_frames = gr.Slider(
-                                        deepy_ui_settings.ASSISTANT_OVERRIDE_FRAMES_MIN,
-                                        deepy_ui_settings.ASSISTANT_OVERRIDE_FRAMES_MAX,
-                                        value=tool_ui_state["num_frames"],
-                                        step=1,
-                                        label="Default Number of Frames",
-                                        interactive=not tool_ui_state["use_template_properties"],
-                                    )
-                                    override_audio_duration = gr.Slider(
-                                        deepy_ui_settings.ASSISTANT_OVERRIDE_AUDIO_DURATION_MIN,
-                                        deepy_ui_settings.ASSISTANT_OVERRIDE_AUDIO_DURATION_MAX,
-                                        value=tool_ui_state["audio_duration"],
-                                        step=1,
-                                        label="Default Audio Duration (seconds)",
-                                        interactive=not tool_ui_state["use_template_properties"],
-                                    )
-                                override_seed = gr.Slider(
-                                    -1,
-                                    999999999,
-                                    value=tool_ui_state["seed"],
-                                    step=1,
-                                    label="Seed (-1 for random)",
-                                    interactive=not tool_ui_state["use_template_properties"],
-                                )
+                                property_controls = {}
+                                for row in ((0, 1), (2, 3), (4,)):
+                                    with gr.Row():
+                                        for index in row:
+                                            field = deepy_ui_settings.GENERATION_PROPERTY_FIELDS[index]
+                                            property_controls[field["key"]] = gr.Slider(field["minimum"], field["maximum"], value=tool_ui_state[field["key"]], step=field["step"], label=field["label"], interactive=not tool_ui_state["use_template_properties"])
+                                override_width, override_height, override_num_frames, override_audio_duration, override_seed = (property_controls[field["key"]] for field in deepy_ui_settings.GENERATION_PROPERTY_FIELDS)
                             with gr.Tab("Templates Settings used by Tools"):
                                 with gr.Column(elem_classes=["chat__template-tool-grid"]):
                                     gr.Markdown("Please Match here Prerecorded Models Settings to each Generation Tool used by Deepy.")

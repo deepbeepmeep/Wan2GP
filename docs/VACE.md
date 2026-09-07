@@ -1,7 +1,5 @@
 # VACE ControlNet Guide
 
-> Applies to: VACE control video, masks, reference images, subject replacement, inpainting and outpainting. Settings recommendations apply to the named VACE variant and its enabled capabilities.
-
 VACE is a ControlNet-style Wan model for Video-to-Video and Reference-to-Video generation. It can inject images into output videos, animate characters, perform masked edits, continue existing videos, transfer motion, and preserve scene structure while changing style or content.
 
 ## Overview
@@ -142,3 +140,7 @@ Advanced tips:
 2. **Quality Reference Images:** use high-resolution, well-lit reference images.
 3. **Proper Masking:** take time to create precise masks with Matanyone.
 4. **Consistent Lighting:** match lighting between reference images and the intended scene.
+
+---
+
+> Applies to: VACE control video, masks, reference images, subject replacement, inpainting and outpainting. Settings recommendations are specific to the named VACE variant and its supported capabilities.

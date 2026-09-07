@@ -777,12 +777,13 @@ class DeepyController:
             )
 
     def ask_ai(self, state, ask_request, client_submission_id: str = "", steering: bool = False):
+        from shared.deepy.drivers import gradio_chat_updates
+        yield from gradio_chat_updates(self.iter_commands(state, ask_request, client_submission_id, steering), lambda: self._deps.get_new_refresh_id())
+
+    def iter_commands(self, state, ask_request, client_submission_id: str = "", steering: bool = False):
         debug_enabled = self._sync_debug_enabled()
         submission_id = str(client_submission_id or "").strip()[:128]
         acknowledged_submission_ids = [submission_id] if submission_id else []
-
-        def get_refresh_id():
-            return str(time.time()) + "_" + str(self._deps.get_new_refresh_id())
 
         session = get_or_create_assistant_session(state)
         foreign_session_reset = self._reset_foreign_active_session(session)
@@ -790,7 +791,7 @@ class DeepyController:
         if len(request_blocks) == 0:
             if debug_enabled:
                 self._debug_log("Request ignored because it was empty after normalization.")
-            yield assistant_chat.build_sync_event(session, acknowledged_submission_ids=acknowledged_submission_ids), gr.update(), gr.update(value=""), gr.update(), gr.update()
+            yield "chat_output", assistant_chat.build_sync_event(session, acknowledged_submission_ids=acknowledged_submission_ids)
             return
         if debug_enabled:
             self._debug_log(f"Request received blocks={len(request_blocks)} worker_active={bool(session.worker_active)} queued_jobs={int(session.queued_job_count or 0)} foreign_session_reset={bool(foreign_session_reset)}")
@@ -798,14 +799,14 @@ class DeepyController:
             if debug_enabled:
                 self._debug_log("Request held because a Deepy reset is pending.")
             status = {"visible": True, "kind": "queued", "text": "Resetting after the current work stops..."}
-            yield assistant_chat.build_sync_event(session, status=status, acknowledged_submission_ids=acknowledged_submission_ids), gr.update(), gr.update(value=""), gr.update(), gr.update()
+            yield "chat_output", assistant_chat.build_sync_event(session, status=status, acknowledged_submission_ids=acknowledged_submission_ids)
             return
         if not self.is_available():
             if debug_enabled:
                 self._debug_log(f"Request rejected: {self.requirement_error_text()}")
             error_turn_id = assistant_chat.create_assistant_turn(session)
             assistant_chat.set_assistant_content(session, error_turn_id, self.requirement_error_text())
-            yield assistant_chat.build_sync_event(session, acknowledged_submission_ids=acknowledged_submission_ids), gr.update(), gr.update(value=""), gr.update(), gr.update()
+            yield "chat_output", assistant_chat.build_sync_event(session, acknowledged_submission_ids=acknowledged_submission_ids)
             return
         if steering:
             with self._queue_state_lock:
@@ -845,7 +846,7 @@ class DeepyController:
             if steering_active:
                 self._debug_log(f"Steering requested worker_active=True active_turn={steered_current_turn} thought_active={bool(session.assistant_thought_active)} action_active={bool(session.assistant_action_active)} queued_jobs={int(session.queued_job_count or 0)}")
                 output_queue.push("chat_output", steering_sync)
-                yield gr.update(), gr.update(), gr.update(value=""), gr.update(), gr.update()
+                yield "request_accepted", None
                 return
         with self._queue_state_lock:
             existing_output_queue = session.control_queue
@@ -857,7 +858,7 @@ class DeepyController:
                 queued_sync = assistant_chat.build_sync_event(session, status={"visible": True, "kind": "queued", "text": "Queued behind the current assistant task."}, acknowledged_submission_ids=acknowledged_submission_ids)
         if enqueue_active:
             existing_output_queue.push("chat_output", queued_sync)
-            yield gr.update(), gr.update(), gr.update(value=""), gr.update(), gr.update()
+            yield "request_accepted", None
             return
         com_stream = AsyncStream()
         com_stream.output_queue = DeepyPublicationQueue(lambda: assistant_chat.build_sync_event(session))
@@ -873,7 +874,6 @@ class DeepyController:
             output_queue.push("chat_output", accepted_sync)
             if queued or len(request_blocks) > 1:
                 output_queue.push("chat_output", assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued", session=session))
-        first_chat_publication = True
         while True:
             cmd, data = com_stream.output_queue.next()
             if cmd == "console_output":
@@ -886,20 +886,19 @@ class DeepyController:
                     descriptors = [f"{item.get('event', {}).get('type', '?')}:{item.get('event', {}).get('sequence', '-')}" for item in published]
                     self._debug_log(f"Publishing chat batch: {descriptors}")
                 try:
-                    yield payload, gr.update(), gr.update(value="") if first_chat_publication else gr.update(), gr.update(), gr.update()
+                    yield "chat_output", payload
                 finally:
-                    first_chat_publication = False
                     com_stream.output_queue.complete_publication()
             elif cmd == "load_queue_trigger":
-                yield gr.update(), str(get_refresh_id()), gr.update(), gr.update(), gr.update()
+                yield cmd, data
             elif cmd == "abort_client_id":
-                yield gr.update(), gr.update(), gr.update(), gr.update(), str(data or "")
+                yield cmd, data
             elif cmd == "refresh_gallery":
-                yield gr.update(), gr.update(), gr.update(), str(get_refresh_id()), gr.update()
+                yield cmd, data
             elif cmd == "error":
                 error_turn_id = assistant_chat.create_assistant_turn(session)
                 error_event = assistant_chat.set_assistant_content(session, error_turn_id, str(data or "Assistant error."))
-                yield error_event if error_event is not None else gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+                yield "chat_output", error_event
             elif cmd == "exit":
                 self._debug_log(f"Publication metrics: {com_stream.output_queue.metrics()}")
                 break

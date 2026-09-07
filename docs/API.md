@@ -1,7 +1,5 @@
 # WanGP Python API
 
-> Applies to: Python integrations and external MCP clients. Interface-specific examples are labelled; actions inside a running Deepy session use its exposed tool contracts.
-
 `shared/api.py` provides a lightweight in-process wrapper over WanGP's existing generation path.
 
 The main goal is to let third-party code call WanGP directly, keep the last loaded model alive across requests, receive structured progress updates, and still capture the same stdout/stderr output that would normally go to the console.
@@ -428,6 +426,10 @@ Batch generation is preserved: `source` accepts a settings list, a task list, or
 
 V2 checks the required model field before submitting any part of a generation batch. Each settings object, supplied directly or wrapped in `params` / `settings`, needs a non-empty `model_type`; legacy `base_model_type` is accepted when `model_type` is absent. Existing `edit_*` post-processing tasks need no model. A missing/invalid model field or malformed task container rejects the whole call with its exact location (for example `source.tasks[1].params.model_type`) and creates no job. V1 and Deepy Zero retain their existing validation paths.
 
+V2 also checks non-empty supplied media inputs against the model declarations and effective input modes, including existing automatic media-flag inference and model defaults. Unsupported inputs, or inputs that an inactive mode would discard, reject the whole batch before submission with the offending field and reason. Empty media fields in full settings objects remain valid. These checks cover start/end images, reference images or injected frames, source/control videos, control images and masks, audio guides, custom guides, and media supplied to selected audio post-processors. Model-specific constraints such as frame-position counts remain part of normal generation validation. Direct Python API, MCP v1 and Deepy Zero validation paths are unchanged.
+
+Frame injection and reference-image conditioning are separate capabilities. For example, H3 FL2VA reports `injected_frames: true` and `reference_images: false`: it accepts `image_refs` in `KFI` frame-injection mode with `frames_positions`, but not as general subject/appearance references. H3 REF2VA declares reference-image conditioning separately.
+
 This is separate from multiple tool calls in one assistant response. Deepy's existing local execution loop keeps those calls grouped in the assistant message, executes them in order, and records one result per call before the next LLM pass. V2 preserves that loop, individual call IDs/results and the existing transcript display; it does not force callers to combine separate requests into one batch.
 
 V2 collections use `limit` (default 20, maximum 100) and opaque `cursor`; results report `count`, `has_more`, `next_cursor`. A page also has a 6,000-character item budget. Repeat the original filters with `next_cursor` as `cursor`. Snapshots are stored outside the model context, remain stable across source changes, expire after ten minutes, and are evicted after 16 newer retained searches. Snapshot storage is limited to 128 MiB each. Expired cursors or changed filters produce an explicit error requiring a new search. `summary_only=true` stores the collection and returns its count and starting cursor without loading its contents.
@@ -440,9 +442,9 @@ Read `wangp://guides/workflows` for templates, model limits, media inputs, long 
 
 In Prime, prefer the session workspace for experiments and editable drafts. Filesystem tools manage that workspace freely. With write access they can create new files in configured output folders and their subfolders, but cannot change, overwrite, delete, rename or move existing output files. Other authorized folders retain their R/RW permissions; deleting or moving an external source removes its vanished-path Gallery entry. This policy does not change generation, post-processing, MCP v1 or Zero contracts.
 
-All product manuals under `docs/` are available as complete MCP resources, including installation, configuration, troubleshooting, model selection, plugins and API integration. Each document starts with a compact `Applies to` note identifying its audience and limits. The current server uses that note as its resource description; Prime also includes it with section reads and document-search results, so extracting a passage does not lose its context. Interface-specific examples are labelled within mixed documents. This documentation policy does not change filesystem permissions or Deepy Zero's routing.
+All product manuals under `docs/` are available as complete MCP resources, including installation, configuration, troubleshooting, model selection, plugins and API integration. Each document ends with a compact `Applies to` note describing its scope for readers. The current server uses that footer as its resource description; Prime also includes it as `applicability` metadata with document reads, section reads and search results, including continuation pages. The scope is therefore available from the first response without reading to the end. Section indexing excludes the footer so its keywords are not attributed to the final section; full-document reads retain it. Interface-specific examples are labelled within mixed documents. This documentation policy does not change filesystem permissions or Deepy Zero's routing.
 
-The current workflow resource uses `wangp://guides/workflows`, without a version label in normal discovery or agent instructions. Its previous version-labelled URI is retained as an unlisted read alias. New documents are published automatically and must include an `Applies to` note; review tool examples, links and setting semantics before adding them. Product-help documents explain the UI and configuration; current callable contracts govern Deepy's actual tool execution.
+The current workflow resource uses `wangp://guides/workflows`, without a version label in normal discovery or agent instructions. Its previous version-labelled URI is retained as an unlisted read alias. New documents are published automatically and must include an `Applies to` footer describing their subject, audience and relevant platform or interface limits; review tool examples, links and setting semantics before adding them. Product-help documents explain the UI and configuration; current callable contracts govern Deepy's actual tool execution.
 
 ### Server launch and historical v1 tool reference
 
@@ -1145,3 +1147,7 @@ job.cancel()
 ```
 
 Cancellation is cooperative and forwards WanGP's normal abort signal to the active model. A cancelled run completes with `result.success == False` and a cancellation entry in `result.errors`.
+
+---
+
+> Applies to: Python integrations and external MCP clients. Examples identify the applicable interface and version; the connected MCP server supplies its current tool contracts.

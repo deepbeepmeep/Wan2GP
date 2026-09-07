@@ -668,6 +668,85 @@ def _resolve_mcp_media_value(session, value: Any, label: str, allow_read_file_sy
     return _resolve_mcp_media_reference(session, value, label, allow_read_file_system, file_access_policy)
 
 
+def _validate_generation_media(session, settings, model_type, path):
+    """Reject media that settings cleanup would discard; MCP v2 only."""
+    from shared.api import _declared_choice_values, _has_media_setting, apply_media_flag_defaults
+
+    supplied = {key for key in _MCP_MEDIA_SETTING_KEYS & settings.keys() if _has_media_setting(settings[key])}
+    if not supplied:
+        return
+    model_def = session.get_model_def(model_type)
+    if model_def is None:
+        raise ValueError(f"{path}: Unknown model_type: {model_type}. Nothing was submitted.")
+    normalized = dict(settings)
+    if normalized.get("model_type"):
+        apply_media_flag_defaults(normalized, model_def)
+    effective = dict(session.get_default_settings(model_type))
+    effective.update({key: value for key, value in normalized.items() if value is not None or key not in effective})
+    image_mode = int(effective.get("image_mode", 0) or 0)
+    image_output = model_def.get("image_outputs", False) or image_mode > 0
+    image_flags = str(effective.get("image_prompt_type", "") or "")
+    video_flags = str(effective.get("video_prompt_type", "") or "")
+    audio_flags = str(effective.get("audio_prompt_type", "") or "")
+    allowed_image = model_def.get("image_prompt_types_allowed", "")
+    custom_choices = model_def.get("guide_custom_choices_image") if image_mode > 0 else None
+    if custom_choices is None:
+        custom_choices = model_def.get("guide_custom_choices")
+    guide_choices = _declared_choice_values(custom_choices) + _declared_choice_values(model_def.get("guide_preprocessing")) + _declared_choice_values(model_def.get("custom_video_selection"))
+    if image_output and model_def.get("inpaint_support", False):
+        guide_choices.append(model_def.get("inpaint_video_prompt_type", "VAG"))
+    reference_choices = [value for value in _declared_choice_values(model_def.get("image_ref_choices")) + guide_choices if "I" in value]
+    audio_choices = model_def.get("audio_prompt_type_sources")
+    audio_values = _declared_choice_values(audio_choices)
+    has_audio = model_def.get("any_audio_prompt", False) and not image_output
+    has_control = any("V" in value for value in guide_choices)
+    if image_mode > 0 and custom_choices is not None:
+        selected = "".join(flag for flag in custom_choices["letters_filter"] if flag in video_flags)
+        if selected and selected not in _declared_choice_values(custom_choices):
+            video_flags = "".join(flag for flag in video_flags if flag not in custom_choices["letters_filter"])
+    control_active = "V" in video_flags
+    has_mask = any("A" in value for value in _declared_choice_values(model_def.get("mask_preprocessing")) + guide_choices) or model_def.get("inpaint_support", False)
+    mask_active = control_active and "A" in video_flags and "U" not in video_flags
+
+    def reject(key, reason):
+        raise ValueError(f"{path}.{key}: {reason} (model {model_type}). Nothing was submitted.")
+
+    checks = {
+        "image_start": ("S" in allowed_image, "S" in image_flags, "image_prompt_type containing S"),
+        "image_end": ("E" in allowed_image, "E" in image_flags and (model_def.get("end_frames_always_enabled", False) or any(flag in image_flags for flag in "SVL")), "an enabled end-image mode"),
+        "video_source": ("V" in allowed_image and not image_output, "V" in image_flags, "image_prompt_type containing V"),
+        "image_guide": (has_control and image_output, control_active, "an enabled Control Image mode"),
+        "video_guide": (has_control and not image_output, control_active, "an enabled Control Video mode"),
+        "video_guide2": (any("+" in value for value in guide_choices) and not image_output, control_active and "+" in video_flags, "an enabled two-video mode"),
+        "image_mask": (has_mask and image_output, mask_active, "an enabled Control Image mask mode"),
+        "video_mask": (has_mask and not image_output, mask_active, "an enabled Control Video mask mode"),
+        "audio_guide": (has_audio and (audio_choices is None or any("A" in value for value in audio_values)), "A" in audio_flags, "audio_prompt_type containing A"),
+        "audio_guide2": (has_audio and (any("B" in value for value in audio_values) if audio_choices is not None else not model_def.get("one_speaker_only", False) and not model_def.get("audio_only", False)), "B" in audio_flags, "audio_prompt_type containing B"),
+        "custom_guide": (model_def.get("custom_guide") is not None, True, "a declared custom guide"),
+    }
+    for key in sorted(supplied & checks.keys()):
+        supported, active, required = checks[key]
+        if not supported:
+            reject(key, "input is unsupported in this model/output mode")
+        if not active:
+            reject(key, f"input would be ignored; requires {required}")
+    if "image_refs" in supplied:
+        injection = "F" in video_flags
+        choices = [value for value in reference_choices if ("F" in value) == injection]
+        if not choices:
+            injection_choices = [value for value in reference_choices if "F" in value]
+            if injection_choices:
+                reject("image_refs", f"only frame injection is supported: video_prompt_type={injection_choices[0]!r} with frames_positions; general reference-image conditioning is unsupported")
+            reject("image_refs", "frame injection is unsupported" if injection else "reference-image conditioning is unsupported")
+        if not any(set(value) <= set(video_flags) for value in choices):
+            reject("image_refs", f"input would be ignored or uses an unsupported mode; video_prompt_type must include one of {choices}")
+    for key, method_key, capability in (("audio_source", "postprocess_audio", "needs_audio_source"), ("replace_voice_sample", "replace_voice_method", "needs_voice_sample"), ("replace_voice_sample2", "replace_voice_method", "needs_voice_sample2")):
+        if key in supplied:
+            from postprocessing.audio_processors import method_metadata
+            if image_output or not method_metadata(effective.get(method_key, ""))[capability]:
+                reject(key, f"input requires a {method_key} processor that uses it")
+
+
 def _resolve_generation_media(session, source: dict[str, Any] | list[dict[str, Any]], allow_read_file_system: bool, file_access_policy=None):
     resolved = copy.deepcopy(source)
 
@@ -1583,6 +1662,7 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
                 model_type = settings.get(model_key)
                 if not isinstance(model_type, str) or not model_type.strip():
                     raise ValueError(f"{path}.{model_key} must be a non-empty string for generation. Nothing was submitted.")
+                _validate_generation_media(session, settings, model_type.strip(), path)
         if api_version == 2 or long_text_active:
             resolved_source = deepy_long_text.resolve_prompt_references(resolved_source, file_access_policy, read_only=api_version == 2)
         record = jobs.submit(_resolve_generation_media(session, resolved_source, allow_read_file_system, file_access_policy))

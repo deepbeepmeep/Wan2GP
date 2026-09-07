@@ -1,7 +1,5 @@
 # Changelog
 
-> Applies to: Historical release notes. Dates and versions describe changes at release time; current product guides and runtime contracts describe present behavior.
-
 ### 21st of May 2026: WanGP v11.77, I can hear Voices
 It has never been easier to do voice cloning directly in video models:
 
@@ -1325,3 +1323,7 @@ Many thanks to *Tophness* who created the framework (and did a big part of the w
 
 ### February 27, 2025
 👋 Wan2.1 has been integrated into [ComfyUI](https://comfyanonymous.github.io/ComfyUI_examples/wan/). Enjoy!
+
+---
+
+> Applies to: Historical release notes. Dates and versions describe behavior at release time; current product guides and interface contracts describe supported behavior in the installed version.

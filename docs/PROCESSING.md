@@ -1,7 +1,5 @@
 # Processing
 
-> Applies to: Control media, masks, reference preparation, long-video sliding windows, duration schedules, overlaps and post-processing. UI steps describe product controls; use exposed actions for tool execution.
-
 Processing is everything WanGP does around generation to prepare inputs, control what the model produces, or refine media after it exists.
 
 Use this guide when you are deciding how to prepare a Control Video, build masks, use reference images, extend a video, or apply late postprocessing.
@@ -218,3 +216,7 @@ If masks do not behave as expected:
 - Save masks and control videos with `--save-masks`.
 - Rebuild the mask with cleaner selections or sub masks.
 - Expand or shrink the mask when the replacement subject needs different space.
+
+---
+
+> Applies to: Control media, masks, reference preparation, long-video sliding windows, duration schedules, overlaps and post-processing. Procedures describe interface controls; programmatic access uses the API and MCP interfaces.

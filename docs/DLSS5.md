@@ -1,7 +1,5 @@
 # DLSS 5 optional runtime installation
 
-> Applies to: Installing and diagnosing the optional DLSS 5 runtime on supported Windows hardware. Processor availability and generation options depend on the installed runtime.
-
 > [!CAUTION]
 > **Copyright, license, and security warning:** this optional integration executes native Windows binaries with access to your GPU and files; several required runtime components are closed source. WanGP does not audit, authenticate, endorse, or redistribute NVIDIA, ReShade, RenoDX, or other third-party runtime binaries. The WanGP, Merserk, and DLSS5-Feeder MIT licenses do **not** grant rights to copy or redistribute those third-party components. Download only from sources you trust, verify signatures and hashes where available, scan every archive before use, and run it entirely at your own risk. You are responsible for complying with every component's license.
 
@@ -138,3 +136,7 @@ Open **Config > Extensions > Spatial Upsamplers / Visual Refiners** to configure
 The Postprocessing, Late Postprocessing, and Media Flow controls expose **DLSS 5 NR Intensity** from `0.0` through `2.0`, with a default of `1.0`.
 
 Because these guides are estimated from the video, results can differ from DLSS integrated directly into a game engine.
+
+---
+
+> Applies to: Installation and diagnostics for the optional DLSS 5 runtime on supported Windows hardware. Available processors and generation options depend on the installed runtime.

@@ -6551,6 +6551,10 @@ class AssistantEngine:
         try:
             if self.debug_enabled:
                 print(f"[AssistantRuntime] Ensuring Deepy text runtime is loaded vram_mode={self.vram_mode} context_window={int(self._get_context_window_tokens())}")
+            previous_status = self.session.chat_status
+            loading = self.runtime_hooks.get_offload_manager() is None
+            if loading:
+                self._set_status("Loading Deepy...", kind="loading")
             model, _tokenizer = self.runtime_hooks.ensure_loaded()
             model._prompt_enhancer_min_model_len_hint = self._get_context_window_tokens()
             engine = getattr(model, "_prompt_enhancer_vllm_engine", None)
@@ -6567,6 +6571,8 @@ class AssistantEngine:
                 print(f"[AssistantRuntime] Deepy action maximum: thought={action_budget_tokens:,}, statement={action_budget_tokens:,}, tool={action_budget_tokens:,} tokens (context_window={context_window_tokens:,}).")
                 self._action_budget_logged = True
             self._log_runtime_info(model)
+            if loading:
+                self._set_status(previous_status["text"] if previous_status else None, kind=previous_status["kind"] if previous_status else "thinking")
             return self.runtime
         except Exception:
             if acquired_here:

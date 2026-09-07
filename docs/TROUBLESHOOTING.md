@@ -1,7 +1,5 @@
 # Troubleshooting Guide
 
-> Applies to: Diagnosing installation, GPU memory, performance, networking and generation problems. Apply the section matching the observed failure and platform; shell examples configure the WanGP process.
-
 This guide covers common issues and their solutions when using WanGP.
 
 ## Installation Issues
@@ -344,3 +342,7 @@ python wgp.py --t2v-1-3B --attention sdpa --profile 4 --teacache 0 --fp16
 # If that fails, check basic PyTorch installation
 python -c "import torch; print(torch.cuda.is_available())"
 ```
+
+---
+
+> Applies to: Diagnosing installation, GPU memory, performance, networking and generation problems. Sections identify the relevant platforms and symptoms; shell examples configure or diagnose the WanGP process.

@@ -1,7 +1,5 @@
 # Spatial Upsampler / Visual Refiner Plugin API
 
-> Applies to: Developing spatial upsampler/refiner plugins: handlers, registration and shared configuration. For using installed processors, discover the current post-processing tool actions.
-
 Spatial upsamplers and visual refiners (Lanczos, FlashVSR, PiD, H3 Face Refiner,
 Chain-of-Zoom, VAE upscalers, ...) are
 registered in `postprocessing/spatial_upsamplers.py`. Each upsampler declares itself and its
@@ -288,3 +286,7 @@ offload_registry.unregister_offloadobj("MyUpsampler", offloadobj)  # in release_
 This lets WanGP track every extension offload object and release all extension
 resources centrally: the toolbar "Unload Models" tool (and the Configuration plugin
 release button) calls `offload_registry.release_all()`.
+
+---
+
+> Applies to: Developing spatial upsampler/refiner plugins: handlers, registration and shared configuration. Installed processing options are available through WanGP's post-processing controls and API.

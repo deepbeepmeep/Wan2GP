@@ -1,7 +1,5 @@
 # Temporal Upsampler Plugin API
 
-> Applies to: Developing temporal upsampler plugins: handlers, registration and shared configuration. For using installed frame interpolation, discover the current post-processing tool actions.
-
 Temporal upsamplers (RIFE, frame interpolation plugins, ...) are registered in
 `postprocessing/temporal_upsamplers.py`. Each upsampler declares its methods and
 supported multipliers through a handler object; the registry owns dropdown state,
@@ -203,3 +201,7 @@ offload_registry.unregister_offloadobj("MyTemporalUpsampler", offloadobj)  # in 
 This lets WanGP track every extension offload object and release all extension
 resources centrally: the toolbar "Unload Models" tool and Configuration plugin
 release button call `offload_registry.release_all()`.
+
+---
+
+> Applies to: Developing temporal upsampler plugins: handlers, registration and shared configuration. Installed frame-interpolation options are available through WanGP's post-processing controls and API.

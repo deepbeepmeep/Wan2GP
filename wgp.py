@@ -92,6 +92,7 @@ from shared.utils.self_refiner import normalize_self_refiner_plan, ensure_refine
 from shared.deepy import controller as deepy_controller
 from shared.deepy import filesystem as deepy_filesystem
 from shared.deepy import cli as deepy_cli
+from shared.deepy import voice as deepy_voice
 from shared.deepy import gradio_ui as deepy_gradio_ui
 from shared.deepy import session_store as deepy_session_store
 from shared import extra_settings
@@ -2679,6 +2680,7 @@ gradio_queue_focus_patch.BACKGROUND_SCHEDULER_DEFAULT_ENABLED = bool(server_conf
 gradio_queue_focus_patch.install()
 gradio_model_switch_patch.install(verbose=ui_perf_debug)
 gradio_startup_patch.install()
+deepy_voice.install_gradio_routes(language=args.deepy_voice_language)
 
 checkpoints_paths = server_config.get("checkpoints_paths", None)
 if checkpoints_paths is None: checkpoints_paths = server_config["checkpoints_paths"] = fl.default_checkpoints_paths
@@ -4717,52 +4719,15 @@ def update_video_prompt_type(state, any_video_guide = False, any_video_mask = Fa
     settings["video_prompt_type"] = video_prompt_type 
 
 
-# Keep event_data required: on Python 3.10, `event_data: gr.EventData = None` becomes Optional[EventData],
-# and Gradio 5.29 stops injecting the gallery selection index, breaking the selected media choice.
-def select_media(state, current_gallery_tab, input_file_list, file_selected, audio_files_paths, audio_file_selected, source, current_spatial_upsampling, current_spatial_parameters, spatial_help_target_id, event_data: gr.EventData):
-    gen = get_gen_info(state)
+def format_media_info(file_name, configs):
+    """Shared selected-media details for Gradio and the standalone Deepy app."""
     model_def = None
-    late_parameter_count = len(upsampler_api.ui_parameter_definitions(upsampler_api.PARAMETER_UI_LATE_POSTPROCESSING)) * 2 + 2
-    if source=="video":
-        if current_gallery_tab != 0:
-            return [gr.update()] * (16 + late_parameter_count)
-        file_list, file_settings_list = get_file_list(state, input_file_list)
-        data = event_data._data if event_data is not None else None
-        # data_choice = None
-        # if data!=None and isinstance(data, dict):
-        #     data_choice = data.get("index",0)        
-        # print(f"source:{source}, file_selected={file_selected}, data_choice={data_choice}, gen_selected={gen.get('selected',None)} ")
-        if data!=None and isinstance(data, dict):
-            choice = data.get("index",0)        
-        else:
-            choice = gen.get("selected", file_selected)
-        choice = min(len(file_list)-1, choice) 
-        if choice < 0 and len(file_list) > 0: choice = 0
-        set_file_choice(gen, file_list, choice)
-        files, settings_list = file_list, file_settings_list
-    else:
-        if current_gallery_tab != 1:
-            return [gr.update()] * (16 + late_parameter_count)
-        audio_file_list, audio_file_settings_list = get_file_list(state, unpack_audio_list(audio_files_paths), audio_files= True)
-        if audio_file_selected >= 0:
-            choice = audio_file_selected
-        else:
-            choice = gen.get("audio_selected",-1)
-        choice = min(len(audio_file_list)-1, choice)
-        if choice < 0 and len(audio_file_list) > 0: choice = 0
-        set_file_choice(gen,  audio_file_list, choice, audio_files=True )
-        files, settings_list = audio_file_list, audio_file_settings_list
-
     is_audio = False
     is_image = False
     is_video = False
     is_deleted = False
-    if len(files) > 0:
-        if len(settings_list) <= choice:
-            pass 
-        configs = settings_list[choice]
-        file_name = files[choice]
-        values = [os.path.basename(strip_virtual_media_suffix(file_name))]
+    if file_name is not None:
+        values = [html.escape(os.path.basename(strip_virtual_media_suffix(file_name)))]
         labels = [ "File Name"]
         misc_values= []
         misc_labels = []
@@ -4852,12 +4817,7 @@ def select_media(state, current_gallery_tab, input_file_list, file_selected, aud
                 duration_seconds = configs.get("duration_seconds", None)
                 if duration_seconds is not None:
                     values += [f"{duration_seconds}s"]
-                if model_def is not None:
-                    duration_def = model_def.get("duration_slider", None)
-                    duration_label = "Max Duration"
-                    if duration_def is not None:
-                        duration_label = duration_def.get("label", duration_label)
-                        labels += [duration_label]
+                    labels += ["Duration"]
             if nb_audio_tracks > 0:
                 values += [nb_audio_tracks]
                 labels += ["Nb Audio Tracks"]
@@ -5246,6 +5206,41 @@ def select_media(state, current_gallery_tab, input_file_list, file_selected, aud
         html_content = f"{table_style}<TABLE ID=video_info WIDTH=100%>" + "".join(rows) + "</TABLE>"
     else:
         html_content =  get_default_video_info()
+    return html_content, is_image, is_video, is_audio, is_deleted
+
+
+# Keep event_data required: on Python 3.10, `event_data: gr.EventData = None` becomes Optional[EventData],
+# and Gradio 5.29 stops injecting the gallery selection index, breaking the selected media choice.
+def select_media(state, current_gallery_tab, input_file_list, file_selected, audio_files_paths, audio_file_selected, source, current_spatial_upsampling, current_spatial_parameters, spatial_help_target_id, event_data: gr.EventData):
+    gen = get_gen_info(state)
+    late_parameter_count = len(upsampler_api.ui_parameter_definitions(upsampler_api.PARAMETER_UI_LATE_POSTPROCESSING)) * 2 + 2
+    if source=="video":
+        if current_gallery_tab != 0:
+            return [gr.update()] * (16 + late_parameter_count)
+        file_list, file_settings_list = get_file_list(state, input_file_list)
+        data = event_data._data if event_data is not None else None
+        if data!=None and isinstance(data, dict):
+            choice = data.get("index",0)
+        else:
+            choice = gen.get("selected", file_selected)
+        choice = min(len(file_list)-1, choice)
+        if choice < 0 and len(file_list) > 0: choice = 0
+        set_file_choice(gen, file_list, choice)
+        files, settings_list = file_list, file_settings_list
+    else:
+        if current_gallery_tab != 1:
+            return [gr.update()] * (16 + late_parameter_count)
+        audio_file_list, audio_file_settings_list = get_file_list(state, unpack_audio_list(audio_files_paths), audio_files= True)
+        if audio_file_selected >= 0:
+            choice = audio_file_selected
+        else:
+            choice = gen.get("audio_selected",-1)
+        choice = min(len(audio_file_list)-1, choice)
+        if choice < 0 and len(audio_file_list) > 0: choice = 0
+        set_file_choice(gen,  audio_file_list, choice, audio_files=True )
+        files, settings_list = audio_file_list, audio_file_settings_list
+
+    html_content, is_image, is_video, is_audio, is_deleted = format_media_info(files[choice] if files else None, settings_list[choice] if files else None)
     visible= len(files) > 0
     visual_media = is_image or is_video
     post_temporal_update = gr.update(visible=False, **({"value": ""} if is_image else {}))
@@ -13792,7 +13787,7 @@ if __name__ == "__main__":
     if app is None:
         app = WAN2GPApplication()
 
-    if args.ask_deepy:
+    if args.ask_deepy or args.deepy_server:
         download_ffmpeg()
         if len(args.output_dir) > 0:
             if not os.path.isdir(args.output_dir):
@@ -13805,8 +13800,12 @@ if __name__ == "__main__":
             audio_save_path = args.output_dir
             print(f"Output directory: {args.output_dir}")
         server_config["notification_sound_enabled"] = 0
+        runner = deepy_cli.run_deepy_cli_session
+        if args.deepy_server:
+            from shared.deepy.server import run_server
+            runner = lambda deps: run_server(deps, args)
         sys.exit(
-            deepy_cli.run_deepy_cli_session(
+            runner(
                 deepy_cli.DeepyCliDeps(
                     controller=_deepy,
                     get_server_config=lambda: server_config,
@@ -13819,6 +13818,7 @@ if __name__ == "__main__":
                     callbacks=deepy_cli.DeepyCliCallbacks(
                         handlers={
                             "abort_generation": (lambda state, client_id: abort_generation(state, client_id, notify=False),),
+                            "format_media_info": (lambda path, settings: format_media_info(path, settings)[0],),
                         }
                     ),
                 )

@@ -1,7 +1,5 @@
 # Command Line Reference
 
-> Applies to: Launching WanGP and processing saved queues from a shell. These command-line options configure a process; they are not Deepy tool arguments or per-model generation settings.
-
 This document covers all available command line options for WanGP.
 
 ## Basic Usage
@@ -11,6 +9,36 @@ This document covers all available command line options for WanGP.
 python wgp.py
 
 ```
+
+## Deepy: Gradio, CLI or Web
+
+Choose one access mode per launch, using your saved Deepy configuration:
+
+```bash
+# Full WanGP Gradio interface: open Ask Deepy in the left dock
+python wgp.py
+
+# Interactive terminal chat, without Gradio
+python wgp.py --ask-deepy
+
+# Standalone browser app, accessible on the local network
+python wgp.py --deepy-server --listen --server-port 7860
+```
+
+The standalone Web server runs chat and generations independently of the browser. Authentication is disabled by default; add `--deepy-auth` to require the printed access key. The standalone app uses native keyboard dictation on smartphones; Whisper recording is offered on desktop and requires a secure browser context. These launch modes do not automatically attach to another running process; use saved sessions to continue work across modes.
+
+Common Deepy launch options:
+
+| Option | Purpose |
+|---|---|
+| `--config FOLDER` | Configuration folder containing `wgp_config.json` |
+| `--deepy-sessions-dir FOLDER` | Persistent-session location; see [session storage](#deepy-session-location) |
+| `--output-dir FOLDER` | Override image, video and audio output folders in CLI or Web mode |
+| `--deepy-voice-language CODE` | Spoken language for microphone transcription in Gradio or Web; automatic by default |
+| `--debug-deepy FOLDER` | Deepy debug logs |
+| `--llm-io FOLDER` | LLM input/output transcripts; see [LLM I/O Transcript](#llm-io-transcript) |
+
+See the [Deepy guide](DEEPY.md) for initial configuration and [interactive CLI commands](DEEPY.md#deepy-cli-mode). The [Web server guide](DEEPY_WEB.md#launch-options) documents network, HTTPS and authentication flags with complete launch examples.
 
 ## CLI Queue Processing (Headless Mode)
 
@@ -357,3 +385,7 @@ While not command line options, these environment variables can affect behavior:
 - `PYTORCH_CUDA_ALLOC_CONF` - CUDA memory allocation settings
 - `TRITON_CACHE_DIR` - Triton cache directory (for Sage attention) 
 - `WAN2GP_DEEPY_TELEMETRY=1` - Enable detailed Deepy decode, MTP, CUDA-memory, and GPU telemetry when verbose level 2 is active (disabled by default)
+
+---
+
+> Applies to: WanGP startup options and saved-queue processing from a shell. Command-line flags configure the application process; generation settings and API tool arguments are specified separately.

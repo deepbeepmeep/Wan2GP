@@ -1,7 +1,5 @@
 # AMD Installation Guide for Windows (TheRock)
 
-> Applies to: Installation on AMD GPUs under Windows with TheRock. These dependency and driver steps apply to that platform, not NVIDIA/CUDA installations or generation task settings.
-
 This guide covers installation for AMD GPUs running under Windows using TheRock's official PyTorch wheels.
 
 ## Supported GPUs
@@ -275,3 +273,7 @@ Known issues are tracked at: https://github.com/ROCm/TheRock/issues/808
 - [ROCm Documentation](https://rocm.docs.amd.com/)
 
 For additional troubleshooting guidance for Wan2GP, see [TROUBLESHOOTING.md](https://github.com/deepbeepmeep/Wan2GP/blob/main/docs/TROUBLESHOOTING.md).
+
+---
+
+> Applies to: Installation on Windows with AMD GPUs and TheRock. Dependency and driver instructions are specific to this platform.

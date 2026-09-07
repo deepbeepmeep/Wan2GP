@@ -1,7 +1,5 @@
 # Loras Guide
 
-> Applies to: LoRA installation, selection, multiplier syntax and presets. Accelerator examples apply to the named architecture; a selected model's current accelerator profile supplies its actual values.
-
 Loras (Low-Rank Adaptations) allow you to customize video generation models by adding specific styles, characters, or effects to your videos.
 
 ## Directory Structure
@@ -360,3 +358,7 @@ https://huggingface.co/Kijai/WanVideo_comfy/blob/main/Wan21_T2V_14B_lightx2v_cfg
 --lora-preset preset              # Load preset on startup
 --check-loras                     # Filter incompatible loras
 ``` 
+
+---
+
+> Applies to: LoRA installation, selection, multiplier syntax and presets. Accelerator examples are specific to the named architecture; each model's available profiles define the corresponding settings.

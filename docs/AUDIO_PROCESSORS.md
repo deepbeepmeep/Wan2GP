@@ -1,7 +1,5 @@
 # Audio Processor Plugin API
 
-> Applies to: Developing audio processor plugins: handler methods, registration and shared configuration. For using installed processors, discover the current post-processing tool actions.
-
 Audio processors (custom soundtrack remuxing, MMAudio, PrismAudio, SeedVC,
 background removal, ...) are registered in `postprocessing/audio_processors.py`.
 Each processor declares one or more methods and their capabilities through a
@@ -239,3 +237,7 @@ offload_registry.unregister_offloadobj("MyAudioProcessor", offloadobj)  # in rel
 This lets WanGP track every extension offload object and release all extension
 resources centrally: the toolbar "Unload Models" tool and Configuration plugin
 release button call `offload_registry.release_all()`.
+
+---
+
+> Applies to: Developing audio processor plugins: handler methods, registration and shared configuration. Installed processing options are available through WanGP's post-processing controls and API.

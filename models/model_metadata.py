@@ -132,7 +132,8 @@ def infer_media_inputs(model_def):
     guide_preprocessing = model_def.get("guide_preprocessing", None)
     guide_custom_choices = model_def.get("guide_custom_choices", None)
     custom_video_selection = model_def.get("custom_video_selection", None)
-    has_reference = _choice_values_contain(image_refs, "I") or _choice_values_contain(guide_custom_choices, "I")
+    reference_choices = [value for value in _choice_values(image_refs) + _choice_values(guide_custom_choices) if "F" not in value]
+    has_reference = any("I" in value for value in reference_choices)
     single_reference = bool(model_def.get("one_image_ref_needed", False) or model_def.get("one_image_ref_only", False))
     has_control = _choice_values_contain(guide_preprocessing, "V") or _choice_values_contain(guide_custom_choices, "V") or _choice_values_contain(custom_video_selection, "V")
     image_outputs = bool(model_def.get("image_outputs", False))
@@ -143,7 +144,7 @@ def infer_media_inputs(model_def):
             "reference": has_reference,
             "single_reference": has_reference and single_reference,
             "multiple_references": has_reference and not single_reference,
-            "background": _choice_values_contain(image_refs, "K") or _choice_values_contain(guide_custom_choices, "K"),
+            "background": any("K" in value for value in reference_choices),
             "injected_frames": _choice_values_contain(image_refs, "F") or _choice_values_contain(guide_custom_choices, "F"),
             "control": image_outputs and has_control,
             "mask": image_outputs and (_choice_values_contain(model_def.get("mask_preprocessing", None), "A") or bool(model_def.get("inpaint_support", False))),

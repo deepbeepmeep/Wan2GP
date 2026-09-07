@@ -604,7 +604,7 @@ For detailed installation instructions for different GPU generations:
 - **[Prompts Guide](docs/PROMPTS.md)** - How WanGP interprets prompts, images as prompts, enhancers, and macros
 
 ### Advanced Features
-- **[Deepy Assistant](docs/DEEPY.md)** - Enable Deepy, configure its tool presets, use selected media and frames, and run Deepy from the CLI
+- **[Deepy Assistant](docs/DEEPY.md)** - Launch Deepy in Gradio, CLI or standalone Web mode; configure tools, media references and saved sessions. See the [Web server guide](docs/DEEPY_WEB.md) for phone access, HTTPS and authentication
 - **[Remote LLMs](docs/REMOTE_LLMS.md)** - Configure Codex, Claude Code, and OpenCode providers for Deepy and Prompt Enhancer
 - **[Loras Guide](docs/LORAS.md)** - Using and managing Loras for customization
 - **[Finetunes](docs/FINETUNES.md)** - Add manually new models to WanGP

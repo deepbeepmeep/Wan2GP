@@ -54,6 +54,58 @@ ASSISTANT_OVERRIDE_AUDIO_DURATION_KEY = "deepy_audio_duration"
 ASSISTANT_OVERRIDE_SEED_KEY = "deepy_seed"
 
 
+TEMPLATE_TOOL_LAYOUT = (
+    ("gen_video", "gen_video_with_speech"),
+    ("gen_image", "edit_image"),
+    ("gen_song",),
+    ("gen_speech_from_description", "gen_speech_from_sample"),
+)
+TEMPLATE_TOOL_UI_KEY = {
+    "gen_video": "video_generator_variant",
+    "gen_video_with_speech": "video_with_speech_variant",
+    "gen_image": "image_generator_variant",
+    "gen_song": "song_variant",
+    "edit_image": "image_editor_variant",
+    "gen_speech_from_description": "speech_from_description_variant",
+    "gen_speech_from_sample": "speech_from_sample_variant",
+}
+
+PROPERTY_MODE_CHOICES = [
+    ("Use template defaults", True),
+    ("Use the values below", False),
+]
+GENERATION_PROPERTY_FIELDS = [
+    {"key": "width", "label": "Default Width", "minimum": ASSISTANT_OVERRIDE_DIMENSION_MIN, "maximum": ASSISTANT_OVERRIDE_DIMENSION_MAX, "step": ASSISTANT_OVERRIDE_DIMENSION_STEP},
+    {"key": "height", "label": "Default Height", "minimum": ASSISTANT_OVERRIDE_DIMENSION_MIN, "maximum": ASSISTANT_OVERRIDE_DIMENSION_MAX, "step": ASSISTANT_OVERRIDE_DIMENSION_STEP},
+    {"key": "num_frames", "label": "Default Number of Frames", "minimum": ASSISTANT_OVERRIDE_FRAMES_MIN, "maximum": ASSISTANT_OVERRIDE_FRAMES_MAX, "step": 1},
+    {"key": "audio_duration", "label": "Default Audio Duration (seconds)", "minimum": ASSISTANT_OVERRIDE_AUDIO_DURATION_MIN, "maximum": ASSISTANT_OVERRIDE_AUDIO_DURATION_MAX, "step": 1},
+    {"key": "seed", "label": "Seed (-1 for random)", "minimum": -1, "maximum": 999999999, "step": 1},
+]
+
+
+def get_simplified_settings_form(settings):
+    templates = [{"key": TEMPLATE_TOOL_UI_KEY[tool], "label": deepy_tool_settings.TOOL_DISPLAY_NAMES[tool], "choices": deepy_tool_settings.list_tool_variant_choices(tool, current_variant=settings[TEMPLATE_TOOL_UI_KEY[tool]])} for row in TEMPLATE_TOOL_LAYOUT for tool in row]
+    keys = ["use_template_properties", *(field["key"] for field in GENERATION_PROPERTY_FIELDS), *(field["key"] for field in templates)]
+    return {"values": {key: settings[key] for key in keys}, "property_modes": PROPERTY_MODE_CHOICES, "properties": GENERATION_PROPERTY_FIELDS, "templates": templates}
+
+
+def validate_simplified_settings(values, form):
+    if not isinstance(values, dict) or values.keys() - form["values"].keys():
+        raise ValueError("Only generation properties and template selections can be changed here.")
+    fields = {field["key"]: field for field in form["properties"]}
+    choices = {field["key"]: [value for label, value in field["choices"]] for field in form["templates"]}
+    for key, value in values.items():
+        if key == "use_template_properties":
+            if type(value) is not bool:
+                raise ValueError("The property mode must be a boolean.")
+        elif key in fields:
+            field = fields[key]
+            if type(value) is not int or not field["minimum"] <= value <= field["maximum"] or (value - field["minimum"]) % field["step"]:
+                raise ValueError(f'{field["label"]}: expected {field["minimum"]}–{field["maximum"]}, step {field["step"]}.')
+        elif not isinstance(value, str) or value not in choices[key]:
+            raise ValueError("Select an existing settings template.")
+
+
 def _clamp_int(value: Any, default: int, minimum: int, maximum: int, step: int = 1) -> int:
     try:
         number = int(round(float(value)))
@@ -249,6 +301,12 @@ def normalize_assistant_tool_ui_settings(
 
 
 __all__ = [
+    "GENERATION_PROPERTY_FIELDS",
+    "PROPERTY_MODE_CHOICES",
+    "TEMPLATE_TOOL_LAYOUT",
+    "TEMPLATE_TOOL_UI_KEY",
+    "get_simplified_settings_form",
+    "validate_simplified_settings",
     "ASSISTANT_OVERRIDE_DIMENSION_MAX",
     "ASSISTANT_OVERRIDE_DIMENSION_MIN",
     "ASSISTANT_OVERRIDE_DIMENSION_STEP",

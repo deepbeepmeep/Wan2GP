@@ -1,7 +1,5 @@
 # Prompts Guide
 
-> Applies to: Prompt writing, comments, line/paragraph splitting, window commands, image pairing, optional enhancement and macros. Follow the selected model's returned prompt guidance for its specific syntax.
-
 This page explains how WanGP interprets the main text prompt: how multiline prompts are split or preserved, how prompt lines can be paired with multiple images, how the Prompt Enhancer changes the text, and how macros generate prompt variations.
 
 ## Prompt Types In Practice
@@ -748,3 +746,7 @@ If your line-processing mode is set to add each new line as a new request, WanGP
 - If you want several separate prompt ideas queued at once, choose `Each New Line Will Add a new ... Request to the Generation Queue`.
 - If `Match images and text prompts` fails, the number of images and prompts must match cleanly.
 - If `@` or `@@` seems ignored, the Prompt Enhancer is probably disabled or not used for that run.
+
+---
+
+> Applies to: Prompt writing, comments, line and paragraph splitting, window commands, image pairing, optional enhancement and macros. Prompt style and supported syntax vary by model and are described in its prompt help.

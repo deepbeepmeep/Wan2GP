@@ -1,7 +1,5 @@
 # WanGP Settings
 
-> Applies to: Generation setting meanings: image_mode, image_start/image_end, image_refs, video duration, audio inputs, flags, sampling, LoRAs and sliding windows. The API metadata appendix describes internal model records.
-
 WanGP generation settings are JSON-serializable values consumed by `wgp.py` and by the Python API in `shared/api.py`.
 
 Topics: [model selection](#model-selection), [prompts](#prompt-settings), [output dimensions and duration](#output-shape), [sampling](#core-sampling), [guidance](#guidance), [image and video inputs](#image-and-video-inputs), [audio inputs](#audio-inputs), [acceleration and caching](#acceleration-and-cache), [audio post-processing](#post-processing-audio), [advanced sampling](#advanced-sampling), [sliding windows](#sliding-window), [LoRAs](#loras), and [flag settings](#flag-settings).
@@ -82,7 +80,7 @@ The baseline schema lives in `models/_settings.json`. Model defaults in `default
 | `image_prompt_type` | string flags | Start/end/source continuation mode. See flag details below. |
 | `image_start` | image or list | Start image(s) for image-to-video or image-conditioned generation. MCP accepts Gallery media IDs or authorized paths, including returned output paths. |
 | `image_end` | image or list | End image(s) when the model supports end frames. MCP accepts Gallery media IDs or authorized paths; sliding-window anchors are an ordered list, one per window. |
-| `image_refs` | image or list | Reference images; MCP accepts a list of Gallery media IDs or authorized paths. Use the complete model/template `video_prompt_type` reference choice, such as `KI`; `K` describes a model-specific reference role. Positioned frames also use `frames_positions`. |
+| `image_refs` | image or list | Reference images or frames to inject, according to the model's declared mode; MCP accepts a list of Gallery media IDs or authorized paths. Use the complete model/template `video_prompt_type` choice, such as `KI` for references or `KFI` with `frames_positions` for frame injection. These are separate capabilities: H3 FL2VA supports frame injection, while H3 REF2VA supports general references. |
 | `image_refs_relative_size` | integer | Relative internal size for reference images on models exposing `any_image_refs_relative_size`. |
 | `remove_background_images_ref` | integer | Background-removal mode for reference images. Usually `0` off, `1` auto/on, with older values migrated by `fix_settings`. |
 | `frames_positions` | string | Positions for `F` positioned-frame references. Syntax is model-specific but usually frame indexes or ranges. |
@@ -357,3 +355,7 @@ Inference rules:
 - `capabilities` provides common text/image/video/audio workflow booleans derived from the model definition.
 - `setting_values` exposes normalized allowed values for agent-facing settings, especially letter-flag settings such as `image_prompt_type`, `video_prompt_type`, `audio_prompt_type`, `prompt_enhancer`, and model-specific selectors such as `model_mode`.
 - For models whose outputs include video, compact model-schema metadata exposes `frames_maximum` as the suggested maximum for one generation window, including the first window of models without sliding-window support. WanGP first calls the model handler's `update_default_settings(...)` with an empty dictionary and uses its `sliding_window_size`; if absent, it uses `model_def["sliding_window_defaults"]["window_default"]`; if that is also absent, it selects the model-valid frame count closest to 97 using `frames_minimum`, `frames_steps`, and `frames_offset`. It is not the total-frame UI limit. Model definitions may use `frames_selection_maximum` to cap the total `video_length` selector. Non-video model schemas omit `frames_maximum`.
+
+---
+
+> Applies to: Generation setting meanings: image_mode, image_start/image_end, image_refs, video duration, audio inputs, flags, sampling, LoRAs and sliding windows. The API metadata appendix describes model declarations rather than generation parameters.

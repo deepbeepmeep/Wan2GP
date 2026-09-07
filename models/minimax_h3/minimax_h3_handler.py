@@ -373,7 +373,7 @@ class family_handler:
                 "text_encoder_URLs": [], "text_encoder_folder": None, "system_configs": {},
                 "prompt_enhancer_def": {"selection": [], "labels": {}, "default": ""},
                 "image_outputs": False, "sliding_window": True, "video_continuation": False,
-                "frames_selection_maximum": 124, "sliding_window_size_locked": True,
+                "sliding_window_size_locked": True,
                 "sliding_window_defaults": {**result["sliding_window_defaults"], "window_max": 124, "window_default": 124, "overlap_default": 18},
                 "extract_guide_from_window_start": True, "control_video_trim_disabled": False, "control_video_trim": False,
                 "image_prompt_types_allowed": "T", "end_frames_always_enabled": False, "image_end_frame_position": False,

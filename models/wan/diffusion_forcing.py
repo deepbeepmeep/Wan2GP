@@ -21,6 +21,7 @@ from shared.utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
 from shared.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from shared.utils.loras_mutipliers import update_loras_slists
 from shared.utils import files_locator as fl
+from shared.utils.text_encoder_cache import TextEncoderCache
 class DTT2V:
 
 
@@ -56,6 +57,7 @@ class DTT2V:
             device=torch.device('cpu'),
             checkpoint_path=text_encoder_filename,
             tokenizer_path=tokenizer_path)
+        self.text_encoder_cache = TextEncoderCache()
         self.model_def = model_def
         self.image_outputs = model_def.get("image_outputs", False)
 
@@ -254,12 +256,13 @@ class DTT2V:
         if self._interrupt:
             return None
         text_len = self.text_len
-        prompt_embeds = self.text_encoder([input_prompt], self.device)[0]
+        encode_fn = lambda prompts: self.text_encoder(prompts, self.device)
+        prompt_embeds = self.text_encoder_cache.encode(encode_fn, [input_prompt], device=self.device)[0]
         prompt_embeds  = prompt_embeds.to(self.dtype).to(self.device)
         prompt_embeds = torch.cat([prompt_embeds, prompt_embeds.new_zeros(text_len -prompt_embeds.size(0), prompt_embeds.size(1)) ]).unsqueeze(0) 
 
         if self.do_classifier_free_guidance:
-            negative_prompt_embeds = self.text_encoder([n_prompt], self.device)[0]
+            negative_prompt_embeds = self.text_encoder_cache.encode(encode_fn, [n_prompt], device=self.device)[0]
             negative_prompt_embeds  = negative_prompt_embeds.to(self.dtype).to(self.device)
             negative_prompt_embeds = torch.cat([negative_prompt_embeds, negative_prompt_embeds.new_zeros(text_len -negative_prompt_embeds.size(0), negative_prompt_embeds.size(1)) ]).unsqueeze(0) 
 

@@ -10,6 +10,7 @@ from diffusers import FlowMatchEulerDiscreteScheduler
 from .ovi.utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                get_sampling_sigmas, retrieve_timesteps)
 from shared.utils import files_locator as fl
+from shared.utils.text_encoder_cache import TextEncoderCache
 from .modules.vae2_2 import Wan2_2_VAE
 from .modules.t5 import T5EncoderModel
 from .ovi.modules.mmaudio.features_utils import FeaturesUtils
@@ -105,6 +106,7 @@ class OviFusionEngine:
             device=torch.device('cpu'),
             checkpoint_path=text_encoder_filename,
             tokenizer_path=tokenizer_path)
+        self.text_encoder_cache = TextEncoderCache()
         
 
 
@@ -194,7 +196,13 @@ class OviFusionEngine:
         if callback != None:
             callback(-1, None, True)
 
-        text_embeddings = self.text_encoder([input_prompt, n_prompt, audio_negative_prompt], device= self.device)
+        encode_fn = lambda prompts: self.text_encoder(prompts, self.device)
+        text_embeddings = self.text_encoder_cache.encode(
+            encode_fn,
+            [input_prompt, n_prompt, audio_negative_prompt],
+            device=self.device,
+            parallel=True,
+        )
         text_embeddings = [emb.to(self.target_dtype).to(self.device) for emb in text_embeddings]
         # Split embeddings
         text_embeddings_audio_pos = text_embeddings[0]

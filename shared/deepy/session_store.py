@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from shared.utils.gallery_media import disambiguate_gallery_media_ids, gallery_media_ids
+
 
 SESSION_SCHEMA_VERSION = 1
 CONTEXT_SCHEMA_VERSION = 1
@@ -174,7 +176,7 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        temporary.write_text(json.dumps(_json_safe(value), ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.write_text(json.dumps(_json_safe(value), ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         os.replace(temporary, path)
     finally:
         if temporary.exists():
@@ -727,6 +729,25 @@ def _prepare_media(directory: Path, records: list[dict[str, Any]], mode: str) ->
     return prepared
 
 
+def _preserve_gallery_media_ids(context: dict[str, Any], *, rebind_paths: bool = False) -> None:
+    referenced_ids = list(dict.fromkeys(re.findall(r"(?:visual|audio):[a-f0-9]{12}", json.dumps(context.get("chat", {})), re.IGNORECASE)))
+    items = []
+    for record in context.get("media", []):
+        if not isinstance(record, dict) or not record.get("path"):
+            continue
+        settings = record["settings"] = dict(record.get("settings") or {})
+        gallery = "audio" if record.get("media_type") == "audio" else "visual"
+        ids = gallery_media_ids(record["path"], gallery)
+        if rebind_paths:
+            settings["gallery_media_ids"] = list(dict.fromkeys([*settings["gallery_media_ids"], *ids]))
+        elif not settings.get("gallery_media_ids"):
+            # Legacy contexts may have saved the absolute path after issuing an ID for its relative spelling.
+            settings["gallery_media_ids"] = list(dict.fromkeys([*(media_id.lower() for media_id in referenced_ids if media_id.lower() in ids), *ids]))
+        items.append((record["path"], gallery, settings))
+    for (_path, _gallery, settings), ids in zip(items, disambiguate_gallery_media_ids(items)):
+        settings["gallery_media_ids"] = ids
+
+
 def _write_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     directory = Path(snapshot["directory"])
     if not directory.is_dir():
@@ -743,6 +764,7 @@ def _write_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     mode = normalize_gallery_media_mode(metadata["gallery_media_mode"])
     media = _prepare_media(directory, list(context.get("media", []) or []), mode)
     context["media"] = media
+    _preserve_gallery_media_ids(context)
     context["workspace"]["media"] = [record for record in media if record.get("source") == "workspace"]
     updated_at = _utc_now()
     manifest = {
@@ -922,6 +944,7 @@ def load_session(session, storage_id: str, deepy_type: str) -> dict[str, Any]:
     stored_type = str(manifest.get("deepy_type", "")).strip().lower()
     if requested_type != stored_type:
         raise SessionStoreError(f"This is a Deepy {stored_type.title()} session and cannot be opened in Deepy {requested_type.title()}.")
+    _preserve_gallery_media_ids(context)
     replacements = {}
     media_records = list(context.get("media", []) or [])
     missing_media = []
@@ -950,6 +973,7 @@ def load_session(session, storage_id: str, deepy_type: str) -> dict[str, Any]:
         elif original:
             missing_media.append(original)
     context = _replace_paths(context, replacements)
+    _preserve_gallery_media_ids(context, rebind_paths=True)
     replay_commands, replay_sequence = _session_replay_commands(directory, context)
     replay_commands = _replace_paths(replay_commands, replacements)
     chat = context.get("chat", {})
@@ -1011,25 +1035,29 @@ def load_session(session, storage_id: str, deepy_type: str) -> dict[str, Any]:
 def inject_session_media(session, gen: dict[str, Any]) -> dict[str, Any]:
     from shared.deepy import media_registry
 
-    media_registry.sync_tool_call_gallery_media(session, gen)
     visual_paths = gen.setdefault("file_list", [])
     visual_settings = gen.setdefault("file_settings_list", [])
     audio_paths = gen.setdefault("audio_file_list", [])
     audio_settings = gen.setdefault("audio_file_settings_list", [])
-    canonical_paths = {os.path.normcase(str(Path(str(path)).resolve())) for path in [*visual_paths, *audio_paths] if str(path or "").strip()}
-    client_keys = set()
-    fingerprints = set()
-    for path, settings in [*zip(visual_paths, visual_settings), *zip(audio_paths, audio_settings)]:
-        settings = settings if isinstance(settings, dict) else {}
-        client_id = str(settings.get("client_id", "") or "")
-        if client_id:
-            client_keys.add((_detect_media_type(Path(str(path))), client_id))
-        fingerprint = str(settings.get("deepy_media_fingerprint", "") or "")
-        existing_path = Path(str(path or ""))
-        if not fingerprint and existing_path.is_file():
-            fingerprint = _fingerprint(existing_path)
-        if fingerprint:
-            fingerprints.add(fingerprint)
+    canonical_paths = {}
+    client_keys = {}
+    fingerprints = {}
+    for paths, settings_list in ((visual_paths, visual_settings), (audio_paths, audio_settings)):
+        for index, path in enumerate(paths):
+            settings = settings_list[index]
+            if settings is None:
+                settings = settings_list[index] = {}
+            entry = (str(path), settings)
+            canonical_paths[os.path.normcase(str(Path(str(path)).resolve()))] = entry
+            client_id = str(settings.get("client_id", "") or "")
+            if client_id:
+                client_keys[(_detect_media_type(Path(str(path))), client_id)] = entry
+            fingerprint = str(settings.get("deepy_media_fingerprint", "") or "")
+            existing_path = Path(str(path or ""))
+            if not fingerprint and existing_path.is_file():
+                fingerprint = _fingerprint(existing_path)
+            if fingerprint:
+                fingerprints[fingerprint] = entry
     injected = 0
     missing = []
     for record in session.media_registry:
@@ -1043,10 +1071,18 @@ def inject_session_media(session, gen: dict[str, Any]) -> dict[str, Any]:
         canonical = os.path.normcase(str(path.resolve()))
         client_id = str(record.get("client_id", "") or "")
         fingerprint = str(record.get("fingerprint", "") or "")
-        if canonical in canonical_paths or client_id and (media_type, client_id) in client_keys or fingerprint and fingerprint in fingerprints:
-            continue
         settings = dict(record.get("settings", {}) or {})
         settings.update({"deepy_session_id": session.storage_session_id, "deepy_media_id": record.get("media_id", ""), "deepy_media_fingerprint": fingerprint})
+        gallery = "audio" if media_type == "audio" else "visual"
+        settings["gallery_media_ids"] = gallery_media_ids(str(path), gallery, settings)
+        existing = canonical_paths.get(canonical) or client_keys.get((media_type, client_id)) or fingerprints.get(fingerprint)
+        if existing is not None:
+            existing_path, existing_settings = existing
+            ids = gallery_media_ids(existing_path, gallery, existing_settings)
+            existing_settings["gallery_media_ids"] = list(dict.fromkeys([*settings["gallery_media_ids"], *ids]))
+            record.update(path=existing_path, path_key=os.path.normcase(str(Path(existing_path).resolve())))
+            record["settings"] = {**settings, "gallery_media_ids": existing_settings["gallery_media_ids"]}
+            continue
         if client_id:
             settings["client_id"] = client_id
         if media_type == "audio":
@@ -1055,12 +1091,14 @@ def inject_session_media(session, gen: dict[str, Any]) -> dict[str, Any]:
         else:
             visual_paths.append(str(path))
             visual_settings.append(settings)
-        canonical_paths.add(canonical)
+        entry = (str(path), settings)
+        canonical_paths[canonical] = entry
         if client_id:
-            client_keys.add((media_type, client_id))
+            client_keys[(media_type, client_id)] = entry
         if fingerprint:
-            fingerprints.add(fingerprint)
+            fingerprints[fingerprint] = entry
         injected += 1
+    media_registry.sync_tool_call_gallery_media(session, gen)
     session.seen_video_gallery_paths = [str(path) for path in visual_paths]
     session.seen_audio_gallery_paths = [str(path) for path in audio_paths]
     return {"injected": injected, "missing": missing}
@@ -1099,6 +1137,7 @@ def duplicate_stored_session(storage_id: str, active_session=None) -> dict[str, 
     directory = _validated_session_dir(storage_id)
     manifest = validate_session(storage_id, str(_read_json(directory / "session.json").get("deepy_type", "")), active_session=active_session)
     context = _read_json(directory / "context.json")
+    _preserve_gallery_media_ids(context)
     root = sessions_root()
     new_id = _new_storage_id(root)
     destination = root / new_id
@@ -1118,6 +1157,7 @@ def duplicate_stored_session(storage_id: str, active_session=None) -> dict[str, 
     replacements: dict[str, str] = {}
     _register_path_replacement(replacements, str(directory), str(destination))
     context = _replace_paths(context, replacements)
+    _preserve_gallery_media_ids(context, rebind_paths=True)
     try:
         shutil.copytree(directory, destination, ignore=shutil.ignore_patterns(".session.lock"))
         journal = destination / UI_JOURNAL_FILENAME

@@ -4,7 +4,6 @@ import argparse
 import contextlib
 import copy
 import dataclasses
-import hashlib
 import io
 import mimetypes
 import sys
@@ -13,6 +12,8 @@ import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+
+from shared.utils.gallery_media import disambiguate_gallery_media_ids, gallery_media_ids
 
 if TYPE_CHECKING:
     from shared.api import SessionJob
@@ -269,16 +270,16 @@ def _gallery_records(session, media_type: str = "all", limit: int = 50) -> list[
             resolved_path = str(path or "").strip()
             item_type = _gallery_media_type(resolved_path, gallery)
             settings = settings_list[index] if index < len(settings_list) and isinstance(settings_list[index], dict) else {}
-            gallery_key = hashlib.sha1(resolved_path.replace("\\", "/").casefold().encode("utf-8")).hexdigest()[:12]
+            ids = gallery_media_ids(resolved_path, gallery, settings, root=session._root)
             record = {
-                "media_id": f"{gallery}:{gallery_key}",
+                "media_id": ids[0],
                 "gallery": gallery,
                 "index": index,
                 "path": resolved_path,
                 "media_type": item_type,
                 "selected": index == selected_index,
                 "in_gallery": True,
-                "settings": _json_safe(settings),
+                "settings": {**_json_safe(settings), "gallery_media_ids": ids},
             }
             if record["selected"] and gallery == "visual" and item_type == "video":
                 record["current_time_seconds"] = gen.get("selected_video_time")
@@ -291,8 +292,14 @@ def _gallery_records(session, media_type: str = "all", limit: int = 50) -> list[
                 continue
             record.update({"index": None, "selected": False, "in_gallery": False})
             record.pop("current_time_seconds", None)
-        for record in current_records:
-            history.pop(record["media_id"], None)
+        combined_records = [*history.values(), *current_records]
+        id_lists = disambiguate_gallery_media_ids([(record["path"], record["gallery"], record["settings"]) for record in combined_records], root=session._root)
+        history.clear()
+        for record, ids in zip(combined_records, id_lists):
+            record["media_id"] = ids[0]
+            record["settings"]["gallery_media_ids"] = ids
+            for media_id in ids:
+                history.pop(media_id, None)
             history[record["media_id"]] = copy.deepcopy(record)
         records = [copy.deepcopy(record) for record in history.values() if requested_type == "all" or record["media_type"] == requested_type]
     return records[-limit:]
@@ -377,7 +384,7 @@ def _gallery_item(session, media_id: str) -> dict[str, Any]:
     lookup = str(media_id or "").strip().lower()
     _gallery_records(session, limit=500)
     with _GALLERY_LOCK:
-        record = _gallery_history(session).get(lookup)
+        record = next((record for record in _gallery_history(session).values() if lookup in record["settings"]["gallery_media_ids"]), None)
         if record is not None and _gallery_path_exists(session, record.get("path", "")):
             return copy.deepcopy(record)
     raise KeyError(f"Unknown WanGP media_id: {media_id}")

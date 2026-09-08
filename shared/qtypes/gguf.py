@@ -41,6 +41,7 @@ _GGUF_LABEL_CACHE = {}
 _GGUF_METADATA_CACHE = {}
 _GGUF_INDEX_CACHE = {}
 _GGUF_RUNTIME_LOGGED = set()
+_GGUF_DEQUANTIZE_BLOCK_CHUNK = 65536  # At most 16M decoded values per standard K/IQ chunk.
 _GGUF_CUDA_KERNELS_ENV = "WGP_GGUF_LLAMACPP_CUDA"
 _GGUF_CUDA_KERNELS_ENABLED_CACHE = None
 _GGUF_CUDA_MODULE = None
@@ -876,7 +877,7 @@ def _may_try_llamacpp_cuda_linear(weight_tensor, input_tensor):
     qtype_name = _gguf_qtype_name(getattr(weight_tensor, "_tensor_type", None))
     try:
         gguf_llamacpp_cuda = _gguf_cuda_module()
-        return gguf_llamacpp_cuda is not None and gguf_llamacpp_cuda.may_support_linear_qtype_name(qtype_name)
+        return callable(getattr(gguf_llamacpp_cuda, "linear", None)) and gguf_llamacpp_cuda.may_support_linear_qtype_name(qtype_name)
     except Exception:
         return False
 
@@ -892,7 +893,7 @@ def _may_try_llamacpp_cuda_embedding(weight_tensor, index_tensor):
     qtype_name = _gguf_qtype_name(getattr(weight_tensor, "_tensor_type", None))
     try:
         gguf_llamacpp_cuda = _gguf_cuda_module()
-        return gguf_llamacpp_cuda is not None and gguf_llamacpp_cuda.may_support_embedding_qtype_name(qtype_name)
+        return callable(getattr(gguf_llamacpp_cuda, "embedding", None)) and gguf_llamacpp_cuda.may_support_embedding_qtype_name(qtype_name)
     except Exception:
         return False
 
@@ -982,14 +983,20 @@ def _gguf_dequantize_tensor(raw, qtype_obj, oshape, dtype=None):
     if qtype_obj not in _DEQUANTIZE_FUNCTIONS:
         out = gguf.quants.dequantize(raw.cpu().numpy(), qtype_obj)
         out = torch.from_numpy(out)
-        return out.to(dtype) if dtype is not None else out
+        return out.to(device=raw.device, dtype=dtype).reshape(oshape)
     block_size, type_size = gguf.GGML_QUANT_SIZES[qtype_obj]
     dequantize_blocks = _DEQUANTIZE_FUNCTIONS[qtype_obj]
     rows = raw.reshape((-1, raw.shape[-1])).view(torch.uint8)
     n_blocks = rows.numel() // type_size
     blocks = rows.reshape((n_blocks, type_size))
-    blocks = dequantize_blocks(blocks, block_size, type_size, dtype)
-    return blocks.reshape(oshape)
+    if n_blocks > _GGUF_DEQUANTIZE_BLOCK_CHUNK:
+        output = torch.empty((n_blocks, block_size), device=raw.device, dtype=dtype or torch.float32)
+        for start in range(0, n_blocks, _GGUF_DEQUANTIZE_BLOCK_CHUNK):
+            end = min(start + _GGUF_DEQUANTIZE_BLOCK_CHUNK, n_blocks)
+            output[start:end].copy_(dequantize_blocks(blocks[start:end], block_size, type_size, torch.float32))
+        return output.reshape(oshape)
+    blocks = dequantize_blocks(blocks, block_size, type_size, torch.float32)
+    return blocks.reshape(oshape).to(dtype)
 
 
 def _maybe_cast_bias(bias, target_dtype):
@@ -1181,7 +1188,112 @@ def _dequantize_blocks_Q2_K(blocks, block_size, type_size, dtype=None):
     return qs.reshape((n_blocks, -1))
 
 
+def _iq_grid(quant, blocks):
+    quant.init_grid()
+    # gguf owns the immutable CPU table for the lifetime of captured H2D copies.
+    return torch.from_numpy(quant.grid).to(device=blocks.device, non_blocking=True).reshape(quant.grid_shape)
+
+
+def _iq_signs(indices):
+    bits = (indices.unsqueeze(-1) >> torch.arange(8, device=indices.device)) & 1
+    bits[..., 7] = bits[..., :7].sum(-1) & 1
+    return 1 - 2 * bits.float()
+
+
+def _dequantize_blocks_IQ2_XXS(blocks, block_size, type_size, dtype=None):
+    n = blocks.shape[0]
+    d, qs = _split_block_dims(blocks, 2)
+    words = _to_uint32(qs.reshape(-1, 4)).reshape(n, 8, 2)
+    db = (d.view(torch.float16).float() * (.5 + ((words[..., 1] >> 28) & 15).float()) * .25).reshape(n, 8, 1, 1)
+    signs = _iq_signs((words[..., 1, None] >> (torch.arange(4, device=blocks.device) * 7)) & 127)
+    indices = qs.reshape(n, 8, 8)[..., :4].long()
+    values = _iq_grid(gguf.quants.IQ2_XXS, blocks).index_select(0, indices.reshape(-1)).reshape(n, 8, 4, 8)
+    return (db * values * signs).reshape(n, block_size).to(dtype)
+
+
+def _dequantize_blocks_IQ2_XS(blocks, block_size, type_size, dtype=None):
+    n = blocks.shape[0]
+    d, qs, scales = _split_block_dims(blocks, 2, 64)
+    words = _to_uint16(qs.reshape(-1, 2)).reshape(n, 32)
+    scales = ((scales.unsqueeze(-1) >> (torch.arange(2, device=blocks.device) * 4)) & 15).reshape(n, 16)
+    db = (d.view(torch.float16).float() * (.5 + scales.float()) * .25).reshape(n, 16, 1, 1)
+    signs = _iq_signs(words >> 9).reshape(n, 16, 2, 8)
+    values = _iq_grid(gguf.quants.IQ2_XS, blocks).index_select(0, (words & 511).reshape(-1).long()).reshape(n, 16, 2, 8)
+    return (db * values * signs).reshape(n, block_size).to(dtype)
+
+
+def _dequantize_blocks_IQ2_S(blocks, block_size, type_size, dtype=None):
+    n = blocks.shape[0]
+    d, qs, signs, qh, scales = _split_block_dims(blocks, 2, 32, 32, 8)
+    shifts = torch.arange(8, device=blocks.device, dtype=torch.uint8)
+    scales = (scales.unsqueeze(-1) >> (shifts[:2] * 4) & 15).reshape(n, 16)
+    db = (d.view(torch.float16).float() * (scales.float() + .5) * .25).reshape(n, 16, 1, 1)
+    signs = (1 - 2 * ((signs.unsqueeze(-1) >> shifts) & 1).float()).reshape(n, 16, 2, 8)
+    qh = ((qh.unsqueeze(-1) >> (shifts[:4] * 2)) & 3).reshape(n, 32).int()
+    indices = qs.int() | (qh << 8)
+    values = _iq_grid(gguf.quants.IQ2_S, blocks).index_select(0, indices.reshape(-1).long()).reshape(n, 16, 2, 8)
+    return (db * values * signs).reshape(n, block_size).to(dtype)
+
+
+def _dequantize_blocks_IQ3_XXS(blocks, block_size, type_size, dtype=None):
+    n = blocks.shape[0]
+    d, qs, scales = _split_block_dims(blocks, 2, 64)
+    words = _to_uint32(scales.reshape(-1, 4)).reshape(n, 8)
+    db = (d.view(torch.float16).float() * (.5 + ((words >> 28) & 15).float()) * .5).reshape(n, 8, 1, 1)
+    signs = _iq_signs((words.unsqueeze(-1) >> (torch.arange(4, device=blocks.device) * 7)) & 127)
+    values = _iq_grid(gguf.quants.IQ3_XXS, blocks).index_select(0, qs.reshape(-1).long()).reshape(n, 8, 4, 8)
+    return (db * values * signs).reshape(n, block_size).to(dtype)
+
+
+def _dequantize_blocks_IQ3_S(blocks, block_size, type_size, dtype=None):
+    n = blocks.shape[0]
+    d, qs, qh, signs, scales = _split_block_dims(blocks, 2, 64, 8, 32)
+    shifts = torch.arange(8, device=blocks.device, dtype=torch.uint8)
+    scales = (scales.unsqueeze(-1) >> (shifts[:2] * 4) & 15).reshape(n, 8)
+    db = (d.view(torch.float16).float() * (1 + 2 * scales)).reshape(n, 8, 1, 1)
+    signs = (1 - 2 * ((signs.unsqueeze(-1) >> shifts) & 1).float()).reshape(n, 8, 4, 8)
+    qh = ((qh.unsqueeze(-1) >> shifts) & 1).reshape(n, 64).int()
+    indices = qs.int() | (qh << 8)
+    values = _iq_grid(gguf.quants.IQ3_S, blocks).index_select(0, indices.reshape(-1).long()).reshape(n, 8, 4, 8)
+    return (db * values * signs).reshape(n, block_size).to(dtype)
+
+
+def _dequantize_blocks_IQ1_S(blocks, block_size, type_size, dtype=None):
+    n = blocks.shape[0]
+    d, qs, qh = _split_block_dims(blocks, 2, 32)
+    words = _to_uint16(qh.reshape(-1, 2)).reshape(n, 8)
+    dl = (d.view(torch.float16).float() * (2 * ((words >> 12) & 7) + 1)).reshape(n, 8, 1, 1)
+    delta = torch.where((words & 32768) == 0, .125, -.125).reshape(n, 8, 1, 1)
+    high = ((words.unsqueeze(-1) >> (torch.arange(4, device=blocks.device) * 3)) & 7).reshape(n, 32)
+    indices = qs.int() | (high << 8)
+    values = _iq_grid(gguf.quants.IQ1_S, blocks).index_select(0, indices.reshape(-1).long()).reshape(n, 8, 4, 8)
+    return (dl * (values + delta)).reshape(n, block_size).to(dtype)
+
+
+def _iq4_values(indices):
+    values = _IQ4_VALUES.to(device=indices.device, non_blocking=True)
+    return values[indices.long()]
+
+
+def _dequantize_blocks_IQ4_NL(blocks, block_size, type_size, dtype=None):
+    n = blocks.shape[0]
+    d, qs = _split_block_dims(blocks, 2)
+    qs = (qs.reshape(n, 1, 16) >> (torch.arange(2, device=blocks.device) * 4).reshape(1, 2, 1)) & 15
+    return (d.view(torch.float16).float() * _iq4_values(qs).reshape(n, 32)).to(dtype)
+
+
+def _dequantize_blocks_IQ4_XS(blocks, block_size, type_size, dtype=None):
+    n = blocks.shape[0]
+    d, scales_h, scales_l, qs = _split_block_dims(blocks, 2, 2, 4)
+    low = ((scales_l.unsqueeze(-1) >> (torch.arange(2, device=blocks.device) * 4)) & 15).reshape(n, 8)
+    high = (_to_uint16(scales_h) >> (torch.arange(8, device=blocks.device) * 2)) & 3
+    dl = (d.view(torch.float16).float() * ((low | (high << 4)) - 32)).reshape(n, 8, 1)
+    qs = (qs.reshape(n, 8, 1, 16) >> (torch.arange(2, device=blocks.device) * 4).reshape(1, 1, 2, 1)) & 15
+    return (dl * _iq4_values(qs).reshape(n, 8, 32)).reshape(n, block_size).to(dtype)
+
+
 if gguf is not None:
+    _IQ4_VALUES = torch.tensor(gguf.quants.IQ4_NL.kvalues, device="cpu", dtype=torch.float32)
     _DEQUANTIZE_FUNCTIONS = {
         gguf.GGMLQuantizationType.Q8_0: _dequantize_blocks_Q8_0,
         gguf.GGMLQuantizationType.Q5_1: _dequantize_blocks_Q5_1,
@@ -1193,6 +1305,14 @@ if gguf is not None:
         gguf.GGMLQuantizationType.Q4_K: _dequantize_blocks_Q4_K,
         gguf.GGMLQuantizationType.Q3_K: _dequantize_blocks_Q3_K,
         gguf.GGMLQuantizationType.Q2_K: _dequantize_blocks_Q2_K,
+        gguf.GGMLQuantizationType.IQ2_S: _dequantize_blocks_IQ2_S,
+        gguf.GGMLQuantizationType.IQ3_S: _dequantize_blocks_IQ3_S,
+        gguf.GGMLQuantizationType.IQ1_S: _dequantize_blocks_IQ1_S,
+        gguf.GGMLQuantizationType.IQ2_XS: _dequantize_blocks_IQ2_XS,
+        gguf.GGMLQuantizationType.IQ2_XXS: _dequantize_blocks_IQ2_XXS,
+        gguf.GGMLQuantizationType.IQ3_XXS: _dequantize_blocks_IQ3_XXS,
+        gguf.GGMLQuantizationType.IQ4_NL: _dequantize_blocks_IQ4_NL,
+        gguf.GGMLQuantizationType.IQ4_XS: _dequantize_blocks_IQ4_XS,
     }
 else:
     _DEQUANTIZE_FUNCTIONS = {}
@@ -1277,6 +1397,7 @@ class GGUFWeightTensor(QTensor):
             return None
 
         num_embeddings, embedding_dim = self._tensor_shape
+        _gguf_log_once(f"torch_embedding_{self._tensor_type.name}", f"[GGUF] embedding backend=PyTorch packed-row dequantization for {self._tensor_type.name}.")
         raw = self._data.reshape(num_embeddings, -1)
         flat_input = input.reshape(-1)
         if flat_input.numel() == 0:
@@ -1284,28 +1405,22 @@ class GGUFWeightTensor(QTensor):
 
         # GGUF blocks are row-aligned, so gather each requested packed row before dequantizing it.
         source_input = flat_input if flat_input.device == raw.device else flat_input.to(raw.device)
-        unique_input, inverse = torch.unique(source_input, sorted=False, return_inverse=True)
-        unique_count = unique_input.shape[0]
-        raw_rows = raw.index_select(0, unique_input)
-        del unique_input, source_input
+        raw_rows = raw.index_select(0, source_input)
+        del source_input
 
         if raw_rows.device != input.device:
             raw_rows = raw_rows.to(input.device)
         dense_rows = _gguf_dequantize_tensor(
             raw_rows,
             self._tensor_type,
-            (unique_count, embedding_dim),
+            (flat_input.numel(), embedding_dim),
             dtype=dtype,
         )
         del raw_rows
         if dense_rows.device != input.device:
             dense_rows = dense_rows.to(input.device)
 
-        if inverse.device != input.device:
-            inverse = inverse.to(input.device)
-        output = dense_rows.index_select(0, inverse)
-        del dense_rows, inverse
-        return output.reshape(*input.shape, embedding_dim)
+        return dense_rows.reshape(*input.shape, embedding_dim)
 
     def linear(self, input, bias=None):
         if torch.is_tensor(input):
@@ -1318,6 +1433,7 @@ class GGUFWeightTensor(QTensor):
             fast_out = _try_llamacpp_cuda_linear(self, input, bias, target_dtype)
             if fast_out is not None:
                 return fast_out
+        _gguf_log_once(f"torch_linear_{self._tensor_type.name}", f"[GGUF] linear backend=PyTorch dense weight materialization for {self._tensor_type.name}.")
         weight = self.dequantize(dtype=target_dtype, device=target_device)
         if torch.is_tensor(input) and input.dtype != weight.dtype:
             input = input.to(weight.dtype)
@@ -1471,7 +1587,7 @@ class GGUFFirstRowsLinear(torch.nn.Module):
         source_raw = source_weight._data
         if self._cached_raw is not source_raw:
             row_bytes = source_raw.numel() // full_rows
-            raw = source_raw[:self.row_count * row_bytes]
+            raw = source_raw.reshape(-1)[:self.row_count * row_bytes]
             weight = GGUFWeightTensor.create(raw, (self.row_count, in_features), (in_features, 1), source_weight.dtype, tensor_type=source_weight._tensor_type, tensor_shape=(self.row_count, in_features))
             object.__setattr__(self, "_cached_raw", source_raw)
             object.__setattr__(self, "_cached_weight", weight)

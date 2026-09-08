@@ -21,7 +21,7 @@ def _is_mps_available():
 
 
 def _check_triton_runtime_smoke():
-    global _TRITON_SMOKE_CACHE
+    global _TRITON_SMOKE_CACHE, tl  # Older Triton resolves kernel names from function globals.
     if _TRITON_SMOKE_CACHE is not None:
         return _TRITON_SMOKE_CACHE
     try:
@@ -44,6 +44,9 @@ def _check_triton_runtime_smoke():
         n_elements = 128
         block_size = 128
         device = torch.device("cuda", torch.cuda.current_device())
+        if torch.cuda.get_device_capability(device) == (12, 0) and tuple(map(int, triton.__version__.split(".")[:2])) < (3, 3):
+            _TRITON_SMOKE_CACHE = (False, "RTX50xx requires Triton 3.3 or newer; the installed compiler cannot compile SM120 reductions")
+            return _TRITON_SMOKE_CACHE
         x = torch.arange(n_elements, dtype=torch.float32, device=device)
         y = torch.empty_like(x)
         grid = (triton.cdiv(n_elements, block_size),)
@@ -129,6 +132,8 @@ def resolve_lm_decoder_engine(requested_engine, engines_available = [], require_
     requested_engine = str(requested_engine or "").strip().lower()
     if _is_mps_available():
         return "legacy"
+    if requested_engine in ("legacy", "cg"):
+        return requested_engine if "cg" in engines_available else "legacy"
     probe_result = probe_vllm_runtime()
     checks = probe_result.get("checks", {})
     triton_supported = bool(checks.get("triton", {}).get("ok", False))

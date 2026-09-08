@@ -73,7 +73,7 @@ from shared.deepy.config import (
     validate_deepy_version_config,
 )
 from shared.prompt_enhancer.config import (
-    PROMPT_ENHANCER_SPECULATIVE_DECODING_AUTO,
+    PROMPT_ENHANCER_SPECULATIVE_DECODING_CHOICES,
     PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT,
     PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY,
     normalize_prompt_enhancer_speculative_decoding,
@@ -196,8 +196,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
         set_deepy_runtime_config(self.server_config, self.server_config_filename)
         prompt_enhancer_default_mode = get_prompt_enhancer_default_mode()
         with gr.Column():
-            deepy_prime_recommendation = deepy_prime_upgrade_message(self.server_config)
-            self.deepy_prime_recommendation = gr.Markdown(value=deepy_prime_recommendation, visible=bool(deepy_prime_recommendation), elem_classes=["deepy-prime-recommendation"])
             with gr.Tabs():
                 with gr.Tab("General"):
                     self.transformer_types_choices = HierarchySelector(
@@ -383,6 +381,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
 
                 with gr.Tab("Prompt Enhancer / Deepy"):
+                    deepy_prime_recommendation = deepy_prime_upgrade_message(self.server_config)
+                    self.deepy_prime_recommendation = gr.Markdown(value=deepy_prime_recommendation, visible=bool(deepy_prime_recommendation), elem_classes=["deepy-prime-recommendation"])
                     llm_config = normalize_llm_config(self.server_config)
                     if llm_config["deepy"] not in {value for _label, value in DEEPY_ENGINE_CHOICES}:
                         llm_config["deepy"] = ENGINE_QWEN35_4B
@@ -410,12 +410,14 @@ class ConfigTabPlugin(WAN2GPPlugin):
                                 choices=enhancer_quantization_choices,
                                 value=enhancer_quantization_value,
                                 label="Qwen LLM Quantization",
+                                info="Lower precision saves VRAM/RAM at some cost to quality. Use the highest precision that fits comfortably.",
                                 visible=enhancer_quantization_visible and not deepy_remote_default,
                             )
                             self.enhancer_speculative_decoding_choice = gr.Dropdown(
-                                choices=[("Auto", PROMPT_ENHANCER_SPECULATIVE_DECODING_AUTO), ("Yes", 1), ("No", 0)],
+                                choices=PROMPT_ENHANCER_SPECULATIVE_DECODING_CHOICES,
                                 value=normalize_prompt_enhancer_speculative_decoding(self.server_config.get(PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT)),
-                                label="Speculative Decoding (x2 faster, but needs 100-400MB extra VRAM)",
+                                label="Speculative Decoding (MTP)",
+                                info="More draft tokens use more VRAM; the fastest choice depends on the request.",
                                 interactive=not self.args.lock_config,
                                 visible=not deepy_remote_default,
                             )
@@ -761,6 +763,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 self.assistant_panel,
                 self.assistant_chat_event,
             ]
+        ).then(
+            fn=None, inputs=None, outputs=None,
+            js="""() => {
+                const button = document.querySelector('#assistant_chat_session_refresh_button button, #assistant_chat_session_refresh_button');
+                if (button) button.click();
+            }""",
         )
 
         def release_ram_and_notify(state):

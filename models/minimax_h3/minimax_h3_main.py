@@ -17,6 +17,7 @@ from .pipeline import MiniMaxH3Pipeline
 from .text_encoder import MiniMaxH3TextEncoder, load_h3_qwen_config
 from .transformer import MiniMaxH3Model, get_linear_split_map
 from .video_vae import MiniMaxH3VideoVAE, get_video_vae_linear_split_map
+from .viggle import load_fixed_prompt
 
 
 VIDEO_VAE_FILE = "MiniMax-H3-video_vae_fp16.safetensors"
@@ -229,20 +230,22 @@ def _load_latent_upscaler(filename):
 def model_factory(model_filename, text_encoder_filename, qkv_splitting, dtype=torch.bfloat16, VAE_dtype=torch.float32, save_quantized=False,
                   model_type="minimax_h3_fl2va", reference_mode=False, video_vae_filename=VIDEO_VAE_FILE,
                   audio_vae_filename=AUDIO_VAE_FILE, latent_upscaler_filename=os.path.join(LATENT_UPSCALER_FOLDER, LATENT_UPSCALER_FILE),
-                  shared_h3_pipeline=None, qkv_layout="interleaved", pdd=False, pdd_num_steps=None, pdd_block_size=None, vdn=False, audio_only=False):
+                  shared_h3_pipeline=None, qkv_layout="interleaved", pdd=False, pdd_num_steps=None, pdd_block_size=None, vdn=False, audio_only=False,
+                  fixed_prompt_filename=None):
     transformer = _load_transformer(model_filename, dtype, qkv_splitting, qkv_layout, pdd, pdd_num_steps, pdd_block_size, vdn)
     if shared_h3_pipeline is None:
-        text_encoder = _load_text_encoder(text_encoder_filename, dtype)
+        text_encoder = _load_text_encoder(text_encoder_filename, dtype) if fixed_prompt_filename is None else None
         video_vae_qkv_splitting = qkv_splitting and video_vae_filename == VIDEO_VAE_FILE
         video_vae = _load_video_vae(video_vae_filename, VAE_dtype, video_vae_qkv_splitting)
         audio_vae = _load_audio_vae(audio_vae_filename)
-        latent_upscaler = _load_latent_upscaler(latent_upscaler_filename)
+        latent_upscaler = _load_latent_upscaler(latent_upscaler_filename) if fixed_prompt_filename is None else None
     else:
         text_encoder = shared_h3_pipeline.text_encoder
         video_vae = shared_h3_pipeline.vae
         audio_vae = shared_h3_pipeline.audio_vae
         latent_upscaler = shared_h3_pipeline.latent_upscaler
-    pipeline = MiniMaxH3Pipeline(transformer, text_encoder, video_vae, audio_vae, latent_upscaler=latent_upscaler, reference_mode=reference_mode, audio_only=audio_only, dtype=dtype)
+    fixed_prompt = load_fixed_prompt(fixed_prompt_filename) if fixed_prompt_filename is not None else None
+    pipeline = MiniMaxH3Pipeline(transformer, text_encoder, video_vae, audio_vae, latent_upscaler=latent_upscaler, reference_mode=reference_mode, audio_only=audio_only, dtype=dtype, fixed_prompt=fixed_prompt)
     if save_quantized:
         from wgp import save_quantized_model
         save_quantized_model(transformer, model_type, model_filename[0], dtype, None,

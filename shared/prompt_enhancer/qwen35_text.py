@@ -1209,7 +1209,6 @@ def load_qwen35_text_prompt_enhancer(
     model._prompt_enhancer_speculative_tokens = spec.get("mtp_speculative_tokens", QWEN35_PROMPT_SPECULATIVE_TOKENS)
     model._prompt_enhancer_speculative_sampling_tokens = spec.get("mtp_speculative_sampling_tokens", QWEN35_PROMPT_SPECULATIVE_SAMPLING_TOKENS)
     model._prompt_enhancer_speculative_confidence = spec.get("mtp_speculative_confidence", 0.30)
-    model._prompt_enhancer_reuse_speculative_mtp_cache = True
     model._prompt_enhancer_use_vllm = engine_name in ("cg", "vllm")
     model._prompt_enhancer_use_legacy_cuda_runner = engine_name == "legacy"
     if model._prompt_enhancer_use_vllm or model._prompt_enhancer_use_legacy_cuda_runner:

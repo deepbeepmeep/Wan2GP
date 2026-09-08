@@ -1,0 +1,29 @@
+{
+    "model": {
+        "name": "Viggle-Animate Pruned 20B",
+        "architecture": "viggle_animate",
+        "description": "Replace in only 3 denoising steps a character using an original control video and one edited frame from that video. The latter is the Reference Image, it must absolutely contain one frame of the Control Video where the main character will be replaced with you want to put instead. It is recommended to use a Generative Image Editor Model for this task.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/Viggle-Animate-pruned_rank8_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/Viggle-Animate-pruned_rank8_int8_convrot.safetensors"
+        ],
+        "loras": [
+            "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/loras/viggle_animate_distillation_bf16.safetensors"
+        ],
+        "loras_multipliers": ["1"]
+    },
+    "prompt": "Prompt ignored. Don't write anything here.",
+    "num_inference_steps": 3,
+    "flow_shift": 3.0,
+    "sample_solver": "euler",
+    "video_length": 124,
+    "sliding_window_size": 124,
+    "sliding_window_overlap": 18,
+    "guidance_phases": 1,
+    "guidance_scale": 1.0,
+    "video_prompt_type": "IVU",
+    "image_refs_relative_size": 100,
+    "remove_background_images_ref": 0,
+    "audio_prompt_type": "",
+    "prompt_enhancer": ""
+}

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import math
 import os
@@ -12,6 +11,7 @@ import time
 import traceback
 import uuid
 import ffmpeg
+from contextlib import nullcontext
 from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +48,7 @@ from shared.deepy import DEFAULT_COMPACTION_PROMPT as ASSISTANT_COMPACTION_PROMP
 from shared.deepy.debug_bootstrap import capture_external_logs
 from shared import extra_settings
 from shared.deepy import filesystem as deepy_filesystem, long_text as deepy_long_text, media_registry, session_store, tool_settings as deepy_tool_settings, transcription as deepy_transcription, ui_settings as deepy_ui_settings, video_tools as deepy_video_tools, vision as deepy_vision
+from shared.utils.gallery_media import gallery_media_ids
 from postprocessing import catalog as postprocessing_catalog
 from shared.gradio import assistant_chat
 from shared.prompt_enhancer import qwen35_text
@@ -562,6 +563,7 @@ class AssistantRuntimeHooks:
     unload_runtime: Callable[[], None]
     unload_weights: Callable[[], None]
     ensure_vision_loaded: Callable[[], tuple[Any, Any]] | None = None
+    get_offload_manager: Callable[[], Any] = lambda: None
 
 
 def get_or_create_assistant_session(state) -> AssistantSessionState:
@@ -2414,10 +2416,11 @@ class DeepyZeroTools:
             return ""
         gallery = lookup.split(":", 1)[0]
         paths = self.gen.get("audio_file_list" if gallery == "audio" else "file_list", []) or []
-        for path in paths:
+        settings_list = self.gen.get("audio_file_settings_list" if gallery == "audio" else "file_settings_list", []) or []
+        for index, path in enumerate(paths):
             resolved = str(path or "").strip()
-            key = hashlib.sha1(resolved.replace("\\", "/").casefold().encode("utf-8")).hexdigest()[:12]
-            if lookup == f"{gallery}:{key}":
+            settings = settings_list[index] if index < len(settings_list) else None
+            if lookup in gallery_media_ids(resolved, gallery, settings):
                 return resolved
         return ""
 
@@ -2679,6 +2682,8 @@ class DeepyZeroTools:
 
     def _build_direct_media_settings(self, source_media: dict[str, Any], comments: str, fallback_prompt: str | None = None, **updates: Any) -> dict[str, Any]:
         settings = dict(source_media.get("settings", {}) or {})
+        for key in ("gallery_media_ids", "deepy_session_id", "deepy_media_id", "deepy_media_fingerprint"):
+            settings.pop(key, None)
         if fallback_prompt is not None and (len(settings) == 0 or str(settings.get("model_type", "") or "").strip() == "Deepy"):
             return self._build_deepy_settings(fallback_prompt, comments, **updates)
         settings["client_id"] = _next_ai_client_id()
@@ -4653,13 +4658,7 @@ class DeepyZeroTools:
         output_name = f"merged_{first_media.get('media_id', 'video')}_{second_media.get('media_id', 'video')}{deepy_video_tools.get_video_container_extension(video_container)}"
         output_path = self._resolve_direct_output_path(output_name, False, False)
         output_path = deepy_video_tools.merge_videos(first_path, second_path, output_path=output_path, video_codec=video_codec, video_container=video_container, audio_codec=self._get_video_audio_output_codec())
-        merged_settings = dict(second_media.get("settings", {}) or {})
-        merged_settings["client_id"] = _next_ai_client_id()
-        self._remember_generated_client_id(merged_settings["client_id"])
-        merged_settings["comments"] = f'Merged from "{first_name} & {second_name}"'
-        end_time = time.time()
-        merged_settings["creation_date"] = datetime.fromtimestamp(end_time).isoformat(timespec="seconds")
-        merged_settings["creation_timestamp"] = int(end_time)
+        merged_settings = self._build_direct_media_settings(second_media, f'Merged from "{first_name} & {second_name}"')
         try:
             fps, width, height, frames_count = get_video_info(output_path)
             merged_settings["resolution"] = f"{width}x{height}"
@@ -6198,13 +6197,18 @@ class AssistantEngine:
         checkpoint = self.session.current_turn
         if self.runtime is None or not isinstance(checkpoint, dict):
             return
+        messages = self.session.messages
+        user_index = next(index for index in reversed(range(len(messages))) if messages[index]["role"] == "user")
+        step_ends = [user_index + 1, *(end for _, end in self._turn_step_ranges(messages, user_index))]
+        retained_lengths = set(step_ends[-(_ACTIVE_TURN_COMPACTION_KEEP_STEPS + 1):])
         boundary = self.runtime.snapshot_rewind_state()
         if boundary is None:
             return
-        boundary["messages_len"] = len(self.session.messages)
-        boundaries = [item for item in checkpoint.setdefault("semantic_boundaries", []) if int(item["messages_len"]) != len(self.session.messages)]
+        boundary["messages_len"] = len(messages)
+        # Tool requests and their results belong to one action group, not separate retained checkpoints.
+        boundaries = [item for item in checkpoint.setdefault("semantic_boundaries", []) if int(item["messages_len"]) in retained_lengths and int(item["messages_len"]) != len(messages)]
         boundaries.append(boundary)
-        checkpoint["semantic_boundaries"] = boundaries[-(_ACTIVE_TURN_COMPACTION_KEEP_STEPS + 1):]
+        checkpoint["semantic_boundaries"] = boundaries
 
     def _send_chat(self, text: str) -> None:
         text = str(text or "").strip()
@@ -6436,12 +6440,7 @@ class AssistantEngine:
                 thinking_text = recovered_reasoning
                 answer_text = ""
                 reclaimed_answer_as_reasoning = True
-        thinking_text = self._merge_text_continuation(self._stream_reasoning_text, thinking_text)
-        answer_text = "" if reclaimed_answer_as_reasoning else self._merge_text_continuation(self._stream_answer_text, answer_text)
-        if not is_final and len(thinking_text) < len(self._stream_reasoning_text):
-            thinking_text = self._stream_reasoning_text
-        if not is_final and len(answer_text) < len(self._stream_answer_text):
-            answer_text = self._stream_answer_text
+        # Callbacks decode the full completion, including corrections to incomplete UTF-8 characters.
         needs_output = (reclaimed_answer_as_reasoning and len(self._stream_answer_text) > 0) or (thinking_text != self._stream_reasoning_text and len(thinking_text) > 0) or (answer_text != self._stream_answer_text and len(answer_text) > 0) or (is_final and (bool(self._stream_reasoning_block_id) or bool(self._stream_answer_block_id)))
         if not needs_output:
             if self.thinking_enabled and re.search(r"</think>", str(raw_text or ""), flags=re.IGNORECASE):
@@ -6570,62 +6569,71 @@ class AssistantEngine:
             else:
                 visual_labels.append(f"Visual {index + 1}: image {source_label}{bbox_label}.")
         caption_model, caption_processor = self._ensure_vision_loaded()
-        try:
-            prompt_token_ids, prompt_embeds, prompt_position_ids, position_offset = deepy_vision.build_image_question_prompt(
-                caption_model,
-                caption_processor,
-                images,
-                question,
-                image_labels=visual_labels,
-                max_images=deepy_vision.VISION_MAX_IMAGES if max_image_edge is None else len(images),
-                max_pixels_per_image=None if max_image_edge is None else max_image_edge * max_image_edge,
+        manager = self.runtime_hooks.get_offload_manager()
+        resident = deepy_vision.can_keep_text_resident(self.runtime, manager)
+        boundaries = self.session.current_turn.get("semantic_boundaries", []) if isinstance(self.session.current_turn, dict) else []
+        context = deepy_vision.resident_inspection(self.runtime, caption_model, manager, boundaries) if resident else nullcontext()
+        with context as unload_vision:
+            try:
+                prompt_token_ids, prompt_embeds, prompt_position_ids, position_offset = deepy_vision.build_image_question_prompt(
+                    caption_model,
+                    caption_processor,
+                    images,
+                    question,
+                    image_labels=visual_labels,
+                    max_images=deepy_vision.VISION_MAX_IMAGES if max_image_edge is None else len(images),
+                    max_pixels_per_image=None if max_image_edge is None else max_image_edge * max_image_edge,
+                    resident=resident,
+                )
+                prompt_embeds = prompt_embeds.detach().to("cpu")
+                prompt_position_ids = prompt_position_ids.detach().to("cpu")
+            finally:
+                if resident:
+                    unload_vision()
+                else:
+                    self.runtime_hooks.unload_weights()
+                del caption_model, caption_processor
+            if self.debug_enabled:
+                prompt_embeds_shape = None if prompt_embeds is None else tuple(int(x) for x in prompt_embeds.shape)
+                prompt_position_shape = None if prompt_position_ids is None else tuple(int(x) for x in prompt_position_ids.shape)
+                prompt_embeds_dtype = None if prompt_embeds is None else str(prompt_embeds.dtype).replace("torch.", "")
+                prompt_position_dtype = None if prompt_position_ids is None else str(prompt_position_ids.dtype).replace("torch.", "")
+                self._log(
+                    "Inspect visual query "
+                    f"media_ids={[item['media_id'] for item in inspected_media]} media_types={[item['media_type'] for item in inspected_media]} image_sizes={[image.size for image in images]} "
+                    f"question={question!r} prompt_tokens={len(prompt_token_ids)} "
+                    f"prompt_embeds_shape={prompt_embeds_shape} prompt_embeds_dtype={prompt_embeds_dtype} "
+                    f"prompt_position_ids_shape={prompt_position_shape} prompt_position_ids_dtype={prompt_position_dtype} "
+                    f"position_offset={int(position_offset or 0)}"
+                )
+            runtime = self.runtime if resident else self._acquire_runtime()
+            vision_context_tokens = min(int(runtime.model._prompt_enhancer_min_model_len_hint), self._get_context_window_tokens())
+            if llm_io_enabled():
+                log_llm_io("OUT", "local-deepy", "visual-query", {
+                    "question": str(question or "").strip(),
+                    "visual_labels": visual_labels,
+                    "media": [{**item, "source": media_descriptor(media_records[index]["path"])} for index, item in enumerate(inspected_media)],
+                    "input_token_ids": [int(token_id) for token_id in prompt_token_ids],
+                    "known_token_ids": known_token_ids(runtime.tokenizer),
+                    "prompt_embeddings": prompt_embeds,
+                    "prompt_position_ids": prompt_position_ids,
+                    "position_offset": int(position_offset or 0),
+                    "generation": {"max_new_tokens": deepy_vision.VISION_LOCAL_ANSWER_MAX_NEW_TOKENS, "seed": 0, "do_sample": False},
+                })
+            answer = runtime.generate_embedded_answer(
+                prompt_token_ids,
+                prompt_embeds,
+                prompt_position_ids,
+                position_offset,
+                max_new_tokens=deepy_vision.VISION_LOCAL_ANSWER_MAX_NEW_TOKENS,
+                seed=0,
+                do_sample=False,
+                temperature=None,
+                top_p=None,
+                top_k=None,
+                min_model_len=vision_context_tokens,
+                restore_snapshot=None if resident else self.session.runtime_snapshot,
             )
-            prompt_embeds = prompt_embeds.detach().to("cpu")
-            prompt_position_ids = prompt_position_ids.detach().to("cpu")
-        finally:
-            self.runtime_hooks.unload_weights()
-            del caption_model, caption_processor
-        if self.debug_enabled:
-            prompt_embeds_shape = None if prompt_embeds is None else tuple(int(x) for x in prompt_embeds.shape)
-            prompt_position_shape = None if prompt_position_ids is None else tuple(int(x) for x in prompt_position_ids.shape)
-            prompt_embeds_dtype = None if prompt_embeds is None else str(prompt_embeds.dtype).replace("torch.", "")
-            prompt_position_dtype = None if prompt_position_ids is None else str(prompt_position_ids.dtype).replace("torch.", "")
-            self._log(
-                "Inspect visual query "
-                f"media_ids={[item['media_id'] for item in inspected_media]} media_types={[item['media_type'] for item in inspected_media]} image_sizes={[image.size for image in images]} "
-                f"question={question!r} prompt_tokens={len(prompt_token_ids)} "
-                f"prompt_embeds_shape={prompt_embeds_shape} prompt_embeds_dtype={prompt_embeds_dtype} "
-                f"prompt_position_ids_shape={prompt_position_shape} prompt_position_ids_dtype={prompt_position_dtype} "
-                f"position_offset={int(position_offset or 0)}"
-            )
-        runtime = self._acquire_runtime()
-        vision_context_tokens = min(int(runtime.model._prompt_enhancer_min_model_len_hint), self._get_context_window_tokens())
-        if llm_io_enabled():
-            log_llm_io("OUT", "local-deepy", "visual-query", {
-                "question": str(question or "").strip(),
-                "visual_labels": visual_labels,
-                "media": [{**item, "source": media_descriptor(media_records[index]["path"])} for index, item in enumerate(inspected_media)],
-                "input_token_ids": [int(token_id) for token_id in prompt_token_ids],
-                "known_token_ids": known_token_ids(runtime.tokenizer),
-                "prompt_embeddings": prompt_embeds,
-                "prompt_position_ids": prompt_position_ids,
-                "position_offset": int(position_offset or 0),
-                "generation": {"max_new_tokens": deepy_vision.VISION_ANSWER_MAX_NEW_TOKENS, "seed": 0, "do_sample": False},
-            })
-        answer = runtime.generate_embedded_answer(
-            prompt_token_ids,
-            prompt_embeds,
-            prompt_position_ids,
-            position_offset,
-            max_new_tokens=deepy_vision.VISION_ANSWER_MAX_NEW_TOKENS,
-            seed=0,
-            do_sample=False,
-            temperature=None,
-            top_p=None,
-            top_k=None,
-            min_model_len=vision_context_tokens,
-            restore_snapshot=self.session.runtime_snapshot,
-        )
         log_llm_io("IN", "local-deepy", "visual-query", {"text": answer})
         result = {
             "status": "done",
@@ -6684,6 +6692,8 @@ class AssistantEngine:
         self.session.drop_state_requested = False
 
     def _pause_runtime(self, pause_reason: str = "idle", preserve_session_snapshot: bool = False) -> None:
+        if pause_reason == "vision" and self._gpu_acquired and deepy_vision.can_keep_text_resident(self.runtime, self.runtime_hooks.get_offload_manager()):
+            return
         keep_loaded = self.vram_mode in (DEEPY_VRAM_MODE_ALWAYS_LOADED, DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST)
         if pause_reason == "vision":
             keep_loaded = False
@@ -7638,9 +7648,15 @@ class AssistantEngine:
     def _sync_generation_context(self, generation_reserve_tokens: int | None = None) -> None:
         runtime = self._acquire_runtime()
         generation_reserve_tokens = self._segment_generation_reserve_tokens() if generation_reserve_tokens is None else max(0, int(generation_reserve_tokens))
+        context_window_tokens = self._get_context_window_tokens()
+        if self.session.rendered_token_ids and self.session.rendered_context_window_tokens != context_window_tokens:
+            self._log(f"Context window changed from {self.session.rendered_context_window_tokens:,} to {context_window_tokens:,} tokens; rebuilding conversation checkpoints.")
+            prior_messages_len = self.session.current_turn["messages_len"]
+            invalidate_assistant_reset_base(self.session)
+            self._commit_rewritten_history(self.session.messages[:prior_messages_len], self.session.messages[prior_messages_len:], generation_reserve_tokens)
+            return
         if self._maybe_summarize_context(generation_reserve_tokens):
             return
-        context_window_tokens = self._get_context_window_tokens()
         render_state_compatible = self.session.rendered_system_prompt_signature == self._current_reset_base_signature() and int(self.session.rendered_context_window_tokens or 0) == context_window_tokens
         if self._get_compaction_type() == DEEPY_COMPACTION_TYPE_SUMMARIZE and context_window_tokens >= DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS and self.session.rendered_token_ids and render_state_compatible:
             target_token_count = len(self._render_messages(add_generation_prompt=True))
@@ -7875,32 +7891,29 @@ class AssistantEngine:
         tool_name = extract_incomplete_tool_name(raw_text)
         tool_marker = re.search(r"<\s*tool_call\s*>", str(raw_text or ""), flags=re.IGNORECASE)
         safe_prefix = str(raw_text or "")[:tool_marker.start()] if tool_marker is not None else str(raw_text or "")
+        rejected_request = raw_text[tool_marker.start():] if tool_marker is not None else raw_text
+        content = _build_assistant_history_content(safe_prefix)
+        if tool_marker is not None:
+            content = f"{content}\n\n{strip_trailing_stop_markup(rejected_request)}".strip()
         payload = {
             "status": "error",
             "error_type": str(error_type or "tool_call_generation_error"),
             "error": str(error_text or "").strip(),
+            "runtime_update": "No tool was executed. Correct the rejected request above and retry.",
         }
         if str(runtime_update or "").strip():
-            payload["runtime_update"] = str(runtime_update).strip()
+            payload["runtime_update"] += f"\n{runtime_update.strip()}"
         if tool_name:
             payload["tool"] = tool_name
-            stored_calls = self._append_assistant_message(safe_prefix, tool_calls=[{"name": tool_name, "arguments": {}}])
-            self._append_tool_message(payload, stored_calls[0].get("id"))
-            tool_label = self.tool_box.get_tool_transcript_label(tool_name, {})
-            message_id, tool_id = self._start_tool_call_card(tool_name, {}, tool_label)
-            self._emit_chat_event(assistant_chat.complete_tool_call(self.session, message_id, tool_id, payload))
-        else:
-            content = _build_assistant_history_content(safe_prefix)
-            update_text = f"{payload['error']} No tool was executed."
-            if payload.get("runtime_update"):
-                update_text += f"\n{payload['runtime_update']}"
-            runtime_update = f"<wangp_runtime_update>\n{update_text}\n</wangp_runtime_update>"
-            self.session.messages.append({"role": "assistant", "content": f"{content}\n\n{runtime_update}".strip()})
-            if self._stream_tool_id:
-                self._emit_chat_event(assistant_chat.update_tool_call(self.session, self._stream_tool_message_id, self._stream_tool_id, status="error", status_text="Error", result=payload, request_pending=False))
-                self._clear_stream_tool_request()
+        # Keep the rejected text in both saved history and live KV. Only the
+        # validation feedback needs prefilling before the next attempt.
+        self.session.messages.append({"role": "assistant", "content": content})
+        self._record_live_context("Rejected tool request retained in live context; only error feedback will be appended.")
+        self._append_tool_message(payload)
+        tool_label = self.tool_box.get_tool_transcript_label(tool_name, {}) if tool_name else "Tool request"
+        message_id, tool_id = self._start_tool_call_card(tool_name, {}, tool_label)
+        self._emit_chat_event(assistant_chat.complete_tool_call(self.session, message_id, tool_id, {**payload, "rejected_request": rejected_request}))
         checkpoint_assistant_turn(self.session)
-        self._canonicalize_context(sync_runtime="record_only")
         self._emit_chat_event(assistant_chat.build_sync_event(self.session, status=self._current_status_payload, stats=self._chat_stats_payload()))
 
     def _record_tool_generation_error_step(self, recent_steps: list[tuple[str, tuple[tuple[str, str], ...]]], error_type: str) -> tuple[str, str]:

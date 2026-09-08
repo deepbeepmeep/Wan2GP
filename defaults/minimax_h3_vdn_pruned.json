@@ -1,15 +1,17 @@
 {
     "model": {
-        "name": "MiniMax H3 FL2VA Pruned VDN 20B",
+        "name": "MiniMax H3 FL2VA Pruned VDN 8-Step 20B",
         "architecture": "minimax_h3_fl2va_pruned",
-        "description": "Pruned MiniMax H3 FL2VA with trained VDN hybrid window/linear attention for faster long-video generation. Triton is required for optimal performance; use the VDN Turbo 8 Steps profile for faster generation.",
+        "description": "Pruned MiniMax H3 FL2VA with trained VDN hybrid window/linear attention for faster long-video generation. Triton is required for optimal performance. The VDN 8-step acceleration LoRA is automatically loaded.",
+        "infos": "\n\n### Automatic 8-step acceleration\nThe VDN 8-step acceleration LoRA is automatically loaded and generation defaults to 8 steps.",
         "URLs": "minimax_h3_fl2va_pruned",
         "modules": "minimax_h3_vdn",
         "loras": "minimax_h3_vdn",
         "loras_multipliers": ["1"],
+        "preload_URLs": "minimax_h3_vdn",
         "vdn": true
     },
-    "num_inference_steps": 50,
+    "num_inference_steps": 8,
     "guidance_phases": 1,
     "sample_solver": "euler",
     "flow_shift": 12.0,

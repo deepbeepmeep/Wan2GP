@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import html
 import json
 import os
@@ -14,6 +13,7 @@ from typing import Any
 import markdown
 
 from shared.deepy import video_tools as deepy_video_tools
+from shared.utils.gallery_media import gallery_media_ids
 from shared.deepy.config import DEEPY_TYPE_PRIME, normalize_deepy_type
 
 
@@ -1755,17 +1755,20 @@ def get_css() -> str:
     overflow: auto;
 }
 
-.chat__structured-result table {
+#assistant_chat_html table {
     width: 100%;
+    table-layout: fixed;
+    margin: 0 0 0.85em;
     border-collapse: collapse;
-    font-size: calc(0.72rem * var(--dock-font-scale));
+    border: 1px solid rgba(116, 190, 230, 0.18);
+    font-size: 0.92em;
     color: var(--assistant-text);
 }
 
-.chat__structured-result th,
-.chat__structured-result td {
+#assistant_chat_html th,
+#assistant_chat_html td {
     padding: 7px 9px;
-    border-bottom: 1px solid rgba(116, 190, 230, 0.12);
+    border: 1px solid rgba(116, 190, 230, 0.18);
     text-align: left;
     vertical-align: top;
     white-space: pre-wrap;
@@ -1773,15 +1776,24 @@ def get_css() -> str:
     color: var(--assistant-text);
 }
 
-.chat__structured-result a {
+#assistant_chat_html table a {
     color: #bfe9ff;
+}
+
+#assistant_chat_html th {
+    color: #f5fbff !important;
+    background: rgba(11, 65, 94, 0.98) !important;
+}
+
+#assistant_chat_html .chat__structured-result table {
+    margin: 0;
+    table-layout: auto;
+    font-size: calc(0.72rem * var(--dock-font-scale));
 }
 
 .chat__structured-result th {
     position: sticky;
     top: 0;
-    color: #f5fbff !important;
-    background: rgba(11, 65, 94, 0.98) !important;
     z-index: 1;
 }
 
@@ -3763,7 +3775,6 @@ WAC.consumePayload = function (payload) {
   if (event.type !== 'sync' && hasSequence) {
     if (sequence <= WAC.chatSequence) return [];
     if (WAC.chatSequence >= 0 && sequenceStart > WAC.chatSequence + 1) {
-      if (event.type === 'append_block_text' || event.type === 'replace_block_text') return [];
       if (event.type !== 'upsert_block' && event.type !== 'finalize_block') {
         WAC.markSyncRequired(event);
         return [];
@@ -4306,6 +4317,26 @@ WAC.resetStreamingMarkdown = function (node) {
   return state;
 };
 
+WAC.appendStreamingListItem = function (node, state, line) {
+  const match = line.match(/^[ \t]*(?:([-+*])|(\d+)\.)[ \t]+(.*)$/);
+  if (!match) return null;
+  const listType = match[1] ? 'ul' : 'ol';
+  const continuing = state.listType === listType && state.list && state.list === node.lastElementChild;
+  if (!state.blockBoundary && !continuing) return null;
+  const list = continuing ? state.list : document.createElement(listType);
+  if (!continuing) {
+    if (listType === 'ol' && Number(match[2]) !== 1) list.start = Number(match[2]);
+    node.appendChild(list);
+  }
+  const item = document.createElement('li');
+  WAC.appendStreamingInlineMarkdown(item, match[3]);
+  list.appendChild(item);
+  state.list = list;
+  state.listType = listType;
+  state.blockBoundary = false;
+  return item;
+};
+
 WAC.renderStreamingMarkdownLine = function (node, state, line) {
   const fence = line.match(/^\s*```\s*([^\s`]*)\s*$/);
   if (state.inFence) {
@@ -4351,34 +4382,17 @@ WAC.renderStreamingMarkdownLine = function (node, state, line) {
     state.blockBoundary = true;
     return;
   }
-  const unordered = line.match(/^\s*[-+*]\s+(.+)$/);
-  const ordered = line.match(/^\s*\d+[.]\s+(.+)$/);
-  if (unordered || ordered) {
-    const listType = unordered ? 'ul' : 'ol';
-    const previous = node.lastElementChild;
-    const continuing = state.listType === listType && previous && previous.tagName.toLowerCase() === listType;
-    if (state.blockBoundary || continuing) {
-      const list = continuing ? previous : document.createElement(listType);
-      if (!continuing) node.appendChild(list);
-      const item = document.createElement('li');
-      WAC.appendStreamingInlineMarkdown(item, (unordered || ordered)[1]);
-      list.appendChild(item);
-      state.list = list;
-      state.listType = listType;
-      state.blockBoundary = false;
-      return;
-    }
+  if (WAC.appendStreamingListItem(node, state, line)) return;
+  if (!line.trim()) {
+    if (!state.list) node.appendChild(document.createElement('br'));
+    state.blockBoundary = true;
+    return;
   }
   state.list = null;
   state.listType = '';
   const rule = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line);
   if (rule) {
     node.appendChild(document.createElement('hr'));
-    state.blockBoundary = true;
-    return;
-  }
-  if (!line) {
-    node.appendChild(document.createElement('br'));
     state.blockBoundary = true;
     return;
   }
@@ -4410,11 +4424,22 @@ WAC.renderStreamingMarkdown = function (node, value) {
     newline = state.buffer.indexOf('\n');
   }
   const delimiterArrived = ['\\', '`', '*', '_', '[', ']', '(', ')', '!'].some((marker) => delta.includes(marker)) || previousBuffer.endsWith('\\');
-  if (state.tail && !completedLine && !delimiterArrived && state.buffer === previousBuffer + delta) {
-    state.tail.appendChild(document.createTextNode(delta));
+  const listMarker = /^[ \t]*(?:[-+*]|\d+\.)[ \t]+/;
+  const listMarkerArrived = listMarker.test(state.buffer) && !listMarker.test(previousBuffer);
+  if (state.tail && !completedLine && !delimiterArrived && !listMarkerArrived && state.buffer === previousBuffer + delta) {
+    const target = ['OL', 'UL'].includes(state.tail.tagName) ? state.tail.lastElementChild : state.tail;
+    target.appendChild(document.createTextNode(delta));
     return;
   }
   if (state.tail) state.tail.remove();
+  if (!state.inFence) {
+    const preview = { ...state };
+    const item = WAC.appendStreamingListItem(node, preview, state.buffer);
+    if (item) {
+      state.tail = preview.list === state.list ? item : preview.list;
+      return;
+    }
+  }
   state.tail = document.createElement('span');
   state.tail.className = 'chat__stream-tail';
   if (state.inFence && state.code) {
@@ -6123,8 +6148,8 @@ def _download_reference_targets(session, record: dict[str, Any], file_access_pol
         media_type = str(media.get("media_type", "") or "").strip().lower()
         if media_type in {"image", "video", "audio"}:
             gallery = "audio" if media_type == "audio" else "visual"
-            gallery_key = hashlib.sha1(media_path.replace("\\", "/").casefold().encode("utf-8")).hexdigest()[:12]
-            add(f"{gallery}:{gallery_key}", path)
+            for media_id in gallery_media_ids(media_path, gallery, media.get("settings")):
+                add(media_id, path)
         add(media.get("filename") or os.path.basename(path), path)
         if file_access_policy.can_read(Path(path)):
             add(file_access_policy.virtualize_path(path), path)

@@ -43,6 +43,8 @@ ckpts/
 loras/
 loras_i2v/
 tmp/
+deepy_sessions/
+dlss5/
 /settings/
 
 wgp_config.json

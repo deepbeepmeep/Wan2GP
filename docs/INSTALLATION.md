@@ -137,67 +137,56 @@ pip install flash-attn==2.7.2.post1
 
 ## GGUF llama.cpp CUDA Kernels
 
-These kernels are used to accelerate GGUF models. Wheel 1.0.14 provides optimized FP16/BF16 modes, CUDA-graph-safe Stream-K, quantized KV-cache attention, and the MMQ activation-tile safety fix required by speculative CUDA-graph workloads on Windows and Linux.
+These kernels accelerate GGUF models with packed MMVQ/MMQ, direct FP16/BF16 activation quantization, CUDA-graph-safe workspaces and quantized KV-cache attention. Wheel **1.0.21** also contains precompiled RTX50xx (SM120) async-copy kernels for Q8 prefill and decode/verification. WanGP's vLLM backend selects them automatically on compatible GPUs; this async path needs no runtime Triton compilation. Other architectures retain the shared kernels.
 
-### GGUF Kernels Wheels for Python 3.11 / Pytorch 2.10 / Cuda 13
+Install the wheel matching your Python, PyTorch and CUDA stack. `--no-deps` preserves the installed PyTorch environment.
 
-- Windows
-   ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.14+torch210cu130py311-cp311-cp311-win_amd64.whl
-   ```
+### Python 3.11 / PyTorch 2.10 / CUDA 13
 
-- Linux
-   ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.14+torch210cu130py311-cp311-cp311-linux_x86_64.whl
-   ```
-
-### GGUF Kernels Wheels for Python 3.10 / Pytorch 2.7.1 / Cuda 12.8
-
-- Windows
-   ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.14+torch271cu128py310-cp310-cp310-win_amd64.whl
-   ```
-
-- Linux
-   ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.14+torch271cu128py310-cp310-cp310-linux_x86_64.whl
-   ```
-
-### FP16/BF16 matmul modes
-
-The default automatic policy keeps GGUF weights packed and uses native BF16 MMQ when BF16 is requested. To select a policy explicitly, set `WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE` before starting WanGP:
-
-- `fast`: use MMQ for small workloads and materialize larger matrices directly as FP16 or BF16 for cuBLAS.
-- `low_vram`: always multiply from packed GGUF weights with MMQ, without materializing a full dense weight matrix.
-
-For example, in Windows Command Prompt:
-
-```
-set WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE=fast
-python wgp.py
+Windows:
+```bash
+pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.21/llamacpp_gguf_cuda-1.0.21%2Btorch210cu130py311-cp311-cp311-win_amd64.whl
 ```
 
-Or in PowerShell:
-
+Linux:
+```bash
+pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.21/llamacpp_gguf_cuda-1.0.21%2Btorch210cu130py311-cp311-cp311-linux_x86_64.whl
 ```
+
+### Python 3.10 / PyTorch 2.7.1 / CUDA 12.8
+
+Windows:
+```bash
+pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.21/llamacpp_gguf_cuda-1.0.21%2Btorch271cu128py310-cp310-cp310-win_amd64.whl
+```
+
+Linux:
+```bash
+pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.21/llamacpp_gguf_cuda-1.0.21%2Btorch271cu128py310-cp310-cp310-linux_x86_64.whl
+```
+
+The CUDA 13 builds contain native GPU code for SM75 through the architectures supported by CUDA 13.1. CUDA 12.8 builds additionally contain pre-SM75 code, subject to PyTorch's own support. The release includes the exact architecture lists, source and build instructions. Hardware validation was performed on RTX5090; Linux wheels were built and tested under Ubuntu 22.04 in WSL.
+
+### Matmul selection and CUDA graphs
+
+The default keeps weights packed and selects MMVQ for decoding/short batches or MMQ for larger batches. To override it, set `WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE` before starting WanGP:
+
+- `fast` or `low_vram`: packed MMVQ/MMQ, with no full dense weight materialization.
+- `materialized` or `cublas`: materialize weights for cuBLAS.
+
+For example, in PowerShell:
+```powershell
 $env:WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE = "low_vram"
 python wgp.py
 ```
 
-Or on Linux:
-
-```
+On Linux:
+```bash
 export WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE=low_vram
 python wgp.py
 ```
 
-The setting is read when the kernel package loads. If it is changed inside an already-running Python process, call `llamacpp_gguf_cuda.refresh_env()` before the next generation. Set `WGP_GGUF_LLAMACPP_CUDA_BF16_FP16=1` only to restore the legacy behavior that computes automatic BF16 requests through FP16 cuBLAS. To disable the GGUF CUDA package entirely, set `WGP_GGUF_LLAMACPP_CUDA=0` before starting WanGP.
-
-### Stream-K and CUDA graphs (wheel 1.0.14+)
-
-Stream-K is enabled by default and reuses a persistent 16 MiB workspace, so it does not allocate memory while a CUDA graph is being recorded. Set `WGP_GGUF_LLAMACPP_CUDA_STREAM_K=0` to disable Stream-K without disabling the rest of the GGUF kernels. Set `WGP_GGUF_LLAMACPP_CUDA_STREAM_K_BUFFER_MB` to change the workspace size; `0` also disables Stream-K.
-
-These variables are cached when the package loads. After changing either one in a running process, call `llamacpp_gguf_cuda.refresh_env()` before the next generation. Existing CUDA graphs must be captured again to use the new setting.
+The wrapper reads the setting for eager calls. Existing CUDA graphs must be recreated to change their recorded operations. MMQ reuses a Stream-K workspace sized from the GPU's SM count and rounded to 16 MiB; WanGP reserves it before graph capture. This version has no `refresh_env()` API or Stream-K environment controls. To disable the GGUF CUDA package, set `WGP_GGUF_LLAMACPP_CUDA=0` before starting WanGP.
 
 ## INT4 / FP4 quantized support
 

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any
 
-from .secure_store import SecureStorageError
+from .secure_store import SecureStorageError, availability_error
 from .service import send_notification
 from .settings import APPRISE_URLS_KEY, NOTIFY_GENERATION_KEY, NOTIFY_QUEUE_COMPLETE_KEY, NOTIFY_QUEUE_INTERRUPTED_KEY, SECURE_STORAGE_KEY, apprise_urls_text, configured_urls
 
@@ -25,13 +25,14 @@ def create_config_ui(gr: Any, config: dict[str, Any]) -> NotificationConfigUI:
         storage_error = ""
     except SecureStorageError as error:
         saved_urls, storage_error = [], str(error)
+    storage_error = storage_error or availability_error()
     gr.Markdown("### Remote Notifications\nEnter one or more space-separated [Apprise URLs](https://appriseit.com/services/). Prefer dedicated, revocable tokens or app passwords.")
     with gr.Row(elem_classes=["wangp-bottom-aligned-row"]):
         urls = gr.Textbox(value=apprise_urls_text(saved_urls), type="password", label="Apprise Destinations", info="Masked by default. Supports email, Telegram, Discord, WhatsApp gateways, webhooks, and other Apprise services.", scale=5)
         reveal = gr.Checkbox(value=False, label="Show / edit temporarily", scale=1, min_width=180)
     secure_storage = gr.Checkbox(value=config.get(SECURE_STORAGE_KEY, False), label="Store Destinations in OS Credential Manager", info="Recommended. wgp_config.json stores only an opaque identifier; WanGP retrieves the destinations when needed. No plaintext fallback is used.")
     if storage_error:
-        gr.Markdown(f"⚠️ {storage_error} Re-enter the destinations or disable secure storage before saving.")
+        gr.Markdown(f"⚠️ {storage_error} Empty destinations can still be saved.")
     with gr.Row():
         on_generation = gr.Checkbox(value=config.get(NOTIFY_GENERATION_KEY, False), label="After Each Generation")
         on_queue_complete = gr.Checkbox(value=config.get(NOTIFY_QUEUE_COMPLETE_KEY, False), label="When Queue Completes")

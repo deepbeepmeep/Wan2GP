@@ -12,6 +12,10 @@ profiles listed in [latent-contracts.md](latent-contracts.md), and
 (including pruned variants). Other profiles remain ineligible until their
 callback latent contracts are independently verified.
 
+LTX-2.5 Dev and Distilled also provisionally use the same `taeltx2_3` decoder
+through the shared architecture/capability registry. Live LTX-2.5 preview
+quality remains unverified; missing or failed decoders retain the RGB fallback.
+
 ## Settings and installation
 
 **Configuration > Previews** controls the global preview defaults. Preview

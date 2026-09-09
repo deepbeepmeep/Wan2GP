@@ -49,7 +49,7 @@ TAELTX23 = PreviewDecoderSpec(
     patch_size=4,
     encoder_time_downscale=(True, True, True),
     decoder_time_upscale=(True, True, True),
-    compatible_architectures=frozenset({"ltx2_22B"}),
+    compatible_architectures=frozenset({"ltx2_22B", "ltx2_25_22B"}),
     adapter_id="ltx2",
     source_url="https://raw.githubusercontent.com/madebyollin/taehv/62f7591f59dfbb4c3c02b7a621d180a9eeaba26c/safetensors/taeltx2_3.safetensors",
 )

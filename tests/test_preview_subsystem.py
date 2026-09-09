@@ -105,11 +105,13 @@ class PreviewSubsystemTests(unittest.TestCase):
             "ltx2_22B_distilled.json",
             "ltx2_22B_1_1.json",
             "ltx2_22B_distilled_1_1.json",
+            "ltx2_25_22B.json",
+            "ltx2_25_22B_distilled.json",
         )
         for filename in profiles:
             with self.subTest(filename=filename):
                 model_def = json.loads(Path("defaults", filename).read_text(encoding="utf-8"))["model"]
-                self.assertIsNotNone(get_decoder_for_model(filename.removesuffix(".json"), model_def))
+                self.assertIs(get_decoder_for_model(filename.removesuffix(".json"), model_def), TAELTX23)
 
     def test_default_h3_profiles_advertise_tae_capability(self):
         self.assertEqual(TAEH3.filename, "taeh3.safetensors")

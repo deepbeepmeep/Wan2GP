@@ -8,6 +8,7 @@ from shared.gradio.hierarchy_selector import HierarchySelector
 from shared import notifications
 from shared.utils import prompt_parser
 from shared.gradio.model_selector_toolbar import unload_models_from_ram
+from shared.preview.types import PreviewOptions
 from shared.utils.video_codecs import SDR_VIDEO_CODEC_CHOICES, VIDEO_CONTAINER_CHOICES, validate_video_output_settings
 from shared.deepy.config import (
     DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT,
@@ -356,6 +357,30 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         label="Max Amount of Loras (in MB) to be Pinned To Reserved Memory (set it to 0-500MB if Out of Memory when starting Gen, -1= No limit)"
                     )
                     self.release_RAM_btn = gr.Button("Force Unload Models from RAM")
+
+                with gr.Tab("Previews"):
+                    preview_options = PreviewOptions.from_value(self.server_config.get("preview_options"))
+                    self.preview_mode_choice = gr.Dropdown(
+                        choices=[("Off", "off"), ("RGB", "rgb"), ("TAE (if available)", "tae")],
+                        value=preview_options.mode,
+                        label="Preview mode",
+                        info="TAE falls back to RGB when the selected model is unsupported or its decoder is unavailable.",
+                        interactive=not self.args.lock_config,
+                    )
+                    self.preview_update_rate_choice = gr.Dropdown(choices=[("Adaptive", "adaptive"), ("Every step", "every_step"), ("Every 2 steps", "every_2"), ("Every 4 steps", "every_4")], value=preview_options.update_rate, label="TAE update rate", info="Applies only to TAE previews.", interactive=not self.args.lock_config)
+                    self.preview_device_choice = gr.Dropdown(choices=[("Auto", "auto"), ("GPU", "cuda"), ("CPU", "cpu")], value=preview_options.device, label="TAE device", info="Applies only to TAE previews.", interactive=not self.args.lock_config)
+                    self.preview_size_choice = gr.Dropdown(choices=[("384 px", 384), ("512 px", 512), ("640 px", 640)], value=preview_options.max_edge, label="TAE maximum edge", info="Applies only to TAE previews.", interactive=not self.args.lock_config)
+                    self.preview_fps_choice = gr.Dropdown(
+                        choices=[("16", 16), ("8", 8), ("4", 4), ("2", 2)], value=preview_options.preview_fps,
+                        label="TAE Preview FPS", info="TAE evenly samples the full decoded clip at this FPS without changing generated frames.", interactive=not self.args.lock_config,
+                    )
+                    self.preview_quality_choice = gr.Dropdown(
+                        choices=[("Fast", 56), ("Balanced", 72), ("Detailed", 88)],
+                        value=preview_options.webp_quality,
+                        label="WebP fallback quality",
+                        info="Applies only when MP4 NVENC preview encoding is unavailable.",
+                        interactive=not self.args.lock_config,
+                    )
 
                 with gr.Tab("Extensions"):
                     gr.Markdown("**Audio Postprocessors**")
@@ -729,6 +754,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.vae_config_choice, self.boost_choice, self.enable_int8_kernels_choice,
             self.video_profile_choice, self.image_profile_choice, self.audio_profile_choice,
             self.preload_in_VRAM_choice, self.max_reserved_loras_choice,
+            self.preview_mode_choice, self.preview_update_rate_choice, self.preview_device_choice, self.preview_size_choice, self.preview_fps_choice, self.preview_quality_choice,
             self.deepy_llm_engine_choice,
             *self.codex_config_ui.save_components,
             *self.claude_config_ui.save_components,
@@ -821,6 +847,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             vae_config_choice, boost_choice, enable_int8_kernels_choice,
             video_profile_choice, image_profile_choice, audio_profile_choice,
             preload_in_VRAM_choice, max_reserved_loras_choice,
+            preview_mode_choice, preview_update_rate_choice, preview_device_choice, preview_size_choice, preview_fps_choice, preview_quality_choice,
             deepy_llm_engine_choice,
             codex_executable_choice, codex_model_choice, codex_reasoning_effort_choice,
             claude_executable_choice, claude_model_choice, claude_reasoning_effort_choice,
@@ -921,6 +948,16 @@ class ConfigTabPlugin(WAN2GPPlugin):
             return f"<div style='color:red; text-align:center;'>Configuration was not saved: {exc}</div>", *[gr.update()]*8
 
         new_server_config = copy.deepcopy(old_server_config)
+        current_preview_options = PreviewOptions.from_value(old_server_config.get("preview_options"))
+        preview_options = PreviewOptions.from_value({
+            "mode": preview_mode_choice,
+            "update_rate": preview_update_rate_choice,
+            "device": preview_device_choice,
+            "max_edge": preview_size_choice,
+            "preview_fps": preview_fps_choice,
+            "webp_quality": preview_quality_choice,
+            "target_updates": current_preview_options.target_updates,
+        })
         new_server_config.update({
             "attention_mode": attention_choice, "transformer_types": transformer_types_choices,
             "text_encoder_quantization": text_encoder_quantization_choice, "save_path": save_path_choice,
@@ -975,6 +1012,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "loras_root": loras_root_choice,
             "save_queue_if_crash": save_queue_if_crash_choice,
             "queue_color_scheme": queue_color_scheme_choice,
+            "preview_options": vars(preview_options),
             gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY: process_queues_when_browser_unfocused_choice,
             "embed_source_images": embed_source_images_choice,
             "video_container": video_container_choice,
@@ -1013,7 +1051,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             LLM_CONFIG_KEY,
             "max_frames_multiplier", "display_stats", "keep_resolution_on_model_switch", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "hdr_video_crf", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "audio_stand_alone_output_codec", "checkpoints_paths", "loras_root", "save_queue_if_crash",
-            "model_hierarchy_type", "UI_theme", "queue_color_scheme", gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY
+            "model_hierarchy_type", "UI_theme", "queue_color_scheme", "preview_options", gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY
         ]
 
         needs_reload = not all(change in no_reload_keys for change in changes)

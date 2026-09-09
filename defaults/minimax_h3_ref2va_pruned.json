@@ -2,6 +2,7 @@
     "model": {
         "name": "MiniMax H3 Ref2VA Pruned 20B",
         "architecture": "minimax_h3_ref2va_pruned",
+        "capabilities": {"live_preview": {"modes": ["off", "rgb", "tae"], "decoders": ["taeh3"]}},
         "description": "Pruned Reference-to-Video-and-Audio: generate synchronized video and stereo audio from text plus reference images, video, and/or audio.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/MiniMax-H3-Ref2VA-pruned_rank8_bf16.safetensors",

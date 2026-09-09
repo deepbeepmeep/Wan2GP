@@ -1020,6 +1020,7 @@ class MiniMaxH3Pipeline:
                     video_velocity, audio_velocity = self.transformer(video, audio, sigma_video.flatten(), stage_sigmas_audio[step:step + 1], context, payload, spectrum=spectrum, first_block_cache=first_block_cache)
                     if spectrum is not None:
                         spectrum.finish_step()
+                    video_denoised = None
                     if stage_solver == "er_sde":
                         video_denoised = video_velocity.float().mul_(sigma_video).add_(video)
                         if effective_sigmas_video is None and source_latents is not None and step_editable_mask is not None:
@@ -1132,10 +1133,20 @@ class MiniMaxH3Pipeline:
                         keep_grouped_rows_fixed = grouped_masking and denoising_start_step <= step and step + 1 < mask_end_step
                         _reinject_video_source(source_video, source_latents, source_noise, source_mask, stage_sigmas_video[step + 1], source_buffer,
                                                1.0 - VISUAL_COND_TIMESTEP if preserve_input_mask_values or keep_grouped_rows_fixed else None)
-                    video_velocity = audio_velocity = video_denoised = audio_velocity_tail = None
+                    video_velocity = audio_velocity = audio_velocity_tail = None
                     if callback is not None:
-                        preview = video[0].detach().cpu() if not self.audio_only and (not offline_spectrum or spectrum.replaying) else None
+                        preview = None
+                        if not self.audio_only and (not offline_spectrum or spectrum.replaying):
+                            preview_video = video_denoised if video_denoised is not None else video
+                            if (video_denoised is not None and effective_sigmas_video is None and source_latents is not None
+                                    and (step < denoising_start_step or step < mask_end_step)):
+                                preview_video = preview_video.clone()
+                                source_mask = None if step < denoising_start_step else editable_mask
+                                _reinject_video_source(preview_video[:, :, :source_latents.shape[2]], source_latents, source_noise,
+                                                       source_mask, 0.0, source_buffer)
+                            preview = preview_video[0].detach().cpu()
                         callback(step, preview, False, denoising_extra=pass_extra, **({"pass_no": pass_no} if pass_no >= 0 else {}))
+                    video_denoised = None
 
             try:
                 if callback is not None:

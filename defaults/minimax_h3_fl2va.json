@@ -2,6 +2,7 @@
     "model": {
         "name": "MiniMax H3 FL2VA 33B",
         "architecture": "minimax_h3_fl2va",
+        "capabilities": {"live_preview": {"modes": ["off", "rgb", "tae"], "decoders": ["taeh3"]}},
         "description": "First/Last-Frame-to-Video-and-Audio: generate synchronized video and stereo audio from text alone, a first frame, a last frame, or both.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/MiniMax-H3-FL2VA_bf16.safetensors",

@@ -2,6 +2,7 @@
     "model": {
         "name": "LTX-2 2.5 Dev 22B",
         "architecture": "ltx2_25_22B",
+        "capabilities": {"live_preview": {"modes": ["off", "rgb", "tae"], "decoders": ["taeltx2_3"]}},
         "description": "LTX-2.5 creates synchronized video and sound from a text prompt, with optional start and end images, soundtrack guidance, raw control video, injected reference frames, and continuation for longer clips. The Dev checkpoint prioritizes quality and prompt adherence.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.5-22b-dev_diffusion_model_bf16.safetensors",

@@ -352,30 +352,26 @@ class ScaledFP8WeightTensor(QTensor):
             return torch.nn.functional.linear(input, self.dequantize(dtype=input.dtype, device=input.device), bias)
         scale_b = scale_b.to(device=x_fp8.device, dtype=torch.float32)
 
-        bias_arg = bias if output_scale is None else None
+        bias_arg = bias
         if bias_arg is not None:
             if bias_arg.device != x_fp8.device:
                 bias_arg = bias_arg.to(x_fp8.device)
             if bias_arg.dtype != input.dtype:
                 bias_arg = bias_arg.to(dtype=input.dtype)
+        fused_bias = bias_arg if output_scale is None and input.dtype != torch.float32 else None
 
         out = torch._scaled_mm(
             x_fp8,
             self._data.t(),
             scale_a,
             scale_b,
-            bias=bias_arg,
+            bias=fused_bias,
             out_dtype=input.dtype,
         )
         if output_scale is not None:
             out *= output_scale.to(device=out.device, dtype=out.dtype).view(1, -1)
-            if bias is not None:
-                bias_arg = bias
-                if bias_arg.device != out.device:
-                    bias_arg = bias_arg.to(out.device)
-                if bias_arg.dtype != out.dtype:
-                    bias_arg = bias_arg.to(dtype=out.dtype)
-                out += bias_arg.view(1, -1)
+        if bias_arg is not None and fused_bias is None:
+            out += bias_arg.view(1, -1)
 
         return out.reshape(*input.shape[:-1], self._data.shape[0])
 

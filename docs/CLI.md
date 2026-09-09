@@ -80,6 +80,19 @@ Queue completed: 3/3 tasks in 5m 23s
 | 1 | Error (file not found, invalid queue, or task failures) |
 | 130 | Interrupted by user (Ctrl+C) |
 
+## MCP Server
+
+```bash
+--mcp                              # Start WanGP as an MCP server without the web UI
+--mcp-transport TRANSPORT          # stdio, sse, or streamable-http
+--mcp-host HOST                    # Host for HTTP transports
+--mcp-port PORT                    # Port for HTTP transports
+--mcp-console-output               # Mirror WanGP output while serving MCP
+--mcp-allow-read-file-system       # Allow agents to submit arbitrary server file paths (disabled by default)
+```
+
+Media IDs returned by the Gallery remain usable when filesystem reads are disabled. Streamable HTTP and SSE servers also expose short-lived Gallery upload/download URLs; stdio does not provide HTTP media transfer.
+
 ### Examples
 ```bash
 # Overnight batch processing
@@ -94,6 +107,26 @@ python wgp.py --process my_queue.zip --verbose 2
 # Combined with other options
 python wgp.py --process queue.zip --output-dir ./out --attention sage2
 ```
+
+## LLM I/O Transcript
+
+```bash
+--llm-io FOLDER                     # Record local and remote LLM traffic as a readable plain-text transcript
+```
+
+WanGP creates a timestamped `.log` file in the supplied folder. Each record is labelled `[OUT → LLM]` or `[IN ← LLM]` and identifies the engine and stream. Text is preserved verbatim; known special tokens include their names and numeric IDs, while other token streams use numeric IDs. Binary media is described by its source, type, dimensions, and size instead of being written as encoded data.
+
+The transcript can contain prompts, conversation history, tool arguments/results, and model output. Enable it only while diagnosing a problem and treat the resulting file as private data.
+
+## Deepy Session Location
+
+```bash
+--deepy-sessions-dir FOLDER          # Override the persistent Deepy sessions folder
+```
+
+The default is `deepy_sessions` in the WanGP installation root. The folder is created just in time, only after multi-session mode is enabled and Deepy receives its first request (or when a session archive is explicitly imported).
+
+Each materialized session keeps its canonical decoder context in `context.json` and an append-only `cards.jsonl` journal of consolidated Web-client commands. Streaming token fragments are not written: a thought, response section, or tool card is journaled once it reaches a safe completed boundary, then those commands are replayed when the session is resumed. During replay, the Web client keeps the transcript hidden and suppresses per-command layout, disclosure, animation, and scroll work before one final refresh.
 
 ## Model and Performance Options
 
@@ -243,6 +276,7 @@ python wgp.py --attention sdpa
 python wgp.py --attention sage
 ```
 - Requires Triton installation
+- On RTX 20XX, install SageAttention 1.0.6
 - 30% faster than SDPA
 - Small quality cost
 
@@ -251,6 +285,7 @@ python wgp.py --attention sage
 python wgp.py --attention sage2
 ```
 - Requires Triton and SageAttention 2.x
+- Requires RTX 30XX or newer (Ampere or newer)
 - 40% faster than SDPA
 - Best performance option
 
@@ -315,3 +350,4 @@ While not command line options, these environment variables can affect behavior:
 - `CUDA_VISIBLE_DEVICES` - Limit visible GPUs
 - `PYTORCH_CUDA_ALLOC_CONF` - CUDA memory allocation settings
 - `TRITON_CACHE_DIR` - Triton cache directory (for Sage attention) 
+- `WAN2GP_DEEPY_TELEMETRY=1` - Enable detailed Deepy decode, MTP, CUDA-memory, and GPU telemetry when verbose level 2 is active (disabled by default)

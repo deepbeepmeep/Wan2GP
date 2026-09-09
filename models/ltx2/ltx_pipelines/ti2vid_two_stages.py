@@ -3,7 +3,7 @@ from collections.abc import Callable, Iterator
 
 import torch
 
-from ..ltx_core.components.diffusion_steps import EulerDiffusionStep, Res2sDiffusionStep
+from ..ltx_core.components.diffusion_steps import EulerAncestralDiffusionStep, EulerDiffusionStep, Res2sDiffusionStep
 from ..ltx_core.components.guiders import CFGGuider, CFGStarRescalingGuider, LtxAPGGuider, MultiModalGuider, MultiModalGuiderParams
 from ..ltx_core.components.noisers import GaussianNoiser
 from ..ltx_core.components.protocols import DiffusionStepProtocol
@@ -190,12 +190,15 @@ class TI2VidTwoStagesPipeline:
         noiser = GaussianNoiser(generator=generator)
         sample_solver = (sample_solver or "euler").lower()
         use_hq_sampler = sample_solver == "res2s"
-        use_distilled_8_steps = sample_solver == "distilled_8_steps"
-        if sample_solver not in {"euler", "res2s", "distilled_8_steps"}:
+        use_ancestral_sampler = sample_solver == "distilled_8_steps_ancestral"
+        use_distilled_8_steps = sample_solver in {"distilled_8_steps", "distilled_8_steps_ancestral"}
+        if sample_solver not in {"euler", "res2s", "distilled_8_steps", "distilled_8_steps_ancestral"}:
             raise ValueError(f"Unsupported LTX2 sampler '{sample_solver}'.")
         skip_stage_2 = bool(skip_stage_2)
         stage_1_pass_no = 0 if skip_stage_2 else 1
-        stepper = Res2sDiffusionStep() if use_hq_sampler else EulerDiffusionStep()
+        stage_1_stepper = Res2sDiffusionStep() if use_hq_sampler else EulerAncestralDiffusionStep() if use_ancestral_sampler else EulerDiffusionStep()
+        stage_2_stepper = Res2sDiffusionStep() if use_hq_sampler else EulerDiffusionStep()
+        ancestral_noise_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 10000) if use_ancestral_sampler else None
         self_refiner_handler = None
         self_refiner_handler_audio = None
         self_refiner_handler_stage2 = None
@@ -433,6 +436,7 @@ class TI2VidTwoStagesPipeline:
                 self_refiner_handler=self_refiner_handler,
                 self_refiner_handler_audio=self_refiner_handler_audio,
                 self_refiner_generator=generator,
+                ancestral_noise_generator=ancestral_noise_generator,
             )
         if interrupt_check is not None and interrupt_check():
             return None, None
@@ -501,7 +505,7 @@ class TI2VidTwoStagesPipeline:
             audio_conditionings=audio_conditionings,
             noiser=noiser,
             sigmas=sigmas,
-            stepper=stepper,
+            stepper=stage_1_stepper,
             denoising_loop_fn=first_stage_denoising_loop,
             components=self.pipeline_components,
             dtype=dtype,
@@ -715,7 +719,7 @@ class TI2VidTwoStagesPipeline:
             audio_conditionings=stage_2_audio_conditionings,
             noiser=noiser,
             sigmas=distilled_sigmas,
-            stepper=stepper,
+            stepper=stage_2_stepper,
             denoising_loop_fn=second_stage_denoising_loop,
             components=self.pipeline_components,
             dtype=dtype,

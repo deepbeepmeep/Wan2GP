@@ -480,9 +480,16 @@ class PreviewSubsystemTests(unittest.TestCase):
             "tqdm": lambda steps, **_: steps,
             "offload": type("Offload", (), {"set_step_no_for_lora": staticmethod(lambda *_: None)}),
             "model_steps": 1,
-            "sigmas_video": _torch.tensor([1.0, 0.5]),
-            "sigmas_audio": _torch.tensor([1.0, 0.5]),
-            "res_coefficients": None,
+            "stage_sigmas_video": _torch.tensor([1.0, 0.5]),
+            "stage_sigmas_audio": _torch.tensor([1.0, 0.5]),
+            "stage_solver": "euler",
+            "pass_no": -1,
+            "effective_sigmas_video": None,
+            "pdd": False,
+            "audio_on_video_schedule": False,
+            "tau_start": 1.0,
+            "tau_denominator": 1,
+            "SOL_ATTN_TAU_END": 1.0,
             "spectrum": None,
             "first_block_cache": None,
             "target_audio_condition_latents": 0,
@@ -493,8 +500,11 @@ class PreviewSubsystemTests(unittest.TestCase):
             "editable_mask": None,
             "denoising_start_step": 0,
             "mask_end_step": 0,
+            "preserve_input_mask_values": False,
+            "_masking_step_mask": lambda *_: None,
+            "grouped_masking": False,
             "offline_spectrum": False,
-            "payload": None,
+            "payload": {"attention_sparsity": 1.0},
             "context": None,
             "audio_scale": 1.0,
             "video": _torch.tensor([1.0]),
@@ -510,6 +520,7 @@ class PreviewSubsystemTests(unittest.TestCase):
 
         class Pipeline:
             transformer = Transformer()
+            audio_only = False
 
             @staticmethod
             def _set_interrupt_state():
@@ -521,8 +532,8 @@ class PreviewSubsystemTests(unittest.TestCase):
 
         captured = []
         namespace["self"] = Pipeline()
-        namespace["callback"] = lambda step, latent, is_final: captured.append((step, latent, is_final))
-        namespace["denoise_pass"]("H3")
+        namespace["callback"] = lambda step, latent, is_final, **_: captured.append((step, latent, is_final))
+        namespace["denoise_pass"]("H3", "")
 
         self.assertEqual([(step, is_final) for step, _, is_final in captured], [(0, False)])
         self.assertTrue(_torch.equal(captured[0][1], _torch.tensor(3.0)))

@@ -71,6 +71,7 @@ class PrismAudioProcessor:
             "status": {PRISMAUDIO_METHOD: "PrismAudio Soundtrack Generation"},
             "config_key": PRISMAUDIO_CONFIG_KEY,
             "pos": 21,
+            "description": "Generate a prompt-guided soundtrack for the video with PrismAudio.",
         }
 
     @classmethod

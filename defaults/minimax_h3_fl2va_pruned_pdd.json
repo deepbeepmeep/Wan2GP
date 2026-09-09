@@ -1,0 +1,16 @@
+{
+    "model": {
+        "name": "MiniMax H3 FL2VA Pruned PDD 8-Step 20B",
+        "architecture": "minimax_h3_fl2va_pruned",
+        "description": "Uses the smaller pruned model to generate synchronized video and audio from text and optional first/last frames. Each PDD step merges four learned denoising-interval outputs, covering 32 intervals in only 8 model evaluations.",
+        "URLs": "minimax_h3_fl2va_pruned",
+        "modules": ["minimax_h3_fl2va_pdd"],
+        "loras": "minimax_h3_fl2va_pdd",
+        "loras_multipliers": "minimax_h3_fl2va_pdd",
+        "pdd": true
+    },
+    "num_inference_steps": 8,
+    "guidance_phases": 1,
+    "sample_solver": "euler",
+    "prompt": "integrated_multimodal_description: [Shot 1] A five-second cinematic single take inside a rain-lashed glass observatory at midnight. A radio astronomer presses an antique transmitter and says clearly (S1) <d>[English] If you can hear me, follow this signal.</d> One brilliant blue pulse races across a translucent star map as the camera slowly pushes closer.\noverall_soundscape: Rain on glass, a low electrical hum, three receiver tones, the synchronized voice, and a short stereo transmission pulse."
+}

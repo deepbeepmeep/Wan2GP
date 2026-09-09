@@ -16,6 +16,7 @@ class Config:
     eos: int = -1
     kvcache_block_size: int = 256
     num_kvcache_blocks: int = -1
+    kv_cache_int8: bool = False
     model_dir: str | None = None
     model_file: str | None = None
 

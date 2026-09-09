@@ -111,6 +111,7 @@ class ProcessFormController:
         library,
         get_model_def,
         output_resolution_values: set[str],
+        output_resolution_choices: list[tuple[str, str]],
         source_audio_track_values: set[str],
         ratio_values: set[str],
         default_model_type: str | None = None,
@@ -118,6 +119,7 @@ class ProcessFormController:
         self.library = library
         self.get_model_def = get_model_def
         self.output_resolution_values = output_resolution_values
+        self.output_resolution_choices = output_resolution_choices
         self.source_audio_track_values = source_audio_track_values
         self.ratio_values = ratio_values
         self.default_model_type = default_model_type or catalog.DEFAULT_MODEL_TYPE
@@ -228,7 +230,10 @@ class ProcessFormController:
         return gr.update(value=prompt, visible=not self.library.hides_prompt(process_name, main_state, user_refs))
 
     def output_resolution_update(self, process_name: str, main_state: dict | None, user_refs: list[str] | None, output_resolution: str):
-        return gr.update(value=output_resolution, visible=not self.library.hides_output_resolution(process_name, main_state, user_refs))
+        choices = list(self.output_resolution_choices)
+        if output_resolution in self.output_resolution_values and not any(value == output_resolution for _, value in choices):
+            choices.insert(0, (output_resolution, output_resolution))
+        return gr.update(choices=choices, value=output_resolution, visible=not self.library.hides_output_resolution(process_name, main_state, user_refs))
 
     def overlap_control_updates(self, process_name: str, main_state: dict | None, user_refs: list[str] | None):
         if self.library.hides_sliding_window_overlap(process_name, main_state, user_refs):

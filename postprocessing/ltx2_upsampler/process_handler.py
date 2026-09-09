@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from postprocessing import spatial_upsamplers as upsampler_api
 from shared.utils.virtual_media import build_virtual_media_path
 
 class LTXVideoUpsamplerProcessHandler:
@@ -9,7 +10,7 @@ class LTXVideoUpsamplerProcessHandler:
     model_type = "__system_flashvsr"
     model_label = "WanGP System Video Postprocessing"
     target_control_label = "Upsampling"
-    default_target_control = "ltx232"
+    default_target_control = "ltx23*2"
     default_chunk_size_seconds = 3.0
     frame_step = 1
     minimum_requested_frames = 1
@@ -36,7 +37,11 @@ class LTXVideoUpsamplerProcessHandler:
 
     @staticmethod
     def normalize_target_control(value: str | None) -> str:
-        return str(value or "") if str(value or "") in {"ltx232", "ltx252"} else "ltx232"
+        for method in ("ltx23", "ltx25"):
+            scale = upsampler_api.parse_multiplier_suffix(value, method, 2.0)
+            if scale == 2.0:
+                return upsampler_api.format_multiplier_value(method, scale)
+        return LTXVideoUpsamplerProcessHandler.default_target_control
 
     def target_control_choices_for_process(self, process_settings: dict) -> list[tuple[str, str]]:
         target = self.normalize_target_control(process_settings["target_ratio"])
@@ -50,7 +55,7 @@ class LTXVideoUpsamplerProcessHandler:
 
     def output_resolution_token(self, value: str | None) -> str:
         target = self.normalize_target_control(value)
-        return f"{target[:5]}-x2"
+        return f"{target.partition('*')[0]}-x2"
 
     def build_queue_settings(self, process_settings: dict, *, source_path: str, start_frame: int, frame_count: int, target_control: str, seed: int, continue_cache: Any, audio_track_no: int | None = None) -> dict:
         target_control = self.normalize_target_control_for_process(target_control, process_settings)

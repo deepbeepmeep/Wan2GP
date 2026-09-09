@@ -1,0 +1,12 @@
+{
+  "_class_name": "MiniMaxMusic3Transformer1DModel",
+  "_diffusers_version": "0.40.0.dev0",
+  "attention_head_dim": 64,
+  "condition_dim": 2048,
+  "ff_inner_dim": 8192,
+  "fourier_embedding_dim": 256,
+  "in_channels": 128,
+  "num_attention_heads": 32,
+  "num_layers": 36,
+  "rotary_dim": 32
+}

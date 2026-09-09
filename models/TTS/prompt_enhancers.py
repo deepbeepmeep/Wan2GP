@@ -85,3 +85,21 @@ HEARTMULA_LYRIC_PROMPT = (
     "Let it ring, let it fall\n"
     "Your echo is the last call\n"
 )
+
+MINIMAX_MUSIC3_LYRIC_PROMPT = HEARTMULA_LYRIC_PROMPT.replace(
+    "[Pre-Chorus], [Chorus], [Bridge], and [Outro]",
+    "[Pre-Chorus], [Chorus], [Post-Chorus], [Bridge], [Instrumental], [Solo], and [Outro]",
+)
+
+MINIMAX_MUSIC3_CAPTION_PROMPT = (
+    "You are a music-production caption writer for a text-to-music model. Rewrite the user's music brief into a "
+    "specific, coherent description of the intended recording. Preserve every explicit creative constraint and "
+    "do not invent artist names, copyrighted-song imitations, or lyric lines. When lyrics are supplied as context, "
+    "use their theme, section order, emotional arc, language, and vocal needs to direct the music, but do not quote "
+    "or reproduce them. Cover genre and subgenre, era or regional influence when relevant, mood, tempo and meter, "
+    "harmonic character, instrumentation, vocal delivery and timbre, production texture, dynamics, and the temporal "
+    "arrangement from intro through ending. Resolve contradictions sensibly and avoid generic praise. Output only a "
+    "250-450 word caption under exactly these three headings: `Global Metadata:`, `Vocal Details:`, and "
+    "`Arrangement:`. Put each heading on its own line, do not insert empty lines, and do not add commentary, "
+    "bullet points, JSON, markdown fences, or lyrics."
+)

@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 
 from . import media_io as media
+from . import output_paths
 from . import video_buffers as video
 
 
@@ -11,16 +12,18 @@ from . import video_buffers as video
 class MuxSession:
     mux_process: object | None = None
     output_path_for_write: str = ""
-    video_only_output_path: str = ""
+    mux_output_path: str = ""
     reserved_metadata_path: str | None = None
+    initial_metadata: dict | None = None
     stopped: bool = False
     mux_finished: bool = False
-    owns_output_path_for_write: bool = False
-    owns_video_only_output: bool = False
 
     def set_output_path(self, output_path: str) -> None:
         self.output_path_for_write = output_path
-        self.video_only_output_path = ""
+        self.mux_output_path = ""
+
+    def set_initial_metadata(self, metadata: dict) -> None:
+        self.initial_metadata = metadata
 
     def ensure_started(
         self,
@@ -40,17 +43,14 @@ class MuxSession:
     ) -> None:
         if self.mux_process is not None:
             return
-        self.reserved_metadata_path = media.create_reserved_metadata_file(self.output_path_for_write)
-        self.owns_output_path_for_write = use_live_av_mux
-        self.owns_video_only_output = not use_live_av_mux
-        if self.owns_video_only_output:
-            self.video_only_output_path = media.reserve_video_only_output_path(self.output_path_for_write)
+        self.mux_output_path = media.reserve_working_output_path(self.output_path_for_write)
+        self.reserved_metadata_path = media.create_reserved_metadata_file(self.mux_output_path, self.initial_metadata)
         if process_is_hdr:
             hdr_video_crf = server_config.get("hdr_video_crf", 8)
-            self.mux_process = media.start_hdr_av_mux_process(ffmpeg_path, self.output_path_for_write, resolved_width, resolved_height, fps_float, hdr_video_crf, output_container, source_path, exact_start_seconds, selected_audio_track, self.reserved_metadata_path, source_audio_duration_seconds) if use_live_av_mux else media.start_hdr_video_mux_process(ffmpeg_path, self.video_only_output_path, resolved_width, resolved_height, fps_float, hdr_video_crf, output_container, self.reserved_metadata_path)
+            self.mux_process = media.start_hdr_av_mux_process(ffmpeg_path, self.mux_output_path, resolved_width, resolved_height, fps_float, hdr_video_crf, output_container, source_path, exact_start_seconds, selected_audio_track, self.reserved_metadata_path, source_audio_duration_seconds) if use_live_av_mux else media.start_hdr_video_mux_process(ffmpeg_path, self.mux_output_path, resolved_width, resolved_height, fps_float, hdr_video_crf, output_container, self.reserved_metadata_path)
             return
         video_codec = server_config.get("video_output_codec", "libx264_8")
-        self.mux_process = media.start_av_mux_process(ffmpeg_path, self.output_path_for_write, resolved_width, resolved_height, fps_float, video_codec, output_container, source_path, exact_start_seconds, selected_audio_track, self.reserved_metadata_path, source_audio_duration_seconds) if use_live_av_mux else media.start_video_mux_process(ffmpeg_path, self.video_only_output_path, resolved_width, resolved_height, fps_float, video_codec, output_container, self.reserved_metadata_path)
+        self.mux_process = media.start_av_mux_process(ffmpeg_path, self.mux_output_path, resolved_width, resolved_height, fps_float, video_codec, output_container, source_path, exact_start_seconds, selected_audio_track, self.reserved_metadata_path, source_audio_duration_seconds) if use_live_av_mux else media.start_video_mux_process(ffmpeg_path, self.mux_output_path, resolved_width, resolved_height, fps_float, video_codec, output_container, self.reserved_metadata_path)
 
     def write_chunk(self, *, process_is_hdr: bool, video_tensor_hdr, video_tensor_uint8, start_frame: int, frame_count: int):
         if process_is_hdr and video_tensor_hdr is not None:
@@ -62,14 +62,19 @@ class MuxSession:
         self.mux_finished = True
         return return_code, stderr, forced_termination
 
+    def promote_output(self, *, notify=None) -> tuple[str, str]:
+        source_path = self.mux_output_path
+        promoted_path = output_paths.promote_output_file(source_path, self.output_path_for_write, notify=notify)
+        self.output_path_for_write = promoted_path
+        self.mux_output_path = promoted_path
+        return source_path, promoted_path
+
     def cleanup_partial_outputs(self) -> None:
         if self.mux_process is not None and not self.mux_finished and self.mux_process.poll() is None:
             try:
-                media.finalize_mux_process(self.mux_process)
+                self.finalize()
             except Exception:
                 pass
-        if self.owns_output_path_for_write and self.mux_process is not None and not self.stopped and self.mux_process.returncode not in (0, None) and os.path.isfile(self.output_path_for_write):
-            media.delete_file_if_exists(self.output_path_for_write, label="continuation output")
-        if self.owns_video_only_output:
-            media.delete_file_if_exists(self.video_only_output_path, label="video-only output")
+        if self.mux_output_path and os.path.isfile(self.mux_output_path) and os.path.getsize(self.mux_output_path) <= 0:
+            media.delete_file_if_exists(self.mux_output_path, label="empty working output")
         media.delete_file_if_exists(self.reserved_metadata_path, label="reserved metadata file")

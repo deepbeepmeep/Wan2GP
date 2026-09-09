@@ -21,7 +21,10 @@ class MyTemporalUpsampler:
             "method_pos": {"mytemporal": 100},                # optional per-method order
             "methods": [("MyTemporalUpsampler", "mytemporal")],
             "multipliers": {"mytemporal": (2.0, 4.0)},        # supported multipliers per method
-            "default_temporal_upsampling": "mytemporal2",
+            "default_temporal_upsampling": "mytemporal*2",
+            "description": "Interpolate smoother video frames.", # optional discovery fallback
+            "method_descriptions": {"mytemporal": "..."},    # optional per-method descriptions
+            "method_parameters": {"mytemporal": [...]},      # optional extra parameter descriptors
         }
 
     def is_upsampling(self, value): ...                       # does this handler own the value?
@@ -33,9 +36,15 @@ class MyTemporalUpsampler:
     def query_download_def(self, *, enabled_only=True): ...    # -> one process_files definition
     def query_download_defs(self, *, enabled_only=True): ...   # -> list of process_files definitions
     def load_upsampler(self, value, **kwargs): ...             # optional pre-dispatch load hook
+    def supports_loaded_model(self, value, context): ...       # optional core-model borrowing
+    def release_private_runtime(self): ...                     # optional before borrowing core model
     def persistent_models(self): ...                          # optional, True keeps model in RAM and unloads VRAM only
     def release_vram(self): ...                               # optional Configuration-tab release hook
     def enabled(self): ...                                    # optional UI gating
+    @property
+    def status(self): ...                                     # optional: "enabled" or "disabled"
+    @property
+    def reason_disabled(self): ...                            # optional user-facing reason
     # optional Configuration tab integration:
     def default_config(self): ...                             # -> dict
     def normalize_config_section(self, section): ...          # -> normalized dict
@@ -44,9 +53,21 @@ class MyTemporalUpsampler:
     def config_requires_release(self, old, new, changed_keys): ...
 ```
 
+Discovery evaluates the historical `enabled()` method first: `True` maps to
+`enabled` and `False` to `disabled`. Only handlers without `enabled()` use the
+optional `status` property. `unknown` means neither mechanism supplied a valid
+status. A non-empty `reason_disabled` is exposed only for disabled handlers.
+Deepy lists all registered temporal processors with this metadata and refuses
+dispatch when the status is disabled.
+
 `SimpleScaleSuffixMixin` provides `is_upsampling` / `split_value` / `build_value`
-for the common `<method><multiplier>` value encoding, for example `rife2` or
-`mytemporal4`.
+for the common `<method>*<multiplier>` value encoding, for example `rife*2` or
+`mytemporal*4`. Its parser also accepts the former concatenated encoding so
+existing settings and queues continue to work, while `build_value()` always
+emits the `*` form.
+The `*` character is reserved and must not appear inside a method id. Custom
+handlers can use the registry's `format_multiplier_value()` and
+`parse_multiplier_suffix()` helpers to follow the same mapping rule.
 
 Handler-exposed method ids in `methods`, `multipliers`, and `method_pos` must be
 multiplier-free. The multiplier only appears in serialized
@@ -55,8 +76,19 @@ multiplier-free. The multiplier only appears in serialized
 
 Dropdown entries are sorted by method position, then by method label. A handler
 can define a default `pos` and override individual methods with `method_pos`.
-Position is independent of multiplier; expanded choices such as `mytemporal2`
-and `mytemporal4` share the `mytemporal` method position.
+Position is independent of multiplier; expanded choices such as `mytemporal*2`
+and `mytemporal*4` share the `mytemporal` method position.
+
+Discovery consumers infer the required `multiplier` parameter from
+`multipliers`. Optional `description`, `method_descriptions`, and
+`method_parameters` fields add reusable presentation and parameter metadata.
+The Post Processing and Late Postprocessing information popup automatically
+lists registered handlers using `description` and any per-method details from
+`method_descriptions`.
+Each `method_parameters` entry is a list of dictionaries with at least `name`;
+it may also define `type`, `description`, `required`, `default`, `enum`, and a
+queue-setting override named `setting`. These fields are optional so older and
+third-party handlers remain compatible.
 
 ## Runtime Contract
 
@@ -83,6 +115,14 @@ unloads the main generation offload object before running the temporal upsampler
 and releases registered extension resources after use. If `persistent_models()`
 returns `True`, WanGP unloads the handler VRAM through the offload registry but
 keeps persistent CPU/RAM state available for the next call.
+
+A temporal handler may borrow an already loaded compatible generation model by
+implementing `supports_loaded_model(value, context)`. On a match, dispatch skips
+`load_upsampler()`, calls `release_private_runtime()` when present, and passes
+the core-owned context as `loaded_model_context` to `temporal_upsample()`. A
+non-match follows the existing private-runtime path. The handler may use the
+borrowed model and MMGP offload object for that call, but must not release them
+and must restore any temporary model state before returning.
 
 ## Registration
 
@@ -133,12 +173,17 @@ If a config change requires releasing loaded runtime state, implement either
 
 ## Built-In Example
 
-RIFE is implemented by `postprocessing/rife/temporal_upsampler.py`:
+RIFE v4.26 is implemented by `postprocessing/rife/temporal_upsampler.py`:
 
 - method id: `rife`
-- serialized values: `rife2`, `rife4`
-- config key: `rife`
-- config section: `wgp_config["temporal_upsamplers"]["rife"]`
+- serialized values: `rife*2`, `rife*3`, `rife*4`
+- model file: `rife4.26.pkl` from `DeepBeepMeep/Wan2.1`
+- no model-version configuration; all multipliers use RIFE v4.26
+
+For a minimal external handler, see the
+[Temporal Blend reference plugin](https://github.com/deepbeepmeep/wan2gp-blender-upsampler).
+It exposes `blend*2` and supplies the description displayed by the Temporal
+Upsampling information button.
 
 ## Extension Offload Object Registry
 

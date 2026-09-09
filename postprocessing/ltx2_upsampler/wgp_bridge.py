@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from postprocessing.spatial_upsamplers import SimpleScaleSuffixMixin, UPSAMPLER_PROFILE_VIDEO, UPSAMPLER_TYPE_POSTPROCESSING
 
-from .runtime import DEFAULT_WINDOW_FRAMES, MAX_WINDOW_FRAMES, MODEL_TYPES, RUNTIME_NAME, TEMPORAL_STRIDE, WINDOW_OVERLAP_FRAMES, lora_urls
+from .runtime import DEFAULT_WINDOW_FRAMES, MAX_WINDOW_FRAMES, MODEL_TYPES, RUNTIME_NAME, TEMPORAL_STRIDE, WINDOW_OVERLAP_FRAMES, lora_urls, supported_spatial_size
 
 DEFAULT_PROMPT = "high quality, detailed, sharp, natural textures"
 
@@ -75,8 +75,11 @@ class LTXVideoUpsamplerBridge(SimpleScaleSuffixMixin):
             "methods": list(cls.METHODS),
             "vae_methods": [],
             "multipliers": cls.MULTIPLIERS,
-            "default_spatial_upsampling": "ltx232",
+            "default_spatial_upsampling": "ltx23*2",
             "default_prompt": DEFAULT_PROMPT,
+            "source_audio_conditioning": True,
+            "postprocessing_category": "upsampler",
+            "description": "Spatially upscale video x2 with the selected LTX 2.3 or 2.5 model, preserving motion and conditioning on source audio. Long videos use deterministic overlapping windows; window size and overlap are configurable in Extensions.",
         }
 
     def enabled(self) -> bool:
@@ -124,7 +127,7 @@ class LTXVideoUpsamplerBridge(SimpleScaleSuffixMixin):
 
         load_model(self.split_value(spatial_upsampling)[0])
 
-    def upscale(self, sample, spatial_upsampling, *, vae_config: int, vae_tile_size=None, seed=0, fps=24.0, frame_offset=0, prompt="", negative_prompt="", still_image=False, abort_callback=None, progress_callback=None, **kwargs):
+    def upscale(self, sample, spatial_upsampling, *, vae_config: int, vae_tile_size=None, seed=0, fps=24.0, frame_offset=0, prompt="", negative_prompt="", audio_waveform=None, audio_sample_rate=0, source_audio_path=None, still_image=False, abort_callback=None, progress_callback=None, **kwargs):
         if still_image:
             raise ValueError("LTX video upsampling is available for videos only")
         split = self.split_value(spatial_upsampling)
@@ -133,9 +136,9 @@ class LTXVideoUpsamplerBridge(SimpleScaleSuffixMixin):
         from .runtime import RUNTIME, upscale_video
 
         if vae_tile_size is None:
-            vae_tile_size = RUNTIME.vae_tile_size(vae_config, int(sample.shape[-2] * 2), int(sample.shape[-1] * 2))
+            vae_tile_size = RUNTIME.vae_tile_size(vae_config, supported_spatial_size(sample.shape[-2]) * 2, supported_spatial_size(sample.shape[-1]) * 2)
         config = self.config()
-        return upscale_video(sample, prompt=prompt, negative_prompt=negative_prompt, seed=seed, fps=fps, window_size=config["window_size"], window_overlap=config["window_overlap"], frame_offset=frame_offset, vae_tile_size=vae_tile_size, abort_callback=abort_callback, progress_callback=progress_callback)
+        return upscale_video(sample, prompt=prompt, negative_prompt=negative_prompt, audio_waveform=audio_waveform, audio_sample_rate=audio_sample_rate, source_audio_path=source_audio_path, seed=seed, fps=fps, window_size=config["window_size"], window_overlap=config["window_overlap"], frame_offset=frame_offset, vae_tile_size=vae_tile_size, abort_callback=abort_callback, progress_callback=progress_callback)
 
     def release_vram(self) -> None:
         from .runtime import release_model

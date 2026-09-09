@@ -94,7 +94,7 @@ class KVCacheManager:
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         device = torch.device(device)
-        cache_dtype = torch.float16 if device.type == "cuda" else dtype
+        cache_dtype = dtype
         self.kv_cache = torch.empty(
             2,
             num_layers,

@@ -95,6 +95,7 @@ WanGP groups audio-only models in the same selector:
 - [IndexTTS2](modeltype:index_tts2) supports zero-shot voice cloning, long dialogue, and text- or audio-guided emotion.
 - [OmniVoice](modeltype:omnivoice) supports multilingual speech, voice design, cloning, and dialogue.
 - Chatterbox and KugelAudio provide alternative speech and cloned-dialogue workflows.
+- [MiniMax Music 3](modeltype:minimax_music3) generates complete lyrics- and description-conditioned songs up to five minutes with native 44.1 kHz stereo output. Its flow transformer and 8B autoregressive Qwen text encoder use persistent ConvRot INT8 checkpoints, while its RVQ decoder has a dedicated accelerated checkpoint and all placement remains MMGP-managed. The shared `lm_decoder_engine` setting exposes CUDA-graph (`cg`) decoding and a `vllm` path that is selected only when both FlashAttention2 and Triton are available.
 - [ACE-Step 1.5 XL](modeltype:ace_step_v1_5_xl) and HeartMuLa generate songs, including lyrics-driven tracks.
 - [Stable Audio 3](modeltype:stable_audio3_small) generates music, loops, ambience, and sound effects.
 - Scenema Audio and DramaBox use LTX-2's audio knowledge for expressive scene-aware speech and dialogue.

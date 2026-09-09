@@ -1,4 +1,5 @@
 import copy
+import fnmatch
 import os
 import re
 
@@ -271,10 +272,10 @@ def _metadata_matches_filter(value, expected):
     if expected is None:
         return True
     if isinstance(value, (list, tuple, set)):
-        actual = {str(one).casefold() for one in value}
-        return any(one.casefold() in actual for one in expected)
+        actual = [str(one).casefold() for one in value]
+        return any(fnmatch.fnmatchcase(one, pattern.casefold()) for one in actual for pattern in expected)
     actual = str(value or "").casefold()
-    return any(actual == one.casefold() for one in expected)
+    return any(fnmatch.fnmatchcase(actual, pattern.casefold()) for pattern in expected)
 
 
 def list_model_defs(models_def, *, family=None, base_model_type=None, finetune=None, model_type=None, main_output=None, inputs=None):
@@ -285,7 +286,7 @@ def list_model_defs(models_def, *, family=None, base_model_type=None, finetune=N
     records = []
     for one_model_type, model_def in models_def.items():
         metadata = model_def.get(METADATA_KEY, {})
-        if requested_model_types is not None and one_model_type not in requested_model_types:
+        if not _metadata_matches_filter(one_model_type, requested_model_types):
             continue
         if not _metadata_matches_filter(metadata.get("family"), family) and not _metadata_matches_filter(metadata.get("family_label"), family):
             continue

@@ -162,6 +162,25 @@ def _decode_json_tensor(tensor):
         return {}
 
 
+def _decode_metadata(metadata):
+    if not isinstance(metadata, dict):
+        return {}
+    value = metadata.get("_quantization_metadata", {})
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return value.get("layers", {}) if isinstance(value, dict) else {}
+
+
+def _find_layer_config(layers, base):
+    config = layers.get(base)
+    if config is not None:
+        return config
+    return next((value for name, value in layers.items() if base.endswith(name) or name.endswith(base)), {})
+
+
 def _convrot_group_size(config):
     if not isinstance(config, dict) or not bool(config.get("convrot", False)):
         return 0
@@ -226,7 +245,8 @@ def _debug_forward_dtype(module, input, rotated, qweight):
     )
 
 
-def _collect_specs(state_dict):
+def _collect_specs(state_dict, metadata=None):
+    layers = _decode_metadata(metadata)
     specs = []
     for key, tensor in state_dict.items():
         if not key.endswith(".weight") or getattr(tensor, "dtype", None) != torch.int8:
@@ -234,17 +254,19 @@ def _collect_specs(state_dict):
         base = key[:-7]
         scale = state_dict.get(base + ".weight_scale")
         quant_config = state_dict.get(base + ".comfy_quant")
-        if scale is None or quant_config is None or getattr(scale, "dtype", None) is None or getattr(quant_config, "dtype", None) != torch.uint8:
+        if scale is None or getattr(scale, "dtype", None) is None:
             continue
-        config = _decode_json_tensor(quant_config) if torch.is_tensor(quant_config) else {}
-        if not isinstance(config, dict):
+        config = _find_layer_config(layers, base)
+        if not config and getattr(quant_config, "dtype", None) == torch.uint8:
+            config = _decode_json_tensor(quant_config)
+        if not isinstance(config, dict) or config.get("format") != "int8_tensorwise":
             continue
         specs.append({"name": base, "weight": tensor, "scale": scale, "config": config})
     return specs
 
 
-def detect(state_dict, verboseLevel=1):
-    specs = _collect_specs(state_dict)
+def detect(state_dict, verboseLevel=1, metadata=None):
+    specs = _collect_specs(state_dict, metadata)
     if not specs:
         return {"matched": False, "kind": "none", "details": {}}
     names = [spec["name"] for spec in specs[:8]]
@@ -252,10 +274,10 @@ def detect(state_dict, verboseLevel=1):
     return {"matched": True, "kind": HANDLER_NAME, "details": {"count": len(specs), "convrot_count": convrot_count, "names": names}}
 
 
-def convert_to_quanto(state_dict, default_dtype, verboseLevel=1, detection=None):
+def convert_to_quanto(state_dict, default_dtype, verboseLevel=1, detection=None, metadata=None):
     if detection is not None and not detection.get("matched", False):
         return {"state_dict": state_dict, "quant_map": {}}
-    specs = _collect_specs(state_dict)
+    specs = _collect_specs(state_dict, metadata)
     if not specs:
         return {"state_dict": state_dict, "quant_map": {}}
     quant_map = {}

@@ -43,6 +43,10 @@ class SeedVCProcessor:
             },
             "config_key": "seedvc",
             "pos": 30,
+            "method_descriptions": {
+                SEEDVC_ONE_SPEAKER_METHOD: "Replace one speaker's voice using a target voice sample.",
+                SEEDVC_TWO_SPEAKERS_METHOD: "Replace two speakers' voices using two target voice samples.",
+            },
         }
 
     @classmethod

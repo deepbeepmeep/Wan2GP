@@ -9,6 +9,10 @@ from shared.match_archi import match_nvidia_architecture
 RESOLUTION_FILE = "resolutions.json"
 
 DEFAULT_RESOLUTION_CHOICES_4K = [
+    # 4096p
+    ("4096x4096 (1:1)", "4096x4096"),
+    ("5440x3072 (16:9)", "5440x3072"),
+    ("3072x5440 (9:16)", "3072x5440"),
     # 4K
     ("3840x2176 (16:9)", "3840x2176"),
     ("2176x3840 (9:16)", "2176x3840"),
@@ -84,6 +88,7 @@ GROUP_THRESHOLDS = {
     "1080p": 1920 * 1088,
     "1440p": 2560 * 1440,
     "2160p": 3840 * 2176,
+    "4096p": 4096 * 4096,
 }
 
 GROUP_TIERS = {
@@ -96,6 +101,7 @@ GROUP_TIERS = {
     "1080p": 1080,
     "1440p": 1440,
     "2160p": 2160,
+    "4096p": 4096,
 }
 
 CATEGORY_ALIASES = {

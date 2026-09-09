@@ -107,12 +107,17 @@ def _reference_t_span(length, time_scale=1.0):
     return sum(_FRAME_RESCALE * time_scale * _FRAME_PER_TOKEN[index % len(_FRAME_PER_TOKEN)] for index in range(length))
 
 
-def _frame_grid(latent_height, latent_width, patch_h, patch_w):
-    sqrt_area = np.sqrt(latent_height * latent_width)
-    height = _axis_from_sqrt_area(latent_height, patch_h, sqrt_area)
-    width = _axis_from_sqrt_area(latent_width, patch_w, sqrt_area)
+def _frame_grid(latent_height, latent_width, patch_h, patch_w, spatial_context=None):
+    canvas_height, canvas_width, top, left = ((latent_height, latent_width, 0, 0)
+                                                if spatial_context is None else spatial_context)
+    sqrt_area = np.sqrt(canvas_height * canvas_width)
+    full_height = _axis_from_sqrt_area(canvas_height, patch_h, sqrt_area)
+    full_width = _axis_from_sqrt_area(canvas_width, patch_w, sqrt_area)
+    height_start, width_start = top // patch_h, left // patch_w
+    height = full_height[height_start:height_start + latent_height // patch_h]
+    width = full_width[width_start:width_start + latent_width // patch_w]
     grids = torch.meshgrid(height, width, indexing="ij")
-    return torch.stack([grid.reshape(-1) for grid in grids], dim=-1), width
+    return torch.stack([grid.reshape(-1) for grid in grids], dim=-1), full_width
 
 
 def _fill_audio_positions(position_ids, rows, length, origin, width_grid):
@@ -142,7 +147,8 @@ def _fill_audio_condition_positions(position_ids, start, anchors, history_origin
 
 def build_packed_sequence(text_token_tags, num_latent_frames, latent_height, latent_width, num_audio_latents,
                           patch_size, keyframe_anchors=(), video_time_scale=1.0, audio_condition_anchors=(),
-                          target_condition_audio_latents=0, target_condition_video_frames=0):
+                          target_condition_audio_latents=0, target_condition_video_frames=0,
+                          target_spatial_context=None):
     _, patch_h, patch_w = patch_size
     rows_per_frame = (latent_height // patch_h) * (latent_width // patch_w)
     text_len = int(text_token_tags.shape[0])
@@ -158,7 +164,7 @@ def build_packed_sequence(text_token_tags, num_latent_frames, latent_height, lat
 
     position_ids = torch.zeros(sequence_length, 3, dtype=torch.float64)
     position_ids[:text_len, 0] = torch.arange(text_len, dtype=torch.float64)
-    frame_grid, width_grid = _frame_grid(latent_height, latent_width, patch_h, patch_w)
+    frame_grid, width_grid = _frame_grid(latent_height, latent_width, patch_h, patch_w, target_spatial_context)
     history_frames = sum(_unpack_keyframe_anchor(entry)[1] for entry in keyframe_anchors if _unpack_keyframe_anchor(entry)[0] == "history")
     target_origin = float(text_len) + _reference_t_span(history_frames, video_time_scale)
     target_times = _video_t_grid(num_latent_frames, target_origin, video_time_scale)
@@ -204,10 +210,11 @@ def build_packed_sequence(text_token_tags, num_latent_frames, latent_height, lat
 def build_ref2va_packed_sequence(text_token_tags, references, num_latent_frames, latent_height, latent_width,
                                  num_audio_latents, patch_size, video_time_scale=1.0, keyframe_anchors=(),
                                  audio_condition_anchors=(), target_condition_audio_latents=0,
-                                 target_condition_video_frames=0):
+                                 target_condition_video_frames=0, target_spatial_context=None):
     _, patch_h, patch_w = patch_size
     text_len = int(text_token_tags.shape[0])
-    target_frame_grid, target_width_grid = _frame_grid(latent_height, latent_width, patch_h, patch_w)
+    target_frame_grid, target_width_grid = _frame_grid(latent_height, latent_width, patch_h, patch_w,
+                                                       target_spatial_context)
     rows_per_target_frame = target_frame_grid.shape[0]
     target_video_rows = num_latent_frames * target_frame_grid.shape[0]
     target_audio_rows = num_audio_latents * MINIMAX_H3_AUDIO_CHANNELS

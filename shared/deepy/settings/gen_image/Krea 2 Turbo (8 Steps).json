@@ -1,0 +1,11 @@
+{
+    "settings_version": 2.73,
+    "model_type": "krea2_turbo",
+    "prompt": "",
+    "image_mode": 1,
+    "resolution": "1024x1024",
+    "num_inference_steps": 8,
+    "guidance_scale": 0,
+    "type": "Krea 2 Turbo (8 Steps)",
+    "batch_size": 1
+}

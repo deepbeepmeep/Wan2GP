@@ -3,11 +3,10 @@
     "video_length": 241,
     "sliding_window_size": 501,
     "resolution": "1280x720",
-    "type": "LTX-2 2.3 Distilled",
-    "audio_prompt_type": "A",	
-    "settings_version": 2.55,
+    "type": "LTX-2 2.3 Distilled 1.0",
+    "audio_prompt_type": "A",
     "base_model_type": "ltx2_22B",
-	"guidance_phases":2,
-	"settings_version": 2.58,	
+	"guidance_phases": 2,
+	"settings_version": 2.58,
     "model_type": "ltx2_22B_distilled"
 }

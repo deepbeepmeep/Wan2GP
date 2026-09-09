@@ -174,3 +174,14 @@ class RMSNorm(nn.Module):
         if self._can_use_triton(x, residual):
             return self._triton_add_rms_forward(x, residual)
         return self._fallback_add_rms_forward(x, residual)
+
+    def forward_list(self, state_list: list[torch.Tensor | None]) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        x, residual = state_list
+        state_list.clear()
+        return self.forward(x, residual)
+
+
+# Register after definitions to preserve Triton's line-number-sensitive cache keys.
+if triton is not None:
+    from shared.kernels.triton_compilation_log import install_triton_compilation_logger
+    install_triton_compilation_logger()

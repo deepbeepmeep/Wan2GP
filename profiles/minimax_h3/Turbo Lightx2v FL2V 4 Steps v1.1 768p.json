@@ -1,0 +1,9 @@
+{
+    "activated_loras": [
+        "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/loras/minimax_h3_lightx2v_fl2v_turbo_4step_alpha128_v1.1_768p_bf16.safetensors"
+    ],
+    "loras_multipliers": "1.0",
+    "num_inference_steps": 4,
+    "guidance_scale": 1,
+    "flow_shift": 6
+}

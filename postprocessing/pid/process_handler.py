@@ -30,7 +30,7 @@ class PiDProcessHandler:
 
         split = split_pid_upsampling(value)
         if split is not None and is_pid_post_upsampling(value):
-            return f"{split[0]}{split[1]:g}"
+            return PiDBridge.build_value(*split)
         backbone = pid_backbone_for_upsampling(value)
         return PID_QWEN_POST_UPSAMPLING_VALUE if backbone == "qwen" else PID_FLUX2_POST_UPSAMPLING_VALUE if backbone == "flux2" else PID_FLUX_POST_UPSAMPLING_VALUE
 

@@ -40,7 +40,7 @@ class _FakeRuntimeModule:
     def get_model_def(self, model_type):
         return {"name": "LTX"} if model_type == MODEL_TYPE else None
 
-    def get_default_settings(self, model_type):
+    def get_factory_settings(self, model_type):
         if model_type != MODEL_TYPE:
             raise ValueError(model_type)
         return copy.deepcopy(self.defaults)

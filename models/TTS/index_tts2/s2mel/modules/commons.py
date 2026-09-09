@@ -523,7 +523,7 @@ def _load_s2mel_checkpoint_state(path):
     if str(path).lower().endswith(".safetensors"):
         from safetensors.torch import load_file
 
-        flat_state = load_file(path, device="cpu")
+        flat_state = load_file(path, device="cpu", writable_tensors=False)
         nested_net = {}
         for key, value in flat_state.items():
             norm_key = key[4:] if key.startswith("net.") else key

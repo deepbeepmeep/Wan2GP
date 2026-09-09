@@ -20,8 +20,21 @@ class MagicMaskAbort(Exception):
     pass
 
 
+def video_mask_controls_visible(video_prompt_type):
+    video_prompt_type = video_prompt_type or ""
+    return "V" in video_prompt_type and "U" not in video_prompt_type
+
+
+def video_mask_dropdown_visible(mask_preprocessing, video_prompt_type):
+    return mask_preprocessing is not None and mask_preprocessing.get("visible", True) and video_mask_controls_visible(video_prompt_type)
+
+
+def video_mask_area_visible(video_prompt_type):
+    return video_mask_controls_visible(video_prompt_type) and "A" in (video_prompt_type or "")
+
+
 def magic_mask_button_updates(image_mode, video_prompt_type):
-    mask_visible = "V" in video_prompt_type and "A" in video_prompt_type and "U" not in video_prompt_type
+    mask_visible = video_mask_area_visible(video_prompt_type)
     image_outputs = image_mode > 0
     return gr.update(visible=mask_visible and image_outputs), gr.update(visible=mask_visible and not image_outputs)
 

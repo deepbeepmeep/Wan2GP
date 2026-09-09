@@ -12,6 +12,7 @@ import logging
 
 from torch import Tensor
 from torch import nn
+from shared.attention import pay_attention
 
 logger = logging.getLogger("dinov2")
 
@@ -40,15 +41,9 @@ class Attention(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-
-        q, k, v = qkv[0] * self.scale, qkv[1], qkv[2]
-        attn = q @ k.transpose(-2, -1)
-
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 1, 3, 4)
+        # Preserve FP32 depth inference without materializing the quadratic attention matrix.
+        x = pay_attention(list(qkv.unbind(0)), force_attention="sdpa").reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x

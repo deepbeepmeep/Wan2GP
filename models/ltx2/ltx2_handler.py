@@ -528,6 +528,7 @@ class family_handler:
             "returns_audio": True,
             "auto_null_audio": True,
             "multimedia_generation": True,
+            "image_end_frame_position": True,
             "profiles_dir": [spec["profiles_dir"]] if distilled else [spec["profiles_dir"], spec["dev_profiles_dir"]],
             "ltx2_spatial_upscaler_file": spec["spatial_upscaler"],
             "ltx2_hdr_lora_file": spec.get("hdr_lora", ""),

@@ -23,13 +23,13 @@ PID_FLUX2_POST_UPSAMPLING_METHOD = "flux2_pid"
 PID_FLUX_POST_UPSAMPLING_METHOD_V15 = "flux_pid(1.5)"
 PID_FLUX2_POST_UPSAMPLING_METHOD_V15 = "flux2_pid(1.5)"
 PID_QWEN_POST_UPSAMPLING_METHOD = "qwen_pid(1.5)"
-PID_QWEN_VAE_UPSAMPLING_VALUE = f"{PID_QWEN_VAE_UPSAMPLING_METHOD}4"
-PID_LEGACY_UPSAMPLING_VALUE = "pid4"
-PID_FLUX_VAE_UPSAMPLING_VALUE = f"{PID_FLUX_VAE_UPSAMPLING_METHOD}4"
-PID_FLUX2_VAE_UPSAMPLING_VALUE = f"{PID_FLUX2_VAE_UPSAMPLING_METHOD}4"
-PID_FLUX_POST_UPSAMPLING_VALUE = f"{PID_FLUX_POST_UPSAMPLING_METHOD}4"
-PID_FLUX2_POST_UPSAMPLING_VALUE = f"{PID_FLUX2_POST_UPSAMPLING_METHOD}4"
-PID_QWEN_POST_UPSAMPLING_VALUE = f"{PID_QWEN_POST_UPSAMPLING_METHOD}4"
+PID_QWEN_VAE_UPSAMPLING_VALUE = f"{PID_QWEN_VAE_UPSAMPLING_METHOD}*4"
+PID_LEGACY_UPSAMPLING_VALUE = "pid*4"
+PID_FLUX_VAE_UPSAMPLING_VALUE = f"{PID_FLUX_VAE_UPSAMPLING_METHOD}*4"
+PID_FLUX2_VAE_UPSAMPLING_VALUE = f"{PID_FLUX2_VAE_UPSAMPLING_METHOD}*4"
+PID_FLUX_POST_UPSAMPLING_VALUE = f"{PID_FLUX_POST_UPSAMPLING_METHOD}*4"
+PID_FLUX2_POST_UPSAMPLING_VALUE = f"{PID_FLUX2_POST_UPSAMPLING_METHOD}*4"
+PID_QWEN_POST_UPSAMPLING_VALUE = f"{PID_QWEN_POST_UPSAMPLING_METHOD}*4"
 PID_VAE_UPSAMPLING_METHODS = (PID_FLUX_VAE_UPSAMPLING_METHOD, PID_FLUX2_VAE_UPSAMPLING_METHOD, PID_FLUX_VAE_UPSAMPLING_METHOD_V15, PID_FLUX2_VAE_UPSAMPLING_METHOD_V15, PID_QWEN_VAE_UPSAMPLING_METHOD, PID_LEGACY_UPSAMPLING_METHOD)
 PID_POST_UPSAMPLING_METHODS = (PID_FLUX_POST_UPSAMPLING_METHOD, PID_FLUX2_POST_UPSAMPLING_METHOD, PID_FLUX_POST_UPSAMPLING_METHOD_V15, PID_FLUX2_POST_UPSAMPLING_METHOD_V15, PID_QWEN_POST_UPSAMPLING_METHOD)
 PID_UPSAMPLING_METHODS = PID_VAE_UPSAMPLING_METHODS + PID_POST_UPSAMPLING_METHODS
@@ -87,8 +87,15 @@ def split_pid_upsampling(spatial_upsampling):
         if text == method:
             return method, 4.0
         if text.startswith(method):
+            suffix = text[len(method):]
+            if suffix.startswith("*"):
+                suffix = suffix[1:]
+                if not suffix:
+                    return None
+            elif "*" in suffix:
+                return None
             try:
-                scale = float(text[len(method):] or 4.0)
+                scale = float(suffix or 4.0)
             except ValueError:
                 return None
             return (method, scale) if scale == 4.0 else None
@@ -226,7 +233,7 @@ def select_pid_checkpoint_type(width, height):
     return "2kto4k" if max(int(width), int(height)) > 512 else "2k"
 
 
-def _pid_latent_downscale(backbone):
+def pid_spatial_block_size(backbone):
     return 16 if normalize_pid_backbone(backbone) == "flux2" else 8
 
 
@@ -635,7 +642,7 @@ class PiDUpsampler:
     def _decode_tiled(self, lq_image, lq_latent, caption_embs, degrade_sigma, seed, num_steps, tile_plan, abort_callback=None, progress_callback=None):
         device = lq_image.device
         batch_size, _, lq_h, lq_w = lq_image.shape
-        latent_scale = _pid_latent_downscale(self.backbone)
+        latent_scale = pid_spatial_block_size(self.backbone)
         rows = tile_plan["rows"]
         cols = tile_plan["cols"]
         tile_ckpt_type = tile_plan["ckpt_type"]
@@ -690,7 +697,7 @@ class PiDUpsampler:
         variant_label = normalize_pid_backbone(self.backbone)
         encode_label = "VAE Encode" if vae_encode or lq_latent is None else "No VAE Encode"
         tiled = self._should_tile(lq_image, resolved_threshold)
-        tile_plan = self._tile_plan(lq_image.shape[-2], lq_image.shape[-1], _pid_latent_downscale(self.backbone), resolved_threshold) if tiled else None
+        tile_plan = self._tile_plan(lq_image.shape[-2], lq_image.shape[-1], pid_spatial_block_size(self.backbone), resolved_threshold) if tiled else None
         ckpt_type = tile_plan["ckpt_type"] if tiled else self._direct_ckpt_type(lq_image, ckpt_type, resolved_threshold)
         threshold_label = pid_tiling_threshold_label(resolved_threshold)
         print(f"[PiD] variant={variant_label}, res={ckpt_type}, tiling_threshold={threshold_label}, conditioning={encode_label}, batch={batch_size}, input={int(lq_image.shape[-1])}x{int(lq_image.shape[-2])}, output={int(lq_image.shape[-1] * 4)}x{int(lq_image.shape[-2] * 4)}, tiled={tiled}")

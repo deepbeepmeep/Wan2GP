@@ -1,0 +1,16 @@
+{
+    "model": {
+        "name": "MiniMax H3 Ref2VA Pruned PDD 8-Step 20B",
+        "architecture": "minimax_h3_ref2va_pruned",
+        "description": "Uses the smaller pruned model to generate synchronized video and audio from text and reference media. Each PDD step merges four learned denoising-interval outputs, covering 32 intervals in only 8 model evaluations.",
+        "URLs": "minimax_h3_ref2va_pruned",
+        "modules": ["minimax_h3_ref2va_pdd"],
+        "loras": "minimax_h3_ref2va_pdd",
+        "loras_multipliers": "minimax_h3_ref2va_pdd",
+        "pdd": true
+    },
+    "num_inference_steps": 8,
+    "guidance_phases": 1,
+    "sample_solver": "euler",
+    "prompt": "summary: [reference generation] Place the subject on a deserted midnight railway platform where a paper bird awakens the station clock during one five-second shot.\ndetailed_description: A steady medium close-up preserves the subject's identity and appearance while a tiny folded paper bird opens its wings, lands on the stopped clock's minute hand, and makes the mechanism advance with one solid click.\noverall_soundscape: Night wind, a soft paper-wing flutter, one heavy clockwork click, and a distant rail hum."
+}

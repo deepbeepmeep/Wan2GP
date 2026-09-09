@@ -1,4 +1,5 @@
 {
+    "profile_id": "ltx2_25_two_stage_distilled_8_3",
     "model_type": "ltx2_25_22B",
     "sample_solver": "distilled_8_steps_ancestral",
     "num_inference_steps": 8,

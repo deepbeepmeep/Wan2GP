@@ -78,6 +78,9 @@ else:
   - Pass `include_availability=True` to add local file availability; this performs the same filesystem scan as the UI status squares.
 - `WanGPSession.get_default_settings(model_type) -> dict`
   - Returns pristine defaults generated from WanGP, the model handler, and the model definition, with `model_type` included. User-saved UI defaults are not included. Deepy/MCP responses omit fixed `settings_version` and display-only `type` metadata.
+- `WanGPSession.resolve_profiles(model_type, *, accelerator_profile_id=None, preset_profile_id=None) -> dict`
+  - Returns isolated effective settings for a registered accelerator, regular preset, or both.
+  - Combined resolution applies model defaults, then the accelerator (`merge before`), then the preset (`merge after`).
 - `WanGPSession.get_model_schema(model_type) -> dict | None`
   - Returns compact capability, media-role, frame-limit, prompt-guidance, and sliding-window metadata.
 - `WanGPSession.get_model_availability(model_type) -> dict`
@@ -88,6 +91,22 @@ else:
   - Waits for completion and returns a structured result object.
 - `SessionJob.cancel()`
   - Requests cancellation of the active generation.
+
+### Resolve Accelerator and Preset Profiles
+
+```python
+settings = session.resolve_profiles(
+    "ltx2_25_22B",
+    accelerator_profile_id="ltx2_25_two_stage_distilled_8_3",
+    preset_profile_id="ltx2_vbvr_video_reasoning",
+)
+settings.update({
+    "prompt": "...",
+    "resolution": "1280x704",
+    "video_length": 241,
+})
+result = session.run_task(settings)
+```
 
 ### When `init(...)` Is Needed
 

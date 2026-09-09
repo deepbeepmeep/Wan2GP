@@ -1,0 +1,27 @@
+{
+    "model": {
+        "name": "Wan2.2 Animate 2 14B Distilled",
+        "architecture": "animate2",
+        "description": "Animate 2 Distilled quickly brings a character image to life by transferring body motion, expressions, camera movement, and scene dynamics from a driving video. It can generate dancing, acting, gestures, fashion shots, and stylized human or creature performances while preserving the character's appearance.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_animate2_14B_distilled_mbf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_animate2_14B_distilled_int8_convrot.safetensors"
+        ],
+        "group": "wan2_2",
+        "animate2_log_scale": -1.3,
+        "animate2_ref_prompt": "The person in the driving video performs an action while the background remains static."
+    },
+    "prompt": "Character appearance: a silver tabby cat with a round face, upright ears, and large round eyes, wearing a dark blue school uniform with gold buttons, a pleated skirt, a white shirt, and a red bow tie. Background: pure white, evenly lit, with no other objects or decorations.",
+    "negative_prompt": "static pose, frozen motion, blurry, low quality, distorted body, deformed hands, extra limbs, unstable identity, flicker",
+    "alt_prompt": "The person in the driving video performs an action while the background remains static.",
+    "video_prompt_type": "UV",
+    "image_prompt_type": "S",
+    "video_length": 65,
+    "num_inference_steps": 10,
+    "sample_solver": "euler",
+    "flow_shift": 5,
+    "guidance_scale": 1.0,
+    "remove_background_images_ref": 0,
+    "force_fps": "control",
+    "prompt_enhancer": ""
+}

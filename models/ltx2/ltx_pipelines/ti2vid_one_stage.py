@@ -293,13 +293,16 @@ class TI2VidOneStagePipeline:
         del transformer
         cleanup_memory()
 
+        video_latent = [video_state.latent]
+        video_state = None
         decoded_video = vae_decode_video_to_tensor(
-            video_state.latent,
+            video_latent,
             self.model_ledger.video_decoder(),
             expected_frames=int(stage_1_output_shape.frames),
             expected_height=int(stage_1_output_shape.height),
             expected_width=int(stage_1_output_shape.width),
             interrupt_check=interrupt_check,
+            generator=generator,
         )
         decoded_audio = vae_decode_audio(
             audio_state.latent, self.model_ledger.audio_decoder(), self.model_ledger.vocoder()

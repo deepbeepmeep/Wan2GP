@@ -20,6 +20,7 @@ class BackgroundRemovalProcessor:
             "method_types": {REMOVE_BACKGROUND_METHOD: (AUDIO_PROCESSOR_TYPE_AUDIO_EDIT,)},
             "status": {REMOVE_BACKGROUND_METHOD: "Removing Music / Background noise"},
             "pos": 10,
+            "description": "Extract a cleaner voice track by removing music and background noise from audio.",
         }
 
     def download(self, method, process_files: Callable[..., Any], send_cmd=None, status_text=None, **_kwargs) -> bool:

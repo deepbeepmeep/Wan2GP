@@ -43,10 +43,14 @@ ckpts/
 loras/
 loras_i2v/
 tmp/
+deepy_sessions/
+dlss5/
 /settings/
 
 wgp_config.json
 plugins_local.json
+/plugins/wan2gp-*/
+/plugins/wangp-*/
 loras_url_cache.json
 loras_url_cache_v2.json
 CLAUDE.md

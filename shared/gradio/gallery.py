@@ -394,7 +394,7 @@ class AdvancedMediaGallery:
         with gr.Column(elem_id=self.elem_id, elem_classes=self.elem_classes) as col:
             self.container = col
 
-            self.state = gr.State(dict(self._initial_state))
+            self.state = dict(self._initial_state) if update else gr.State(dict(self._initial_state))
 
             if update:
                 self.gallery = gr.update(

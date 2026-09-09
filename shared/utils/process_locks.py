@@ -4,6 +4,7 @@ import torch
 
 gen_lock = threading.Lock()
 _MAIN_PROCESS_RUNNING_KEY = "main_process_running"
+_PROCESS_NAMES_KEY = "process_names"
 
 def get_gen_info(state):
     cache = state.get("gen", None)
@@ -109,6 +110,7 @@ def force_release_GPU_resident(state, process_id):
 def acquire_main_GPU_ressources(state):
     gen = get_gen_info(state)
     release_actions = []
+    waiting_on = None
     while True:
         with gen_lock:
             process_status = gen.get("process_status", None)
@@ -116,6 +118,11 @@ def acquire_main_GPU_ressources(state):
                 release_actions = _collect_resident_release_actions_locked(gen, requester_id="main")
                 gen["process_status"] = "process:main"
                 break
+            if process_status != waiting_on:
+                process_id = process_status.split(":", 1)[1]
+                process_name = gen[_PROCESS_NAMES_KEY][process_id]
+                gen["status"] = f"Media generation is waiting for {process_name} to release GPU resources..."
+                waiting_on = process_status
         time.sleep(0.1)
     _run_release_actions(release_actions)
     if torch.cuda.is_available():
@@ -131,6 +138,11 @@ def acquire_GPU_ressources(state, process_id, process_name, gr = None, custom_pa
             if process_hierarchy is None:
                 process_hierarchy = dict()
                 gen["process_hierarchy"]= process_hierarchy
+            process_names = gen.get(_PROCESS_NAMES_KEY, None)
+            if process_names is None:
+                process_names = dict()
+                gen[_PROCESS_NAMES_KEY] = process_names
+            process_names[process_id] = process_name
 
             process_status = gen.get("process_status", None)
             if process_status is None:
@@ -211,3 +223,4 @@ def release_GPU_ressources(state, process_id, keep_resident = False, process_nam
         if restore_status == "process:main" and not _main_generation_active_locked(gen):
             restore_status = None
         gen["process_status"] = restore_status
+        gen.get(_PROCESS_NAMES_KEY, {}).pop(process_id, None)

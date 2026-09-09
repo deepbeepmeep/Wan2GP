@@ -24,6 +24,7 @@ from ..scail2 import build_scail2_pose_tokens
 from ..steadydancer.small_archs import FactorConv3d, PoseRefNetNoBNV3
 from ..steadydancer.mobilenetv2_dcd import DYModule
 from ..shotplan import inject_shotplan_tokens
+from ..animate2 import animate2_attention_block, animate2_cached_attention_block
 
 __all__ = ['WanModel']
 
@@ -596,6 +597,8 @@ class WanAttentionBlock(nn.Module):
         lynx_feature_extractor = False,
         lynx_ref_buffer = None,
         sub_x_no =0,         
+        animate2_generation = None,
+        animate2_cached = False,
     ):
         r"""
         Args:
@@ -604,6 +607,9 @@ class WanAttentionBlock(nn.Module):
             grid_sizes(Tensor): Shape [B, 3], the second dimension contains (F, H, W)
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
         """
+        if animate2_generation is not None:
+            return animate2_cached_attention_block(self, x, e, grid_sizes, freqs, animate2_generation) if animate2_cached else animate2_attention_block(self, x, e, context, grid_sizes, freqs, animate2_generation)
+
         hints_processed = None
         attention_dtype =  self.self_attn.q.weight.dtype 
         dtype = x.dtype
@@ -925,6 +931,11 @@ class WanModel(ModelMixin, ConfigMixin):
                 k = k.replace("patch_embedding_pose.", "pose_patch_embedding.", 1)
             if k.startswith("patch_embedding_mask."):
                 k = k.replace("patch_embedding_mask.", "mask_patch_embedding.", 1)
+            if k.startswith("blocks."):
+                parts = k.split(".")
+                if len(parts) > 2 and parts[2] == "block":
+                    del parts[2]
+                    k = ".".join(parts)
             if not k.startswith("vae."):
                 new_sd[k] = v
         return new_sd
@@ -1522,6 +1533,13 @@ class WanModel(ModelMixin, ConfigMixin):
         bernini_sources = None,
         vista = None,
         shotplan_cut_frames = None,
+        animate2_ref_x = None,
+        animate2_ref_y = None,
+        animate2_ref_context = None,
+        animate2_ref_clip_fea = None,
+        animate2_ref_freqs = None,
+        animate2_log_scale = 0.0,
+        animate2_kv_cache = "Disabled",
     ):
         # patch_dtype =  self.patch_embedding.weight.dtype
         modulation_dtype = self.time_projection[1].weight.dtype
@@ -1537,7 +1555,9 @@ class WanModel(ModelMixin, ConfigMixin):
             # from chipmunk.ops.voxel import voxel_chunk_no_padding, reverse_voxel_chunk_no_padding
             voxel_shape = (4, 6, 8)
         real_seq = 0
-        x_list = x
+        x_list = list(x)
+        x.clear()
+        x = None
         output_slice = None
         output_grid_sizes = None
         joint_pass = len(x_list) > 1
@@ -1560,6 +1580,9 @@ class WanModel(ModelMixin, ConfigMixin):
         else:
             scail2_ref_latents_list = [scail2_ref_latents] * len(x_list)
         bernini_enabled = bernini_sources is not None
+        animate2_enabled = animate2_ref_x is not None
+        animate2_cache = get_cache("animate2_kv") if animate2_enabled and animate2_kv_cache in ("GPU", "RAM") else None
+        animate2_cached = animate2_cache is not None and len(animate2_cache.get("blocks", [])) == len(self.blocks)
         bernini_freqs_list = []
         bernini_output_slices = []
 
@@ -1721,6 +1744,21 @@ class WanModel(ModelMixin, ConfigMixin):
         x = None
         vista_condition_tokens = None
 
+        animate2_ref_hidden = animate2_ref_grid_sizes = None
+        if animate2_enabled:
+            if animate2_cached:
+                animate2_ref_x = animate2_ref_y = None
+                animate2_ref_grid_sizes = animate2_cache["grid_sizes"]
+            else:
+                animate2_ref_input = torch.cat([animate2_ref_x, animate2_ref_y], dim=1)
+                animate2_ref_x = animate2_ref_y = None
+                animate2_ref_hidden = self.patch_embedding(animate2_ref_input.to(self.patch_embedding.weight.dtype)).to(modulation_dtype)
+                animate2_ref_input = None
+                animate2_ref_grid_sizes = animate2_ref_hidden.shape[2:]
+                animate2_ref_hidden = animate2_ref_hidden.flatten(2).transpose(1, 2)
+                if animate2_cache is not None:
+                    animate2_cache.update({"grid_sizes": animate2_ref_grid_sizes, "blocks": []})
+
         shotplan_keep_mask = None
         if self.shotplan and shotplan_cut_frames:
             if offload.shared_state.get("_radial", False):
@@ -1773,10 +1811,16 @@ class WanModel(ModelMixin, ConfigMixin):
 
         _flag_df = t.dim() == 2
 
+        time_positions = torch.cat([t.flatten(), torch.ones_like(t.flatten()[:1])]) if animate2_enabled else t.flatten()
         e = self.time_embedding(
-            sinusoidal_embedding_1d(self.freq_dim, t.flatten()).to(modulation_dtype)  # self.patch_embedding.weight.dtype)
-        )  # b, dim        
+            sinusoidal_embedding_1d(self.freq_dim, time_positions).to(modulation_dtype)  # self.patch_embedding.weight.dtype)
+        )  # b, dim
         e0 = self.time_projection(e).unflatten(1, (6, self.dim)).to(e.dtype)
+
+        animate2_ref_e0 = None
+        if animate2_enabled:
+            animate2_ref_e0 = e0[-1:]
+            e, e0 = e[:-1], e0[:-1]
 
         standin_x = None
         if standin_ref is not None:
@@ -1824,6 +1868,17 @@ class WanModel(ModelMixin, ConfigMixin):
                     context_list.append( torch.cat( [context_clip, one_context ], dim=1 ))
         else:
             context_list = context
+
+        animate2_ref_context_emb = None
+        if animate2_enabled and not animate2_cached:
+            animate2_ref_context_emb = self.text_embedding(animate2_ref_context)
+            animate2_ref_context = None
+            animate2_ref_clip_emb = self.img_emb(animate2_ref_clip_fea)
+            animate2_ref_clip_fea = None
+            animate2_ref_context_emb = torch.cat([animate2_ref_clip_emb, animate2_ref_context_emb], dim=1)
+            animate2_ref_clip_emb = None
+        elif animate2_enabled:
+            animate2_ref_context = animate2_ref_clip_fea = None
 
         if multitalk_audio != None:
             multitalk_audio_list = []
@@ -1946,7 +2001,28 @@ class WanModel(ModelMixin, ConfigMixin):
                     if not standin_cache_enabled: get_cache("standin").clear()
                     standin_x = block(standin_x, context = None, grid_sizes = None, e= standin_e0, freqs = standin_freqs, standin_phase = 1)
 
-                if perturbation_layers is not None and block_idx in perturbation_layers:
+                if animate2_enabled:
+                    animate2_generation = {
+                        "x_list": x_list,
+                        "contexts": context_list,
+                        "should_calc": x_should_calc,
+                        "unconditional": [i > 0 if joint_pass else x_id > 0 for i in range(len(x_list))],
+                        "e": e0,
+                        "grid_sizes": attention_grid_sizes,
+                        "freqs": freqs,
+                        "log_scale": animate2_log_scale,
+                    }
+                    if animate2_cached:
+                        animate2_ref_handoff = [animate2_cache["blocks"][block_idx].to(device=x_list[0].device, dtype=modulation_dtype)]
+                        x_list = block(animate2_ref_handoff, e=animate2_ref_e0, context=None, grid_sizes=animate2_ref_grid_sizes, freqs=animate2_ref_freqs, animate2_generation=animate2_generation, animate2_cached=True)
+                    else:
+                        if animate2_cache is not None:
+                            animate2_cache["blocks"].append(animate2_ref_hidden.detach().to(animate2_ref_hidden.device if animate2_kv_cache == "GPU" else "cpu", copy=True))
+                        animate2_ref_handoff = [animate2_ref_hidden]
+                        animate2_ref_hidden = None
+                        animate2_ref_hidden, x_list = block(animate2_ref_handoff, e=animate2_ref_e0, context=animate2_ref_context_emb, grid_sizes=animate2_ref_grid_sizes, freqs=animate2_ref_freqs, animate2_generation=animate2_generation)
+                    animate2_generation = None
+                elif perturbation_layers is not None and block_idx in perturbation_layers:
                     if x_id != 0 or not x_should_calc[0]:
                         continue
                     x_list[0] = block(x_list[0], context = context_list[0], audio_scale= audio_scale_list[0], e= e0, **kwargs)
@@ -1960,6 +2036,9 @@ class WanModel(ModelMixin, ConfigMixin):
                             x_list[i] = block(x, context = context, hints= hints, audio_scale= audio_scale, multitalk_audio = multitalk_audio, multitalk_masks =multitalk_masks, e= e0,  motion_vec = motion_vec, lynx_ip_embeds= lynx_ip_embeds, lynx_ref_buffer = lynx_ref_buffer, sub_x_no =i,  **block_kwargs)
                             del x
                     context = hints = None
+
+        if animate2_enabled:
+            animate2_ref_hidden = animate2_ref_context_emb = animate2_ref_e0 = animate2_ref_freqs = None
 
         if skips_steps_cache != None:
             if joint_pass:
@@ -1986,7 +2065,9 @@ class WanModel(ModelMixin, ConfigMixin):
         if lynx_feature_extractor:
             return get_cache("lynx_ref_buffer")
         
-        for i, x in enumerate(x_list):
+        for i in range(len(x_list)):
+            x = x_list[i]
+            x_list[i] = None
             if chipmunk:
                 x = reverse_voxel_chunk_no_padding(x.transpose(1, 2).unsqueeze(-1), x_og_shape, voxel_shape).squeeze(-1)
                 x = x.flatten(2).transpose(1, 2)
@@ -2006,9 +2087,15 @@ class WanModel(ModelMixin, ConfigMixin):
             if output_slice is not None:
                 x = x[:, :, output_slice]
             x_list[i] = x
-            del x
+            x = None
 
-        return [x.float() for x in x_list]
+        outputs = []
+        for index in range(len(x_list)):
+            x = x_list[index]
+            x_list[index] = None
+            outputs.append(x.float())
+            x = None
+        return outputs
 
     def unpatchify(self, x, grid_sizes):
         r"""

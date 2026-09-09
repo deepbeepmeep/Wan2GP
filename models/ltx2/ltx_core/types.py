@@ -187,6 +187,7 @@ class LatentState:
     positions: torch.Tensor
     clean_latent: torch.Tensor
     attention_mask: torch.Tensor | None = None
+    keyframes_mask: torch.Tensor | None = None
     runtime_cache: LatentStateRuntimeCache = field(default_factory=LatentStateRuntimeCache, compare=False, repr=False)
 
     def clone(self) -> "LatentState":
@@ -196,4 +197,5 @@ class LatentState:
             positions=self.positions.clone(),
             clean_latent=self.clean_latent.clone(),
             attention_mask=self.attention_mask.clone() if self.attention_mask is not None else None,
+            keyframes_mask=self.keyframes_mask.clone() if self.keyframes_mask is not None else None,
         )

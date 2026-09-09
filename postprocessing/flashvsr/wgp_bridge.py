@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
+from postprocessing.spatial_upsamplers import format_multiplier_value, parse_multiplier_suffix
 from postprocessing.flashvsr.sparse_backend_config import (
     SPARSE_BACKEND_AUTO,
     SPARSE_BACKEND_CHOICES,
@@ -131,22 +132,17 @@ class FlashVSRBridge:
 
     @classmethod
     def upsampling_value(cls, scale: float) -> str:
-        return f"{cls.UPSAMPLING_VALUE_PREFIX}{cls.format_ratio(scale)}"
+        return format_multiplier_value(cls.UPSAMPLING_VALUE_PREFIX, scale)
 
     @classmethod
     def upsampling_two_pass_value(cls, scale: float) -> str:
-        return f"{cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX}{cls.format_ratio(scale)}"
+        return format_multiplier_value(cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX, scale)
 
     @classmethod
     def scale_for_upsampling(cls, spatial_upsampling) -> float | None:
         text = str(spatial_upsampling or "").strip().lower()
         prefix = cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX if text.startswith(cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX) else cls.UPSAMPLING_VALUE_PREFIX
-        if not text.startswith(prefix):
-            return None
-        try:
-            scale = float(text[len(prefix):])
-        except ValueError:
-            return None
+        scale = parse_multiplier_suffix(text, prefix, 2.0)
         return scale if scale in cls.UPSAMPLING_RATIOS else None
 
     @classmethod
@@ -167,6 +163,13 @@ class FlashVSRBridge:
             "vae_methods": [],
             "multipliers": {cls.UPSAMPLING_VALUE_PREFIX: cls.UPSAMPLING_RATIOS, cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX: cls.UPSAMPLING_RATIOS},
             "default_spatial_upsampling": cls.upsampling_value(2.0),
+            "postprocessing_category": "upsampler",
+            "description": "Provides learned detail recovery and is optimized for modest VRAM use. The Full variant's final VAE decode can be slow; Tiny is faster, and Two Pass may reduce horizontal banding.",
+            "media_descriptions": {"video": "Its learned reconstruction is designed for good temporal stability."},
+            "method_descriptions": {
+                cls.UPSAMPLING_VALUE_PREFIX: "Restore detail and spatially upscale with learned FlashVSR reconstruction. The Full variant's final VAE decode can be slow; Tiny is faster and large outputs can consume substantial VRAM.",
+                cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX: "Apply two FlashVSR restoration passes for stronger detail reconstruction and reduced horizontal banding, at approximately twice the processing cost.",
+            },
         }
 
     @classmethod

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Bundled from ComfyUI-sol-attn v0.5.2 (commit e2fc225).
+# Bundled from ComfyUI-sol-attn v0.6.2 (commit 930a4d6).
 """Triton Sol-Attn reference."""
 
 import torch
@@ -7,7 +7,8 @@ import triton
 import triton.language as tl
 from triton.tools.tensor_descriptor import TensorDescriptor
 
-from .preprocess import prepare
+from .preprocess import prepare, prepare_int8_kv
+from .quant import _round_to_int8
 
 
 def _lean_do_bench(fn, quantiles=None, **kwargs):
@@ -30,12 +31,14 @@ def _lean_do_bench(fn, quantiles=None, **kwargs):
 
 
 def _tuned(configs):
-    return triton.autotune(
-        configs=configs,
-        key=["T"],
-        cache_results=True,  # persist timings across restarts, not just per process
-        do_bench=_lean_do_bench,
-    )
+    # cache_results / do_bench are not available on older Triton; probe once.
+    extras = {}
+    try:
+        triton.autotune(configs=[], key=["_probe"], cache_results=True, do_bench=None)
+        extras = {"cache_results": True, "do_bench": _lean_do_bench}
+    except TypeError:
+        pass
+    return triton.autotune(configs=configs, key=["T"], **extras)
 
 
 _TMA_CONFIGS = [
@@ -63,14 +66,13 @@ def _tma_compatible(t):
 
 
 def _validate(q, k, v, kv_splits, thresh_type):
-    """Upstream validation extended to the locally tested SM120 path, plus an
-    SM89 pointer fallback.
+    """Validate the explicit architecture set supported by this integration.
 
-    The public upstream dispatcher allows SM90/SM100. This standalone Triton
-    reference has also been validated on SM120; SM89 runs the pointer kernel
-    twins (validated by forced dispatch, not on SM89 hardware). Other
-    architectures remain disabled instead of being treated as implicitly
-    compatible.
+    SM120 is tested locally on its pointer path. SM86 is community-tested on RTX 30
+    hardware, and SM89 is community-tested on RTX 40 hardware; the shared
+    SM86/SM89/SM120 pointer implementation is also cross-checked by forced dispatch.
+    SM121 retains the community-enabled TMA path. Other architectures remain
+    disabled instead of being treated as implicitly compatible.
     """
     if q.ndim != 4 or q.shape != k.shape or q.shape != v.shape:
         raise ValueError("q, k, and v must share shape [B, T, H, 128]")
@@ -90,13 +92,22 @@ def _validate(q, k, v, kv_splits, thresh_type):
     if kv_splits > route_groups:
         raise ValueError("each KV split must contain at least one N64 route group")
     arch = torch.cuda.get_device_capability(q.device)
-    if arch not in ((9, 0), (10, 0), (12, 0), (8, 9)):
-        raise RuntimeError("Sol-Attn supports SM89, SM90, SM100, and SM120")
+    if arch not in ((8, 6), (8, 9), (9, 0), (10, 0), (12, 0), (12, 1)):
+        raise RuntimeError("Sol-Attn supports SM86, SM89, SM90, SM100, SM120, SM121")
     return arch
 
 
 BLOCK = 64
 GROUP = 32
+
+# Kept as a private switch so correctness/benchmark tests can compare the new
+# inline-Q implementation with the materialized-Q reference in one process.
+_POINTER_INLINE_Q = True
+
+
+def _use_pointer_arch(arch):
+    """Architectures where the pointer forward wins or TMA is unavailable."""
+    return arch in ((8, 6), (8, 9), (12, 0))
 
 
 @_tuned(_TMA_CONFIGS)
@@ -225,13 +236,15 @@ def _forward(
 @triton.jit
 def _forward_int8(
     q_desc,
-    v_desc,
     kc_desc,
     vc_desc,
     qi_ptr,
     ki_ptr,
     q_scale,
     k_scale,
+    vi_ptr,
+    vsc_ptr,
+    v_ptr,
     threshold,
     o_desc,
     scale,
@@ -240,12 +253,14 @@ def _forward_int8(
     sink_q_start,
     sink_q_end,
     T,
+    sv_b, sv_t, sv_h,
     H: tl.constexpr,
     D: tl.constexpr,
     NT: tl.constexpr,
     BV: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     GROUP_SIZE: tl.constexpr,
+    INT8_PV: tl.constexpr,
 ):
     """INT8 q/k exact path. Routing and the approximate path stay bf16; only the
     exact-block residual scores use the int8 dot, with the block-mean term added
@@ -274,6 +289,9 @@ def _forward_int8(
         mask=q_valid,
         other=1.0,
     )
+    bv_offsets = v_tile * BV + tl.arange(0, BV)
+    if INT8_PV:
+        v_scale = tl.load(vsc_ptr + batch_head * D + bv_offsets)
     q_len = tl.minimum(BLOCK_SIZE, T - q_start).to(tl.float32)
 
     output = tl.zeros([BLOCK_SIZE, BV], dtype=tl.float32)
@@ -354,16 +372,42 @@ def _forward_int8(
                 0.0,
                 -float("inf"),
             )
-            new_max = tl.maximum(row_max, tl.max(exact_scores, axis=1))
+            block_max = tl.max(exact_scores, axis=1)
+            new_max = tl.maximum(row_max, block_max)
             alpha = tl.math.exp2(row_max - new_max)
-            exact_probability = tl.math.exp2(exact_scores - new_max[:, None])
-            row_sum = row_sum * alpha + tl.sum(exact_probability, axis=1)
-            v = v_desc.load(
-                [batch, kv_start, head, v_tile * BV]
-            ).reshape([BLOCK_SIZE, BV])
-            output = output * alpha[:, None] + tl.dot(
-                exact_probability.to(v.dtype), v
-            )
+            if INT8_PV:
+                # P is non-negative with a known per-row max; its scale and
+                # V's per-channel scale both factor out of the int32 dot.
+                # Exponentiating against the block max instead of the running max
+                # lands P in [0, 1], which is exactly the range the INT8
+                # quantization wants -- so the softmax rescale and the quant scale
+                # are the same constant and P is never materialized twice.
+                vi = tl.load(
+                    vi_ptr + ((batch * T + k_rows[:, None]) * H + head) * D
+                    + bv_offsets[None, :],
+                    mask=(k_rows < T)[:, None],
+                    other=0,
+                )
+                pe = tl.math.exp2(exact_scores - block_max[:, None])
+                beta = tl.math.exp2(block_max - new_max)
+                row_sum = row_sum * alpha + beta * tl.sum(pe, axis=1)
+                pi = tl.minimum(pe * 127.0 + 0.5, 127.0).to(tl.int8)
+                pv = tl.dot(pi, vi, out_dtype=tl.int32).to(tl.float32) * (
+                    (beta * (1.0 / 127.0))[:, None] * v_scale[None, :]
+                )
+                output = output * alpha[:, None] + pv
+            else:
+                exact_probability = tl.math.exp2(exact_scores - new_max[:, None])
+                row_sum = row_sum * alpha + tl.sum(exact_probability, axis=1)
+                vb = tl.load(
+                    v_ptr + batch * sv_b + k_rows[:, None].to(tl.int64) * sv_t
+                    + head * sv_h + bv_offsets[None, :],
+                    mask=(k_rows < T)[:, None],
+                    other=0.0,
+                )
+                output = output * alpha[:, None] + tl.dot(
+                    exact_probability.to(vb.dtype), vb
+                )
             row_max = new_max
 
     o_desc.store(
@@ -392,7 +436,7 @@ def _forward_ptr(
     BLOCK_SIZE: tl.constexpr,
     GROUP_SIZE: tl.constexpr,
 ):
-    """Pointer twin of _forward for pre-TMA arches (SM89). Masked loads with
+    """Pointer twin of _forward for pre-TMA arches (SM86/SM89). Masked loads with
     explicit strides; q/k/v keep their layout, so interleaved qkv views need
     no contiguous() copy."""
     v_tile, q_block, batch_head = (
@@ -512,8 +556,10 @@ def _forward_ptr(
 @_tuned(_PTR_CONFIGS)
 @triton.jit
 def _forward_int8_ptr(
-    q_ptr, v_ptr, kc_ptr, vc_ptr, qi_ptr, ki_ptr, q_scale, k_scale, threshold, o_ptr,
+    q_ptr, v_ptr, kc_ptr, vc_ptr, qi_ptr, ki_ptr, q_scale, k_scale,
+    vi_ptr, vsc_ptr, threshold, kc_mean_ptr, kc_var_ptr, o_ptr,
     scale,
+    tau,
     sink_start,
     sink_end,
     sink_q_start,
@@ -527,8 +573,16 @@ def _forward_int8_ptr(
     BV: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     GROUP_SIZE: tl.constexpr,
+    INT8_PV: tl.constexpr,
+    INLINE_Q: tl.constexpr,
 ):
-    """Pointer twin of _forward_int8 for pre-TMA arches (SM89)."""
+    """Pointer INT8 forward for SM86, SM89, and SM120.
+
+    With INLINE_Q, per-token Q quantization and the diagonal route threshold
+    are derived from the BF16 Q tile already resident in this program. This
+    removes the materialized Q-int8/Q-scale/threshold producer and its full-Q
+    read while retaining the original K-residual quantization.
+    """
     v_tile, q_block, batch_head = (
         tl.program_id(0),
         tl.program_id(1),
@@ -547,12 +601,20 @@ def _forward_int8_ptr(
         mask=q_valid[:, None],
         other=0.0,
     )
-    qi = tl.load(
-        qi_ptr + ((batch * T + q_rows[:, None]) * H + head) * D + d_offsets[None, :],
-        mask=q_valid[:, None],
-        other=0,
-    )
-    qs = tl.load(q_scale + (batch * T + q_rows) * H + head, mask=q_valid, other=1.0)
+    if INLINE_Q:
+        q_fp32 = q.to(tl.float32)
+        q_amax = tl.max(tl.abs(q_fp32), axis=1)
+        qs = tl.maximum(q_amax / 127.0, 1e-8)
+        qi = _round_to_int8(q_fp32 / qs[:, None])
+    else:
+        qi = tl.load(
+            qi_ptr + ((batch * T + q_rows[:, None]) * H + head) * D + d_offsets[None, :],
+            mask=q_valid[:, None],
+            other=0,
+        )
+        qs = tl.load(q_scale + (batch * T + q_rows) * H + head, mask=q_valid, other=1.0)
+    if INT8_PV:
+        v_scale = tl.load(vsc_ptr + batch_head * D + bv_offsets)
     q_len = tl.minimum(BLOCK_SIZE, T - q_start).to(tl.float32)
 
     output = tl.zeros([BLOCK_SIZE, BV], dtype=tl.float32)
@@ -560,7 +622,20 @@ def _forward_int8_ptr(
     row_max = tl.full((BLOCK_SIZE,), -float("inf"), tl.float32)
     scale_log2 = scale * 1.4426950408889634
     tail_length = T - (NT - 1) * BLOCK_SIZE
-    route_threshold = tl.load(threshold + (batch * NT + q_block) * H + head)
+    if INLINE_Q:
+        centroid = tl.sum(q.to(tl.float32), axis=0) / q_len
+        mean_kc = tl.load(kc_mean_ptr + batch_head * D + d_offsets)
+        var_kc = tl.load(kc_var_ptr + batch_head * D + d_offsets)
+        threshold_scale = scale_log2
+        threshold_mean = tl.sum(centroid * mean_kc, axis=0) * threshold_scale
+        threshold_variance = tl.sum(
+            centroid * centroid * var_kc, axis=0
+        ) * (threshold_scale * threshold_scale)
+        route_threshold = threshold_mean + tau * tl.sqrt(
+            tl.maximum(threshold_variance, 0.0) + 1.0e-6
+        )
+    else:
+        route_threshold = tl.load(threshold + (batch * NT + q_block) * H + head)
     q_in_sink = (q_block >= sink_q_start) & (q_block < sink_q_end)
 
     for group_start in range(0, NT, GROUP_SIZE):
@@ -632,18 +707,40 @@ def _forward_int8_ptr(
                 + approx_col[:, None]
             )
             exact_scores += tl.where(k_valid[None, :], 0.0, -float("inf"))
-            new_max = tl.maximum(row_max, tl.max(exact_scores, axis=1))
+            block_max = tl.max(exact_scores, axis=1)
+            new_max = tl.maximum(row_max, block_max)
             alpha = tl.math.exp2(row_max - new_max)
-            exact_probability = tl.math.exp2(exact_scores - new_max[:, None])
-            row_sum = row_sum * alpha + tl.sum(exact_probability, axis=1)
-            v = tl.load(
-                v_ptr + batch * sv_b + k_rows[:, None].to(tl.int64) * sv_t + head * sv_h + bv_offsets[None, :],
-                mask=k_valid[:, None],
-                other=0.0,
-            )
-            output = output * alpha[:, None] + tl.dot(
-                exact_probability.to(v.dtype), v
-            )
+            if INT8_PV:
+                # see _forward_int8 for why both scales factor out of the dot.
+                # Exponentiating against the block max instead of the running max
+                # lands P in [0, 1], which is exactly what the INT8 quantization
+                # wants -- so the softmax rescale and the quant scale are the same
+                # constant, and P never has to be materialized at running-max scale.
+                vi = tl.load(
+                    vi_ptr + ((batch * T + k_rows[:, None]) * H + head) * D
+                    + bv_offsets[None, :],
+                    mask=k_valid[:, None],
+                    other=0,
+                )
+                pe = tl.math.exp2(exact_scores - block_max[:, None])
+                beta = tl.math.exp2(block_max - new_max)
+                row_sum = row_sum * alpha + beta * tl.sum(pe, axis=1)
+                pi = tl.minimum(pe * 127.0 + 0.5, 127.0).to(tl.int8)
+                pv = tl.dot(pi, vi, out_dtype=tl.int32).to(tl.float32) * (
+                    (beta * (1.0 / 127.0))[:, None] * v_scale[None, :]
+                )
+                output = output * alpha[:, None] + pv
+            else:
+                exact_probability = tl.math.exp2(exact_scores - new_max[:, None])
+                row_sum = row_sum * alpha + tl.sum(exact_probability, axis=1)
+                vb = tl.load(
+                    v_ptr + batch * sv_b + k_rows[:, None].to(tl.int64) * sv_t + head * sv_h + bv_offsets[None, :],
+                    mask=k_valid[:, None],
+                    other=0.0,
+                )
+                output = output * alpha[:, None] + tl.dot(
+                    exact_probability.to(vb.dtype), vb
+                )
             row_max = new_max
 
     tl.store(
@@ -662,6 +759,7 @@ def sol_attn(
     tau: float = 1.0,
     thresh_type: str = "diag",
     int8_qk: bool = False,
+    int8_pv: bool = False,
     sink_blocks: tuple = (0, 0),
     sink_q: tuple = (0, 0),
 ) -> torch.Tensor:
@@ -669,7 +767,8 @@ def sol_attn(
 
     ``sink_blocks`` = (start, end) KV block range forced exact for every query
     (e.g. MiniMax H3's packed conditioning rows); ``sink_q`` = query block range
-    that attends everything exactly.
+    that attends everything exactly. ``int8_pv`` additionally quantizes the
+    P·V dot (opt-in; costs accuracy).
     """
 
     arch = _validate(q, k, v, 1, thresh_type)
@@ -680,15 +779,43 @@ def sol_attn(
     output = torch.empty(q.shape, device=q.device, dtype=q.dtype)
     sinks = (int(sink_blocks[0]), int(sink_blocks[1]), int(sink_q[0]), int(sink_q[1]))
 
-    if arch[0] < 9:
-        # SM89 pointer path: masked loads, q/k/v keep their strides.
+    if _use_pointer_arch(arch):
+        # SM86/SM89/SM120 pointer path: masked loads, q/k/v keep their strides.
         if int8_qk:
-            kc, vc, threshold, q8, q_scale, k8, k_scale = prepare(
-                q, k, v, scale=scale, tau=tau, thresh_type=thresh_type, int8_qk=True
-            )
+            # Below the node's normal 4K Sol gate, the separate producer is
+            # already tiny and can autotune to a different forward warp count;
+            # keep the proven materialized path there. Inline Q is for the
+            # long-sequence regime where its traffic and memory matter.
+            inline_q = _POINTER_INLINE_Q and thresh_type == "diag" and tokens >= 4096
+            if inline_q:
+                if int8_pv:
+                    from .quant import quantize_v_per_channel
+                    kc, vc, stat_mean, stat_var, k8, k_scale, v_absmax = prepare_int8_kv(
+                        k, v, int8_pv=True
+                    )
+                    vi, v_scale = quantize_v_per_channel(v, absmax=v_absmax)
+                else:
+                    kc, vc, stat_mean, stat_var, k8, k_scale = prepare_int8_kv(k, v)
+                    vi, v_scale = q, q  # unused dummies
+                threshold, q8, q_scale = q, q, q  # dead when INLINE_Q=True
+            else:
+                if int8_pv:
+                    from .quant import quantize_v_per_channel
+                    kc, vc, threshold, q8, q_scale, k8, k_scale, v_absmax = prepare(
+                        q, k, v, scale=scale, tau=tau, thresh_type=thresh_type, int8_qk=True, int8_pv=True
+                    )
+                    vi, v_scale = quantize_v_per_channel(v, absmax=v_absmax)
+                else:
+                    kc, vc, threshold, q8, q_scale, k8, k_scale = prepare(
+                        q, k, v, scale=scale, tau=tau, thresh_type=thresh_type, int8_qk=True
+                    )
+                    vi, v_scale = q8, q_scale  # unused dummies
+                stat_mean, stat_var = q, q  # dead when INLINE_Q=False
             _forward_int8_ptr[(1, blocks, batch * heads)](
-                q, v, kc, vc, q8, k8, q_scale, k_scale, threshold, output,
+                q, v, kc, vc, q8, k8, q_scale, k_scale,
+                vi, v_scale, threshold, stat_mean, stat_var, output,
                 scale,
+                tau,
                 *sinks,
                 tokens,
                 q.stride(0), q.stride(1), q.stride(2),
@@ -699,6 +826,8 @@ def sol_attn(
                 BV=head_dim,
                 BLOCK_SIZE=BLOCK,
                 GROUP_SIZE=GROUP,
+                INT8_PV=int8_pv,
+                INLINE_Q=inline_q,
             )
             return output
         kc, vc, threshold = prepare(q, k, v, scale=scale, tau=tau, thresh_type=thresh_type)
@@ -722,29 +851,41 @@ def sol_attn(
     block_shape = [1, BLOCK, 1, head_dim]
     summary_shape = [1, GROUP, 1, head_dim]
     if int8_qk:
-        kc, vc, threshold, q8, q_scale, k8, k_scale = prepare(
-            q, k, v, scale=scale, tau=tau, thresh_type=thresh_type, int8_qk=True
-        )
+        if int8_pv:
+            from .quant import quantize_v_per_channel
+            kc, vc, threshold, q8, q_scale, k8, k_scale, v_absmax = prepare(
+                q, k, v, scale=scale, tau=tau, thresh_type=thresh_type, int8_qk=True, int8_pv=True
+            )
+            vi, v_scale = quantize_v_per_channel(v, absmax=v_absmax)
+        else:
+            kc, vc, threshold, q8, q_scale, k8, k_scale = prepare(
+                q, k, v, scale=scale, tau=tau, thresh_type=thresh_type, int8_qk=True
+            )
+            vi, v_scale = q8, q_scale  # unused dummies
         _forward_int8[(1, blocks, batch * heads)](
             TensorDescriptor.from_tensor(q, block_shape),
-            TensorDescriptor.from_tensor(v, block_shape),
             TensorDescriptor.from_tensor(kc, summary_shape),
             TensorDescriptor.from_tensor(vc, summary_shape),
             q8,
             k8,
             q_scale,
             k_scale,
+            vi,
+            v_scale,
+            v,
             threshold,
             TensorDescriptor.from_tensor(output, block_shape),
             scale,
             *sinks,
             tokens,
+            v.stride(0), v.stride(1), v.stride(2),
             heads,
             head_dim,
             blocks,
             head_dim,
             BLOCK,
             GROUP,
+            int8_pv,
         )
         return output
     kc, vc, threshold = prepare(q, k, v, scale=scale, tau=tau, thresh_type=thresh_type)

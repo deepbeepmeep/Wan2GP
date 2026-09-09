@@ -1,0 +1,16 @@
+{
+    "settings_version": 2.73,
+    "model_type": "ace_step_v1_5_turbo_lm_1_7b",
+    "prompt": "[Verse]\nNeon rain on the city line\nYou hum the tune and I fall in time\n\n[Chorus]\nHold me close and keep the time\nWe can make the whole night shine",
+    "alt_prompt": "Heavy metal / hard rock, aggressive distorted guitars, pounding double-kick drums, powerful gritty male vocals, dark epic atmosphere, driving tempo.",
+    "image_mode": 0,
+    "duration_seconds": 90,
+    "num_inference_steps": 8,
+    "model_mode": 2,
+    "audio_scale": 0.5,
+    "shift": 1.0,
+    "guidance_scale": 1.0,
+    "scheduler_type": "euler",
+    "seed": -1,
+    "type": "ACE-Step 1.5 Turbo LM 1.7B"
+}

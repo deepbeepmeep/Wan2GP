@@ -17,4 +17,10 @@ def get_system_handler(name: str | None) -> Any:
     if name == "coz":
         from postprocessing.chain_of_zoom.process_handler import HANDLER
         return HANDLER
+    if name == "ltx2_upsampler":
+        from postprocessing.ltx2_upsampler.process_handler import HANDLER
+        return HANDLER
+    if name in ("rife", "dlssg", "dlss5"):
+        from .system_upsampler_handler import DLSS5_HANDLER, DLSSG_HANDLER, RIFE_HANDLER
+        return {"rife": RIFE_HANDLER, "dlssg": DLSSG_HANDLER, "dlss5": DLSS5_HANDLER}[name]
     return None

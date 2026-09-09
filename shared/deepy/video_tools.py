@@ -4,13 +4,15 @@ import base64
 import hashlib
 import math
 import os
+import re
 import shutil
 import subprocess
 from collections import OrderedDict
 from datetime import datetime
+from tempfile import TemporaryDirectory
 
 import ffmpeg
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 from shared.ffmpeg_setup import download_ffmpeg
 from shared.utils.audio_video import get_mp4_audio_codec_settings
@@ -165,6 +167,151 @@ def merge_videos(first_video: str, second_video: str, output_path: str | None = 
         insert_at = cmd.index(output_path)
         cmd[insert_at:insert_at] = _get_mp4_audio_encode_args(audio_codec)
     _run_ffmpeg(cmd)
+    return output_path
+
+
+def _side_by_side_layout(count: int, layout: str | None) -> tuple[int, int, str]:
+    layout = str(layout or "horizontal").strip().lower() or "horizontal"
+    if layout == "horizontal":
+        return count, 1, layout
+    if layout == "vertical":
+        return 1, count, layout
+    if layout == "grid":
+        columns = math.ceil(math.sqrt(count))
+        return columns, math.ceil(count / columns), layout
+    match = re.fullmatch(r"(\d+)x(\d+)", layout)
+    if match is None:
+        raise ValueError("layout must be horizontal, vertical, grid, or COLSxROWS.")
+    columns, rows = map(int, match.groups())
+    if columns < 1 or rows < 1 or columns * rows < count:
+        raise ValueError(f"layout {layout} does not have room for {count} media items.")
+    return columns, rows, layout
+
+
+def _side_by_side_legend_image(width: int, height: int, text: str) -> Image.Image:
+    image = Image.new("RGB", (width, height), "black")
+    draw = ImageDraw.Draw(image)
+    font_size = max(12, min(36, height // 2))
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", font_size)
+    except OSError:
+        font = ImageFont.load_default()
+    original_text = str(text or "").strip().replace("\n", " ")
+    text = original_text
+    while text and draw.textlength(text, font=font) > width - 16:
+        text = text[:-1].rstrip()
+    if text != original_text:
+        suffix = "..."
+        while text and draw.textlength(f"{text.rstrip('.')}{suffix}", font=font) > width - 16:
+            text = text[:-1].rstrip()
+        text = f"{text.rstrip('.')}{suffix}" if draw.textlength(suffix, font=font) <= width - 16 else ""
+    if text:
+        box = draw.textbbox((0, 0), text, font=font)
+        draw.text(((width - box[2] + box[0]) / 2, (height - box[3] + box[1]) / 2), text, fill="white", font=font)
+    return image
+
+
+def side_by_side_media(source_paths: list[str], output_path: str, layout: str | None = None, legends: list[str] | None = None, *, video_codec: str | None = None, video_container: str | None = None, audio_codec: str | None = None) -> str:
+    source_paths = [os.path.normpath(str(path or "").strip()) for path in source_paths]
+    if not source_paths:
+        raise ValueError("media_ids must contain at least one image or video.")
+    missing = next((path for path in source_paths if not os.path.isfile(path)), None)
+    if missing is not None:
+        raise FileNotFoundError(f"Media not found: {missing}")
+    if legends is not None and not isinstance(legends, list):
+        raise ValueError("legends must be an array of strings.")
+    legends = [] if legends is None else [str(legend or "").strip() for legend in legends]
+    if len(legends) > len(source_paths):
+        raise ValueError("legends cannot contain more entries than media_ids.")
+    legends += [""] * (len(source_paths) - len(legends))
+    columns, rows, _resolved_layout = _side_by_side_layout(len(source_paths), layout)
+    videos = [has_video_extension(path) for path in source_paths]
+    sizes = []
+    for path, is_video in zip(source_paths, videos):
+        if is_video:
+            stream = _probe_video_stream(path)
+            sizes.append((int(stream["width"]), int(stream["height"])))
+        else:
+            with Image.open(path) as image:
+                sizes.append(image.size)
+    tile_width, tile_height = sizes[0]
+    has_legends = any(legends)
+    legend_height = max(32, min(96, tile_height // 8)) if has_legends else 0
+    cell_height = tile_height + legend_height
+    output_path = os.path.normpath(str(output_path or "").strip())
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    if not any(videos):
+        canvas = Image.new("RGB", (columns * tile_width, rows * cell_height), "black")
+        for index, (path, legend) in enumerate(zip(source_paths, legends)):
+            with Image.open(path) as source:
+                image = source.convert("RGB")
+                image.thumbnail((tile_width, tile_height), Image.Resampling.LANCZOS)
+                x = index % columns * tile_width
+                y = index // columns * cell_height
+                canvas.paste(image, (x + (tile_width - image.width) // 2, y + (tile_height - image.height) // 2))
+                if has_legends:
+                    canvas.paste(_side_by_side_legend_image(tile_width, legend_height, legend), (x, y + tile_height))
+        canvas.save(output_path)
+        return output_path
+
+    tile_width += tile_width % 2
+    tile_height += tile_height % 2
+    legend_height += legend_height % 2
+    cell_height = tile_height + legend_height
+    durations = []
+    for path, is_video in zip(source_paths, videos):
+        if not is_video:
+            continue
+        duration = get_media_duration(path)
+        if duration is None or duration <= 0:
+            fps, _width, _height, frame_count = get_video_info(path)
+            duration = frame_count / fps if fps > 0 else 0
+        if duration <= 0:
+            raise ValueError(f"Could not determine video duration: {path}")
+        durations.append(duration)
+    duration = max(durations)
+    first_video = source_paths[videos.index(True)]
+    fps = get_precise_video_fps(first_video)
+    if fps is None or fps <= 0:
+        fps = float(get_video_info(first_video)[0])
+    fps = fps if fps > 0 else 24.0
+    fps_text = f"{fps:.6f}".rstrip("0").rstrip(".")
+    duration_text = f"{duration:.6f}".rstrip("0").rstrip(".")
+    input_args = []
+    for path, is_video in zip(source_paths, videos):
+        input_args += ["-i", path] if is_video else ["-loop", "1", "-framerate", fps_text, "-i", path]
+    with TemporaryDirectory(prefix="wangp_side_by_side_") as temp_dir:
+        if has_legends:
+            for index, legend in enumerate(legends):
+                legend_path = os.path.join(temp_dir, f"legend_{index}.png")
+                _side_by_side_legend_image(tile_width, legend_height, legend).save(legend_path)
+                input_args += ["-loop", "1", "-framerate", fps_text, "-i", legend_path]
+        filters = []
+        tile_labels = []
+        for index in range(len(source_paths)):
+            filters.append(f"[{index}:v]setpts=PTS-STARTPTS,fps={fps_text},scale={tile_width}:{tile_height}:force_original_aspect_ratio=decrease,pad={tile_width}:{tile_height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,tpad=stop_mode=clone:stop_duration={duration_text},trim=duration={duration_text}[v{index}]")
+            if has_legends:
+                filters.append(f"[{len(source_paths) + index}:v]setpts=PTS-STARTPTS,fps={fps_text},trim=duration={duration_text}[l{index}]")
+                filters.append(f"[v{index}][l{index}]vstack=inputs=2[t{index}]")
+                tile_labels.append(f"[t{index}]")
+            else:
+                tile_labels.append(f"[v{index}]")
+        output_width, output_height = columns * tile_width, rows * cell_height
+        if len(source_paths) == 1:
+            filters.append(f"{tile_labels[0]}pad={output_width}:{output_height}:0:0:color=black[out]")
+        else:
+            positions = "|".join(f"{index % columns * tile_width}_{index // columns * cell_height}" for index in range(len(source_paths)))
+            filters.append(f"{''.join(tile_labels)}xstack=inputs={len(source_paths)}:layout={positions}:fill=black:shortest=1[grid]")
+            filters.append(f"[grid]pad={output_width}:{output_height}:0:0:color=black[out]")
+        cmd = [*input_args, "-filter_complex", ";".join(filters), "-map", "[out]"]
+        audio_index = next((index for index, (path, is_video) in enumerate(zip(source_paths, videos)) if is_video and _has_audio_stream(path)), None)
+        if audio_index is not None:
+            cmd += ["-map", f"{audio_index}:a:0", "-af", "apad", *_get_mp4_audio_encode_args(audio_codec)]
+        cmd += [*get_video_encode_args(video_codec, video_container), "-t", duration_text]
+        if str(video_container or "mp4").strip().lower() == "mp4":
+            cmd += ["-movflags", "+faststart"]
+        cmd += [output_path]
+        _run_ffmpeg(cmd)
     return output_path
 
 

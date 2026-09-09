@@ -53,6 +53,7 @@ class TransformerConfig:
     context_dim: int
     apply_gated_attention: bool = False
     cross_attention_adaln: bool = False
+    ff_bias: bool = True
 
 
 class BasicAVTransformerBlock(torch.nn.Module):
@@ -89,7 +90,7 @@ class BasicAVTransformerBlock(torch.nn.Module):
                 attention_function=attention_function,
                 apply_gated_attention=video.apply_gated_attention,
             )
-            self.ff = FeedForward(video.dim, dim_out=video.dim)
+            self.ff = FeedForward(video.dim, dim_out=video.dim, bias=video.ff_bias)
             self.scale_shift_table = torch.nn.Parameter(torch.empty(adaln_embedding_coefficient(video.cross_attention_adaln), video.dim))
 
         if audio is not None:
@@ -113,7 +114,7 @@ class BasicAVTransformerBlock(torch.nn.Module):
                 attention_function=attention_function,
                 apply_gated_attention=audio.apply_gated_attention,
             )
-            self.audio_ff = FeedForward(audio.dim, dim_out=audio.dim)
+            self.audio_ff = FeedForward(audio.dim, dim_out=audio.dim, bias=audio.ff_bias)
             self.audio_scale_shift_table = torch.nn.Parameter(torch.empty(adaln_embedding_coefficient(audio.cross_attention_adaln), audio.dim))
 
         if audio is not None and video is not None:

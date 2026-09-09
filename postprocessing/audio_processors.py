@@ -3,6 +3,15 @@
 Audio processors are interchangeable handlers for post-generation audio work.
 Each handler declares methods through ``query_audio_processor_def()`` and may
 expose config controls under ``wgp_config["audio_processors"][config_key]``.
+Definitions may also expose an optional ``description`` plus optional
+``method_descriptions`` and ``method_parameters`` mappings for reusable
+discovery interfaces. Existing handlers without these fields remain valid.
+Discovery tests the existing optional ``enabled()`` method first. When it is
+absent, handlers may expose a ``status`` property containing ``"enabled"`` or
+``"disabled"``. Discovery reports ``"unknown"`` only when neither contract
+provides a valid status. Disabled handlers may expose ``reason_disabled``. This
+instance property is separate from the definition's existing per-method
+``status`` progress labels.
 Model persistence is shared through
 ``wgp_config["audio_processors"]["persistence"]``. Dispatch retains at most one
 audio processor handler and releases it before another handler runs.
@@ -26,6 +35,7 @@ import importlib
 from typing import Any, Callable
 
 from shared.utils import offload_registry
+from .processor_status import PROCESSOR_STATUS_DISABLED, PROCESSOR_STATUS_ENABLED, PROCESSOR_STATUS_UNKNOWN, handler_reason_disabled, handler_status
 
 
 AUDIO_PROCESSOR_TYPE_SOUNDTRACK = "soundtrack"
@@ -494,17 +504,17 @@ def create_late_remux_ui(gr, *, update_form: bool = False, default_visibility_fa
     with gr.Column(visible=True) as postprocess_audio_col:
         with gr.Row():
             postprocess_audio = gr.Dropdown(choices=choices, visible=True, scale=1, label="Audio Action", show_label=False, elem_classes="postprocess", **({} if update_form else {"value": value}))
-        with gr.Column(visible=metadata["needs_prompt"] or metadata["needs_negative_prompt"]) as postprocess_audio_prompt_row:
+        with gr.Column(**({} if update_form else {"visible": metadata["needs_prompt"] or metadata["needs_negative_prompt"]})) as postprocess_audio_prompt_row:
             with gr.Row():
                 postprocess_audio_prompt = gr.Text("", label="Prompt", elem_classes="postprocess")
                 postprocess_audio_neg_prompt = gr.Text("", label="Negative Prompt", elem_classes="postprocess")
             postprocess_audio_seed = gr.Slider(-1, 999999999, value=-1, step=1, label="Seed (-1 for random)", show_reset_button=False)
             repeat_generation = gr.Slider(1, 25.0, value=1, step=1, label="Number of Sample Videos to Generate", show_reset_button=False)
-    with gr.Row(visible=metadata["needs_audio_source"]) as audio_source_row:
+    with gr.Row(**({} if update_form else {"visible": metadata["needs_audio_source"]})) as audio_source_row:
         audio_source = gr.Audio(label="Soundtrack", type="filepath", show_download_button=True)
-    with gr.Row(visible=metadata["needs_voice_sample"]) as replace_voice_sample_row:
+    with gr.Row(**({} if update_form else {"visible": metadata["needs_voice_sample"]})) as replace_voice_sample_row:
         replace_voice_sample = gr.Audio(label="Voice Sample #1", type="filepath", show_download_button=True)
-    with gr.Row(visible=metadata["needs_voice_sample2"]) as replace_voice_sample2_row:
+    with gr.Row(**({} if update_form else {"visible": metadata["needs_voice_sample2"]})) as replace_voice_sample2_row:
         replace_voice_sample2 = gr.Audio(label="Voice Sample #2", type="filepath", show_download_button=True)
     if not update_form:
         postprocess_audio.change(fn=late_remux_refresh_updates, inputs=[postprocess_audio], outputs=[postprocess_audio_prompt_row, audio_source_row, replace_voice_sample_row, replace_voice_sample2_row])

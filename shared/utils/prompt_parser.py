@@ -57,6 +57,24 @@ def split_prompt_units(prompt_text, multi_prompts_gen_type, single_prompt=False,
         return prompts
     return [one_line.strip() for one_line in prompt_text.split("\n") if one_line.strip()]
 
+def validate_sliding_window_prompt_boundaries(prompts, multi_prompts_gen_type, image_end=None):
+    if normalize_multi_prompts_mode(multi_prompts_gen_type, "FG") != "PW":
+        return ""
+    prompts = list(prompts or [])
+    command_windows = [prompt for prompt in prompts if str(prompt or "").lstrip().startswith("[/")]
+    end_frame_count = len(image_end) if isinstance(image_end, (list, tuple)) else int(bool(image_end))
+    structured_fields = ("overall_soundscape:", "non_diegetic_music:")
+    structured_extras = all(prompt in command_windows or str(prompt or "").lstrip().startswith(structured_fields) for prompt in prompts)
+    intended_count_confirmed = end_frame_count == len(command_windows) or structured_extras
+    if len(command_windows) < 2 or len(prompts) == len(command_windows) or not intended_count_confirmed:
+        return ""
+    evidence = f" and {end_frame_count} End Images" if end_frame_count == len(command_windows) else ""
+    return (
+        f"The prompt is parsed as {len(prompts)} sliding windows, but {len(command_windows)} explicit [/...] window markers{evidence} indicate {len(command_windows)} intended windows. "
+        "With 'Each Paragraph Separated by an Empty line will be used for a new Sliding Window of the same Video Generation', every blank line starts a new window. "
+        "Keep every line and labeled section belonging to one window adjacent with single newlines, and use exactly one blank line between complete windows."
+    )
+
 def serialize_prompt_units(prompt_text, prompts, multi_prompts_gen_type):
     prompt_text = prompt_text.replace("\r\n", "\n").replace("\r", "\n")
     if prompt_text.startswith(ENHANCED_PROMPT_PREFIX):
@@ -143,6 +161,15 @@ def serialize_prompt_blocks_with_prefix(prompts, original_prompts=None):
         original_prompt = re.sub(r"[\r\n]+", " ", str(original_prompt or "")).strip()
         blocks.append(f"{PROMPT_UNIT_PREFIX} {original_prompt}\n{prompt}")
     return "\n\n".join(blocks)
+
+def parse_prompt_history(prompt_text, enhanced_prompt_text, multi_prompts_gen_type):
+    prompt_text = str(prompt_text or "")
+    enhanced_prompt_text = str(enhanced_prompt_text or "")
+    if enhanced_prompt_text:
+        return split_prompt_units(prompt_text, multi_prompts_gen_type, originals=True), split_prompt_units(enhanced_prompt_text, multi_prompts_gen_type)
+    if prompt_text.startswith(PROMPT_UNIT_PREFIX):
+        return split_prompt_units(prompt_text, multi_prompts_gen_type, originals=True), split_prompt_units(prompt_text, multi_prompts_gen_type)
+    return None
 
 def is_speaker_options_line(line):
     return SPEAKER_OPTIONS_LINE_RE.search(line or "") is not None

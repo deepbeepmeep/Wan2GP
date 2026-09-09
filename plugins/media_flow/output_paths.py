@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import os
 from pathlib import Path
 
 import gradio as gr
@@ -23,7 +24,7 @@ IMAGE_CODEC_EXTENSIONS = {
 
 
 def choose_resolution(budget_label: str) -> str:
-    resolutions = {"256p": "448x256", "320p": "576x320", "384p": "672x384", "480p": "832x480", "540p": "960x544", "720p": "1280x720", "900p": "1600x896", "1080p": "1920x1088"}
+    resolutions = {"256p": "448x256", "320p": "576x320", "384p": "672x384", "480p": "832x480", "540p": "960x544", "720p": "1280x720", "900p": "1600x896", "1080p": "1920x1088", "1440p": "2560x1440", "2160p": "3840x2176"}
     try:
         return resolutions[str(budget_label)]
     except KeyError as exc:
@@ -93,6 +94,33 @@ def make_output_variant(output: Path, *, notify: Callable[[str], None] | None = 
             if notify is not None:
                 notify(f"Output file already exists. Using {candidate}")
             return str(candidate)
+    raise gr.Error(f"Unable to find a free output filename for {output}")
+
+
+def promote_output_file(source_path: str, output_path: str, *, notify: Callable[[str], None] | None = None) -> str:
+    source = Path(source_path).resolve()
+    output = Path(output_path).resolve()
+    if source == output:
+        return str(output)
+    for index in range(1, 10000):
+        candidate = output if index == 1 else output.with_name(f"{output.stem}_{index}{output.suffix}")
+        try:
+            handle = os.open(str(candidate), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            continue
+        try:
+            os.close(handle)
+            os.replace(source, candidate)
+        except BaseException:
+            try:
+                if candidate.is_file() and candidate.stat().st_size == 0:
+                    candidate.unlink()
+            except OSError:
+                pass
+            raise
+        if candidate != output and notify is not None:
+            notify(f"Output file became unavailable while processing. Using {candidate}")
+        return str(candidate)
     raise gr.Error(f"Unable to find a free output filename for {output}")
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
-from postprocessing.spatial_upsamplers import SimpleScaleSuffixMixin, UPSAMPLER_PROFILE_VIDEO, UPSAMPLER_TYPE_POSTPROCESSING
+from postprocessing.spatial_upsamplers import SimpleScaleSuffixMixin, UPSAMPLER_PROFILE_VIDEO, UPSAMPLER_TYPE_POSTPROCESSING, format_multiplier_value
 
 
 class SeedVR2Bridge(SimpleScaleSuffixMixin):
@@ -69,7 +69,7 @@ class SeedVR2Bridge(SimpleScaleSuffixMixin):
 
     @classmethod
     def upsampling_value(cls, scale: float) -> str:
-        return f"{cls.UPSAMPLING_VALUE_PREFIX}{cls.format_ratio(scale)}"
+        return format_multiplier_value(cls.UPSAMPLING_VALUE_PREFIX, scale)
 
     @classmethod
     def query_upsampler_def(cls) -> dict[str, Any]:
@@ -85,6 +85,9 @@ class SeedVR2Bridge(SimpleScaleSuffixMixin):
             "vae_methods": [],
             "multipliers": {cls.UPSAMPLING_VALUE_PREFIX: cls.UPSAMPLING_RATIOS},
             "default_spatial_upsampling": cls.upsampling_value(2.0),
+            "postprocessing_category": "upsampler",
+            "description": "Restore detail and reduce compression or generation degradation while spatially upscaling with SeedVR2.",
+            "media_descriptions": {"video": "Overlapping model windows preserve temporal continuity; the window size is configurable in Extensions."},
         }
 
     def enabled(self) -> bool:
@@ -146,7 +149,7 @@ class SeedVR2Bridge(SimpleScaleSuffixMixin):
             raise ValueError(f"Unknown SeedVR2 upsampling mode: {spatial_upsampling}")
         scale = split[1]
         output_height, output_width = int(sample.shape[-2] * scale), int(sample.shape[-1] * scale)
-        vae_tile_size = int(vae_tile_size or self.vae_tile_size(vae_config, output_height, output_width) or self.AUTO_VAE_TILE_SIZE)
+        vae_tile_size = int(self.vae_tile_size(vae_config, output_height, output_width) or self.AUTO_VAE_TILE_SIZE)
         vae_tile_size = min(vae_tile_size, self.AUTO_VAE_TILE_SIZE if int(vae_config) == 0 else self.MAX_VAE_TILE_SIZE)
         from .runtime import upscale_video
         if still_image:

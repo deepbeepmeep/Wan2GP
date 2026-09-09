@@ -24,6 +24,9 @@ from omegaconf import OmegaConf
 from .gpt.model_v2 import UnifiedVoice
 from .utils.maskgct_utils import build_semantic_model, build_semantic_codec
 from .utils.front import TextNormalizer, TextTokenizer
+from .enhanced_codec import EnhancedCodec
+from .japanese_g2p import JapaneseG2PProcessor
+from .multilingual_tokenizer import get_tokenizer as get_multilingual_tokenizer, lang_to_token
 
 from .s2mel.modules.commons import load_checkpoint2, MyModel
 from .s2mel.modules.bigvgan import bigvgan
@@ -50,6 +53,18 @@ _MIN_CG_SOUND_SECONDS = 10.0
 # Calibration run (test_kvcache.zip): weighted avg ratio ~=9.8884, safety x3 => 29.67.
 _CG_SOUND_TOKENS_PER_TEXT_TOKEN = 29.67
 _LOG_KV_RATIO = str(os.environ.get("INDEXTTS2_LOG_KV_RATIO", "0")).strip().lower() in ("1", "true", "yes")
+_PRONUNCIATION_ANNOTATION_PATTERN = re.compile(r'<([^|>\n]+)\|([^>\n]+)>')
+
+
+def _apply_pronunciation_annotations(text):
+    def _replace(match):
+        word, pronunciation = match.group(1), match.group(2).upper()
+        if re.fullmatch(r"[\u3040-\u30ff]+", pronunciation):
+            return f" {pronunciation} "
+        token = "SPECIAL_TOKEN_2" if re.search(r"[\u4e00-\u9fff]", word) else "SPECIAL_TOKEN_1"
+        return f"<|{token}|>{pronunciation}<|{token}|>"
+
+    return _PRONUNCIATION_ANNOTATION_PATTERN.sub(_replace, text)
 
 
 @contextmanager
@@ -63,7 +78,7 @@ def _quiet_load_output(show_logs):
 
 class IndexTTS2:
     def __init__(
-            self, cfg_path="checkpoints/config.yaml", model_dir="checkpoints", use_fp16=False, device=None,
+            self, cfg_path="checkpoints/config.yaml", model_dir="checkpoints", use_fp16=False, use_bf16=False, device=None,
             use_cuda_kernel=None,use_deepspeed=False, use_accel=False, use_torch_compile=False, show_load_logs=False,
             lm_decoder_engine="legacy",
             force_no_flash2=False,
@@ -85,30 +100,40 @@ class IndexTTS2:
         if device is not None:
             self.device = device
             self.use_fp16 = False if device == "cpu" else use_fp16
+            self.use_bf16 = False if device in ("cpu", "mps") else use_bf16
             self.use_cuda_kernel = use_cuda_kernel is not None and use_cuda_kernel and device.startswith("cuda")
         elif torch.cuda.is_available():
             self.device = "cuda:0"
             self.use_fp16 = use_fp16
+            self.use_bf16 = use_bf16
             self.use_cuda_kernel = use_cuda_kernel is None or use_cuda_kernel
         elif hasattr(torch, "xpu") and torch.xpu.is_available():
             self.device = "xpu"
             self.use_fp16 = use_fp16
+            self.use_bf16 = use_bf16
             self.use_cuda_kernel = False
         elif hasattr(torch, "mps") and torch.backends.mps.is_available():
             self.device = "mps"
             self.use_fp16 = False  # Use float16 on MPS is overhead than float32
+            self.use_bf16 = False
             self.use_cuda_kernel = False
         else:
             self.device = "cpu"
             self.use_fp16 = False
+            self.use_bf16 = False
             self.use_cuda_kernel = False
             self._load_log(">> Be patient, it may take a while to run in CPU mode.")
 
         self.cfg = OmegaConf.load(cfg_path)
         self.model_dir = model_dir
-        if _FORCE_GPT_FP16:
+        self.is_v25 = float(self.cfg.get("version", 2.0)) >= 2.5
+        if self.is_v25 and self.device not in ("cpu", "mps"):
+            self.use_fp16 = False
+            self.use_bf16 = True
+        elif _FORCE_GPT_FP16:
             self.use_fp16 = True
-        self.dtype = torch.float16 if self.use_fp16 else None
+            self.use_bf16 = False
+        self.dtype = torch.bfloat16 if self.use_bf16 else (torch.float16 if self.use_fp16 else None)
         self.stop_mel_token = self.cfg.gpt.stop_mel_token
         self.use_accel = use_accel
         self.force_no_flash2 = bool(force_no_flash2)
@@ -119,7 +144,7 @@ class IndexTTS2:
         if not os.path.isabs(qwen_emo_dir) and not os.path.isdir(qwen_emo_dir):
             qwen_emo_dir = os.path.join(self.model_dir, qwen_emo_dir)
         with _quiet_load_output(self.show_load_logs):
-            self.qwen_emo = QwenEmotion(qwen_emo_dir, lm_decoder_engine=lm_decoder_engine)
+            self.qwen_emo = QwenEmotion(qwen_emo_dir, model_filename=self.cfg.get("qwen_emo_filename", "model.safetensors"), lm_decoder_engine=lm_decoder_engine)
         self._load_log(">> qwen_emo weights restored from:", qwen_emo_dir)
 
         w2v_bert_dir = getattr(self.cfg, "w2v_bert_path", _W2V_BERT_FOLDER)
@@ -142,26 +167,29 @@ class IndexTTS2:
                 writable_tensors=False,
                 modelClass=UnifiedVoice,
                 forcedConfigPath=gpt_config_path,
-                default_dtype=torch.float16 if self.use_fp16 else torch.float32,
+                default_dtype=self.dtype or torch.float32,
                 configKwargs={
                     "use_accel": self.use_accel,
-                    "gpt_build_fp16": self.use_fp16,
+                    "spk_cond_mode": "campplus" if self.is_v25 else "conformer",
+                    "gpt_linear_layers": self.is_v25,
+                    "gpt_build_fp16": self.dtype == torch.float16,
+                    "gpt_build_dtype": self.dtype,
                     "gpt_build_meta": True,
                     "force_no_flash2": self.force_no_flash2,
                     "accel_allow_vllm_kernels": self.accel_allow_vllm_kernels,
                 },
             )
         self.gpt = self.gpt.to("cpu")
-        if self.use_fp16:
+        if self.dtype is not None:
             first_param = next(self.gpt.parameters(), None)
-            if first_param is not None and first_param.dtype != torch.float16:
-                self.gpt = self.gpt.half()
+            if first_param is not None and first_param.dtype != self.dtype:
+                self.gpt = self.gpt.to(dtype=self.dtype)
             self.gpt.eval()
         else:
             self.gpt.eval()
         self._load_log(">> GPT weights restored from:", self.gpt_path)
 
-        self.gpt.post_init_gpt2_config(use_deepspeed=use_deepspeed, kv_cache=True, half=self.use_fp16)
+        self.gpt.post_init_gpt2_config(use_deepspeed=use_deepspeed, kv_cache=True, half=self.use_fp16, dtype=self.dtype)
 
         if self.use_cuda_kernel:
             # preload the CUDA kernel for BigVGAN
@@ -177,7 +205,7 @@ class IndexTTS2:
         with _quiet_load_output(self.show_load_logs):
             self.extract_features = SeamlessM4TFeatureExtractor.from_pretrained(w2v_bert_dir, local_files_only=True)
         self.semantic_model, self.semantic_mean, self.semantic_std = build_semantic_model(
-            os.path.join(self.model_dir, self.cfg.w2v_stat), model_dir=w2v_bert_dir, use_fp16=self.use_fp16
+            os.path.join(self.model_dir, self.cfg.w2v_stat), model_dir=w2v_bert_dir, use_fp16=self.use_fp16 and not self.is_v25
         )
         self.semantic_model = self.semantic_model.to("cpu")
         self.semantic_model.eval()
@@ -185,15 +213,19 @@ class IndexTTS2:
         self.semantic_std = self.semantic_std.to("cpu")
         self._load_log(">> semantic_model weights restored from:", w2v_bert_dir)
 
-        semantic_codec = build_semantic_codec(self.cfg.semantic_codec)
-        semantic_code_ckpt = os.path.join(self.model_dir, _SEMANTIC_CODEC_FILENAME)
+        semantic_codec = EnhancedCodec(cfg=self.cfg.semantic_codec) if self.is_v25 else build_semantic_codec(self.cfg.semantic_codec)
+        semantic_codec_filename = self.cfg.get("semantic_codec_checkpoint", _SEMANTIC_CODEC_FILENAME)
+        semantic_code_ckpt = os.path.join(self.model_dir, semantic_codec_filename)
         if not os.path.isfile(semantic_code_ckpt):
             raise FileNotFoundError(
                 f"semantic_codec checkpoint not found at '{semantic_code_ckpt}'. "
                 "Download it via the IndexTTS2 handler model files."
             )
         with _quiet_load_output(self.show_load_logs):
-            safetensors.torch.load_model(semantic_codec, semantic_code_ckpt)
+            if self.is_v25:
+                offload.load_model_data(semantic_codec, semantic_code_ckpt, writable_tensors=False, default_dtype=None)
+            else:
+                semantic_codec.load_state_dict(safetensors.torch.load_file(semantic_code_ckpt, writable_tensors=False))
         self.semantic_codec = semantic_codec.to("cpu")
         self.semantic_codec.eval()
         self._load_log('>> semantic_codec weights restored from: {}'.format(semantic_code_ckpt))
@@ -244,13 +276,18 @@ class IndexTTS2:
         self.bigvgan.eval()
         self._load_log(">> bigvgan weights restored from:", bigvgan_name)
 
-        self.bpe_path = os.path.join(self.model_dir, self.cfg.dataset["bpe_model"])
         self.normalizer = TextNormalizer(enable_glossary=True)
         with _quiet_load_output(self.show_load_logs):
             self.normalizer.load()
         self._load_log(">> TextNormalizer loaded")
-        self.tokenizer = TextTokenizer(self.bpe_path, self.normalizer)
-        self._load_log(">> bpe model loaded from:", self.bpe_path)
+        if self.is_v25:
+            self.japanese_processor = JapaneseG2PProcessor()
+            self.tokenizer = get_multilingual_tokenizer(self.model_dir)
+            self._load_log(">> multilingual tokenizer loaded from:", self.model_dir)
+        else:
+            self.bpe_path = os.path.join(self.model_dir, self.cfg.dataset["bpe_model"])
+            self.tokenizer = TextTokenizer(self.bpe_path, self.normalizer)
+            self._load_log(">> bpe model loaded from:", self.bpe_path)
 
         # åŠ è½½æœ¯è¯­è¯æ±‡è¡¨ï¼ˆå¦‚æžœå­˜åœ¨ï¼‰
         self.glossary_path = os.path.join(self.model_dir, "glossary.yaml")
@@ -468,11 +505,15 @@ class IndexTTS2:
         attention_mask = inputs["attention_mask"].to(self.device)
         spk_cond_emb = self.get_emb(input_features, attention_mask)
 
-        codec_device = next(self.semantic_codec.parameters()).device
-        spk_cond_for_codec = spk_cond_emb if spk_cond_emb.device == codec_device else spk_cond_emb.to(codec_device)
-        _, S_ref = self.semantic_codec.quantize(spk_cond_for_codec)
-        if S_ref.device != spk_cond_emb.device:
-            S_ref = S_ref.to(spk_cond_emb.device)
+        if self.is_v25:
+            S_ref = spk_cond_emb
+            spk_cond_for_codec = None
+        else:
+            codec_device = next(self.semantic_codec.parameters()).device
+            spk_cond_for_codec = spk_cond_emb if spk_cond_emb.device == codec_device else spk_cond_emb.to(codec_device)
+            _, S_ref = self.semantic_codec.quantize(spk_cond_for_codec)
+            if S_ref.device != spk_cond_emb.device:
+                S_ref = S_ref.to(spk_cond_emb.device)
 
         ref_mel = self.mel_fn(audio_22k.to(spk_cond_emb.device).float())
         ref_target_lengths = torch.LongTensor([ref_mel.size(2)]).to(ref_mel.device)
@@ -599,11 +640,15 @@ class IndexTTS2:
             attention_mask = inputs["attention_mask"].to(self.device)
             spk_cond_emb = self.get_emb(input_features, attention_mask)
 
-            codec_device = next(self.semantic_codec.parameters()).device
-            spk_cond_for_codec = spk_cond_emb if spk_cond_emb.device == codec_device else spk_cond_emb.to(codec_device)
-            _, S_ref = self.semantic_codec.quantize(spk_cond_for_codec)
-            if S_ref.device != spk_cond_emb.device:
-                S_ref = S_ref.to(spk_cond_emb.device)
+            if self.is_v25:
+                S_ref = spk_cond_emb
+                spk_cond_for_codec = None
+            else:
+                codec_device = next(self.semantic_codec.parameters()).device
+                spk_cond_for_codec = spk_cond_emb if spk_cond_emb.device == codec_device else spk_cond_emb.to(codec_device)
+                _, S_ref = self.semantic_codec.quantize(spk_cond_for_codec)
+                if S_ref.device != spk_cond_emb.device:
+                    S_ref = S_ref.to(spk_cond_emb.device)
 
             ref_mel = self.mel_fn(item["audio_22k"].to(spk_cond_emb.device).float())
             ref_target_lengths = torch.LongTensor([ref_mel.size(2)]).to(ref_mel.device)
@@ -710,7 +755,9 @@ class IndexTTS2:
                     pause_ms = 0
             if payload is None:
                 continue
-            latent = payload["latent"].to(self.device)
+            latent = payload["latent"]
+            if latent is not None:
+                latent = latent.to(self.device)
             codes = payload["codes"].to(self.device)
             code_lens = payload["code_lens"].to(self.device)
             ref_mel = payload["ref_mel"].to(self.device)
@@ -731,17 +778,23 @@ class IndexTTS2:
                 prompt_condition_cache[speaker_cache_key] = prompt_condition_cpu
                 del speaker_ref_codes, speaker_ref_lengths, prompt_condition
             prompt_condition = prompt_condition_cpu.to(self.device)
-            latent = self.s2mel.models["gpt_layer"](latent)
-            quantizer_device = next(self.semantic_codec.quantizer.parameters()).device
-            codes_for_quantizer = codes.unsqueeze(1)
-            if codes_for_quantizer.device != quantizer_device:
-                codes_for_quantizer = codes_for_quantizer.to(quantizer_device)
-            S_infer = self.semantic_codec.quantizer.vq2emb(codes_for_quantizer)
-            if S_infer.device != latent.device:
-                S_infer = S_infer.to(latent.device)
-            S_infer = S_infer.transpose(1, 2)
-            S_infer = S_infer + latent
-            target_lengths = (code_lens * 1.72).long()
+            codes_for_quantizer = None
+            if self.is_v25:
+                codes_for_codec = codes.to(self.device)
+                S_infer = self.semantic_codec(codes_for_codec)
+                target_lengths = torch.LongTensor([int(S_infer.shape[1] * 1.72 * float(payload.get("duration_factor", 1.0)))]).to(S_infer.device)
+                del codes_for_codec
+            else:
+                latent = self.s2mel.models["gpt_layer"](latent)
+                quantizer_device = next(self.semantic_codec.quantizer.parameters()).device
+                codes_for_quantizer = codes.unsqueeze(1)
+                if codes_for_quantizer.device != quantizer_device:
+                    codes_for_quantizer = codes_for_quantizer.to(quantizer_device)
+                S_infer = self.semantic_codec.quantizer.vq2emb(codes_for_quantizer)
+                if S_infer.device != latent.device:
+                    S_infer = S_infer.to(latent.device)
+                S_infer = S_infer.transpose(1, 2) + latent
+                target_lengths = (code_lens * 1.72).long()
             cond = self.s2mel.models["length_regulator"](S_infer, ylens=target_lengths, n_quantizers=3, f0=None)[0]
             cat_condition = torch.cat([prompt_condition, cond], dim=1)
             vc_target = self.s2mel.models["cfm"].inference(
@@ -767,7 +820,7 @@ class IndexTTS2:
             segment_payloads[item_index] = None
             if isinstance(payload, dict):
                 payload.clear()
-            del latent, codes, code_lens, prompt_condition, ref_mel, style, S_infer, cond, cat_condition, target_lengths, payload, prompt_condition_cpu
+            del latent, codes, code_lens, codes_for_quantizer, prompt_condition, ref_mel, style, S_infer, cond, cat_condition, target_lengths, payload, prompt_condition_cpu
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -854,19 +907,91 @@ class IndexTTS2:
 
         return emo_vector
 
+    _V25_SPLIT_PROTECTED_PATTERN = re.compile(r'<\|SPECIAL_TOKEN_\d+\|>.*?<\|SPECIAL_TOKEN_\d+\|>')
+
+    def _v25_token_len(self, text):
+        return len(self.tokenizer.encode(text, allowed_special="all"))
+
+    def _split_v25_atomic_pieces(self, text):
+        pieces, position = [], 0
+        for match in self._V25_SPLIT_PROTECTED_PATTERN.finditer(text):
+            if match.start() > position:
+                pieces.append((text[position:match.start()], False))
+            pieces.append((match.group(0), True))
+            position = match.end()
+        if position < len(text):
+            pieces.append((text[position:], False))
+        return pieces
+
+    def _split_v25_text_by_tokens(self, text, max_tokens, language_prefix):
+        capacity = self.gpt.text_pos_embedding.emb.num_embeddings
+        budget = max(1, min(int(max_tokens), capacity - 2) - self._v25_token_len(language_prefix))
+        if self._v25_token_len(text) <= budget:
+            return [text]
+        chunks = []
+        for piece, atomic in self._split_v25_atomic_pieces(text):
+            if atomic:
+                chunks.append(piece)
+                continue
+            for part in re.split(r'(?<=[，。！？、；：,\.\!\?;:\n])', piece):
+                if not part:
+                    continue
+                if self._v25_token_len(part) <= budget:
+                    chunks.append(part)
+                    continue
+                current = ""
+                for char in part:
+                    if current and self._v25_token_len(current + char) > budget:
+                        chunks.append(current)
+                        current = char
+                    else:
+                        current += char
+                if current:
+                    chunks.append(current)
+        segments, current = [], ""
+        for chunk in chunks:
+            if current and self._v25_token_len(current + chunk) > budget:
+                segments.append(current)
+                current = chunk
+            else:
+                current += chunk
+        if current:
+            segments.append(current)
+        return segments or [text]
+
+    def _prepare_v25_text(self, text, language, max_tokens, text_normalization):
+        language = str(language).strip().lower()
+        text = self.normalizer.clean_pattern.sub(lambda match: self.normalizer.char_rep_map[match.group()], text)
+        if text_normalization and language in ("zh", "zhen", "en"):
+            text = self.normalizer.normalize(text)
+        if language in ("zh", "zhen", "en", "ja"):
+            text = text.lower()
+        elif language == "es":
+            text = text.upper()
+        text = _apply_pronunciation_annotations(text)
+        if language == "ja":
+            text = self.japanese_processor.process(text)
+        text = re.sub(r'<\|([^|]+)\|>', lambda match: f'<|{match.group(1).upper()}|>', text)
+        language_prefix = f"<|{language}|> "
+        segment_texts = self._split_v25_text_by_tokens(text, max_tokens, language_prefix)
+        segments = [self.tokenizer.encode(language_prefix + segment, allowed_special="all") + [self.cfg.gpt.stop_text_token] for segment in segment_texts]
+        return segments, torch.LongTensor([lang_to_token(language)]).to(self.device), text
+
     # åŽŸå§‹æŽ¨ç†æ¨¡å¼
     def infer(self, spk_audio_prompt, text, output_path,
               emo_audio_prompt=None, emo_alpha=1.0,
               emo_vector=None,
               use_emo_text=False, emo_text=None, use_random=False, interval_silence=200,
-              verbose=False, max_text_tokens_per_segment=120, stream_return=False, more_segment_before=0, clear_cache_after=True, **generation_kwargs):
+              verbose=False, max_text_tokens_per_segment=120, stream_return=False, more_segment_before=0, clear_cache_after=True,
+              lang="en", duration_factor=1.0, text_normalization=True, **generation_kwargs):
         if stream_return:
             gen = self.infer_generator(
                 spk_audio_prompt, text, output_path,
                 emo_audio_prompt, emo_alpha,
                 emo_vector,
                 use_emo_text, emo_text, use_random, interval_silence,
-                verbose, max_text_tokens_per_segment, stream_return, more_segment_before, **generation_kwargs
+                verbose, max_text_tokens_per_segment, stream_return, more_segment_before,
+                lang=lang, duration_factor=duration_factor, text_normalization=text_normalization, **generation_kwargs
             )
             def _wrapped():
                 try:
@@ -884,7 +1009,8 @@ class IndexTTS2:
                     emo_audio_prompt, emo_alpha,
                     emo_vector,
                     use_emo_text, emo_text, use_random, interval_silence,
-                    verbose, max_text_tokens_per_segment, stream_return, more_segment_before, **generation_kwargs
+                    verbose, max_text_tokens_per_segment, stream_return, more_segment_before,
+                    lang=lang, duration_factor=duration_factor, text_normalization=text_normalization, **generation_kwargs
                 ))[0]
             except IndexError:
                 return None
@@ -897,7 +1023,8 @@ class IndexTTS2:
               emo_audio_prompt=None, emo_alpha=1.0,
               emo_vector=None,
               use_emo_text=False, emo_text=None, use_random=False, interval_silence=200,
-              verbose=False, max_text_tokens_per_segment=120, stream_return=False, quick_streaming_tokens=0, **generation_kwargs):
+              verbose=False, max_text_tokens_per_segment=120, stream_return=False, quick_streaming_tokens=0,
+              lang="en", duration_factor=1.0, text_normalization=True, **generation_kwargs):
         self._raise_if_aborted()
         if verbose:
             print(f"origin text:{text}, spk_audio_prompt:{spk_audio_prompt}, "
@@ -966,19 +1093,22 @@ class IndexTTS2:
             del spk_mats, emo_mats, random_index, emo_matrix
         emo_cond_emb = self._ensure_emo_entry(emo_audio_prompt, verbose=verbose).to(self.device)
 
-        text_tokens_list = self.tokenizer.tokenize(text)
-        segments = self.tokenizer.split_segments(text_tokens_list, max_text_tokens_per_segment, quick_streaming_tokens = quick_streaming_tokens)
+        if self.is_v25:
+            segments, lang_tensor, normalized_text = self._prepare_v25_text(text, lang, max_text_tokens_per_segment, text_normalization)
+            segment_text_token_lengths = [len(segment) for segment in segments]
+        else:
+            text_tokens_list = self.tokenizer.tokenize(text)
+            segments = self.tokenizer.split_segments(text_tokens_list, max_text_tokens_per_segment, quick_streaming_tokens=quick_streaming_tokens)
+            segment_text_token_lengths = [max(1, len(self.tokenizer.convert_tokens_to_ids(one_segment))) for one_segment in segments]
+            text_token_ids = self.tokenizer.convert_tokens_to_ids(text_tokens_list)
+            if self.tokenizer.unk_token_id in text_token_ids:
+                print(f"  >> Warning: input text contains {text_token_ids.count(self.tokenizer.unk_token_id)} unknown tokens (id={self.tokenizer.unk_token_id}):")
+                print("     Tokens which can't be encoded: ", [token for token, token_id in zip(text_tokens_list, text_token_ids) if token_id == self.tokenizer.unk_token_id])
+                print("     Consider updating the BPE model or modifying the text to avoid unknown tokens.")
         segments_count = len(segments)
-        segment_text_token_lengths = [max(1, len(self.tokenizer.convert_tokens_to_ids(one_segment))) for one_segment in segments]
-
-        text_token_ids = self.tokenizer.convert_tokens_to_ids(text_tokens_list)
-        if self.tokenizer.unk_token_id in text_token_ids:
-            print(f"  >> Warning: input text contains {text_token_ids.count(self.tokenizer.unk_token_id)} unknown tokens (id={self.tokenizer.unk_token_id}):")
-            print( "     Tokens which can't be encoded: ", [t for t, id in zip(text_tokens_list, text_token_ids) if id == self.tokenizer.unk_token_id])
-            print(f"     Consider updating the BPE model or modifying the text to avoid unknown tokens.")
                   
         if verbose:
-            print("text_tokens_list:", text_tokens_list)
+            print("normalized text:", normalized_text if self.is_v25 else text)
             print("segments count:", segments_count)
             print("max_text_tokens_per_segment:", max_text_tokens_per_segment)
             print(*segments, sep="\n")
@@ -1013,20 +1143,21 @@ class IndexTTS2:
             except Exception:
                 mel_sr = 22050.0
                 mel_hop = 256.0
-            sound_tokens_per_second = max(1.0, (mel_sr / max(1.0, mel_hop)) / _MEL_TOKENS_PER_SOUND_TOKEN)
+            sound_tokens_per_second = max(1.0, (mel_sr / max(1.0, mel_hop)) / (_MEL_TOKENS_PER_SOUND_TOKEN * (2 if self.is_v25 else 1)))
             min_cg_sound_tokens = int(math.ceil(_MIN_CG_SOUND_SECONDS * sound_tokens_per_second))
             if duration_seconds_hint > 0:
                 duration_sound_tokens = int(math.ceil(duration_seconds_hint * sound_tokens_per_second))
             else:
                 duration_sound_tokens = int(max_mel_tokens)
             max_segment_text_tokens = max(1, max(segment_text_token_lengths) if len(segment_text_token_lengths) > 0 else int(max_text_tokens_per_segment))
-            longest_segment_estimated_sound_tokens = int(math.ceil(max_segment_text_tokens * _CG_SOUND_TOKENS_PER_TEXT_TOKEN))
+            longest_segment_estimated_sound_tokens = int(math.ceil(max_segment_text_tokens * _CG_SOUND_TOKENS_PER_TEXT_TOKEN / (2 if self.is_v25 else 1)))
             capped_segment_sound_tokens = max(1, min(int(duration_sound_tokens), int(longest_segment_estimated_sound_tokens)))
             cg_generation_tokens = max(min_cg_sound_tokens, capped_segment_sound_tokens)
             if shared_segment_generation_tokens is None:
                 segment_generation_token_budget = max(1, min(int(max_mel_tokens), int(cg_generation_tokens)))
             if cg_max_total_tokens is None:
-                prompt_budget = int(getattr(self.gpt, "cond_num", 32) + max_segment_text_tokens + 3)
+                conditioning_tokens = 3 if self.is_v25 else int(getattr(self.gpt, "cond_num", 32))
+                prompt_budget = conditioning_tokens + max_segment_text_tokens + 3
                 cg_max_total_tokens = prompt_budget + max(1, int(segment_generation_token_budget))
 
         wavs = []
@@ -1043,14 +1174,14 @@ class IndexTTS2:
             for seg_idx, sent in enumerate(segments):
                 self._raise_if_aborted()
                 try:
-                    text_tokens = self.tokenizer.convert_tokens_to_ids(sent)
-                    text_tokens = torch.tensor(text_tokens, dtype=torch.int32, device=self.device).unsqueeze(0)
+                    text_token_ids = sent if self.is_v25 else self.tokenizer.convert_tokens_to_ids(sent)
+                    text_tokens = torch.tensor(text_token_ids, dtype=torch.int32, device=self.device).unsqueeze(0)
                     if verbose:
                         print(text_tokens)
                         print(f"text_tokens shape: {text_tokens.shape}, text_tokens type: {text_tokens.dtype}")
-                        # debug tokenizer
-                        text_token_syms = self.tokenizer.convert_ids_to_tokens(text_tokens[0].tolist())
-                        print("text_token_syms is same as segment tokens", text_token_syms == sent)
+                        if not self.is_v25:
+                            text_token_syms = self.tokenizer.convert_ids_to_tokens(text_tokens[0].tolist())
+                            print("text_token_syms is same as segment tokens", text_token_syms == sent)
 
                     m_start_time = time.perf_counter()
                     with torch.no_grad():
@@ -1085,6 +1216,8 @@ class IndexTTS2:
                             repetition_penalty=repetition_penalty,
                             max_generate_length=segment_generation_token_budget,
                             cg_max_total_tokens=cg_max_total_tokens,
+                            langs=lang_tensor if self.is_v25 else None,
+                            campplus_embedding=style if self.is_v25 else None,
                             **generation_kwargs
                         )
 
@@ -1128,36 +1261,39 @@ class IndexTTS2:
                         print(f"code len: {code_lens}")
 
                     m_start_time = time.perf_counter()
-                    use_speed = torch.zeros(spk_cond_emb.size(0)).to(spk_cond_emb.device).long()
-                    with torch.amp.autocast(text_tokens.device.type, enabled=self.dtype is not None, dtype=self.dtype):
-                        latent = self.gpt(
-                            speech_conditioning_latent,
-                            text_tokens,
-                            torch.tensor([text_tokens.shape[-1]], device=text_tokens.device),
-                            codes,
-                            torch.tensor([codes.shape[-1]], device=text_tokens.device),
-                            emo_cond_emb,
-                            cond_mel_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=text_tokens.device),
-                            emo_cond_mel_lengths=torch.tensor([emo_cond_emb.shape[-1]], device=text_tokens.device),
-                            emo_vec=emovec,
-                            use_speed=use_speed,
-                        )
-                        gpt_forward_time += time.perf_counter() - m_start_time
+                    latent = None
+                    if not self.is_v25:
+                        use_speed = torch.zeros(spk_cond_emb.size(0)).to(spk_cond_emb.device).long()
+                        with torch.amp.autocast(text_tokens.device.type, enabled=self.dtype is not None, dtype=self.dtype):
+                            latent = self.gpt(
+                                speech_conditioning_latent,
+                                text_tokens,
+                                torch.tensor([text_tokens.shape[-1]], device=text_tokens.device),
+                                codes,
+                                torch.tensor([codes.shape[-1]], device=text_tokens.device),
+                                emo_cond_emb,
+                                cond_mel_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=text_tokens.device),
+                                emo_cond_mel_lengths=torch.tensor([emo_cond_emb.shape[-1]], device=text_tokens.device),
+                                emo_vec=emovec,
+                                use_speed=use_speed,
+                            )
+                            gpt_forward_time += time.perf_counter() - m_start_time
 
                     if defer_s2mel and not stream_return:
-                        target_lengths = (code_lens * 1.72).long()
+                        target_lengths = (code_lens * (3.44 if self.is_v25 else 1.72) * duration_factor).long()
                         deferred_segment_payloads.append(
                             {
                                 "speaker_cache_key": speaker_cache_key,
                                 "speaker_ref_codes": speaker_ref_codes_cpu,
                                 "speaker_ref_lengths": speaker_ref_lengths_cpu,
-                                "latent": latent.detach().cpu().contiguous(),
+                                "latent": None if latent is None else latent.detach().cpu().contiguous(),
                                 "codes": codes.detach().cpu().contiguous(),
                                 "code_lens": code_lens.detach().cpu().contiguous(),
                                 "text_token_count": int(text_tokens.shape[-1]),
                                 "sound_token_count": int(max_code_len),
                                 "ref_mel": ref_mel_cpu,
                                 "style": style_cpu,
+                                "duration_factor": float(duration_factor),
                                 "estimated_samples": int(max(1, int(target_lengths.max().item())) * hop_size),
                             }
                         )
@@ -1172,19 +1308,25 @@ class IndexTTS2:
                         m_start_time = time.perf_counter()
                         diffusion_steps = 25
                         inference_cfg_rate = 0.7
-                        latent = self.s2mel.models['gpt_layer'](latent)
-                        quantizer_device = next(self.semantic_codec.quantizer.parameters()).device
-                        codes_for_quantizer = codes.unsqueeze(1)
-                        if codes_for_quantizer.device != quantizer_device:
-                            codes_for_quantizer = codes_for_quantizer.to(quantizer_device)
-                        S_infer = self.semantic_codec.quantizer.vq2emb(codes_for_quantizer)
-                        if S_infer.device != latent.device:
-                            S_infer = S_infer.to(latent.device)
-                        S_infer = S_infer.transpose(1, 2)
-                        S_infer = S_infer + latent
-                        target_lengths = (code_lens * 1.72).long()
-                        speaker_ref_codes = speaker_ref_codes_cpu.to(latent.device)
-                        speaker_ref_lengths = speaker_ref_lengths_cpu.to(latent.device)
+                        codes_for_quantizer = None
+                        if self.is_v25:
+                            codes_for_codec = codes.to(self.device)
+                            S_infer = self.semantic_codec(codes_for_codec)
+                            target_lengths = torch.LongTensor([int(S_infer.shape[1] * 1.72 * duration_factor)]).to(S_infer.device)
+                            del codes_for_codec
+                        else:
+                            latent = self.s2mel.models['gpt_layer'](latent)
+                            quantizer_device = next(self.semantic_codec.quantizer.parameters()).device
+                            codes_for_quantizer = codes.unsqueeze(1)
+                            if codes_for_quantizer.device != quantizer_device:
+                                codes_for_quantizer = codes_for_quantizer.to(quantizer_device)
+                            S_infer = self.semantic_codec.quantizer.vq2emb(codes_for_quantizer)
+                            if S_infer.device != latent.device:
+                                S_infer = S_infer.to(latent.device)
+                            S_infer = S_infer.transpose(1, 2) + latent
+                            target_lengths = (code_lens * 1.72).long()
+                        speaker_ref_codes = speaker_ref_codes_cpu.to(S_infer.device)
+                        speaker_ref_lengths = speaker_ref_lengths_cpu.to(S_infer.device)
                         prompt_condition = self.s2mel.models["length_regulator"](
                             speaker_ref_codes,
                             ylens=speaker_ref_lengths,
@@ -1323,7 +1465,7 @@ def find_most_similar_cosine(query_vector, matrix):
     return most_similar_index
 
 class QwenEmotion:
-    def __init__(self, model_dir, lm_decoder_engine="legacy"):
+    def __init__(self, model_dir, model_filename="model.safetensors", lm_decoder_engine="legacy"):
         self.model_dir = model_dir
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_dir)
         def _pretie_qwen_lm_head(state_dict, quantization_map=None, tied_weights_map=None):
@@ -1332,7 +1474,7 @@ class QwenEmotion:
                 tied_weights_map["lm_head.weight"] = "model.embed_tokens.weight"
             return state_dict, quantization_map, tied_weights_map
 
-        model_path = os.path.join(self.model_dir, "model.safetensors")
+        model_path = os.path.join(self.model_dir, model_filename)
         config_path = os.path.join(self.model_dir, "config.json")
         self.model = offload.fast_load_transformers_model(
             model_path,

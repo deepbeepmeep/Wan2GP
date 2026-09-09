@@ -413,6 +413,7 @@ class WanAny2V:
 
     def generate(self,
         input_prompt,
+        alt_prompt="",
         input_frames= None,
         input_frames2= None,
         input_masks = None,
@@ -552,7 +553,10 @@ class WanAny2V:
         if self._interrupt:
             return None
         # Text Encoder
-        kiwi_edit = model_type in ["kiwi_edit"]        
+        kiwi_edit = model_type in ["kiwi_edit"]
+        animate2 = model_def.get("animate2", False)
+        animate2_kv_cache = custom_settings.get("animate2_kv_cache", "Disabled") if animate2 and isinstance(custom_settings, dict) else "Disabled"
+        if animate2_kv_cache == "Enabled": animate2_kv_cache = "GPU"
         bernini = model_def.get("bernini_class", False)
         shotplan = model_def.get("shotplan", False)
         if n_prompt == "":
@@ -587,6 +591,10 @@ class WanAny2V:
             if NAG_scale > 1 or any_guidance_at_all:      
                 context_null = self.text_encoder_cache.encode(encode_fn, [n_prompt], device=self.device)[0].to(self.dtype)
                 context_null = torch.cat([context_null, context_null.new_zeros(text_len -context_null.size(0), context_null.size(1)) ]).unsqueeze(0)
+            if animate2:
+                ref_prompt = alt_prompt.strip() or model_def["animate2_ref_prompt"]
+                animate2_ref_context = self.text_encoder_cache.encode(encode_fn, [ref_prompt], device=self.device)[0].to(self.dtype)
+                animate2_ref_context = torch.cat([animate2_ref_context, animate2_ref_context.new_zeros(text_len - animate2_ref_context.size(0), animate2_ref_context.size(1))]).unsqueeze(0)
 
         # NAG_prompt =  "static, low resolution, blurry"
         # context_NAG = self.text_encoder([NAG_prompt], self.device)[0]
@@ -629,7 +637,7 @@ class WanAny2V:
         trim_frames = 0
         post_decode_pre_trim = 0
         last_latent_preview = False
-        extended_overlapped_latents = clip_image_start = clip_image_end = image_mask_latents = latent_slice = freqs = post_freqs = None
+        extended_overlapped_latents = clip_image_start = clip_image_end = animate2_clip_image_ref = image_mask_latents = latent_slice = freqs = post_freqs = None
         use_extended_overlapped_latents = True
         # SCAIL uses a fixed ref latent frame that should not be noised.
         no_noise_latents_injection = infinitetalk or scail or scail2
@@ -640,7 +648,7 @@ class WanAny2V:
         extended_input_dim = 0
         ref_images_before = False            
         # image2video 
-        if model_def.get("i2v_class", False) and not (animate or scail or scail2):
+        if model_def.get("i2v_class", False) and not (animate or animate2 or scail or scail2):
             any_end_frame = False
             if infinitetalk:
                 new_shot = "0" in video_prompt_type
@@ -846,6 +854,29 @@ class WanAny2V:
             ref_images_count = 1
             lat_frames = int((input_frames.shape[1] - 1) // self.vae_stride[0]) + 1
 
+        # Animate 2
+        if animate2:
+            input_frames = input_frames[:, :frame_num].to(device=self.device, dtype=self.VAE_dtype)
+            if not input_ref_images:
+                input_ref_images = [image_start if image_start is not None else convert_image_to_tensor(pre_video_frame)]
+            image_ref = input_ref_images[0].to(device=self.device, dtype=self.VAE_dtype)
+            image_ref = image_ref.unsqueeze(1) if image_ref.ndim == 3 else image_ref
+            color_reference_frame = image_ref.clone()
+            clip_image_start = image_ref[:, 0]
+            animate2_clip_image_ref = input_frames[:, 0]
+            driving_latents = self.vae.encode([input_frames], VAE_tile_size)[0]
+            lat_frames, lat_h, lat_w = driving_latents.shape[1:]
+            identity_latents = self.vae.encode([image_ref], VAE_tile_size)[0]
+            output_pixels = torch.zeros_like(input_frames)
+            if prefix_frames_count > 0: output_pixels[:, :prefix_frames_count] = input_video[:, :prefix_frames_count].to(output_pixels)
+            output_latents = self.vae.encode([output_pixels], VAE_tile_size)[0]
+            y = torch.cat([torch.cat([self.get_i2v_mask(lat_h, lat_w, 1, lat_t=1, device=self.device), self.get_i2v_mask(lat_h, lat_w, prefix_frames_count, lat_t=lat_frames, device=self.device)], dim=1), torch.cat([identity_latents, output_latents], dim=1)])
+            grid_h, grid_w = lat_h // ps_h, lat_w // ps_w
+            animate2_ref_freqs = get_nd_rotary_pos_embed((1, 0, grid_w), (1 + lat_frames, grid_h, 2 * grid_w), (lat_frames, grid_h, grid_w), L_test=lat_frames, enable_riflex=False)
+            kwargs.update({"y": y, "animate2_ref_x": driving_latents.unsqueeze(0), "animate2_ref_y": torch.cat([self.get_i2v_mask(lat_h, lat_w, frame_num, lat_t=lat_frames, device=self.device), driving_latents]).unsqueeze(0), "animate2_ref_context": animate2_ref_context, "animate2_ref_freqs": animate2_ref_freqs, "animate2_log_scale": model_def["animate2_log_scale"], "animate2_kv_cache": animate2_kv_cache})
+            ref_images_before, ref_images_count = True, 1
+            identity_latents = output_latents = output_pixels = None
+
         # SCAIL - 3D pose-guided character animation
         if scail:
             pose_pixels = input_frames
@@ -921,6 +952,10 @@ class WanAny2V:
                 clip_context = self.clip.visual([clip_image_start[:, None, :, :]])
             clip_image_start = clip_image_end = None
             kwargs.update({'clip_fea': clip_context})
+            if animate2:
+                animate2_clip_image_ref = resize_lanczos(animate2_clip_image_ref, clip_image_size, clip_image_size)
+                kwargs["animate2_ref_clip_fea"] = self.clip.visual([animate2_clip_image_ref[:, None, :, :]])
+                animate2_clip_image_ref = None
             if steadydancer:
                 kwargs['steadydancer_clip_fea_c'] = self.clip.visual([input_frames[:, :1]])
 
@@ -1384,7 +1419,7 @@ class WanAny2V:
 
         offload.shared_state["_radial"] =  offload.shared_state["_attention"]=="radial"
         radial = offload.shared_state.get("_radial", False)        
-        if radial:
+        if radial and not animate2:
             radial_cache = get_cache("radial")
             from shared.radial_attention.attention import fill_radial_cache
             fill_radial_cache(radial_cache, len(self.model.blocks), *target_shape[1:])
@@ -1517,6 +1552,11 @@ class WanAny2V:
                         # "face_pixel_values": [face_pixel_values, None]
                         "face_pixel_values": [face_pixel_values, face_pixel_values] # seems to look better this way
                     }
+                elif animate2:
+                    gen_args = {
+                        "x": [latent_model_input, latent_model_input],
+                        "context": [context, context_null],
+                    }
                 elif wanmove:
                     gen_args = {
                         "x" : [latent_model_input, latent_model_input],
@@ -1588,7 +1628,9 @@ class WanAny2V:
                         "context": [context, context_null]
                     }
 
-                if joint_pass and any_guidance:
+                latent_model_input = None
+                run_joint_pass = joint_pass or animate2 and any_guidance
+                if run_joint_pass and any_guidance:
                     ret_values = trans( **gen_args , **kwargs)
                     if self._interrupt:
                         return clear()               
@@ -1597,10 +1639,12 @@ class WanAny2V:
                     ret_values = [None] * size
                     for x_id in range(size):
                         sub_gen_args = {k : [v[x_id]] for k, v in gen_args.items() }
+                        gen_args["x"][x_id] = None
                         ret_values[x_id] = trans( **sub_gen_args, x_id= x_id , **kwargs)[0]
                         if self._interrupt:
                             return clear()         
                     sub_gen_args = None
+                gen_args = None
                 if bernini:
                     noise_pred = ret_values[0] if bernini_coeffs[0] == 1 else ret_values[0] * bernini_coeffs[0]
                     for pred, coeff in zip(ret_values[1:], bernini_coeffs[1:]):

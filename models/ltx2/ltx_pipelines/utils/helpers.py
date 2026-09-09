@@ -688,6 +688,7 @@ def euler_denoising_loop(
     self_refiner_handler=None,
     self_refiner_handler_audio=None,
     self_refiner_generator: torch.Generator | None = None,
+    ancestral_noise_generator: torch.Generator | None = None,
 ) -> tuple[LatentState | None, LatentState | None]:
     """
     Perform the joint audio-video denoising loop over a diffusion schedule.
@@ -725,6 +726,17 @@ def euler_denoising_loop(
     if callable(prewarm):
         prewarm(video_state, audio_state, sigmas)
 
+    def advance(state: LatentState, denoised: torch.Tensor, step_idx: int, unconditional_denoised: torch.Tensor | None = None) -> torch.Tensor:
+        if getattr(stepper, "uses_unconditional", False):
+            if unconditional_denoised is None:
+                raise RuntimeError("CFG++ diffusion requires an unconditional denoised prediction")
+            return stepper.step(state.latent, denoised, sigmas, step_idx, unconditional_denoised_sample=unconditional_denoised)
+        if ancestral_noise_generator is None:
+            return stepper.step(state.latent, denoised, sigmas, step_idx)
+        noise = torch.randn(state.latent.shape, generator=ancestral_noise_generator, device=state.latent.device, dtype=state.latent.dtype)
+        latent = stepper.step(state.latent, denoised, sigmas, step_idx, noise=noise)
+        return post_process_latent(latent, state.denoise_mask, state.clean_latent)
+
     try:
         for step_idx, _ in enumerate(tqdm(sigmas[:-1])):
             if interrupt_check is not None and interrupt_check():
@@ -739,6 +751,12 @@ def euler_denoising_loop(
             denoised_video = post_process_latent(denoised_video, video_state.denoise_mask, video_state.clean_latent)
             if audio_state is not None:
                 denoised_audio = post_process_latent(denoised_audio, audio_state.denoise_mask, audio_state.clean_latent)
+            unconditional_video = unconditional_audio = None
+            if getattr(stepper, "uses_unconditional", False):
+                unconditional_video, unconditional_audio = denoise_fn.unconditional_predictions
+                unconditional_video = post_process_latent(unconditional_video, video_state.denoise_mask, video_state.clean_latent)
+                if audio_state is not None:
+                    unconditional_audio = post_process_latent(unconditional_audio, audio_state.denoise_mask, audio_state.clean_latent)
 
             refiner_steps = 0
             if self_refiner_handler is not None:
@@ -850,9 +868,9 @@ def euler_denoising_loop(
                 if audio_state is not None:
                     audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio_final, sigmas, step_idx))
             else:
-                video_state = replace(video_state, latent=stepper.step(video_state.latent, denoised_video, sigmas, step_idx))
+                video_state = replace(video_state, latent=advance(video_state, denoised_video, step_idx, unconditional_video))
                 if audio_state is not None:
-                    audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio, sigmas, step_idx))
+                    audio_state = replace(audio_state, latent=advance(audio_state, denoised_audio, step_idx, unconditional_audio))
 
             if mask_context is not None:
                 _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
@@ -1105,6 +1123,7 @@ def modality_from_latent_state(
         attention_mask=state.attention_mask,
         cross_attention_mask=cross_attention_mask,
         frame_indices=frame_indices,
+        keyframes_mask=state.keyframes_mask,
         runtime_cache=runtime_cache,
         step_index=step_index,
         sigma_schedule=sigma_schedule,
@@ -1922,6 +1941,8 @@ def multi_modal_guider_denoising_func(
     v_context_p_mask_builder: Callable[[LatentState, torch.Tensor | None, torch.Tensor], torch.Tensor | None] | None = None,
     a_context_p_mask_builder: Callable[[LatentState, torch.Tensor | None, torch.Tensor], torch.Tensor | None] | None = None,
     skip_audio_to_video: bool = False,
+    force_unconditional: bool = False,
+    capture_unconditional: bool = False,
 ) -> DenoisingFunc:
     prepared_v_context_p = prepared_v_context_n = None
     prepared_a_context_p = prepared_a_context_n = prepared_a_context_id = None
@@ -1972,8 +1993,8 @@ def multi_modal_guider_denoising_func(
             context_mask_builder=a_context_p_mask_builder,
         )
 
-        use_video_cfg = video_guider.do_unconditional_generation()
-        use_audio_cfg = audio_guider.do_unconditional_generation()
+        use_video_cfg = force_unconditional or video_guider.do_unconditional_generation()
+        use_audio_cfg = force_unconditional or audio_guider.do_unconditional_generation()
         use_cfg = use_video_cfg or use_audio_cfg
         use_video_stg = video_guider.do_perturbed_generation()
         use_audio_stg = audio_guider.do_perturbed_generation()
@@ -2206,8 +2227,11 @@ def multi_modal_guider_denoising_func(
 
         last_denoised_video = denoised_video
         last_denoised_audio = denoised_audio
+        if capture_unconditional:
+            guider_denoising_step.unconditional_predictions = (neg_denoised_video, neg_denoised_audio) if use_cfg else (None, None)
         return denoised_video, denoised_audio
 
+    guider_denoising_step.unconditional_predictions = (None, None)
     guider_denoising_step._prewarm = _prewarm
     guider_denoising_step._cleanup = _cleanup
     return guider_denoising_step
@@ -2393,6 +2417,7 @@ def denoise_audio_video(  # noqa: PLR0913
     mask_context: MaskInjection | None = None,
     freeze_audio: bool = False,
     skip_audio: bool = False,
+    video_position_offset: float = 0.0,
 ) -> tuple[LatentState | None, LatentState | None]:
     video_state, video_tools = noise_video_state(
         output_shape=output_shape,
@@ -2418,6 +2443,10 @@ def denoise_audio_video(  # noqa: PLR0913
         )
     if freeze_audio and audio_state is not None:
         audio_state = replace(audio_state, denoise_mask=torch.zeros_like(audio_state.denoise_mask))
+    if video_position_offset:
+        positions = video_state.positions.clone()
+        positions[:, 0].add_(float(video_position_offset))
+        video_state = replace(video_state, positions=positions)
 
     loop_kwargs = {}
     if "preview_tools" in inspect.signature(denoising_loop_fn).parameters:

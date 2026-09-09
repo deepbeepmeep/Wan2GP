@@ -117,8 +117,8 @@ class GemmaTextEmbeddingsConnectorModel(torch.nn.Module):
         dtype: torch.dtype = torch.bfloat16,
     ) -> None:
         super().__init__()
-        self.video_embeddings_connector = video_embeddings_connector.to(dtype=dtype)
-        self.audio_embeddings_connector = audio_embeddings_connector.to(dtype=dtype)
+        self.video_embeddings_connector = video_embeddings_connector
+        self.audio_embeddings_connector = audio_embeddings_connector
 
 
 class GemmaTextEmbeddingsConnectorModelConfigurator(ModelConfigurator[GemmaTextEmbeddingsConnectorModel]):
@@ -170,4 +170,28 @@ TEXT_EMBEDDINGS_CONNECTOR_KEY_OPS = (
     .with_replacement("diffusion_model.video_embeddings_connector.", "video_embeddings_connector.")
     .with_replacement("audio_connector.", "audio_embeddings_connector.")
     .with_replacement("video_connector.", "video_embeddings_connector.")
+)
+
+VIDEO_EMBEDDINGS_CONNECTOR_KEY_OPS = (
+    SDOps("VIDEO_EMBEDDINGS_CONNECTOR_KEY_OPS")
+    .with_matching(prefix="model.diffusion_model.video_embeddings_connector.")
+    .with_matching(prefix="diffusion_model.video_embeddings_connector.")
+    .with_matching(prefix="video_embeddings_connector.")
+    .with_matching(prefix="video_connector.")
+    .with_replacement("model.diffusion_model.video_embeddings_connector.", "")
+    .with_replacement("diffusion_model.video_embeddings_connector.", "")
+    .with_replacement("video_embeddings_connector.", "")
+    .with_replacement("video_connector.", "")
+)
+
+AUDIO_EMBEDDINGS_CONNECTOR_KEY_OPS = (
+    SDOps("AUDIO_EMBEDDINGS_CONNECTOR_KEY_OPS")
+    .with_matching(prefix="model.diffusion_model.audio_embeddings_connector.")
+    .with_matching(prefix="diffusion_model.audio_embeddings_connector.")
+    .with_matching(prefix="audio_embeddings_connector.")
+    .with_matching(prefix="audio_connector.")
+    .with_replacement("model.diffusion_model.audio_embeddings_connector.", "")
+    .with_replacement("diffusion_model.audio_embeddings_connector.", "")
+    .with_replacement("audio_embeddings_connector.", "")
+    .with_replacement("audio_connector.", "")
 )

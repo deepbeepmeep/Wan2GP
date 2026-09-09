@@ -183,7 +183,8 @@ class Scheduler:
         self.block_manager.deallocate(seq)
         self.waiting.appendleft(seq)
 
-    def postprocess(self, seqs: list[Sequence], token_ids: list[int]) -> list[bool]:
+    def postprocess(self, seqs: list[Sequence], token_ids: list[int] | list[list[int]]) -> int:
+        emitted_tokens = 0
         # Check if this is a CFG batch
         is_cfg_batch = False
         if len(seqs) > 0 and seqs[0].cfg_scale > 1.0 and seqs[0].paired_seq is not None:
@@ -203,6 +204,7 @@ class Scheduler:
             for i, (cond_seq, uncond_seq, token_id) in enumerate(zip(cond_seqs, uncond_seqs, token_ids)):
                 cond_seq.append_token(token_id)
                 uncond_seq.append_token(token_id)  # Same token for unconditional
+                emitted_tokens += 1
                 
                 # Check if either sequence is finished
                 cond_finished = ((not cond_seq.ignore_eos and token_id == self.eos) or 
@@ -222,9 +224,15 @@ class Scheduler:
                         self.running.remove(uncond_seq)
         else:
             # Normal batch
-            for seq, token_id in zip(seqs, token_ids):
-                seq.append_token(token_id)
-                if (not seq.ignore_eos and token_id == self.eos) or seq.num_completion_tokens == seq.max_tokens:
-                    seq.status = SequenceStatus.FINISHED
-                    self.block_manager.deallocate(seq)
-                    self.running.remove(seq)
+            for seq, seq_token_ids in zip(seqs, token_ids):
+                if not isinstance(seq_token_ids, list):
+                    seq_token_ids = [seq_token_ids]
+                for token_id in seq_token_ids:
+                    seq.append_token(token_id)
+                    emitted_tokens += 1
+                    if (not seq.ignore_eos and token_id == self.eos) or seq.num_completion_tokens == seq.max_tokens:
+                        seq.status = SequenceStatus.FINISHED
+                        self.block_manager.deallocate(seq)
+                        self.running.remove(seq)
+                        break
+        return emitted_tokens

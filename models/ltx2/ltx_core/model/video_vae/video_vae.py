@@ -999,10 +999,11 @@ class VideoDecoder(nn.Module):
 
 
 def decode_video(
-    latent: torch.Tensor,
+    latent: torch.Tensor | list[torch.Tensor],
     video_decoder: VideoDecoder,
     tiling_config: TilingConfig | None = None,
     interrupt_check: Callable[[], bool] | None = None,
+    generator: torch.Generator | None = None,
 ) -> Iterator[torch.Tensor]:
     """
     Decode a video latent tensor with the given decoder.
@@ -1019,11 +1020,21 @@ def decode_video(
         frames = rearrange(frames[0], "c f h w -> f h w c")
         return frames
 
+    if isinstance(latent, list):
+        latent_tensor = latent[0]
+        latent.clear()
+        latent = latent_tensor
+    is_diffusion_decoder = getattr(video_decoder, "is_diffusion_decoder", False)
     tiled_iterator = None
     decoded_video = None
     try:
         if tiling_config is not None:
-            tiled_iterator = video_decoder.tiled_decode(latent, tiling_config, interrupt_check=interrupt_check)
+            if is_diffusion_decoder:
+                decoder_input = [latent]
+                latent = None
+                tiled_iterator = video_decoder.tiled_decode(decoder_input, tiling_config, generator=generator, interrupt_check=interrupt_check)
+            else:
+                tiled_iterator = video_decoder.tiled_decode(latent, tiling_config, generator=generator, interrupt_check=interrupt_check)
             for frames in tiled_iterator:
                 if interrupt_check is not None and interrupt_check():
                     return
@@ -1031,7 +1042,12 @@ def decode_video(
         else:
             if interrupt_check is not None and interrupt_check():
                 return
-            decoded_video = video_decoder(latent)
+            if is_diffusion_decoder:
+                decoder_input = [latent]
+                latent = None
+                decoded_video = video_decoder(decoder_input, generator=generator)
+            else:
+                decoded_video = video_decoder(latent)
             if interrupt_check is not None and interrupt_check():
                 return
             yield convert_to_uint8(decoded_video)
@@ -1047,7 +1063,7 @@ def decode_video(
 
 
 def decode_video_to_tensor(
-    latent: torch.Tensor,
+    latent: torch.Tensor | list[torch.Tensor],
     video_decoder: VideoDecoder,
     tiling_config: TilingConfig | None = None,
     expected_frames: int | None = None,
@@ -1056,7 +1072,12 @@ def decode_video_to_tensor(
     interrupt_check: Callable[[], bool] | None = None,
     hdr_transform: str | None = None,
     output_dtype: torch.dtype | None = None,
+    generator: torch.Generator | None = None,
 ) -> torch.Tensor | None:
+    if isinstance(latent, list):
+        latent_tensor = latent[0]
+        latent.clear()
+        latent = latent_tensor
     full_video_shape = VideoLatentShape.from_torch_shape(latent.shape).upscale(video_decoder.video_downscale_factors)
     frame_capacity = int(expected_frames) if expected_frames is not None else int(full_video_shape.frames)
     target_height = int(expected_height) if expected_height is not None else int(full_video_shape.height)
@@ -1071,14 +1092,17 @@ def decode_video_to_tensor(
     tiled_iterator = None
     decoded_video = None
     write_pos = 0
+    is_diffusion_decoder = getattr(video_decoder, "is_diffusion_decoder", False)
     try:
         if tiling_config is not None:
-            tiled_iterator = video_decoder.tiled_decode(
-                latent,
-                tiling_config,
-                interrupt_check=interrupt_check,
-                copy_emitted_chunks=False,
-            )
+            tiled_decode_kwargs = {"generator": generator, "interrupt_check": interrupt_check, "copy_emitted_chunks": False}
+            if is_diffusion_decoder:
+                tiled_decode_kwargs["output_uint8"] = tensor_dtype is torch.uint8
+                decoder_input = [latent]
+                latent = None
+                tiled_iterator = video_decoder.tiled_decode(decoder_input, tiling_config, **tiled_decode_kwargs)
+            else:
+                tiled_iterator = video_decoder.tiled_decode(latent, tiling_config, **tiled_decode_kwargs)
             for frames in tiled_iterator:
                 if interrupt_check is not None and interrupt_check():
                     return None
@@ -1088,7 +1112,9 @@ def decode_video_to_tensor(
                 if frame_count <= 0:
                     break
                 frames = frames[:, :, :frame_count, :target_height, :target_width]
-                if is_hdr:
+                if frames.dtype is torch.uint8:
+                    pass
+                elif is_hdr:
                     frames = vae_range_to_hdr_linear(frames, transform=hdr_transform).to(dtype=tensor_dtype)
                 else:
                     frames = frames.add_(1.0).mul_(127.5).clamp_(0.0, 255.0)
@@ -1097,7 +1123,12 @@ def decode_video_to_tensor(
         else:
             if interrupt_check is not None and interrupt_check():
                 return None
-            decoded_video = video_decoder(latent)
+            if is_diffusion_decoder:
+                decoder_input = [latent]
+                latent = None
+                decoded_video = video_decoder(decoder_input, generator=generator, interrupt_check=interrupt_check)
+            else:
+                decoded_video = video_decoder(latent)
             if interrupt_check is not None and interrupt_check():
                 return None
             frame_count = min(int(decoded_video.shape[2]), frame_capacity)

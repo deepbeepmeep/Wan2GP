@@ -65,10 +65,16 @@ class LTXModel(torch.nn.Module):
         caption_projection: torch.nn.Module | None = None,
         audio_caption_projection: torch.nn.Module | None = None,
         cross_attention_adaln: bool = False,
+        use_prompt_adaln_single: bool = True,
+        ff_bias: bool = True,
+        audio_ff_bias: bool = True,
+        use_keyframes_abs_pos_embedding: bool = False,
     ):
         super().__init__()
         self._enable_gradient_checkpointing = False
         self.cross_attention_adaln = cross_attention_adaln
+        self.use_prompt_adaln_single = use_prompt_adaln_single
+        self.use_keyframes_abs_pos_embedding = use_keyframes_abs_pos_embedding
         self.interrupt_check: Callable[[], bool] | None = None
         self.interrupted = False
         self.interrupt_check: Callable[[], bool] | None = None
@@ -124,6 +130,8 @@ class LTXModel(torch.nn.Module):
             norm_eps=norm_eps,
             attention_type=attention_type,
             apply_gated_attention=apply_gated_attention,
+            ff_bias=ff_bias,
+            audio_ff_bias=audio_ff_bias,
         )
 
     def _init_video(
@@ -137,6 +145,9 @@ class LTXModel(torch.nn.Module):
         """Initialize video-specific components."""
         # Video input components
         self.patchify_proj = torch.nn.Linear(in_channels, self.inner_dim, bias=True)
+        self.keyframes_abs_pos_embedding = (
+            torch.nn.Parameter(torch.zeros(1, self.inner_dim)) if self.use_keyframes_abs_pos_embedding else None
+        )
         if caption_projection is not None:
             self.caption_projection = caption_projection
 
@@ -146,13 +157,18 @@ class LTXModel(torch.nn.Module):
         )
 
         self.prompt_adaln_single = (
-            AdaLayerNormSingle(self.inner_dim, embedding_coefficient=2) if self.cross_attention_adaln else None
+            AdaLayerNormSingle(self.inner_dim, embedding_coefficient=2)
+            if self.cross_attention_adaln and self.use_prompt_adaln_single
+            else None
         )
 
         # Video output components
         self.scale_shift_table = torch.nn.Parameter(torch.empty(2, self.inner_dim))
         self.norm_out = torch.nn.LayerNorm(self.inner_dim, elementwise_affine=False, eps=norm_eps)
         self.proj_out = torch.nn.Linear(self.inner_dim, out_channels)
+
+    def _keyframes_embedding(self) -> torch.Tensor | None:
+        return getattr(self, "keyframes_abs_pos_embedding", None)
 
     def _init_audio(
         self,
@@ -175,7 +191,9 @@ class LTXModel(torch.nn.Module):
         )
 
         self.audio_prompt_adaln_single = (
-            AdaLayerNormSingle(self.audio_inner_dim, embedding_coefficient=2) if self.cross_attention_adaln else None
+            AdaLayerNormSingle(self.audio_inner_dim, embedding_coefficient=2)
+            if self.cross_attention_adaln and self.use_prompt_adaln_single
+            else None
         )
 
         # Audio output components
@@ -233,6 +251,7 @@ class LTXModel(torch.nn.Module):
                 rope_type=self.rope_type,
                 av_ca_timestep_scale_multiplier=self.av_ca_timestep_scale_multiplier,
                 prompt_adaln=getattr(self, "prompt_adaln_single", None),
+                keyframes_embedding_provider=self._keyframes_embedding,
             )
             self.audio_args_preprocessor = MultiModalTransformerArgsPreprocessor(
                 patchify_proj=self.audio_patchify_proj,
@@ -267,6 +286,7 @@ class LTXModel(torch.nn.Module):
                 positional_embedding_theta=self.positional_embedding_theta,
                 rope_type=self.rope_type,
                 prompt_adaln=getattr(self, "prompt_adaln_single", None),
+                keyframes_embedding_provider=self._keyframes_embedding,
             )
         elif self.model_type.is_audio_enabled():
             self.audio_args_preprocessor = TransformerArgsPreprocessor(
@@ -306,6 +326,8 @@ class LTXModel(torch.nn.Module):
         norm_eps: float,
         attention_type: AttentionFunction | AttentionCallable,
         apply_gated_attention: bool,
+        ff_bias: bool = True,
+        audio_ff_bias: bool = True,
     ) -> None:
         """Initialize transformer blocks for LTX."""
         video_config = (
@@ -316,6 +338,7 @@ class LTXModel(torch.nn.Module):
                 context_dim=cross_attention_dim,
                 apply_gated_attention=apply_gated_attention,
                 cross_attention_adaln=self.cross_attention_adaln,
+                ff_bias=ff_bias,
             )
             if self.model_type.is_video_enabled()
             else None
@@ -328,6 +351,7 @@ class LTXModel(torch.nn.Module):
                 context_dim=audio_cross_attention_dim,
                 apply_gated_attention=apply_gated_attention,
                 cross_attention_adaln=self.cross_attention_adaln,
+                ff_bias=audio_ff_bias,
             )
             if self.model_type.is_audio_enabled()
             else None

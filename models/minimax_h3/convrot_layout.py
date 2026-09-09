@@ -48,6 +48,8 @@ def restore_interleaved_h3_qkv(state_dict):
                     for key in state_dict)
     if not has_convrot and not has_nvfp4 and not has_w4a8:
         return state_dict
+    if not any(key.endswith(".qkv_proj.weight") for key in state_dict):
+        return state_dict
     norm_key = next(key for key in state_dict if key.endswith("blocks.0.attn.q_norm.weight"))
     head_dim = state_dict[norm_key].shape[0]
     qkv_key = next(key for key in state_dict if key.endswith("blocks.0.attn.qkv_proj.weight"))

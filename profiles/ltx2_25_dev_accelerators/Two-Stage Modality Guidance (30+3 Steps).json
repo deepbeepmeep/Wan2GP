@@ -1,4 +1,5 @@
 {
+  "profile_id": "ltx2_25_two_stage_modality_guidance_30_3",
     "model_type": "ltx2_25_22B",
     "sample_solver": "euler",
     "num_inference_steps": 30,

@@ -75,6 +75,20 @@ def _session(accelerator_choices=(), preset_choices=(), defaults=None):
 
 
 class AcceleratorProfileResolutionTests(unittest.TestCase):
+    def test_additional_ltx_profile_ids_resolve(self):
+        profiles = (
+            ("Single-Stage Dev DistilledLoRA (8 Steps).json", "ltx2_25_single_stage_distilled_8", 8, 1),
+            ("Single-Stage Dev Multimodal Res2S (15 Steps).json", "ltx2_25_single_stage_multimodal_res2s_15", 15, 1),
+            ("Two-Stage Modality Guidance (30+3 Steps).json", "ltx2_25_two_stage_modality_guidance_30_3", 30, 2),
+        )
+        choices = [f"ltx2_25_dev_accelerators/{filename}" for filename, _, _, _ in profiles]
+        session, _ = _session([FAST_CHOICE, QUALITY_CHOICE, *choices])
+        for _, profile_id, steps, phases in profiles:
+            with self.subTest(profile_id=profile_id):
+                settings = session.resolve_profiles(MODEL_TYPE, accelerator_profile_id=profile_id)
+                self.assertEqual((settings["num_inference_steps"], settings["guidance_phases"]), (steps, phases))
+                self.assertNotIn("profile_id", settings)
+
     def test_resolves_ltx_profiles_with_defaults_loras_and_isolated_results(self):
         session, module = _session([FAST_CHOICE, QUALITY_CHOICE], [VBVR_CHOICE])
 

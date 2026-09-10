@@ -8,7 +8,8 @@ from shared.utils.loras_mutipliers import parse_loras_multipliers
 import gradio as gr
 from pathlib import Path
 
-from .infos import LTX2_25_INFOS, LTX2_INFOS, LTX2_MSR_INFOS, LTX2_MSR_V2_INFOS
+from .infos import LTX2_25_INFOS, LTX2_INFOS, LTX2_MSR_INFOS, LTX2_MSR_V2_INFOS, LTX2_SOL_INFOS
+from .ltx_core.model.transformer.sol_attention import SOL_ATTN_TAU_START_DEFAULT
 from .lora_utils import control_video_phase2_message
 from .ltx2_runtime import LTX2_OUTPAINTING_METHOD
 
@@ -511,10 +512,13 @@ class family_handler:
         distilled = pipeline_kind == "distilled"
         gemma_folder = _GEMMA4_FOLDER if ltx25 else _GEMMA_FOLDER
         gemma_files = (_GEMMA4_FILENAME, _GEMMA4_INT8_FILENAME) if ltx25 else (_GEMMA_FILENAME, _GEMMA_QUANTO_FILENAME)
+        base_infos = model_def.get("infos") or (
+            LTX2_25_INFOS if ltx25 else LTX2_MSR_V2_INFOS if msr_v2 else LTX2_MSR_INFOS if msr else LTX2_INFOS
+        )
         extra_model_def = {
             "ltx2_22B_class": base_model_type in LTX2_22B_CLASS or ltx25,
             "ltx2_edit_anything": editanything_ref,
-            "infos": model_def.get("infos", LTX2_25_INFOS if ltx25 else LTX2_MSR_V2_INFOS if msr_v2 else LTX2_MSR_INFOS if msr else LTX2_INFOS),
+            "infos": base_infos + LTX2_SOL_INFOS,
             "text_encoder_folder": gemma_folder,
             "text_encoder_URLs": [
                 build_hf_url("DeepBeepMeep/LTX-2", gemma_folder, gemma_files[0]),
@@ -536,6 +540,15 @@ class family_handler:
             "self_refiner": True,
             "self_refiner_max_plans": 2,
             "custom_settings": [_PROMPT_RELAY_CUSTOM_SETTING.copy()],
+            "custom_attention_modes": {
+                "sol": {"label": "Sol sparse attention, requires Triton and RTX 30xx or newer", "supports_sparsity": True},
+            },
+            "attention_sparsity": {
+                "label": "Start Tau (higher = more sparse/faster; lower = more faithful; End Tau = 0.8)",
+                "start": 0.0,
+                "end": 4.0,
+                "inc": 0.05,
+            },
             # "no_background_removal": True,
             "vae_block_size": 64,
             "keep_frames_video_guide_not_supported": True,
@@ -595,7 +608,7 @@ class family_handler:
                     "preserve_empty_prompt_lines": True,
                     "skip_video_guide_preprocess": True,
                     "NAG": True,
-                    "infos": model_def.get("infos", JOYAI_ECHO_INFOS),
+                    "infos": (model_def.get("infos") or JOYAI_ECHO_INFOS) + LTX2_SOL_INFOS,
                     "fps": 25,
                     "image_prompt_types_allowed": "TSV",
                     "prompt_infos": JOYAI_ECHO_PROMPT_INFOS,
@@ -1059,6 +1072,7 @@ class family_handler:
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
         default_perturbation_layers = _default_perturbation_layers(base_model_type)
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
+        ui_defaults.setdefault("attention_sparsity", SOL_ATTN_TAU_START_DEFAULT)
         if _is_joyai_echo(base_model_type, model_def):
             ui_defaults.setdefault("resolution", "1280x720")
             ui_defaults.setdefault("video_length", 129)
@@ -1114,7 +1128,6 @@ class family_handler:
                 audio_prompt_type =audio_prompt_type.replace("L", "")
                 ui_defaults["audio_prompt_type"] = audio_prompt_type
 
-            
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         default_perturbation_layers = _default_perturbation_layers(base_model_type)
@@ -1127,6 +1140,7 @@ class family_handler:
                 "audio_prompt_type": "",
                 "perturbation_layers": default_perturbation_layers,
                 "guidance_phases": 2,
+                "attention_sparsity": SOL_ATTN_TAU_START_DEFAULT,
 	            }
         )
         ui_defaults.setdefault("audio_scale", 1.0)

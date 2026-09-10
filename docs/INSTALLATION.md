@@ -88,6 +88,7 @@ pip install sageattention==1.0.6
 
 #### Linux: Install SageAttention 2 for RTX 30XX-50XX
 ```
+# run with WanGP's environment activated
 python -m pip install "setuptools<=75.8.2" --force-reinstall
 git clone https://github.com/thu-ml/SageAttention
 cd SageAttention 
@@ -108,9 +109,28 @@ pip install https://github.com/woct0rdho/SpargeAttn/releases/download/v0.1.0-win
 ```
 
 #### Linux Install Sparge Attention
+CUDA 13 (and recent nvcc builds in general) cannot compile the upstream git checkout directly: the build fails with `error: identifier "__assert_fail" is undefined` in `cuda_fp8.hpp` / `cuda_fp6.hpp` / `cuda_fp4.hpp`. Use the helper script, which clones the repo, adds a `-DNDEBUG` nvcc flag (which disables the `assert()` calls CUDA 13's headers make inside host/device functions) and installs it. As with the flash attention build, run it with WanGP's environment activated, since it compiles against that environment's PyTorch:
+```
+scripts/install-spargeattn.sh
+```
+
+Manual equivalent:
 ```
 python -m pip install ninja wheel packaging
-python -m pip install --no-build-isolation git+https://github.com/woct0rdho/SpargeAttn.git
+git clone https://github.com/woct0rdho/SpargeAttn
+cd SpargeAttn
+# patch setup.py in two places:
+#   1. add "-DNDEBUG", as a new line right after "-std=c++17", inside NVCC_FLAGS_COMMON
+#   2. in run_instantiations(), replace os.system(f"python {py_file}") with
+#      subprocess.check_call([sys.executable, str(py_file)])   (and add "import sys" at the top)
+python -m pip install --no-build-isolation .
+```
+
+If you only need the kernels for one of your GPUs, limit the build (much faster):
+```
+TORCH_CUDA_ARCH_LIST="12.0" scripts/install-spargeattn.sh   # RTX 50xx only
+TORCH_CUDA_ARCH_LIST="8.9" scripts/install-spargeattn.sh    # RTX 40xx only
+TORCH_CUDA_ARCH_LIST="8.6" scripts/install-spargeattn.sh    # RTX 30xx only
 ```
 
 

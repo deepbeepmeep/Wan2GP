@@ -45,6 +45,7 @@ loras_i2v/
 tmp/
 deepy_sessions/
 dlss5/
+SpargeAttn-build/
 /settings/
 
 wgp_config.json

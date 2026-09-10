@@ -88,6 +88,7 @@ pip install sageattention==1.0.6
 
 #### Linux: Install SageAttention 2 for RTX 30XX-50XX
 ```
+# run with WanGP's environment activated
 python -m pip install "setuptools<=75.8.2" --force-reinstall
 git clone https://github.com/thu-ml/SageAttention
 cd SageAttention 

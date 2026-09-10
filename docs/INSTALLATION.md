@@ -130,9 +130,29 @@ pip install https://github.com/Redtash1/Flash_Attention_2_Windows/releases/downl
 ```
 
 #### Linux
+There is no prebuilt wheel for the PyTorch version WanGP uses, so the package is compiled from source (a plain `pip install flash-attn` would build in an isolated environment that does not contain your PyTorch). Use the helper script, run from a terminal with WanGP's environment activated (the one created in the setup steps above, with the matching PyTorch and CUDA toolkit):
 ```
-pip install flash-attn==2.7.2.post1
+scripts/install-flashattn.sh
 ```
+It builds flash-attn **2.8.3.post1** from its PyPI source distribution — the first release with native consumer-Blackwell (sm_120, RTX 50xx) kernels — compiles against that environment's PyTorch (so it must be run from the activated environment), and verifies the result with a small forward+backward smoke test.
+
+By default the kernels for RTX 30xx/40xx and RTX 50xx are compiled; limiting `FLASH_ATTN_CUDA_ARCHS` to the GPU(s) the environment will run on makes the build faster (each entry adds one gencode pass per kernel):
+```
+FLASH_ATTN_CUDA_ARCHS="120" scripts/install-flashattn.sh    # RTX 50xx only
+FLASH_ATTN_CUDA_ARCHS="80"  scripts/install-flashattn.sh    # RTX 30xx/40xx only
+```
+The toolkit used must match the **major** CUDA version of the venv's PyTorch: the script checks this and stops with a clear error otherwise (e.g. a cu12x PyTorch venv on a machine whose toolkits are CUDA 13). In that case install a matching toolkit — `sudo apt install cuda-nvcc-12-8 cuda-cudart-dev-12-8` on Ubuntu 24.04 with NVIDIA's CUDA repo (any 12.x matches a cu12 PyTorch) — and re-run with `CUDA_HOME=/usr/local/cuda-12.8`. Note that the sm_120 kernels require nvcc ≥ 12.8; on older toolkits the script refuses rather than silently building without them.
+
+If the selected attention mode is *flash*, every GPU it will run on must have been included in the build, otherwise the kernel launches on that GPU fail (other modes such as *sdpa* or *sage* are not affected).
+
+Flash attention 2 requires an Ampere (RTX 30xx) or newer GPU: RTX 20xx and GTX 10xx cards cannot run these kernels, so on them use *sdpa* (or *sage* 1.0.6 on RTX 20xx) instead.
+
+The compile is CPU-bound (the GPU stays idle), and with full parallelism it can heat the CPU. The script prints the parallelism it will use before building; to keep it down, limit the number of parallel compiler processes and/or the worker threads per process:
+```
+MAX_JOBS=4 scripts/install-flashattn.sh                     # fewer parallel nvcc processes
+MAX_JOBS=2 NVCC_THREADS=1 scripts/install-flashattn.sh      # ~2-4 CPU threads at peak
+```
+`MAX_JOBS` defaults to a value derived from the core count and free RAM (each nvcc process peaks at ~8-9 GB). Limiting `FLASH_ATTN_CUDA_ARCHS` to the GPU the build runs on shortens the build the most.
 
 
 ## GGUF llama.cpp CUDA Kernels

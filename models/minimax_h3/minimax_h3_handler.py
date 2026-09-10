@@ -370,7 +370,7 @@ class family_handler:
                 "profiles_dir": [VIGGLE_ARCHITECTURE],
                 "infos": VIGGLE_INFOS,
                 "prompt_infos": "Viggle uses a fixed prompt. Prepare the character replacement in the Edited Reference Frame; generation prompt text is ignored.",
-                "text_encoder_URLs": [], "text_encoder_folder": None, "system_configs": {},
+                "text_encoder_URLs": [], "text_encoder_folder": None, "system_configs": {}, "NAG": False, "no_negative_prompt": True,
                 "prompt_enhancer_def": {"selection": [], "labels": {}, "default": ""},
                 "image_outputs": False, "sliding_window": True, "video_continuation": False,
                 "sliding_window_size_locked": True,
@@ -466,7 +466,8 @@ class family_handler:
                 "inc": 0.05,
             },
             "sample_solvers": [("Euler", "euler")] if pdd else [("Euler", "euler"), ("RES Multistep", "res_multistep"), ("Ralston 2S (~2x slower)", "ralston_2s")],
-            "no_negative_prompt": True,
+            "NAG": True,
+            "no_negative_prompt": False,
             "returns_audio": True,
             "multimedia_generation": True,
             "image_end_frame_position": True,
@@ -934,6 +935,9 @@ class family_handler:
             "audio_prompt_type": "",
             "video_prompt_type": "",
             "image_mode": 0,
+            "NAG_scale": 1.0,
+            "NAG_tau": 3.5,
+            "NAG_alpha": 0.5,
         })
         if reference_mode:
             ui_defaults.update({"image_refs_relative_size": 100, "remove_background_images_ref": 0})

@@ -336,26 +336,71 @@ class VDNHybridAttention(nn.Module):
         if not self.use_triton:
             _notify_slow()
 
-    def forward(self, x_handoff, raw_qkv, softmax_qkv, original_out):
+    def forward(self, x_handoff, raw_qkv, softmax_qkv, original_out, NAG=None):
         x = x_handoff.pop()
         video = slice(self.video_start, x.shape[0])
-        local = self._window_softmax(softmax_qkv)
+        local = self._window_softmax(softmax_qkv, NAG)
         local.mul_(self.softmax_gate(x))
         output = original_out(local.reshape(x.shape[0], -1))
         del local
+        if NAG is not None:
+            caption = NAG["x"]
+            NAG["x"] = original_out(NAG.pop("attention").mul_(self.softmax_gate(caption)).reshape(caption.shape[0], -1))
         text_idx = self.text_indices.to(x.device)
         query, key, value = raw_qkv
         raw_qkv.clear()
         video_raw = [query[video], key[video], value[video]]
         text_raw = [key[text_idx], value[text_idx]]
         query = key = value = None
+        if NAG is not None:
+            # The negative output is assembled as the positive one is, from both halves, then guided once.
+            _, key_neg, value_neg = NAG.pop("raw")
+            branch_neg = self.linear_attention(x[video], list(video_raw), self.frames, self.tokens_per_frame, self.frame_size,
+                                               self.bounds, caption, [key_neg, value_neg], self.use_triton)
+            del caption, key_neg, value_neg
         branch = self.linear_attention(x[video], video_raw, self.frames,
                                        self.tokens_per_frame, self.frame_size, self.bounds, x[text_idx],
                                        text_raw, self.use_triton)
         output[video].add_(self.to_out_linear(branch))
+        if NAG is not None:
+            from .transformer import _nag_guidance
+
+            rows = NAG["rows"]
+            if "video_rows" not in NAG:
+                in_video = rows >= self.video_start
+                NAG["video_rows"] = in_video.nonzero().flatten(), rows[in_video] - self.video_start
+            output_neg = original_out(NAG.pop("local").mul_(self.softmax_gate(x[rows])).reshape(rows.numel(), -1))
+            guided_video, branch_rows = NAG["video_rows"]
+            output_neg[guided_video] += self.to_out_linear(branch_neg[branch_rows])
+            del branch_neg
+            output[rows] = _nag_guidance(output[rows], output_neg, NAG)
         return output
 
-    def _window_softmax(self, qkv_handoff):
+    def _nag_window_softmax(self, query, key, value, NAG, force_attention, dense_rows, groups):
+        from shared.attention import pay_attention
+
+        query_neg, key_neg, value_neg = NAG.pop("qkv")
+        text_len, mask = NAG["text_len"], NAG["mask"]
+        shift = key_neg.shape[1] - text_len
+        key = torch.cat((key_neg, key[:, text_len:]), dim=1)
+        value = torch.cat((value_neg, value[:, text_len:]), dim=1)
+        del key_neg, value_neg
+        NAG["attention"] = pay_attention([query_neg, key, value], force_attention=force_attention, recycle_q=True)
+        del query_neg
+        if "window_plan" not in NAG:
+            # Window keys are absolute rows: a caption longer than the prompt moves every later key by the difference.
+            shifted = _window_plan(self.layout, self.video_start + shift, self.frames, self.tokens_per_frame, self.bounds, query.device)[1]
+            NAG["window_plan"] = (dense_rows[mask[dense_rows]],
+                                  [(rows[mask[rows]], indices) for (rows, _), (_, indices) in zip(groups, shifted)])
+        dense_rows, groups = NAG["window_plan"]
+        output = torch.empty_like(query)
+        output[:, dense_rows] = pay_attention([query[:, dense_rows], key, value], force_attention=force_attention, recycle_q=True)
+        for rows, indices in groups:
+            if rows.numel():
+                output[:, rows] = pay_attention([query[:, rows], key[:, indices], value[:, indices]], force_attention=force_attention, recycle_q=True)
+        return output[0, NAG["rows"]]
+
+    def _window_softmax(self, qkv_handoff, NAG=None):
         from shared.attention import pay_attention, sage2_supported
 
         query, key, value = qkv_handoff
@@ -366,6 +411,8 @@ class VDNHybridAttention(nn.Module):
         dense_rows, groups = _window_plan(self.layout, video_start, frames, per_frame, self.bounds, query.device)
         if force_attention == "sage2":
             _notify_sage()
+        if NAG is not None:
+            NAG["local"] = self._nag_window_softmax(query, key, value, NAG, force_attention, dense_rows, groups)
         output[:, dense_rows] = pay_attention([query[:, dense_rows], key, value], force_attention=force_attention, recycle_q=True)
         for rows, indices in groups:
             output[:, rows] = pay_attention([query[:, rows], key[:, indices], value[:, indices]], force_attention=force_attention, recycle_q=True)

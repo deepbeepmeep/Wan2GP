@@ -112,6 +112,36 @@ def _rope_table(angles, dtype):
     return torch.stack((angles.cos(), angles.sin()), dim=-1).unsqueeze(0).unsqueeze(2).to(dtype)
 
 
+def _nag_guidance(x_pos, x_neg, NAG):
+    # NAG over (rows, features) as models/flux/math.py computes it, in float32: the scale amplifies half-precision rounding.
+    dtype = x_pos.dtype
+    x_pos, x_guidance = x_pos.float(), x_neg.float()
+    nag_scale, nag_tau, nag_alpha = NAG["scale"], NAG["tau"], NAG["alpha"]
+    x_guidance.mul_(1 - nag_scale).add_(x_pos, alpha=nag_scale)
+    norm_positive = torch.norm(x_pos, p=1, dim=-1, keepdim=True)
+    norm_guidance = torch.norm(x_guidance, p=1, dim=-1, keepdim=True)
+    scale = norm_guidance / norm_positive
+    torch.nan_to_num(scale, nan=10.0, posinf=10.0, neginf=10.0, out=scale)
+    x_guidance.mul_(torch.where(scale > nag_tau, 1 / (norm_guidance + 1e-7) * norm_positive * nag_tau, 1.0))
+    del norm_positive, norm_guidance, scale
+    x_guidance.mul_(nag_alpha).add_(x_pos, alpha=1 - nag_alpha)
+    return x_guidance.to(dtype)
+
+
+def _nag_guided_rows(layout, audio_start, audio_t, fixed_video_rows, device):
+    # The rows being generated: target audio and video, less the latents that carry supplied input.
+    mask = torch.zeros(layout.sequence_length, dtype=torch.bool, device=device)
+    mask[audio_start:] = True
+    condition_latents = layout.num_target_condition_audio_latents
+    mask[audio_start:audio_start + condition_latents] = False
+    mask[audio_start + audio_t:audio_start + audio_t + condition_latents] = False
+    if layout.num_target_condition_video_rows:
+        mask[-layout.num_target_condition_video_rows:] = False
+    video_start = audio_start + audio_t * 2
+    mask[video_start:video_start + fixed_video_rows] = False
+    return mask, mask.nonzero().flatten()
+
+
 class TimeEmbedder(nn.Module):
     def __init__(self, freq_dim, hidden, out, dtype=None, device=None):
         super().__init__()
@@ -186,11 +216,9 @@ class Attention(nn.Module):
             from .vdn_attention import VDNHybridAttention
             self.vdn = VDNHybridAttention(hidden, heads, head_dim, dtype=dtype, device=device)
 
-    def forward(self, x_list, rope=None, transformer_options=None):
+    def _qkv(self, x_list, rope, use_sol):
         x = _take(x_list)
-        vdn_input = x if hasattr(self, "vdn") else None
         seq_len = x.shape[0]
-        use_sol = not hasattr(self, "vdn") and self.sol_attention is not None and self.sol_attention.use_for_layer(seq_len)
         split_qkv = hasattr(self, "q_proj")
         if split_qkv:
             query = self.q_proj(x).view(1, seq_len, self.heads, self.head_dim)
@@ -230,11 +258,38 @@ class Attention(nn.Module):
                 first.mul_(cosine).addcmul_(second, sine, value=-1)
                 second.mul_(cosine).addcmul_(scratch, sine)
             del scratch, tensor, first, second
+        return qkv_list, raw_qkv
+
+    def _nag_attention(self, qkv_list, NAG):
+        # Negative branch, built as flux builds it: the negative caption's keys and values take the place of the prompt's.
+        # Its query is the caption itself, which keeps evolving through the blocks, followed by the guided rows.
+        query_neg, key_neg, value_neg = NAG.pop("qkv")
+        query, key, value = qkv_list
+        text_len, rows, caption_len = NAG["text_len"], NAG["rows"], query_neg.shape[1]
+        qkv_neg = [torch.cat((query_neg, query[:, rows]), dim=1), torch.cat((key_neg, key[:, text_len:]), dim=1),
+                   torch.cat((value_neg, value[:, text_len:]), dim=1)]
+        del query_neg, key_neg, value_neg, query, key, value
+        x_neg = pay_attention(qkv_neg, recycle_q=True)
+        NAG["x"] = self.out_proj(x_neg[0, :caption_len].reshape(caption_len, -1))
+        return x_neg[0, caption_len:].reshape(rows.numel(), -1)
+
+    def forward(self, x_list, rope=None, transformer_options=None, NAG=None):
+        seq_len = x_list[0].shape[0]
+        vdn_input = x_list[0] if hasattr(self, "vdn") else None
+        use_sol = not hasattr(self, "vdn") and self.sol_attention is not None and self.sol_attention.use_for_layer(seq_len)
+        qkv_list, raw_qkv = self._qkv(x_list, rope, use_sol)
+        if NAG is not None:
+            NAG["qkv"], NAG["raw"] = self._qkv([NAG["x"]], NAG["rope"], False)
         if hasattr(self, "vdn"):
             x_handoff, raw_handoff, softmax_handoff = [vdn_input], list(raw_qkv), qkv_list
-            vdn_input = raw_qkv = qkv_list = query = key = value = None
-            return self.vdn(x_handoff, raw_handoff, softmax_handoff, self.out_proj)
+            vdn_input = raw_qkv = qkv_list = None
+            return self.vdn(x_handoff, raw_handoff, softmax_handoff, self.out_proj, NAG)
+        x_neg = None if NAG is None else self._nag_attention(qkv_list, NAG)
         attention = pay_attention(qkv_list, recycle_q=True) if self.sol_attention is None else self.sol_attention(qkv_list, use_sol)
+        if x_neg is not None:
+            rows = NAG["rows"]
+            attention[0, rows] = _nag_guidance(attention[0, rows].flatten(1), x_neg, NAG).view(-1, self.heads, self.head_dim)
+            del x_neg
         output = attention.reshape(seq_len, -1)
         return self.out_proj(output)
 
@@ -339,20 +394,33 @@ class DiTBlock(nn.Module):
             hidden.copy_(branch)
         return hidden, signature
 
-    def forward(self, x_list, temb, segments, rope, residual_signature_elements=0):
+    def _advance_caption(self, NAG, gate_msa, shift_mlp, scale_mlp, gate_mlp):
+        caption = [(0, NAG["hidden"].shape[0], NAG["row"])]
+        hidden = _gated_residual([NAG.pop("hidden")], [gate_msa], [NAG.pop("x")], caption)
+        h_list = [_modulate(self.norm2(hidden), [shift_mlp, scale_mlp], caption)]
+        NAG["hidden"] = _gated_residual([hidden], [gate_mlp], [self.mlp(h_list)], caption)
+
+    def forward(self, x_list, temb, segments, rope, residual_signature_elements=0, NAG=None):
         residual_list = [_take(x_list)]
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln_proj(temb)
+        if NAG is not None:
+            # The negative caption goes through the block as the prompt's text rows do, with their modulation.
+            NAG["x"] = _modulate(self.norm1(NAG["hidden"]), [shift_msa, scale_msa], [(0, NAG["hidden"].shape[0], NAG["row"])])
         h_list = [_modulate(self.norm1(residual_list[0]), [shift_msa, scale_msa], segments)]
         if not residual_signature_elements:
-            residual_list = [_gated_residual(residual_list, [gate_msa], [self.attn(h_list, rope=rope)], segments)]
+            residual_list = [_gated_residual(residual_list, [gate_msa], [self.attn(h_list, rope=rope, NAG=NAG)], segments)]
+            if NAG is not None:
+                self._advance_caption(NAG, gate_msa, shift_mlp, scale_mlp, gate_mlp)
             h_list = [_modulate(self.norm2(residual_list[0]), [shift_mlp, scale_mlp], segments)]
             return _gated_residual(residual_list, [gate_mlp], [self.mlp(h_list)], segments)
 
         hidden = _take(residual_list)
         signature_stride = max(1, math.ceil(hidden.numel() / residual_signature_elements))
-        branch = self.attn(h_list, rope=rope)
+        branch = self.attn(h_list, rope=rope, NAG=NAG)
         hidden, signature = self._gated_branch(hidden, gate_msa.to(hidden.dtype), branch, segments, signature_stride)
         del branch
+        if NAG is not None:
+            self._advance_caption(NAG, gate_msa, shift_mlp, scale_mlp, gate_mlp)
         h_list = [_modulate(self.norm2(hidden), [shift_mlp, scale_mlp], segments)]
         branch = self.mlp(h_list)
         hidden, signature = self._gated_branch(hidden, gate_mlp.to(hidden.dtype), branch, segments, signature_stride, signature)
@@ -595,6 +663,20 @@ class MiniMaxH3Model(nn.Module):
         payload["layout_signature"], payload["layout"] = signature, layout
         return layout
 
+    def _prepare_nag(self, NAG, layout, timestep_indices, audio_start, audio_t, fixed_video_rows, device, dtype):
+        if NAG["context"].shape[-1] != self.hidden_size:
+            NAG["context"] = self.preprocess_text_embeds(NAG["context"])
+        caption_len = NAG["context"].shape[1]
+        if NAG.get("rope") is None:
+            # Caption rows take the packed sequence's text positions, (index, 0, 0).
+            positions = torch.zeros(caption_len, 3, dtype=torch.float32, device="cpu")
+            positions[:, 0] = torch.arange(caption_len, dtype=torch.float32, device="cpu")
+            frequencies = positions.unsqueeze(-1) * self.rope.inv_freq.detach().cpu().view(1, 1, -1)
+            NAG["rope"] = _rope_table(torch.cat(frequencies.unbind(dim=1), dim=-1), dtype).to(device)
+        mask, rows = _nag_guided_rows(layout, audio_start, audio_t, fixed_video_rows, device)
+        return dict(NAG, hidden=NAG["context"][0].to(device=device, dtype=dtype, copy=True), mask=mask, rows=rows,
+                    row=int(timestep_indices[0]) * 3 + MINIMAX_H3_TEXT_TAG, text_len=layout.text_indices.numel())
+
     def _time_embedding(self, timesteps, table=None):
         if not self.use_adaln_curves:
             return self.time_embedder(timesteps)
@@ -731,6 +813,10 @@ class MiniMaxH3Model(nn.Module):
         del adaln_indices, changes
         target_audio_rows = audio_t * 2
         audio_start = video_start - target_audio_rows
+        NAG = payload.get("NAG")
+        if NAG is not None:
+            fixed_video_rows = target_video_fixed_rows if target_video_order is not None and target_video_mask_active else 0
+            NAG = self._prepare_nag(NAG, layout, timestep_indices, audio_start, audio_t, fixed_video_rows, device, dtype)
         self.sol_attention.begin_forward(layout, device, dtype, payload["attention_sparsity"], target_video_order is not None)
         if vdn := getattr(self.blocks[0].attn, "vdn", None):
             for block in self.blocks:
@@ -742,12 +828,12 @@ class MiniMaxH3Model(nn.Module):
                 h_list = [hidden]
                 hidden = None
                 block_temb = ref2va_temb if ref2va_temb is not None and self.hybrid_ref2va_blocks[0] <= block_index <= self.hybrid_ref2va_blocks[1] else temb
-                hidden = block(h_list, block_temb, segments, rope)
+                hidden = block(h_list, block_temb, segments, rope, NAG=NAG)
         else:
             self._check_interrupt()
             block_temb = ref2va_temb if ref2va_temb is not None and self.hybrid_ref2va_blocks[0] == 0 else temb
             hidden, signature = self.blocks[0]([hidden], block_temb, segments, rope,
-                                                residual_signature_elements=first_block_cache.MAX_SIGNATURE_ELEMENTS)
+                                                residual_signature_elements=first_block_cache.MAX_SIGNATURE_ELEMENTS, NAG=NAG)
             if first_block_cache.should_compute(signature):
                 head_output = first_block_cache.capture_head_output(hidden[audio_start:])
                 for block_index in range(1, len(self.blocks)):
@@ -755,7 +841,7 @@ class MiniMaxH3Model(nn.Module):
                     block_temb = ref2va_temb if ref2va_temb is not None and self.hybrid_ref2va_blocks[0] <= block_index <= self.hybrid_ref2va_blocks[1] else temb
                     h_list = [hidden]
                     hidden = None
-                    hidden = self.blocks[block_index](h_list, block_temb, segments, rope)
+                    hidden = self.blocks[block_index](h_list, block_temb, segments, rope, NAG=NAG)
                 first_block_cache.store_tail_residual(hidden[audio_start:], head_output)
             else:
                 first_block_cache.apply_tail_residual(hidden[audio_start:])

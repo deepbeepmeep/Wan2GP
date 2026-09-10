@@ -153,8 +153,9 @@ class MiniMaxH3TextEncoder(nn.Module):
         add_text(prompt)
         return entries or [TEXT_PAD]
 
-    def encode(self, prompt, items, device, dtype):
+    def encode(self, prompt, items, device, dtype, min_tokens=0):
         entries = self._presentation(prompt, items)
+        entries += [TEXT_PAD] * (min_tokens - len(entries))
         token_ids = []
         visual_specs = []
         for entry in entries:

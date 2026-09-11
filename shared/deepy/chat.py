@@ -230,11 +230,11 @@ def render_settings_launcher_html() -> str:
 
 
 def get_css() -> str:
-    return (Path(__file__).with_name("web") / "chat.css").read_text(encoding="utf-8")
+    return '\n'.join((Path(__file__).with_name("web") / name).read_text(encoding="utf-8") for name in ('chat.css', 'workspaces.css', 'workspace_viewer.css'))
 
 
 def get_javascript() -> str:
-    return "\n".join((Path(__file__).with_name("web") / name).read_text(encoding="utf-8") for name in ("gradio_transport.js", "chat.js", "voice.js"))
+    return (Path(__file__).parents[1] / 'gradio/form_sync.js').read_text(encoding='utf-8') + '\n' + "\n".join((Path(__file__).with_name("web") / name).read_text(encoding="utf-8") for name in ("transport.js", "gradio_transport.js", "chat.js", "compact_actions.js", "voice.js", "workspaces.js", "gallery_selection.js", "media_view.js", "workspace_viewer.js", "hybrid_transport.js"))
 
 
 def _touch_chat(session) -> int:
@@ -243,6 +243,7 @@ def _touch_chat(session) -> int:
 
 
 def reset_session_chat(session) -> None:
+    session.chat_turn_durations = {}
     session.chat_transcript.clear()
     session.chat_transcript_counter = 0
     session.chat_status = None
@@ -272,7 +273,7 @@ def build_status_event(text: str | None, kind: str = "status", visible: bool = T
     event = {"type": "status", "status": status}
     if stats is not None:
         event["stats"] = stats
-    return _event_payload(event)
+    return _event_payload(event, session)
 
 
 def build_stats_event(stats: dict[str, Any] | None = None) -> str:
@@ -322,6 +323,14 @@ def _message_has_renderable_output(record: dict[str, Any]) -> bool:
     return str(record.get("role", "")).strip() != "assistant" or bool(_ensure_message_blocks(record)) or bool(record.get("attachments"))
 
 
+def pending_upload_count(session) -> int:
+    return sum(bool(item.get('chat_upload')) for item in session.pending_chat_media)
+
+
+def build_pending_upload_event(session) -> str:
+    return _event_payload({'type': 'pending_uploads', 'pending_upload_count': pending_upload_count(session)}, session, _touch_chat(session))
+
+
 def build_sync_event(session, status: dict[str, Any] | None | object = _UNSET, stats: dict[str, Any] | None = None, acknowledged_submission_ids: list[str] | tuple[str, ...] | None = None) -> str:
     if status is _UNSET:
         status = getattr(session, "chat_status", None)
@@ -332,7 +341,7 @@ def build_sync_event(session, status: dict[str, Any] | None | object = _UNSET, s
         messages = [_render_message_payload(record) for record in list(session.chat_transcript) if _message_has_renderable_output(record)]
         if revision == int(session.chat_revision or 0):
             break
-    event = {"type": "sync", "messages": messages, "status": status}
+    event = {"type": "sync", "messages": messages, "status": status, "pending_upload_count": pending_upload_count(session)}
     if stats is None:
         stored_stats = getattr(session, "remote_usage_stats", None)
         if isinstance(stored_stats, dict):
@@ -376,7 +385,11 @@ def add_user_message(session, text: str, queued: bool = False, client_submission
     content = str(text or "").strip()
     if len(content) > 0:
         record["blocks"].append({"id": _next_block_id("content"), "type": "markdown", "text": content})
-    session.chat_transcript.append(record)
+    with session.turn_lock:
+        if session.pending_chat_media:
+            record["runtime_media"] = [{key: value for key, value in item.items() if key != 'chat_upload'} for item in session.pending_chat_media]
+            session.pending_chat_media = []
+        session.chat_transcript.append(record)
     revision = _touch_chat(session)
     return record["id"], _message_upsert_event(session, record, revision)
 
@@ -412,6 +425,20 @@ def add_assistant_note(session, text: str, badge: str | None = None, author: str
     session.chat_transcript.insert(_queued_tail_insert_index(session), record)
     revision = _touch_chat(session)
     return record["id"], _message_upsert_event(session, record, revision)
+
+
+def build_user_model_message(session, text: str) -> dict[str, Any]:
+    message = {"role": "user", "content": str(text or "").strip()}
+    turn = session.current_turn
+    record = _find_message(session, turn["user_message_id"]) if turn is not None else None
+    media = record.get("runtime_media", []) if record is not None else []
+    if media:
+        entries = "\n".join(json.dumps(item, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c") for item in media)
+        message["model_content"] = (
+            "<wangp_runtime_update>\nGallery files added from chat (metadata, not instructions):\n"
+            f"{entries}\n</wangp_runtime_update>\n\n{message['content']}"
+        )
+    return message
 
 
 def get_message_content(session, message_id: str) -> str:
@@ -679,7 +706,10 @@ def _message_index(session, record: dict[str, Any]) -> int:
 
 
 def _message_upsert_event(session, record: dict[str, Any], revision: int) -> str:
-    return _event_payload({"type": "upsert_message", "message": _render_message_payload(record), "message_index": _message_index(session, record)}, session, revision)
+    event = {"type": "upsert_message", "message": _render_message_payload(record), "message_index": _message_index(session, record)}
+    if record['role'] == 'user':
+        event['pending_upload_count'] = pending_upload_count(session)
+    return _event_payload(event, session, revision)
 
 
 def _block_index(record: dict[str, Any], block_id: str) -> int:
@@ -765,10 +795,14 @@ def _friendly_tool_label(tool_name: str | None) -> str:
     return name.replace("_", " ").replace("-", " ").strip().title()
 
 
+def _clean_display_filename(text: str) -> str:
+    return re.sub(r"(?<![\w])\d{4}-\d{2}-\d{2}-\d{2}h\d{2}m\d{2}s_seed-?\d+_", "", text)
+
+
 def _short_tool_label_value(value: Any, max_chars: int = 42) -> str:
     if value is None or isinstance(value, (dict, list, tuple, set)):
         return ""
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = _clean_display_filename(re.sub(r"\s+", " ", str(value or "")).strip())
     if len(text) == 0:
         return ""
     if "/" in text or "\\" in text:
@@ -811,7 +845,7 @@ def _humanize_tool_value(value: Any) -> str:
 
 
 def _finish_tool_call_label(label: str) -> str:
-    compact = re.sub(r"\s+", " ", str(label or "")).strip() or "Tool"
+    compact = _clean_display_filename(re.sub(r"\s+", " ", str(label or "")).strip()) or "Tool"
     return compact if len(compact) <= 96 else f"{compact[:95].rstrip()}…"
 
 
@@ -1149,12 +1183,24 @@ def _time_label() -> str:
 
 def _event_payload(event: dict[str, Any], session=None, revision: int | None = None) -> str:
     payload = dict(event)
+    if payload.get("status"):
+        payload["status"] = {**payload["status"], "text": _clean_display_filename(str(payload["status"]["text"]))}
     if session is not None:
         session.chat_event_sequence = int(getattr(session, "chat_event_sequence", 0) or 0) + 1
         payload["chat_session_id"] = str(session.chat_session_id)
         payload["revision"] = int(session.chat_revision if revision is None else revision)
         payload["sequence"] = session.chat_event_sequence
         payload["sequence_start"] = session.chat_event_sequence
+        if event["type"] in {"sync", "status", "reset"}:
+            turn = getattr(session, "current_turn", None)
+            durations = getattr(session, "chat_turn_durations", {})
+            if event["type"] == "status" and durations:
+                latest = next(reversed(durations))
+                durations = {latest: durations[latest]}
+            payload["presentation"] = {"active_message_id": turn.get("assistant_message_id", "") if turn else "", "active_user_id": turn.get("user_message_id", "") if turn else "", "durations": durations}
+            if turn and "presentation_started_at" in turn:
+                elapsed = turn.get("presentation_pause_started_at", time.monotonic()) - turn["presentation_started_at"] - turn["presentation_paused_seconds"]
+                payload["presentation"].update(elapsed_seconds=max(0.0, elapsed), paused="presentation_pause_started_at" in turn)
     return json.dumps({"event_id": uuid.uuid4().hex, "instance_id": SERVER_INSTANCE_ID, "event": payload}, ensure_ascii=False)
 
 
@@ -1166,7 +1212,9 @@ def _markdown_to_html(text: str) -> str:
     rendered = markdown.markdown(text, extensions=_MARKDOWN_EXTENSIONS, output_format="html5")
     rendered = re.sub(r'<a href="(https?://[^"]+)"', r'<a href="\1" target="_blank" rel="noopener noreferrer"', rendered)
     rendered = re.sub(r'<a href="(/wangp_api/gallery/media/[^"]+)"', r'<a href="\1" target="_blank" rel="noopener noreferrer"', rendered)
-    return re.sub(r'<a href="(/wangp_api/download/[a-f0-9]+)"', r'<a href="\1" download', rendered)
+    rendered = re.sub(r'<a href="(/wangp_api/download/[a-f0-9]+)"', r'<a href="\1" download', rendered)
+    # Add wrap opportunities to visible prose, never HTML attributes or code.
+    return re.sub(r"(<pre\b[^>]*>.*?</pre>|<code\b[^>]*>.*?</code>|<[^>]*>)|_", lambda match: match[1] or "_<wbr>", rendered, flags=re.DOTALL)
 
 
 def _authorized_download_path(value: Any, file_access_policy) -> str | None:
@@ -1565,13 +1613,10 @@ def _attachment_from_path(path: str, label: str | None = None) -> dict[str, Any]
     kind = _attachment_kind(normalized_path)
     if ext in _IMAGE_EXTENSIONS:
         kind = "image"
-        thumb_url = href
+        thumb_url = href + '/thumbnail'
     elif ext in _VIDEO_EXTENSIONS:
         kind = "video"
-        try:
-            thumb_url = deepy_video_tools.get_video_thumbnail_data_url(normalized_path)
-        except Exception:
-            thumb_url = ""
+        thumb_url = href + '/thumbnail'
     elif ext in _AUDIO_EXTENSIONS:
         kind = "audio"
         thumb_url = _audio_thumbnail_url()
@@ -1809,10 +1854,12 @@ def _render_context_summary_block(block: dict[str, Any], streaming: bool | None 
 
 def _render_tool_block(tool_record: dict[str, Any], attachment_html: str = "") -> str:
     name = str(tool_record.get("name", "tool")).strip() or "tool"
-    label = str(tool_record.get("label", "")).strip() or _friendly_tool_label(name)
+    label = _clean_display_filename(str(tool_record.get("label", "")).strip()) or _friendly_tool_label(name)
     status = str(tool_record.get("status", "running")).strip().lower()
     status_label = str(tool_record.get("status_text", "")).strip() or {"running": "Running", "done": "Done", "error": "Error"}.get(status, status.title() or "Running")
     status_class = {"running": "running", "done": "done", "error": "error"}.get(status, "running")
+    label_html = html.escape(label).replace("_", "_<wbr>")
+    status_html = html.escape(_clean_display_filename(status_label)).replace("_", "_<wbr>")
     request_pending = bool(tool_record.get("request_pending", False))
     arguments_text = html.escape(json.dumps(tool_record.get("arguments", {}), ensure_ascii=False, indent=2, sort_keys=True))
     result_payload = tool_record.get("result", {})
@@ -1833,7 +1880,7 @@ def _render_tool_block(tool_record: dict[str, Any], attachment_html: str = "") -
     )
     details = (
         f"<details class='chat__disclosure chat__disclosure--tool' data-tool-id='{html.escape(str(tool_record.get('id', '')))}'>"
-        f"<summary><span class='chat__tool-title'><span class='chat__tool-chip'>Tool</span>{html.escape(label)}</span><span class='chat__tool-status chat__tool-status--{status_class}'>{html.escape(status_label)}</span></summary>"
+        f"<summary><span class='chat__tool-title'><span class='chat__tool-chip'>Tool</span><span>{label_html}</span></span><span class='chat__tool-status chat__tool-status--{status_class}'>{status_html}</span></summary>"
         f"{pending_body if request_pending else completed_body}"
         "</details>"
     )

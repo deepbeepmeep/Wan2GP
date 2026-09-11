@@ -3,12 +3,14 @@ from __future__ import annotations
 import gc
 import json
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 import torch
 import whisper
+from torch.utils._python_dispatch import TorchDispatchMode
 from mmgp import offload
 
 from shared.deepy import video_tools as deepy_video_tools
@@ -90,10 +92,22 @@ def _load_whisper_medium(device: torch.device) -> whisper.Whisper:
     return _load_whisper(config["dims"], weights_path, device, alignment_heads.encode("ascii") if alignment_heads else None)
 
 
-def _load_whisper(dims, weights_path, device, alignment_heads, preprocess_sd=None):
-    model = whisper.model.Whisper(whisper.model.ModelDimensions(**dims))
+class _SkipRandomInitialization(TorchDispatchMode):
+    """Skip overwritten random weights in this thread, leaving buffers intact."""
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        if func in (torch.ops.aten.uniform_.default, torch.ops.aten.normal_.default):
+            return args[0]
+        return func(*args, **(kwargs or {}))
+
+
+def _load_whisper(dims, weights_path, device, alignment_heads, preprocess_sd=None, check_cancelled=lambda: None):
+    check_cancelled()
+    with _SkipRandomInitialization():
+        model = whisper.model.Whisper(whisper.model.ModelDimensions(**dims))
+    check_cancelled()
     # Whisper keeps normalization weights in float32 and casts projections during inference.
     offload.load_model_data(model, str(weights_path), writable_tensors=False, default_dtype=torch.float32, preprocess_sd=preprocess_sd)
+    check_cancelled()
     if alignment_heads:
         model.set_alignment_heads(alignment_heads)
     model.eval()
@@ -117,12 +131,14 @@ def _large_v3_state_dict(state_dict):
     return converted
 
 
-def _load_whisper_large_v3(device):
+def _load_whisper_large_v3(device, *, check_cancelled=lambda: None, gen=None):
     from shared.utils.download import process_files_def
 
+    check_cancelled()
     folder = fl.locate_folder(WHISPER_LARGE_V3_FOLDER, error_if_none=False)
     if not _whisper_medium_files_present(Path(folder) if folder else None):
-        process_files_def(repoId=WHISPER_LARGE_V3_REPO, sourceFolderList=[WHISPER_LARGE_V3_FOLDER], fileList=[["config.json", "model.safetensors"]])
+        process_files_def(repoId=WHISPER_LARGE_V3_REPO, sourceFolderList=[WHISPER_LARGE_V3_FOLDER], fileList=[["config.json", "model.safetensors"]], gen=gen)
+    check_cancelled()
     config_path = fl.locate_file(f"{WHISPER_LARGE_V3_FOLDER}/config.json")
     weights_path = fl.locate_file(f"{WHISPER_LARGE_V3_FOLDER}/model.safetensors")
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
@@ -130,7 +146,7 @@ def _load_whisper_large_v3(device):
         n_mels=config["num_mel_bins"], n_audio_ctx=config["max_source_positions"], n_audio_state=config["d_model"], n_audio_head=config["encoder_attention_heads"], n_audio_layer=config["encoder_layers"],
         n_vocab=config["vocab_size"], n_text_ctx=config["max_target_positions"], n_text_state=config["d_model"], n_text_head=config["decoder_attention_heads"], n_text_layer=config["decoder_layers"],
     )
-    return _load_whisper(dims, weights_path, device, whisper._ALIGNMENT_HEADS["large-v3"], _large_v3_state_dict)
+    return _load_whisper(dims, weights_path, device, whisper._ALIGNMENT_HEADS["large-v3"], _large_v3_state_dict, check_cancelled)
 
 
 def _make_temp_audio_path() -> Path:
@@ -138,10 +154,10 @@ def _make_temp_audio_path() -> Path:
     return (_TEMP_ROOT / f"{uuid.uuid4().hex}.wav").resolve()
 
 
-def _prepare_audio_input(source_path: str, audio_track_no: int | None = None) -> tuple[str, list[Path]]:
+def _prepare_audio_input(source_path: str, audio_track_no: int | None = None, duration_seconds: float | None = None) -> tuple[str, list[Path]]:
     download_ffmpeg()
     temp_audio_path = _make_temp_audio_path()
-    deepy_video_tools.extract_audio(source_path, str(temp_audio_path), audio_track_no=audio_track_no, audio_codec="wav")
+    deepy_video_tools.extract_audio(source_path, str(temp_audio_path), audio_track_no=audio_track_no, audio_codec="wav", duration=duration_seconds)
     return str(temp_audio_path), [temp_audio_path]
 
 
@@ -180,16 +196,33 @@ def _serialize_segments(segments: list[dict[str, Any]], timestamp_type: str | No
     return serialized
 
 
-def transcribe_media(source_path: str, *, timestamp_type: str | None = None, audio_track_no: int | None = None, device: str | None = None, model_name: str = "medium", language: str | None = None) -> dict[str, Any]:
+def transcribe_media(source_path: str, *, timestamp_type: str | None = None, audio_track_no: int | None = None, device: str | None = None, model_name: str = "medium", language: str | None = None, prepared_model: list | None = None, check_cancelled=lambda: None, duration_seconds: float | None = None) -> dict[str, Any]:
     normalized_timestamp_type = normalize_timestamp_type(timestamp_type)
     source_path = str(source_path or "").strip()
     if len(source_path) == 0 or not os.path.isfile(source_path):
         raise FileNotFoundError(f"Media file not found: {source_path}")
     device = torch.device(device if device is not None else "cuda" if torch.cuda.is_available() else "cpu")
-    audio_path, temporary_paths = _prepare_audio_input(source_path, audio_track_no=audio_track_no)
+    started = time.perf_counter()
+    audio_path, temporary_paths = _prepare_audio_input(source_path, audio_track_no=audio_track_no, duration_seconds=duration_seconds)
+    prepared = time.perf_counter()
     model = None
+    cancellation_hooks = []
     try:
-        model = {"medium": _load_whisper_medium, "large-v3": _load_whisper_large_v3}[model_name](device)
+        check_cancelled()
+        if prepared_model is None:
+            model = {"medium": _load_whisper_medium, "large-v3": _load_whisper_large_v3}[model_name](device)
+        else:
+            model = prepared_model.pop()
+            check_cancelled()
+            model.to(device=device)
+        check_cancelled()
+        if prepared_model is not None:
+            # Check at encoder/decoder boundaries, including each decoded token.
+            # Hooks belong only to this recording's model, never to TTS models.
+            for module in (model.encoder, model.decoder):
+                cancellation_hooks.append(module.register_forward_pre_hook(lambda module, inputs: check_cancelled()))
+        loaded = time.perf_counter()
+        print(f"[Whisper {model_name}] Loaded on {model.device}; transcribing...", flush=True)
         raw_result = model.transcribe(
             audio_path,
             verbose=None,
@@ -197,7 +230,12 @@ def transcribe_media(source_path: str, *, timestamp_type: str | None = None, aud
             word_timestamps=normalized_timestamp_type == "word",
             language=language,
         )
+        check_cancelled()
+        transcribed = time.perf_counter()
+        print(f"[Whisper {model_name}] Audio preparation {prepared - started:.2f}s; model loading {loaded - prepared:.2f}s; transcription {transcribed - loaded:.2f}s.", flush=True)
     finally:
+        for hook in cancellation_hooks:
+            hook.remove()
         for temporary_path in temporary_paths:
             try:
                 temporary_path.unlink(missing_ok=True)

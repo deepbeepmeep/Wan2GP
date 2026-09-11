@@ -688,7 +688,7 @@ Convenience helpers are available for the common edit task shapes:
 job = session.submit_media_postprocessing(
     r"C:\media\input.mp4",
     spatial_upsampling="h3facerefine",
-    spatial_upsampler_face_count=2,
+    spatial_upsampler_param=2,
     return_media=True,
 )
 
@@ -700,7 +700,7 @@ Postprocessing values use the registered postprocessor value strings:
 
 - `temporal_upsampling`: registered temporal upsamplers such as `rife*2` or `dlssg*4`. Temporal upsampling is video-only.
 - `spatial_upsampling`: registered decoded-media upsamplers such as `lanczos*2`, `flashvsr*2`, `coz*4`, or the no-scale visual refiner `h3facerefine`. VAE upsamplers are model-pipeline features and are not accepted for late postprocessing.
-- Method-specific values use the flat parameter ids returned by postprocessing discovery. For example, H3 accepts `spatial_upsampler_prompt`, `spatial_upsampler_reference_images`, and `spatial_upsampler_face_count`.
+- Method-specific values use the flat parameter ids returned by postprocessing discovery. For example, H3 accepts `spatial_upsampler_prompt`, `spatial_upsampler_reference_images`, and `spatial_upsampler_param`.
 - `film_grain_intensity` / `film_grain_saturation`: late film grain settings. Film grain is active when intensity is greater than `0`.
 
 At least one postprocessing operation must be selected.
@@ -767,7 +767,8 @@ settings = {
     "video_source": r"C:\media\input.mp4",
     "temporal_upsampling": "rife*4",
     "spatial_upsampling": "lanczos*2",
-    "spatial_upsampler_face_count": 1,
+    "spatial_upsampler_param": 1,
+    "spatial_upsampler_param2": 1,
     "_api": {"return_media": True},
 }
 

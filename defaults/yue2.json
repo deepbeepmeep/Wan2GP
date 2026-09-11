@@ -1,0 +1,22 @@
+{
+    "model": {
+        "name": "Music YuE2 3B",
+        "architecture": "yue2",
+        "description": "Lyrics and style to 48 kHz stereo songs with optional melody/chord planning and ABC score conditioning. CC BY-NC 4.0 weights.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/YuE2_Acoustic_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/YuE2_Acoustic_int8_convrot.safetensors"
+        ]
+    },
+    "prompt": "[Verse]\nMorning light across the bay\nWe watch the shadows drift away\n[Chorus]\nStay with me until the dawn\nLet our little song go on",
+    "alt_prompt": "English acoustic pop, warm female vocal, fingerpicked guitar, gentle drums, hopeful, 90 BPM",
+    "duration_seconds": 120,
+    "num_inference_steps": 32,
+    "guidance_scale": 1.0,
+    "temperature": 1.0,
+    "top_k": 100,
+    "top_p": 0.95,
+    "model_mode": 0,
+    "custom_settings": {"abc": ""},
+    "prompt_enhancer": ""
+}

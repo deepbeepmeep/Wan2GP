@@ -1,0 +1,17 @@
+{
+  "model": {
+    "name": "Speech AuK",
+    "architecture": "auk",
+    "description": "Instruction-based speech generation, voice cloning, editing, enhancement and separation. Qwen encoder requires a separate license for commercial use.",
+    "URLs": [
+      "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/AuK_bf16.safetensors",
+      "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/AuK_int8_convrot.safetensors"
+    ]
+  },
+  "prompt": "Say \"Welcome back. It is wonderful to hear from you.\" in a warm, calm female voice.",
+  "audio_prompt_type": "",
+  "duration_seconds": 5,
+  "num_inference_steps": 32,
+  "guidance_scale": 2,
+  "prompt_enhancer": ""
+}

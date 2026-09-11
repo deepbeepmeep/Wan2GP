@@ -53,7 +53,7 @@ FIRST_BLOCK_CACHE_STRENGTHS = [
 
 FL2VA_DEEPY_INFOS = """Generate video and stereo sound from `prompt`. `image_start` / `image_end` anchor the opening / ending; together they constrain the transition. `video_source` continues an existing video; sliding windows carry overlapping video and audio forward.
 
-Control Video (`video_guide`) guides frames: lower Denoising Strength preserves more source content; Whole Frame at strength 1 gives full freedom. A mask selects the edited area. Inject Frames uses ordered `image_refs` and explicit positions (`1` = first frame, `L` = last frame of the window).
+Control Video (`video_guide`) guides frames: lower Denoising Strength preserves more source content; Whole Frame at strength 1 gives full freedom. A mask selects the edited area. For motion/appearance references, use Ref2VA Reference Video. Inject Frames uses ordered `image_refs` and explicit positions (`1` = first frame, `L` = last frame of the window).
 
 `audio_prompt_type`: empty = generate video and audio; `A` = condition on `audio_guide`; `K` = control video plus its soundtrack; `2` = keep control frames and generate their audio. A complete input soundtrack is reused; a shorter one permits generated sound afterward. Match visible action and speech to supplied audio.
 
@@ -79,6 +79,8 @@ Start and end images are placed at those exact points in the video. For general 
 - **Use Control Video:** use an uploaded video to guide the result. Lower **Denoising Strength** values keep the result closer to the control video; `1.0` gives the model full freedom. At `1.0` with **Whole Frame** selected, the control video does not affect the result, so WanGP skips that work. Choose **Masked Area** or **Non Masked Area** to limit editing to part of the frame. **Masking Strength** controls how strongly the rest of the frame stays close to the control video. Use a lower masking strength (<0.75) to facilitate continuity with masked areas.
 - **Inject Frames:** add images at specific points in the generated video. Add the images under **Reference Images**, then enter one position per image in the same order. Position `1` means the first frame; `L` means the last frame of a sliding-window segment.
 
+For motion or appearance transfer from a video reference, use Ref2VA with **Reference Video**. FL2VA Control Video uses denoising-based editing.
+
 ### Audio Source
 
 - **Generate Video and Audio from Text Prompt:** let H3 create both.
@@ -95,7 +97,7 @@ H3 is designed for 24 FPS, although WanGP can generate at another frame rate. Mi
 
 REF2VA_DEEPY_INFOS = """Generate video and 32 kHz stereo audio from `prompt` and references. Ordered `image_refs` guide identity, objects or setting; reference flags in `video_prompt_type`: `I` preserves chosen output dimensions, `KI` derives them from the first image. `image_start` / `image_end` are timeline anchors shown before general image references. `video_source` and sliding windows provide continuation.
 
-`video_guide` / `video_guide2` supply up to two reference videos for appearance, motion or camera; choose the corresponding video mode. Reference videos preserve the chosen output size. Depth or Generic Control uses the control video's aspect ratio; describe the intended transformation in the prompt.
+`video_guide` / `video_guide2` supply up to two reference videos for appearance, motion or camera; choose the corresponding video mode. Reference videos preserve the chosen output size. Depth or Generic Control uses the control video's aspect ratio. Use Reference Video for motion transfer to image-reference characters. Generic Control edits through denoising: lower strength preserves more source content; at strength 1 without a mask, the source supplies no visual conditioning. Generic Control does not supply a video reference.
 
 `audio_prompt_type`: empty = no audio reference; `A` = `audio_guide`; `AB` = both audio guides; `K` = reference-video soundtracks. The prompt defines whether audio is copied or used as a voice/sound reference.
 
@@ -117,11 +119,11 @@ Ref2VA generates a new video with native 32 kHz stereo audio from text plus mult
 
 ### Choosing a video input
 
-- **Reference Video:** reuse subjects, appearance, or motion without changing the selected output resolution.
+- **Reference Video:** reuse subjects, appearance, or motion without changing the selected output resolution. Choose this mode to transfer motion from a video to characters supplied in reference images; describe the subject replacements in the prompt. Reference videos do not use Denoising Strength.
 - **Depth Control:** reuse the scene's depth and layout.
-- **Generic Control:** provide the video unchanged, use its aspect ratio to set the output dimensions and use the text prompt to tell the model what to do with it.
+- **Generic Control:** edit the source video using the prompt and **Denoising Strength**, with output dimensions based on its aspect ratio. Lower strength preserves more source content. At `1.0` with **Whole Frame** selected, the source video supplies no visual conditioning. Choose **Masked Area** or **Non Masked Area** to edit part of the frame. This mode does not supply the video as a motion/appearance reference.
 
-Reference videos adapt to your chosen output size. Control videos instead define the output size and are converted into the selected guide. Both guide the result creatively rather than reproducing every frame exactly.
+Reference videos adapt to your chosen output size and guide the result creatively, without guaranteeing exact motion reproduction. Depth Control supplies a depth guide; Generic Control edits the source through denoising. Control videos define the output size.
 
 ### Reference-image size
 
@@ -263,6 +265,7 @@ def _get_audio_generator_model_def(model_def):
         "profiles_dir": ["minimax_h3_tts"],
         "duration_slider": {
             "label": "Maximum Total Audio Duration (seconds)",
+            "name": "Maximum Total Audio Duration",
             "min": 4,
             "max": int(H3_DIALOGUE_MAX_TOTAL_SECONDS),
             "increment": 1,
@@ -497,12 +500,12 @@ class family_handler:
             "control_video_trim_disabled": True,
             "infos": (REF2VA_INFOS if reference_mode else FL2VA_INFOS) + (H3_PDD_RUNTIME_INFOS if pdd else H3_RUNTIME_INFOS) + (PRUNED_INFOS if pruned else "") + (H3_VDN_INFOS if vdn else "") + model_def.get("infos", ""),
             "prompt_infos": REF2VA_PROMPT_INFOS if reference_mode else FL2VA_PROMPT_INFOS,
-            "prompt_enhancer_button_label": "Write H3 Prompt",
+            "prompt_enhancer_button_label": "Write",
             "prompt_enhancer_def": {
                 "selection": ["T", "TI"],
                 "labels": {
-                    "TV": "Write an H3 Reference Prompt from Text" if reference_mode else "Write an H3 Prompt from Text",
-                    "TIV": "Write an H3 Reference Prompt from Text + First Reference Image" if reference_mode else "Write an H3 Prompt from Text + Start Image",
+                    "TV": "An H3 Reference Prompt from Text" if reference_mode else "An H3 Prompt from Text",
+                    "TIV": "An H3 Reference Prompt from Text + First Reference Image" if reference_mode else "An H3 Prompt from Text + Start Image",
                 },
                 "default": "",
             },
@@ -516,6 +519,8 @@ class family_handler:
             "finetunes_params": H3_FINETUNES_PARAMS,
             TURBO_LORA_KEY: build_hf_url(REPO_ID, "loras", TURBO_LORA_FILE),
             REF_TURBO_LORA_KEY: build_hf_url(REPO_ID, "loras", REF_TURBO_LORA_FILE),
+            "h3_temporal_refiner": True,
+            "excluded_spatial_upsamplers": ["h3temporal"],
             "qkv_splitting": True,
             "qkv_layout": "interleaved",
             "keep_frames_video_guide_not_supported": True,
@@ -920,8 +925,8 @@ class family_handler:
         if settings_version < 2.76:
             video_prompt_type = ui_defaults.get("video_prompt_type", "")
             if "V" in video_prompt_type and not any(flag in video_prompt_type for flag in "PDEG+-"):
-                video_prompt_type = video_prompt_type.replace("V", "GV", 1)
-            elif "V" in video_prompt_type and any(flag in video_prompt_type for flag in "+-") and "U" not in video_prompt_type:
+                video_prompt_type += "-"
+            if "V" in video_prompt_type and any(flag in video_prompt_type for flag in "+-") and "U" not in video_prompt_type:
                 video_prompt_type += "U"
             ui_defaults["video_prompt_type"] = video_prompt_type
 

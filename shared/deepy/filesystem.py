@@ -181,10 +181,11 @@ class FileAccessPolicy:
             path_key = key in _PATH_KEYS or key.endswith(("_path", "_paths")) or key.endswith(("_file", "_files", "_folder", "_folders", "_directory", "_directories")) and (absolute or virtual)
             if path_key or key in {"source", "sources"} and (absolute or virtual):
                 try:
-                    return self.virtualize_path(_resolved_path(text) if absolute else self.resolve_path(text))
+                    target = self.resolve_path(text) if virtual and not absolute else _resolved_path(text)
+                    return self.virtualize_path(target) if any(_inside(target, root) for _alias, root in self.mounts) else None
                 except (OSError, PermissionError, ValueError):
                     if absolute:
-                        return Path(text).name or "file"
+                        return None
             return self._virtualize_text(text)
         return value
 
@@ -270,7 +271,7 @@ def build_file_access_policy(server_config: dict[str, Any] | None, *, unrestrict
     mode = DEEPY_FILE_SYSTEM_ACCESS_READ if unrestricted_read else normalize_deepy_file_system_access(config.get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, False))
     video_output = config.get("save_path", "outputs") or "outputs"
     output_roots = _unique_paths([video_output, config.get("image_save_path", video_output) or video_output, config.get("audio_save_path", video_output) or video_output])
-    configured_roots = [(path, alias) for path, alias in parse_deepy_file_system_paths(config.get(DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_FILE_SYSTEM_PATHS_DEFAULT))]
+    configured_roots = parse_deepy_file_system_paths(config.get(DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_FILE_SYSTEM_PATHS_DEFAULT)) if mode != DEEPY_FILE_SYSTEM_ACCESS_DISABLED else []
     seen_paths = {os.path.normcase(str(path)) for path in output_roots}
     selected = []
     for value, alias in configured_roots:

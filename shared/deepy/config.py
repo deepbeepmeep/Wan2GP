@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from packaging.version import InvalidVersion, Version
+from shared.utils.config_store import config_lock, read_config
 
 
 DEEPY_ENABLED_KEY = "deepy_enabled"
 DEEPY_TYPE_KEY = "deepy_type"
 DEEPY_VRAM_MODE_KEY = "deepy_vram_mode"
+DEEPY_VOICE_LANGUAGE_KEY = "deepy_voice_language"
 DEEPY_TOOL_GEN_IMAGE_KEY = "deepy_tool_gen_image"
 DEEPY_TOOL_EDIT_IMAGE_KEY = "deepy_tool_edit_image"
 DEEPY_TOOL_GEN_VIDEO_KEY = "deepy_tool_gen_video"
@@ -88,7 +90,15 @@ DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT = True
 DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT = True
 DEEPY_SESSION_RESET_MODE_DEFAULT = "new_session"
 DEEPY_SESSION_GALLERY_MEDIA_MODE_DEFAULT = "link"
-DEEPY_MULTI_SESSION_DEFAULT = False
+DEEPY_MULTI_SESSION_DISABLED = "disabled"
+DEEPY_MULTI_SESSION_SELECTABLE = "selectable"
+DEEPY_MULTI_SESSION_DEDICATED = "dedicated"
+DEEPY_MULTI_SESSION_DEFAULT = DEEPY_MULTI_SESSION_DISABLED
+DEEPY_MULTI_SESSION_CHOICES = [
+    ("Disabled", DEEPY_MULTI_SESSION_DISABLED),
+    ("Multisessions with dedicated Workspace", DEEPY_MULTI_SESSION_DEDICATED),
+    ("Multisessions with selectable Workspace", DEEPY_MULTI_SESSION_SELECTABLE),
+]
 DEEPY_CONFIG_FILENAME = "wgp_config.json"
 
 # Experimental, intentionally not user-configurable yet. The tools remain gated by
@@ -115,6 +125,24 @@ _DEEPY_GEN_VIDEO_WITH_SPEECH_ALIASES = {
 }
 _DEEPY_RUNTIME_CONFIG: dict[str, Any] | None = None
 _DEEPY_RUNTIME_CONFIG_FILENAME = ""
+
+
+def normalize_deepy_voice_language(value: Any) -> str:
+    language = str(value or "auto").strip().lower()
+    if language == "auto":
+        return language
+    from whisper.tokenizer import LANGUAGES, TO_LANGUAGE_CODE
+
+    language = TO_LANGUAGE_CODE.get(language, language)
+    if language not in LANGUAGES:
+        raise ValueError(f"Unsupported Whisper language: {value}")
+    return language
+
+
+def deepy_voice_language_choices() -> list[tuple[str, str]]:
+    from whisper.tokenizer import LANGUAGES
+
+    return [("Auto", "auto"), *sorted((name.title(), code) for code, name in LANGUAGES.items())]
 
 
 def normalize_deepy_enabled(value: Any) -> int:
@@ -409,9 +437,16 @@ def normalize_deepy_session_gallery_media_mode(value: Any) -> str:
 
 
 def normalize_deepy_multi_session(value: Any) -> bool:
+    return normalize_deepy_session_mode(value) != DEEPY_MULTI_SESSION_DISABLED
+
+
+def normalize_deepy_session_mode(value: Any) -> str:
     if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "on", "yes"}
-    return bool(value)
+        value = value.strip().lower()
+        if value in {DEEPY_MULTI_SESSION_DISABLED, DEEPY_MULTI_SESSION_SELECTABLE, DEEPY_MULTI_SESSION_DEDICATED}:
+            return value
+        value = value in {"1", "true", "on", "yes"}
+    return DEEPY_MULTI_SESSION_SELECTABLE if value else DEEPY_MULTI_SESSION_DISABLED
 
 
 def estimate_deepy_kv_cache_mb(enhancer_enabled: Any, context_tokens: Any, kv_cache_quantization: Any = "") -> tuple[str | None, int | None]:
@@ -442,10 +477,12 @@ def format_deepy_context_tokens_label(enhancer_enabled: Any, context_tokens: Any
 
 
 def normalize_deepy_runtime_config(server_config: dict[str, Any] | None) -> dict[str, Any]:
-    runtime_config = dict(server_config or {})
+    from shared.remote_llm.config import is_remote_engine, local_enhancer_id, resolve_role_engine
+
+    runtime_config = {**get_deepy_default_runtime_config(), **(server_config or {})}
     runtime_config[DEEPY_ENABLED_KEY] = normalize_deepy_enabled(runtime_config.get(DEEPY_ENABLED_KEY, 0))
+    runtime_config[DEEPY_VOICE_LANGUAGE_KEY] = normalize_deepy_voice_language(runtime_config.get(DEEPY_VOICE_LANGUAGE_KEY, "auto"))
     runtime_config[DEEPY_TYPE_KEY] = normalize_deepy_type(runtime_config.get(DEEPY_TYPE_KEY, DEEPY_TYPE_DEFAULT))
-    runtime_config[DEEPY_VRAM_MODE_KEY] = normalize_deepy_vram_mode(runtime_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_MODE_UNLOAD))
     runtime_config[DEEPY_TOOL_GEN_IMAGE_KEY] = normalize_deepy_tool_gen_image(runtime_config.get(DEEPY_TOOL_GEN_IMAGE_KEY, DEEPY_DEFAULT_GEN_IMAGE))
     runtime_config[DEEPY_TOOL_EDIT_IMAGE_KEY] = normalize_deepy_tool_edit_image(runtime_config.get(DEEPY_TOOL_EDIT_IMAGE_KEY, DEEPY_DEFAULT_EDIT_IMAGE))
     runtime_config[DEEPY_TOOL_GEN_VIDEO_KEY] = normalize_deepy_tool_gen_video(runtime_config.get(DEEPY_TOOL_GEN_VIDEO_KEY, DEEPY_DEFAULT_GEN_VIDEO))
@@ -453,23 +490,32 @@ def normalize_deepy_runtime_config(server_config: dict[str, Any] | None) -> dict
     runtime_config[DEEPY_TOOL_GEN_SONG_KEY] = normalize_deepy_tool_gen_song(runtime_config.get(DEEPY_TOOL_GEN_SONG_KEY, DEEPY_DEFAULT_GEN_SONG))
     runtime_config[DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY] = normalize_deepy_tool_gen_speech_from_description(runtime_config.get(DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY, DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION))
     runtime_config[DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY] = normalize_deepy_tool_gen_speech_from_sample(runtime_config.get(DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY, DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE))
-    runtime_config[DEEPY_CONTEXT_TOKENS_KEY] = normalize_deepy_context_tokens(runtime_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
-    runtime_config[DEEPY_KV_CACHE_QUANTIZATION_KEY] = normalize_deepy_kv_cache_quantization(runtime_config.get(DEEPY_KV_CACHE_QUANTIZATION_KEY, DEEPY_KV_CACHE_QUANTIZATION_DEFAULT))
-    runtime_config[DEEPY_COMPACTION_TYPE_KEY] = normalize_deepy_compaction_type(runtime_config.get(DEEPY_COMPACTION_TYPE_KEY, DEEPY_COMPACTION_TYPE_DEFAULT))
-    runtime_config[DEEPY_COMPACTION_THINKING_KEY] = normalize_deepy_compaction_thinking(runtime_config.get(DEEPY_COMPACTION_THINKING_KEY, DEEPY_COMPACTION_THINKING_DEFAULT))
-    runtime_config[DEEPY_REPETITION_PENALTY_KEY] = normalize_deepy_repetition_penalty(runtime_config.get(DEEPY_REPETITION_PENALTY_KEY, DEEPY_REPETITION_PENALTY_DEFAULT))
-    runtime_config[DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_custom_system_prompt(runtime_config.get(DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY, ""))
-    runtime_config[DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_prime_guidance(runtime_config.get(DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_GUIDANCE_DEFAULT))
-    runtime_config[DEEPY_PRIME_MCP_SERVERS_KEY] = normalize_deepy_prime_mcp_servers(runtime_config.get(DEEPY_PRIME_MCP_SERVERS_KEY, {}))
-    runtime_config[DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY] = normalize_deepy_mcp_auto_discover_paths(runtime_config.get(DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT))
-    runtime_config[DEEPY_ALLOW_READ_FILE_SYSTEM_KEY] = normalize_deepy_file_system_access(runtime_config.get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_FILE_SYSTEM_ACCESS_DEFAULT))
-    runtime_config[DEEPY_FILE_SYSTEM_PATHS_KEY] = normalize_deepy_file_system_paths(runtime_config.get(DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_FILE_SYSTEM_PATHS_DEFAULT))
-    runtime_config[DEEPY_READ_EVERYWHERE_KEY] = normalize_deepy_read_everywhere(runtime_config.get(DEEPY_READ_EVERYWHERE_KEY, DEEPY_READ_EVERYWHERE_DEFAULT))
     runtime_config[DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY] = normalize_deepy_auto_cancel_queue_tasks(runtime_config.get(DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY, DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT))
     runtime_config[DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY] = normalize_deepy_separate_requests_with_empty_line(runtime_config.get(DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY, DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT))
     runtime_config[DEEPY_SESSION_RESET_MODE_KEY] = normalize_deepy_session_reset_mode(runtime_config.get(DEEPY_SESSION_RESET_MODE_KEY, DEEPY_SESSION_RESET_MODE_DEFAULT))
     runtime_config[DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY] = normalize_deepy_session_gallery_media_mode(runtime_config.get(DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY, DEEPY_SESSION_GALLERY_MEDIA_MODE_DEFAULT))
-    runtime_config[DEEPY_MULTI_SESSION_KEY] = normalize_deepy_multi_session(runtime_config.get(DEEPY_MULTI_SESSION_KEY, DEEPY_MULTI_SESSION_DEFAULT))
+    runtime_config[DEEPY_MULTI_SESSION_KEY] = normalize_deepy_session_mode(runtime_config.get(DEEPY_MULTI_SESSION_KEY, DEEPY_MULTI_SESSION_DEFAULT))
+    engine = resolve_role_engine(runtime_config, "deepy")
+    remote = is_remote_engine(engine)
+    qwen_local = not remote and local_enhancer_id(engine) in DEEPY_QWEN_ENHANCER_IDS
+    if qwen_local:
+        runtime_config[DEEPY_REPETITION_PENALTY_KEY] = normalize_deepy_repetition_penalty(runtime_config.get(DEEPY_REPETITION_PENALTY_KEY, DEEPY_REPETITION_PENALTY_DEFAULT))
+        runtime_config[DEEPY_KV_CACHE_QUANTIZATION_KEY] = normalize_deepy_kv_cache_quantization(runtime_config.get(DEEPY_KV_CACHE_QUANTIZATION_KEY, DEEPY_KV_CACHE_QUANTIZATION_DEFAULT))
+    if runtime_config[DEEPY_ENABLED_KEY] and (qwen_local or remote):
+        runtime_config[DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_custom_system_prompt(runtime_config.get(DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY, ""))
+        runtime_config[DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_prime_guidance(runtime_config.get(DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_GUIDANCE_DEFAULT))
+        runtime_config[DEEPY_PRIME_MCP_SERVERS_KEY] = normalize_deepy_prime_mcp_servers(runtime_config.get(DEEPY_PRIME_MCP_SERVERS_KEY, {}))
+        runtime_config[DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY] = normalize_deepy_mcp_auto_discover_paths(runtime_config.get(DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT))
+        runtime_config[DEEPY_ALLOW_READ_FILE_SYSTEM_KEY] = normalize_deepy_file_system_access(runtime_config.get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_FILE_SYSTEM_ACCESS_DEFAULT))
+        if not remote:
+            runtime_config[DEEPY_VRAM_MODE_KEY] = normalize_deepy_vram_mode(runtime_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_MODE_UNLOAD))
+        if qwen_local:
+            runtime_config[DEEPY_CONTEXT_TOKENS_KEY] = normalize_deepy_context_tokens(runtime_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
+            runtime_config[DEEPY_COMPACTION_TYPE_KEY] = normalize_deepy_compaction_type(runtime_config.get(DEEPY_COMPACTION_TYPE_KEY, DEEPY_COMPACTION_TYPE_DEFAULT))
+            runtime_config[DEEPY_COMPACTION_THINKING_KEY] = normalize_deepy_compaction_thinking(runtime_config.get(DEEPY_COMPACTION_THINKING_KEY, DEEPY_COMPACTION_THINKING_DEFAULT))
+        if runtime_config[DEEPY_ALLOW_READ_FILE_SYSTEM_KEY] != DEEPY_FILE_SYSTEM_ACCESS_DISABLED:
+            runtime_config[DEEPY_FILE_SYSTEM_PATHS_KEY] = normalize_deepy_file_system_paths(runtime_config.get(DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_FILE_SYSTEM_PATHS_DEFAULT))
+            runtime_config[DEEPY_READ_EVERYWHERE_KEY] = normalize_deepy_read_everywhere(runtime_config.get(DEEPY_READ_EVERYWHERE_KEY, DEEPY_READ_EVERYWHERE_DEFAULT))
     return runtime_config
 
 
@@ -478,6 +524,7 @@ def get_deepy_default_runtime_config() -> dict[str, Any]:
         DEEPY_ENABLED_KEY: 0,
         DEEPY_TYPE_KEY: DEEPY_TYPE_DEFAULT,
         DEEPY_VRAM_MODE_KEY: DEEPY_VRAM_MODE_UNLOAD,
+        DEEPY_VOICE_LANGUAGE_KEY: "auto",
         DEEPY_TOOL_EDIT_IMAGE_KEY: DEEPY_DEFAULT_EDIT_IMAGE,
         DEEPY_TOOL_GEN_IMAGE_KEY: DEEPY_DEFAULT_GEN_IMAGE,
         DEEPY_TOOL_GEN_VIDEO_KEY: DEEPY_DEFAULT_GEN_VIDEO,
@@ -507,12 +554,13 @@ def get_deepy_default_runtime_config() -> dict[str, Any]:
 
 def set_deepy_runtime_config(server_config: dict[str, Any] | None, server_config_filename: str = "") -> dict[str, Any]:
     global _DEEPY_RUNTIME_CONFIG, _DEEPY_RUNTIME_CONFIG_FILENAME
-    normalized = normalize_deepy_runtime_config(server_config)
-    if isinstance(server_config, dict):
-        server_config.update(normalized)
-    _DEEPY_RUNTIME_CONFIG = normalized
-    _DEEPY_RUNTIME_CONFIG_FILENAME = str(server_config_filename or "").strip()
-    return normalized
+    with config_lock:
+        normalized = normalize_deepy_runtime_config(server_config)
+        if isinstance(server_config, dict):
+            server_config.update(normalized)
+        _DEEPY_RUNTIME_CONFIG = normalized
+        _DEEPY_RUNTIME_CONFIG_FILENAME = str(server_config_filename or "").strip()
+        return normalized
 
 
 def get_deepy_runtime_config() -> dict[str, Any]:
@@ -527,8 +575,7 @@ def get_deepy_runtime_config() -> dict[str, Any]:
         if not path.is_file():
             continue
         try:
-            with path.open("r", encoding="utf-8") as reader:
-                loaded = json.load(reader)
+            loaded = read_config(path)
         except Exception:
             continue
         if isinstance(loaded, dict):

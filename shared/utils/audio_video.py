@@ -198,6 +198,27 @@ def get_audio_file_channels(audio_path):
     return int(audio_stream["channels"])
 
 
+def get_media_duration_and_audio_layouts(media_path):
+    """Read file duration and each audio track's channel layout, without decoding."""
+    probe = ffmpeg.probe(os.fspath(media_path), cmd=_ffprobe_binary())
+    duration = probe.get("format", {}).get("duration")
+    duration = float(duration) if duration not in (None, "", "N/A") else None
+    layouts = []
+    for stream in probe.get("streams", []):
+        if stream.get("codec_type") != "audio":
+            continue
+        channels = int(stream.get("channels", 0))
+        layout = stream.get("channel_layout", "")
+        if channels in (1, 2):
+            label = "Mono" if channels == 1 else "Stereo"
+        elif channels:
+            label = f"{layout} ({channels} channels)" if layout and layout != "unknown" else f"{channels} channels"
+        else:
+            label = "Unknown channel layout"
+        layouts.append(label)
+    return duration, layouts
+
+
 def resolve_mux_audio_sampling_rate(default_rate, source_audio_metadata=None, audio_paths=None):
     sample_rates = [int(default_rate)]
     for meta in source_audio_metadata or []:
@@ -998,10 +1019,27 @@ def save_image_metadata(image_path, metadata_dict, **save_kwargs):
 def read_image_metadata(image_path):
     try:
         ext = os.path.splitext(image_path)[1].lower()
+        if ext == ".png":
+            # Read text chunks without inflating IDAT (including text after IDAT).
+            with open(image_path, "rb") as fp:
+                if fp.read(8) != _PNG_SIGNATURE:
+                    raise ValueError("Invalid PNG signature")
+                png = PngImagePlugin.PngStream(fp)
+                try:
+                    while True:
+                        cid, pos, length = png.read()
+                        if cid == b"IEND":
+                            break
+                        if cid in (b"tEXt", b"zTXt", b"iTXt"):
+                            data = png.call(cid, pos, length)
+                            png.crc(cid, data)
+                        else:
+                            fp.seek(length + 4, 1)
+                    val = png.im_text.get("comment")
+                    return json.loads(val) if val else None
+                finally:
+                    png.close()
         with Image.open(image_path) as im:
-            if ext == ".png":
-                val = (getattr(im, "text", {}) or {}).get("comment") or im.info.get("comment")
-                return json.loads(val) if val else None
             if ext in (".jpg", ".jpeg"):
                 import piexif
                 try:

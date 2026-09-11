@@ -471,10 +471,12 @@ class AssistantSessionState:
     storage_session_id: str = ""
     storage_session_dir: str = ""
     storage_title: str = ""
+    storage_title_pending: bool = False
     storage_deepy_type: str = ""
     storage_created_at: str = ""
     storage_updated_at: str = ""
     gallery_media_mode: str = "link"
+    gallery_workspace_id: str = ""
     session_environment: dict[str, Any] = field(default_factory=dict)
     active_skills: list[Any] = field(default_factory=list)
     session_lock_path: str = ""
@@ -509,11 +511,13 @@ class AssistantSessionState:
     chat_epoch: int = 0
     release_vram_callback: Callable[[], None] | None = None
     force_loading_status_once: bool = False
+    chat_turn_durations: dict[str, float] = field(default_factory=dict)
     current_turn: dict[str, Any] | None = None
     interruption_notice: str = ""
     interruption_history: list[dict[str, Any]] = field(default_factory=list)
     recorded_budget_events: list[dict[str, Any]] = field(default_factory=list)
     runtime_status_note: str = ""
+    pending_chat_media: list[dict[str, str]] = field(default_factory=list)
     runtime_status_signature: str = ""
     rendered_system_prompt_signature: str = ""
     rendered_context_window_tokens: int = 0
@@ -626,6 +630,7 @@ def clear_assistant_session(session: AssistantSessionState) -> None:
     session.interruption_history.clear()
     session.recorded_budget_events.clear()
     session.runtime_status_note = ""
+    session.pending_chat_media.clear()
     session.runtime_status_signature = ""
     session.rendered_system_prompt_signature = ""
     session.rendered_context_window_tokens = 0
@@ -694,6 +699,8 @@ def reset_assistant_session_to_base(session: AssistantSessionState, rendered_sys
 
 def begin_assistant_turn(session: AssistantSessionState, user_message_id: str, user_text: str, assistant_badge: str = "") -> None:
     session.current_turn = {
+        "presentation_started_at": time.monotonic(),
+        "presentation_paused_seconds": 0.0,
         "user_message_id": str(user_message_id or "").strip(),
         "user_text": str(user_text or "").strip(),
         "messages_len": len(session.messages),
@@ -717,6 +724,8 @@ def begin_assistant_turn(session: AssistantSessionState, user_message_id: str, u
 
 def begin_assistant_replay_turn(session: AssistantSessionState, replay: dict[str, Any]) -> None:
     session.current_turn = {
+        "presentation_started_at": time.monotonic(),
+        "presentation_paused_seconds": 0.0,
         "user_message_id": str(replay["user_message_id"]),
         "user_text": str(replay["user_text"]),
         "messages_len": int(replay["turn_messages_len"]),
@@ -1149,6 +1158,11 @@ def rollback_assistant_turn(session: AssistantSessionState, interrupted_badge: s
 
 def finish_assistant_turn(session: AssistantSessionState) -> None:
     had_turn = session.current_turn is not None
+    if had_turn and session.current_turn.get("presentation_started_at") is not None:
+        turn = session.current_turn
+        if turn["assistant_message_id"]:
+            ended = turn.get("presentation_pause_started_at", time.monotonic())
+            session.chat_turn_durations[turn["assistant_message_id"]] = max(0.0, ended - turn["presentation_started_at"] - turn["presentation_paused_seconds"])
     session.current_turn = None
     if had_turn:
         _notify_session_safe_checkpoint(session)
@@ -1200,6 +1214,8 @@ def mark_assistant_paused(session: AssistantSessionState) -> bool:
         if not session.pause_requested or session.interrupt_requested or session.drop_state_requested:
             return False
         session.paused = True
+        if session.current_turn is not None and "presentation_started_at" in session.current_turn:
+            session.current_turn["presentation_pause_started_at"] = time.monotonic()
         return True
 
 
@@ -1207,6 +1223,8 @@ def resume_assistant(session: AssistantSessionState) -> bool:
     with session.turn_lock:
         if not session.pause_requested and not session.paused:
             return False
+        if session.current_turn is not None and "presentation_pause_started_at" in session.current_turn:
+            session.current_turn["presentation_paused_seconds"] += time.monotonic() - session.current_turn.pop("presentation_pause_started_at")
         session.pause_requested = False
         session.paused = False
         session.pause_resume_event.set()
@@ -2026,18 +2044,19 @@ class DeepyZeroTools:
         generated_client_ids = {str(value or "").strip() for value in list(self.session.generated_client_ids or []) if len(str(value or "").strip()) > 0}
         media_updates = {}
         gallery_groups = (
-            ("seen_video_gallery_paths", list(file_list or []), list(file_settings_list or [])),
-            ("seen_audio_gallery_paths", list(audio_file_list or []), list(audio_file_settings_list or [])),
+            ("seen_video_gallery_paths", file_list or [], file_settings_list or []),
+            ("seen_audio_gallery_paths", audio_file_list or [], audio_file_settings_list or []),
         )
         for session_attr, gallery_files, gallery_settings in gallery_groups:
             previous_files = [str(path or "").strip() for path in getattr(self.session, session_attr, []) if len(str(path or "").strip()) > 0]
-            current_pairs = [(str(path or "").strip(), gallery_settings[index] if index < len(gallery_settings) and isinstance(gallery_settings[index], dict) else None) for index, path in enumerate(gallery_files) if len(str(path or "").strip()) > 0]
-            current_files = [path for path, _settings in current_pairs]
+            current_pairs = [(str(path or "").strip(), index) for index, path in enumerate(gallery_files) if len(str(path or "").strip()) > 0]
+            current_files = [path for path, _index in current_pairs]
             appended_start = len(previous_files) if len(previous_files) <= len(current_files) and current_files[: len(previous_files)] == previous_files else len(current_files)
             setattr(self.session, session_attr, list(current_files))
             if appended_start >= len(current_pairs):
                 continue
-            for media_path, settings in current_pairs[appended_start:]:
+            for media_path, index in current_pairs[appended_start:]:
+                settings = gallery_settings[index] if index < len(gallery_settings) else None
                 client_id = "" if not isinstance(settings, dict) else str(settings.get("client_id", "") or "").strip()
                 if len(client_id) > 0 and client_id in generated_client_ids:
                     continue
@@ -2242,10 +2261,10 @@ class DeepyZeroTools:
         source = "audio" if str(source or "").strip().lower() == "audio" else "video"
         if source == "audio":
             raw_choice = (self.gen or {}).get("audio_selected", -1)
-            file_list, file_settings_list = list(audio_file_list or []), list(audio_file_settings_list or [])
+            file_list, file_settings_list = audio_file_list or [], audio_file_settings_list or []
         else:
             raw_choice = (self.gen or {}).get("selected", -1)
-            file_list, file_settings_list = list(file_list or []), list(file_settings_list or [])
+            file_list, file_settings_list = file_list or [], file_settings_list or []
         try:
             choice = int(raw_choice if raw_choice is not None else -1)
         except Exception:
@@ -2365,23 +2384,12 @@ class DeepyZeroTools:
             raise RuntimeError(f"Output file was not created: {output_path}")
         if not callable(self.record_file_metadata):
             raise RuntimeError("WanGP direct media recording is not available.")
-        self._trim_gallery_history(audio_only)
         if persist_metadata:
             self.record_file_metadata(output_path, settings, is_image, audio_only, self.gen)
         else:
             self.record_file_metadata(output_path, settings, is_image, audio_only, self.gen, notify_generation=False, write_metadata=False, record_notification=False)
         self.send_cmd("refresh_gallery", {"path": output_path})
         return self._register_tool_media(output_path, settings, label=label)
-
-    def _trim_gallery_history(self, audio_only: bool) -> None:
-        path_key, settings_key, selection_key = ("audio_file_list", "audio_file_settings_list", "audio_selected") if audio_only else ("file_list", "file_settings_list", "selected")
-        paths = list(self.gen.get(path_key, []))
-        saved_settings = list(self.gen.get(settings_key, []))
-        keep_count = int(self._server_config().get("clear_file_list", 0))
-        keep_from = max(len(paths) - keep_count, 0) if keep_count > 0 else len(paths)
-        self.gen[path_key] = paths[keep_from:]
-        self.gen[settings_key] = saved_settings[keep_from:]
-        self.gen[selection_key] = max(int(self.gen.get(selection_key, 0)) - keep_from, 0)
 
     @staticmethod
     def _read_media_settings(path: str, media_type: str) -> dict[str, Any]:
@@ -2790,7 +2798,7 @@ class DeepyZeroTools:
                     return result
                 file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(gen)
                 media_file_list = list(audio_file_list or []) if gallery_media_type == "audio" else list(file_list or [])
-                media_settings_list = list(audio_file_settings_list or []) if gallery_media_type == "audio" else list(file_settings_list or [])
+                media_settings_list = (audio_file_settings_list or []) if gallery_media_type == "audio" else (file_settings_list or [])
                 file_path, file_settings = media_registry.find_last_gallery_media_by_client(media_file_list, media_settings_list, client_id, media_type=gallery_media_type)
                 if file_path is not None and isinstance(file_settings, dict):
                     self._log(f"{activity_label.capitalize()} already completed before queue admission wait observed for {client_id}; skipping browser-style queue admission wait.")
@@ -2830,7 +2838,7 @@ class DeepyZeroTools:
                     return result
                 file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(gen)
                 media_file_list = list(audio_file_list or []) if gallery_media_type == "audio" else list(file_list or [])
-                media_settings_list = list(audio_file_settings_list or []) if gallery_media_type == "audio" else list(file_settings_list or [])
+                media_settings_list = (audio_file_settings_list or []) if gallery_media_type == "audio" else (file_settings_list or [])
                 queue = list(gen.get("queue", []) or [])
                 client_id_still_in_queue = self._queue_contains_client_id(queue, client_id)
                 if client_id_still_in_queue:
@@ -3738,8 +3746,7 @@ class DeepyZeroTools:
             return {"status": "error", "items": [], "paths": [], "media_ids": [], "added": 0, "already_present": 0, "failed": 0, "error": "path or paths is required."}
         if len(inputs) > 50:
             return {"status": "error", "items": [], "paths": [], "media_ids": [], "added": 0, "already_present": 0, "failed": len(inputs), "error": "At most 50 media files can be added at once."}
-        trimmed_galleries = set()
-        items = [self._add_to_gallery_item(value, trimmed_galleries) for value in inputs]
+        items = [self._add_to_gallery_item(value) for value in inputs]
         successful = [item for item in items if item["status"] == "done"]
         if successful:
             from shared.gradio.gallery_files import expose_gallery_files
@@ -3762,7 +3769,7 @@ class DeepyZeroTools:
             result.update({key: items[0][key] for key in ("media_id", "media_type", "already_present")})
         return result
 
-    def _add_to_gallery_item(self, path: str, trimmed_galleries: set[bool]) -> dict[str, Any]:
+    def _add_to_gallery_item(self, path: str) -> dict[str, Any]:
         source = self._resolve_media_record_input(path)
         if source is None:
             return {"status": "error", "path": str(path or "").strip(), "media_id": "", "media_type": "", "already_present": False, "error": "Not an authorized existing image, video, or audio file."}
@@ -3791,9 +3798,6 @@ class DeepyZeroTools:
         if existing_index is None:
             if not callable(self.record_file_metadata):
                 return {"status": "error", "path": output_path, "media_id": "", "media_type": media_type, "already_present": False, "error": "WanGP Gallery recording is unavailable."}
-            if audio_only not in trimmed_galleries:
-                self._trim_gallery_history(audio_only)
-                trimmed_galleries.add(audio_only)
             self.record_file_metadata(output_path, settings, media_type == "image", audio_only, self.gen, notify_generation=False, write_metadata=False, record_notification=False)
             existing_index = next(index for index, gallery_path in enumerate(self.gen[path_key]) if os.path.normcase(os.path.abspath(str(gallery_path))) == os.path.normcase(output_path))
         else:
@@ -6154,7 +6158,7 @@ class AssistantEngine:
             self._log(f"Prepared runtime update with {len(runtime_lines)} instruction(s).")
 
     def _build_pending_user_message(self, user_text: str) -> dict[str, Any]:
-        message = {"role": "user", "content": str(user_text or "").strip()}
+        message = assistant_chat.build_user_model_message(self.session, user_text)
         runtime_note_blocks = [str(self.session.runtime_status_note or "").strip()] if len(str(self.session.runtime_status_note or "").strip()) > 0 else []
         if self.session.recorded_budget_events:
             runtime_note_blocks.append(
@@ -6212,7 +6216,7 @@ class AssistantEngine:
         runtime_status_note = "\n\n".join([block for block in runtime_note_blocks if len(block) > 0]).strip()
         if len(runtime_status_note) == 0:
             return message
-        message["model_content"] = f"{runtime_status_note}\n\n{message['content']}".strip()
+        message["model_content"] = f"{runtime_status_note}\n\n{message.get('model_content', message['content'])}".strip()
         self.session.runtime_status_note = ""
         if self.debug_enabled:
             self._log(f"Queued runtime status update inside hidden user content:\n{runtime_status_note}")
@@ -7761,8 +7765,11 @@ class AssistantEngine:
         runtime = self._acquire_runtime()
         generation_reserve_tokens = self._segment_generation_reserve_tokens() if generation_reserve_tokens is None else max(0, int(generation_reserve_tokens))
         context_window_tokens = self._get_context_window_tokens()
-        if self.session.rendered_token_ids and self.session.rendered_context_window_tokens != context_window_tokens:
-            self._log(f"Context window changed from {self.session.rendered_context_window_tokens:,} to {context_window_tokens:,} tokens; rebuilding conversation checkpoints.")
+        context_changed = self.session.rendered_context_window_tokens != context_window_tokens
+        instructions_changed = self.session.rendered_system_prompt_signature != self._current_reset_base_signature()
+        if self.session.rendered_token_ids and (context_changed or instructions_changed):
+            reason = f"Context window changed from {self.session.rendered_context_window_tokens:,} to {context_window_tokens:,} tokens" if context_changed else "Deepy instructions/settings changed"
+            self._log(f"{reason}; rebuilding conversation checkpoints.")
             prior_messages_len = self.session.current_turn["messages_len"]
             invalidate_assistant_reset_base(self.session)
             self._commit_rewritten_history(self.session.messages[:prior_messages_len], self.session.messages[prior_messages_len:], generation_reserve_tokens)

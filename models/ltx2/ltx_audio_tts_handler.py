@@ -189,6 +189,7 @@ def _get_scenema_model_def():
         "profiles_dir": ["scenema_audio"],
         "duration_slider": {
             "label": "Max Duration (seconds)",
+            "name": "Max Duration",
             "min": 1,
             "max": SCENEMA_MAX_DURATION_SECONDS,
             "increment": 0.5,
@@ -252,6 +253,7 @@ def _get_dramabox_model_def():
         "profiles_dir": ["dramabox_audio"],
         "duration_slider": {
             "label": "Target Duration (seconds, 0 = auto)",
+            "name": "Target Duration",
             "min": 0,
             "max": DRAMABOX_MAX_DURATION_SECONDS,
             "increment": 0.5,

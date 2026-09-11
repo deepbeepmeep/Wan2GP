@@ -93,11 +93,12 @@ WAC.scheduleComposerLayout = function (scrollState) {
   if (scrollState) WAC.composerResizeScrollState = scrollState;
   else if (!WAC.composerResizeScrollState) WAC.composerResizeScrollState = WAC.captureAutoscrollState();
   if (WAC.composerResizeFrame) window.cancelAnimationFrame(WAC.composerResizeFrame);
+  const scroll = WAC.scroll(), initialTop = scroll?.scrollTop;
   WAC.composerResizeFrame = window.requestAnimationFrame(() => {
     WAC.composerResizeFrame = window.requestAnimationFrame(() => {
       WAC.composerResizeFrame = 0;
+      const state = scroll?.scrollTop !== initialTop ? WAC.captureAutoscrollState() : WAC.composerResizeScrollState;
       WAC.syncComposerLayout();
-      const state = WAC.composerResizeScrollState;
       WAC.composerResizeScrollState = null;
       WAC.applyAutoscrollState(state);
     });
@@ -119,6 +120,7 @@ WAC.bottomThreshold = function () {
 
 WAC.captureAutoscrollState = function () {
   if (WAC.replayDepth > 0) return null;
+  if (WAC.compactScrollState) return WAC.compactScrollState;
   const scroll = WAC.scroll();
   if (!scroll) return { atBottom: true, top: 0 };
   return {
@@ -128,19 +130,14 @@ WAC.captureAutoscrollState = function () {
 };
 
 WAC.applyAutoscrollState = function (state) {
-  if (WAC.replayDepth > 0) return;
+  if (WAC.replayDepth > 0 || WAC.compactScrollState) return;
   const scroll = WAC.scroll();
   if (!scroll) return;
-  if (state && state.atBottom) {
-    scroll.scrollTop = scroll.scrollHeight;
-    WAC.syncJumpToBottom();
-    return;
+  if (state) {
+    const top = state.atBottom ? Math.max(0, scroll.scrollHeight - scroll.clientHeight) : Math.max(0, Number(state.top || 0));
+    // Writing even the current position can interrupt native touch/smooth scrolling.
+    if (scroll.scrollTop !== top) scroll.scrollTop = top;
   }
-  if (!state) {
-    WAC.syncJumpToBottom();
-    return;
-  }
-  scroll.scrollTop = Math.max(0, Number(state.top || 0));
   WAC.syncJumpToBottom();
 };
 
@@ -276,6 +273,7 @@ WAC.clearRequestInput = function (expectedText) {
   const current = WAC.normalizeText(input.value || '');
   const expected = WAC.normalizeText(expectedText || '');
   if (expected && current && current !== expected) return;
+  if (window.matchMedia('(pointer: coarse)').matches && document.activeElement === input) input.blur();
   input.value = '';
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -292,7 +290,7 @@ WAC.reconcileOptimisticSubmits = function (acknowledgedSubmissionIds) {
   WAC.optimisticSubmits = (Array.isArray(WAC.optimisticSubmits) ? WAC.optimisticSubmits : []).filter((item) => {
     const submissionId = String(item && item.id || '').trim();
     const timestamp = Number(item && item.ts || 0);
-    return submissionId && !acknowledged.has(submissionId) && timestamp > 0 && now - timestamp < WAC.optimisticMaxAgeMs;
+    return submissionId && !acknowledged.has(submissionId) && timestamp > 0 && (item.accepted || now - timestamp < WAC.optimisticMaxAgeMs);
   });
   for (const item of WAC.optimisticSubmits) {
     const optimisticId = String(item && item.id || '').trim();
@@ -322,11 +320,17 @@ WAC.pushOptimisticUserMessage = function (text, badgeText) {
   WAC.upsertMessage(message, false, badge === 'Steered' ? WAC.queuedTailInsertIndex() : undefined);
   WAC.scrollToBottomAfterLayout();
   window.setTimeout(() => {
-    if (!(WAC.optimisticSubmits || []).some((item) => String(item && item.id || '') === optimisticId)) return;
+    if (!(WAC.optimisticSubmits || []).some((item) => String(item && item.id || '') === optimisticId && !item.accepted)) return;
     WAC.dropOptimisticSubmit(optimisticId);
     WAC.removeMessage(optimisticId);
   }, WAC.optimisticMaxAgeMs);
   return optimisticId;
+};
+
+WAC.acceptRestorationSubmission = function (submissionId, response) {
+  if (!response.queued_for_restoration) return;
+  const item = WAC.optimisticSubmits.find(item => item.id === submissionId);
+  if (item) item.accepted = true;
 };
 
 WAC.host = function () {
@@ -580,20 +584,35 @@ WAC.handleDisclosureToggle = function (event) {
   WAC.disclosureState[key] = !!node.open;
 };
 
-WAC.toggleDisclosure = function (node) {
-  if (!node || !node.classList || !node.classList.contains('chat__disclosure')) return;
-  const scrollState = WAC.captureAutoscrollState();
+WAC.toggleDisclosure = function (node, pointerY, fromBottom = false) {
+  if (!node || !node.matches('.chat__disclosure, .chat__compact-section')) return;
+  const scroll = WAC.scroll();
+  const followBottom = (!node.open || fromBottom) && WAC.isNearBottom();
+  const summary = node.querySelector(':scope > summary');
+  const before = summary.getBoundingClientRect();
+  let targetY = before.top + before.height / 2;
+  if (node.open && Number.isFinite(pointerY) && scroll) {
+    const bounds = scroll.getBoundingClientRect();
+    if (before.top < bounds.top) targetY = Math.min(pointerY, bounds.bottom - before.height / 2);
+  }
   node.open = !node.open;
-  const key = WAC.disclosureKey(node);
+  const key = node.matches('.chat__disclosure') ? WAC.disclosureKey(node) : '';
   if (key) WAC.disclosureState[key] = !!node.open;
-  WAC.applyAutoscrollState(scrollState);
+  // Settle compact media/statement placement before anchoring, in the same frame.
+  // Opening or closing from below preserves active bottom tracking; otherwise anchor the heading.
+  node._syncDisclosureLayout?.();
+  if (scroll) {
+    const after = summary.getBoundingClientRect();
+    const top = followBottom ? Math.max(0, scroll.scrollHeight - scroll.clientHeight) : scroll.scrollTop + after.top + after.height / 2 - targetY;
+    if (scroll.scrollTop !== top) scroll.scrollTop = top; // Native bounds avoid blank space below the chat.
+  }
+  WAC.handleScroll();
 };
 
-WAC.closeDisclosure = function (node) {
+WAC.closeDisclosure = function (node, pointerY) {
   if (!node || !node.open) return;
-  WAC.toggleDisclosure(node);
-  const summary = node.querySelector(':scope > summary');
-  if (summary && typeof summary.focus === 'function') summary.focus({ preventScroll: true });
+  WAC.toggleDisclosure(node, pointerY, true);
+  node.querySelector(':scope > summary').focus({ preventScroll: true });
 };
 
 WAC.markCopyButton = function (button, state) {
@@ -631,11 +650,7 @@ WAC.handleCollapseButtonClick = function (event) {
   if (!button) return false;
   event.preventDefault();
   event.stopPropagation();
-  if (button.dataset.collapsePointerHandled === 'true') {
-    delete button.dataset.collapsePointerHandled;
-    return true;
-  }
-  WAC.closeDisclosure(button.closest('.chat__disclosure'));
+  WAC.closeDisclosure(button.closest('.chat__disclosure'), event.detail ? event.clientY : undefined);
   return true;
 };
 
@@ -644,11 +659,9 @@ WAC.handleCollapseButtonPointerDown = function (event) {
   if (!button) return false;
   const isPrimaryPointer = event.button === 0 || event.pointerType === 'touch' || event.pointerType === 'pen';
   if (!isPrimaryPointer) return false;
-  if (WAC.startDisclosureTouch(event, button, true)) return true;
+  if (WAC.startDisclosurePointer(event, button, true)) return true;
   event.preventDefault();
   event.stopPropagation();
-  button.dataset.collapsePointerHandled = 'true';
-  WAC.closeDisclosure(button.closest('.chat__disclosure'));
   return true;
 };
 
@@ -656,28 +669,33 @@ WAC.handleDisclosurePointerDown = function (event) {
   const summary = event && event.target && event.target.closest ? event.target.closest('summary') : null;
   if (!summary) return false;
   const disclosureNode = summary.parentElement;
-  if (!disclosureNode || !disclosureNode.classList || !disclosureNode.classList.contains('chat__disclosure')) return false;
-  if (WAC.startDisclosureTouch(event, summary, false)) return true;
+  if (!disclosureNode || !disclosureNode.matches('.chat__disclosure, .chat__compact-section')) return false;
+  if (WAC.startDisclosurePointer(event, summary, false)) return true;
   if (event.button !== 0) return false;
   event.preventDefault();
   event.stopPropagation();
-  WAC.toggleDisclosure(disclosureNode);
   return true;
 };
 
-WAC.startDisclosureTouch = function (event, node, collapse) {
-  if (event.pointerType !== 'touch' && event.pointerType !== 'pen') return false;
-  WAC.disclosureTouch = {id: event.pointerId, x: event.clientX, y: event.clientY, node, collapse, moved: !event.isPrimary};
+WAC.startDisclosurePointer = function (event, node, collapse) {
+  if (!['mouse', 'touch', 'pen'].includes(event.pointerType) || (event.pointerType === 'mouse' && event.button !== 0)) return false;
+  WAC.disclosurePointer = {id: event.pointerId, x: event.clientX, y: event.clientY, node, collapse, moved: !event.isPrimary};
+  if (event.pointerType === 'mouse') {
+    event.preventDefault();
+    event.stopPropagation();
+  }
   return true;
 };
 
-WAC.trackDisclosureTouch = function (event) {
-  const touch = WAC.disclosureTouch;
-  if (!touch || touch.id !== event.pointerId) return;
-  if (event.type === 'pointercancel' || Math.hypot(event.clientX - touch.x, event.clientY - touch.y) > 10) touch.moved = true;
-  if (event.type !== 'pointerup' || touch.moved || !touch.node.isConnected) return;
-  const node = touch.node.closest('.chat__disclosure');
-  if (touch.collapse) WAC.closeDisclosure(node);
+WAC.trackDisclosurePointer = function (event) {
+  const pointer = WAC.disclosurePointer;
+  if (!pointer || pointer.id !== event.pointerId) return;
+  if (event.type === 'pointercancel' || Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) > 10) pointer.moved = true;
+  if (event.type !== 'pointerup' || pointer.moved || !pointer.node.isConnected) return;
+  // A live title update can suppress the browser's click. Complete the original
+  // press here, then consume its compatibility click even if layout moved its target.
+  const node = pointer.node.closest('.chat__disclosure, .chat__compact-section');
+  if (pointer.collapse) WAC.closeDisclosure(node, event.clientY);
   else WAC.toggleDisclosure(node);
 };
 
@@ -832,6 +850,7 @@ WAC.handleQueuedRequestClick = function (event) {
 };
 
 WAC.isAssistantBusy = function () {
+  if (WAC.restorationStatus) return true;
   if (WAC.state && WAC.state.status && WAC.state.status.visible && WAC.state.status.text) return true;
   const stopButton = document.querySelector('#assistant_chat_html .chat__status-stop');
   return !!(stopButton && !stopButton.disabled);
@@ -933,7 +952,7 @@ WAC.consumePayload = function (payload) {
     return [];
   }
   const blockEventTypes = ['upsert_block', 'append_block_text', 'replace_block_text', 'finalize_block', 'remove_block'];
-  const transcriptEvent = event.type === 'sync' || event.type === 'upsert_message' || event.type === 'remove_message' || blockEventTypes.includes(event.type);
+  const transcriptEvent = event.type === 'sync' || event.type === 'upsert_message' || event.type === 'remove_message' || event.type === 'pending_uploads' || blockEventTypes.includes(event.type);
   const revision = Number(event.revision);
   const hasRevision = transcriptEvent && Number.isFinite(revision);
   const sequence = Number(event.sequence);
@@ -967,6 +986,7 @@ WAC.consumePayload = function (payload) {
     WAC.syncRecoveryPending = false;
   }
   if (hasRevision) WAC.chatRevision = revision;
+  if (event.pending_upload_count !== undefined) WAC.setPendingUploadCount(event.pending_upload_count);
   if (event.type === 'reset') {
     WAC.reset();
     if (chatSessionId) WAC.chatSessionId = chatSessionId;
@@ -1158,12 +1178,15 @@ WAC.syncDockLayout = function () {
 };
 
 WAC.setDockOpen = function (open, focusInput = true) {
+  const firstOpen = open && !WAC.hasOpenedDock;
+  if (open) WAC.hasOpenedDock = true;
   WAC.dockOpen = !!open;
   WAC.syncDockState();
   WAC.syncDockLayout();
   if (WAC.dockOpen) {
     window.setTimeout(() => {
       WAC.syncComposerLayout();
+      if (firstOpen) WAC.scrollToBottomAfterLayout();
       const input = WAC.requestInput();
       if (input && focusInput) input.focus();
     }, 140);
@@ -1684,13 +1707,19 @@ WAC.createBlockNode = function (html) {
 WAC.positionBlockNode = function (messageNode, blockNode, blockIndex) {
   const body = messageNode && messageNode.querySelector ? messageNode.querySelector('.chat__body') : null;
   if (!body || !blockNode) return;
-  const index = Number.isFinite(Number(blockIndex)) ? Number(blockIndex) : body.querySelectorAll(':scope > [data-block-id]').length;
+  const blocks = (WAC.compactChildren?.(body) || Array.from(body.children)).filter(node => node.dataset.blockId);
+  const currentIndex = blocks.indexOf(blockNode);
+  const index = Number.isFinite(Number(blockIndex)) ? Number(blockIndex) : currentIndex < 0 ? Math.max(-1, ...blocks.map((node, ordinal) => Number(node.dataset.blockIndex ?? ordinal))) + 1 : Number(blockNode.dataset.blockIndex ?? currentIndex);
   blockNode.dataset.blockIndex = String(index);
-  const before = Array.from(body.querySelectorAll(':scope > [data-block-id]')).find((node) => node !== blockNode && Number(node.dataset.blockIndex || -1) > index);
+  const before = blocks.find((node, ordinal) => node !== blockNode && Number(node.dataset.blockIndex ?? ordinal) > index);
   if (before) {
-    if (blockNode.nextElementSibling !== before) body.insertBefore(blockNode, before);
+    if (currentIndex < 0 || blocks[currentIndex + 1] !== before) (before._compactSlot || before).before(blockNode);
   }
-  else if (blockNode.parentElement !== body || blockNode !== body.lastElementChild) body.appendChild(blockNode);
+  else if (!blocks.length) body.appendChild(blockNode);
+  else if (blockNode !== blocks[blocks.length - 1]) {
+    const last = blocks[blocks.length - 1];
+    (last._compactSlot || last).after(blockNode);
+  }
 };
 
 WAC.rememberBlock = function (event, node, text, finalized) {
@@ -1701,7 +1730,7 @@ WAC.rememberBlock = function (event, node, text, finalized) {
     id: blockId,
     type: String(event.block_type || (node && node.dataset.blockType) || ''),
     index: Number.isFinite(Number(event.block_index)) ? Number(event.block_index) : messageState.order.length - 1,
-    html: node ? node.outerHTML : String(event.html || ''),
+    html: node ? (WAC.canonicalBlockHTML?.(node) ?? node.outerHTML) : String(event.html || ''),
     text: String(typeof text === 'undefined' ? '' : text),
     finalized: !!finalized,
   };
@@ -1786,6 +1815,7 @@ WAC.finalizeBlock = function (event) {
 WAC.removeBlock = function (event) {
   const node = WAC.blockNode(event.message_id, event.block_id);
   const scrollState = WAC.captureAutoscrollState();
+  WAC.patchCompactMedia?.(node, null);
   if (node) node.remove();
   const messageState = WAC.blockState[String(event.message_id || '')];
   if (messageState) {
@@ -1838,16 +1868,20 @@ WAC.patchDisclosureNode = function (current, next) {
 };
 
 WAC.patchBlockNode = function (current, next) {
+  const blockIndex = current.dataset.blockIndex;
+  WAC.patchCompactMedia?.(current, next);
   if (current.matches('.chat__disclosure')) WAC.patchDisclosureNode(current, next);
   else {
     WAC.syncAttributes(current, next);
     WAC.patchMessageBody(current, next);
   }
+  if (blockIndex !== undefined) current.dataset.blockIndex = blockIndex;
   return current;
 };
 
 WAC.patchMessageBody = function (currentBody, nextBody) {
   if (!currentBody || !nextBody) return;
+  WAC.flattenCompactActions?.(currentBody);
   const existingByKey = new Map();
   const nodeKey = node => node.nodeType === 1 ? node.dataset.blockId || WAC.disclosureKey(node) : '';
   currentBody.querySelectorAll(':scope > [data-block-id], :scope > .chat__disclosure').forEach((node) => {
@@ -1986,10 +2020,123 @@ WAC.removeMessage = function (messageId) {
   WAC.applyAutoscrollState(scrollState);
 };
 
+WAC.setRestoration = function (restoration) {
+  WAC.restorationStatus = restoration ? {visible: true, kind: 'session_loading', text: restoration.text} : null;
+  WAC.setStatus(WAC.state.status);
+};
+
+WAC.uploadMediaFiles = async function (files, request, notice, updateGallery, fromChat = false) {
+  let lastId = null;
+  for (const file of files) {
+    notice('Uploading ' + file.name + '…');
+    const form = new FormData(); form.append('file', file);
+    if (fromChat) form.append('from_chat', 'true');
+    const result = await request('media', form);
+    updateGallery?.(result.gallery);
+    lastId = result.id;
+  }
+  return lastId;
+};
+
+WAC.setPendingUploadCount = function (count) {
+  WAC.pendingUploadCount = count;
+  WAC.refreshChatDraftActions?.();
+  const counter = document.getElementById('assistant_chat_upload_count');
+  if (!counter) return;
+  counter.hidden = !count;
+  const label = count + ' media attached to the next message';
+  counter.title = label; counter.setAttribute('aria-label', label);
+  const text = 'x' + count;
+  if (counter.lastElementChild.textContent !== text) counter.lastElementChild.textContent = text;
+};
+
+WAC.mountChatUpload = function (request, notice, updateGallery) {
+  const controls = document.getElementById('assistant_chat_controls');
+  if (!controls || document.getElementById('assistant_chat_upload_button')) return;
+  const button = document.createElement('button');
+  button.id = 'assistant_chat_upload_button'; button.type = 'button';
+  button.title = 'Upload images or videos'; button.setAttribute('aria-label', button.title);
+  button.innerHTML = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'image/*,video/*'; input.multiple = true; input.hidden = true;
+  const status = document.createElement('span');
+  status.id = 'assistant_chat_upload_status'; status.setAttribute('role', 'status'); status.hidden = true;
+  const uploadNotice = text => { status.textContent = text; status.hidden = !text; };
+  button.onclick = () => input.click();
+  input.onchange = async () => {
+    if (!input.files.length) return;
+    button.disabled = true; button.setAttribute('aria-busy', 'true');
+    const files = Array.from(input.files);
+    const uploading = (async () => {
+      const id = await WAC.uploadMediaFiles(files, request, uploadNotice, updateGallery, true);
+      await request('media/' + encodeURIComponent(id) + '/select', {});
+    })();
+    WAC.pendingChatUpload = uploading;
+    try {
+      await uploading;
+      uploadNotice('');
+    } catch (error) { uploadNotice(error.message); }
+    finally { if (WAC.pendingChatUpload === uploading) WAC.pendingChatUpload = null; button.disabled = false; button.removeAttribute('aria-busy'); input.value = ''; }
+  };
+  controls.append(button, input);
+  if (document.body.hasAttribute('data-deepy-app')) {
+    const counter = document.createElement('span'); counter.id = 'assistant_chat_upload_count'; counter.hidden = true;
+    counter.setAttribute('role', 'status');
+    counter.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 6-6 4 4 3-3 5 5"/></svg><span></span>';
+    const clear = document.createElement('button'); clear.id = 'assistant_chat_clear_draft'; clear.type = 'button';
+    clear.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/></svg>';
+    let clearing = false;
+    WAC.refreshChatDraftActions = () => {
+      const hasText = !!WAC.requestInput().value;
+      clear.disabled = clearing || (!hasText && !WAC.pendingUploadCount);
+      clear.title = hasText ? 'Clear text' : 'Remove last attachment'; clear.setAttribute('aria-label', clear.title);
+    };
+    clear.onclick = async () => {
+      if (WAC.requestInput().value) {WAC.setRequestInputValue(''); return;}
+      clearing = true; WAC.refreshChatDraftActions();
+      try {WAC.consumePayload((await request('media/unattach-last', {chat_session_id: WAC.chatSessionId})).event);}
+      catch (error) {uploadNotice(error.message);}
+      finally {clearing = false; WAC.refreshChatDraftActions();}
+    };
+    WAC.requestInput().addEventListener('input', WAC.refreshChatDraftActions);
+    controls.append(status, counter, clear);
+    WAC.setPendingUploadCount(WAC.pendingUploadCount || 0);
+  }
+  else controls.after(status);
+};
+
+WAC.waitForChatUpload = async function () {
+  if (!WAC.pendingChatUpload) return;
+  const status = document.getElementById('assistant_chat_upload_status');
+  status.textContent = 'Message queued — waiting for media upload…'; status.hidden = false;
+  await WAC.pendingChatUpload;
+};
+
 WAC.setStatus = function (status, restoreAnchor) {
+  WAC.state.status = status || null;
+  const effective = WAC.restorationStatus || status;
+  const node = WAC.statusNode();
+  const key = effective?.visible && effective.kind === 'tool' ? WAC.chatSessionId + ':' + effective.text : null;
+  if (key && node?.classList.contains('is-visible') && node.querySelector('.chat__status-text')?.title !== String(effective.text)) {
+    if (WAC.pendingToolStatus?.key === key) return;
+    clearTimeout(WAC.pendingToolStatus?.timer);
+    WAC.pendingToolStatus = {key, timer: setTimeout(() => {
+      WAC.pendingToolStatus = null;
+      WAC.renderStatus(WAC.state.status, restoreAnchor);
+    }, 1000)};
+    return;
+  }
+  clearTimeout(WAC.pendingToolStatus?.timer);
+  WAC.pendingToolStatus = null;
+  WAC.renderStatus(status, restoreAnchor);
+};
+
+WAC.renderStatus = function (status, restoreAnchor) {
   WAC.ensureShell();
   const scrollState = WAC.captureAutoscrollState();
-  WAC.state.status = status || null;
+  status = WAC.restorationStatus || status;
+  const restoring = !!WAC.restorationStatus;
+  document.querySelectorAll('button#assistant_chat_reset_button, #assistant_chat_reset_button button').forEach(button => { button.disabled = restoring; });
   const node = WAC.statusNode();
   if (!node) return;
   const textNode = node.querySelector('.chat__status-text');
@@ -2014,7 +2161,7 @@ WAC.setStatus = function (status, restoreAnchor) {
     WAC.applyAutoscrollState(scrollState);
     return;
   }
-  if (textNode) textNode.textContent = String(status.text);
+  if (textNode) { textNode.textContent = String(status.text).replace(/_/g, '_\u200b'); textNode.title = String(status.text); }
   const kind = String(status.kind || 'status');
   node.dataset.kind = kind;
   if (pauseNode) {
@@ -2030,7 +2177,7 @@ WAC.setStatus = function (status, restoreAnchor) {
     stopNode.disabled = kind === 'session_loading';
   }
   node.classList.add('is-visible');
-  WAC.setBusyInputHelper(true);
+  WAC.setBusyInputHelper(kind !== 'session_loading');
   WAC.applyAutoscrollState(scrollState);
 };
 
@@ -2074,6 +2221,8 @@ WAC.sync = function (messages, status, stats, acknowledgedSubmissionIds) {
 };
 
 WAC.reset = function () {
+  WAC.setPendingUploadCount(0);
+  WAC.compactScrollState = null;
   if (WAC.queuedEditMessageId) WAC.finishQueuedRequestEdit();
   WAC.state = { order: [], messages: {}, status: null, stats: null };
   WAC.blockState = {};
@@ -2141,6 +2290,8 @@ WAC.syncDisclosureBridge = function () {
 };
 
 WAC.handleScroll = function () {
+  // A pending resize must not restore an older position after the user has scrolled.
+  if (WAC.composerResizeFrame) WAC.composerResizeScrollState = WAC.captureAutoscrollState();
   WAC.syncJumpToBottom();
 };
 
@@ -2213,15 +2364,16 @@ WAC.installDockBridge = function () {
     if (event.target && event.target.closest && event.target.closest('#deepy_type_choice')) window.setTimeout(WAC.syncDeepyTypePreview, 0);
   }, true);
   document.addEventListener('pointerdown', (event) => {
-    WAC.disclosureTouch = null;
+    WAC.disclosurePointer = null;
     WAC.attachmentTouch = null;
     if (WAC.handleCollapseButtonPointerDown(event)) return;
     if (WAC.handleDisclosurePointerDown(event)) return;
+    if (event.target.matches('.chat__compact-section[open]') && WAC.startDisclosurePointer(event, event.target, true)) return;
     if (WAC.handleAttachmentPointerDown(event)) return;
   }, true);
   for (const type of ['pointermove', 'pointerup', 'pointercancel']) document.addEventListener(type, event => {
     WAC.trackAttachmentTouch(event);
-    WAC.trackDisclosureTouch(event);
+    WAC.trackDisclosurePointer(event);
   }, {capture: true, passive: true});
   for (const type of ['contextmenu', 'dragstart']) document.addEventListener(type, event => {
     if (window.matchMedia('(pointer: coarse)').matches && event.target.closest('.chat__attachment')) {
@@ -2231,8 +2383,8 @@ WAC.installDockBridge = function () {
   }, true);
   document.addEventListener('click', (event) => {
     // Opening a block can move another control under the finger before the synthetic click.
-    if (event.detail !== 0 && WAC.disclosureTouch) {
-      WAC.disclosureTouch = null;
+    if (event.detail !== 0 && WAC.disclosurePointer) {
+      WAC.disclosurePointer = null;
       event.preventDefault();
       event.stopPropagation();
       return;
@@ -2246,11 +2398,11 @@ WAC.installDockBridge = function () {
     const disclosureSummary = event.target && event.target.closest ? event.target.closest('summary') : null;
     if (disclosureSummary) {
       const disclosureNode = disclosureSummary.parentElement;
-      if (disclosureNode && disclosureNode.classList && disclosureNode.classList.contains('chat__disclosure')) {
+      if (disclosureNode && disclosureNode.matches('.chat__disclosure, .chat__compact-section')) {
         event.preventDefault();
         event.stopPropagation();
-        if (event.detail === 0) WAC.toggleDisclosure(disclosureNode);
-        WAC.disclosureTouch = null;
+        WAC.toggleDisclosure(disclosureNode);
+        WAC.disclosurePointer = null;
         return;
       }
     }
@@ -2289,6 +2441,11 @@ WAC.installDockBridge = function () {
       return;
     }
     const resetButton = event.target && event.target.closest ? event.target.closest('#assistant_chat_reset_button') : null;
+    if (WAC.restorationStatus && resetButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (resetButton && WAC.queuedEditMessageId) {
       event.preventDefault();
       event.stopPropagation();
@@ -2297,6 +2454,7 @@ WAC.installDockBridge = function () {
     }
     const askButton = event.target && event.target.closest ? event.target.closest('#assistant_chat_ask_button') : null;
     if (!askButton) return;
+    if (WAC.finishVoiceBeforeSubmit?.()) { event.preventDefault(); event.stopPropagation(); return; }
     const input = WAC.requestInput();
     const text = input ? String(input.value || '').trim() : '';
     if (WAC.queuedEditMessageId) {
@@ -2332,6 +2490,7 @@ WAC.installDockBridge = function () {
     }
   }, true);
   document.addEventListener('keydown', (event) => {
+    if (event.target.closest?.('dialog[open]')) return;
     if (event.key === 'Escape' && WAC.queuedEditMessageId) {
       event.preventDefault();
       event.stopPropagation();
@@ -2349,6 +2508,7 @@ WAC.installDockBridge = function () {
   document.addEventListener('keydown', (event) => {
     const input = WAC.requestInput();
     if (!input || event.target !== input || event.key !== 'Enter' || event.shiftKey || event.altKey) return;
+    if (WAC.finishVoiceBeforeSubmit?.()) { event.preventDefault(); event.stopPropagation(); return; }
     const text = String(input.value || '').trim();
     if (WAC.queuedEditMessageId) {
       event.preventDefault();

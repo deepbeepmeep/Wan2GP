@@ -1,6 +1,6 @@
 # Prompts Guide
 
-This page explains how WanGP interprets the main text prompt: how multiline prompts are split or preserved, how prompt lines can be paired with multiple images, how the Prompt Enhancer changes the text, and how macros generate prompt variations.
+This page explains how WanGP interprets the main text prompt: how multiline prompts are split or preserved, how prompt lines can be paired with multiple images, how a local or remote Prompt Enhancer changes the text, and how macros generate prompt variations.
 
 ## Prompt Types In Practice
 
@@ -142,7 +142,7 @@ Rotate the pose of the woman so that she is facing the right.
 Render the subjects as classical sculptures carved from single blocks of pristine white marble.
 ```
 
-This is especially important for `Qwen Image Edit, `Flux Kontext`, `Chrono Edit`,  `Ditto`, ...
+This is especially important for `Qwen Image Edit`, `Flux Kontext`, `Chrono Edit`, and `Ditto`.
 
 
 For video edit models such as `Ditto 14B`, write instructions that apply to the whole clip or the whole frames, for example:
@@ -411,32 +411,55 @@ If you used `Generate every combination of images and texts`, you would get many
 
 Prompt enhancement is easiest to think of as a writing assistant built into WanGP.
 
+For **AuK**, **Refine** offers **AuK instruction from text** and **AuK instruction from text + source transcription**. The first option rewrites your instruction and refines voice descriptions. The transcription option first transcribes the source recording locally, then gives that text to the enhancer as context. It covers the same opening section that AuK will edit: the requested target duration, capped at the clip's length. It is most useful for replacing, inserting or deleting words. Select the source-audio mode, upload the recording and set the target duration before using it.
+
+Transcription adds processing time and may mishear words. If no source audio is selected, no speech is detected or transcription fails, a notice appears and refinement continues using text only. Cancelling still stops the operation. Quote original and replacement words explicitly when you know them; those words take priority over the transcript. Check the enhanced instruction before generating. Neither option adjusts AuK's target duration. Enhancement is disabled by default. If you use an external enhancer, it receives the transcript as well as your request; choose a local enhancer to keep both on your machine.
+
 WanGP has two levels for it:
 
 - a global Prompt Enhancer setup in `Configuration`
 - a per-generation Prompt Enhancer control next to the main prompt box
 
-If no Prompt Enhancer is enabled in `Configuration`, the Prompt Enhancer row does not appear in the generation UI.
+The Prompt Enhancer can use a local model on the WanGP machine or the same external Codex, Claude Code, or OpenCode engine configured for Deepy Prime. The Prompt Enhancer row appears for models that provide an enhancement workflow; its exact choices depend on the selected model.
 
 ### Where It Is Enabled
 
-First enable a Prompt Enhancer in `Configuration`.
+Open **Configuration > Prompt Enhancer / Deepy**, then select **Prompt Enhancer / Deepy LLM Engine**.
 
 That global configuration decides:
 
-- which Prompt Enhancer family WanGP loads
+- which local or external engine writes enhanced prompts
 - whether it works automatically during generation or on demand
-- for Qwen3.5- and Qwen3.8-based enhancers, which quantized backend is used
-- sampling behavior such as `temperature`, `top_p`, and random seed randomization
+- for local Qwen engines, which quantization and acceleration options are used
+- for local engines, sampling behavior such as temperature, top-p, and seed randomization
 
-Once that is enabled, the generation screen shows the Prompt Enhancer row near the main prompt field.
+If you select an external engine, configure its executable, model, and reasoning options in the panel that appears. External engines require **Deepy Prime**, even when you mainly intend to use prompt enhancement, because Prime provides their WanGP integration. Save the configuration when finished.
+
+For a model that supports prompt enhancement, the generation screen shows the Prompt Enhancer row near the main prompt field.
 
 Depending on your configuration, it either:
 
 - runs automatically during generation
-
-
 - or appears as a button you click manually before generation
+
+### Choose a local or external engine
+
+| Engine | Functional impact | Recommendation |
+|---|---|---|
+| **Florence 2 + Llama 3.2 3B** | A lightweight local combination for image understanding and text rewriting. | Use on limited hardware when a simple local enhancer is sufficient. |
+| **Florence 2 + Llama Joy 8B** | Produces richer local rewriting than the 3B option but uses more memory. | Use when you prefer this writing style and do not need Deepy Prime. |
+| **Qwen3.5 VL Abliterated 4B** | Handles text and images in one local model with relatively low memory use. | Recommended local starting point for most users. |
+| **Qwen3.5 VL Abliterated 9B** | Better instruction following and richer prompts than 4B, with higher VRAM/RAM use. | Use when quality matters and it fits comfortably beside your generation model. |
+| **Qwen3.8 VL Uncensored 27B** | Strongest local understanding and rewriting, but much heavier to load and run. It is also the required local engine for Deepy Prime. | Use for quality-first work and complex visual instructions on high-memory systems. |
+| **Codex** | Uses the selected external Codex model and does not occupy WanGP's local GPU memory. | Use when you already have Codex configured and want strong remote instruction following. |
+| **Claude Code** | Uses the selected external Claude model and does not occupy WanGP's local GPU memory. | Use when Claude is your preferred writing/reasoning provider. |
+| **OpenCode** | Connects through OpenCode to its configured provider, including supported cloud or local OpenAI-compatible services. | Use when you need provider flexibility or already manage models through OpenCode. |
+
+An external engine is useful when you want to preserve local VRAM for image or video generation, avoid downloading a local enhancer model, or use a stronger provider model. Network and provider latency can make each enhancement slower to start.
+
+The selected engine is shared by **Deepy, Prompt Enhancer, and visual inspection**; there is no separate Prompt Enhancer engine selector. With an external engine, prompts, attached images, sampled video frames, and relevant instructions may be sent outside the WanGP machine. Provider privacy and retention rules apply. WanGP does not store provider passwords or access tokens; authentication stays with the external tool. A local OpenCode server using a local provider can keep data on the machine.
+
+For installation, authentication, model selection, and provider-specific behavior, see [Remote LLMs](REMOTE_LLMS.md).
 
 
 ### Automatic Versus On-Demand
@@ -472,30 +495,32 @@ She steps onto the dimly lit stage, spotlight cutting through haze. "Welcome guy
 - Cons: one more step in the workflow
 - Cons: with multiple `Start Image`s, it only works cleanly when `Multiple Images as Texts Prompts` is set to `Match images and text prompts`, and the number of images matches the number of prompt lines
 
-### Prompt Enhancer Families
-
-WanGP currently supports several Prompt Enhancer backends that you can choose in the `Config / Extensions` tab:
-
-- `Llama 3.2`
-- `Llama Joy`
-- `Qwen3.5-4B Abliterated`
-- `Qwen3.5-9B Abliterated`
-- `Qwen3.8-27B Uncensored`
-
-Qwen 3.5 (especially the 9B / quanto int8 variant) provides a strong quality/performance balance, while Qwen3.8 targets the highest quality. Both families support `Think` mode, which lets the Prompt Enhancer spend more time on your request and may require more VRAM.
-
 ### Qwen Backend Choices
 
-For Qwen3.5-based enhancers, WanGP can use different backends.
+The **Qwen LLM Quantization** choice is available only for local Qwen engines. Lower quantization uses less VRAM and RAM but can reduce prompt quality.
 
-| Backend | Best for | Pros | Cons |
-| --- | --- | --- | --- |
-| `Int8` | The default Qwen setup | Simplest choice, best quality | Heavier on the VRAM |
-| `GGUF` | Lower RAM/disk usage, especially if you already use GGUF tooling | Can be very fast with GGUF CUDA kernels, especially on Windows | Lower Prompt Compliance |
+For Qwen3.5:
 
-Qwen3.5 can be greatly accelerated if `Config / Performance / Language Models Decoder Engine` option is set to *cg* or *vllm*.
+- **Quanto Int8** generally gives better quality and uses more memory. This is the recommended choice when it fits comfortably.
+- **GGUF Q4** uses less memory and can be faster with compatible GGUF CUDA kernels, at some cost to prompt compliance. Use it when Int8 leaves too little memory for generation.
 
-Qwen3.8 uses GGUF weights and offers Q4 (default and highest quality), IQ3_S (the recommended Q3 middle ground), or Q2 (lowest RAM and VRAM use). The IQ3_S checkpoint uses the Q4_K embedding and the same Q4 MTP weights as the Q4 model so that WanGP can keep using its accelerated kernels. WanGP automatically loads those MTP weights separately when speculative decoding is enabled; the main Q3 checkpoint itself contains no MTP weights. The quantization selector is shown only when a Qwen3.5 or Qwen3.8 enhancer is selected.
+For Qwen3.8:
+
+- **GGUF Q4** gives the highest quality and uses the most memory.
+- **GGUF IQ3_S** provides the recommended balance of quality and memory for most local Qwen3.8 users.
+- **GGUF Q2** has the lowest memory use and the greatest quality loss. Use it only when Q3 or Q4 cannot fit.
+
+The shared **Configuration > Performance > Language Models Decoder Engine** can accelerate supported local Qwen engines. **Auto** is recommended. CUDA Graph and vLLM can be much faster but load the whole language model into VRAM; vLLM also requires Triton and Flash Attention 2. Use the PyTorch option for maximum compatibility.
+
+### Speculative Decoding (MTP)
+
+Speculative decoding can make supported local Qwen text generation faster by predicting multiple tokens ahead. It affects Prompt Enhancer and Deepy response speed, not media-generation speed.
+
+- **Auto** is recommended. It normally enables acceleration with at least 12 GB VRAM for Qwen3.5 9B or 24 GB for Qwen3.8 27B.
+- **Disabled** saves the additional VRAM and is appropriate when the generation model needs that memory.
+- **2, 3, or 4 draft tokens** allows manual tuning. More draft tokens are not always faster; start with 2 and compare repeated prompts if you want to tune it.
+
+Qwen3.5 4B and the Florence/Llama engines do not support this option. Quantization, speculative decoding, local sampling controls, and local VRAM-loading controls are hidden when an external engine is selected because the external provider owns its runtime behavior.
 
 ### The Main Prompt Enhancer Choices
 
@@ -662,7 +687,7 @@ Use this only when you know exactly what format you want. It is powerful, but ea
 
 ## Think Mode
 
-On Qwen3.5-based prompt enhancers, WanGP can show a `Think` checkbox.
+With local Qwen3.5- and Qwen3.8-based prompt enhancers, WanGP can show a `Think` checkbox. External engines use their configured model and reasoning-effort controls instead.
 
 Practical use:
 
@@ -746,6 +771,9 @@ If your line-processing mode is set to add each new line as a new request, WanGP
 - If you want several separate prompt ideas queued at once, choose `Each New Line Will Add a new ... Request to the Generation Queue`.
 - If `Match images and text prompts` fails, the number of images and prompts must match cleanly.
 - If `@` or `@@` seems ignored, the Prompt Enhancer is probably disabled or not used for that run.
+- If an external engine cannot be saved, enable **Deepy Prime** and complete that engine's setup in **Configuration > Prompt Enhancer / Deepy**.
+- If remote enhancement cannot inspect an image, confirm that the selected provider/model accepts images and that the external tool is authenticated.
+- If you do not want prompts or visual inputs to leave the machine, select a local engine instead of Codex, Claude Code, or a cloud-backed OpenCode provider.
 
 ---
 

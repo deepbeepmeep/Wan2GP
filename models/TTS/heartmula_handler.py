@@ -32,7 +32,8 @@ def _get_heartmula_model_def():
         "text_prompt_enhancer_instructions": HEARTMULA_LYRIC_PROMPT,
         "prompt_enhancer_button_label": "Compose Lyrics",
         "duration_slider": {
-            "label": "Duration of the Song (in seconds)",
+            "label": "Maximum Song Duration (seconds)",
+            "name": "Maximum Song Duration",
             "min": 30,
             "max": 240,
             "increment": 0.1,

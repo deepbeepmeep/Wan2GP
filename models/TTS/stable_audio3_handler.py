@@ -65,7 +65,7 @@ def _max_duration(base_model_type):
 
 
 def _duration_slider(base_model_type):
-    return {"label": "Duration (seconds)", "min": 1, "max": _max_duration(base_model_type), "increment": 1, "default": 30}
+    return {"label": "Duration (seconds)", "name": "Target Duration", "min": 1, "max": _max_duration(base_model_type), "increment": 1, "default": 30}
 
 
 def _custom_settings(base_model_type):

@@ -996,6 +996,9 @@ class DeepyPrimeTools:
         if ignored:
             result["info"] = f"Ignored {', '.join(ignored)}: WanGP manages waiting for generation and post-processing."
         self._remember_generated_media(result)
+        if tool_name in {"wangp_generate", "wangp_postprocess"}:
+            from shared.mcp_v2 import public_media_result
+            result = public_media_result(result)
         return self.file_access_policy.virtualize_result(result)
 
     def _get_selected_media_record_from_source(self, source: str, requested_media_type: str = "all"):

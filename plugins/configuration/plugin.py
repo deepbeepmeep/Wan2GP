@@ -2,6 +2,11 @@ import gradio as gr
 from shared.utils.plugins import WAN2GPPlugin
 import copy
 import json
+from shared.utils.config_store import config_snapshot, update_config
+from shared.gradio.form_sync import GradioForm
+from shared.utils.form_sync import Saved
+from shared.deepy.config import DEEPY_VOICE_LANGUAGE_KEY, deepy_voice_language_choices, normalize_deepy_voice_language
+from shared.deepy.voice import VOICE_MODE_KEY, VOICE_MODE_CHOICES, voice_mode
 from shared.deepy.engine import get_or_create_assistant_session
 from shared.gradio import assistant_chat, gradio_queue_focus_patch
 from shared.gradio.hierarchy_selector import HierarchySelector
@@ -212,12 +217,21 @@ class ConfigTabPlugin(WAN2GPPlugin):
         )
 
     def create_config_ui(self):
+        first_event = len(gr.context.get_blocks_context().fns)
         migrate_extension_defaults(self.server_config, self.server_config_filename)
         set_deepy_runtime_config(self.server_config, self.server_config_filename)
         prompt_enhancer_default_mode = get_prompt_enhancer_default_mode()
         with gr.Column():
             with gr.Tabs():
                 with gr.Tab("General"):
+                    self.voice_mode_choice = gr.Dropdown(choices=VOICE_MODE_CHOICES, value=lambda: voice_mode(self.server_config), label="Microphone transcription", elem_id="voice_transcription_mode", interactive=not self.args.lock_config)
+                    self.deepy_voice_language_choice = gr.Dropdown(
+                        choices=deepy_voice_language_choices(),
+                        value=lambda: normalize_deepy_voice_language(self.server_config.get(DEEPY_VOICE_LANGUAGE_KEY, "auto")),
+                        label="Voice transcription language",
+                        info="Auto detects the spoken language. Selecting a known language can improve recognition of short recordings. --deepy-voice-language overrides this choice.",
+                        elem_id="deepy_voice_language_choice", interactive=not self.args.lock_config,
+                    )
                     self.transformer_types_choices = HierarchySelector(
                         hierarchy=self.create_models_selector_hierarchy(self.displayed_model_types),
                         value=self.transformer_types,
@@ -257,8 +271,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         value=self.preload_model_policy, label="Model Loading/Unloading Policy"
                     )
                     self.clear_file_list_choice = gr.Dropdown(
-                        choices=[("None", 0), ("Keep last video", 1), ("Keep last 5 videos", 5), ("Keep last 10", 10), ("Keep last 20", 20), ("Keep last 30", 30)],
-                        value=self.server_config.get("clear_file_list", 5), label="Keep Previous Generations in Gallery"
+                        choices=[("All", 0), ("Last media", 1), ("Last 5", 5), ("Last 10", 10), ("Last 20", 20), ("Last 30", 30)],
+                        value=self.server_config.get("clear_file_list", 5), label="Media Visible per Gallery", info="Older media remain in the workspace and can be managed with its magnifier."
                     )
                     self.multi_prompts_gen_type_choice = gr.Dropdown(
                         choices=prompt_parser.get_multi_prompts_gen_choices("Video"),
@@ -409,6 +423,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     llm_config_view = {**self.server_config, LLM_CONFIG_KEY: llm_config}
                     active_llm_engines = {resolve_role_engine(llm_config_view, "deepy")}
                     deepy_remote_default = is_remote_engine(resolve_role_engine(llm_config_view, "deepy"))
+                    deepy_type_default = deepy_mode_from_config(self.server_config.get(DEEPY_ENABLED_KEY, 0), self.server_config.get(DEEPY_TYPE_KEY, DEEPY_TYPE_DEFAULT))
                     with gr.Group(elem_classes=["wangp-transparent-group"]):
                         self.deepy_llm_engine_choice = gr.Dropdown(choices=DEEPY_ENGINE_CHOICES, value=llm_config["deepy"], label="Prompt Enhancer / Deepy LLM Engine")
                         self.remote_llm_warning_md = gr.Markdown(value=privacy_warning(self.server_config))
@@ -416,75 +431,20 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         self.codex_config_ui = create_codex_config_ui(gr, llm_config["profiles"][ENGINE_CODEX], visible=ENGINE_CODEX in active_llm_engines, lock_config=self.args.lock_config)
                         self.claude_config_ui = create_claude_config_ui(gr, llm_config["profiles"][ENGINE_CLAUDE], visible=ENGINE_CLAUDE in active_llm_engines, lock_config=self.args.lock_config)
                         self.opencode_config_ui = create_opencode_config_ui(gr, llm_config["profiles"][ENGINE_OPENCODE], visible=ENGINE_OPENCODE in active_llm_engines, lock_config=self.args.lock_config)
-                    with gr.Group():
-                        enhancer_enabled_value = local_enhancer_id(llm_config["deepy"], enabled_choice_value(self.server_config.get("enhancer_enabled", prompt_enhancer_default_mode), PROMPT_ENHANCER_CHOICES, prompt_enhancer_default_mode))
-                        self.enhancer_enabled_choice = gr.Dropdown(
-                            choices=PROMPT_ENHANCER_CHOICES,
-                            value=enhancer_enabled_value,
-                            label="Local model used to power Prompt Enhancer / Deepy",
-                            visible=False,
-                        )
-                        enhancer_quantization_choices, enhancer_quantization_value, enhancer_quantization_visible = prompt_enhancer_quantization_ui_state(enhancer_enabled_value, self.server_config.get("prompt_enhancer_quantization", "quanto_int8"))
-                        with gr.Row():
-                            self.enhancer_quantization_choice = gr.Dropdown(
-                                choices=enhancer_quantization_choices,
-                                value=enhancer_quantization_value,
-                                label="Qwen LLM Quantization",
-                                info="Lower precision saves VRAM/RAM at some cost to quality. Use the highest precision that fits comfortably.",
-                                visible=enhancer_quantization_visible and not deepy_remote_default,
-                            )
-                            self.enhancer_speculative_decoding_choice = gr.Dropdown(
-                                choices=PROMPT_ENHANCER_SPECULATIVE_DECODING_CHOICES,
-                                value=normalize_prompt_enhancer_speculative_decoding(self.server_config.get(PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT)),
-                                label="Speculative Decoding (MTP)",
-                                info="More draft tokens use more VRAM; the fastest choice depends on the request.",
-                                interactive=not self.args.lock_config,
-                                visible=not deepy_remote_default,
-                            )
-                        self.enhancer_mode_choice = gr.Dropdown(choices=[("On-Demand Button Only", 1),("Automatic on Generation", 0)], value=self.server_config.get("enhancer_mode", 1), label="Prompt Enhancer Usage")
-                    with gr.Row():
-                        self.prompt_enhancer_temperature_choice = gr.Slider(
-                            0.1,
-                            1.5,
-                            value=self.server_config.get("prompt_enhancer_temperature", 0.6),
-                            step=0.01,
-                            label="Sampling Temperature (High = More Creativity)",
-                            interactive=not self.args.lock_config,
-                            visible=not deepy_remote_default,
-                        )
-                        self.prompt_enhancer_top_p_choice = gr.Slider(
-                            0.1,
-                            1.0,
-                            value=self.server_config.get("prompt_enhancer_top_p", 0.9),
-                            step=0.01,
-                            label="Sampling Top-p (High = More Variety)",
-                            interactive=not self.args.lock_config,
-                            visible=not deepy_remote_default,
-                        )
-                    self.prompt_enhancer_randomize_seed_choice = gr.Checkbox(
-                        value=self.server_config.get("prompt_enhancer_randomize_seed", True),
-                        label="Randomize Prompt Enhancer Seed",
-                        interactive=not self.args.lock_config,
-                        visible=not deepy_remote_default,
+                    enhancer_enabled_value = local_enhancer_id(llm_config["deepy"], enabled_choice_value(self.server_config.get("enhancer_enabled", prompt_enhancer_default_mode), PROMPT_ENHANCER_CHOICES, prompt_enhancer_default_mode))
+                    self.enhancer_enabled_choice = gr.Dropdown(
+                        choices=PROMPT_ENHANCER_CHOICES,
+                        value=enhancer_enabled_value,
+                        label="Local model used to power Prompt Enhancer / Deepy",
+                        visible=False,
                     )
-                    deepy_type_default = deepy_mode_from_config(self.server_config.get(DEEPY_ENABLED_KEY, 0), self.server_config.get(DEEPY_TYPE_KEY, DEEPY_TYPE_DEFAULT))
-                    self.deepy_type_choice = gr.Dropdown(
-                        choices=[("Disabled", DEEPY_TYPE_DISABLED), ("Deepy Zero", DEEPY_TYPE_ZERO), ("Deepy Prime", DEEPY_TYPE_PRIME)],
-                        value=deepy_type_default,
-                        label="Deepy",
-                        info=f"Deepy Zero is lightweight and local-only. Deepy Prime plans advanced workflows and is required for every external LLM because it exposes WanGP's MCP tools. With a local LLM, Prime requires Qwen3.8 VL 27B and Summarize compaction: at least {DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:,} context tokens, or {DEEPY_COMPACTION_THINKING_MIN_TOKENS:,} with Thinking.",
-                        elem_id="deepy_type_choice",
-                    )
-                    self.deepy_type_value = gr.HTML(value=deepy_type_default, elem_id="deepy_type_value")
-                    self.deepy_vram_mode_choice = gr.Dropdown(
-                        choices=[
-                            ("Unload from VRAM as soon as possible", DEEPY_VRAM_MODE_UNLOAD),
-                            ("Unload from VRAM if VRAM requested by another WanGP component", DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST),
-                            ("Always loaded in VRAM", DEEPY_VRAM_MODE_ALWAYS_LOADED),
-                        ],
-                        value=normalize_deepy_vram_mode(self.server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_MODE_UNLOAD)),
-                        label="Deepy VRAM Loading Mode (the longer Deepy stays in VRAM, the faster Deepy is)",
-                        visible=not deepy_remote_default,
+                    enhancer_quantization_choices, enhancer_quantization_value, enhancer_quantization_visible = prompt_enhancer_quantization_ui_state(enhancer_enabled_value, self.server_config.get("prompt_enhancer_quantization", "quanto_int8"))
+                    self.enhancer_quantization_choice = gr.Dropdown(
+                        choices=enhancer_quantization_choices,
+                        value=enhancer_quantization_value,
+                        label="Qwen LLM Quantization",
+                        info="Lower precision saves VRAM/RAM at some cost to quality. Use the highest precision that fits comfortably.",
+                        visible=enhancer_quantization_visible and not deepy_remote_default,
                     )
                     deepy_context_tokens_default = normalize_deepy_context_tokens(self.server_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
                     if deepy_type_default == DEEPY_TYPE_PRIME:
@@ -498,85 +458,138 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             return DEEPY_COMPACTION_CHOICE_THINKING
                         return compaction_type
                     with gr.Row():
+                        self.enhancer_mode_choice = gr.Dropdown(choices=[("On-Demand Button Only", 1),("Automatic on Generation", 0)], value=self.server_config.get("enhancer_mode", 1), label="Prompt Enhancer Usage")
+                    with gr.Row(visible=not deepy_remote_default) as self.enhancer_sampling_row:
+                        self.prompt_enhancer_temperature_choice = gr.Slider(
+                            0.1,
+                            1.5,
+                            value=self.server_config.get("prompt_enhancer_temperature", 0.6),
+                            step=0.01,
+                            show_reset_button=False,
+                            label="Sampling Temperature (High = More Creativity)",
+                            interactive=not self.args.lock_config,
+                        )
+                        self.prompt_enhancer_top_p_choice = gr.Slider(
+                            0.1,
+                            1.0,
+                            value=self.server_config.get("prompt_enhancer_top_p", 0.9),
+                            step=0.01,
+                            show_reset_button=False,
+                            label="Sampling Top-p (High = More Variety)",
+                            interactive=not self.args.lock_config,
+                        )
+                        self.prompt_enhancer_randomize_seed_choice = gr.Checkbox(
+                            value=self.server_config.get("prompt_enhancer_randomize_seed", True),
+                            label="Randomize Prompt Enhancer Seed",
+                            elem_classes="cbx_bottom",
+                            interactive=not self.args.lock_config,
+                        )
+                    with gr.Row(visible=not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)) as self.enhancer_decoding_row:
+                        self.enhancer_speculative_decoding_choice = gr.Dropdown(
+                            choices=PROMPT_ENHANCER_SPECULATIVE_DECODING_CHOICES,
+                            value=normalize_prompt_enhancer_speculative_decoding(self.server_config.get(PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT)),
+                            label="Speculative Decoding (MTP)",
+                            info="More draft tokens use more VRAM; the fastest choice depends on the request.",
+                            interactive=not self.args.lock_config,
+                        )
+                        self.deepy_kv_cache_quantization_choice = gr.Dropdown(
+                            choices=[("Auto", DEEPY_KV_CACHE_QUANTIZATION_AUTO), ("Disabled (BF16)", ""), ("INT8 (about half the KV-cache VRAM)", "int8")],
+                            value=deepy_kv_cache_quantization_default,
+                            label="KV Cache Quantization",
+                            info="INT8 halves KV-cache VRAM use, leaving more room for longer context.",
+                        )
+                        self.deepy_repetition_penalty_choice = gr.Dropdown(
+                            choices=[("Disabled", False), ("Enabled", True)],
+                            value=normalize_deepy_repetition_penalty(self.server_config.get(DEEPY_REPETITION_PENALTY_KEY, DEEPY_REPETITION_PENALTY_DEFAULT)),
+                            label="Repetition Penalty",
+                            info="Reduces repeated phrases in Prompt Enhancer and Deepy; about 10% slower.",
+                            visible=not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID),
+                        )
+                    self.deepy_type_choice = gr.Dropdown(
+                        choices=[("Disabled", DEEPY_TYPE_DISABLED), ("Deepy Zero", DEEPY_TYPE_ZERO), ("Deepy Prime", DEEPY_TYPE_PRIME)],
+                        value=deepy_type_default,
+                        label="Deepy",
+                        info="Deepy Zero uses local Qwen models for focused tasks such as generation, editing and transcription. Deepy Prime plans multi-step projects, manages workspace files and can use external tools; it requires Qwen3.8 VL 27B locally or an external LLM.",
+                        elem_id="deepy_type_choice",
+                    )
+                    with gr.Row(visible=deepy_type_default != DEEPY_TYPE_DISABLED and not deepy_remote_default) as self.deepy_vram_row:
+                        self.deepy_vram_mode_choice = gr.Dropdown(
+                            choices=[
+                                ("Unload from VRAM as soon as possible", DEEPY_VRAM_MODE_UNLOAD),
+                                ("Unload from VRAM if VRAM requested by another WanGP component", DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST),
+                                ("Always loaded in VRAM", DEEPY_VRAM_MODE_ALWAYS_LOADED),
+                            ],
+                            value=normalize_deepy_vram_mode(self.server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_MODE_UNLOAD)),
+                            label="Deepy VRAM Loading Mode (the longer Deepy stays in VRAM, the faster Deepy is)",
+                        )
+                    with gr.Row(visible=deepy_type_default != DEEPY_TYPE_DISABLED and not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)) as self.deepy_context_row:
                         with gr.Column(scale=2):
                             self.deepy_context_tokens_choice = gr.Slider(
                                 minimum=DEEPY_CONTEXT_TOKENS_MIN,
                                 maximum=256000,
                                 value=deepy_context_tokens_default,
                                 step=512,
+                                show_reset_button=False,
                                 label=format_deepy_context_tokens_label(self.server_config.get("enhancer_enabled", 0), deepy_context_tokens_default, deepy_kv_cache_quantization_default),
-                                visible=not deepy_remote_default,
+                                info="More tokens retain more conversation and tool history, but use more VRAM.",
                             )
-                        with gr.Column(scale=1):
-                            self.deepy_kv_cache_quantization_choice = gr.Dropdown(
-                                choices=[("Auto", DEEPY_KV_CACHE_QUANTIZATION_AUTO), ("Disabled (BF16)", ""), ("INT8 (about half the KV-cache VRAM)", "int8")],
-                                value=deepy_kv_cache_quantization_default,
-                                label="KV Cache Quantization",
-                                visible=not deepy_remote_default,
+                        with gr.Column(scale=1, visible=deepy_type_default != DEEPY_TYPE_DISABLED and not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)) as self.deepy_compaction_column:
+                            self.deepy_compaction_type_choice = gr.Dropdown(
+                                choices=[("Discard Oldest Entries", DEEPY_COMPACTION_TYPE_DISCARD), (f"Summarize (recommended, {DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:,}+ tokens)", DEEPY_COMPACTION_TYPE_SUMMARIZE), (f"Summarize with Thinking ({DEEPY_COMPACTION_THINKING_MIN_TOKENS:,}+ tokens)", DEEPY_COMPACTION_CHOICE_THINKING)],
+                                value=current_compaction_choice,
+                                label="Compaction Type When Context is Full",
+                                info="Choose how to make room when the conversation fills the context window.",
                             )
-                    with gr.Row():
-                        self.deepy_compaction_type_choice = gr.Dropdown(
-                            choices=[("Discard Oldest Entries", DEEPY_COMPACTION_TYPE_DISCARD), ("Summarize", DEEPY_COMPACTION_TYPE_SUMMARIZE), ("Summarize with Thinking", DEEPY_COMPACTION_CHOICE_THINKING)],
-                            value=current_compaction_choice,
-                            label="Compaction Type When Cache is Full",
-                            info=f"Summarize requires at least {DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:,} context tokens; Summarize with Thinking requires {DEEPY_COMPACTION_THINKING_MIN_TOKENS:,}. Compaction reserves one action budget plus 128 tokens; With Thinking reserves 50% more and starts earlier. Thoughts appear in a separate expandable section and are excluded from the compacted context.",
-                            visible=not deepy_remote_default,
+                    self.deepy_type_value = gr.HTML(value=deepy_type_default, elem_id="deepy_type_value")
+                    with gr.Column(visible=deepy_type_default != DEEPY_TYPE_DISABLED) as self.deepy_options_group:
+                        prime_guidance_value = normalize_deepy_prime_guidance(self.server_config.get(DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_GUIDANCE_DEFAULT))
+                        deepy_file_system_access = normalize_deepy_file_system_access(self.server_config.get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT))
+                        access_ui, everywhere_ui = deepy_filesystem_ui_state(deepy_type_default)
+                        self.deepy_allow_read_file_system_choice = gr.Dropdown(
+                            value=deepy_file_system_access,
+                            **access_ui,
                         )
-                        self.deepy_repetition_penalty_choice = gr.Dropdown(
-                            choices=[("Disabled", False), ("Enabled", True)],
-                            value=normalize_deepy_repetition_penalty(self.server_config.get(DEEPY_REPETITION_PENALTY_KEY, DEEPY_REPETITION_PENALTY_DEFAULT)),
-                            label="Repetition Penalty",
-                            info="Enabled is about 10% slower but reduces rambling and repeated phrases across Deepy's generation phases.",
-                            visible=not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID),
+                        self.deepy_file_system_paths_choice = gr.Textbox(
+                            value="\n".join(normalize_deepy_file_system_paths(self.server_config.get(DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_FILE_SYSTEM_PATHS_DEFAULT))),
+                            lines=4,
+                            label="Additional Filesystem Folders",
+                            info='One folder per line, optionally followed by an optional alias. Quote paths containing spaces, for example: "D:\\My Media" projects.',
+                            visible=deepy_file_system_access != DEEPY_FILE_SYSTEM_ACCESS_DISABLED,
                         )
-                    prime_guidance_value = normalize_deepy_prime_guidance(self.server_config.get(DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_GUIDANCE_DEFAULT))
-                    deepy_file_system_access = normalize_deepy_file_system_access(self.server_config.get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT))
-                    access_ui, everywhere_ui = deepy_filesystem_ui_state(deepy_type_default)
-                    self.deepy_allow_read_file_system_choice = gr.Dropdown(
-                        value=deepy_file_system_access,
-                        **access_ui,
-                    )
-                    self.deepy_file_system_paths_choice = gr.Textbox(
-                        value="\n".join(normalize_deepy_file_system_paths(self.server_config.get(DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_FILE_SYSTEM_PATHS_DEFAULT))),
-                        lines=4,
-                        label="Additional Filesystem Folders",
-                        info='One folder per line, optionally followed by an optional alias. Quote paths containing spaces, for example: "D:\\My Media" projects.',
-                        visible=deepy_file_system_access != DEEPY_FILE_SYSTEM_ACCESS_DISABLED,
-                    )
-                    self.deepy_read_everywhere_choice = gr.Checkbox(
-                        value=normalize_deepy_read_everywhere(self.server_config.get(DEEPY_READ_EVERYWHERE_KEY, DEEPY_READ_EVERYWHERE_DEFAULT)),
-                        visible=deepy_file_system_access != DEEPY_FILE_SYSTEM_ACCESS_DISABLED,
-                        **everywhere_ui,
-                    )
-                    self.deepy_allow_read_file_system_choice.change(fn=lambda value: (gr.update(visible=value != DEEPY_FILE_SYSTEM_ACCESS_DISABLED), gr.update(visible=value != DEEPY_FILE_SYSTEM_ACCESS_DISABLED)), inputs=[self.deepy_allow_read_file_system_choice], outputs=[self.deepy_file_system_paths_choice, self.deepy_read_everywhere_choice], show_progress="hidden")
-                    self.deepy_type_choice.change(fn=lambda value: tuple(gr.update(**settings) for settings in deepy_filesystem_ui_state(value)), inputs=[self.deepy_type_choice], outputs=[self.deepy_allow_read_file_system_choice, self.deepy_read_everywhere_choice], show_progress="hidden")
-                    with gr.Tabs(selected="prime_guidance" if deepy_type_default == DEEPY_TYPE_PRIME else "zero_prompt"):
-                        with gr.Tab("Deepy Zero Prompt", id="zero_prompt"):
-                            self.deepy_zero_custom_system_prompt_choice = gr.Textbox(
-                                value=normalize_deepy_custom_system_prompt(self.server_config.get(DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY, "")),
-                                lines=7,
-                                label="Deepy Zero Custom System Prompt",
-                                info="Added after the built-in Deepy Zero system prompt on the next user interaction.",
-                            )
-                        with gr.Tab("Deepy Prime Guidance", id="prime_guidance"):
-                            self.deepy_prime_custom_system_prompt_choice = gr.Textbox(
-                                value=prime_guidance_value,
-                                lines=7,
-                                label="Deepy Prime User Guidance",
-                                info="Treated as the user's standing preferences and appended to Deepy Prime's trusted system instructions.",
-                            )
-                            self.deepy_prime_mcp_servers_choice = gr.Textbox(
-                                value=json.dumps(self.server_config.get(DEEPY_PRIME_MCP_SERVERS_KEY, {}), indent=2),
-                                lines=8,
-                                label="External MCP Servers (JSON)",
-                                info='Optional servers keyed by name. Use {"transport":"stdio","command":"...","args":[]} or {"transport":"streamable-http","url":"..."}.',
-                            )
-                            self.deepy_mcp_auto_discover_paths_choice = gr.Checkbox(
-                                value=normalize_deepy_mcp_auto_discover_paths(self.server_config.get(DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT)),
-                                label="Allow Searching for Changed MCP Executable Paths",
-                                info="Disabled by default. If a versioned stdio executable disappears, search only sibling version folders under the same runtime root for the newest exact filename.",
-                            )
-                    self.deepy_requirement_md = gr.Markdown(value=deepy_requirement_message(self.server_config))
+                        self.deepy_read_everywhere_choice = gr.Checkbox(
+                            value=normalize_deepy_read_everywhere(self.server_config.get(DEEPY_READ_EVERYWHERE_KEY, DEEPY_READ_EVERYWHERE_DEFAULT)),
+                            visible=deepy_file_system_access != DEEPY_FILE_SYSTEM_ACCESS_DISABLED,
+                            **everywhere_ui,
+                        )
+                        self.deepy_allow_read_file_system_choice.change(fn=lambda value: (gr.update(visible=value != DEEPY_FILE_SYSTEM_ACCESS_DISABLED), gr.update(visible=value != DEEPY_FILE_SYSTEM_ACCESS_DISABLED)), inputs=[self.deepy_allow_read_file_system_choice], outputs=[self.deepy_file_system_paths_choice, self.deepy_read_everywhere_choice], show_progress="hidden")
+                        self.deepy_type_choice.change(fn=lambda value: tuple(gr.update(**settings) for settings in deepy_filesystem_ui_state(value)), inputs=[self.deepy_type_choice], outputs=[self.deepy_allow_read_file_system_choice, self.deepy_read_everywhere_choice], show_progress="hidden")
+                        with gr.Tabs(selected="prime_guidance" if deepy_type_default == DEEPY_TYPE_PRIME else "zero_prompt"):
+                            with gr.Tab("Deepy Zero Prompt", id="zero_prompt"):
+                                self.deepy_zero_custom_system_prompt_choice = gr.Textbox(
+                                    value=normalize_deepy_custom_system_prompt(self.server_config.get(DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY, "")),
+                                    lines=7,
+                                    label="Deepy Zero Custom System Prompt",
+                                    info="Added after the built-in Deepy Zero system prompt on the next user interaction.",
+                                )
+                            with gr.Tab("Deepy Prime Guidance", id="prime_guidance"):
+                                self.deepy_prime_custom_system_prompt_choice = gr.Textbox(
+                                    value=prime_guidance_value,
+                                    lines=7,
+                                    label="Deepy Prime User Guidance",
+                                    info="Treated as the user's standing preferences and appended to Deepy Prime's trusted system instructions.",
+                                )
+                                self.deepy_prime_mcp_servers_choice = gr.Textbox(
+                                    value=json.dumps(self.server_config.get(DEEPY_PRIME_MCP_SERVERS_KEY, {}), indent=2),
+                                    lines=8,
+                                    label="External MCP Servers (JSON)",
+                                    info='Optional servers keyed by name. Use {"transport":"stdio","command":"...","args":[]} or {"transport":"streamable-http","url":"..."}.',
+                                )
+                                self.deepy_mcp_auto_discover_paths_choice = gr.Checkbox(
+                                    value=normalize_deepy_mcp_auto_discover_paths(self.server_config.get(DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT)),
+                                    label="Allow Searching for Changed MCP Executable Paths",
+                                    info="Disabled by default. If a versioned stdio executable disappears, search only sibling version folders under the same runtime root for the newest exact filename.",
+                                )
+                        self.deepy_requirement_md = gr.Markdown(value=deepy_requirement_message(self.server_config) if deepy_type_default != DEEPY_TYPE_DISABLED else "")
 
                 with gr.Tab("Outputs"):
                     self.video_container_choice = gr.Dropdown(choices=VIDEO_CONTAINER_CHOICES, value=self.server_config.get("video_container", "mp4"), label="Video Container")
@@ -646,6 +659,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 self.apply_btn = gr.Button("Save Settings")
 
         def update_deepy_requirement(enhancer_enabled_choice, deepy_type_choice, deepy_context_tokens_choice, deepy_compaction_type_choice, deepy_llm_engine_choice):
+            if deepy_type_choice == DEEPY_TYPE_DISABLED:
+                return ""
             runtime_config = dict(self.server_config)
             deepy_enabled_choice, deepy_type_choice = split_deepy_mode(deepy_type_choice)
             runtime_config["enhancer_enabled"] = enhancer_enabled_choice
@@ -662,12 +677,15 @@ class ConfigTabPlugin(WAN2GPPlugin):
             requirement_input.input(fn=update_deepy_requirement, inputs=deepy_requirement_inputs, outputs=[self.deepy_requirement_md], show_progress="hidden")
 
         def enforce_deepy_prime_requirements(deepy_type_choice, deepy_context_tokens_choice, deepy_compaction_type_choice, enhancer_enabled_choice, deepy_kv_cache_quantization_choice, deepy_llm_engine_choice):
+            if deepy_type_choice == DEEPY_TYPE_DISABLED:
+                return gr.update(), gr.update(), "", DEEPY_TYPE_DISABLED, gr.update()
+            qwen_local = not is_remote_engine(deepy_llm_engine_choice) and enhancer_enabled_choice in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)
             runtime_config = dict(self.server_config)
             deepy_enabled_choice, deepy_type_choice = split_deepy_mode(deepy_type_choice)
             runtime_config["enhancer_enabled"] = enhancer_enabled_choice
             runtime_config[DEEPY_ENABLED_KEY] = deepy_enabled_choice
             runtime_config[DEEPY_TYPE_KEY] = deepy_type_choice
-            if normalize_deepy_type(deepy_type_choice) == DEEPY_TYPE_PRIME:
+            if qwen_local and normalize_deepy_type(deepy_type_choice) == DEEPY_TYPE_PRIME:
                 deepy_context_tokens_choice = max(deepy_compaction_min_tokens(deepy_compaction_type_choice), normalize_deepy_context_tokens(deepy_context_tokens_choice))
                 if normalize_deepy_compaction_type(deepy_compaction_type_choice) != DEEPY_COMPACTION_TYPE_SUMMARIZE:
                     deepy_compaction_type_choice = DEEPY_COMPACTION_TYPE_SUMMARIZE
@@ -675,16 +693,19 @@ class ConfigTabPlugin(WAN2GPPlugin):
             runtime_config[DEEPY_COMPACTION_TYPE_KEY] = deepy_compaction_type_choice
             runtime_config[DEEPY_COMPACTION_THINKING_KEY] = deepy_compaction_type_choice == DEEPY_COMPACTION_CHOICE_THINKING
             runtime_config[LLM_CONFIG_KEY] = {**normalize_llm_config(runtime_config), "deepy": deepy_llm_engine_choice}
-            context_label = format_deepy_context_tokens_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice)
+            context_update = gr.update(value=deepy_context_tokens_choice, label=format_deepy_context_tokens_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice)) if qwen_local else gr.update()
+            compaction_update = gr.update(value=deepy_compaction_type_choice) if qwen_local else gr.update()
             recommendation = deepy_prime_upgrade_message(runtime_config)
-            return gr.update(value=deepy_context_tokens_choice, label=context_label), gr.update(value=deepy_compaction_type_choice), deepy_requirement_message(runtime_config), deepy_mode_from_config(deepy_enabled_choice, deepy_type_choice), gr.update(value=recommendation, visible=bool(recommendation))
+            return context_update, compaction_update, deepy_requirement_message(runtime_config), deepy_mode_from_config(deepy_enabled_choice, deepy_type_choice), gr.update(value=recommendation, visible=bool(recommendation))
 
         self.deepy_type_choice.input(fn=enforce_deepy_prime_requirements, inputs=[self.deepy_type_choice, self.deepy_context_tokens_choice, self.deepy_compaction_type_choice, self.enhancer_enabled_choice, self.deepy_kv_cache_quantization_choice, self.deepy_llm_engine_choice], outputs=[self.deepy_context_tokens_choice, self.deepy_compaction_type_choice, self.deepy_requirement_md, self.deepy_type_value, self.deepy_prime_recommendation], show_progress="hidden")
 
-        def update_deepy_context_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice):
+        def update_deepy_context_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice, deepy_type_choice, deepy_llm_engine_choice):
+            if deepy_type_choice == DEEPY_TYPE_DISABLED or is_remote_engine(deepy_llm_engine_choice) or enhancer_enabled_choice not in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID):
+                return gr.update()
             return gr.update(label=format_deepy_context_tokens_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice))
 
-        deepy_context_label_inputs = [self.enhancer_enabled_choice, self.deepy_context_tokens_choice, self.deepy_kv_cache_quantization_choice]
+        deepy_context_label_inputs = [self.enhancer_enabled_choice, self.deepy_context_tokens_choice, self.deepy_kv_cache_quantization_choice, self.deepy_type_choice, self.deepy_llm_engine_choice]
         self.enhancer_enabled_choice.input(fn=update_deepy_context_label, inputs=deepy_context_label_inputs, outputs=[self.deepy_context_tokens_choice], show_progress="hidden")
         self.deepy_context_tokens_choice.input(fn=update_deepy_context_label, inputs=deepy_context_label_inputs, outputs=[self.deepy_context_tokens_choice], show_progress="hidden")
         self.deepy_kv_cache_quantization_choice.input(fn=update_deepy_context_label, inputs=deepy_context_label_inputs, outputs=[self.deepy_context_tokens_choice], show_progress="hidden")
@@ -698,33 +719,34 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         self.enhancer_enabled_choice.input(fn=update_enhancer_quantization_choice, inputs=[self.enhancer_enabled_choice, self.enhancer_quantization_choice], outputs=[self.enhancer_quantization_choice], show_progress="hidden")
         self.enhancer_enabled_choice.input(fn=update_speculative_decoding_choice, inputs=[self.enhancer_enabled_choice, self.enhancer_speculative_decoding_choice], outputs=[self.enhancer_speculative_decoding_choice], show_progress="hidden")
-        self.enhancer_enabled_choice.input(fn=lambda enhancer: gr.update(visible=int(enhancer) in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)), inputs=[self.enhancer_enabled_choice], outputs=[self.deepy_repetition_penalty_choice], show_progress="hidden")
 
-        def update_remote_engine_ui(deepy_engine, enhancer_quantization):
+        def update_remote_engine_ui(deepy_engine, enhancer_quantization, deepy_type):
             view = normalize_llm_config(self.server_config)
             view["deepy"] = deepy_engine
             runtime_config = {**self.server_config, LLM_CONFIG_KEY: view}
             deepy_remote = is_remote_engine(resolve_role_engine(runtime_config, "deepy"))
             active = {resolve_role_engine(runtime_config, "deepy")}
             quantization_choices, quantization_value, quantization_visible = prompt_enhancer_quantization_ui_state(local_enhancer_id(deepy_engine), enhancer_quantization)
+            qwen_local = not deepy_remote and local_enhancer_id(deepy_engine) in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)
+            deepy_enabled = deepy_type != DEEPY_TYPE_DISABLED
             return (
                 privacy_warning(runtime_config),
                 gr.update(visible=deepy_remote),
                 gr.update(visible=ENGINE_CODEX in active), gr.update(visible=ENGINE_CLAUDE in active), gr.update(visible=ENGINE_OPENCODE in active),
-                gr.update(value=local_enhancer_id(deepy_engine), visible=False), gr.update(choices=quantization_choices, value=quantization_value, visible=quantization_visible and not deepy_remote), gr.update(visible=not deepy_remote),
-                gr.update(visible=not deepy_remote), gr.update(visible=not deepy_remote), gr.update(visible=not deepy_remote),
-                gr.update(visible=not deepy_remote), gr.update(visible=not deepy_remote), gr.update(visible=not deepy_remote), gr.update(visible=not deepy_remote),
-                gr.update(visible=not deepy_remote and local_enhancer_id(deepy_engine) in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)),
+                gr.update(value=local_enhancer_id(deepy_engine), visible=False), gr.update(choices=quantization_choices, value=quantization_value, visible=quantization_visible and not deepy_remote),
+                gr.update(visible=qwen_local), gr.update(visible=not deepy_remote), gr.update(visible=deepy_enabled and not deepy_remote),
+                gr.update(visible=deepy_enabled and qwen_local), gr.update(visible=deepy_enabled and qwen_local), gr.update(visible=deepy_enabled), gr.update(visible=qwen_local),
             )
 
-        remote_engine_state_inputs = [self.deepy_llm_engine_choice, self.enhancer_quantization_choice]
+        remote_engine_state_inputs = [self.deepy_llm_engine_choice, self.enhancer_quantization_choice, self.deepy_type_choice]
         remote_engine_outputs = [
             self.remote_llm_warning_md, self.remote_llm_auth_md, self.codex_config_ui.group, self.claude_config_ui.group, self.opencode_config_ui.group,
-            self.enhancer_enabled_choice, self.enhancer_quantization_choice, self.enhancer_speculative_decoding_choice,
-            self.prompt_enhancer_temperature_choice, self.prompt_enhancer_top_p_choice, self.prompt_enhancer_randomize_seed_choice,
-            self.deepy_vram_mode_choice, self.deepy_context_tokens_choice, self.deepy_kv_cache_quantization_choice, self.deepy_compaction_type_choice, self.deepy_repetition_penalty_choice,
+            self.enhancer_enabled_choice, self.enhancer_quantization_choice,
+            self.enhancer_decoding_row, self.enhancer_sampling_row, self.deepy_vram_row,
+            self.deepy_context_row, self.deepy_compaction_column, self.deepy_options_group, self.deepy_repetition_penalty_choice,
         ]
         self.deepy_llm_engine_choice.input(fn=update_remote_engine_ui, inputs=remote_engine_state_inputs, outputs=remote_engine_outputs, show_progress="hidden")
+        self.deepy_type_choice.change(fn=update_remote_engine_ui, inputs=remote_engine_state_inputs, outputs=remote_engine_outputs, show_progress="hidden")
 
         bind_codex_config_ui(gr, self.codex_config_ui, self.server_config, self.server_config_filename)
         bind_claude_config_ui(gr, self.claude_config_ui, self.server_config, self.server_config_filename)
@@ -762,7 +784,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.enhancer_enabled_choice, self.enhancer_quantization_choice, self.enhancer_speculative_decoding_choice, self.enhancer_mode_choice,
             self.prompt_enhancer_temperature_choice, self.prompt_enhancer_top_p_choice, self.prompt_enhancer_randomize_seed_choice,
             self.matanyone_version_choice,
-            self.deepy_type_choice, self.deepy_vram_mode_choice, self.deepy_allow_read_file_system_choice, self.deepy_file_system_paths_choice, self.deepy_read_everywhere_choice,
+            self.deepy_type_choice, self.deepy_vram_mode_choice, self.deepy_voice_language_choice, self.voice_mode_choice, self.deepy_allow_read_file_system_choice, self.deepy_file_system_paths_choice, self.deepy_read_everywhere_choice,
             self.deepy_context_tokens_choice, self.deepy_kv_cache_quantization_choice, self.deepy_compaction_type_choice, self.deepy_repetition_penalty_choice, self.deepy_zero_custom_system_prompt_choice, self.deepy_prime_custom_system_prompt_choice, self.deepy_prime_mcp_servers_choice, self.deepy_mcp_auto_discover_paths_choice,
             self.video_container_choice, self.video_output_codec_choice, self.hdr_video_crf_choice, self.image_output_codec_choice, self.audio_output_codec_choice, self.audio_stand_alone_output_codec_choice,
             self.metadata_choice, self.embed_source_images_choice,
@@ -774,8 +796,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.resolution
         ]
 
-        self.apply_btn.click(
-            fn=self._save_changes,
+        # These configuration input callbacks only derive presentation/choices.
+        view_events = [event for index, event in gr.context.get_blocks_context().fns.items() if index >= first_event and event.fn and event.outputs and all(kind in ('input', 'change') for _, kind in event.targets)]
+        self.synced_form = GradioForm(self.state.value.service.forms, 'configuration', inputs[1:-1], view_events=view_events)
+        self.synced_form.bind_save(
+            self.apply_btn.click, self._save_changes,
             inputs=inputs,
             outputs=[
                 self.msg,
@@ -819,7 +844,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         if self.args.lock_config:
             return "<div style='color:red; text-align:center;'>Configuration is locked by command-line arguments.</div>", *[gr.update()]*9
 
-        old_server_config = copy.deepcopy(self.server_config)
+        old_server_config = config_snapshot(self.server_config)
         audio_processor_component_count = len(getattr(self, "audio_processor_config_components", []))
         temporal_upsampler_component_count = len(getattr(self, "temporal_upsampler_config_components", []))
         upsampler_component_count = len(getattr(self, "upsampler_config_components", []))
@@ -854,7 +879,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             enhancer_enabled_choice, enhancer_quantization_choice, enhancer_speculative_decoding_choice, enhancer_mode_choice,
             prompt_enhancer_temperature_choice, prompt_enhancer_top_p_choice, prompt_enhancer_randomize_seed_choice,
             matanyone_version_choice,
-            deepy_type_choice, deepy_vram_mode_choice, deepy_allow_read_file_system_choice, deepy_file_system_paths_choice, deepy_read_everywhere_choice,
+            deepy_type_choice, deepy_vram_mode_choice, deepy_voice_language_choice, voice_mode_choice, deepy_allow_read_file_system_choice, deepy_file_system_paths_choice, deepy_read_everywhere_choice,
             deepy_context_tokens_choice, deepy_kv_cache_quantization_choice, deepy_compaction_type_choice, deepy_repetition_penalty_choice, deepy_zero_custom_system_prompt_choice, deepy_prime_custom_system_prompt_choice, deepy_prime_mcp_servers_choice, deepy_mcp_auto_discover_paths_choice,
             video_container_choice, video_output_codec_choice, hdr_video_crf_choice, image_output_codec_choice, audio_output_codec_choice, audio_stand_alone_output_codec_choice,
             metadata_choice, embed_source_images_choice,
@@ -862,17 +887,16 @@ class ConfigTabPlugin(WAN2GPPlugin):
             notification_sound_enabled_choice, notification_sound_volume_choice, notification_apprise_urls_choice, notification_secure_storage_choice, notification_on_generation_choice, notification_on_queue_complete_choice, notification_on_queue_interrupted_choice,
             last_resolution_choice
         ) = fixed_args
-        deepy_compaction_thinking_choice = deepy_compaction_type_choice == DEEPY_COMPACTION_CHOICE_THINKING
-        deepy_compaction_type_choice = normalize_deepy_compaction_type(deepy_compaction_type_choice)
 
-        llm_config_choice = {
-            "deepy": deepy_llm_engine_choice,
-            "profiles": {
-                ENGINE_CODEX: codex_profile_from_values(codex_executable_choice, codex_model_choice, codex_reasoning_effort_choice, normalize_llm_config(old_server_config)["profiles"][ENGINE_CODEX]["model_catalog"]),
-                ENGINE_CLAUDE: claude_profile_from_values(claude_executable_choice, claude_model_choice, claude_reasoning_effort_choice, normalize_llm_config(old_server_config)["profiles"][ENGINE_CLAUDE]["model_catalog"]),
-                ENGINE_OPENCODE: opencode_profile_from_values(opencode_executable_choice, opencode_base_url_choice, opencode_provider_choice, opencode_model_choice, opencode_reasoning_effort_choice, opencode_config_choice, normalize_llm_config(old_server_config)["profiles"][ENGINE_OPENCODE]["model_catalog"]),
-            },
-        }
+        llm_config_choice = normalize_llm_config(old_server_config)
+        llm_config_choice["deepy"] = deepy_llm_engine_choice
+        profiles = llm_config_choice["profiles"]
+        if deepy_llm_engine_choice == ENGINE_CODEX:
+            profiles[ENGINE_CODEX] = codex_profile_from_values(codex_executable_choice, codex_model_choice, codex_reasoning_effort_choice, profiles[ENGINE_CODEX]["model_catalog"])
+        elif deepy_llm_engine_choice == ENGINE_CLAUDE:
+            profiles[ENGINE_CLAUDE] = claude_profile_from_values(claude_executable_choice, claude_model_choice, claude_reasoning_effort_choice, profiles[ENGINE_CLAUDE]["model_catalog"])
+        elif deepy_llm_engine_choice == ENGINE_OPENCODE:
+            profiles[ENGINE_OPENCODE] = opencode_profile_from_values(opencode_executable_choice, opencode_base_url_choice, opencode_provider_choice, opencode_model_choice, opencode_reasoning_effort_choice, opencode_config_choice, profiles[ENGINE_OPENCODE]["model_catalog"])
 
         deepy_enabled_choice, deepy_type_choice = split_deepy_mode(deepy_type_choice)
         validation_config = {**old_server_config, LLM_CONFIG_KEY: llm_config_choice}
@@ -883,15 +907,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
             return f"<div style='color:red; text-align:center;'>Configuration was not saved: {exc}</div>", *[gr.update()]*9
 
         deepy_remote = is_remote_engine(deepy_llm_engine_choice)
-        if deepy_remote:
-            # Local-only controls are hidden for external engines. Preserve their
-            # saved values so a stale hidden component cannot block or alter a
-            # remote-engine configuration.
-            enhancer_enabled_choice = old_server_config.get("enhancer_enabled", enhancer_enabled_choice)
-            enhancer_quantization_choice = old_server_config.get("prompt_enhancer_quantization", enhancer_quantization_choice)
-            enhancer_speculative_decoding_choice = old_server_config.get(PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, enhancer_speculative_decoding_choice)
-        else:
+        if not deepy_remote:
             enhancer_enabled_choice = local_enhancer_id(deepy_llm_engine_choice, enhancer_enabled_choice)
+        qwen_local = not deepy_remote and enhancer_enabled_choice in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)
 
         if not deepy_remote and int(enhancer_enabled_choice) == QWEN38_PROMPT_ENHANCER_ID and enhancer_quantization_choice not in ("gguf", "gguf_q3", "gguf_q2"):
             error = "Qwen3.8-27B is available only as GGUF. Select GGUF Q2, Q3, or Q4 as the Qwen LLM quantization."
@@ -902,7 +920,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             gr.Info(f"Configuration was not saved: {error}")
             return f"<div style='color:red; text-align:center;'>Configuration was not saved: {error}</div>", *[gr.update()]*9
 
-        if not deepy_remote:
+        if qwen_local:
             try:
                 enhancer_speculative_decoding_choice = validate_prompt_enhancer_speculative_decoding(enhancer_enabled_choice, enhancer_speculative_decoding_choice)
             except ValueError as exc:
@@ -910,11 +928,19 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 return f"<div style='color:red; text-align:center;'>Configuration was not saved: {exc}</div>", *[gr.update()]*9
 
         try:
-            if not deepy_remote:
-                deepy_type_choice, deepy_compaction_type_choice, deepy_context_tokens_choice = validate_deepy_version_config(deepy_type_choice, deepy_compaction_type_choice, deepy_context_tokens_choice, enhancer_enabled_choice, compaction_thinking=deepy_compaction_thinking_choice)
-            deepy_prime_mcp_servers_choice = normalize_deepy_prime_mcp_servers(deepy_prime_mcp_servers_choice)
-            deepy_file_system_paths_choice = normalize_deepy_file_system_paths(deepy_file_system_paths_choice)
-            parse_deepy_file_system_paths(deepy_file_system_paths_choice)
+            if deepy_enabled_choice:
+                if not deepy_remote and not qwen_local:
+                    raise ValueError("Florence 2 is not compatible with Deepy. Select a Qwen model or disable Deepy before saving.")
+                if not deepy_remote and deepy_type_choice == DEEPY_TYPE_PRIME and enhancer_enabled_choice != QWEN38_PROMPT_ENHANCER_ID:
+                    raise ValueError("Deepy Prime requires the Qwen3.8 VL 27B model.")
+                if qwen_local:
+                    deepy_compaction_thinking_choice = deepy_compaction_type_choice == DEEPY_COMPACTION_CHOICE_THINKING
+                    deepy_compaction_type_choice = normalize_deepy_compaction_type(deepy_compaction_type_choice)
+                    deepy_type_choice, deepy_compaction_type_choice, deepy_context_tokens_choice = validate_deepy_version_config(deepy_type_choice, deepy_compaction_type_choice, deepy_context_tokens_choice, enhancer_enabled_choice, compaction_thinking=deepy_compaction_thinking_choice)
+                deepy_prime_mcp_servers_choice = normalize_deepy_prime_mcp_servers(deepy_prime_mcp_servers_choice)
+                if deepy_allow_read_file_system_choice != DEEPY_FILE_SYSTEM_ACCESS_DISABLED:
+                    deepy_file_system_paths_choice = normalize_deepy_file_system_paths(deepy_file_system_paths_choice)
+                    parse_deepy_file_system_paths(deepy_file_system_paths_choice)
         except ValueError as exc:
             gr.Info(f"Configuration was not saved: {exc}")
             return f"<div style='color:red; text-align:center;'>Configuration was not saved: {exc}</div>", *[gr.update()]*9
@@ -962,30 +988,14 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "multi_prompts_gen_type": prompt_parser.normalize_multi_prompts_mode(multi_prompts_gen_type_choice, default=prompt_parser.DEFAULT_MULTI_PROMPTS_MODE),
             "keep_intermediate_sliding_windows": keep_intermediate_sliding_windows_choice,
             "preload_model_policy": preload_model_policy_choice, "UI_theme": UI_theme_choice,
-            "fit_canvas": fit_canvas_choice, "enhancer_enabled": enhancer_enabled_choice,
+            "fit_canvas": fit_canvas_choice,
             LLM_CONFIG_KEY: llm_config_choice,
-            "prompt_enhancer_quantization": enhancer_quantization_choice,
-            PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY: enhancer_speculative_decoding_choice,
             "enhancer_mode": enhancer_mode_choice,
             "matanyone_version": matanyone_version_choice,
-            "prompt_enhancer_temperature": prompt_enhancer_temperature_choice,
-            "prompt_enhancer_top_p": prompt_enhancer_top_p_choice,
-            "prompt_enhancer_randomize_seed": prompt_enhancer_randomize_seed_choice,
             DEEPY_ENABLED_KEY: normalize_deepy_enabled(deepy_enabled_choice),
             DEEPY_TYPE_KEY: normalize_deepy_type(deepy_type_choice),
-            DEEPY_VRAM_MODE_KEY: normalize_deepy_vram_mode(deepy_vram_mode_choice),
-            DEEPY_ALLOW_READ_FILE_SYSTEM_KEY: normalize_deepy_file_system_access(deepy_allow_read_file_system_choice),
-            DEEPY_FILE_SYSTEM_PATHS_KEY: deepy_file_system_paths_choice,
-            DEEPY_READ_EVERYWHERE_KEY: normalize_deepy_read_everywhere(deepy_read_everywhere_choice),
-            DEEPY_CONTEXT_TOKENS_KEY: normalize_deepy_context_tokens(deepy_context_tokens_choice),
-            DEEPY_KV_CACHE_QUANTIZATION_KEY: normalize_deepy_kv_cache_quantization(deepy_kv_cache_quantization_choice),
-            DEEPY_COMPACTION_TYPE_KEY: deepy_compaction_type_choice,
-            DEEPY_COMPACTION_THINKING_KEY: deepy_compaction_thinking_choice,
-            DEEPY_REPETITION_PENALTY_KEY: normalize_deepy_repetition_penalty(deepy_repetition_penalty_choice),
-            DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY: normalize_deepy_custom_system_prompt(deepy_zero_custom_system_prompt_choice),
-            DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY: normalize_deepy_prime_guidance(deepy_prime_custom_system_prompt_choice),
-            DEEPY_PRIME_MCP_SERVERS_KEY: deepy_prime_mcp_servers_choice,
-            DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY: normalize_deepy_mcp_auto_discover_paths(deepy_mcp_auto_discover_paths_choice),
+            DEEPY_VOICE_LANGUAGE_KEY: normalize_deepy_voice_language(deepy_voice_language_choice),
+            VOICE_MODE_KEY: voice_mode({VOICE_MODE_KEY: voice_mode_choice}),
             "preload_in_VRAM": preload_in_VRAM_choice, "depth_anything_v2_variant": depth_anything_v2_variant_choice,
             "notification_sound_enabled": notification_sound_enabled_choice,
             "notification_sound_volume": notification_sound_volume_choice,
@@ -1006,12 +1016,43 @@ class ConfigTabPlugin(WAN2GPPlugin):
             gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY: process_queues_when_browser_unfocused_choice,
             "embed_source_images": embed_source_images_choice,
             "video_container": video_container_choice,
-            "last_model_type": state["model_type"],
-            "last_model_per_family": state["last_model_per_family"],
-            "last_model_per_type": state["last_model_per_type"],
-            "last_advanced_choice": state["advanced"], "last_resolution_choice": last_resolution_choice,
-            "last_resolution_per_group": state["last_resolution_per_group"],
         })
+        # Preserve saved values for controls hidden by the selected engine or Deepy mode.
+        if not deepy_remote:
+            new_server_config.update({
+                "enhancer_enabled": enhancer_enabled_choice,
+                "prompt_enhancer_temperature": prompt_enhancer_temperature_choice,
+                "prompt_enhancer_top_p": prompt_enhancer_top_p_choice,
+                "prompt_enhancer_randomize_seed": prompt_enhancer_randomize_seed_choice,
+            })
+        if qwen_local:
+            new_server_config.update({
+                "prompt_enhancer_quantization": enhancer_quantization_choice,
+                PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY: enhancer_speculative_decoding_choice,
+                DEEPY_KV_CACHE_QUANTIZATION_KEY: normalize_deepy_kv_cache_quantization(deepy_kv_cache_quantization_choice),
+                DEEPY_REPETITION_PENALTY_KEY: normalize_deepy_repetition_penalty(deepy_repetition_penalty_choice),
+            })
+        if deepy_enabled_choice:
+            new_server_config.update({
+                DEEPY_ALLOW_READ_FILE_SYSTEM_KEY: normalize_deepy_file_system_access(deepy_allow_read_file_system_choice),
+                DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY: normalize_deepy_custom_system_prompt(deepy_zero_custom_system_prompt_choice),
+                DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY: normalize_deepy_prime_guidance(deepy_prime_custom_system_prompt_choice),
+                DEEPY_PRIME_MCP_SERVERS_KEY: deepy_prime_mcp_servers_choice,
+                DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY: normalize_deepy_mcp_auto_discover_paths(deepy_mcp_auto_discover_paths_choice),
+            })
+            if not deepy_remote:
+                new_server_config[DEEPY_VRAM_MODE_KEY] = normalize_deepy_vram_mode(deepy_vram_mode_choice)
+            if qwen_local:
+                new_server_config.update({
+                    DEEPY_CONTEXT_TOKENS_KEY: normalize_deepy_context_tokens(deepy_context_tokens_choice),
+                    DEEPY_COMPACTION_TYPE_KEY: deepy_compaction_type_choice,
+                    DEEPY_COMPACTION_THINKING_KEY: deepy_compaction_thinking_choice,
+                })
+            if deepy_allow_read_file_system_choice != DEEPY_FILE_SYSTEM_ACCESS_DISABLED:
+                new_server_config.update({
+                    DEEPY_FILE_SYSTEM_PATHS_KEY: deepy_file_system_paths_choice,
+                    DEEPY_READ_EVERYWHERE_KEY: normalize_deepy_read_everywhere(deepy_read_everywhere_choice),
+                })
         audio_processor_api.apply_config_update(new_server_config, self.audio_processor_config_bindings, audio_processor_config_update)
         temporal_upsampler_api.apply_config_update(new_server_config, self.temporal_upsampler_config_bindings, temporal_upsampler_config_update)
         upsampler_api.apply_config_update(new_server_config, self.upsampler_config_bindings, upsampler_config_update)
@@ -1023,16 +1064,23 @@ class ConfigTabPlugin(WAN2GPPlugin):
         for key in ("depth_anything_v3_process_res", "depth_anything_v3_chunk_size", "depth_anything_v3_chunk_overlap"):
             new_server_config.pop(key, None)
 
-        with open(self.server_config_filename, "w", encoding="utf-8") as writer:
-            writer.write(json.dumps(new_server_config, indent=4))
+        updates = {key: value for key, value in new_server_config.items() if key not in old_server_config or value != old_server_config[key]}
+        removed = old_server_config.keys() - new_server_config.keys()
+        update_config(self.server_config, self.server_config_filename, updates, remove=removed)
+        if VOICE_MODE_KEY in updates:
+            self.state.value.service.publish("voice_config", {"mode": voice_mode(self.server_config)})
+        if 'clear_file_list' in updates:
+            self.state.value.service.host_changed()
         try:
             notifications.cleanup_config_update(old_server_config, new_server_config)
         except notifications.SecureStorageError as exc:
             gr.Warning(f"Configuration was saved, but the previous credential-store entry could not be removed: {exc}")
         
-        changes = [k for k, v in new_server_config.items() if v != old_server_config.get(k)]
+        changes = list(updates)
 
         no_reload_keys = [
+            VOICE_MODE_KEY,
+            DEEPY_VOICE_LANGUAGE_KEY,
             "attention_mode", "vae_config", "boost", "enable_int8_kernels", "save_path", "image_save_path", "audio_save_path",
             "metadata_type", "clear_file_list", "multi_prompts_gen_type", "keep_intermediate_sliding_windows", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", *notifications.CONFIG_KEYS, "audio_processors", "temporal_upsamplers", "spatial_upsamplers", "matanyone_version",
@@ -1046,7 +1094,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         needs_reload = not all(change in no_reload_keys for change in changes)
 
-        self.set_global("server_config", new_server_config)
         self.set_global("three_levels_hierarchy", new_server_config["model_hierarchy_type"] == 1)
         self.set_global("attention_mode", new_server_config["attention_mode"])
         self.set_global("default_profile", new_server_config["profile"])
@@ -1066,9 +1113,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.set_global("transformer_quantization", new_server_config["transformer_quantization"])
         self.set_global("transformer_dtype_policy", new_server_config["transformer_dtype_policy"])
         self.set_global("transformer_types", new_server_config["transformer_types"])
-        set_deepy_runtime_config(new_server_config, self.server_config_filename)
+        set_deepy_runtime_config(self.server_config, self.server_config_filename)
         if needs_reload: self.set_global("reload_needed", True)
-        self.server_config.update(new_server_config)
 
         enhancer_runtime_changed = LLM_CONFIG_KEY in changes or "enhancer_enabled" in changes or "prompt_enhancer_quantization" in changes or "lm_decoder_engine" in changes or DEEPY_KV_CACHE_QUANTIZATION_KEY in changes or DEEPY_ENABLED_KEY in changes or DEEPY_VRAM_MODE_KEY in changes
         deepy_type_changed = DEEPY_TYPE_KEY in changes
@@ -1116,7 +1162,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         launcher_update = gr.update(value=assistant_chat.render_launcher_html() if deepy_visible else "", visible=deepy_visible)
         panel_update = gr.update(visible=deepy_visible)
 
-        return (
+        return Saved((
             msg,
             description_update,
             header_update,
@@ -1127,4 +1173,4 @@ class ConfigTabPlugin(WAN2GPPlugin):
             launcher_update,
             panel_update,
             chat_event_update,
-        )
+        ))

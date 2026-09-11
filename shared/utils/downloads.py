@@ -141,13 +141,17 @@ def _get_gallery_download(media_id):
 
 
 def _install_routes_on_app(fastapi_app):
+    from shared.utils.http_disconnect import install_http_disconnect_patch
+    install_http_disconnect_patch()
+
     if getattr(fastapi_app, "_wangp_download_routes_installed", False):
         return
 
     @fastapi_app.get("/wangp_api/download/{token}")
     async def _wangp_download(token: str, download: bool = False):
         from fastapi import Response
-        from fastapi.responses import FileResponse, StreamingResponse
+        from fastapi.responses import StreamingResponse
+        from shared.utils.http_disconnect import DisconnectAwareFileResponse
         job = _pop_download_job(token)
         if job is not None:
             headers = {"Content-Disposition": _content_disposition(job["filename"])}
@@ -155,16 +159,28 @@ def _install_routes_on_app(fastapi_app):
         file_download = _get_file_download(token)
         if file_download is None or not Path(file_download["path"]).is_file():
             return Response("Download expired or not found", status_code=404)
-        return FileResponse(file_download["path"], filename=file_download["filename"], media_type=file_download["mime_type"], content_disposition_type="attachment" if download else "inline")
+        return DisconnectAwareFileResponse(file_download["path"], filename=file_download["filename"], media_type=file_download["mime_type"], content_disposition_type="attachment" if download else "inline")
 
     @fastapi_app.get("/wangp_api/gallery/media/{media_id}")
     async def _wangp_gallery_media(media_id: str):
         from fastapi import Response
-        from fastapi.responses import FileResponse
+        from shared.utils.http_disconnect import DisconnectAwareFileResponse
         gallery_download = _get_gallery_download(media_id)
         if gallery_download is None or not Path(gallery_download["path"]).is_file():
             return Response("Gallery media expired or not found", status_code=404)
-        return FileResponse(gallery_download["path"], media_type=gallery_download["mime_type"])
+        return DisconnectAwareFileResponse(gallery_download["path"], media_type=gallery_download["mime_type"])
+
+    @fastapi_app.get("/wangp_api/download/{token}/thumbnail")
+    async def _wangp_thumbnail(token: str):
+        from fastapi import Response
+        from shared.deepy.thumbnails import render_thumbnail
+        file_download = _get_file_download(token)
+        if file_download is None or not Path(file_download['path']).is_file():
+            return Response('Preview not found', status_code=404)
+        data = await render_thumbnail(file_download['path'])
+        if not data:
+            return Response('Preview unavailable', status_code=404)
+        return Response(data, media_type='image/jpeg', headers={'Cache-Control': 'private, max-age=60'})
 
     fastapi_app._wangp_download_routes_installed = True
 

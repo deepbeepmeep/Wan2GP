@@ -791,8 +791,8 @@ class WanGPSession:
         task = self._normalize_task(settings, task_index=1)
         return self._submit_tasks([self._absolutize_task_paths(task, caller_base_path)], callbacks=callbacks)
 
-    def submit_media_postprocessing(self, media_source: str | os.PathLike[str], *, temporal_upsampling: str = "", spatial_upsampling: str = "", spatial_upsampler_prompt: str = "", spatial_upsampler_reference_images: list[str] | None = None, spatial_upsampler_face_count: int = 1, film_grain_intensity: float = 0, film_grain_saturation: float = 0.5, seed: int = -1, api_options: dict[str, Any] | None = None, return_media: bool = False, callbacks: object | None = None, **settings_overrides: Any) -> SessionJob:
-        settings = build_media_postprocessing_settings(media_source, temporal_upsampling=temporal_upsampling, spatial_upsampling=spatial_upsampling, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_face_count=spatial_upsampler_face_count, film_grain_intensity=film_grain_intensity, film_grain_saturation=film_grain_saturation, seed=seed, api_options=api_options, return_media=return_media, **settings_overrides)
+    def submit_media_postprocessing(self, media_source: str | os.PathLike[str], *, temporal_upsampling: str = "", spatial_upsampling: str = "", spatial_upsampler_prompt: str = "", spatial_upsampler_reference_images: list[str] | None = None, spatial_upsampler_param: float | None = None, spatial_upsampler_param2: float | None = None, film_grain_intensity: float = 0, film_grain_saturation: float = 0.5, seed: int = -1, api_options: dict[str, Any] | None = None, return_media: bool = False, callbacks: object | None = None, **settings_overrides: Any) -> SessionJob:
+        settings = build_media_postprocessing_settings(media_source, temporal_upsampling=temporal_upsampling, spatial_upsampling=spatial_upsampling, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_param=spatial_upsampler_param, spatial_upsampler_param2=spatial_upsampler_param2, film_grain_intensity=film_grain_intensity, film_grain_saturation=film_grain_saturation, seed=seed, api_options=api_options, return_media=return_media, **settings_overrides)
         return self.submit_task(settings, callbacks=callbacks)
 
     def submit_audio_remux(self, video_source: str | os.PathLike[str], *, postprocess_audio: str, audio_source: str | os.PathLike[str] | None = None, postprocess_audio_prompt: str = "", postprocess_audio_neg_prompt: str = "", seed: int = -1, repeat_generation: int = 1, replace_voice_sample: str | os.PathLike[str] | None = None, replace_voice_sample2: str | os.PathLike[str] | None = None, api_options: dict[str, Any] | None = None, return_media: bool = False, callbacks: object | None = None, **settings_overrides: Any) -> SessionJob:
@@ -1409,7 +1409,7 @@ class WanGPSession:
         return min(90, 20 + int(ratio * 65))
 
 
-def build_media_postprocessing_settings(media_source: str | os.PathLike[str], *, temporal_upsampling: str = "", spatial_upsampling: str = "", spatial_upsampler_prompt: str = "", spatial_upsampler_reference_images: list[str] | None = None, spatial_upsampler_face_count: int = 1, film_grain_intensity: float = 0, film_grain_saturation: float = 0.5, seed: int = -1, api_options: dict[str, Any] | None = None, return_media: bool = False, **settings_overrides: Any) -> dict[str, Any]:
+def build_media_postprocessing_settings(media_source: str | os.PathLike[str], *, temporal_upsampling: str = "", spatial_upsampling: str = "", spatial_upsampler_prompt: str = "", spatial_upsampler_reference_images: list[str] | None = None, spatial_upsampler_param: float | None = None, spatial_upsampler_param2: float | None = None, film_grain_intensity: float = 0, film_grain_saturation: float = 0.5, seed: int = -1, api_options: dict[str, Any] | None = None, return_media: bool = False, **settings_overrides: Any) -> dict[str, Any]:
     settings = {
         "mode": "edit_postprocessing",
         "prompt": "Media postprocessing",
@@ -1419,7 +1419,8 @@ def build_media_postprocessing_settings(media_source: str | os.PathLike[str], *,
         "spatial_upsampling": spatial_upsampling or "",
         "spatial_upsampler_prompt": spatial_upsampler_prompt,
         "spatial_upsampler_reference_images": list(spatial_upsampler_reference_images or []),
-        "spatial_upsampler_face_count": spatial_upsampler_face_count,
+        "spatial_upsampler_param": spatial_upsampler_param,
+        "spatial_upsampler_param2": spatial_upsampler_param2,
         "film_grain_intensity": film_grain_intensity,
         "film_grain_saturation": film_grain_saturation,
         "postprocess_audio": "",

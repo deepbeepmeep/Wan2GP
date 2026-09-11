@@ -22,6 +22,11 @@ _ENV_NATIVE_FALLBACK_MAX_M = "WAN2GP_QUANTO_INT8_NATIVE_FALLBACK_MAX_M"
 _ENV_PROFILE_SHAPES = "WAN2GP_QUANTO_INT8_PROFILE_SHAPES"
 _ENV_PROFILE_TIME = "WAN2GP_QUANTO_INT8_PROFILE_TIME"
 
+# Set before generation; restart to discard graphs recorded with the old value.
+FUSED_CONVROT_ENABLED = True
+_CONVROT_MODULE = None
+_CONVROT_USED_PRINTED = False
+
 _STARTUP_PRINTED = False
 _RUNTIME_DISABLED = False
 _RUNTIME_DISABLE_REASON = ""
@@ -356,12 +361,14 @@ def _init_quanto_tensor_types() -> bool:
 
 
 def _refresh_triton_direct_kernel_flags() -> None:
-    global _TRITON_DIRECT_FUSED_READY, _TRITON_DIRECT_SCALED_READY
+    global _TRITON_DIRECT_FUSED_READY, _TRITON_DIRECT_SCALED_READY, _CONVROT_MODULE
     mod = _TRITON_MODULE
     triton_ns = getattr(mod, "triton", None) if mod is not None else None
     has_common = bool(mod is not None and triton_ns is not None and hasattr(triton_ns, "cdiv") and hasattr(mod, "_select_triton_int8_config"))
     _TRITON_DIRECT_FUSED_READY = bool(has_common and hasattr(mod, "_fused_dynamic_int8_blockscale_gemm_kernel"))
     _TRITON_DIRECT_SCALED_READY = bool(has_common and hasattr(mod, "_scaled_int8_gemm_kernel"))
+    if _TRITON_DIRECT_FUSED_READY:
+        _CONVROT_MODULE = importlib.import_module("shared.kernels.convrot_int8_triton")
 
 
 def _is_qbytes_tensor(t: torch.Tensor) -> bool:
@@ -463,6 +470,8 @@ def _fused_launch_params(m: int, k: int, n: int, device: torch.device) -> tuple[
     grid_m = mod.triton.cdiv(m, block_m)
     grid_n = mod.triton.cdiv(n, block_n)
     params = (block_m, block_n, block_k, num_warps, num_stages, grid_m, grid_n)
+    if mod._autotune_is_blocked():
+        return params
     return _cache_launch_params(_FUSED_LAUNCH_CACHE, _FUSED_LAUNCH_CACHE_FIFO, _FUSED_LAUNCH_CACHE_MAX, key, params)
 
 
@@ -479,6 +488,8 @@ def _scaled_launch_params(m: int, k: int, n: int, device: torch.device) -> tuple
     grid_m = mod.triton.cdiv(m, block_m)
     grid_n = mod.triton.cdiv(n, block_n)
     params = (block_m, block_n, block_k, num_warps, num_stages, grid_m, grid_n)
+    if mod._autotune_is_blocked():
+        return params
     return _cache_launch_params(_SCALED_LAUNCH_CACHE, _SCALED_LAUNCH_CACHE_FIFO, _SCALED_LAUNCH_CACHE_MAX, key, params)
 
 
@@ -536,8 +547,15 @@ def _probe_triton_backend() -> Tuple[Optional[object], str]:
 
 
 def _register_int8_ops_for_namespace(ns: str, lib: torch.library.Library) -> None:
+    lib.define("convrot_int8_mm(Tensor x2d, Tensor qweight, Tensor scale, Tensor? bias=None) -> Tensor")
     lib.define("fused_quant_scaled_mm(Tensor x2d, Tensor qweight, Tensor qweight_scale, int out_dtype_code=0) -> Tensor")
     lib.define("scaled_int8_mm(Tensor a_int8, Tensor b_int8, Tensor a_scale, Tensor b_scale, int out_dtype_code=0) -> Tensor")
+
+    torch.library.impl(f"{ns}::convrot_int8_mm", "CUDA")(_convrot_int8_mm)
+
+    @torch.library.register_fake(f"{ns}::convrot_int8_mm")
+    def _convrot_int8_mm_fake(x2d, qweight, scale, bias=None):
+        return x2d.new_empty((x2d.shape[0], qweight.shape[0]))
 
     @torch.library.impl(f"{ns}::fused_quant_scaled_mm", "CUDA")
     def _fused_quant_scaled_mm_cuda(x2d: torch.Tensor, qweight: torch.Tensor, qweight_scale: torch.Tensor, out_dtype_code: int = 0):
@@ -585,6 +603,7 @@ def _ensure_compile_safe_ops() -> None:
             op_ns is not None
             and hasattr(op_ns, "fused_quant_scaled_mm")
             and hasattr(op_ns, "scaled_int8_mm")
+            and hasattr(op_ns, "convrot_int8_mm")
         )
         if not has_ops:
             raise
@@ -771,6 +790,35 @@ def _scaled_int8_mm_direct_call(
             + (f" Recovery candidates also failed: {' | '.join(recovery_errors[-4:])}" if recovery_errors else "")
         ) from exc
     return out
+
+
+def _convrot_int8_mm(x2d, qweight, scale, bias=None):
+    global _CONVROT_USED_PRINTED
+    m, k = x2d.shape
+    n = qweight.shape[0]
+    cfg = _fused_launch_params(m, k, n, x2d.device)[:5]
+    if cfg[2] != 64:
+        from shared.qtypes.int8_convrot import _rotate_activation
+        out = _fused_quant_scaled_mm_direct_call(_rotate_activation(x2d, 256), qweight, scale, x2d.dtype)
+        if bias is not None:
+            out += bias
+        return out
+    out = torch.empty((m, n), device=x2d.device, dtype=x2d.dtype)
+    _CONVROT_MODULE.convrot_int8_mm(x2d, qweight, scale, out, bias, cfg)
+    if not _CONVROT_USED_PRINTED:
+        _CONVROT_USED_PRINTED = True
+        _log("Fused ConvRot INT8 decode kernel is being used.")
+    return out
+
+
+def fused_convrot_linear(input, weight, bias):
+    x2d = input.reshape(-1, input.shape[-1])
+    scale = _prepare_weight_scale(weight._scale, weight.shape[0], input.device)
+    if torch.compiler.is_compiling():
+        out = torch.ops.wan2gp_int8.convrot_int8_mm(x2d, weight._data, scale, bias)
+    else:
+        out = _convrot_int8_mm(x2d, weight._data, scale, bias)
+    return out.reshape(*input.shape[:-1], weight.shape[0])
 
 
 def _fused_quant_scaled_mm_call(x2d: torch.Tensor, qweight: torch.Tensor, qweight_scale: torch.Tensor, output_dtype: torch.dtype) -> torch.Tensor:

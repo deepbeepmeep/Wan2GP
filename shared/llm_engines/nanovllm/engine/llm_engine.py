@@ -187,6 +187,12 @@ class LLMEngine:
             self.scheduler.add(seq)
 
     def step(self):
+        if self.config.kv_cache_initial_tokens:
+            blocks = self.scheduler.block_manager
+            needed = sum(max(0, seq.num_blocks - len(seq.block_table)) for seq in self.scheduler.running)
+            if needed > len(blocks.free_block_ids):
+                capacity = self.model_runner.call("grow_kv_cache", len(blocks.blocks) + needed - len(blocks.free_block_ids))
+                blocks.grow(capacity)
         seqs, is_prefill = self.scheduler.schedule()
         token_ids = self.model_runner.call("run", seqs, is_prefill)
         emitted_tokens = self.scheduler.postprocess(seqs, token_ids)

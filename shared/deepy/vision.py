@@ -118,7 +118,7 @@ def normalize_inspection_bbox(bbox: Any) -> list[int] | None:
     if not all(0 <= value <= 1000 for value in values):
         raise ValueError("bbox values must be integers from 0 to 1000.")
     if x_max <= x_min or y_max <= y_min:
-        raise ValueError("bbox maximums must be greater than its minimums.")
+        raise ValueError("bbox=[x_min,y_min,x_max,y_max] uses integers 0..1000 relative to the full image; x_max must be greater than x_min and y_max greater than y_min.")
     return values
 
 

@@ -4,6 +4,7 @@ import atexit
 import copy
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -13,8 +14,10 @@ import urllib.parse
 import uuid
 import zipfile
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from shared.utils.gallery_media import disambiguate_gallery_media_ids, gallery_media_ids
@@ -164,7 +167,10 @@ def _json_safe(value: Any) -> Any:
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        # Windows cannot replace a file while another thread has it open.
+        with _ROOT_LOCK:
+            content = path.read_text(encoding="utf-8")
+        value = json.loads(content)
     except (OSError, ValueError) as exc:
         raise SessionStoreError(f"Cannot read Deepy session file: {path.name}") from exc
     if not isinstance(value, dict):
@@ -177,7 +183,8 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         temporary.write_text(json.dumps(_json_safe(value), ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-        os.replace(temporary, path)
+        with _ROOT_LOCK:
+            os.replace(temporary, path)
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -546,17 +553,20 @@ def bind_session_persistence(session) -> None:
     session.safe_checkpoint_callback = schedule_autosave
 
 
-def ensure_session(session, first_request: str, deepy_type: str, gallery_media_mode: str, environment: dict[str, Any] | None = None) -> dict[str, Any]:
+def ensure_session(session, first_request: str, deepy_type: str, gallery_media_mode: str, environment: dict[str, Any] | None = None, *, media_import=False) -> dict[str, Any]:
     deepy_type = str(deepy_type or "").strip().lower()
     if session.storage_session_id:
         if session.storage_deepy_type != deepy_type:
             raise SessionStoreError("A Deepy session cannot change between Prime and Zero.")
         session.gallery_media_mode = normalize_gallery_media_mode(gallery_media_mode or session.gallery_media_mode)
         session.session_environment = _json_safe(environment or session.session_environment)
+        if session.storage_title_pending and str(first_request or '').strip():
+            session.storage_title = automatic_title(first_request)
+            session.storage_title_pending = False
         bind_session_persistence(session)
         return session_metadata(session)
     request = str(first_request or "").strip()
-    if not request:
+    if not request and not media_import:
         raise SessionStoreError("A Deepy session is created only when its first request is sent.")
     root = sessions_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -568,7 +578,8 @@ def ensure_session(session, first_request: str, deepy_type: str, gallery_media_m
     now = _utc_now()
     session.storage_session_id = storage_id
     session.storage_session_dir = str(directory)
-    session.storage_title = automatic_title(request)
+    session.storage_title_pending = media_import and not session.storage_title
+    session.storage_title = session.storage_title or ('New Deepy session' if media_import else automatic_title(request))
     session.storage_deepy_type = deepy_type
     session.storage_created_at = now
     session.storage_updated_at = now
@@ -583,10 +594,12 @@ def session_metadata(session) -> dict[str, Any]:
     return {
         "id": str(session.storage_session_id or ""),
         "title": str(session.storage_title or ""),
+        **({"title_pending": True} if session.storage_title_pending else {}),
         "deepy_type": str(session.storage_deepy_type or ""),
         "created_at": str(session.storage_created_at or ""),
         "updated_at": str(session.storage_updated_at or ""),
         "gallery_media_mode": normalize_gallery_media_mode(session.gallery_media_mode),
+        **({"gallery_workspace_id": session.gallery_workspace_id} if session.gallery_workspace_id else {}),
     }
 
 
@@ -648,6 +661,7 @@ def _capture_snapshot(session) -> dict[str, Any] | None:
             "chat": {
                 "messages": saved_messages,
                 "transcript": saved_transcript,
+                "turn_durations": dict(session.chat_turn_durations),
                 "transcript_counter": int(session.chat_transcript_counter or 0),
                 "revision": int(session.chat_revision or 0),
                 "interruption_notice": str(session.interruption_notice or ""),
@@ -657,6 +671,7 @@ def _capture_snapshot(session) -> dict[str, Any] | None:
             "artifacts": _artifact_snapshot(session),
             "ui": {"tool_settings": copy.deepcopy(session.tool_ui_settings)},
             "runtime": {
+                "pending_chat_media": copy.deepcopy(session.pending_chat_media),
                 "generated_client_ids": list(session.generated_client_ids),
                 "selected_visual_signature": str(session.selected_visual_runtime_signature or ""),
                 "selected_audio_signature": str(session.selected_audio_runtime_signature or ""),
@@ -771,10 +786,12 @@ def _write_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "schema_version": SESSION_SCHEMA_VERSION,
         "id": metadata["id"],
         "title": metadata["title"],
+        **({"title_pending": True} if metadata.get("title_pending") else {}),
         "deepy_type": metadata["deepy_type"],
         "created_at": metadata["created_at"],
         "updated_at": updated_at,
         "gallery_media_mode": mode,
+        **({"gallery_workspace_id": metadata["gallery_workspace_id"]} if metadata.get("gallery_workspace_id") else {}),
         "context_revision": int(snapshot["revision"]),
         "message_count": len(context["chat"]["messages"]),
         "card_count": card_count,
@@ -838,7 +855,7 @@ def list_sessions(deepy_type: str | None = None) -> list[dict[str, Any]]:
             manifest = _read_json(manifest_path)
         except SessionStoreError:
             continue
-        if str(manifest.get("id", "")) != directory.name:
+        if str(manifest.get("id", "")) != directory.name or manifest.get("archived_at"):
             continue
         if normalized_type and str(manifest.get("deepy_type", "")).strip().lower() != normalized_type:
             continue
@@ -900,6 +917,8 @@ def _session_replay_commands(directory: Path, context: dict[str, Any]) -> tuple[
 def validate_session(storage_id: str, deepy_type: str, active_session=None) -> dict[str, Any]:
     directory = _validated_session_dir(storage_id)
     manifest = _read_json(directory / "session.json")
+    if manifest.get("archived_at"):
+        raise SessionStoreError("Restore this archived session and its workspace before resuming it.")
     context = _read_json(directory / "context.json")
     if str(manifest.get("id", "")) != storage_id or str(context.get("session_id", "")) != storage_id:
         raise SessionStoreError("Deepy session identifiers do not match its directory.")
@@ -935,6 +954,8 @@ def validate_session(storage_id: str, deepy_type: str, active_session=None) -> d
 def load_session(session, storage_id: str, deepy_type: str) -> dict[str, Any]:
     directory = _validated_session_dir(storage_id)
     manifest = _read_json(directory / "session.json")
+    if manifest.get("archived_at"):
+        raise SessionStoreError("Restore this archived session and its workspace before resuming it.")
     context = _read_json(directory / "context.json")
     if str(manifest.get("id", "")) != storage_id or str(context.get("session_id", "")) != storage_id:
         raise SessionStoreError("Deepy session identifiers do not match its directory.")
@@ -979,6 +1000,9 @@ def load_session(session, storage_id: str, deepy_type: str) -> dict[str, Any]:
     chat = context.get("chat", {})
     if not isinstance(chat, dict):
         raise SessionStoreError("Invalid Deepy session chat context.")
+    durations = chat.get("turn_durations", {})
+    if not isinstance(durations, dict) or any(not isinstance(key, str) or type(value) not in (int, float) or not math.isfinite(value) or value < 0 for key, value in durations.items()):
+        raise SessionStoreError("Invalid Deepy session turn durations.")
     from shared.deepy.artifacts import ArtifactWorkspace
 
     artifact_workspace = ArtifactWorkspace()
@@ -987,13 +1011,16 @@ def load_session(session, storage_id: str, deepy_type: str) -> dict[str, Any]:
     session.storage_session_id = storage_id
     session.storage_session_dir = str(directory)
     session.storage_title = str(manifest.get("title", "") or "Deepy session")
+    session.storage_title_pending = bool(manifest.get("title_pending", False))
     session.storage_deepy_type = stored_type
     session.storage_created_at = str(manifest.get("created_at", "") or "")
     session.storage_updated_at = str(manifest.get("updated_at", "") or "")
     session.gallery_media_mode = normalize_gallery_media_mode(manifest.get("gallery_media_mode"))
+    session.gallery_workspace_id = str(manifest.get("gallery_workspace_id", "") or "")
     session.session_environment = _json_safe(context.get("environment", {}))
     session.chat_session_id = storage_id
     session.messages = list(chat.get("messages", []) or [])
+    session.chat_turn_durations = dict(durations)
     session.chat_transcript = list(chat.get("transcript", []) or [])
     for record_index, record in enumerate(session.chat_transcript):
         if isinstance(record, dict) and record.get("queued"):
@@ -1014,6 +1041,7 @@ def load_session(session, storage_id: str, deepy_type: str) -> dict[str, Any]:
     session.media_registry_counter = max([int(str(record.get("media_id", "_0")).rsplit("_", 1)[-1]) for record in session.media_registry if str(record.get("media_id", "")).rsplit("_", 1)[-1].isdigit()] or [0])
     session.tool_ui_settings = dict(context.get("ui", {}).get("tool_settings", {}) or {})
     runtime = context.get("runtime", {})
+    session.pending_chat_media = list(runtime.get("pending_chat_media", []))
     pending_action = _pending_action_from_runtime(runtime)
     session.generated_client_ids = list(runtime.get("generated_client_ids", []) or [])
     session.selected_visual_runtime_signature = str(runtime.get("selected_visual_signature", "") or "")
@@ -1037,21 +1065,23 @@ def load_session(session, storage_id: str, deepy_type: str) -> dict[str, Any]:
 
 def inject_session_media(session, gen: dict[str, Any]) -> dict[str, Any]:
     from shared.deepy import media_registry
+    from shared.utils.media_settings import peek_settings
 
     visual_paths = gen.setdefault("file_list", [])
     visual_settings = gen.setdefault("file_settings_list", [])
     audio_paths = gen.setdefault("audio_file_list", [])
     audio_settings = gen.setdefault("audio_file_settings_list", [])
     canonical_paths = {}
+    settings_locations = {}
     client_keys = {}
     fingerprints = {}
     for paths, settings_list in ((visual_paths, visual_settings), (audio_paths, audio_settings)):
         for index, path in enumerate(paths):
-            settings = settings_list[index]
-            if settings is None:
-                settings = settings_list[index] = {}
+            settings = peek_settings(settings_list, index) or {}
             entry = (str(path), settings)
-            canonical_paths[os.path.normcase(str(Path(str(path)).resolve()))] = entry
+            canonical = os.path.normcase(str(Path(str(path)).resolve()))
+            canonical_paths[canonical] = entry
+            settings_locations[canonical] = (settings_list, index)
             client_id = str(settings.get("client_id", "") or "")
             if client_id:
                 client_keys[(_detect_media_type(Path(str(path))), client_id)] = entry
@@ -1075,7 +1105,7 @@ def inject_session_media(session, gen: dict[str, Any]) -> dict[str, Any]:
         canonical = os.path.normcase(str(path.resolve()))
         client_id = str(record.get("client_id", "") or "")
         fingerprint = str(record.get("fingerprint", "") or "")
-        settings = dict(record.get("settings", {}) or {})
+        settings = dict(media_registry._resolve_settings(str(path), record.get("settings")))
         settings.update({"deepy_session_id": session.storage_session_id, "deepy_media_id": record.get("media_id", ""), "deepy_media_fingerprint": fingerprint})
         gallery = "audio" if media_type == "audio" else "visual"
         settings["gallery_media_ids"] = gallery_media_ids(str(path), gallery, settings)
@@ -1093,13 +1123,17 @@ def inject_session_media(session, gen: dict[str, Any]) -> dict[str, Any]:
                         break
         if existing is not None:
             existing_path, existing_settings = existing
+            existing_settings.update(media_registry._resolve_settings(existing_path, {**settings, **existing_settings}))
+            target_list, target_index = settings_locations[os.path.normcase(str(Path(existing_path).resolve()))]
+            target_list[target_index] = existing_settings
             ids = gallery_media_ids(existing_path, gallery, existing_settings)
             existing_settings["gallery_media_ids"] = list(dict.fromkeys([*settings["gallery_media_ids"], *ids]))
             record.update(path=existing_path, path_key=os.path.normcase(str(Path(existing_path).resolve())))
-            record["settings"] = {**settings, "gallery_media_ids": existing_settings["gallery_media_ids"]}
+            record["settings"] = {**settings, **existing_settings}
             continue
         if client_id:
             settings["client_id"] = client_id
+        record["settings"] = settings.copy()
         if media_type == "audio":
             audio_paths.append(str(path))
             audio_settings.append(settings)
@@ -1108,6 +1142,7 @@ def inject_session_media(session, gen: dict[str, Any]) -> dict[str, Any]:
             visual_settings.append(settings)
         entry = (str(path), settings)
         canonical_paths[canonical] = entry
+        settings_locations[canonical] = (audio_settings, len(audio_settings) - 1) if media_type == "audio" else (visual_settings, len(visual_settings) - 1)
         if client_id:
             client_keys[(media_type, client_id)] = entry
         if fingerprint:
@@ -1128,6 +1163,7 @@ def rename_session(session, title: str) -> dict[str, Any]:
     if not title:
         raise SessionStoreError("Session title cannot be empty.")
     session.storage_title = title[:120]
+    session.storage_title_pending = False
     manifest = flush_session(session)
     return manifest or session_metadata(session)
 
@@ -1145,6 +1181,7 @@ def rename_stored_session(storage_id: str, title: str, active_session=None) -> d
         raise SessionStoreError("Session title cannot be empty.")
     manifest = _read_json(directory / "session.json")
     manifest["title"] = normalized_title[:120]
+    manifest.pop("title_pending", None)
     manifest["updated_at"] = _utc_now()
     _atomic_json(directory / "session.json", manifest)
     return manifest
@@ -1206,6 +1243,7 @@ def start_new_session(session, *, save_current: bool = True) -> None:
     session.storage_session_id = ""
     session.storage_session_dir = ""
     session.storage_title = ""
+    session.storage_title_pending = False
     session.storage_deepy_type = ""
     session.storage_created_at = ""
     session.storage_updated_at = ""
@@ -1242,6 +1280,27 @@ def reset_session_files(session) -> None:
             child.mkdir()
     session.safe_checkpoint_revision = int(session.safe_checkpoint_revision or 0) + 1
     flush_session(session)
+
+
+@contextmanager
+def archiving_session(storage_id: str):
+    """Hide a session without moving linked artifacts; undo if its workspace cannot move."""
+    directory = _validated_session_dir(storage_id)
+    lease = SimpleNamespace(session_lock_path="", session_lock_token="", pending_session_save=None, storage_session_dir="")
+    _acquire_session_lock(lease, directory)
+    try:
+        path = directory / "session.json"
+        manifest = _read_json(path)
+        if manifest.get("id") != storage_id:
+            raise SessionStoreError("Deepy session identifier does not match its directory.")
+        _atomic_json(path, {**manifest, "archived_at": _utc_now()})
+        try:
+            yield
+        except Exception:
+            _atomic_json(path, manifest)
+            raise
+    finally:
+        release_session_lock(lease)
 
 
 def delete_session(storage_id: str, active_session=None) -> Path:
@@ -1397,6 +1456,7 @@ __all__ = [
     "UI_JOURNAL_SCHEMA_VERSION",
     "SessionLockedError",
     "SessionStoreError",
+    "archiving_session",
     "automatic_title",
     "bind_session_persistence",
     "configure_sessions_root",

@@ -166,6 +166,16 @@ Media Flow spatial process. A parameter can still be inferred and passed by
 WanGP when it is absent from a UI context; H3, for example, receives generation
 prompt/reference data without showing redundant controls during generation.
 
+The two persisted generic slider slots are `spatial_upsampler_param` and
+`spatial_upsampler_param2`. A refiner declares zero, one or both in its
+`method_parameters`, with its own labels, limits, steps and defaults. Unset slot
+values resolve to that method's defaults. Method selection updates the slider
+metadata and resets these slots to the newly selected method's defaults.
+
+Use `label` for the short gallery label and optional `label_long` for a generation
+label with brief guidance. Declare `description` and optional `method_descriptions`
+on the processor so the UI can explain which choice suits the user's input.
+
 Supported generic UI components are `textbox`, `number`, `slider`, `dropdown`,
 `checkbox`, and `images`. Image parameters are rendered by
 `AdvancedMediaGallery`; set `multiple` to `True` for an ordered list or `False`

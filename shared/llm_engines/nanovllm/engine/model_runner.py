@@ -703,7 +703,7 @@ class ModelRunner:
             return []
         return [module for module in self.model.modules() if hasattr(module, "k_cache") and hasattr(module, "v_cache") and not bool(getattr(module, "_exclude_paged_kv_cache", False))]
 
-    def allocate_kv_cache(self):
+    def allocate_kv_cache(self, generation_tokens=None):
         config = self.config
         hf_config = config.hf_config
         runtime_device = self._get_runtime_device()
@@ -719,8 +719,12 @@ class ModelRunner:
         scale_element_size = torch.float16.itemsize if config.kv_cache_int8 else 0
         block_bytes = 2 * kv_cache_layer_count * self.block_size * num_kv_heads * (head_dim * cache_element_size + scale_elements * scale_element_size)
 
-        # Strict policy: allocate exactly the blocks required by requested runtime limits.
-        required_blocks_per_seq = (config.max_model_len + self.block_size - 1) // self.block_size
+        # Default consumers reserve the full limit; token generators can opt into growth.
+        cache_length = config.max_model_len
+        if config.kv_cache_initial_tokens:
+            self._kv_cache_generation_tokens = min(config.kv_cache_initial_tokens, config.kv_cache_max_tokens) if generation_tokens is None else generation_tokens
+            cache_length = config.kv_cache_prompt_tokens + self._kv_cache_generation_tokens
+        required_blocks_per_seq = (cache_length + self.block_size - 1) // self.block_size
         required_total_blocks = required_blocks_per_seq * max(1, config.max_num_seqs)
         config.num_kvcache_blocks = max(1, int(required_total_blocks))
         required_kv_bytes = config.num_kvcache_blocks * block_bytes
@@ -777,6 +781,51 @@ class ModelRunner:
             if config.kv_cache_int8:
                 module.k_scale = self.kv_cache_scales[0, layer_id]
                 module.v_scale = self.kv_cache_scales[1, layer_id]
+
+        if config.kv_cache_initial_tokens and generation_tokens is None:
+            print(f"[nanovllm] KV cache: {self._kv_cache_generation_tokens}/{config.kv_cache_max_tokens} generation tokens + {config.kv_cache_prompt_tokens} prompt tokens per branch; {config.num_kvcache_blocks} pages ({required_kv_bytes / 1024**2:.1f} MiB).")
+
+    @torch.inference_mode()
+    def grow_kv_cache(self, minimum_blocks):
+        config = self.config
+        old_tokens = tokens = self._kv_cache_generation_tokens
+        blocks = config.num_kvcache_blocks
+        while blocks < minimum_blocks and tokens < config.kv_cache_max_tokens:
+            tokens = min((tokens * 3 + 1) // 2, config.kv_cache_max_tokens)
+            blocks = ((config.kv_cache_prompt_tokens + tokens + self.block_size - 1) // self.block_size) * config.max_num_seqs
+        if blocks < minimum_blocks:
+            raise RuntimeError("KV cache growth would exceed the request's maximum token budget.")
+        if self._get_runtime_device().type == "cuda":
+            torch.cuda.synchronize()
+        if not self.enforce_eager:
+            self.clear_graph_cache()
+            self.graphs.clear()
+            self.graph_vars.clear()
+            self.graph_pool = None
+        # Stage live pages in RAM before allocating their larger GPU replacement.
+        old_cache = self.kv_cache.cpu()
+        old_scales = self.kv_cache_scales.cpu() if config.kv_cache_int8 else None
+        for module in self._get_kv_cache_modules():
+            module.k_cache = module.v_cache = torch.empty(0, device="cpu")
+            if config.kv_cache_int8:
+                module.k_scale = module.v_scale = torch.empty(0, device="cpu")
+        del self.kv_cache
+        if config.kv_cache_int8:
+            del self.kv_cache_scales
+        self.allocate_kv_cache(tokens)
+        if not self.enforce_eager:
+            # Capture writes dummy KV slots. Restore live pages only AFTER capture.
+            self.capture_cudagraph()
+        # Each destination is contiguous, avoiding a full-cache GPU staging copy.
+        for kind in range(2):
+            for layer in range(old_cache.shape[1]):
+                self.kv_cache[kind, layer, :old_cache.shape[2]].copy_(old_cache[kind, layer])
+                if config.kv_cache_int8:
+                    self.kv_cache_scales[kind, layer, :old_scales.shape[2]].copy_(old_scales[kind, layer])
+        del old_cache, old_scales
+        self._runtime_signature = self._get_graph_capture_signature()
+        print(f"[nanovllm] KV cache grew: {old_tokens} -> {tokens}/{config.kv_cache_max_tokens} generation tokens per branch; {config.num_kvcache_blocks} pages.")
+        return config.num_kvcache_blocks
 
     def prepare_block_tables(self, seqs: list[Sequence]):
         bs = len(seqs)

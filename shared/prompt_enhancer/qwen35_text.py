@@ -13,6 +13,7 @@ from mmgp import offload
 from tqdm.auto import tqdm
 
 from shared.llm_io import known_token_ids, llm_io_enabled, log_llm_io
+from shared.deepy.config import DEEPY_REPETITION_PENALTY_DEFAULT, DEEPY_REPETITION_PENALTY_KEY, get_deepy_config_value, normalize_deepy_repetition_penalty
 from shared.utils import files_locator as fl
 from shared.llm_engines.nanovllm import SamplingParams
 from shared.llm_engines.nanovllm.models.qwen3_5 import Qwen3_5ForCausalLM, clear_qwen35_runtime_caches
@@ -726,6 +727,7 @@ def _generate_messages_vllm(
 
     engine = _get_or_create_vllm_engine(self, usage_mode="text")
     outputs = []
+    apply_repetition_penalty = normalize_deepy_repetition_penalty(get_deepy_config_value(DEEPY_REPETITION_PENALTY_KEY, DEEPY_REPETITION_PENALTY_DEFAULT))
     thinking_enabled = _prompt_enhancer_thinking_enabled(self, thinking_enabled=thinking_enabled)
     runtime_extra_tokens = _resolve_prompt_runtime_extra_tokens(self, thinking_enabled=thinking_enabled)
     progress_desc = (
@@ -762,7 +764,7 @@ def _generate_messages_vllm(
             top_k=normalized_top_k,
             top_p=normalized_top_p,
             min_p=_resolve_prompt_min_p(self),
-            repetition_penalty=_resolve_prompt_repetition_penalty(self),
+            repetition_penalty=_resolve_prompt_repetition_penalty(self) if apply_repetition_penalty else 1.0,
             predictive_penalty=_resolve_predictive_penalty_enabled(self),
             ignore_eos=False,
             logits_processor=logits_processor,

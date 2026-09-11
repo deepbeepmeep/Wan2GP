@@ -2,6 +2,7 @@
 
 import copy
 import json
+from itertools import zip_longest
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +34,7 @@ MEDIA_DISCOVERY_DESCRIPTIONS = {
     "create_color_frame": "Create a solid-color Gallery image.",
     "extract_audio": "Extract audio, optionally a time range.",
     "extract_video": "Extract a video segment.",
-    "inspect_media": "Inspect images via media_id/media_ids or exact video frames via media_inputs, with optional crops; no frame extraction needed.",
+    "inspect_media": "Answer a required question about images via media_id/media_ids or exact video frames via media_inputs, with optional crops; no frame extraction needed.",
     "inspect_video": "Inspect a video time range via media_id using automatically sampled frames.",
     "merge_videos": "Join two videos end to end.",
     "transcribe_media": "Transcribe speech with timestamps.",
@@ -42,6 +43,28 @@ MEDIA_DISCOVERY_DESCRIPTIONS = {
 
 def action_def(description, properties=None, required=()):
     return {"description": description, "parameters": {"type": "object", "properties": properties or {}, "required": list(required), "additionalProperties": False}}
+
+
+def public_media_result(result, media_records=()):
+    """Expose one Gallery identity; keep restoration aliases in internal state."""
+    from shared.utils.gallery_media import gallery_media_ids
+
+    identities = {}
+    for record in media_records:
+        ids = gallery_media_ids(record["path"], "audio" if record["media_type"] == "audio" else "visual", record.get("settings"))
+        identities.update({value: ids[0] for value in [record["media_id"], *ids]})
+    private = {"gallery_media_ids", "deepy_media_id", "deepy_media_fingerprint", "deepy_session_id"}
+
+    def clean(value, key=""):
+        if isinstance(value, dict):
+            return {name: clean(child, name) for name, child in value.items() if name not in private}
+        if isinstance(value, list):
+            return [clean(child, key) for child in value]
+        if isinstance(value, str) and key.endswith(("media_id", "media_ids")):
+            return identities.get(value, value)
+        return value
+
+    return clean(result)
 
 
 def function_def(function, description=None, exclude=()):
@@ -83,6 +106,8 @@ def invocation(actions, action, arguments):
         path = ".".join(map(str, error.path)) or "arguments"
         if action == "inspect_media" and error.validator == "oneOf":
             raise ValueError("inspect_media requires exactly one of media_id (one visual), media_ids (a list), or media_inputs (selected frames), inside arguments alongside question.")
+        if action == "inspect_media" and "bbox" in error.path:
+            raise ValueError(f"{path}: {error.message}. bbox=[x_min,y_min,x_max,y_max], integers 0..1000 relative to the full image; x_max>x_min and y_max>y_min.")
         required = ", ".join(definition["parameters"].get("required", [])) or "none"
         if "example" in definition:
             raise ValueError(f"{path}: {error.message}. Required arguments: {required}. Call structure: {json.dumps(definition['example'], ensure_ascii=False)}")
@@ -212,7 +237,7 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
             result["summary"] = page["summary"]
         return result
 
-    gallery_def = paginated(action_def("List current and remembered Gallery media, optionally only live selections. Returned media_id values identify inputs to other tools.", {"media_type": {"type": "string", "enum": ["all", "image", "video", "audio"], "default": "all"}, "selected_only": {"type": "boolean", "default": False}}))
+    gallery_def = paginated(action_def("List current and remembered Gallery media, alternating image/video then audio, newest-first within each gallery. Optionally filter by media_type or only live selections. Returned media_id values identify inputs to other tools.", {"media_type": {"type": "string", "enum": ["all", "image", "video", "audio"], "default": "all"}, "selected_only": {"type": "boolean", "default": False}}))
 
     @mcp.tool()
     def wangp_list_gallery(action: str | None = None, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -226,7 +251,12 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
             core._gallery_records(session, media_type=kind, limit=500)
             with core._GALLERY_LOCK:
                 snapshot = copy.deepcopy(list(core._gallery_history(session).values()))
-            records = (core._compact_gallery_record(record) for record in reversed(snapshot) if (kind == "all" or record["media_type"] == kind) and (not selected or record["selected"]))
+            ordered = [record for record in reversed(snapshot) if (kind == "all" or record["media_type"] == kind) and (not selected or record["selected"])]
+            if kind == "all":
+                visual = (record for record in ordered if record['gallery'] == 'visual')
+                audio = (record for record in ordered if record['gallery'] == 'audio')
+                ordered = (record for pair in zip_longest(visual, audio) for record in pair if record is not None)
+            records = (core._compact_gallery_record(record) for record in ordered)
         return collection(["gallery", kind, selected], records, arguments, "media")
 
     def io_definitions():
@@ -340,7 +370,7 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
                 " Inspect video frames directly; use extract_image only to save a frame."
                 " Each media_inputs item may specify bbox=[x_min,y_min,x_max,y_max] (integers 0..1000), overriding the shared bbox; omitted boxes use the shared bbox or the full visual. Cropping precedes resizing."
             )
-            actions["inspect_media"]["example"] = {"action": "inspect_media", "arguments": {"media_inputs": [{"media_id": "visual:VIDEO", "time_seconds": 24.4, "bbox": [0, 0, 500, 1000]}, {"media_id": "visual:IMAGE", "bbox": [500, 0, 1000, 1000]}], "question": "Compare these regions."}}
+            actions["inspect_media"]["example"] = {"action": "inspect_media", "arguments": {"media_id": "visual:IMAGE", "question": "Describe this image."}}
         if "extract_image" in actions:
             actions["extract_image"]["description"] += " frame_no is zero-based (0 is the first frame); use frame_no or time_seconds, not both."
         if action == "inspect_media" and isinstance(arguments, dict) and "media" in arguments:
@@ -356,8 +386,8 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
         if response is not None:
             return response
         if action == "media_settings":
-            return operations["wangp_get_media_settings"](**arguments)
-        return operations["wangp_toolbox"](action, arguments)
+            return public_media_result(operations["wangp_get_media_settings"](**arguments), get_toolbox().session.media_registry)
+        return public_media_result(operations["wangp_toolbox"](action, arguments), get_toolbox().session.media_registry)
 
     wait_properties = {
         "wait": {"type": "boolean", "default": True, **({} if allow_async else {"const": True})},
@@ -371,15 +401,15 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
 
     def finish(initial, args):
         if defer_wait or not args.get("wait", True):
-            return initial
+            return public_media_result(initial)
         job = jobs.get(initial["job_id"])
         try:
             job.job.result(timeout=args.get("timeout_s"))
         except TimeoutError:
             result = job.snapshot(event_limit=args.get("event_limit", 0))
             result.update(status="timeout", waiting_timed_out=True)
-            return result
-        return job.snapshot(event_limit=args.get("event_limit", 0))
+            return public_media_result(result)
+        return public_media_result(job.snapshot(event_limit=args.get("event_limit", 0)))
 
     generate_def = action_def("Generate image, video or audio from prepared settings, a task wrapping settings in params or settings, a task list or a manifest with tasks. Each generation settings object requires model_type (legacy base_model_type is accepted); edit_* post-processing tasks need no model. Model selection and supplied media inputs are checked before the batch is submitted once, preserving task order and settings. Inputs unsupported by the model or inactive in the selected mode return an error. source may contain @file(\"@workspace/prompt.txt\") in a prompt field: WanGP reads and snapshots that authorized UTF-8 file, preserving blank lines. " + wait_help, {"source": {"anyOf": [{"type": "object"}, {"type": "array", "items": {"type": "object"}, "minItems": 1}]}, **wait_properties}, ("source",))
     generate_def["_summary"] = 'Generate from prepared settings with arguments={"source":{...settings}}; source also accepts a task list or tasks manifest. Waits for completion by default; read the contract only for additional options.'
@@ -443,7 +473,7 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
         response = invocation(session_actions, action, arguments)
         if response is not None:
             return response
-        return session_operations[action](**arguments)
+        return public_media_result(session_operations[action](**arguments))
 
     for tool in mcp._tool_manager.list_tools():
         tool.fn_metadata.arg_model.model_config["extra"] = "forbid"

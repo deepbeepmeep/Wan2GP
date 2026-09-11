@@ -17,6 +17,7 @@ class Gallery:
         self._deps = deps
         self._state = state
         self._session = get_or_create_assistant_session(state)
+        self._record_views = {}
 
     def _gen(self) -> dict[str, Any]:
         return self._deps.get_gen_info(self._state)
@@ -123,18 +124,29 @@ class Gallery:
     def _iter_records(self, audio_only: bool | None = None) -> list[tuple[bool, int, dict[str, Any], str]]:
         gen = self._gen()
         groups = []
-        if audio_only is None or not audio_only:
-            file_list, file_settings_list = gen["file_list"], gen["file_settings_list"]
+        # Rendering a large retained workspace must not re-register every media
+        # (registry insertion/search is linear). Invalidate on metadata replacement
+        # or session registry reset, while retaining the original registration path.
+        registered = {id(record) for record in self._session.media_registry}
+        for audio in (False, True):
+            if audio_only is not None and audio != audio_only:
+                continue
+            file_list, file_settings_list = self._resolve_lists(audio)
             for index, path in enumerate(file_list):
-                record = self._register(str(path or ""), file_settings_list[index] if index < len(file_settings_list) else None)
+                settings = file_settings_list[index]
+                cached = self._record_views.get(path)
+                if cached is not None and cached[0] is settings and id(cached[1]) in registered:
+                    record = cached[1]
+                else:
+                    record = self._register(path, settings)
+                    if record is not None:
+                        self._record_views[path] = (settings, record)
+                        registered.add(id(record))
                 if record is not None:
-                    groups.append((False, index, record, str(path or "")))
-        if audio_only is None or audio_only:
-            file_list, file_settings_list = gen["audio_file_list"], gen["audio_file_settings_list"]
-            for index, path in enumerate(file_list):
-                record = self._register(str(path or ""), file_settings_list[index] if index < len(file_settings_list) else None)
-                if record is not None:
-                    groups.append((True, index, record, str(path or "")))
+                    groups.append((audio, index, record, path))
+        if audio_only is None:
+            active = set(gen['file_list']) | set(gen['audio_file_list'])
+            self._record_views = {path: value for path, value in self._record_views.items() if path in active}
         return groups
 
     def list_lines(self, media_scope: str = "all") -> list[str]:
@@ -314,3 +326,5 @@ class Gallery:
         gen["current_gallery_source"] = "video"
         gen["selected_video_time"] = None
         self._session.media_registry.clear()
+        with self._session.turn_lock:
+            self._session.pending_chat_media.clear()

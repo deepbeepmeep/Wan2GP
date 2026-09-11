@@ -10,7 +10,7 @@ from typing import Any, Callable
 import gradio as gr
 
 from shared.deepy import tool_settings as deepy_tool_settings
-from shared.deepy.config import DEEPY_TYPE_KEY, get_deepy_config_value, normalize_deepy_type
+from shared.deepy.config import DEEPY_TYPE_KEY, DEEPY_MULTI_SESSION_CHOICES, DEEPY_MULTI_SESSION_SELECTABLE, get_deepy_config_value, normalize_deepy_type, normalize_deepy_multi_session, normalize_deepy_session_mode
 from shared.deepy import ui_settings as deepy_ui_settings
 from shared.deepy import session_store
 from shared.gradio import assistant_chat
@@ -71,6 +71,7 @@ class DeepyChatUI:
     panel: Any
     settings_launcher_host: Any
     settings_save_btn: Any
+    settings_panel: Any
     html_output: Any
     chat_event: Any
     sync_btn: Any
@@ -96,6 +97,7 @@ class DeepyChatUI:
     reset_btn: Any
     multi_session: Any
     multi_session_options: Any
+    session_workspace_picker: Any
     mono_session_options: Any
     session_dropdown: Any
     session_resume_btn: Any
@@ -108,6 +110,7 @@ class DeepyChatUI:
     session_gallery_media_mode: Any
     session_reset_mode: Any
     session_status: Any
+    compact_actions: Any
     auto_cancel_queue_tasks: Any
     separate_requests_with_empty_line: Any
     use_template_properties: Any
@@ -317,7 +320,7 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
     saved_sessions = session_store.list_sessions(deepy_type)
     session_choices = [(str(item.get("title", "") or "Deepy session"), str(item.get("id", "") or "")) for item in saved_sessions] or [("No saved sessions", "")]
     session_value = session_choices[0][1]
-    multi_session_enabled = bool(session_ui_state["multi_session"])
+    multi_session_enabled = normalize_deepy_multi_session(session_ui_state["multi_session"])
     session_ui_state["reset_mode"] = session_store.RESET_MODE_NEW if multi_session_enabled else session_store.RESET_MODE_RESET
     if not multi_session_enabled:
         session_ui_state["gallery_media_mode"] = session_store.GALLERY_MEDIA_LINK
@@ -348,17 +351,18 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
             session_refresh_btn = gr.Button("Refresh Saved Sessions", visible=False, elem_id=assistant_chat.SESSION_REFRESH_BUTTON_ID)
             pause_btn = gr.Button("Pause / Resume", elem_id=assistant_chat.PAUSE_BRIDGE_ID)
             stop_btn = gr.Button("Stop", elem_id=assistant_chat.STOP_BRIDGE_ID)
-            with gr.Row(elem_id=assistant_chat.CONTROLS_ID):
+            with gr.Row(elem_id=assistant_chat.CONTROLS_ID, elem_classes=["chat__gradio-controls"]):
                 request = gr.Text(value="", label="Request", scale=3, show_label=False, elem_id=assistant_chat.REQUEST_ID)
                 ask_btn = gr.Button("Ask", scale=1, min_width=10, elem_id=assistant_chat.ASK_BUTTON_ID)
                 reset_btn = gr.Button(reset_label, scale=1, min_width=10, elem_id=assistant_chat.RESET_BUTTON_ID)
             stats_output = gr.HTML(assistant_chat.render_stats_html(), elem_id=assistant_chat.STATS_BLOCK_ID)
-            with gr.Column(elem_id=assistant_chat.SETTINGS_PANEL_ID):
+            with gr.Column(elem_id=assistant_chat.SETTINGS_PANEL_ID) as settings_panel:
                 with gr.Column(elem_classes=["chat__template-modal-card", "chat__settings-card"]):
                     gr.HTML(_settings_title_html())
                     with gr.Column(elem_classes=["chat__settings-scroll"]):
                         with gr.Tabs():
                             with gr.Tab("Generation Properties"):
+                                compact_actions = gr.Checkbox(value=bool(get_deepy_config_value("deepy_compact_actions", True)), label="Compacted View of Thoughts and Actions", elem_id="assistant_chat_compact_actions")
                                 separate_requests_with_empty_line = gr.Checkbox(
                                     value=tool_ui_state["separate_requests_with_empty_line"],
                                     label="Separate Different Requests with an Empty Line",
@@ -400,9 +404,10 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
                                                 controls_by_tool[tool_name] = control
                                                 template_controls.append(control)
                             with gr.Tab("Sessions"):
-                                multi_session = gr.Checkbox(value=multi_session_enabled, label="Enable multi-session mode")
+                                multi_session = gr.Dropdown(choices=DEEPY_MULTI_SESSION_CHOICES, value=normalize_deepy_session_mode(session_ui_state["multi_session"]), label="Multisessions")
                                 with gr.Column(visible=multi_session_enabled) as multi_session_options:
                                     gr.Markdown("Persistent sessions are created only when the first request is sent. Continuous saves run at safe action boundaries.")
+                                    session_workspace_picker = gr.HTML('<div id="deepy-session-workspaces"></div>', visible=normalize_deepy_session_mode(session_ui_state["multi_session"]) == DEEPY_MULTI_SESSION_SELECTABLE)
                                     with gr.Row(elem_classes=["chat__session-selector"]):
                                         session_dropdown = gr.Dropdown(choices=session_choices, value=session_value, label="Saved Sessions", interactive=multi_session_enabled, elem_id="deepy_session_dropdown")
                                     with gr.Row(equal_height=True, elem_classes=["chat__session-action-buttons"]):
@@ -438,6 +443,7 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
         panel=panel,
         settings_launcher_host=settings_launcher_host,
         settings_save_btn=settings_save_btn,
+        settings_panel=settings_panel,
         html_output=html_output,
         chat_event=chat_event,
         sync_btn=sync_btn,
@@ -463,6 +469,7 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
         reset_btn=reset_btn,
         multi_session=multi_session,
         multi_session_options=multi_session_options,
+        session_workspace_picker=session_workspace_picker,
         mono_session_options=mono_session_options,
         session_dropdown=session_dropdown,
         session_resume_btn=session_resume_btn,
@@ -475,6 +482,7 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
         session_gallery_media_mode=session_gallery_media_mode,
         session_reset_mode=session_reset_mode,
         session_status=session_status,
+        compact_actions=compact_actions,
         auto_cancel_queue_tasks=auto_cancel_queue_tasks,
         separate_requests_with_empty_line=separate_requests_with_empty_line,
         use_template_properties=use_template_properties,
@@ -519,6 +527,11 @@ def bind_deepy_chat_ui(
     abort_client_id: Any,
     handlers: DeepyChatHandlers,
 ) -> None:
+    from shared.deepy.hybrid import service_for
+    from shared.deepy.hybrid_ui import bind_handlers, bind_settings_sync, control_updates
+    hybrid = service_for(state.value)
+    if hybrid is not None:
+        bind_handlers(hybrid, handlers)
     template_modal_outputs = [
         ui.template_modal_state,
         ui.template_modal,
@@ -595,7 +608,7 @@ def bind_deepy_chat_ui(
 
     def _session_preference_updates(settings):
         effective = bool(settings["effective_multi_session"])
-        requested = bool(settings["multi_session"])
+        requested = normalize_deepy_multi_session(settings["multi_session"])
         enabled = effective and requested
         reset_label = "New" if effective else "Reset"
         mode_status = "Multi-session mode is active." if effective else "Single-session mode is active; Reset clears the current temporary conversation."
@@ -611,6 +624,7 @@ def bind_deepy_chat_ui(
             *(gr.update(interactive=enabled) for _component in range(7)),
             gr.update(value=settings["gallery_media_mode"], interactive=enabled),
             gr.update(value=session_store.RESET_MODE_RESET, interactive=False),
+            gr.update(visible=normalize_deepy_session_mode(settings["multi_session"]) == DEEPY_MULTI_SESSION_SELECTABLE),
         )
 
     def update_session_preferences(state_value, multi_session, reset_mode, gallery_media_mode, persist=False):
@@ -622,6 +636,14 @@ def bind_deepy_chat_ui(
         return catalog_event, *_session_preference_updates(settings)
 
     def restore_saved_session_cards(state_value, storage_id):
+        if hybrid is not None:
+            from shared.deepy.errors import DeepyBusy
+            try:
+                hybrid.control('resume', {'id': storage_id})
+            except DeepyBusy as exc:
+                gr.Info(str(exc))
+                return gr.update(), gr.update(), gr.update(), gr.update(), {}, gr.update()
+            return gr.update(), gr.update(), gr.update(), gr.update(value=''), {}, gr.update()
         from shared.deepy.engine import get_or_create_assistant_session
 
         session = get_or_create_assistant_session(state_value)
@@ -707,7 +729,12 @@ def bind_deepy_chat_ui(
     def delete_saved_session(state_value, storage_id):
         if not str(storage_id or "").strip():
             return gr.update(), gr.update(), gr.update()
-        result = handlers.delete_saved_session(state_value, storage_id)
+        from shared.deepy.errors import DeepyBusy
+        try:
+            result = handlers.delete_saved_session(state_value, storage_id)
+        except DeepyBusy as exc:
+            gr.Info(str(exc))
+            return gr.update(), gr.update(), gr.update()
         catalog_event, dropdown_update = _session_catalog_event(result["active_id"], handlers.get_session_ui_settings()["effective_multi_session"])
         events = [catalog_event] if result["event"] is None else [result["event"], catalog_event]
         return assistant_chat.build_event_batch(events), dropdown_update, gr.update(value=f"Session moved to the recoverable trash folder: `{result['trash_path']}`")
@@ -790,6 +817,10 @@ def bind_deepy_chat_ui(
         default_speech_from_description,
         default_speech_from_sample,
     ):
+        if hybrid is not None:
+            hybrid.submit(ask_request, client_submission_id, steering=False)
+            yield gr.update(), gr.update(), gr.update(value=""), gr.update(), gr.update(), gr.update()
+            return
         handlers.prepare_request_context(state_value, output_value, last_choice_value, audio_files_paths_value, audio_file_selected_value)
         update_session_ui_settings(
             state_value,
@@ -835,6 +866,10 @@ def bind_deepy_chat_ui(
         default_speech_from_description,
         default_speech_from_sample,
     ):
+        if hybrid is not None:
+            hybrid.submit(ask_request, client_submission_id, steering=False)
+            yield gr.update(), gr.update(), gr.update(value=""), gr.update(), gr.update(), gr.update()
+            return
         handlers.prepare_request_context(state_value, output_value, last_choice_value, audio_files_paths_value, audio_file_selected_value)
         update_session_ui_settings(
             state_value,
@@ -880,6 +915,10 @@ def bind_deepy_chat_ui(
         default_speech_from_description,
         default_speech_from_sample,
     ):
+        if hybrid is not None:
+            hybrid.submit(ask_request, client_submission_id, steering=True)
+            yield gr.update(), gr.update(), gr.update(value=""), gr.update(), gr.update(), gr.update()
+            return
         handlers.prepare_request_context(state_value, output_value, last_choice_value, audio_files_paths_value, audio_file_selected_value)
         update_session_ui_settings(
             state_value,
@@ -981,6 +1020,7 @@ def bind_deepy_chat_ui(
 
     def persist_ui_settings(
         state_value,
+        compact_actions,
         auto_cancel_queue_tasks,
         separate_requests_with_empty_line,
         use_template_properties,
@@ -1000,6 +1040,8 @@ def bind_deepy_chat_ui(
         session_reset_mode,
         session_gallery_media_mode,
     ):
+        if hybrid is not None:
+            hybrid.update_display_settings({"compact_actions": compact_actions})
         _apply_ui_settings(
             state_value,
             auto_cancel_queue_tasks,
@@ -1022,15 +1064,20 @@ def bind_deepy_chat_ui(
         return update_session_preferences(state_value, multi_session, session_reset_mode, session_gallery_media_mode, persist=True)
 
     def stop_ai_with_ui(state_value):
-        return handlers.stop_ai(state_value)
+        return control_updates(hybrid, "stop") if hybrid is not None else handlers.stop_ai(state_value)
 
     def pause_ai_with_ui(state_value):
-        return handlers.stop_ai(state_value, queued_action=assistant_chat.PAUSE_TOGGLE_ACTION)
+        return control_updates(hybrid, "pause") if hybrid is not None else handlers.stop_ai(state_value, queued_action=assistant_chat.PAUSE_TOGGLE_ACTION)
 
     def queued_request_action_with_ui(state_value, action_payload):
+        if hybrid is not None:
+            import json
+            return control_updates(hybrid, "queued", json.loads(action_payload))
         return handlers.stop_ai(state_value, queued_action=action_payload)
 
     def reset_ai_with_ui(state_value, reset_mode):
+        if hybrid is not None:
+            return *control_updates(hybrid, "reset"), gr.update()
         from shared.deepy.engine import get_or_create_assistant_session
 
         result = handlers.reset_ai(state_value, reset_mode=reset_mode)
@@ -1216,9 +1263,16 @@ def bind_deepy_chat_ui(
         ui.session_import_file,
         ui.session_gallery_media_mode,
         ui.session_reset_mode,
+        ui.session_workspace_picker,
     ]
     for component in (ui.multi_session, ui.session_reset_mode, ui.session_gallery_media_mode):
-        component.change(fn=update_session_preferences, inputs=session_preference_inputs, outputs=session_preference_outputs, show_progress="hidden", queue=False)
+        (component.input if hybrid is not None else component.change)(fn=update_session_preferences, inputs=session_preference_inputs, outputs=session_preference_outputs, show_progress="hidden", queue=False)
+
+    if hybrid is not None:
+        from types import SimpleNamespace
+        preference_view = SimpleNamespace(fn=lambda requested, mode: _session_preference_updates({**handlers.get_session_ui_settings(), 'multi_session': requested, 'gallery_media_mode': mode}), inputs=[ui.multi_session, ui.session_gallery_media_mode], outputs=session_preference_outputs[1:])
+        with ui.settings_panel:
+            settings_form = bind_settings_sync(hybrid, state, ui, _template_dropdown_updates, _session_catalog_event, preference_view)
 
     def wire_session_resume(button, storage_input):
         button.click(fn=restore_saved_session_cards, inputs=[state, storage_input], outputs=[ui.chat_event, ui.session_dropdown, ui.session_status, ui.request, ui.session_resume_state, output_trigger], show_progress="hidden")
@@ -1232,10 +1286,15 @@ def bind_deepy_chat_ui(
     ui.session_export_btn.click(fn=export_saved_session, inputs=[state, ui.session_dropdown], outputs=[ui.session_export_file, ui.session_status], show_progress="hidden")
     ui.session_import_file.upload(fn=import_saved_session, inputs=[ui.session_import_file], outputs=[ui.chat_event, ui.session_dropdown, ui.session_status, ui.session_import_file], show_progress="hidden")
     ui.session_delete_btn.click(fn=open_delete_session_modal, inputs=[ui.session_dropdown], outputs=template_modal_outputs, show_progress="hidden", queue=False)
-    ui.settings_save_btn.click(
-        fn=persist_ui_settings,
+    def save_settings(*args):
+        from shared.utils.form_sync import Saved
+        return Saved(persist_ui_settings(*args))
+
+    save_settings_event = (lambda **kwargs: settings_form.bind_save(ui.settings_save_btn.click, save_settings, **kwargs)) if hybrid is not None else (lambda **kwargs: ui.settings_save_btn.click(fn=persist_ui_settings, **kwargs))
+    save_settings_event(
         inputs=[
             state,
+            ui.compact_actions,
             ui.auto_cancel_queue_tasks,
             ui.separate_requests_with_empty_line,
             ui.use_template_properties,

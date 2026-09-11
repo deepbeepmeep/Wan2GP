@@ -15,8 +15,8 @@ python wgp.py
 Choose one access mode per launch, using your saved Deepy configuration:
 
 ```bash
-# Full WanGP Gradio interface: open Ask Deepy in the left dock
-python wgp.py
+# Gradio at / and the synchronized mobile Web app at /deepy/
+python wgp.py --listen
 
 # Interactive terminal chat, without Gradio
 python wgp.py --ask-deepy
@@ -25,7 +25,7 @@ python wgp.py --ask-deepy
 python wgp.py --deepy-server --listen --server-port 7860
 ```
 
-The standalone Web server runs chat and generations independently of the browser. Authentication is disabled by default; add `--deepy-auth` to require the printed access key. The standalone app uses native keyboard dictation on smartphones; Whisper recording is offered on desktop and requires a secure browser context. These launch modes do not automatically attach to another running process; use saved sessions to continue work across modes.
+Gradio includes the Web app at `http://<PC-address>:7860/deepy/`; standalone Web serves it at `http://<PC-address>:7860/`. In a Gradio launch, both interfaces share chat, galleries, selections, settings and active work. Chat and generations continue with every browser closed. Authentication is disabled by default; `--deepy-auth` enables the Web access key. On smartphones the app uses native keyboard dictation. Separate launches do not attach to another process; use saved sessions when moving between processes.
 
 Common Deepy launch options:
 
@@ -34,11 +34,11 @@ Common Deepy launch options:
 | `--config FOLDER` | Configuration folder containing `wgp_config.json` |
 | `--deepy-sessions-dir FOLDER` | Persistent-session location; see [session storage](#deepy-session-location) |
 | `--output-dir FOLDER` | Override image, video and audio output folders in CLI or Web mode |
-| `--deepy-voice-language CODE` | Spoken language for microphone transcription in Gradio or Web; automatic by default |
+| `--deepy-voice-language CODE` | Overrides the configured microphone transcription language in Gradio or Web; `fr`, `en`, etc., or `auto` for detection |
 | `--debug-deepy FOLDER` | Deepy debug logs |
 | `--llm-io FOLDER` | LLM input/output transcripts; see [LLM I/O Transcript](#llm-io-transcript) |
 
-See the [Deepy guide](DEEPY.md) for initial configuration and [interactive CLI commands](DEEPY.md#deepy-cli-mode). The [Web server guide](DEEPY_WEB.md#launch-options) documents network, HTTPS and authentication flags with complete launch examples.
+See the [Deepy guide](DEEPY.md) for initial configuration, [interactive CLI commands](DEEPY.md#cli-mode), and Web network, HTTPS, and authentication setup.
 
 ## CLI Queue Processing (Headless Mode)
 
@@ -245,6 +245,7 @@ Notes:
 ```bash
 --settings PATH              # Path to folder containing default settings for all models
 --config PATH                # Config folder for wgp_config.json and queue.zip
+--workspaces-dir FOLDER       # Gallery workspaces for Gradio/Web (default: ./workspaces)
 --verbose LEVEL              # Information level 0-2 (default: 1)
 ```
 

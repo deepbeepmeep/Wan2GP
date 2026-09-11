@@ -6,6 +6,13 @@ gradio-app {
     width: 100%;
 }
 
+.wangp-voice-prompt textarea:disabled {
+    background: var(--background-fill-secondary);
+    color: var(--body-text-color-subdued);
+    box-shadow: none;
+    cursor: not-allowed;
+}
+
 .postprocess div,
 .postprocess span,
 .postprocess label,
@@ -21,25 +28,36 @@ gradio-app {
     --layout-gap: 0px !important;
 }
 .postprocess span {margin-top:4px;margin-bottom:4px}
+.form:has(> #family_list) {
+    background: transparent;
+    border-radius: 14px;
+}
 #model_list, #family_list, #model_base_types_list {
-background-color:black;
-padding:1px}
+    --wangp-model-corners: 0;
+    background-color: #a9bfd0;
+    border-radius: var(--wangp-model-corners) !important;
+    padding: 1px;
+}
+
+.dark :is(#model_list, #family_list, #model_base_types_list) {
+    background-color: #526a80;
+}
 
 #model_list,#model_base_types_list { padding-left:0px}
 
 #model_list input, #family_list input, #model_base_types_list input {
 font-size: calc(25px * var(--wangp-ui-scale))}
 
-#family_list div div {
-border-radius: 4px 0px 0px 4px;
+#family_list {
+    --wangp-model-corners: 14px 0 0 14px;
 }
 
-#model_list div div {
-border-radius: 0px 4px 4px 0px;
+#model_list, #model_base_types_list:has(+ #model_list.hidden) {
+    --wangp-model-corners: 0 14px 14px 0;
 }
 
-#model_base_types_list div div {
-border-radius: 0px 0px 0px 0px;
+:is(#family_list, #model_base_types_list, #model_list) > .container > .wrap {
+    border-radius: var(--wangp-model-corners);
 }
 
 .title-with-lines {
@@ -436,6 +454,7 @@ user-select: text;
 .wangp-bottom-aligned-row {
     align-items: flex-end !important;
 }
+
 .deepy-prime-recommendation {
     margin: 0 0 calc(8px * var(--wangp-ui-scale)) !important;
     padding: calc(8px * var(--wangp-ui-scale)) calc(12px * var(--wangp-ui-scale)) !important;

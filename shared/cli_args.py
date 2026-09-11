@@ -24,6 +24,7 @@ def _arg_provided(argv: Sequence[str], name: str) -> bool:
 
 
 def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default_lora_root: str, argv: Sequence[str] | None = None):
+    from shared.deepy.config import normalize_deepy_voice_language
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(description="Generate a video from a text prompt or image using Gradio")
     add = parser.add_argument
@@ -51,6 +52,7 @@ def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default
     add("--verbose", type=str, default=1, help="Verbose level")
     add("--debug-deepy", type=str, default=None, help="Enable Deepy verbose debug logging and write it to the given folder")
     add("--deepy-sessions-dir", type=str, default="", metavar="FOLDER", help="Store persistent Deepy sessions in FOLDER (default: ./deepy_sessions)")
+    add("--workspaces-dir", type=str, default="", metavar="FOLDER", help="Store gallery workspaces in FOLDER (default: ./workspaces)")
     add("--llm-io", type=str, default="", metavar="FOLDER", help="Write a plain-text transcript of all local and remote LLM input/output to FOLDER")
     add("--steps", type=int, default=0, help="default denoising steps")
     add("--frames", type=int, default=0, help="default number of frames")
@@ -77,12 +79,12 @@ def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default
     add("--vae-config", type=str, default="", help="vae config mode")
     add("--process", type=str, default="", help="Process a saved queue (.zip) or settings file (.json) without launching the web UI")
     add("--deepy-server", action="store_true", help="Serve the Deepy chat and media galleries without the Gradio UI")
-    add("--deepy-https-port", type=int, default=None, help="Additional HTTPS port for the standalone Deepy server (requires a trusted certificate and private key)")
+    add("--deepy-https-port", type=int, default=None, help="Additional HTTPS port for Gradio/Deepy Web (requires a trusted certificate and private key)")
     add("--deepy-certfile", default=None, help="HTTPS certificate PEM file (otherwise DEEPY_SERVER_CERT)")
     add("--deepy-keyfile", default=None, help="HTTPS private key PEM file (otherwise DEEPY_SERVER_KEY)")
-    add("--deepy-no-auth", action="store_true", default=True, help="Disable access-key authentication for the standalone Deepy server (default)")
-    add("--deepy-auth", action="store_false", dest="deepy_no_auth", help="Enable access-key authentication for the standalone Deepy server")
-    add("--deepy-voice-language", default=None, help="Whisper dictation language code, e.g. fr or en (default: automatic detection)")
+    add("--deepy-no-auth", action="store_true", default=True, help="Disable access-key authentication for the Deepy Web app and API (default)")
+    add("--deepy-auth", action="store_false", dest="deepy_no_auth", help="Enable access-key authentication for the Deepy Web app and API")
+    add("--deepy-voice-language", default=None, type=normalize_deepy_voice_language, help="Override the configured Whisper dictation language, e.g. fr, en or auto (default: Deepy configuration)")
     add("--ask-deepy", action="store_true", help="Start an interactive Deepy console session without launching the web UI")
     add("--mcp", action="store_true", help="Start WanGP as an MCP server without launching the web UI")
     add("--mcp-transport", type=str, default="stdio", help="MCP transport: stdio, sse, or streamable-http")

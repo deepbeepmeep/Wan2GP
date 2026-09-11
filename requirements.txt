@@ -41,6 +41,7 @@ jax
 
 # UI & interaction
 gradio==5.29.0
+orjson==3.11.6 # Fix native crashes when serializing deeply nested objects.
 dashscope
 loguru
 s3tokenizer
@@ -112,3 +113,4 @@ keyring==25.7.0
 # transformers==4.46.3  # for llamallava pre-patch
 # rembg==2.0.65         # non-GPU fallback
 huggingface_hub[hf_xet]
+# Optional Xet transport: cancellable downloads require hf_xet>=1.5.2.

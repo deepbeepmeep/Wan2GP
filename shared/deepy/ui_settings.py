@@ -29,7 +29,7 @@ from shared.deepy.config import (
     normalize_deepy_separate_requests_with_empty_line,
     normalize_deepy_session_gallery_media_mode,
     normalize_deepy_session_reset_mode,
-    normalize_deepy_multi_session,
+    normalize_deepy_session_mode,
 )
 from shared.deepy import tool_settings as deepy_tool_settings
 
@@ -57,8 +57,8 @@ ASSISTANT_OVERRIDE_SEED_KEY = "deepy_seed"
 TEMPLATE_TOOL_LAYOUT = (
     ("gen_video", "gen_video_with_speech"),
     ("gen_image", "edit_image"),
-    ("gen_song",),
     ("gen_speech_from_description", "gen_speech_from_sample"),
+    ("gen_song",),
 )
 TEMPLATE_TOOL_UI_KEY = {
     "gen_video": "video_generator_variant",
@@ -205,7 +205,7 @@ def store_assistant_tool_ui_settings(server_config: dict[str, Any] | None, setti
 def get_persisted_assistant_session_ui_settings(server_config: dict[str, Any] | None = None) -> dict[str, Any]:
     source = server_config if isinstance(server_config, dict) else {}
     return {
-        "multi_session": normalize_deepy_multi_session(source.get(DEEPY_MULTI_SESSION_KEY, get_deepy_config_value(DEEPY_MULTI_SESSION_KEY, DEEPY_MULTI_SESSION_DEFAULT))),
+        "multi_session": normalize_deepy_session_mode(source.get(DEEPY_MULTI_SESSION_KEY, get_deepy_config_value(DEEPY_MULTI_SESSION_KEY, DEEPY_MULTI_SESSION_DEFAULT))),
         "reset_mode": normalize_deepy_session_reset_mode(source.get(DEEPY_SESSION_RESET_MODE_KEY, get_deepy_config_value(DEEPY_SESSION_RESET_MODE_KEY, DEEPY_SESSION_RESET_MODE_DEFAULT))),
         "gallery_media_mode": normalize_deepy_session_gallery_media_mode(source.get(DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY, get_deepy_config_value(DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY, DEEPY_SESSION_GALLERY_MEDIA_MODE_DEFAULT))),
     }
@@ -215,7 +215,7 @@ def store_assistant_session_ui_settings(server_config: dict[str, Any] | None, *,
     if not isinstance(server_config, dict):
         return False
     server_config.update({
-        DEEPY_MULTI_SESSION_KEY: normalize_deepy_multi_session(multi_session),
+        DEEPY_MULTI_SESSION_KEY: normalize_deepy_session_mode(multi_session),
         DEEPY_SESSION_RESET_MODE_KEY: normalize_deepy_session_reset_mode(reset_mode),
         DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY: normalize_deepy_session_gallery_media_mode(gallery_media_mode),
     })

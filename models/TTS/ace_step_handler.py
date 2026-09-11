@@ -55,6 +55,7 @@ def _ace_step15_lm_weights_name(lm_folder):
 
 ACE_STEP_DURATION_SLIDER = {
     "label": "Duration (seconds)",
+    "name": "Target Duration",
     "min": 5,
     "max": 240,
     "increment": 1,
@@ -63,6 +64,7 @@ ACE_STEP_DURATION_SLIDER = {
 
 ACE_STEP15_DURATION_SLIDER = {
     "label": "Duration (seconds)",
+    "name": "Target Duration",
     "min": 5,
     "max": 360,
     "increment": 1,

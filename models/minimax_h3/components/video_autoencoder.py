@@ -918,6 +918,9 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
             for k in range(pad_tokens)
         )
         output_frames = num_chunks * (chunk_num_frames - self.frame_pre_padding) + self.frame_overlap - pad_frames
+        if num_chunks == 0:
+            # Short videos still need one decode, without an overlapping temporal chunk.
+            return self._decode_clip(z)[:, :, self.frame_pre_padding : self.frame_pre_padding + output_frames]
         decoded = None
         write_position = 0
         overlap = None

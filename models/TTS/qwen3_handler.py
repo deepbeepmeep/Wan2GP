@@ -111,6 +111,7 @@ QWEN3_TTS_SPEAKER_META = {
 }
 QWEN3_TTS_DURATION_SLIDER = {
     "label": "Max duration (seconds)",
+    "name": "Max Duration",
     "min": 1,
     "max": 600,
     "increment": 1,

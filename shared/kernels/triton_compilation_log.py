@@ -13,6 +13,23 @@ def _compile_duration_ms(times: Any) -> float:
     return total_us / 1000.0
 
 
+def _compile_variant(source: Any, metadata: dict) -> str:
+    parts = []
+    if hasattr(source, "fn"):
+        for index, name in enumerate(source.fn.arg_names):
+            path = (index,)
+            if path in source.constants:
+                parts.append(f"{name}={source.constants[path]}")
+            elif name in source.signature:
+                value = str(source.signature[name])
+                attrs = source.attrs.get(path, ())
+                if attrs:
+                    value += "(" + ",".join(f"{key}={value}" for key, value in attrs) + ")"
+                parts.append(f"{name}:{value}")
+    parts.extend(f"{key}={metadata[key]}" for key in ("num_warps", "num_stages") if key in metadata)
+    return ", ".join(parts)
+
+
 def install_triton_compilation_logger() -> bool:
     try:
         import triton
@@ -35,7 +52,9 @@ def install_triton_compilation_logger() -> bool:
             if event.get("cache_hit", True):
                 return
             duration_ms = _compile_duration_ms(event.get("times"))
-            print(f"[WanGP][Triton] Compiled {kernel_name} in {duration_ms:.0f} ms.", flush=True)
+            variant = _compile_variant(source, event["metadata"])
+            details = f" [{variant}]" if variant else ""
+            print(f"[WanGP][Triton] Compiled {kernel_name}{details} in {duration_ms:.0f} ms.", flush=True)
 
         setattr(listener, _LOGGER_MARKER, True)
         compilation.listener = listener

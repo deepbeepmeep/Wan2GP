@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import gradio as gr
+from shared.utils.config_store import config_lock, write_config
 
 from shared.deepy.config import (
     DEEPY_CONTEXT_TOKENS_DEFAULT,
@@ -36,6 +37,8 @@ from shared.deepy.config import (
     normalize_deepy_prime_mcp_servers,
     normalize_deepy_session_gallery_media_mode,
     normalize_deepy_multi_session,
+    normalize_deepy_session_mode,
+    DEEPY_MULTI_SESSION_DEDICATED,
     normalize_deepy_vram_mode,
     set_deepy_runtime_config,
 )
@@ -127,7 +130,9 @@ class DeepyController:
         self._deps = deps
         self._active_assistant_session: Any | None = None
         self._queue_state_lock = threading.RLock()
-        self._multi_session_enabled = normalize_deepy_multi_session(self._server_config().get(DEEPY_MULTI_SESSION_KEY, DEEPY_MULTI_SESSION_DEFAULT))
+        self._session_mode = normalize_deepy_session_mode(self._server_config().get(DEEPY_MULTI_SESSION_KEY, DEEPY_MULTI_SESSION_DEFAULT))
+        self._multi_session_enabled = normalize_deepy_multi_session(self._session_mode)
+        self.workspace_host = None
         self._multi_session_latched = False
 
     def get_verbose_level(self) -> int:
@@ -154,16 +159,23 @@ class DeepyController:
 
     def _persist_tool_ui_settings(self, normalized: dict[str, Any]) -> None:
         server_config = self._server_config()
-        deepy_ui_settings.store_assistant_tool_ui_settings(server_config, normalized)
-        self._write_server_config(server_config)
+        with config_lock:
+            deepy_ui_settings.store_assistant_tool_ui_settings(server_config, normalized)
+            self._write_server_config(server_config)
         gr.Info("New Deepy Setting Saved")
 
     def _write_server_config(self, server_config: dict[str, Any]) -> None:
         server_config_filename = str(self._deps.get_server_config_filename() or "").strip()
-        set_deepy_runtime_config(server_config, server_config_filename)
-        if len(server_config_filename) > 0:
-            with open(server_config_filename, "w", encoding="utf-8") as writer:
-                writer.write(json.dumps(server_config, indent=4))
+        with config_lock:
+            set_deepy_runtime_config(server_config, server_config_filename)
+            if len(server_config_filename) > 0:
+                write_config(server_config, server_config_filename)
+
+    def set_compact_actions(self, enabled: bool) -> None:
+        with config_lock:
+            server_config = self._server_config()
+            server_config["deepy_compact_actions"] = enabled
+            self._write_server_config(server_config)
 
     def _session_environment(self, session) -> dict[str, Any]:
         servers = normalize_deepy_prime_mcp_servers(self._server_config().get(DEEPY_PRIME_MCP_SERVERS_KEY, {})) if self.get_deepy_type() == DEEPY_TYPE_PRIME else {}
@@ -175,25 +187,30 @@ class DeepyController:
 
     def get_session_ui_settings(self) -> dict[str, Any]:
         settings = deepy_ui_settings.get_persisted_assistant_session_ui_settings(self._server_config())
-        settings["reset_mode"] = session_store.RESET_MODE_NEW if settings["multi_session"] else session_store.RESET_MODE_RESET
-        if not settings["multi_session"]:
+        enabled = normalize_deepy_multi_session(settings["multi_session"])
+        settings["reset_mode"] = session_store.RESET_MODE_NEW if enabled else session_store.RESET_MODE_RESET
+        if not enabled:
             settings["gallery_media_mode"] = session_store.GALLERY_MEDIA_LINK
-        settings.update(effective_multi_session=self._multi_session_enabled, restart_required=settings["multi_session"] != self._multi_session_enabled, unsaved_changes=False)
+        settings.update(effective_multi_session=self._multi_session_enabled, effective_session_mode=self._session_mode, restart_required=settings["multi_session"] != self._session_mode, unsaved_changes=False)
         return settings
 
     def update_session_ui_settings(self, state, *, multi_session, reset_mode, gallery_media_mode, persist=False) -> dict[str, Any]:
+        workspace_locked = self.workspace_host._deepy_workspace_locked() if self.workspace_host is not None else False
         requested_multi_session = normalize_deepy_multi_session(multi_session)
+        requested_mode = normalize_deepy_session_mode(multi_session)
         persisted = deepy_ui_settings.get_persisted_assistant_session_ui_settings(self._server_config())
         if not self._multi_session_latched:
             self._multi_session_enabled = requested_multi_session
+            self._session_mode = requested_mode
         normalized_gallery_mode = normalize_deepy_session_gallery_media_mode(gallery_media_mode) if requested_multi_session else session_store.GALLERY_MEDIA_LINK
         normalized = {
-            "multi_session": requested_multi_session,
+            "multi_session": requested_mode,
             "effective_multi_session": self._multi_session_enabled,
-            "restart_required": requested_multi_session != self._multi_session_enabled,
+            "effective_session_mode": self._session_mode,
+            "restart_required": requested_mode != self._session_mode,
             "reset_mode": session_store.RESET_MODE_NEW if requested_multi_session else session_store.RESET_MODE_RESET,
             "gallery_media_mode": normalized_gallery_mode,
-            "unsaved_changes": requested_multi_session != persisted["multi_session"] or (requested_multi_session and normalized_gallery_mode != persisted["gallery_media_mode"]),
+            "unsaved_changes": requested_mode != persisted["multi_session"] or (requested_multi_session and normalized_gallery_mode != persisted["gallery_media_mode"]),
         }
         session = get_or_create_assistant_session(state)
         session.gallery_media_mode = normalize_deepy_session_gallery_media_mode(gallery_media_mode) if self._multi_session_enabled else session_store.GALLERY_MEDIA_LINK
@@ -201,27 +218,43 @@ class DeepyController:
             session_store.schedule_autosave(session)
         if persist:
             server_config = self._server_config()
-            deepy_ui_settings.store_assistant_session_ui_settings(server_config, multi_session=requested_multi_session, reset_mode=normalized["reset_mode"], gallery_media_mode=normalized["gallery_media_mode"])
-            self._write_server_config(server_config)
+            with config_lock:
+                deepy_ui_settings.store_assistant_session_ui_settings(server_config, multi_session=requested_mode, reset_mode=normalized["reset_mode"], gallery_media_mode=normalized["gallery_media_mode"])
+                self._write_server_config(server_config)
             normalized["unsaved_changes"] = False
+        if self.workspace_host is not None:
+            self.workspace_host.publish_workspaces()
+            if self.workspace_host._deepy_workspace_locked() != workspace_locked:
+                self.workspace_host.publish('gallery', self.workspace_host.gallery_snapshot())
         return normalized
 
     def multi_session_enabled(self) -> bool:
         return self._multi_session_enabled
 
+    def dedicated_workspace_enabled(self) -> bool:
+        return self._session_mode == DEEPY_MULTI_SESSION_DEDICATED
+
     def _complete_session_reset(self, state, session, reset_mode: str) -> None:
         reset_mode = session_store.RESET_MODE_NEW if self._multi_session_enabled else session_store.RESET_MODE_RESET
+        started = time.perf_counter()
         with session.turn_lock:
+            locked = time.perf_counter()
             if session.storage_session_id:
                 session_store.flush_session(session)
+            saved = time.perf_counter()
             if reset_mode == session_store.RESET_MODE_NEW or not self._multi_session_enabled:
                 session_store.start_new_session(session, save_current=False)
+            rotated = time.perf_counter()
             self.release_vram(state, True, discard_runtime_snapshot=True, preserve_reset_base=True)
+            released = time.perf_counter()
             if not self._multi_session_enabled:
                 session_store.ensure_mono_session_workspace(session.chat_session_id)
             elif reset_mode == session_store.RESET_MODE_RESET and session.storage_session_id:
                 session_store.reset_session_files(session)
             session.pending_reset_mode = ""
+        finished = time.perf_counter()
+        if finished - started >= 1:
+            print(f"[Deepy][Session reset] total={finished-started:.3f}s lock={locked-started:.3f}s save={saved-locked:.3f}s rotate={rotated-saved:.3f}s release/reset runtime={released-rotated:.3f}s finalize={finished-released:.3f}s", flush=True)
 
     def _reset_foreign_active_session(self, session) -> bool:
         active_session = self._active_assistant_session
@@ -315,14 +348,16 @@ class DeepyController:
 
     def requirement_error_text(self) -> str:
         server_config = self._server_config()
-        if not deepy_requirement_met(server_config):
-            return deepy_requirement_error(server_config)
         if not normalize_deepy_enabled(server_config.get(DEEPY_ENABLED_KEY, 0)):
             return _DEEPY_DISABLED_TEXT
+        if not deepy_requirement_met(server_config):
+            return deepy_requirement_error(server_config)
         return ""
 
     def get_vram_mode(self) -> str:
         server_config = self._server_config()
+        if not normalize_deepy_enabled(server_config.get(DEEPY_ENABLED_KEY, 0)) or is_remote_engine(resolve_role_engine(server_config, "deepy")):
+            return DEEPY_VRAM_MODE_UNLOAD
         return normalize_deepy_vram_mode(server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_MODE_UNLOAD))
 
     def get_deepy_type(self) -> str:
@@ -486,6 +521,8 @@ class DeepyController:
             begin_assistant_turn(session, user_message_id, ask_request)
             if self._multi_session_enabled:
                 session_store.schedule_autosave(session)
+        if self.workspace_host is not None:
+            self.workspace_host.ensure_session_workspace()
         return user_message_id, user_event
 
     def _queue_assistant_request(self, state, session, output_queue, ask_request: str, queued_epoch: int, *, queued: bool, client_submission_id: str = "", assistant_badge: str = "", replay_action: dict[str, Any] | None = None):
@@ -633,6 +670,8 @@ class DeepyController:
                             raw_send_cmd("chat_output", assistant_chat.build_reset_event(session))
                     elif has_more_work:
                         raw_send_cmd("chat_output", final_sync)
+                    else:
+                        raw_send_cmd("chat_output", assistant_chat.build_status_event(None, visible=False, session=session))
                     self._debug_log(f"Worker finished user_message_id={user_message_id} stale={bool(stale_turn)} has_more_work={bool(has_more_work)} queued_jobs={int(session.queued_job_count or 0)}")
                     if not has_more_work:
                         if self.get_vram_mode() == DEEPY_VRAM_MODE_UNLOAD:
@@ -808,6 +847,11 @@ class DeepyController:
             assistant_chat.set_assistant_content(session, error_turn_id, self.requirement_error_text())
             yield "chat_output", assistant_chat.build_sync_event(session, acknowledged_submission_ids=acknowledged_submission_ids)
             return
+        if self.workspace_host is not None:
+            with self._queue_state_lock:
+                self._prepare_session_request_locked(session, request_blocks[0])
+            # The host lock must be acquired outside all queue-lock scopes.
+            self.workspace_host.ensure_session_workspace()
         if steering:
             with self._queue_state_lock:
                 steering_active = bool(session.worker_active and session.control_queue is not None)
@@ -1030,7 +1074,7 @@ class DeepyController:
             replay_stream = self.resume_restored_action(state) if replay_pending and session.pending_action_replay is not None else None
             return (prefill_tokens, replay_stream) if replay_pending else prefill_tokens
 
-    def resume_saved_session(self, state, storage_id: str, *, defer_context_prefill: bool = False) -> dict[str, Any]:
+    def resume_saved_session(self, state, storage_id: str, *, defer_context_prefill: bool = False, workspace_host=None) -> dict[str, Any]:
         if not self._multi_session_enabled:
             raise gr.Error("Enable multi-session mode and restart WanGP before resuming a saved session.")
         session = get_or_create_assistant_session(state)
@@ -1040,13 +1084,17 @@ class DeepyController:
         if session.storage_session_id == storage_id and session.pending_reset_mode == session_store.RESET_MODE_NEW:
             session.worker_idle_event.wait()
         if session.storage_session_id == storage_id:
+            if workspace_host is not None:
+                workspace_host.ensure_session_workspace()
             with session.turn_lock:
                 context_prefill_pending = bool(session.pending_replay_reason)
                 action_replay_pending = session.pending_action_replay is not None
                 event = assistant_chat.build_replay_batch(session, session.ui_replay_commands) if session.ui_replay_commands else assistant_chat.build_sync_event(session)
                 prefill_tokens = 0 if defer_context_prefill or not context_prefill_pending else self.prefill_restored_session_context(state)
                 return {"event": event, "active_id": storage_id, "injected": 0, "prefill_tokens": prefill_tokens, "warnings": [], "context_prefill_pending": context_prefill_pending and defer_context_prefill, "action_replay_pending": action_replay_pending}
-        session_store.validate_session(storage_id, self.get_deepy_type())
+        manifest = session_store.validate_session(storage_id, self.get_deepy_type())
+        if workspace_host is not None:
+            workspace_host.validate_session_workspace(manifest.get('gallery_workspace_id'))
         self._wait_for_turn_boundary(session)
         with session.turn_lock:
             if session.storage_session_id:
@@ -1061,6 +1109,8 @@ class DeepyController:
             from shared.deepy.filesystem import build_file_access_policy
 
             media_registry.sync_context_media_paths(session, build_file_access_policy(self._server_config()))
+            if workspace_host is not None:
+                workspace_host.restore_session_workspace(session.gallery_workspace_id)
             gallery = session_store.inject_session_media(session, self._deps.get_gen_info(state))
             saved_mcp = {str(item.get("name", "")) for item in list(loaded["environment"].get("mcp_servers", []) or []) if isinstance(item, dict)}
             current_mcp = set(normalize_deepy_prime_mcp_servers(self._server_config().get(DEEPY_PRIME_MCP_SERVERS_KEY, {}))) if self.get_deepy_type() == DEEPY_TYPE_PRIME else set()
@@ -1071,7 +1121,11 @@ class DeepyController:
 
     def rename_saved_session(self, state, storage_id: str, title: str) -> dict[str, Any]:
         session = get_or_create_assistant_session(state)
-        return session_store.rename_stored_session(storage_id, title, active_session=session)
+        with self._queue_state_lock:
+            result = session_store.rename_stored_session(storage_id, title, active_session=session)
+        if self.workspace_host is not None:
+            self.workspace_host.rename_session_workspace(storage_id, result['title'])
+        return result
 
     def duplicate_saved_session(self, state, storage_id: str) -> dict[str, Any]:
         session = get_or_create_assistant_session(state)
@@ -1091,10 +1145,13 @@ class DeepyController:
             raise gr.Error("Stop Deepy before deleting its active session.")
         active = session.storage_session_id == storage_id
         if active:
+            session_store.flush_session(session)
             self.release_vram(state, True, discard_runtime_snapshot=True)
         destination = session_store.delete_session(storage_id, active_session=session)
         if active:
             session_store.start_new_session(session, save_current=False)
+        if self.workspace_host is not None:
+            self.workspace_host.delete_session_workspace(storage_id)
         return {"event": assistant_chat.build_reset_event(session) if active else None, "trash_path": str(destination), "active_id": session.storage_session_id}
 
     def stop_ai(self, state, queued_action=""):

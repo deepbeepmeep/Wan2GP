@@ -52,6 +52,7 @@ INDEX_TTS2_QWEN_EMO_FILES = [
 ]
 INDEX_TTS2_DURATION_SLIDER = {
     "label": "Max duration (seconds)",
+    "name": "Max Duration",
     "min": 1,
     "max": 600,
     "increment": 1,

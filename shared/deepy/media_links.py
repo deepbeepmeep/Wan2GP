@@ -11,7 +11,7 @@ from shared.utils.gallery_media import gallery_media_ids
 
 
 def restore_media_links(transcript, replay_commands, media_records):
-    paths, replacements = {}, {}
+    paths, replacements, thumbnails = {}, {}, {}
 
     def register(path):
         if not path or not os.path.isfile(path):
@@ -41,8 +41,8 @@ def restore_media_links(transcript, replay_commands, media_records):
                 url = register(path)
                 if url:
                     replacements[value["href"]] = url
-                    if value.get("kind") == "image" and value.get("thumb_url"):
-                        replacements[value["thumb_url"]] = url
+                    if value.get("kind") in {"image", "video"} and value.get("thumb_url"):
+                        thumbnails[value['thumb_url']] = url + '/thumbnail'
                     elif value.get("kind") in {"audio", "archive"} and value.get("thumb_url"):
                         from shared.deepy.chat import _AUDIO_THUMBNAIL_PATH, _ARCHIVE_THUMBNAIL_PATH
                         thumbnail = register(_AUDIO_THUMBNAIL_PATH if value["kind"] == "audio" else _ARCHIVE_THUMBNAIL_PATH)
@@ -58,16 +58,23 @@ def restore_media_links(transcript, replay_commands, media_records):
         return paths.get(os.path.normcase(os.path.abspath(path)), match.group(0))
 
     legacy = re.compile(r'/gradio_api/file(?:=|%3[Dd])([^\s\"\'<>)]+)')
+    # Rewrite all links in one pass. Repeated str.replace for every attachment
+    # made restoring a long, media-rich transcript quadratic in its size.
+    replacements = {old: new for old, new in replacements.items() if old and old != new}
+    links = re.compile('|'.join(re.escape(old) for old in sorted(replacements, key=len, reverse=True))) if replacements else None
+    image_src = re.compile(r'(<img\b[^>]*?\bsrc=[\"\'])([^\"\']+)([\"\'])', re.IGNORECASE)
 
     def rewrite(value):
         if isinstance(value, dict):
-            return {replacements.get(key, key): rewrite(item) for key, item in value.items()}
+            return {replacements.get(key, key): thumbnails[item] if key == 'thumb_url' and item in thumbnails else rewrite(item) for key, item in value.items()}
         if isinstance(value, list):
             return [rewrite(item) for item in value]
         if isinstance(value, str):
-            for old, new in replacements.items():
-                if old:
-                    value = value.replace(old, new)
+            # Old image cards used the very same URL for href and src. Only
+            # the preview becomes a thumbnail; opening keeps the original.
+            value = image_src.sub(lambda match: match[1] + thumbnails.get(html.unescape(match[2]), match[2]) + match[3], value)
+            if links is not None:
+                value = links.sub(lambda match: replacements[match[0]], value)
             return legacy.sub(legacy_url, value)
         return value
 

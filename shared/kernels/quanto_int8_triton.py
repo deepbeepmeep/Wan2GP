@@ -129,6 +129,15 @@ def _is_stream_capturing() -> bool:
         return False
 
 
+def _autotune_is_blocked() -> bool:
+    return torch.compiler.is_compiling() or _is_stream_capturing()
+
+
+def _use_cg_autotune(device_index: int) -> bool:
+    props = torch.cuda.get_device_properties(device_index)
+    return props.major == 12 and "RTX 50" in props.name
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, str(default)))
@@ -355,10 +364,11 @@ def _device_index(device: Optional[torch.device]) -> int:
 def _device_fingerprint(device_index: int) -> str:
     props = torch.cuda.get_device_properties(device_index)
     triton_ver = getattr(triton, "__version__", "0.0")
-    return (
+    fingerprint = (
         f"{props.name}|cc={props.major}.{props.minor}|sm={props.multi_processor_count}|"
         f"torch={torch.__version__}|triton={triton_ver}|wan2gp_int8_cache_v={_AUTOTUNE_CACHE_VERSION}"
     )
+    return fingerprint + ("|bench=cg-v1" if _use_cg_autotune(device_index) else "")
 
 
 def _autotune_slot_cache_key(device_index: int, kernel_kind: str, slot_id: str) -> str:
@@ -661,6 +671,8 @@ def _ensure_compile_compatible_config(
     n: int,
     rep_shapes: tuple[tuple[int, int, int], ...],
 ) -> tuple[tuple[int, int, int, int, int], Optional[Exception]]:
+    if _autotune_is_blocked():
+        return preferred, None
     device = torch.device("cuda", device_index)
     _ = rep_shapes
     probe_m, probe_k, probe_n, _ = _runtime_probe_shape(kind, m, k, n, baseline)
@@ -757,23 +769,45 @@ def _validate_config(
 
 
 def _benchmark_config_ms(kind: str, cfg: tuple[int, int, int, int, int], tensors: tuple[torch.Tensor, ...], device: torch.device, m: int, k: int, n: int) -> Optional[float]:
+    if _autotune_is_blocked():
+        return None
     warmup = max(1, _env_int(_ENV_AUTOTUNE_WARMUP, 2))
     iters = max(1, _env_int(_ENV_AUTOTUNE_ITERS, 5))
+    graph = None
     try:
-        for _ in range(warmup):
-            _launch_candidate(kind, cfg, tensors, m, n, k)
-        torch.cuda.synchronize(device)
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        for _ in range(iters):
-            _launch_candidate(kind, cfg, tensors, m, n, k)
-        end.record()
-        end.synchronize()
-        return float(start.elapsed_time(end)) / float(iters)
+        with torch.cuda.device(device):
+            for _ in range(warmup):
+                _launch_candidate(kind, cfg, tensors, m, n, k)
+            torch.cuda.synchronize(device)
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            if _use_cg_autotune(_device_index(device)):
+                graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(graph):
+                    for _ in range(iters):
+                        _launch_candidate(kind, cfg, tensors, m, n, k)
+                graph.replay()
+                torch.cuda.synchronize(device)
+                timings = []
+                for _ in range(3):
+                    start.record()
+                    graph.replay()
+                    end.record()
+                    end.synchronize()
+                    timings.append(float(start.elapsed_time(end)) / iters)
+                return sorted(timings)[1]
+            start.record()
+            for _ in range(iters):
+                _launch_candidate(kind, cfg, tensors, m, n, k)
+            end.record()
+            end.synchronize()
+            return float(start.elapsed_time(end)) / float(iters)
     except Exception as exc:
         _autotune_debug(f"benchmark failed for {kind} shape=({m},{k},{n}) cfg={cfg}: {exc}")
         return None
+    finally:
+        if graph is not None:
+            graph.reset()
 
 
 def _can_tune_slot(slot_key: tuple[int, str, str]) -> bool:
@@ -821,6 +855,8 @@ def _autotune_config(
     slot_id: str,
     rep_shapes: tuple[tuple[int, int, int], ...],
 ) -> tuple[int, int, int, int, int]:
+    if _autotune_is_blocked():
+        return baseline
     device = torch.device("cuda", device_index)
     cached = _get_cached_config(device_index, kind, slot_id, m, k, n)
     if cached is not None:
@@ -837,6 +873,8 @@ def _autotune_config(
     rep_baseline = _select_static_triton_int8_config(rep_m, rep_k, rep_n)
     candidate_seed = rep_baseline if _config_compatible_with_baseline(kind, baseline, rep_baseline) else baseline
     candidates = _candidate_configs(candidate_seed, rep_m, rep_k, rep_n, kind=kind)
+    if _use_cg_autotune(device_index) and rep_m <= 4 and baseline[2] == 64:
+        candidates.append((4, 64, 64, 4, 4))
     if baseline not in candidates:
         candidates = [baseline, *candidates]
 
@@ -891,6 +929,8 @@ def _select_triton_int8_config(
     kernel_kind: str = "fused",
 ) -> tuple[int, int, int, int, int]:
     baseline = _select_static_triton_int8_config(m, k, n)
+    if torch.compiler.is_compiling():
+        return _LOW_SHARED_MEMORY_CONFIG if baseline == _HIGH_SHARED_MEMORY_CONFIG else baseline
     if (m, k, n) in _TRITON_TINY_M_RUNTIME_CONFIGS:
         return baseline
     if not is_available() or not torch.cuda.is_available():
@@ -913,7 +953,7 @@ def _select_triton_int8_config(
         _AUTOTUNE_SESSION_CACHE.pop(session_key, None)
     cached_cfg = _get_cached_config(device_index, kernel_kind, slot_id, m, k, n)
     if cached_cfg is not None and _config_compatible_with_baseline(kernel_kind, baseline, cached_cfg):
-        if not _is_stream_capturing():
+        if not _autotune_is_blocked():
             compile_safe, _ = _ensure_compile_compatible_config(
                 kernel_kind,
                 device_index,
@@ -931,7 +971,7 @@ def _select_triton_int8_config(
             return compile_safe
         _AUTOTUNE_SESSION_CACHE[session_key] = cached_cfg
         return cached_cfg
-    if _is_stream_capturing():
+    if _autotune_is_blocked():
         # During graph capture we must avoid autotune/probing allocations. Do not populate
         # session cache with the baseline fallback, so a later non-capture call can autotune.
         return baseline

@@ -106,6 +106,7 @@ class family_handler:
             },
             "duration_slider": {
                 "label": "Maximum Song Duration (seconds)",
+                "name": "Maximum Song Duration",
                 "min": 1,
                 "max": 300,
                 "increment": 1,

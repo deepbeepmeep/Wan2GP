@@ -26,7 +26,7 @@ class BackgroundRemovalProcessor:
     def download(self, method, process_files: Callable[..., Any], send_cmd=None, status_text=None, **_kwargs) -> bool:
         from shared.utils.download import download_audio_background_replacement
 
-        return download_audio_background_replacement(send_cmd, status_text or "Downloading audio background replacement model files...")
+        return download_audio_background_replacement(send_cmd, status_text or "Downloading audio background replacement model files...", process_files=process_files)
 
     def query_download_defs(self, enabled_only: bool = True) -> list[dict[str, Any]]:
         from shared.utils.download import query_audio_background_replacement_download_def

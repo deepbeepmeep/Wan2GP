@@ -657,7 +657,7 @@ class MiniMaxH3Pipeline:
                  sample_solver="euler", attention_sparsity=1.0,
                  guide_phases=1, switch_threshold=H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, loras_slists=None, loras_selected=None, set_progress_status=None,
                  starting_sigma=None, preserve_input_mask_values=False, refinement_mode=False,
-                 custom_settings=None, duration_seconds=None, verbose_level=0, dialogue_segment=False, **kwargs):
+                 custom_settings=None, duration_seconds=None, verbose_level=0, dialogue_segment=False, vae_upsampler=None, temporal_rope_clock=None, **kwargs):
         if self.audio_only and H3_DIALOGUE_GENERATION and not dialogue_segment and is_dialogue_prompt(input_prompt):
             self._early_stop = False
             return generate_dialogue(
@@ -919,6 +919,9 @@ class MiniMaxH3Pipeline:
                    "fps": fps, "target_audio_condition_latents": target_audio_condition_latents,
                    "target_video_condition_frames": target_video_condition_frames,
                    "attention_sparsity": float(attention_sparsity)}
+
+        if temporal_rope_clock is not None:
+            payload["temporal_rope_clock"] = temporal_rope_clock
 
         if starting_sigma is None:
             base_sigmas = torch.linspace(1.0, 0.0, int(sampling_steps) + 1, dtype=torch.float32)
@@ -1447,11 +1450,27 @@ class MiniMaxH3Pipeline:
                 decoded_video = _video_to_uint8_cpu(decoded_video) if tiled_phase_2 else decoded_video.cpu()
             else:
                 decoded_video = frozen_target_video[:, :target_frames].cpu()
+        temporal_latents = video.detach().cpu() if vae_upsampler is not None else None
         video = None
         decoded_audio = self.audio_vae.decode(audio)[0]
         audio = None
         target_samples = round(target_frames / fps * AUDIO_SAMPLE_RATE)
         decoded_audio = _fit_audio_samples(decoded_audio, target_samples)
+
+        if vae_upsampler is not None:
+            def temporal_progress(status, current=None, total=None):
+                if set_progress_status is not None and current is None:
+                    set_progress_status(status)
+                if callback is not None and current is not None:
+                    callback(current - 1, None, current == 0, override_num_inference_steps=total, denoising_extra=status)
+
+            decoded_video = vae_upsampler.refine(decoded_video, pipeline=self, latents=temporal_latents,
+                                                prompt=input_prompt, fps=fps, seed=int(seed),
+                                                audio_waveform=decoded_audio.transpose(0, 1).float().cpu().numpy(),
+                                                audio_sample_rate=AUDIO_SAMPLE_RATE, reference_images=input_ref_images,
+                                                vae_tile_size=VAE_tile_size, progress_callback=temporal_progress)
+            temporal_latents = None
+            self._check_abort()
 
         output_prefix = history_frames
         output_prefix_count = history_count

@@ -3,10 +3,13 @@ from __future__ import annotations
 import os
 import re
 import time
+from copy import deepcopy
+from functools import lru_cache
 from typing import Any
 
 from shared.utils.audio_video import read_image_metadata
 from shared.utils.gallery_media import gallery_media_ids
+from shared.utils.media_settings import peek_settings
 
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"}
@@ -183,15 +186,15 @@ def record_media_access(
 def sync_tool_call_gallery_media(session, gen: dict[str, Any]) -> list[dict[str, Any]]:
     gallery_records = {}
     gallery_defs = (
-        ("visual", list(gen.get("file_list", []) or []), list(gen.get("file_settings_list", []) or [])),
-        ("audio", list(gen.get("audio_file_list", []) or []), list(gen.get("audio_file_settings_list", []) or [])),
+        ("visual", gen.get("file_list", []), gen.get("file_settings_list", [])),
+        ("audio", gen.get("audio_file_list", []), gen.get("audio_file_settings_list", [])),
     )
     for gallery, paths, settings_list in gallery_defs:
         for index, path in enumerate(paths):
             normalized_path = str(path or "").strip()
             if not normalized_path:
                 continue
-            settings = settings_list[index] if index < len(settings_list) and isinstance(settings_list[index], dict) else None
+            settings = peek_settings(settings_list, index) if index < len(settings_list) else None
             for media_id in gallery_media_ids(normalized_path, gallery, settings):
                 gallery_records[media_id] = (normalized_path, settings)
 
@@ -255,9 +258,9 @@ def sync_context_media_paths(session, file_access_policy) -> list[dict[str, Any]
     return synced
 
 
-def collapse_gallery_media(file_list: list[Any], file_settings_list: list[Any]) -> tuple[list[Any], list[Any]]:
+def collapse_gallery_media(file_list: list[Any], file_settings_list: list[Any], max_items: int = 0) -> tuple[list[Any], list[Any]]:
     gallery_files = list(file_list or [])
-    gallery_settings = list(file_settings_list or [])
+    gallery_settings = file_settings_list or []
     collapsed_pairs: list[tuple[Any, Any]] = []
     seen_client_keys: set[tuple[str, str]] = set()
     for index in range(len(gallery_files) - 1, -1, -1):
@@ -268,7 +271,11 @@ def collapse_gallery_media(file_list: list[Any], file_settings_list: list[Any]) 
             if client_key in seen_client_keys:
                 continue
             seen_client_keys.add(client_key)
+        if path is None and settings is None:
+            continue
         collapsed_pairs.append((path, settings))
+        if max_items > 0 and len(collapsed_pairs) >= max_items:
+            break
     collapsed_pairs.reverse()
     collapsed_files = []
     collapsed_settings = []
@@ -285,7 +292,7 @@ def find_last_gallery_media_by_client(file_list: list[Any], file_settings_list: 
     if len(lookup_client_id) == 0:
         return None, None
     gallery_files = list(file_list or [])
-    gallery_settings = list(file_settings_list or [])
+    gallery_settings = file_settings_list or []
     expected_media_type = normalize_media_type(media_type)
     for index in range(len(gallery_files) - 1, -1, -1):
         settings = gallery_settings[index] if index < len(gallery_settings) else None
@@ -304,10 +311,8 @@ def find_last_gallery_media_by_client(file_list: list[Any], file_settings_list: 
 
 
 def sync_recent_generated_media(session, file_list: list[Any], file_settings_list: list[Any], max_items: int = _SEARCH_LIMIT) -> list[dict[str, Any]]:
-    collapsed_file_list, collapsed_settings_list = collapse_gallery_media(file_list, file_settings_list)
+    collapsed_file_list, collapsed_settings_list = collapse_gallery_media(file_list, file_settings_list, max_items=max_items)
     recent_items = list(zip(collapsed_file_list, collapsed_settings_list))
-    if max_items > 0:
-        recent_items = recent_items[-max_items:]
     synced = []
     for path, settings in recent_items:
         record = register_media(
@@ -356,14 +361,25 @@ def resolve_media_reference(session, reference: str, media_type: str = "any", li
     }
 
 
+@lru_cache(maxsize=512)
+def _file_settings(path: str, mtime_ns: int, size: int, ctime_ns: int):
+    # Cache absent metadata too; a new conversation must not reprobe the same files.
+    from shared.utils.video_metadata import read_metadata_from_video
+
+    reader = {"image": read_image_metadata, "video": read_metadata_from_video}.get(_detect_media_type(path))
+    return reader(path) if reader is not None else None
+
+
 def _resolve_settings(path: str, settings: dict[str, Any] | None) -> dict[str, Any]:
-    if isinstance(settings, dict) and len(settings) > 0:
+    # Session/gallery identifiers alone are not the file's generation metadata.
+    if isinstance(settings, dict) and settings.keys() - {"gallery_media_ids", "deepy_session_id", "deepy_media_id", "deepy_media_fingerprint", "client_id"}:
         return settings
-    if _detect_media_type(path) == "image" and os.path.isfile(path):
-        metadata = read_image_metadata(path)
+    if os.path.isfile(path):
+        stat = os.stat(path)
+        metadata = _file_settings(os.path.normcase(os.path.abspath(path)), stat.st_mtime_ns, stat.st_size, stat.st_ctime_ns)
         if isinstance(metadata, dict):
-            return metadata
-    return {}
+            return {**deepcopy(metadata), **(settings or {})}
+    return settings or {}
 
 
 def _resolve_alias(records: list[dict[str, Any]], reference: str) -> dict[str, Any] | None:
@@ -469,7 +485,7 @@ def summarize_prompt(prompt: str, media_type: str) -> str:
         if line:
             meaningful_lines.append(line)
     summary = " ".join(meaningful_lines)[:PROMPT_SUMMARY_MAX_CHARS].rstrip()
-    return summary or f"Generated {media_type}"
+    return summary or media_type.capitalize()
 
 
 def _resolve_source(settings: dict[str, Any] | None) -> str:

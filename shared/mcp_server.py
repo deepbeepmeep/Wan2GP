@@ -5,6 +5,7 @@ import contextlib
 import copy
 import dataclasses
 import io
+import logging
 import mimetypes
 import sys
 import threading
@@ -104,7 +105,11 @@ def _register_documentation_resources(mcp, file_access_policy=None, long_text_ac
         read_document.__name__ = f"read_{path.stem.casefold()}_documentation"
         description = "WanGP generation settings: model selection, prompts, output dimensions, sampling and guidance, media inputs, acceleration and caching, post-processing, sliding windows, LoRAs, flags, and model API metadata." if path.stem.casefold() == "settings" else f"WanGP {path.stem} documentation."
         if api_version == 2:
-            description = next(line.removeprefix("> Applies to: ") for line in read_document().splitlines() if line.startswith("> Applies to: "))
+            scope = next((line.removeprefix("> Applies to: ").strip() for line in read_document().splitlines() if line.startswith("> Applies to: ")), "")
+            if scope:
+                description = scope
+            else:
+                logging.getLogger(__name__).warning("Missing or empty '> Applies to:' scope in %s; using the default documentation description.", path)
         mcp.resource(resource_uri, name=path.stem.casefold(), title=path.stem.replace("_", " ").title(), description=description, mime_type="text/markdown")(read_document)
 
     for path in sorted(_AGENT_SKILLS_DIR.glob("*/SKILL.md")):
@@ -1074,8 +1079,11 @@ def _run_io_action(session, file_access_policy, action: str, arguments: dict[str
     if action == "list":
         return file_access_policy.virtualize_result(filesystem.list_entries(file_access_policy, path=arguments.get("path", ""), pattern=arguments.get("pattern", "*"), recursive=arguments.get("recursive", False), limit=arguments.get("limit", 200), offset=arguments.get("offset", 0), media_type=arguments.get("media_type", "all")))
     if action == "info":
-        path, _gallery = _resolve_io_source(session, file_access_policy, arguments["source"])
-        return file_access_policy.virtualize_result(filesystem.file_info(path))
+        path, gallery = _resolve_io_source(session, file_access_policy, arguments["source"])
+        result = filesystem.file_info(path)
+        if gallery:
+            result["media_id"] = _gallery_item(session, arguments["source"])["media_id"]
+        return file_access_policy.virtualize_result(result)
     if action == "read_text":
         return file_access_policy.virtualize_result(filesystem.read_text(file_access_policy, arguments["path"], start_line=arguments.get("start_line", 1), end_line=arguments.get("end_line"), encoding=arguments.get("encoding", "utf-8-sig")))
     if action == "search_text":

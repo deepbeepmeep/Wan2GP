@@ -2,6 +2,8 @@
 
 This system allows you to extend and customize the Wan2GP user interface and functionality without modifying the core application code. This document will guide you through the process of creating and installing your own plugins.
 
+For configuration forms shared across browser windows, use the [shared form synchronization API](FORM_SYNC.md), including draft preservation and conflict handling. Generation drafts, such as the Sample plugin's Prompt Copy, stay local to the invoking browser.
+
 ## Table of Contents
 1.  [Plugin Structure](#plugin-structure)
     *   [Reference Plugins and Specialized APIs](#reference-plugins-and-specialized-apis)

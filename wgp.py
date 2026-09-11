@@ -3056,6 +3056,38 @@ def get_transformer_dtype(model_type, transformer_dtype_policy):
 def get_settings_file_name(model_type):
     return  os.path.join(args.settings, model_type + "_settings.json")
 
+def get_saved_output_filename(model_type):
+    """Return the Output Filename template saved in the model settings file, or "" if absent."""
+    try:
+        with open(get_settings_file_name(model_type), "r", encoding="utf-8") as f:
+            return json.load(f).get("output_filename", "") or ""
+    except (OSError, json.JSONDecodeError):
+        return ""
+
+def resolve_stored_output_filename(model_type, settings):
+    """Fallback filename template for generations whose Misc Output Filename box is empty.
+
+    Resolution order: the model settings file value, then the global
+    Configuration > Outputs default. A stored template that cannot be formatted
+    is skipped with a console warning (and the next source tried) instead of
+    failing the generation, unlike a template typed in the Misc box.
+
+    Returns the formatted filename (without extension) or None, in which case
+    the caller falls back to the default auto naming.
+    """
+    from shared.utils.filename_formatter import FilenameFormatter
+    for label, template in (
+        ("model settings file", get_saved_output_filename(model_type)),
+        ("Configuration > Outputs default", server_config.get("output_filename_default", "")),
+    ):
+        if not len(template):
+            continue
+        try:
+            return FilenameFormatter.format_filename(template, settings)
+        except ValueError as exc:
+            print(f"[Wan2GP] Ignoring {label} output filename template {template!r}: {exc}; using default naming")
+    return None
+
 def fix_postprocess_audio_settings(ui_defaults, settings_version):
     return audio_processor_api.fix_settings(ui_defaults, settings_version, attachment_has_path_values=_attachment_has_path_values)
 
@@ -8293,7 +8325,14 @@ def generate_media(
                     file_name = f"{sanitize_file_name(truncate_for_filesystem(os.path.splitext(os.path.basename(file_name))[0])).strip()}.{extension}"
                     file_name = os.path.basename(get_available_filename(output_dir, file_name))
                 else:
-                    file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(truncate_for_filesystem(save_prompt)).strip()}.{extension}"
+                    # No Misc box template: model settings file, then the global
+                    # Configuration > Outputs default, then the default auto naming
+                    file_name = resolve_stored_output_filename(model_type, inputs)
+                    if file_name is None:
+                        file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(truncate_for_filesystem(save_prompt)).strip()}.{extension}"
+                    else:
+                        file_name = f"{sanitize_file_name(truncate_for_filesystem(os.path.splitext(os.path.basename(file_name))[0])).strip()}.{extension}"
+                        file_name = os.path.basename(get_available_filename(output_dir, file_name))
                 video_path = os.path.join(output_dir, file_name)
 
                 if BGRA_frames is not None:

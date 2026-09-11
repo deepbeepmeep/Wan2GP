@@ -128,17 +128,10 @@ def _nag_guidance(x_pos, x_neg, NAG):
     return x_guidance.to(dtype)
 
 
-def _nag_guided_rows(layout, audio_start, audio_t, fixed_video_rows, device):
-    # The rows being generated: target audio and video, less the latents that carry supplied input.
+def _nag_guided_rows(layout, device):
+    # Every row after the caption, supplied input included (start image, keyframes, continuation), as Wan and LTX-2 guide.
     mask = torch.zeros(layout.sequence_length, dtype=torch.bool, device=device)
-    mask[audio_start:] = True
-    condition_latents = layout.num_target_condition_audio_latents
-    mask[audio_start:audio_start + condition_latents] = False
-    mask[audio_start + audio_t:audio_start + audio_t + condition_latents] = False
-    if layout.num_target_condition_video_rows:
-        mask[-layout.num_target_condition_video_rows:] = False
-    video_start = audio_start + audio_t * 2
-    mask[video_start:video_start + fixed_video_rows] = False
+    mask[layout.text_indices.numel():] = True
     return mask, mask.nonzero().flatten()
 
 
@@ -663,7 +656,7 @@ class MiniMaxH3Model(nn.Module):
         payload["layout_signature"], payload["layout"] = signature, layout
         return layout
 
-    def _prepare_nag(self, NAG, layout, timestep_indices, audio_start, audio_t, fixed_video_rows, device, dtype):
+    def _prepare_nag(self, NAG, layout, timestep_indices, device, dtype):
         if NAG["context"].shape[-1] != self.hidden_size:
             NAG["context"] = self.preprocess_text_embeds(NAG["context"])
         caption_len = NAG["context"].shape[1]
@@ -673,7 +666,7 @@ class MiniMaxH3Model(nn.Module):
             positions[:, 0] = torch.arange(caption_len, dtype=torch.float32, device="cpu")
             frequencies = positions.unsqueeze(-1) * self.rope.inv_freq.detach().cpu().view(1, 1, -1)
             NAG["rope"] = _rope_table(torch.cat(frequencies.unbind(dim=1), dim=-1), dtype).to(device)
-        mask, rows = _nag_guided_rows(layout, audio_start, audio_t, fixed_video_rows, device)
+        mask, rows = _nag_guided_rows(layout, device)
         return dict(NAG, hidden=NAG["context"][0].to(device=device, dtype=dtype, copy=True), mask=mask, rows=rows,
                     row=int(timestep_indices[0]) * 3 + MINIMAX_H3_TEXT_TAG, text_len=layout.text_indices.numel())
 
@@ -815,8 +808,7 @@ class MiniMaxH3Model(nn.Module):
         audio_start = video_start - target_audio_rows
         NAG = payload.get("NAG")
         if NAG is not None:
-            fixed_video_rows = target_video_fixed_rows if target_video_order is not None and target_video_mask_active else 0
-            NAG = self._prepare_nag(NAG, layout, timestep_indices, audio_start, audio_t, fixed_video_rows, device, dtype)
+            NAG = self._prepare_nag(NAG, layout, timestep_indices, device, dtype)
         self.sol_attention.begin_forward(layout, device, dtype, payload["attention_sparsity"], target_video_order is not None)
         if vdn := getattr(self.blocks[0].attn, "vdn", None):
             for block in self.blocks:

@@ -46,7 +46,7 @@ class DLSSGTemporalUpsampler(api.SimpleScaleSuffixMixin):
             "methods": [(label, self.METHOD)],
             "multipliers": {self.METHOD: multipliers},
             "default_temporal_upsampling": "dlssg*2",
-            "description": "NVIDIA DLSS Frame Generation using video motion estimation. It provides x2-x4 interpolation and capability-gated x5/x6 on RTX 50 series. Requires Windows 11, HAGS, and GeForce RTX 40 or newer.",
+            "description": "NVIDIA DLSS Frame Generation using video motion estimation. It provides x2-x4 interpolation and capability-gated x5/x6 on RTX 50 series. Requires a GeForce RTX 40 or newer; on Windows, Windows 11 and HAGS; on Linux, a Linux-built DLSSG worker (see docs/DLSS5.md).",
         }
 
     def validate_upsampling(self, temporal_upsampling, *, source_is_image=False):

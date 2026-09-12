@@ -45,6 +45,7 @@ loras_i2v/
 tmp/
 deepy_sessions/
 dlss5/
+scripts/dlssg_worker_linux/.cache/
 /settings/
 
 wgp_config.json

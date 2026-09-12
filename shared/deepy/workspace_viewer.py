@@ -170,6 +170,7 @@ class WorkspaceViewer:
                     saved[prefix + 'last_selected'] = True
                     saved['current_gallery_source'] = source
                     service.workspaces.save(target, saved)
+                service.publish_workspaces()
                 return {'count': len(entries)}
             if action not in ('reorder', 'eject', 'delete'):
                 raise ValueError('Unknown workspace media action.')

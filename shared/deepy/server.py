@@ -22,6 +22,7 @@ from shared.deepy.errors import error_payload
 from shared.deepy.gallery import _AUDIO_EXTENSIONS, _IMAGE_EXTENSIONS, _VIDEO_EXTENSIONS
 from shared.deepy.voice import mount_voice_routes, save_upload
 from shared.utils.downloads import _install_routes_on_app
+from shared.utils.media_imports import persist_gallery_import
 
 WEB = Path(__file__).with_name("web")
 
@@ -245,18 +246,21 @@ def create_app(service, *, token: str | None, voice_language=None, https_port=No
 
     @app.post("/deepy_api/media")
     async def upload(file: UploadFile = File(...), from_chat: bool = Form(False)):
-        from gradio import processing_utils
-        from gradio_client.utils import strip_invalid_filename_characters
-
         session_epoch = service._session.chat_epoch
-
-        with TemporaryDirectory(prefix="wangp-upload-") as directory:
-            path = await save_upload(file, Path(directory), limit=1024 * 1024 * 1024, extensions=_IMAGE_EXTENSIONS | _VIDEO_EXTENSIONS | _AUDIO_EXTENSIONS)
-            name = strip_invalid_filename_characters(Path(file.filename).name)
-            named_path = path.with_name(name)
-            path.rename(named_path)
-            cached_path = await run_in_threadpool(processing_utils.save_file_to_cache, named_path, processing_utils.get_upload_folder())
-            media_id = await run_in_threadpool(service.import_media, cached_path, session_epoch=session_epoch, from_chat=from_chat)
+        output = Path(service._deps.get_server_config()['save_path'])
+        output.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(prefix='.import-', dir=output) as directory:
+            source = await save_upload(file, Path(directory), limit=1024 * 1024 * 1024, extensions=_IMAGE_EXTENSIONS | _VIDEO_EXTENSIONS | _AUDIO_EXTENSIONS, preserve_filename=True)
+            def add():
+                with service._mutation_lock:
+                    path, reused = persist_gallery_import(source, output, move=True)
+                    try:
+                        return service.import_media(path, session_epoch=session_epoch, from_chat=from_chat)
+                    except Exception:
+                        if not reused:
+                            Path(path).unlink(missing_ok=True)
+                        raise
+            media_id = await run_in_threadpool(add)
         with service._mutation_lock:
             return {"id": media_id, "gallery": service.gallery_snapshot()}
 

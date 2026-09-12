@@ -35,7 +35,7 @@ _VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
 _AGENT_GUIDE_PATH = Path(__file__).resolve().parents[1] / "wangp-agent" / "SKILL.md"
 _AGENT_SKILLS_DIR = _AGENT_GUIDE_PATH.parent / "skills"
 _DOCS_DIR = Path(__file__).resolve().parents[1] / "docs"
-_DEEPY_VISUAL_TOOL_IDS = {"gen_image", "edit_image", "gen_video", "gen_video_with_speech"}
+_DEEPY_VISUAL_TOOL_IDS = {"gen_image", "edit_image", "gen_video", "gen_video_with_speech", "gen_video_with_refs"}
 _DEEPY_VIDEO_TOOL_IDS = {"gen_video", "gen_video_with_speech"}
 _DEEPY_AUDIO_TOOL_IDS = {"gen_song", "gen_speech_from_description", "gen_speech_from_sample"}
 _DEEPY_MODEL_DEF_STRING_LIMIT = 256
@@ -471,6 +471,7 @@ def _compact_model_metadata(records: list[dict[str, Any]]) -> list[dict[str, Any
 def _compact_deepy_model_metadata(record: dict[str, Any]) -> dict[str, Any]:
     compact = {key: copy.deepcopy(record[key]) for key in ("model_type", "name", "family", "family_label", "base_model_type", "finetune", "main_output", "outputs", "inputs") if record.get(key) not in (None, "", [], {})}
     compact["capabilities"] = [key for key, enabled in record.get("capabilities", {}).items() if enabled]
+    compact.update({key: copy.deepcopy(record[key]) for key in ("accelerated", "size", "specialities", "matched_specialities", "unmatched_specialities", "word_matches") if key in record})
     if record.get("sliding_window"):
         compact["capabilities"].append("sliding_window")
     compact["media_inputs"] = {kind: [key for key, enabled in values.items() if enabled] for kind, values in record.get("media_inputs", {}).items() if isinstance(values, dict) and any(values.values())}
@@ -522,6 +523,7 @@ def _deepy_template_defaults(session) -> dict[str, str]:
         "gen_video": settings["video_generator_variant"],
         "gen_video_with_speech": settings["video_with_speech_variant"],
         "gen_song": settings["song_variant"],
+        "gen_video_with_refs": settings["with_refs_variant"],
         "gen_speech_from_description": settings["speech_from_description_variant"],
         "gen_speech_from_sample": settings["speech_from_sample_variant"],
     }
@@ -569,6 +571,7 @@ def _strip_deepy_settings_metadata(settings: dict[str, Any]) -> dict[str, Any]:
     stripped = dict(settings)
     stripped.pop("settings_version", None)
     stripped.pop("type", None)
+    stripped.pop("profile_priority", None)
     return stripped
 
 
@@ -1402,7 +1405,7 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
     def wangp_model_settings(model_type: str, setting_id: str | None = None) -> dict[str, Any]:
         """List saved settings, accelerator profiles and presets for a model, or return one by id."""
 
-        result = session.get_model_settings(model_type, setting_id)
+        result = session.get_model_settings(model_type, setting_id, include_selection=True) if api_version == 2 else session.get_model_settings(model_type, setting_id)
         if setting_id is not None and isinstance(result.get("content"), dict):
             result["content"] = _strip_deepy_fixed_image_mode(session, result["content"], model_type)
         return result

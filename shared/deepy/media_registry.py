@@ -119,13 +119,13 @@ def register_media(
         if record.get("path_key") == path_key:
             existing = record
             break
-    if existing is None:
+    new_record = existing is None
+    if new_record:
         session.media_registry_counter += 1
         existing = {
             "media_id": f"{detected_type}_{session.media_registry_counter}",
             "path_key": path_key,
         }
-        session.media_registry.insert(0, existing)
     else:
         session.media_registry.remove(existing)
         session.media_registry.insert(0, existing)
@@ -151,6 +151,9 @@ def register_media(
             "access": sorted(accesses),
         }
     )
+    # Gallery snapshots can run while IDs are resolved. Publish complete records.
+    if new_record:
+        session.media_registry.insert(0, existing)
     return existing
 
 

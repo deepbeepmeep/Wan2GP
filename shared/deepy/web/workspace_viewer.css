@@ -7,7 +7,10 @@
 .wv-open .media-audio-thumbnail {display:grid;place-items:center;height:110px;font-size:52px;}
 .wangp-workspace-viewer header {display:flex;align-items:center;justify-content:space-between;gap:20px;background:linear-gradient(120deg,#103f58,#176786);color:white;padding:16px 24px;}
 .wv-heading {display:flex;flex-direction:column;gap:5px;min-width:0;max-width:75%;}
-.wangp-workspace-viewer [data-workspace] {max-width:100%;min-width:180px;padding:6px 30px 6px 10px;border:1px solid #ffffff50;border-radius:9px;background:#ffffff16;color:white;font:650 18px/1.4 system-ui;cursor:pointer;}
+.wv-workspace-picker {display:flex;align-items:center;gap:8px;min-width:0;}
+.wv-workspace-picker select {flex:1;min-width:0!important;}
+.wv-workspace-picker button {flex-shrink:0;}
+.wangp-workspace-viewer [data-workspace] {max-width:100%;min-width:180px;padding:6px 30px 6px 10px;border:1px solid #ffffff50;border-radius:9px;background:var(--background-fill-primary,#fff);color:var(--body-text-color,#163d52);font:650 18px/1.4 system-ui;cursor:pointer;}
 .wangp-workspace-viewer [data-workspace] option {background:var(--background-fill-primary,#fff);color:var(--body-text-color,#163d52);font-weight:400;}
 .wv-header-actions {display:flex;gap:8px;flex-shrink:0;}
 .wangp-workspace-viewer [data-summary] {font-size:12px;opacity:.8;}
@@ -16,8 +19,8 @@
 .wangp-workspace-viewer button:disabled {opacity:.4;cursor:default;}
 .wangp-workspace-viewer button:focus-visible,.wv-tile:focus-visible {outline:3px solid #309ee7;outline-offset:2px;}
 .wangp-workspace-viewer svg {width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}
-.wangp-workspace-viewer .wv-header-actions button {background:#ffffff16;border-color:#ffffff35;color:white;}
-.wangp-workspace-viewer .wv-header-actions button:hover {background:#ffffff30;}
+.wangp-workspace-viewer header button {background:#ffffff16;border-color:#ffffff35;color:white;}
+.wangp-workspace-viewer header button:hover {background:#ffffff30;}
 .wv-toolbar {display:flex;align-items:center;gap:8px;padding:12px 24px;border-bottom:1px solid var(--border-color-primary,#dce5eb);}
 .wv-toolbar [role=tablist] {display:flex;gap:4px;}
 .wv-toolbar [aria-selected=true] {background:#155d7e;color:white;border-color:#155d7e;}

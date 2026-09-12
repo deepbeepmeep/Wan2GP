@@ -683,6 +683,16 @@ class DeepyPrimeTools:
             return ""
         return "WanGP waits for generation and post-processing internally and returns their results; do not poll jobs."
 
+    def get_runtime_context(self) -> str:
+        from shared.deepy.ui_settings import normalize_assistant_tool_ui_settings
+
+        settings = normalize_assistant_tool_ui_settings(**self.assistant_session.tool_ui_settings)
+        signature = f"{settings['model_speed']}:{settings['model_size']}"
+        if signature == self.assistant_session.model_selection_runtime_signature:
+            return ""
+        self.assistant_session.model_selection_runtime_signature = signature
+        return f"Current model selection preferences: speed={settings['model_speed']}, size={settings['model_size']}. These replace earlier standing preferences. Model search applies them automatically; explicit user choices still win and configured templates remain the normal choice."
+
     def get_system_context(self) -> str:
         from shared.deepy import ui_settings as deepy_ui_settings
 

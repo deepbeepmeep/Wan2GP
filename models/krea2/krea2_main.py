@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import text_encoding_prompts, text_encoding_progress, generation_progress
 import json
 import math
 import os
@@ -142,7 +143,8 @@ class Qwen3VLConditioner(torch.nn.Module):
             inputs_embeds = inputs_embeds.masked_scatter(visual_pos_masks.unsqueeze(-1).expand_as(inputs_embeds), image_embeds.to(inputs_embeds.dtype))
             position_ids, _ = self.qwen.get_rope_index(input_ids, image_grid_thw=image_grid_thw, attention_mask=mask)
         selected_layers = [layer_idx - 1 for layer_idx in self.select_layers]
-        states = self.qwen.language_model(input_ids=None if inputs_embeds is not None else input_ids, inputs_embeds=inputs_embeds, attention_mask=mask, position_ids=position_ids, use_cache=False, visual_pos_masks=visual_pos_masks, deepstack_visual_embeds=deepstack_visual_embeds, return_mid_results_layers=selected_layers)
+        with text_encoding_progress(self.qwen.language_model.layers, prompt_count=len(text)):
+            states = self.qwen.language_model(input_ids=None if inputs_embeds is not None else input_ids, inputs_embeds=inputs_embeds, attention_mask=mask, position_ids=position_ids, use_cache=False, visual_pos_masks=visual_pos_masks, deepstack_visual_embeds=deepstack_visual_embeds, return_mid_results_layers=selected_layers)
         if states.last_hidden_state is None:
             return None, None
         mid_results = states.mid_results
@@ -323,28 +325,32 @@ class Krea2Pipeline:
                     scale = 768 / max(image.size)
                     image = image.resize((round(image.width * scale), round(image.height * scale)), Image.Resampling.LANCZOS)
                 grounding_images.append(image)
-        txt, txtmask = self._encode_prompts(prompts, device, dtype, images=grounding_images)
-        if txt is None:
-            return None
-        cfg = guidance > 0
-        true_cfg_scale = guidance + 1.0 if cfg else 1.0
-        NAG = None
-        nagtxt = nagtxtmask = None
-        context_len = txt.shape[1]
-        if float(NAG_scale) > 1.0 and not cfg:
-            nagtxt, nagtxtmask = self._encode_prompts(negative_prompts, device, dtype, images=grounding_images)
-            if nagtxt is None:
+        pending_prompts = prompts + negative_prompts if guidance > 0 or float(NAG_scale) > 1.0 else prompts
+        cache_keys = [(self.encoder.max_length, tuple(self.encoder.select_layers), p) for p in pending_prompts]
+        prompt_count = len(pending_prompts) if grounding_images is not None else sum(k not in self.text_encoder_cache._entries for k in dict.fromkeys(cache_keys))
+        with text_encoding_prompts(prompt_count):
+            txt, txtmask = self._encode_prompts(prompts, device, dtype, images=grounding_images)
+            if txt is None:
                 return None
-            context_len = max(txt.shape[1], nagtxt.shape[1])
-            txtmask = torch.cat((txtmask, txtmask.new_zeros(txtmask.shape[0], context_len - txtmask.shape[1])), dim=1)
-            nagtxtmask = torch.cat((nagtxtmask, nagtxtmask.new_zeros(nagtxtmask.shape[0], context_len - nagtxtmask.shape[1])), dim=1)
-            NAG = {"scale": float(NAG_scale), "tau": float(NAG_tau), "alpha": float(NAG_alpha), "cap_embed_len": context_len, "prefix_len": 0}
-        x, pos, mask = _prepare(noise, context_len, patch, txtmask)
-        if cfg:
-            untxt, untxtmask = self._encode_prompts(negative_prompts, device, dtype, images=grounding_images)
-            if untxt is None:
-                return None
-            _, unpos, unmask = _prepare(noise, untxt.shape[1], patch, untxtmask)
+            cfg = guidance > 0
+            true_cfg_scale = guidance + 1.0 if cfg else 1.0
+            NAG = None
+            nagtxt = nagtxtmask = None
+            context_len = txt.shape[1]
+            if float(NAG_scale) > 1.0 and not cfg:
+                nagtxt, nagtxtmask = self._encode_prompts(negative_prompts, device, dtype, images=grounding_images)
+                if nagtxt is None:
+                    return None
+                context_len = max(txt.shape[1], nagtxt.shape[1])
+                txtmask = torch.cat((txtmask, txtmask.new_zeros(txtmask.shape[0], context_len - txtmask.shape[1])), dim=1)
+                nagtxtmask = torch.cat((nagtxtmask, nagtxtmask.new_zeros(nagtxtmask.shape[0], context_len - nagtxtmask.shape[1])), dim=1)
+                NAG = {"scale": float(NAG_scale), "tau": float(NAG_tau), "alpha": float(NAG_alpha), "cap_embed_len": context_len, "prefix_len": 0}
+            x, pos, mask = _prepare(noise, context_len, patch, txtmask)
+            if cfg:
+                untxt, untxtmask = self._encode_prompts(negative_prompts, device, dtype, images=grounding_images)
+                if untxt is None:
+                    return None
+                _, unpos, unmask = _prepare(noise, untxt.shape[1], patch, untxtmask)
         x1 = (256 // align) ** 2
         x2 = (1280 // align) ** 2
         ts = _timesteps(x.shape[1], steps, x1, x2, y1=y1, y2=y2, mu=mu)
@@ -764,6 +770,7 @@ class model_factory:
         self.tokenizer = tokenizer
         self.vae = vae
 
+    @generation_progress
     def generate(
         self,
         seed: int | None = None,
@@ -853,7 +860,7 @@ class model_factory:
         def _vae_upsampler_progress(_phase, current_step=None, total_steps=None):
             if callable(set_progress_status):
                 label = getattr(vae_upsampler, "progress_label", "VAE Spatial Upsampling")
-                set_progress_status(f"{label} in progress" if current_step is None or total_steps is None else f"{label} in progress ({int(current_step) + 1}/{int(total_steps)})")
+                set_progress_status(f"{label} in Progress" if current_step is None or total_steps is None else f"{label} in Progress ({int(current_step) + 1}/{int(total_steps)})")
 
         images = self.pipeline(
             prompts,

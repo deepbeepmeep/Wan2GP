@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from shared.utils.phase_progress import text_encoding_prompts, generation_progress
 import os
 
 import torch
@@ -69,6 +70,7 @@ class model_factory:
         self.model = transformer
         self.base_model_type = base_model_type
 
+    @generation_progress
     def generate(
         self,
         seed: int | None = None,
@@ -84,6 +86,7 @@ class model_factory:
         custom_settings=None,
         callback=None,
         loras_slists=None,
+        set_progress_status=None,
         **kwargs,
     ):
         if loras_slists is not None:
@@ -107,37 +110,38 @@ class model_factory:
                 preview = torch.nn.functional.interpolate(image, size=(preview_height, preview_width), mode="bilinear", align_corners=False) if image.shape[-2:] != (preview_height, preview_width) else image
                 callback(step_idx, preview.to("cpu").transpose(0, 1), False)
 
-        try:
-            if references:
-                image = self.transformer.it2i_generate(
-                    self.tokenizer,
-                    input_prompt,
-                    references,
-                    cfg_scale=guide_scale,
-                    img_cfg_scale=1.0,
-                    timestep_shift=shift,
-                    image_size=(width, height),
-                    num_steps=sampling_steps,
-                    batch_size=batch_size,
-                    seed=seed or 0,
-                    use_kv_cache=use_kv_cache,
-                    callback=step_callback,
-                )
-            else:
-                image = self.transformer.t2i_generate(
-                    self.tokenizer,
-                    input_prompt,
-                    cfg_scale=guide_scale,
-                    timestep_shift=shift,
-                    image_size=(width, height),
-                    num_steps=sampling_steps,
-                    batch_size=batch_size,
-                    seed=seed or 0,
-                    use_kv_cache=use_kv_cache,
-                    callback=step_callback,
-                )
-        except InterruptedError:
-            return None
+        with text_encoding_prompts(1 + int(guide_scale != 1.0 if references else guide_scale > 1.0)):
+            try:
+                if references:
+                    image = self.transformer.it2i_generate(
+                        self.tokenizer,
+                        input_prompt,
+                        references,
+                        cfg_scale=guide_scale,
+                        img_cfg_scale=1.0,
+                        timestep_shift=shift,
+                        image_size=(width, height),
+                        num_steps=sampling_steps,
+                        batch_size=batch_size,
+                        seed=seed or 0,
+                        use_kv_cache=use_kv_cache,
+                        callback=step_callback,
+                    )
+                else:
+                    image = self.transformer.t2i_generate(
+                        self.tokenizer,
+                        input_prompt,
+                        cfg_scale=guide_scale,
+                        timestep_shift=shift,
+                        image_size=(width, height),
+                        num_steps=sampling_steps,
+                        batch_size=batch_size,
+                        seed=seed or 0,
+                        use_kv_cache=use_kv_cache,
+                        callback=step_callback,
+                    )
+            except InterruptedError:
+                return None
         if self._interrupt:
             return None
         return image.clamp_(-1, 1).to("cpu").transpose(0, 1)

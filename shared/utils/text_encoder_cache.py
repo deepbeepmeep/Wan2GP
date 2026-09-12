@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Hashable
 
 import torch
+from shared.utils.phase_progress import text_encoding_prompts
 
 
 @dataclass
@@ -44,22 +45,23 @@ class TextEncoderCache:
                 raise ValueError("cache_keys must match the number of prompts.")
 
         if not parallel:
-            results: list[Any] = []
-            for prompt, cache_key in zip(prompts_list, keys_list):
-                cached = self._entries.get(cache_key)
-                if cached is not None:
-                    self._entries.move_to_end(cache_key)
-                    results.append(self._to_device(cached.value, device))
-                    continue
-                encoded = encode_fn([prompt])
-                if isinstance(encoded, (list, tuple)):
-                    if not encoded:
-                        raise ValueError("encode_fn returned empty embeddings.")
-                    encoded_item = encoded[0]
-                else:
-                    encoded_item = encoded
-                results.append(self._store(cache_key, encoded_item, device))
-            return results
+            with text_encoding_prompts(sum(key not in self._entries for key in dict.fromkeys(keys_list)), inherit=True):
+                results: list[Any] = []
+                for prompt, cache_key in zip(prompts_list, keys_list):
+                    cached = self._entries.get(cache_key)
+                    if cached is not None:
+                        self._entries.move_to_end(cache_key)
+                        results.append(self._to_device(cached.value, device))
+                        continue
+                    encoded = encode_fn([prompt])
+                    if isinstance(encoded, (list, tuple)):
+                        if not encoded:
+                            raise ValueError("encode_fn returned empty embeddings.")
+                        encoded_item = encoded[0]
+                    else:
+                        encoded_item = encoded
+                    results.append(self._store(cache_key, encoded_item, device))
+                return results
 
         results = [None] * len(prompts_list)
         missing_prompts: list[str] = []
@@ -77,7 +79,8 @@ class TextEncoderCache:
             results[idx] = self._to_device(cached.value, device)
 
         if missing_prompts:
-            encoded_batch = encode_fn(missing_prompts)
+            with text_encoding_prompts(len(missing_prompts), inherit=True):
+                encoded_batch = encode_fn(missing_prompts)
             if not isinstance(encoded_batch, list):
                 encoded_batch = list(encoded_batch)
             if len(encoded_batch) != len(missing_prompts):

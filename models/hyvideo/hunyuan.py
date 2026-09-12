@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import generation_progress
 import os
 import time
 import random
@@ -725,6 +726,7 @@ class HunyuanVideoSampler(Inference):
         return freqs_cos, freqs_sin
 
 
+    @generation_progress
     def generate(
         self,
         input_prompt,
@@ -753,6 +755,7 @@ class HunyuanVideoSampler(Inference):
         cfg_star_switch = False,
         fit_into_canvas = True,
         conditioning_latents_size = 0,
+        set_progress_status=None,
         **kwargs,
     ):
 

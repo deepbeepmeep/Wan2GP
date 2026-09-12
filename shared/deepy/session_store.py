@@ -126,6 +126,20 @@ def automatic_title(first_request: str, max_words: int = 10, max_chars: int = 60
     return title or "Deepy session"
 
 
+def _unique_title(title: str, storage_id: str = "") -> str:
+    title = re.sub(r"\s+", " ", str(title or "")).strip()[:120]
+    if not title:
+        raise SessionStoreError("Session title cannot be empty.")
+    used_titles = {str(item["title"]).casefold() for item in list_sessions() if item["id"] != storage_id}
+    candidate = title
+    number = 2
+    while candidate.casefold() in used_titles:
+        suffix = f" ({number})"
+        candidate = title[:120 - len(suffix)].rstrip() + suffix
+        number += 1
+    return candidate
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -561,7 +575,7 @@ def ensure_session(session, first_request: str, deepy_type: str, gallery_media_m
         session.gallery_media_mode = normalize_gallery_media_mode(gallery_media_mode or session.gallery_media_mode)
         session.session_environment = _json_safe(environment or session.session_environment)
         if session.storage_title_pending and str(first_request or '').strip():
-            session.storage_title = automatic_title(first_request)
+            session.storage_title = _unique_title(automatic_title(first_request), session.storage_session_id)
             session.storage_title_pending = False
         bind_session_persistence(session)
         return session_metadata(session)
@@ -579,7 +593,7 @@ def ensure_session(session, first_request: str, deepy_type: str, gallery_media_m
     session.storage_session_id = storage_id
     session.storage_session_dir = str(directory)
     session.storage_title_pending = media_import and not session.storage_title
-    session.storage_title = session.storage_title or ('New Deepy session' if media_import else automatic_title(request))
+    session.storage_title = _unique_title(session.storage_title or ('New Deepy session' if media_import else automatic_title(request)), storage_id)
     session.storage_deepy_type = deepy_type
     session.storage_created_at = now
     session.storage_updated_at = now
@@ -669,7 +683,7 @@ def _capture_snapshot(session) -> dict[str, Any] | None:
             },
             "media": copy.deepcopy(session.media_registry),
             "artifacts": _artifact_snapshot(session),
-            "ui": {"tool_settings": copy.deepcopy(session.tool_ui_settings)},
+            "ui": {"tool_settings": copy.deepcopy(session.tool_ui_settings), "model_selection_runtime_signature": session.model_selection_runtime_signature},
             "runtime": {
                 "pending_chat_media": copy.deepcopy(session.pending_chat_media),
                 "generated_client_ids": list(session.generated_client_ids),
@@ -1040,6 +1054,7 @@ def load_session(session, storage_id: str, deepy_type: str) -> dict[str, Any]:
     restore_media_links(session.chat_transcript, replay_commands, session.media_registry)
     session.media_registry_counter = max([int(str(record.get("media_id", "_0")).rsplit("_", 1)[-1]) for record in session.media_registry if str(record.get("media_id", "")).rsplit("_", 1)[-1].isdigit()] or [0])
     session.tool_ui_settings = dict(context.get("ui", {}).get("tool_settings", {}) or {})
+    session.model_selection_runtime_signature = str(context.get("ui", {}).get("model_selection_runtime_signature", ""))
     runtime = context.get("runtime", {})
     session.pending_chat_media = list(runtime.get("pending_chat_media", []))
     pending_action = _pending_action_from_runtime(runtime)
@@ -1159,10 +1174,7 @@ def inject_session_media(session, gen: dict[str, Any]) -> dict[str, Any]:
 
 
 def rename_session(session, title: str) -> dict[str, Any]:
-    title = re.sub(r"\s+", " ", str(title or "")).strip()
-    if not title:
-        raise SessionStoreError("Session title cannot be empty.")
-    session.storage_title = title[:120]
+    session.storage_title = _unique_title(title, session.storage_session_id)
     session.storage_title_pending = False
     manifest = flush_session(session)
     return manifest or session_metadata(session)
@@ -1176,11 +1188,9 @@ def rename_stored_session(storage_id: str, title: str, active_session=None) -> d
         lock = _read_json(directory / ".session.lock")
         if _process_alive(int(lock.get("pid", 0) or 0)):
             raise SessionLockedError("Close this Deepy session before renaming it.")
-    normalized_title = re.sub(r"\s+", " ", str(title or "")).strip()
-    if not normalized_title:
-        raise SessionStoreError("Session title cannot be empty.")
+    normalized_title = _unique_title(title, storage_id)
     manifest = _read_json(directory / "session.json")
-    manifest["title"] = normalized_title[:120]
+    manifest["title"] = normalized_title
     manifest.pop("title_pending", None)
     manifest["updated_at"] = _utc_now()
     _atomic_json(directory / "session.json", manifest)
@@ -1248,6 +1258,7 @@ def start_new_session(session, *, save_current: bool = True) -> None:
     session.storage_created_at = ""
     session.storage_updated_at = ""
     session.session_environment = {}
+    session.model_selection_runtime_signature = ""
     session.safe_checkpoint_revision = 0
     session.saved_checkpoint_revision = 0
     session.pending_session_save = None

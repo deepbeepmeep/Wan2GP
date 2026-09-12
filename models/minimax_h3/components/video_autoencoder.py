@@ -29,6 +29,7 @@ from diffusers.utils.accelerate_utils import apply_forward_hook
 from shared.attention import pay_attention
 
 from ..interrupt import GenerationInterrupted
+from shared.utils.phase_progress import PhaseProgress
 
 
 logger = logging.get_logger(__name__)
@@ -918,40 +919,47 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
             for k in range(pad_tokens)
         )
         output_frames = num_chunks * (chunk_num_frames - self.frame_pre_padding) + self.frame_overlap - pad_frames
-        if num_chunks == 0:
-            # Short videos still need one decode, without an overlapping temporal chunk.
-            return self._decode_clip(z)[:, :, self.frame_pre_padding : self.frame_pre_padding + output_frames]
-        decoded = None
-        write_position = 0
-        overlap = None
-        for i in range(num_chunks):
-            start = i * tokens_chunk_size
-            clip = self._decode_clip(z[:, :, start : start + tokens_chunk_size + self.token_overlap])
-            for j in range(int(token_drop > 0) + 1):
-                frame_start = j * chunk_num_frames
-                chunk = clip[:, :, frame_start : frame_start + chunk_num_frames]
-                chunk = chunk[:, :, self.frame_pre_padding :]
-                if j == 0:
-                    if overlap is not None:
-                        chunk = self._blend(overlap, chunk, self.frame_overlap, dim=-3)
-                    if decoded is None:
-                        decoded = torch.empty(*chunk.shape[:2], output_frames, *chunk.shape[3:],
-                                              dtype=chunk.dtype, device=chunk.device)
-                    copy_frames = min(chunk.shape[2], output_frames - write_position)
-                    if copy_frames > 0:
-                        decoded[:, :, write_position : write_position + copy_frames].copy_(chunk[:, :, :copy_frames])
-                        write_position += copy_frames
-                else:
-                    overlap = chunk.contiguous()
-            del clip
-        if overlap is not None:
-            copy_frames = min(overlap.shape[2], output_frames - write_position)
-            if copy_frames > 0:
-                decoded[:, :, write_position : write_position + copy_frames].copy_(overlap[:, :, :copy_frames])
-                write_position += copy_frames
-        if write_position != output_frames:
-            raise RuntimeError(f"MiniMax H3 VAE decoded {write_position} frames, expected {output_frames}")
-        return decoded
+        spatial_tiles = 1
+        if self.use_tiling:
+            height, width = z.shape[-2] * self.spatial_compression_ratio, z.shape[-1] * self.spatial_compression_ratio
+            rows = self._split_tiles(height, self.tile_sample_min_height, self.tile_sample_min_overlap_height)[0]
+            cols = self._split_tiles(width, self.tile_sample_min_width, self.tile_sample_min_overlap_width)[0]
+            spatial_tiles = len(rows) * len(cols)
+        with PhaseProgress(max(1, num_chunks) * spatial_tiles) as progress, progress.track(self.decoder, spatial_tiles):
+            if num_chunks == 0:
+                # Short videos still need one decode, without an overlapping temporal chunk.
+                return self._decode_clip(z)[:, :, self.frame_pre_padding : self.frame_pre_padding + output_frames]
+            decoded = None
+            write_position = 0
+            overlap = None
+            for i in range(num_chunks):
+                start = i * tokens_chunk_size
+                clip = self._decode_clip(z[:, :, start : start + tokens_chunk_size + self.token_overlap])
+                for j in range(int(token_drop > 0) + 1):
+                    frame_start = j * chunk_num_frames
+                    chunk = clip[:, :, frame_start : frame_start + chunk_num_frames]
+                    chunk = chunk[:, :, self.frame_pre_padding :]
+                    if j == 0:
+                        if overlap is not None:
+                            chunk = self._blend(overlap, chunk, self.frame_overlap, dim=-3)
+                        if decoded is None:
+                            decoded = torch.empty(*chunk.shape[:2], output_frames, *chunk.shape[3:],
+                                                  dtype=chunk.dtype, device=chunk.device)
+                        copy_frames = min(chunk.shape[2], output_frames - write_position)
+                        if copy_frames > 0:
+                            decoded[:, :, write_position : write_position + copy_frames].copy_(chunk[:, :, :copy_frames])
+                            write_position += copy_frames
+                    else:
+                        overlap = chunk.contiguous()
+                del clip
+            if overlap is not None:
+                copy_frames = min(overlap.shape[2], output_frames - write_position)
+                if copy_frames > 0:
+                    decoded[:, :, write_position : write_position + copy_frames].copy_(overlap[:, :, :copy_frames])
+                    write_position += copy_frames
+            if write_position != output_frames:
+                raise RuntimeError(f"MiniMax H3 VAE decoded {write_position} frames, expected {output_frames}")
+            return decoded
 
     @apply_forward_hook
     def encode(self, x: torch.Tensor, return_dict: bool = True) -> AutoencoderKLOutput | tuple[torch.Tensor]:

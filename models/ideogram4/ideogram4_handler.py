@@ -182,6 +182,7 @@ class family_handler:
             "flow_shift": True,
             "custom_settings": [one.copy() for one in _CUSTOM_SETTINGS],
             "infos": IDEOGRAM4_INFOS,
+            "specialities": [{"name": name} for name in ("logos", "posters", "typography", "graphic design", "text rendering")],
             "no_negative_prompt": True,
             "no_background_removal": True,
             "skip_prompt_template": True,
@@ -207,6 +208,7 @@ class family_handler:
         if conditional_only:
             model_def_update.update({
                 "conditional_transformer_only": True,
+                "accelerated": "native",
                 "guidance_max_phases": 0,
                 "lora_multiplier_phases": 1,
                 "preset_profiles_dir": [],

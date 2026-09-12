@@ -5,7 +5,7 @@
     "alt_prompt": "English acoustic pop, warm female vocal, fingerpicked guitar, gentle drums, hopeful, 90 BPM",
     "image_mode": 0,
     "audio_prompt_type": "",
-    "duration_seconds": 360,
+    "duration_seconds": 120,
     "num_inference_steps": 32,
     "guidance_scale": 1.0,
     "temperature": 1.0,

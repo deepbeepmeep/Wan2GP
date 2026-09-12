@@ -311,6 +311,23 @@ h2 {
     pointer-events: none;
 }
 
+.wangp-generation-info {color:var(--body-text-color);font-size:var(--text-md);line-height:1.55;}
+.wangp-generation-info .generation-summary {margin-bottom:10px;overflow-wrap:anywhere;}
+.wangp-generation-info .generation-table-wrap {max-width:100%;overflow-x:auto;border:1px solid var(--border-color-primary);border-radius:var(--block-radius,8px);background:var(--background-fill-primary);}
+.wangp-generation-info #PINFO {width:100%;margin:0;border:0;border-collapse:separate;border-spacing:0;table-layout:auto;color:inherit;font:inherit;}
+.wangp-generation-info #PINFO td {padding:12px 5px;border:0;vertical-align:middle;}
+.wangp-generation-info #PINFO td:last-child {padding-right:12px;}
+.wangp-generation-info #PINFO .generation-prompt-cell {width:100%;min-width:200px;padding:14px 16px;overflow-wrap:anywhere;}
+.wangp-generation-info .generation-label {margin-bottom:6px;font-size:var(--text-sm);font-weight:600;color:var(--body-text-color-subdued);}
+.wangp-generation-info .generation-note {margin-bottom:8px;color:var(--body-text-color-subdued);white-space:pre-wrap;}
+.wangp-generation-info .generation-references {display:grid;grid-template-columns:repeat(2,120px);gap:10px;}
+.wangp-generation-info .generation-references:has(> :only-child) {grid-template-columns:120px;}
+.wangp-generation-info .generation-reference {display:flex;flex-direction:column;gap:6px;width:120px;padding:6px;border:1px solid var(--border-color-primary);border-radius:var(--button-small-radius,6px);background:var(--background-fill-secondary);color:inherit;font:inherit;cursor:pointer;}
+.wangp-generation-info .generation-reference img {display:block;width:100%;height:101px;object-fit:contain;border-radius:4px;}
+.wangp-generation-info .generation-reference span {font-size:var(--text-sm);line-height:1.35;overflow-wrap:anywhere;text-align:center;}
+.wangp-generation-info .generation-reference:hover {border-color:var(--color-accent);}
+.wangp-generation-info .generation-reference:focus-visible {outline:2px solid var(--color-accent);outline-offset:2px;}
+
 .hover-image {
 cursor: pointer;
 position: relative;

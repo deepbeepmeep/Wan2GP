@@ -208,7 +208,7 @@
     }
     field({key: 'use_template_properties', label: 'Default Dimensions / Durations / Seed', choices: form.property_modes}, $('#property-mode'));
     for (const def of form.properties) field(def, $('#property-fields'));
-    for (const def of form.templates) field(def, $('#template-fields'));
+    for (const def of [...form.preferences, ...form.templates]) field(def, $('#template-fields'));
     const mode = $('#property-mode select');
     mode.onchange = () => { for (const input of $('#property-fields').querySelectorAll('input')) input.disabled = mode.value === 'true'; };
     mode.onchange(); $('#save-settings').disabled = false;
@@ -221,7 +221,7 @@
       $('#settings-status').after(controls);
     }
     controls.hidden = !merged.conflicts.length;
-    const labels = Object.fromEntries([...form.properties, ...form.templates, {key:'use_template_properties',label:'Default properties'}].map(field => [field.key,field.label]));
+    const labels = Object.fromEntries([...form.properties, ...form.preferences, ...form.templates, {key:'use_template_properties',label:'Default properties'}].map(field => [field.key,field.label]));
     $('#settings-status').textContent = merged.conflicts.length ? 'Changed in another window: '+merged.conflicts.map(key => labels[key]).join(', ')+'. Your edits have been kept.' : merged.dirty.length ? 'Unsaved changes' : '';
     return merged.dirty.length;
   }

@@ -519,6 +519,7 @@ class AssistantSessionState:
     runtime_status_note: str = ""
     pending_chat_media: list[dict[str, str]] = field(default_factory=list)
     runtime_status_signature: str = ""
+    model_selection_runtime_signature: str = ""
     rendered_system_prompt_signature: str = ""
     rendered_context_window_tokens: int = 0
     pending_replay_reason: str = ""
@@ -632,6 +633,7 @@ def clear_assistant_session(session: AssistantSessionState) -> None:
     session.runtime_status_note = ""
     session.pending_chat_media.clear()
     session.runtime_status_signature = ""
+    session.model_selection_runtime_signature = ""
     session.rendered_system_prompt_signature = ""
     session.rendered_context_window_tokens = 0
     session.pending_replay_reason = ""
@@ -1547,6 +1549,7 @@ class DeepyZeroTools:
             "edit_image": "image_editor_variant",
             "gen_video": "video_generator_variant",
             "gen_video_with_speech": "video_with_speech_variant",
+            "gen_video_with_refs": "with_refs_variant",
             "gen_song": "song_variant",
             "gen_speech_from_description": "speech_from_description_variant",
             "gen_speech_from_sample": "speech_from_sample_variant",
@@ -1599,13 +1602,13 @@ class DeepyZeroTools:
             return None, None
 
     def _is_video_generation_tool(self, tool_name: str) -> bool:
-        return str(tool_name or "").strip() in {"gen_video", "gen_video_with_speech"}
+        return str(tool_name or "").strip() in {"gen_video", "gen_video_with_speech", "gen_video_with_refs"}
 
     def _is_audio_generation_tool(self, tool_name: str) -> bool:
         return str(tool_name or "").strip() in {"gen_song", "gen_speech_from_description", "gen_speech_from_sample"}
 
     def _supports_inference_steps_override(self, tool_name: str) -> bool:
-        return str(tool_name or "").strip() in {"gen_image", "edit_image", "gen_video", "gen_video_with_speech"}
+        return str(tool_name or "").strip() in {"gen_image", "edit_image", "gen_video", "gen_video_with_speech", "gen_video_with_refs"}
 
     def _compute_effective_video_fps(self, task: dict[str, Any]) -> int | None:
         force_fps = str(task.get("force_fps", "") or "").strip()
@@ -1879,6 +1882,10 @@ class DeepyZeroTools:
             result["audio_duration"] = task.get("duration_seconds", None)
         if lookup_name == "gen_video":
             result["multimedia_generation"] = bool(model_def.get("multimedia_generation", False))
+        if lookup_name == "gen_video_with_refs":
+            result["reference_videos"] = bool(model_def.get("reference_video_enabled", False))
+            result["input_guidance"] = model_def.get("deepy_infos", model_def.get("infos", ""))
+            result["prompt_guidance"] = model_def.get("deepy_prompt_infos", model_def.get("prompt_infos", ""))
         result["extra_settings"] = {label: entry.get("value", None) for label, entry in self._get_generation_extra_settings_info(task).items()}
         return result, None
 
@@ -3305,6 +3312,70 @@ class DeepyZeroTools:
             result["source_start_media_id"] = start_media.get("media_id", "")
         if end_media is not None:
             result["source_end_media_id"] = end_media.get("media_id", "")
+        return result
+
+    @assistant_tool(
+        display_name="Generate Video With References",
+        description="Generate video using the configured reference template. Read get_default_settings for its input/prompt guidance. Supply image_refs and/or video_refs as resolved media IDs; video references require template support. Start/end images anchor frames and do not count as references.",
+        parameters={
+            **copy.deepcopy(gen_video._assistant_tool["parameters"]),
+            "image_refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "description": "Image media IDs supplying subject identity or appearance.", "required": False},
+            "video_refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 2, "description": "Video media IDs supplying appearance or motion; only when the selected template supports video references.", "required": False},
+        },
+    )
+    def gen_video_with_refs(
+        self, prompt: str, image_refs: list[str] | None = None, video_refs: list[str] | None = None,
+        image_start: str | None = None, image_end: str | None = None, width: int | None = None,
+        height: int | None = None, num_frames: int | None = None, duration_seconds: float | None = None,
+        fps: int | None = None, num_inference_steps: int | None = None,
+        extra_settings: dict[str, Any] | None = None, loras: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        self._sync_recent_media()
+        tool_name = "gen_video_with_refs"
+        variant = self.get_tool_variant(tool_name)
+        model_def = self._get_effective_tool_model_def(tool_name)
+        sources = {}
+        for name, values, resolver in (("image_refs", image_refs, self._resolve_image_media), ("video_refs", video_refs, self._resolve_video_media)):
+            if values is not None and (not isinstance(values, list) or not values or any(not isinstance(value, str) or not value.strip() for value in values)):
+                return {"status": "error", "error": f"{name} must be a non-empty array of media IDs."}
+            sources[name] = []
+            for value in values or []:
+                media, error = resolver(value, name)
+                if error is not None:
+                    return error
+                sources[name].append(media["path"])
+        if not sources["image_refs"] and not sources["video_refs"]:
+            return {"status": "error", "error": "Supply image_refs or video_refs. For text or start/end-frame video without references, use gen_video."}
+        video_mode = "V+-U" if len(sources["video_refs"]) == 2 else "V-U"
+        if sources["video_refs"] and (len(sources["video_refs"]) > 2 or not model_def.get("reference_video_enabled", False) or video_mode not in [value for label, value in model_def["guide_custom_choices"]["choices"]]):
+            return {"status": "error", "error": "The selected reference template does not support this video-reference input. Choose a compatible template in Deepy Settings."}
+        for name, value in (("image_start", image_start), ("image_end", image_end)):
+            media, error = self._resolve_image_media(value or "", name)
+            if error is not None:
+                return error
+            sources[name] = None if media is None else media["path"]
+        client_id = _next_ai_client_id()
+        task, error = self._build_generation_task(tool_name, variant, prompt=prompt, client_id=client_id, image_refs=sources["image_refs"], image_start=sources["image_start"], image_end=sources["image_end"])
+        if error is not None:
+            return error
+        if not task["prompt"]:
+            return {"status": "error", "error": "Prompt is empty.", "client_id": client_id, "output_file": ""}
+        if sources["video_refs"]:
+            # Keep the template's image-reference mode when images are supplied.
+            image_mode = "".join(flag for flag in task["video_prompt_type"] if flag in "KI") if sources["image_refs"] else ""
+            task["video_prompt_type"] = image_mode + video_mode
+            task["video_guide"] = sources["video_refs"][0]
+            if len(sources["video_refs"]) == 2:
+                task["video_guide2"] = sources["video_refs"][1]
+        try:
+            task = deepy_tool_settings.apply_tool_loras(tool_name, variant, task, loras)
+        except (TypeError, ValueError) as exc:
+            return {"status": "error", "error": str(exc), "client_id": client_id, "output_file": ""}
+        task, error = self._apply_generation_overrides(tool_name, task, include_num_frames=True, width=width, height=height, num_frames=num_frames, duration_seconds=duration_seconds, fps=fps, num_inference_steps=num_inference_steps, extra_settings=extra_settings)
+        if error is not None:
+            return error
+        result = self._queue_generation_task(task, activity_label="reference video generation", output_label="Generated video", gallery_media_type="video")
+        result.update(generator_variant=variant, template_file=self.get_tool_template_filename(tool_name), source_image_media_ids=list(image_refs or []), source_video_media_ids=list(video_refs or []))
         return result
 
     @assistant_tool(
@@ -5938,9 +6009,11 @@ class AssistantEngine:
         sentences = [
             f"The {tool_name} tool {'has changed and now uses' if changed else 'uses'} Settings '{template_label}'."
         ]
+        if tool_name == "gen_video_with_refs":
+            return " ".join(sentences) + " Read get_default_settings for this template before its first reference generation; follow its input and prompt guidance."
         if tool_name == "gen_video" and bool(model_def.get("multimedia_generation", False)):
             sentences.append(
-                "The gen_video tool can generate a video with an audio output from a text prompt. So if the user provides only a text prompt and wants a talking or voiced video, you must use gen_video directly, keep the spoken words in the prompt, and do not call gen_speech_from_description, gen_speech_from_sample, or gen_video_with_speech first."
+                "The gen_video tool can generate a video with an audio output from a text prompt. So if the user provides only a text prompt without subject references and wants a talking or voiced video, you must use gen_video directly, keep the spoken words in the prompt, and do not call gen_speech_from_description, gen_speech_from_sample, or gen_video_with_speech first."
             )
         if "T" in image_prompt_types_allowed:
             sentences.append(
@@ -5957,7 +6030,7 @@ class AssistantEngine:
             return []
         current_variants: dict[str, str] = {}
         current_lines: list[str] = []
-        for tool_name in ("gen_video", "gen_video_with_speech"):
+        for tool_name in ("gen_video", "gen_video_with_speech", "gen_video_with_refs"):
             variant = str(self.tool_box.get_tool_variant(tool_name) or "").strip()
             if len(variant) == 0:
                 continue
@@ -6158,7 +6231,7 @@ class AssistantEngine:
             self._log(f"Prepared runtime update with {len(runtime_lines)} instruction(s).")
 
     def _build_pending_user_message(self, user_text: str) -> dict[str, Any]:
-        message = assistant_chat.build_user_model_message(self.session, user_text)
+        message = assistant_chat.build_user_model_message(self.session, user_text, toolbox=self.tool_box)
         runtime_note_blocks = [str(self.session.runtime_status_note or "").strip()] if len(str(self.session.runtime_status_note or "").strip()) > 0 else []
         if self.session.recorded_budget_events:
             runtime_note_blocks.append(

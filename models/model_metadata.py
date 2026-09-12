@@ -121,7 +121,7 @@ def infer_inputs(model_def):
         inputs.append("image")
     if image_outputs and (_choice_values_contain(guide_preprocessing, "V") or _choice_values_contain(alt_guide_refs, "V")) and "image" not in inputs:
         inputs.append("image")
-    if "V" in image_prompt_types_allowed or "L" in image_prompt_types_allowed or (not image_outputs and (_choice_values_contain(guide_preprocessing, "V") or _choice_values_contain(alt_guide_refs, "V") or _choice_values_contain(custom_video_selection, "V"))):
+    if model_def.get("reference_video_enabled", False) or "V" in image_prompt_types_allowed or "L" in image_prompt_types_allowed or (not image_outputs and (_choice_values_contain(guide_preprocessing, "V") or _choice_values_contain(alt_guide_refs, "V") or _choice_values_contain(custom_video_selection, "V"))):
         inputs.append("video")
     return list(dict.fromkeys(inputs))
 
@@ -150,6 +150,7 @@ def infer_media_inputs(model_def):
             "mask": image_outputs and (_choice_values_contain(model_def.get("mask_preprocessing", None), "A") or bool(model_def.get("inpaint_support", False))),
         },
         "video": {
+            "reference": bool(model_def.get("reference_video_enabled", False)),
             "continue": "V" in image_prompt_types_allowed,
             "last": "L" in image_prompt_types_allowed,
             "control": (not image_outputs) and has_control,
@@ -169,7 +170,7 @@ def infer_capabilities(model_def, main_outputs, outputs, inputs, media_inputs):
     return {
         "text_to_video": "video" in main_outputs and "text" in inputs,
         "image_to_video": "video" in main_outputs and image_inputs["start"],
-        "video_to_video": "video" in main_outputs and (video_inputs["continue"] or video_inputs["control"]),
+        "video_to_video": "video" in main_outputs and (video_inputs["continue"] or video_inputs["control"] or video_inputs["reference"]),
         "text_to_image": "image" in main_outputs and "text" in inputs,
         "image_to_image": "image" in main_outputs and (image_inputs["start"] or image_inputs["reference"] or image_inputs["control"]),
         "text_to_audio": "audio" in main_outputs and "text" in inputs,
@@ -179,6 +180,7 @@ def infer_capabilities(model_def, main_outputs, outputs, inputs, media_inputs):
         "inpainting": bool(model_def.get("inpaint_support", False) or image_inputs["mask"] or video_inputs["mask"]),
         "outpainting": bool(model_def.get("video_guide_outpainting", False)),
         "reference_images": image_inputs["reference"],
+        "reference_videos": video_inputs["reference"],
         "background_image": image_inputs["background"],
         "injected_frames": image_inputs["injected_frames"],
         "control_image": image_inputs["control"],
@@ -239,6 +241,7 @@ def store_metadata(model_type, model_def, model_types_handlers, families_infos):
         "media_inputs": media_inputs,
         "capabilities": infer_capabilities(model_def, main_outputs, outputs, inputs, media_inputs),
         "setting_values": infer_setting_values(model_def),
+        **{key: copy.deepcopy(model_def[key]) for key in ("accelerated", "size", "specialities") if key in model_def},
     }
     return model_def
 

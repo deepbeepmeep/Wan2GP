@@ -44,7 +44,8 @@ class WorkspaceStore:
 
     def catalog(self):
         with self.lock:
-            return sorted(({key: record[key] for key in ('id', 'name', 'deepy_session_id') if key in record} for record in self.records.values()), key=lambda item: item['name'].casefold())
+            records = sorted(self.records.values(), key=lambda record: (-record['last_activity'], record['name'].casefold()))
+            return [{key: record[key] for key in ('id', 'name', 'deepy_session_id') if key in record} for record in records]
 
     def _name(self, name, excluding=None, owner=None):
         if not isinstance(name, str) or not name.strip() or len(name.strip()) > 120:
@@ -106,6 +107,7 @@ class WorkspaceStore:
             if record['gallery'] != gallery:
                 changed = any(record['gallery'].get(key, []) != gallery.get(key, []) for key in ('file_list', 'audio_file_list'))
                 self._write({**record, 'gallery': gallery, 'last_activity': time.time() if changed else record['last_activity']})
+                return changed
 
     def protect(self, workspace_id, protected):
         with self.lock:

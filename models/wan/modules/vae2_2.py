@@ -2,6 +2,7 @@
 import logging
 
 import torch
+from shared.utils.phase_progress import PhaseProgress, check_abort, set_phase_status
 import torch.cuda.amp as amp
 import torch.nn as nn
 import torch.nn.functional as F
@@ -708,6 +709,7 @@ class Decoder3d(nn.Module):
             x = self.conv1(x)
 
         for layer in self.middle:
+            check_abort()
             if isinstance(layer, ResidualBlock) and feat_cache is not None:
                 x = layer(x, feat_cache, feat_idx)
             else:
@@ -715,6 +717,7 @@ class Decoder3d(nn.Module):
 
         ## upsamples
         for layer in self.upsamples:
+            check_abort()
             if feat_cache is not None:
                 x = layer(x, feat_cache, feat_idx, first_chunk)
             else:
@@ -722,6 +725,7 @@ class Decoder3d(nn.Module):
 
         ## head
         for layer in self.head:
+            check_abort()
             if isinstance(layer, CausalConv3d) and feat_cache is not None:
                 idx = feat_idx[0]
                 cache_x = x[:, :, -CACHE_T:, :, :].clone()
@@ -972,81 +976,92 @@ class WanVAE_(nn.Module):
         target_width = full_width if target_width is None else min(int(target_width), full_width)
         if target_frames <= 0:
             return torch.empty((latent_source.shape[0], 3, 0, target_height, target_width), dtype=torch.uint8, device="cpu")
-        if scale is not None and isinstance(scale[0], torch.Tensor):
-            scale = [u.to(device=device) for u in scale]
-        if tile_size <= 0:
-            z = latent_source.to(device=device, dtype=dtype)
-            frames = self.decode(z, scale, any_end_frame=any_end_frame)[:, :, :target_frames, :target_height, :target_width]
-            decoded = _vae_float_to_cpu_uint8(frames)
-            del z, frames
-            return decoded
+        spatial_tiles = 1
+        if tile_size > 0:
+            stride = max(1, int(max(1, tile_size // 16) * 0.75))
+            row_limit = max(1, tile_size - int(tile_size * 0.25))
+            rows = min(len(range(0, latent_source.shape[-2], stride)), (target_height + row_limit - 1) // row_limit)
+            cols = min(len(range(0, latent_source.shape[-1], stride)), (target_width + row_limit - 1) // row_limit)
+            spatial_tiles = rows * cols
+        with PhaseProgress(spatial_tiles * needed_latents) as progress, progress.track(self.decoder):
+            try:
+                if scale is not None and isinstance(scale[0], torch.Tensor):
+                    scale = [u.to(device=device) for u in scale]
+                if tile_size <= 0:
+                    z = latent_source.to(device=device, dtype=dtype)
+                    frames = self.decode(z, scale, any_end_frame=any_end_frame)[:, :, :target_frames, :target_height, :target_width]
+                    decoded = _vae_float_to_cpu_uint8(frames)
+                    del z, frames
+                    return decoded
 
-        tile_sample_min_size = tile_size
-        tile_latent_min_size = max(1, int(tile_sample_min_size / 16))
-        tile_overlap_factor = 0.25
-        overlap_size = max(1, int(tile_latent_min_size * (1 - tile_overlap_factor)))
-        blend_extent = int(tile_sample_min_size * tile_overlap_factor)
-        row_limit = max(1, tile_sample_min_size - blend_extent)
-        decoded = torch.empty((latent_source.shape[0], 3, target_frames, target_height, target_width), dtype=torch.uint8, device="cpu")
-        previous_row_edges = []
-        row_index = 0
-        for latent_y in range(0, latent_source.shape[-2], overlap_size):
-            current_row_edges = []
-            left_edge = None
-            col_index = 0
-            write_y0 = row_index * row_limit
-            write_y1 = min(write_y0 + row_limit, target_height)
-            has_next_row = write_y1 < target_height
-            if write_y1 <= write_y0:
-                break
-            for latent_x in range(0, latent_source.shape[-1], overlap_size):
-                write_x0 = col_index * row_limit
-                write_x1 = min(write_x0 + row_limit, target_width)
-                has_next_col = write_x1 < target_width
-                if write_x1 <= write_x0:
-                    break
-                tile_latents = latent_source[:, :, :, latent_y:latent_y + tile_latent_min_size, latent_x:latent_x + tile_latent_min_size].to(device=device, dtype=dtype)
-                if scale is not None:
-                    if isinstance(scale[0], torch.Tensor):
-                        tile_latents.div_(scale[1].view(1, self.z_dim, 1, 1, 1)).add_(scale[0].view(1, self.z_dim, 1, 1, 1))
-                    else:
-                        tile_latents.div_(scale[1]).add_(scale[0])
-                bottom_edge = None
-                right_edge = None
-                previous_edge = previous_row_edges[col_index] if row_index > 0 and col_index < len(previous_row_edges) else None
-                for frame_start, tile in self.decode_tile_chunks(tile_latents, any_end_frame=any_end_frame):
-                    if frame_start >= target_frames:
+                tile_sample_min_size = tile_size
+                tile_latent_min_size = max(1, int(tile_sample_min_size / 16))
+                tile_overlap_factor = 0.25
+                overlap_size = max(1, int(tile_latent_min_size * (1 - tile_overlap_factor)))
+                blend_extent = int(tile_sample_min_size * tile_overlap_factor)
+                row_limit = max(1, tile_sample_min_size - blend_extent)
+                decoded = torch.empty((latent_source.shape[0], 3, target_frames, target_height, target_width), dtype=torch.uint8, device="cpu")
+                previous_row_edges = []
+                row_index = 0
+                for latent_y in range(0, latent_source.shape[-2], overlap_size):
+                    current_row_edges = []
+                    left_edge = None
+                    col_index = 0
+                    write_y0 = row_index * row_limit
+                    write_y1 = min(write_y0 + row_limit, target_height)
+                    has_next_row = write_y1 < target_height
+                    if write_y1 <= write_y0:
                         break
-                    frame_end = min(frame_start + int(tile.shape[2]), target_frames)
-                    tile = tile[:, :, :frame_end - frame_start]
-                    if previous_edge is not None:
-                        _blend_v_edge_(previous_edge[:, :, frame_start:frame_end], tile, blend_extent)
-                    if left_edge is not None:
-                        _blend_h_edge_(left_edge[:, :, frame_start:frame_end], tile, blend_extent)
-                    if has_next_row:
-                        edge = tile[:, :, :, -min(blend_extent, tile.shape[-2]):, :].detach().cpu()
-                        if bottom_edge is None:
-                            bottom_edge = torch.empty((edge.shape[0], edge.shape[1], target_frames, edge.shape[3], edge.shape[4]), dtype=edge.dtype, device="cpu")
-                        bottom_edge[:, :, frame_start:frame_end].copy_(edge)
-                        del edge
-                    if has_next_col:
-                        edge = tile[:, :, :, :, -min(blend_extent, tile.shape[-1]):].detach().cpu()
-                        if right_edge is None:
-                            right_edge = torch.empty((edge.shape[0], edge.shape[1], target_frames, edge.shape[3], edge.shape[4]), dtype=edge.dtype, device="cpu")
-                        right_edge[:, :, frame_start:frame_end].copy_(edge)
-                        del edge
-                    tile = tile[:, :, :, :write_y1 - write_y0, :write_x1 - write_x0]
-                    decoded[:, :, frame_start:frame_end, write_y0:write_y0 + tile.shape[-2], write_x0:write_x0 + tile.shape[-1]].copy_(_vae_float_to_cpu_uint8(tile))
-                    del tile
-                current_row_edges.append(bottom_edge)
-                left_edge = right_edge
-                del tile_latents, previous_edge
-                col_index += 1
-            left_edge = None
-            previous_row_edges = current_row_edges
-            row_index += 1
-        return decoded
+                    for latent_x in range(0, latent_source.shape[-1], overlap_size):
+                        write_x0 = col_index * row_limit
+                        write_x1 = min(write_x0 + row_limit, target_width)
+                        has_next_col = write_x1 < target_width
+                        if write_x1 <= write_x0:
+                            break
+                        tile_latents = latent_source[:, :, :, latent_y:latent_y + tile_latent_min_size, latent_x:latent_x + tile_latent_min_size].to(device=device, dtype=dtype)
+                        if scale is not None:
+                            if isinstance(scale[0], torch.Tensor):
+                                tile_latents.div_(scale[1].view(1, self.z_dim, 1, 1, 1)).add_(scale[0].view(1, self.z_dim, 1, 1, 1))
+                            else:
+                                tile_latents.div_(scale[1]).add_(scale[0])
+                        bottom_edge = None
+                        right_edge = None
+                        previous_edge = previous_row_edges[col_index] if row_index > 0 and col_index < len(previous_row_edges) else None
+                        for frame_start, tile in self.decode_tile_chunks(tile_latents, any_end_frame=any_end_frame):
+                            if frame_start >= target_frames:
+                                break
+                            frame_end = min(frame_start + int(tile.shape[2]), target_frames)
+                            tile = tile[:, :, :frame_end - frame_start]
+                            if previous_edge is not None:
+                                _blend_v_edge_(previous_edge[:, :, frame_start:frame_end], tile, blend_extent)
+                            if left_edge is not None:
+                                _blend_h_edge_(left_edge[:, :, frame_start:frame_end], tile, blend_extent)
+                            if has_next_row:
+                                edge = tile[:, :, :, -min(blend_extent, tile.shape[-2]):, :].detach().cpu()
+                                if bottom_edge is None:
+                                    bottom_edge = torch.empty((edge.shape[0], edge.shape[1], target_frames, edge.shape[3], edge.shape[4]), dtype=edge.dtype, device="cpu")
+                                bottom_edge[:, :, frame_start:frame_end].copy_(edge)
+                                del edge
+                            if has_next_col:
+                                edge = tile[:, :, :, :, -min(blend_extent, tile.shape[-1]):].detach().cpu()
+                                if right_edge is None:
+                                    right_edge = torch.empty((edge.shape[0], edge.shape[1], target_frames, edge.shape[3], edge.shape[4]), dtype=edge.dtype, device="cpu")
+                                right_edge[:, :, frame_start:frame_end].copy_(edge)
+                                del edge
+                            tile = tile[:, :, :, :write_y1 - write_y0, :write_x1 - write_x0]
+                            decoded[:, :, frame_start:frame_end, write_y0:write_y0 + tile.shape[-2], write_x0:write_x0 + tile.shape[-1]].copy_(_vae_float_to_cpu_uint8(tile))
+                            del tile
+                        current_row_edges.append(bottom_edge)
+                        left_edge = right_edge
+                        del tile_latents, previous_edge
+                        col_index += 1
+                    left_edge = None
+                    previous_row_edges = current_row_edges
+                    row_index += 1
+                return decoded
 
+            finally:
+                self.clear_cache()
 
     def spatial_tiled_encode(self, x, scale, tile_size, any_end_frame = False) :
         tile_sample_min_size = tile_size
@@ -1310,6 +1325,7 @@ class Wan2_2_VAE:
         """
         videos: A list of videos each with shape [C, T, H, W].
         """
+        set_phase_status("VAE Encoding")
         scale = [u.to(device = self.device) for u in self.scale]  
         
         if tile_size > 0 and False :

@@ -393,6 +393,7 @@ class family_handler:
             result = family_handler.query_model_def(REF2VA_PRUNED_ARCHITECTURE, model_def)
             result.update({
                 "profiles_dir": [VIGGLE_ARCHITECTURE],
+                "specialities": [{"name": "character replacement"}, {"name": "motion transfer"}],
                 "infos": VIGGLE_INFOS,
                 "prompt_infos": "Viggle uses a fixed prompt. Prepare the character replacement in the Edited Reference Frame; generation prompt text is ignored.",
                 "deepy_infos": "Viggle combines `video_guide` with one edited frame from that video in `image_refs` (reference mode `I`, Control Video mode `VU`). Edit the character while preserving that frame's pose, props, background, framing and dimensions; any clear source frame works. The video supplies motion/camera, the edited frame supplies appearance. Windows are fixed at 124 frames with 18-frame overlap by default. `audio_prompt_type`: empty = model audio; `A` = `audio_guide`; `K` = control-video soundtrack. Audio conditioning is experimental: use synchronized audio. A full input track is reused; a shorter one allows generated audio afterward.",
@@ -410,7 +411,7 @@ class family_handler:
                 "one_image_ref_needed": True, "no_background_removal": True, "any_image_refs_relative_size": False, "fit_into_canvas_image_refs": 1,
                 "image_ref_choices": {"choices": [("Use Edited Reference Frame", "I")], "letters_filter": "I", "default": "I", "label": "Edited Reference Frame"},
                 "guide_custom_choices": {"choices": [("Use Control Video", "VU")], "letters_filter": "V-U", "default": "VU", "label": "Control Video"},
-                "video_guide_label": "Control Video", "preprocess_video_guide2": False,
+                "video_guide_label": "Control Video", "preprocess_video_guide2": False, "reference_video_enabled": False,
                 "any_audio_prompt": True, "audio_prompt_choices": True, "output_audio_is_input_audio": True,
                 "audio_guide_label": "Custom Audio",
                 "audio_prompt_type_sources": {
@@ -430,6 +431,9 @@ class family_handler:
         text_encoder_files = [TEXT_ENCODER_BF16, TEXT_ENCODER_INT8] if text_encoder_variant is None else TEXT_ENCODER_VARIANTS[text_encoder_variant]
         result = {
             "dtype": "bf16",
+            "size": "lighter" if pruned else "large",
+            **({"accelerated": "native"} if pdd or vdn else {}),
+            **({"specialities": [{"name": "character consistency", "aliases": ["identity preservation"]}, {"name": "motion transfer", "description": "Transfer motion or camera from reference videos to image-reference characters."}]} if reference_mode else {}),
             "fps": 24,
             "frames_minimum": 107,
             "frames_steps": 17,
@@ -513,7 +517,7 @@ class family_handler:
             "video_prompt_enhancer_instructions": REF2VA_IMAGE_SYSTEM_PROMPT if reference_mode else FL2VA_IMAGE_SYSTEM_PROMPT,
             "text_prompt_enhancer_max_tokens": 2048 if reference_mode else 1024,
             "video_prompt_enhancer_max_tokens": 2048 if reference_mode else 1024,
-            "profiles_dir": ["minimax_h3_vdn"] if vdn else ["minimax_h3"],
+            "profiles_dir": ["minimax_h3_vdn"] if vdn else [] if pdd else ["minimax_h3", "minimax_h3_ref2va" if reference_mode else "minimax_h3_fl2va"],
             "finetune_custom_urls": ["video_vae_file", "audio_vae_file"],
             "finetunes_infos": H3_FINETUNES_INFOS,
             "finetunes_params": H3_FINETUNES_PARAMS,
@@ -584,6 +588,7 @@ class family_handler:
                 },
                 "preprocess_video_guide2": True,
                 "mask_preprocessing": {"selection": ["", "A", "NA"]},
+                "reference_video_enabled": True,
                 "reference_video_max_frames": 15 * 24,
                 "reference_video_max_size": (768, 1344),
                 "any_audio_prompt": True,

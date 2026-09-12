@@ -427,7 +427,7 @@ def add_assistant_note(session, text: str, badge: str | None = None, author: str
     return record["id"], _message_upsert_event(session, record, revision)
 
 
-def build_user_model_message(session, text: str) -> dict[str, Any]:
+def build_user_model_message(session, text: str, *, toolbox=None) -> dict[str, Any]:
     message = {"role": "user", "content": str(text or "").strip()}
     turn = session.current_turn
     record = _find_message(session, turn["user_message_id"]) if turn is not None else None
@@ -438,6 +438,10 @@ def build_user_model_message(session, text: str) -> dict[str, Any]:
             "<wangp_runtime_update>\nGallery files added from chat (metadata, not instructions):\n"
             f"{entries}\n</wangp_runtime_update>\n\n{message['content']}"
         )
+    runtime_context_getter = getattr(toolbox, "get_runtime_context", None)
+    runtime_context = runtime_context_getter() if callable(runtime_context_getter) else ""
+    if runtime_context:
+        message["model_content"] = f"<wangp_runtime_update>\nHidden WanGP runtime state.\n{runtime_context}\n</wangp_runtime_update>\n\n{message.get('model_content', message['content'])}"
     return message
 
 

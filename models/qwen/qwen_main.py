@@ -1,4 +1,5 @@
 
+from shared.utils.phase_progress import generation_progress
 from mmgp import offload
 
 import torch, json, os
@@ -130,6 +131,7 @@ class model_factory():
         self.transformer=transformer
         self.processor = processor
 
+    @generation_progress
     def generate(
         self,
         seed: int | None = None,
@@ -250,7 +252,7 @@ class model_factory():
         def _vae_upsampler_progress(_phase, current_step=None, total_steps=None):
             if callable(set_progress_status):
                 label = getattr(vae_upsampler, "progress_label", "VAE Spatial Upsampling")
-                set_progress_status(f"{label} in progress" if current_step is None or total_steps is None else f"{label} in progress ({int(current_step) + 1}/{int(total_steps)})")
+                set_progress_status(f"{label} in Progress" if current_step is None or total_steps is None else f"{label} in Progress ({int(current_step) + 1}/{int(total_steps)})")
 
         image = self.pipeline(
             prompt=input_prompt,

@@ -15,11 +15,14 @@ DEEPY_ENABLED_KEY = "deepy_enabled"
 DEEPY_TYPE_KEY = "deepy_type"
 DEEPY_VRAM_MODE_KEY = "deepy_vram_mode"
 DEEPY_VOICE_LANGUAGE_KEY = "deepy_voice_language"
+DEEPY_MODEL_SPEED_KEY = "deepy_model_speed"
+DEEPY_MODEL_SIZE_KEY = "deepy_model_size"
 DEEPY_TOOL_GEN_IMAGE_KEY = "deepy_tool_gen_image"
 DEEPY_TOOL_EDIT_IMAGE_KEY = "deepy_tool_edit_image"
 DEEPY_TOOL_GEN_VIDEO_KEY = "deepy_tool_gen_video"
 DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY = "deepy_tool_gen_video_with_speech"
 DEEPY_TOOL_GEN_SONG_KEY = "deepy_tool_gen_song"
+DEEPY_TOOL_GEN_VIDEO_WITH_REFS_KEY = "deepy_tool_gen_video_with_refs"
 DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY = "deepy_tool_gen_speech_from_description"
 DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY = "deepy_tool_gen_speech_from_sample"
 DEEPY_CONTEXT_TOKENS_KEY = "deepy_context_tokens"
@@ -55,7 +58,7 @@ DEEPY_TYPE_ZERO = "zero"
 DEEPY_TYPE_PRIME = "prime"
 DEEPY_TYPE_DISABLED = "disabled"
 DEEPY_TYPE_DEFAULT = DEEPY_TYPE_ZERO
-DEEPY_PRIME_GUIDANCE_DEFAULT = "When choosing a model at the user's explicit request or because the configured template lacks a required capability, prefer the highest-quality base or full model unless the user prioritizes speed."
+DEEPY_PRIME_GUIDANCE_DEFAULT = "Use the current Speed and Model Size preferences for choices left unspecified by the user when selecting beyond configured templates."
 _DEEPY_PRIME_GUIDANCE_OLD_DEFAULT = "When several models can satisfy the request, prefer the highest-quality base or full model unless the user explicitly prioritizes speed or names another model."
 DEEPY_COMPACTION_TYPE_DISCARD = "discard"
 DEEPY_COMPACTION_TYPE_SUMMARIZE = "summarize"
@@ -65,6 +68,7 @@ DEEPY_DEFAULT_EDIT_IMAGE = "Flux Klein 9B"
 DEEPY_DEFAULT_GEN_VIDEO = "LTX-2 2.5 Distilled"
 DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH = "LTX-2.5 Distilled With Sound"
 DEEPY_DEFAULT_GEN_SONG = "ACE-Step 1.5 Turbo LM 1.7B"
+DEEPY_DEFAULT_GEN_VIDEO_WITH_REFS = "MiniMax H3 Ref2VA Pruned Turbo Lightx2v 8 Steps"
 DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION = "Qwen3 1.7B"
 DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE = "Index TTS 2"
 DEEPY_CONTEXT_TOKENS_MIN = 8192
@@ -194,6 +198,10 @@ def normalize_deepy_tool_gen_video(value: Any) -> str:
 
 def normalize_deepy_tool_gen_video_with_speech(value: Any) -> str:
     return _normalize_deepy_variant(value, _DEEPY_GEN_VIDEO_WITH_SPEECH_ALIASES, DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH)
+
+
+def normalize_deepy_tool_gen_video_with_refs(value: Any) -> str:
+    return _normalize_deepy_variant(value, {}, DEEPY_DEFAULT_GEN_VIDEO_WITH_REFS)
 
 
 def normalize_deepy_tool_gen_song(value: Any) -> str:
@@ -488,6 +496,7 @@ def normalize_deepy_runtime_config(server_config: dict[str, Any] | None) -> dict
     runtime_config[DEEPY_TOOL_GEN_VIDEO_KEY] = normalize_deepy_tool_gen_video(runtime_config.get(DEEPY_TOOL_GEN_VIDEO_KEY, DEEPY_DEFAULT_GEN_VIDEO))
     runtime_config[DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY] = normalize_deepy_tool_gen_video_with_speech(runtime_config.get(DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY, DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH))
     runtime_config[DEEPY_TOOL_GEN_SONG_KEY] = normalize_deepy_tool_gen_song(runtime_config.get(DEEPY_TOOL_GEN_SONG_KEY, DEEPY_DEFAULT_GEN_SONG))
+    runtime_config[DEEPY_TOOL_GEN_VIDEO_WITH_REFS_KEY] = normalize_deepy_tool_gen_video_with_refs(runtime_config.get(DEEPY_TOOL_GEN_VIDEO_WITH_REFS_KEY, DEEPY_DEFAULT_GEN_VIDEO_WITH_REFS))
     runtime_config[DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY] = normalize_deepy_tool_gen_speech_from_description(runtime_config.get(DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY, DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION))
     runtime_config[DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY] = normalize_deepy_tool_gen_speech_from_sample(runtime_config.get(DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY, DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE))
     runtime_config[DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY] = normalize_deepy_auto_cancel_queue_tasks(runtime_config.get(DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY, DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT))
@@ -530,6 +539,7 @@ def get_deepy_default_runtime_config() -> dict[str, Any]:
         DEEPY_TOOL_GEN_VIDEO_KEY: DEEPY_DEFAULT_GEN_VIDEO,
         DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY: DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH,
         DEEPY_TOOL_GEN_SONG_KEY: DEEPY_DEFAULT_GEN_SONG,
+        DEEPY_TOOL_GEN_VIDEO_WITH_REFS_KEY: DEEPY_DEFAULT_GEN_VIDEO_WITH_REFS,
         DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY: DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION,
         DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY: DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE,
         DEEPY_CONTEXT_TOKENS_KEY: DEEPY_CONTEXT_TOKENS_DEFAULT,
@@ -539,6 +549,8 @@ def get_deepy_default_runtime_config() -> dict[str, Any]:
         DEEPY_REPETITION_PENALTY_KEY: DEEPY_REPETITION_PENALTY_DEFAULT,
         DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY: "",
         DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY: DEEPY_PRIME_GUIDANCE_DEFAULT,
+        DEEPY_MODEL_SPEED_KEY: "fast",
+        DEEPY_MODEL_SIZE_KEY: "smaller",
         DEEPY_PRIME_MCP_SERVERS_KEY: {},
         DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY: DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT,
         DEEPY_ALLOW_READ_FILE_SYSTEM_KEY: DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT,

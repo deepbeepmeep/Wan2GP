@@ -96,7 +96,7 @@ class DeepyService(WorkspaceSupport, GenerationRuntime):
     def _settings_form(self):
         current = ui_settings.get_persisted_assistant_tool_ui_settings(self._deps.get_server_config())
         current.update(self._session.tool_ui_settings)
-        return ui_settings.get_simplified_settings_form(current)
+        return ui_settings.get_simplified_settings_form(current, prime=self._deps.controller.get_deepy_type() == "prime")
 
     def settings(self):
         with self._mutation_lock:

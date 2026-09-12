@@ -130,7 +130,7 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
     assistant_badge = str(session.current_turn.get("assistant_badge", "") or "") if isinstance(session.current_turn, dict) else ""
     if assistant_badge:
         _send(send_cmd, assistant_chat.set_message_badge(session, assistant_id, assistant_badge))
-    user_message = assistant_chat.build_user_model_message(session, text)
+    user_message = assistant_chat.build_user_model_message(session, text, toolbox=toolbox)
     session.messages.append(user_message)
     checkpoint_assistant_turn(session)
     answer_parts: list[str] = []

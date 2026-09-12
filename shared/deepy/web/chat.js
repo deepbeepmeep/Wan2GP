@@ -7,6 +7,8 @@ window.WAC = WAC;
 
 WAC.state = WAC.state || { order: [], messages: {}, status: null, stats: null };
 WAC.blockState = WAC.blockState || {};
+WAC.streamingReveals = WAC.streamingReveals || new Map();
+WAC.streamingRevealFrame = WAC.streamingRevealFrame || 0;
 WAC.init = WAC.init || false;
 WAC.observer = WAC.observer || null;
 WAC.eventNode = WAC.eventNode || null;
@@ -578,6 +580,7 @@ WAC.applyDisclosureState = function (root) {
 WAC.handleDisclosureToggle = function (event) {
   if (WAC.replayDepth > 0) return;
   const node = event && event.target;
+  if (node && node.tagName === 'DETAILS' && !node.open) WAC.clearStreamingReveals(node, true);
   if (!node || !node.classList || !node.classList.contains('chat__disclosure')) return;
   const key = WAC.disclosureKey(node);
   if (!key) return;
@@ -596,6 +599,7 @@ WAC.toggleDisclosure = function (node, pointerY, fromBottom = false) {
     if (before.top < bounds.top) targetY = Math.min(pointerY, bounds.bottom - before.height / 2);
   }
   node.open = !node.open;
+  WAC.clearStreamingReveals(node, true);
   const key = node.matches('.chat__disclosure') ? WAC.disclosureKey(node) : '';
   if (key) WAC.disclosureState[key] = !!node.open;
   // Settle compact media/statement placement before anchoring, in the same frame.
@@ -1635,11 +1639,24 @@ WAC.renderStreamingMarkdown = function (node, value) {
   const text = String(value || '');
   let state = node.__wangpStreamingMarkdown;
   if (state && text === state.source) return;
-  if (!state || !text.startsWith(state.source) || state.tablePending) state = WAC.resetStreamingMarkdown(node);
+  if (!state || !text.startsWith(state.source)) state = WAC.resetStreamingMarkdown(node);
   const delta = text.slice(state.source.length);
+  WAC.appendStreamingMarkdown(node, delta);
+};
+
+// The reveal loop supplies only new text; completed Markdown stays untouched.
+WAC.appendStreamingMarkdown = function (node, delta) {
+  const state = node.__wangpStreamingMarkdown || WAC.resetStreamingMarkdown(node);
+  if (state.tablePending) {
+    const pending = state.tablePending;
+    state.table.body.parentNode.remove();
+    node.appendChild(pending.tableHeader.span);
+    node.appendChild(pending.tableHeader.break);
+    Object.assign(state, pending);
+  }
   const previousBuffer = state.buffer;
   state.buffer += delta;
-  state.source = text;
+  state.source += delta;
   let completedLine = false;
   let newline = state.buffer.indexOf('\n');
   while (newline >= 0) {
@@ -1655,8 +1672,9 @@ WAC.renderStreamingMarkdown = function (node, value) {
     if (separators.length === state.tableHeader.cells.length && separators.every((cell) => /^:?-{3,}:?$/.test(cell))) {
       if (state.tail) state.tail.remove();
       state.tail = null;
+      const pending = { ...state, tablePending: null };
       WAC.renderStreamingMarkdownLine(node, state, state.buffer);
-      state.tablePending = true;
+      state.tablePending = pending;
       return;
     }
   }
@@ -1665,7 +1683,8 @@ WAC.renderStreamingMarkdown = function (node, value) {
   const listMarkerArrived = listMarker.test(state.buffer) && !listMarker.test(previousBuffer);
   if (state.tail && !state.table && !completedLine && !delimiterArrived && !listMarkerArrived && state.buffer === previousBuffer + delta) {
     const target = ['OL', 'UL'].includes(state.tail.tagName) ? state.tail.lastElementChild : state.tail;
-    target.appendChild(document.createTextNode(delta));
+    if (target.lastChild && target.lastChild.nodeType === 3) target.lastChild.appendData(delta);
+    else target.appendChild(document.createTextNode(delta));
     return;
   }
   if (state.tail) state.tail.remove();
@@ -1690,6 +1709,67 @@ WAC.renderStreamingMarkdown = function (node, value) {
     WAC.appendStreamingInlineMarkdown(state.tail, state.buffer);
     node.appendChild(state.tail);
   }
+};
+
+WAC.shouldRevealStreamingText = function (live) {
+  return !WAC.replayDepth && !document.hidden && !window.matchMedia('(prefers-reduced-motion: reduce)').matches && !live.closest('details:not([open])') && live.getClientRects().length > 0;
+};
+
+WAC.clearStreamingReveals = function (root, flush = false) {
+  for (const [live, reveal] of WAC.streamingReveals) {
+    if (root && root !== live && !root.contains(live)) continue;
+    WAC.streamingReveals.delete(live);
+    if (flush && live.isConnected) {
+      WAC.appendStreamingMarkdown(live, reveal.text.slice(live.__wangpStreamingMarkdown.source.length));
+      if (reveal.finalEvent) WAC.finalizeBlock(reveal.finalEvent);
+    }
+  }
+  if (!WAC.streamingReveals.size && WAC.streamingRevealFrame) {
+    window.cancelAnimationFrame(WAC.streamingRevealFrame);
+    WAC.streamingRevealFrame = 0;
+  }
+};
+
+WAC.queueStreamingReveal = function (live, text) {
+  const now = performance.now();
+  const reveal = WAC.streamingReveals.get(live) || { last: now, text: '' };
+  reveal.text = text;
+  // Catch up a burst in roughly 700 ms, speeding up when more text arrives.
+  reveal.speed = Math.max(180, (text.length - live.__wangpStreamingMarkdown.source.length) / 0.7);
+  WAC.streamingReveals.set(live, reveal);
+  if (!WAC.shouldRevealStreamingText(live)) WAC.clearStreamingReveals(live, true);
+  else if (!WAC.streamingRevealFrame) WAC.streamingRevealFrame = window.requestAnimationFrame(WAC.stepStreamingReveals);
+};
+
+WAC.stepStreamingReveals = function (now) {
+  WAC.streamingRevealFrame = 0;
+  // Read visibility before changing the DOM, then scroll once for the whole frame.
+  const ready = [];
+  for (const [live, reveal] of WAC.streamingReveals) {
+    if (!live.isConnected) { WAC.streamingReveals.delete(live); continue; }
+    const animate = WAC.shouldRevealStreamingText(live);
+    if (!animate || now - reveal.last >= 32) ready.push({ live, reveal, animate });
+  }
+  if (ready.length) {
+    const scrollState = WAC.captureAutoscrollState();
+    for (const { live, reveal, animate } of ready) {
+      const start = live.__wangpStreamingMarkdown.source.length;
+      let end = animate ? Math.min(reveal.text.length, start + Math.max(1, Math.floor(reveal.speed * (now - reveal.last) / 1000))) : reveal.text.length;
+      // Keep ordinary words together, without stalling on long URLs or unspaced text.
+      const limit = Math.min(reveal.text.length, end + 32);
+      while (end < limit && !/\s/u.test(reveal.text[end])) end += 1;
+      if (end < reveal.text.length && /[\uDC00-\uDFFF]/u.test(reveal.text[end])) end += 1;
+      while (end < reveal.text.length && /\s/u.test(reveal.text[end])) end += 1;
+      WAC.appendStreamingMarkdown(live, reveal.text.slice(start, end));
+      reveal.last = now;
+      if (end === reveal.text.length) {
+        WAC.streamingReveals.delete(live);
+        if (reveal.finalEvent) WAC.finalizeBlock(reveal.finalEvent);
+      }
+    }
+    WAC.applyAutoscrollState(scrollState);
+  }
+  if (WAC.streamingReveals.size) WAC.streamingRevealFrame = window.requestAnimationFrame(WAC.stepStreamingReveals);
 };
 
 WAC.incrementalMessageState = function (messageId) {
@@ -1748,7 +1828,7 @@ WAC.upsertBlock = function (event) {
   if (!next) return WAC.markSyncRequired(event);
   const initialText = String(event.text || '');
   const nextLive = WAC.liveTextNode(next);
-  if (nextLive) WAC.renderStreamingMarkdown(nextLive, initialText);
+  if (nextLive) WAC.resetStreamingMarkdown(nextLive);
   const existing = WAC.blockNode(event.message_id, event.block_id);
   let node = next;
   if (existing) {
@@ -1760,6 +1840,12 @@ WAC.upsertBlock = function (event) {
   WAC.rememberBlock(event, node, initialText, !event.streaming);
   WAC.hideEmpty();
   WAC.applyDisclosureState(messageNode);
+  const live = WAC.liveTextNode(node);
+  if (live) {
+    WAC.resetStreamingMarkdown(live);
+    if (existing) WAC.renderStreamingMarkdown(live, initialText);
+    else WAC.queueStreamingReveal(live, initialText);
+  }
   WAC.applyAutoscrollState(scrollState);
 };
 
@@ -1782,8 +1868,13 @@ WAC.appendBlockText = function (event) {
   if (!Number.isFinite(start) || current.length !== start) return WAC.markSyncRequired(event);
   const scrollState = WAC.captureAutoscrollState();
   const suffix = String(event.text || '');
-  WAC.renderStreamingMarkdown(live, current + suffix);
-  WAC.rememberBlock(event, node, current + suffix, false);
+  const known = WAC.incrementalMessageState(event.message_id).blocks[String(event.block_id)];
+  if (known) { known.text = current + suffix; known.finalized = false; }
+  else WAC.rememberBlock(event, node, current + suffix, false);
+  if (!live.__wangpStreamingMarkdown) WAC.renderStreamingMarkdown(live, current);
+  const reveal = WAC.streamingReveals.get(live);
+  if (reveal) reveal.finalEvent = null;
+  WAC.queueStreamingReveal(live, current + suffix);
   WAC.applyAutoscrollState(scrollState);
 };
 
@@ -1792,12 +1883,25 @@ WAC.replaceBlockText = function (event) {
   const live = WAC.liveTextNode(node);
   if (!node || !live) return WAC.markSyncRequired(event);
   const scrollState = WAC.captureAutoscrollState();
+  WAC.clearStreamingReveals(live);
   WAC.renderStreamingMarkdown(live, String(event.text || ''));
   WAC.rememberBlock(event, node, String(event.text || ''), false);
   WAC.applyAutoscrollState(scrollState);
 };
 
 WAC.finalizeBlock = function (event) {
+  const live = WAC.liveTextNode(WAC.blockNode(event.message_id, event.block_id));
+  const reveal = WAC.streamingReveals.get(live);
+  if (reveal && WAC.shouldRevealStreamingText(live) && String(event.text || '').startsWith(live.__wangpStreamingMarkdown.source)) {
+    reveal.finalEvent = event;
+    WAC.queueStreamingReveal(live, String(event.text || ''));
+    const known = WAC.incrementalMessageState(event.message_id).blocks[String(event.block_id)];
+    known.text = String(event.text || '');
+    known.html = event.html;
+    known.finalized = true;
+    return;
+  }
+  if (live) WAC.clearStreamingReveals(live);
   if (!WAC.messageNode(event.message_id) && event.message) WAC.upsertMessage(event.message, true, event.message_index);
   const messageNode = WAC.messageNode(event.message_id);
   const current = WAC.blockNode(event.message_id, event.block_id);
@@ -1814,6 +1918,7 @@ WAC.finalizeBlock = function (event) {
 
 WAC.removeBlock = function (event) {
   const node = WAC.blockNode(event.message_id, event.block_id);
+  if (node) WAC.clearStreamingReveals(node);
   const scrollState = WAC.captureAutoscrollState();
   WAC.patchCompactMedia?.(node, null);
   if (node) node.remove();
@@ -1868,6 +1973,7 @@ WAC.patchDisclosureNode = function (current, next) {
 };
 
 WAC.patchBlockNode = function (current, next) {
+  WAC.clearStreamingReveals(current);
   const blockIndex = current.dataset.blockIndex;
   WAC.patchCompactMedia?.(current, next);
   if (current.matches('.chat__disclosure')) WAC.patchDisclosureNode(current, next);
@@ -2011,6 +2117,7 @@ WAC.removeMessage = function (messageId) {
   if (!transcript) return;
   const scrollState = WAC.captureAutoscrollState();
   const existing = transcript.querySelector(`[data-message-id="${CSS.escape(String(messageId))}"]`);
+  if (existing) WAC.clearStreamingReveals(existing);
   if (existing) existing.remove();
   delete WAC.state.messages[String(messageId)];
   delete WAC.blockState[String(messageId)];
@@ -2206,6 +2313,7 @@ WAC.setStats = function (stats) {
 };
 
 WAC.sync = function (messages, status, stats, acknowledgedSubmissionIds) {
+  WAC.clearStreamingReveals();
   WAC.ensureShell();
   WAC.captureDisclosureState(WAC.transcript());
   const followSubmittedRequest = WAC.syncAcknowledgesFollowedSubmission(messages, acknowledgedSubmissionIds);
@@ -2221,6 +2329,7 @@ WAC.sync = function (messages, status, stats, acknowledgedSubmissionIds) {
 };
 
 WAC.reset = function () {
+  WAC.clearStreamingReveals();
   WAC.setPendingUploadCount(0);
   WAC.compactScrollState = null;
   if (WAC.queuedEditMessageId) WAC.finishQueuedRequestEdit();
@@ -2336,6 +2445,9 @@ WAC.installObserver = function () {
 WAC.installDockBridge = function () {
   if (WAC.dockBridgeInstalled) return;
   WAC.dockBridgeInstalled = true;
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) WAC.clearStreamingReveals(null, true);
+  });
   WAC.dockOpen = false;
   try { window.localStorage.removeItem('wangp-assistant-chat-open'); } catch (_error) {}
   document.addEventListener('beforeinput', (event) => {

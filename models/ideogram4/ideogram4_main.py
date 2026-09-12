@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from shared.utils.phase_progress import vae_decoding_progress, text_encoding_progress, generation_progress
 import math
 import os
 
@@ -253,19 +254,20 @@ class Ideogram4WanPipeline:
             tap_layers = set(QWEN3_VL_ACTIVATION_LAYERS)
             captured = {}
             hidden_states = inputs_embeds
-            for layer_idx, decoder_layer in enumerate(language_model.layers):
-                hidden_states = decoder_layer(
-                    hidden_states,
-                    attention_mask=causal_mask,
-                    position_ids=text_position_ids,
-                    past_key_values=None,
-                    cache_position=cache_position,
-                    position_embeddings=position_embeddings,
-                )
-                if layer_idx in tap_layers:
-                    captured[layer_idx] = hidden_states.clone()
-                if self._interrupt:
-                    return None
+            with text_encoding_progress(language_model.layers, prompt_count=token_ids.shape[0]):
+                for layer_idx, decoder_layer in enumerate(language_model.layers):
+                    hidden_states = decoder_layer(
+                        hidden_states,
+                        attention_mask=causal_mask,
+                        position_ids=text_position_ids,
+                        past_key_values=None,
+                        cache_position=cache_position,
+                        position_embeddings=position_embeddings,
+                    )
+                    if layer_idx in tap_layers:
+                        captured[layer_idx] = hidden_states.clone()
+                    if self._interrupt:
+                        return None
         del hidden_states, inputs_embeds, position_embeddings, causal_mask, position_ids, mrope_position_ids, cache_position, text_position_ids
         first = captured[QWEN3_VL_ACTIVATION_LAYERS[0]]
         batch_size, seq_len, hidden_size = first.shape
@@ -281,7 +283,8 @@ class Ideogram4WanPipeline:
     def _decode_image(self, z: torch.Tensor, grid_h: int, grid_w: int) -> torch.Tensor:
         z = self._unpack_vae_latents(z, grid_h, grid_w)
         vae_dtype = next(self.autoencoder.decoder.parameters()).dtype
-        return self.autoencoder.decoder(z.to(vae_dtype)).float().clamp(-1.0, 1.0)
+        with vae_decoding_progress(1, self.autoencoder.decoder):
+            return self.autoencoder.decoder(z.to(vae_dtype)).float().clamp(-1.0, 1.0)
 
     def _decode(self, z: torch.Tensor, grid_h: int, grid_w: int) -> torch.Tensor:
         return self._decode_image(z, grid_h, grid_w).cpu().transpose(0, 1)
@@ -479,11 +482,11 @@ class Ideogram4WanPipeline:
             if callable(set_progress_status):
                 progress_label = getattr(vae_upsampler, "progress_label", "VAE Spatial Upsampling")
                 if current_step is None or total_steps is None:
-                    set_progress_status(f"{progress_label} in progress")
+                    set_progress_status(f"{progress_label} in Progress")
                 else:
                     total_steps = int(total_steps)
                     step_no = min(int(current_step) + 1, total_steps)
-                    set_progress_status(f"{progress_label} in progress ({step_no}/{total_steps})")
+                    set_progress_status(f"{progress_label} in Progress ({step_no}/{total_steps})")
 
         _vae_upsampler_progress(None)
         lq_image_ref = [self._decode_image(z, grid_h=grid_h, grid_w=grid_w)]
@@ -558,6 +561,7 @@ class model_factory:
             dtype=VAE_dtype,
         )
 
+    @generation_progress
     def generate(
         self,
         seed=None,

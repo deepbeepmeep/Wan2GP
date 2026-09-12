@@ -32,6 +32,7 @@ class family_handler:
             ("LanPaint (15 steps): ~15x slower, very hard task", 5),
         ]
         result = {
+            **({"accelerated": "native"} if base_model_type in (_TURBO_MODEL_TYPE, _TURBO_EDIT_MODEL_TYPE) else {}),
             "image_outputs": True,
             "guidance_max_phases": 1 if base_model_type in (_RAW_MODEL_TYPE, _RAW_EDIT_MODEL_TYPE) else 0,
             "NAG": True,
@@ -81,6 +82,7 @@ class family_handler:
             })
         if edit:
             result.update({
+                "specialities": [{"name": "identity-preserving edits", "aliases": ["identity preservation"]}, {"name": "subject placement"}],
                 "infos": "Edit images with the built-in Identity Edit LoRA by combining the Text Prompt (`prompt`) with Reference Images (`image_refs`). One reference supplies the image to edit; with two, use the scene first and the person or object second, and identify their roles in the prompt. Reference mode `KI` keeps the first image as the main scene; `I` treats references as people or objects. Text-only generation is also available.\n\nInpainting combines a Control Image and mask with the prompt; choose Masked Denoising or a LanPaint method. A Control Image is placed before other references, so it becomes image 1 in the prompt. Outpainting extends the source canvas using the selected margins. Enable background removal only for references whose surrounding scene should be discarded.",
                 "prompt_infos": 'Use a short, direct editing instruction and name what must remain unchanged. For example: "Change the car to matte black; keep its shape, camera angle, lighting and surroundings." For two-image composition: "Place the person from image 2 at the table in image 1; preserve their face and clothing, and match the scene lighting." Image numbers follow input order, including a Control Image placed first.\n\nState identity, pose, clothing or background constraints explicitly when they matter. For inpainting, identify the replacement inside the mask; for outpainting, describe the scene continuing into the new area. Quote exact visible text. For text-only generation, describe the finished image instead of referring to a source.',
                 "deepy_infos": "Identity Edit combines `prompt` and ordered `image_refs`: one source, or scene first + person/object second. `KI` keeps the first image as the main scene; `I` uses people/objects. A Control Image is prepended as image 1. Inpainting uses source + mask with Masked Denoising or LanPaint; outpainting extends the canvas. Text-only generation is supported.",

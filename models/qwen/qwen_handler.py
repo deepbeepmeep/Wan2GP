@@ -27,6 +27,7 @@ class family_handler():
         extra_model_def["excluded_spatial_upsamplers"] = ["qwen_pid(1.5)"]
 
         if base_model_type in ["qwen_image_layered_20B"]:
+            extra_model_def["specialities"] = [{"name": "layer decomposition", "aliases": ["editable layers"], "description": "Decompose an input image into RGBA layers."}]
             extra_model_def["batch_size_label"] = "Number of Layers"
             extra_model_def["set_video_prompt_type"] = "V"
             extra_model_def["guide_preprocessing"] = {

@@ -452,13 +452,15 @@ class DeepyController:
                 force_release_on_acquire=True,
             )
 
-    def update_tool_ui_settings(self, state, *, auto_cancel_queue_tasks=None, separate_requests_with_empty_line=None, use_template_properties=None, width=None, height=None, num_frames=None, audio_duration=None, seed=None, video_with_speech_variant=None, image_generator_variant=None, image_editor_variant=None, video_generator_variant=None, song_variant=None, speech_from_description_variant=None, speech_from_sample_variant=None, persist=False):
+    def update_tool_ui_settings(self, state, *, auto_cancel_queue_tasks=None, separate_requests_with_empty_line=None, use_template_properties=None, model_speed=None, model_size=None, width=None, height=None, num_frames=None, audio_duration=None, seed=None, video_with_speech_variant=None, image_generator_variant=None, image_editor_variant=None, video_generator_variant=None, song_variant=None, with_refs_variant=None, speech_from_description_variant=None, speech_from_sample_variant=None, persist=False):
         session = get_or_create_assistant_session(state)
         normalized = set_assistant_tool_ui_settings(
             session,
             auto_cancel_queue_tasks=auto_cancel_queue_tasks,
             separate_requests_with_empty_line=separate_requests_with_empty_line,
             use_template_properties=use_template_properties,
+            model_speed=model_speed,
+            model_size=model_size,
             width=width,
             height=height,
             num_frames=num_frames,
@@ -469,6 +471,7 @@ class DeepyController:
             image_editor_variant=image_editor_variant,
             video_generator_variant=video_generator_variant,
             song_variant=song_variant,
+            with_refs_variant=with_refs_variant,
             speech_from_description_variant=speech_from_description_variant,
             speech_from_sample_variant=speech_from_sample_variant,
         )

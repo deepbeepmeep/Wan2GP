@@ -16,7 +16,7 @@
     observer.disconnect();
     const legacyInput = WAC.eventSource();
     if (legacyInput?.__wangpAssistantEventValueObserved) delete legacyInput.value;
-    let galleryRevision = -1, settingsRevision = -1, generating = false, noticeTimer = null, unauthorized = false;
+    let galleryRevision = -1, settingsRevision = -1, previewRevision = -1, generating = false, noticeTimer = null, unauthorized = false;
     let restoration = null, restoredId = null;
     const base = marker.dataset.deepyHybrid;
     const openApp = document.createElement('a');
@@ -47,6 +47,7 @@
       galleryRevision = view.gallery; settingsRevision = view.settings;
       if (gallery) {click('deepy_hybrid_gallery_sync'); viewer.invalidate();}
       if (settings) click('deepy_hybrid_settings_sync');
+      if (view.preview !== previewRevision) {previewRevision = view.preview; click('deepy_hybrid_preview_sync');}
     }
     function catalog(state) {
       WAC.consumePayload({type: 'session_catalog', sessions: state.sessions, active_session_id: state.active_session_id, multi_session_enabled: state.multi_session});
@@ -69,7 +70,7 @@
       generating = !!data;
     }
     const transport = new DeepyConnection(base, {
-      snapshot: state => {WAC.applyDisplaySettings(state.display_settings); renderWorkspaces(state.workspaces, true); restoring(state.restoration); WAC.consumePayload(state.chat); catalog(state); galleryRevision = settingsRevision = -1; refresh(state.host_view); progress(state.progress); window.WanGPFormSync.refresh(state.forms);},
+      snapshot: state => {WAC.applyDisplaySettings(state.display_settings); renderWorkspaces(state.workspaces, true); restoring(state.restoration); WAC.consumePayload(state.chat); catalog(state); galleryRevision = settingsRevision = previewRevision = -1; refresh(state.host_view); progress(state.progress); window.WanGPFormSync.refresh(state.forms);},
       event: event => {
         if (event.type === 'snapshot') {WAC.applyDisplaySettings(event.data.display_settings); renderWorkspaces(event.data.workspaces); restoring(event.data.restoration); WAC.consumePayload(event.data.chat); catalog(event.data); refresh(event.data.host_view); progress(event.data.progress); window.WanGPFormSync.refresh(event.data.forms);}
         else if (event.type === 'workspaces') {renderWorkspaces(event.data); viewer.invalidate();}

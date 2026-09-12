@@ -224,14 +224,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
         with gr.Column():
             with gr.Tabs():
                 with gr.Tab("General"):
-                    self.voice_mode_choice = gr.Dropdown(choices=VOICE_MODE_CHOICES, value=lambda: voice_mode(self.server_config), label="Microphone transcription", elem_id="voice_transcription_mode", interactive=not self.args.lock_config)
-                    self.deepy_voice_language_choice = gr.Dropdown(
-                        choices=deepy_voice_language_choices(),
-                        value=lambda: normalize_deepy_voice_language(self.server_config.get(DEEPY_VOICE_LANGUAGE_KEY, "auto")),
-                        label="Voice transcription language",
-                        info="Auto detects the spoken language. Selecting a known language can improve recognition of short recordings. --deepy-voice-language overrides this choice.",
-                        elem_id="deepy_voice_language_choice", interactive=not self.args.lock_config,
-                    )
                     self.transformer_types_choices = HierarchySelector(
                         hierarchy=self.create_models_selector_hierarchy(self.displayed_model_types),
                         value=self.transformer_types,
@@ -334,6 +326,14 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         value=self.server_config.get(gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY, 1),
                         label="Process Queues when Browser is not in focus (may drain more energy)",
                         interactive=not self.args.lock_config
+                    )
+                    self.voice_mode_choice = gr.Dropdown(choices=VOICE_MODE_CHOICES, value=lambda: voice_mode(self.server_config), label="Microphone transcription", elem_id="voice_transcription_mode", interactive=not self.args.lock_config)
+                    self.deepy_voice_language_choice = gr.Dropdown(
+                        choices=deepy_voice_language_choices(),
+                        value=lambda: normalize_deepy_voice_language(self.server_config.get(DEEPY_VOICE_LANGUAGE_KEY, "auto")),
+                        label="Voice transcription language",
+                        info="Auto detects the spoken language. Selecting a known language can improve recognition of short recordings. --deepy-voice-language overrides this choice.",
+                        elem_id="deepy_voice_language_choice", interactive=not self.args.lock_config,
                     )
 
                 with gr.Tab("Performance"):
@@ -563,32 +563,32 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         )
                         self.deepy_allow_read_file_system_choice.change(fn=lambda value: (gr.update(visible=value != DEEPY_FILE_SYSTEM_ACCESS_DISABLED), gr.update(visible=value != DEEPY_FILE_SYSTEM_ACCESS_DISABLED)), inputs=[self.deepy_allow_read_file_system_choice], outputs=[self.deepy_file_system_paths_choice, self.deepy_read_everywhere_choice], show_progress="hidden")
                         self.deepy_type_choice.change(fn=lambda value: tuple(gr.update(**settings) for settings in deepy_filesystem_ui_state(value)), inputs=[self.deepy_type_choice], outputs=[self.deepy_allow_read_file_system_choice, self.deepy_read_everywhere_choice], show_progress="hidden")
-                        with gr.Tabs(selected="prime_guidance" if deepy_type_default == DEEPY_TYPE_PRIME else "zero_prompt"):
-                            with gr.Tab("Deepy Zero Prompt", id="zero_prompt"):
-                                self.deepy_zero_custom_system_prompt_choice = gr.Textbox(
-                                    value=normalize_deepy_custom_system_prompt(self.server_config.get(DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY, "")),
-                                    lines=7,
-                                    label="Deepy Zero Custom System Prompt",
-                                    info="Added after the built-in Deepy Zero system prompt on the next user interaction.",
-                                )
-                            with gr.Tab("Deepy Prime Guidance", id="prime_guidance"):
-                                self.deepy_prime_custom_system_prompt_choice = gr.Textbox(
-                                    value=prime_guidance_value,
-                                    lines=7,
-                                    label="Deepy Prime User Guidance",
-                                    info="Treated as the user's standing preferences and appended to Deepy Prime's trusted system instructions.",
-                                )
-                                self.deepy_prime_mcp_servers_choice = gr.Textbox(
-                                    value=json.dumps(self.server_config.get(DEEPY_PRIME_MCP_SERVERS_KEY, {}), indent=2),
-                                    lines=8,
-                                    label="External MCP Servers (JSON)",
-                                    info='Optional servers keyed by name. Use {"transport":"stdio","command":"...","args":[]} or {"transport":"streamable-http","url":"..."}.',
-                                )
-                                self.deepy_mcp_auto_discover_paths_choice = gr.Checkbox(
-                                    value=normalize_deepy_mcp_auto_discover_paths(self.server_config.get(DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT)),
-                                    label="Allow Searching for Changed MCP Executable Paths",
-                                    info="Disabled by default. If a versioned stdio executable disappears, search only sibling version folders under the same runtime root for the newest exact filename.",
-                                )
+                        with gr.Column(visible=deepy_type_default == DEEPY_TYPE_ZERO) as self.deepy_zero_options:
+                            self.deepy_zero_custom_system_prompt_choice = gr.Textbox(
+                                value=normalize_deepy_custom_system_prompt(self.server_config.get(DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY, "")),
+                                lines=7,
+                                label="Deepy Zero Custom System Prompt",
+                                info="Added after the built-in Deepy Zero system prompt on the next user interaction.",
+                            )
+                        with gr.Column(visible=deepy_type_default == DEEPY_TYPE_PRIME) as self.deepy_prime_options:
+                            self.deepy_prime_custom_system_prompt_choice = gr.Textbox(
+                                value=prime_guidance_value,
+                                lines=7,
+                                label="Deepy Prime User Guidance",
+                                info="Treated as the user's standing preferences and appended to Deepy Prime's trusted system instructions.",
+                            )
+                            self.deepy_prime_mcp_servers_choice = gr.Textbox(
+                                value=json.dumps(self.server_config.get(DEEPY_PRIME_MCP_SERVERS_KEY, {}), indent=2),
+                                lines=8,
+                                label="External MCP Servers (JSON)",
+                                info='Optional servers keyed by name. Use {"transport":"stdio","command":"...","args":[]} or {"transport":"streamable-http","url":"..."}.',
+                            )
+                            self.deepy_mcp_auto_discover_paths_choice = gr.Checkbox(
+                                value=normalize_deepy_mcp_auto_discover_paths(self.server_config.get(DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT)),
+                                label="Allow Searching for Changed MCP Executable Paths",
+                                info="Disabled by default. If a versioned stdio executable disappears, search only sibling version folders under the same runtime root for the newest exact filename.",
+                            )
+                        self.deepy_type_choice.change(fn=lambda value: (gr.update(visible=value == DEEPY_TYPE_ZERO), gr.update(visible=value == DEEPY_TYPE_PRIME)), inputs=[self.deepy_type_choice], outputs=[self.deepy_zero_options, self.deepy_prime_options], show_progress="hidden")
                         self.deepy_requirement_md = gr.Markdown(value=deepy_requirement_message(self.server_config) if deepy_type_default != DEEPY_TYPE_DISABLED else "")
 
                 with gr.Tab("Outputs"):
@@ -937,7 +937,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     deepy_compaction_thinking_choice = deepy_compaction_type_choice == DEEPY_COMPACTION_CHOICE_THINKING
                     deepy_compaction_type_choice = normalize_deepy_compaction_type(deepy_compaction_type_choice)
                     deepy_type_choice, deepy_compaction_type_choice, deepy_context_tokens_choice = validate_deepy_version_config(deepy_type_choice, deepy_compaction_type_choice, deepy_context_tokens_choice, enhancer_enabled_choice, compaction_thinking=deepy_compaction_thinking_choice)
-                deepy_prime_mcp_servers_choice = normalize_deepy_prime_mcp_servers(deepy_prime_mcp_servers_choice)
+                if deepy_type_choice == DEEPY_TYPE_PRIME:
+                    deepy_prime_mcp_servers_choice = normalize_deepy_prime_mcp_servers(deepy_prime_mcp_servers_choice)
                 if deepy_allow_read_file_system_choice != DEEPY_FILE_SYSTEM_ACCESS_DISABLED:
                     deepy_file_system_paths_choice = normalize_deepy_file_system_paths(deepy_file_system_paths_choice)
                     parse_deepy_file_system_paths(deepy_file_system_paths_choice)
@@ -1033,13 +1034,15 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 DEEPY_REPETITION_PENALTY_KEY: normalize_deepy_repetition_penalty(deepy_repetition_penalty_choice),
             })
         if deepy_enabled_choice:
-            new_server_config.update({
-                DEEPY_ALLOW_READ_FILE_SYSTEM_KEY: normalize_deepy_file_system_access(deepy_allow_read_file_system_choice),
-                DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY: normalize_deepy_custom_system_prompt(deepy_zero_custom_system_prompt_choice),
-                DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY: normalize_deepy_prime_guidance(deepy_prime_custom_system_prompt_choice),
-                DEEPY_PRIME_MCP_SERVERS_KEY: deepy_prime_mcp_servers_choice,
-                DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY: normalize_deepy_mcp_auto_discover_paths(deepy_mcp_auto_discover_paths_choice),
-            })
+            new_server_config[DEEPY_ALLOW_READ_FILE_SYSTEM_KEY] = normalize_deepy_file_system_access(deepy_allow_read_file_system_choice)
+            if deepy_type_choice == DEEPY_TYPE_ZERO:
+                new_server_config[DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_custom_system_prompt(deepy_zero_custom_system_prompt_choice)
+            if deepy_type_choice == DEEPY_TYPE_PRIME:
+                new_server_config.update({
+                    DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY: normalize_deepy_prime_guidance(deepy_prime_custom_system_prompt_choice),
+                    DEEPY_PRIME_MCP_SERVERS_KEY: deepy_prime_mcp_servers_choice,
+                    DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY: normalize_deepy_mcp_auto_discover_paths(deepy_mcp_auto_discover_paths_choice),
+                })
             if not deepy_remote:
                 new_server_config[DEEPY_VRAM_MODE_KEY] = normalize_deepy_vram_mode(deepy_vram_mode_choice)
             if qwen_local:

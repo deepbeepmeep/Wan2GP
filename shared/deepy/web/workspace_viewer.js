@@ -5,13 +5,14 @@
   icons.broom = '<path d="m20 3-8 10m-3-2 6 5-5 6-8-7 7-4Zm-3 5 4 4"/>';
   icons.lock = '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4M12 14v3"/>';
   icons.unlock = '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0M12 14v3"/>';
+  icons.create = '<path d="M12 5v14M5 12h14"/>';
   class WorkspaceViewer {
     constructor(picker, transport) {
       this.picker = picker; this.transport = transport; this.source = 'video'; this.selections = {video: new Set(), audio: new Set()}; this.requestId = 0;
       const button = document.createElement('button'); button.type = 'button'; button.title = button.ariaLabel = 'Explore workspace'; button.innerHTML = svg('search');
       picker.node.append(button); button.onclick = event => {event.stopPropagation(); this.open();};
       this.dialog = document.createElement('dialog'); this.dialog.className = 'wangp-workspace-viewer'; this.dialog.ariaLabel = 'Workspace media viewer';
-      this.dialog.innerHTML = `<header><div class="wv-heading"><select data-workspace aria-label="Workspace"></select><span data-summary></span></div><div class="wv-header-actions"><button data-retention aria-label="Automatic workspace archiving" title="Automatic workspace archiving">${svg('broom')}</button><button data-close aria-label="Close workspace viewer" title="Close (Esc)">${svg('close')}</button></div></header>
+      this.dialog.innerHTML = `<header><div class="wv-heading"><div class="wv-workspace-picker"><select data-workspace aria-label="Workspace"></select><button data-create aria-label="Add workspace" title="Add workspace">${svg('create')}</button></div><span data-summary></span></div><div class="wv-header-actions"><button data-retention aria-label="Automatic workspace archiving" title="Automatic workspace archiving">${svg('broom')}</button><button data-close aria-label="Close workspace viewer" title="Close (Esc)">${svg('close')}</button></div></header>
         <div class="wv-toolbar"><div role="tablist" aria-label="Workspace media"><button role="tab" data-source="video">Images / Videos</button><button role="tab" data-source="audio">Audio</button></div><span class="wv-spacer"></span><span data-activity></span><button data-protect aria-label="Protect workspace from automatic archiving" aria-pressed="false">${svg('unlock')}</button><button data-import>${svg('import')}Import</button><button data-refresh>Refresh</button><input data-files type="file" accept="image/*,video/*,audio/*" multiple hidden></div>
         <div class="wv-selection"><span data-count></span><button data-page-select>Select page</button><button data-clear>Clear selection</button><div data-actions hidden><button data-action="eject">${svg('eject')}Eject</button><button data-action="delete">${svg('delete')}Delete files</button><button data-action="copy">${svg('copy')}Copy to workspace</button><button data-action="archive">${svg('archive')}ZIP</button><button data-action="first" title="Move selected media to the oldest end">Move to start</button><button data-action="last" title="Move selected media to the newest end">Move to end</button></div></div>
         <p class="wv-notice" role="status" hidden></p><div class="wv-content"><section class="wv-browser" aria-label="Workspace media grid"><div class="wv-grid" role="listbox" aria-multiselectable="true" aria-label="Media"></div><div class="wv-empty" hidden>No media in this gallery. Import files to get started.</div><div class="wv-rubber" hidden></div></section><aside><h3>Media details</h3><div class="wv-preview"></div><iframe title="Generation properties" sandbox=""></iframe></aside></div>
@@ -26,6 +27,8 @@
       this.modal.querySelector('form').onsubmit = event => {event.preventDefault(); this.confirm();};
       this.dialog.querySelector('[data-close]').onclick = () => this.dialog.close();
       this.dialog.querySelector('[data-workspace]').onchange = event => this.changeWorkspace(event.target.value);
+      this.dialog.querySelector('[data-create]').onclick = () => this.picker.open('create');
+      this.picker.dialog.addEventListener('close', () => this.invalidate());
       this.dialog.querySelector('[data-protect]').onclick = () => this.protect();
       this.dialog.querySelector('[data-retention]').onclick = () => this.action('retention').catch(error => this.notice(error.message));
       this.dialog.onclose = () => {this.requestId++; this.detailRequest?.abort(); this.grid.replaceChildren(); this.preview.replaceChildren(); this.modal.close(); clearTimeout(this.refreshTimer); clearTimeout(this.pageHover); cancelAnimationFrame(this.rubberFrame);};

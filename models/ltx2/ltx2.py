@@ -12,6 +12,7 @@ import torchaudio
 from accelerate import init_empty_weights
 from safetensors.torch import load_file
 from shared.utils import files_locator as fl
+from shared.utils.phase_progress import generation_progress
 from shared.utils.hdr import VIDEO_PROMPT_HDR_OUTPUT_FLAG, hdr_linear_to_vae_range
 
 from .ltx_core.conditioning import AudioConditionByLatent, AudioConditionByLatentPrefix, AudioConditionByReferenceLatent
@@ -1289,6 +1290,7 @@ class LTX2:
             _append_system_lora("id", 1.0 if guidance_phases == 1 else "1;0", "id-lora-celebvhq")
         return loras, loras_mult
 
+    @generation_progress
     def generate(
         self,
         input_prompt: str,

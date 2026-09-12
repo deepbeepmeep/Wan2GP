@@ -45,6 +45,7 @@ from .wanmove.trajectory import replace_feature, create_pos_feature_map
 from .alpha.utils import load_gauss_mask, apply_alpha_shift
 from shared.utils.audio_video import save_video
 from shared.utils.text_encoder_cache import TextEncoderCache
+from shared.utils.phase_progress import generation_progress, text_encoding_prompts
 from shared.utils.self_refiner import PnPHandler, create_self_refiner_handler
 from mmgp import safetensors2
 from shared.utils import files_locator as fl 
@@ -411,6 +412,7 @@ class WanAny2V:
 
         return mocha_latents, (torch.cat(cos_parts, dim=0), torch.cat(sin_parts, dim=0))
 
+    @generation_progress
     def generate(self,
         input_prompt,
         alt_prompt="",
@@ -578,23 +580,33 @@ class WanAny2V:
             from .kiwi.embedders import build_kiwi_conditions
             kiwi_ref_images = original_input_ref_images[0] if original_input_ref_images is not None and len(original_input_ref_images) else None
             kiwi_state = build_kiwi_conditions(vae=self.vae, source_frames=input_frames, ref_images=kiwi_ref_images, width=width, height=height, batch_size=batch_size, device=self.device, dtype=self.dtype, source_embedder_file=self.kiwi_source_embedder_file, ref_embedder_file=self.kiwi_ref_embedder_file, vae_tile_size=VAE_tile_size)
-            context = self.kiwi_mllm.encode_from_inputs(input_prompt, input_frames, kiwi_ref_images, use_ref_image=self.kiwi_ref_embedder_file is not None, max_frames=16)
-            context = [context]
-            if any_guidance_at_all or NAG_scale > 1:
-                context_null = self.kiwi_mllm.encode_from_inputs(n_prompt, input_frames, kiwi_ref_images, use_ref_image=self.kiwi_ref_embedder_file is not None, max_frames=16)
-                context_null = [context_null]
+            with text_encoding_prompts(2 if any_guidance_at_all or NAG_scale > 1 else 1):
+                context = self.kiwi_mllm.encode_from_inputs(input_prompt, input_frames, kiwi_ref_images, use_ref_image=self.kiwi_ref_embedder_file is not None, max_frames=16)
+                context = [context]
+                if any_guidance_at_all or NAG_scale > 1:
+                    context_null = self.kiwi_mllm.encode_from_inputs(n_prompt, input_frames, kiwi_ref_images, use_ref_image=self.kiwi_ref_embedder_file is not None, max_frames=16)
+                    context_null = [context_null]
         else:
             text_len = self.model.text_len
             encode_fn = lambda prompts: self.text_encoder(prompts, self.device)
-            context = self.text_encoder_cache.encode(encode_fn, [input_prompt], device=self.device)[0].to(self.dtype)
+            prompts = [input_prompt]
+            if NAG_scale > 1 or any_guidance_at_all:
+                prompts.append(n_prompt)
+            if animate2:
+                prompts.append(alt_prompt.strip() or model_def["animate2_ref_prompt"])
+            contexts = iter(self.text_encoder_cache.encode(encode_fn, prompts, device=self.device))
+            context = next(contexts).to(self.dtype)
             context = torch.cat([context, context.new_zeros(text_len -context.size(0), context.size(1)) ]).unsqueeze(0)
             if NAG_scale > 1 or any_guidance_at_all:      
-                context_null = self.text_encoder_cache.encode(encode_fn, [n_prompt], device=self.device)[0].to(self.dtype)
+                context_null = next(contexts).to(self.dtype)
                 context_null = torch.cat([context_null, context_null.new_zeros(text_len -context_null.size(0), context_null.size(1)) ]).unsqueeze(0)
             if animate2:
-                ref_prompt = alt_prompt.strip() or model_def["animate2_ref_prompt"]
-                animate2_ref_context = self.text_encoder_cache.encode(encode_fn, [ref_prompt], device=self.device)[0].to(self.dtype)
+                animate2_ref_context = next(contexts).to(self.dtype)
                 animate2_ref_context = torch.cat([animate2_ref_context, animate2_ref_context.new_zeros(text_len - animate2_ref_context.size(0), animate2_ref_context.size(1))]).unsqueeze(0)
+            del contexts
+
+        if set_progress_status is not None:
+            set_progress_status("Preparing Image and Video Conditioning")
 
         # NAG_prompt =  "static, low resolution, blurry"
         # context_NAG = self.text_encoder([NAG_prompt], self.device)[0]

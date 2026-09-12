@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Callable, Iterator, Sequence
 
 import torch
+from shared.utils.phase_progress import GenerationAborted, PhaseProgress
 import torch.nn.functional as F
 from einops import rearrange
 from packaging.version import InvalidVersion, Version
@@ -59,7 +60,7 @@ def _attention_backend_message() -> str:
     return f"eager tiled SDPA (Triton {_TRITON_VERSION}; minimum {_MIN_TRITON_VERSION})"
 
 
-class _DecodeInterrupted(RuntimeError):
+class _DecodeInterrupted(GenerationAborted):
     pass
 
 
@@ -721,100 +722,102 @@ class DiffusionVideoDecoder(nn.Module):
         work_latent = VideoLatentShape.from_torch_shape(latent.shape)
         work_pixels = work_latent.upscale(self.video_downscale_factors)._replace(channels=self.out_channels)
         tiles = self._schedule(work_latent, tiling_config)
-        trailing_input = [latent]
-        latent = None
-        latent = _append_trailing_frames(trailing_input, self._trailing_latent_frames)
-        stage_input = [latent]
-        latent = None
-        features = self._stages_1_to_3(stage_input, interrupt_check)
-        decode_device = features.device
-        features_list = [features]
-        features = None
-        features = _to_disposable(features_list, "cpu")
-        content_stage4_frames = (work_latent.frames - 1) * 4 + 1
-        temporal_groups: list[list[_Tile]] = []
-        for tile in tiles:
-            if not temporal_groups or temporal_groups[-1][0].out_t != tile.out_t:
-                temporal_groups.append([tile])
-            else:
-                temporal_groups[-1].append(tile)
-        overlap_buffer = overlap_weights = None
-        progress = tqdm(total=len(tiles), desc="NAD VAE decoding", leave=False)
-        try:
-            for group_index, group in enumerate(temporal_groups):
-                _check_interrupt(interrupt_check)
-                group_start, group_stop = group[0].out_t.start, group[0].out_t.stop
-                group_frames = group_stop - group_start
-                accum_dtype = torch.float16 if features.dtype == torch.bfloat16 else features.dtype
-                buffer = torch.zeros((work_pixels.batch, self.out_channels, group_frames, work_pixels.height, work_pixels.width), device="cpu", dtype=accum_dtype)
-                weights = torch.zeros((1, 1, group_frames, work_pixels.height, work_pixels.width), device="cpu", dtype=accum_dtype)
-                for tile in group:
-                    is_origin = tile.t.start == 0
-                    pad_trailing = tile.t.end == content_stage4_frames
-                    t_stop = features.shape[1] if pad_trailing else tile.t.end
-                    feature_tile = features[:, tile.t.start:t_stop, tile.h.start:tile.h.end, tile.w.start:tile.w.end]
-                    feature_list = [feature_tile]
-                    feature_tile = None
-                    feature_tile = _to_disposable(feature_list, decode_device)
-                    stage5_frames = (tile.t.end - tile.t.start) * self.upsamples[3].stride[0] - (1 if is_origin else 0)
-                    if pad_trailing:
-                        stage5_frames = max(stage5_frames, self.stage5_kernel[0])
-                    noise_shape = (work_pixels.batch, self.out_channels, stage5_frames, (tile.h.end - tile.h.start) * 8, (tile.w.end - tile.w.start) * 8)
-                    noise_device = generator.device if generator is not None else decode_device
-                    noise = torch.randn(noise_shape, dtype=features.dtype, device=noise_device, generator=generator)
-                    noise_list = [noise]
-                    noise = None
-                    noise = _to_disposable(noise_list, decode_device)
-                    feature_list, noise_list = [feature_tile], [noise]
-                    feature_tile = noise = None
-                    decoded = self._decode_tile(feature_list, noise_list, is_origin, pad_trailing, interrupt_check)
-                    expected = (tile.out_t.stop - tile.out_t.start, tile.out_h.stop - tile.out_h.start, tile.out_w.stop - tile.out_w.start)
-                    resize_input = [decoded]
-                    decoded = None
-                    decoded, _ = _resize_axis(resize_input, 2, expected[0], False)
-                    resize_input = [decoded]
-                    decoded = None
-                    decoded, _ = _resize_axis(resize_input, 3, expected[1], False)
-                    resize_input = [decoded]
-                    decoded = None
-                    decoded, _ = _resize_axis(resize_input, 4, expected[2], False)
-                    decoded_list = [decoded]
-                    decoded = None
-                    decoded = _to_disposable(decoded_list, decode_device, accum_dtype)
-                    mask_t, mask_h, mask_w = (mask.to(device=decoded.device, dtype=accum_dtype) for mask in tile.masks)
-                    decoded.mul_(mask_t.view(1, 1, -1, 1, 1)).mul_(mask_h.view(1, 1, 1, -1, 1)).mul_(mask_w.view(1, 1, 1, 1, -1))
-                    mask_t = mask_h = mask_w = None
-                    decoded_list = [decoded]
-                    decoded = None
-                    decoded = _to_disposable(decoded_list, "cpu")
-                    local_t = slice(tile.out_t.start - group_start, tile.out_t.stop - group_start)
-                    coords = (slice(None), slice(None), local_t, tile.out_h, tile.out_w)
-                    buffer[coords] += decoded
-                    mask_t, mask_h, mask_w = (mask.to(device="cpu", dtype=accum_dtype) for mask in tile.masks)
-                    strength = mask_t.view(1, 1, -1, 1, 1) * mask_h.view(1, 1, 1, -1, 1) * mask_w.view(1, 1, 1, 1, -1)
-                    weights[coords] += strength
-                    del decoded, strength
-                    progress.update(1)
-                    _check_interrupt(interrupt_check)
-                if overlap_buffer is not None:
-                    overlap_frames = overlap_buffer.shape[2]
-                    buffer[:, :, :overlap_frames] += overlap_buffer
-                    weights[:, :, :overlap_frames] += overlap_weights
-                next_start = temporal_groups[group_index + 1][0].out_t.start if group_index + 1 < len(temporal_groups) else group_stop
-                emit_frames = next_start - group_start
-                emitted = self._crop_emit(buffer[:, :, :emit_frames], weights[:, :, :emit_frames], group_start, content_pixels, h_pad, w_pad)
-                if emitted is not None:
-                    emitted = emitted.add_(1.0).mul_(127.5).clamp_(0.0, 255.0).to(torch.uint8) if output_uint8 else emitted.clone()
-                if next_start < group_stop:
-                    overlap_buffer = buffer[:, :, emit_frames:].clone()
-                    overlap_weights = weights[:, :, emit_frames:].clone()
+        with PhaseProgress(len(tiles)) as phase_progress:
+            trailing_input = [latent]
+            latent = None
+            latent = _append_trailing_frames(trailing_input, self._trailing_latent_frames)
+            stage_input = [latent]
+            latent = None
+            features = self._stages_1_to_3(stage_input, interrupt_check)
+            decode_device = features.device
+            features_list = [features]
+            features = None
+            features = _to_disposable(features_list, "cpu")
+            content_stage4_frames = (work_latent.frames - 1) * 4 + 1
+            temporal_groups: list[list[_Tile]] = []
+            for tile in tiles:
+                if not temporal_groups or temporal_groups[-1][0].out_t != tile.out_t:
+                    temporal_groups.append([tile])
                 else:
-                    overlap_buffer = overlap_weights = None
-                del buffer, weights
-                if emitted is not None:
-                    yield emitted
-        finally:
-            progress.close()
+                    temporal_groups[-1].append(tile)
+            overlap_buffer = overlap_weights = None
+            progress = tqdm(total=len(tiles), desc="NAD VAE Decoding", leave=False)
+            try:
+                for group_index, group in enumerate(temporal_groups):
+                    _check_interrupt(interrupt_check)
+                    group_start, group_stop = group[0].out_t.start, group[0].out_t.stop
+                    group_frames = group_stop - group_start
+                    accum_dtype = torch.float16 if features.dtype == torch.bfloat16 else features.dtype
+                    buffer = torch.zeros((work_pixels.batch, self.out_channels, group_frames, work_pixels.height, work_pixels.width), device="cpu", dtype=accum_dtype)
+                    weights = torch.zeros((1, 1, group_frames, work_pixels.height, work_pixels.width), device="cpu", dtype=accum_dtype)
+                    for tile in group:
+                        is_origin = tile.t.start == 0
+                        pad_trailing = tile.t.end == content_stage4_frames
+                        t_stop = features.shape[1] if pad_trailing else tile.t.end
+                        feature_tile = features[:, tile.t.start:t_stop, tile.h.start:tile.h.end, tile.w.start:tile.w.end]
+                        feature_list = [feature_tile]
+                        feature_tile = None
+                        feature_tile = _to_disposable(feature_list, decode_device)
+                        stage5_frames = (tile.t.end - tile.t.start) * self.upsamples[3].stride[0] - (1 if is_origin else 0)
+                        if pad_trailing:
+                            stage5_frames = max(stage5_frames, self.stage5_kernel[0])
+                        noise_shape = (work_pixels.batch, self.out_channels, stage5_frames, (tile.h.end - tile.h.start) * 8, (tile.w.end - tile.w.start) * 8)
+                        noise_device = generator.device if generator is not None else decode_device
+                        noise = torch.randn(noise_shape, dtype=features.dtype, device=noise_device, generator=generator)
+                        noise_list = [noise]
+                        noise = None
+                        noise = _to_disposable(noise_list, decode_device)
+                        feature_list, noise_list = [feature_tile], [noise]
+                        feature_tile = noise = None
+                        decoded = self._decode_tile(feature_list, noise_list, is_origin, pad_trailing, interrupt_check)
+                        expected = (tile.out_t.stop - tile.out_t.start, tile.out_h.stop - tile.out_h.start, tile.out_w.stop - tile.out_w.start)
+                        resize_input = [decoded]
+                        decoded = None
+                        decoded, _ = _resize_axis(resize_input, 2, expected[0], False)
+                        resize_input = [decoded]
+                        decoded = None
+                        decoded, _ = _resize_axis(resize_input, 3, expected[1], False)
+                        resize_input = [decoded]
+                        decoded = None
+                        decoded, _ = _resize_axis(resize_input, 4, expected[2], False)
+                        decoded_list = [decoded]
+                        decoded = None
+                        decoded = _to_disposable(decoded_list, decode_device, accum_dtype)
+                        mask_t, mask_h, mask_w = (mask.to(device=decoded.device, dtype=accum_dtype) for mask in tile.masks)
+                        decoded.mul_(mask_t.view(1, 1, -1, 1, 1)).mul_(mask_h.view(1, 1, 1, -1, 1)).mul_(mask_w.view(1, 1, 1, 1, -1))
+                        mask_t = mask_h = mask_w = None
+                        decoded_list = [decoded]
+                        decoded = None
+                        decoded = _to_disposable(decoded_list, "cpu")
+                        local_t = slice(tile.out_t.start - group_start, tile.out_t.stop - group_start)
+                        coords = (slice(None), slice(None), local_t, tile.out_h, tile.out_w)
+                        buffer[coords] += decoded
+                        mask_t, mask_h, mask_w = (mask.to(device="cpu", dtype=accum_dtype) for mask in tile.masks)
+                        strength = mask_t.view(1, 1, -1, 1, 1) * mask_h.view(1, 1, 1, -1, 1) * mask_w.view(1, 1, 1, 1, -1)
+                        weights[coords] += strength
+                        del decoded, strength
+                        progress.update(1)
+                        phase_progress.advance()
+                        _check_interrupt(interrupt_check)
+                    if overlap_buffer is not None:
+                        overlap_frames = overlap_buffer.shape[2]
+                        buffer[:, :, :overlap_frames] += overlap_buffer
+                        weights[:, :, :overlap_frames] += overlap_weights
+                    next_start = temporal_groups[group_index + 1][0].out_t.start if group_index + 1 < len(temporal_groups) else group_stop
+                    emit_frames = next_start - group_start
+                    emitted = self._crop_emit(buffer[:, :, :emit_frames], weights[:, :, :emit_frames], group_start, content_pixels, h_pad, w_pad)
+                    if emitted is not None:
+                        emitted = emitted.add_(1.0).mul_(127.5).clamp_(0.0, 255.0).to(torch.uint8) if output_uint8 else emitted.clone()
+                    if next_start < group_stop:
+                        overlap_buffer = buffer[:, :, emit_frames:].clone()
+                        overlap_weights = weights[:, :, emit_frames:].clone()
+                    else:
+                        overlap_buffer = overlap_weights = None
+                    del buffer, weights
+                    if emitted is not None:
+                        yield emitted
+            finally:
+                progress.close()
 
     def forward(self, sample: torch.Tensor | list[torch.Tensor], generator: torch.Generator | None = None, interrupt_check: Callable[[], bool] | None = None) -> torch.Tensor:
         sample_list = sample if isinstance(sample, list) else [sample]

@@ -58,14 +58,20 @@ def bind_gallery_sync(service, state, render_gallery, outputs, *, gallery, main)
 
     gr.on([main.load, trigger.click], refresh, inputs=[state, revision, restored], outputs=[*outputs, revision, restored, view], queue=False, show_progress='hidden', trigger_mode='always_last').then(restore_selection, inputs=[state], outputs=[gallery], queue=False, show_progress='hidden').then(fn=None, inputs=[restored], outputs=None, js='payload => window.__wangpAssistantChatNS.galleryRestored?.(JSON.parse(payload))')
 
+    # Reuse the existing preview renderer without requiring a generation request
+    # in this page. New/reconnected pages also read the current shared preview.
+    [preview] = [fn for fn in main.fns.values() if fn.name == 'refresh_preview' and fn.inputs == [state]]
+    preview_trigger = gr.Button(visible=False, elem_id='deepy_hybrid_preview_sync')
+    gr.on([main.load, preview_trigger.click], preview.fn, inputs=preview.inputs, outputs=preview.outputs, queue=False, show_progress='hidden', trigger_mode='always_last')
+
 
 def bind_settings_sync(service, state, ui, dropdown_updates, catalog_event, preference_view):
     trigger = gr.Button(visible=False, elem_id='deepy_hybrid_settings_sync')
     revision = gr.State(-1)
-    props = [ui.compact_actions, ui.auto_cancel_queue_tasks, ui.separate_requests_with_empty_line, ui.use_template_properties, ui.override_height, ui.override_width, ui.override_num_frames, ui.override_audio_duration, ui.override_seed]
-    keys = ['compact_actions', 'auto_cancel_queue_tasks', 'separate_requests_with_empty_line', 'use_template_properties', 'height', 'width', 'num_frames', 'audio_duration', 'seed']
-    tools = [ui.default_video_generator, ui.default_video_with_speech, ui.default_image_generator, ui.default_image_editor, ui.default_song, ui.default_speech_from_description, ui.default_speech_from_sample]
-    tool_keys = ['video_generator_variant', 'video_with_speech_variant', 'image_generator_variant', 'image_editor_variant', 'song_variant', 'speech_from_description_variant', 'speech_from_sample_variant']
+    props = [ui.compact_actions, ui.auto_cancel_queue_tasks, ui.separate_requests_with_empty_line, ui.use_template_properties, ui.model_speed, ui.model_size, ui.override_height, ui.override_width, ui.override_num_frames, ui.override_audio_duration, ui.override_seed]
+    keys = ['compact_actions', 'auto_cancel_queue_tasks', 'separate_requests_with_empty_line', 'use_template_properties', 'model_speed', 'model_size', 'height', 'width', 'num_frames', 'audio_duration', 'seed']
+    tools = [ui.default_video_generator, ui.default_video_with_speech, ui.default_image_generator, ui.default_image_editor, ui.default_song, ui.default_with_refs, ui.default_speech_from_description, ui.default_speech_from_sample]
+    tool_keys = ['video_generator_variant', 'video_with_speech_variant', 'image_generator_variant', 'image_editor_variant', 'song_variant', 'with_refs_variant', 'speech_from_description_variant', 'speech_from_sample_variant']
     preference_keys = ['multi_session', 'gallery_media_mode']
     all_keys = keys + tool_keys + preference_keys
     components = [*props, *tools, ui.multi_session, ui.session_gallery_media_mode]
@@ -79,7 +85,7 @@ def bind_settings_sync(service, state, ui, dropdown_updates, catalog_event, pref
 
     def render_fields(values):
         updates, _ = dropdown_updates({tool: values[key] for tool, key in ui_settings.TEMPLATE_TOOL_UI_KEY.items()})
-        return dict(zip(tool_keys, updates))
+        return dict(zip((ui_settings.TEMPLATE_TOOL_UI_KEY[tool] for row in ui_settings.TEMPLATE_TOOL_LAYOUT for tool in row), updates))
 
     form = GradioForm(service.forms, 'deepy-gradio', components, keys=all_keys, read=read, scope=lambda: service._session.chat_session_id, render_fields=render_fields, view_events=[preference_view], lock=service._mutation_lock)
     outputs = [ui.session_dropdown, ui.reset_btn]

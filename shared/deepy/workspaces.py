@@ -100,7 +100,8 @@ class WorkspaceSupport:
     def save_workspace(self):
         if self.workspaces is not None:
             with self._mutation_lock:
-                self.workspaces.save(self.workspace_id, capture_gallery(self._state['gen']))
+                if self.workspaces.save(self.workspace_id, capture_gallery(self._state['gen'])):
+                    self.publish_workspaces()
 
     def _apply_workspace(self, workspace_id):
         gallery = load_gallery(self.workspaces.get(workspace_id), self._workspace_settings)

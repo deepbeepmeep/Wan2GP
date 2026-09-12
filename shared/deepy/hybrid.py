@@ -43,6 +43,8 @@ class HybridService(DeepyService):
         self._gallery_signature = None
         self.gallery_revision = 0
         self.settings_revision = 0
+        self.preview_revision = 0
+        self._preview_image = None
         self._settings_signature = None
         self._catalog_revision = 0
         self._model_forms = {}
@@ -121,6 +123,11 @@ class HybridService(DeepyService):
                     gallery_view = (signature, self.generation_running, self._queue_revision)
                     settings = (json.dumps(self._session.tool_ui_settings, sort_keys=True), self._session.storage_session_id, self._session.storage_title, self._catalog_revision)
                     changed = False
+                    preview = gen.get('preview')
+                    if preview is not self._preview_image:
+                        self._preview_image = preview
+                        self.preview_revision += 1
+                        changed = True
                     if signature != self._gallery_signature:
                         media_changed = self._gallery_signature is None or signature[:2] != self._gallery_signature[:2]
                         self._gallery_signature = signature
@@ -136,7 +143,7 @@ class HybridService(DeepyService):
                         self.settings_revision += 1
                         changed = True
                     if changed:
-                        self.publish('host_view', {'gallery': self.gallery_revision, 'settings': self.settings_revision})
+                        self.publish('host_view', {'gallery': self.gallery_revision, 'settings': self.settings_revision, 'preview': self.preview_revision})
             except Exception:
                 traceback.print_exc()
                 self.publish_error('Could not synchronize the Gradio view.')
@@ -144,7 +151,7 @@ class HybridService(DeepyService):
     def snapshot(self):
         result = super().snapshot()
         result['hybrid'] = True
-        result['host_view'] = {'gallery': self.gallery_revision, 'settings': self.settings_revision}
+        result['host_view'] = {'gallery': self.gallery_revision, 'settings': self.settings_revision, 'preview': self.preview_revision}
         result['forms'] = self.forms.revisions()
         return result
 

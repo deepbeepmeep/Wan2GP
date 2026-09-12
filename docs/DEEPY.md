@@ -11,7 +11,7 @@ Use Deepy when you want to work toward an outcome instead of manually operating 
 - **Deepy Zero** is fast and lightweight. Use it for focused tasks such as generating one asset, editing selected media, extracting a clip, resizing a file, or producing a transcript. It works well with the smaller supported Qwen models.
 - **Deepy Prime** is for projects that need planning or several connected actions. Use it when Deepy must compare compatible models, combine multiple media assets, inspect intermediate results, manage project files, or work with external MCP services. Prime requires Qwen3.8 VL 27B locally or a configured remote LLM.
 
-Both versions use the same generation tools, templates, galleries, media references, and saved sessions. Choose the assistant in **Configuration > Prompt Enhancer / Deepy**.
+Both versions share generation features, galleries, media references, and saved sessions. Both offer a dedicated video-with-references template. Choose the assistant in **Configuration > Prompt Enhancer / Deepy**.
 
 ## Enable Deepy
 
@@ -92,7 +92,7 @@ Prime is especially useful for requests with dependencies. It can create an inte
 3. Describe the result you want and any details that must be preserved.
 4. Review the generated media and ask for refinements in the same conversation.
 
-Deepy uses the configured template for each generation task. Zero uses the selected template directly. Prime also starts with the selected template and looks for another compatible model only when you request model selection, name a model, or the current template cannot perform the requested task.
+Deepy uses the configured template for each generation task. Zero uses the selected template directly. Prime also starts with the selected template and looks for another compatible model when you request model selection, name a model or family, request a declared speciality such as infographics, or the current template cannot perform the task.
 
 You can override supported values in a request, including width, height, frame count, audio duration, FPS, inference steps, seed, and LoRAs. Put model-specific choices that Deepy cannot override into a linked template.
 
@@ -118,6 +118,8 @@ Deepy normally prefers the selected item for words such as `selected`, `current`
 
 In Gradio, scrub a selected video before referring to `this frame` or `this time`. In the Web app, viewing or playing a video does not select a reference moment, so include the time or frame number in your request. Deepy asks for clarification when a reference is ambiguous.
 
+When generating video from an image, the image can have different roles. A **start image** anchors the opening scene and composition. A **reference image** guides a subject's identity or appearance without fixing the opening frame, according to the model's supported mode. For example, “animate this photo” and “put this character in a new scene” use the source differently. A model may support one role, both, or other roles such as inserting frames at specified positions.
+
 ### Browse galleries
 
 The image/video and audio galleries let you select, inspect, play, and download media. Selecting a tile marks it for your next request; it does not submit anything. The information pane shows prompts, model settings, dimensions, and creation details when available.
@@ -141,6 +143,17 @@ You can send a new instruction while Deepy is working. Use this to steer the cur
 
 Open **Ask Deepy > Settings** in Gradio for the complete settings panel. The standalone Web app provides the commonly used generation defaults and existing template choices.
 
+### Prime model preferences
+
+At the top of **Templates Settings used by Tools**, Prime offers **Speed** and **Model Size**, also available in the Web app. They apply when Prime chooses beyond your configured templates; an explicit model or template request takes priority.
+
+- **Speed:** Fast (default) favors models with native acceleration or accelerator profiles. Standard favors ordinary generation without automatically adding an accelerator. No preference ignores speed.
+- **Model Size:** Smaller (default) favors declared lighter variants; Larger favors full variants. No preference ignores size. These labels compare variants, not absolute GB, VRAM use or quality.
+
+Prime first checks required inputs and the requested speciality, then prefers candidates matching both preferences over those matching only one. For example, an H3 request with a subject reference can select a compatible lighter Ref2VA variant and its recommended accelerator. An infographic request can find a model declaring that strength. If only some speciality terms match, Prime receives the missing terms and checks essential requirements before generating.
+
+Fast uses a model's recommended accelerator settings when available. Natively accelerated models already use accelerated defaults. Your configured templates keep their settings; these preferences do not replace them on ordinary requests. Changes reach Prime as a hidden runtime update on the next turn, including with a remote LLM; no conversation restart is needed. Deepy Zero has no model-preference controls or injection.
+
 ### Generation defaults
 
 Choose whether each tool uses dimensions, durations, and seed from its template or replaces them with Deepy's defaults:
@@ -156,13 +169,16 @@ Most changes apply immediately. Click **Save Deepy Settings** to reuse them afte
 
 Deepy has templates for:
 
-- Media Generator
-- Video With Speech
 - Image Generator
 - Image Editor
+- Video Generator
+- Video With Speech
+- Video Generator with Ref.
 - Song Generator
 - Speech From Description
 - Speech From Sample
+
+Deepy uses **Video Generator with Ref.** when images or videos supply subject identity, appearance or motion. A start image instead fixes the opening scene and uses the regular video template. Available reference templates are MiniMax H3 Ref2VA Pruned with its eight-step accelerator (default), LTX-2 2.3 MSR V2 Distilled 1.1, and Vace Fusionix. H3 accepts image and video references; the other templates accept image references. Deepy checks model support when combining references with other inputs.
 
 WanGP includes built-in templates. To reuse your own model setup:
 
@@ -190,7 +206,7 @@ Save the setting and restart WanGP if Deepy has already started. In a dedicated 
 
 Sessions save automatically. There is no separate Save Session action. A saved session includes its conversation, completed actions, displayed results, workspace association, and media references. When resuming a long session, the conversation may appear before Deepy finishes preparing it.
 
-In Gradio you can resume, rename, duplicate, export, import, or delete sessions. In Web, use the session selector in the top bar. In CLI, use `/sessions` and `/resume <ref>`. Wait for active or paused work to finish before switching sessions.
+In Gradio you can resume, rename, duplicate, export, import, or delete sessions. In Web, use the session selector in the top bar. In CLI, use `/sessions` and `/resume <ref>`. Wait for active or paused work to finish before switching sessions. If an automatic or manually entered session name is already used, Deepy adds an available number, such as **My video (2)**. Names differing only in capitalization count as duplicates.
 
 ### Keep links or copy media
 

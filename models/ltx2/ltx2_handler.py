@@ -559,6 +559,7 @@ class family_handler:
         extra_model_def.update(_get_system_lora_urls(spec))
         if distilled:
             extra_model_def["ltx2_pipeline"] = "distilled"
+            extra_model_def["accelerated"] = "native"
         else:
             extra_model_def["finetune_custom_urls"] =  [ "ltx2_lora_distilled"]
 

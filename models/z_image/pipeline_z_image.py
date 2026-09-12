@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from shared.utils.phase_progress import text_encoding_progress
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Union
 
@@ -241,42 +242,23 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         lora_scale: Optional[float] = None,
     ):
         prompt = [prompt] if isinstance(prompt, str) else prompt
-        prompt_embeds = self._encode_prompt(
-            prompt=prompt,
-            device=device,
-            dtype=dtype,
-            num_images_per_prompt=num_images_per_prompt,
-            prompt_embeds=prompt_embeds,
-            max_sequence_length=max_sequence_length,
-        )
-
         if do_classifier_free_guidance:
             if negative_prompt is None:
                 negative_prompt = [DEFAULT_NEGATIVE_PROMPT for _ in prompt]
             elif isinstance(negative_prompt, str):
-                negative_prompt = (
-                    [DEFAULT_NEGATIVE_PROMPT for _ in prompt]
-                    if not negative_prompt.strip()
-                    else [negative_prompt]
-                )
-            else:
-                # Keep list behavior but fill empty items when lengths match.
-                if len(negative_prompt) == len(prompt):
-                    negative_prompt = [
-                        DEFAULT_NEGATIVE_PROMPT if (p is None or (isinstance(p, str) and not p.strip())) else p
-                        for p in negative_prompt
-                    ]
+                negative_prompt = [DEFAULT_NEGATIVE_PROMPT for _ in prompt] if not negative_prompt.strip() else [negative_prompt]
+            elif len(negative_prompt) == len(prompt):
+                negative_prompt = [DEFAULT_NEGATIVE_PROMPT if p is None or (isinstance(p, str) and not p.strip()) else p for p in negative_prompt]
             assert len(prompt) == len(negative_prompt)
-            negative_prompt_embeds = self._encode_prompt(
-                prompt=negative_prompt,
-                device=device,
-                dtype=dtype,
-                num_images_per_prompt=num_images_per_prompt,
-                prompt_embeds=negative_prompt_embeds,
-                max_sequence_length=max_sequence_length,
-            )
-        else:
+        pending_positive = prompt if prompt_embeds is None else []
+        pending_negative = negative_prompt if do_classifier_free_guidance and negative_prompt_embeds is None else []
+        encoded = self._encode_prompt(pending_positive + pending_negative, device=device, dtype=dtype, num_images_per_prompt=num_images_per_prompt, max_sequence_length=max_sequence_length)
+        if prompt_embeds is None:
+            prompt_embeds = encoded[:len(pending_positive)]
+        if not do_classifier_free_guidance:
             negative_prompt_embeds = []
+        elif negative_prompt_embeds is None:
+            negative_prompt_embeds = encoded[len(pending_positive):]
         return prompt_embeds, negative_prompt_embeds
 
     def _encode_prompt(
@@ -320,7 +302,8 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
             )
             text_input_ids = text_inputs.input_ids.to(device)
             prompt_masks = text_inputs.attention_mask.to(device).bool()
-            prompt_embeds = self.text_encoder(input_ids=text_input_ids, attention_mask=prompt_masks, output_hidden_states=True).hidden_states[-2]
+            with text_encoding_progress(self.text_encoder.model.layers, prompt_count=len(prompts)):
+                prompt_embeds = self.text_encoder(input_ids=text_input_ids, attention_mask=prompt_masks, output_hidden_states=True).hidden_states[-2]
             embeddings_list = []
             for i in range(len(prompt_embeds)):
                 embeddings_list.append(prompt_embeds[i][prompt_masks[i]])

@@ -23,11 +23,12 @@ class YuE2Pipeline:
     sample_rate = 48000
     frame_rate = 25
 
-    def __init__(self, ar_weights, acoustic_weights, tokenizer_path, vae_weights, vae_config, dtype, vae_dtype, lm_decoder_engine):
+    def __init__(self, ar_weights, acoustic_weights, tokenizer_path, vae_weights, vae_config, dtype, vae_dtype, lm_decoder_engine, scoring_checkpoint=None):
         directory = Path(__file__).parent
         self._interrupt = False
         self._early_stop = False
         self.lm_decoder_engine = lm_decoder_engine
+        self.scoring_checkpoint = scoring_checkpoint
         ar_config = Qwen3Config(**json.loads((directory / "yue2_ar.json").read_text()))
         nar_config = YuE2Config(**json.loads((directory / "yue2.json").read_text()))
         with torch.device("meta"):
@@ -97,16 +98,21 @@ class YuE2Pipeline:
         return tokens
 
     @torch.inference_mode()
-    def generate(self, input_prompt, alt_prompt, seed, duration_seconds, sampling_steps, guide_scale, temperature, top_k, top_p, model_mode=0, custom_settings=None, VAE_tile_size=1024, callback=None, **kwargs):
+    def generate(self, input_prompt, alt_prompt, seed, duration_seconds, sampling_steps, guide_scale, temperature, top_k, top_p, model_mode=0, custom_settings=None, VAE_tile_size=1024, callback=None, audio_prompt_type="", audio_guide=None, offloadobj=None, **kwargs):
         self._interrupt = self._early_stop = False
         self.last_plan = self.last_latents = None
         self.last_truncated = {}
         mode = ("full", "melody", "off")[model_mode]
-        abc = custom_settings["abc"].strip() if custom_settings is not None and "abc" in custom_settings else ""
-        request = SongRequest(style=alt_prompt, lyrics=input_prompt, cot=mode, abc=abc or None, cfg_scale=guide_scale, seed=seed)
+        abc = custom_settings["abc"].strip() if "A" not in audio_prompt_type and custom_settings is not None and "abc" in custom_settings else ""
         maximum = int(duration_seconds * self.frame_rate)
         sampling = replace(self.generation_config.semantic, max_tokens=maximum, min_tokens=min(200, maximum - 1), temperature=temperature, top_k=top_k, top_p=top_p)
         try:
+            if "A" in audio_prompt_type:
+                from .sheetsage2.scoring import score_audio
+                self.engine.release_runtime_allocations()
+                offloadobj.unload_all()
+                abc = score_audio(audio_guide, self.scoring_checkpoint, mode == "melody", callback, self._abort_requested)
+            request = SongRequest(style=alt_prompt, lyrics=input_prompt, cot=mode, abc=abc or None, cfg_scale=guide_scale, seed=seed)
             if mode == "off":
                 abc_ids = []
             elif abc:

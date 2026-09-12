@@ -1851,9 +1851,8 @@ def _load_task_attachments(params, media_base_path, cache_dir=None, log_prefix="
                 continue
 
             if cache_dir:
-                final_path = os.path.join(cache_dir, os.path.basename(source_name))
                 try:
-                    shutil.copy2(source_path, final_path)
+                    final_path = gr.processing_utils.save_file_to_cache(source_path, cache_dir)
                 except Exception as e:
                     print(f"{log_prefix} Error copying {filename}: {e}")
                     continue
@@ -1997,13 +1996,10 @@ def _parse_task_manifest(manifest, state, media_base_path, cache_dir=None, log_p
 
 def _parse_queue_zip_tasks(filename, state, task_limit=None, log_prefix="[load_queue]", skip_validate_settings=False):
     """Parse queue ZIP file. Returns (queue_list, error_msg or None, source_task_count)."""
-    save_path_base = server_config.get("save_path", "outputs")
-    cache_dir = os.path.join(save_path_base, "_loaded_queue_cache")
+    cache_dir = gr.utils.get_upload_folder()
 
     try:
         print(f"{log_prefix} Attempting to load queue from: {filename}")
-        os.makedirs(cache_dir, exist_ok=True)
-
         with tempfile.TemporaryDirectory() as tmpdir:
             with zipfile.ZipFile(filename, 'r') as zf:
                 if "queue.json" not in zf.namelist():
@@ -4147,7 +4143,10 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
     if lm_decoder_engine_obtained in ("cg", "vllm") and int(profile) not in [ 1, 3]:
         _load_models_info(f"Unable to use LM Engine '{lm_decoder_engine_obtained}' as it requires a Memory Profile such as 1,3 or 3+ that loads entirely the Main Models in VRAM. Switching to Legacy LM Engine...")
         lm_decoder_engine_obtained = "legacy"
-    with model_unload_guard():
+    loading_model_ids = {filename: "transformer" if i == 0 else f"transformer {i + 1}" for i, filename in enumerate(local_model_file_list)}
+    if text_encoder_filename:
+        loading_model_ids[text_encoder_filename] = "text_encoder"
+    with model_unload_guard(), offload.loading_context(loading_callback, loading_model_ids):
         torch.set_default_device('cpu')
         wan_model, pipe = model_type_handler.load_model(
                     local_model_file_list, runtime_model_type or model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = text_encoder_quantization,
@@ -4265,7 +4264,7 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
     generation_start_time = last_refresh_time = time.time()
     denoising_start_time = None
     estimated_total_time = None
-    def callback(step_idx = -1, latent = None, force_refresh = True, read_state = False, override_num_inference_steps = -1, pass_no = -1, preview_meta=preview_meta, denoising_extra ="", progress_unit = None, status_prefix = ""):
+    def callback(step_idx = -1, latent = None, force_refresh = True, read_state = False, override_num_inference_steps = -1, pass_no = -1, preview_meta=preview_meta, denoising_extra ="", progress_unit = None, status_prefix = "", progress_title = None):
         nonlocal denoising_start_time, estimated_total_time, last_refresh_time
         step_completed = step_idx >= 0
         in_pause = False
@@ -4301,7 +4300,7 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
                 wan_model._early_stop = True
         refresh_id =  gen.get("refresh", -1)
         current_time = time.time()
-        if force_refresh and step_idx < 0:
+        if force_refresh and (step_idx < 0 or progress_title is not None):
             denoising_start_time = current_time
             estimated_total_time = None
         if force_refresh or step_idx >= 0:
@@ -4316,10 +4315,16 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
             UI_refresh = state.get("refresh", 0)
             if UI_refresh >= refresh_id:
                 return  
-        if override_num_inference_steps > 0:
+        if override_num_inference_steps > 0 and progress_title is None:
             gen["num_inference_steps"] = override_num_inference_steps
              
         num_inference_steps = gen.get("num_inference_steps", 0)
+        if read_state:
+            num_inference_steps, progress_unit = gen.get("phase_progress_units", (num_inference_steps, progress_unit))
+        else:
+            if progress_title is not None:
+                num_inference_steps = override_num_inference_steps
+            gen["phase_progress_units"] = (num_inference_steps, progress_unit)
         status = status_prefix or gen["progress_status"]
         state["refresh"] = refresh_id
         if read_state:
@@ -4332,6 +4337,8 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
                 phase = "Aborting"    
             elif gen.get("early_stop", False):
                 phase = "Early Stop in progress"
+            elif progress_title is not None:
+                phase = progress_title
             elif step_idx  == num_inference_steps:
                 phase = "VAE Decoding"    
             else:
@@ -4536,8 +4543,8 @@ def refresh_gallery(state): #, msg
         prompt =  task["prompt"]
         params = task["params"]
         model_type = params.get("model_type", "")
-        multi_prompts_gen_type = params["multi_prompts_gen_type"]
         is_edit_task = _is_edit_task_params(params)
+        multi_prompts_gen_type = "FG" if is_edit_task else params["multi_prompts_gen_type"]
         if is_edit_task:
             base_model_type, model_def, preprocess_all = None, None, False
         else:
@@ -4549,7 +4556,7 @@ def refresh_gallery(state): #, msg
         if prompt.startswith(prompt_parser.ENHANCED_PROMPT_PREFIX):
             enhanced = True
             prompt = prompt[len(prompt_parser.ENHANCED_PROMPT_PREFIX):]
-        prompt_units = prompt_parser.split_prompt_units(prompt, multi_prompts_gen_type)
+        prompt_units = [prompt] if is_edit_task else prompt_parser.split_prompt_units(prompt, multi_prompts_gen_type)
         if multi_prompts_gen_type == "FG" or len(prompt_units) <= 1:
             prompt = html.escape(prompt_units[0] if len(prompt_units) > 0 else prompt).replace("\n", "<BR>")
         else:
@@ -4564,42 +4571,45 @@ def refresh_gallery(state): #, msg
                     escaped_prompt = "<B>" + escaped_prompt + "</B>"
                 escaped_prompts.append(escaped_prompt)
             prompt = "<BR><DIV style='height:8px'></DIV>".join(escaped_prompts)
-        if enhanced:
-            prompt = "<U><B>Enhanced:</B></U><BR>" + prompt
+        if is_edit_task:
+            summary, prompt = prompt, ""
+        else:
+            is_image = params["image_mode"] > 0
+            audio_only = model_def.get("audio_only", False)
+            count = params["batch_size"] if is_image else params["repeat_generation"]
+            summary = "New " + ("Audio" if audio_only else "Image" if is_image else "Video")
+            if count > 1:
+                summary += f" x{count}"
+            if audio_only:
+                duration_def = model_def.get("duration_slider")
+                duration = params["duration_seconds"]
+                if duration_def is not None and duration > 0 and duration_def.get("name", duration_def["label"]).lower().startswith("max"):
+                    summary += f", Max Duration is {duration:g} s"
+            else:
+                if not is_image:
+                    frames = params["video_length"]
+                    fps = get_computed_fps(params["force_fps"], base_model_type, params.get("video_guide"), params.get("video_source"))
+                    summary += f", {frames} frames ({round(frames / fps, 1):g}s)"
+                summary += f", {params['resolution']}, {params['num_inference_steps']} inference steps"
+            summary = html.escape(summary)
 
-        if len(header_text) > 0:
-            prompt =  "<I>" + header_text + "</I><BR><BR>" + prompt
-        thumbnail_size = "100px"
+        details = f'<div class="generation-note">{html.escape(header_text)}</div>' if header_text else ""
+        if prompt:
+            prompt_label = "Enhanced Prompt" if enhanced else "Prompt"
+            details += f'<div class="generation-prompt"><div class="generation-label">{prompt_label}</div><div>{prompt}</div></div>'
         thumbnails = ""
-        
-        start_img_data = task.get('start_image_data_base64')
-        start_img_labels = task.get('start_image_labels')
-        if start_img_data and start_img_labels:
-            for i, (img_uri, img_label) in enumerate(zip(start_img_data, start_img_labels)):
-                thumbnails += f'<td><div class="hover-image" onclick="showImageModal(\'current_start_{i}\')"><img src="{img_uri}" alt="{img_label}" style="max-width:{thumbnail_size}; max-height:{thumbnail_size}; display: block; margin: auto; object-fit: contain;" /><span class="tooltip">{img_label}</span></div></td>'
-        
-        end_img_data = task.get('end_image_data_base64')
-        end_img_labels = task.get('end_image_labels')
-        if end_img_data and end_img_labels:
-            for i, (img_uri, img_label) in enumerate(zip(end_img_data, end_img_labels)):
-                thumbnails += f'<td><div class="hover-image" onclick="showImageModal(\'current_end_{i}\')"><img src="{img_uri}" alt="{img_label}" style="max-width:{thumbnail_size}; max-height:{thumbnail_size}; display: block; margin: auto; object-fit: contain;" /><span class="tooltip">{img_label}</span></div></td>'
-        
-        # Get current theme from server config  
-        current_theme = server_config.get("UI_theme", "default")
-        
-        # Use minimal, adaptive styling that blends with any background
-        # This creates a subtle container that doesn't interfere with the page's theme
-        table_style = """
-            border: 1px solid rgba(128, 128, 128, 0.3); 
-            background-color: transparent; 
-            color: inherit; 
-            padding: 8px;
-            border-radius: 6px;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-        """
+        for side in ("start", "end"):
+            images, labels = task.get(f'{side}_image_data_base64'), task.get(f'{side}_image_labels')
+            if images and labels:
+                for i, (img_uri, img_label) in enumerate(zip(images, labels)):
+                    label = html.escape(img_label)
+                    thumbnails += f'<button type="button" class="generation-reference" onclick="showImageModal(\'current_{side}_{i}\')" aria-label="View {label}" title="View {label}"><img src="{img_uri}" alt="{label}" /><span>{label}</span></button>'
+        if thumbnails:
+            thumbnails = f'<td><div class="generation-references" role="group" aria-label="Generation References">{thumbnails}</div></td>'
+        table = f'<div class="generation-table-wrap"><table id="PINFO"><tbody><tr><td class="generation-prompt-cell">{details}</td>{thumbnails}</tr></tbody></table></div>' if details or thumbnails else ""
         if params.get("mode", None) in ['edit'] : onemorewindow_visible = False
         gen_buttons_visible = True
-        html_content =  f"<TABLE WIDTH=100% ID=PINFO style='{table_style}'><TR style='height:140px'><TD width=100% style='{table_style}'>" + prompt + "</TD>" + thumbnails + "</TR></TABLE>" 
+        html_content = f'<div class="wangp-generation-info"><div class="generation-summary"><strong>{summary}</strong></div>{table}</div>'
         html_output = gr.HTML(html_content, visible= True)
         if last_was_audio:
             audio_choice = max(-1, audio_choice)
@@ -4805,15 +4815,6 @@ def format_media_info(file_name, configs):
             width, height = img.size
             is_image = True
             frames_count = fps = 1
-            actual_duration = "Not applicable (still image)"
-            if getattr(img, "is_animated", False):
-                duration_ms = 0
-                for frame in range(img.n_frames):
-                    img.seek(frame)
-                    duration_ms += img.info.get("duration", 0)
-                actual_duration = f"{duration_ms / 1000:.2f}s" if duration_ms else "Unknown"
-            values += [f"{actual_duration}, No audio"]
-            labels += ["Duration"]
         else:
             fps, width, height, frames_count = get_video_info(file_name)
             is_video = True
@@ -4824,9 +4825,11 @@ def format_media_info(file_name, configs):
             if len(layouts) > 1:
                 layouts = [f"Track {index + 1}: {layout}" for index, layout in enumerate(layouts)]
             audio_summary = "; ".join(layouts) or "No audio"
-            values += [html.escape(f"{actual_duration}, {audio_summary}")]
-            labels += ["Duration"]
+            if is_audio:
+                values += [html.escape(f"{actual_duration}, {audio_summary}")]
+                labels += ["Duration"]
             nb_audio_tracks = len(layouts) if is_video else 0
+            audio_tracks_summary = html.escape(f"{nb_audio_tracks}, {audio_summary}")
 
         if configs != None:
             # Deepy reference IDs alone do not describe a generation model.
@@ -4891,7 +4894,7 @@ def format_media_info(file_name, configs):
                 values += [f"{width}x{height}", f"{frames_count} frames (duration={frames_count/fps:.1f}s, fps={round(fps)})"]
                 labels += ["Resolution", "Frames"]
             if nb_audio_tracks > 0:
-                values += [nb_audio_tracks]
+                values += [audio_tracks_summary]
                 labels += ["Nb Audio Tracks"]
             values += [video_creation_date]
             labels += ["Creation Date"]
@@ -4912,7 +4915,7 @@ def format_media_info(file_name, configs):
                 values += extra_values
                 labels += extra_labels
             if nb_audio_tracks  > 0:
-                values +=[nb_audio_tracks]
+                values +=[audio_tracks_summary]
                 labels +=["Nb Audio Tracks"]
 
             values += pp_values
@@ -5255,7 +5258,7 @@ def format_media_info(file_name, configs):
                 values += [video_activated_loras_str]
                 labels += ["LoRAs"] 
             if nb_audio_tracks  > 0:
-                values +=[nb_audio_tracks]
+                values +=[audio_tracks_summary]
                 labels +=["Nb Audio Tracks"]
             values += [ video_creation_date, video_generation_time ]
             labels += [ "Creation Date", "Generation Time" ]
@@ -7023,9 +7026,10 @@ def generate_media(
     profile = compute_profile(override_profile, output_type)
     if model_type != transformer_type or reload_needed or profile != loaded_profile or config != loaded_config:
         release_model()
-        send_cmd("status", f"Loading model {get_model_name(model_type)}...")
+        send_cmd("status", f"Loading Model {get_model_name(model_type)}...")
         def loading_progress(phase, completed, total, model_id):
-            title = f"Loading — {phase}" + (f" ({model_id})" if model_id else "")
+            component = " ".join(word.upper() if word.lower() in ("vae", "clip", "llm", "t5") else word.capitalize() for word in model_id.replace("_", " ").split())
+            title = f"Loading - {phase}" + (f" {component} Model" if component else "")
             send_cmd("progress", [(completed, total), title, total, "phases"])
 
         try:
@@ -7034,7 +7038,7 @@ def generate_media(
             traceback.clear_frames(error.__traceback__)
             gc.collect()
             return True
-        send_cmd("status", "Model loaded")
+        send_cmd("status", "Model Loaded")
         send_cmd("refresh_models", get_unique_id())
         reload_needed=  False
     download_requested_postprocessing_assets(
@@ -8406,11 +8410,16 @@ def generate_media(
                 else:
                     file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(truncate_for_filesystem(save_prompt)).strip()}.{extension}"
                 video_path = os.path.join(output_dir, file_name)
+                saving_status = f"Saving File {file_name if len(file_name) <= 50 else file_name[:12] + '...' + file_name[-35:]}"
 
                 if BGRA_frames is not None:
                     from models.wan.alpha.utils import write_zip_file
+                    zip_name = os.path.splitext(file_name)[0] + ".zip"
+                    set_progress_status(f"Saving File {zip_name if len(zip_name) <= 50 else zip_name[:12] + '...' + zip_name[-35:]}")
                     write_zip_file(os.path.splitext(video_path)[0] + ".zip", BGRA_frames)
                     BGRA_frames = None 
+                if not is_image:
+                    set_progress_status(saving_status)
                 if audio_only:
                     audio_path = os.path.join(output_dir, file_name)
                     audio_path = save_audio_file(audio_path, sample.squeeze(0), output_audio_sampling_rate, audio_codec)
@@ -8421,6 +8430,8 @@ def generate_media(
                     new_image_path = []
                     for no, img in enumerate(sample):  
                         img_path = get_available_filename(output_dir, image_path, "" if no == 0 else f"_{no}")
+                        img_name = os.path.basename(img_path)
+                        set_progress_status(f"Saving File {img_name if len(img_name) <= 50 else img_name[:12] + '...' + img_name[-35:]}")
                         new_image_path.append(save_image(img, save_file = img_path, quality = server_config.get("image_output_codec", None)))
 
                     video_path= new_image_path
@@ -8491,6 +8502,7 @@ def generate_media(
                     if generated_audio is not None: output_new_audio_filepath = None
                     mux_audio_sampling_rate = resolve_mux_audio_sampling_rate(output_audio_sampling_rate, source_audio_metadata, new_audio_tracks)
 
+                    set_progress_status(saving_status)
                     combine_and_concatenate_video_with_audio_tracks(
                         video_path,
                         save_path_tmp,
@@ -10419,7 +10431,7 @@ def goto_model_type_with_filter(state, model_type):
 def change_model_from_target(state, model_type):
     model_type = _model_choice_target_model_type(model_type)
     model_dropdowns.debug_model_selector_event("target.apply", target=model_type, state_filter=model_dropdowns.get_model_output_filter(_get_dropdown_deps(), state))
-    return change_model(state, model_type)
+    return change_model(state, model_type)[0]
 
 def refresh_model_dropdowns(state):
     model_type = get_state_model_type(state)
@@ -11329,6 +11341,10 @@ attention_modes_choices= [
 
 def refresh_attention_header(state, override_attention):
     return generate_header(get_state_model_type(state), compile, attention_mode, override_attention)[1]
+
+def refresh_attention_sparsity(state, override_attention):
+    modes = get_model_def(get_state_model_type(state)).get("custom_attention_modes", {})
+    return gr.update(visible=modes.get(override_attention, {}).get("supports_sparsity", False))
 
 def detect_auto_save_form(state, evt:gr.SelectData):
     last_tab_id = state.get("last_tab_id", 0)
@@ -12420,7 +12436,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             label=model_def.get("skip_steps_multiplier_label", "Skip Steps Cache Global Acceleration")
                         )
                         if not update_form:
-                            skip_steps_cache_type.change(fn=lambda cache_type: gr.update(visible=cache_type in ("tea", "mag", "first_block")), inputs=[skip_steps_cache_type], outputs=[skip_steps_multiplier])
+                            skip_steps_cache_type.input(fn=lambda cache_type: gr.update(visible=cache_type in ("tea", "mag", "first_block")), inputs=[skip_steps_cache_type], outputs=[skip_steps_multiplier])
                         skip_steps_start_step_perc = gr.Slider(0, 100, value=ui_get("skip_steps_start_step_perc"), step=1, label="Skip Steps starting moment in % of generation", show_reset_button= False) 
 
                 with gr.Tab("Post Processing", visible = not audio_only) as post_processing_tab:
@@ -12576,7 +12592,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             refiner_val = ensure_refiner_list(ui_get("self_refiner_plan", []))
                             self_refiner_plan = refiner_val if update_form else gr.State(value=refiner_val)
                             
-                            with gr.Column(visible=(update_form and ui_get("self_refiner_setting", 0) > 0)) as self_refiner_rules_ui:
+                            with gr.Column(visible=ui_get("self_refiner_setting", 0) > 0) as self_refiner_rules_ui:
                                 gr.Markdown("#### Refiner Rules")
                                 
                                 with gr.Row(elem_id="refiner-input-row"):
@@ -12589,7 +12605,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 
                                 if not update_form:
                                     refiner_add_btn.click(fn=add_refiner_rule, inputs=[self_refiner_plan, refiner_range, refiner_mult], outputs=[self_refiner_plan])
-                                    self_refiner_setting.change(fn=lambda s: gr.update(visible=s > 0), inputs=[self_refiner_setting], outputs=[self_refiner_rules_ui])
+                                    self_refiner_setting.input(fn=lambda s: gr.update(visible=s > 0), inputs=[self_refiner_setting], outputs=[self_refiner_rules_ui])
 
                                     @gr.render(inputs=self_refiner_plan)
                                     def render_refiner_rules(rules):
@@ -12789,8 +12805,8 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     _deepy_hybrid.configure_workspaces(args.workspaces_dir or os.path.join(wgp_root, 'workspaces'))
                 state = default_state if default_state is not None else gr.State(state_dict)
                 if tab_id == "generate" and header is not None:
-                    override_attention.change(fn=refresh_attention_header, inputs=[state, override_attention], outputs=[header], show_progress="hidden")
-                override_attention.change(fn=lambda value, modes=custom_attention_modes: gr.update(visible=modes.get(value, {}).get("supports_sparsity", False)), inputs=[override_attention], outputs=[attention_sparsity], show_progress="hidden")
+                    override_attention.input(fn=refresh_attention_header, inputs=[state, override_attention], outputs=[header], show_progress="hidden")
+                override_attention.input(fn=refresh_attention_sparsity, inputs=[state, override_attention], outputs=[attention_sparsity], show_progress="hidden")
                 gen_status = WangpProgress.component(visible=True)
                 main_bridge_elem_ids = tab_id == 'generate'
                 status_trigger = gr.Text(interactive= False, visible=False, elem_id="wangp_main_status_trigger" if main_bridge_elem_ids else None)
@@ -12942,8 +12958,11 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       NAG_col, audio_options_row, remove_background_sound, normalize_audio_volumes, audio_prompt_type_custom_option, speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, prompt_enhancer_mode_dropdown, prompt_enhancer_think, force_control_video_trim,
                                       min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temporal_upsampling_method, temporal_upsampling_multiplier, spatial_upsampling_method, spatial_upsampling_ratio, temperature_row, *spatial_upsampler_extra, *PP_spatial_upsampler_extra, *custom_settings_rows, *custom_setting_extra_inputs, top_pk_row,
                                       number_frames_row, negative_prompt_row, config_column, *config_group_dropdowns,
-                                      self_refiner_col, pause_row]+\
+                                      self_refiner_col, self_refiner_rules_ui, pause_row]+\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,
+        if tab_id == 'generate':
+            # Restore the header with the effective attention value in the same update.
+            extra_inputs.append(gr.update(value=generate_header(model_type, compile, attention_mode, selected_attention)[1]) if update_form else header)
         if update_form:
             locals_dict = locals()
             gen_inputs = build_form_refresh_outputs(inputs_names, locals_dict, state_dict, plugin_data, extra_inputs)
@@ -12970,9 +12989,9 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             video_guide2.change(fn=refresh_video_input_label, inputs=[video_guide2, gr.State(video_guide2_label)], outputs=video_guide2, show_progress="hidden")
             video_mask.change(fn=refresh_video_input_label, inputs=[video_mask, gr.State(video_mask_label)], outputs=video_mask, show_progress="hidden")
             guidance_phases.change(fn=change_guidance_phases, inputs= [state, guidance_phases, video_prompt_type], outputs =[model_switch_phase, guidance_phases_row, switch_threshold, switch_threshold2, guidance2_scale, guidance3_scale, video_prompt_type])
-            remove_background_sound.change(fn=refresh_remove_background_sound, inputs=[state, audio_prompt_type, remove_background_sound], outputs=[audio_prompt_type])
-            normalize_audio_volumes.change(fn=refresh_normalize_audio_volumes, inputs=[state, audio_prompt_type, normalize_audio_volumes], outputs=[audio_prompt_type])
-            audio_prompt_type_custom_option.change(fn=refresh_audio_prompt_type_custom_option, inputs=[state, audio_prompt_type, audio_prompt_type_custom_option], outputs=[audio_prompt_type])
+            remove_background_sound.input(fn=refresh_remove_background_sound, inputs=[state, audio_prompt_type, remove_background_sound], outputs=[audio_prompt_type])
+            normalize_audio_volumes.input(fn=refresh_normalize_audio_volumes, inputs=[state, audio_prompt_type, normalize_audio_volumes], outputs=[audio_prompt_type])
+            audio_prompt_type_custom_option.input(fn=refresh_audio_prompt_type_custom_option, inputs=[state, audio_prompt_type, audio_prompt_type_custom_option], outputs=[audio_prompt_type])
             audio_prompt_type_sources.change(fn=refresh_audio_prompt_type_sources, inputs=[state, audio_prompt_type, audio_prompt_type_sources, video_prompt_type, image_mode], outputs=[audio_prompt_type, audio_guide, audio_guide2, speakers_locations_row, remove_background_sound, normalize_audio_volumes, audio_prompt_type_custom_option, audio_options_row, audio_guide_row, force_control_video_trim, custom_settings_visibility_trigger])
             prompt_enhancer_mode_dropdown.input(fn=build_prompt_enhancer_value, inputs=[prompt_enhancer_mode_dropdown, prompt_enhancer_think], outputs=[prompt_enhancer], show_progress="hidden")
             prompt_enhancer_think.input(fn=build_prompt_enhancer_value, inputs=[prompt_enhancer_mode_dropdown, prompt_enhancer_think], outputs=[prompt_enhancer], show_progress="hidden")
@@ -13297,7 +13316,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     show_progress="hidden",
                 ).then(fn= change_model_from_target,
                     inputs=[state, model_choice_target],
-                    outputs= [model_description, header],
+                    outputs= [model_description],
                     show_progress="hidden",
                 ).then(fn= fill_inputs, 
                     inputs=[state],

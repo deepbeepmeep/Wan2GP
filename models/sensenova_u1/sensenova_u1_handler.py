@@ -96,6 +96,7 @@ class family_handler:
             "at_least_one_image_ref_needed": False,
             "image_prompt_types_allowed": "S",
             "infos": SENSENOVA_INFOS,
+            "specialities": [{"name": "infographics", "aliases": ["information graphics", "information posters"]}, {"name": "text rendering", "description": "Chinese and English lettering within images."}, {"name": "precise layouts"}],
             "prompt_infos": SENSENOVA_PROMPT_INFOS,
             "preview_all_images": True,
             "prompt_enhancer_button_label": "Enhance",

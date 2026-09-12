@@ -9,6 +9,7 @@ import re
 import struct
 import subprocess
 import threading
+import time
 from fractions import Fraction
 from functools import lru_cache
 from pathlib import Path
@@ -29,7 +30,16 @@ DEPTH_MODEL_VARIANT = "vitl"
 LEGACY_NR_WORKER = HOST_DIR / "nvngx.dll"
 DEPTH_NR_WORKER = HOST_DIR / "nr-depth-worker.exe"
 NR_WORKER = DEPTH_NR_WORKER if USE_DEPTH_GUIDE else LEGACY_NR_WORKER
-DLSSG_WORKER = DLSSG_DIR / "dlssg-worker.exe"
+if os.name == "nt":
+    DLSSG_WORKER = DLSSG_DIR / "dlssg-worker.exe"
+    DLSSG_RUNTIME = DLSSG_DIR / "nvngx_dlssg.dll"
+else:
+    # Linux: official NVIDIA DLSS SDK runtime (CUDA/Vulkan API); the worker is
+    # a Linux build of the MIT-licensed dlssg_worker (see docs/DLSS5.md). The
+    # glob picks the newest installed runtime, falling back to the version
+    # installed by scripts/install_dlss5.sh for a clear "missing" message.
+    DLSSG_WORKER = DLSSG_DIR / "dlssg-worker"
+    DLSSG_RUNTIME = next(iter(sorted(DLSSG_DIR.glob("libnvidia-ngx-dlssg.so*"), reverse=True)), DLSSG_DIR / "libnvidia-ngx-dlssg.so.310.7.0")
 
 NR_FILES = (
     HOST_DIR / "dxgi.dll",
@@ -38,7 +48,7 @@ NR_FILES = (
     DLSS_DIR / "nvngx_dlss.dll",
     NR_WORKER,
 )
-DLSSG_FILES = (DLSSG_DIR / "nvngx_dlssg.dll", DLSSG_WORKER)
+DLSSG_FILES = (DLSSG_RUNTIME, DLSSG_WORKER)
 
 NR_MODES = {
     1.0: ("DLAA", 5),
@@ -122,7 +132,7 @@ def _missing(files: tuple[Path, ...]) -> list[Path]:
 
 @lru_cache(maxsize=1)
 def dlssg_capabilities() -> dict:
-    if _missing(DLSSG_FILES) or os.name != "nt":
+    if _missing(DLSSG_FILES):
         return {}
     try:
         result = subprocess.run([str(DLSSG_WORKER), "--probe"], cwd=str(DLSSG_DIR), capture_output=True, text=True, timeout=15, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -134,8 +144,8 @@ def dlssg_capabilities() -> dict:
 
 @lru_cache(maxsize=1)
 def _gpu_series() -> int:
-    if os.name != "nt":
-        return 0
+    # nvidia-smi is available on Windows and Linux; the query is a no-op on
+    # hosts without an NVIDIA GPU (regex finds no series).
     try:
         result = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True, timeout=5, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.TimeoutExpired):
@@ -163,11 +173,11 @@ def _hags_enabled() -> bool | None:
 
 
 def unavailable_reason(*, temporal: bool) -> str:
+    if not temporal and os.name != "nt":
+        return "Windows only: ReShade/RenoDX"
     missing = _missing(DLSSG_FILES if temporal else NR_FILES)
     if missing:
         return f"missing {missing[0].name}"
-    if os.name != "nt":
-        return "Windows 11 required"
     series = _gpu_series()
     minimum = 40 if temporal else 30
     if series < minimum:
@@ -551,6 +561,8 @@ class FrameGenerationSession(Worker):
 def _interpolate(frame_count: int, width: int, height: int, frame_getter, fps: float, scale: int, motion_vector: str, abort_callback=None, progress_callback=None) -> np.ndarray | None:
     generated_count = scale - 1
     session = FrameGenerationSession(width, height, frame_count, generated_count)
+    print(f"[DLSS 5] Frame Generation: {frame_count} input frames at {width}x{height}, x{scale} ({generated_count} generated frame(s) per pair)")
+    start = time.perf_counter()
     completed = False
     try:
         guides = FlowGuides(width, height, motion_vector)
@@ -558,28 +570,42 @@ def _interpolate(frame_count: int, width: int, height: int, frame_getter, fps: f
         for index in range(frame_count):
             if abort_callback is not None and abort_callback():
                 return None
+            frame_start = time.perf_counter()
             frame = frame_getter(index)
             motion, reset = guides.process(frame)
             target_index = index * scale
             output[target_index] = frame
+            generated = 0
             if index == 0:
-                session.process_frame(index, frame, motion, Fraction(index, 1) / Fraction(str(fps)), reset)
+                generated = session.process_frame(index, frame, motion, Fraction(index, 1) / Fraction(str(fps)), reset)
             else:
                 generated_output = output[target_index - generated_count:target_index]
                 generated = session.process_frame(index, frame, motion, Fraction(index, 1) / Fraction(str(fps)), reset, generated_output)
                 if reset or not generated:
                     generated_output[:] = output[target_index - scale]
+            if reset:
+                status = "reset"
+            elif generated:
+                status = f"generated {generated} frame(s)"
+            else:
+                status = "disabled, carried previous frame forward"
+            print(f"[DLSS 5] Frame Generation {index + 1}/{frame_count}: {status} in {time.perf_counter() - frame_start:.2f} s")
             if progress_callback is not None:
                 progress_callback("DLSS Frame Generation", index + 1, frame_count)
             del frame, motion
         if abort_callback is not None and abort_callback():
             return None
         completed = True
+        elapsed = time.perf_counter() - start
     finally:
         try:
             session.close(abort=not completed)
         finally:
             offload_registry.unload_vram(list(_GUIDE_OFFLOADS))
+    if completed:
+        print(f"[DLSS 5] Frame Generation finished: {frame_count} input frames -> {output.shape[0]} output frames in {elapsed:.1f} s ({frame_count / elapsed:.1f} input fps -> {output.shape[0] / elapsed:.1f} output fps)")
+        for line in session.logs:
+            print(f"[DLSS 5] worker: {line}")
     return output
 
 

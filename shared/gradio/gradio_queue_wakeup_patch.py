@@ -5,6 +5,7 @@ from queue import Queue
 from types import FunctionType, SimpleNamespace
 
 from gradio import queueing, routes
+from shared.utils.fastapi_routes import iter_app_routes
 
 
 def _with_sleep(fn, sleep):
@@ -80,7 +81,7 @@ class WakeupQueue(queueing.Queue):
 def _patch_message_delivery(app):
     # Both /queue/data and /call/... share this closure. Leave the complete SSE
     # protocol (errors, heartbeats, cancellation, close messages) in upstream code.
-    for route in app.routes:
+    for route in iter_app_routes(app):
         endpoint = getattr(route, 'endpoint', None)
         if not isinstance(endpoint, FunctionType):
             continue

@@ -268,12 +268,13 @@ def install_gradio_routes(*, get_service, language=None):
         return
     from fastapi import Depends
     from gradio.routes import API_PREFIX, App
+    from shared.utils.fastapi_routes import iter_app_routes
 
     original = App.create_app
 
     def create_app(*args, **kwargs):
         app = original(*args, **kwargs)
-        login_check = next(route.endpoint for route in app.routes if route.path == f"{API_PREFIX}/login_check")
+        login_check = next(route.endpoint for route in iter_app_routes(app) if getattr(route, 'path', None) == f"{API_PREFIX}/login_check")
         mount_voice_routes(app, dependencies=[Depends(login_check)], get_service=get_service, language=language)
         return app
 

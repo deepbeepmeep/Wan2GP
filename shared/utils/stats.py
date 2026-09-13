@@ -146,6 +146,12 @@ class SystemStatsApp:
 
         stats_html = f"""
         <style>
+        /* Gradio dims pending HTML even when progress is hidden. */
+        #wangp-system-stats .html-container {{
+            opacity: 1;
+            transition: none;
+        }}
+
         .stats-container {{
             display: flex;
             justify-content: space-between;
@@ -242,7 +248,7 @@ class SystemStatsApp:
         return stats_html, last_disk_io
 
     def get_gradio_element(self):
-        self.system_stats_display = gr.HTML(self.html)
+        self.system_stats_display = gr.HTML(self.html, elem_id="wangp-system-stats")
         return self.system_stats_display
 
     def setup_events(self, main, state):

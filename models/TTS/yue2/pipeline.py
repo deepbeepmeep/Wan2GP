@@ -29,6 +29,8 @@ class YuE2Pipeline:
         self._early_stop = False
         self.lm_decoder_engine = lm_decoder_engine
         self.scoring_checkpoint = scoring_checkpoint
+
+        dtype = vae_dtype = torch.bfloat16
         ar_config = Qwen3Config(**json.loads((directory / "yue2_ar.json").read_text()))
         nar_config = YuE2Config(**json.loads((directory / "yue2.json").read_text()))
         with torch.device("meta"):

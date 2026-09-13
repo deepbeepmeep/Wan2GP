@@ -3,7 +3,7 @@
     "name": "Speech AuK Flash",
     "architecture": "auk",
     "auk_flash": true,
-    "description": "Four-step AuK speech generation and editing with fixed sampling and CFG disabled.",
+    "description": "Four-step AuK speech generation and editing with fixed sampling and CFG disabled. ",
     "URLs": [
       "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/AuK_Flash_bf16.safetensors",
       "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/AuK_Flash_int8_convrot.safetensors"
@@ -11,7 +11,7 @@
   },
   "prompt": "Say \"Welcome back. It is wonderful to hear from you.\" in a warm, calm female voice.",
   "audio_prompt_type": "",
-  "duration_seconds": 30,
+  "duration_seconds": 5,
   "num_inference_steps": 4,
   "guidance_scale": 0,
   "prompt_enhancer": ""

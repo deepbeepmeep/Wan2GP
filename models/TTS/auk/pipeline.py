@@ -38,6 +38,7 @@ class AuKPipeline:
 
     def __init__(self, model_path, encoder_path, vae_path, tokenizer_folder, config_path, flash=False, dtype=torch.bfloat16):
         self.device = torch.device('cuda')
+        dtype = torch.bfloat16
         self.dtype = dtype
         self.flash = flash
         self._interrupt = False

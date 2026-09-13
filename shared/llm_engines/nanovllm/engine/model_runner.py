@@ -923,6 +923,7 @@ class ModelRunner:
             seq.clear_prompt_data()
         reset_context()
 
+    @torch.inference_mode()
     def _prefill_prefix_chunks(self, seq: Sequence, chunk_tokens: int) -> None:
         """Prefill all but the final chunk without sampling or retaining logits."""
         num_tokens = seq.num_tokens

@@ -415,7 +415,7 @@ def _prepare_weight_scale(scale: torch.Tensor, out_features: int, device: torch.
     return flat_scale
 
 
-def _cache_launch_params(cache: dict, fifo: list, max_size: int, key: tuple[int, int, int, int], params: tuple[int, int, int, int, int, int, int]) -> tuple[int, int, int, int, int, int, int]:
+def _cache_launch_params(cache: dict, fifo: list, max_size: int, key: tuple, params: tuple[int, int, int, int, int, int, int]) -> tuple[int, int, int, int, int, int, int]:
     if key in cache:
         return cache[key]
     cache[key] = params
@@ -457,16 +457,16 @@ def _compile_recovery_candidates(kind: str, preferred: tuple[int, int, int, int,
         return []
 
 
-def _fused_launch_params(m: int, k: int, n: int, device: torch.device) -> tuple[int, int, int, int, int, int, int]:
+def _fused_launch_params(m: int, k: int, n: int, device: torch.device, kernel_kind: str = "fused") -> tuple[int, int, int, int, int, int, int]:
     device_index = int(device.index if device.type == "cuda" else -1)
-    key = (device_index, m, k, n)
+    key = (device_index, m, k, n) if kernel_kind == "fused" else (device_index, m, k, n, kernel_kind)
     cached = _FUSED_LAUNCH_CACHE.get(key)
     if cached is not None:
         return cached
     mod = _TRITON_MODULE
     if mod is None:
         raise RuntimeError("Triton backend not initialized")
-    block_m, block_n, block_k, num_warps, num_stages = mod._select_triton_int8_config(m, k, n, device=device, kernel_kind="fused")
+    block_m, block_n, block_k, num_warps, num_stages = mod._select_triton_int8_config(m, k, n, device=device, kernel_kind=kernel_kind)
     grid_m = mod.triton.cdiv(m, block_m)
     grid_n = mod.triton.cdiv(n, block_n)
     params = (block_m, block_n, block_k, num_warps, num_stages, grid_m, grid_n)
@@ -804,6 +804,7 @@ def _convrot_int8_mm(x2d, qweight, scale, bias=None):
             out += bias
         return out
     out = torch.empty((m, n), device=x2d.device, dtype=x2d.dtype)
+    cfg = _fused_launch_params(m, k, n, x2d.device, kernel_kind="convrot_bias" if bias is not None else "convrot")[:5]
     _CONVROT_MODULE.convrot_int8_mm(x2d, qweight, scale, out, bias, cfg)
     if not _CONVROT_USED_PRINTED:
         _CONVROT_USED_PRINTED = True

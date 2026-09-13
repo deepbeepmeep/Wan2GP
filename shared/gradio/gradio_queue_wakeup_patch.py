@@ -1,5 +1,6 @@
 """Wake Gradio's existing scheduler on enqueue/completion instead of polling."""
 import asyncio
+from asyncio import TimeoutError
 from functools import wraps
 from queue import Queue
 from types import FunctionType, SimpleNamespace

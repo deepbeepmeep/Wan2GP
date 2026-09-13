@@ -166,7 +166,8 @@ def get_css():
     vertical-align: middle;
     line-height: 0 !important;
 }
-.wangp-prompt-tools-empty {
+/* Voice controls are mounted in this row even when the model has no help. */
+.wangp-prompt-tools-empty:not(:has(.wangp-prompt-microphone:not([hidden]))) {
     display: none !important;
     margin: 0 !important;
 }

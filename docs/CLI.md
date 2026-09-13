@@ -1,6 +1,6 @@
 # Command Line Reference
 
-This document covers all available command line options for WanGP.
+This document covers current command line options for WanGP. Deprecated Wan model-selection shortcuts remain accepted for existing launch scripts, but are omitted from command help.
 
 ## Basic Usage
 
@@ -25,7 +25,7 @@ python wgp.py --ask-deepy
 python wgp.py --deepy-server --listen --server-port 7860
 ```
 
-Gradio includes the Web app at `http://<PC-address>:7860/deepy/`; standalone Web serves it at `http://<PC-address>:7860/`. In a Gradio launch, both interfaces share chat, galleries, selections, settings and active work. Chat and generations continue with every browser closed. Authentication is disabled by default; `--deepy-auth` enables the Web access key. On smartphones the app uses native keyboard dictation. Separate launches do not attach to another process; use saved sessions when moving between processes.
+Gradio includes the Web app at `http://<PC-address>:7860/deepy/`; standalone Web serves it at `http://<PC-address>:7860/`. In a Gradio launch, both interfaces share chat, galleries, selections, settings and active work. Chat and generations continue with every browser closed. Authentication is disabled by default; `--auth` enables a shared password login for Gradio and Deepy. On smartphones the app uses native keyboard dictation. Separate launches do not attach to another process; use saved sessions when moving between processes.
 
 Common Deepy launch options:
 
@@ -37,6 +37,21 @@ Common Deepy launch options:
 | `--deepy-voice-language CODE` | Overrides the configured microphone transcription language in Gradio or Web; `fr`, `en`, etc., or `auto` for detection |
 | `--debug-deepy FOLDER` | Deepy debug logs |
 | `--llm-io FOLDER` | LLM input/output transcripts; see [LLM I/O Transcript](#llm-io-transcript) |
+
+Shared network protection options:
+
+| Option | Purpose |
+|---|---|
+| `--auth` | Enable password-only login for Gradio and Deepy; generate a password when none is supplied |
+| `--no-auth` | Explicitly disable web authentication; this is the default |
+| `--auth-password PASSPHRASE` | Fixed web passphrase; requires `--auth`. Environment alternative: `WANGP_AUTH_PASSWORD` |
+| `--mcp-auth` | Enable separate OAuth authorization for network MCP |
+| `--mcp-auth-password PASSPHRASE` | Fixed MCP approval passphrase; requires `--mcp-auth`. Environment alternative: `WANGP_MCP_AUTH_PASSWORD` |
+| `--mcp-auth-url ORIGIN` | Public MCP server origin, such as `https://wangp.example.com:7866`; required with `--mcp-auth` |
+| `--ssl-certfile FILE`, `--ssl-keyfile FILE` | Certificate and private key for any web/HTTP MCP launch; environment alternatives: `WANGP_SSL_CERT`, `WANGP_SSL_KEY` |
+| `--https-port PORT` | Serve HTTPS on this port and redirect the main HTTP port; requires the certificate and key |
+
+The authentication and certificate flags no longer use Deepy-specific names. Authentication remains off unless enabled. See [MCP OAuth setup](API.md#mcp-authentication-and-https) for external clients.
 
 See the [Deepy guide](DEEPY.md) for initial configuration, [interactive CLI commands](DEEPY.md#cli-mode), and Web network, HTTPS, and authentication setup.
 
@@ -193,20 +208,15 @@ Each materialized session keeps its canonical decoder context in `context.json` 
 ## Lora Configuration
 
 ```bash
---loras PATH                 # Root folder for all LoRA subfolders (default: loras)
---lora-dir PATH              # Path to Wan t2v loras directory
---lora-dir-i2v PATH          # Path to Wan i2v loras directory
---lora-dir-hunyuan PATH      # Path to Hunyuan t2v loras directory
---lora-dir-hunyuan-i2v PATH  # Path to Hunyuan i2v loras directory
---lora-dir-hunyuan-1-5 PATH  # Path to Hunyuan 1.5 loras directory
---lora-dir-ltxv PATH         # Path to LTX Video loras directory
+--loras PATH                 # Root folder for default LoRA subfolders (default: loras)
+--lora-config FILE           # Optional JSON mapping LoRA subfolder names to paths
 --lora-preset PRESET         # Load lora preset file (.lset) on startup
 --check-loras                # Filter incompatible loras (slower startup)
 ```
 
-Notes:
-- `--loras` sets the root folder used by all LoRA subfolders (e.g. `loras/wan`, `loras/flux`, etc.).
-- Specific `--lora-dir-*` flags override the root for that family only.
+Use `python wgp.py --lora-config lora_paths.json` to override individual collections. JSON keys match the exact subfolder names in the default `loras/` folder, such as `wan`, `wan_5B`, or `flux2_klein_4b`. Values are complete directory paths; relative values resolve beside the JSON file.
+
+JSON entries take precedence over `--loras`. Unlisted keys use the root from `--loras`, then `wgp_config.json`'s `loras_root`, then `loras/`. The former model-specific `--lora-dir*` flags have been removed. See the [LoRA guide](LORAS.md#custom-lora-directories) for a sample JSON and setup instructions.
 
 ## Generation Settings
 

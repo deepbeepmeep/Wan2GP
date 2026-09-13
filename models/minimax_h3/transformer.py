@@ -728,20 +728,6 @@ class MiniMaxH3Model(nn.Module):
                 del target_rope
             payload["rope"] = rope
             del positions, frequencies
-        physical_rope = None
-        if "temporal_rope_clock" in payload:
-            physical_rope = payload.get("physical_rope")
-            if physical_rope is None:
-                from .components.packing import _FRAME_RESCALE
-                physical_positions = layout.position_ids.clone()
-                physical_positions[video_start:, 0] = (layout.position_ids[video_start, 0]
-                    + payload["temporal_rope_clock"].repeat_interleave(target_video_rows // latent_t) * (_FRAME_RESCALE * 24.0 / payload["fps"]))
-                physical_angles = (physical_positions[:, :, None] * self.rope.inv_freq.detach().cpu()[None, None, :]).flatten(1).float()
-                physical_rope = _rope_table(physical_angles, dtype).to(device)
-                if target_video_order is not None:
-                    physical_rope[:, video_start:] = physical_rope[:, video_start:].index_select(1, target_video_order)
-                payload["physical_rope"] = physical_rope
-                del physical_positions, physical_angles
         del adaln_indices, changes
         target_audio_rows = audio_t * 2
         audio_start = video_start - target_audio_rows
@@ -756,7 +742,7 @@ class MiniMaxH3Model(nn.Module):
                 h_list = [hidden]
                 hidden = None
                 block_temb = ref2va_temb if ref2va_temb is not None and self.hybrid_ref2va_blocks[0] <= block_index <= self.hybrid_ref2va_blocks[1] else temb
-                hidden = block(h_list, block_temb, segments, physical_rope if physical_rope is not None and block_index >= 30 else rope)
+                hidden = block(h_list, block_temb, segments, rope)
         else:
             self._check_interrupt()
             block_temb = ref2va_temb if ref2va_temb is not None and self.hybrid_ref2va_blocks[0] == 0 else temb
@@ -769,7 +755,7 @@ class MiniMaxH3Model(nn.Module):
                     block_temb = ref2va_temb if ref2va_temb is not None and self.hybrid_ref2va_blocks[0] <= block_index <= self.hybrid_ref2va_blocks[1] else temb
                     h_list = [hidden]
                     hidden = None
-                    hidden = self.blocks[block_index](h_list, block_temb, segments, physical_rope if physical_rope is not None and block_index >= 30 else rope)
+                    hidden = self.blocks[block_index](h_list, block_temb, segments, rope)
                 first_block_cache.store_tail_residual(hidden[audio_start:], head_output)
             else:
                 first_block_cache.apply_tail_residual(hidden[audio_start:])

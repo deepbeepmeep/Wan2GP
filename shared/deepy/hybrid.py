@@ -268,10 +268,10 @@ class HybridService(DeepyService):
             self._host_worker.join(5)
 
     @asynccontextmanager
-    async def lifespan(self, app, *, token=None, voice_language=None, https_port=None):
+    async def lifespan(self, app, *, auth=None, voice_language=None, https_port=None):
         from shared.deepy.server import create_app
         from starlette.concurrency import run_in_threadpool
-        app.mount('/deepy', create_app(self, token=token, voice_language=voice_language, https_port=https_port))
+        app.mount('/deepy', create_app(self, auth=auth, voice_language=voice_language, https_port=https_port))
         try:
             await run_in_threadpool(self._deps.load_queue_action, None, self._state, SimpleNamespace(target=None))
             self.start_generation()
@@ -283,18 +283,27 @@ class HybridService(DeepyService):
 def launch_gradio(demo, service, args, **kwargs):
     """Use Gradio's supported lifespan hook to mount the shared Web application."""
     from shared.deepy.server import server_options
-    host, port, cert, key, https_port, token = server_options(args)
-    if token is not None:
-        print(f"Deepy access key: {token}")
+    host, port, cert, key, https_port, auth = server_options(args)
+    print("WanGP web authentication disabled." if auth.gate is None else "WanGP web authentication enabled.")
     scheme = 'https' if cert and https_port is None else 'http'
     print(f"Deepy Web app: {scheme}://{host}:{port}/deepy/")
 
     @asynccontextmanager
     async def lifespan(app):
-        async with service.lifespan(app, token=token, voice_language=args.deepy_voice_language, https_port=https_port):
+        demo.run_startup_events()
+        await demo.run_extra_startup_events()
+        app.startup_events_triggered = True
+        async with service.lifespan(app, auth=auth, voice_language=args.deepy_voice_language, https_port=https_port):
             yield
 
-    demo.launch(**kwargs, app_kwargs={"lifespan": lifespan}, ssl_certfile=cert if https_port is None else None, ssl_keyfile=key if https_port is None else None, ssl_verify=False if cert else True, prevent_thread_lock=https_port is not None)
+    from starlette.middleware import Middleware
+    from shared.authentication.web import GradioStartupMiddleware, WebAuthMiddleware
+    from shared.authentication.tls import HTTPSRedirect
+    middleware = [Middleware(WebAuthMiddleware, auth=auth)]
+    if https_port is not None:
+        middleware.insert(0, Middleware(HTTPSRedirect, port=https_port))
+    middleware.insert(0, Middleware(GradioStartupMiddleware))
+    demo.launch(**kwargs, app_kwargs={"lifespan": lifespan, "middleware": middleware}, ssl_certfile=cert if https_port is None else None, ssl_keyfile=key if https_port is None else None, ssl_verify=False if cert else True, prevent_thread_lock=https_port is not None)
     if https_port is not None:
         import uvicorn
         print(f"Deepy HTTPS app: https://{host}:{https_port}/deepy/")

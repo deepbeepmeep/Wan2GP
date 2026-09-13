@@ -1,5 +1,4 @@
 
-import os
 import re
 import torch
 import numpy as np
@@ -115,58 +114,22 @@ class family_handler():
         return {"wan":(0, "Wan2.1"), "wan2_2":(1, "Wan2.2") }
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-i2v",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Wan i2v Loras (default: {os.path.join(lora_root, 'wan_i2v')})"
-        )
-        parser.add_argument(
-            "--lora-dir",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Wan t2v Loras (default: {os.path.join(lora_root, 'wan')})"
-        )
-        parser.add_argument(
-            "--lora-dir-wan-1-3b",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Wan 1.3B Loras (default: {os.path.join(lora_root, 'wan_1.3B')})"
-        )
-        parser.add_argument(
-            "--lora-dir-wan-5b",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Wan 5B Loras (default: {os.path.join(lora_root, 'wan_5B')})"
-        )
-        parser.add_argument(
-            "--lora-dir-wan-i2v",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Wan i2v Loras (default: {os.path.join(lora_root, 'wan_i2v')})"
-        )
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
+    def get_lora_dir(base_model_type):
         if test_shotplan(base_model_type):
-            return os.path.join(lora_root, "wan_shotplan_2_2" if base_model_type == "shotplan_t2v_2_2" else "wan_shotplan")
+            return "wan_shotplan_2_2" if base_model_type == "shotplan_t2v_2_2" else "wan_shotplan"
         i2v = test_class_i2v(base_model_type) and not test_i2v_2_2(base_model_type)
-        wan_dir = getattr(args, "lora_dir_wan", None) or getattr(args, "lora_dir", None) or os.path.join(lora_root, "wan")
-        wan_i2v_dir = getattr(args, "lora_dir_wan_i2v", None) or getattr(args, "lora_dir_i2v", None) or os.path.join(lora_root, "wan_i2v")
-        wan_1_3b_dir = getattr(args, "lora_dir_wan_1_3b", None) or os.path.join(lora_root, "wan_1.3B")
-        wan_5b_dir = getattr(args, "lora_dir_wan_5b", None) or os.path.join(lora_root, "wan_5B")
 
         if base_model_type == "animate2":
-            return os.path.join(lora_root, "wan_animate2")
+            return "wan_animate2"
         if test_scail2(base_model_type):
-            return wan_i2v_dir
+            return "wan_i2v"
         if i2v:
-            return wan_i2v_dir
+            return "wan_i2v"
         if "1.3B" in base_model_type:
-            return wan_1_3b_dir
+            return "wan_1.3B"
         if test_wan_5B(base_model_type) or base_model_type in ["ovi"]:
-            return wan_5b_dir
-        return wan_dir
+            return "wan_5B"
+        return "wan"
 
     @staticmethod
     def set_cache_parameters(cache_type, base_model_type, model_def, inputs, skip_steps_cache):

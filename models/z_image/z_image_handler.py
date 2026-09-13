@@ -1,4 +1,3 @@
-import os
 import torch
 from shared.utils.hf import build_hf_url
 
@@ -91,17 +90,8 @@ class family_handler:
         return {"z_image": (1120, "Z-Image") }
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-z-image",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains z image settings (default: {os.path.join(lora_root, 'z_image')})"
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_dir_z_image", None) or os.path.join(lora_root, "z_image")
+    def get_lora_dir(base_model_type):
+        return "z_image"
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

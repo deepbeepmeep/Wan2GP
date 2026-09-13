@@ -389,7 +389,7 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
                                     with gr.Row():
                                         for index in row:
                                             field = deepy_ui_settings.GENERATION_PROPERTY_FIELDS[index]
-                                            property_controls[field["key"]] = gr.Slider(field["minimum"], field["maximum"], value=tool_ui_state[field["key"]], step=field["step"], label=field["label"], interactive=not tool_ui_state["use_template_properties"])
+                                            property_controls[field["key"]] = gr.Slider(field["minimum"], field["maximum"], value=tool_ui_state[field["key"]], step=field["step"], label=field["label"], interactive=not tool_ui_state["use_template_properties"], show_reset_button=False, elem_classes=["chat__generation-property"])
                                 override_width, override_height, override_num_frames, override_audio_duration, override_seed = (property_controls[field["key"]] for field in deepy_ui_settings.GENERATION_PROPERTY_FIELDS)
                             with gr.Tab("Templates Settings used by Tools"):
                                 with gr.Row(visible=deepy_type == "prime"):

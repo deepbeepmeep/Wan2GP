@@ -402,25 +402,10 @@ class family_handler:
         return {"tts": (2200, "TTS")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-scenema-audio",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Scenema Audio LoRAs (default: {os.path.join(lora_root, 'scenema_audio')})",
-        )
-        parser.add_argument(
-            "--lora-dir-dramabox-audio",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains DramaBox Audio LoRAs (default: {os.path.join(lora_root, 'dramabox_audio')})",
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
+    def get_lora_dir(base_model_type):
         if _is_dramabox(base_model_type):
-            return getattr(args, "lora_dir_dramabox_audio", None) or os.path.join(lora_root, "dramabox_audio")
-        return getattr(args, "lora_dir_scenema_audio", None) or os.path.join(lora_root, "scenema_audio")
+            return "dramabox_audio"
+        return "scenema_audio"
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

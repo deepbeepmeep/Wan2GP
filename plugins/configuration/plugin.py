@@ -8,7 +8,7 @@ from shared.utils.form_sync import Saved
 from shared.deepy.config import DEEPY_VOICE_LANGUAGE_KEY, deepy_voice_language_choices, normalize_deepy_voice_language
 from shared.deepy.voice import VOICE_MODE_KEY, VOICE_MODE_CHOICES, voice_mode
 from shared.deepy.engine import get_or_create_assistant_session
-from shared.gradio import assistant_chat, gradio_queue_focus_patch
+from shared.gradio import assistant_chat, gradio_queue_focus_patch, ui_studio
 from shared.gradio.hierarchy_selector import HierarchySelector
 from shared import notifications
 from shared.utils import prompt_parser
@@ -269,7 +269,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.multi_prompts_gen_type_choice = gr.Dropdown(
                         choices=prompt_parser.get_multi_prompts_gen_choices("Video"),
                         value=prompt_parser.normalize_multi_prompts_mode(self.server_config.get("multi_prompts_gen_type", prompt_parser.DEFAULT_MULTI_PROMPTS_MODE), default=prompt_parser.DEFAULT_MULTI_PROMPTS_MODE),
-                        label="How to Process each Line of the Text Prompt (First Time Model SDefault)",
+                        label="How to Process each Line of the Text Prompt (First Time Model Default)",
                     )
                     self.display_stats_choice = gr.Dropdown(
                         choices=[("Disabled", 0), ("Enabled", 1)],
@@ -310,7 +310,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         interactive=not self.args.lock_config
                     )
                     self.UI_theme_choice = gr.Dropdown(
-                        choices=[("Blue Sky (Default)", "default"), ("Classic Gradio", "gradio")],
+                        choices=ui_studio.THEME_CHOICES,
                         value=self.server_config.get("UI_theme", "default"), label="UI Theme (requires restart)"
                     )
                     self.queue_color_scheme_choice = gr.Dropdown(

@@ -53,12 +53,8 @@ class family_handler:
         return {"music": (2195, "Music"), "tts": (2200, "TTS")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument("--lora-dir-minimax-music3", type=str, default=None, help=f"Path to MiniMax Music 3 LoRAs (default: {os.path.join(lora_root, ARCHITECTURE)})")
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_dir_minimax_music3", None) or os.path.join(lora_root, ARCHITECTURE)
+    def get_lora_dir(base_model_type):
+        return ARCHITECTURE
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

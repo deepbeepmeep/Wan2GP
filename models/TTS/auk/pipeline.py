@@ -75,7 +75,7 @@ class AuKPipeline:
         return self._interrupt or self._early_stop
 
     @torch.inference_mode()
-    def generate(self, input_prompt, audio_guide=None, duration_seconds=5, sampling_steps=32, guide_scale=2.0, seed=1, batch_size=1, callback=None, audio_prompt_type='', joint_pass=True, **kwargs):
+    def generate(self, input_prompt, audio_guide=None, duration_seconds=30, sampling_steps=32, guide_scale=2.0, seed=1, batch_size=1, callback=None, audio_prompt_type='', joint_pass=True, **kwargs):
         self._interrupt = self._early_stop = False
         torch.manual_seed(seed)
         prompt = input_prompt

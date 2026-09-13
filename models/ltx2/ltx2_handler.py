@@ -2,6 +2,7 @@ import os
 import shutil
 import sys
 import torch
+from shared.lora_paths import resolve_lora_dir
 from shared.utils import files_locator as fl
 from shared.utils.hf import build_hf_url
 from shared.utils.loras_mutipliers import parse_loras_multipliers
@@ -401,8 +402,7 @@ def _migrate_loras():
 
     moved = set()
     for spec in _ARCH_SPECS.values():
-        lora_dir = Path(lora_root) / spec["lora_dir"]
-        lora_dir.mkdir(parents=True, exist_ok=True)
+        lora_dir = Path(resolve_lora_dir(spec["lora_dir"], lora_root, wgp.args.lora_config))
         for key in _LORA_SPEC_KEYS:
             filename = spec.get(key, None)
             if filename is None or filename in moved:
@@ -810,17 +810,8 @@ class family_handler:
         return get_rgb_factors("ltx2", "ltx2_22B" if _is_ltx25(base_model_type) else base_model_type)
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-ltx2",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains LTX-2 LoRAs (default: {os.path.join(lora_root, 'ltx2')})",
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_dir_ltx2", None) or os.path.join(lora_root, "ltx2")
+    def get_lora_dir(base_model_type):
+        return "ltx2"
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

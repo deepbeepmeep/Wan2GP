@@ -36,7 +36,7 @@ _AGENT_GUIDE_PATH = Path(__file__).resolve().parents[1] / "wangp-agent" / "SKILL
 _AGENT_SKILLS_DIR = _AGENT_GUIDE_PATH.parent / "skills"
 _DOCS_DIR = Path(__file__).resolve().parents[1] / "docs"
 _DEEPY_VISUAL_TOOL_IDS = {"gen_image", "edit_image", "gen_video", "gen_video_with_speech", "gen_video_with_refs"}
-_DEEPY_VIDEO_TOOL_IDS = {"gen_video", "gen_video_with_speech"}
+_DEEPY_VIDEO_TOOL_IDS = {"gen_video", "gen_video_with_speech", "gen_video_with_refs"}
 _DEEPY_AUDIO_TOOL_IDS = {"gen_song", "gen_speech_from_description", "gen_speech_from_sample"}
 _DEEPY_MODEL_DEF_STRING_LIMIT = 256
 _TOOLBOX_ACTIONS = {
@@ -553,18 +553,20 @@ def _deepy_general_properties(session) -> dict[str, Any]:
     return {key: settings[key] for key in ("use_template_properties", "width", "height", "num_frames", "audio_duration", "seed")}
 
 
-def _strip_deepy_general_property_settings(tool_id: str, settings: dict[str, Any]) -> dict[str, Any]:
-    stripped = copy.deepcopy(settings)
-    conflicting_keys = {"seed"}
+def _apply_deepy_general_properties(tool_id: str, settings: dict[str, Any], properties: dict[str, Any]) -> dict[str, Any]:
+    effective = dict(settings)
+    effective["seed"] = properties["seed"]
     if tool_id in _DEEPY_VISUAL_TOOL_IDS:
-        conflicting_keys.update(("resolution", "width", "height"))
+        effective.pop("width", None)
+        effective.pop("height", None)
+        effective["resolution"] = f"{properties['width']}x{properties['height']}"
         if tool_id in _DEEPY_VIDEO_TOOL_IDS:
-            conflicting_keys.update(("video_length", "num_frames"))
+            effective.pop("num_frames", None)
+            effective["video_length"] = properties["num_frames"]
     elif tool_id in _DEEPY_AUDIO_TOOL_IDS:
-        conflicting_keys.update(("duration_seconds", "audio_duration"))
-    for key in conflicting_keys:
-        stripped.pop(key, None)
-    return stripped
+        effective.pop("audio_duration", None)
+        effective["duration_seconds"] = properties["audio_duration"]
+    return effective
 
 
 def _strip_deepy_settings_metadata(settings: dict[str, Any]) -> dict[str, Any]:
@@ -608,7 +610,7 @@ def _deepy_template_settings(session, tool_id: str, template: str) -> dict[str, 
     general_properties = _deepy_general_properties(session)
     effective_settings = session.prepare_settings_for_export(template_settings)
     if not general_properties["use_template_properties"]:
-        effective_settings = _strip_deepy_general_property_settings(tool_id, effective_settings)
+        effective_settings = _apply_deepy_general_properties(tool_id, effective_settings, general_properties)
     effective_settings = _strip_deepy_fixed_image_mode(session, _strip_deepy_settings_metadata(effective_settings))
     result = {
         "tool_id": tool_id,
@@ -1718,8 +1720,14 @@ def build_inprocess_server(session, toolbox=None, default_job_event_limit: int =
 
 def build_server(args: argparse.Namespace):
     from shared.api import init
+    from shared.authentication import forwarded_options
+    from shared.authentication.oauth import mcp_authorization
+    from shared.authentication.tls import tls_options
 
     args.transport = _normalize_transport(getattr(args, "transport", "stdio"))
+    forwarded_options(args)
+    args.oauth = mcp_authorization(args, args.transport)
+    args.tls = tls_options(args, args.port or 8000)
     console_output = bool(args.console_output) and args.transport != "stdio"
     with _stdio_safe_startup_output(args.transport):
         session = init(
@@ -1738,6 +1746,9 @@ def build_server(args: argparse.Namespace):
     if args.transport == "streamable-http":
         settings["json_response"] = True
         settings["stateless_http"] = True
+    if args.oauth is not None:
+        from shared.authentication.oauth import transport_security
+        settings["transport_security"] = transport_security(args.oauth.issuer)
     return build_server_for_session(session, settings, default_job_event_limit=getattr(args, "job_event_limit", 20), allow_read_file_system=getattr(args, "allow_read_file_system", False), http_media_transfer=args.transport != "stdio", api_version=args.mcp_api_version, allow_async=args.mcp_async)
 
 
@@ -1755,6 +1766,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=None, help="Optional port for non-stdio transports.")
     parser.add_argument("--job-event-limit", type=int, default=20, help="Default number of recent progress events included in job snapshots; use 0 for terminal state/results only.")
     parser.add_argument("--allow-read-file-system", action="store_true", help="Allow MCP tool arguments to reference arbitrary server filesystem paths. Disabled by default; media IDs returned by wangp_list_gallery remain available.")
+    from shared.authentication import add_arguments
+    add_arguments(parser)
     return parser.parse_args(argv)
 
 
@@ -1772,7 +1785,18 @@ def run_server(server, args: argparse.Namespace) -> int:
     if transport == "stdio":
         server.run()
     else:
-        server.run(transport=transport)
+        import uvicorn
+        from shared.authentication.tls import HTTPSRedirect, run_http_and_https
+        app = server.sse_app() if transport == "sse" else server.streamable_http_app()
+        if args.oauth is not None:
+            app = args.oauth.wrap(app)
+        cert, key, https_port = args.tls
+        host, port = server.settings.host, server.settings.port
+        if https_port is None:
+            uvicorn.run(app, host=host, port=port, ssl_certfile=cert, ssl_keyfile=key)
+        else:
+            app = HTTPSRedirect(app, https_port)
+            run_http_and_https(uvicorn.Config(app, host=host, port=port, lifespan="off", timeout_graceful_shutdown=5), uvicorn.Config(app, host=host, port=https_port, ssl_certfile=cert, ssl_keyfile=key, timeout_graceful_shutdown=5))
     return 0
 
 

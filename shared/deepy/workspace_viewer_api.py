@@ -105,5 +105,5 @@ def mount_workspace_viewer(app, service):
             return await run_in_threadpool(add)
 
     @app.post('/deepy_api/workspace_viewer/{action}')
-    def action(action: Literal['reorder', 'eject', 'delete', 'copy', 'archive'], payload: ViewerAction):
+    def action(action: Literal['reorder', 'eject', 'delete', 'copy', 'move', 'archive'], payload: ViewerAction):
         return viewer.action(action, payload.model_dump())

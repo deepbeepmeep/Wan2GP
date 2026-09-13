@@ -6,6 +6,7 @@
   icons.lock = '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4M12 14v3"/>';
   icons.unlock = '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0M12 14v3"/>';
   icons.create = '<path d="M12 5v14M5 12h14"/>';
+  icons.move = '<path d="M14 3H3v18h11M9 12h12m-5-5 5 5-5 5"/>';
   class WorkspaceViewer {
     constructor(picker, transport) {
       this.picker = picker; this.transport = transport; this.source = 'video'; this.selections = {video: new Set(), audio: new Set()}; this.requestId = 0;
@@ -14,7 +15,7 @@
       this.dialog = document.createElement('dialog'); this.dialog.className = 'wangp-workspace-viewer'; this.dialog.ariaLabel = 'Workspace media viewer';
       this.dialog.innerHTML = `<header><div class="wv-heading"><div class="wv-workspace-picker"><select data-workspace aria-label="Workspace"></select><button data-create aria-label="Add workspace" title="Add workspace">${svg('create')}</button></div><span data-summary></span></div><div class="wv-header-actions"><button data-retention aria-label="Automatic workspace archiving" title="Automatic workspace archiving">${svg('broom')}</button><button data-close aria-label="Close workspace viewer" title="Close (Esc)">${svg('close')}</button></div></header>
         <div class="wv-toolbar"><div role="tablist" aria-label="Workspace media"><button role="tab" data-source="video">Images / Videos</button><button role="tab" data-source="audio">Audio</button></div><span class="wv-spacer"></span><span data-activity></span><button data-protect aria-label="Protect workspace from automatic archiving" aria-pressed="false">${svg('unlock')}</button><button data-import>${svg('import')}Import</button><button data-refresh>Refresh</button><input data-files type="file" accept="image/*,video/*,audio/*" multiple hidden></div>
-        <div class="wv-selection"><span data-count></span><button data-page-select>Select page</button><button data-clear>Clear selection</button><div data-actions hidden><button data-action="eject">${svg('eject')}Eject</button><button data-action="delete">${svg('delete')}Delete files</button><button data-action="copy">${svg('copy')}Copy to workspace</button><button data-action="archive">${svg('archive')}ZIP</button><button data-action="first" title="Move selected media to the oldest end">Move to start</button><button data-action="last" title="Move selected media to the newest end">Move to end</button></div></div>
+        <div class="wv-selection"><span data-count></span><button data-page-select>Select page</button><button data-clear>Clear selection</button><div data-actions hidden><button data-action="eject">${svg('eject')}Eject</button><button data-action="delete">${svg('delete')}Delete files</button><button data-action="copy">${svg('copy')}Copy to workspace</button><button data-action="move">${svg('move')}Move to workspace</button><button data-action="archive">${svg('archive')}ZIP</button><button data-action="first" title="Move selected media to the oldest end">Move to start</button><button data-action="last" title="Move selected media to the newest end">Move to end</button></div></div>
         <p class="wv-notice" role="status" hidden></p><div class="wv-content"><section class="wv-browser" aria-label="Workspace media grid"><div class="wv-grid" role="listbox" aria-multiselectable="true" aria-label="Media"></div><div class="wv-empty" hidden>No media in this gallery. Import files to get started.</div><div class="wv-rubber" hidden></div></section><aside><h3>Media details</h3><div class="wv-preview"></div><iframe title="Generation properties" sandbox=""></iframe></aside></div>
         <footer><span>Oldest → newest · Ctrl/⌘ click or drag on empty space to select · Drag tiles to reorder</span><button data-prev aria-label="Older page">←</button><label>Page <input data-page type="number" min="1" aria-label="Page number"></label><span data-pages></span><button data-next aria-label="Newer page">→</button></footer>`;
       document.body.append(this.dialog);
@@ -203,9 +204,9 @@
       try {
         const result = await this.transport.request('workspace_viewer/' + action, {workspace: this.workspace, source: this.source, revision: this.state.revision, keys: [...this.selected], ...extra});
         if (action === 'archive') {const link = document.createElement('a'); link.href = result.url; link.download = result.filename; document.body.append(link); link.click(); link.remove();}
-        if (['eject', 'delete'].includes(action)) this.selected.clear();
+        if (['eject', 'delete', 'move'].includes(action)) this.selected.clear();
         await this.load(this.page, true);
-        this.notice(result.errors?.length ? result.errors.join(' · ') : action === 'copy' ? `${result.count} media added to the target workspace.` : '');
+        this.notice(result.errors?.length ? result.errors.join(' · ') : action === 'copy' ? `${result.count} media added to the target workspace.` : action === 'move' ? `${result.count} media moved to the target workspace.` : '');
         return true;
       } catch (error) {this.notice(error.message); if (this.modal.open) {const node = this.modal.querySelector('[role=alert]'); node.hidden = false; node.textContent = error.message;} await this.load(this.state.page, true); this.notice(error.message); return false;}
       finally {this.setBusy(false);}
@@ -223,17 +224,18 @@
       if (action === 'last') return this.run('reorder', {before: null});
       if (action === 'first') return this.run('reorder', {edge: 'start'});
       this.modal.dataset.action = action;
-      this.modal.querySelector('h2').textContent = {delete:'Delete files permanently',copy:'Copy to workspace',archive:'Download ZIP archive',retention:'Automatic workspace archiving'}[action];
+      this.modal.querySelector('h2').textContent = {delete:'Delete files permanently',copy:'Copy to workspace',move:'Move to workspace',archive:'Download ZIP archive',retention:'Automatic workspace archiving'}[action];
       this.modal.querySelector('p').textContent = action === 'retention' ? 'At the next WanGP startup, archive unlocked workspaces with no media additions, removals or reordering during this period. Their dedicated Deepy sessions are archived too. Media files stay in place. Opening or renaming a workspace does not reset its activity date.' : action === 'delete' ? `Permanently delete ${this.selected.size} selected media files from disk? They will also be removed from every workspace that references them. This cannot be undone.` : action === 'copy' ? 'Append the selected media to another workspace. The original files are shared, without copying them on disk.' : 'Choose the name of the ZIP to download.';
+      if (action === 'move') this.modal.querySelector('p').textContent = 'Move the selected media to another workspace and remove them from this one. The files stay in place on disk; other workspaces keep their references.';
       this.modal.querySelector('[data-name-label]').hidden = action !== 'archive'; this.modal.querySelector('input').disabled = action !== 'archive';
       this.modal.querySelector('input').value = action === 'archive' ? this.state.name + '.zip' : '';
-      const target = this.modal.querySelector('select'); target.disabled = !['copy', 'retention'].includes(action); target.closest('label').hidden = target.disabled;
+      const target = this.modal.querySelector('select'); target.disabled = !['copy', 'move', 'retention'].includes(action); target.closest('label').hidden = target.disabled;
       this.modal.querySelector('[data-select-label]').textContent = action === 'retention' ? 'Archive after inactivity of' : 'Target workspace';
       target.replaceChildren(...(retention ? retention.choices.map(([label, days]) => new Option(label, days)) : this.picker.state.items.filter(item => item.id !== this.workspace).map(item => new Option(WanGPWorkspacePicker.label(item), item.id))));
       if (retention) target.value = retention.days;
       this.modal.querySelector('[role=alert]').hidden = true;
-      this.modal.querySelector('[type=submit]').textContent = action === 'retention' ? 'Save' : action === 'delete' ? 'Delete permanently' : action === 'copy' ? 'Copy' : 'Download';
-      this.modal.querySelector('[type=submit]').disabled = action === 'copy' && !target.options.length;
+      this.modal.querySelector('[type=submit]').textContent = action === 'retention' ? 'Save' : action === 'delete' ? 'Delete permanently' : action === 'copy' ? 'Copy' : action === 'move' ? 'Move' : 'Download';
+      this.modal.querySelector('[type=submit]').disabled = ['copy', 'move'].includes(action) && !target.options.length;
       this.modal.showModal(); this.modal.querySelector(action === 'delete' ? '[data-cancel]' : action === 'archive' ? 'input' : 'select').focus();
     }
     async confirm() {

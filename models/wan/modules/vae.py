@@ -3,7 +3,7 @@ import logging
 import os
 from mmgp import offload
 import torch
-from shared.utils.phase_progress import PhaseProgress, check_abort, set_phase_status
+from shared.utils.phase_progress import vae_encoding_progress, PhaseProgress, check_abort, set_phase_status
 import torch.cuda.amp as amp
 import torch.nn as nn
 import torch.nn.functional as F
@@ -1020,11 +1020,19 @@ class WanVAE:
         videos: A list of videos each with shape [C, T, H, W].
         """
         set_phase_status("VAE Encoding")
-        scale = [u.to(device = self.device) for u in self.scale]  
-        if tile_size > 0:
-            return [ self.model.spatial_tiled_encode(u.to(self.dtype).unsqueeze(0), scale, tile_size, any_end_frame=any_end_frame).float().squeeze(0) for u in videos ]
-        else:
-            return [ self.model.encode(u.to(self.dtype).unsqueeze(0), scale, any_end_frame=any_end_frame).float().squeeze(0) for u in videos ]
+        tiles = 0
+        for video in videos:
+            temporal_tiles = 2 + (video.shape[1] - 2) // 4 if any_end_frame else 1 + (video.shape[1] - 1) // 4
+            if tile_size > 0:
+                stride = int(tile_size * 0.75)
+                temporal_tiles *= len(range(0, video.shape[-2], stride)) * len(range(0, video.shape[-1], stride))
+            tiles += temporal_tiles
+        with vae_encoding_progress(tiles, self.model.encoder, cleanup=self.model.clear_cache, enabled=any(video.shape[1] > 1 for video in videos)):
+            scale = [u.to(device = self.device) for u in self.scale]
+            if tile_size > 0:
+                return [ self.model.spatial_tiled_encode(u.to(self.dtype).unsqueeze(0), scale, tile_size, any_end_frame=any_end_frame).float().squeeze(0) for u in videos ]
+            else:
+                return [ self.model.encode(u.to(self.dtype).unsqueeze(0), scale, any_end_frame=any_end_frame).float().squeeze(0) for u in videos ]
 
 
     def decode(self, zs, tile_size, any_end_frame = False):

@@ -32,12 +32,8 @@ class family_handler:
         return {'tts': (2200, 'TTS')}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument('--lora-dir-auk', type=str, default=None, help='Path to AuK LoRAs')
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, 'lora_dir_auk', None) or os.path.join(lora_root, 'auk')
+    def get_lora_dir(base_model_type):
+        return 'auk'
 
     @staticmethod
     def query_model_def(base_model_type, model_def):
@@ -55,7 +51,7 @@ class family_handler:
             'text_encoder_URLs': [build_hf_url(REPO_ID, ENCODER_FOLDER, f'Qwen2.5-Omni-3B_{suffix}.safetensors') for suffix in ('bf16', 'int8_convrot')],
             'any_audio_prompt': True, 'audio_prompt_choices': True, 'audio_guide_label': 'Source / reference audio',
             'audio_prompt_type_sources': {'selection': ['', 'A'], 'labels': {'': 'Instruction TTS', 'A': 'Voice cloning / edit source audio'}, 'default': '', 'letters_filter': 'A'},
-            'duration_slider': {'label': 'Target duration (seconds)', 'name': 'Target Duration', 'min': 0.1, 'max': MAX_DURATION, 'increment': 0.1, 'default': 5},
+            'duration_slider': {'label': 'Target duration (seconds)', 'name': 'Target Duration', 'min': 0.1, 'max': MAX_DURATION, 'increment': 0.1, 'default': 30},
             'infos': INFOS, 'prompt_infos': PROMPT_INFOS,
             'deepy_infos': DEEPY_INFOS, 'deepy_prompt_infos': DEEPY_PROMPT_INFOS,
         }
@@ -78,7 +74,7 @@ class family_handler:
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
-        ui_defaults.update({'prompt': 'Say "Welcome back. It is wonderful to hear from you." in a warm, calm female voice.', 'audio_prompt_type': '', 'duration_seconds': 5, 'num_inference_steps': 4 if model_def.get('auk_flash', False) else 32, 'guidance_scale': 0 if model_def.get('auk_flash', False) else 2, 'negative_prompt': '', 'repeat_generation': 1, 'prompt_enhancer': '', 'video_length': 0, 'multi_prompts_gen_type': 'FG'})
+        ui_defaults.update({'prompt': 'Say "Welcome back. It is wonderful to hear from you." in a warm, calm female voice.', 'audio_prompt_type': '', 'duration_seconds': 30, 'num_inference_steps': 4 if model_def.get('auk_flash', False) else 32, 'guidance_scale': 0 if model_def.get('auk_flash', False) else 2, 'negative_prompt': '', 'repeat_generation': 1, 'prompt_enhancer': '', 'video_length': 0, 'multi_prompts_gen_type': 'FG'})
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
@@ -91,5 +87,5 @@ class family_handler:
             import librosa
             source_duration = librosa.get_duration(path=inputs['audio_guide'])
             if source_duration > inputs['duration_seconds']:
-                gr.Info(f'AuK will process only the first {inputs["duration_seconds"]:g} seconds of the source audio. The maximum per run is {MAX_DURATION} seconds.')
+                gr.Info(f'Only the first {inputs["duration_seconds"]:g} seconds of the source audio will be used for this generation.')
         return None

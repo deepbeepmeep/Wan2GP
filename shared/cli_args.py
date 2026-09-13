@@ -1,29 +1,17 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import sys
 from collections.abc import Sequence
 
-
-def _register_family_lora_args(parser, family_handlers: Sequence[str], lora_root: str) -> None:
-    registered_families = set()
-    for path in family_handlers:
-        handler = importlib.import_module(path).family_handler
-        family_name = handler.query_model_family()
-        family_key = family_name or path
-        if family_key in registered_families:
-            continue
-        if hasattr(handler, "register_lora_cli_args"):
-            handler.register_lora_cli_args(parser, lora_root)
-        registered_families.add(family_key)
+from shared.lora_paths import load_lora_config
 
 
 def _arg_provided(argv: Sequence[str], name: str) -> bool:
     return any(one_arg == name or str(one_arg).startswith(f"{name}=") for one_arg in argv)
 
 
-def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default_lora_root: str, argv: Sequence[str] | None = None):
+def parse_wgp_args(config_filename: str, argv: Sequence[str] | None = None):
     from shared.deepy.config import normalize_deepy_voice_language
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(description="Generate a video from a text prompt or image using Gradio")
@@ -43,7 +31,7 @@ def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default
     add("--preload", type=str, default="0", help="Megabytes of the diffusion model to preload in VRAM")
     add("--multiple-images", action="store_true", help="Allow inputting multiple images with image to video")
     add("--loras", type=str, default="", help="Root folder for LoRAs (default: loras)")
-    _register_family_lora_args(parser, family_handlers, default_lora_root)
+    add("--lora-config", type=load_lora_config, default={}, metavar="FILE", help="JSON mapping LoRA subfolder names to directory paths")
     add("--check-loras", action="store_true", help="Filter Loras that are not valid")
     add("--lora-preset", type=str, default="", help="Lora preset to preload")
     add("--settings", type=str, default="settings", help="Path to settings folder")
@@ -66,24 +54,22 @@ def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default
     add("--server-name", type=str, default="", help="Server name")
     add("--gpu", type=str, default="", help="Default GPU Device")
     add("--open-browser", action="store_true", help="open browser")
-    add("--t2v", action="store_true", help="text to video mode")
-    add("--i2v", action="store_true", help="image to video mode")
-    add("--t2v-14B", action="store_true", help="text to video mode 14B model")
-    add("--t2v-1-3B", action="store_true", help="text to video mode 1.3B model")
-    add("--vace-1-3B", action="store_true", help="Vace ControlNet 1.3B model")
-    add("--i2v-1-3B", action="store_true", help="Fun InP image to video mode 1.3B model")
-    add("--i2v-14B", action="store_true", help="image to video mode 14B model")
+    # Deprecated model-selection shortcuts: keep accepting existing launch scripts.
+    add("--t2v", action="store_true", help=argparse.SUPPRESS)
+    add("--i2v", action="store_true", help=argparse.SUPPRESS)
+    add("--t2v-14B", action="store_true", help=argparse.SUPPRESS)
+    add("--t2v-1-3B", action="store_true", help=argparse.SUPPRESS)
+    add("--vace-1-3B", action="store_true", help=argparse.SUPPRESS)
+    add("--i2v-1-3B", action="store_true", help=argparse.SUPPRESS)
+    add("--i2v-14B", action="store_true", help=argparse.SUPPRESS)
     add("--compile", action="store_true", help="Enable pytorch compilation")
     add("--listen", action="store_true", help="Server accessible on local network")
     add("--attention", type=str, default="", help="attention mode")
     add("--vae-config", type=str, default="", help="vae config mode")
     add("--process", type=str, default="", help="Process a saved queue (.zip) or settings file (.json) without launching the web UI")
     add("--deepy-server", action="store_true", help="Serve the Deepy chat and media galleries without the Gradio UI")
-    add("--deepy-https-port", type=int, default=None, help="Additional HTTPS port for Gradio/Deepy Web (requires a trusted certificate and private key)")
-    add("--deepy-certfile", default=None, help="HTTPS certificate PEM file (otherwise DEEPY_SERVER_CERT)")
-    add("--deepy-keyfile", default=None, help="HTTPS private key PEM file (otherwise DEEPY_SERVER_KEY)")
-    add("--deepy-no-auth", action="store_true", default=True, help="Disable access-key authentication for the Deepy Web app and API (default)")
-    add("--deepy-auth", action="store_false", dest="deepy_no_auth", help="Enable access-key authentication for the Deepy Web app and API")
+    from shared.authentication import add_arguments
+    add_arguments(parser)
     add("--deepy-voice-language", default=None, type=normalize_deepy_voice_language, help="Override the configured Whisper dictation language, e.g. fr, en or auto (default: Deepy configuration)")
     add("--ask-deepy", action="store_true", help="Start an interactive Deepy console session without launching the web UI")
     add("--mcp", action="store_true", help="Start WanGP as an MCP server without launching the web UI")

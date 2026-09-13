@@ -1,4 +1,3 @@
-import os
 import torch
 import gradio as gr
 from PIL import Image
@@ -274,41 +273,14 @@ class family_handler():
         return {"flux":(1100, "Flux 1"), "flux2":(1101, "Flux 2")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-flux",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains flux images Loras (default: {os.path.join(lora_root, 'flux')})"
-        )
-        parser.add_argument(
-            "--lora-dir-flux2",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains flux2 images Loras (default: {os.path.join(lora_root, 'flux2')})"
-        )
-        parser.add_argument(
-            "--lora-dir-flux2-klein-4b",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Flux 2 Klein 4B Loras (default: {os.path.join(lora_root, 'flux2_klein_4b')})"
-        )
-        parser.add_argument(
-            "--lora-dir-flux2-klein-9b",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Flux 2 Klein 9B Loras (default: {os.path.join(lora_root, 'flux2_klein_9b')})"
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
+    def get_lora_dir(base_model_type):
         if base_model_type == "flux2_klein_4b":
-            return getattr(args, "lora_dir_flux2_klein_4b", None) or os.path.join(lora_root, "flux2_klein_4b")
+            return "flux2_klein_4b"
         if base_model_type == "flux2_klein_9b":
-            return getattr(args, "lora_dir_flux2_klein_9b", None) or os.path.join(lora_root, "flux2_klein_9b")
+            return "flux2_klein_9b"
         if test_flux2(base_model_type):
-            return getattr(args, "lora_dir_flux2", None) or os.path.join(lora_root, "flux2")
-        return getattr(args, "lora_dir_flux", None) or os.path.join(lora_root, "flux")
+            return "flux2"
+        return "flux"
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

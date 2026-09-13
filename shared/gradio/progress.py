@@ -192,8 +192,8 @@ class WangpProgress:
         return gr.HTML(value=initial.render(active=False) if visible else "", visible=visible, container=True, padding=False, elem_classes=["wangp-progress-container"], **kwargs)
 
     @classmethod
-    def bind(cls, event, fn, *, inputs, outputs, component, **kwargs):
-        """Bind a synchronous Gradio operation; its progress(...) calls stay unchanged."""
+    def bind(cls, event, fn, *, inputs, outputs, component, hide=(), **kwargs):
+        """Bind an operation, optionally swapping controls with its progress in one update."""
         import gradio as gr
 
         signature = inspect.signature(fn)
@@ -209,31 +209,35 @@ class WangpProgress:
                     return fn(*args, **kw, progress=progress)
 
             unchanged = [gr.update() for _ in outputs]
+            keep_hidden = [gr.update() for _ in hide]
+            restore = [gr.update(visible=True) for _ in hide]
+            if hide:
+                yield *unchanged, *(gr.update(visible=False) for _ in hide), gr.update(value=progress.render(), visible=True)
             with ThreadPoolExecutor(max_workers=1, thread_name_prefix="wangp-progress") as worker:
                 future = worker.submit(copy_context().run, work)
                 previous = None
                 while not future.done():
                     html = progress.render(hold_complete=True)
                     if html != previous:
-                        yield *unchanged, gr.update(value=html, visible=bool(html))
+                        yield *unchanged, *keep_hidden, gr.update(value=html, visible=bool(html))
                         previous = html
                     # A short bounded wait also delivers completion without another polling delay.
                     wait([future], timeout=0.1)
                 try:
                     result = future.result()
                 except Exception:
-                    yield *unchanged, gr.update(value="", visible=False)
+                    yield *unchanged, *restore, gr.update(value="", visible=False)
                     raise
             values = [result] if len(outputs) == 1 else result
             if progress.completion_delay:
-                yield *values, gr.update(value=progress.render(hold_complete=True), visible=True)
+                yield *values, *keep_hidden, gr.update(value=progress.render(hold_complete=True), visible=True)
                 time.sleep(progress.completion_delay)
-            yield *values, gr.update(value="", visible=False)
+            yield *values, *restore, gr.update(value="", visible=False)
 
         # Gradio must not replace our per-invocation tracker with gr.Progress.
         run.__signature__ = signature.replace(parameters=[param for name, param in signature.parameters.items() if name != "progress"])
         kwargs.setdefault("concurrency_id", f"wangp-progress-{component._id}")
-        return event(fn=run, inputs=inputs, outputs=[*outputs, component], show_progress="hidden", **kwargs)
+        return event(fn=run, inputs=inputs, outputs=[*outputs, *hide, component], show_progress="hidden", **kwargs)
 
 
 def _install_tqdm_tracking():

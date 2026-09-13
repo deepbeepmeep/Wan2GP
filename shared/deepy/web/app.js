@@ -28,7 +28,6 @@
     snapshot: state => {
       snapshot(state, hasSnapshot); hasSnapshot = true;
       restoreBackgroundChatScroll();
-      $('#login-dialog').close();
     },
     event: message => {
       if (message.type === 'snapshot') snapshot(message.data, true);
@@ -47,7 +46,7 @@
       else if (message.type === 'error' && message.data.visible) notice(message.data.message);
     },
     connection,
-    unauthorized: () => {if (!$('#login-dialog').open) $('#login-dialog').showModal();},
+    unauthorized: () => {window.location.assign('/auth/login?next=' + encodeURIComponent(location.pathname));},
   });
   const api = (path, body, signal) => transport.request(path, body, signal);
   WAC.saveDisplaySettings = values => api('display-settings', values);
@@ -70,9 +69,8 @@
     const loading = sessionStatus?.kind === 'session_loading' && currentTab !== 'chat';
     if (loading) data = {type: 'status', data: sessionStatus.text, aborting: false};
     $('#abort-generation').hidden = loading;
-    const scrollState = currentTab === 'chat' ? WAC.captureAutoscrollState() : null;
     const node = $('#generation-progress'); node.hidden = !data;
-    if (!data) { if (scrollState) WAC.scheduleComposerLayout(scrollState); return; }
+    if (!data) return;
     const bar = $('#generation-bar');
     const position = data.type === 'progress' ? data.data[0] : null;
     const statusOnly = data.type !== 'progress';
@@ -93,7 +91,6 @@
     } else bar.removeAttribute('value');
     $('#abort-generation').disabled = data.aborting;
     $('#abort-generation span').textContent = data.aborting ? 'Aborting…' : 'Abort';
-    if (scrollState) WAC.scheduleComposerLayout(scrollState);
   }
   function tab(name) {
     if (currentTab === 'chat' && name !== 'chat') chatScrollState = WAC.captureAutoscrollState();
@@ -419,15 +416,32 @@
   WAC.readEventSource = () => {};
   WAC.installEventBridge = () => {window.addEventListener('resize', () => WAC.scheduleComposerLayout());};
   document.addEventListener('DOMContentLoaded', () => {
+    WAC.emptyMarkup = mode => {
+      const prime = mode === 'prime';
+      return `<div class="chat__empty-card chat__empty-card--web">
+        <header class="chat__empty-header"><h2 class="chat__empty-title">Deepy ${prime ? 'Prime' : 'Zero'}</h2></header>
+        <p class="chat__empty-intro">${prime ? 'Describe your idea. Deepy takes it from there.' : 'Create with a simple request.'}</p>
+        <section class="chat__empty-section"><ul>
+          <li>Create and edit images, videos, speech and music.</li>
+          <li>${prime ? 'Let Deepy choose the models and plan the steps.' : 'Use your preferred models and settings.'}</li>
+          <li>${prime ? 'Build on your creations, one request at a time.' : 'Make quick edits to your latest creation.'}</li>
+        </ul></section>
+        <p class="chat__empty-tip">Try: “${prime ? 'Turn my selfie into a superhero.' : 'Animate this photo.'}”</p>
+        ${WAC.sessionPickerMarkup()}
+      </div>`;
+    };
+    WAC.empty().innerHTML = WAC.emptyMarkup(WAC.host().dataset.deepyType);
     const request = WAC.requestInput();
-    const resizeRequest = () => {
-      const scrollState = WAC.captureAutoscrollState();
+    const resizeRequest = (scrollState = WAC.captureAutoscrollState()) => {
       request.style.height = 'auto';
       request.style.height = request.scrollHeight + 'px';
       WAC.scheduleComposerLayout(scrollState);
     };
-    request.addEventListener('input', resizeRequest);
-    window.addEventListener('resize', resizeRequest);
+    request.addEventListener('input', () => resizeRequest());
+    // Resize events arrive after the viewport has changed; retain the preceding scroll intent.
+    let viewportScrollState = WAC.captureAutoscrollState();
+    WAC.scroll().addEventListener('scroll', () => { viewportScrollState = WAC.captureAutoscrollState(); }, {passive: true});
+    window.addEventListener('resize', () => resizeRequest(viewportScrollState));
     const composer = $('#assistant_chat_controls');
     WAC.mountChatUpload(api, notice, gallery);
     // Preserve input focus without cancelling WebKit's synthesized touch click.
@@ -513,8 +527,6 @@
       } catch (error) { $('#rename-session-error').textContent = error.message; $('#rename-session-error').hidden = false; }
       finally { save.disabled = false; }
     };
-    $('#login-form').onsubmit = async event => {event.preventDefault(); try {await api('login', {token: $('#access-key').value}); $('#access-key').value = ''; $('#login-dialog').close(); connect();} catch (error) {$('#login-error').textContent = error.message;}};
-    $('#login-dialog').addEventListener('cancel', event => event.preventDefault());
     for (const input of document.querySelectorAll('#visual-upload, #audio-upload')) input.onchange = async () => {
       input.disabled = true;
       try { await WAC.uploadMediaFiles(Array.from(input.files), api, notice, gallery); notice('Import complete.'); }

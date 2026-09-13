@@ -275,6 +275,12 @@
       });
     }
   }
+  const finalize = WAC.finalizeBlock;
+  WAC.finalizeBlock = event => {
+    finalize(event);
+    // Streaming can finalize after its transport event has already been presented.
+    schedule(event, presentation.active_message_id);
+  };
   WAC.setCompactActions = value => {
     compactByDefault = !!value;
     document.querySelectorAll('[data-deepy-compact-actions]').forEach(input => input.checked = compactByDefault);

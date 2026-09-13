@@ -1764,7 +1764,11 @@ WAC.stepStreamingReveals = function (now) {
       reveal.last = now;
       if (end === reveal.text.length) {
         WAC.streamingReveals.delete(live);
-        if (reveal.finalEvent) WAC.finalizeBlock(reveal.finalEvent);
+        if (reveal.finalEvent) {
+          // Finalization may regroup compact blocks; preserve the position from before this text grew.
+          WAC.applyAutoscrollState(scrollState);
+          WAC.finalizeBlock(reveal.finalEvent);
+        }
       }
     }
     WAC.applyAutoscrollState(scrollState);
@@ -2238,6 +2242,15 @@ WAC.setStatus = function (status, restoreAnchor) {
   WAC.renderStatus(status, restoreAnchor);
 };
 
+WAC.syncStatusLayout = function (scrollState = WAC.captureAutoscrollState()) {
+  const node = WAC.statusNode();
+  if (node?.classList.contains('is-visible')) {
+    const height = node.offsetHeight + 'px';
+    if (node.parentElement.style.getPropertyValue('--chat-status-height') !== height) node.parentElement.style.setProperty('--chat-status-height', height);
+  }
+  WAC.applyAutoscrollState(scrollState);
+};
+
 WAC.renderStatus = function (status, restoreAnchor) {
   WAC.ensureShell();
   const scrollState = WAC.captureAutoscrollState();
@@ -2265,7 +2278,7 @@ WAC.renderStatus = function (status, restoreAnchor) {
       stopNode.disabled = true;
     }
     WAC.setBusyInputHelper(false);
-    WAC.applyAutoscrollState(scrollState);
+    WAC.syncStatusLayout(scrollState);
     return;
   }
   if (textNode) { textNode.textContent = String(status.text).replace(/_/g, '_\u200b'); textNode.title = String(status.text); }
@@ -2285,7 +2298,7 @@ WAC.renderStatus = function (status, restoreAnchor) {
   }
   node.classList.add('is-visible');
   WAC.setBusyInputHelper(kind !== 'session_loading');
-  WAC.applyAutoscrollState(scrollState);
+  WAC.syncStatusLayout(scrollState);
 };
 
 WAC.setStats = function (stats) {
@@ -2413,6 +2426,17 @@ WAC.syncScrollBridge = function () {
   if (WAC.scrollNode) WAC.scrollNode.removeEventListener('scroll', WAC.handleScroll, { passive: true });
   WAC.scrollNode = scroll;
   WAC.scrollNode.addEventListener('scroll', WAC.handleScroll, { passive: true });
+  // Media/layout changes can reach the bottom without changing scrollTop or firing scroll.
+  WAC.jumpBottomResizeObserver?.disconnect();
+  WAC.jumpBottomResizeObserver = new ResizeObserver(() => WAC.syncJumpToBottom());
+  WAC.jumpBottomResizeObserver.observe(scroll);
+  WAC.jumpBottomResizeObserver.observe(WAC.transcript());
+  WAC.statusResizeObserver?.disconnect();
+  const status = WAC.statusNode();
+  if (status) {
+    WAC.statusResizeObserver = new ResizeObserver(() => WAC.syncStatusLayout());
+    WAC.statusResizeObserver.observe(status);
+  }
   WAC.syncJumpToBottom();
 };
 

@@ -1,5 +1,5 @@
 # Adapted from: https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/pixart_alpha/pipeline_pixart_alpha.py
-from shared.utils.phase_progress import text_encoding_prompts, text_encoding_progress
+from shared.utils.phase_progress import control_video_encoding, text_encoding_prompts, text_encoding_progress
 import copy
 import inspect
 import math
@@ -1533,11 +1533,12 @@ class LTXVideoPipeline(DiffusionPipeline):
                 #     and media_frame_number + n_frames <= num_frames
                 # )
 
-                media_item_latents = vae_encode(
-                    media_item.to(dtype=self.vae.dtype, device=self.vae.device),
-                    self.vae,
-                    vae_per_channel_normalize=vae_per_channel_normalize,
-                ).to(dtype=init_latents.dtype)
+                with control_video_encoding(bool(control_frames) and n_frames > 1):
+                    media_item_latents = vae_encode(
+                        media_item.to(dtype=self.vae.dtype, device=self.vae.device),
+                        self.vae,
+                        vae_per_channel_normalize=vae_per_channel_normalize,
+                    ).to(dtype=init_latents.dtype)
 
                 # Handle the different conditioning cases
                 if control_frames:

@@ -295,11 +295,43 @@
 
 #assistant_chat_settings_panel > .chat__settings-card > .chat__settings-scroll {
     display: block !important;
+    width: auto !important;
+    align-self: stretch;
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto !important;
     overflow-x: hidden !important;
-    padding: 12px 12px 12px;
+    margin: 0 8px 8px;
+    padding: 12px 4px;
+    scrollbar-gutter: stable;
+}
+
+#assistant_chat_settings_panel > .chat__settings-card > .block,
+#assistant_chat_settings_panel > .chat__settings-card > .chat__settings-actions {
+    flex: 0 0 auto;
+}
+
+#assistant_chat_settings_panel .chat__generation-property .head {
+    flex-wrap: nowrap;
+    gap: 8px;
+    align-items: center;
+}
+
+#assistant_chat_settings_panel .chat__generation-property .head label {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+#assistant_chat_settings_panel .chat__generation-property .tab-like-container {
+    flex: 0 0 auto;
+}
+
+#assistant_chat_settings_panel .chat__generation-property input[type="number"] {
+    width: 7ch;
+}
+
+#assistant_chat_settings_panel .chat__generation-property input[type="number"][max="999999999"] {
+    width: 12ch;
 }
 
 #assistant_chat_settings_panel > .chat__settings-card > .chat__settings-scroll > .block {
@@ -582,7 +614,7 @@
 }
 
 #assistant_chat_html > .chat:has(.chat__status.is-visible) {
-    --chat-status-reserved-height: 58px;
+    --chat-status-reserved-height: var(--chat-status-height, 58px);
 }
 
 #assistant_chat_html > .chat::before {

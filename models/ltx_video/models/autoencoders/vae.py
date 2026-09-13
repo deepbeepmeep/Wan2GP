@@ -1,4 +1,4 @@
-from shared.utils.phase_progress import vae_decoding_progress, set_phase_status
+from shared.utils.phase_progress import vae_encoding_progress, vae_decoding_progress, set_phase_status
 from typing import Optional, Union
 
 import torch
@@ -272,49 +272,55 @@ class AutoencoderKLWrapper(ModelMixin, ConfigMixin):
         self, z: torch.FloatTensor, return_dict: bool = True
     ) -> Union[DecoderOutput, torch.FloatTensor]:
         set_phase_status("VAE Encoding")
-        if self.use_z_tiling and z.shape[2] > (self.z_sample_size + 1) > 1:
-            tile_latent_min_tsize = self.z_sample_size 
-            tile_sample_min_tsize = tile_latent_min_tsize *  8 
-            tile_overlap_factor = 0.25
+        temporal_tiling = self.use_z_tiling and z.shape[2] > (self.z_sample_size + 1) > 1
+        tiles = len(range(0, z.shape[2], int(self.z_sample_size * 8 * 0.75))) if temporal_tiling else 1
+        if self.use_hw_tiling and (temporal_tiling or z.shape[2] > 1):
+            stride = int(self.tile_sample_min_size * (1 - self.tile_overlap_factor))
+            tiles *= len(range(0, z.shape[-2], stride)) * len(range(0, z.shape[-1], stride))
+        with vae_encoding_progress(tiles, self.encoder, enabled=z.shape[2] > 1):
+            if self.use_z_tiling and z.shape[2] > (self.z_sample_size + 1) > 1:
+                tile_latent_min_tsize = self.z_sample_size
+                tile_sample_min_tsize = tile_latent_min_tsize *  8
+                tile_overlap_factor = 0.25
 
-            B, C, T, H, W = z.shape
-            overlap_size = int(tile_sample_min_tsize * (1 - tile_overlap_factor))
-            blend_extent = int(tile_latent_min_tsize * tile_overlap_factor)
-            t_limit = tile_latent_min_tsize - blend_extent
+                B, C, T, H, W = z.shape
+                overlap_size = int(tile_sample_min_tsize * (1 - tile_overlap_factor))
+                blend_extent = int(tile_latent_min_tsize * tile_overlap_factor)
+                t_limit = tile_latent_min_tsize - blend_extent
 
-            row = []
-            for i in range(0, T, overlap_size):
-                tile = z[:, :, i: i + tile_sample_min_tsize + 1, :, :]
-                if self.use_hw_tiling:
-                    tile = self._hw_tiled_encode(tile, return_dict)
-                else:
-                    tile = self._encode(tile)
-                if i > 0:
-                    tile = tile[:, :, 1:, :, :]
-                row.append(tile)
-            result_row = []
-            for i, tile in enumerate(row):
-                if i > 0:
-                    tile = self.blend_z(row[i - 1], tile, blend_extent)
-                    result_row.append(tile[:, :, :t_limit, :, :])
-                else:
-                    result_row.append(tile[:, :, :t_limit + 1, :, :])
+                row = []
+                for i in range(0, T, overlap_size):
+                    tile = z[:, :, i: i + tile_sample_min_tsize + 1, :, :]
+                    if self.use_hw_tiling:
+                        tile = self._hw_tiled_encode(tile, return_dict)
+                    else:
+                        tile = self._encode(tile)
+                    if i > 0:
+                        tile = tile[:, :, 1:, :, :]
+                    row.append(tile)
+                result_row = []
+                for i, tile in enumerate(row):
+                    if i > 0:
+                        tile = self.blend_z(row[i - 1], tile, blend_extent)
+                        result_row.append(tile[:, :, :t_limit, :, :])
+                    else:
+                        result_row.append(tile[:, :, :t_limit + 1, :, :])
 
-            moments = torch.cat(result_row, dim=2)
+                moments = torch.cat(result_row, dim=2)
 
 
-        else:
-            moments = (
-                self._hw_tiled_encode(z, return_dict)
-                if self.use_hw_tiling and z.shape[2] > 1 
-                else self._encode(z)
-            )
+            else:
+                moments = (
+                    self._hw_tiled_encode(z, return_dict)
+                    if self.use_hw_tiling and z.shape[2] > 1
+                    else self._encode(z)
+                )
 
-        posterior = DiagonalGaussianDistribution(moments)
-        if not return_dict:
-            return (posterior,)
+            posterior = DiagonalGaussianDistribution(moments)
+            if not return_dict:
+                return (posterior,)
 
-        return AutoencoderKLOutput(latent_dist=posterior)
+            return AutoencoderKLOutput(latent_dist=posterior)
 
     def _normalize_latent_channels(self, z: torch.FloatTensor) -> torch.FloatTensor:
         if isinstance(self.latent_norm_out, nn.BatchNorm3d):

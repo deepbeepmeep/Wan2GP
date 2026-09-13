@@ -1,4 +1,3 @@
-import os
 
 import torch
 
@@ -258,17 +257,8 @@ class family_handler:
         return get_rgb_factors("flux", sub_family="flux2")
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-ideogram4",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Ideogram 4 LoRAs (default: {os.path.join(lora_root, 'ideogram4')})",
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_dir_ideogram4", None) or os.path.join(lora_root, "ideogram4")
+    def get_lora_dir(base_model_type):
+        return "ideogram4"
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

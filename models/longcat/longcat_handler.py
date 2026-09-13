@@ -1,4 +1,3 @@
-import os
 import torch
 from shared.utils.hf import build_hf_url
 
@@ -24,33 +23,12 @@ class family_handler:
         return {"longcat": (60, "LongCat")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-longcat",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains LongCat Video LoRAs (default: {os.path.join(lora_root, 'longcat')})",
-        )
-        parser.add_argument(
-            "--lora-dir-longcat-avatar",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains LongCat Avatar LoRAs (default: {os.path.join(lora_root, 'longcat_avatar')})",
-        )
-        parser.add_argument(
-            "--lora-dir-longcat-avatar-v1-5",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains LongCat Avatar 1.5 LoRAs (default: {os.path.join(lora_root, 'longcat_avatar_v1_5')})",
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
+    def get_lora_dir(base_model_type):
         if base_model_type == "longcat_avatar":
-            return getattr(args, "lora_dir_longcat_avatar", None) or os.path.join(lora_root, "longcat_avatar")
+            return "longcat_avatar"
         if base_model_type == "longcat_avatar_v1_5":
-            return getattr(args, "lora_dir_longcat_avatar_v1_5", None) or os.path.join(lora_root, "longcat_avatar_v1_5")
-        return getattr(args, "lora_dir_longcat", None) or os.path.join(lora_root, "longcat")
+            return "longcat_avatar_v1_5"
+        return "longcat"
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

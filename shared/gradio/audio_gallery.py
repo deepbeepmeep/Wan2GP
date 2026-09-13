@@ -593,37 +593,20 @@ AG.tryInstall();
 
         gallery_html = f"""
         <style>
-            :root {{
-                --bg-primary: #fafafa;
-                --bg-secondary: white;
-                --bg-selected-filename: #f0f0f0;
-                --bg-selected-thumbnail: #E3F2FD;
-                --bg-tooltip: rgba(0, 0, 0, 0.85);
-                --text-primary: #333;
-                --text-secondary: #666;
-                --text-tooltip: white;
-                --border-primary: #e0e0e0;
-                --border-secondary: #d0d0d0;
-                --accent-color: #2196F3;
-                --shadow-color: rgba(33, 150, 243, 0.3);
-                --shadow-color-selected: rgba(33, 150, 243, 0.4);
-            }}
-
-            @media (prefers-color-scheme: dark) {{
-                :root {{
-                    --bg-primary: #27272a;
-                    --bg-secondary: #52525b;
-                    --bg-selected-filename: #2c2c2c;
-                    --bg-selected-thumbnail: #0d2a40;
-                    --bg-tooltip: rgba(255, 255, 255, 0.85);
-                    --text-primary: #e0e0e0;
-                    --text-secondary: #a0a0a0;
-                    --text-tooltip: black;
-                    --border-primary: #333;
-                    --border-secondary: #444;
-                    --shadow-color: rgba(33, 150, 243, 0.5);
-                    --shadow-color-selected: rgba(33, 150, 243, 0.6);
-                }}
+            .audio-gallery-container {{
+                --bg-primary: var(--studio-surface);
+                --bg-secondary: var(--studio-input);
+                --bg-selected-filename: var(--studio-soft);
+                --bg-selected-thumbnail: var(--studio-button);
+                --bg-tooltip: var(--body-text-color);
+                --text-primary: var(--body-text-color);
+                --text-secondary: var(--body-text-color-subdued);
+                --text-tooltip: var(--background-fill-primary);
+                --border-primary: var(--studio-border);
+                --border-secondary: var(--studio-border);
+                --accent-color: var(--studio-accent);
+                --shadow-color: color-mix(in srgb, var(--studio-accent) 20%, transparent);
+                --shadow-color-selected: color-mix(in srgb, var(--studio-accent) 25%, transparent);
             }}
 
             /* Fix audio player height */

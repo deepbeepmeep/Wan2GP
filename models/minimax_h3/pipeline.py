@@ -15,7 +15,7 @@ from tqdm import tqdm
 from mmgp import offload
 from shared.utils.loras_mutipliers import update_loras_slists
 from shared.utils.text_encoder_cache import TextEncoderCache
-from shared.utils.phase_progress import generation_progress
+from shared.utils.phase_progress import control_video_encoding, generation_progress
 from shared.utils.frame_scheduler import floor_frame_count, normalize_frame_count, normalize_overlap
 from .constants import (H3_AUDIO_REFINEMENT_DENOISE, H3_AUDIO_REFINEMENT_SETTING, H3_AUDIO_REFINEMENT_STEPS,
                         H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, h3_grouped_masking_enabled)
@@ -659,7 +659,7 @@ class MiniMaxH3Pipeline:
                  sample_solver="euler", attention_sparsity=1.0,
                  guide_phases=1, switch_threshold=H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, loras_slists=None, loras_selected=None, set_progress_status=None,
                  starting_sigma=None, preserve_input_mask_values=False, refinement_mode=False,
-                 custom_settings=None, duration_seconds=None, verbose_level=0, dialogue_segment=False, vae_upsampler=None, temporal_rope_clock=None, **kwargs):
+                 custom_settings=None, duration_seconds=None, verbose_level=0, dialogue_segment=False, **kwargs):
         if self.audio_only and H3_DIALOGUE_GENERATION and not dialogue_segment and is_dialogue_prompt(input_prompt):
             self._early_stop = False
             return generate_dialogue(
@@ -828,7 +828,8 @@ class MiniMaxH3Pipeline:
                     self._add_audio_condition(continuation_audio[..., :history_latents], "history", audio_latents, audio_keyframes)
                 self._add_audio_condition(continuation_audio[..., history_latents:], "first", audio_latents, audio_keyframes)
         if frozen_target_video is not None:
-            target_video_condition = self._encode_video(_resize_video(frozen_target_video, height, width), keep_all_latents=True)
+            with control_video_encoding(audio_from_control_video):
+                target_video_condition = self._encode_video(_resize_video(frozen_target_video, height, width), keep_all_latents=True)
         if self.reference_mode and self.fixed_prompt is None:
             for image in input_ref_images or []:
                 self._add_image_reference(image, width, height, image_refs_relative_size, presentation, visual_latents, refs)
@@ -878,10 +879,11 @@ class MiniMaxH3Pipeline:
         source_latents = editable_mask = None
         if video_to_video:
             if set_progress_status is not None:
-                set_progress_status("Encoding H3 control video")
+                set_progress_status("Encoding H3 Control Video")
             self._check_abort()
             source_video = _resize_video(_as_video(input_frames)[:, history_count:history_count + aligned_target_frames], height, width)
-            source_latents = _encode_video_source(self.vae, source_video, self.device, outpainting_dims).cpu()
+            with control_video_encoding(control_video):
+                source_latents = _encode_video_source(self.vae, source_video, self.device, outpainting_dims).cpu()
             self._check_abort()
             if input_masks is not None:
                 source_mask = input_masks[:, history_count:history_count + source_video.shape[1]]
@@ -925,8 +927,6 @@ class MiniMaxH3Pipeline:
                    "target_video_condition_frames": target_video_condition_frames,
                    "attention_sparsity": float(attention_sparsity)}
 
-        if temporal_rope_clock is not None:
-            payload["temporal_rope_clock"] = temporal_rope_clock
 
         if starting_sigma is None:
             base_sigmas = torch.linspace(1.0, 0.0, int(sampling_steps) + 1, dtype=torch.float32)
@@ -1247,7 +1247,8 @@ class MiniMaxH3Pipeline:
                 tile_count = H3_PHASE_2_TILE_COUNT
                 if video_to_video:
                     phase_2_source_video = _resize_video(_as_video(input_frames)[:, history_count:history_count + aligned_target_frames], target_height, target_width)
-                    phase_2_source_latents = _encode_video_source(self.vae, phase_2_source_video, self.device, outpainting_dims)
+                    with control_video_encoding(control_video):
+                        phase_2_source_latents = _encode_video_source(self.vae, phase_2_source_video, self.device, outpainting_dims)
                     phase_2_source_latents = phase_2_source_latents[:, :, :latent_t].to(device="cpu", dtype=phase_2_latent_canvas.dtype, non_blocking=False)
                     if input_masks is not None:
                         phase_2_source_mask = input_masks[:, history_count:history_count + phase_2_source_video.shape[1]]
@@ -1387,7 +1388,8 @@ class MiniMaxH3Pipeline:
                 if video_to_video:
                     self._use_shared_components()
                     source_video = _resize_video(_as_video(input_frames)[:, history_count:history_count + aligned_target_frames], target_height, target_width)
-                    source_latents = _encode_video_source(self.vae, source_video, self.device, outpainting_dims).cpu()[:, :, :latent_t].to(video)
+                    with control_video_encoding(control_video):
+                        source_latents = _encode_video_source(self.vae, source_video, self.device, outpainting_dims).cpu()[:, :, :latent_t].to(video)
                     source_noise = phase_2_noise[:, :, :source_latents.shape[2]]
                     source_buffer = torch.empty_like(source_latents)
                     if input_masks is not None:
@@ -1455,7 +1457,6 @@ class MiniMaxH3Pipeline:
                 decoded_video = _video_to_uint8_cpu(decoded_video) if tiled_phase_2 else decoded_video.cpu()
             else:
                 decoded_video = frozen_target_video[:, :target_frames].cpu()
-        temporal_latents = video.detach().cpu() if vae_upsampler is not None else None
         video = None
         if set_progress_status is not None:
             set_progress_status("Decoding H3 Stereo Audio")
@@ -1463,21 +1464,6 @@ class MiniMaxH3Pipeline:
         audio = None
         target_samples = round(target_frames / fps * AUDIO_SAMPLE_RATE)
         decoded_audio = _fit_audio_samples(decoded_audio, target_samples)
-
-        if vae_upsampler is not None:
-            def temporal_progress(status, current=None, total=None):
-                if set_progress_status is not None and current is None:
-                    set_progress_status(status)
-                if callback is not None and current is not None:
-                    callback(current - 1, None, current == 0, override_num_inference_steps=total, denoising_extra=status)
-
-            decoded_video = vae_upsampler.refine(decoded_video, pipeline=self, latents=temporal_latents,
-                                                prompt=input_prompt, fps=fps, seed=int(seed),
-                                                audio_waveform=decoded_audio.transpose(0, 1).float().cpu().numpy(),
-                                                audio_sample_rate=AUDIO_SAMPLE_RATE, reference_images=input_ref_images,
-                                                vae_tile_size=VAE_tile_size, progress_callback=temporal_progress)
-            temporal_latents = None
-            self._check_abort()
 
         output_prefix = history_frames
         output_prefix_count = history_count

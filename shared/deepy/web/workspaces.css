@@ -9,8 +9,8 @@
 .wangp-workspaces button:hover {background:var(--background-fill-secondary,#e3edf3);}
 .wangp-workspaces button:disabled {opacity:.45; cursor:wait;}
 .wangp-workspaces svg {width:19px; height:19px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;}
-#wangp-gallery-tabs > [role=tablist] {flex-wrap:wrap; align-items:center;}
-#wangp-gallery-tabs [role=tablist] .wangp-workspaces {position:relative;top:-3px;}
+#wangp-gallery-tabs [role=tablist] {flex-wrap:wrap; align-items:center;}
+#wangp-gallery-tabs [role=tablist] .wangp-workspaces {position:relative;top:-3px;order:1;flex:1 1 214px;max-width:294px;}
 .wangp-workspace-dialog {padding:0; width:min(420px,calc(100vw - 32px)); border:1px solid var(--border-color-primary,#b9d0dd); border-radius:18px; background:var(--background-fill-primary,#fff); color:var(--body-text-color,#174a67); box-shadow:0 28px 62px #071f303d;}
 .wangp-workspace-dialog::backdrop {background:#071f3066;}
 .wangp-workspace-dialog h2 {margin:0; padding:14px 20px; font:700 17px system-ui; color:#f3fbff; background:linear-gradient(180deg,#105679,#0a3b54);}

@@ -27,6 +27,7 @@ class _GenerationProgress:
         self.prompt_total = 1
         self.text_phase_active = False
         self.prompt_scope_active = False
+        self.vae_encoding_enabled = False
 
     def check_abort(self):
         now = monotonic()
@@ -168,14 +169,14 @@ def text_encoding_progress(layers, next_status="Preparing Conditioning", prompt_
 
 
 @contextmanager
-def vae_decoding_progress(total, decoder, count=1, cleanup=None):
+def vae_decoding_progress(total, decoder, count=1, cleanup=None, title="VAE Decoding", next_status=None):
     """Track actual decoder calls and allow cancellation within an untiled decode."""
     if _generation.get() is None:
         yield
         return
     handles = []
     try:
-        with PhaseProgress(total) as progress, tqdm(total=total, desc="VAE Decoding", unit="tiles", mininterval=1 / 3, leave=False) as bar:
+        with PhaseProgress(total, title=title, next_status=next_status) as progress, tqdm(total=total, desc=title, unit="tiles", mininterval=1 / 3, leave=False) as bar:
             def completed(*_):
                 bar.update(count)
                 progress.advance(count)
@@ -190,3 +191,29 @@ def vae_decoding_progress(total, decoder, count=1, cleanup=None):
             handle.remove()
         if cleanup is not None:
             cleanup()
+
+
+@contextmanager
+def vae_encoding_progress(total, encoder, count=1, cleanup=None, enabled=True):
+    """Count encoder tiles with the same throttling and cancellation as decoding."""
+    state = _generation.get()
+    if state is None or not (state.vae_encoding_enabled and enabled):
+        yield
+        return
+    with vae_decoding_progress(total, encoder, count, cleanup, title="VAE Encoding", next_status="Preparing Conditioning"):
+        yield
+
+
+@contextmanager
+def control_video_encoding(enabled=True):
+    """Enable VAE tile progress only while encoding a control video."""
+    state = _generation.get()
+    if state is None:
+        yield
+        return
+    previous = state.vae_encoding_enabled
+    state.vae_encoding_enabled = enabled
+    try:
+        yield
+    finally:
+        state.vae_encoding_enabled = previous

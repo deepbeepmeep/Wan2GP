@@ -158,7 +158,7 @@ class WorkspaceViewer:
                             names.add(basename.casefold())
                             archive.write(path, basename)
                 return json.loads(register_download(name if name.lower().endswith('.zip') else name + '.zip', 'application/zip', lambda: stream_writer(write_zip)))
-            if action == 'copy':
+            if action in ('copy', 'move'):
                 target = payload.get('target')
                 if target == workspace:
                     raise ValueError('Choose another workspace.')
@@ -171,8 +171,9 @@ class WorkspaceViewer:
                     saved['current_gallery_source'] = source
                     service.workspaces.save(target, saved)
                 service.publish_workspaces()
-                return {'count': len(entries)}
-            if action not in ('reorder', 'eject', 'delete'):
+                if action == 'copy':
+                    return {'count': len(entries)}
+            if action not in ('reorder', 'eject', 'delete', 'move'):
                 raise ValueError('Unknown workspace media action.')
             if action == 'delete':
                 service.require_idle()

@@ -16,6 +16,8 @@
 
 import torch
 
+from shared.utils.phase_progress import vae_encoding_progress
+
 from .components.video_autoencoder import AutoencoderKLMiniMaxH3, get_linear_split_map as get_video_vae_linear_split_map
 
 
@@ -89,22 +91,28 @@ class MiniMaxH3VideoVAE(AutoencoderKLMiniMaxH3):
         return self._normalize(posterior.mode().float())
 
     def encode_condition(self, video, keep_all_latents=False):
-        pixels = self._pixels(video)
-        if pixels.shape[2] == 1:
-            moments = self._encode_clip(pixels)
-        elif keep_all_latents:
-            clip_length = self.config.clip_length
-            moments = torch.cat([
-                self._encode_clip(pixels[:, :, start:start + clip_length])
-                for start in range(0, pixels.shape[2], clip_length)
-            ], dim=2)
-        else:
-            moments = self._encode(pixels)
-        mean, logvar = moments.float().chunk(2, dim=1)
-        std = torch.exp(0.5 * logvar.clamp(-30.0, 20.0))
-        noise = torch.randn(mean.shape, generator=torch.Generator().manual_seed(42), dtype=torch.float32, device="cpu")
-        latents = (mean + std * noise.to(mean.device)).to(torch.float16).float()
-        return self._normalize(latents)
+        tiles = (video.shape[2] + self.config.clip_length - 1) // self.config.clip_length
+        if self.use_tiling:
+            rows = self._split_tiles(video.shape[-2], self.tile_sample_min_height, self.tile_sample_min_overlap_height)[0]
+            cols = self._split_tiles(video.shape[-1], self.tile_sample_min_width, self.tile_sample_min_overlap_width)[0]
+            tiles *= len(rows) * len(cols)
+        with vae_encoding_progress(tiles, self.encoder, enabled=video.shape[2] > 1):
+            pixels = self._pixels(video)
+            if pixels.shape[2] == 1:
+                moments = self._encode_clip(pixels)
+            elif keep_all_latents:
+                clip_length = self.config.clip_length
+                moments = torch.cat([
+                    self._encode_clip(pixels[:, :, start:start + clip_length])
+                    for start in range(0, pixels.shape[2], clip_length)
+                ], dim=2)
+            else:
+                moments = self._encode(pixels)
+            mean, logvar = moments.float().chunk(2, dim=1)
+            std = torch.exp(0.5 * logvar.clamp(-30.0, 20.0))
+            noise = torch.randn(mean.shape, generator=torch.Generator().manual_seed(42), dtype=torch.float32, device="cpu")
+            latents = (mean + std * noise.to(mean.device)).to(torch.float16).float()
+            return self._normalize(latents)
 
     def decode(self, latents):
         mean = self._latents_mean.view(1, -1, 1, 1, 1).to(latents)

@@ -340,17 +340,8 @@ class family_handler:
         return {"tts": (2200, "TTS")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-qwen3-tts",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Qwen3 TTS settings (default: {os.path.join(lora_root, 'qwen3_tts')})",
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_qwen3_tts", None) or os.path.join(lora_root, "qwen3_tts")
+    def get_lora_dir(base_model_type):
+        return "qwen3_tts"
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

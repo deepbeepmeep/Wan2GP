@@ -95,7 +95,7 @@ def _json_script_payload(value: str) -> str:
 def render_info_trigger(popup_id: str, title: str, *, extra_class: str = "") -> str:
     title_attr = html.escape(title, quote=True)
     classes = "wangp-model-info-trigger" + (f" {html.escape(extra_class, quote=True)}" if extra_class else "")
-    return f"<button type='button' class='{classes}' title='{title_attr}' aria-label='{title_attr}' data-wangp-model-info-open='{html.escape(popup_id, quote=True)}'>&#9432;</button>"
+    return f"<button type='button' class='{classes}' title='{title_attr}' aria-label='{title_attr}' data-wangp-model-info-open='{html.escape(popup_id, quote=True)}'>i</button>"
 
 
 def render_info_popup(popup_id: str, title: str, markdown: str, *, lazy: bool = False) -> str:
@@ -135,15 +135,15 @@ def _render_info_trigger_and_popup(popup_id: str, title: str, markdown: str, *, 
 
 def render_model_description(description: str, infos=None, *, model_type: str = "", model_name: str = "Model", height: int = 40) -> str:
     if not infos:
-        return f"<div style='height:{int(height)}px'>{description}</div>"
+        return f"<div class='wangp-model-info-host' style='min-height:{int(height)}px'><div class='wangp-model-info-description'>{description}</div></div>"
     title, markdown = _normalize_infos(infos, model_name)
     if not markdown.strip():
-        return f"<div style='height:{int(height)}px'>{description}</div>"
+        return f"<div class='wangp-model-info-host' style='min-height:{int(height)}px'><div class='wangp-model-info-description'>{description}</div></div>"
     popup_id = "wangp-model-info-" + re.sub(r"[^A-Za-z0-9_-]", "-", str(model_type or model_name)).strip("-").lower()
     return (
         f"<div class='wangp-model-info-host' style='min-height:{int(height)}px'>"
-        f"<div class='wangp-model-info-description'>{description}</div>"
         f"{_render_info_trigger_and_popup(popup_id, title, markdown)}"
+        f"<div class='wangp-model-info-description'>{description}</div>"
         "</div>"
     )
 
@@ -168,11 +168,30 @@ def get_css() -> str:
 .wangp-model-info-host {
     position: relative;
     padding-right: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.wangp-model-info-host > .wangp-model-info-trigger {
+    position: static;
+    order: 1;
+    flex: 0 0 22px;
+    margin: 0;
+    width: 22px;
+    height: 22px;
+    min-width: 22px;
+    min-height: 22px;
+    border: 1px solid currentColor;
+    background: transparent;
+    color: #175a79;
+    font: 500 17px/1 Arial, sans-serif;
 }
 .header-markdown-group .html-container {
     padding: 0 !important;
 }
 .wangp-model-info-description {
+    flex: 1;
+    min-width: 0;
     line-height: 1.35;
 }
 .wangp-prompt-info-host {

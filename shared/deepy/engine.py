@@ -9148,7 +9148,7 @@ class AssistantEngine:
             if steering_requested:
                 self._set_status("Steering accepted. Deepy is applying the new instructions...", kind="queued")
             else:
-                self._set_status("Preparing the next request..." if self.session.queued_job_count > 0 else "Finishing Deepy...", kind="loading")
+                self._set_status("Preparing the next request..." if self.session.queued_job_count > 0 else "Finalizing request...", kind="loading")
             preserve_interrupted_snapshot = False
             with self.session.turn_lock:
                 if self.session.interrupt_requested:

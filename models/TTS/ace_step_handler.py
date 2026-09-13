@@ -320,34 +320,10 @@ class family_handler:
         return {"music": (2195, "Music"), "tts": (2200, "TTS")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-ace-step",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Ace Step settings (default: {os.path.join(lora_root, 'ace_step')})",
-        )
-        parser.add_argument(
-            "--lora-dir-ace-step15",
-            dest="lora_ace_step15",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Ace Step 1.5 settings (default: {os.path.join(lora_root, 'ace_step_v1_5')})",
-        )
-        parser.add_argument(
-            "--lora-dir-ace-step15-xl",
-            dest="lora_ace_step15_xl",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Ace Step 1.5 XL settings (default: {os.path.join(lora_root, 'ace_step_v1_5_xl')})",
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
+    def get_lora_dir(base_model_type):
         if _is_ace_step15(base_model_type):
-            attr_name = "lora_ace_step15_xl" if _is_ace_step15_xl(base_model_type) else "lora_ace_step15"
-            return getattr(args, attr_name, None) or os.path.join(lora_root, _ace_step15_lora_dir_name(base_model_type))
-        return getattr(args, "lora_ace_step", None) or os.path.join(lora_root, "ace_step")
+            return _ace_step15_lora_dir_name(base_model_type)
+        return "ace_step"
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

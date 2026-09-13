@@ -29,7 +29,7 @@ from diffusers.utils.accelerate_utils import apply_forward_hook
 from shared.attention import pay_attention
 
 from ..interrupt import GenerationInterrupted
-from shared.utils.phase_progress import PhaseProgress
+from shared.utils.phase_progress import vae_encoding_progress, PhaseProgress
 
 
 logger = logging.get_logger(__name__)
@@ -977,14 +977,20 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
             The latent distribution of the encoded videos. Note that MiniMax-H3 normalizes the sampled latents with
             `latents_mean` / `latents_std` afterwards.
         """
-        if self.use_slicing and x.shape[0] > 1:
-            moments = torch.cat([self._encode(x_slice) for x_slice in x.split(1)])
-        else:
-            moments = self._encode(x)
-        posterior = DiagonalGaussianDistribution(moments)
-        if not return_dict:
-            return (posterior,)
-        return AutoencoderKLOutput(latent_dist=posterior)
+        tiles = (x.shape[0] if self.use_slicing else 1) * ((x.shape[2] + self.config.clip_length - 1) // self.config.clip_length)
+        if self.use_tiling:
+            rows = self._split_tiles(x.shape[-2], self.tile_sample_min_height, self.tile_sample_min_overlap_height)[0]
+            cols = self._split_tiles(x.shape[-1], self.tile_sample_min_width, self.tile_sample_min_overlap_width)[0]
+            tiles *= len(rows) * len(cols)
+        with vae_encoding_progress(tiles, self.encoder, enabled=x.shape[2] > 1):
+            if self.use_slicing and x.shape[0] > 1:
+                moments = torch.cat([self._encode(x_slice) for x_slice in x.split(1)])
+            else:
+                moments = self._encode(x)
+            posterior = DiagonalGaussianDistribution(moments)
+            if not return_dict:
+                return (posterior,)
+            return AutoencoderKLOutput(latent_dist=posterior)
 
     @apply_forward_hook
     def decode(self, z: torch.Tensor, return_dict: bool = True) -> DecoderOutput | tuple[torch.Tensor]:

@@ -372,13 +372,8 @@ class family_handler:
         return get_rgb_factors("minimax_h3")
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument("--lora-dir-minimax-h3", type=str, default=None,
-                            help=f"Path to MiniMax H3 LoRAs (default: {os.path.join(lora_root, 'minimax_h3')})")
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_dir_minimax_h3", None) or os.path.join(lora_root, "minimax_h3")
+    def get_lora_dir(base_model_type):
+        return "minimax_h3"
 
     @staticmethod
     def set_cache_parameters(cache_type, base_model_type, model_def, inputs, skip_steps_cache):
@@ -523,8 +518,6 @@ class family_handler:
             "finetunes_params": H3_FINETUNES_PARAMS,
             TURBO_LORA_KEY: build_hf_url(REPO_ID, "loras", TURBO_LORA_FILE),
             REF_TURBO_LORA_KEY: build_hf_url(REPO_ID, "loras", REF_TURBO_LORA_FILE),
-            "h3_temporal_refiner": True,
-            "excluded_spatial_upsamplers": ["h3temporal"],
             "qkv_splitting": True,
             "qkv_layout": "interleaved",
             "keep_frames_video_guide_not_supported": True,

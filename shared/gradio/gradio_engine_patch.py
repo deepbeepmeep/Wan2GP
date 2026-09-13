@@ -1,6 +1,7 @@
 """Cache Gradio constructor bookkeeping and safely traverse shared state."""
 import inspect
 import os
+import shutil
 import tempfile
 from functools import lru_cache, wraps
 from pathlib import Path
@@ -42,6 +43,17 @@ def _get_upload_folder():
     return os.environ.get('GRADIO_TEMP_DIR') or _resolved_upload_folder(os.path.abspath(tempfile.gettempdir()))
 
 
+def _move_uploaded_files_to_cache(files, destinations):
+    for source, destination in zip(files, destinations):
+        # Upload destinations include the content hash. On Windows rename fails
+        # when one already exists; shutil.move would then truncate the cached
+        # file while browsers may still be reading it with its original length.
+        if Path(destination).exists():
+            Path(source).unlink()
+        else:
+            shutil.move(source, destination)
+
+
 def _snapshot_traverse(value, func, is_root):
     if is_root(value):
         return func(value)
@@ -56,13 +68,14 @@ def _snapshot_traverse(value, func, is_root):
 
 
 def install():
-    from gradio import blocks, component_meta, data_classes, processing_utils, utils
+    from gradio import blocks, component_meta, data_classes, processing_utils, routes, utils
     from gradio_client import utils as client_utils
     from shared.gradio import gradio_frontend_patch, gradio_model_change_queue, gradio_queue_wakeup_patch
 
     gradio_queue_wakeup_patch.install()
     gradio_model_change_queue.install()
     gradio_frontend_patch.install()
+    routes.move_uploaded_files_to_cache = _move_uploaded_files_to_cache
 
     if component_meta.updateable is _updateable:
         return

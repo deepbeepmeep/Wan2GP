@@ -9,7 +9,7 @@ button:focus-visible, a:focus-visible, textarea:focus-visible { outline: 3px sol
 .app-header strong { font-size: 22px; letter-spacing: -.6px; }
 .app-header strong sup { font-size: .6em; line-height: 0; vertical-align: super; color: #0876a4; }
 #connection { position: fixed; top: max(8px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); z-index: 10000; max-width: 90vw; padding: 7px 14px; border: 1px solid #e6a7ab; border-radius: 12px; background: #fff0f1; color: #b22232; font-size: 13px; font-weight: 600; box-shadow: 0 3px 12px #70222b20; pointer-events: none; }
-main { flex: 1; min-width: 0; min-height: 0; display: flex; }
+main { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; }
 .view { width: 100%; min-width: 0; min-height: 0; }
 [hidden] { display: none !important; }
 nav { display: flex; flex-shrink: 0; padding: 6px 12px max(6px, env(safe-area-inset-bottom)); gap: 6px; border-top: 1px solid #d7e3e9; background: white; }
@@ -134,7 +134,7 @@ h1 { font-size: 23px; margin: 0 0 7px; letter-spacing: -.6px; }
 #settings-conflict-controls button { border: 1px solid #a9c6d4; border-radius: 10px; padding: 8px 10px; background: #fff; color: #16465e; font: inherit; font-size: 13px; min-height: 40px; }
 .settings-fields input[aria-invalid="true"] { border-color: #bf7136; }
 .gallery-empty { color: #718895; padding: 70px 20px; text-align: center; grid-column: 1/-1; border: 1px dashed #bdced8; border-radius: 16px; }
-#generation-progress { display: flex; flex-shrink: 0; align-items: center; gap: 16px; padding: 10px 20px; background: #dcecf3; font-size: 12px; }
+#generation-progress { position: absolute; inset: 0 0 auto; z-index: 5; display: flex; align-items: center; gap: 16px; padding: 10px 20px; background: #dcecf3; font-size: 12px; }
 .generation-meter { flex: 1; min-width: 0; min-height: 28px; display: flex; flex-direction: column; justify-content: center; }
 .generation-caption { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 5px; }
 #generation-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -178,3 +178,9 @@ dialog button { width: 100%; padding: 12px; background: #0c5376; color: white; b
 #template-fields select { max-width: 100%; }
 
 .settings-panels:has(#templates-settings:not([hidden])) { overflow-x: hidden; }
+body[data-deepy-app] .chat__empty-card--web .chat__empty-title { font-size: 2rem; line-height: 1.15; }
+body[data-deepy-app] .chat__empty-card--web .chat__empty-intro { margin: 20px 3px; font-size: 1.25rem; line-height: 1.4; }
+body[data-deepy-app] .chat__empty-card--web .chat__empty-section { padding: 16px; }
+body[data-deepy-app] .chat__empty-card--web .chat__empty-section ul { gap: 16px; }
+body[data-deepy-app] .chat__empty-card--web .chat__empty-section li { font-size: 1.125rem; line-height: 1.4; }
+body[data-deepy-app] .chat__empty-card--web .chat__empty-tip { margin: 20px 3px 0; font-size: 1.125rem; line-height: 1.4; }

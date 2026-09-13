@@ -89,6 +89,7 @@ from shared.deepy.config import DEEPY_KV_CACHE_QUANTIZATION_DEFAULT, DEEPY_KV_CA
 from shared.deepy.onboarding import apply_first_launch_deepy_prime_defaults
 from shared.remote_llm.config import LLM_CONFIG_KEY, is_remote_engine, normalize_llm_config, resolve_role_engine
 from shared.loras_migration import migrate_loras_layout
+from shared.lora_paths import resolve_lora_dir
 from shared.utils.wgp_config_migration import migrate_extension_defaults
 from shared.utils import files_locator as fl 
 from shared.gradio.audio_gallery import AudioGallery  
@@ -138,7 +139,7 @@ from shared.ffmpeg_setup import download_ffmpeg
 from shared.api import apply_video_length_duration, get_api_output_options, store_api_output_artifact
 from shared.utils.plugins import PluginManager, WAN2GPApplication, SYSTEM_PLUGINS
 from shared.llm_engines.nanovllm.vllm_support import resolve_lm_decoder_engine
-from shared.gradio import assistant_chat, field_help, finetune_editor, gallery_files, local_file_picker, model_infos, model_output_filter, model_selector_toolbar
+from shared.gradio import assistant_chat, field_help, finetune_editor, gallery_files, local_file_picker, model_infos, model_output_filter, model_selector_toolbar, ui_studio
 from shared.gradio.magic_mask import MagicMaskUI, video_mask_area_visible, video_mask_controls_visible, video_mask_dropdown_visible
 from shared import model_dropdowns
 from shared import settings_metadata
@@ -162,7 +163,7 @@ AUTOSAVE_ERROR_FILENAME = "error_queue.zip"
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-target_mmgp_version = "3.7.14"
+target_mmgp_version = "3.8.0"
 WanGP_version = "13.0"
 settings_version = 2.79
 max_source_video_frames = 3000
@@ -2535,23 +2536,15 @@ def get_lora_dir(model_type):
     if get_dir is None:
         raise Exception("loras unknown")
 
-    lora_root = get_lora_root()
-
-    lora_dir = get_dir(base_model_type, args, lora_root)
-    if lora_dir is None:
-        raise Exception("loras unknown")
-    if os.path.isfile(lora_dir):
-        raise Exception(f"loras path '{lora_dir}' exists and is not a directory")
-    if not os.path.isdir(lora_dir):
-        os.makedirs(lora_dir, exist_ok=True)
-    # return os.path.abspath(lora_dir)        
-    return lora_dir
+    lora_key = get_dir(base_model_type)
+    if lora_key is None: raise Exception("loras unknown")
+    return resolve_lora_dir(lora_key, get_lora_root(), args.lora_config)
 
 attention_modes_installed = get_attention_modes()
 attention_modes_supported = get_supported_attention_modes()
 override_attention_modes_installed = get_override_attention_modes()
 override_attention_modes_supported = get_supported_override_attention_modes()
-args = parse_wgp_args(family_handlers, CONFIG_FILENAME, DEFAULT_LORA_ROOT)
+args = parse_wgp_args(CONFIG_FILENAME)
 migrate_loras_layout()
 
 gpu_major, gpu_minor = torch.cuda.get_device_capability(args.gpu if len(args.gpu) > 0 else None)
@@ -12502,10 +12495,11 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 any_cfg_zero = model_def.get("cfg_zero", False)
                 any_cfg_star = model_def.get("cfg_star", False)
                 any_apg = model_def.get("adaptive_projected_guidance", False)
-                any_motion_amplitude = model_def.get("motion_amplitude", False) and not image_outputs
-                any_pnp = True # Enable PnP for all supported models (or restriction logic here)
+                any_motion_amplitude = get_container_def("motion_amplitude_col").visible and not image_outputs
+                any_extra_frames = v2i_switch_supported and image_outputs
+                any_pnp = model_def.get("self_refiner", False)
 
-                with gr.Tab("Quality", visible = (vace and image_outputs or any_perturbation or any_cfg_zero or any_cfg_star or any_apg or any_motion_amplitude or any_pnp) and not audio_only ) as quality_tab:
+                with gr.Tab("Quality", visible=any((any_perturbation, any_cfg_star, any_apg, any_motion_amplitude, any_extra_frames, any_pnp)) and not audio_only) as quality_tab:
                         with gr.Column(visible = any_perturbation ) as perturbation_row:
                             gr.Markdown("<B>Perturbation (improves video quality, requires guidance > 1)</B>")
                             perturbation_choices = model_def.get("perturbation_choices", [("OFF", 0), ("Skip Layer Guidance", 1)])
@@ -12560,7 +12554,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             with gr.Row():
                                 cfg_zero_step = gr.Slider(-1, 39, value=ui_get("cfg_zero_step"), step=1, label="CFG Zero below this Layer (Extra Process)", visible = any_cfg_zero, show_reset_button= False) 
 
-                        with gr.Column(visible = v2i_switch_supported and image_outputs) as min_frames_if_references_col:
+                        with gr.Column(visible=any_extra_frames) as min_frames_if_references_col:
                             gr.Markdown("<B>WanGP normally runs the shortest model-compatible generation and keeps its first frame. Generating additional frames may improve still-image quality or preserve Reference / Control Image details, at extra generation cost.</B>")
                             _, _, temporal_latent = get_model_min_frames_and_step(base_model_type)
                             temporal_latent = max(1, int(temporal_latent or 1))
@@ -12581,11 +12575,11 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 label="Generate additional frames before keeping the first image"
                             )
 
-                        with gr.Column(visible = get_container_def("motion_amplitude_col").visible and not image_outputs) as motion_amplitude_col:
+                        with gr.Column(visible=any_motion_amplitude) as motion_amplitude_col:
                             gr.Markdown("<B>Experimental: Accelerate Motion (1: disabled, 1.15 recommended)")
                             motion_amplitude  = setting_slider("motion_amplitude")
 
-                        with gr.Column(visible = model_def.get("self_refiner", False)) as self_refiner_col:
+                        with gr.Column(visible=any_pnp) as self_refiner_col:
                             gr.Markdown("<B>Self-Refining Video Sampling (PnP) - should improve quality of Motion</B>")
                             self_refiner_setting = gr.Dropdown(choices=[("Disabled", 0),("Enabled with P1-Norm", 1), ("Enabled with P2-Norm", 2)], value=ui_get("self_refiner_setting", 0), scale=1, label="Self Refiner")
                             
@@ -13033,16 +13027,16 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     if completion is not None and completion is not previous_completion:
                         progress.set_download(completion)
                         previous_completion = completion
+                    active = gen.get("status_display", False)
                     status = gen.get("status", "")
-                    if status and status != previous_status:
+                    if status and (status != previous_status or not active):
                         progress.status(status)
-                        previous_status = status
                     progress_args = gen.get("last_progress_args")
-                    if progress_args is not None and progress_args != previous_progress:
+                    if active and progress_args is not None and (progress_args != previous_progress or status != previous_status):
                         progress(*progress_args)
                         previous_progress = progress_args
+                    previous_status = status
                     progress.set_download(gen.get("download_progress"))
-                    active = gen.get("status_display", False)
                     aborting = gen.get("abort", False)
                     html = progress.render(aborting=aborting, active=active, hold_complete=True)
                     completing = not aborting and progress.completion_delay > 0
@@ -13143,11 +13137,11 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             def prompt_enhancer_ui(mode, busy):
                 output_fields = {step.output_field for step in prompt_enhancer_chaining.parse_mode(mode)}
                 fields = [gr.update(interactive=not busy) if field in output_fields else gr.update() for field in ("prompt", "alt_prompt", "prompt")]
-                return [*fields, gr.update(visible=not busy)]
+                return fields
 
-            enhance_prompt_ui_outputs = [prompt, alt_prompt, wizard_prompt, prompt_enhancer_row]
+            enhance_prompt_ui_outputs = [prompt, alt_prompt, wizard_prompt]
             for trigger, outputs in zip(enhance_prompt_triggers, enhance_prompt_outputs):
-                WangpProgress.bind(trigger.change, enhance_prompt, inputs=enhance_prompt_inputs, outputs=outputs, component=prompt_enhancer_progress).then(
+                WangpProgress.bind(trigger.change, enhance_prompt, inputs=enhance_prompt_inputs, outputs=outputs, component=prompt_enhancer_progress, hide=[prompt_enhancer_row]).then(
                     fn=lambda mode: prompt_enhancer_ui(mode, False), inputs=prompt_enhancer, outputs=enhance_prompt_ui_outputs, show_progress="hidden",
                 )
 
@@ -13745,10 +13739,7 @@ def create_ui():
     local_file_picker.configure_last_directory_store(server_config)
     UI_theme = server_config.get("UI_theme", "default")
     UI_theme  = args.theme if len(args.theme) > 0 else UI_theme
-    if UI_theme == "gradio":
-        theme = None
-    else:
-        theme = gr.themes.Soft(font=["Verdana"], primary_hue="sky", neutral_hue="slate", spacing_size=theme_spacing_size, radius_size=theme_radius_size, text_size=theme_text_size)
+    theme = ui_studio.create_theme(UI_theme, spacing_size=theme_spacing_size, radius_size=theme_radius_size, text_size=theme_text_size)
 
     # Load main JS from external file
     js_path = os.path.join(os.path.dirname(__file__), "shared", "gradio", "ui_scripts.js")
@@ -13779,7 +13770,7 @@ def create_ui():
     else:
         stats_app = None
 
-    with gr.Blocks(css=css, js=js, theme=theme, title="WanGP", fill_width=True) as main:
+    with ui_studio.Blocks(css=css, js=js, theme=theme, title="WanGP", fill_width=True) as main:
         gr.Markdown(f'<div align=center><H1>Wan<SUP style="color: #2563eb;">GP</SUP> v{WanGP_version} <FONT SIZE=4>by <I>DeepBeepMeep</I></FONT> <FONT SIZE=3>') # (<A HREF='https://github.com/deepbeepmeep/Wan2GP'>Updates</A>)</FONT SIZE=3></H1></div>")
         global model_list
 

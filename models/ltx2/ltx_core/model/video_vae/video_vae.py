@@ -3,7 +3,7 @@ import itertools
 from typing import Any, Callable, Iterator, List, Optional, Tuple
 
 import torch
-from shared.utils.phase_progress import PhaseProgress, check_abort
+from shared.utils.phase_progress import vae_encoding_progress, PhaseProgress, check_abort
 from einops import rearrange
 from torch import nn
 
@@ -1246,7 +1246,8 @@ def encode_video(
     if tiling_config is None or (
         tiling_config.spatial_config is None and tiling_config.temporal_config is None
     ):
-        return video_encoder(video)
+        with vae_encoding_progress(1, video_encoder, enabled=video.shape[2] > 1):
+            return video_encoder(video)
     if video.shape[2] == 1 and tiling_config.spatial_config is not None:
         tiling_config = replace(tiling_config, spatial_config=None)
 
@@ -1266,80 +1267,83 @@ def encode_video(
     output = None
     weights = None
 
-    for t_idx, h_idx, w_idx in itertools.product(
-        range(len(temporal_intervals.starts)),
-        range(len(height_intervals.starts)),
-        range(len(width_intervals.starts)),
-    ):
-        t_start = temporal_intervals.starts[t_idx]
-        t_end = temporal_intervals.ends[t_idx]
-        t_left = temporal_intervals.left_ramps[t_idx]
-        t_right = temporal_intervals.right_ramps[t_idx]
-        h_start = height_intervals.starts[h_idx]
-        h_end = height_intervals.ends[h_idx]
-        h_left = height_intervals.left_ramps[h_idx]
-        h_right = height_intervals.right_ramps[h_idx]
-        w_start = width_intervals.starts[w_idx]
-        w_end = width_intervals.ends[w_idx]
-        w_left = width_intervals.left_ramps[w_idx]
-        w_right = width_intervals.right_ramps[w_idx]
+    tiles = len(temporal_intervals.starts) * len(height_intervals.starts) * len(width_intervals.starts)
+    with vae_encoding_progress(tiles, video_encoder, enabled=video.shape[2] > 1):
+        for t_idx, h_idx, w_idx in itertools.product(
+            range(len(temporal_intervals.starts)),
+            range(len(height_intervals.starts)),
+            range(len(width_intervals.starts)),
+        ):
+            t_start = temporal_intervals.starts[t_idx]
+            t_end = temporal_intervals.ends[t_idx]
+            t_left = temporal_intervals.left_ramps[t_idx]
+            t_right = temporal_intervals.right_ramps[t_idx]
+            h_start = height_intervals.starts[h_idx]
+            h_end = height_intervals.ends[h_idx]
+            h_left = height_intervals.left_ramps[h_idx]
+            h_right = height_intervals.right_ramps[h_idx]
+            w_start = width_intervals.starts[w_idx]
+            w_end = width_intervals.ends[w_idx]
+            w_left = width_intervals.left_ramps[w_idx]
+            w_right = width_intervals.right_ramps[w_idx]
 
-        t_slice, _ = map_temporal_slice(t_start, t_end, t_left, t_right, scale.time)
-        h_slice, _ = map_spatial_slice(h_start, h_end, h_left, h_right, scale.height)
-        w_slice, _ = map_spatial_slice(w_start, w_end, w_left, w_right, scale.width)
+            t_slice, _ = map_temporal_slice(t_start, t_end, t_left, t_right, scale.time)
+            h_slice, _ = map_spatial_slice(h_start, h_end, h_left, h_right, scale.height)
+            w_slice, _ = map_spatial_slice(w_start, w_end, w_left, w_right, scale.width)
 
-        tile = video[:, :, t_slice, h_slice, w_slice]
-        encoded_tile = video_encoder(tile)
+            tile = video[:, :, t_slice, h_slice, w_slice]
+            encoded_tile = video_encoder(tile)
 
-        t_len = t_end - t_start
-        h_len = h_end - h_start
-        w_len = w_end - w_start
-        encoded_tile = encoded_tile[:, :, :t_len, :h_len, :w_len]
+            t_len = t_end - t_start
+            h_len = h_end - h_start
+            w_len = w_end - w_start
+            encoded_tile = encoded_tile[:, :, :t_len, :h_len, :w_len]
 
-        if output is None:
-            output = torch.zeros(
-                latent_shape.to_torch_shape(),
+            if output is None:
+                output = torch.zeros(
+                    latent_shape.to_torch_shape(),
+                    device=encoded_tile.device,
+                    dtype=encoded_tile.dtype,
+                )
+                weights = torch.zeros(
+                    (1, 1, latent_shape.frames, latent_shape.height, latent_shape.width),
+                    device=encoded_tile.device,
+                    dtype=encoded_tile.dtype,
+                )
+
+            mask_t = _make_mask_1d(
+                t_len,
+                t_left,
+                t_right,
+                left_starts_from_0=True,
                 device=encoded_tile.device,
                 dtype=encoded_tile.dtype,
             )
-            weights = torch.zeros(
-                (1, 1, latent_shape.frames, latent_shape.height, latent_shape.width),
+            mask_h = _make_mask_1d(
+                h_len,
+                h_left,
+                h_right,
+                left_starts_from_0=False,
                 device=encoded_tile.device,
                 dtype=encoded_tile.dtype,
             )
+            mask_w = _make_mask_1d(
+                w_len,
+                w_left,
+                w_right,
+                left_starts_from_0=False,
+                device=encoded_tile.device,
+                dtype=encoded_tile.dtype,
+            )
+            mask = mask_t[:, None, None] * mask_h[None, :, None] * mask_w[None, None, :]
+            mask = mask.unsqueeze(0).unsqueeze(0)
 
-        mask_t = _make_mask_1d(
-            t_len,
-            t_left,
-            t_right,
-            left_starts_from_0=True,
-            device=encoded_tile.device,
-            dtype=encoded_tile.dtype,
-        )
-        mask_h = _make_mask_1d(
-            h_len,
-            h_left,
-            h_right,
-            left_starts_from_0=False,
-            device=encoded_tile.device,
-            dtype=encoded_tile.dtype,
-        )
-        mask_w = _make_mask_1d(
-            w_len,
-            w_left,
-            w_right,
-            left_starts_from_0=False,
-            device=encoded_tile.device,
-            dtype=encoded_tile.dtype,
-        )
-        mask = mask_t[:, None, None] * mask_h[None, :, None] * mask_w[None, None, :]
-        mask = mask.unsqueeze(0).unsqueeze(0)
-
-        output[:, :, t_start:t_end, h_start:h_end, w_start:w_end] += encoded_tile * mask
-        weights[:, :, t_start:t_end, h_start:h_end, w_start:w_end] += mask
+            output[:, :, t_start:t_end, h_start:h_end, w_start:w_end] += encoded_tile * mask
+            weights[:, :, t_start:t_end, h_start:h_end, w_start:w_end] += mask
 
     if output is None or weights is None:
-        return video_encoder(video)
+        with vae_encoding_progress(1, video_encoder, enabled=video.shape[2] > 1):
+            return video_encoder(video)
     weights = weights.clamp_min(1e-6)
     return output / weights
 

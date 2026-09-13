@@ -63,6 +63,28 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
+## 13th of September 2026: WanGP v13.00 — It's Your Lucky Day!
+
+**WanGP Major Release**
+
+- **Upgraded User Interface**: a more responsive interface for switching models and browsing media, a modern look, and five color themes, including Classic Gradio. Use the microphone beside a prompt to dictate it, then review and edit the text before generating.
+
+- **Access Anywhere**: start a generation at home and follow it from another browser or device connected to the same running WanGP server (VPN recommended for remote access). Galleries, selected media, progress, and the generation queue stay synchronized, so you can check results and add new jobs. Each Gradio page keeps its own unsent prompts and draft settings.
+
+- **Clearer Progress and Cancellation**: see what WanGP is doing while it downloads files, loads models, encodes prompts, or generates media. Progress bars now cover more stages, and you can request cancellation during preparation as well as generation.
+
+- **Workspaces**: keep generated and imported media organized by project, with collections and selections remembered after restarting WanGP. Switch workspaces between tasks, or open the workspace manager beside the gallery selector to browse the full collection, reorder items, copy or move them between workspaces, and download a selection as a ZIP. Copying media between workspaces does not duplicate the files on disk. See the [workspace guide](docs/WORKSPACES.md).
+
+- **Deepy Web App**: take Deepy with you in a phone-friendly interface. Upload a photo or recording, describe what you want, and follow the conversation and results from your phone or desktop. Open **Web app →** in Deepy's settings to find it, and add it to your phone's home screen for quick access. See the [Deepy guide](docs/DEEPY.md). You can use this way both *Deepy Zero* & *Deepy Prime*, although you will get best results with *Deepy Prime*.
+
+
+**New Models**
+
+- **YuE2**: turn lyrics and a musical style into a complete song with vocals and accompaniment. The cover workflow can extract melody and chords from a source song to guide a new performance; supply the lyrics separately and keep them aligned with the original sections.
+
+- **AuK Speech**: generate speech from written instructions, or use a source recording for voice cloning, spoken-word edits, speech cleanup, and speaker separation. Choose **Flash** for a fast four-step result or **Base** for more control. Start with a short clip and describe both what to change and what to preserve.
+
+
 ## 6th of September 2026: WanGP v12.72 — Power Up, Polish, Pause
 - **H3 VDN**: at least 20% Faster and even more on larger / longer videos, requires a bit more VRAM and Triton must be installed
 

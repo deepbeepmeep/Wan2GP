@@ -3,7 +3,6 @@ import logging
 from contextlib import nullcontext
 
 from shared.deepy import chat, media_registry, session_store
-from shared.deepy.config import DEEPY_MULTI_SESSION_DEDICATED, DEEPY_MULTI_SESSION_KEY, normalize_deepy_session_mode
 from shared.deepy.errors import DeepyBusy
 from shared.utils.workspaces import ARCHIVE_AFTER_DAYS_KEY, WorkspaceStore, capture_gallery, load_gallery
 from shared.utils.media_settings import MediaSettingsCache
@@ -87,9 +86,8 @@ class WorkspaceSupport:
         self.ensure_session_workspace()
 
     def _deepy_workspace_locked(self):
-        # A blank conversation has no owned workspace yet. A saved dedicated
-        # preference also locks the picker while the running mode awaits restart.
-        return bool(self.workspaces.for_session(self._session.storage_session_id)) or self._deps.controller.dedicated_workspace_enabled() or normalize_deepy_session_mode(self._deps.get_server_config().get(DEEPY_MULTI_SESSION_KEY)) == DEEPY_MULTI_SESSION_DEDICATED
+        # Follow the running mode; saved preferences may await Save or restart.
+        return bool(self.workspaces.for_session(self._session.storage_session_id)) or self._deps.controller.dedicated_workspace_enabled()
 
     def publish_workspaces(self):
         if self.workspaces is not None:

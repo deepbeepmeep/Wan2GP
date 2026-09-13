@@ -88,8 +88,8 @@ class family_handler:
         return {"music": (2195, "Music"), "tts": (2200, "TTS")}
 
     @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return os.path.join(lora_root, ARCHITECTURE)
+    def get_lora_dir(base_model_type):
+        return ARCHITECTURE
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

@@ -96,8 +96,8 @@ PROPERTY_MODE_CHOICES = [
 GENERATION_PROPERTY_FIELDS = [
     {"key": "width", "label": "Default Width", "minimum": ASSISTANT_OVERRIDE_DIMENSION_MIN, "maximum": ASSISTANT_OVERRIDE_DIMENSION_MAX, "step": ASSISTANT_OVERRIDE_DIMENSION_STEP},
     {"key": "height", "label": "Default Height", "minimum": ASSISTANT_OVERRIDE_DIMENSION_MIN, "maximum": ASSISTANT_OVERRIDE_DIMENSION_MAX, "step": ASSISTANT_OVERRIDE_DIMENSION_STEP},
-    {"key": "num_frames", "label": "Default Number of Frames", "minimum": ASSISTANT_OVERRIDE_FRAMES_MIN, "maximum": ASSISTANT_OVERRIDE_FRAMES_MAX, "step": 1},
-    {"key": "audio_duration", "label": "Default Audio Duration (seconds)", "minimum": ASSISTANT_OVERRIDE_AUDIO_DURATION_MIN, "maximum": ASSISTANT_OVERRIDE_AUDIO_DURATION_MAX, "step": 1},
+    {"key": "num_frames", "label": "Default Frames", "minimum": ASSISTANT_OVERRIDE_FRAMES_MIN, "maximum": ASSISTANT_OVERRIDE_FRAMES_MAX, "step": 1},
+    {"key": "audio_duration", "label": "Default Audio (s)", "minimum": ASSISTANT_OVERRIDE_AUDIO_DURATION_MIN, "maximum": ASSISTANT_OVERRIDE_AUDIO_DURATION_MAX, "step": 1},
     {"key": "seed", "label": "Seed (-1 for random)", "minimum": -1, "maximum": 999999999, "step": 1},
 ]
 

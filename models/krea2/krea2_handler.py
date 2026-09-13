@@ -135,12 +135,8 @@ class family_handler:
         return {"krea2": (1150, "Krea 2")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument("--lora-dir-krea2", type=str, default=None, help=f"Path to a directory that contains Krea 2 LoRAs (default: {os.path.join(lora_root, 'krea2')})")
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_dir_krea2", None) or os.path.join(lora_root, "krea2")
+    def get_lora_dir(base_model_type):
+        return "krea2"
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

@@ -5,7 +5,6 @@ import asyncio
 import json
 import os
 import re
-import secrets
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -23,6 +22,9 @@ from shared.deepy.gallery import _AUDIO_EXTENSIONS, _IMAGE_EXTENSIONS, _VIDEO_EX
 from shared.deepy.voice import mount_voice_routes, save_upload
 from shared.utils.downloads import _install_routes_on_app
 from shared.utils.media_imports import persist_gallery_import
+from shared.authentication import password
+from shared.authentication.web import WebAuthentication, WebAuthMiddleware
+from shared.authentication.tls import HTTPSRedirect, run_http_and_https, tls_options
 
 WEB = Path(__file__).with_name("web")
 
@@ -38,7 +40,7 @@ class Control(BaseModel):
     payload: dict = Field(default_factory=dict)
 
 
-def create_app(service, *, token: str | None, voice_language=None, https_port=None):
+def create_app(service, *, token=None, auth=None, voice_language=None, https_port=None):
     from shared.utils.network_diagnostics import install_network_diagnostics
     install_network_diagnostics()
 
@@ -48,19 +50,10 @@ def create_app(service, *, token: str | None, voice_language=None, https_port=No
         service.close()
 
     app = FastAPI(title="Deepy", lifespan=lifespan)
-
-    @app.middleware("http")
-    async def authenticate(request, call_next):
-        path = request.scope["path"][len(request.scope.get("root_path", "")):]
-        public = path in {"/", "/deepy_api/login"} or path.startswith("/assets/")
-        supplied = request.cookies.get("deepy_access", "")
-        if token is not None and not public and not secrets.compare_digest(supplied, token):
-            return JSONResponse({"detail": "Sign in to Deepy."}, status_code=401)
-        if request.method not in {"GET", "HEAD", "OPTIONS"}:
-            origin = request.headers.get("origin")
-            if origin and origin != f"{request.url.scheme}://{request.url.netloc}":
-                return JSONResponse({"detail": "Cross-origin request rejected."}, status_code=403)
-        return await call_next(request)
+    auth = auth if auth is not None else WebAuthentication(token)
+    app.add_middleware(WebAuthMiddleware, auth=auth)
+    if https_port is not None:
+        app.add_middleware(HTTPSRedirect, port=https_port)
 
     @app.exception_handler(ValueError)
     async def invalid_value(request, error):
@@ -83,17 +76,6 @@ def create_app(service, *, token: str | None, voice_language=None, https_port=No
         if https_port is not None:
             page = page.replace("<body data-deepy-app>", f'<body data-deepy-app data-deepy-https-port="{int(https_port)}">')
         return HTMLResponse(page, headers={"Cache-Control": "no-cache"})
-
-    @app.post("/deepy_api/login")
-    async def login(request: Request):
-        if token is None:
-            return {"ok": True}
-        body = await request.json()
-        if not isinstance(body, dict) or not isinstance(body.get("token"), str) or not secrets.compare_digest(body["token"], token):
-            raise HTTPException(401, "Incorrect access key.")
-        response = JSONResponse({"ok": True})
-        response.set_cookie("deepy_access", token, httponly=True, secure=request.url.scheme == "https", samesite="strict")
-        return response
 
     @app.get("/assets/{name}")
     def asset(name: str):
@@ -187,12 +169,6 @@ def create_app(service, *, token: str | None, voice_language=None, https_port=No
 
     @app.websocket('/deepy_api/events')
     async def websocket_events(socket: WebSocket, after: int = 0):
-        # HTTP middleware does not run for WebSocket upgrades.
-        origin = socket.headers.get('origin')
-        scheme = 'https' if socket.url.scheme == 'wss' else 'http'
-        if (token is not None and not secrets.compare_digest(socket.cookies.get('deepy_access', ''), token)) or (origin and origin != f'{scheme}://{socket.url.netloc}'):
-            await socket.close(code=1008)
-            return
         await socket.accept()
 
         async def send_events():
@@ -279,58 +255,29 @@ def create_app(service, *, token: str | None, voice_language=None, https_port=No
     return app
 
 
-def _run_http_and_https(http_config, https_config):
-    import threading
-    import uvicorn
-
-    # Validate TLS before either port starts accepting requests.
-    http_config.load()
-    https_config.load()
-    http, https = uvicorn.Server(http_config), uvicorn.Server(https_config)
-
-    def serve_http():
-        try:
-            http.run()
-        finally:
-            https.should_exit = True
-
-    worker = threading.Thread(target=serve_http, name="Deepy HTTP")
-    worker.start()
-    try:
-        https.run()
-    finally:
-        http.should_exit = True
-        worker.join()
-
-
 def server_options(args):
-    token = None if args.deepy_no_auth else os.environ.get("DEEPY_SERVER_TOKEN") or secrets.token_urlsafe(24)
+    if args.mcp_auth or args.mcp_auth_password is not None or args.mcp_auth_url is not None:
+        raise ValueError("MCP OAuth options require --mcp with a network transport.")
     host = "0.0.0.0" if args.listen else args.server_name or os.getenv("SERVER_NAME", "localhost")
     port = int(args.server_port) or int(os.getenv("SERVER_PORT", "7860"))
-    cert = args.deepy_certfile or os.environ.get("DEEPY_SERVER_CERT")
-    key = args.deepy_keyfile or os.environ.get("DEEPY_SERVER_KEY")
-    https_port = args.deepy_https_port
-    if bool(cert) != bool(key) or (https_port is not None and not cert):
-        raise ValueError("HTTPS requires both --deepy-certfile and --deepy-keyfile (or DEEPY_SERVER_CERT and DEEPY_SERVER_KEY).")
-    if https_port is not None and (not 1 <= https_port <= 65535 or https_port == port):
-        raise ValueError("--deepy-https-port must be between 1 and 65535 and differ from --server-port.")
-    return host, port, cert, key, https_port, token
+    cert, key, https_port = tls_options(args, port)
+    return host, port, cert, key, https_port, WebAuthentication(password(args))
 
 
 def run_server(deps, args):
     import uvicorn
     from shared.deepy.service import DeepyService
 
-    host, port, cert, key, https_port, token = server_options(args)
+    host, port, cert, key, https_port, auth = server_options(args)
     print(f"Deepy server: {'https' if cert and https_port is None else 'http'}://{host}:{port}")
     if https_port is not None:
         print(f"Deepy HTTPS: https://{host}:{https_port}")
-    print("Deepy authentication disabled." if token is None else f"Deepy access key: {token}")
+    print("WanGP web authentication disabled." if auth.gate is None else "WanGP web authentication enabled.")
     service = DeepyService(deps)
     service.configure_workspaces(args.workspaces_dir or str(WEB.parents[2] / 'workspaces'))
-    app = create_app(service, token=token, voice_language=args.deepy_voice_language, https_port=https_port)
+    app = create_app(service, auth=auth, voice_language=args.deepy_voice_language, https_port=https_port)
     if https_port is None:
         uvicorn.run(app, host=host, port=port, ssl_certfile=cert, ssl_keyfile=key)
     else:
-        _run_http_and_https(uvicorn.Config(app, host=host, port=port, lifespan="off", timeout_graceful_shutdown=5), uvicorn.Config(app, host=host, port=https_port, ssl_certfile=cert, ssl_keyfile=key, timeout_graceful_shutdown=5))
+        run_http_and_https(uvicorn.Config(app, host=host, port=port, lifespan="off", timeout_graceful_shutdown=5), uvicorn.Config(app, host=host, port=https_port, ssl_certfile=cert, ssl_keyfile=key, timeout_graceful_shutdown=5))
     return 0

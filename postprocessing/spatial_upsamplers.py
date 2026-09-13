@@ -122,7 +122,6 @@ spatial_upsampler_handlers = [
     "postprocessing.seedvr2.wgp_bridge.SeedVR2Bridge",
     "postprocessing.pid.wgp_bridge.PiDBridge",
     "postprocessing.h3_face_refiner.wgp_bridge.H3FaceRefinerBridge",
-    "postprocessing.h3_temporal_refiner.wgp_bridge.H3TemporalRefinerBridge",
     "postprocessing.chain_of_zoom.wgp_bridge.ChainOfZoomBridge",
     "postprocessing.ltx2_upsampler.wgp_bridge.LTXVideoUpsamplerBridge",
     "postprocessing.spatial_upsamplers.WanVaeUpsampler",

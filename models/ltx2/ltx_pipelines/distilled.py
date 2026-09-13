@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import control_video_encoding
 import logging
 import os
 import time
@@ -288,7 +289,8 @@ class DistilledPipeline:
         if set_progress_status is not None:
             set_progress_status("VAE encoding")
         video_encoder = self._get_model("video_encoder")
-        source_latent = vae_encode_video(source_video, video_encoder, tiling_config).to(device=self.device, dtype=dtype)
+        with control_video_encoding():
+            source_latent = vae_encode_video(source_video, video_encoder, tiling_config).to(device=self.device, dtype=dtype)
 
         if interrupt_check is not None and interrupt_check():
             return None

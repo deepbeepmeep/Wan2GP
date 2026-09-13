@@ -199,7 +199,7 @@ class RemoteLLMAdapterTests(unittest.TestCase):
     def test_llm_io_cli_option_creates_the_transcript_in_the_requested_folder(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             try:
-                args = parse_wgp_args([], "wgp_config.json", "loras", ["--llm-io", temp_dir])
+                args = parse_wgp_args("wgp_config.json", ["--llm-io", temp_dir])
                 path = get_llm_io_path()
                 self.assertEqual(args.llm_io, temp_dir)
                 self.assertIsNotNone(path)

@@ -127,15 +127,10 @@ class family_handler:
         return {"music": (2195, "Music"), "tts": (2200, "TTS")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument("--lora-dir-stable-audio3-small", type=str, default=None, help=f"Path to Stable Audio 3 Small LoRAs (default: {os.path.join(lora_root, STABLE_AUDIO3_SMALL)})")
-        parser.add_argument("--lora-dir-stable-audio3-medium", type=str, default=None, help=f"Path to Stable Audio 3 Medium LoRAs (default: {os.path.join(lora_root, STABLE_AUDIO3_MEDIUM)})")
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
+    def get_lora_dir(base_model_type):
         if base_model_type == STABLE_AUDIO3_MEDIUM:
-            return getattr(args, "lora_dir_stable_audio3_medium", None) or os.path.join(lora_root, STABLE_AUDIO3_MEDIUM)
-        return getattr(args, "lora_dir_stable_audio3_small", None) or os.path.join(lora_root, STABLE_AUDIO3_SMALL)
+            return STABLE_AUDIO3_MEDIUM
+        return STABLE_AUDIO3_SMALL
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

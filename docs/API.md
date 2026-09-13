@@ -54,6 +54,8 @@ else:
         print(error.message)
 ```
 
+To use existing LoRA collections, add `"--lora-config", "C:/WanGP/lora_paths.json"` to `cli_args` when initializing the session. This uses the same folder keys and overrides as the web app; see the [LoRA path configuration guide](LORAS.md#custom-lora-directories).
+
 ## Main Entry Points
 
 - `init(...) -> WanGPSession`
@@ -361,6 +363,44 @@ Useful `GeneratedArtifact` fields:
 
 ## MCP Server
 
+### MCP authentication and HTTPS
+
+Network MCP supports optional OAuth 2.1 authorization, separate from the Gradio/Deepy browser login. Use it when external MCP clients can reach WanGP over an untrusted network. Local `stdio` connections do not use OAuth. Keep an unauthenticated network MCP server restricted to localhost or a trusted VPN.
+
+Update the project dependencies first with `python -m pip install -r requirements.txt`. The network authentication uses the maintained MCP 1.x SDK; the MCP protocol version is independent of WanGP's API v1/v2 tool selection.
+
+For direct HTTPS with a generated MCP approval passphrase:
+
+```powershell
+python wgp.py --mcp --mcp-transport streamable-http --mcp-host 0.0.0.0 --mcp-port 7866 --mcp-auth --mcp-auth-url https://wangp.example.com:7866 --ssl-certfile C:\certs\wangp.pem --ssl-keyfile C:\certs\wangp-key.pem
+```
+
+Connect your OAuth-capable MCP client to `https://wangp.example.com:7866/mcp`. `--mcp-auth-url` is the externally reachable **origin**, including a non-default port, without `/mcp`, other paths or query parameters. The certificate must cover that hostname and be trusted by the client. HTTPS is required for non-loopback OAuth origins.
+
+The client discovers authorization settings, registers, then opens the **Authorize MCP Access** page. Check the client name and callback address, and enter the separate MCP passphrase printed at startup only if you initiated the connection. Approval gives that client access to the WanGP tools and media permitted by the server's configuration. The shared `wangp` scope is full server access, not a read-only or per-tool permission. OAuth does not expand filesystem permissions: the existing `--mcp-allow-read-file-system` option remains separate.
+
+Use `--mcp-auth-password "your separate long passphrase"` with `--mcp-auth` for a fixed passphrase, or set `WANGP_MCP_AUTH_PASSWORD` in the launch environment. An explicit CLI passphrase takes precedence. Generated passphrases change at restart; supplied passphrases are not printed. Web `--auth` passwords and browser sessions do not authorize MCP requests.
+
+For an HTTPS reverse proxy on the same PC:
+
+```powershell
+python wgp.py --mcp --mcp-transport streamable-http --mcp-host 127.0.0.1 --mcp-port 7866 --mcp-auth --mcp-auth-url https://wangp.example.com
+```
+
+The proxy handles the certificate. Forward the whole origin, including authorization and discovery endpoints, preserve the original Host header, and forward the correct scheme. Keep the backend private. Hosting under a URL subpath is not supported. For local development only, an origin such as `http://127.0.0.1:7866` is accepted without a certificate.
+
+The same certificate flags work with `python -m shared.mcp_server`; use that entry point's `--transport`, `--host` and `--port` names. `--https-port` optionally adds HTTPS while redirecting the main HTTP port. Legacy SSE transport uses `/sse` and the same OAuth protection; Streamable HTTP is recommended for new client connections.
+
+Client requirements and session behavior:
+
+- Authorization-code flow with S256 PKCE, authorization-server and protected-resource discovery, and dynamic client registration are supported. Registration accepts public clients and clients using `client_secret_post` or `client_secret_basic`. Redirects must use HTTPS or loopback HTTP. URL-based client metadata documents and private-key client authentication are not supported.
+- Clients send the issued access token in `Authorization: Bearer ...` on **every** MCP request and direct media upload/download. Never put a token or passphrase in a URL. A browser login cookie or the passphrase itself is not a bearer token.
+- Authorization approvals expire after ten minutes and issued codes after two minutes. Access tokens expire after one hour. Refresh tokens rotate and expire at most seven days after the original approval. Reusing an old refresh token revokes that approval; reconnect the client. Clients can also revoke tokens through the advertised revocation endpoint.
+- Server restart invalidates registered clients, approvals and tokens, even with a fixed passphrase. Reconnect or remove and re-add the server in clients that retain stale registration details. Unapproved registrations expire after ten minutes; approved registrations expire after 30 days.
+- MCP password checks use the same [progressive delay rules](DEEPY.md#protect-network-access) as the web login, with a separate global counter. Existing authorized clients continue working during a login cooldown. Only one MCP password check runs at a time.
+
+For NAT port forwarding, expose only trusted HTTPS with authentication enabled. See [HTTPS setup](DEEPY.md#set-up-https) for certificate and VPN guidance.
+
 ### MCP API v2 and migration
 
 WanGP now serves **API v2 by default**. The version is fixed at server startup; it versions WanGP tool contracts, not the MCP protocol. Pin existing integrations to v1 before upgrading:
@@ -464,7 +504,7 @@ python wgp.py --mcp --mcp-api-version 1 --mcp-transport streamable-http --mcp-ho
 python wgp.py --mcp --mcp-api-version 1 --mcp-transport streamable-http --mcp-allow-read-file-system
 ```
 
-For Streamable HTTP, connect MCP clients to `http://<host>:<port>/mcp`. Use `--mcp-host 0.0.0.0` only on a trusted network or behind an authenticated reverse proxy. Direct server filesystem paths are rejected by default; media IDs returned by `wangp_list_gallery` remain usable. `--mcp-allow-read-file-system` explicitly permits agents to supply arbitrary existing server paths.
+For Streamable HTTP, connect MCP clients to `http://<host>:<port>/mcp`. Use `--mcp-host 0.0.0.0` only on a trusted network or with [OAuth and HTTPS](#mcp-authentication-and-https). Direct server filesystem paths are rejected by default; media IDs returned by `wangp_list_gallery` remain usable. `--mcp-allow-read-file-system` explicitly permits agents to supply arbitrary existing server paths.
 
 The lower-level adapter can still be launched directly:
 

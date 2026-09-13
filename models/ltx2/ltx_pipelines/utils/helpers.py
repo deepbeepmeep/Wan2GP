@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import control_video_encoding
 import gc
 import inspect
 import logging
@@ -271,8 +272,20 @@ def video_conditionings_by_control_video(
     tiling_config: TilingConfig | None = None,
     continuous_conditioning_and_guide: bool = False,
 ) -> list[ConditioningItem]:
-    if int(downscale_factor or 1) > 1:
-        return video_conditionings_by_reference_latent(
+    with control_video_encoding():
+        if int(downscale_factor or 1) > 1:
+            return video_conditionings_by_reference_latent(
+                video_conditioning=video_conditioning,
+                height=height,
+                width=width,
+                num_frames=num_frames,
+                video_encoder=video_encoder,
+                dtype=dtype,
+                device=device,
+                downscale_factor=downscale_factor,
+                tiling_config=tiling_config,
+            )
+        return video_conditionings_by_keyframe(
             video_conditioning=video_conditioning,
             height=height,
             width=width,
@@ -280,20 +293,9 @@ def video_conditionings_by_control_video(
             video_encoder=video_encoder,
             dtype=dtype,
             device=device,
-            downscale_factor=downscale_factor,
             tiling_config=tiling_config,
+            continuous_conditioning_and_guide=continuous_conditioning_and_guide,
         )
-    return video_conditionings_by_keyframe(
-        video_conditioning=video_conditioning,
-        height=height,
-        width=width,
-        num_frames=num_frames,
-        video_encoder=video_encoder,
-        dtype=dtype,
-        device=device,
-        tiling_config=tiling_config,
-        continuous_conditioning_and_guide=continuous_conditioning_and_guide,
-    )
 
 
 def latent_conditionings_by_latent_sequence(

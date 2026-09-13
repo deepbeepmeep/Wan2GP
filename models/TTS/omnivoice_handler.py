@@ -291,17 +291,8 @@ class family_handler:
         return {"tts": (2200, "TTS")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-omnivoice",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains OmniVoice settings (default: {os.path.join(lora_root, 'omnivoice')})",
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_dir_omnivoice", None) or os.path.join(lora_root, "omnivoice")
+    def get_lora_dir(base_model_type):
+        return "omnivoice"
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

@@ -1,4 +1,3 @@
-import os
 
 import torch
 from PIL import Image
@@ -153,17 +152,8 @@ class family_handler:
         return {"sensenova": (1160, "SenseNova")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-sensenova-u1",
-            type=str,
-            default=None,
-            help=f"Path to SenseNova-U1 LoRAs (default: {os.path.join(lora_root, _PROFILE_FOLDER)}).",
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_dir_sensenova_u1", None) or os.path.join(lora_root, _PROFILE_FOLDER)
+    def get_lora_dir(base_model_type):
+        return _PROFILE_FOLDER
 
     @staticmethod
     def preview_latents(base_model_type, latents, meta):

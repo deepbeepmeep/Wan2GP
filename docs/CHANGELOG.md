@@ -1,5 +1,11 @@
 # Changelog
 
+### Unreleased
+
+- **CLI cleanup:** legacy Wan model-selection shortcuts are deprecated and hidden from command help. Existing launch scripts using them continue to work.
+
+- **LoRA paths:** one optional `--lora-config FILE` JSON replaces the model-specific LoRA directory flags. Keys reuse the subfolder names inside `loras/`; default folders keep working unchanged. See the [sample JSON and setup guide](LORAS.md#custom-lora-directories).
+
 ### 21st of May 2026: WanGP v11.77, I can hear Voices
 It has never been easier to do voice cloning directly in video models:
 

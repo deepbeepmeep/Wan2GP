@@ -278,20 +278,10 @@ class family_handler:
         return {"tts": (2200, "TTS")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-index-tts2",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains IndexTTS2 settings (default: {os.path.join(lora_root, 'index_tts2')})",
-        )
-        parser.add_argument("--lora-dir-index-tts25", type=str, default=None, help=f"Path to IndexTTS 2.5 LoRAs (default: {os.path.join(lora_root, INDEX_TTS25_ARCHITECTURE)})")
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
+    def get_lora_dir(base_model_type):
         if base_model_type == INDEX_TTS25_ARCHITECTURE:
-            return getattr(args, "lora_dir_index_tts25", None) or os.path.join(lora_root, INDEX_TTS25_ARCHITECTURE)
-        return getattr(args, "lora_dir_index_tts2", None) or os.path.join(lora_root, "index_tts2")
+            return INDEX_TTS25_ARCHITECTURE
+        return "index_tts2"
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

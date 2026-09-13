@@ -1,8 +1,11 @@
 """Avoid propagating Gradio layout updates into unaffected Svelte branches."""
 from functools import lru_cache, wraps
+from hashlib import sha256
+import json
 from pathlib import Path
+import re
 
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from gradio import routes
 
 from shared.gradio.gradio_model_change_queue import _REPLACEMENTS as _QUEUE_REPLACEMENTS
@@ -102,6 +105,13 @@ function Mn(S){
 """
 
 _PATCHES = {
+    'Dropdown-DSZkNuau.js': [
+        ('function ce(l,t,e){', Path(__file__).with_name('model_status.js').read_text(encoding='utf-8') + '\nfunction ce(l,t,e){'),
+        ('X(t,u),X(t,r)},p(o,a){', 'X(t,u),X(t,r),He(u,wangpModelLabel(t,h))},p(o,a){'),
+        ('&&He(u,h),a&2&&n', '&&He(u,wangpModelLabel(t,h)),a&2&&n'),
+        ('me(n,l[10]),l[30](n)', 'wangpModelInput(n,l[10]),l[30](n)'),
+        ('c[0]&1024&&n.value!==i[10]&&me(n,i[10])', 'c[0]&1024&&wangpModelInput(n,i[10])'),
+    ],
     'Gallery-D7vc32lN.js': [
         # Selection is a user event. Server values/indices notify change once,
         # after normalization; index-only updates must still refresh consumers.
@@ -122,6 +132,7 @@ _PATCHES = {
         ('this._tickerAdded || !this.domElement ||', 'this._pauseUpdate || this._tickerAdded || !this.domElement ||'),
     ],
     'Blocks-BMC4HgbM.js': [
+        ('function Jt(S,J=null,K=null){', 'function Jt(S,J=null,K=null){if(window.__wangpGradioStale)return;'),
         # Hide the API footer fragment (including its divider), not the API.
         ('y=l[5]&&Qi(l);', 'y=false;'),
         ('b[5]?y?y.p(b,q):(y=Qi(b),y.c(),y.m(e,t)):y&&(y.d(1),y=null),', ''),
@@ -168,6 +179,47 @@ def _asset(path):
     return source
 
 
+_BOOT_SCRIPT = re.compile(r'<script type="module" crossorigin src="(?P<base>\./assets/)(?P<name>index-[^"]+\.js)"></script>')
+
+
+def _ui_signature(config, versions):
+    # Initial values/choices, visibility and styling can change without changing
+    # the wire contract. Hash only at app construction, never per page/request.
+    components = [
+        [component['id'], component['type'], component['component_class_id'], component['key'],
+         {key: component['props'][key] for key in ('elem_id', 'type', 'multiselect', 'file_count') if key in component['props']}]
+        for component in config['components']
+    ]
+    contract = [config['version'], config['protocol'], config['api_prefix'], components, config['layout'], config['dependencies'], versions]
+    return 'ui-' + sha256(json.dumps(contract, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+class _BrowserInstanceGuard:
+    def __init__(self, app, signature):
+        self.app, self.signature = app, signature.encode()
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] == 'http':
+            instance = next((value for key, value in scope['headers'] if key == b'x-wangp-app-id'), None)
+            if instance is not None and instance != self.signature:
+                response = JSONResponse({'error': 'The interface changed. Reload this page.'}, status_code=409, headers={'X-WanGP-Reload': '1'})
+                return await response(scope, receive, send)
+        return await self.app(scope, receive, send)
+
+
+def _version_html(source, versions):
+    def replace(match):
+        base = match['base']
+        imports = {base + name: f'{base}{name}?__wangp_ui={version}' for name, version in versions.items()}
+        # All imports of a patched chunk must resolve to the SAME module, including
+        # imports from unchanged chunks. Rewriting only dynamic imports duplicates
+        # Gradio's stores and breaks event ordering.
+        import_map = '<script type="importmap">' + json.dumps({'imports': imports}) + '</script>'
+        return import_map + match[0].replace(base + match['name'], imports[base + match['name']])
+
+    return _BOOT_SCRIPT.sub(replace, source)
+
+
 def install():
     original = routes.FileResponse
     if getattr(original, '_wangp_frontend', False):
@@ -185,3 +237,39 @@ def install():
 
     file_response._wangp_frontend = True
     routes.FileResponse = file_response
+
+    versions = {path.name: sha256(_asset(str(path)).encode()).hexdigest()[:16] for path in asset_paths if path != _EDITOR_PATH}
+    original_template = routes.templates.TemplateResponse
+    session_script = Path(__file__).with_name('session_guard.js').read_text(encoding='utf-8')
+
+    @wraps(original_template)
+    def template_response(*args, **kwargs):
+        response = original_template(*args, **kwargs)
+        source = response.body.decode('utf-8')
+        patched = _version_html(source, versions)
+        if patched != source:
+            config = response.context['config']
+            if not config.get('auth_required'):
+                guard = session_script.replace('__WANGP_UI_SIGNATURE__', json.dumps(config['wangp_ui_signature']))
+                patched = patched.replace('<script type="importmap">', '<script>' + guard + '</script><script type="importmap">', 1)
+            response.body = patched.encode('utf-8')
+            response.headers['content-length'] = str(len(response.body))
+            response.headers['cache-control'] = 'no-store'
+        return response
+
+    routes.templates.TemplateResponse = template_response
+
+    original_create_app = routes.App.create_app
+
+    @wraps(original_create_app)
+    def create_app(*args, **kwargs):
+        app = original_create_app(*args, **kwargs)
+        blocks = app.get_blocks()
+        # Blocks.__init__ creates a provisional app before the UI exists.
+        if hasattr(blocks, 'config'):
+            config = blocks.config
+            config['wangp_ui_signature'] = _ui_signature(config, versions)
+            app.add_middleware(_BrowserInstanceGuard, signature=config['wangp_ui_signature'])
+        return app
+
+    routes.App.create_app = staticmethod(create_app)

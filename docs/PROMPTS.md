@@ -247,6 +247,16 @@ Important practical limitation:
 
 - only one `Start Image` is supported in this mode
 
+#### Injecting Frames Across Windows
+
+For models with **Inject Frames**, add your images under **Reference Images** and enter comma-separated tokens in **Positions of Injected Frames**:
+
+- A frame number, such as `1`, injects the next image at that position (`1` is the first frame).
+- `L` injects the next image at the end of the next window.
+- `X` skips that window without consuming an image. Repeat it to delay injection for multiple windows.
+
+For example, `L, L, X, L, L` uses four images at the ends of windows 1, 2, 4, and 5. Window 3 has no new frame injection. `L, X, X, L` injects two images at the ends of windows 1 and 4. Lowercase `l` and `x` also work. Enter these tokens in the positions field, not in the text prompt.
+
 #### Optional `[/...]` Window Commands
 
 Sliding-window prompts can include optional slash commands in brackets. WanGP removes these commands before sending the prompt text to the model. Brackets that do not start with `/` are ignored by this parser and remain available for model-specific prompt syntax such as Prompt Relay.

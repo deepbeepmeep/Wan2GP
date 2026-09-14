@@ -12,7 +12,8 @@
     "top_k": 100,
     "top_p": 0.95,
     "model_mode": 0,
-    "custom_settings": {"abc": ""},
+    "custom_guide": null,
+    "custom_settings": {"save_score": 0},
     "prompt_enhancer": "",
     "seed": -1,
     "type": "YuE2"

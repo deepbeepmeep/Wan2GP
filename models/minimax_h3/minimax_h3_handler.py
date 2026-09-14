@@ -53,7 +53,7 @@ FIRST_BLOCK_CACHE_STRENGTHS = [
 
 FL2VA_DEEPY_INFOS = """Generate video and stereo sound from `prompt`. `image_start` / `image_end` anchor the opening / ending; together they constrain the transition. `video_source` continues an existing video; sliding windows carry overlapping video and audio forward.
 
-Control Video (`video_guide`) guides frames: lower Denoising Strength preserves more source content; Whole Frame at strength 1 gives full freedom. A mask selects the edited area. For motion/appearance references, use Ref2VA Reference Video. Inject Frames uses ordered `image_refs` and explicit positions (`1` = first frame, `L` = last frame of the window).
+Control Video (`video_guide`) guides frames: lower Denoising Strength preserves more source content; Whole Frame at strength 1 gives full freedom. A mask selects the edited area. For motion/appearance references, use Ref2VA Reference Video. Inject Frames uses ordered `image_refs` and explicit positions (`1` = first frame, `L` = last frame of the window, `X` = skip a window without consuming an image).
 
 `audio_prompt_type`: empty = generate video and audio; `A` = condition on `audio_guide`; `K` = control video plus its soundtrack; `2` = keep control frames and generate their audio. A complete input soundtrack is reused; a shorter one permits generated sound afterward. Match visible action and speech to supplied audio.
 
@@ -77,7 +77,7 @@ Start and end images are placed at those exact points in the video. For general 
 
 - **Generate without using a Control Video:** generate normally from the prompt and any start/end images.
 - **Use Control Video:** use an uploaded video to guide the result. Lower **Denoising Strength** values keep the result closer to the control video; `1.0` gives the model full freedom. At `1.0` with **Whole Frame** selected, the control video does not affect the result, so WanGP skips that work. Choose **Masked Area** or **Non Masked Area** to limit editing to part of the frame. **Masking Strength** controls how strongly the rest of the frame stays close to the control video. Use a lower masking strength (<0.75) to facilitate continuity with masked areas.
-- **Inject Frames:** add images at specific points in the generated video. Add the images under **Reference Images**, then enter one position per image in the same order. Position `1` means the first frame; `L` means the last frame of a sliding-window segment.
+- **Inject Frames:** add images at specific points in the generated video. Add the images under **Reference Images**, then enter one position per image in the same order. Position `1` means the first frame; `L` means the last frame of a sliding-window segment. Each `X` skips a window without consuming an image.
 
 For motion or appearance transfer from a video reference, use Ref2VA with **Reference Video**. FL2VA Control Video uses denoising-based editing.
 
@@ -430,6 +430,7 @@ class family_handler:
             **({"accelerated": "native"} if pdd or vdn else {}),
             **({"specialities": [{"name": "character consistency", "aliases": ["identity preservation"]}, {"name": "motion transfer", "description": "Transfer motion or camera from reference videos to image-reference characters."}]} if reference_mode else {}),
             "fps": 24,
+            "prompt_enhancer_video_duration": True,
             "frames_minimum": 107,
             "frames_steps": 17,
             "frames_offset": 5,
@@ -722,7 +723,7 @@ class family_handler:
             video_prompt_type = inputs["video_prompt_type"]
             audio_prompt_type = inputs["audio_prompt_type"]
             if "F" in inputs["video_prompt_type"]:
-                position_count = len((inputs["frames_positions"] or "").replace(",", " ").split())
+                position_count = sum(pos.upper() != "X" for pos in (inputs["frames_positions"] or "").replace(",", " ").split())
                 image_count = len(inputs["image_refs"] or [])
                 if position_count != image_count:
                     return f"MiniMax H3 frame injection requires one position per Reference Image (found {position_count} positions and {image_count} images)"

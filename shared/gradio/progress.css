@@ -1,4 +1,17 @@
 /* Gradio sets overflow:auto inline on HTML blocks. */
+.gradio-container .wangp-progress-with-action { position: relative; border: 0; background: transparent; }
+.gradio-container .wangp-progress-with-action:not(:has(.block.wangp-progress-container:not(.hidden) .prose:not(.hide) .wangp-progress)) { display: none; }
+.gradio-container .wangp-progress-container .html-container { opacity: 1; transition: none; }
+.wangp-progress-with-action .wangp-progress.status-only { padding-right: calc(96px * var(--progress-scale)); }
+.wangp-progress-with-action .progress-track { max-width: calc(100% - 160px); }
+.gradio-container .wangp-progress-with-action .wangp-progress-stop {
+    position: absolute !important; right: 12px; top: 50%; transform: translateY(-50%);
+    width: auto; min-width: 62px; min-height: 34px; margin: 0; padding: 0 12px;
+    border: 1px solid rgb(255 255 255 / 18%); border-radius: 999px;
+    background: rgb(179 58 58 / 90%); color: white; font-size: var(--text-sm); font-weight: 800;
+    box-shadow: 0 10px 18px rgb(6 18 28 / 16%); cursor: pointer;
+}
+.gradio-container .wangp-progress-with-action .wangp-progress-stop:hover { background: rgb(197 72 72 / 96%); }
 .gradio-container .block.wangp-progress-container { overflow: hidden !important; border-radius: 12px; }
 .wangp-progress {
     --progress-scale: var(--wangp-ui-scale, 1);
@@ -89,4 +102,7 @@
     .wangp-progress .progress-heading:has(.progress-timing:not(:empty)) .progress-timing { grid-column: 2; }
 }
 @keyframes wangp-progress-pulse { from { transform: translateX(-100%); } to { transform: translateX(286%); } }
+.wangp-progress.token-progress .progress-heading:has(.progress-timing) { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.wangp-progress.token-progress .progress-caption { grid-column: 1; }
+.wangp-progress.token-progress .progress-timing { grid-column: 2; }
 @media (prefers-reduced-motion: reduce) { .wangp-progress .indeterminate .progress-fill { animation: none; transform: translateX(90%); } }

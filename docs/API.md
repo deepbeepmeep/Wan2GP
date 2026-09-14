@@ -360,6 +360,20 @@ Useful `GeneratedArtifact` fields:
   - Sampling rate associated with `artifact.audio_tensor` when present.
 - `artifact.fps`
   - Output FPS associated with `artifact.video_tensor_uint8` when present.
+- `artifact.side_files`
+  - Companion filenames mapped to their file contents as `bytes`, such as `{"song.abc": b"...", "song.mid": b"..."}`. Python session calls return these in memory by default, while the main media is still saved for the gallery. Set `_api={"return_side_files": False}` to save the companions beside the media instead. They are not separate gallery entries.
+
+For YuE2, set `custom_settings={"save_score": 1}` to export both the ABC and MIDI composition. This works with automatic planning, a supplied score or source-audio scoring; direct generation has no score. These describe the composition used to generate the song, not an exact transcription of the finished audio. Wan Alpha returns its transparent PNG-frame ZIP through the same `side_files` field.
+
+To supply a YuE2 score, set `custom_guide` to the path of a UTF-8 `.abc` file and use `audio_prompt_type=""` with composition mode 0 or 1. Source-audio scoring (`audio_prompt_type="A"`) hides and ignores this optional file. The former pasted `custom_settings.abc` value is ignored; upload a file instead.
+
+```python
+for artifact in result.artifacts:
+    for filename, content in artifact.side_files.items():
+        (Path("my_exports") / filename).write_bytes(content)
+```
+
+Create the destination directory before writing. Companion names follow the final media filename, including any suffix WanGP adds to avoid overwriting an existing output.
 
 ## MCP Server
 

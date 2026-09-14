@@ -719,6 +719,8 @@ def _generate_messages_vllm(
     top_k=None,
     seed=None,
     thinking_enabled: bool | None = None,
+    stop_requested=None,
+    stream_callback=None,
 ):
     reset_context()
     tokenizer = self._prompt_enhancer_tokenizer
@@ -788,6 +790,8 @@ def _generate_messages_vllm(
                 sampling_params=sampling_params,
                 use_tqdm=True,
                 unconditional_prompts=None,
+                stop_requested=stop_requested,
+                stream_callback=stream_callback,
             )
             engine._last_failure_reason = ""
         except Exception as exc:
@@ -821,6 +825,8 @@ def _generate_messages(
     top_k=None,
     seed=None,
     thinking_enabled: bool | None = None,
+    stop_requested=None,
+    stream_callback=None,
 ):
     top_k = _resolve_prompt_top_k(self, top_k)
     if _use_vllm_prompt_enhancer(self) or _use_legacy_cuda_runner_prompt_enhancer(self):
@@ -834,6 +840,8 @@ def _generate_messages(
             top_k=top_k,
             seed=seed,
             thinking_enabled=thinking_enabled,
+            stop_requested=stop_requested,
+            stream_callback=stream_callback,
         )
     raise RuntimeError("Qwen3.5 prompt enhancer text runtime is not configured with an available decode engine.")
 

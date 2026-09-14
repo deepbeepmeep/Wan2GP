@@ -1846,7 +1846,12 @@ class WanAny2V:
                 BGRA_frames = None
             if videos.dtype != torch.uint8:
                 videos = videos.clamp_(-1, 1).add_(1.0).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8)
-            if BGRA_frames is not None: ret["BGRA_frames"] =  BGRA_frames
+            if BGRA_frames is not None:
+                from io import BytesIO
+                from .alpha.utils import write_zip_file
+                with BytesIO() as stream:
+                    write_zip_file(stream, BGRA_frames)
+                    ret["side_files"] = {".zip": stream.getvalue()}
         return ret
 
     def get_loras_transformer(self, get_model_recursive_prop, base_model_type, model_type, video_prompt_type, model_mode, **kwargs):

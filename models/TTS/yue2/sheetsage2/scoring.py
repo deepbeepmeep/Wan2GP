@@ -89,7 +89,7 @@ def score_audio(filename, checkpoint, melody_only, callback, abort_fn):
             print(f"[SheetSage2] {warning}", flush=True)
         if result.get("abc_error") or not result["abc"]:
             raise ValueError(f"SheetSage2 could not produce a usable score: {result.get('abc_error')}")
-        return result["abc"]
+        return result["abc"], result["midi"]
     except offload.LoadingCancelled:
         raise InterruptedError("SheetSage2 loading interrupted") from None
     finally:

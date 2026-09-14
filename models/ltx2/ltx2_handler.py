@@ -522,6 +522,7 @@ class family_handler:
             ],
             "dtype": "bf16",
             "fps": 24,
+            "prompt_enhancer_video_duration": True,
             "frames_minimum": 17,
             "frames_steps": 8,
             "sliding_window": not msr,

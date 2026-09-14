@@ -481,7 +481,7 @@ class family_handler():
                         ("Crane Below Left", "crane_below_left"),
                     ],
                 },
-                "custom_guide": {"label": "Custom Camera Movement (.npz)", "required": False, "file_types": [".npz"]},
+                "custom_guide": {"id": "custom_guide", "name": "Custom Camera Movement", "label": "Custom Camera Movement (.npz)", "type": "file", "default": None, "required": False, "file_types": [".npz"]},
                 "mask_preprocessing": {"selection": [""], "visible": False},
                 "custom_settings": [
                     {"id": "vista4d_scene_scale", "name": "Scene scale", "label": "Vista4D scene scale", "type": "float", "default": 1.0},
@@ -499,7 +499,7 @@ class family_handler():
 
 
         if base_model_type in ["wanmove"]:
-            extra_model_def["custom_guide"] = { "label": "Trajectory File", "required": True, "file_types": [".npy"]}
+            extra_model_def["custom_guide"] = {"id": "custom_guide", "name": "Trajectory", "label": "Trajectory File (.npy)", "type": "file", "default": None, "required": True, "file_types": [".npy"]}
             extra_model_def["i2v_trajectory"] = True
 
         if base_model_type in ["steadydancer"]:

@@ -8,6 +8,7 @@ import torch
 from mmgp import offload
 from safetensors import safe_open
 from shared.utils import files_locator as fl
+from shared.utils.cancellation import check_cancelled
 
 from .florence2 import Florence2Config, Florence2ForConditionalGeneration, Florence2Processor
 from .florence2.image_processing_florence2 import Florence2ImageProcessorLite
@@ -239,10 +240,12 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
 
 
 def _load_state_dict(weights_path: Path) -> dict:
+    check_cancelled()
     if weights_path.suffix == ".safetensors":
         state_dict = {}
         with safe_open(str(weights_path), framework="pt", device="cpu") as f:
             for key in f.keys():
+                check_cancelled()
                 state_dict[key] = f.get_tensor(key)
         return state_dict
     return torch.load(str(weights_path), map_location="cpu")
@@ -278,9 +281,12 @@ def load_florence2(
     weights_path = _resolve_weights_path(model_path)
     state_dict = _load_state_dict(weights_path)
 
+    check_cancelled()
     model = Florence2ForConditionalGeneration(config)
+    check_cancelled()
     load_info = model.load_state_dict(state_dict, strict=False)
     del state_dict
+    check_cancelled()
     if load_info.missing_keys:
         allowed_missing = {
             "language_model.model.encoder.embed_tokens.weight",

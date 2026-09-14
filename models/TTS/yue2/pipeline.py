@@ -100,12 +100,18 @@ class YuE2Pipeline:
         return tokens
 
     @torch.inference_mode()
-    def generate(self, input_prompt, alt_prompt, seed, duration_seconds, sampling_steps, guide_scale, temperature, top_k, top_p, model_mode=0, custom_settings=None, VAE_tile_size=1024, callback=None, audio_prompt_type="", audio_guide=None, offloadobj=None, **kwargs):
+    def generate(self, input_prompt, alt_prompt, seed, duration_seconds, sampling_steps, guide_scale, temperature, top_k, top_p, model_mode=0, custom_settings=None, VAE_tile_size=1024, callback=None, audio_prompt_type="", audio_guide=None, offloadobj=None, input_custom=None, **kwargs):
         self._interrupt = self._early_stop = False
         self.last_plan = self.last_latents = None
         self.last_truncated = {}
         mode = ("full", "melody", "off")[model_mode]
-        abc = custom_settings["abc"].strip() if "A" not in audio_prompt_type and custom_settings is not None and "abc" in custom_settings else ""
+        midi = None
+        side_files = {}
+        abc = ""
+        if "A" not in audio_prompt_type and input_custom is not None:
+            abc = Path(input_custom).read_text(encoding="utf-8-sig").strip()
+            if not abc:
+                raise ValueError("The ABC score file is empty.")
         maximum = int(duration_seconds * self.frame_rate)
         sampling = replace(self.generation_config.semantic, max_tokens=maximum, min_tokens=min(200, maximum - 1), temperature=temperature, top_k=top_k, top_p=top_p)
         try:
@@ -113,7 +119,7 @@ class YuE2Pipeline:
                 from .sheetsage2.scoring import score_audio
                 self.engine.release_runtime_allocations()
                 offloadobj.unload_all()
-                abc = score_audio(audio_guide, self.scoring_checkpoint, mode == "melody", callback, self._abort_requested)
+                abc, midi = score_audio(audio_guide, self.scoring_checkpoint, mode == "melody", callback, self._abort_requested)
             request = SongRequest(style=alt_prompt, lyrics=input_prompt, cot=mode, abc=abc or None, cfg_scale=guide_scale, seed=seed)
             if mode == "off":
                 abc_ids = []
@@ -123,6 +129,9 @@ class YuE2Pipeline:
                 abc_ids = self._tokens(token_prefixes(request, self.tokenizer), self.generation_config.abc, seed, "abc", callback)
                 abc = self.tokenizer.decode(abc_ids)
             self.last_plan = {"abc": abc, "abc_ids": abc_ids, "request": request.to_dict()}
+            if abc and custom_settings is not None and custom_settings.get("save_score", 0):
+                from .score_export import score_side_files
+                side_files = score_side_files(abc, midi)
             prefix = token_prefixes(request, self.tokenizer, abc_ids)
             negative = negative_prefix(request, self.tokenizer, abc_ids) if guide_scale != 1 else None
             codec = self._tokens(prefix, sampling, seed, "semantic", callback, negative, guide_scale, mode == "off")
@@ -163,7 +172,7 @@ class YuE2Pipeline:
                 return None
             if not torch.isfinite(audio).all():
                 raise FloatingPointError("YuE2 decoded non-finite audio.")
-            return {"x": audio[0].float().clamp_(-1, 1), "audio_sampling_rate": self.sample_rate}
+            return {"x": audio[0].float().clamp_(-1, 1), "audio_sampling_rate": self.sample_rate, "side_files": side_files}
         except InterruptedError:
             if not self._interrupt:
                 raise

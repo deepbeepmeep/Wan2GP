@@ -83,7 +83,7 @@ The baseline schema lives in `models/_settings.json`. Model defaults in `default
 | `image_refs` | image or list | Reference images or frames to inject, according to the model's declared mode; MCP accepts a list of Gallery media IDs or authorized paths. Use the complete model/template `video_prompt_type` choice, such as `KI` for references or `KFI` with `frames_positions` for frame injection. These are separate capabilities: H3 FL2VA supports frame injection, while H3 REF2VA supports general references. |
 | `image_refs_relative_size` | integer | Relative internal size for reference images on models exposing `any_image_refs_relative_size`. |
 | `remove_background_images_ref` | integer | Background-removal mode for reference images. Usually `0` off, `1` auto/on, with older values migrated by `fix_settings`. |
-| `frames_positions` | string | Positions for `F` positioned-frame references. Syntax is model-specific but usually frame indexes or ranges. |
+| `frames_positions` | string | Comma-separated frame positions: `1` = first frame, `L` = window end, `X` = skip a window without consuming an image. Repeat `X` to skip multiple windows. `L,L,X,L,L` uses four images at the ends of windows 1, 2, 4, and 5. |
 | `image_guide` | image | Control image used in image mode. WanGP maps this into `video_guide` internally for generation. |
 | `image_mask` | image | Image mask used in image inpainting/control modes. |
 | `video_source` | video | Source video for continuation (`image_prompt_type` `V`) or post-processing edit tasks. |

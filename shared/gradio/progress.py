@@ -10,6 +10,8 @@ from functools import wraps
 from html import escape
 from pathlib import Path
 
+from shared.utils.cancellation import cancellation_context
+
 
 _tracked_progress = ContextVar("wangp_tqdm_progress", default=None)
 _duration = r"(?:(?:\d+h )?(?:\d+m )?\d+(?:\.\d+)?s|\d+:\d{2}(?::\d{2})?)"
@@ -27,13 +29,20 @@ class WangpProgress:
     def __init__(self, track_tqdm=False):
         self.track_tqdm = track_tqdm
         self.description = ""
+        self.timing = ""
         self.position = None
         self.download = None
         self._bars = []
         self._completion = None
         self._download_finished_at = None
+        self.gen = {"abort": False, "download_progress_callback": self.set_download}
+
+    def check_cancelled(self):
+        if self.gen["abort"]:
+            raise InterruptedError("Operation Stopped")
 
     def __call__(self, progress, desc=None, total=None, unit="steps", _tqdm=None):
+        self.timing = ""
         if desc is not None:
             self.description = desc
         if progress is None:
@@ -51,8 +60,13 @@ class WangpProgress:
                 self._completion = (self.position, None, self.description, None)
 
     def status(self, description):
+        self.timing = ""
         self.description = description
         self.position = (None, None, "", None)
+
+    def stream_tokens(self, *, token_count, max_tokens, prefill_seconds, tokens_per_second, **kwargs):
+        self((token_count, max_tokens), desc="Enhancing Prompt", unit="tokens")
+        self.timing = f"Prefill {prefill_seconds:.2f}s · {tokens_per_second:.1f} tk/s"
 
     def set_download(self, data):
         self.download = data
@@ -67,6 +81,7 @@ class WangpProgress:
         return .2 if self._completion[3] is None else max(0, self._completion[3] - time.monotonic())
 
     def render(self, *, compact=False, aborting=False, active=True, hold_complete=False, bar_text=None):
+        aborting = aborting or self.gen["abort"]
         # A standalone worker may publish its next update while the UI renders.
         position, download, title = self.position, self.download, self.description
         if hold_complete and not aborting and self.completion_delay:
@@ -86,7 +101,8 @@ class WangpProgress:
             title = title.removesuffix("...").removesuffix("…").rstrip()
         if aborting:
             title = f"Stopping… {title}"
-        filename = counter = amount = speed = timing = ""
+        filename = counter = amount = speed = ""
+        timing = self.timing
         if download is not None and active:
             data = download
             completed, total = data["completed"], data["total"]
@@ -110,6 +126,8 @@ class WangpProgress:
             ratio = None
         percentage = max(0, min(100, ratio * 100)) if ratio is not None else None
         classes = "wangp-progress" + (" compact" if compact else "")
+        if self.timing:
+            classes += " token-progress"
         if not active:
             classes += " finished status-only"
         elif download is None and position == (None, None, "", None):
@@ -184,11 +202,24 @@ class WangpProgress:
         _tqdm.close()
 
     @staticmethod
-    def component(*, visible=False, **kwargs):
+    def component(*, visible=False, stop=False, **kwargs):
         import gradio as gr
 
         initial = WangpProgress()
         initial.status("Ready")
+        if stop:
+            with gr.Group(elem_classes=["wangp-progress-with-action"]):
+                component = WangpProgress.component(visible=visible, **kwargs)
+                button = gr.Button("Stop", size="sm", elem_classes=["wangp-progress-stop"])
+            component._progress_runs = {}
+
+            def request_stop(request: gr.Request):
+                progress = component._progress_runs.get(request.session_hash)
+                if progress is not None:
+                    progress.gen["abort"] = True
+
+            button.click(request_stop, queue=False, show_progress="hidden", api_name=False)
+            return component
         return gr.HTML(value=initial.render(active=False) if visible else "", visible=visible, container=True, padding=False, elem_classes=["wangp-progress-container"], **kwargs)
 
     @classmethod
@@ -198,44 +229,61 @@ class WangpProgress:
 
         signature = inspect.signature(fn)
         track_tqdm = signature.parameters["progress"].default.track_tqdm
+        runs = getattr(component, "_progress_runs", None)
 
         @wraps(fn)
         def run(*args, **kw):
             progress = cls(track_tqdm=track_tqdm)
-            progress.status("Preparing…")
+            if runs is None:
+                progress.status("Preparing…")
+            else:
+                progress(0, desc="Preparing Prompt Enhancer")
+            if runs is not None:
+                *args, request = args
+                runs[request.session_hash] = progress
 
             def work():
-                with progress.track():
+                with progress.track(), cancellation_context(progress.check_cancelled if runs is not None else None):
                     return fn(*args, **kw, progress=progress)
 
             unchanged = [gr.update() for _ in outputs]
             keep_hidden = [gr.update() for _ in hide]
             restore = [gr.update(visible=True) for _ in hide]
-            if hide:
-                yield *unchanged, *(gr.update(visible=False) for _ in hide), gr.update(value=progress.render(), visible=True)
-            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="wangp-progress") as worker:
-                future = worker.submit(copy_context().run, work)
-                previous = None
-                while not future.done():
-                    html = progress.render(hold_complete=True)
-                    if html != previous:
-                        yield *unchanged, *keep_hidden, gr.update(value=html, visible=bool(html))
-                        previous = html
-                    # A short bounded wait also delivers completion without another polling delay.
-                    wait([future], timeout=0.1)
-                try:
-                    result = future.result()
-                except Exception:
-                    yield *unchanged, *restore, gr.update(value="", visible=False)
-                    raise
-            values = [result] if len(outputs) == 1 else result
-            if progress.completion_delay:
-                yield *values, *keep_hidden, gr.update(value=progress.render(hold_complete=True), visible=True)
-                time.sleep(progress.completion_delay)
-            yield *values, *restore, gr.update(value="", visible=False)
+            try:
+                if hide:
+                    yield *unchanged, *(gr.update(visible=False) for _ in hide), gr.update(value=progress.render(), visible=True)
+                with ThreadPoolExecutor(max_workers=1, thread_name_prefix="wangp-progress") as worker:
+                    future = worker.submit(copy_context().run, work)
+                    previous = None
+                    while not future.done():
+                        html = progress.render(hold_complete=True)
+                        if html != previous:
+                            yield *unchanged, *keep_hidden, gr.update(value=html, visible=bool(html))
+                            previous = html
+                        # A short bounded wait also delivers completion without another polling delay.
+                        wait([future], timeout=0.1)
+                    try:
+                        result = future.result()
+                    except Exception:
+                        yield *unchanged, *restore, gr.update(value="", visible=False)
+                        if progress.gen["abort"]:
+                            return
+                        raise
+                values = [result] if len(outputs) == 1 else result
+                if progress.completion_delay:
+                    yield *values, *keep_hidden, gr.update(value=progress.render(hold_complete=True), visible=True)
+                    time.sleep(progress.completion_delay)
+                yield *values, *restore, gr.update(value="", visible=False)
+            finally:
+                if runs is not None:
+                    runs.pop(request.session_hash, None)
 
         # Gradio must not replace our per-invocation tracker with gr.Progress.
-        run.__signature__ = signature.replace(parameters=[param for name, param in signature.parameters.items() if name != "progress"])
+        parameters = [param for name, param in signature.parameters.items() if name != "progress"]
+        if runs is not None:
+            parameters.append(inspect.Parameter("request", inspect.Parameter.POSITIONAL_OR_KEYWORD, default=None, annotation=gr.Request))
+            run.__annotations__ = {**fn.__annotations__, "request": gr.Request}
+        run.__signature__ = signature.replace(parameters=parameters)
         kwargs.setdefault("concurrency_id", f"wangp-progress-{component._id}")
         return event(fn=run, inputs=inputs, outputs=[*outputs, *hide, component], show_progress="hidden", **kwargs)
 

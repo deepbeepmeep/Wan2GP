@@ -25,9 +25,11 @@ INFOS = """**Turn your lyrics into a complete song** with a singing voice and ac
 
 **Optional prompt enhancer:** disabled by default. Choose Lyrics to turn an idea into singable words or tidy existing lyrics; choose Music Style to clarify the sound, or Lyrics then Music Style to prepare both. Review the result before generating. The enhancer does not edit your ABC score.
 
-**Optional ABC score:** leave this empty unless you already have a compatible written melody or composition. ABC is a text format for musical notation, not a place for instructions such as “make it happier.” Supplying a score replaces the automatic plan. It requires Melody and chords or Melody only; melody-only scores must omit chord symbols. The supported score format uses Vocal and Ins voices. A score and lyrics that belong together give the model clearer guidance.
+**Optional ABC score:** upload a UTF-8 `.abc` file if you already have a compatible written melody or composition. Otherwise leave the file input empty for automatic planning. ABC is a text format for musical notation, not a place for instructions such as “make it happier.” Supplying a score replaces the automatic plan. It requires Melody and chords or Melody only; melody-only scores must omit chord symbols. The supported score format uses Vocal and Ins voices. A score and lyrics that belong together give the model clearer guidance.
 
-Changing the lyrics, style or score creates a **new recording**; it does not preserve the original voice or keep parts of an existing recording untouched. Choose **Source Audio > Extract Score from Source Song** to transcribe a recording with SheetSage2/MERT2. Melody and chords retains harmony; Melody only leaves the new accompaniment more freedom. Direct generation cannot use source audio. The manual ABC field is hidden while source audio is selected. You must still supply lyrics: transcription extracts musical notes, not sung words. Match the lyrics and section order to the source; transcription mistakes can affect the result. The model weights are **CC BY-NC 4.0 (non-commercial use)**.
+**Save ABC and MIDI Score:** turn this on to save both `.abc` and `.mid` beside the song, using the same filename. This exports the planned, supplied or source-transcribed composition, not a transcription of the finished performance. The score can be longer than an early-stopped song. Direct generation has no score to export. Off by default.
+
+Changing the lyrics, style or score creates a **new recording**; it does not preserve the original voice or keep parts of an existing recording untouched. Choose **Source Audio > Extract Score from Source Song** to transcribe a recording with SheetSage2/MERT2. Melody and chords retains harmony; Melody only leaves the new accompaniment more freedom. Direct generation cannot use source audio. The ABC file input is hidden and ignored while source audio is selected. You must still supply lyrics: transcription extracts musical notes, not sung words. Match the lyrics and section order to the source; transcription mistakes can affect the result. The model weights are **CC BY-NC 4.0 (non-commercial use)**.
 """
 PROMPT_INFOS = """**Write lyrics, not a request to write them.** Put section labels on their own lines and leave a blank line between sections:
 
@@ -53,12 +55,15 @@ gentle drums, hopeful, 90 BPM
 ```
 
 For a cover from source audio, enter the original lyrics separately and keep their verse/chorus order aligned with the source. The audio supplies notes, not a transcript of the words.
+Enable **Save ABC and MIDI Score** to keep the composition for later editing or reuse; the saved score does not add lyrics automatically.
+To reuse an ABC score, upload its `.abc` file under **Optional ABC Score**, select No Audio, and use Melody and chords or Melody only. Keep notation out of the lyrics and style fields.
 
 Start with a few compatible ideas. “Gentle acoustic ballad” and “aggressive fast metal” pull in different directions. For a different arrangement, keep the lyrics and change the style; for a different performance, change the seed. If the ending is cut off, allow more time or shorten the lyrics. A style prompt describes the character of a voice; it does not guarantee a particular singer's identity.
 """
 DEEPY_INFOS = """**YuE2 song generation:** `prompt` = lyrics; `alt_prompt` = music style. Outputs 48 kHz stereo vocals and accompaniment.
 - `model_mode`: **0** melody+chords (recommended), **1** melody only/free accompaniment, **2** direct generation.
-- Leave `custom_settings.abc` empty normally. A supplied native ABC score replaces planning in modes 0/1; use Vocal/Ins voices and no chords for mode 1. Align the lyrics with the score.
+- Optional `custom_guide`: path to a UTF-8 `.abc` score file, replacing planning in modes 0/1. Use Vocal/Ins voices and no chords for mode 1. Align the lyrics with the score. Omit for automatic planning; source audio hides and overrides this file. Old `custom_settings.abc` text is ignored.
+- `custom_settings.save_score`: **0** off (default), **1** export both `.abc` and `.mid` with the song's filename. Exports the conditioning composition, not the finished performance; it may outlast a truncated song. Mode 2 exports neither. API artifacts return these side files in memory.
 - **`duration_seconds` is an upper limit, not a requested song length. YuE2 can stop earlier when it considers the song finished.** Increasing it does not force a longer song; too short can cut it off. Very large limits are capped by the remaining model context after lyrics/score. Start with 32 steps and guidance 1; change seed for another take.
 - Abort cancels without audio. Early Stop renders existing audio tokens; during score planning it finishes the score then makes an approximately eight-second preview, capped by duration. Acoustic synthesis/decoding still finish; previews may end mid-phrase.
 - Prompt enhancement is off by default: `T1` prepares lyrics, `L2O` prepares style, `T1,B2O` prepares lyrics then style informed by them. It does not modify ABC.
@@ -66,7 +71,8 @@ DEEPY_INFOS = """**YuE2 song generation:** `prompt` = lyrics; `alt_prompt` = mus
 """
 DEEPY_PROMPT_INFOS = """**Lyrics:** actual short, singable lines with `[Verse]`, `[Chorus]`, `[Bridge]` on separate lines; blank lines between sections. Repeat chorus words explicitly.
 **Music style:** language + genre + instruments + mood + vocal character, optionally tempo. Example: `English acoustic pop, warm female vocal, fingerpicked guitar, gentle drums, hopeful, 90 BPM`.
-Keep style instructions out of the lyrics; avoid conflicting styles. For a cover, supply source lyrics with section order and phrasing matching the recording. Leave the ABC field empty unless a compatible score is supplied; source audio overrides manual ABC. Increase duration or shorten lyrics if truncated; change seed for a new performance. A voice description does not guarantee a singer's identity.
+Enable `custom_settings.save_score=1` to retain the ABC/MIDI composition for editing or reuse; sung words still belong in the lyrics input.
+Keep style instructions out of the lyrics; avoid conflicting styles. For a cover, supply source lyrics with section order and phrasing matching the recording. Upload a compatible `.abc` file through `custom_guide` to reuse a score; source audio overrides this file. Increase duration or shorten lyrics if truncated; change seed for a new performance. A voice description does not guarantee a singer's identity.
 """
 
 
@@ -113,7 +119,10 @@ class family_handler:
             "model_modes": {"choices": [("Melody and chords", 0), ("Melody only", 1), ("Direct generation", 2)], "default": 0, "label": "Composition Planning"},
             "any_audio_prompt": True, "audio_prompt_choices": True, "audio_guide_label": "Source Song (Music to Transcribe)",
             "audio_prompt_type_sources": {"selection": ["", "A"], "labels": {"": "No Audio", "A": "Extract Score from Source Song"}, "default": "", "label": "Source Audio", "letters_filter": "A"},
-            "custom_settings": [{"id": "abc", "name": "ABC Score", "label": "Optional ABC score (planning modes only)", "type": "text", "default": "", "audio_prompt_type_not": "A"}],
+            "custom_guide": {"id": "custom_guide", "name": "ABC Score", "label": "Optional ABC Score (.abc)", "type": "file", "default": None, "required": False, "file_types": [".abc"], "audio_prompt_type_not": "A"},
+            "custom_settings": [
+                {"id": "save_score", "name": "Save Score", "label": "Save ABC and MIDI Score", "type": "dropdown", "choices": [("Off", 0), ("On", 1)], "default": 0},
+            ],
             "duration_slider": {"label": "Maximum Song Duration (seconds)", "name": "Maximum Song Duration", "min": 1, "max": 600, "increment": 1, "default": 120},
             "infos": INFOS,
             "prompt_infos": PROMPT_INFOS,
@@ -142,7 +151,7 @@ class family_handler:
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
-        ui_defaults.update({"prompt": PROMPT, "alt_prompt": STYLE, "audio_prompt_type": "", "duration_seconds": 120, "video_length": 0, "num_inference_steps": 32, "guidance_scale": 1.0, "temperature": 1.0, "top_k": 100, "top_p": 0.95, "model_mode": 0, "custom_settings": {"abc": ""}, "prompt_enhancer": "", "negative_prompt": "", "repeat_generation": 1, "multi_prompts_gen_type": "FG"})
+        ui_defaults.update({"prompt": PROMPT, "alt_prompt": STYLE, "audio_prompt_type": "", "duration_seconds": 120, "video_length": 0, "num_inference_steps": 32, "guidance_scale": 1.0, "temperature": 1.0, "top_k": 100, "top_p": 0.95, "model_mode": 0, "custom_guide": None, "custom_settings": {"save_score": 0}, "prompt_enhancer": "", "negative_prompt": "", "repeat_generation": 1, "multi_prompts_gen_type": "FG"})
 
     @staticmethod
     def validate_generative_prompt(base_model_type, model_def, inputs, one_prompt):
@@ -157,10 +166,9 @@ class family_handler:
             return "YuE2 guidance must be at least 1 (1 disables CFG)."
         if inputs["model_mode"] not in (0, 1, 2):
             return "Choose melody and chords, melody only, or direct generation."
-        custom = inputs["custom_settings"]
-        if not scoring and custom is not None and "abc" in custom:
-            if not isinstance(custom["abc"], str):
-                return "ABC score must be text."
-            if custom["abc"].strip() and inputs["model_mode"] == 2:
+        if not scoring and inputs["custom_guide"] is not None:
+            if Path(inputs["custom_guide"]).suffix.lower() != ".abc":
+                return "Upload an ABC score file with the .abc extension."
+            if inputs["model_mode"] == 2:
                 return "An ABC score requires a composition planning mode."
         return None

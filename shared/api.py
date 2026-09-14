@@ -215,6 +215,7 @@ class GeneratedArtifact:
     audio_sampling_rate: int | None = None
     fps: float | None = None
     flashvsr_continue_cache: Any = None
+    side_files: dict[str, bytes] = field(default_factory=dict)
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any], *, default_client_id: str = "") -> "GeneratedArtifact | None":
@@ -231,6 +232,7 @@ class GeneratedArtifact:
             audio_sampling_rate=payload.get("audio_sampling_rate"),
             fps=payload.get("fps"),
             flashvsr_continue_cache=payload.get("flashvsr_continue_cache"),
+            side_files=payload.get("side_files", {}),
         )
 
 
@@ -314,7 +316,7 @@ def _coerce_api_audio_tensor(output_audio_data: Any) -> Any:
     return None if output_audio_data is None else np.asarray(output_audio_data, dtype=np.float32)
 
 
-def build_api_output_artifact_payload(client_id: str, video_path: Any, media_type: str, output_video_frames: Any, output_audio_data: Any, output_audio_sampling_rate: Any, output_fps: Any, *, hdr: bool = False, flashvsr_continue_cache: Any = None) -> dict[str, Any] | None:
+def build_api_output_artifact_payload(client_id: str, video_path: Any, media_type: str, output_video_frames: Any, output_audio_data: Any, output_audio_sampling_rate: Any, output_fps: Any, *, hdr: bool = False, flashvsr_continue_cache: Any = None, side_files: dict[str, bytes] | None = None) -> dict[str, Any] | None:
     client_id = str(client_id or "").strip()
     if len(client_id) == 0:
         return None
@@ -330,11 +332,12 @@ def build_api_output_artifact_payload(client_id: str, video_path: Any, media_typ
         "audio_sampling_rate": int(output_audio_sampling_rate) if output_audio_sampling_rate else None,
         "fps": float(output_fps) if output_fps else None,
         "flashvsr_continue_cache": flashvsr_continue_cache,
+        "side_files": side_files if side_files is not None else {},
     }
 
 
-def store_api_output_artifact(gen: dict[str, Any], client_id: str, video_path: Any, media_type: str, output_video_frames: Any, output_audio_data: Any, output_audio_sampling_rate: Any, output_fps: Any, *, hdr: bool = False, flashvsr_continue_cache: Any = None) -> bool:
-    payload = build_api_output_artifact_payload(client_id, video_path, media_type, output_video_frames, output_audio_data, output_audio_sampling_rate, output_fps, hdr=hdr, flashvsr_continue_cache=flashvsr_continue_cache)
+def store_api_output_artifact(gen: dict[str, Any], client_id: str, video_path: Any, media_type: str, output_video_frames: Any, output_audio_data: Any, output_audio_sampling_rate: Any, output_fps: Any, *, hdr: bool = False, flashvsr_continue_cache: Any = None, side_files: dict[str, bytes] | None = None) -> bool:
+    payload = build_api_output_artifact_payload(client_id, video_path, media_type, output_video_frames, output_audio_data, output_audio_sampling_rate, output_fps, hdr=hdr, flashvsr_continue_cache=flashvsr_continue_cache, side_files=side_files)
     if payload is None:
         return False
     gen.setdefault("api_output_artifacts", {})[payload["client_id"]] = payload
@@ -940,6 +943,7 @@ class WanGPSession:
             elif "priority" in params and not params["priority"]:
                 params.pop("priority", None)
             task["params"] = params
+            task.setdefault("plugin_data", {}).setdefault("api", {}).setdefault("return_side_files", True)
             client_ids.append(client_id)
         return tuple(client_ids)
 

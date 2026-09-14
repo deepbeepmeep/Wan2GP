@@ -7540,6 +7540,7 @@ def generate_media(
         pre_video_guide_is_hdr = False
         context_scale = None
         window_no = 0
+        end_frame_no = 0
         extra_windows = 0
         gen_cache = {}
         stop_sample_scheduled = False
@@ -7708,12 +7709,12 @@ def generate_media(
                 guide_start_frame =  prefix_video.shape[1]
                 if fake_start_image:
                     source_video_overlap_frames_count = source_video_frames_count = guide_start_frame = 0
-            if image_end is not None:
+            if image_end is not None and not (frame_window_options is not None and frame_window_options.get("no_end_image", False)):
                 image_end_list=  image_end if isinstance(image_end, list) else [image_end]
-                if len(image_end_list) >= window_no:
+                if end_frame_no < len(image_end_list):
                     new_height, new_width = image_size                    
-                    image_end_tensor, _, _ = calculate_dimensions_and_resize_image(image_end_list[window_no-1], new_height, new_width, sample_fit_canvas, fit_crop, block_size = block_size)
-                    # image_end_tensor =image_end_list[window_no-1].resize((new_width, new_height), resample=Image.Resampling.LANCZOS) 
+                    image_end_tensor, _, _ = calculate_dimensions_and_resize_image(image_end_list[end_frame_no], new_height, new_width, sample_fit_canvas, fit_crop, block_size = block_size)
+                    end_frame_no += 1
                     refresh_preview["image_end"] = image_end_tensor 
                     image_end_tensor = convert_image_to_tensor(image_end_tensor)
                     if sample_fit_canvas != None: 

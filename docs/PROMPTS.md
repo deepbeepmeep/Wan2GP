@@ -270,9 +270,12 @@ Generic WanGP window commands:
 - `[/overlap=9]`: use 9 overlap frames for this window, rounded to the model's overlap frame step
 - `[/overlap=0]`: use no overlap frames, when the model supports text-to-video windows
 - `[/new_shot]`: start this window without overlap frames, creating a hard transition, it is an alias for `[/overlap=0]`
+- `[/no_end_image]`: skip this window's End Image without consuming it. The next window without this command uses the next unused End Image. Repeat the command on consecutive window prompts to skip several windows; it takes no value and does not affect Inject Frames or overlap.
 - `[/loras_mult=1;3]`: override the active LoRA multipliers for this window only. The selected LoRAs stay the same; use the same syntax as the LoRAs Multipliers field, such as `[/loras_mult=1;3 0.5;0.5]` for two active LoRAs. Windows without `[/loras_mult=...]` use the normal LoRA multipliers from the UI/default settings.
 
 Use `[/new_shot]` when a window should behave like a hard cut: a new scene, a new character introduction, or the first generated window after Continue Video when the source video should remain in the final output but should not visually condition the new generated window.
+
+For example, with four End Images and five window prompts, add `[/no_end_image]` to the third prompt to use the images in windows 1, 2, 4, and 5. This command applies only to the marked window; automatically added windows use End Images normally.
 
 Multiple commands can be combined in one bracket, for example `[/duration=5s,/overlap=9]`, `[/duration=4s,/new_shot]`, or `[/duration=5s,/loras_mult=1;3]`.
 

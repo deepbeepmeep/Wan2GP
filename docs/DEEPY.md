@@ -163,6 +163,8 @@ Choose whether each tool uses dimensions, durations, and seed from its template 
 - audio duration
 - seed (`-1` means random)
 
+Choose **Use template defaults first** to prefer the selected template's values, or **Use the values below** to prefer your Deepy defaults. For Deepy Prime, if a generation request omits dimensions, duration, or seed, WanGP fills the missing values from your Deepy defaults before using the model's factory settings. Values already supplied in the request are preserved.
+
 Most changes apply immediately. Click **Save Deepy Settings** to reuse them after restarting WanGP.
 
 ### Template choices

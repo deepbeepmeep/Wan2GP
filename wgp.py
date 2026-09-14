@@ -164,7 +164,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.8.0"
-WanGP_version = "13.0"
+WanGP_version = "13.01"
 settings_version = 2.79
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -8810,7 +8810,9 @@ def _process_tasks(state):
                     error_filename = AUTOSAVE_ERROR_FILENAME if save_queue_if_crash == 1 else get_available_filename("", AUTOSAVE_ERROR_FILENAME, f"_{datetime.now():%Y%m%d_%H%M%S}")
                     if _save_queue_to_zip(global_queue_ref, error_filename):
                         print(f"Error Queue autosaved successfully to {error_filename}")
-                        gr.Info(f"Error Queue autosaved successfully to {error_filename}")
+                        from gradio.context import LocalContext
+                        if LocalContext.blocks.get() is not None and LocalContext.event_id.get() is not None:
+                            gr.Info(f"Error Queue autosaved successfully to {error_filename}")
                     else:
                         print("Autosave Error Queue failed.")
             except Exception as e:

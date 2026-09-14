@@ -79,8 +79,8 @@ def style_config(config, theme):
             label = 'Enhance Prompt' if 'btn_centered' in (component['props'].get('elem_classes') or []) else component['props']['value']
             if label in icons:
                 extra.extend(['wangp-studio-icon', f'wangp-studio-icon-{list(icons).index(label)}'])
-            if label == 'Generate':
-                extra.append('wangp-studio-generate')
+            if label in ('Generate', 'Add New Prompt To Queue'):
+                extra.append('wangp-studio-generation-action')
             if label == 'Enhance Prompt':
                 extra.append('wangp-studio-enhancer')
         if extra:

@@ -90,7 +90,7 @@ def normalize_model_preference(value, key):
 
 
 PROPERTY_MODE_CHOICES = [
-    ("Use template defaults", True),
+    ("Use template defaults first", True),
     ("Use the values below", False),
 ]
 GENERATION_PROPERTY_FIELDS = [

@@ -1676,6 +1676,18 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
                 if not isinstance(model_type, str) or not model_type.strip():
                     raise ValueError(f"{path}.{model_key} must be a non-empty string for generation. Nothing was submitted.")
                 _validate_generation_media(session, settings, model_type.strip(), path)
+                properties = _deepy_general_properties(session)
+                outputs = (session.get_model_metadata(model_type.strip()) or {}).get("main_output", [])
+                defaults = {"seed": properties["seed"]}
+                if "image" in outputs or "video" in outputs:
+                    defaults["resolution"] = f"{properties['width']}x{properties['height']}"
+                    if "video" in outputs and settings.get("image_mode", 0) not in (1, 2):
+                        defaults["video_length"] = properties["num_frames"]
+                elif "audio" in outputs:
+                    defaults["duration_seconds"] = properties["audio_duration"]
+                for key, value in defaults.items():
+                    if settings.get(key) is None:
+                        settings[key] = value
         if api_version == 2 or long_text_active:
             resolved_source = deepy_long_text.resolve_prompt_references(resolved_source, file_access_policy, read_only=api_version == 2)
         record = jobs.submit(_resolve_generation_media(session, resolved_source, allow_read_file_system, file_access_policy))

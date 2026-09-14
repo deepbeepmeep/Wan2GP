@@ -185,9 +185,12 @@ _BOOT_SCRIPT = re.compile(r'<script type="module" crossorigin src="(?P<base>\./a
 def _ui_signature(config, versions):
     # Initial values/choices, visibility and styling can change without changing
     # the wire contract. Hash only at app construction, never per page/request.
+    # ImageEditor.type converts decoded images to PIL/numpy/filepaths in Python;
+    # the browser always exchanges the same EditorData structure.
     components = [
         [component['id'], component['type'], component['component_class_id'], component['key'],
-         {key: component['props'][key] for key in ('elem_id', 'type', 'multiselect', 'file_count') if key in component['props']}]
+         {key: component['props'][key] for key in ('elem_id', 'type', 'multiselect', 'file_count')
+          if key in component['props'] and not (key == 'type' and component['type'] in ('imageeditor', 'wangpimageeditor'))}]
         for component in config['components']
     ]
     contract = [config['version'], config['protocol'], config['api_prefix'], components, config['layout'], config['dependencies'], versions]

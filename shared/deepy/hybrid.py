@@ -206,7 +206,8 @@ class HybridService(DeepyService):
                     self._condition.notify_all()
                 self.host_changed()
         except Exception as error:
-            traceback.print_exc()
+            if getattr(error, 'print_exception', True):
+                traceback.print_exc()
             # The service broadcasts the error once to every connected client.
             # Observers must not raise it again through their own Gradio requests.
             self.publish_error(error)

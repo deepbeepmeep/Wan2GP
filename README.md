@@ -477,6 +477,8 @@ Use this script to get the latest updates for WAN2GP and upgrade dependencies.
 * **1. Update:** Fetches the latest code from GitHub and updates requirements.
 * **2. Upgrade:** Allows you to manually individually upgrade heavy backend components (like PyTorch, Triton, Sage Attention).
 
+Triton recommendations follow both your GPU and selected PyTorch: **3.3.x with PyTorch 2.7**, **3.6.x with PyTorch 2.10** on RTX 30XX or newer, and **3.2.x on RTX 20XX**. Use **Upgrade** to correct an older Triton installation; **Update** alone does not change it.
+
 #### 4️⃣ Managing Environments (`scripts\manage.bat` | `scripts/manage.sh`)
 Use this script to manage and switch between your sandboxed environments safely.
 
@@ -485,7 +487,7 @@ Use this script to manage and switch between your sandboxed environments safely.
     * Copy-paste the folder path (e.g., `C:\WAN2GP\venv`), select type `venv`, then use **Set Active Environment** to make it the default. Now `run.bat` and `update.bat` will target your existing setup.
 
 * **Example Scenario 2: Testing New Configurations**
-    * Let's say you have an environment named `env_stable` that works perfectly, but you want to try the new "Use Latest" combo. Instead of risking your working setup, run `install.bat`, create a *new* environment called `env_testing`, and select **Use Latest**.
+    * Let's say you have an environment named `env_stable` that works perfectly, but you want to try different components. Run `install.bat`, create a *new* environment called `env_testing`, and select **Manual Selection**. **Autoselect** installs the recommended stack for your GPU.
     * If the testing environment breaks, simply open `manage.bat`, select **Set Active Environment**, and switch back to `env_stable`. You are back up and running instantly.
 
 ---
@@ -508,6 +510,16 @@ conda activate wan2gp
 pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 --index-url https://download.pytorch.org/whl/cu130
 pip install -r requirements.txt
 ```
+
+On Windows, install Triton in the same environment, using the command matching your GPU and PyTorch:
+
+| GPU | PyTorch | Command |
+| --- | --- | --- |
+| RTX 30XX - RTX 50XX | 2.10 (recommended) | `python -m pip install -U "triton-windows>=3.6,<3.7"` |
+| RTX 30XX - RTX 50XX | 2.7 / 2.7.1 | `python -m pip install -U "triton-windows>=3.3,<3.4"` |
+| RTX 20XX | 2.7 or 2.10 (legacy Triton compatibility exception) | `python -m pip install -U "triton-windows>=3.2,<3.3"` |
+
+Triton 3.2 on RTX 30XX or newer can crash YuE2's optimized INT8 ConvRot kernels because it lacks `triton.language.gather`. Upgrade Triton as above and restart WanGP. RTX 20XX must stay on 3.2 and uses the existing standard INT8 path; compatibility with newer PyTorch is not guaranteed upstream. RTX 50XX users should use PyTorch 2.10 / Triton 3.6 for WanGP's optimized INT8 and NV FP4 support. Linux normally receives matching Triton through PyTorch. See the **[Triton Installation Guide](docs/INSTALLATION.md#triton-installation)** for details and RTX 20XX limitations.
 
 For optimized attention, install **SageAttention 1.0.6 on RTX 20XX** and **SageAttention 2.2.0 on RTX 30XX or newer**. SageAttention 2 requires an Ampere-or-newer GPU; GTX 10XX should use SDPA. See the **[Installation Guide](docs/INSTALLATION.md#sage-attention)** for the platform-specific commands.
 

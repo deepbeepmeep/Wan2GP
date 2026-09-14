@@ -3,17 +3,27 @@ import anyio
 from starlette.responses import FileResponse
 
 
-class DisconnectAwareFileResponse(FileResponse):
+class DisconnectAwareResponse:
     async def __call__(self, scope, receive, send):
         async def watch_disconnect():
             while (await receive())["type"] != "http.disconnect":
                 pass
             tasks.cancel_scope.cancel()
 
+        async def send_response(message):
+            await send(message)
+            if message['type'] == 'http.response.start':
+                # BaseHTTPMiddleware must receive headers before we can stop
+                # the response, even if the browser has already disconnected.
+                tasks.start_soon(watch_disconnect)
+
         async with anyio.create_task_group() as tasks:
-            tasks.start_soon(watch_disconnect)
-            await super().__call__(scope, receive, send)
+            await super().__call__(scope, receive, send_response)
             tasks.cancel_scope.cancel()
+
+
+class DisconnectAwareFileResponse(DisconnectAwareResponse, FileResponse):
+    pass
 
 
 def install_http_disconnect_patch():

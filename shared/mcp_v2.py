@@ -439,7 +439,8 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
         return public_media_result(job.snapshot(event_limit=args.get("event_limit", 0)))
 
     generate_def = action_def("Generate image, video or audio from prepared settings, a task wrapping settings in params or settings, a task list or a manifest with tasks. Each generation settings object requires model_type (legacy base_model_type is accepted); edit_* post-processing tasks need no model. Model selection and supplied media inputs are checked before the batch is submitted once, preserving task order and settings. Inputs unsupported by the model or inactive in the selected mode return an error. source may contain @file(\"@workspace/prompt.txt\") in a prompt field: WanGP reads and snapshots that authorized UTF-8 file, preserving blank lines. " + wait_help, {"source": {"anyOf": [{"type": "object"}, {"type": "array", "items": {"type": "object"}, "minItems": 1}]}, **wait_properties}, ("source",))
-    generate_def["_summary"] = 'Generate from prepared settings with arguments={"source":{...settings}}; source also accepts a task list or tasks manifest. Waits for completion by default; read the contract only for additional options.'
+    generate_def["description"] += " Omitted resolution, video_length or duration_seconds, and seed use Deepy's standing defaults before model factory settings. Supplied values, including template values, are preserved."
+    generate_def["_summary"] = 'Generate from prepared settings with arguments={"source":{...settings}}; source also accepts a task list or tasks manifest. Missing dimensions, duration and seed use Deepy defaults. Waits for completion by default; read the contract only for additional options.'
 
     @mcp.tool()
     def wangp_generate(action: str | None = None, arguments: dict[str, Any] | None = None) -> dict[str, Any]:

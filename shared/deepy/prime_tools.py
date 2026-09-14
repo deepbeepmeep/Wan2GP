@@ -713,6 +713,7 @@ class DeepyPrimeTools:
                 f"Default seed: {int(settings['seed'])}.",
             ])
             lines.append("Override compatible template/model defaults with the width, height, frame count, audio duration, and seed above when the user does not specify them.")
+        lines.append("The generate tool fills omitted dimensions, duration, and seed from Deepy's standing defaults before model factory defaults; pass the template values explicitly to preserve them.")
         return "\n".join(lines)
 
     def get_tool_display_name(self, tool_name: str) -> str:

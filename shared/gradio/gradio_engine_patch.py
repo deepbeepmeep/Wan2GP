@@ -70,10 +70,11 @@ def _snapshot_traverse(value, func, is_root):
 def install():
     from gradio import blocks, component_meta, data_classes, processing_utils, routes, utils
     from gradio_client import utils as client_utils
-    from shared.gradio import gradio_frontend_patch, gradio_model_change_queue, gradio_queue_wakeup_patch
+    from shared.gradio import gradio_frontend_patch, gradio_media_response_patch, gradio_model_change_queue, gradio_queue_wakeup_patch
 
     gradio_queue_wakeup_patch.install()
     gradio_model_change_queue.install()
+    gradio_media_response_patch.install()
     gradio_frontend_patch.install()
     routes.move_uploaded_files_to_cache = _move_uploaded_files_to_cache
 

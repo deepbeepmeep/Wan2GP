@@ -383,6 +383,7 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
                                     choices=deepy_ui_settings.PROPERTY_MODE_CHOICES,
                                     value=tool_ui_state["use_template_properties"],
                                     label="Default Dimensions / Durations / Seed",
+                                    elem_classes=["chat__template-tool-dropdown"],
                                 )
                                 property_controls = {}
                                 for row in ((0, 1), (2, 3), (4,)):

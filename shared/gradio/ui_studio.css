@@ -175,6 +175,9 @@ footer .built-with > img {
     min-height: 36px;
     padding-inline: 6px;
 }
+.wangp-studio-generation-action {
+    font-weight: 700;
+}
 .wangp-studio-enhancer.btn_centered {
     padding: 8px 12px;
 }

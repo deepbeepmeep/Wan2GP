@@ -97,6 +97,7 @@ from shared.utils.self_refiner import normalize_self_refiner_plan, ensure_refine
 from shared.deepy import controller as deepy_controller
 from shared.deepy.hybrid import HybridService, SharedState, service_for
 from shared.utils.gallery_view import gallery_window
+from shared.gradio.import_files import ImportFiles
 from shared.deepy import filesystem as deepy_filesystem
 from shared.deepy import cli as deepy_cli
 from shared.deepy import voice as deepy_voice
@@ -10023,21 +10024,27 @@ def add_videos_to_gallery(state, input_file_list, choice, audio_files_paths, aud
                 if fps == 0 and not audio_file:
                     invalid_files_count += 1 
                     continue
-            file_path, reused = persist_gallery_import(file_path, server_config['save_path'])
+            file_path, reused = persist_gallery_import(file_path, server_config['save_path'], filename=getattr(file_path, 'orig_name', None))
             if reused:
                 gr.Info(f"Existing file reused: {os.path.basename(file_path)}")
             if audio_file:
                 new_audio= True
-                if file_path not in audio_file_list:
-                    audio_file_list.append(file_path)
-                    audio_file_settings_list.append(file_settings)
-                audio_file_selected = audio_file_list.index(file_path)
+                if file_path in audio_file_list:
+                    index = audio_file_list.index(file_path)
+                    audio_file_list.pop(index)
+                    file_settings = audio_file_settings_list.pop(index)
+                audio_file_list.append(file_path)
+                audio_file_settings_list.append(file_settings)
+                audio_file_selected = len(audio_file_list) - 1
             else:
                 new_video= True
-                if file_path not in file_list:
-                    file_list.append(file_path)
-                    file_settings_list.append(file_settings)
-                choice = file_list.index(file_path)
+                if file_path in file_list:
+                    index = file_list.index(file_path)
+                    file_list.pop(index)
+                    file_settings = file_settings_list.pop(index)
+                file_list.append(file_path)
+                file_settings_list.append(file_settings)
+                choice = len(file_list) - 1
             valid_files_count +=1
 
     if valid_files_count== 0 and invalid_files_count ==0:
@@ -12905,7 +12912,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             video_info_remux_audio_btn = gr.Button("Remux Audio", size ="sm", visible=True)
                             video_info_eject_video3_btn = gr.Button("Eject Video", size ="sm", visible=True)
                     with gr.Tab("Import Media to Galleries", id= "video_add"):
-                        files_to_load = gr.Files(label= "Media to Import in Galleries", height=120)
+                        files_to_load = ImportFiles(file_count="multiple", label= "Media to Import in Galleries", height=120)
                         with gr.Row():
                             video_info_add_videos_btn = gr.Button("Import Videos / Images / Audio Files", size ="sm")
  

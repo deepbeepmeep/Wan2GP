@@ -16,10 +16,14 @@ def _same_contents(source, target):
                 return False
         return not right.read(1)
 
+def _import_filename(filename):
+    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', str(filename).replace('\\', '/').rsplit('/', 1)[-1])
+
+
 def open_import_file(directory, filename):
     directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=True)
-    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', str(filename).replace('\\', '/').rsplit('/', 1)[-1])
+    name = _import_filename(filename)
     path = directory / name
     duplicate = 0
     while True:
@@ -30,7 +34,7 @@ def open_import_file(directory, filename):
             path = directory / f'{Path(name).stem} ({duplicate}){Path(name).suffix}'
 
 
-def persist_gallery_import(source, directory, *, move=False):
+def persist_gallery_import(source, directory, *, move=False, filename=None):
     source = Path(source)
     # Already durable: do not duplicate media selected from the output directory.
     if source.resolve().parent == Path(directory).resolve():
@@ -38,14 +42,14 @@ def persist_gallery_import(source, directory, *, move=False):
     # Compare and publish together so simultaneous imports see complete files.
     with _import_lock:
         directory = Path(directory).resolve()
-        name = source.name
+        name = _import_filename(filename or source.name)
         candidate = directory / name
         duplicate = 0
         while candidate.exists():
             if _same_contents(source, candidate):
                 return str(candidate), True
             duplicate += 1
-            candidate = directory / f'{source.stem} ({duplicate}){source.suffix}'
+            candidate = directory / f'{Path(name).stem} ({duplicate}){Path(name).suffix}'
         path, writer = open_import_file(directory, name)
         try:
             if move:

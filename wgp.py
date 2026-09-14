@@ -2536,6 +2536,13 @@ def get_lora_dir(model_type):
     if get_dir is None:
         raise Exception("loras unknown")
 
+    try:
+        inspect.signature(get_dir).bind(base_model_type)
+    except TypeError:
+        # Legacy handlers return a resolved path, not a LoRA config key.
+        lora_dir = get_dir(base_model_type, args, get_lora_root())
+        if lora_dir is None: raise Exception("loras unknown")
+        return lora_dir
     lora_key = get_dir(base_model_type)
     if lora_key is None: raise Exception("loras unknown")
     return resolve_lora_dir(lora_key, get_lora_root(), args.lora_config)
@@ -3613,7 +3620,7 @@ def download_requested_postprocessing_assets(send_cmd, *, postprocess_audio="", 
 
 
 def download_file(url,filename, gen=None, show_filename=True):
-    from shared.utils.download import download_file as shared_download_file
+    from shared.utils.download import download_url as shared_download_file
 
     return shared_download_file(url, filename, gen=gen, show_filename=show_filename)
 

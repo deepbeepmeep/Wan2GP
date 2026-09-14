@@ -1,3 +1,4 @@
+import inspect
 import os, shutil, sys, time
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from shared.utils.download_progress import DownloadCancelled, check_download_cancelled, download_context, install_hf_download_patch
@@ -226,6 +227,32 @@ def process_download_defs(download_defs, gen=None, show_filename=True):
     for download_def in download_defs or []:
         if download_def is not None:
             process_files_def(**download_def, gen=gen, show_filename=show_filename)
+
+
+_download_compat_warnings = set()
+
+
+def download_url(url, filename, gen=None, show_filename=True):
+    """Call the active downloader, including older plugin replacements."""
+    downloader = download_file
+    parameters = inspect.signature(downloader, follow_wrapped=False).parameters
+    kwargs = {"gen": gen, "show_filename": show_filename}
+    if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        kwargs = {key: value for key, value in kwargs.items() if key in parameters and parameters[key].kind != inspect.Parameter.POSITIONAL_ONLY}
+    if len(kwargs) < 2:
+        implementation = downloader if inspect.isroutine(downloader) else type(downloader).__call__
+        source = inspect.getsourcefile(implementation) or inspect.getfile(implementation)
+        parts = source.replace("\\", "/").split("/")
+        plugin = next((parts[i + 1] for i, part in enumerate(parts[:-1]) if part.lower() == "plugins"), None)
+        owner = f"Plugin '{plugin}' ({source})" if plugin else f"Download Replacement '{source}'"
+        if owner not in _download_compat_warnings:
+            _download_compat_warnings.add(owner)
+            missing = ", ".join(key for key in ("gen", "show_filename") if key not in kwargs)
+            print(f"[Downloads] Warning: Unable to Enable the Full Download Progress Bar as {owner} Does Not Support {missing}. Continuing Without These Arguments; Please Update the Plugin. Download Cancellation May Also Be Unavailable During the Transfer.")
+    check_download_cancelled(gen)
+    result = downloader(url, filename, **kwargs)
+    check_download_cancelled(gen)
+    return result
 
 
 def download_file(url, filename, gen=None, show_filename=True):

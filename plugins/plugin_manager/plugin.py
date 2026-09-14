@@ -566,12 +566,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         js = self._get_js_script_html()
         plugin_blocks.load(fn=None, js=js)
 
-        self.main_tabs.select(
-            self._on_tab_select_refresh,
-            None,
-            [self.plugins_html_display, *self.local_available_plugins_html_outputs, *self.community_plugins_html_outputs],
-            show_progress="hidden"
-        )
+        self.on_tab_outputs = [self.plugins_html_display, *self.local_available_plugins_html_outputs, *self.community_plugins_html_outputs]
         
         self.restart_button.click(fn=None, js="handleRestart()")
         WangpProgress.bind(self.refresh_catalog_button.click, self._refresh_catalog,
@@ -600,9 +595,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
 
         return plugin_blocks
 
-    def _on_tab_select_refresh(self, evt: gr.SelectData):
-        if evt.value != "Plugins":
-            return (gr.update(), *[gr.update() for _ in range(self._available_outputs_count())])
+    def on_tab_select(self, state: dict):
         if hasattr(self, '_community_plugins_cache'):
             del self._community_plugins_cache
 

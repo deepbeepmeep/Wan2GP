@@ -51,7 +51,7 @@ class RifeTemporalUpsampler(temporal_upsampler_api.SimpleScaleSuffixMixin):
             return f"Unknown temporal upsampling mode: {temporal_upsampling}"
         return "Temporal Upsampling can not be used with an Image" if source_is_image else ""
 
-    def temporal_upsample(self, temporal_upsampling, sample, previous_last_frame, fps, *, processing_device="cuda", to_uint8_callback=None, **kwargs):
+    def temporal_upsample(self, temporal_upsampling, sample, previous_last_frame, fps, *, processing_device="cuda", to_uint8_callback=None, abort_callback=None, progress_callback=None, **kwargs):
         split = self.split_value(temporal_upsampling)
         if split is None:
             return sample, previous_last_frame, fps
@@ -61,21 +61,13 @@ class RifeTemporalUpsampler(temporal_upsampler_api.SimpleScaleSuffixMixin):
         if multiplier <= 1:
             return sample, previous_last_frame, fps
         rife_model_path = self.files_locator.locate_file(RIFE_V4_FILENAME)
-        if previous_last_frame is not None and previous_last_frame.dtype != sample.dtype:
-            if sample.dtype == torch.uint8:
-                if to_uint8_callback is None:
-                    raise RuntimeError("RIFE temporal upsampling needs a uint8 conversion callback")
-                previous_last_frame = to_uint8_callback(previous_last_frame)
-            else:
-                previous_last_frame = previous_last_frame.float().div_(127.5).sub_(1.0)
         from postprocessing.rife.inference import temporal_interpolation
 
+        output = temporal_interpolation(rife_model_path, sample, multiplier, device=processing_device, previous_last_frame=previous_last_frame, abort_callback=abort_callback, progress_callback=progress_callback)
+        if output is None:
+            return None, previous_last_frame, fps * multiplier
+        # Keep a single source frame, not a view retaining the complete video.
+        last_frame = (sample[:, -1:] if previous_last_frame is not None else output[:, -1:]).to(device="cpu").clone()
         if previous_last_frame is not None:
-            sample = torch.cat([previous_last_frame, sample], dim=1)
-            previous_last_frame = sample[:, -1:].clone()
-            sample = temporal_interpolation(rife_model_path, sample, multiplier, device=processing_device)
-            sample = sample[:, 1:]
-        else:
-            sample = temporal_interpolation(rife_model_path, sample, multiplier, device=processing_device)
-            previous_last_frame = sample[:, -1:].clone()
-        return sample, previous_last_frame, fps * multiplier
+            output = output[:, 1:]
+        return output, last_frame, fps * multiplier

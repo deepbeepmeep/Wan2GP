@@ -8231,6 +8231,7 @@ def generate_media(
                 send_cmd("output")  
             else:
                 sample = samples.cpu()
+                samples = None
                 stop_current_sample = stop_sample_scheduled or (not (is_image or audio_only) and sample.shape[1] < current_video_length)
                 # if True: # for testing
                 #     torch.save(sample, "output.pt")

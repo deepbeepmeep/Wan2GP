@@ -1,6 +1,6 @@
 {
     "activated_loras": [
-        "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/loras/loras/minimax_h3_taomate_3step_lora_avg_rank_19_bf16.safetensors"
+        "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/loras/minimax_h3_taomate_3step_lora_avg_rank_19_bf16.safetensors"
     ],
     "loras_multipliers": "1.0",
     "num_inference_steps": 3,

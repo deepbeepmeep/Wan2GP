@@ -105,6 +105,10 @@ function Mn(S){
 """
 
 _PATCHES = {
+    'utils-BsGrhMNe.js': [
+        # Round once before splitting units so 119.999 seconds displays as 2:00.
+        ('const w=t=>{const o=Math.floor(t/3600)', 'const w=t=>{t=Math.round(t);const o=Math.floor(t/3600)'),
+    ],
     'Dropdown-DSZkNuau.js': [
         ('function ce(l,t,e){', Path(__file__).with_name('model_status.js').read_text(encoding='utf-8') + '\nfunction ce(l,t,e){'),
         ('X(t,u),X(t,r)},p(o,a){', 'X(t,u),X(t,r),He(u,wangpModelLabel(t,h))},p(o,a){'),

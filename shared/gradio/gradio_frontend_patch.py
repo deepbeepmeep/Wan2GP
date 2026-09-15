@@ -186,9 +186,11 @@ def _asset(path):
 _BOOT_SCRIPT = re.compile(r'<script type="module" crossorigin src="(?P<base>\./assets/)(?P<name>index-[^"]+\.js)"></script>')
 
 
-def _ui_signature(config, versions):
+def _ui_signature(config):
     # Initial values/choices, visibility and styling can change without changing
     # the wire contract. Hash only at app construction, never per page/request.
+    # Asset hashes version browser imports separately; a display-only patch does
+    # not invalidate an existing page's component IDs or event bindings.
     # ImageEditor.type converts decoded images to PIL/numpy/filepaths in Python;
     # the browser always exchanges the same EditorData structure.
     components = [
@@ -197,7 +199,7 @@ def _ui_signature(config, versions):
           if key in component['props'] and not (key == 'type' and component['type'] in ('imageeditor', 'wangpimageeditor'))}]
         for component in config['components']
     ]
-    contract = [config['version'], config['protocol'], config['api_prefix'], components, config['layout'], config['dependencies'], versions]
+    contract = [config['version'], config['protocol'], config['api_prefix'], components, config['layout'], config['dependencies']]
     return 'ui-' + sha256(json.dumps(contract, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
@@ -275,7 +277,7 @@ def install():
         # Blocks.__init__ creates a provisional app before the UI exists.
         if hasattr(blocks, 'config'):
             config = blocks.config
-            config['wangp_ui_signature'] = _ui_signature(config, versions)
+            config['wangp_ui_signature'] = _ui_signature(config)
             app.add_middleware(_BrowserInstanceGuard, signature=config['wangp_ui_signature'])
         return app
 

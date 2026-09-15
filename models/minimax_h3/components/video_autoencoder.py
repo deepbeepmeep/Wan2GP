@@ -893,6 +893,10 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
             moments = moments[:, :, : -self.config.token_drop]
         return moments
 
+    def _prepare_decoded_chunk(self, chunk: torch.Tensor) -> torch.Tensor:
+        """Convert finalized pixels before copying them to the CPU output buffer."""
+        return chunk
+
     def _decode(self, z: torch.Tensor) -> torch.Tensor:
         r"""
         Decode a latent video, mirroring the chunking that `_encode` applied.
@@ -900,6 +904,7 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
         `token_drop` removed the tail of every encoded chunk, so consecutive decoded chunks overlap by
         `frame_overlap` pixel frames and are linearly cross-faded. Latent frames are repeated at the end when the
         length is not a whole number of chunks; the extra pixel frames are cut off again at the end.
+        Finalized frames are accumulated on CPU; only the current clip and its overlap stay on GPU.
         """
         tokens_chunk_size = self.tokens_chunk_size
         token_drop = self.config.token_drop
@@ -928,10 +933,23 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
         with PhaseProgress(max(1, num_chunks) * spatial_tiles) as progress, progress.track(self.decoder, spatial_tiles):
             if num_chunks == 0:
                 # Short videos still need one decode, without an overlapping temporal chunk.
-                return self._decode_clip(z)[:, :, self.frame_pre_padding : self.frame_pre_padding + output_frames]
+                chunk = self._decode_clip(z)[:, :, self.frame_pre_padding : self.frame_pre_padding + output_frames]
+                return self._prepare_decoded_chunk(chunk).to(device="cpu", non_blocking=False)
             decoded = None
             write_position = 0
             overlap = None
+
+            def write_chunk(chunk):
+                nonlocal decoded, write_position
+                copy_frames = min(chunk.shape[2], output_frames - write_position)
+                if copy_frames <= 0:
+                    return
+                chunk = self._prepare_decoded_chunk(chunk[:, :, :copy_frames])
+                if decoded is None:
+                    decoded = torch.empty(*chunk.shape[:2], output_frames, *chunk.shape[3:], dtype=chunk.dtype, device="cpu")
+                decoded[:, :, write_position : write_position + copy_frames].copy_(chunk, non_blocking=False)
+                write_position += copy_frames
+
             for i in range(num_chunks):
                 start = i * tokens_chunk_size
                 clip = self._decode_clip(z[:, :, start : start + tokens_chunk_size + self.token_overlap])
@@ -942,21 +960,12 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
                     if j == 0:
                         if overlap is not None:
                             chunk = self._blend(overlap, chunk, self.frame_overlap, dim=-3)
-                        if decoded is None:
-                            decoded = torch.empty(*chunk.shape[:2], output_frames, *chunk.shape[3:],
-                                                  dtype=chunk.dtype, device=chunk.device)
-                        copy_frames = min(chunk.shape[2], output_frames - write_position)
-                        if copy_frames > 0:
-                            decoded[:, :, write_position : write_position + copy_frames].copy_(chunk[:, :, :copy_frames])
-                            write_position += copy_frames
+                        write_chunk(chunk)
                     else:
                         overlap = chunk.contiguous()
-                del clip
+                del chunk, clip
             if overlap is not None:
-                copy_frames = min(overlap.shape[2], output_frames - write_position)
-                if copy_frames > 0:
-                    decoded[:, :, write_position : write_position + copy_frames].copy_(overlap[:, :, :copy_frames])
-                    write_position += copy_frames
+                write_chunk(overlap)
             if write_position != output_frames:
                 raise RuntimeError(f"MiniMax H3 VAE decoded {write_position} frames, expected {output_frames}")
             return decoded
@@ -1005,7 +1014,7 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
 
         Returns:
             [`~models.autoencoders.vae.DecoderOutput`] or `tuple`:
-                The decoded videos, shape `(batch_size, out_channels, num_frames, height, width)`.
+                The decoded CPU videos, shape `(batch_size, out_channels, num_frames, height, width)`.
         """
         if self.use_slicing and z.shape[0] > 1:
             decoded = torch.cat([self._decode(z_slice) for z_slice in z.split(1)])

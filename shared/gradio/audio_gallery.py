@@ -521,9 +521,8 @@ AG.tryInstall();
         return dt
 
     def _format_duration(self, seconds):
-        """Format duration in seconds to MM:SS format."""
-        mins = int(seconds // 60)
-        secs = int(seconds % 60)
+        """Round to the nearest second before formatting as MM:SS."""
+        mins, secs = divmod(int(seconds + 0.5), 60)
         return f"{mins}:{secs:02d}"
 
     def _get_file_info(self, audio_path, not_found=False):

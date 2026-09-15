@@ -117,7 +117,10 @@ class MiniMaxH3VideoVAE(AutoencoderKLMiniMaxH3):
     def decode(self, latents):
         mean = self._latents_mean.view(1, -1, 1, 1, 1).to(latents)
         std = self._latents_std.view(1, -1, 1, 1, 1).to(latents)
-        decoded = super().decode((latents * std + mean).to(self._model_dtype), return_dict=False)[0].float()
+        return super().decode((latents * std + mean).to(self._model_dtype), return_dict=False)[0]
+
+    def _prepare_decoded_chunk(self, chunk):
+        decoded = chunk.float()
         decoded.mul_(self.pixel_std.to(decoded)).add_(self.pixel_mean.to(decoded))
         return decoded.clamp_(0.0, 1.0).mul_(2.0).sub_(1.0)
 

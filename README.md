@@ -63,7 +63,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-## 13th of September 2026: WanGP v13.00 — It's Your Lucky Day!
+## 16th of September 2026: WanGP v13.10 — It's Your Lucky Day!
 
 **WanGP Major Release**
 
@@ -77,6 +77,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 - **Deepy Web App**: take Deepy with you in a phone-friendly interface. Upload a photo or recording, describe what you want, and follow the conversation and results from your phone or desktop. Open **Web app →** in Deepy's settings to find it, and add it to your phone's home screen for quick access. See the [Deepy guide](docs/DEEPY.md). You can use this way both *Deepy Zero* & *Deepy Prime*, although you will get best results with *Deepy Prime*.
 
+- **Prompt Enhancer Upgrades**: when using a Qwen3.5/3.8 powered Prompt Enhancer, now all attached images (Start Image/End Image/Control Image/Ref Images) may be used to produce the enhanced prompt. The prompt enhancer is also given the duration of the video / sliding window you want to generate (this works also when prompt commands like [\duration=3s] are used). Even better multiple sliding windows prompts can be enhanced at the same time based on the actual start/end frames they will see.
 
 **New Models**
 
@@ -84,6 +85,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 - **AuK Speech**: generate speech from written instructions, or use a source recording for voice cloning, spoken-word edits, speech cleanup, and speaker separation. Choose **Flash** for a fast four-step result or **Base** for more control. Start with a short clip and describe both what to change and what to preserve.
 
+*update 13.10*: Prompt Enhancer Upgrades
 
 ## 6th of September 2026: WanGP v12.72 — Power Up, Polish, Pause
 - **H3 VDN**: at least 20% Faster and even more on larger / longer videos, requires a bit more VRAM and Triton must be installed

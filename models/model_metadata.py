@@ -192,6 +192,8 @@ def infer_capabilities(model_def, main_outputs, outputs, inputs, media_inputs):
 
 
 def infer_setting_values(model_def):
+    from shared.prompt_enhancer.labels import resolve_definition
+
     image_prompt_types_allowed = str(model_def.get("image_prompt_types_allowed", "") or "")
     image_prompt_choices = [{"label": _IMAGE_PROMPT_LABELS.get("", ""), "value": ""}]
     for letter in image_prompt_types_allowed:
@@ -217,7 +219,7 @@ def infer_setting_values(model_def):
         },
         "model_mode": normalize_choice_def(model_def.get("model_modes", None)),
         "sample_solver": normalize_choice_def({"choices": model_def.get("sample_solvers", [])}) if model_def.get("sample_solvers", None) is not None else None,
-        "prompt_enhancer": normalize_choice_def(model_def.get("prompt_enhancer_def", None)),
+        "prompt_enhancer": normalize_choice_def(resolve_definition(model_def)),
     }
 
 

@@ -335,6 +335,7 @@ class LLMEngine:
         sampling_params: SamplingParams | list[SamplingParams],
         position_offsets: list[int] | None = None,
         use_tqdm: bool = True,
+        stream_callback=None,
     ):
         if self.scheduler is None:
             raise RuntimeError("LLM engine is closed.")
@@ -378,10 +379,27 @@ class LLMEngine:
             )
         outputs = {}
         prefill_throughput = decode_throughput = 0.0
+        sequences = list(self.scheduler.waiting) if stream_callback is not None else []
+        emitter = ThrottledStreamEmitter(1 / 3)
+        prefill_seconds = decode_seconds = 0.0
+        decode_tokens = 0
+
+        def emit_progress(force=False):
+            if stream_callback is not None and (force or emitter.is_due()):
+                emitter.emit(stream_callback, raw_text="".join(self.tokenizer.decode(seq.completion_token_ids) for seq in sequences), token_count=sum(seq.num_completion_tokens for seq in sequences), max_tokens=sum(sp.max_tokens for sp in sampling_params), prefill_seconds=prefill_seconds, tokens_per_second=decode_tokens / decode_seconds if decode_seconds else 0.0, stop_reason="completed" if force else None, is_final=force, force=force)
+
         try:
+            emit_progress()
             while not self.is_finished():
                 t = perf_counter()
                 output, num_tokens = self.step()
+                elapsed = perf_counter() - t
+                if num_tokens > 0:
+                    prefill_seconds += elapsed
+                else:
+                    decode_seconds += elapsed
+                    decode_tokens -= num_tokens
+                emit_progress()
                 if use_tqdm:
                     if num_tokens > 0:
                         prefill_throughput = num_tokens / (perf_counter() - t)
@@ -395,6 +413,7 @@ class LLMEngine:
                     outputs[seq_id] = token_ids
                     if use_tqdm:
                         pbar.update(1)
+            emit_progress(force=True)
         except Exception:
             self.reset()
             raise

@@ -505,7 +505,7 @@ class family_handler:
                 "selection": ["T", "TI"],
                 "labels": {
                     "TV": "An H3 Reference Prompt from Text" if reference_mode else "An H3 Prompt from Text",
-                    "TIV": "An H3 Reference Prompt from Text + First Reference Image" if reference_mode else "An H3 Prompt from Text + Start Image",
+                    "TIV": "An H3 Reference Prompt from Text + {image_inputs}" if reference_mode else "An H3 Prompt from Text + {image_inputs}",
                 },
                 "default": "",
             },

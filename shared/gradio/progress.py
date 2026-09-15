@@ -64,8 +64,8 @@ class WangpProgress:
         self.description = description
         self.position = (None, None, "", None)
 
-    def stream_tokens(self, *, token_count, max_tokens, prefill_seconds, tokens_per_second, **kwargs):
-        self((token_count, max_tokens), desc="Enhancing Prompt", unit="tokens")
+    def stream_tokens(self, *, token_count, max_tokens, prefill_seconds, tokens_per_second, description="Enhancing Prompt", **kwargs):
+        self((token_count, max_tokens), desc=description, unit="tokens")
         self.timing = f"Prefill {prefill_seconds:.2f}s · {tokens_per_second:.1f} tk/s"
 
     def set_download(self, data):

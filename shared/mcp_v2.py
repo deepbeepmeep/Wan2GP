@@ -494,6 +494,11 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
     session_actions["get_job"]["description"] = "Read the state or result of a generation or post-processing job."
     session_actions["cancel_job"]["description"] = "Request cancellation of a generation or post-processing job."
     session_actions["notify"]["description"] = "Send a notification through configured destinations; notifications are independent of job completion."
+    if not deepy_help:
+        session_actions["list_queue"] = paginated(action_def("List all waiting and running tasks in the connected generation queue, including UI tasks. Returns total_count, queued_count (waiting only), running_count and per-task queue_id for cancel_queue_task. A batch contributes one entry per task; completed tasks are omitted."))
+        session_actions["list_queue"]["example"] = {"action": "list_queue", "arguments": {}}
+        session_actions["cancel_queue_task"] = action_def("Cancel exactly one queue task using queue_id from list_queue. Waiting tasks are removed; running tasks receive an abort request. Other tasks in the batch remain queued. A stale/unknown ID is rejected without cancelling another task.", {"queue_id": {"type": "string", "minLength": 1}}, ["queue_id"])
+        session_actions["cancel_queue_task"]["example"] = {"action": "cancel_queue_task", "arguments": {"queue_id": "<queue_id from list_queue>"}}
 
     @mcp.tool()
     def wangp_session(action: str | None = None, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -501,6 +506,12 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
         response = invocation(session_actions, action, arguments)
         if response is not None:
             return response
+        if action == "list_queue":
+            snapshot = session.list_queue() if not arguments.get("cursor") else {}
+            tasks = snapshot.pop("tasks", [])
+            return collection({"tool": "session", "action": action}, tasks, arguments, key="tasks", metadata=snapshot)
+        if action == "cancel_queue_task":
+            return session.cancel_queue_task(**arguments)
         return public_media_result(session_operations[action](**arguments))
 
     for tool in mcp._tool_manager.list_tools():

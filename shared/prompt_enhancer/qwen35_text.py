@@ -721,6 +721,7 @@ def _generate_messages_vllm(
     thinking_enabled: bool | None = None,
     stop_requested=None,
     stream_callback=None,
+    enhancement_progress=None,
 ):
     reset_context()
     tokenizer = self._prompt_enhancer_tokenizer
@@ -738,6 +739,9 @@ def _generate_messages_vllm(
         else f"Qwen3.5 prompt enhancement ({getattr(self, '_prompt_enhancer_engine_name', 'vllm')})"
     )
     for idx, message in enumerate(tqdm(messages, total=len(messages), desc=progress_desc, dynamic_ncols=True, leave=False)):
+        if enhancement_progress is not None:
+            enhancement_progress.prompt(idx, len(messages), int(max_new_tokens) + runtime_extra_tokens)
+            stream_callback = enhancement_progress.tokens
         prompt = _build_chat_prompt(tokenizer, message, enable_thinking=thinking_enabled)
         try:
             prompt_token_ids = [int(token_id) for token_id in tokenizer.encode(prompt)]
@@ -827,6 +831,7 @@ def _generate_messages(
     thinking_enabled: bool | None = None,
     stop_requested=None,
     stream_callback=None,
+    enhancement_progress=None,
 ):
     top_k = _resolve_prompt_top_k(self, top_k)
     if _use_vllm_prompt_enhancer(self) or _use_legacy_cuda_runner_prompt_enhancer(self):
@@ -842,6 +847,7 @@ def _generate_messages(
             thinking_enabled=thinking_enabled,
             stop_requested=stop_requested,
             stream_callback=stream_callback,
+            enhancement_progress=enhancement_progress,
         )
     raise RuntimeError("Qwen3.5 prompt enhancer text runtime is not configured with an available decode engine.")
 

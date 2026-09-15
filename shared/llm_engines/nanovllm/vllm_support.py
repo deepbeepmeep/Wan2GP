@@ -492,6 +492,7 @@ class NanoVllmTextEngine:
         ignore_eos: bool = False,
         position_offset: int = 0,
         repetition_penalty: float = 1.0,
+        stream_callback=None,
     ):
         results = self.generate_embedded_batch(
             [{"prompt_token_ids": prompt_token_ids, "prompt_embeds": prompt_embeds, "prompt_position_ids": prompt_position_ids, "position_offset": position_offset}],
@@ -505,6 +506,7 @@ class NanoVllmTextEngine:
             release_vram_after=release_vram_after,
             ignore_eos=ignore_eos,
             repetition_penalty=repetition_penalty,
+            stream_callback=stream_callback,
         )
         return None if not results else results[0]
 
@@ -522,6 +524,7 @@ class NanoVllmTextEngine:
         release_vram_after: bool = True,
         ignore_eos: bool = False,
         repetition_penalty: float = 1.0,
+        stream_callback=None,
     ):
         """Run several independent embedded prompts concurrently (batched prefill + decode).
 
@@ -575,6 +578,7 @@ class NanoVllmTextEngine:
                 position_offsets=[int(request.get("position_offset", 0) or 0) for request in requests],
                 sampling_params=sampling_params,
                 use_tqdm=use_tqdm,
+                stream_callback=stream_callback,
             )
             for output in outputs or []:
                 text, token_ids = self._extract_text_and_tokens(output)

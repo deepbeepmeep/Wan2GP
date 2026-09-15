@@ -454,7 +454,7 @@ In Deepy Prime's in-process model definitions, optional `deepy_infos` and `deepy
 | Post-processing | `wangp_postprocess` / discovered processor ID |
 | Media utilities / previous generation settings | `wangp_toolbox` / discovered action or `media_settings` |
 | File navigation, search, text edits, archives | `wangp_io` / `list`, `rg`, `read_text`, `info`, `edit`, `append_text`, `write_text`, etc. |
-| Jobs, notifications, HTTP Gallery transfers | `wangp_session` / `get_job`, `cancel_job`, `notify`, `create_gallery_upload`, `create_gallery_download` |
+| Jobs, notifications, HTTP Gallery transfers | `wangp_session` / `get_job`, `cancel_job`, `list_queue`, `cancel_queue_task`, `notify`, `create_gallery_upload`, `create_gallery_download` (`list_queue` and `cancel_queue_task` are external-only) |
 | Documentation | Standard MCP resources; Prime exposes `mcp_resource` |
 
 Example v2 calls:
@@ -890,6 +890,39 @@ Example:
 ```python
 job = session.submit(Path(r"C:\WanGP\my_queue.zip"))
 ```
+
+## Inspecting and Cancelling Queue Tasks
+
+The Python API can list the connected session's entire generation queue, including tasks added through the WebUI when the session is bound to its live `webui_state`:
+
+```python
+queue = session.list_queue()
+print(queue["queued_count"])   # Waiting tasks, excluding the running task.
+print(queue["running_count"])  # Includes a running task that is being cancelled.
+for task in queue["tasks"]:
+    print(task["queue_id"], task["status"], task["model_type"], task["prompt"])
+
+# Use the queue_id of the specific task you want to cancel.
+session.cancel_queue_task(queue_id)
+```
+
+The result contains `total_count`, `queued_count`, `running_count`, and `tasks` in queue order. Each task includes an opaque `queue_id`, one-based `position`, original `task_id`, optional `client_id` (empty for ordinary UI tasks), `model_type`, a prompt preview of up to 320 characters, and `status`: `queued`, `running`, or `cancelling`. Completed tasks are omitted. Counts are per queue task, not per output image, repeat, or batch submission.
+
+Cancelling a waiting task removes it immediately and returns `status="cancelled"`. Cancelling a running task requests its normal abort and returns `status="cancelling"`; poll a fresh list until it disappears. Other tasks in the batch remain queued. Cancelling an unknown or finished ID raises an error without aborting another task. Use the returned `queue_id`, not the displayed numeric `task_id`, which can be reused when a new queue is loaded.
+
+External **MCP v2** exposes the same operations through `wangp_session`:
+
+```python
+wangp_session(action="list_queue", arguments={})
+wangp_session(action="list_queue", arguments={"summary_only": True})
+wangp_session(action="cancel_queue_task", arguments={"queue_id": "<queue_id from list_queue>"})
+```
+
+MCP lists use the standard `limit` / `cursor` pagination. `count` is the number of tasks on that page; the three queue counts cover the entire snapshot. Continuations preserve that snapshot. Omit `cursor` to get current counts after a cancellation or completion. `summary_only=true` returns counts without task details.
+
+These two MCP actions are **not exposed to Deepy** or MCP v1. Existing `get_job` / `cancel_job` continue to operate on a submitted MCP job, which can contain multiple queue tasks; `cancel_queue_task` targets just one of those tasks.
+
+Queue access is scoped to the connected session, not every WanGP process on the machine. A standalone MCP server owns its headless session and does not inspect a separately running WebUI. A WebUI-bound Python API reads that UI's admitted generation queue; submissions still waiting for UI admission are not yet queue entries. HTTP MCP clients call these tools through `/mcp`; there is no separate REST queue route.
 
 ## Streaming Events
 

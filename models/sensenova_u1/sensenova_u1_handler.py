@@ -104,9 +104,9 @@ class family_handler:
                 "selection": ["T", "TI", "T1", "TI1"],
                 "labels": {
                     "T": "A General Image Prompt using existing Text Prompt",
-                    "TI": "A General Image Prompt using existing Text Prompt and First Reference Image",
+                    "TI": "A General Image Prompt using existing Text Prompt and {image_inputs}",
                     "T1": "An Infographic Prompt using existing Text Prompt",
-                    "TI1": "An Infographic Prompt using existing Text Prompt and First Reference Image",
+                    "TI1": "An Infographic Prompt using existing Text Prompt and {image_inputs}",
                 },
                 "default": "",
             },

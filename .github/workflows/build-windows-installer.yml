@@ -1,0 +1,138 @@
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Installer version (x.y.z)"
+        required: false
+        default: ""
+  push:
+    tags:
+      - "launcher-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve the version number
+        id: version
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          if (-not $version) {
+            if ("${{ github.ref }}" -like "refs/tags/launcher-v*") {
+              $version = "${{ github.ref_name }}".Substring("launcher-v".Length)
+            } else {
+              $version = "0.0.$env:GITHUB_RUN_NUMBER"
+            }
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Version '$version' must look like 1.2.3"
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Building WanGP launcher $version"
+
+      - name: Install the launcher build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r launcher/requirements-launcher.txt
+
+      - name: Run the launcher unit tests
+        shell: pwsh
+        run: python -m unittest launcher.tests.test_launcher -v
+
+      - name: Stamp the version and the repository into launcher_config.json
+        shell: pwsh
+        run: |
+          $path = "launcher/launcher_config.json"
+          $config = Get-Content $path -Raw | ConvertFrom-Json
+          $config.app_version = "${{ steps.version.outputs.version }}"
+          $config.repo_url = "${{ github.server_url }}/${{ github.repository }}.git"
+          $config | ConvertTo-Json -Depth 10 | Set-Content $path -Encoding UTF8
+          Get-Content $path
+
+      - name: Build the application icon and the executable metadata
+        shell: pwsh
+        run: |
+          python launcher/build_assets.py --version "${{ steps.version.outputs.version }}"
+          if (-not (Test-Path "launcher/assets/wangp.ico")) { throw "Icon generation failed" }
+
+      - name: Freeze the launcher with PyInstaller
+        shell: pwsh
+        run: |
+          pyinstaller launcher/wangp.spec --noconfirm --distpath dist --workpath build/pyinstaller
+          if (-not (Test-Path "dist/launcher-bin/WanGP.exe")) {
+            throw "PyInstaller did not produce dist/launcher-bin/WanGP.exe"
+          }
+
+      - name: Smoke-test the frozen launcher
+        shell: pwsh
+        run: |
+          # The runner has no GPU and no interactive session, so this only asserts
+          # that the bundle loads its modules and resolves its own resources.
+          $process = Start-Process -FilePath "dist/launcher-bin/WanGP.exe" `
+                                   -ArgumentList "--selftest" -PassThru -Wait -NoNewWindow
+          if ($process.ExitCode -ne 0) {
+            throw "Launcher self-test failed with exit code $($process.ExitCode)"
+          }
+
+      - name: Assemble the WanGP payload
+        shell: pwsh
+        run: |
+          # git archive gives us exactly the tracked files: no .git, no caches,
+          # no environment or output folders left over from a previous run.
+          New-Item -ItemType Directory -Force -Path build/payload | Out-Null
+          git archive --format=tar HEAD | tar -x -C build/payload
+          Remove-Item -Recurse -Force build/payload/.github -ErrorAction SilentlyContinue
+          $size = (Get-ChildItem build/payload -Recurse -File | Measure-Object -Property Length -Sum).Sum
+          Write-Host ("Payload: {0:N1} MB" -f ($size / 1MB))
+          if (-not (Test-Path "build/payload/wgp.py")) { throw "wgp.py missing from the payload" }
+          if (-not (Test-Path "build/payload/setup.py")) { throw "setup.py missing from the payload" }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Compile the installer
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          & $iscc `
+            "/DMyAppVersion=${{ steps.version.outputs.version }}" `
+            "/DPayloadDir=$PWD\build\payload" `
+            "/DLauncherDir=$PWD\dist\launcher-bin" `
+            "/DOutputDir=$PWD\dist" `
+            "launcher\installer.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+          Get-ChildItem dist/*.exe | ForEach-Object {
+            Write-Host ("{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB))
+          }
+
+      - name: Publish the installer as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WanGP-Setup-${{ steps.version.outputs.version }}
+          path: dist/WanGP-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach the installer to the release
+        if: startsWith(github.ref, 'refs/tags/launcher-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/WanGP-Setup-*.exe
+          generate_release_notes: true

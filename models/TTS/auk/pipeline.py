@@ -51,6 +51,8 @@ class AuKPipeline:
         offload.load_model_data(self.text_encoder, encoder_path, default_dtype=dtype, writable_tensors=False)
         self.text_encoder.eval().requires_grad_(False)
         self.vae = offload.fast_load_transformers_model(vae_path, modelClass=AuKVAE, defaultConfigPath=config_path, default_dtype=torch.float32, writable_tensors=False)
+        # Keep the VAE's BF16 conversion policy independent of the transformer config.
+        self.vae._convertWeightsFloatTo = torch.bfloat16
         self.vae._lock_dtype = torch.float32
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_folder, local_files_only=True)
         self.feature_extractor = WhisperFeatureExtractor.from_pretrained(tokenizer_folder, local_files_only=True)

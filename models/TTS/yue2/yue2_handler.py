@@ -10,7 +10,45 @@ REPO_ID = "DeepBeepMeep/TTS"
 TEXT_ENCODER_FOLDER = "YuE2_AR"
 ASSETS = ["vae_config.json", "YuE2_VAE_bf16.safetensors"]
 SCORING_CHECKPOINT = "SheetSage2_MERT2_bf16.safetensors"
-PROMPT = "[Verse]\nMorning light across the bay\nWe watch the shadows drift away\n[Chorus]\nStay with me until the dawn\nLet our little song go on"
+PROMPT = """[Verse]
+I left my keys beside your coffee
+Caught the first bus out of town
+Watched the harbor through the window
+Till the morning mist came down
+
+[Chorus]
+Leave a light on by the water
+Let it shine across the blue
+Every road can take me farther
+Every road leads back to you
+
+[Verse]
+City rain against my collar
+Your old song inside my head
+I could hear you in the silence
+Of the words we never said
+
+[Chorus]
+Leave a light on by the water
+Let it shine across the blue
+Every road can take me farther
+Every road leads back to you
+
+[Bridge]
+Now the last train crosses over
+And the rooftops come in view
+I have found the words I needed
+I am bringing them to you
+
+[Chorus]
+Leave a light on by the water
+Let it shine across the blue
+Every road can take me farther
+Every road leads back to you
+
+[Outro]
+There's a light on by the water
+And I'm coming home to you"""
 STYLE = "English acoustic pop, warm female vocal, fingerpicked guitar, gentle drums, hopeful, 90 BPM"
 INFOS = """**Turn your lyrics into a complete song** with a singing voice and accompaniment, in stereo.
 

@@ -312,7 +312,6 @@ h2 {
 }
 
 .wangp-generation-info {color:var(--body-text-color);font-size:var(--text-md);line-height:1.55;}
-.wangp-generation-info .generation-summary {margin-bottom:10px;overflow-wrap:anywhere;}
 .wangp-generation-info .generation-table-wrap {max-width:100%;overflow-x:auto;border:1px solid var(--border-color-primary);border-radius:var(--block-radius,8px);background:var(--background-fill-primary);}
 .wangp-generation-info #PINFO {width:100%;margin:0;border:0;border-collapse:separate;border-spacing:0;table-layout:auto;color:inherit;font:inherit;}
 .wangp-generation-info #PINFO td {padding:12px 5px;border:0;vertical-align:middle;}

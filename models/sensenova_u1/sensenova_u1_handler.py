@@ -76,6 +76,7 @@ class family_handler:
     def query_model_def(base_model_type, model_def):
         return {
             "image_outputs": True,
+            "dtype": "bf16",
             "no_negative_prompt": True,
             "no_background_removal": True,
             "guidance_max_phases": 1,

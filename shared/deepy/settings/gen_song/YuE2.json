@@ -1,7 +1,7 @@
 {
     "settings_version": 2.79,
     "model_type": "yue2",
-    "prompt": "[Verse]\nMorning light across the bay\nWe watch the shadows drift away\n\n[Chorus]\nStay with me until the dawn\nLet our little song go on",
+    "prompt": "[Verse]\nI left my keys beside your coffee\nCaught the first bus out of town\nWatched the harbor through the window\nTill the morning mist came down\n\n[Chorus]\nLeave a light on by the water\nLet it shine across the blue\nEvery road can take me farther\nEvery road leads back to you\n\n[Verse]\nCity rain against my collar\nYour old song inside my head\nI could hear you in the silence\nOf the words we never said\n\n[Chorus]\nLeave a light on by the water\nLet it shine across the blue\nEvery road can take me farther\nEvery road leads back to you\n\n[Bridge]\nNow the last train crosses over\nAnd the rooftops come in view\nI have found the words I needed\nI am bringing them to you\n\n[Chorus]\nLeave a light on by the water\nLet it shine across the blue\nEvery road can take me farther\nEvery road leads back to you\n\n[Outro]\nThere's a light on by the water\nAnd I'm coming home to you",
     "alt_prompt": "English acoustic pop, warm female vocal, fingerpicked guitar, gentle drums, hopeful, 90 BPM",
     "image_mode": 0,
     "audio_prompt_type": "",

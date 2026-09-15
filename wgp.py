@@ -166,7 +166,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.8.0"
-WanGP_version = "13.02"
+WanGP_version = "13.03"
 settings_version = 2.79
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -4479,22 +4479,23 @@ def abort_generation(state, client_id="", notify = True):
 def early_stop_generation(state):
     gen = get_gen_info(state)
     gen["resume"] = True
-    if "in_progress" in gen:
-        queue = gen.get("queue", [])
-        model_type = queue[0].get("params", {}).get("model_type") if queue else None
-        model_def = get_model_def(model_type) if model_type else None
-        if not model_def or not model_def.get("supports_early_stop", False):
-            gr.Info("Early Stop is not supported for this model.")
-            return gr.Button(interactive=True)
+    queue = gen.get("queue", [])
+    if not queue:
+        return gr.Button(interactive=True)
+    model_type = queue[0].get("params", {}).get("model_type")
+    model_def = get_model_def(model_type) if model_type else None
+    if not model_def or not model_def.get("supports_early_stop", False):
+        gr.Info("Early Stop is not supported for this model.")
+        return gr.Button(interactive=True)
+    with gen_lock:
         if gen.get("early_stop", False):
             return gr.Button(interactive=False)
         gen["early_stop"] = True
         gen["early_stop_forwarded"] = False
-        msg = "Early Stop in progress"
-        gen["status"] = msg
-        gr.Info(msg)
-        return gr.Button(interactive=False)
-    return gr.Button(interactive=True)
+    msg = "Early Stop Requested"
+    gen["status"] = msg
+    gr.Info(msg)
+    return gr.Button(interactive=False)
 
 def gallery_update(file_list, selected_index, **kwargs):
     visible, local_index, _ = gallery_window(file_list, selected_index, server_config['clear_file_list'])
@@ -4508,6 +4509,15 @@ def pack_audio_gallery_state(audio_file_list, selected_index, refresh = True):
 def unpack_audio_list(packed_audio_file_list):
     value = json.loads(packed_audio_file_list)
     return value['paths'] if isinstance(value, dict) else value
+
+def can_extend_sample(params):
+    if _is_edit_task_params(params) or params.get("mode") == "edit" or params.get("image_mode", 0) != 0:
+        return False
+    model_type = params["model_type"]
+    base_model_type, model_def = get_base_model_type(model_type), get_model_def(model_type)
+    preprocess_all = resolve_model_preprocess_all(model_def, base_model_type=base_model_type, video_prompt_type=params.get("video_prompt_type", ""), image_prompt_type=params.get("image_prompt_type", ""), audio_prompt_type=params.get("audio_prompt_type", ""), custom_settings=params.get("custom_settings", {}), params=params)
+    return test_any_sliding_window(base_model_type) and not preprocess_all
+
 
 def refresh_gallery(state): #, msg
     service = service_for(state)
@@ -4550,7 +4560,7 @@ def refresh_gallery(state): #, msg
         last_was_audio = False  # Synchronize the visual selection even while displaying audio.
 
     if not in_progress or len(queue) == 0:
-        return *output_tabs, gallery_update(file_list, choice), gr.update() if last_was_audio else choice, *pack_audio_gallery_state(audio_file_list, audio_choice), gr.HTML("", visible= False),  gr.Button(visible=True), gr.Button(visible=False), gr.Row(visible=False), gr.Row(visible=False), update_queue_data(queue), gr.Button(interactive=  abort_interactive), gr.Button(interactive=  early_stop_interactive, visible= early_stop_visible), gr.Button(visible= False)
+        return *output_tabs, gallery_update(file_list, choice), gr.update() if last_was_audio else choice, *pack_audio_gallery_state(audio_file_list, audio_choice), gr.HTML("", visible= False),  gr.Button(visible=True), gr.Button(visible=False), gr.Row(visible=False), gr.update(), update_queue_data(queue), gr.Button(interactive=  abort_interactive), gr.Button(interactive=  early_stop_interactive, visible= early_stop_visible), gr.Button(visible= False), gr.update(visible=False)
     else:
         task = queue[0]
         prompt =  task["prompt"]
@@ -4559,11 +4569,10 @@ def refresh_gallery(state): #, msg
         is_edit_task = _is_edit_task_params(params)
         multi_prompts_gen_type = "FG" if is_edit_task else params["multi_prompts_gen_type"]
         if is_edit_task:
-            base_model_type, model_def, preprocess_all = None, None, False
+            base_model_type, model_def = None, None
         else:
             base_model_type, model_def = get_base_model_type(model_type), get_model_def(model_type)
-            preprocess_all = resolve_model_preprocess_all(model_def, base_model_type=base_model_type, video_prompt_type=params.get("video_prompt_type", ""), image_prompt_type=params.get("image_prompt_type", ""), audio_prompt_type=params.get("audio_prompt_type", ""), custom_settings=params.get("custom_settings", {}), params=params)
-        onemorewindow_visible = model_def is not None and test_any_sliding_window(base_model_type) and params.get("image_mode",0) == 0 and not preprocess_all
+        onemorewindow_visible = can_extend_sample(params)
         early_stop_visible = bool(model_def and model_def.get("supports_early_stop", False))
         enhanced = False
         if prompt.startswith(prompt_parser.ENHANCED_PROMPT_PREFIX):
@@ -4585,7 +4594,7 @@ def refresh_gallery(state): #, msg
                 escaped_prompts.append(escaped_prompt)
             prompt = "<BR><DIV style='height:8px'></DIV>".join(escaped_prompts)
         if is_edit_task:
-            summary, prompt = prompt, ""
+            summary, prompt = task["prompt"], ""
         else:
             is_image = params["image_mode"] > 0
             audio_only = model_def.get("audio_only", False)
@@ -4604,7 +4613,6 @@ def refresh_gallery(state): #, msg
                     fps = get_computed_fps(params["force_fps"], base_model_type, params.get("video_guide"), params.get("video_source"))
                     summary += f", {frames} frames ({round(frames / fps, 1):g}s)"
                 summary += f", {params['resolution']}, {params['num_inference_steps']} inference steps"
-            summary = html.escape(summary)
 
         details = f'<div class="generation-note">{html.escape(header_text)}</div>' if header_text else ""
         if prompt:
@@ -4620,16 +4628,14 @@ def refresh_gallery(state): #, msg
         if thumbnails:
             thumbnails = f'<td><div class="generation-references" role="group" aria-label="Generation References">{thumbnails}</div></td>'
         table = f'<div class="generation-table-wrap"><table id="PINFO"><tbody><tr><td class="generation-prompt-cell">{details}</td>{thumbnails}</tr></tbody></table></div>' if details or thumbnails else ""
-        if params.get("mode", None) in ['edit'] : onemorewindow_visible = False
-        gen_buttons_visible = True
-        html_content = f'<div class="wangp-generation-info"><div class="generation-summary"><strong>{summary}</strong></div>{table}</div>'
+        html_content = f'<div class="wangp-generation-info">{table}</div>'
         html_output = gr.HTML(html_content, visible= True)
         if last_was_audio:
             audio_choice = max(-1, audio_choice)
         else:
             choice = max(0, choice)
                     
-        return *output_tabs, gallery_update(file_list, choice), gr.update() if last_was_audio else choice, *pack_audio_gallery_state(audio_file_list, audio_choice), html_output, gr.Button(visible=False), gr.Button(visible=True), gr.Row(visible=True), gr.Row(visible= gen_buttons_visible), update_queue_data(queue), gr.Button(interactive=  abort_interactive), gr.Button(interactive=  early_stop_interactive, visible= early_stop_visible), gr.Button(visible= onemorewindow_visible)
+        return *output_tabs, gallery_update(file_list, choice), gr.update() if last_was_audio else choice, *pack_audio_gallery_state(audio_file_list, audio_choice), html_output, gr.Button(visible=False), gr.Button(visible=True), gr.Row(visible=True), gr.update(), update_queue_data(queue), gr.Button(interactive=  abort_interactive), gr.Button(interactive=  early_stop_interactive, visible= early_stop_visible), gr.Button(visible= onemorewindow_visible), gr.update(label=summary, visible=True)
 
 
 
@@ -6188,8 +6194,9 @@ def edit_media(
     any_change_initial = any_change
     while not gen.get("abort", False): 
         any_change = any_change_initial
-        extra_generation += gen.get("extra_orders",0)
-        gen["extra_orders"] = 0
+        with gen_lock:
+            extra_generation += gen.get("extra_orders",0)
+            gen["extra_orders"] = 0
         total_generation = repeat_generation + extra_generation
         gen["total_generation"] = total_generation         
         if repeat_no >= total_generation: break
@@ -6977,9 +6984,7 @@ def generate_media(
     api_options = plugin_data.get("api", {}) if isinstance(plugin_data, dict) and isinstance(plugin_data.get("api", {}), dict) else {}
     flashvsr_continue_cache = api_options.get("flashvsr_continue_cache")
     return_flashvsr_continue_cache = bool(api_options.get("return_flashvsr_continue_cache"))
-    gen["early_stop"] = False
     api_return_side_files = bool(api_options.get("return_side_files", api_return_video_uint8 or api_return_audio))
-    gen["early_stop_forwarded"] = False
     gen["last_progress_args"] = None
     torch.set_grad_enabled(False) 
     if mode == "edit_audio":
@@ -7516,8 +7521,9 @@ def generate_media(
     gen["sliding_window"] = sliding_window 
     while not abort: 
         stop_current_sample = False
-        extra_generation += gen.get("extra_orders",0)
-        gen["extra_orders"] = 0
+        with gen_lock:
+            extra_generation += gen.get("extra_orders",0)
+            gen["extra_orders"] = 0
         total_generation = repeat_generation + extra_generation
         gen["total_generation"] = total_generation     
         gen["header_text"] = ""    
@@ -7551,7 +7557,6 @@ def generate_media(
         image_size = default_image_size #  default frame dimensions for budget until it is change due to a resize
         sample_fit_canvas = fit_canvas
         current_video_length = first_window_video_length
-        gen["extra_windows"] = 0
         gen["total_windows"] = 1
         gen["window_no"] = 1
         input_waveform, input_waveform_sample_rate = None, 0
@@ -7621,8 +7626,9 @@ def generate_media(
 
  
         while not abort and not stop_current_sample:
-            new_extra_windows = gen.get("extra_windows",0)
-            gen["extra_windows"] = 0
+            with gen_lock:
+                new_extra_windows = gen.get("extra_windows",0)
+                gen["extra_windows"] = 0
             extra_windows += new_extra_windows
             if scheduler_active:
                 for _ in range(new_extra_windows):
@@ -8643,9 +8649,14 @@ def generate_media(
 def prepare_generate_media(state):
 
     if state.get("validate_success",0) != 1:
-        return gr.Button(visible= True), gr.Button(visible= False), gr.Column(visible= False), gr.update(visible=False)
+        return gr.Button(visible= True), gr.Button(visible= False), gr.Column(visible= False), gr.Button(visible=False), gr.Button(visible=False)
     else:
-        return gr.Button(visible= False), gr.Button(visible= True), gr.Column(visible= True), gr.update(visible= False)
+        if not get_gen_info(state).get("in_progress", False):
+            clear_status(state)
+        params = get_gen_info(state)["queue"][0]["params"]
+        extend_visible = can_extend_sample(params)
+        early_stop_visible = not _is_edit_task_params(params) and bool(get_model_def(params["model_type"]).get("supports_early_stop", False))
+        return gr.Button(visible= False), gr.Button(visible= True), gr.Column(visible= True), gr.Button(visible=extend_visible), gr.Button(visible=early_stop_visible, interactive=True)
 
 
 def generate_preview(model_type, payload):
@@ -8813,8 +8824,7 @@ def _process_tasks(state):
                     send_cmd("status", "Video Generation Aborted")
                     send_cmd("output", None)
 
-                gen["early_stop"] = False
-                gen["early_stop_forwarded"] = False
+                clear_status(state)
                 if not success:
                     notification_run.interrupt("Generation stopped before the queue completed.")
                     break
@@ -9160,10 +9170,13 @@ def merge_status_context(status="", context=""):
         
 def clear_status(state):
     gen = get_gen_info(state)
-    gen["extra_windows"] = 0
+    with gen_lock:
+        gen["extra_windows"] = 0
+        gen["extra_orders"] = 0
+        gen["early_stop"] = False
+        gen["early_stop_forwarded"] = False
     gen["total_windows"] = 1
     gen["window_no"] = 1
-    gen["extra_orders"] = 0
     gen["repeat_no"] = 0
     gen["total_generation"] = 0
 
@@ -9188,9 +9201,9 @@ def update_status(state):
 
 def one_more_sample(state):
     gen = get_gen_info(state)
-    extra_orders = gen.get("extra_orders", 0)
-    extra_orders += 1
-    gen["extra_orders"]  = extra_orders
+    with gen_lock:
+        extra_orders = gen.get("extra_orders", 0) + 1
+        gen["extra_orders"] = extra_orders
     in_progress = gen.get("in_progress", False)
     if not in_progress :
         return state
@@ -9203,9 +9216,9 @@ def one_more_sample(state):
 
 def one_more_window(state):
     gen = get_gen_info(state)
-    extra_windows = gen.get("extra_windows", 0)
-    extra_windows += 1
-    gen["extra_windows"]= extra_windows
+    with gen_lock:
+        extra_windows = gen.get("extra_windows", 0) + 1
+        gen["extra_windows"] = extra_windows
     in_progress = gen.get("in_progress", False)
     if not in_progress :
         return state
@@ -11141,13 +11154,14 @@ def refresh_video_prompt_type_video_custom_checkbox(state, video_prompt_type, vi
 
 def refresh_preview(state):
     gen = get_gen_info(state)
+    placeholder = '<div style="text-align: center; color: var(--body-text-color-subdued); padding: 16px 0;">Preview not yet Available</div>'
     preview_image = gen.get("preview", None)
     if preview_image is None:
-        return ""
+        return placeholder
     
     preview_base64 = pil_to_base64_uri(preview_image, format="jpeg", quality=85)
     if preview_base64 is None:
-        return ""
+        return placeholder
 
     html_content = f"""
     <div style="display: flex; justify-content: center; align-items: center; height: 200px; cursor: pointer;" onclick="showImageModal('preview_0')">
@@ -11162,9 +11176,9 @@ def init_process_queue_if_any(state):
     gen = get_gen_info(state)
     if bool(gen.get("queue",[])):
         state["validate_success"] = 1
-        return gr.Button(visible=False), gr.Button(visible=True), gr.Column(visible=True)                   
+        return prepare_generate_media(state)
     else:
-        return gr.Button(visible=True), gr.Button(visible=False), gr.Column(visible=False)
+        return gr.Button(visible=True), gr.Button(visible=False), gr.Column(visible=False), gr.Button(visible=False), gr.Button(visible=False)
 
 def get_modal_image(image_base64, label):
     return f"""
@@ -12965,11 +12979,12 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         pause_btn = gr.Button("Pause", visible = True, size='md', min_width=1)
                         resume_btn = gr.Button("Resume", visible = False, size='md', min_width=1)
                         abort_btn = gr.Button("Abort", visible = True, size='md', min_width=1)
-                        earlystop_btn = gr.Button("Early Stop", visible = True, size='md', min_width=1)
-                    gen_info = gr.HTML(visible=False, min_height=1)
+                        earlystop_btn = gr.Button("Early Stop", visible = False, size='md', min_width=1)
                     with gr.Accordion("Preview", open=False):
-                        preview = gr.HTML(label="Preview", show_label= False)
+                        preview = gr.HTML(value=refresh_preview(state_dict), label="Preview", show_label= False)
                         preview_trigger = gr.Text(visible= False)
+                    with gr.Accordion("Current Prompt and Media", open=True, visible=False) as gen_info_accordion:
+                        gen_info = gr.HTML(visible=False, min_height=1)
                 add_to_queue_btn = gr.Button("Add New Prompt To Queue", visible=False)
                 with gr.Accordion("Queue Management", open=False) as queue_accordion:
                     with gr.Row():
@@ -13115,10 +13130,10 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
 
             if tab_id == 'generate':
                 from shared.deepy.hybrid_ui import bind_gallery_sync
-                bind_gallery_sync(_deepy_hybrid, state, refresh_gallery, [gallery_tabs, current_gallery_tab, output, last_choice, audio_files_paths, audio_file_selected, audio_gallery_refresh_trigger, gen_info, generate_btn, add_to_queue_btn, current_gen_column, current_gen_buttons_row, queue_html, abort_btn, earlystop_btn, onemorewindow_btn], gallery=output, main=main)
+                bind_gallery_sync(_deepy_hybrid, state, refresh_gallery, [gallery_tabs, current_gallery_tab, output, last_choice, audio_files_paths, audio_file_selected, audio_gallery_refresh_trigger, gen_info, generate_btn, add_to_queue_btn, current_gen_column, current_gen_buttons_row, queue_html, abort_btn, earlystop_btn, onemorewindow_btn, gen_info_accordion], gallery=output, main=main)
                 output_trigger.change(refresh_gallery,
                     inputs = [state], 
-                    outputs = [gallery_tabs, current_gallery_tab, output, last_choice, audio_files_paths, audio_file_selected, audio_gallery_refresh_trigger, gen_info, generate_btn, add_to_queue_btn, current_gen_column, current_gen_buttons_row, queue_html, abort_btn, earlystop_btn, onemorewindow_btn],
+                    outputs = [gallery_tabs, current_gallery_tab, output, last_choice, audio_files_paths, audio_file_selected, audio_gallery_refresh_trigger, gen_info, generate_btn, add_to_queue_btn, current_gen_column, current_gen_buttons_row, queue_html, abort_btn, earlystop_btn, onemorewindow_btn, gen_info_accordion],
                     show_progress="hidden"
                     )
 
@@ -13494,7 +13509,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     show_progress="hidden",
                 ).then(fn=prepare_generate_media,
                     inputs= [state],
-                    outputs= [generate_btn, add_to_queue_btn, current_gen_column, current_gen_buttons_row]
+                    outputs= [generate_btn, add_to_queue_btn, current_gen_column, onemorewindow_btn, earlystop_btn]
                 ).then(fn=activate_status,
                     inputs= [state],
                     outputs= [status_trigger],             
@@ -13524,13 +13539,13 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     inputs=[load_queue_btn, state],
                     outputs=[queue_html]
                 ).then(
-                     fn=lambda s: (gr.update(visible=bool(get_gen_info(s).get("queue",[]))), gr.Accordion(open=True)) if bool(get_gen_info(s).get("queue",[])) else (gr.update(visible=False), gr.update()),
+                     fn=lambda s: gr.Accordion(open=True) if get_gen_info(s).get("queue", []) else gr.update(),
                      inputs=[state],
-                     outputs=[current_gen_column, queue_accordion]
+                     outputs=[queue_accordion]
                 ).then(
                     fn=init_process_queue_if_any,
                     inputs=[state],
-                    outputs=[generate_btn, add_to_queue_btn, current_gen_column, ]
+                    outputs=[generate_btn, add_to_queue_btn, current_gen_column, onemorewindow_btn, earlystop_btn]
                 ).then(fn=activate_status,
                     inputs= [state],
                     outputs= [status_trigger],             

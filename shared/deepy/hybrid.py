@@ -52,6 +52,7 @@ class HybridService(DeepyService):
         self._queue_worker = None
         self._queue_updates = (None, None, None)
         self._queue_revision = 0
+        self._gallery_update = None
         self.autoloaded_queue = False
         self._process_queue = process_queue
         self._finalize_queue = finalize_queue
@@ -120,7 +121,7 @@ class HybridService(DeepyService):
                     if gen.pop('refresh_tab', False):
                         gen['current_gallery_source'] = 'audio' if gen['last_was_audio'] else 'video'
                     signature = (tuple(gen['file_list']), tuple(gen['audio_file_list']), gen['selected'], gen['audio_selected'], gen['current_gallery_source'], tuple(map(id, list.__iter__(gen['file_settings_list']))), tuple(map(id, list.__iter__(gen['audio_file_settings_list']))), self._deps.get_server_config().get('clear_file_list', 5))
-                    gallery_view = (signature, self.generation_running, self._queue_revision)
+                    gallery_view = (signature, self.generation_running, self._gallery_update)
                     settings = (json.dumps(self._session.tool_ui_settings, sort_keys=True), self._session.storage_session_id, self._session.storage_title, self._catalog_revision)
                     changed = False
                     preview = gen.get('preview')
@@ -203,6 +204,10 @@ class HybridService(DeepyService):
                 with self._condition:
                     self._queue_updates = updates
                     self._queue_revision += 1
+                    # Only output-trigger timestamps request a gallery/details
+                    # refresh. Preview frames yield an empty Text component here.
+                    if isinstance(updates[1], (int, float)):
+                        self._gallery_update = updates[1]
                     self._condition.notify_all()
                 self.host_changed()
         except Exception as error:
@@ -252,7 +257,9 @@ class HybridService(DeepyService):
                 updates = self._queue_updates
                 finished = self._queue_worker is not worker
             if changed:
-                yield tuple(gr.update() if value is None else value for value in updates)
+                # Shared view revisions deliver galleries and previews to every
+                # page. Do not refresh them a second time in the initiating page.
+                yield gr.update(), gr.update(), gr.update() if updates[2] is None else updates[2]
             if finished:
                 break
 

@@ -22,15 +22,6 @@ _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "configs", f"{_ARCHITECTU
 _TOKENIZER_FOLDER = "sensenova_u1_5"
 
 
-def _lock_checkpoint_fp32_parameters(model, state_dict):
-    parameters = dict(model.named_parameters())
-    for key, tensor in state_dict.items():
-        parameter = parameters.get(key)
-        if parameter is not None and tensor.dtype == torch.float32:
-            parameter._lock_dtype = torch.float32
-    return state_dict
-
-
 def _as_pil(image) -> Image.Image:
     if isinstance(image, Image.Image):
         return image.convert("RGB")
@@ -56,7 +47,11 @@ class model_factory:
         for module in transformer.modules():
             if isinstance(module, Qwen3RotaryEmbedding):
                 module.reset_inv_freq()
-        offload.load_model_data(transformer, filename, writable_tensors=False, default_dtype=dtype, preprocess_sd=lambda state_dict: _lock_checkpoint_fp32_parameters(transformer, state_dict))
+        # SenseNova's BF16 residual stream can exceed FP16's finite range.
+        # Ignore the shared FP16 setting for loading and MMGP weight conversion.
+        dtype = torch.bfloat16
+        offload.load_model_data(transformer, filename, writable_tensors=False, default_dtype=dtype)
+        transformer._convertWeightsFloatTo = dtype
         transformer.eval().requires_grad_(False)
         transformer._interrupt = False
         if save_quantized:

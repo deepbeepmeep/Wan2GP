@@ -141,7 +141,7 @@ class YuE2Pipeline:
                     return None
                 raise RuntimeError("YuE2 generated no audio tokens.")
             chunks = chunk_ranges(len(codec), len(prefix))
-            noise = torch.randn((len(codec), 64), generator=torch.Generator(device="cpu").manual_seed(seed))
+            noise = torch.randn((len(codec), 64), device="cpu", generator=torch.Generator(device="cpu").manual_seed(seed))
             latent_parts = []
             total = len(chunks) * sampling_steps
             with tqdm(total=total, desc="YuE2 acoustic synthesis", unit="step") as progress:

@@ -547,6 +547,8 @@ def _compile_recovery_candidates(
     raw = [preferred]
     raw.extend(_candidate_configs(baseline, m, k, n, kind=kind))
     raw.extend(conservative_large_tiles)
+    # Larger tiles need fewer buffered stages on GPUs with limited shared memory.
+    raw.extend((bm, bn, bk, warps, stages) for bm, bn, bk, warps, _ in conservative_large_tiles for stages in (1, 2))
 
     dedup: list[tuple[int, int, int, int, int]] = []
     seen = set()

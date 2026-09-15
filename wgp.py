@@ -12954,16 +12954,11 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
  
             if not update_form:
                 generate_btn = gr.Button("Generate")
-                add_to_queue_btn = gr.Button("Add New Prompt To Queue", visible=False)
                 generate_trigger = gr.Text(visible = False) 
                 add_to_queue_trigger = gr.Text(visible = False)
                 js_trigger_index = gr.Text(visible=False, elem_id="js_trigger_for_edit_refresh")
 
                 with gr.Column(visible= False) as current_gen_column:
-                    with gr.Accordion("Preview", open=False):
-                        preview = gr.HTML(label="Preview", show_label= False)
-                        preview_trigger = gr.Text(visible= False)
-                    gen_info = gr.HTML(visible=False, min_height=1) 
                     with gr.Row() as current_gen_buttons_row:
                         onemoresample_btn = gr.Button("One More Sample", visible = True, size='md', min_width=1)
                         onemorewindow_btn = gr.Button("Extend this Sample", visible = False, size='md', min_width=1)
@@ -12971,6 +12966,11 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         resume_btn = gr.Button("Resume", visible = False, size='md', min_width=1)
                         abort_btn = gr.Button("Abort", visible = True, size='md', min_width=1)
                         earlystop_btn = gr.Button("Early Stop", visible = True, size='md', min_width=1)
+                    gen_info = gr.HTML(visible=False, min_height=1)
+                    with gr.Accordion("Preview", open=False):
+                        preview = gr.HTML(label="Preview", show_label= False)
+                        preview_trigger = gr.Text(visible= False)
+                add_to_queue_btn = gr.Button("Add New Prompt To Queue", visible=False)
                 with gr.Accordion("Queue Management", open=False) as queue_accordion:
                     with gr.Row():
                         queue_html = gr.HTML(

@@ -58,7 +58,7 @@ def login_page(title, description, action, fields, *, error="", status=200, retr
     page = f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)}</title>
 <style>body{{font:16px system-ui;background:#15171c;color:#f1f3f8;margin:0;display:grid;min-height:100vh;place-items:center}}main{{width:min(420px,85vw);padding:32px;background:#222630;border-radius:16px}}h1{{font-size:24px}}p{{line-height:1.5;overflow-wrap:anywhere}}input,button{{box-sizing:border-box;width:100%;padding:12px;margin-top:12px;border-radius:8px;border:1px solid #778}}button{{background:#a7c7ff;color:#101828;cursor:pointer}}.error{{color:#ffb7b7}}</style></head>
 <body><main><h1>{html.escape(title)}</h1><p>{html.escape(description)}</p><form method="post" action="{html.escape(action, quote=True)}">{hidden}<label>Passphrase<input name="password" type="password" required autocomplete="current-password" maxlength="1024" autofocus></label><button>{html.escape(button)}</button><p class="error" role="alert">{html.escape(error)}</p></form></main></body></html>'''
-    headers = dict(PAGE_HEADERS)
+    headers = {**PAGE_HEADERS, "Referrer-Policy": "same-origin"}
     if retry:
         headers["Retry-After"] = str(retry)
     return HTMLResponse(page, status_code=status, headers=headers)

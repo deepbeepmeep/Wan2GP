@@ -1284,7 +1284,7 @@ class LTX2:
             _append_system_lora("outpaint", 1.0, "ic-lora-outpaint")
         if _ltx2_main_loras_compatible(resolved_base_model_type) and (_ltx2_inpainting_enabled(video_prompt_type) or any_outpainting and LTX2_OUTPAINTING_METHOD == 2):
             _append_system_lora("inpaint", 1.0, "in-outpainting")
-        if _ltx2_main_ingredients_enabled(resolved_base_model_type, video_prompt_type):
+        if not model_def.get("ltx2_msr", False) and _ltx2_main_ingredients_enabled(resolved_base_model_type, video_prompt_type):
             _append_system_lora("ingredients", 1.4, "ic-lora-ingredients")
         if "1" in audio_prompt_type:
             _append_system_lora("id", 1.0 if guidance_phases == 1 else "1;0", "id-lora-celebvhq")
@@ -1372,7 +1372,8 @@ class LTX2:
         distill = self.model_def.get("ltx2_pipeline", "two_stage") == "distilled"
         editanything = _is_editanything_model(self.model_def)
         msr = self.model_def.get("ltx2_msr", False)
-        main_ingredients = _ltx2_main_ingredients_enabled(self.base_model_type, video_prompt_type)
+        ltx25 = self.base_model_type in {"ltx2_25_22B", "ltx2_25_22B_msr"}
+        main_ingredients = not msr and _ltx2_main_ingredients_enabled(self.base_model_type, video_prompt_type)
         output_frame_num = frame_num
         msr_frame_count = 0
         if msr and "I" in video_prompt_type and input_ref_images is not None:
@@ -1382,7 +1383,8 @@ class LTX2:
                 input_ref_images,
                 "K" in video_prompt_type,
             )
-            frame_num = max(frame_num, msr_frame_count)
+            if not ltx25:
+                frame_num = max(frame_num, msr_frame_count)
 
         hdr_enabled = _ltx2_main_loras_compatible(self.base_model_type) and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type
         input_video_is_hdr = bool(input_video_is_hdr)
@@ -1535,17 +1537,27 @@ class LTX2:
 
         force_stage2_ref_video_conditioning = False
         if msr and "I" in video_prompt_type and input_ref_images is not None:
-            ref_video = _build_msr_reference_video(
-                input_ref_images,
-                msr_frame_count,
-                int(width),
-                int(height),
-                "K" in video_prompt_type,
-                _is_msr_v2_model_def(self.model_def),
-            )
-            if video_conditioning is None:
-                video_conditioning = []
-            video_conditioning.append((ref_video, 0, control_strength))
+            if ltx25:
+                from .msr import MSRReferenceImages, load_slot_embeddings
+
+                slots = load_slot_embeddings(fl.locate_file(self.model_def["ltx2_msr_slot_embeddings_file"]))
+                refs = list(input_ref_images) if isinstance(input_ref_images, (list, tuple)) else [input_ref_images]
+                if "K" in video_prompt_type:
+                    refs = refs[1:] + refs[:1]
+                frames = [_msr_ref_image_to_frame(ref, int(width), int(height)) for ref in refs]
+                video_conditioning = MSRReferenceImages(frames, slots, msr_frame_count, control_strength)
+            else:
+                ref_video = _build_msr_reference_video(
+                    input_ref_images,
+                    msr_frame_count,
+                    int(width),
+                    int(height),
+                    "K" in video_prompt_type,
+                    _is_msr_v2_model_def(self.model_def),
+                )
+                if video_conditioning is None:
+                    video_conditioning = []
+                video_conditioning.append((ref_video, 0, control_strength))
             force_stage2_ref_video_conditioning = True
         elif main_ingredients and "I" in video_prompt_type and input_ref_images is not None:
             ref_frame_count = int(frame_num)
@@ -1871,7 +1883,7 @@ class LTX2:
                 self_refiner_max_plans=self_refiner_max_plans,
                 editanything_ref_images=editanything_ref_images,
                 ltx2_22B_class=ltx2_22B_class,
-                use_ancestral_sampler=distill and self.base_model_type == "ltx2_25_22B",
+                use_ancestral_sampler=distill and ltx25,
                 **distilled_kwargs,
             )
 

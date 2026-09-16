@@ -2,8 +2,18 @@
     --wangp-ui-scale: 0.9;
 }
 
+/* Form refreshes change control heights; keep the page at the user's position. */
+html {
+    overflow-anchor: none;
+}
+
 gradio-app {
     width: 100%;
+}
+
+/* Hide the preview-close toggle; reference galleries have explicit clear controls. */
+.gallery-container > .preview button[aria-label="Close"] {
+    display: none;
 }
 
 .wangp-voice-prompt textarea:disabled {

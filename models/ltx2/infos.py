@@ -120,13 +120,13 @@ Result: the reference voice workflow uses your ID-LoRA file and weight.
 ```
 """
 
-LTX2_25_INFOS = LTX2_INFOS
+LTX2_25_INFOS = LTX2_INFOS + "\nReference Voice (ID-LoRA) is unavailable for LTX-2.5.\n"
 
 LTX2_25_DEEPY_INFOS = """Generate video and synchronized sound from `prompt`. `image_start` / `image_end` anchor the opening / ending; `video_source` continues video. Sliding windows carry overlapping video and audio forward.
 
 Control Video (`video_guide`) supplies raw frames or a selected pose/depth/edge guide; higher Control Video Strength follows it more closely. Inpainting uses source + mask: Control Video Strength 1 and Unmasked Area Strength 0 preserve unmasked content. Inject Frames places ordered `image_refs` at explicit positions (`1` = first frame, `L` = last in the window, `X` = skip a window without consuming an image). Ingredients uses one composite reference sheet for characters, objects and setting.
 
-`audio_prompt_type`: empty = generate soundtrack; `A` = condition on `audio_guide`; `K` = control video and its audio; `2` = generate audio for control frames; `A1OF` = reference voice through ID-LoRA. A complete input soundtrack is normally reused; a shorter one allows audio continuation. Make action and speech agree with soundtrack timing.
+`audio_prompt_type`: empty = generate soundtrack; `A` = condition on `audio_guide`; `K` = control video and its audio; `2` = generate audio for control frames. A complete input soundtrack is normally reused; a shorter one allows audio continuation. Make action and speech agree with soundtrack timing.
 
 For continuation, the alignment selector places controls/injected frames relative to source-video time zero or the new continuation. Use capabilities for window limits and `prompt_infos` for speech and timed prompting.
 """
@@ -152,6 +152,15 @@ Subject or object references work best on a plain white background. If your non-
 Character sheets are recommended for character references: use an image that shows the same character from several points of view, poses, or close-up/detail angles. This gives MSR more identity and clothing information than a single portrait.
 
 Use the text prompt to describe how the referenced subjects should appear together in the referenced environment.
+"""
+
+LTX2_25_MSR_INFOS = LTX2_MSR_INFOS + """
+
+## LTX-2.5 MSR V1
+
+This preset uses the LTX-2.5 Distilled model with the LiconStudio MSR V1 LoRA and its learned reference-slot embeddings. Each reference is encoded separately using 33 repeated frames. This preparation length does not change the output video length.
+
+Start with 8 sampling steps and describe each reference's role, the subjects' actions, and their spatial relationships. The model can generate sound with the video or use a supplied soundtrack. Prompt enhancement is optional and off by default.
 """
 
 LTX2_MSR_V2_INFOS = LTX2_MSR_INFOS + """

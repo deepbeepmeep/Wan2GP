@@ -67979,10 +67979,12 @@ function Y2e(r, e, t) {
     return !K || oe > K;
   }
   async function V() {
+    const K = de.get_dirty_state();
+    if (_e && !K.background && !K.layers && !K.composite && H()) return { id: _e };
     if (de?.is_empty?.())
       return t(36, we = F1()), _e = null, oe = 0, we;
     if (de?.is_export_deferred?.()) return we;
-    const K = de.get_dirty_state(), nt = !!_e && !K.background && !K.layers && !K.composite && !H();
+    const nt = !!_e && !K.background && !K.layers && !K.composite && !H();
     if (!K.background && !K.layers && !K.composite && !nt) {
       if (_e) return { id: _e };
       const ar = Math.random().toString(36).substring(2);

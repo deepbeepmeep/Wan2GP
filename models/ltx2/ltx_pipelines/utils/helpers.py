@@ -272,6 +272,10 @@ def video_conditionings_by_control_video(
     tiling_config: TilingConfig | None = None,
     continuous_conditioning_and_guide: bool = False,
 ) -> list[ConditioningItem]:
+    from ...msr import MSRReferenceImages
+
+    if isinstance(video_conditioning, MSRReferenceImages):
+        return video_conditioning.encode(height, width, video_encoder, dtype, device, tiling_config)
     with control_video_encoding():
         if int(downscale_factor or 1) > 1:
             return video_conditionings_by_reference_latent(

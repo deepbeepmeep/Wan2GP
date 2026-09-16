@@ -85,7 +85,9 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 - **AuK Speech**: generate speech from written instructions, or use a source recording for voice cloning, spoken-word edits, speech cleanup, and speaker separation. Choose **Flash** for a fast four-step result or **Base** for more control. Start with a short clip and describe both what to change and what to preserve.
 
-*update 13.10*: Prompt Enhancer Upgrades
+- **LTX2.5 updates**: added LTX 2.5 MSR (reference to videos), LTX 2.5 Ingredients is now used when Ref. Images are provided, updated Media Flow processes with LTX 2.5 unblur and uncompress LoRAs
+
+*update 13.10*: Prompt Enhancer Upgrades, LTX2.5 updates
 
 ## 6th of September 2026: WanGP v12.72 — Power Up, Polish, Pause
 - **H3 VDN**: at least 20% Faster and even more on larger / longer videos, requires a bit more VRAM and Triton must be installed

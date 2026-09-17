@@ -63,7 +63,7 @@ def get_audio_standalone_extension(codec_key: str | None) -> str:
     codec_key = str(codec_key or "wav").strip().lower() or "wav"
     if codec_key == "mp3":
         codec_key = "mp3_192"
-    return ".wav" if codec_key == "wav" else ".mp3"
+    return f".{codec_key}" if codec_key in {"wav", "flac"} else ".mp3"
 
 
 def _get_mp4_audio_encode_args(codec_key: str | None) -> list[str]:
@@ -80,6 +80,8 @@ def _get_standalone_audio_encode_args(codec_key: str | None) -> list[str]:
         codec_key = "mp3_192"
     if codec_key == "wav":
         return ["-c:a", "pcm_s16le"]
+    if codec_key == "flac":
+        return ["-c:a", "flac", "-sample_fmt", "s16"]
     bitrate = {"mp3_128": "128k", "mp3_192": "192k", "mp3_320": "320k"}.get(codec_key, "192k")
     return ["-c:a", "libmp3lame", "-b:a", bitrate]
 

@@ -85,7 +85,7 @@ def _get_standalone_audio_encode_args(codec_key: str | None) -> list[str]:
     if codec_key == "wav":
         return ["-c:a", "pcm_s16le"]
     if codec_key == "flac":
-        return ["-c:a", "flac"]
+        return ["-c:a", "flac", "-sample_fmt", "s16"]
     if codec_key in {"m4a", "alac"}:
         return ["-c:a", "alac"]
     bitrate = {"mp3_128": "128k", "mp3_192": "192k", "mp3_320": "320k"}.get(codec_key, "192k")

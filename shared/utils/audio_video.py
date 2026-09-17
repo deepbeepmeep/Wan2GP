@@ -301,6 +301,7 @@ def _get_audio_codec_settings(codec_key):
         codec_key = "mp3_192"
     settings = {
         "wav": {"ext": "wav", "format": "wav"},
+        "flac": {"ext": "flac", "format": "flac"},
         "mp3_128": {"ext": "mp3", "format": "mp3", "bitrate": "128k"},
         "mp3_192": {"ext": "mp3", "format": "mp3", "bitrate": "192k"},
         "mp3_320": {"ext": "mp3", "format": "mp3", "bitrate": "320k"},
@@ -404,6 +405,9 @@ def save_audio_file(path, audio_data, sample_rate, codec_key="wav"):
         path = osp.splitext(path)[0] + f".{ext}"
     if settings["format"] == "wav":
         return write_wav_file(path, audio_data, sample_rate)
+    if settings["format"] == "flac":
+        sf.write(path, _prepare_audio_array(audio_data), int(sample_rate), subtype="PCM_16", format="FLAC")
+        return path
     fd, tmp_path = tempfile.mkstemp(suffix=".wav", prefix="audio_")
     os.close(fd)
     try:

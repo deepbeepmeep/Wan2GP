@@ -534,14 +534,19 @@ class Qwen3_5StaticCache(Qwen3_5DynamicCache):
             raise RuntimeError(f"Cannot truncate MTP cache from {self._seq_length} to {seq_length} tokens.")
         self._seq_length = seq_length
 
-    def snapshot(self) -> dict:
+    def snapshot(self, previous: dict | None = None, reuse_tokens: int = 0) -> dict:
+        from shared.llm_engines.snapshot_cache import snapshot_cache
+
+        reuse = 0 if previous is None else min(reuse_tokens, previous["seq_length"], self._seq_length)
         return {
             "seq_length": self._seq_length,
-            "key_cache": [None if cache is None else cache[:, :self._seq_length].detach().to("cpu").as_subclass(torch.Tensor).clone() for cache in self.key_cache],
-            "value_cache": [None if cache is None else cache[:, :self._seq_length].detach().to("cpu").as_subclass(torch.Tensor).clone() for cache in self.value_cache],
+            "key_cache": [None if cache is None else snapshot_cache(cache, [(0, self._seq_length)], axis=1, previous=None if previous is None else previous["key_cache"][index], reuse=reuse) for index, cache in enumerate(self.key_cache)],
+            "value_cache": [None if cache is None else snapshot_cache(cache, [(0, self._seq_length)], axis=1, previous=None if previous is None else previous["value_cache"][index], reuse=reuse) for index, cache in enumerate(self.value_cache)],
         }
 
     def restore(self, snapshot: dict) -> None:
+        from shared.llm_engines.snapshot_cache import restore_cache
+
         seq_length = int(snapshot["seq_length"])
         if seq_length > self.max_cache_len:
             raise RuntimeError(f"Saved MTP cache exceeds live capacity ({seq_length} > {self.max_cache_len}).")
@@ -552,8 +557,8 @@ class Qwen3_5StaticCache(Qwen3_5DynamicCache):
                 continue
             if saved_key is None or saved_value is None:
                 raise RuntimeError("Saved MTP cache layout does not match the live model.")
-            live_key[:, :seq_length].copy_(saved_key.to(device=live_key.device, dtype=live_key.dtype))
-            live_value[:, :seq_length].copy_(saved_value.to(device=live_value.device, dtype=live_value.dtype))
+            restore_cache(live_key, saved_key)
+            restore_cache(live_value, saved_value)
         self._seq_length = seq_length
 
 
@@ -1467,10 +1472,10 @@ class Qwen3_5MTP(nn.Module):
             clear_head_cache()
         self._cache = None
 
-    def snapshot_sequence_state(self) -> dict:
+    def snapshot_sequence_state(self, previous: dict | None = None, reuse_tokens: int = 0) -> dict:
         if not isinstance(self._cache, Qwen3_5StaticCache):
             raise RuntimeError("MTP static cache is not prepared.")
-        return self._cache.snapshot()
+        return self._cache.snapshot(previous=previous, reuse_tokens=reuse_tokens)
 
     def restore_sequence_state(self, snapshot: dict) -> None:
         if not isinstance(self._cache, Qwen3_5StaticCache):

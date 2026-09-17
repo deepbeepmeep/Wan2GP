@@ -21,6 +21,7 @@
 *.backup
 *.pkl
 *.html
+!shared/deepy/web/app.html
 !plugins/motion_designer/assets/motion_designer_iframe_template.html
 *.pdf
 *.whl

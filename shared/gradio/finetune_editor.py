@@ -14,6 +14,7 @@ import gradio as gr
 
 from shared.gradio.local_file_picker import CHECKPOINT_FILE_EXTENSIONS, LocalFilePickerTextbox
 from shared.prompt_enhancer import chaining as prompt_enhancer_chaining
+from shared.prompt_enhancer import labels as prompt_enhancer_labels
 from shared import resolutions as resolution_utils
 from shared.utils import files_locator as fl
 
@@ -1174,11 +1175,8 @@ def _prompt_enhancer_default_modes(model_def: dict) -> list[str]:
 
 
 def _prompt_enhancer_choices(model_def: dict) -> list[tuple[str, str]]:
-    default_labels = {
-        "T": "Based on Text Prompt Content",
-        "TI": "Based on both Text Prompt and Images Prompts Content (Start Image / First Reference Image)",
-    }
-    prompt_enhancer_def = model_def.get("prompt_enhancer_def")
+    default_labels = prompt_enhancer_labels.default_labels(model_def)
+    prompt_enhancer_def = prompt_enhancer_labels.resolve_definition(model_def)
     if isinstance(prompt_enhancer_def, dict):
         selection = prompt_enhancer_def.get("selection", [])
         labels = prompt_enhancer_def.get("labels", {})
@@ -1188,6 +1186,7 @@ def _prompt_enhancer_choices(model_def: dict) -> list[tuple[str, str]]:
             selection = []
         if not isinstance(labels, dict):
             labels = {}
+        labels = {**labels, **{mode.replace("V", "").replace("P", ""): label for mode, label in labels.items()}}
         return [(str(labels.get(str(mode).strip(), default_labels.get(str(mode).strip(), str(mode).strip()))), str(mode).strip()) for mode in selection if str(mode).strip()]
     selection = model_def.get("prompt_enhancer_choices_allowed", ["T"] if model_def.get("audio_only", False) else ["T", "TI"])
     if isinstance(selection, str):

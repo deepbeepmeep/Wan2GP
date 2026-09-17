@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import control_video_encoding
 import hashlib
 import os
 import shutil
@@ -700,8 +701,10 @@ def prepare_vista4d_condition(pipeline, input_frames, input_custom, frame_num, h
     vae_dtype = pipeline.VAE_dtype
     source_video = _video_np_to_tensor(data["source_video"], device, vae_dtype)
     point_video = _video_np_to_tensor(data["point_cloud_video"], device, vae_dtype)
-    source_latents = pipeline.vae.encode([source_video], tile_size=tile_size)[0].unsqueeze(0).to(device=device, dtype=dtype)
-    point_latents = pipeline.vae.encode([point_video], tile_size=tile_size)[0].unsqueeze(0).to(device=device, dtype=dtype)
+    with control_video_encoding():
+        source_latents = pipeline.vae.encode([source_video], tile_size=tile_size)[0].unsqueeze(0).to(device=device, dtype=dtype)
+    with control_video_encoding():
+        point_latents = pipeline.vae.encode([point_video], tile_size=tile_size)[0].unsqueeze(0).to(device=device, dtype=dtype)
     source_masks = _pack_masks(data["source_alpha_mask"], data["source_motion_mask"], device, dtype)
     point_masks = _pack_masks(data["point_cloud_alpha_mask"], data["point_cloud_motion_mask"], device, dtype)
 

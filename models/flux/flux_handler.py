@@ -1,4 +1,3 @@
-import os
 import torch
 import gradio as gr
 from PIL import Image
@@ -153,6 +152,12 @@ class family_handler():
             extra_model_def["text_encoder_folder"] = text_encoder_folder
         if flux2_klein:
             extra_model_def["profiles_dir"] = ["flux2_klein_4b"] if flux2_klein_4b else ["flux2_klein_9b"]
+            extra_model_def.update({
+                "deepy_infos": "Text-to-image or editing with ordered `image_refs`. Preserve `video_prompt_type`: `KI` = first image is the main scene, then people/objects; `I` = people/objects. Inpainting combines source, mask and prompt.",
+                "deepy_prompt_infos": "Text-only: describe the finished image. Editing: give a precise change and state what to preserve, e.g. 'Replace the woman in image 1 with the man from image 2; keep pose, lighting and background.' Number references in upload order and assign each a role. Quote exact visible text.",
+                "infos": "Generate from text alone, or combine the Text Prompt (`prompt`) with ordered Reference Images (`image_refs`) for editing and composition. Reference mode `KI` treats the first image as the main scene, followed by people/objects; `I` supplies people/objects. Describe each image's role in the prompt. Inpainting combines the source image, mask and prompt to target a region.",
+                "prompt_infos": 'For text-only generation, describe the finished image. For editing, give a precise instruction and identify what to retain: "Replace the woman in image 1 with the man from image 2; keep the pose, camera angle, lighting and background." For a new composition, describe the final scene and assign each reference a role, such as the person from image 1 wearing the coat from image 2. Image numbers follow upload order. Keep instructions compatible and quote exact visible text.',
+            })
         else:
             extra_model_def["profiles_dir"] = [] if (flux_schnell or flux2) else ["flux"]
         if flux_chroma_radiance:
@@ -268,41 +273,14 @@ class family_handler():
         return {"flux":(1100, "Flux 1"), "flux2":(1101, "Flux 2")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-flux",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains flux images Loras (default: {os.path.join(lora_root, 'flux')})"
-        )
-        parser.add_argument(
-            "--lora-dir-flux2",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains flux2 images Loras (default: {os.path.join(lora_root, 'flux2')})"
-        )
-        parser.add_argument(
-            "--lora-dir-flux2-klein-4b",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Flux 2 Klein 4B Loras (default: {os.path.join(lora_root, 'flux2_klein_4b')})"
-        )
-        parser.add_argument(
-            "--lora-dir-flux2-klein-9b",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Flux 2 Klein 9B Loras (default: {os.path.join(lora_root, 'flux2_klein_9b')})"
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
+    def get_lora_dir(base_model_type):
         if base_model_type == "flux2_klein_4b":
-            return getattr(args, "lora_dir_flux2_klein_4b", None) or os.path.join(lora_root, "flux2_klein_4b")
+            return "flux2_klein_4b"
         if base_model_type == "flux2_klein_9b":
-            return getattr(args, "lora_dir_flux2_klein_9b", None) or os.path.join(lora_root, "flux2_klein_9b")
+            return "flux2_klein_9b"
         if test_flux2(base_model_type):
-            return getattr(args, "lora_dir_flux2", None) or os.path.join(lora_root, "flux2")
-        return getattr(args, "lora_dir_flux", None) or os.path.join(lora_root, "flux")
+            return "flux2"
+        return "flux"
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

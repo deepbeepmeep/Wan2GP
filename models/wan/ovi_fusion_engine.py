@@ -1,6 +1,7 @@
 import os
 
 import torch
+from shared.utils.phase_progress import generation_progress
 import logging
 from textwrap import indent
 import torch.nn as nn
@@ -126,6 +127,7 @@ class OviFusionEngine:
 
 
     @torch.no_grad()
+    @generation_progress
     def generate(self,
                     input_prompt, 
                     image_start=None,
@@ -146,6 +148,7 @@ class OviFusionEngine:
                     audio_negative_prompt="",
                     loras_slists = None,
                     callback = None,
+                    set_progress_status = None,
                     block_size = 0,                    
                     VAE_tile_size = 0,
                     joint_pass = False,
@@ -196,6 +199,8 @@ class OviFusionEngine:
 
         text_embeddings = self.text_encoder([input_prompt, n_prompt, audio_negative_prompt], device= self.device)
         text_embeddings = [emb.to(self.target_dtype).to(self.device) for emb in text_embeddings]
+        if set_progress_status is not None:
+            set_progress_status("Preparing Audio and Video Conditioning")
         # Split embeddings
         text_embeddings_audio_pos = text_embeddings[0]
         text_embeddings_video_pos = text_embeddings[0] 

@@ -17,6 +17,9 @@ class Config:
     kvcache_block_size: int = 256
     num_kvcache_blocks: int = -1
     kv_cache_int8: bool = False
+    kv_cache_initial_tokens: int = 0
+    kv_cache_max_tokens: int = 0
+    kv_cache_prompt_tokens: int = 0
     model_dir: str | None = None
     model_file: str | None = None
 

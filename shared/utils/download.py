@@ -1,4 +1,15 @@
+import inspect
 import os, shutil, sys, time
+from tempfile import NamedTemporaryFile, TemporaryDirectory
+from shared.utils.download_progress import DownloadCancelled, check_download_cancelled, download_context, install_hf_download_patch
+
+
+def _hf_download(*, gen=None, show_filename=True, file_index=1, file_count=1, **kwargs):
+    from huggingface_hub import hf_hub_download
+
+    install_hf_download_patch()
+    with download_context(gen, kwargs["filename"], show_filename, file_index, file_count):
+        return hf_hub_download(**kwargs)
 
 # Global variables to track download progress
 _start_time = None
@@ -108,12 +119,14 @@ def create_progress_hook(filename):
     return hook
 
 
-def process_files_def(repoId=None, sourceFolderList=None, fileList=None, targetFolderList=None):
-    from huggingface_hub import hf_hub_download, snapshot_download
+def process_files_def(repoId=None, sourceFolderList=None, fileList=None, targetFolderList=None, gen=None, show_filename=True):
+    from huggingface_hub import HfApi, snapshot_download
     from shared.utils import files_locator as fl
 
+    check_download_cancelled(gen)
     if targetFolderList is None:
         targetFolderList = [None] * len(sourceFolderList)
+    downloads = []
     for targetFolder, sourceFolder, files in zip(targetFolderList, sourceFolderList, fileList):
         if targetFolder is not None and len(targetFolder) == 0:
             targetFolder = None
@@ -121,16 +134,19 @@ def process_files_def(repoId=None, sourceFolderList=None, fileList=None, targetF
         targetRoot = fl.get_smart_download_root(explicit_target)
         local_dir = os.path.join(targetRoot, targetFolder) if targetFolder is not None else targetRoot
         if len(files) == 0:
-            if fl.locate_folder(sourceFolder if targetFolder is None else os.path.join(targetFolder, sourceFolder), error_if_none=False) is None:
-                snapshot_download(repo_id=repoId, allow_patterns=sourceFolder + "/*", local_dir=local_dir)
-        else:
-            for onefile in files:
-                if len(sourceFolder) > 0:
-                    if fl.locate_file((sourceFolder + "/" + onefile) if targetFolder is None else os.path.join(targetFolder, sourceFolder, onefile), error_if_none=False) is None:
-                        hf_hub_download(repo_id=repoId, filename=onefile, local_dir=local_dir, subfolder=sourceFolder)
-                else:
-                    if fl.locate_file(onefile if targetFolder is None else os.path.join(targetFolder, onefile), error_if_none=False) is None:
-                        hf_hub_download(repo_id=repoId, filename=onefile, local_dir=local_dir)
+            if gen is None:
+                if fl.locate_folder(sourceFolder if targetFolder is None else os.path.join(targetFolder, sourceFolder), error_if_none=False) is None:
+                    snapshot_download(repo_id=repoId, allow_patterns=sourceFolder + "/*", local_dir=local_dir)
+                continue
+            # Explicit iteration keeps the opt-in context in this thread, including folder downloads.
+            prefix = sourceFolder.rstrip("/") + "/" if sourceFolder else ""
+            files = [name[len(prefix):] for name in HfApi().list_repo_files(repoId) if name.startswith(prefix)]
+        for onefile in files:
+            check_download_cancelled(gen)
+            if fl.locate_file(_download_relpath(sourceFolder, onefile, targetFolder), error_if_none=False) is None:
+                downloads.append(dict(repo_id=repoId, filename=onefile, local_dir=local_dir, subfolder=sourceFolder or None))
+    for index, download in enumerate(downloads, 1):
+        _hf_download(**download, gen=gen, show_filename=show_filename, file_index=index, file_count=len(downloads))
 
 
 def _download_relpath(source_folder, filename, target_folder=None):
@@ -176,15 +192,19 @@ def send_download_status(send_cmd=None, status_text=None):
         send_cmd("status", status_text)
 
 
-def process_files_def_if_needed(download_def, send_cmd=None, status_text=None):
+def process_files_def_if_needed(download_def, send_cmd=None, status_text=None, gen=None, show_filename=True, process_files=None):
+    check_download_cancelled(gen)
     if download_def is None or len(download_def_missing_files(download_def)) == 0:
         return False
     send_download_status(send_cmd, status_text)
+    if process_files is None:
+        from functools import partial
+        process_files = partial(process_files_def, gen=gen, show_filename=show_filename)
     if isinstance(download_def, list):
         for one_def in download_def:
-            process_files_def(**one_def)
+            process_files(**one_def)
     else:
-        process_files_def(**download_def)
+        process_files(**download_def)
     return True
 
 
@@ -196,23 +216,49 @@ def query_audio_background_replacement_download_def():
     }
 
 
-def download_audio_background_replacement(send_cmd=None, status_text="Downloading audio background replacement model files..."):
-    return process_files_def_if_needed(query_audio_background_replacement_download_def(), send_cmd=send_cmd, status_text=status_text)
+def download_audio_background_replacement(send_cmd=None, status_text="Downloading audio background replacement model files...", gen=None, process_files=None):
+    return process_files_def_if_needed(query_audio_background_replacement_download_def(), send_cmd=send_cmd, status_text=status_text, gen=gen, process_files=process_files)
 
 
-def process_download_defs(download_defs):
+def process_download_defs(download_defs, gen=None, show_filename=True):
     if isinstance(download_defs, dict):
-        process_files_def(**download_defs)
+        process_files_def(**download_defs, gen=gen, show_filename=show_filename)
         return
     for download_def in download_defs or []:
         if download_def is not None:
-            process_files_def(**download_def)
+            process_files_def(**download_def, gen=gen, show_filename=show_filename)
 
 
-def download_file(url, filename):
-    from huggingface_hub import hf_hub_download
+_download_compat_warnings = set()
+
+
+def download_url(url, filename, gen=None, show_filename=True):
+    """Call the active downloader, including older plugin replacements."""
+    downloader = download_file
+    parameters = inspect.signature(downloader, follow_wrapped=False).parameters
+    kwargs = {"gen": gen, "show_filename": show_filename}
+    if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        kwargs = {key: value for key, value in kwargs.items() if key in parameters and parameters[key].kind != inspect.Parameter.POSITIONAL_ONLY}
+    if len(kwargs) < 2:
+        implementation = downloader if inspect.isroutine(downloader) else type(downloader).__call__
+        source = inspect.getsourcefile(implementation) or inspect.getfile(implementation)
+        parts = source.replace("\\", "/").split("/")
+        plugin = next((parts[i + 1] for i, part in enumerate(parts[:-1]) if part.lower() == "plugins"), None)
+        owner = f"Plugin '{plugin}' ({source})" if plugin else f"Download Replacement '{source}'"
+        if owner not in _download_compat_warnings:
+            _download_compat_warnings.add(owner)
+            missing = ", ".join(key for key in ("gen", "show_filename") if key not in kwargs)
+            print(f"[Downloads] Warning: Unable to Enable the Full Download Progress Bar as {owner} Does Not Support {missing}. Continuing Without These Arguments; Please Update the Plugin. Download Cancellation May Also Be Unavailable During the Transfer.")
+    check_download_cancelled(gen)
+    result = downloader(url, filename, **kwargs)
+    check_download_cancelled(gen)
+    return result
+
+
+def download_file(url, filename, gen=None, show_filename=True):
     from shared.utils import files_locator as fl
 
+    check_download_cancelled(gen)
     url = url.split("|")[0]
     if url.startswith("https://huggingface.co/") and "/resolve/main/" in url:
         base_dir = os.path.dirname(filename)
@@ -222,18 +268,35 @@ def download_file(url, filename):
         onefile = os.path.basename(url_parts[-1])
         sourceFolder = os.path.dirname(url_parts[-1])
         if len(sourceFolder) == 0:
-            hf_hub_download(repo_id=repoId, filename=onefile, local_dir=fl.get_download_location() if len(base_dir) == 0 else base_dir)
+            _hf_download(repo_id=repoId, filename=onefile, local_dir=fl.get_download_location() if len(base_dir) == 0 else base_dir, gen=gen, show_filename=show_filename)
         else:
             tgt = fl.get_download_location() if len(base_dir) == 0 else base_dir
             os.makedirs(tgt, exist_ok=True)
-            temp_dir_path = os.path.join(tgt, f"_temp{time.time()}")
-            temp_full_path = os.path.join(temp_dir_path, sourceFolder)
-            os.makedirs(temp_full_path, exist_ok=True)
-            hf_hub_download(repo_id=repoId, filename=onefile, local_dir=temp_dir_path, subfolder=sourceFolder)
-            shutil.move(os.path.join(temp_full_path, onefile), tgt)
-            shutil.rmtree(temp_dir_path)
+            with TemporaryDirectory(prefix="_temp", dir=tgt) as temp_dir_path:
+                _hf_download(repo_id=repoId, filename=onefile, local_dir=temp_dir_path, subfolder=sourceFolder, gen=gen, show_filename=show_filename)
+                check_download_cancelled(gen)
+                shutil.move(os.path.join(temp_dir_path, sourceFolder, onefile), tgt)
+    elif gen is not None:
+        from huggingface_hub import file_download as hf
+
+        install_hf_download_patch()
+        with download_context(gen, filename, show_filename):
+            # Write beside the destination so publication is an atomic rename.
+            with NamedTemporaryFile(dir=os.path.dirname(filename) or ".", prefix="_download_", suffix=".incomplete", delete=False) as temp_file:
+                temp_path = temp_file.name
+                try:
+                    hf.http_get(url, temp_file, displayed_filename=os.path.basename(filename))
+                except BaseException:
+                    temp_file.close()
+                    os.remove(temp_path)
+                    raise
+            try:
+                check_download_cancelled(gen)
+                os.replace(temp_path, filename)
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
     else:
         from urllib.request import urlretrieve
 
         urlretrieve(url, filename, create_progress_hook(filename))
-

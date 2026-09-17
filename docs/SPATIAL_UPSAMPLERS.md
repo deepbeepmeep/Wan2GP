@@ -98,8 +98,10 @@ Discovery evaluates the historical `enabled()` method first: `True` maps to
 optional `status` property. Discovery always emits `enabled`, `disabled`, or
 `unknown`; `unknown` means neither mechanism supplied a valid status.
 `reason_disabled` is included only when the normalized status is `disabled` and
-the handler provides a non-empty reason. Deepy includes these fields for every
-discovered process and will not dispatch a process reported as disabled.
+the handler provides a non-empty reason. This describes the internal catalog;
+Prime's post-processing toolbox omits disabled processors from callable
+discovery. Internal/compatibility views may include them for diagnostics,
+but a process reported as disabled cannot be dispatched.
 
 `SimpleScaleSuffixMixin` provides `is_upsampling`/`split_value`/`build_value` for the
 common `<method>*<multiplier>` value encoding (e.g. `lanczos*2`, `coz*4`). Its
@@ -163,6 +165,16 @@ gallery item, and `media_flow` exposes scalar controls for the currently selecte
 Media Flow spatial process. A parameter can still be inferred and passed by
 WanGP when it is absent from a UI context; H3, for example, receives generation
 prompt/reference data without showing redundant controls during generation.
+
+The two persisted generic slider slots are `spatial_upsampler_param` and
+`spatial_upsampler_param2`. A refiner declares zero, one or both in its
+`method_parameters`, with its own labels, limits, steps and defaults. Unset slot
+values resolve to that method's defaults. Method selection updates the slider
+metadata and resets these slots to the newly selected method's defaults.
+
+Use `label` for the short gallery label and optional `label_long` for a generation
+label with brief guidance. Declare `description` and optional `method_descriptions`
+on the processor so the UI can explain which choice suits the user's input.
 
 Supported generic UI components are `textbox`, `number`, `slider`, `dropdown`,
 `checkbox`, and `images`. Image parameters are rendered by
@@ -284,3 +296,7 @@ offload_registry.unregister_offloadobj("MyUpsampler", offloadobj)  # in release_
 This lets WanGP track every extension offload object and release all extension
 resources centrally: the toolbar "Unload Models" tool (and the Configuration plugin
 release button) calls `offload_registry.release_all()`.
+
+---
+
+> Applies to: Developing spatial upsampler/refiner plugins: handlers, registration and shared configuration. Installed processing options are available through WanGP's post-processing controls and API.

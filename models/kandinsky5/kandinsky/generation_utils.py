@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import text_encoding_prompts
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "False"
 
@@ -291,7 +292,7 @@ def generate_sample(
     else:
         type_of_content = "video"
 
-    with torch.no_grad():
+    with torch.no_grad(), text_encoding_prompts(sum((type_of_content, p) not in text_embedder.text_encoder_cache._entries for p in dict.fromkeys([caption, negative_caption]))):
         bs_text_embed, text_cu_seqlens, attention_mask = text_embedder.encode(
             [caption], type_of_content=type_of_content
         )
@@ -412,7 +413,7 @@ def generate_sample_ti2i(
             edit_latent = torch.cat([torch.zeros_like(img), torch.zeros_like(img[...,:1])],-1)
         img = torch.cat([img, edit_latent],dim=-1)
     
-    with torch.no_grad():
+    with torch.no_grad(), text_encoding_prompts(2 if image is not None else sum((type_of_content, p) not in text_embedder.text_encoder_cache._entries for p in dict.fromkeys([caption, negative_caption]))):
         bs_text_embed, text_cu_seqlens, attention_mask = text_embedder.encode(
             [caption], type_of_content=type_of_content, images=image
         )
@@ -518,7 +519,7 @@ def generate_sample_i2v(
     else:
         type_of_content = "video"
         
-    with torch.no_grad():
+    with torch.no_grad(), text_encoding_prompts(sum((type_of_content, p) not in text_embedder.text_encoder_cache._entries for p in dict.fromkeys([caption, negative_caption]))):
         bs_text_embed, text_cu_seqlens, attention_mask = text_embedder.encode(
             [caption], type_of_content=type_of_content
         )

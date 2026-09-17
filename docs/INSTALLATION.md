@@ -2,7 +2,7 @@
 
 This guide covers manual installation for different GPU generations and operating systems. Alternatively you may use the 1 click install / update scripts (please check the repo readme for instructions).
 
-It is recommended to use Python 3.10.9, PyTorch 2.7.1 with Cuda 12.8 for GTX 10XX and Python 3.11.14, PyTorch 2.10 with Cuda 13.0/13.1 for RTX 20XX - RTX 50XX as both these configs are well-tested and stable.
+It is recommended to use Python 3.10.9, PyTorch 2.7.1 with Cuda 12.8 for GTX 10XX and Python 3.11.14, PyTorch 2.10 with Cuda 13.0/13.1 for RTX 20XX - RTX 50XX. RTX 20XX requires Triton 3.2.
 
 It is not recommended to use either PytTorch 2.8.0 as some System RAM memory leaks have been observed when switching models or 2.9.0 which has some Convolution 3D perf issues (VAE VRAM requirements explode).
 
@@ -50,18 +50,33 @@ Read the full **[DLSS 5 runtime installation, directory layout, copyright, and s
 ## Triton Installation
 The Triton library is required for Pytorch compilation and Sage Attention and by various kernels to accelerate tensors processing.
 
-### Windows RTX 20XX -RTX 30xx
-```
-pip install -U "triton-windows<3.3"
+### Windows RTX 30XX - RTX 50XX
+
+Use the Triton version matching your PyTorch installation. For the recommended **PyTorch 2.10** environment:
+
+```bash
+python -m pip install -U "triton-windows>=3.6,<3.7"
 ```
 
-### Windows RTX 40XX -RTX 50xx
+For an existing **PyTorch 2.7 / 2.7.1** environment:
+
+```bash
+python -m pip install -U "triton-windows>=3.3,<3.4"
 ```
-pip install triton-windows
+
+Triton 3.3 or newer is required for optimized ConvRot support.
+
+### Windows RTX 20XX
+
+RTX 20XX must use Triton 3.2:
+
+```bash
+python -m pip install -U "triton-windows>=3.2,<3.3"
 ```
 
 ### Linux
-Triton library should be automatically installed when installing pytorch.
+
+PyTorch normally installs the matching Triton version automatically: 3.3 for PyTorch 2.7, or 3.6 for PyTorch 2.10. RTX 20XX requires Triton 3.2.
 
 ## Sage Attention
 Sage Attention accelerates Video / Image Generation up to x2 with very little quality loss. Sage does not support GTX 10XX in WanGP.
@@ -116,6 +131,8 @@ python -m pip install --no-build-isolation git+https://github.com/woct0rdho/Spar
 
 ## Flash Attention
 Flash attention is not as fast as Sage for Generating Videos or Images but it preserves quality. However when used with a Language Model (prompt enhancer, Text to Speech, Deepy) it can offer a significant speedup.
+
+The FlashAttention 2 packages below require RTX 30XX or newer. RTX 20XX users should use SDPA or SageAttention 1 where supported, and the PyTorch/legacy LM decoder for autoregressive models.
 
  
 ### Flash Attention Windows
@@ -238,3 +255,7 @@ These kernels accelerate bitsandbytes 4-bit / NF4 checkpoints. Install them afte
 ```
 pip install bitsandbytes==0.49.2
 ```
+
+---
+
+> Applies to: Manual installation and dependencies on Windows and Linux. Requirements vary by operating system and GPU; the commands in this guide concern installation and launch.

@@ -2,8 +2,25 @@
     --wangp-ui-scale: 0.9;
 }
 
+/* Form refreshes change control heights; keep the page at the user's position. */
+html {
+    overflow-anchor: none;
+}
+
 gradio-app {
     width: 100%;
+}
+
+/* Hide the preview-close toggle; reference galleries have explicit clear controls. */
+.gallery-container > .preview button[aria-label="Close"] {
+    display: none;
+}
+
+.wangp-voice-prompt textarea:disabled {
+    background: var(--background-fill-secondary);
+    color: var(--body-text-color-subdued);
+    box-shadow: none;
+    cursor: not-allowed;
 }
 
 .postprocess div,
@@ -21,25 +38,36 @@ gradio-app {
     --layout-gap: 0px !important;
 }
 .postprocess span {margin-top:4px;margin-bottom:4px}
+.form:has(> #family_list) {
+    background: transparent;
+    border-radius: 14px;
+}
 #model_list, #family_list, #model_base_types_list {
-background-color:black;
-padding:1px}
+    --wangp-model-corners: 0;
+    background-color: #a9bfd0;
+    border-radius: var(--wangp-model-corners) !important;
+    padding: 1px;
+}
+
+.dark :is(#model_list, #family_list, #model_base_types_list) {
+    background-color: #526a80;
+}
 
 #model_list,#model_base_types_list { padding-left:0px}
 
 #model_list input, #family_list input, #model_base_types_list input {
 font-size: calc(25px * var(--wangp-ui-scale))}
 
-#family_list div div {
-border-radius: 4px 0px 0px 4px;
+#family_list {
+    --wangp-model-corners: 14px 0 0 14px;
 }
 
-#model_list div div {
-border-radius: 0px 4px 4px 0px;
+#model_list, #model_base_types_list:has(+ #model_list.hidden) {
+    --wangp-model-corners: 0 14px 14px 0;
 }
 
-#model_base_types_list div div {
-border-radius: 0px 0px 0px 0px;
+:is(#family_list, #model_base_types_list, #model_list) > .container > .wrap {
+    border-radius: var(--wangp-model-corners);
 }
 
 .title-with-lines {
@@ -293,6 +321,22 @@ h2 {
     pointer-events: none;
 }
 
+.wangp-generation-info {color:var(--body-text-color);font-size:var(--text-md);line-height:1.55;}
+.wangp-generation-info .generation-table-wrap {max-width:100%;overflow-x:auto;border:1px solid var(--border-color-primary);border-radius:var(--block-radius,8px);background:var(--background-fill-primary);}
+.wangp-generation-info #PINFO {width:100%;margin:0;border:0;border-collapse:separate;border-spacing:0;table-layout:auto;color:inherit;font:inherit;}
+.wangp-generation-info #PINFO td {padding:12px 5px;border:0;vertical-align:middle;}
+.wangp-generation-info #PINFO td:last-child {padding-right:12px;}
+.wangp-generation-info #PINFO .generation-prompt-cell {width:100%;min-width:200px;padding:14px 16px;overflow-wrap:anywhere;}
+.wangp-generation-info .generation-label {margin-bottom:6px;font-size:var(--text-sm);font-weight:600;color:var(--body-text-color-subdued);}
+.wangp-generation-info .generation-note {margin-bottom:8px;color:var(--body-text-color-subdued);white-space:pre-wrap;}
+.wangp-generation-info .generation-references {display:grid;grid-template-columns:repeat(2,120px);gap:10px;}
+.wangp-generation-info .generation-references:has(> :only-child) {grid-template-columns:120px;}
+.wangp-generation-info .generation-reference {display:flex;flex-direction:column;gap:6px;width:120px;padding:6px;border:1px solid var(--border-color-primary);border-radius:var(--button-small-radius,6px);background:var(--background-fill-secondary);color:inherit;font:inherit;cursor:pointer;}
+.wangp-generation-info .generation-reference img {display:block;width:100%;height:101px;object-fit:contain;border-radius:4px;}
+.wangp-generation-info .generation-reference span {font-size:var(--text-sm);line-height:1.35;overflow-wrap:anywhere;text-align:center;}
+.wangp-generation-info .generation-reference:hover {border-color:var(--color-accent);}
+.wangp-generation-info .generation-reference:focus-visible {outline:2px solid var(--color-accent);outline-offset:2px;}
+
 .hover-image {
 cursor: pointer;
 position: relative;
@@ -346,6 +390,10 @@ transition: visibility 0s linear 1s, opacity 0.3s linear 1s; /* 1s delay before 
 .btn_centered {margin-top: calc(10px * var(--wangp-ui-scale)); text-wrap-mode: nowrap;}
 .cbx_centered label {margin-top: calc(8px * var(--wangp-ui-scale)); text-wrap-mode: nowrap;}
 .cbx_bottom label {padding-top: calc(48px * var(--wangp-ui-scale)); text-wrap-mode: nowrap;}
+/* Reserve the LoRA multiplier's actual width instead of a fixed 1% column. */
+#video_info table {
+    table-layout: auto !important;
+}
 .copy-swap {
 display: block;
 max-width: 100%;
@@ -436,6 +484,7 @@ user-select: text;
 .wangp-bottom-aligned-row {
     align-items: flex-end !important;
 }
+
 .deepy-prime-recommendation {
     margin: 0 0 calc(8px * var(--wangp-ui-scale)) !important;
     padding: calc(8px * var(--wangp-ui-scale)) calc(12px * var(--wangp-ui-scale)) !important;

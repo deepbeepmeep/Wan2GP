@@ -15,6 +15,7 @@ from shared.deepy.config import (
     DEEPY_DEFAULT_EDIT_IMAGE,
     DEEPY_DEFAULT_GEN_IMAGE,
     DEEPY_DEFAULT_GEN_SONG,
+    DEEPY_DEFAULT_GEN_VIDEO_WITH_REFS,
     DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION,
     DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE,
     DEEPY_DEFAULT_GEN_VIDEO,
@@ -23,6 +24,7 @@ from shared.deepy.config import (
     DEEPY_TOOL_EDIT_IMAGE_KEY,
     DEEPY_TOOL_GEN_IMAGE_KEY,
     DEEPY_TOOL_GEN_SONG_KEY,
+    DEEPY_TOOL_GEN_VIDEO_WITH_REFS_KEY,
     DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY,
     DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY,
     DEEPY_TOOL_GEN_VIDEO_KEY,
@@ -31,6 +33,7 @@ from shared.deepy.config import (
     normalize_deepy_tool_edit_image,
     normalize_deepy_tool_gen_image,
     normalize_deepy_tool_gen_song,
+    normalize_deepy_tool_gen_video_with_refs,
     normalize_deepy_tool_gen_speech_from_description,
     normalize_deepy_tool_gen_speech_from_sample,
     normalize_deepy_tool_gen_video,
@@ -48,9 +51,10 @@ DEFAULT_SPEECH_FROM_SAMPLE_VARIANT = DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE
 TOOL_DISPLAY_NAMES = {
     "gen_image": "Image Generator",
     "edit_image": "Image Editor",
-    "gen_video": "Media Generator",
+    "gen_video": "Video Generator",
     "gen_video_with_speech": "Video With Speech",
     "gen_song": "Song Generator",
+    "gen_video_with_refs": "Video Generator with Ref.",
     "gen_speech_from_description": "Speech From Description",
     "gen_speech_from_sample": "Speech From Sample",
 }
@@ -58,6 +62,7 @@ _TOOL_TEMPLATE_VALIDATION_ERRORS = {
     "gen_video": "The settings should generate a video",
     "gen_video_with_speech": "The settings should generate a Video and accept an Audio Prompt",
     "gen_song": "The settings should generate music",
+    "gen_video_with_refs": "The settings should generate video using references",
     "gen_image": "The settings of the model must generate an Image",
     "edit_image": "The settings of the model must generate an Image and accept an Image Ref",
     "gen_speech_from_description": "The model should generate only an audio output",
@@ -73,6 +78,7 @@ _TOOL_CONFIG_SPECS = {
         "normalize": normalize_deepy_tool_gen_video_with_speech,
     },
     "gen_song": {"key": DEEPY_TOOL_GEN_SONG_KEY, "default": DEEPY_DEFAULT_GEN_SONG, "normalize": normalize_deepy_tool_gen_song},
+    "gen_video_with_refs": {"key": DEEPY_TOOL_GEN_VIDEO_WITH_REFS_KEY, "default": DEEPY_DEFAULT_GEN_VIDEO_WITH_REFS, "normalize": normalize_deepy_tool_gen_video_with_refs},
     "gen_speech_from_description": {
         "key": DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY,
         "default": DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION,
@@ -467,6 +473,7 @@ def validate_wangp_settings_payload_for_tool(tool_name: str, payload: dict[str, 
         "gen_video": image_mode == 0,
         "gen_video_with_speech": image_mode == 0 and accepts_audio_prompt,
         "gen_song": audio_only and isinstance(model_def, dict) and str(model_def.get("group", "") or "").strip() == "music",
+        "gen_video_with_refs": image_mode == 0 and (has_image_refs or (isinstance(model_def, dict) and model_def.get("reference_video_enabled", False))),
         "gen_image": image_mode == 1,
         "edit_image": image_mode == 1 and has_image_refs,
         "gen_speech_from_description": audio_only,
@@ -548,6 +555,11 @@ def get_default_image_editor_variant() -> str:
 def get_default_video_with_speech_variant() -> str:
     configured = _get_configured_tool_variant("gen_video_with_speech")
     return resolve_tool_variant("gen_video_with_speech", configured, default_variant=DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH)
+
+
+def get_default_with_refs_variant() -> str:
+    configured = _get_configured_tool_variant("gen_video_with_refs")
+    return resolve_tool_variant("gen_video_with_refs", configured, default_variant=DEEPY_DEFAULT_GEN_VIDEO_WITH_REFS)
 
 
 def get_default_song_variant() -> str:
@@ -761,7 +773,7 @@ def build_generation_task(
         if "E" not in image_prompt_types_allowed:
             raise ValueError("This preset does not support an End Image.")
         task["image_prompt_type"] = _add_unique_flags(task.get("image_prompt_type", ""), "E")
-    if has_image_refs and str(tool_name or "").strip() in {"gen_video", "gen_video_with_speech"} and "I" not in str(task.get("video_prompt_type", "") or ""):
+    if has_image_refs and str(tool_name or "").strip() in {"gen_video", "gen_video_with_speech", "gen_video_with_refs"} and "I" not in str(task.get("video_prompt_type", "") or ""):
         raise ValueError("This preset received Reference Images but its Video Prompt Type does not enable them.")
     return task
 
@@ -779,6 +791,7 @@ __all__ = [
     "get_default_image_editor_variant",
     "get_default_image_generator_variant",
     "get_default_song_variant",
+    "get_default_with_refs_variant",
     "get_default_speech_from_description_variant",
     "get_default_speech_from_sample_variant",
     "get_default_video_generator_variant",

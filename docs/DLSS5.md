@@ -136,3 +136,7 @@ Open **Config > Extensions > Spatial Upsamplers / Visual Refiners** to configure
 The Postprocessing, Late Postprocessing, and Media Flow controls expose **DLSS 5 NR Intensity** from `0.0` through `2.0`, with a default of `1.0`.
 
 Because these guides are estimated from the video, results can differ from DLSS integrated directly into a game engine.
+
+---
+
+> Applies to: Installation and diagnostics for the optional DLSS 5 runtime on supported Windows hardware. Available processors and generation options depend on the installed runtime.

@@ -1,5 +1,5 @@
 --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ort-cuda-13-nightly/pypi/simple/
-mmgp==3.7.14
+mmgp==3.8.0
 # Core AI stack
 diffusers==0.36.0
 transformers==4.54.0 #4.53.1
@@ -41,6 +41,7 @@ jax
 
 # UI & interaction
 gradio==5.29.0
+orjson==3.11.6 # Fix native crashes when serializing deeply nested objects.
 dashscope
 loguru
 s3tokenizer
@@ -80,10 +81,14 @@ smplfitter @ https://github.com/deepbeepmeep/smplfitter/releases/download/v0.2.1
 omegaconf
 hydra-core
 easydict
-pydantic==2.10.6
-mcp==1.10.1
+pydantic==2.11.10
+mcp==1.30.0
 
 # Math & modeling
+mir_eval==0.8.2
+pretty_midi==0.2.11.post0
+mido==1.3.3
+symusic==0.6.0
 torchdiffeq>=0.2.5
 tensordict>=0.6.1
 peft==0.17.0 # 0.15.0
@@ -112,3 +117,4 @@ keyring==25.7.0
 # transformers==4.46.3  # for llamallava pre-patch
 # rembg==2.0.65         # non-GPU fallback
 huggingface_hub[hf_xet]
+# Optional Xet transport: cancellable downloads require hf_xet>=1.5.2.

@@ -52,6 +52,7 @@ INDEX_TTS2_QWEN_EMO_FILES = [
 ]
 INDEX_TTS2_DURATION_SLIDER = {
     "label": "Max duration (seconds)",
+    "name": "Max Duration",
     "min": 1,
     "max": 600,
     "increment": 1,
@@ -148,6 +149,13 @@ def _get_index_tts2_model_def(base_model_type):
         "lm_engines": ["legacy", "cg", "vllm"],
         "compile": False,
     }
+    if not is_v25:
+        model_def.update({
+            "deepy_infos": "`prompt` = speech; `audio_guide` = required speaker sample. `audio_prompt_type`: `A` uses its voice/emotion; `AB` adds emotion from `audio_guide2`; `AB2` uses that second sample as speaker 2. `alt_prompt` sets default emotion. Max duration caps output.",
+            "deepy_prompt_infos": "Write exact English/Chinese speech. Inline cues persist until replaced: '[happy] Hello. [calm] We have time.' `alt_prompt` applies where no inline cue exists; text emotion overrides audio emotion. Keep delivery directions in cues or `alt_prompt`. For `AB2`, label dialogue `Speaker 1:` / `Speaker 2:` matching sample order.",
+            "infos": "Generate speech from Text Prompt (`prompt`) and a required Speaker reference voice (`audio_guide`). In audio mode `A`, the sample supplies the speaker and emotion. Mode `AB` uses the second sample (`audio_guide2`) as an emotion reference; `AB2` uses it as a second speaker for dialogue. Default Emotion Instruction (`alt_prompt`) and inline emotion cues control delivery separately from the spoken words. Max duration caps the assembled audio.",
+            "prompt_infos": 'Write the exact words to speak, with natural punctuation, in English or Chinese. WanGP reads `[happy] Hello there. [calm] We have time.` as emotion cues followed by speech; each cue stays active until replaced. `alt_prompt` supplies the default emotion where no inline cue applies. Keep directions inside these cues or the emotion field. For `AB2` dialogue, use `Speaker 1:` and `Speaker 2:` sections matching the two samples. Inline/text emotion overrides the audio emotion for that segment.',
+        })
     if is_v25:
         model_def.update({
             "model_modes": {
@@ -270,24 +278,14 @@ class family_handler:
         return {"tts": (2200, "TTS")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-index-tts2",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains IndexTTS2 settings (default: {os.path.join(lora_root, 'index_tts2')})",
-        )
-        parser.add_argument("--lora-dir-index-tts25", type=str, default=None, help=f"Path to IndexTTS 2.5 LoRAs (default: {os.path.join(lora_root, INDEX_TTS25_ARCHITECTURE)})")
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
+    def get_lora_dir(base_model_type):
         if base_model_type == INDEX_TTS25_ARCHITECTURE:
-            return getattr(args, "lora_dir_index_tts25", None) or os.path.join(lora_root, INDEX_TTS25_ARCHITECTURE)
-        return getattr(args, "lora_dir_index_tts2", None) or os.path.join(lora_root, "index_tts2")
+            return INDEX_TTS25_ARCHITECTURE
+        return "index_tts2"
 
     @staticmethod
     def query_model_def(base_model_type, model_def):
-        return _get_index_tts2_model_def(base_model_type)
+        return {**_get_index_tts2_model_def(base_model_type), "specialities": [{"name": name} for name in ("expressive speech", "emotion transfer", "two-speaker dialogue")]}
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

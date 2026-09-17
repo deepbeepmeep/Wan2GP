@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import text_encoding_progress, generation_progress
 import json
 import math
 import os
@@ -313,15 +314,16 @@ class LongCatModel:
             )
             ids = ids.to(device)
             mask = mask.to(device)
-            prompt_embeds = self.text_encoder.model(ids, mask).to(dtype)
+            with text_encoding_progress(self.text_encoder.model.blocks, prompt_count=len(prompts)):
+                prompt_embeds = self.text_encoder.model(ids, mask).to(dtype)
             return list(zip(prompt_embeds, mask))
         prompt_list = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompt_list)
-        prompt_contexts = self.text_encoder_cache.encode(
-            encode_fn,
-            prompt_list,
-            device=device,
-        )
+        neg_list = [] if negative_prompt is None else [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+        if len(neg_list) == 1 and batch_size > 1:
+            neg_list = neg_list * batch_size
+        contexts = self.text_encoder_cache.encode(encode_fn, prompt_list + neg_list, device=device)
+        prompt_contexts, negative_contexts = contexts[:batch_size], contexts[batch_size:]
         prompt_embeds = torch.stack([ctx[0] for ctx in prompt_contexts], dim=0)
         mask = torch.stack([ctx[1] for ctx in prompt_contexts], dim=0)
         seq_len = prompt_embeds.shape[1]
@@ -337,11 +339,7 @@ class LongCatModel:
             neg_list = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
             if len(neg_list) == 1 and batch_size > 1:
                 neg_list = neg_list * batch_size
-            neg_contexts = self.text_encoder_cache.encode(
-                encode_fn,
-                neg_list,
-                device=device,
-            )
+            neg_contexts = negative_contexts
             neg_embeds = torch.stack([ctx[0] for ctx in neg_contexts], dim=0)
             neg_mask = torch.stack([ctx[1] for ctx in neg_contexts], dim=0)
             neg_embeds = neg_embeds.unsqueeze(1)
@@ -589,6 +587,7 @@ class LongCatModel:
         return sigmas.to(dtype=torch.float32, device="cpu")
 
     @torch.no_grad()
+    @generation_progress
     def generate(
         self,
         seed=None,
@@ -622,6 +621,7 @@ class LongCatModel:
         speakers_bboxes=None,
         window_no=None,
         offloadobj=None,
+        set_progress_status=None,
         **kwargs,
     ):
         if self._interrupt:

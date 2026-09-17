@@ -130,7 +130,8 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
     assistant_badge = str(session.current_turn.get("assistant_badge", "") or "") if isinstance(session.current_turn, dict) else ""
     if assistant_badge:
         _send(send_cmd, assistant_chat.set_message_badge(session, assistant_id, assistant_badge))
-    session.messages.append({"role": "user", "content": text})
+    user_message = assistant_chat.build_user_model_message(session, text, toolbox=toolbox)
+    session.messages.append(user_message)
     checkpoint_assistant_turn(session)
     answer_parts: list[str] = []
     answer_segment_parts: list[str] = []
@@ -357,7 +358,7 @@ def run_remote_deepy_turn(server_config: dict[str, Any], session, text: str, sys
         system_prompt = f"{system_prompt}\n\n{execution_instructions}".strip()
     try:
         set_remote_status("waiting", f"Waiting for {engine_label}...", "loading")
-        answer = backend.run_turn(text, system_prompt=system_prompt, tools=toolbox.get_tool_schemas(), images=[], on_event=on_event, call_tool=call_tool, should_stop=lambda: bool(session.interrupt_requested or assistant_steering_interrupt_due(session)))
+        answer = backend.run_turn(user_message.get("model_content", user_message["content"]), system_prompt=system_prompt, tools=toolbox.get_tool_schemas(), images=[], on_event=on_event, call_tool=call_tool, should_stop=lambda: bool(session.interrupt_requested or assistant_steering_interrupt_due(session)))
         if answer and not answer_parts:
             answer_parts.append(answer)
             _answer_block_id, payload = assistant_chat.upsert_assistant_content_block(session, assistant_id, None, answer, streaming=False)

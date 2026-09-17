@@ -14,15 +14,9 @@ def preparse_loras_multipliers(loras_multipliers):
 def expand_slist(slists_dict, mult_no, num_inference_steps, model_switch_step, model_switch_step2 ):
     def expand_one(slist, num_inference_steps):
         if not isinstance(slist, list): slist = [slist]
-        new_slist= []
         if num_inference_steps <=0:
-            return new_slist
-        inc =  len(slist) / num_inference_steps 
-        pos = 0
-        for i in range(num_inference_steps):
-            new_slist.append(slist[ int(pos)])
-            pos += inc
-        return new_slist
+            return []
+        return [slist[i * len(slist) // num_inference_steps] for i in range(num_inference_steps)]
 
     phase1 = slists_dict["phase1"][mult_no]
     phase2 = slists_dict["phase2"][mult_no]

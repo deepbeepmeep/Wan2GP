@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import generation_progress
 from mmgp import offload
 import argparse
 import os
@@ -261,6 +262,7 @@ class LTXV:
         self.vae = vae
         # return pipeline, pipe
 
+    @generation_progress
     def generate(
         self,
         input_prompt: str,
@@ -283,6 +285,7 @@ class LTXV:
         device: Optional[str] = None,
         VAE_tile_size = None,
         apg_switch = 0,
+        set_progress_status=None,
         **kwargs,
     ):
 

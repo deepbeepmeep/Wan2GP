@@ -13,6 +13,7 @@ from mmgp import offload
 from tqdm.auto import tqdm
 
 from shared.llm_io import known_token_ids, llm_io_enabled, log_llm_io
+from shared.deepy.config import DEEPY_REPETITION_PENALTY_DEFAULT, DEEPY_REPETITION_PENALTY_KEY, get_deepy_config_value, normalize_deepy_repetition_penalty
 from shared.utils import files_locator as fl
 from shared.llm_engines.nanovllm import SamplingParams
 from shared.llm_engines.nanovllm.models.qwen3_5 import Qwen3_5ForCausalLM, clear_qwen35_runtime_caches
@@ -184,37 +185,39 @@ def _resolve_quanto_log_ssm_a(model_path: str, spec: dict) -> bool:
     return filename in log_ssm_a_filenames or (bool(spec.get("text_int8_log_ssm_a", False)) and filename == selected_filename)
 
 
-def _normalize_generated_text(text: str) -> str:
+def _normalize_generated_text(text: str, *, keep_trailing_newlines: bool = False) -> str:
     text = str(text or "")
     text = text.replace("<|im_end|>", "").replace("<|im_start|>", "")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n")]
-    return "\n".join(lines).strip()
+    text = "\n".join(lines)
+    return text.lstrip() if keep_trailing_newlines else text.strip()
 
 
-def _clean_answer_text(text: str) -> str:
+def _clean_answer_text(text: str, *, keep_trailing_newlines: bool = False) -> str:
     text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"^(?:\s*</think>\s*)+", "", text, flags=re.IGNORECASE)
     text = text.replace("<think>", "\n").replace("</think>", "\n")
     text = re.sub(r"^\s*assistant\s*:?\s*", "", text, flags=re.IGNORECASE)
-    text = re.split(
+    parts = re.split(
         r"(?:<\|im_start\|>\s*(?:assistant|user|system|tool)\b|<tool_call>\s*|<tool_response>\s*|<tools>\s*|\n\s*(?:assistant|user|system|tool)\s*:)",
         text,
         maxsplit=1,
         flags=re.IGNORECASE,
-    )[0]
+    )
+    text = parts[0]
     cleaned_lines = []
     for line in text.split("\n"):
         stripped = line.strip()
         if stripped.lower() == "code interpreter":
             break
         cleaned_lines.append(line)
-    return _normalize_generated_text("\n".join(cleaned_lines))
+    return _normalize_generated_text("\n".join(cleaned_lines), keep_trailing_newlines=keep_trailing_newlines and len(parts) == 1)
 
 
-def _split_generated_parts(text: str) -> tuple[list[str], str]:
+def _split_generated_parts(text: str, *, keep_trailing_newlines: bool = False) -> tuple[list[str], str]:
     text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     think_chunks = []
     answer_parts = []
@@ -259,11 +262,11 @@ def _split_generated_parts(text: str) -> tuple[list[str], str]:
             if leading_text.lower().startswith("thinking process"):
                 think_chunks.append(leading_text)
                 answer_text = text[timeline_match.start():]
-    return [normalized for chunk in think_chunks if len(normalized := _normalize_generated_text(chunk)) > 0], _clean_answer_text(answer_text)
+    return [normalized for chunk in think_chunks if len(normalized := _normalize_generated_text(chunk)) > 0], _clean_answer_text(answer_text, keep_trailing_newlines=keep_trailing_newlines)
 
 
-def _split_generated_text(text: str) -> tuple[str, str]:
-    think_chunks, answer_text = _split_generated_parts(text)
+def _split_generated_text(text: str, *, keep_trailing_newlines: bool = False) -> tuple[str, str]:
+    think_chunks, answer_text = _split_generated_parts(text, keep_trailing_newlines=keep_trailing_newlines)
     return _normalize_generated_text("\n\n".join(think_chunks)), answer_text
 
 
@@ -716,6 +719,9 @@ def _generate_messages_vllm(
     top_k=None,
     seed=None,
     thinking_enabled: bool | None = None,
+    stop_requested=None,
+    stream_callback=None,
+    enhancement_progress=None,
 ):
     reset_context()
     tokenizer = self._prompt_enhancer_tokenizer
@@ -724,6 +730,7 @@ def _generate_messages_vllm(
 
     engine = _get_or_create_vllm_engine(self, usage_mode="text")
     outputs = []
+    apply_repetition_penalty = normalize_deepy_repetition_penalty(get_deepy_config_value(DEEPY_REPETITION_PENALTY_KEY, DEEPY_REPETITION_PENALTY_DEFAULT))
     thinking_enabled = _prompt_enhancer_thinking_enabled(self, thinking_enabled=thinking_enabled)
     runtime_extra_tokens = _resolve_prompt_runtime_extra_tokens(self, thinking_enabled=thinking_enabled)
     progress_desc = (
@@ -732,6 +739,9 @@ def _generate_messages_vllm(
         else f"Qwen3.5 prompt enhancement ({getattr(self, '_prompt_enhancer_engine_name', 'vllm')})"
     )
     for idx, message in enumerate(tqdm(messages, total=len(messages), desc=progress_desc, dynamic_ncols=True, leave=False)):
+        if enhancement_progress is not None:
+            enhancement_progress.prompt(idx, len(messages), int(max_new_tokens) + runtime_extra_tokens)
+            stream_callback = enhancement_progress.tokens
         prompt = _build_chat_prompt(tokenizer, message, enable_thinking=thinking_enabled)
         try:
             prompt_token_ids = [int(token_id) for token_id in tokenizer.encode(prompt)]
@@ -760,7 +770,7 @@ def _generate_messages_vllm(
             top_k=normalized_top_k,
             top_p=normalized_top_p,
             min_p=_resolve_prompt_min_p(self),
-            repetition_penalty=_resolve_prompt_repetition_penalty(self),
+            repetition_penalty=_resolve_prompt_repetition_penalty(self) if apply_repetition_penalty else 1.0,
             predictive_penalty=_resolve_predictive_penalty_enabled(self),
             ignore_eos=False,
             logits_processor=logits_processor,
@@ -784,6 +794,8 @@ def _generate_messages_vllm(
                 sampling_params=sampling_params,
                 use_tqdm=True,
                 unconditional_prompts=None,
+                stop_requested=stop_requested,
+                stream_callback=stream_callback,
             )
             engine._last_failure_reason = ""
         except Exception as exc:
@@ -817,6 +829,9 @@ def _generate_messages(
     top_k=None,
     seed=None,
     thinking_enabled: bool | None = None,
+    stop_requested=None,
+    stream_callback=None,
+    enhancement_progress=None,
 ):
     top_k = _resolve_prompt_top_k(self, top_k)
     if _use_vllm_prompt_enhancer(self) or _use_legacy_cuda_runner_prompt_enhancer(self):
@@ -830,6 +845,9 @@ def _generate_messages(
             top_k=top_k,
             seed=seed,
             thinking_enabled=thinking_enabled,
+            stop_requested=stop_requested,
+            stream_callback=stream_callback,
+            enhancement_progress=enhancement_progress,
         )
     raise RuntimeError("Qwen3.5 prompt enhancer text runtime is not configured with an available decode engine.")
 

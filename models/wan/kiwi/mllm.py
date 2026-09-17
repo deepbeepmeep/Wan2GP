@@ -9,6 +9,7 @@ from typing import List, Optional
 
 import numpy as np
 import torch
+from shared.utils.phase_progress import text_encoding_progress
 from PIL import Image
 from mmgp import offload
 
@@ -324,13 +325,13 @@ class KiwiMLLMContextEncoder:
         if not self.managed_by_mmgp:
             self._ensure_on_device()
         if len(src_video_frames) == 1 and ref_image is None:
-            with self._safe_print_context():
+            with self._safe_print_context(), text_encoding_progress(self.encoder.qwen_model.language_model.layers):
                 context = self.encoder(prompt, src_image=src_video_frames)
         else:
             mllm_kwargs = {"src_video": src_video_frames}
             if ref_image is not None:
                 mllm_kwargs["ref_image"] = [ref_image]
-            with self._safe_print_context():
+            with self._safe_print_context(), text_encoding_progress(self.encoder.qwen_model.language_model.layers):
                 context = self.encoder(prompt, **mllm_kwargs)
         context = context.to(device=self.device, dtype=self.dtype)
         if self.offload_after_encode and not self.managed_by_mmgp:

@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import text_encoding_progress, set_phase_status
 from typing import List, Optional, Tuple, Union
 import math
 import os
@@ -527,27 +528,29 @@ class NEOChatModel(PreTrainedModel):
         return torch.stack([t_image, h_image, w_image], dim=0)
     
     def _t2i_prefix_forward(self, input_ids, indexes, attention_mask):
-        out = self.language_model.model(
-            input_ids=input_ids,
-            indexes=indexes,
-            attention_mask=attention_mask,
-            use_cache=True,
-        )
-        result = (out.past_key_values, out.last_hidden_state.device, out.last_hidden_state.dtype)
-        del out
-        return result
+        with text_encoding_progress(self.language_model.model.layers):
+            out = self.language_model.model(
+                input_ids=input_ids,
+                indexes=indexes,
+                attention_mask=attention_mask,
+                use_cache=True,
+            )
+            result = (out.past_key_values, out.last_hidden_state.device, out.last_hidden_state.dtype)
+            del out
+            return result
 
     def _it2i_prefix_forward(self, input_embeds_list, indexes, attention_mask, gen_indicators=None):
-        out = self.language_model.model(
-            inputs_embeds_list=input_embeds_list,
-            indexes=indexes,
-            attention_mask=attention_mask,
-            use_cache=True,
-            image_gen_indicators=gen_indicators.view(1, -1) if gen_indicators is not None else None
-        )
-        result = (out.past_key_values, out.last_hidden_state.device, out.last_hidden_state.dtype)
-        del out
-        return result
+        with text_encoding_progress(self.language_model.model.layers):
+            out = self.language_model.model(
+                inputs_embeds_list=input_embeds_list,
+                indexes=indexes,
+                attention_mask=attention_mask,
+                use_cache=True,
+                image_gen_indicators=gen_indicators.view(1, -1) if gen_indicators is not None else None
+            )
+            result = (out.past_key_values, out.last_hidden_state.device, out.last_hidden_state.dtype)
+            del out
+            return result
 
     def _think_prefix_forward(self, **kwargs):
         """Build the Think prefix cache without materialising per-token logits."""
@@ -1559,6 +1562,7 @@ class NEOChatModel(PreTrainedModel):
             del indexes_img_condition, attention_mask_img_condition_prefix
         if past_key_values_uncondition is not None:
             del indexes_uncondition, attention_mask_uncondition_prefix
+        set_phase_status("Preparing Denoising")
         self._notify_layer_offload_phase("denoise")
 
         for layer_idx in range(len(past_key_values_condition.layers)):
@@ -1792,6 +1796,7 @@ class NEOChatModel(PreTrainedModel):
         del input_ids_condition, indexes_condition, attention_mask_condition_prefix
         if input_ids_uncondition is not None:
             del input_ids_uncondition, indexes_uncondition, attention_mask_uncondition_prefix
+        set_phase_status("Preparing Denoising")
         self._notify_layer_offload_phase("denoise")
 
         for layer_idx in range(len(past_key_values_condition.layers)):

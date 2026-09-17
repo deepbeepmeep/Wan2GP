@@ -147,8 +147,8 @@ def _record_main_outputs(record):
 
 
 def _get_model_defs_by_type(deps, dropdown_types):
-    if deps.list_model_defs is not None:
-        return {record["model_type"]: record for record in deps.list_model_defs(model_type=dropdown_types)}
+    # Internal callers only read metadata for exact IDs; the public bulk query
+    # deep-copies entire definitions, including settings, for external callers.
     records = {}
     for model_type in dropdown_types:
         model_def = deps.get_model_def(model_type)

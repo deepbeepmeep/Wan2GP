@@ -1,4 +1,3 @@
-import os
 
 import torch
 
@@ -32,7 +31,8 @@ def _get_heartmula_model_def():
         "text_prompt_enhancer_instructions": HEARTMULA_LYRIC_PROMPT,
         "prompt_enhancer_button_label": "Compose Lyrics",
         "duration_slider": {
-            "label": "Duration of the Song (in seconds)",
+            "label": "Maximum Song Duration (seconds)",
+            "name": "Maximum Song Duration",
             "min": 30,
             "max": 240,
             "increment": 0.1,
@@ -86,17 +86,8 @@ class family_handler:
         return {"music": (2195, "Music"), "tts": (2200, "TTS")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-heart_mula",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Heart Mula settings (default: {os.path.join(lora_root, 'heart_mula')})",
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_heart_mula", None) or os.path.join(lora_root, "heart_mula")
+    def get_lora_dir(base_model_type):
+        return "heart_mula"
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

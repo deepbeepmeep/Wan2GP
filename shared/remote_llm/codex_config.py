@@ -25,7 +25,7 @@ class CodexConfigUI:
 
 def create_codex_config_ui(gr, profile: dict[str, Any], *, visible: bool, lock_config: bool) -> CodexConfigUI:
     with gr.Group(visible=visible, elem_classes=["wangp-transparent-group"]) as group:
-        gr.Markdown("**Codex setup** — WanGP automatically detects a standalone/npm Codex CLI or the compatible CLI bundled with the Codex VS Code extension. [Install the Codex CLI](https://learn.chatgpt.com/docs/codex/cli) only if neither is available. If sign-in is needed, Deepy displays Codex's secure browser sign-in link in the chat.")
+        gr.Markdown("**Codex setup** — On Windows, WanGP checks native CLIs on PATH and the Codex app's standalone CLI before npm installations and compatible Codex VS Code extension bundles. Set a full executable path below to choose a specific installation. [Install the Codex CLI](https://learn.chatgpt.com/docs/codex/cli) if none is available. If sign-in is needed, Deepy displays Codex's secure browser sign-in link in the chat.")
         with gr.Row(elem_classes=["wangp-bottom-aligned-row"]):
             executable = gr.Textbox(value=profile["executable"], label="Codex executable")
             model = gr.Dropdown(choices=codex_model_choices(profile["model_catalog"], profile["model"]), value=profile["model"], allow_custom_value=True, label="Codex model")

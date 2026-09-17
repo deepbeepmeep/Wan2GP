@@ -1,4 +1,4 @@
-import json
+from shared.utils.config_store import write_config
 from decimal import Decimal, InvalidOperation
 
 from postprocessing.mmaudio import MMAUDIO_DEFAULT_MODE
@@ -90,8 +90,7 @@ def get_prompt_enhancer_default_mode() -> int:
 def _write_config(config, config_filename):
     if not config_filename:
         return
-    with open(config_filename, "w", encoding="utf-8") as writer:
-        writer.write(json.dumps(config, indent=4))
+    write_config(config, config_filename)
 
 
 def _set_missing_persistence(config, key):

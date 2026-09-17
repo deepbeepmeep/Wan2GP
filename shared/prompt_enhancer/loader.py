@@ -8,6 +8,7 @@ import torch
 from mmgp import offload
 from safetensors import safe_open
 from shared.utils import files_locator as fl
+from shared.utils.cancellation import check_cancelled
 
 from .florence2 import Florence2Config, Florence2ForConditionalGeneration, Florence2Processor
 from .florence2.image_processing_florence2 import Florence2ImageProcessorLite
@@ -40,7 +41,6 @@ class PromptEnhancerRuntime:
 
 def ensure_prompt_enhancer_assets(process_files_def, enhancer_enabled: int, qwen_backend: str = "quanto_int8", speculative_decoding: bool = False):
     enhancer_enabled = int(enhancer_enabled)
-    speculative_decoding = resolve_prompt_enhancer_speculative_decoding(enhancer_enabled, speculative_decoding)[0]
     if enhancer_enabled == 1:
         process_files_def(
             repoId=PROMPT_ENHANCER_REPO,
@@ -64,10 +64,11 @@ def ensure_prompt_enhancer_assets(process_files_def, enhancer_enabled: int, qwen
     if enhancer_enabled in (3, 4, 5):
         from .qwen35_vl import ensure_qwen35_prompt_enhancer_assets, get_qwen35_prompt_enhancer_variant
 
+        speculative_decoding = resolve_prompt_enhancer_speculative_decoding(enhancer_enabled, speculative_decoding)[0]
         ensure_qwen35_prompt_enhancer_assets(process_files_def, backend=qwen_backend, variant=get_qwen35_prompt_enhancer_variant(enhancer_enabled), speculative_decoding=bool(speculative_decoding))
 
 
-def download_prompt_enhancer_assets(enhancer_enabled: int, qwen_backend: str = "quanto_int8", speculative_decoding: bool = False, send_cmd=None, progress=None, status_text="Downloading Prompt Enhancer model files..."):
+def download_prompt_enhancer_assets(enhancer_enabled: int, qwen_backend: str = "quanto_int8", speculative_decoding: bool = False, send_cmd=None, progress=None, status_text="Downloading Prompt Enhancer model files...", gen=None):
     enhancer_enabled = int(enhancer_enabled)
     if enhancer_enabled <= 0:
         return False
@@ -86,7 +87,7 @@ def download_prompt_enhancer_assets(enhancer_enabled: int, qwen_backend: str = "
                 progress(0, status_text)
             download_status_text = status_text
             status_sent = True
-        downloaded = process_files_def_if_needed(download_def, send_cmd=send_cmd, status_text=download_status_text) or downloaded
+        downloaded = process_files_def_if_needed(download_def, send_cmd=send_cmd, status_text=download_status_text, gen=gen) or downloaded
 
     ensure_prompt_enhancer_assets(process_download_def, enhancer_enabled=enhancer_enabled, qwen_backend=qwen_backend, speculative_decoding=speculative_decoding)
     return downloaded
@@ -148,7 +149,6 @@ def _load_joycaption_prompt_enhancer():
 
 def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_decoder_engine: str = "", qwen_backend: str = "quanto_int8", speculative_decoding: bool = False, deepy_kv_cache_quantization: str = "") -> PromptEnhancerRuntime:
     enhancer_enabled = int(enhancer_enabled)
-    speculative_decoding, speculative_decoding_message = resolve_prompt_enhancer_speculative_decoding(enhancer_enabled, speculative_decoding)
     runtime = PromptEnhancerRuntime()
     if enhancer_enabled <= 0:
         return runtime
@@ -156,6 +156,7 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
     ensure_prompt_enhancer_assets(process_files_def, enhancer_enabled=enhancer_enabled, qwen_backend=qwen_backend, speculative_decoding=speculative_decoding)
 
     if enhancer_enabled in (3, 4, 5):
+        speculative_decoding, speculative_decoding_message = resolve_prompt_enhancer_speculative_decoding(enhancer_enabled, speculative_decoding)
         deepy_kv_cache_quantization, kv_cache_message = resolve_deepy_kv_cache_quantization(deepy_kv_cache_quantization)
         if speculative_decoding_message:
             print(f"[Prompt Enhancer / Deepy] {speculative_decoding_message}")
@@ -239,10 +240,12 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
 
 
 def _load_state_dict(weights_path: Path) -> dict:
+    check_cancelled()
     if weights_path.suffix == ".safetensors":
         state_dict = {}
         with safe_open(str(weights_path), framework="pt", device="cpu") as f:
             for key in f.keys():
+                check_cancelled()
                 state_dict[key] = f.get_tensor(key)
         return state_dict
     return torch.load(str(weights_path), map_location="cpu")
@@ -278,9 +281,12 @@ def load_florence2(
     weights_path = _resolve_weights_path(model_path)
     state_dict = _load_state_dict(weights_path)
 
+    check_cancelled()
     model = Florence2ForConditionalGeneration(config)
+    check_cancelled()
     load_info = model.load_state_dict(state_dict, strict=False)
     del state_dict
+    check_cancelled()
     if load_info.missing_keys:
         allowed_missing = {
             "language_model.model.encoder.embed_tokens.weight",

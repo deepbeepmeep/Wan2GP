@@ -236,3 +236,7 @@ In **Editor** mode:
 4) Click **Save** to update the finetune, **Export** to download/share its JSON definition, or **Delete** to remove it. Delete shows a confirmation row in place of the editor action buttons.
 
 After creation, import, save, or delete, WanGP refreshes the model list automatically.
+
+---
+
+> Applies to: Creating and managing custom model definitions and weights. Model-definition fields and conversion commands concern model setup; per-generation settings are specified separately.

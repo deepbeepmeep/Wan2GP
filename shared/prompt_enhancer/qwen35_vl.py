@@ -21,6 +21,7 @@ from shared.llm_engines.nanovllm.models.qwen3_5 import Qwen3_5DynamicCache
 from shared.llm_engines.nanovllm.utils.context import reset_context
 from shared.qtypes.gguf import materialize_module_source_tensors
 from shared.utils import files_locator as fl
+from shared.utils.cancellation import cancellation_context, check_cancelled
 
 from .assets import (
     QWEN35_4B_TEXT_GGUF_FILENAME,
@@ -37,6 +38,7 @@ from .assets import (
     QWEN38_VARIANT_27B,
 )
 from .qwen3_5 import load_qwen35_model_class
+from .progress import EnhancementProgress
 
 
 UPSTREAM_MODELING_FILENAME = "modeling_qwen3_5.py"
@@ -783,41 +785,92 @@ def _prepare_multimodal_vllm_prompt(self, model_inputs, image_features=None):
     return prompt_token_ids, prompt_embeds, prompt_position_ids, position_offset
 
 
-def _generate_image_captions_vllm(self, images):
+def _generate_image_captions_vllm(self, images, *, image_contexts=None, offload_manager=None, enhancement_progress=None):
     qwen35_text_mod = _get_qwen35_text_runtime_helpers()
     text_model = self._prompt_enhancer_text_model
     tokenizer = self._prompt_enhancer_tokenizer
     processor = self._prompt_enhancer_processor
-    engine = qwen35_text_mod._get_or_create_vllm_engine(text_model, usage_mode="multimodal")
+    # Finish every vision pass before loading the shared decoder. A previous
+    # request's graphs must be closed before MMGP can change its weight storage.
+    text_model.unload()
+    if offload_manager is not None:
+        offload_manager.unload_all()
+    groups = [([image], None) for image in images] if image_contexts is None else [(context.images, context.labels) for context in image_contexts]
+    progress = enhancement_progress or EnhancementProgress()
+    image_count = len({id(image) for group, _ in groups for image in group})
+    prepared = []
+    features = {}
     outputs = []
-    for image in images:
-        message = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": image},
-                    {
-                        "type": "text",
-                        "text": "Describe this image accurately in one concise paragraph, focusing on the main subject, setting, and notable objects. Output only the description.",
-                    },
-                ],
-            }
-        ]
+    for group_images, labels in tqdm(groups, desc="Encoding Prompt Images", dynamic_ncols=True, leave=False):
+        check_cancelled()
+        if not group_images:
+            prepared.append(None)
+            continue
+        caption_tokens = 128 if labels is None else 128 * len(group_images) + 128
+        content = []
+        for index, image in enumerate(group_images):
+            if labels is not None:
+                content.append({"type": "text", "text": labels[index]})
+            content.append({"type": "image", "image": image})
+        if labels is None:
+            message = [{"role": "user", "content": content + [{"type": "text", "text": "Describe this image accurately in one concise paragraph, focusing on the main subject, setting, and notable objects. Output only the description."}]}]
+        else:
+            names = "; ".join(labels)
+            instructions = f"Describe these labeled images accurately: {names}. Use each exact image name as a heading, followed by a concise description of its subject, setting and notable details. Start and end images anchor the opening and ending of this window; frame labels locate intermediate anchors within it. Reference images guide appearance. Distinguish the images and mention visible relationships without inventing motion or unseen events. Output only the labeled descriptions."
+            headings = "\n".join(f"{label}: <visible details>" for label in labels)
+            content.append({"type": "text", "text": f"Describe all {len(labels)} separate still images in the order shown. Use each heading below exactly once, without renaming, adding or omitting any heading. Describe only visible details; do not infer movement from still images.\n{headings}"})
+            message = [{"role": "system", "content": instructions}, {"role": "user", "content": content}]
         text = processor.apply_chat_template(
             message,
             tokenize=False,
             add_generation_prompt=True,
             enable_thinking=False,
         )
-        model_inputs = processor(
-            text=[text],
-            images=[image],
-            return_tensors="pt",
-            padding=True,
-            return_mm_token_type_ids=True,
-        )
-        prompt_token_ids, prompt_embeds, prompt_position_ids, position_offset = _prepare_multimodal_vllm_prompt(self, model_inputs)
-        engine.reserve_runtime(prompt_len=len(prompt_token_ids), max_tokens=128, cfg_scale=1.0)
+        # PIL sources and pending pixel batches stay in RAM even if another
+        # model left PyTorch's default device set to CUDA.
+        with torch.device("cpu"):
+            model_inputs = processor(
+                text=[text],
+                images=[_resize_image_for_caption(image) for image in group_images],
+                return_tensors="pt",
+                padding=True,
+                return_mm_token_type_ids=True,
+            )
+        # Bound vision activation memory to one image and reuse repeated window
+        # anchors. Retain features/embeddings on CPU between phases.
+        pixels = model_inputs.pop("pixel_values")
+        grids = model_inputs["image_grid_thw"]
+        image_features, first_patch = [], 0
+        with torch.inference_mode():
+            for image, grid in zip(group_images, grids.tolist()):
+                check_cancelled()
+                patch_count = grid[0] * grid[1] * grid[2]
+                key = (id(image), tuple(grid))
+                if key not in features:
+                    with progress.vision(self.vision_tower_model.blocks, len(features), image_count):
+                        output = self.model.get_image_features(pixels[first_patch:first_patch + patch_count], grids.new_tensor([grid]), return_dict=True)
+                    features[key] = output.pooler_output[0].to("cpu")
+                    del output
+                image_features.append(features[key])
+                first_patch += patch_count
+            prompt_token_ids, prompt_embeds, prompt_position_ids, position_offset = _prepare_multimodal_vllm_prompt(self, model_inputs, image_features=image_features)
+            prepared.append((prompt_token_ids, prompt_embeds.to("cpu"), None if prompt_position_ids is None else prompt_position_ids.to("cpu"), position_offset, caption_tokens, message, text))
+        del pixels, image_features, model_inputs, prompt_embeds, prompt_position_ids
+    features.clear()
+    if offload_manager is not None:
+        offload_manager.unload_all()
+    # Captioning and enhancement use the same cache policy and engine identity.
+    engine = qwen35_text_mod._get_or_create_vllm_engine(text_model, usage_mode="text")
+    for request in prepared:
+        if request is not None:
+            engine.reserve_runtime(prompt_len=len(request[0]), max_tokens=request[4], cfg_scale=1.0)
+    for index, request in enumerate(prepared):
+        check_cancelled()
+        if request is None:
+            outputs.append("")
+            continue
+        prompt_token_ids, prompt_embeds, prompt_position_ids, position_offset, caption_tokens, message, text = request
+        progress.caption(index, len(groups), caption_tokens)
         engine._ensure_llm()
         if engine._llm is None:
             raise RuntimeError("Qwen3.5 caption vLLM runtime is not available.")
@@ -831,19 +884,18 @@ def _generate_image_captions_vllm(self, images):
             log_llm_io("OUT", "local-image-captioner", "qwen-visual-generation", {
                 "prompt": text,
                 "messages": message,
-                "image": media_descriptor(image),
                 "input_token_ids": prompt_token_ids,
                 "known_token_ids": known_token_ids(tokenizer),
                 "prompt_embeddings": prompt_embeds,
                 "prompt_position_ids": prompt_position_ids,
                 "position_offset": position_offset,
-                "generation": {"max_new_tokens": 128, "temperature": temp, "top_p": normalized_top_p, "top_k": normalized_top_k, "do_sample": False},
+                "generation": {"max_new_tokens": caption_tokens, "temperature": temp, "top_p": normalized_top_p, "top_k": normalized_top_k, "do_sample": False},
             })
         response = engine.generate_embedded(
             prompt_token_ids=prompt_token_ids,
             prompt_embeds=prompt_embeds,
             prompt_position_ids=prompt_position_ids,
-            max_tokens=128,
+            max_tokens=caption_tokens,
             temperature=temp,
             top_p=normalized_top_p,
             top_k=normalized_top_k,
@@ -853,6 +905,7 @@ def _generate_image_captions_vllm(self, images):
             release_vram_after=False,
             ignore_eos=False,
             position_offset=position_offset,
+            stream_callback=progress.tokens if enhancement_progress is not None else None,
         )
         raw_text = "" if response is None else response.get("text", "")
         log_llm_io("IN", "local-image-captioner", "qwen-visual-generation", {"text": raw_text, "response": response})
@@ -861,11 +914,25 @@ def _generate_image_captions_vllm(self, images):
     return outputs
 
 
-def _generate_image_captions(self, images):
-    images = [_resize_image_for_caption(image) for image in images]
+def _generate_image_captions(self, images, *, image_contexts=None, offload_manager=None, stop_requested=None, enhancement_progress=None):
     qwen35_text_mod = _get_qwen35_text_runtime_helpers()
     if qwen35_text_mod._use_vllm_prompt_enhancer(self._prompt_enhancer_text_model) or qwen35_text_mod._use_legacy_cuda_runner_prompt_enhancer(self._prompt_enhancer_text_model):
-        return _generate_image_captions_vllm(self, images)
+        def check_stop():
+            if stop_requested is not None and stop_requested():
+                raise InterruptedError("Prompt Enhancement Cancelled")
+        hooks = [block.register_forward_pre_hook(lambda *_: check_cancelled()) for block in self.vision_tower_model.blocks]
+        try:
+            with cancellation_context(check_stop) if stop_requested is not None else nullcontext():
+                return _generate_image_captions_vllm(self, images, image_contexts=image_contexts, offload_manager=offload_manager, enhancement_progress=enhancement_progress)
+        except BaseException:
+            self._prompt_enhancer_text_model.unload()
+            if offload_manager is not None:
+                offload_manager.unload_all()
+            raise
+        finally:
+            for hook in hooks:
+                hook.remove()
+    images = [_resize_image_for_caption(image) for image in images]
     outputs = []
     processor = self._prompt_enhancer_processor
     for image in images:

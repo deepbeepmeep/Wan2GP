@@ -41,6 +41,13 @@ def _resolve_codex_executable(configured: str) -> str:
         return shutil.which(configured) or configured
     candidates = []
     if os.name == "nt":
+        # Prefer the standalone native CLI on PATH over an older npm shell wrapper.
+        candidates.append(shutil.which("codex.exe"))
+        localappdata = os.environ.get("LOCALAPPDATA", "")
+        if localappdata:
+            app_bin = Path(localappdata, "OpenAI", "Codex", "bin")
+            app_binaries = list(app_bin.glob("*/codex.exe")) + list(app_bin.glob("codex.exe"))
+            candidates.extend(str(path) for path in sorted(app_binaries, key=lambda path: path.stat().st_mtime, reverse=True))
         appdata = os.environ.get("APPDATA", "")
         userprofile = os.environ.get("USERPROFILE", "")
         if appdata:
@@ -120,7 +127,7 @@ class CodexBackend:
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
             )
         except (FileNotFoundError, PermissionError, OSError) as exc:
-            raise CodexSetupRequired(f"Codex CLI is not available to WanGP. WanGP checks standalone/npm installations and compatible Codex VS Code extension bundles automatically. If neither is installed, [install the Codex CLI]({CODEX_CLI_DOCS_URL}) and retry. With npm, run `npm install -g @openai/codex`; alternatively set a full executable path in Configuration.\n\nThe Microsoft Store ChatGPT/Codex app alone is not sufficient because its packaged executable cannot be launched by WanGP. Details: {exc}") from exc
+            raise CodexSetupRequired(f"Codex CLI is not available to WanGP. WanGP checks native CLIs on PATH, the Codex app's standalone CLI, npm installations and compatible Codex VS Code extension bundles automatically. If none is available, [install the Codex CLI]({CODEX_CLI_DOCS_URL}) and retry. With npm, run `npm install -g @openai/codex`; alternatively set a full executable path in Configuration.\n\nExecutables inside the protected Microsoft Store WindowsApps directory cannot be launched by WanGP; use a standalone CLI exposed by the app or installed separately. Details: {exc}") from exc
         self._reader = threading.Thread(target=self._read_loop, name="wangp-codex-app-server", daemon=True)
         self._reader.start()
         self._request("initialize", {"clientInfo": {"name": "WanGP", "title": "WanGP Deepy", "version": "1"}, "capabilities": {"experimentalApi": True}})
@@ -361,10 +368,21 @@ class CodexBackend:
 
     def close(self) -> None:
         process, self._process = self._process, None
-        if process is not None and process.poll() is None:
+        if process is not None:
+            if process.stdin is not None:
+                process.stdin.close()
             try:
-                process.terminate()
                 process.wait(timeout=3)
-            except Exception:
-                process.kill()
+            except subprocess.TimeoutExpired:
+                if os.name == "nt":
+                    # A .cmd launcher owns Node and Codex children; killing only
+                    # cmd.exe leaves those children holding the working directory.
+                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+                else:
+                    process.kill()
+                process.wait(timeout=3)
+            if self._reader is not None:
+                self._reader.join(timeout=3)
+            if process.stdout is not None:
+                process.stdout.close()
         self._temp_dir.cleanup()

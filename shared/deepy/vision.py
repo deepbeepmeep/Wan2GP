@@ -52,14 +52,12 @@ def can_keep_text_resident(runtime, manager) -> bool:
 
 
 @contextmanager
-def resident_inspection(runtime, caption_model, manager, semantic_boundaries):
+def resident_inspection(runtime, caption_model, manager):
     """Lend the assistant's cache memory to vision without moving its weights."""
     from shared.prompt_enhancer.qwen35_assistant_runtime import _ASSISTANT_PREFILL_CHUNK_TOKENS
 
     model = runtime.model
     snapshot = runtime.snapshot_context()
-    signature = runtime._get_live_llm().model_runner._get_graph_capture_signature()
-    boundaries = [item for item in semantic_boundaries if item["runtime_signature"] == signature]
     min_model_len = model._prompt_enhancer_min_model_len_hint
     prefill_chunk_tokens = model.__dict__.get("_prefill_chunk_tokens")
     cotenants = manager.cotenants_map
@@ -103,12 +101,6 @@ def resident_inspection(runtime, caption_model, manager, semantic_boundaries):
             model._prefill_chunk_tokens = prefill_chunk_tokens
         if snapshot is not None:
             runtime.restore_snapshot(snapshot)
-            runner = runtime._get_live_llm().model_runner
-            # Exact KV/block-table restoration preserves these prefixes, even though
-            # the replacement cache and its newly captured graphs have new addresses.
-            for boundary in boundaries:
-                boundary["runtime_signature"] = runner._get_graph_capture_signature()
-                boundary["kv_cache_ptr"] = int(runner.kv_cache.data_ptr())
 
 
 def normalize_inspection_bbox(bbox: Any) -> list[int] | None:
@@ -126,7 +118,7 @@ def normalize_inspection_bbox(bbox: Any) -> list[int] | None:
     if not all(0 <= value <= 1000 for value in values):
         raise ValueError("bbox values must be integers from 0 to 1000.")
     if x_max <= x_min or y_max <= y_min:
-        raise ValueError("bbox maximums must be greater than its minimums.")
+        raise ValueError("bbox=[x_min,y_min,x_max,y_max] uses integers 0..1000 relative to the full image; x_max must be greater than x_min and y_max greater than y_min.")
     return values
 
 

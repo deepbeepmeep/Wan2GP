@@ -709,9 +709,15 @@ def parameter_default(parameter: dict[str, Any]):
 
 def parameter_ui_state(method, ui_context: str, parameter_values=None) -> dict[str, Any]:
     definitions = ui_parameter_definitions(ui_context)
-    active = {str(parameter["name"]) for parameter in method_parameters(method, ui_context=ui_context)}
+    selected = {str(parameter["name"]): parameter for parameter in method_parameters(method, ui_context=ui_context)}
+    definitions = [selected.get(parameter["name"], parameter) for parameter in definitions]
+    active = set(selected)
     current = parameter_values if isinstance(parameter_values, dict) else {}
-    values = {str(parameter["name"]): current.get(str(parameter["name"]), parameter_default(parameter)) if str(parameter["name"]) in active else parameter_default(parameter) for parameter in definitions}
+    values = {}
+    for parameter in definitions:
+        name = str(parameter["name"])
+        value = current.get(name) if name in active else None
+        values[name] = parameter_default(parameter) if value is None else value
     return {"definitions": definitions, "active": active, "values": values}
 
 
@@ -779,6 +785,8 @@ def create_generation_spatial_ui(gr, spatial_upsampling, *, image_outputs: bool 
         visible = name in parameter_state["active"]
         initial = parameter_state["values"][name]
         label = str(parameter.get("label", name.removeprefix(PARAMETER_PREFIX).replace("_", " ").title()))
+        if not late_postprocessing:
+            label = parameter.get("label_long", label)
         info = str(parameter.get("description", "") or "") or None
         if component_type == "images":
             from shared.gradio.gallery import AdvancedMediaGallery
@@ -809,10 +817,21 @@ def create_generation_spatial_ui(gr, spatial_upsampling, *, image_outputs: bool 
 
     def refresh_method(method, value, current_parameters):
         ratio_choices, scale, value = normalize_upsampling_value_for_method(method, value)
+        current_parameters = dict(current_parameters)
+        for name in ("spatial_upsampler_param", "spatial_upsampler_param2"):
+            current_parameters.pop(name, None)
         method_parameter_state = parameter_ui_state(method, ui_context, current_parameters)
+        selected_defs = {parameter["name"]: parameter for parameter in method_parameter_state["definitions"]}
+
+        def update_parameter(name):
+            parameter = selected_defs[name]
+            changes = {"value": method_parameter_state["values"][name]}
+            if parameter_component_type(parameter) == "slider":
+                changes.update(label=parameter.get("label") if late_postprocessing else parameter.get("label_long", parameter.get("label")), info=parameter.get("description"), minimum=parameter.get("minimum", 0), maximum=parameter.get("maximum", 1), step=parameter.get("step", 1))
+            return gr.update(**changes)
         return (gr.update(choices=ratio_choices, value=scale if ratio_choices else None, visible=bool(method and ratio_choices)), value,
                 *(gr.update(visible=name in method_parameter_state["active"]) for name in parameter_components),
-                *(gr.update(value=method_parameter_state["values"][name]) for name in parameter_components), method_parameter_state["values"])
+                *(update_parameter(name) for name in parameter_components), method_parameter_state["values"])
 
     def refresh_ratio(method, scale):
         _, scale, value = normalize_upsampling_state(method, scale)

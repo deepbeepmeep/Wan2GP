@@ -1,4 +1,3 @@
-import os
 
 import torch
 from PIL import Image
@@ -77,6 +76,7 @@ class family_handler:
     def query_model_def(base_model_type, model_def):
         return {
             "image_outputs": True,
+            "dtype": "bf16",
             "no_negative_prompt": True,
             "no_background_removal": True,
             "guidance_max_phases": 1,
@@ -96,6 +96,7 @@ class family_handler:
             "at_least_one_image_ref_needed": False,
             "image_prompt_types_allowed": "S",
             "infos": SENSENOVA_INFOS,
+            "specialities": [{"name": "infographics", "aliases": ["information graphics", "information posters"]}, {"name": "text rendering", "description": "Chinese and English lettering within images."}, {"name": "precise layouts"}],
             "prompt_infos": SENSENOVA_PROMPT_INFOS,
             "preview_all_images": True,
             "prompt_enhancer_button_label": "Enhance",
@@ -103,9 +104,9 @@ class family_handler:
                 "selection": ["T", "TI", "T1", "TI1"],
                 "labels": {
                     "T": "A General Image Prompt using existing Text Prompt",
-                    "TI": "A General Image Prompt using existing Text Prompt and First Reference Image",
+                    "TI": "A General Image Prompt using existing Text Prompt and {image_inputs}",
                     "T1": "An Infographic Prompt using existing Text Prompt",
-                    "TI1": "An Infographic Prompt using existing Text Prompt and First Reference Image",
+                    "TI1": "An Infographic Prompt using existing Text Prompt and {image_inputs}",
                 },
                 "default": "",
             },
@@ -152,17 +153,8 @@ class family_handler:
         return {"sensenova": (1160, "SenseNova")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-sensenova-u1",
-            type=str,
-            default=None,
-            help=f"Path to SenseNova-U1 LoRAs (default: {os.path.join(lora_root, _PROFILE_FOLDER)}).",
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_dir_sensenova_u1", None) or os.path.join(lora_root, _PROFILE_FOLDER)
+    def get_lora_dir(base_model_type):
+        return _PROFILE_FOLDER
 
     @staticmethod
     def preview_latents(base_model_type, latents, meta):

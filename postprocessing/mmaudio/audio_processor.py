@@ -107,7 +107,7 @@ class MMAudioProcessor:
         from shared.utils.download import process_files_def_if_needed
 
         defs = self.query_download_defs(enabled_only=True)
-        return process_files_def_if_needed(defs[0] if defs else None, send_cmd=send_cmd, status_text=status_text or "Downloading MMAudio model files...")
+        return process_files_def_if_needed(defs[0] if defs else None, send_cmd=send_cmd, status_text=status_text or "Downloading MMAudio model files...", process_files=process_files)
 
     def generate_soundtrack(self, method, video_path, prompt="", negative_prompt="", seed=-1, duration=0, output_path=None, send_cmd=None, status_callback=None, verbose_level=1, audio_codec_key="aac_128", **_kwargs) -> str:
         enabled, _, persistence, model_name, model_path = self._settings()

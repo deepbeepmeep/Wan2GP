@@ -1,4 +1,3 @@
-import os
 import torch
 import gradio as gr
 from shared.utils.hf import build_hf_url
@@ -27,6 +26,7 @@ class family_handler():
         extra_model_def["excluded_spatial_upsamplers"] = ["qwen_pid(1.5)"]
 
         if base_model_type in ["qwen_image_layered_20B"]:
+            extra_model_def["specialities"] = [{"name": "layer decomposition", "aliases": ["editable layers"], "description": "Decompose an input image into RGBA layers."}]
             extra_model_def["batch_size_label"] = "Number of Layers"
             extra_model_def["set_video_prompt_type"] = "V"
             extra_model_def["guide_preprocessing"] = {
@@ -125,17 +125,8 @@ class family_handler():
         return {"qwen":(1110, "Qwen")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-qwen",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains qwen images Loras (default: {os.path.join(lora_root, 'qwen')})"
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_dir_qwen", None) or os.path.join(lora_root, "qwen")
+    def get_lora_dir(base_model_type):
+        return "qwen"
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

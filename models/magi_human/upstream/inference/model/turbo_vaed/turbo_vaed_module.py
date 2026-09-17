@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from shared.utils.phase_progress import vae_decoding_progress
 from typing import Optional, Tuple, Union
 
 import torch
@@ -1068,6 +1069,13 @@ class TurboVAED(ModelMixin, ConfigMixin):
                 f"output_offload={bool(output_offload)} grid={spatial_grid}",
                 flush=True,
             )
+        first = int(temporal_chunk_size) if int(temporal_chunk_size) > 0 else self.first_chunk_size
+        step = int(temporal_chunk_size) if int(temporal_chunk_size) > 0 else self.step_size
+        tiles = 1 + max(0, (z.shape[2] - first + step - 1) // step)
         if tile_size > 0:
-            return self._spatial_tiled_decode(z, tile_size, output_offload=output_offload, temporal_chunk_size=temporal_chunk_size)
-        return self._sliding_window_decode(z, output_offload=output_offload, temporal_chunk_size=temporal_chunk_size)
+            stride = max(1, int(max(1, tile_size // self.spatial_compression_ratio) * 0.75))
+            tiles *= len(range(0, z.shape[-2], stride)) * len(range(0, z.shape[-1], stride))
+        with vae_decoding_progress(tiles, self.decoder):
+            if tile_size > 0:
+                return self._spatial_tiled_decode(z, tile_size, output_offload=output_offload, temporal_chunk_size=temporal_chunk_size)
+            return self._sliding_window_decode(z, output_offload=output_offload, temporal_chunk_size=temporal_chunk_size)

@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import vae_decoding_progress, set_phase_status
 import os
 import json
 from math import sqrt, floor, ceil
@@ -750,6 +751,7 @@ class AutoencoderKLHunyuanVideo(ModelMixin, ConfigMixin):
                 [`~models.autoencoder_kl.AutoencoderKLOutput`] is returned,
                 otherwise a plain `tuple` is returned.
         """
+        set_phase_status("VAE Encoding")
         if opt_tiling:
             if self._forced_tile_config is not None:
                 tile_size, tile_stride = self._forced_tile_config
@@ -827,7 +829,16 @@ class AutoencoderKLHunyuanVideo(ModelMixin, ConfigMixin):
             self.tile_size = tile_size
             self.apply_tiling(tile_size, tile_stride)
 
-        decoded = self._decode(z).sample
+        tiles = 1
+        temporal_size = self.tile_sample_min_num_frames // self.temporal_compression_ratio
+        if self.use_framewise_decoding and z.shape[2] > temporal_size + 1:
+            tiles *= len(range(0, z.shape[2] - temporal_size + 1, self.tile_sample_stride_num_frames // self.temporal_compression_ratio))
+        tile_h = self.tile_sample_min_height // self.spatial_compression_ratio
+        tile_w = self.tile_sample_min_width // self.spatial_compression_ratio
+        if self.use_tiling and (z.shape[-2] > tile_h or z.shape[-1] > tile_w):
+            tiles *= len(range(0, z.shape[-2] - tile_h + 1, self.tile_sample_stride_height // self.spatial_compression_ratio)) * len(range(0, z.shape[-1] - tile_w + 1, self.tile_sample_stride_width // self.spatial_compression_ratio))
+        with vae_decoding_progress(tiles, self.decoder):
+            decoded = self._decode(z).sample
 
         if not return_dict:
             return (decoded,)

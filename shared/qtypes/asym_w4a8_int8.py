@@ -32,7 +32,10 @@ except Exception:  # pragma: no cover
 try:
     import triton
     import triton.language as tl
-    from triton.language.extra.cuda import libdevice as tl_libdevice
+    if torch.version.hip:
+        from triton.language.extra.hip import libdevice as tl_libdevice
+    else:
+        from triton.language.extra.cuda import libdevice as tl_libdevice
 
     _TRITON_AVAILABLE = True
 except Exception:  # pragma: no cover

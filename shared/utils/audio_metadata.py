@@ -142,6 +142,11 @@ def save_audio_metadata(path, configs):
         _write_mp3_text_tag(path, payload)
     elif ext == ".wav":
         write_wav_text_chunk(path, path, payload)
+    elif ext == ".flac":
+        from mutagen.flac import FLAC
+        audio = FLAC(path)
+        audio["WanGP"] = [payload]
+        audio.save()
     else:
         raise ValueError(f"Unsupported audio metadata format: {ext}")
 
@@ -152,6 +157,10 @@ def read_audio_metadata(path):
         raw = _read_mp3_text_tag(path)
     elif ext == ".wav":
         raw = read_wav_text_chunk(path)
+    elif ext == ".flac":
+        from mutagen.flac import FLAC
+        values = FLAC(path).get("WanGP", [])
+        raw = values[0] if values else None
     else:
         return None
     if not raw:

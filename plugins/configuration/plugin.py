@@ -622,6 +622,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.audio_stand_alone_output_codec_choice = gr.Dropdown(
                         choices=[
                             ("WAV (Lossless)", "wav"),
+                            ("FLAC (Lossless)", "flac"),
                             ("MP3 128 kbps", "mp3_128"),
                             ("MP3 192 kbps", "mp3_192"),
                             ("MP3 320 kbps", "mp3_320"),

@@ -61,6 +61,8 @@ INFOS = """**Turn your lyrics into a complete song** with a singing voice and ac
 
 **Abort** cancels the generation without saving a partial song. **Early Stop** stops audio-token generation and renders what has already been composed.
 
+**LoRAs:** select compatible YuE2 acoustic-model LoRAs in the LoRAs tab. Start with multiplier 1; lower it for a weaker effect. They affect the audio rendering after composition and audio-token generation. AR planner LoRAs are not supported by this loader.
+
 **Optional prompt enhancer:** disabled by default. Choose Lyrics to turn an idea into singable words or tidy existing lyrics; choose Music Style to clarify the sound, or Lyrics then Music Style to prepare both. Review the result before generating. The enhancer does not edit your ABC score.
 
 **Optional ABC score:** upload a UTF-8 `.abc` file if you already have a compatible written melody or composition. Otherwise leave the file input empty for automatic planning. ABC is a text format for musical notation, not a place for instructions such as “make it happier.” Supplying a score replaces the automatic plan. It requires Melody and chords or Melody only; melody-only scores must omit chord symbols. The supported score format uses Vocal and Ins voices. A score and lyrics that belong together give the model clearer guidance.
@@ -99,6 +101,7 @@ To reuse an ABC score, upload its `.abc` file under **Optional ABC Score**, sele
 Start with a few compatible ideas. “Gentle acoustic ballad” and “aggressive fast metal” pull in different directions. For a different arrangement, keep the lyrics and change the style; for a different performance, change the seed. If the ending is cut off, allow more time or shorten the lyrics. A style prompt describes the character of a voice; it does not guarantee a particular singer's identity.
 """
 DEEPY_INFOS = """**YuE2 song generation:** `prompt` = lyrics; `alt_prompt` = music style. Outputs 48 kHz stereo vocals and accompaniment.
+- `activated_loras` / `loras_multipliers`: compatible YuE2 acoustic-model LoRAs, applied during synthesis; start at 1. AR planner LoRAs are not supported.
 - `model_mode`: **0** melody+chords (recommended), **1** melody only/free accompaniment, **2** direct generation.
 - Optional `custom_guide`: path to a UTF-8 `.abc` score file, replacing planning in modes 0/1. Use Vocal/Ins voices and no chords for mode 1. Align the lyrics with the score. Omit for automatic planning; source audio hides and overrides this file. Old `custom_settings.abc` text is ignored.
 - `custom_settings.save_score`: **0** off (default), **1** export both `.abc` and `.mid` with the song's filename. Exports the conditioning composition, not the finished performance; it may outlast a truncated song. Mode 2 exports neither. API artifacts return these side files in memory.
@@ -139,6 +142,7 @@ class family_handler:
     def query_model_def(base_model_type, model_def):
         return {
             "group": "music", "audio_only": True, "image_outputs": False, "sliding_window": False, "supports_early_stop": True,
+            "enabled_audio_lora": True,
             "guidance_max_phases": 1, "no_negative_prompt": True, "inference_steps": True,
             "temperature": True, "top_k_slider": True, "top_p_slider": True, "embedded_guidance": False,
             "image_prompt_types_allowed": "", "profiles_dir": [ARCHITECTURE], "compile": False,

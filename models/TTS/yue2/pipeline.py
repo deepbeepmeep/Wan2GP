@@ -10,6 +10,7 @@ from tqdm import tqdm
 from transformers import Qwen3Config
 
 from shared.llm_engines.nanovllm.token_generation import TokenGenerationEngine
+from shared.utils.loras_mutipliers import update_loras_slists
 
 from .modules import YuE2Config
 from .protocol import ABC_END, MUSIC_END, CONTEXT, GenerationConfig, SongRequest, token_prefixes, negative_prefix, chunk_ranges
@@ -100,7 +101,7 @@ class YuE2Pipeline:
         return tokens
 
     @torch.inference_mode()
-    def generate(self, input_prompt, alt_prompt, seed, duration_seconds, sampling_steps, guide_scale, temperature, top_k, top_p, model_mode=0, custom_settings=None, VAE_tile_size=1024, callback=None, audio_prompt_type="", audio_guide=None, offloadobj=None, input_custom=None, **kwargs):
+    def generate(self, input_prompt, alt_prompt, seed, duration_seconds, sampling_steps, guide_scale, temperature, top_k, top_p, model_mode=0, custom_settings=None, VAE_tile_size=1024, callback=None, audio_prompt_type="", audio_guide=None, offloadobj=None, input_custom=None, loras_slists=None, **kwargs):
         self._interrupt = self._early_stop = False
         self.last_plan = self.last_latents = None
         self.last_truncated = {}
@@ -141,6 +142,8 @@ class YuE2Pipeline:
                     return None
                 raise RuntimeError("YuE2 generated no audio tokens.")
             chunks = chunk_ranges(len(codec), len(prefix))
+            if loras_slists is not None:
+                update_loras_slists(self.transformer, loras_slists, sampling_steps)
             noise = torch.randn((len(codec), 64), device="cpu", generator=torch.Generator(device="cpu").manual_seed(seed))
             latent_parts = []
             total = len(chunks) * sampling_steps

@@ -5,6 +5,7 @@ from dataclasses import replace
 import torch
 from torch import nn
 import torch.nn.functional as F
+from mmgp import offload
 
 from shared.attention import pay_attention
 from shared.llm_engines.nanovllm.models.qwen3 import Qwen3ForCausalLM
@@ -145,6 +146,10 @@ class AcousticBackbone(nn.Module):
 class YuE2Acoustic(nn.Module):
     _offload_hooks = ["synthesize"]
 
+    def preprocess_loras(self, model_type, sd):
+        # Native YuE2 adapters omit the weight suffix required by MMGP.
+        return {key + ".weight" if key.endswith((".lora_A", ".lora_B")) else key: value for key, value in sd.items()}
+
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -186,6 +191,7 @@ class YuE2Acoustic(nn.Module):
         raw_steps = torch.logit(torch.arange(2 * steps, 0, -1, dtype=torch.float64) / (2 * steps)).clamp(-20, 20).to(state.device)
         try:
             for step in range(steps):
+                offload.set_step_no_for_lora(self, step)
                 # The integrator retains state, but transfers ownership of the midpoint.
                 first = self([state], raw_steps[2 * step], cache, cos, sin, pos)
                 first.div_(2 * steps)

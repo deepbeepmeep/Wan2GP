@@ -24,12 +24,23 @@ class YuE2Pipeline:
     sample_rate = 48000
     frame_rate = 25
 
-    def __init__(self, ar_weights, acoustic_weights, tokenizer_path, vae_weights, vae_config, dtype, vae_dtype, lm_decoder_engine, scoring_checkpoint=None):
+    def __init__(self, ar_weights, acoustic_weights, tokenizer_path, vae_weights, vae_config, dtype, vae_dtype, lm_decoder_engine, scoring_checkpoint=None, hum_weights=None, hum_encoder_weights=None):
         directory = Path(__file__).parent
         self._interrupt = False
         self._early_stop = False
         self.lm_decoder_engine = lm_decoder_engine
         self.scoring_checkpoint = scoring_checkpoint
+        self.hum = None
+        self.hum_encoder = None
+        if hum_weights is not None:
+            from .hum import HumProjections, HumEncoder
+            with torch.device("meta"):
+                self.hum = HumProjections()
+                self.hum_encoder = HumEncoder()
+            for model, filename in ((self.hum, hum_weights), (self.hum_encoder, hum_encoder_weights)):
+                offload.load_model_data(model, filename, default_dtype=None, writable_tensors=False)
+                model.eval().requires_grad_(False)
+            self.hum.abort_fn = self._abort_requested
 
         dtype = vae_dtype = torch.bfloat16
         ar_config = Qwen3Config(**json.loads((directory / "yue2_ar.json").read_text()))
@@ -105,7 +116,8 @@ class YuE2Pipeline:
         self._interrupt = self._early_stop = False
         self.last_plan = self.last_latents = None
         self.last_truncated = {}
-        mode = ("full", "melody", "off")[model_mode]
+        mode = "melody" if self.hum is not None else ("full", "melody", "off")[model_mode]
+        carrier = None
         midi = None
         side_files = {}
         abc = ""
@@ -116,13 +128,47 @@ class YuE2Pipeline:
         maximum = int(duration_seconds * self.frame_rate)
         sampling = replace(self.generation_config.semantic, max_tokens=maximum, min_tokens=min(200, maximum - 1), temperature=temperature, top_k=top_k, top_p=top_p)
         try:
+            if self.hum is not None:
+                from .hum import prosody_carrier
+                import time
+                self.engine.release_runtime_allocations()
+                offloadobj.unload_all()
+                def report_hum(title):
+                    print(f"[YuE2] {title}", flush=True)
+                    if callback is not None:
+                        callback(step_idx=0, override_num_inference_steps=1, progress_title=title, denoising_extra=title)
+                audio = prosody_carrier(audio_guide, self._abort_requested, report_hum)
+                report_hum("Encoding Hum Carrier")
+                last_update = 0.
+                with tqdm(desc="Encoding Hum Carrier", unit="tile") as progress:
+                    def report_encode(completed, total):
+                        nonlocal last_update
+                        progress.total = total
+                        progress.update()
+                        now = time.monotonic()
+                        if callback is not None and (now - last_update >= 1 / 3 or completed == total):
+                            last_update = now
+                            callback(step_idx=completed - 1, override_num_inference_steps=total, progress_title="Encoding Hum Carrier", denoising_extra="Encoding Hum Carrier", progress_unit="tiles")
+                        if self._interrupt:
+                            raise InterruptedError("Hum encoding interrupted")
+                    carrier = self.hum_encoder.encode(audio, VAE_tile_size, self._abort_requested, report_encode)
+                del audio
             if "A" in audio_prompt_type:
                 from .sheetsage2.scoring import score_audio
                 self.engine.release_runtime_allocations()
                 offloadobj.unload_all()
                 abc, midi = score_audio(audio_guide, self.scoring_checkpoint, mode == "melody", callback, self._abort_requested)
             request = SongRequest(style=alt_prompt, lyrics=input_prompt, cot=mode, abc=abc or None, cfg_scale=guide_scale, seed=seed)
-            if mode == "off":
+            if self.hum is not None and model_mode == 0:
+                from .hum import open_hum_score
+                partial = self.tokenizer.encode(open_hum_score(abc))
+                request = replace(request, abc=None)
+                continuation = self._tokens(token_prefixes(request, self.tokenizer) + partial, self.generation_config.abc, seed, "abc", callback)
+                abc_ids = partial + continuation
+                abc = self.tokenizer.decode(abc_ids)
+                midi = None
+                request = replace(request, abc=abc)
+            elif mode == "off":
                 abc_ids = []
             elif abc:
                 abc_ids = self.tokenizer.encode(abc)
@@ -149,13 +195,21 @@ class YuE2Pipeline:
             total = len(chunks) * sampling_steps
             with tqdm(total=total, desc="YuE2 acoustic synthesis", unit="step") as progress:
                 for chunk_index, (start, end) in enumerate(chunks):
+                    hum_features = None
+                    if carrier is not None:
+                        conditioning = torch.zeros((end - start, 64), device="cpu", dtype=carrier.dtype)
+                        available = max(0, min(end, len(carrier)) - start)
+                        conditioning[:available] = carrier[start:start + available]
+                        hum_features = self.hum(conditioning)
+                        del conditioning
                     ar_ids = prefix + codec[start:end] + [MUSIC_END]
                     cache = [self.text_encoder.condition(ar_ids)]
                     def report(step):
                         progress.update()
                         if callback is not None:
                             callback(step_idx=chunk_index * sampling_steps + step, override_num_inference_steps=total, denoising_extra="YuE2 acoustic synthesis")
-                    latent_parts.append(self.transformer.synthesize(noise[start:end], cache, len(ar_ids), sampling_steps, report))
+                    latent_parts.append(self.transformer.synthesize(noise[start:end], cache, len(ar_ids), sampling_steps, report, hum_features=hum_features))
+                    del hum_features
             latents = torch.cat(latent_parts)
             self.last_latents = latents
             latent = latents.T[None]
@@ -183,6 +237,7 @@ class YuE2Pipeline:
             return None
         finally:
             self.engine.release_runtime_allocations()
+            carrier = None
 
     def release(self):
         self.engine.close()

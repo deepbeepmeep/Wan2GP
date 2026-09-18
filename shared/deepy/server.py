@@ -261,7 +261,9 @@ def server_options(args):
     host = "0.0.0.0" if args.listen else args.server_name or os.getenv("SERVER_NAME", "localhost")
     port = int(args.server_port) or int(os.getenv("SERVER_PORT", "7860"))
     cert, key, https_port = tls_options(args, port)
-    return host, port, cert, key, https_port, WebAuthentication(password(args))
+    if args.public_url is not None and https_port is not None:
+        raise ValueError('Use --public-url for proxy-managed HTTPS or --https-port for WanGP redirects, not both.')
+    return host, port, cert, key, https_port, WebAuthentication(password(args), public_url=args.public_url)
 
 
 def run_server(deps, args):

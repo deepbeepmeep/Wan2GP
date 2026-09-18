@@ -45,15 +45,16 @@ Shared network protection options:
 | `--auth` | Enable password-only login for Gradio and Deepy; generate a password when none is supplied |
 | `--no-auth` | Explicitly disable web authentication; this is the default |
 | `--auth-password PASSPHRASE` | Fixed web passphrase; requires `--auth`. Environment alternative: `WANGP_AUTH_PASSWORD` |
+| `--public-url ORIGIN` | Optional exact browser-origin restriction, e.g. `https://wangp.example.com`; default accepts HTTP/HTTPS for the same host and explicit port. Also supports proxies that rewrite the backend host. Applies to Gradio and Deepy, with or without `--auth` |
 | `--mcp-auth` | Enable separate OAuth authorization for network MCP |
 | `--mcp-auth-password PASSPHRASE` | Fixed MCP approval passphrase; requires `--mcp-auth`. Environment alternative: `WANGP_MCP_AUTH_PASSWORD` |
 | `--mcp-auth-url ORIGIN` | Public MCP server origin, such as `https://wangp.example.com:7866`; required with `--mcp-auth` |
 | `--ssl-certfile FILE`, `--ssl-keyfile FILE` | Certificate and private key for any web/HTTP MCP launch; environment alternatives: `WANGP_SSL_CERT`, `WANGP_SSL_KEY` |
 | `--https-port PORT` | Serve HTTPS on this port and redirect the main HTTP port; requires the certificate and key |
 
-The authentication and certificate flags no longer use Deepy-specific names. Authentication remains off unless enabled. See [MCP OAuth setup](API.md#mcp-authentication-and-https) for external clients.
+The authentication and certificate flags no longer use Deepy-specific names. Authentication remains off unless enabled. See [Authentication, HTTPS, and Reverse Proxies](AUTHENTICATION.md) for web login, `--public-url` examples, certificates, and MCP OAuth setup.
 
-See the [Deepy guide](DEEPY.md) for initial configuration, [interactive CLI commands](DEEPY.md#cli-mode), and Web network, HTTPS, and authentication setup.
+See the [Deepy guide](DEEPY.md) for initial configuration and [interactive CLI commands](DEEPY.md#cli-mode).
 
 ## CLI Queue Processing (Headless Mode)
 

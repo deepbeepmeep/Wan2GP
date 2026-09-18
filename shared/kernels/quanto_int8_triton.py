@@ -11,7 +11,10 @@ import torch
 try:
     import triton
     import triton.language as tl
-    from triton.language.extra.cuda import libdevice as tl_libdevice
+    if getattr(torch.version, "hip", None):
+        from triton.language.extra.hip import libdevice as tl_libdevice
+    else:
+        from triton.language.extra.cuda import libdevice as tl_libdevice
 
     _TRITON_AVAILABLE = True
 except Exception:  # pragma: no cover
@@ -20,6 +23,8 @@ except Exception:  # pragma: no cover
     tl_libdevice = None  # type: ignore
     _TRITON_AVAILABLE = False
 
+
+_HIP_BACKEND = bool(getattr(torch.version, "hip", None))
 
 _ENV_ENABLE = "WAN2GP_QUANTO_INT8_TRITON"
 _ENV_AUTOTUNE_ENABLE = "WAN2GP_QUANTO_INT8_AUTOTUNE"
@@ -603,6 +608,7 @@ def _launch_candidate(kind: str, cfg: tuple[int, int, int, int, int], tensors: t
             block_k=block_k,
             num_warps=num_warps,
             num_stages=num_stages,
+            hip_mode=_HIP_BACKEND and k < 128,
         )
         return
     a_int8_c, b_int8_c, a_scale_c, b_scale_c, out = tensors
@@ -626,6 +632,7 @@ def _launch_candidate(kind: str, cfg: tuple[int, int, int, int, int], tensors: t
         block_k=block_k,
         num_warps=num_warps,
         num_stages=num_stages,
+        hip_mode=_HIP_BACKEND and k < 128,
     )
 
 
@@ -1069,6 +1076,7 @@ if _TRITON_AVAILABLE:
         block_m: tl.constexpr,
         block_n: tl.constexpr,
         block_k: tl.constexpr,
+        hip_mode: tl.constexpr = False,
     ):
         pid_m = tl.program_id(0)
         pid_n = tl.program_id(1)
@@ -1092,7 +1100,10 @@ if _TRITON_AVAILABLE:
         row_inv_scale = 1.0 / row_scale
 
         # Pass 2: quantize activations on the fly + int8 dot.
-        acc = tl.zeros((block_m, block_n), dtype=tl.int32)
+        if hip_mode:
+            acc = tl.zeros((block_m, block_n), dtype=tl.float32)
+        else:
+            acc = tl.zeros((block_m, block_n), dtype=tl.int32)
         for k0 in range(0, k, block_k):
             kk = k0 + offs_k
             a = tl.load(
@@ -1111,7 +1122,10 @@ if _TRITON_AVAILABLE:
                 mask=(offs_n[None, :] < n) & (kk[:, None] < k),
                 other=0,
             ).to(tl.int8)
-            acc += tl.dot(a, b)
+            if hip_mode:
+                acc += tl.dot(a.to(tl.float32), b.to(tl.float32), out_dtype=tl.float32)
+            else:
+                acc += tl.dot(a, b)
 
         scales = tl.load(s_ptr + offs_n, mask=offs_n < n, other=0).to(tl.float32)
         out = acc.to(tl.float32) * row_scale[:, None] * scales[None, :]
@@ -1139,6 +1153,7 @@ if _TRITON_AVAILABLE:
         block_m: tl.constexpr,
         block_n: tl.constexpr,
         block_k: tl.constexpr,
+        hip_mode: tl.constexpr = False,
     ):
         pid_m = tl.program_id(0)
         pid_n = tl.program_id(1)
@@ -1167,8 +1182,10 @@ if _TRITON_AVAILABLE:
                 other=0,
             ).to(tl.int8)
 
-            dot_i32 = tl.dot(a, b)
-            acc += dot_i32.to(tl.float32) * row_scale[:, None]
+            if hip_mode:
+                acc += tl.dot(a.to(tl.float32), b.to(tl.float32), out_dtype=tl.float32) * row_scale[:, None]
+            else:
+                acc += tl.dot(a, b).to(tl.float32) * row_scale[:, None]
 
         scales = tl.load(s_ptr + offs_n, mask=offs_n < n, other=0).to(tl.float32)
         out = acc * scales[None, :]
@@ -1197,6 +1214,7 @@ if _TRITON_AVAILABLE:
         block_m: tl.constexpr,
         block_n: tl.constexpr,
         block_k: tl.constexpr,
+        hip_mode: tl.constexpr = False,
     ):
         pid_m = tl.program_id(0)
         pid_n = tl.program_id(1)
@@ -1204,7 +1222,10 @@ if _TRITON_AVAILABLE:
         offs_n = pid_n * block_n + tl.arange(0, block_n)
         offs_k = tl.arange(0, block_k)
 
-        acc = tl.zeros((block_m, block_n), dtype=tl.int32)
+        if hip_mode:
+            acc = tl.zeros((block_m, block_n), dtype=tl.float32)
+        else:
+            acc = tl.zeros((block_m, block_n), dtype=tl.int32)
         for k0 in range(0, k, block_k):
             kk = k0 + offs_k
             a = tl.load(
@@ -1218,7 +1239,10 @@ if _TRITON_AVAILABLE:
                 mask=(offs_n[None, :] < n) & (kk[:, None] < k),
                 other=0,
             ).to(tl.int8)
-            acc += tl.dot(a, b)
+            if hip_mode:
+                acc += tl.dot(a.to(tl.float32), b.to(tl.float32), out_dtype=tl.float32)
+            else:
+                acc += tl.dot(a, b)
 
         a_scales = tl.load(a_scales_ptr + offs_m, mask=offs_m < m, other=1).to(tl.float32)
         b_scales = tl.load(b_scales_ptr + offs_n, mask=offs_n < n, other=1).to(tl.float32)
@@ -1284,6 +1308,7 @@ def _fused_quant_scaled_mm_common(
         block_k=block_k,
         num_warps=num_warps,
         num_stages=num_stages,
+        hip_mode=_HIP_BACKEND and k < 128,
     )
     return out
 
@@ -1447,5 +1472,6 @@ def scaled_int8_mm(
         block_k=block_k,
         num_warps=num_warps,
         num_stages=num_stages,
+        hip_mode=_HIP_BACKEND and k < 128,
     )
     return out

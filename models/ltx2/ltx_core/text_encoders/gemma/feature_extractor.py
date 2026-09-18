@@ -38,10 +38,12 @@ def _norm_and_concat_padded_batch(
 def _norm_and_concat_per_token_rms(encoded_text: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
     b, t, d, l = encoded_text.shape
     variance = torch.mean(encoded_text**2, dim=2, keepdim=True)
-    normed = encoded_text * torch.rsqrt(variance + 1e-6)
-    normed = normed.reshape(b, t, d * l)
+    encoded_text.mul_(torch.rsqrt(variance + 1e-6))
+    del variance
+    normed = encoded_text.reshape(b, t, d * l)
     mask_3d = attention_mask.bool().unsqueeze(-1)
-    return torch.where(mask_3d, normed, torch.zeros_like(normed))
+    normed.masked_fill_(~mask_3d, 0.0)
+    return normed
 
 
 def _rescale_norm(x: torch.Tensor, target_dim: int, source_dim: int) -> torch.Tensor:
@@ -77,12 +79,15 @@ class GemmaFeaturesExtractorProjLinear(torch.nn.Module, ModelConfigurator["Gemma
         encoded = torch.stack(hidden_states, dim=-1) if isinstance(hidden_states, (list, tuple)) else hidden_states
         if self.is_v2:
             normed = _norm_and_concat_per_token_rms(encoded, attention_mask).to(encoded.dtype)
+            del encoded
             v_dim = self.video_aggregate_embed.out_features
             video = self.video_aggregate_embed(_rescale_norm(normed, v_dim, self.embedding_dim))
             audio = None
             if self.audio_aggregate_embed is not None:
                 a_dim = self.audio_aggregate_embed.out_features
                 audio = self.audio_aggregate_embed(_rescale_norm(normed, a_dim, self.embedding_dim))
+            del normed
+            torch.cuda.empty_cache()
             return video, audio
 
         if self.aggregate_embed is None:

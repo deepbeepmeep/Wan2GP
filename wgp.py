@@ -203,6 +203,7 @@ unique_id = 0
 unique_id_lock = threading.Lock()
 offloadobj = enhancer_offloadobj = wan_model = None
 loaded_config = ""
+loaded_quantization = ""
 reload_needed = True
 _HANDLER_MODULES = [
     "shared.qtypes.scaled_fp8",
@@ -255,7 +256,7 @@ def clear_gen_cache():
 
 
 def release_model():
-    global wan_model, offloadobj, reload_needed
+    global wan_model, offloadobj, reload_needed, loaded_quantization
     wan_model = None
     clear_gen_cache()
     if "_cache" in offload.shared_state:
@@ -267,6 +268,7 @@ def release_model():
     gc.collect()
     torch.cuda.empty_cache()
     reload_needed = True
+    loaded_quantization = ""
 def get_unique_id():
     global unique_id  
     with unique_id_lock:
@@ -450,7 +452,8 @@ def edit_task_in_queue( state ):
     model_type = get_state_model_type(state)
     new_inputs["model_type"] = model_type 
     new_inputs["state"] = state 
-    new_inputs["model_filename"] = get_model_filename(model_type, transformer_quantization, transformer_dtype_policy)
+    eff_quant = new_inputs.get("override_quantization", "") or transformer_quantization
+    new_inputs["model_filename"] = get_model_filename(model_type, eff_quant, transformer_dtype_policy)
 
     task_to_edit = queue[task_to_edit_index]
             
@@ -4056,8 +4059,8 @@ def ensure_prompt_enhancer_loaded(override_profile=-1, progress=None, send_cmd=N
         raise gr.Error("Prompt enhancer text runtime is not available.")
     return prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer
 
-def load_models(model_type, override_profile = -1, output_type="video", config_id = None, runtime_model_type=None, track_as_main=True, gen=None, loading_callback=None, **model_kwargs):
-    global transformer_type, loaded_profile, loaded_config
+def load_models(model_type, override_profile = -1, output_type="video", config_id = None, runtime_model_type=None, track_as_main=True, gen=None, loading_callback=None, override_quantization="", **model_kwargs):
+    global transformer_type, loaded_profile, loaded_config, loaded_quantization
     def _load_models_info(message):
         if int(verbose_level) > 0:
             print(message)
@@ -4070,9 +4073,10 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
         for _, _, current_config in model_config_groups.selected_model_configs(config_groups, config_id):
             model_def.update(current_config)
     save_quantized = args.save_quantized and model_def != None
-    model_filename = get_model_filename(model_type=model_type, quantization= "" if save_quantized else transformer_quantization, dtype_policy = transformer_dtype_policy, model_def=model_def)
+    effective_quant = override_quantization if len(override_quantization) else transformer_quantization
+    model_filename = get_model_filename(model_type=model_type, quantization= "" if save_quantized else effective_quant, dtype_policy = transformer_dtype_policy, model_def=model_def)
     if "URLs2" in model_def:
-        model_filename2 = get_model_filename(model_type=model_type, quantization= "" if save_quantized else transformer_quantization, dtype_policy = transformer_dtype_policy, submodel_no=2, model_def=model_def) # !!!!
+        model_filename2 = get_model_filename(model_type=model_type, quantization= "" if save_quantized else effective_quant, dtype_policy = transformer_dtype_policy, submodel_no=2, model_def=model_def)
     else:
         model_filename2 = None
     modules = get_model_recursive_prop(model_type, "modules", return_list=True, model_def=model_def)
@@ -4083,7 +4087,7 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
     if save_quantized and len(modules) > 0:
         print(f"Unable to create a finetune quantized model as some modules are declared in the finetune definition. If your finetune includes already the module weights you can remove the 'modules' entry and try again. If not you will need also to change temporarly the model 'architecture' to an architecture that wont require the modules part ({modules}) to quantize and then add back the original 'modules' and 'architecture' entries.")
         save_quantized = False
-    quantizeTransformer = not save_quantized and model_def !=None and transformer_quantization in ("int8", "fp8") and model_def.get("auto_quantize", False) and not "quanto" in model_filename
+    quantizeTransformer = not save_quantized and model_def !=None and effective_quant in ("int8", "fp8") and model_def.get("auto_quantize", False) and not "quanto" in model_filename
     if quantizeTransformer and len(modules) > 0:
         print(f"Autoquantize is not yet supported if some modules are declared")
         quantizeTransformer = False
@@ -4107,18 +4111,18 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
         if isinstance(module_type,dict):
             URLs1 = module_type.get("URLs", None)
             if URLs1 is None: raise Exception(f"No URLs defined for Module {module_type}")
-            model_file_list.append(get_model_filename(model_type, transformer_quantization, transformer_dtype, URLs = URLs1))
+            model_file_list.append(get_model_filename(model_type, effective_quant, transformer_dtype, URLs = URLs1))
             URLs2 = module_type.get("URLs2", None)
             if URLs2 is None: raise Exception(f"No URL2s defined for Module {module_type}")
-            model_file_list.append(get_model_filename(model_type, transformer_quantization, transformer_dtype, URLs = URLs2))
+            model_file_list.append(get_model_filename(model_type, effective_quant, transformer_dtype, URLs = URLs2))
             model_type_list += [model_type] * 2
             source_type_list += [1] * 2
             model_submodel_no_list += [1,2]
         else:
-            model_file_list.append(get_model_filename(model_type, transformer_quantization, transformer_dtype, module_type= module_type))
+            model_file_list.append(get_model_filename(model_type, effective_quant, transformer_dtype, module_type= module_type))
             model_type_list.append(model_type)
             source_type_list.append(True)
-            model_submodel_no_list.append(0) 
+            model_submodel_no_list.append(0)
 
     local_model_file_list= []
     for filename, file_model_type, file_source_type, submodel_no in zip(model_file_list, model_type_list, source_type_list, model_submodel_no_list):
@@ -4143,8 +4147,9 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
 
     model_type_handler = model_types_handlers[base_model_type] 
     text_encoder_URLs= get_model_recursive_prop(model_type, "text_encoder_URLs", return_list=True, model_def=model_def)
+    effective_text_encoder_quant = override_quantization if len(override_quantization) else text_encoder_quantization
     if text_encoder_URLs is not None:
-        text_encoder_filename = get_model_filename(model_type=model_type, quantization= text_encoder_quantization, dtype_policy = transformer_dtype_policy, URLs=text_encoder_URLs)
+        text_encoder_filename = get_model_filename(model_type=model_type, quantization= effective_text_encoder_quant, dtype_policy = transformer_dtype_policy, URLs=text_encoder_URLs)
     if text_encoder_filename is not None and len(text_encoder_filename):
         text_encoder_folder = model_def.get("text_encoder_folder", None)
         if text_encoder_filename is not None:
@@ -4165,7 +4170,7 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
     with model_unload_guard(), offload.loading_context(loading_callback, loading_model_ids):
         torch.set_default_device('cpu')
         wan_model, pipe = model_type_handler.load_model(
-                    local_model_file_list, runtime_model_type or model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = text_encoder_quantization,
+                    local_model_file_list, runtime_model_type or model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = effective_text_encoder_quant,
                     dtype = transformer_dtype, VAE_dtype = VAE_dtype, mixed_precision_transformer = mixed_precision_transformer, save_quantized = save_quantized, submodel_no_list   = model_submodel_no_list, text_encoder_filename = text_encoder_filename, profile=profile, lm_decoder_engine=lm_decoder_engine_obtained, **model_kwargs )
 
         kwargs = {}
@@ -4192,7 +4197,8 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
         transformer_type = model_type
         loaded_profile = profile
         loaded_config = config_id or ""
-    return wan_model, offloadobj 
+        loaded_quantization = effective_quant
+    return wan_model, offloadobj
 
 if not "P" in preload_model_policy:
     wan_model, offloadobj, transformer = None, None, None
@@ -4218,12 +4224,13 @@ def is_generation_in_progress():
 def get_auto_attention():
     return get_default_attention_mode()
 
-def generate_header(model_type, compile, attention_mode, override_attention=""):
+def generate_header(model_type, compile, attention_mode, override_attention="", override_quantization=""):
 
     description_container = [""]
     model_name = get_model_name(model_type, description_container)
     model_def = get_model_def(model_type) or {}
-    full_filename = get_model_filename(model_type, transformer_quantization, transformer_dtype_policy)
+    eff_quant = override_quantization if len(override_quantization) else transformer_quantization
+    full_filename = get_model_filename(model_type, eff_quant, transformer_dtype_policy)
     model_filename = os.path.basename(full_filename)
     description  = description_container[0]
     description = model_infos.render_model_description(description, model_def.get("infos", None), model_type=model_type, model_name=model_name, height=60 if server_config.get('display_stats', 0) == 1 else 40)
@@ -6981,6 +6988,7 @@ def generate_media(
     min_frames_if_references,
     override_profile,
     override_attention,
+    override_quantization,
     attention_sparsity,
     temperature,
     custom_settings,
@@ -7099,7 +7107,9 @@ def generate_media(
         model_kwargs.update(upsampler_api.model_load_kwargs_for_vae_upsampling(spatial_upsampling, base_model_type, model_def, image_mode))
     output_type = get_profile_type_for_model(model_type, image_mode)
     profile = compute_profile(override_profile, output_type)
-    if model_type != transformer_type or reload_needed or profile != loaded_profile or config != loaded_config:
+    effective_quantization = override_quantization if len(override_quantization) else transformer_quantization
+    if (model_type != transformer_type or reload_needed or profile != loaded_profile 
+        or config != loaded_config or effective_quantization != loaded_quantization):
         release_model()
         send_cmd("status", f"Loading Model {get_model_name(model_type)}...")
         def loading_progress(phase, completed, total, model_id):
@@ -7108,7 +7118,7 @@ def generate_media(
             send_cmd("progress", [(completed, total), title, total, "phases"])
 
         try:
-            wan_model, offloadobj = load_models(model_type, override_profile, output_type=output_type, config_id=config, gen=gen, loading_callback=offload.LoadingCallback(lambda: gen.get("abort", False), loading_progress), **model_kwargs)
+            wan_model, offloadobj = load_models(model_type, override_profile, output_type=output_type, config_id=config, gen=gen, loading_callback=offload.LoadingCallback(lambda: gen.get("abort", False), loading_progress), override_quantization=effective_quantization, **model_kwargs)
         except offload.LoadingCancelled as error:
             traceback.clear_frames(error.__traceback__)
             gc.collect()
@@ -8595,7 +8605,7 @@ def generate_media(
                 inputs.pop("task")
                 inputs.pop("mode")
                 inputs["model_type"] = model_type
-                inputs["model_filename"] = get_model_filename(model_type, transformer_quantization, transformer_dtype_policy)
+                inputs["model_filename"] = get_model_filename(model_type, effective_quantization, transformer_dtype_policy)
                 if is_image:
                     inputs["image_quality"] = server_config.get("image_output_codec", None)
                 else:
@@ -10170,7 +10180,8 @@ def collect_current_model_settings(state):
     settings = get_model_settings(state, model_type)
     settings["state"] = state
     settings = prepare_inputs_dict("metadata", settings)
-    settings["model_filename"] = get_model_filename(model_type, transformer_quantization, transformer_dtype_policy)
+    eff_quant = settings.get("override_quantization", "") or transformer_quantization
+    settings["model_filename"] = get_model_filename(model_type, eff_quant, transformer_dtype_policy)
     settings["model_type"] = model_type 
     return settings 
 
@@ -10178,7 +10189,8 @@ def collect_current_model_settings(state):
 def collect_current_model_settings_with_media(state):
     model_type = get_state_model_type(state)
     settings = (get_model_settings(state, model_type) or {}).copy()
-    settings["model_filename"] = get_model_filename(model_type, transformer_quantization, transformer_dtype_policy)
+    eff_quant = settings.get("override_quantization", "") or transformer_quantization
+    settings["model_filename"] = get_model_filename(model_type, eff_quant, transformer_dtype_policy)
     settings["model_type"] = model_type
     return settings
 
@@ -10660,6 +10672,7 @@ def save_inputs(
             min_frames_if_references,
             override_profile,
             override_attention,
+            override_quantization,
             attention_sparsity,
             temperature,
             custom_setting_1,
@@ -10807,7 +10820,7 @@ def change_model(state, model_choice):
     if hasattr(app, "plugin_manager"):
         app.plugin_manager.notify_model_change(state, model_choice)
     model_settings = get_model_settings(state, model_choice) or get_default_settings(model_choice)
-    description, header = generate_header(model_choice, compile=compile, attention_mode=attention_mode, override_attention=model_settings.get("override_attention", ""))
+    description, header = generate_header(model_choice, compile=compile, attention_mode=attention_mode, override_attention=model_settings.get("override_attention", ""), override_quantization=model_settings.get("override_quantization", ""))
     
     return description, header
 
@@ -10854,7 +10867,10 @@ def preload_model_when_switching(state):
     global reload_needed, wan_model, offloadobj
     if "S" in preload_model_policy:
         model_type = get_state_model_type(state) 
-        if  model_type !=  transformer_type:
+        model_settings = get_model_settings(state, model_type) or get_default_settings(model_type)
+        eff_quant = model_settings.get("override_quantization", "")
+        effective_quant = eff_quant if len(eff_quant) else transformer_quantization
+        if model_type != transformer_type or effective_quant != loaded_quantization:
             release_model()            
             model_filename = get_model_name(model_type)
             progress = WangpProgress()
@@ -10863,6 +10879,7 @@ def preload_model_when_switching(state):
             wan_model, offloadobj = load_models(
                 model_type,
                 output_type=get_profile_type_for_model(model_type, 0),
+                override_quantization=effective_quant,
             )
             progress.status("Model loaded")
             yield progress.render(active=False)
@@ -12837,6 +12854,17 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         value=selected_attention,
                         label=f"Override Attention Mode"
                     )
+                    override_quantization_choices = [
+                        ("Default Quantization (from Config)", ""),
+                        ("Scaled Int8 (recommended)", "int8"),
+                        ("Scaled Fp8", "fp8"),
+                        ("16-bit (no quantization)", "bf16"),
+                    ]
+                    override_quantization = gr.Dropdown(
+                        choices=override_quantization_choices,
+                        value=ui_get("override_quantization", ""),
+                        label="Override Transformer Model Quantization"
+                    )
                     attention_sparsity = setting_slider("attention_sparsity", visible=custom_attention_modes.get(selected_attention, {}).get("supports_sparsity", False))
                     with gr.Column():
                         gr.Markdown('<B>Customize the Output Filename using Settings Values (<I>date, seed, resolution, num_inference_steps, prompt, flow_shift, video_length, guidance_scale</I>). For Instance:<BR>"<I>{date(YYYY-MM-DD_HH-mm-ss)}_{seed}_{prompt(50)}, {num_inference_steps}</I>"</B>')
@@ -12897,8 +12925,13 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     _deepy_hybrid = HybridService(_deepy_runtime_deps(), state_dict, process_queue=_process_tasks, finalize_queue=_finalize_generation, unload=_unload_model_if_needed, gallery_lock=lock)
                     _deepy_hybrid.configure_workspaces(args.workspaces_dir or os.path.join(wgp_root, 'workspaces'))
                 state = default_state if default_state is not None else gr.State(state_dict)
+
+                def refresh_attention_and_quantization_header(state, override_attention, override_quantization):
+                    return generate_header(get_state_model_type(state), compile, attention_mode, override_attention, override_quantization)[1]
+
                 if tab_id == "generate" and header is not None:
-                    override_attention.input(fn=refresh_attention_header, inputs=[state, override_attention], outputs=[header], show_progress="hidden")
+                    override_attention.input(fn=refresh_attention_and_quantization_header, inputs=[state, override_attention, override_quantization], outputs=[header], show_progress="hidden")
+                    override_quantization.input(fn=refresh_attention_and_quantization_header, inputs=[state, override_attention, override_quantization], outputs=[header], show_progress="hidden")
                 override_attention.input(fn=refresh_attention_sparsity, inputs=[state, override_attention], outputs=[attention_sparsity], show_progress="hidden")
                 gen_status = WangpProgress.component(visible=True)
                 main_bridge_elem_ids = tab_id == 'generate'
@@ -13055,8 +13088,8 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       self_refiner_col, self_refiner_rules_ui, pause_row]+\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,
         if tab_id == 'generate':
-            # Restore the header with the effective attention value in the same update.
-            extra_inputs.append(gr.update(value=generate_header(model_type, compile, attention_mode, selected_attention)[1]) if update_form else header)
+            # Restore the header with the effective attention & quantization value in the same update.
+            extra_inputs.append(gr.update(value=generate_header(model_type, compile, attention_mode, selected_attention, ui_get("override_quantization", ""))[1]) if update_form else header)
         if update_form:
             locals_dict = locals()
             gen_inputs = build_form_refresh_outputs(inputs_names, locals_dict, state_dict, plugin_data, extra_inputs)

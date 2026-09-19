@@ -94,7 +94,6 @@
 	"RIFLEx_setting": 0,
 	"override_profile": -1,
 	"override_attention": "",
-	"override_quantization": "",
 	"attention_sparsity": 1.0,
 	"output_filename": "",
 	"config": "",

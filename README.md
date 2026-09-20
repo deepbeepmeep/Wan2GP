@@ -73,7 +73,7 @@ No distilled version is available yet.
 
 - **Full JIT Checkpoint Loading**: WanGP now downloads preprocessing and postprocessing checkpoints only when needed, instead of downloading them all on first use. This saves disk space if you use WanGP for a specific task, such as audio generation, or want to build a portable version of WanGP.
 
-- **Comfy Kitchen Kernel Support**: These kernels are installed automatically and can accelerate specific models. They have been integrated into H3 and LTX2.x, which are now 10% faster.
+- **Comfy Kitchen Kernels Support**: These kernels are installed automatically and can accelerate specific models. They have been integrated into H3 and LTX2.x, which are now 10% faster.
 
 - **Minimax H3 INT8 ConvRot VAE**: Twice as fast. Now downloaded automatically and used by default when INT8 is selected in your transformer configuration. 
 

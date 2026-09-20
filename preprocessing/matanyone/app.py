@@ -1348,7 +1348,9 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
 
     # download assets
 
-    mask_progress = WangpProgress.component(stop=True)
+    # Keep progress events wired without showing a panel that shifts the editor.
+    with gr.Column(visible=False):
+        mask_progress = WangpProgress.component(stop=True)
     matanyone_title_md = gr.Markdown(get_title_markdown())
     refresh_form_trigger.change(fn=get_title_markdown, inputs=[], outputs=[matanyone_title_md], show_progress="hidden")
     gr.Markdown("If you have some trouble creating the perfect mask, be aware of these tips:")

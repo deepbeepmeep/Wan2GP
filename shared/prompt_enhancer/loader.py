@@ -25,7 +25,7 @@ from .assets import (
     PROMPT_ENHANCER_REPO,
 )
 from shared.deepy.config import resolve_deepy_kv_cache_quantization
-from .config import resolve_prompt_enhancer_speculative_decoding
+from .config import resolve_prompt_enhancer_speculative_decoding, speculative_decoding_runtime
 
 
 @dataclass(slots=True)
@@ -64,8 +64,9 @@ def ensure_prompt_enhancer_assets(process_files_def, enhancer_enabled: int, qwen
     if enhancer_enabled in (3, 4, 5):
         from .qwen35_vl import ensure_qwen35_prompt_enhancer_assets, get_qwen35_prompt_enhancer_variant
 
-        speculative_decoding = resolve_prompt_enhancer_speculative_decoding(enhancer_enabled, speculative_decoding)[0]
-        ensure_qwen35_prompt_enhancer_assets(process_files_def, backend=qwen_backend, variant=get_qwen35_prompt_enhancer_variant(enhancer_enabled), speculative_decoding=bool(speculative_decoding))
+        speculative_decoding = resolve_prompt_enhancer_speculative_decoding(enhancer_enabled, speculative_decoding, qwen_backend=qwen_backend)[0]
+        speculative_decoding, _ = speculative_decoding_runtime(speculative_decoding)
+        ensure_qwen35_prompt_enhancer_assets(process_files_def, backend=qwen_backend, variant=get_qwen35_prompt_enhancer_variant(enhancer_enabled), speculative_decoding=speculative_decoding)
 
 
 def download_prompt_enhancer_assets(enhancer_enabled: int, qwen_backend: str = "quanto_int8", speculative_decoding: bool = False, send_cmd=None, progress=None, status_text="Downloading Prompt Enhancer model files...", gen=None):
@@ -156,7 +157,8 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
     ensure_prompt_enhancer_assets(process_files_def, enhancer_enabled=enhancer_enabled, qwen_backend=qwen_backend, speculative_decoding=speculative_decoding)
 
     if enhancer_enabled in (3, 4, 5):
-        speculative_decoding, speculative_decoding_message = resolve_prompt_enhancer_speculative_decoding(enhancer_enabled, speculative_decoding)
+        speculative_decoding, speculative_decoding_message = resolve_prompt_enhancer_speculative_decoding(enhancer_enabled, speculative_decoding, qwen_backend=qwen_backend)
+        speculative_decoding, speculative_tokens = speculative_decoding_runtime(speculative_decoding)
         deepy_kv_cache_quantization, kv_cache_message = resolve_deepy_kv_cache_quantization(deepy_kv_cache_quantization)
         if speculative_decoding_message:
             print(f"[Prompt Enhancer / Deepy] {speculative_decoding_message}")
@@ -167,6 +169,7 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
             enhancer_quantization_GGUF,
             enhancer_quantization_GGUF_Q3,
             enhancer_quantization_GGUF_Q2,
+            enhancer_quantization_GGUF_PTQ1,
             enhancer_quantization_QUANTO_INT8,
             alias_qwen35_text_embedding_for_mmgp,
             get_qwen35_assets_dir_name,
@@ -180,7 +183,7 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
         qwen35_variant = get_qwen35_prompt_enhancer_variant(enhancer_enabled)
         spec = get_qwen35_variant_spec(qwen35_variant)
         quantization = get_qwen35_quantization(qwen_backend or enhancer_quantization_QUANTO_INT8, variant=qwen35_variant)
-        backend = enhancer_quantization_GGUF if quantization in (enhancer_quantization_GGUF_Q3, enhancer_quantization_GGUF_Q2) else quantization
+        backend = enhancer_quantization_GGUF if quantization in (enhancer_quantization_GGUF_Q3, enhancer_quantization_GGUF_Q2, enhancer_quantization_GGUF_PTQ1) else quantization
         assets_dir_name = get_qwen35_assets_dir_name(qwen35_variant)
         assets_dir = fl.locate_folder(assets_dir_name, error_if_none=False) or fl.get_download_location(assets_dir_name)
         if backend == enhancer_quantization_GGUF:
@@ -197,12 +200,13 @@ def load_prompt_enhancer_runtime(process_files_def, enhancer_enabled: int, lm_de
             attn_implementation="sdpa",
             requested_lm_engine=lm_decoder_engine,
             variant=qwen35_variant,
-            speculative_decoding=bool(speculative_decoding),
+            speculative_decoding=speculative_decoding,
             kv_cache_int8=deepy_kv_cache_quantization == "int8",
         )
-        if speculative_decoding > 2:
-            runtime.llm_model._prompt_enhancer_speculative_tokens = speculative_decoding
-            runtime.llm_model._prompt_enhancer_speculative_sampling_tokens = speculative_decoding
+        if speculative_tokens is not None:
+            speculative_tokens = min(speculative_tokens, getattr(runtime.llm_model, "_block_draft_max_tokens", speculative_tokens))
+            runtime.llm_model._prompt_enhancer_speculative_tokens = speculative_tokens
+            runtime.llm_model._prompt_enhancer_speculative_sampling_tokens = speculative_tokens
         runtime.llm_tokenizer = getattr(runtime.llm_model, "_prompt_enhancer_tokenizer", None)
         runtime.llm_model.eval()
         caption_embedding_model = alias_qwen35_text_embedding_for_mmgp(runtime.llm_model)

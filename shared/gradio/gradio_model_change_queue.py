@@ -41,8 +41,12 @@ def _prepare(app):
             continue
         # Plugins may add model-change listeners and branch existing chains.
         # Release after WanGP's form refresh, independently of those listeners.
-        [change] = [fn for fn in app.fns.values() if fn.name == 'change_model_from_target' and target in fn.inputs]
-        [tail] = [fn for fn in app.fns.values() if fn.name == 'fill_inputs' and fn.trigger_after == change._id]
+        tails = [fn for fn in app.fns.values() if getattr(fn.fn, '_wangp_model_switch_tail', False) and target in fn.inputs]
+        if tails:
+            [tail] = tails
+        else:
+            [change] = [fn for fn in app.fns.values() if fn.name == 'change_model_from_target' and target in fn.inputs]
+            [tail] = [fn for fn in app.fns.values() if fn.name == 'fill_inputs' and fn.trigger_after == change._id]
         # Gradio dispatches this frontend-only continuation after its pending
         # output updates settle. It adds no HTTP request or wait to a single swap.
         _, ack = app.default_config.set_event_trigger([EventListenerMethod(None, 'then')], None, None, None, js='()=>{}', trigger_after=tail._id, queue=False, api_name=False)

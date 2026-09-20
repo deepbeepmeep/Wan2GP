@@ -28,6 +28,7 @@
 *.exe
 cache
 __pycache__/
+node_modules/
 shared/gradio/wangp_image_editor/templates/component/index.js.map
 storage/
 samples/

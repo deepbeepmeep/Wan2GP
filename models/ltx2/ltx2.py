@@ -1291,6 +1291,7 @@ class LTX2:
         return loras, loras_mult
 
     @generation_progress
+    @torch.inference_mode()
     def generate(
         self,
         input_prompt: str,

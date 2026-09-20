@@ -138,13 +138,8 @@ class family_handler:
                 }
             )
         else:
-            download_def.append(
-                {
-                    "repoId": "DeepBeepMeep/Wan2.1",
-                    "sourceFolderList": ["chinese-wav2vec2-base"],
-                    "fileList": [["config.json", "preprocessor_config.json", "pytorch_model.bin", "readme.txt"]],
-                }
-            )
+            from models.wan.multitalk.assets import query_download_def
+            download_def.append(query_download_def(include_readme=True))
         download_def += [
             {
                 "repoId": "DeepBeepMeep/Wan2.1",

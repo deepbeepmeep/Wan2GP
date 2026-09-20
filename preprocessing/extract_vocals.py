@@ -7,6 +7,9 @@ import torch
 import gc
 
 from audio_separator.separator import Separator
+from shared.utils import files_locator as fl
+from shared.utils.download import process_files_def_if_needed
+from preprocessing.roformer.assets import query_download_def
 
 def _resolve_separator_output(out_file, output_dir: Path) -> Path:
     out = Path(out_file)
@@ -42,6 +45,7 @@ def _prepare_separator_input(src_path: str, min_seconds: float):
 
 
 def extract_vocal_and_background_stems(src_path: str, vocals_dst_path: str, background_dst_path: str, min_seconds: float = 8) -> tuple[str, str]:
+    process_files_def_if_needed(query_download_def())
     default_device = torch.get_default_device()
     torch.set_default_device('cpu')
 
@@ -57,7 +61,7 @@ def extract_vocal_and_background_stems(src_path: str, vocals_dst_path: str, back
         sep = Separator(
             output_dir=str(vocals_dst.parent),
             output_format=(vocals_dst.suffix.lstrip(".") or "wav"),
-            model_file_dir="ckpts/roformer/" #model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+            model_file_dir=fl.locate_folder("roformer")
         )
         sep.load_model()
         out_files = sep.separate(use_path, {"Vocals": vocals_dst.stem, "Instrumental": background_dst.stem})
@@ -82,6 +86,7 @@ def get_vocals(src_path: str, dst_path: str, min_seconds: float = 8) -> str:
     Returns the full path to the vocals file.
     """
 
+    process_files_def_if_needed(query_download_def())
     default_device = torch.get_default_device()
     torch.set_default_device('cpu')
 
@@ -97,7 +102,7 @@ def get_vocals(src_path: str, dst_path: str, min_seconds: float = 8) -> str:
             output_dir=str(dst.parent),
             output_format=(dst.suffix.lstrip(".") or "wav"),
             output_single_stem="Vocals",
-            model_file_dir="ckpts/roformer/" #model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+            model_file_dir=fl.locate_folder("roformer")
         )
         sep.load_model()
         out_files = sep.separate(use_path, {"Vocals": dst.stem})

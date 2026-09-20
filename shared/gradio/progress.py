@@ -11,6 +11,7 @@ from html import escape
 from pathlib import Path
 
 from shared.utils.cancellation import cancellation_context
+from shared.utils.download_progress import download_operation
 
 
 _tracked_progress = ContextVar("wangp_tqdm_progress", default=None)
@@ -237,13 +238,13 @@ class WangpProgress:
             if runs is None:
                 progress.status("Preparing…")
             else:
-                progress(0, desc="Preparing Prompt Enhancer")
+                progress(0, desc="Preparing")
             if runs is not None:
                 *args, request = args
                 runs[request.session_hash] = progress
 
             def work():
-                with progress.track(), cancellation_context(progress.check_cancelled if runs is not None else None):
+                with progress.track(), download_operation(progress.gen), cancellation_context(progress.check_cancelled if runs is not None else None):
                     return fn(*args, **kw, progress=progress)
 
             unchanged = [gr.update() for _ in outputs]
@@ -264,9 +265,13 @@ class WangpProgress:
                         wait([future], timeout=0.1)
                     try:
                         result = future.result()
-                    except Exception:
+                    except Exception as exc:
                         yield *unchanged, *restore, gr.update(value="", visible=False)
                         if progress.gen["abort"]:
+                            return
+                        from shared.utils.download import DownloadError
+                        if isinstance(exc, DownloadError):
+                            gr.Warning(str(exc))
                             return
                         raise
                 values = [result] if len(outputs) == 1 else result

@@ -2,6 +2,25 @@
 import argparse
 import os
 import secrets
+from urllib.parse import urlsplit
+
+
+def parse_public_url(value):
+    from pydantic import AnyHttpUrl
+
+    try:
+        parsed = urlsplit(value)
+        if (parsed.scheme not in {'http', 'https'} or not parsed.hostname or parsed.username is not None
+                or parsed.password is not None or parsed.path not in {'', '/'}
+                or any(char.isspace() or ord(char) < 32 for char in value)
+                or any(char in value for char in ('?', '#', '\\', '*'))):
+            raise ValueError()
+        url = AnyHttpUrl(value)
+        if not 1 <= url.port <= 65535:
+            raise ValueError()
+        return str(url).rstrip('/')
+    except ValueError as error:
+        raise ValueError('--public-url must be an HTTP(S) origin, e.g. https://wangp.example.com, without a path, query, fragment or credentials.') from error
 
 
 def add_arguments(parser):
@@ -10,6 +29,7 @@ def add_arguments(parser):
     auth.add_argument("--auth", action="store_true", help="Require a password for all Gradio and Deepy web access")
     auth.add_argument("--no-auth", action="store_false", dest="auth", help="Disable web authentication (default)")
     add("--auth-password", default=None, help="Web passphrase (requires --auth; otherwise WANGP_AUTH_PASSWORD or a generated password)")
+    add("--public-url", type=parse_public_url, default=None, metavar="ORIGIN", help="Restrict Gradio/Deepy browser requests to this exact origin, e.g. https://wangp.example.com (default: same host/port, HTTP or HTTPS)")
     add("--mcp-auth", action="store_true", help="Require OAuth authorization for network MCP")
     add("--mcp-auth-password", default=None, help="Separate MCP approval passphrase (requires --mcp-auth; otherwise WANGP_MCP_AUTH_PASSWORD or a generated password)")
     add("--mcp-auth-url", default=None, help="Public MCP server origin, e.g. https://wangp.example.com:7866 (requires --mcp-auth)")

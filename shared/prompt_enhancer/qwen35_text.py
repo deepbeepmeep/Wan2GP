@@ -488,6 +488,7 @@ def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None, 
                 logits.index_fill_(-1, valid_ids, float("-inf"))
             return logits
 
+        suppress_tokens_logits_processor._is_token_mask = True
         processors.append(suppress_tokens_logits_processor)
         processors_without_penalty.append(suppress_tokens_logits_processor)
 
@@ -508,6 +509,7 @@ def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None, 
             def thinking_logits_processor(_input_ids, logits):
                 return thinking_state.apply_(logits)
 
+            thinking_logits_processor._is_token_mask = True
             processors.append(thinking_logits_processor)
             processors_without_penalty.append(thinking_logits_processor)
             update_callbacks.append(thinking_state.update)
@@ -533,11 +535,28 @@ def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None, 
                 logits = processor(input_ids, logits)
             return logits
     logits_processor._without_penalty = logits_processor_without_penalty
+    logits_processor._is_token_mask = all(getattr(processor, "_is_token_mask", False) for processor in processors)
     logits_processor._requires_input_ids = False
     logits_processor._supports_partial_vocab = lambda: thinking_state is None or not thinking_state.in_thinking or thinking_state.generated_thinking_tokens < thinking_state.max_thinking_tokens
     if logits_processor_without_penalty is not None:
+        logits_processor_without_penalty._is_token_mask = True
         logits_processor_without_penalty._requires_input_ids = False
         logits_processor_without_penalty._supports_partial_vocab = logits_processor._supports_partial_vocab
+
+    if presence_processor is None:
+        # A verifier can evaluate these rules against each hypothetical accepted
+        # prefix on the GPU. Python state is updated only for committed tokens.
+        def speculative_batch_rules():
+            return {
+                "suppressed": suppressed_ids,
+                "thinking_stops": () if thinking_state is None else thinking_state.stop_token_ids,
+                "thinking": (-1, 0, 0) if thinking_state is None else (
+                    thinking_state.close_think_token_id,
+                    thinking_state.max_thinking_tokens - thinking_state.generated_thinking_tokens,
+                    int(thinking_state.in_thinking),
+                ),
+            }
+        logits_processor._speculative_batch_rules = speculative_batch_rules
 
     if len(update_callbacks) == 1:
         update_state = update_callbacks[0]
@@ -892,12 +911,18 @@ def _load_local_text_model(
     enable_mtp: bool = False,
     modules=None,
     postprocess_sd=None,
+    preserve_native_dtypes=False,
 ):
     config = _load_text_config(config_path)
     config._prompt_enhancer_safe_legacy = bool(safe_legacy_mode)
     config._prompt_enhancer_enable_mtp_speculative = bool(enable_mtp)
     with torch.device("meta"):
         model = Qwen3_5ForCausalLM(config)
+
+    load_options = {}
+    if preserve_native_dtypes:
+        from shared.qtypes.prism import preserve_checkpoint_dtypes
+        load_options["pre_load_callback"] = preserve_checkpoint_dtypes
 
     offload.load_model_data(
         model,
@@ -907,6 +932,7 @@ def _load_local_text_model(
         modules=modules,
         writable_tensors=False,
         default_dtype=default_dtype,
+        **load_options,
     )
     if materialize_source_tensors:
         materialize_module_source_tensors(model)
@@ -1057,7 +1083,7 @@ def _build_fused_column_linear(modules):
     return fused
 
 
-def _apply_qwen35_projection_fusions(model) -> None:
+def _apply_qwen35_projection_fusions(model, *, prism=False, optimize_prism=True) -> None:
     blocks = list(getattr(model, "blk", ()))
     mtp = getattr(model, "mtp", None)
     if mtp is not None:
@@ -1069,6 +1095,19 @@ def _apply_qwen35_projection_fusions(model) -> None:
             block.ffn_gate_up = _build_fused_column_linear([block.ffn_gate, block.ffn_up])
             block.ffn_gate = None
             block.ffn_up = None
+        if prism and block is not getattr(mtp, "block", None):
+            if not optimize_prism:
+                continue
+            # Fuse only projections with the same checkpoint basis and dtype.
+            # Alpha/beta remain unrotated BF16, separate from packed QKV/gate.
+            if block.layer_type == "linear_attention":
+                block.attn_qkv_gate = _build_fused_column_linear([block.attn_qkv, block.attn_gate])
+                block.ssm_ab = _build_fused_column_linear([block.ssm_alpha, block.ssm_beta])
+                block.attn_qkv = block.attn_gate = block.ssm_alpha = block.ssm_beta = None
+            else:
+                block.attn_qkv_full = _build_fused_column_linear([block.attn_q, block.attn_k, block.attn_v])
+                block.attn_q = block.attn_k = block.attn_v = None
+            continue
         if getattr(block, "layer_type", None) != "linear_attention":
             continue
         # Real prompt-enhancer benchmarks only kept this fusion: it removes two extra
@@ -1118,15 +1157,28 @@ def load_qwen35_text_prompt_enhancer(
         runtime_model_path=text_assets_dir,
     )
     safe_legacy_mode = not allow_vllm_kernels
-    enable_mtp = bool(speculative_decoding and spec.get("supports_mtp", False))
+    prism_metadata = {}
+    if backend == enhancer_quantization_GGUF:
+        from shared.qtypes.prism import get_prism_metadata
+        model_path = _resolve_gguf_model_path(model_path, assets_dir, variant=variant)
+        prism_metadata = get_prism_metadata(model_path)
+    from .config import BLOCK_DRAFT_METHODS
+    block_draft_method = speculative_decoding if speculative_decoding in BLOCK_DRAFT_METHODS else None
+    if block_draft_method is not None and (variant != "27b" or engine_name != "vllm"):
+        raise ValueError("DSpark and DFlash2 require Qwen3.8/Bonsai 27B with the vLLM decoder engine.")
+    enable_mtp = bool(speculative_decoding and block_draft_method is None and spec.get("supports_mtp", False))
     q3_filename = spec.get("text_gguf_q3_filename")
     uses_separate_q3_mtp = backend == enhancer_quantization_GGUF and q3_filename and os.path.basename(str(model_path or "")).lower() == q3_filename.lower()
     mtp_filename = spec.get("text_gguf_q3_mtp_filename" if uses_separate_q3_mtp else "text_mtp_filename") if enable_mtp else None
+    if enable_mtp and prism_metadata:
+        mtp_filename = spec["text_gguf_ptq1_mtp_filename"]
     mtp_modules = [_resolve_qwen35_checkpoint_file(assets_dir, mtp_filename, variant=variant)] if mtp_filename else None
     postprocess_sd = _add_qwen35_mtp_shared_weights if enable_mtp else None
     if backend == enhancer_quantization_GGUF:
         model_path = _resolve_gguf_model_path(model_path, assets_dir, variant=variant)
         gguf_v_head_reordered, gguf_ssm_param_reordered, gguf_interleave_ssm_ab = _resolve_gguf_linear_attention_layout_from_filename(model_path)
+        if prism_metadata:
+            gguf_v_head_reordered, gguf_ssm_param_reordered, gguf_interleave_ssm_ab = True, True, False
         quanto_log_ssm_a = False
         preprocess_sd = _build_qwen35_gguf_preprocess_sd(
             tie_output_to_embeddings=bool(spec.get("tie_word_embeddings", False)),
@@ -1168,6 +1220,7 @@ def load_qwen35_text_prompt_enhancer(
         enable_mtp=enable_mtp,
         modules=mtp_modules,
         postprocess_sd=postprocess_sd,
+        preserve_native_dtypes=bool(prism_metadata),
     )
     if backend == enhancer_quantization_QUANTO_INT8 and spec.get("text_int8_tie_word_embeddings", False):
         _tie_qwen35_output_to_embeddings(model)
@@ -1181,10 +1234,23 @@ def load_qwen35_text_prompt_enhancer(
         )
     elif quanto_log_ssm_a:
         _configure_qwen35_text_model(model, log_ssm_a=True)
-    _apply_qwen35_projection_fusions(model)
+    _apply_qwen35_projection_fusions(model, prism=bool(prism_metadata))
+    if prism_metadata:
+        from shared.qtypes.prism import install_prism_transforms
+        install_prism_transforms(model, prism_metadata)
+        if engine_name == "vllm":
+            from shared.qtypes.prism import install_prism_decode
+            install_prism_decode(model)
+    if backend == enhancer_quantization_GGUF and variant == "27b" and engine_name == "vllm":
+        from shared.kernels.qwen_gdn import install_gdn_decode
+        install_gdn_decode(model)
     mtp_draft_vocab_size = spec.get("mtp_draft_vocab_size")
     if enable_mtp and mtp_draft_vocab_size is not None:
-        model.mtp.lm_head = GGUFFirstRowsLinear(model.mtp.lm_head, mtp_draft_vocab_size)
+        if prism_metadata:
+            from shared.qtypes.prism import PrismFirstRowsLinear
+            model.mtp.lm_head = PrismFirstRowsLinear(model.mtp.lm_head, mtp_draft_vocab_size)
+        else:
+            model.mtp.lm_head = GGUFFirstRowsLinear(model.mtp.lm_head, mtp_draft_vocab_size)
         model.mtp.draft_vocab_size = mtp_draft_vocab_size
 
     model._prompt_enhancer_tokenizer = tokenizer
@@ -1227,6 +1293,9 @@ def load_qwen35_text_prompt_enhancer(
     model._prompt_enhancer_speculative_tokens = spec.get("mtp_speculative_tokens", QWEN35_PROMPT_SPECULATIVE_TOKENS)
     model._prompt_enhancer_speculative_sampling_tokens = spec.get("mtp_speculative_sampling_tokens", QWEN35_PROMPT_SPECULATIVE_SAMPLING_TOKENS)
     model._prompt_enhancer_speculative_confidence = spec.get("mtp_speculative_confidence", 0.30)
+    if block_draft_method is not None:
+        from .block_draft import install_block_draft
+        install_block_draft(model, block_draft_method, engine_name, bonsai=bool(prism_metadata))
     model._prompt_enhancer_use_vllm = engine_name in ("cg", "vllm")
     model._prompt_enhancer_use_legacy_cuda_runner = engine_name == "legacy"
     if model._prompt_enhancer_use_vllm or model._prompt_enhancer_use_legacy_cuda_runner:

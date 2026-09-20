@@ -509,6 +509,7 @@ class ModelRunner:
 
     def clear_graph_cache(self):
         self._speculative_sampling_graphs.clear()
+        self._speculative_acceptance_graphs = {}
         if self._graph_cache:
             for key in list(self._graph_cache.keys()):
                 self._drop_graph_cache_entry(key)
@@ -1104,10 +1105,18 @@ class ModelRunner:
             seq.logits_processor_update_state(token_id)
         return token_id
 
-    def _speculative_distribution(self, seq: Sequence, logits: torch.Tensor, sample_params, virtual_tokens: list[int], vocab_size: int | None = None, predictive: bool = False, profile: dict | None = None, profile_role: str = "target") -> torch.Tensor:
+    def _speculative_distribution(self, seq: Sequence, logits: torch.Tensor, sample_params, virtual_tokens: list[int], vocab_size: int | None = None, predictive: bool = False, profile: dict | None = None, profile_role: str = "target", rules_applied: bool = False) -> torch.Tensor:
         temperatures, _cfg_scales, _top_ks, _top_ps, _min_ps, repetition_penalties = sample_params
         penalty = 1.0 if repetition_penalties is None else float(repetition_penalties[0].item())
-        logits = self._apply_speculative_logit_rules(seq, logits, penalty, virtual_tokens, vocab_size, predictive=predictive).float().div_(temperatures[0])
+        if not rules_applied:
+            logits = self._apply_speculative_logit_rules(seq, logits, penalty, virtual_tokens, vocab_size, predictive=predictive)
+        if (predictive and logits.is_cuda and self.use_triton_sampling and not self.enforce_eager
+                and not getattr(self.model, "_block_draft", False)
+                and not getattr(self, "_disable_mtp_gpu_draft", False)
+                and seq.top_k is not None and 1 < seq.top_k <= 128):
+            from .speculative_sampling import draft_probabilities
+            return draft_probabilities(self, seq, logits)
+        logits = logits.float().div_(temperatures[0])
         top_k = int(seq.top_k) if seq.top_k is not None and 0 < int(seq.top_k) < logits.numel() else None
         top_p = float(seq.top_p) if seq.top_p is not None and 0.0 < float(seq.top_p) < 1.0 else None
         min_p = float(seq.min_p) if seq.min_p is not None and float(seq.min_p) > 0.0 else None
@@ -1503,7 +1512,8 @@ class ModelRunner:
             sampling_method = "rejection sampling" if seq.top_k != 1 else "greedy exact-match"
             execution = "eager" if self.enforce_eager else "CUDA graph"
             draft_tokens = self.model._prompt_enhancer_speculative_sampling_tokens if seq.top_k != 1 else self.model._prompt_enhancer_speculative_tokens
-            print(f"[Deepy][Speculative] method=native MTP ({sampling_method}, up to {draft_tokens} draft tokens, {execution} verification).")
+            method = self.model.mtp.method if getattr(self.model, "_block_draft", False) else "native MTP"
+            print(f"[Deepy][Speculative] method={method} ({sampling_method}, up to {draft_tokens} draft tokens, {execution} verification).")
             self.model._prompt_enhancer_speculative_method_logged = True
         sample_key = (seq.temperature, seq.cfg_scale, seq.top_k, seq.top_p, seq.min_p, seq.repetition_penalty)
         if self._mtp_sample_params is None or self._mtp_sample_params[0] != sample_key:
@@ -1546,6 +1556,32 @@ class ModelRunner:
         self._mark_mtp_stage_profile(profile, 4, "output", stage_started)
         reset_context()
         self.speculative_stats["target_passes"] += 1
+        emitted, accepted_count = self._sample_verified_block(seq, logits, draft_tokens, draft_distributions, sample_params, profile)
+        stage_started = time.perf_counter()
+        self._commit_speculative_target_state(len(emitted), len(draft_tokens) + 1)
+        self._mark_mtp_stage_profile(profile, 7, "commit", stage_started)
+        stage_started = time.perf_counter()
+        # Replace all speculative MTP entries with the verified target states.
+        self.model.mtp.truncate_cache(mtp_cache_length)
+        commit_start = 0
+        self._mark_mtp_stage_profile(profile, 8, "truncate", stage_started)
+        mtp_positions = positions[..., commit_start:len(emitted)] if positions.ndim == 3 else positions[commit_start:len(emitted)]
+        stage_started = time.perf_counter()
+        self._advance_mtp(seq, emitted[commit_start:], mtp_positions, hidden_states[:, commit_start:len(emitted)])
+        self._mark_mtp_stage_profile(profile, 9, "mtp_advance", stage_started)
+        self._finish_mtp_stage_profile(profile, accepted_count, len(emitted), commit_start, len(seq))
+        self.speculative_stats["emitted_tokens"] += len(emitted)
+        return [emitted]
+
+    def _sample_verified_block(self, seq, logits, draft_tokens, draft_distributions, sample_params, profile=None):
+        from .speculative_sampling import can_batch_acceptance, sample_verified_block
+        if (torch.is_tensor(draft_tokens) and logits.is_cuda
+                and not getattr(self, "_disable_mtp_gpu_acceptance", False)
+                and can_batch_acceptance(self, seq)):
+            return sample_verified_block(self, seq, logits, draft_tokens, draft_distributions, sample_params, profile)
+        return self._sample_verified_block_reference(seq, logits, draft_tokens, draft_distributions, sample_params, profile)
+
+    def _sample_verified_block_reference(self, seq, logits, draft_tokens, draft_distributions, sample_params, profile=None):
         greedy_target_tokens = None
         if seq.top_k == 1 and sample_params[-1] is None and seq.logits_processor is None:
             bias = self._get_logits_bias(seq, logits)
@@ -1593,21 +1629,7 @@ class ModelRunner:
         if accepted_count == len(draft_token_ids) and not stopped:
             emitted.append(greedy_target_tokens[len(draft_token_ids)] if greedy_target_tokens is not None else self._sample_speculative_target(seq, logits[len(draft_token_ids)], sample_params, emitted, profile=profile, profile_role="bonus"))
         self._mark_mtp_stage_profile(profile, 6, "sampling", stage_started)
-        stage_started = time.perf_counter()
-        self._commit_speculative_target_state(len(emitted), len(draft_token_ids) + 1)
-        self._mark_mtp_stage_profile(profile, 7, "commit", stage_started)
-        stage_started = time.perf_counter()
-        # Replace all speculative MTP entries with the verified target states.
-        self.model.mtp.truncate_cache(mtp_cache_length)
-        commit_start = 0
-        self._mark_mtp_stage_profile(profile, 8, "truncate", stage_started)
-        mtp_positions = positions[..., commit_start:len(emitted)] if positions.ndim == 3 else positions[commit_start:len(emitted)]
-        stage_started = time.perf_counter()
-        self._advance_mtp(seq, emitted[commit_start:], mtp_positions, hidden_states[:, commit_start:len(emitted)])
-        self._mark_mtp_stage_profile(profile, 9, "mtp_advance", stage_started)
-        self._finish_mtp_stage_profile(profile, accepted_count, len(emitted), commit_start, len(seq))
-        self.speculative_stats["emitted_tokens"] += len(emitted)
-        return [emitted]
+        return emitted, accepted_count
 
     def _replay_decode_graph_hidden(self, input_ids: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
         bs = input_ids.size(0)
@@ -1627,6 +1649,8 @@ class ModelRunner:
         graph_vars["context_lens"][:bs] = context.context_lens
         graph_vars["block_tables"][:bs, :context.block_tables.size(1)] = context.block_tables
         self.graphs[graph_bs].replay()
+        if getattr(self.model, "_block_draft", False):
+            self.model._draft_features = graph_vars["draft_features"]
         return graph_vars["outputs"][:bs]
 
     def _run_decode_hidden(self, input_ids: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
@@ -1641,6 +1665,8 @@ class ModelRunner:
         verify_length = int(input_ids.numel())
         graph_vars = self.speculative_graph_vars[verify_length]
         self.speculative_graphs[verify_length].replay()
+        if getattr(self.model, "_block_draft", False):
+            self.model._draft_features = graph_vars["draft_features"]
         return graph_vars["outputs"]
 
     @torch.inference_mode()
@@ -1921,6 +1947,8 @@ class ModelRunner:
         self.mtp_graph_pool = None
         self.mtp_graph_vars = {}
         self.mtp_refresh_graphs = {}
+        if getattr(self.model, "_block_draft", False):
+            self.graph_vars["draft_features"] = self.model._draft_features
         if getattr(self.model, "mtp", None) is not None and bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False)):
             dummy_block = config.num_kvcache_blocks - 1
             for verify_length in reversed(range(2, self._max_speculative_draft_tokens + 2)):
@@ -1949,48 +1977,51 @@ class ModelRunner:
                     "block_tables": speculative_block_tables,
                     "outputs": speculative_outputs,
                 }
-            mtp_input_ids = torch.zeros((1, 1), dtype=torch.int64, device=model_device)
-            mtp_positions = torch.zeros(1, dtype=torch.int64, device=model_device)
-            mtp_hidden_states = torch.zeros((1, 1, hf_config.hidden_size), dtype=self.dtype, device=model_device)
-            self.model.mtp._cache.cache_seqlens.zero_()
-            mtp_outputs, mtp_logits = self.model.mtp(mtp_input_ids, mtp_positions, mtp_hidden_states, last_logits_only=True, cache_prepared=True)
-            mtp_next_token = torch.argmax(mtp_logits[0, -1]).reshape(1)
-            mtp_graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(mtp_graph):
+                if getattr(self.model, "_block_draft", False):
+                    self.speculative_graph_vars[verify_length]["draft_features"] = self.model._draft_features
+            if not getattr(self.model, "_block_draft", False):
+                mtp_input_ids = torch.zeros((1, 1), dtype=torch.int64, device=model_device)
+                mtp_positions = torch.zeros(1, dtype=torch.int64, device=model_device)
+                mtp_hidden_states = torch.zeros((1, 1, hf_config.hidden_size), dtype=self.dtype, device=model_device)
+                self.model.mtp._cache.cache_seqlens.zero_()
                 mtp_outputs, mtp_logits = self.model.mtp(mtp_input_ids, mtp_positions, mtp_hidden_states, last_logits_only=True, cache_prepared=True)
                 mtp_next_token = torch.argmax(mtp_logits[0, -1]).reshape(1)
-            torch.cuda.synchronize()
-            self.mtp_graph = mtp_graph
-            self.mtp_graph_pool = mtp_graph.pool()
-            self.mtp_graph_vars = {
-                "input_ids": mtp_input_ids,
-                "positions": mtp_positions,
-                "hidden_states": mtp_hidden_states,
-                "outputs": mtp_outputs,
-                "logits": mtp_logits,
-                "next_token": mtp_next_token,
-            }
-            for count in reversed(range(2, self._max_speculative_draft_tokens + 2)):
-                refresh_ids = torch.zeros((1, count), dtype=torch.int64, device=model_device)
-                refresh_positions = torch.arange(count, dtype=torch.int64, device=model_device)
-                refresh_hidden = torch.zeros((1, count, hf_config.hidden_size), dtype=self.dtype, device=model_device)
-                self.model.mtp._cache.cache_seqlens.zero_()
-                self.model.mtp(refresh_ids, refresh_positions, refresh_hidden, last_logits_only=True, cache_prepared=True)
-                refresh_graph = torch.cuda.CUDAGraph()
-                with torch.cuda.graph(refresh_graph, self.mtp_graph_pool):
-                    refresh_outputs, refresh_logits = self.model.mtp(refresh_ids, refresh_positions, refresh_hidden, last_logits_only=True, cache_prepared=True)
-                    refresh_next_token = refresh_logits[0, -1].argmax().reshape(1)
-                self.mtp_refresh_graphs[count] = {
-                    "graph": refresh_graph,
-                    "input_ids": refresh_ids,
-                    "positions": refresh_positions,
-                    "hidden_states": refresh_hidden,
-                    "outputs": refresh_outputs,
-                    "logits": refresh_logits,
-                    "next_token": refresh_next_token,
+                mtp_graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(mtp_graph):
+                    mtp_outputs, mtp_logits = self.model.mtp(mtp_input_ids, mtp_positions, mtp_hidden_states, last_logits_only=True, cache_prepared=True)
+                    mtp_next_token = torch.argmax(mtp_logits[0, -1]).reshape(1)
+                torch.cuda.synchronize()
+                self.mtp_graph = mtp_graph
+                self.mtp_graph_pool = mtp_graph.pool()
+                self.mtp_graph_vars = {
+                    "input_ids": mtp_input_ids,
+                    "positions": mtp_positions,
+                    "hidden_states": mtp_hidden_states,
+                    "outputs": mtp_outputs,
+                    "logits": mtp_logits,
+                    "next_token": mtp_next_token,
                 }
-            torch.cuda.synchronize()
-            self.model.mtp._cache.cache_seqlens.zero_()
+                for count in reversed(range(2, self._max_speculative_draft_tokens + 2)):
+                    refresh_ids = torch.zeros((1, count), dtype=torch.int64, device=model_device)
+                    refresh_positions = torch.arange(count, dtype=torch.int64, device=model_device)
+                    refresh_hidden = torch.zeros((1, count, hf_config.hidden_size), dtype=self.dtype, device=model_device)
+                    self.model.mtp._cache.cache_seqlens.zero_()
+                    self.model.mtp(refresh_ids, refresh_positions, refresh_hidden, last_logits_only=True, cache_prepared=True)
+                    refresh_graph = torch.cuda.CUDAGraph()
+                    with torch.cuda.graph(refresh_graph, self.mtp_graph_pool):
+                        refresh_outputs, refresh_logits = self.model.mtp(refresh_ids, refresh_positions, refresh_hidden, last_logits_only=True, cache_prepared=True)
+                        refresh_next_token = refresh_logits[0, -1].argmax().reshape(1)
+                    self.mtp_refresh_graphs[count] = {
+                        "graph": refresh_graph,
+                        "input_ids": refresh_ids,
+                        "positions": refresh_positions,
+                        "hidden_states": refresh_hidden,
+                        "outputs": refresh_outputs,
+                        "logits": refresh_logits,
+                        "next_token": refresh_next_token,
+                    }
+                torch.cuda.synchronize()
+                self.model.mtp._cache.cache_seqlens.zero_()
         self._graph_cache[cache_key] = {
             "graphs": self.graphs,
             "pool": self.graph_pool,

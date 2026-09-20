@@ -130,8 +130,8 @@ When the latest item is selected, new output is selected automatically. If you a
 
 The chat and generation progress bars show what Deepy and WanGP are doing.
 
-- **Pause** suspends Deepy's current turn without losing it. A generation or tool operation already underway is allowed to finish, then Deepy pauses before the next action. This is useful when another WanGP task needs the GPU.
-- **Resume** continues the same turn from where it paused.
+- **Pause** suspends Deepy's current turn without losing it. Running media generation and postprocessing pause at their next processing checkpoint; other tools finish before Deepy pauses. The Generate panel reflects the same paused state. Postprocessing retains its GPU state while paused.
+- **Resume** continues the same turn and its paused media operation. You can resume from either chat or the Generate panel.
 - **Stop** ends Deepy's current turn. Depending on the **Auto-abort** setting, it may also cancel or remove generation work started by Deepy.
 - **Abort** cancels the active WanGP generation.
 
@@ -244,55 +244,11 @@ For an app-like view on iPhone, open the Deepy address in Safari and choose **Sh
 
 ### Protect network access
 
-Authentication is optional and off by default. `--auth` enables one password-only login for **all Gradio and Deepy web access**, including APIs, galleries, downloads, uploads and live connections. No username is needed.
-
-```powershell
-# Generate a new password and print it in the terminal
-python wgp.py --listen --auth
-
-# Choose a fixed passphrase
-python wgp.py --listen --auth --auth-password "your long private passphrase"
-
-# The same options work with the standalone Deepy Web app
-python wgp.py --deepy-server --listen --auth
-```
-
-Open the usual Gradio or Deepy address and enter the password. A login covers both interfaces on the same hostname. Browser sessions expire after 24 hours; restarting WanGP invalidates every session. A generated password also changes at each launch. To avoid putting a fixed passphrase in command history, set `WANGP_AUTH_PASSWORD` in the launch environment and use `--auth`. An explicit `--auth-password` takes precedence. Passwords supplied by you are not printed by WanGP.
-
-Login attempts are limited across all clients and web interfaces in this process. The first four failures have no delay. After failure 5, wait 30 seconds; each further failure adds 30 seconds, reaching 450 seconds after failure 19. From failure 20, only one attempt every ten minutes is allowed. Only one password check can run at a time. Requests during the waiting period do not extend it. A successful login resets the failure counter. Existing signed-in sessions keep working during a cooldown. Restarting WanGP resets the counter as well as all sessions.
-
-Choose protection according to how the server is reached:
-
-- **Only this PC:** the default localhost access usually needs no application password or certificate.
-- **Trusted private LAN:** authentication is useful on shared networks. HTTPS protects the passphrase and generated media from network interception.
-- **VPN-only access:** application authentication can be optional if firewall/VPN rules restrict access to trusted users and the entire connection is protected. Keep public port forwarding closed. A VPN ending at your router may leave the final LAN connection unencrypted.
-- **Public access, including NAT port forwarding:** enable authentication and trusted HTTPS. NAT alone does not protect a forwarded port. Forward only the HTTPS port; never expose a password login over plain HTTP.
-
-Network MCP has a **separate OAuth login**, enabled with `--mcp-auth`. The web password and browser cookie do not authorize MCP clients. See [MCP authentication](API.md#mcp-authentication-and-https).
+See [Authentication, HTTPS, and Reverse Proxies](AUTHENTICATION.md) for the shared Gradio/Deepy password login, session behavior, and network protection.
 
 ### Set up HTTPS
 
-The certificate options apply to Gradio, Deepy and network MCP. Obtain a certificate and private key for the exact hostname clients will use. Public access needs a certificate trusted by those clients, commonly issued for your domain by a public certificate authority or managed by an HTTPS reverse proxy. For a private LAN, [mkcert](https://github.com/FiloSottile/mkcert) can create a local certificate; each client device must trust that local certificate authority. Keep its CA private key and the server private key private.
-
-Serve HTTPS directly on the main port:
-
-```powershell
-python wgp.py --listen --auth --server-port 7860 --ssl-certfile C:\certs\wangp.pem --ssl-keyfile C:\certs\wangp-key.pem
-```
-
-Open `https://<certificate-hostname>:7860/`, or `/deepy/` for the mobile Web app. Add `--deepy-server` for standalone Deepy at `/`.
-
-To redirect HTTP on the main port to a separate HTTPS port:
-
-```powershell
-python wgp.py --listen --auth --server-port 7860 --https-port 7861 --ssl-certfile C:\certs\wangp.pem --ssl-keyfile C:\certs\wangp-key.pem
-```
-
-Use `https://<certificate-hostname>:7861/`. The HTTP port redirects; it does not serve a second unencrypted application. Alternatively, set `WANGP_SSL_CERT` and `WANGP_SSL_KEY` in the launch environment. Command-line certificate paths take precedence. Missing, mismatched or unreadable certificate/key files stop startup.
-
-An HTTPS reverse proxy can manage certificates instead. Keep its WanGP backend private, preserve the original Host header and forward the correct scheme from a trusted local proxy. Configure proxy authentication separately if you want another access restriction.
-
-Browser microphone recording can require trusted HTTPS even over a VPN. Native phone keyboard dictation does not use Deepy's microphone access.
+See [HTTPS certificates](AUTHENTICATION.md#https-certificates) and [reverse proxy setup](AUTHENTICATION.md#hosting-behind-a-reverse-proxy), including `--public-url` for RunPod, Nginx, Traefik, and Cloudflare.
 
 ## Voice input and transcription
 
@@ -384,13 +340,19 @@ For Qwen3.8 27B:
 
 If Deepy frequently unloads other models, runs out of memory, or leaves too little VRAM for media generation, select a smaller model or lower quantization before reducing the context window drastically.
 
-### Speculative Decoding (MTP)
+### Speculative Decoding
 
 Speculative decoding can generate Deepy's text faster by predicting several tokens ahead. More draft tokens can improve speed for some requests but use more VRAM, and the fastest setting varies by model and workload.
 
-- **Auto** enables the feature only on supported models when WanGP detects enough VRAM: normally at least 12 GB for Qwen3.5 9B and 24 GB for Qwen3.8 27B. **Recommended for:** nearly everyone.
-- **Disabled** saves the extra VRAM and avoids spending memory on acceleration. **Recommended for:** tight-memory systems or when Auto prevents a generation model from fitting.
-- **Enabled with 2, 3, or 4 draft tokens** lets you tune for speed manually. Higher is not always faster. **Recommended for:** users willing to benchmark repeated, representative prompts; start with 2.
+Choose a method and **Number of Tokens** on the row above **KV Cache Quantization**. Only compatible methods appear; switching to an incompatible model, quantization, or decoder resets the method to **Auto**.
+
+- **Auto** enables MTP on supported models when WanGP detects enough VRAM: normally at least 12 GB for Qwen3.5 9B and 24 GB for Qwen3.8 27B. The token count is automatic.
+- **Disabled** adds no draft-model VRAM and disables the token control. Use it when memory is tight or prediction is slower for your workload.
+- **MTP** supports 1–8 draft tokens on Qwen3.5 9B and Qwen3.8/Bonsai 27B. Start with 2.
+- **DSpark** supports 1–7 draft tokens on Qwen3.8/Bonsai 27B with the vLLM decoder (including Auto decoder selection).
+- **DFlash2** supports 1–7 draft tokens on Qwen3.8 Q2, Q3 and Q4, and 1–5 on Bonsai PTQ1, with the vLLM decoder (including Auto decoder selection). WanGP selects the Qwen drafter for Q2/Q3/Q4 and the Bonsai-adapted drafter for PTQ1 automatically.
+
+Each method label includes its estimated additional VRAM: approximately 0.5–1 GiB for MTP and 4–5 GiB for DSpark or DFlash2 at roughly 32K context. Auto adds between zero and the MTP cost. Longer context, draft count, and model choice affect actual usage. Compare representative prompts before choosing a prediction method: Disabled can be fastest, especially with Bonsai.
 
 This setting changes response speed, not the quality or speed of image, video, or audio generation.
 
@@ -555,7 +517,7 @@ Create a portrait for an introduction video, generate a short speech explaining 
 - Put recurring model-specific choices in a linked template instead of repeating them in every prompt.
 - Specify a time, frame, or audio track when the source contains several possible references.
 - Ask for word timestamps when segment timestamps are not precise enough.
-- Use **Pause** to temporarily free local resources without abandoning the turn.
+- Use **Pause** to temporarily suspend work without abandoning the turn.
 - Use saved sessions and copied gallery media when a project must remain portable after source files move.
 - You can ask Deepy WanGP-specific questions instead of searching the manuals yourself.
 

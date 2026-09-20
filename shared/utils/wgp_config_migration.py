@@ -9,7 +9,7 @@ from shared.deepy.config import DEEPY_ENABLED_KEY, DEEPY_TEMPLATE_CONFIG_MIGRATI
 
 LEGACY_EXTENSIONS_DEFAULTS_MIGRATED_KEY = "_extensions_defaults_migrated"
 EXTENSIONS_DEFAULTS_VERSION_KEY = "extensions_defaults_version"
-EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.20")
+EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.23")
 EXTENSIONS_DEFAULTS_TARGET_VERSION_TEXT = str(EXTENSIONS_DEFAULTS_TARGET_VERSION)
 INSTALLED_REMOTE_PLUGINS_KEY = "installed_remote_plugins"
 
@@ -209,6 +209,17 @@ def _extension_defaults_version(config) -> Decimal:
     return Decimal("1.1") if config.get(LEGACY_EXTENSIONS_DEFAULTS_MIGRATED_KEY, False) else Decimal("1.0")
 
 
+def _migrate_int8_kernels(server_config) -> bool:
+    changed = False
+    if "int8_kernels" not in server_config:
+        server_config["int8_kernels"] = "auto" if _to_int(server_config.get("enable_int8_kernels", 1), 0) == 1 else "disabled"
+        changed = True
+    if "enable_int8_kernels" in server_config:
+        del server_config["enable_int8_kernels"]
+        changed = True
+    return changed
+
+
 def migrate_extension_defaults(server_config, server_config_filename="") -> bool:
     if not isinstance(server_config, dict):
         return False
@@ -263,6 +274,19 @@ def migrate_extension_defaults(server_config, server_config_filename="") -> bool
 
     if version < Decimal("1.20"):
         changed = _migrate_deepy_template_names(server_config) or changed
+
+    if version < Decimal("1.21"):
+        changed = _migrate_int8_kernels(server_config) or changed
+
+    if version < Decimal("1.22") and "kernel_precision" not in server_config:
+        server_config["kernel_precision"] = "fast"
+        changed = True
+
+    if version < Decimal("1.23"):
+        from shared.prompt_enhancer.config import PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT, split_speculative_decoding, speculative_decoding_config
+        key = PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY
+        server_config[key] = speculative_decoding_config(*split_speculative_decoding(server_config.get(key, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT)))
+        changed = True
 
     changed = _migrate_audio_processors_config(server_config, version) or changed
     changed = _migrate_temporal_upsamplers_config(server_config) or changed

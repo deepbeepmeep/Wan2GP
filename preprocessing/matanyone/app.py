@@ -29,7 +29,32 @@ from shared.utils.utils import truncate_for_filesystem, sanitize_file_name, proc
 from shared.utils.process_locks import acquire_GPU_ressources, release_GPU_ressources, any_GPU_process_running
 from preprocessing.sam3.logger import get_logger
 
+from functools import wraps
+import inspect
+from shared.gradio.progress import WangpProgress
+from shared.utils.download_progress import download_operation
+
 logger = get_logger(__name__)
+
+
+def mask_action(fn):
+    signature = inspect.signature(fn)
+
+    @wraps(fn)
+    def run(*args, progress=None, **kwargs):
+        progress = progress or WangpProgress(track_tqdm=True)
+        arguments = signature.bind(*args, **kwargs).arguments
+        if any(key in arguments and arguments[key] is None for key in ("image_input", "video_input")):
+            return fn(*args, **kwargs)
+        progress(0, desc="Preparing Mask Models")
+        with download_operation(progress.gen):
+            ensure_selected_matanyone_assets(server_config_ref, gen=progress.gen)
+            progress.check_cancelled()
+            return fn(*args, **kwargs)
+
+    run.__signature__ = signature.replace(parameters=[*signature.parameters.values(), inspect.Parameter("progress", inspect.Parameter.KEYWORD_ONLY, default=WangpProgress(track_tqdm=True))])
+    return run
+
 
 arg_device = str(get_device())
 arg_sam_model_type="vit_h"
@@ -79,7 +104,7 @@ def perform_spatial_upsampling(frames, new_dim):
     if new_dim =="":
         return frames
     h, w = frames[0].shape[:2]
-    
+
     from shared.utils.utils import resize_lanczos 
     pos = new_dim.find(" ")
     fit_into_canvas = "Outer" in new_dim
@@ -95,7 +120,7 @@ def perform_spatial_upsampling(frames, new_dim):
 
     def upsample_frames(frame):
         return np.array(Image.fromarray(frame).resize((w,h), resample=Image.Resampling.LANCZOS))
-    
+
     output_frames = process_images_multithread(upsample_frames, frames, "upsample", wrap_in_list = False, max_workers=get_default_workers(), in_place=True)    
     return output_frames
 
@@ -108,7 +133,7 @@ class MaskGenerator():
     def first_frame_click(self, image: np.ndarray, points:np.ndarray, labels: np.ndarray, multimask=True):
         mask, logit, painted_image = self.samcontroler.first_frame_click(image, points, labels, multimask)
         return mask, logit, painted_image
-    
+
 # convert points input to prompt state
 def get_prompt(click_state, click_input):
     inputs = json.loads(click_input)
@@ -459,6 +484,7 @@ def _sam3_propagate_prompts(video_state, prompts, start_frame, end_frame):
     return alpha
 
 
+@mask_action
 def get_frames_from_image(state, image_input, image_state, new_dim):
     """
     Args:
@@ -518,6 +544,7 @@ def get_frames_from_image(state, image_input, image_state, new_dim):
 
 
 # extract frames from upload video
+@mask_action
 def get_frames_from_video(state, video_input, video_state, new_dim):
     """
     Args:
@@ -652,6 +679,7 @@ def get_end_number(track_pause_number_slider, video_state, interactive_state):
 
 
 # use sam to get the mask
+@mask_action
 def sam_refine(state, video_state, point_prompt, click_state, interactive_state, evt:gr.SelectData ): #
     """
     Args:
@@ -752,6 +780,7 @@ def remove_multi_mask(interactive_state, mask_dropdown):
     return interactive_state, gr.update(choices=[],value=[])
 
 
+@mask_action
 def add_sam3_keyword_masks(state, video_state, interactive_state, keyword_text, mask_dropdown):
     if video_state["masks"] is None:
         gr.Info("SAM3 session lost. Please reload the media")
@@ -823,6 +852,7 @@ def get_dim_file_suffix(new_dim):
     return new_dim[:pos]
 
 # image matting
+@mask_action
 def image_matting(state, video_state, interactive_state, mask_type, matting_type, new_new_dim, mask_dropdown, erode_kernel_size, dilate_kernel_size, refine_iter):
     if video_state["masks"] is None:
         gr.Info("Matanyone Session Lost. Please reload an Image")
@@ -865,7 +895,7 @@ def image_matting(state, video_state, interactive_state, mask_type, matting_type
         release_GPU(state)
 
     foreground_mat = matting_type == "Foreground"
-    
+
     foreground_output = None
     foreground_title = "Image with Background"
     alpha_title = "B & W Mask Image Output" if is_sam3_selected() else "Alpha Mask Image Output"
@@ -927,6 +957,7 @@ def image_matting(state, video_state, interactive_state, mask_type, matting_type
 
 
 # video matting
+@mask_action
 def video_matting(state, video_state, mask_type, video_input, end_slider, matting_type, new_new_dim, interactive_state, mask_dropdown, erode_kernel_size, dilate_kernel_size):
     if video_state["masks"] is None:
         gr.Info("Matanyone Session Lost. Please reload a Video")
@@ -1068,7 +1099,7 @@ def add_audio_to_video(video_path, audio_path, output_path):
 def generate_video_from_frames(frames, output_path, fps=30, gray2rgb=False, audio_path=""):
     """
     Generates a video from a list of frames.
-    
+
     Args:
         frames (list of numpy arrays): The frames to include in the video.
         output_path (str): The path to save the generated video.
@@ -1082,11 +1113,11 @@ def generate_video_from_frames(frames, output_path, fps=30, gray2rgb=False, audi
     if not os.path.exists(os.path.dirname(output_path)):
         os.makedirs(os.path.dirname(output_path))
     video_temp_path = output_path.replace(".mp4", "_temp.mp4")
-    
+
     # resize back to ensure input resolution
     imageio.mimwrite(video_temp_path, frames, fps=fps, quality=7, 
                      codec='libx264', ffmpeg_params=["-vf", f"scale={w}:{h}"])
-    
+
     # add audio to video if audio path exists
     if audio_path != "" and os.path.exists(audio_path):
         output_path = add_audio_to_video(video_temp_path, audio_path, output_path)    
@@ -1190,47 +1221,41 @@ def load_unload_models(state = None, selected = True, force = False):
             return
         else:
             load_in_progress = True
-            if selected_version == MATANYONE_SAM3:
+            try:
+                if selected_version == MATANYONE_SAM3:
+                    ensure_selected_matanyone_assets(server_config_ref)
+                    _ensure_sam3_predictor()
+                    model_loaded = True
+                    loaded_matanyone_version = selected_version
+                    matanyone_in_GPU = model_in_GPU = False
+                    return
+                sam_checkpoint = None
                 ensure_selected_matanyone_assets(server_config_ref)
-                _ensure_sam3_predictor()
-                model_loaded = True
-                loaded_matanyone_version = selected_version
-                matanyone_in_GPU = model_in_GPU = False
+
+                transfer_stream = torch.cuda.Stream()
+                with torch.cuda.stream(transfer_stream):
+                    # initialize sams
+                    major, minor = torch.cuda.get_device_capability(arg_device)
+                    if  major < 8:
+                        bfloat16_supported = False
+                    else:
+                        bfloat16_supported = True
+
+                    model = MaskGenerator(sam_checkpoint, "cpu")
+                    model.samcontroler.sam_controler.model.to("cpu").to(torch.bfloat16).to(arg_device)
+                    model_in_GPU = True
+                    matanyone_model, loaded_matanyone_version, _ = load_selected_matanyone_model(server_config_ref)
+                    # pipe ={"mat" : matanyone_model, "sam" :model.samcontroler.sam_controler.model }
+                    # offload.profile(pipe)
+                    matanyone_model = matanyone_model.to("cpu").eval()
+                    matanyone_in_GPU = False
+                    matanyone_processor = InferenceCore(matanyone_model, cfg=matanyone_model.cfg)
+                model_loaded  = True
+            except Exception:
+                load_unload_models(state, False, True)
+                raise
+            finally:
                 load_in_progress = False
-                return
-            # args, defined in track_anything.py
-            sam_checkpoint_url_dict = {
-                'vit_h': "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth",
-                'vit_l': "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth",
-                'vit_b': "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
-            }
-            # os.path.join('.')
-
-
-            # sam_checkpoint = load_file_from_url(sam_checkpoint_url_dict[arg_sam_model_type], ".")
-            sam_checkpoint = None
-            ensure_selected_matanyone_assets(server_config_ref)
-
-            transfer_stream = torch.cuda.Stream()
-            with torch.cuda.stream(transfer_stream):
-                # initialize sams
-                major, minor = torch.cuda.get_device_capability(arg_device)
-                if  major < 8:
-                    bfloat16_supported = False
-                else:
-                    bfloat16_supported = True
-
-                model = MaskGenerator(sam_checkpoint, "cpu")
-                model.samcontroler.sam_controler.model.to("cpu").to(torch.bfloat16).to(arg_device)
-                model_in_GPU = True
-                matanyone_model, loaded_matanyone_version, _ = load_selected_matanyone_model(server_config_ref)
-                # pipe ={"mat" : matanyone_model, "sam" :model.samcontroler.sam_controler.model }
-                # offload.profile(pipe)
-                matanyone_model = matanyone_model.to("cpu").eval()
-                matanyone_in_GPU = False
-                matanyone_processor = InferenceCore(matanyone_model, cfg=matanyone_model.cfg)
-            model_loaded  = True
-            load_in_progress = False
 
     else:
         # print("Matanyone Tab UnSelected")
@@ -1323,13 +1348,14 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
 
     # download assets
 
+    mask_progress = WangpProgress.component(stop=True)
     matanyone_title_md = gr.Markdown(get_title_markdown())
     refresh_form_trigger.change(fn=get_title_markdown, inputs=[], outputs=[matanyone_title_md], show_progress="hidden")
     gr.Markdown("If you have some trouble creating the perfect mask, be aware of these tips:")
     gr.Markdown("- Using the Matanyone Settings you can also define Negative Point Prompts to remove parts of the current selection.")
     gr.Markdown("- Sometime it is very hard to fit everything you want in a single mask, it may be much easier to combine multiple independent sub Masks before producing the Matting : each sub Mask is created by selecting an  area of an image and by clicking the Add Mask button. Sub masks can then be enabled / disabled in the Matanyone settings.")
     gr.Markdown("The Mask Generation time and the VRAM consumed are proportional to the number of frames and the resolution. So if relevant, you may reduce the number of frames in the Matanyone Settings. You will need for the moment to resize yourself the video if needed.")
-    
+
     with gr.Column( visible=True):
         with gr.Row():
             with gr.Accordion("Video Tutorial (click to expand)", open=False, elem_classes="custom-bg"):
@@ -1485,7 +1511,8 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
 
 
                 # first step: get the video information     
-                extract_frames_button.click(
+                WangpProgress.bind(extract_frames_button.click,
+                    component=mask_progress,
                     fn=get_frames_from_video,
                     inputs=[
                         state, video_input, video_state, new_dim
@@ -1504,7 +1531,8 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                                             outputs=[template_frame, interactive_state], api_name="end_image")
                 
                 # click select image to get mask using sam
-                template_frame.select(
+                WangpProgress.bind(template_frame.select,
+                    component=mask_progress,
                     fn=sam_refine,
                     inputs=[state, video_state, point_prompt, click_state, interactive_state],
                     outputs=[template_frame, video_state, interactive_state]
@@ -1524,10 +1552,11 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                 )
 
                 # video matting
-                matting_button.click(
+                WangpProgress.bind(matting_button.click(
                     fn=show_outputs,
                     inputs=[],
-                    outputs=[foreground_video_output, alpha_video_output]).then(
+                    outputs=[foreground_video_output, alpha_video_output]).then,
+                    component=mask_progress,
                     fn=video_matting,
                     inputs=[state, video_state, mask_type, video_input, end_selection_slider, matting_type, new_dim, interactive_state, mask_dropdown, erode_kernel_size, dilate_kernel_size],
                     outputs=[foreground_video_output, alpha_video_output,foreground_video_output, alpha_video_output, export_to_vace_video_14B_btn, export_to_current_video_engine_btn]
@@ -1542,7 +1571,8 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
 
                 refresh_form_trigger.change(fn=lambda video_state: gr.update(visible=is_sam3_selected() and video_state.get("origin_images") is not None), inputs=[video_state], outputs=[sam3_keyword_row], show_progress="hidden")
 
-                sam3_keyword_button.click(
+                WangpProgress.bind(sam3_keyword_button.click,
+                    component=mask_progress,
                     fn=add_sam3_keyword_masks,
                     inputs=[state, video_state, interactive_state, sam3_keyword_text, mask_dropdown],
                     outputs=[interactive_state, mask_dropdown, template_frame]
@@ -1703,7 +1733,8 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                     fn=teleport_to_media_tab, inputs= [tab_state, state], outputs= [tabs]).then(fn=None, inputs=None, outputs=None, js=click_brush_js)
 
                 # first step: get the image information 
-                extract_frames_button.click(
+                WangpProgress.bind(extract_frames_button.click,
+                    component=mask_progress,
                     fn=get_frames_from_image,
                     inputs=[
                         state, image_input, image_state, new_dim
@@ -1730,7 +1761,8 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                                             outputs=[template_frame, interactive_state], api_name="end_image")
                 
                 # click select image to get mask using sam
-                template_frame.select(
+                WangpProgress.bind(template_frame.select,
+                    component=mask_progress,
                     fn=sam_refine,
                     inputs=[state, image_state, point_prompt, click_state, interactive_state],
                     outputs=[template_frame, image_state, interactive_state]
@@ -1749,14 +1781,16 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                     outputs=[interactive_state, mask_dropdown]
                 )
 
-                image_sam3_keyword_button.click(
+                WangpProgress.bind(image_sam3_keyword_button.click,
+                    component=mask_progress,
                     fn=add_sam3_keyword_masks,
                     inputs=[state, image_state, interactive_state, image_sam3_keyword_text, mask_dropdown],
                     outputs=[interactive_state, mask_dropdown, template_frame]
                 )
 
                 # image matting
-                matting_button.click(
+                WangpProgress.bind(matting_button.click,
+                    component=mask_progress,
                     fn=image_matting,
                     inputs=[state, image_state, interactive_state, mask_type, matting_type, new_dim, mask_dropdown, erode_kernel_size, dilate_kernel_size, image_selection_slider],
                     outputs=[image_tabs, image_first_tab, image_second_tab, foreground_image_output, control_image_output, alpha_image_output, foreground_image_output, control_image_output, alpha_image_output, bbox_info, export_image_btn, export_image_mask_btn]

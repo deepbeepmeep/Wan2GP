@@ -1,0 +1,34 @@
+{
+    "model": {
+        "name": "Music YuE2 3B Hum-to-Song",
+        "architecture": "yue2_hum",
+        "description": "Turn a clear hummed melody, your lyrics and a music style into a new stereo song. Continue Hum extends the melody into a longer composition; Hum Only uses its transcribed score without extending it. Includes Mothersuperior's required hum adapter and real-audio v4 LoRA. Does not clone the humming voice.",
+        "URLs": "yue2",
+        "modules": [
+            [
+                "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/YuE2_Hum_Projections.safetensors"
+            ]
+        ],
+        "loras": [
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/YuE2_Hum_LoRA.safetensors"
+        ],
+        "loras_multipliers": [
+            1.0
+        ]
+    },
+    "prompt": "[Verse]\nI left my keys beside your coffee\nCaught the first bus out of town\nWatched the harbor through the window\nTill the morning mist came down\n\n[Chorus]\nLeave a light on by the water\nLet it shine across the blue\nEvery road can take me farther\nEvery road leads back to you\n\n[Verse]\nCity rain against my collar\nYour old song inside my head\nI could hear you in the silence\nOf the words we never said\n\n[Chorus]\nLeave a light on by the water\nLet it shine across the blue\nEvery road can take me farther\nEvery road leads back to you\n\n[Bridge]\nNow the last train crosses over\nAnd the rooftops come in view\nI have found the words I needed\nI am bringing them to you\n\n[Chorus]\nLeave a light on by the water\nLet it shine across the blue\nEvery road can take me farther\nEvery road leads back to you\n\n[Outro]\nThere's a light on by the water\nAnd I'm coming home to you",
+    "alt_prompt": "English acoustic pop, warm female vocal, fingerpicked guitar, gentle drums, hopeful, 90 BPM",
+    "duration_seconds": 120,
+    "num_inference_steps": 32,
+    "guidance_scale": 1.0,
+    "temperature": 1.0,
+    "top_k": 100,
+    "top_p": 0.95,
+    "model_mode": 0,
+    "custom_guide": null,
+    "custom_settings": {
+        "save_score": 0
+    },
+    "prompt_enhancer": "",
+    "audio_prompt_type": "A"
+}

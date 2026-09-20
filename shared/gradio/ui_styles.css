@@ -16,6 +16,23 @@ gradio-app {
     display: none;
 }
 
+/* The preview overlays a taller thumbnail grid. Its outer hidden-overflow
+   wrapper must not scroll when Chrome reveals a focused thumbnail. */
+.block:has(> .gallery-container) {
+    overflow: clip;
+}
+
+/* Chrome puts its buffering spinner beside the public controls enclosures.
+   Hide that inherited layer, then restore both enclosures so the native
+   playback, timeline, volume and fullscreen controls remain available. */
+.gallery-container video[data-testid="detailed-video"]::-webkit-media-controls {
+    visibility: hidden;
+}
+.gallery-container video[data-testid="detailed-video"]::-webkit-media-controls-enclosure,
+.gallery-container video[data-testid="detailed-video"]::-webkit-media-controls-overlay-enclosure {
+    visibility: visible;
+}
+
 .wangp-voice-prompt textarea:disabled {
     background: var(--background-fill-secondary);
     color: var(--body-text-color-subdued);
@@ -468,6 +485,12 @@ user-select: text;
 .header-markdown-group .prose {
     margin-top: 0 !important;
     margin-bottom: 0 !important;
+}
+/* Keep the description and attention line steady while callbacks are pending. */
+.header-markdown-group div.html-container,
+.header-markdown-group div:has(> [data-testid="markdown"]) {
+    opacity: 1;
+    transition: none;
 }
 
 .wangp-transparent-group,

@@ -6,6 +6,7 @@ from transformers import AutoTokenizer
 import torch.multiprocessing as mp
 from shared.utils.cancellation import check_cancelled
 from shared.prompt_enhancer.streaming import ThrottledStreamEmitter
+from shared.kernels import int8_backend
 
 from ..config import Config
 from ..sampling_params import SamplingParams
@@ -33,7 +34,11 @@ class LLMEngine:
             process.start()
             self.ps.append(process)
             self.events.append(event)
-        self.model_runner = ModelRunner(config, 0, self.events, model_object=model_object, graph_pool_handle=graph_pool_handle)
+        runner_class = ModelRunner
+        if getattr(model_object, "_block_draft", False):
+            from .block_draft_runner import BlockDraftRunner
+            runner_class = BlockDraftRunner
+        self.model_runner = runner_class(config, 0, self.events, model_object=model_object, graph_pool_handle=graph_pool_handle)
         tokenizer = kwargs.get("tokenizer", None)
         if tokenizer is not None:
             self.tokenizer = tokenizer
@@ -41,6 +46,7 @@ class LLMEngine:
             self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
         config.eos = self.tokenizer.eos_token_id
         self.scheduler = Scheduler(config)
+        self._int8_backend_revision = int8_backend.revision
         self._exit_registered = False
         self._closed = False
         self._exited = False
@@ -230,6 +236,14 @@ class LLMEngine:
             if seq.block_table:
                 self.scheduler.block_manager.deallocate(seq)
 
+    def _refresh_int8_backend(self):
+        # Once per request, never per token. Captured CUDA graphs bypass Python
+        # dispatch; cached KV values also belong to the previous kernel's math.
+        # Keep the loaded model and weights, rebuild only runtime allocations.
+        if self._int8_backend_revision != int8_backend.revision:
+            self.reset_runtime_state()
+            self._int8_backend_revision = int8_backend.revision
+
     def generate(
         self,
         prompts: list[str] | list[list[int]],
@@ -243,6 +257,7 @@ class LLMEngine:
         if self.scheduler is None:
             raise RuntimeError("LLM engine is closed.")
         # Ensure model runtime/KV cache are prepared, and sync scheduler blocks.
+        self._refresh_int8_backend()
         self.model_runner.ensure_runtime_ready()
         if (self.config.num_kvcache_blocks > 0 and
                 len(self.scheduler.block_manager.blocks) != self.config.num_kvcache_blocks):
@@ -339,6 +354,7 @@ class LLMEngine:
     ):
         if self.scheduler is None:
             raise RuntimeError("LLM engine is closed.")
+        self._refresh_int8_backend()
         self.model_runner.ensure_runtime_ready()
         if (
             self.config.num_kvcache_blocks > 0

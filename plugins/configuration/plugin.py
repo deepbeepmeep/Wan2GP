@@ -1,3 +1,4 @@
+from shared.kernels import int8_backend, kernel_policy
 import gradio as gr
 from shared.utils.plugins import WAN2GPPlugin
 import copy
@@ -83,10 +84,10 @@ from shared.deepy.config import (
     validate_deepy_version_config,
 )
 from shared.prompt_enhancer.config import (
-    PROMPT_ENHANCER_SPECULATIVE_DECODING_CHOICES,
     PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT,
     PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY,
-    normalize_prompt_enhancer_speculative_decoding,
+    speculative_decoding_ui_state,
+    speculative_decoding_config,
     validate_prompt_enhancer_speculative_decoding,
 )
 from shared.deepy.onboarding import deepy_prime_upgrade_message
@@ -121,15 +122,15 @@ from shared.utils.wgp_config_migration import (
 QWEN35_PROMPT_ENHANCER_IDS = (3, 4)
 QWEN38_PROMPT_ENHANCER_ID = 5
 QWEN35_QUANTIZATION_CHOICES = [("Quanto Int8 (recommended, better quality)", "quanto_int8"), ("GGUF Q4 (less VRAM/RAM & faster if kernels are installed, but worse quality)", "gguf")]
-QWEN38_QUANTIZATION_CHOICES = [("GGUF Q4 (default, highest quality and VRAM/RAM use)", "gguf"), ("GGUF IQ3_S (recommended Q3, middle quality and VRAM/RAM use)", "gguf_q3"), ("GGUF Q2 (lowest quality and VRAM/RAM use)", "gguf_q2")]
+QWEN38_QUANTIZATION_CHOICES = [("GGUF Uncensored Q4 (default, highest quality and VRAM/RAM use)", "gguf"), ("GGUF Uncensored IQ3_S (recommended Q3, middle quality and VRAM/RAM use)", "gguf_q3"), ("GGUF Uncensored Q2 (lowest quality and VRAM/RAM use)", "gguf_q2"), ("Bonsai 2 Abliterated PTQ1_0 (ternary, requires kernels 1.0.22+)", "gguf_ptq1")]
 
 
 def prompt_enhancer_quantization_ui_state(enhancer_enabled, quantization):
     enhancer_enabled = int(enhancer_enabled)
     if enhancer_enabled == QWEN38_PROMPT_ENHANCER_ID:
-        value = quantization if quantization in ("gguf", "gguf_q3", "gguf_q2") else "gguf"
+        value = quantization if quantization in ("gguf", "gguf_q3", "gguf_q2", "gguf_ptq1") else "gguf"
         return QWEN38_QUANTIZATION_CHOICES, value, True
-    value = "gguf" if quantization in ("gguf", "gguf_q3", "gguf_q2") else "quanto_int8"
+    value = "gguf" if quantization in ("gguf", "gguf_q3", "gguf_q2", "gguf_ptq1") else "quanto_int8"
     return QWEN35_QUANTIZATION_CHOICES, value, enhancer_enabled in QWEN35_PROMPT_ENHANCER_IDS
 
 
@@ -166,7 +167,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("default_profile_audio")
         self.request_global("vae_config")
         self.request_global("boost")
-        self.request_global("enable_int8_kernels")
+        self.request_global("int8_kernels")
         self.request_global("preload_model_policy")
         self.request_global("transformer_quantization")
         self.request_global("transformer_dtype_policy")
@@ -200,6 +201,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         self.request_component("model_description")
         self.request_component("header")
+        self.request_component("override_attention")
         self.request_component("model_family")
         self.request_component("model_base_type_choice")
         self.request_component("model_choice")
@@ -365,7 +367,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         label="VAE Tiling (higher presets use less VRAM and may increase artifacts like banding)",
                     )
                     self.boost_choice = gr.Dropdown(choices=[("ON", 1), ("OFF", 2)], value=self.boost, label="Boost (~10% speedup for ~1GB VRAM)")
-                    self.enable_int8_kernels_choice = gr.Dropdown(choices=[("Disabled", 0), ("Enabled if Triton available", 1)], value=self.server_config.get("enable_int8_kernels", 1), label="Int8 Kernels (Experimental, 10% faster with INT8 quantized checkpoints, requires Triton)")
+                    self.int8_kernels_choice = gr.Dropdown(choices=int8_backend.CHOICES, value=self.server_config.get("int8_kernels", "auto"), label="INT8 Math Kernels", info="Auto selects Comfy Kitchen, then Triton, then PyTorch. Disabled uses PyTorch. Changes apply to the next generation without reloading weights.")
+                    self.kernel_precision_choice = gr.Dropdown(choices=kernel_policy.CHOICES, value=self.server_config.get("kernel_precision", "fast"), label="CUDA Kernels Optimized Ops Precision (When Available)", info="Fast allows additional VAE optimizations with small rounding differences. Allow Faster Approximate Kernels is the default. INT8 math is controlled separately.")
                     self.video_profile_choice = gr.Dropdown(
                         choices=self.memory_profile_choices,
                         value=self.default_profile_video,
@@ -484,14 +487,21 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             elem_classes="cbx_bottom",
                             interactive=not self.args.lock_config,
                         )
-                    with gr.Row(visible=not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)) as self.enhancer_decoding_row:
+                    speculative_choices, speculative_method, token_choices, speculative_tokens = speculative_decoding_ui_state(
+                        enhancer_enabled_value, enhancer_quantization_value, self.server_config.get("lm_decoder_engine", ""),
+                        self.server_config.get(PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT))
+                    with gr.Row(visible=not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)) as self.enhancer_speculative_row:
                         self.enhancer_speculative_decoding_choice = gr.Dropdown(
-                            choices=PROMPT_ENHANCER_SPECULATIVE_DECODING_CHOICES,
-                            value=normalize_prompt_enhancer_speculative_decoding(self.server_config.get(PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT)),
-                            label="Speculative Decoding (MTP)",
-                            info="More draft tokens use more VRAM; the fastest choice depends on the request.",
+                            choices=speculative_choices, value=speculative_method, label="Speculative Decoding",
+                            info="Speculative decoding uses extra VRAM. For Bonsai PTQ1, Auto disables MTP at 10 GiB VRAM or less and uses 2 draft tokens above 10 GiB.",
                             interactive=not self.args.lock_config,
                         )
+                        self.enhancer_speculative_tokens_choice = gr.Dropdown(
+                            choices=token_choices, value=speculative_tokens, label="Number of Tokens",
+                            info="Maximum draft tokens per prediction. More tokens can increase memory use and may be slower",
+                            interactive=bool(token_choices) and not self.args.lock_config,
+                        )
+                    with gr.Row(visible=not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)) as self.enhancer_decoding_row:
                         self.deepy_kv_cache_quantization_choice = gr.Dropdown(
                             choices=[("Auto", DEEPY_KV_CACHE_QUANTIZATION_AUTO), ("Disabled (BF16)", ""), ("INT8 (about half the KV-cache VRAM)", "int8")],
                             value=deepy_kv_cache_quantization_default,
@@ -710,15 +720,22 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.deepy_context_tokens_choice.input(fn=update_deepy_context_label, inputs=deepy_context_label_inputs, outputs=[self.deepy_context_tokens_choice], show_progress="hidden")
         self.deepy_kv_cache_quantization_choice.input(fn=update_deepy_context_label, inputs=deepy_context_label_inputs, outputs=[self.deepy_context_tokens_choice], show_progress="hidden")
 
-        def update_speculative_decoding_choice(enhancer_enabled_choice, speculative_decoding_choice):
-            return gr.update(value=normalize_prompt_enhancer_speculative_decoding(speculative_decoding_choice), interactive=not self.args.lock_config)
+        def update_speculative_decoding_choice(enhancer_enabled_choice, enhancer_quantization_choice, lm_decoder_engine_choice, method, tokens):
+            _, quantization, _ = prompt_enhancer_quantization_ui_state(enhancer_enabled_choice, enhancer_quantization_choice)
+            choices, method, counts, tokens = speculative_decoding_ui_state(enhancer_enabled_choice, quantization, lm_decoder_engine_choice, method, tokens)
+            return gr.update(choices=choices, value=method, interactive=not self.args.lock_config), gr.update(choices=counts, value=tokens, interactive=bool(counts) and not self.args.lock_config)
 
         def update_enhancer_quantization_choice(enhancer_enabled_choice, enhancer_quantization_choice):
             choices, value, visible = prompt_enhancer_quantization_ui_state(enhancer_enabled_choice, enhancer_quantization_choice)
             return gr.update(choices=choices, value=value, visible=visible)
 
         self.enhancer_enabled_choice.input(fn=update_enhancer_quantization_choice, inputs=[self.enhancer_enabled_choice, self.enhancer_quantization_choice], outputs=[self.enhancer_quantization_choice], show_progress="hidden")
-        self.enhancer_enabled_choice.input(fn=update_speculative_decoding_choice, inputs=[self.enhancer_enabled_choice, self.enhancer_speculative_decoding_choice], outputs=[self.enhancer_speculative_decoding_choice], show_progress="hidden")
+        speculative_inputs = [self.enhancer_enabled_choice, self.enhancer_quantization_choice, self.lm_decoder_engine_choice, self.enhancer_speculative_decoding_choice, self.enhancer_speculative_tokens_choice]
+        speculative_outputs = [self.enhancer_speculative_decoding_choice, self.enhancer_speculative_tokens_choice]
+        self.enhancer_enabled_choice.change(fn=update_speculative_decoding_choice, inputs=speculative_inputs, outputs=speculative_outputs, show_progress="hidden")
+        self.enhancer_quantization_choice.change(fn=update_speculative_decoding_choice, inputs=speculative_inputs, outputs=speculative_outputs, show_progress="hidden")
+        self.lm_decoder_engine_choice.input(fn=update_speculative_decoding_choice, inputs=speculative_inputs, outputs=speculative_outputs, show_progress="hidden")
+        self.enhancer_speculative_decoding_choice.input(fn=update_speculative_decoding_choice, inputs=speculative_inputs, outputs=speculative_outputs, show_progress="hidden")
 
         def update_remote_engine_ui(deepy_engine, enhancer_quantization, deepy_type):
             view = normalize_llm_config(self.server_config)
@@ -734,7 +751,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 gr.update(visible=deepy_remote),
                 gr.update(visible=ENGINE_CODEX in active), gr.update(visible=ENGINE_CLAUDE in active), gr.update(visible=ENGINE_OPENCODE in active),
                 gr.update(value=local_enhancer_id(deepy_engine), visible=False), gr.update(choices=quantization_choices, value=quantization_value, visible=quantization_visible and not deepy_remote),
-                gr.update(visible=qwen_local), gr.update(visible=not deepy_remote), gr.update(visible=deepy_enabled and not deepy_remote),
+                gr.update(visible=qwen_local), gr.update(visible=qwen_local), gr.update(visible=not deepy_remote), gr.update(visible=deepy_enabled and not deepy_remote),
                 gr.update(visible=deepy_enabled and qwen_local), gr.update(visible=deepy_enabled and qwen_local), gr.update(visible=deepy_enabled), gr.update(visible=qwen_local),
             )
 
@@ -742,7 +759,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         remote_engine_outputs = [
             self.remote_llm_warning_md, self.remote_llm_auth_md, self.codex_config_ui.group, self.claude_config_ui.group, self.opencode_config_ui.group,
             self.enhancer_enabled_choice, self.enhancer_quantization_choice,
-            self.enhancer_decoding_row, self.enhancer_sampling_row, self.deepy_vram_row,
+            self.enhancer_speculative_row, self.enhancer_decoding_row, self.enhancer_sampling_row, self.deepy_vram_row,
             self.deepy_context_row, self.deepy_compaction_column, self.deepy_options_group, self.deepy_repetition_penalty_choice,
         ]
         self.deepy_llm_engine_choice.input(fn=update_remote_engine_ui, inputs=remote_engine_state_inputs, outputs=remote_engine_outputs, show_progress="hidden")
@@ -774,14 +791,14 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.quantization_choice, self.transformer_dtype_policy_choice, self.mixed_precision_choice,
             self.text_encoder_quantization_choice, self.lm_decoder_engine_choice, self.VAE_precision_choice, self.compile_choice,
             self.depth_anything_v2_variant_choice,
-            self.vae_config_choice, self.boost_choice, self.enable_int8_kernels_choice,
+            self.vae_config_choice, self.boost_choice, self.int8_kernels_choice, self.kernel_precision_choice,
             self.video_profile_choice, self.image_profile_choice, self.audio_profile_choice,
             self.preload_in_VRAM_choice, self.max_reserved_loras_choice,
             self.deepy_llm_engine_choice,
             *self.codex_config_ui.save_components,
             *self.claude_config_ui.save_components,
             *self.opencode_config_ui.save_components,
-            self.enhancer_enabled_choice, self.enhancer_quantization_choice, self.enhancer_speculative_decoding_choice, self.enhancer_mode_choice,
+            self.enhancer_enabled_choice, self.enhancer_quantization_choice, self.enhancer_speculative_decoding_choice, self.enhancer_speculative_tokens_choice, self.enhancer_mode_choice,
             self.prompt_enhancer_temperature_choice, self.prompt_enhancer_top_p_choice, self.prompt_enhancer_randomize_seed_choice,
             self.matanyone_version_choice,
             self.deepy_type_choice, self.deepy_vram_mode_choice, self.deepy_voice_language_choice, self.voice_mode_choice, self.deepy_allow_read_file_system_choice, self.deepy_file_system_paths_choice, self.deepy_read_everywhere_choice,
@@ -800,8 +817,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
         view_events = [event for index, event in gr.context.get_blocks_context().fns.items() if index >= first_event and event.fn and event.outputs and all(kind in ('input', 'change') for _, kind in event.targets)]
         self.synced_form = GradioForm(self.state.value.service.forms, 'configuration', inputs[1:-1], view_events=view_events)
         self.synced_form.bind_save(
-            self.apply_btn.click, self._save_changes,
-            inputs=inputs,
+            self.apply_btn.click, lambda *values: self._save_changes(*values[:-1], override_attention=values[-1]),
+            inputs=[*inputs, self.override_attention],
             outputs=[
                 self.msg,
                 self.model_description,
@@ -837,7 +854,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.release_RAM_btn.click(fn=release_ram_and_notify, inputs=[self.state])
         return [self.release_RAM_btn]
 
-    def _save_changes(self, state, *args):
+    def _save_changes(self, state, *args, override_attention=""):
         gen_in_progress = self.is_generation_in_progress()
         # return "<div style='color:red; text-align:center;'>Unable to change config when a generation is in progress.</div>", *[gr.update()]*5
 
@@ -869,14 +886,14 @@ class ConfigTabPlugin(WAN2GPPlugin):
             quantization_choice, transformer_dtype_policy_choice, mixed_precision_choice,
             text_encoder_quantization_choice, lm_decoder_engine_choice, VAE_precision_choice, compile_choice,
             depth_anything_v2_variant_choice,
-            vae_config_choice, boost_choice, enable_int8_kernels_choice,
+            vae_config_choice, boost_choice, int8_kernels_choice, kernel_precision_choice,
             video_profile_choice, image_profile_choice, audio_profile_choice,
             preload_in_VRAM_choice, max_reserved_loras_choice,
             deepy_llm_engine_choice,
             codex_executable_choice, codex_model_choice, codex_reasoning_effort_choice,
             claude_executable_choice, claude_model_choice, claude_reasoning_effort_choice,
             opencode_executable_choice, opencode_base_url_choice, opencode_provider_choice, opencode_model_choice, opencode_reasoning_effort_choice, opencode_config_choice,
-            enhancer_enabled_choice, enhancer_quantization_choice, enhancer_speculative_decoding_choice, enhancer_mode_choice,
+            enhancer_enabled_choice, enhancer_quantization_choice, enhancer_speculative_decoding_choice, enhancer_speculative_tokens_choice, enhancer_mode_choice,
             prompt_enhancer_temperature_choice, prompt_enhancer_top_p_choice, prompt_enhancer_randomize_seed_choice,
             matanyone_version_choice,
             deepy_type_choice, deepy_vram_mode_choice, deepy_voice_language_choice, voice_mode_choice, deepy_allow_read_file_system_choice, deepy_file_system_paths_choice, deepy_read_everywhere_choice,
@@ -911,8 +928,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             enhancer_enabled_choice = local_enhancer_id(deepy_llm_engine_choice, enhancer_enabled_choice)
         qwen_local = not deepy_remote and enhancer_enabled_choice in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)
 
-        if not deepy_remote and int(enhancer_enabled_choice) == QWEN38_PROMPT_ENHANCER_ID and enhancer_quantization_choice not in ("gguf", "gguf_q3", "gguf_q2"):
-            error = "Qwen3.8-27B is available only as GGUF. Select GGUF Q2, Q3, or Q4 as the Qwen LLM quantization."
+        if not deepy_remote and int(enhancer_enabled_choice) == QWEN38_PROMPT_ENHANCER_ID and enhancer_quantization_choice not in ("gguf", "gguf_q3", "gguf_q2", "gguf_ptq1"):
+            error = "Qwen3.8-27B is available only as GGUF. Select GGUF Q2, Q3, Q4, or Bonsai PTQ1_0 as the Qwen LLM quantization."
             gr.Info(f"Configuration was not saved: {error}")
             return f"<div style='color:red; text-align:center;'>Configuration was not saved: {error}</div>", *[gr.update()]*9
         if not deepy_remote and int(enhancer_enabled_choice) in QWEN35_PROMPT_ENHANCER_IDS and enhancer_quantization_choice not in ("quanto_int8", "gguf"):
@@ -922,7 +939,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         if qwen_local:
             try:
-                enhancer_speculative_decoding_choice = validate_prompt_enhancer_speculative_decoding(enhancer_enabled_choice, enhancer_speculative_decoding_choice)
+                _, method, _, tokens = speculative_decoding_ui_state(enhancer_enabled_choice, enhancer_quantization_choice, lm_decoder_engine_choice, enhancer_speculative_decoding_choice, enhancer_speculative_tokens_choice)
+                enhancer_speculative_decoding_choice = validate_prompt_enhancer_speculative_decoding(enhancer_enabled_choice, speculative_decoding_config(method, tokens))
             except ValueError as exc:
                 gr.Info(f"Configuration was not saved: {exc}")
                 return f"<div style='color:red; text-align:center;'>Configuration was not saved: {exc}</div>", *[gr.update()]*9
@@ -985,7 +1003,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "vae_config": vae_config_choice, "vae_precision": VAE_precision_choice,
             "mixed_precision": mixed_precision_choice, "metadata_type": metadata_choice,
             "transformer_quantization": quantization_choice, "transformer_dtype_policy": transformer_dtype_policy_choice,
-            "boost": boost_choice, "enable_int8_kernels": enable_int8_kernels_choice, "clear_file_list": clear_file_list_choice,
+            "boost": boost_choice, "int8_kernels": int8_kernels_choice, "kernel_precision": kernel_precision_choice, "clear_file_list": clear_file_list_choice,
             "multi_prompts_gen_type": prompt_parser.normalize_multi_prompts_mode(multi_prompts_gen_type_choice, default=prompt_parser.DEFAULT_MULTI_PROMPTS_MODE),
             "keep_intermediate_sliding_windows": keep_intermediate_sliding_windows_choice,
             "preload_model_policy": preload_model_policy_choice, "UI_theme": UI_theme_choice,
@@ -1068,6 +1086,17 @@ class ConfigTabPlugin(WAN2GPPlugin):
             new_server_config.pop(key, None)
 
         updates = {key: value for key, value in new_server_config.items() if key not in old_server_config or value != old_server_config[key]}
+        int8_resolution = None
+        if "int8_kernels" in updates or "kernel_precision" in updates:
+            if gen_in_progress:
+                raise gr.Error("Wait for the current generation to finish before changing kernel options.")
+            try:
+                if new_server_config["kernel_precision"] not in ("strict", "fast"):
+                    raise ValueError("Unknown non-INT8 kernel precision")
+                if "int8_kernels" in updates:
+                    int8_resolution = int8_backend.resolve_backend(new_server_config["int8_kernels"])
+            except (ValueError, RuntimeError) as exc:
+                raise gr.Error(str(exc)) from exc
         removed = old_server_config.keys() - new_server_config.keys()
         update_config(self.server_config, self.server_config_filename, updates, remove=removed)
         if VOICE_MODE_KEY in updates:
@@ -1084,7 +1113,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         no_reload_keys = [
             VOICE_MODE_KEY,
             DEEPY_VOICE_LANGUAGE_KEY,
-            "attention_mode", "vae_config", "boost", "enable_int8_kernels", "save_path", "image_save_path", "audio_save_path",
+            "attention_mode", "vae_config", "boost", "int8_kernels", "kernel_precision", "save_path", "image_save_path", "audio_save_path",
             "metadata_type", "clear_file_list", "multi_prompts_gen_type", "keep_intermediate_sliding_windows", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", *notifications.CONFIG_KEYS, "audio_processors", "temporal_upsamplers", "spatial_upsamplers", "matanyone_version",
             "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed", "prompt_enhancer_quantization", PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, "enhancer_mode",
@@ -1108,7 +1137,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.set_global("lm_decoder_engine", new_server_config["lm_decoder_engine"])
         self.set_global("vae_config", new_server_config["vae_config"])
         self.set_global("boost", new_server_config["boost"])
-        self.set_global("enable_int8_kernels", new_server_config["enable_int8_kernels"])
+        self.set_global("int8_kernels", new_server_config["int8_kernels"])
         self.set_global("save_path", new_server_config["save_path"])
         self.set_global("image_save_path", new_server_config["image_save_path"])
         self.set_global("audio_save_path", new_server_config["audio_save_path"])
@@ -1148,13 +1177,15 @@ class ConfigTabPlugin(WAN2GPPlugin):
         audio_processor_api.release_changed_config_processors(old_server_config, new_server_config, changes)
         temporal_upsampler_api.release_changed_config_temporal_upsamplers(old_server_config, new_server_config, changes)
         upsampler_api.release_changed_config_upsamplers(old_server_config, new_server_config, changes)
-        if "enable_int8_kernels" in changes:
-            self.apply_int8_kernel_setting(new_server_config["enable_int8_kernels"], True)
+        if "kernel_precision" in changes:
+            kernel_policy.configure(new_server_config["kernel_precision"])
+        if "int8_kernels" in changes:
+            self.apply_int8_kernel_setting(new_server_config["int8_kernels"], True, resolved=int8_resolution)
 
         model_type = state["model_type"]
         
         model_family_update, model_base_type_update, model_choice_update = self.generate_dropdown_model_list(model_type)
-        description_update, header_update = self.generate_header(model_type, compile=new_server_config["compile"], attention_mode=new_server_config["attention_mode"])
+        description_update, header_update = self.generate_header(model_type, compile=new_server_config["compile"], attention_mode=new_server_config["attention_mode"], override_attention=override_attention)
 
         if gen_in_progress:
             msg = "<div style='color:green; text-align:center;'>The new configuration has been succesfully applied. Some of the Settings will be only effective when you will start another Generation</div>"

@@ -139,9 +139,14 @@ WAC.installEventBridge = function () {
     if (!document.hidden) WAC.readEventSource();
   });
   window.addEventListener('resize', () => {
+    // CSS viewport constraints have already changed by the time resize fires.
+    const scrollState = WAC.lastScrollState;
     WAC.resetComposerLayout();
     WAC.syncDockLayout();
-    window.requestAnimationFrame(WAC.syncComposerLayout);
+    window.requestAnimationFrame(() => {
+      WAC.syncComposerLayout();
+      WAC.applyAutoscrollState(scrollState);
+    });
   }, { passive: true });
 };
 

@@ -648,26 +648,30 @@ class DeepyPrimeTools:
         cancel_requested = False
         snapshot = initial
         deadline = None if timeout_s is None else time.monotonic() + timeout_s
+        from shared.deepy.media_pause import MediaToolPause
+        job = self._server._wangp_jobs.get(job_id).job
         try:
-            while True:
-                if snapshot.get("webui_submission_ready") and not queue_triggered:
-                    self.send_cmd("load_queue_trigger", {"job_id": job_id, "token": snapshot.get("webui_load_queue_token", "")})
-                    queue_triggered = True
-                    self._update_tool_progress("running", "Running", {"status": "running", "job_id": job_id})
-                if snapshot.get("done"):
-                    return self._finalize_generation_snapshot(snapshot)
-                if self._is_interrupted() and not cancel_requested:
-                    if not self._active_job_cancel_requested:
-                        self._server._wangp_jobs.get(job_id).job.cancel()
-                        self._active_job_cancel_requested = True
-                    cancel_requested = True
-                    self._update_tool_progress("running", "Stopping generation", {"status": "running", "job_id": job_id})
-                    continue
-                if deadline is not None and time.monotonic() >= deadline:
-                    self._watch_background_job(job_id, trigger_queue=not queue_triggered)
-                    return {**snapshot, "status": "timeout", "waiting_timed_out": True}
-                time.sleep(self._POLL_INTERVAL_SECONDS)
-                snapshot = self._server._wangp_jobs.get(job_id).snapshot(event_limit=event_limit)
+            with MediaToolPause(self.assistant_session, self.state["gen"], job.webui_client_ids, self.send_cmd) as media_pause:
+                while True:
+                    media_pause.poll()
+                    if snapshot.get("webui_submission_ready") and not queue_triggered:
+                        self.send_cmd("load_queue_trigger", {"job_id": job_id, "token": snapshot.get("webui_load_queue_token", "")})
+                        queue_triggered = True
+                        self._update_tool_progress("running", "Running", {"status": "running", "job_id": job_id})
+                    if snapshot.get("done"):
+                        return self._finalize_generation_snapshot(snapshot)
+                    if self._is_interrupted() and not cancel_requested:
+                        if not self._active_job_cancel_requested:
+                            self._server._wangp_jobs.get(job_id).job.cancel()
+                            self._active_job_cancel_requested = True
+                        cancel_requested = True
+                        self._update_tool_progress("running", "Stopping generation", {"status": "running", "job_id": job_id})
+                        continue
+                    if deadline is not None and not self.assistant_session.pause_requested and time.monotonic() >= deadline:
+                        self._watch_background_job(job_id, trigger_queue=not queue_triggered)
+                        return {**snapshot, "status": "timeout", "waiting_timed_out": True}
+                    time.sleep(self._POLL_INTERVAL_SECONDS)
+                    snapshot = self._server._wangp_jobs.get(job_id).snapshot(event_limit=event_limit)
         finally:
             self._active_job_id = ""
             self._active_job_cancel_requested = False

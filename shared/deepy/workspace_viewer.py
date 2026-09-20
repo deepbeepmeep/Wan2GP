@@ -212,6 +212,14 @@ class WorkspaceViewer:
                     position = 0 if payload.get('edge') == 'start' else len(indices) if before is None else indices.index(catalog['by_key'][before]['index'])
                     indices[position:position] = [entry['index'] for entry in entries]
                 retain_entries(gen, prefix, indices, inplace=True)
+                if action == 'reorder':
+                    # The main gallery shows the newest bounded window. A
+                    # reordered selection can leave it; keep its preview open
+                    # on the nearest remaining visible item in that case.
+                    offset = gallery_offset(len(indices), service._deps.get_server_config().get('clear_file_list', 5))
+                    if 0 <= gen[prefix + 'selected'] < offset:
+                        gen[prefix + 'selected'] = offset
+                        gen[prefix + 'last_selected'] = offset == len(indices) - 1
                 failures = []
             gen['selected_video_time'] = None
             service.publish('gallery', service.gallery_snapshot())

@@ -13,11 +13,26 @@ class DownloadCancelled(Exception):
 
 
 def check_download_cancelled(gen):
-    if gen is not None and gen.get("abort", False):
+    if gen is not None and (gen.get("abort", False) or (gen.get("abort_callback") is not None and gen["abort_callback"]())):
         raise DownloadCancelled("Download cancelled")
 
 
 _current_download = ContextVar("wangp_download", default=None)
+_operation_download_gen = ContextVar("wangp_download_gen", default=None)
+
+
+def resolve_download_gen(gen=None):
+    return _operation_download_gen.get() if gen is None else gen
+
+
+@contextmanager
+def download_operation(gen):
+    """Share progress and cancellation with nested asset consumers in this worker."""
+    token = _operation_download_gen.set(gen)
+    try:
+        yield
+    finally:
+        _operation_download_gen.reset(token)
 
 
 class _DownloadProgress:

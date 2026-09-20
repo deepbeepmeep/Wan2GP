@@ -755,6 +755,7 @@ class Qwen3_5Block(nn.Module):
                 bias=bool(config.attention_bias),
             )
             self.attn_kv = None
+            self.attn_qkv_full = None
             self.attn_output = RowParallelLinear(
                 total_num_heads * self.head_dim,
                 hidden_size,
@@ -787,6 +788,8 @@ class Qwen3_5Block(nn.Module):
             self.ssm_alpha = ColumnParallelLinear(hidden_size, self.num_v_heads, bias=False)
             self.ssm_beta = ColumnParallelLinear(hidden_size, self.num_v_heads, bias=False)
             self.attn_gate_ab = None
+            self.attn_qkv_gate = None
+            self.ssm_ab = None
             self.ssm_dt = nn.Parameter(torch.zeros(self.num_v_heads))
             self.ssm_a = nn.Parameter(-torch.ones(self.num_v_heads))
             if self._short_convolution_cls is not None:
@@ -822,6 +825,8 @@ class Qwen3_5Block(nn.Module):
             self._gguf_v_head_reordered = False
             self._gguf_ssm_param_reordered = False
             self._log_ssm_a = False
+            self._gdn_prepare_decode = None
+            self._gdn_recurrent_raw = None
 
     def prepare_sequence_state(self, max_batch_size: int, device: torch.device, dtype: torch.dtype):
         if self.layer_type != "linear_attention":
@@ -914,12 +919,22 @@ class Qwen3_5Block(nn.Module):
         hidden_states = _take_tensor(x_list)
         batch_size, seq_len, _ = hidden_states.shape
         is_cuda = hidden_states.is_cuda
-        q_and_gate = self.attn_q(hidden_states).view(batch_size, seq_len, self.num_heads, self.head_dim * 2)
+        if self.attn_qkv_full is None:
+            q_and_gate = self.attn_q(hidden_states)
+            fused_key = fused_value = None
+        else:
+            q_and_gate, fused_key, fused_value = self.attn_qkv_full(hidden_states).split(
+                [self.num_heads * self.head_dim * 2, self.num_kv_heads * self.head_dim, self.num_kv_heads * self.head_dim], dim=-1
+            )
+        q_and_gate = q_and_gate.reshape(batch_size, seq_len, self.num_heads, self.head_dim * 2)
         query_states, gate = torch.chunk(q_and_gate, 2, dim=-1)
         gate = gate.reshape(batch_size, seq_len, -1)
 
         query_states = self.attn_q_norm(query_states)
-        if self.attn_kv is None:
+        if fused_key is not None:
+            key_states = fused_key.reshape(batch_size, seq_len, self.num_kv_heads, self.head_dim)
+            value_states = fused_value.reshape(batch_size, seq_len, self.num_kv_heads, self.head_dim)
+        elif self.attn_kv is None:
             key_states = self.attn_k(hidden_states).view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
             value_states = self.attn_v(hidden_states).view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
         else:
@@ -1007,12 +1022,20 @@ class Qwen3_5Block(nn.Module):
             if self.speculative_conv_state_buffer.shape[0] < seq_len - 1 or self.speculative_recurrent_state_buffer.shape[0] < seq_len - 1:
                 raise RuntimeError(f"Predictive state buffers do not cover a {seq_len}-token verification pass.")
 
-        mixed_qkv_input = self.attn_qkv(hidden_states)
-        if self.attn_gate_ab is None:
+        if self.attn_qkv_gate is not None:
+            mixed_qkv_input, z = self.attn_qkv_gate(hidden_states).split([self.key_dim * 2 + self.value_dim, self.value_dim], dim=-1)
+            # The convolution verification kernel consumes dense [B, T, C].
+            # A multi-token slice of the combined projection has a wider stride.
+            mixed_qkv_input = mixed_qkv_input.contiguous()
+            z = z.reshape(batch_size, seq_len, -1, self.head_v_dim)
+            a, b = self.ssm_ab(hidden_states).chunk(2, dim=-1)
+        elif self.attn_gate_ab is None:
+            mixed_qkv_input = self.attn_qkv(hidden_states)
             z = self.attn_gate(hidden_states).reshape(batch_size, seq_len, -1, self.head_v_dim)
             a = self.ssm_alpha(hidden_states)
             b = self.ssm_beta(hidden_states)
         else:
+            mixed_qkv_input = self.attn_qkv(hidden_states)
             gate_ab = self.attn_gate_ab(hidden_states)
             gate_proj, a, b = torch.split(gate_ab, [self.value_dim, self.num_v_heads, self.num_v_heads], dim=-1)
             z = gate_proj.reshape(batch_size, seq_len, -1, self.head_v_dim)
@@ -1161,7 +1184,9 @@ class Qwen3_5Block(nn.Module):
                 num_v_heads=self.num_v_heads,
             )
 
-        beta = b.sigmoid()
+        # Both decode implementations consume parameters in execution head
+        # order. Ordinary GGUF checkpoints still need these permutations;
+        # Bonsai has already prepared their order during loading.
         ssm_a = _maybe_reorder_gguf_ssm_param(
             self.ssm_a,
             interleave_halves=self._gguf_interleave_ssm_ab,
@@ -1169,7 +1194,7 @@ class Qwen3_5Block(nn.Module):
             num_k_heads=self.num_k_heads,
             num_v_heads=self.num_v_heads,
         )
-        ssm_a = -torch.exp(ssm_a.float()) if self._log_ssm_a else ssm_a.float()
+        ssm_a = -torch.exp(ssm_a.float()) if self._log_ssm_a else ssm_a
         ssm_dt = _maybe_reorder_gguf_ssm_param(
             self.ssm_dt,
             interleave_halves=self._gguf_interleave_ssm_ab,
@@ -1177,14 +1202,28 @@ class Qwen3_5Block(nn.Module):
             num_k_heads=self.num_k_heads,
             num_v_heads=self.num_v_heads,
         )
-        g = ssm_a * F.softplus(a.float() + ssm_dt)
+        use_raw_recurrent = (self._gdn_recurrent_raw is not None and is_cuda
+                             and cache_params is None and (use_precomputed_states or speculative_verify))
+        if use_raw_recurrent:
+            core_attn_out, last_recurrent_state = self._gdn_recurrent_raw(
+                query, key, value, a, b, ssm_a, ssm_dt, recurrent_state,
+                self.speculative_recurrent_state_buffer if speculative_verify else None,
+            )
+            g = beta = None
+        elif self._gdn_prepare_decode is not None and use_precomputed_states and is_cuda:
+            query, key, g, beta = self._gdn_prepare_decode(query, key, a, b, ssm_a, ssm_dt, self.num_v_heads)
+        else:
+            beta = b.sigmoid()
+            g = ssm_a.float() * F.softplus(a.float() + ssm_dt)
+            if self.num_v_heads // self.num_k_heads > 1:
+                repeat_factor = self.num_v_heads // self.num_k_heads
+                query = query.repeat_interleave(repeat_factor, dim=2)
+                key = key.repeat_interleave(repeat_factor, dim=2)
         a = b = None
-        if self.num_v_heads // self.num_k_heads > 1:
-            repeat_factor = self.num_v_heads // self.num_k_heads
-            query = query.repeat_interleave(repeat_factor, dim=2)
-            key = key.repeat_interleave(repeat_factor, dim=2)
 
-        if speculative_verify and self._fast_recurrent_gated_delta_rule is not None and is_cuda:
+        if use_raw_recurrent:
+            pass
+        elif speculative_verify and self._fast_recurrent_gated_delta_rule is not None and is_cuda:
             from shared.llm_engines.nanovllm.layers.speculative_state import recurrent_verify
             core_attn_out, last_recurrent_state = recurrent_verify(query, key, value, g, beta, recurrent_state, self.speculative_recurrent_state_buffer)
         elif speculative_verify:
@@ -1265,7 +1304,7 @@ class Qwen3_5Block(nn.Module):
 
         if cache_params is not None:
             cache_params.recurrent_states[layer_idx] = last_recurrent_state
-        else:
+        elif last_recurrent_state is not recurrent_state:
             recurrent_state.copy_(last_recurrent_state)
 
         query = key = value = mixed_qkv = beta = g = last_recurrent_state = None
@@ -1334,6 +1373,8 @@ class Qwen3_5ForCausalLM(nn.Module):
         self.output_norm.use_triton_rmsnorm = not safe_legacy_kernels
         self.output = nn.Linear(int(config.hidden_size), int(config.vocab_size), bias=False)
         self.mtp = Qwen3_5MTP(config) if bool(getattr(config, "_prompt_enhancer_enable_mtp_speculative", False)) else None
+        self._block_draft = False
+        self._draft_features = None
 
     @property
     def device(self) -> torch.device:
@@ -1392,6 +1433,7 @@ class Qwen3_5ForCausalLM(nn.Module):
         hidden_states = self.token_embd(input_ids) if inputs_embeds is None else inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, positions)
         residual = None
+        draft_features = [] if self._block_draft else None
         for layer_idx, block in enumerate(self.blk):
             x_list = [hidden_states, residual]
             hidden_states = residual = None
@@ -1402,6 +1444,10 @@ class Qwen3_5ForCausalLM(nn.Module):
                 attention_mask=attention_mask,
                 past_key_values=past_key_values,
             )
+            if draft_features is not None and layer_idx in self.mtp.target_layer_ids:
+                draft_features.append(hidden_states + residual)
+        if draft_features is not None:
+            self._draft_features = torch.cat(draft_features, dim=-1)
         norm_state_list = [hidden_states, residual]
         hidden_states = residual = None
         hidden_states, _ = self.output_norm.forward_list(norm_state_list)

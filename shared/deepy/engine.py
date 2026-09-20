@@ -495,6 +495,7 @@ class AssistantSessionState:
     steering_deadline: float = 0.0
     assistant_thought_active: bool = False
     assistant_action_active: bool = False
+    media_tool_active: bool = False
     assistant_compaction_active: bool = False
     pause_requested: bool = False
     paused: bool = False
@@ -1217,7 +1218,7 @@ def mark_assistant_paused(session: AssistantSessionState) -> bool:
             return False
         session.paused = True
         if session.current_turn is not None and "presentation_started_at" in session.current_turn:
-            session.current_turn["presentation_pause_started_at"] = time.monotonic()
+            session.current_turn.setdefault("presentation_pause_started_at", time.monotonic())
         return True
 
 
@@ -2777,15 +2778,17 @@ class DeepyZeroTools:
         self._update_tool_progress("running", "Queued", {"status": "queued", "client_id": client_id, "prompt": prompt, "resolution": resolution})
         task["priority"] = True
         gen["inline_queue"] = task
-        self.send_cmd("load_queue_trigger", {"client_id": client_id})
         self._log(f"Queued {activity_label} for {client_id}")
 
-        with capture_external_logs():
+        from shared.deepy.media_pause import MediaToolPause
+        with capture_external_logs(), MediaToolPause(self.session, gen, [client_id], self.send_cmd) as media_pause:
+            self.send_cmd("load_queue_trigger", {"client_id": client_id})
             queue_wait_started_at = time.time()
             queue_wait_suspended = False
             queue_wait_suspend_logged = False
             activity_console_label = activity_label.capitalize()
             while True:
+                media_pause.poll()
                 if self._is_interrupted():
                     return self._interrupted_result(client_id, task, force_cancel_queue=True)
                 queue_errors = gen.get("queue_errors", None) or {}
@@ -2826,6 +2829,7 @@ class DeepyZeroTools:
                 time.sleep(0.25)
 
             while True:
+                media_pause.poll()
                 if self._is_interrupted():
                     return self._interrupted_result(client_id, task, force_cancel_queue=True)
                 queue_errors = gen.get("queue_errors", None) or {}

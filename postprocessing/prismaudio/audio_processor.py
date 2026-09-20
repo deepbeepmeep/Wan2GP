@@ -225,7 +225,9 @@ class PrismAudioProcessor:
             except Exception as exc:
                 from huggingface_hub.errors import EntryNotFoundError
 
-                if not isinstance(exc, EntryNotFoundError):
+                from shared.utils.download import DownloadError
+                cause = exc.__cause__ if isinstance(exc, DownloadError) else exc
+                if not isinstance(cause, EntryNotFoundError):
                     raise
                 self._package_from_upstream(process_files, send_cmd=send_cmd)
                 if not all(self._has_required_file(path) for path in audio_files):

@@ -260,7 +260,7 @@ def _pause_aware_status(session, status: dict[str, Any] | None) -> dict[str, Any
     if bool(getattr(session, "paused", False)):
         return {"visible": True, "kind": "paused", "text": "Deepy is paused."}
     if bool(getattr(session, "pause_requested", False)):
-        text = "Pausing after the current tool finishes..." if bool(getattr(session, "assistant_action_active", False)) else "Pausing Deepy..."
+        text = "Pausing media processing at the next checkpoint..." if getattr(session, "media_tool_active", False) else ("Pausing after the current tool finishes..." if bool(getattr(session, "assistant_action_active", False)) else "Pausing Deepy...")
         return {"visible": True, "kind": "pause_pending", "text": text}
     return status
 
@@ -1190,11 +1190,13 @@ def _event_payload(event: dict[str, Any], session=None, revision: int | None = N
     if payload.get("status"):
         payload["status"] = {**payload["status"], "text": _clean_display_filename(str(payload["status"]["text"]))}
     if session is not None:
-        session.chat_event_sequence = int(getattr(session, "chat_event_sequence", 0) or 0) + 1
         payload["chat_session_id"] = str(session.chat_session_id)
         payload["revision"] = int(session.chat_revision if revision is None else revision)
-        payload["sequence"] = session.chat_event_sequence
-        payload["sequence_start"] = session.chat_event_sequence
+        # Status/stats can be coalesced away and are not transcript mutations.
+        if event["type"] not in {"status", "stats", "session_catalog", "session_resume_ready"}:
+            session.chat_event_sequence = int(getattr(session, "chat_event_sequence", 0) or 0) + 1
+            payload["sequence"] = session.chat_event_sequence
+            payload["sequence_start"] = session.chat_event_sequence
         if event["type"] in {"sync", "status", "reset"}:
             turn = getattr(session, "current_turn", None)
             durations = getattr(session, "chat_turn_durations", {})

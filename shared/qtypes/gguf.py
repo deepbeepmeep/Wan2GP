@@ -5,6 +5,7 @@ import struct
 import sys
 import numpy as np
 from dataclasses import dataclass
+from enum import IntEnum
 
 import torch
 from torch.utils import _pytree as pytree
@@ -17,6 +18,19 @@ from mmgp.offload import QEmbedding as BaseQEmbedding
 
 
 HANDLER_NAME = "gguf"
+
+
+class PrismQuantizationType(IntEnum):
+    """Prism's extension IDs, without modifying the upstream gguf package."""
+    PTQ1_0 = 143
+
+
+def _quantization_type(value):
+    return PrismQuantizationType(value) if value == 143 else gguf.GGMLQuantizationType(value)
+
+
+def _quantization_sizes(value):
+    return (128, 28) if value == PrismQuantizationType.PTQ1_0 else gguf.GGML_QUANT_SIZES[value]
 
 try:
     import gguf
@@ -113,6 +127,7 @@ class _GGUFParsedIndex:
     tensor_infos: tuple[_GGUFTensorInfo, ...]
     config: object | None
     orig_shapes: tuple[tuple[str, tuple[int, ...]], ...]
+    prism_metadata: tuple = ()
 
 
 def _normalize_gguf_path(file_path):
@@ -344,7 +359,7 @@ def _gguf_skip_value_stream(reader, raw_type, byte_order):
 def _gguf_quant_byte_shape(shape, tensor_type):
     if len(shape) == 0:
         return tuple(shape)
-    block_size, type_size = gguf.GGML_QUANT_SIZES[tensor_type]
+    block_size, type_size = _quantization_sizes(tensor_type)
     last_dim = int(shape[-1])
     if block_size <= 0 or last_dim % block_size != 0:
         raise ValueError(f"Invalid GGUF tensor shape {tuple(shape)} for tensor type {getattr(tensor_type, 'name', tensor_type)}")
@@ -373,6 +388,7 @@ def _gguf_parse_index(file_path):
         data_alignment = int(getattr(gguf, "GGUF_DEFAULT_ALIGNMENT", 32))
         config = None
         orig_shapes = {}
+        prism_metadata = {}
         for _ in range(kv_count):
             key = _gguf_read_string_stream(reader, byte_order)
             raw_type = int(_gguf_stream_unpack(reader, byte_order + "I")[0])
@@ -381,6 +397,9 @@ def _gguf_parse_index(file_path):
                 continue
             if key == "config":
                 config = _gguf_decode_value_stream(reader, raw_type, byte_order)
+                continue
+            if key.startswith("prism.hadamard."):
+                prism_metadata[key] = _gguf_decode_value_stream(reader, raw_type, byte_order)
                 continue
             if key.startswith(_GGUF_ORIG_SHAPE_PREFIX):
                 value = _gguf_decode_value_stream(reader, raw_type, byte_order)
@@ -395,12 +414,12 @@ def _gguf_parse_index(file_path):
             name = _gguf_read_string_stream(reader, byte_order)
             n_dims = int(_gguf_stream_unpack(reader, byte_order + "I")[0])
             raw_shape = tuple(int(_gguf_stream_unpack(reader, byte_order + "Q")[0]) for _ in range(n_dims))
-            tensor_type = gguf.GGMLQuantizationType(int(_gguf_stream_unpack(reader, byte_order + "I")[0]))
+            tensor_type = _quantization_type(int(_gguf_stream_unpack(reader, byte_order + "I")[0]))
             rel_offset = int(_gguf_stream_unpack(reader, byte_order + "Q")[0])
             n_elements = 1
             for dim in raw_shape:
                 n_elements *= int(dim)
-            block_size, type_size = gguf.GGML_QUANT_SIZES[tensor_type]
+            block_size, type_size = _quantization_sizes(tensor_type)
             n_bytes = int(n_elements * type_size // block_size)
             tensor_infos.append(
                 _GGUFTensorInfo(
@@ -435,6 +454,7 @@ def _gguf_parse_index(file_path):
             tensor_infos=tensor_infos,
             config=config,
             orig_shapes=tuple((name, shape) for name, shape in orig_shapes.items()),
+            prism_metadata=tuple(prism_metadata.items()),
         )
 
 
@@ -635,7 +655,7 @@ def load_gguf_state_dict(
             new_sd.update(_filter_state_dict_basic(state_dict, one_filter, keep_prefixes))
         state_dict = new_sd
 
-    if state_dict:
+    if state_dict and not parsed.prism_metadata:
         for name, bias in list(state_dict.items()):
             if not name.endswith(".bias") or not torch.is_tensor(bias):
                 continue
@@ -900,7 +920,7 @@ def _may_try_llamacpp_cuda_embedding(weight_tensor, index_tensor):
 
 def _guess_variant_from_filename(filename):
     base = os.path.basename(str(filename))
-    match = re.search(r"(?i)(?:^|[_-])(Q\d+_K|Q\d+_\d|Q\d+|IQ\d+_\w+)(?:$|[_.-])", base)
+    match = re.search(r"(?i)(?:^|[_-])(PTQ1_0|Q\d+_K|Q\d+_\d|Q\d+|IQ\d+_\w+)(?:$|[_.-])", base)
     if match:
         return match.group(1).upper()
     return None
@@ -984,7 +1004,7 @@ def _gguf_dequantize_tensor(raw, qtype_obj, oshape, dtype=None):
         out = gguf.quants.dequantize(raw.cpu().numpy(), qtype_obj)
         out = torch.from_numpy(out)
         return out.to(device=raw.device, dtype=dtype).reshape(oshape)
-    block_size, type_size = gguf.GGML_QUANT_SIZES[qtype_obj]
+    block_size, type_size = _quantization_sizes(qtype_obj)
     dequantize_blocks = _DEQUANTIZE_FUNCTIONS[qtype_obj]
     rows = raw.reshape((-1, raw.shape[-1])).view(torch.uint8)
     n_blocks = rows.numel() // type_size
@@ -997,6 +1017,18 @@ def _gguf_dequantize_tensor(raw, qtype_obj, oshape, dtype=None):
         return output.reshape(oshape)
     blocks = dequantize_blocks(blocks, block_size, type_size, torch.float32)
     return blocks.reshape(oshape).to(dtype)
+
+
+def _dequantize_blocks_PTQ1_0(blocks, block_size, type_size, dtype):
+    # Prism's reference base-3 codec, including the four-trit tail bytes.
+    scale = blocks[:, 26:28].contiguous().view(torch.float16).to(dtype)
+    pieces = []
+    for offset, width, count in ((0, 16, 5), (16, 8, 5), (24, 2, 4)):
+        packed = blocks[:, offset:offset + width].to(torch.int32)
+        for n in range(count):
+            trit = (((packed * (3 ** n)) & 255) * 3 >> 8) - 1
+            pieces.append(trit.to(dtype) * scale)
+    return torch.cat(pieces, dim=1)
 
 
 def _maybe_cast_bias(bias, target_dtype):
@@ -1295,6 +1327,7 @@ def _dequantize_blocks_IQ4_XS(blocks, block_size, type_size, dtype=None):
 if gguf is not None:
     _IQ4_VALUES = torch.tensor(gguf.quants.IQ4_NL.kvalues, device="cpu", dtype=torch.float32)
     _DEQUANTIZE_FUNCTIONS = {
+        PrismQuantizationType.PTQ1_0: _dequantize_blocks_PTQ1_0,
         gguf.GGMLQuantizationType.Q8_0: _dequantize_blocks_Q8_0,
         gguf.GGMLQuantizationType.Q5_1: _dequantize_blocks_Q5_1,
         gguf.GGMLQuantizationType.Q5_0: _dequantize_blocks_Q5_0,
@@ -1429,6 +1462,9 @@ class GGUFWeightTensor(QTensor):
         else:
             target_dtype = _resolve_default_dtype(self._gguf_default_dtype, fallback=self.dtype)
             target_device = self.device
+        if self._tensor_type == PrismQuantizationType.PTQ1_0 and target_device.type == "cuda":
+            from .prism import ptq_linear
+            return ptq_linear(input, self._data, list(self._tensor_shape), bias, target_dtype)
         if _may_try_llamacpp_cuda_linear(self, input):
             fast_out = _try_llamacpp_cuda_linear(self, input, bias, target_dtype)
             if fast_out is not None:
@@ -1497,7 +1533,7 @@ class GGUFWeightTensor(QTensor):
         tensor_shape = ast.literal_eval(meta.get("tensor_shape", str(list(size))))
         tensor_type = None
         if gguf is not None and meta.get("tensor_type"):
-            tensor_type = getattr(gguf.GGMLQuantizationType, meta["tensor_type"], None)
+            tensor_type = getattr(PrismQuantizationType, meta["tensor_type"], None) or getattr(gguf.GGMLQuantizationType, meta["tensor_type"], None)
         return GGUFWeightTensor(
             qtype=qtype,
             axis=axis,

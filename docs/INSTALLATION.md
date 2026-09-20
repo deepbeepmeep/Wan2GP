@@ -40,6 +40,34 @@ pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https
 pip install -r requirements.txt
 ```
 
+## INT8 Math Kernels
+
+In the configuration menu, **INT8 Math Kernels** selects the backend for INT8 quantized linear layers, including INT8 ConvRot checkpoints:
+
+- **Auto** (default): tries Comfy Kitchen CUDA on NVIDIA or HIP on AMD ROCm, then Triton, then PyTorch when neither backend is available.
+- **Triton**: selects WanGP's Triton INT8 kernels. See [Triton Installation](#triton-installation) below.
+- **Comfy Kitchen Kernels**: selects Kitchen's native CUDA or HIP kernels for the current PyTorch runtime.
+- **Disabled (PyTorch)**: uses the standard PyTorch/Quanto path.
+
+Kitchen falls back to Triton when unavailable, and Triton falls back to PyTorch when unavailable, including explicit selections. Startup reports the backend actually selected. Finish the current generation before changing the selection. Weights stay loaded; autoregressive CUDA graphs and KV caches rebuild on the next request when the resolved backend changes. Existing `enable_int8_kernels` configurations migrate automatically: enabled becomes `int8_kernels: "auto"`, disabled becomes `int8_kernels: "disabled"`.
+
+Comfy Kitchen is installed with `requirements.txt`; its prebuilt CUDA kernels require an NVIDIA R580+ driver. AMD INT8/ConvRot uses ROCm PyTorch and Kitchen's HIP extension on supported RDNA3/3.5/4 devices. RDNA2 and unavailable or failing HIP backends retain the Triton/PyTorch fallback. WanGP probes small plain and ConvRot linear operations before selecting Kitchen, and reports CUDA or HIP in the startup message. AMD routing is covered by mocked tests; HIP execution has not yet been validated on AMD hardware here. This option selects INT8 linear math; it does not change the attention backend or enable FP16 accumulation.
+
+### CUDA Kernels Optimized Ops Precision (When Available)
+
+The separate **CUDA Kernels Optimized Ops Precision (When Available)** dropdown controls additional H3 VAE optimizations. The default is **Allow Faster Approximate Kernels** (`kernel_precision: "fast"`), including migration from configs without this key. Explicitly saved choices are preserved:
+
+- **Preserve Precision**: keeps the existing decoder rounding and uses the Triton encoder SiLU/layout/padding fusion when supported. This path preserves native PyTorch GroupNorm statistics.
+- **Allow Faster Approximate Kernels**: additionally enables Kitchen's fused encoder GroupNorm/SiLU/padding and a contiguous Triton decoder SwiGLU output. Kitchen also combines decoder Q/K RMSNorm and partial RoPE for BF16 activations (including BF16, FP8, and INT8 checkpoints). With Kitchen INT8 ConvRot decoding, it also fuses RMSNorm/SwiGLU into activation quantization and residual scaling/addition into linear outputs. These preserve checkpoint dtypes, but normalization rounding and the following matrix multiplication's layout can slightly change outputs. Kitchen's encoder fusion can lower VRAM even when it is slower than the strict Triton path.
+
+Kitchen falls back to the available Triton implementation, then PyTorch. These additional H3 fusions are enabled on validated RTX 50-series SM120 devices; other architectures keep their existing path. FP16 accumulation and attention settings are unchanged. The selection applies between generations without reloading weights, independently of **INT8 Math Kernels**.
+
+
+
+### H3 Video VAE Selection
+
+H3's **Video VAE** configuration defaults to **Auto**, which follows the current **Transformer Model Quantization** choice: 16-bit selects BF16, FP8 selects FP8 Mixed Precision, and INT8 selects INT8 ConvRot Decoder. Explicit **BF16**, **FP8 Mixed Precision**, and **INT8 ConvRot Decoder** choices override Auto. The selected VAE is downloaded automatically before loading; INT8 math still follows the separate **INT8 Math Kernels** selection.
+
 ## Optional DLSS 5 upsamplers
 
 WanGP can expose NVIDIA DLSS 5 Neural Rendering as a native-resolution refiner or spatial upsampler, and DLSS Frame Generation as a temporal upsampler. These optional Windows components are not installed by the normal WanGP installer and include closed-source third-party binaries with separate licenses and security implications. Close WanGP and run `scripts\install_dlss5.bat` for the checksum-verified automatic installation.
@@ -154,7 +182,7 @@ pip install flash-attn==2.7.2.post1
 
 ## GGUF llama.cpp CUDA Kernels
 
-These kernels accelerate GGUF models with packed MMVQ/MMQ, direct FP16/BF16 activation quantization, CUDA-graph-safe workspaces and quantized KV-cache attention. Wheel **1.0.21** also contains precompiled RTX50xx (SM120) async-copy kernels for Q8 prefill and decode/verification. WanGP's vLLM backend selects them automatically on compatible GPUs; this async path needs no runtime Triton compilation. Other architectures retain the shared kernels.
+These kernels accelerate GGUF models with packed MMVQ/MMQ, direct FP16/BF16 activation quantization, CUDA-graph-safe workspaces and quantized KV-cache attention. Wheel **1.0.22** also contains precompiled RTX50xx (SM120) async-copy kernels for Q8 prefill and decode/verification. WanGP's vLLM backend selects them automatically on compatible GPUs; this async path needs no runtime Triton compilation. Other architectures retain the shared kernels.
 
 Install the wheel matching your Python, PyTorch and CUDA stack. `--no-deps` preserves the installed PyTorch environment.
 
@@ -162,24 +190,24 @@ Install the wheel matching your Python, PyTorch and CUDA stack. `--no-deps` pres
 
 Windows:
 ```bash
-pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.21/llamacpp_gguf_cuda-1.0.21%2Btorch210cu130py311-cp311-cp311-win_amd64.whl
+pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.22/llamacpp_gguf_cuda-1.0.22%2Btorch210cu130py311-cp311-cp311-win_amd64.whl
 ```
 
 Linux:
 ```bash
-pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.21/llamacpp_gguf_cuda-1.0.21%2Btorch210cu130py311-cp311-cp311-linux_x86_64.whl
+pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.22/llamacpp_gguf_cuda-1.0.22%2Btorch210cu130py311-cp311-cp311-linux_x86_64.whl
 ```
 
 ### Python 3.10 / PyTorch 2.7.1 / CUDA 12.8
 
 Windows:
 ```bash
-pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.21/llamacpp_gguf_cuda-1.0.21%2Btorch271cu128py310-cp310-cp310-win_amd64.whl
+pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.22/llamacpp_gguf_cuda-1.0.22%2Btorch271cu128py310-cp310-cp310-win_amd64.whl
 ```
 
 Linux:
 ```bash
-pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.21/llamacpp_gguf_cuda-1.0.21%2Btorch271cu128py310-cp310-cp310-linux_x86_64.whl
+pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.22/llamacpp_gguf_cuda-1.0.22%2Btorch271cu128py310-cp310-cp310-linux_x86_64.whl
 ```
 
 The CUDA 13 builds contain native GPU code for SM75 through the architectures supported by CUDA 13.1. CUDA 12.8 builds additionally contain pre-SM75 code, subject to PyTorch's own support. The release includes the exact architecture lists, source and build instructions. Hardware validation was performed on RTX5090; Linux wheels were built and tested under Ubuntu 22.04 in WSL.

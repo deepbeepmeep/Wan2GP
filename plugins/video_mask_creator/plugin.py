@@ -2,6 +2,9 @@ import gradio as gr
 from shared.utils.plugins import WAN2GPPlugin
 from preprocessing.matanyone import app as matanyone_app
 
+PRELOAD_MODELS_ON_TAB_SELECT = False
+
+
 class MaskGeneratorPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
@@ -40,9 +43,9 @@ class MaskGeneratorPlugin(WAN2GPPlugin):
         self.matanyone_app.PlugIn = self
 
     def on_tab_select(self, state: dict) -> None:
-        # print("[MaskGeneratorPlugin] Tab selected. Loading models...")
-        self.matanyone_app.ensure_selected_assets(self.server_config)
-        self.mask_event_handler(state, True)
+        if PRELOAD_MODELS_ON_TAB_SELECT:
+            self.matanyone_app.ensure_selected_assets(self.server_config)
+            self.mask_event_handler(state, True)
         self._is_active = True
 
     def on_tab_deselect(self, state: dict) -> None:

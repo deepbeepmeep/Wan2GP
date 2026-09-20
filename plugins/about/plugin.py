@@ -32,6 +32,7 @@ class AboutPlugin(WAN2GPPlugin):
         gr.Markdown("- <B>Resemble.AI</B> for the incredible ChatterBox (https://github.com/resemble-ai/chatterbox)")
         gr.Markdown("- <B>HeartMuLa Team</B> for the open music generation models (https://github.com/HeartMuLa/heartlib)")
         gr.Markdown("- <B>Multimodal Art Projection (MAP) Team and collaborators</B> for YuE2 song generation, SheetSage2 music transcription and the MERT2 music encoder (https://github.com/multimodal-art-projection/YuE, https://huggingface.co/m-a-p/SheetSage2, https://huggingface.co/m-a-p/MERT-v2-FullSong)")
+        gr.Markdown("- **Mothersuperior** for the [YuE2 Hum-to-Song adapter](https://huggingface.co/Mothersuperior/YuE2-hum-to-song), hum-conditioning workflow and [real-audio acoustic LoRA](https://huggingface.co/Mothersuperior/yue2-mothersuperior-realaudio-tokenizer-v4) used by this contribution.")
         gr.Markdown("- <B>ACE-Step Team</B> for the ACE-Step music generation model (https://github.com/ace-step/ACE-Step) & ACE-Step 1.5 (https://github.com/ace-step/ACE-Step-1.5)")
         gr.Markdown("- <B>Stability AI</B> for Stable Audio 3 (https://github.com/Stability-AI/stable-audio-3)")
         gr.Markdown("- <B>Alibaba Qwen Team</B> for Qwen 3 TTS (https://github.com/QwenLM/Qwen3-TTS)")

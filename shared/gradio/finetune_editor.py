@@ -410,6 +410,7 @@ def bind_editor(
     save_inputs_handler: Callable,
     target_state,
     generation_inputs: list,
+    bind_model_change: bool = True,
 ):
     action_outputs = _action_outputs(ui, state, model_choice_target)
     delete_outputs = _delete_outputs(ui, state, model_choice_target)
@@ -461,12 +462,13 @@ def bind_editor(
         outputs=delete_outputs,
         show_progress="hidden",
     )
-    model_choice_target.change(
-        fn=lambda model_target_value: toolbar_button_updates(deps_factory(), str(model_target_value or "").split("|", 1)[0].strip()),
-        inputs=[model_choice_target],
-        outputs=[toolbar_button],
-        show_progress="hidden",
-    )
+    if bind_model_change:
+        model_choice_target.change(
+            fn=lambda model_target_value: toolbar_button_updates(deps_factory(), str(model_target_value or "").split("|", 1)[0].strip()),
+            inputs=[model_choice_target],
+            outputs=[toolbar_button],
+            show_progress="hidden",
+        )
     auto_id_inputs = [state, ui.mode, ui.original_id, ui.source_model_type, ui.id_text, ui.auto_id, ui.name_text, ui.description_text]
     ui.auto_id.change(fn=lambda *values: refresh_auto_id(deps_factory(), *values, update_interactivity=True), inputs=auto_id_inputs, outputs=[ui.id_text], queue=False, show_progress="hidden")
     ui.name_text.input(fn=lambda *values: refresh_auto_id(deps_factory(), *values, event_kind="input"), inputs=auto_id_inputs, outputs=[ui.id_text], queue=False, show_progress="hidden")

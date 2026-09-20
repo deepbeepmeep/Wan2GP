@@ -441,6 +441,7 @@ class AdvancedMediaGallery:
             inputs=[self.state, self.gallery],
             outputs=[self.gallery, self.state],
             trigger_mode="always_last",
+            show_progress="hidden",
         )
 
         # Gallery value changed by user actions (click-to-add, drag-drop, internal remove, etc.)

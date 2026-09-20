@@ -47,10 +47,23 @@ class PasswordGate:
             self.lock.release()
 
 
-def same_origin(connection):
-    origin = connection.headers.get("origin")
+def _browser_origin(connection, public_url=None):
+    if public_url is not None:
+        return public_url
     scheme = {"ws": "http", "wss": "https"}.get(connection.url.scheme, connection.url.scheme)
-    return origin is None or origin == f"{scheme}://{connection.url.netloc}"
+    host = connection.url.netloc
+    origin = connection.headers.get("origin")
+    # A proxy can terminate or add TLS without changing the public Host. Accept
+    # either web scheme only for that exact authority, including an explicit port.
+    # Use the accepted browser scheme for login cookies, not the proxy's scheme.
+    if scheme in {"http", "https"} and origin in {f"http://{host}", f"https://{host}"}:
+        return origin
+    return f"{scheme}://{host}"
+
+
+def same_origin(connection, public_url=None):
+    origin = connection.headers.get("origin")
+    return origin is None or origin == _browser_origin(connection, public_url)
 
 
 def login_page(title, description, action, fields, *, error="", status=200, retry=0, button="Sign In"):
@@ -75,7 +88,9 @@ async def small_form(request):
 
 
 class WebAuthentication:
-    def __init__(self, password):
+    def __init__(self, password, public_url=None):
+        from shared.authentication import parse_public_url
+        self.public_url = parse_public_url(public_url) if public_url is not None else None
         self.gate = PasswordGate(password) if password is not None else None
         self.sessions = {}
         self.lock = threading.Lock()
@@ -99,7 +114,7 @@ class WebAuthentication:
                 form = await small_form(request)
             except (ValueError, UnicodeError):
                 return JSONResponse({"detail": "Invalid login request."}, status_code=400)
-            if not same_origin(request) or not secrets.compare_digest(form.get("csrf", "").encode("utf-8"), self.csrf_secret.encode("utf-8")):
+            if not same_origin(request, self.public_url) or not secrets.compare_digest(form.get("csrf", "").encode("utf-8"), self.csrf_secret.encode("utf-8")):
                 return JSONResponse({"detail": "Cross-origin request rejected."}, status_code=403)
             valid, retry = (True, 0) if self.gate is None else await run_in_threadpool(self.gate.check, form.get("password", ""))
             if valid:
@@ -111,7 +126,7 @@ class WebAuthentication:
                     if len(self.sessions) >= 4096:
                         return JSONResponse({"detail": "Too many active sessions."}, status_code=503)
                     self.sessions[session] = now + SESSION_SECONDS
-                response.set_cookie(COOKIE, session, httponly=True, secure=request.url.scheme == "https", samesite="strict", path="/", max_age=SESSION_SECONDS)
+                response.set_cookie(COOKIE, session, httponly=True, secure=_browser_origin(request, self.public_url).startswith("https://"), samesite="strict", path="/", max_age=SESSION_SECONDS)
                 return response
             status = 429 if retry else 401
             error = f"Try again in {retry} seconds." if retry else "Incorrect passphrase."
@@ -130,10 +145,10 @@ class WebAuthMiddleware:
         if scope["type"] == "http" and path == "/auth/login" and scope["method"] in {"GET", "POST"}:
             return await (await self.auth.login(Request(scope, receive)))(scope, receive, send)
         unsafe = scope["type"] == "websocket" or scope["method"] not in {"GET", "HEAD", "OPTIONS"}
-        if not self.auth.authenticated(connection) or (unsafe and not same_origin(connection)):
+        if not self.auth.authenticated(connection) or (unsafe and not same_origin(connection, self.auth.public_url)):
             if scope["type"] == "websocket":
                 return await send({"type": "websocket.close", "code": 1008})
-            if unsafe and not same_origin(connection):
+            if unsafe and not same_origin(connection, self.auth.public_url):
                 response = JSONResponse({"detail": "Cross-origin request rejected."}, status_code=403)
             elif scope["method"] in {"GET", "HEAD"} and "text/html" in connection.headers.get("accept", ""):
                 target = path + ("?" + scope["query_string"].decode("latin1") if scope["query_string"] else "")

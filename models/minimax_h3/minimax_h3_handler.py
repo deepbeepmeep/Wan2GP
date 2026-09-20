@@ -13,7 +13,7 @@ from .constants import (H3_AUDIO_REFINEMENT_SETTING, H3_MASK_MODE_DEFAULT, H3_MA
                         h3_grouped_masking_enabled)
 from .dialogue import H3_DIALOGUE_GENERATION, H3_DIALOGUE_MAX_TOTAL_SECONDS, H3_DIALOGUE_PROMPT_INFOS, load_dialogue_whisper
 from .minimax_h3_main import (AUDIO_VAE_FILE, LATENT_UPSCALER_FILE, LATENT_UPSCALER_FOLDER, TEXT_ENCODER_FOLDER,
-                              VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE)
+                              VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE, VIDEO_VAE_INT8_FILE)
 from .pdd import PDD_BLOCK_SIZE, PDD_NUM_STEPS
 from .viggle import VIGGLE_ARCHITECTURE, VIGGLE_ASSET_FOLDER, VIGGLE_INFOS, VIGGLE_PROMPT_FILE, VIGGLE_REPO_ID
 from .prompt_enhancer import (FL2VA_DEEPY_PROMPT_INFOS, FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
@@ -534,8 +534,10 @@ class family_handler:
             },
             "system_configs2": {
                 "_name": "Video VAE",
-                "_default_label": "Original VAE",
+                "_default_label": "Auto",
+                "bf16": {"name": "BF16", "video_vae_file": VIDEO_VAE_FILE},
                 "fp8mix": {"name": "FP8 Mixed Precision", "video_vae_file": VIDEO_VAE_FP8MIX_FILE},
+                "int8_convrot": {"name": "INT8 ConvRot Decoder", "video_vae_file": VIDEO_VAE_INT8_FILE},
             },
             "system_configs3": {
                 "_name": "DiT Denoising Priority",
@@ -816,6 +818,14 @@ class family_handler:
         return None
 
     @staticmethod
+    def resolve_runtime_model_def(model_def, runtime_context):
+        """Resolve Auto once for both asset downloads and model loading."""
+        if "video_vae_file" in model_def or model_def.get("system_configs2", {}).get("_name") != "Video VAE":
+            return model_def
+        filename = {"int8": VIDEO_VAE_INT8_FILE, "fp8": VIDEO_VAE_FP8MIX_FILE}.get(runtime_context["transformer_quantization"], VIDEO_VAE_FILE)
+        return {**model_def, "video_vae_file": filename}
+
+    @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):
         source_folders = []
         file_lists = []
@@ -823,6 +833,9 @@ class family_handler:
         video_vae_file = model_def.get("video_vae_file", VIDEO_VAE_FILE)
         if video_vae_file in (VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE):
             vae_files.append(video_vae_file)
+        if video_vae_file == VIDEO_VAE_INT8_FILE:
+            source_folders.append("minimax_h3")
+            file_lists.append([VIDEO_VAE_INT8_FILE.rsplit("/", 1)[-1]])
         if "audio_vae_file" not in model_def:
             vae_files.append(AUDIO_VAE_FILE)
         if vae_files:

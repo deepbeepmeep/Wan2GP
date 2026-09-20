@@ -140,6 +140,7 @@ WAC.applyAutoscrollState = function (state) {
     // Writing even the current position can interrupt native touch/smooth scrolling.
     if (scroll.scrollTop !== top) scroll.scrollTop = top;
   }
+  if (scroll.clientHeight > 0) WAC.lastScrollState = WAC.captureAutoscrollState();
   WAC.syncJumpToBottom();
 };
 
@@ -1868,8 +1869,11 @@ WAC.appendBlockText = function (event) {
   const current = WAC.currentBlockText(event, node);
   const start = Number(event.text_start);
   const end = Number(event.text_end);
-  if (Number.isFinite(end) && current.length >= end) return;
-  if (!Number.isFinite(start) || current.length !== start) return WAC.markSyncRequired(event);
+  // Python publishes code-point offsets; JS length counts UTF-16 code units.
+  let currentLength = 0;
+  for (const character of current) currentLength += 1;
+  if (Number.isFinite(end) && currentLength >= end) return;
+  if (!Number.isFinite(start) || currentLength !== start) return WAC.markSyncRequired(event);
   const scrollState = WAC.captureAutoscrollState();
   const suffix = String(event.text || '');
   const known = WAC.incrementalMessageState(event.message_id).blocks[String(event.block_id)];
@@ -2412,6 +2416,7 @@ WAC.syncDisclosureBridge = function () {
 };
 
 WAC.handleScroll = function () {
+  if (WAC.scroll().clientHeight > 0) WAC.lastScrollState = WAC.captureAutoscrollState();
   // A pending resize must not restore an older position after the user has scrolled.
   if (WAC.composerResizeFrame) WAC.composerResizeScrollState = WAC.captureAutoscrollState();
   WAC.syncJumpToBottom();
@@ -2425,6 +2430,7 @@ WAC.syncScrollBridge = function () {
   }
   if (WAC.scrollNode) WAC.scrollNode.removeEventListener('scroll', WAC.handleScroll, { passive: true });
   WAC.scrollNode = scroll;
+  WAC.lastScrollState = WAC.captureAutoscrollState();
   WAC.scrollNode.addEventListener('scroll', WAC.handleScroll, { passive: true });
   // Media/layout changes can reach the bottom without changing scrollTop or firing scroll.
   WAC.jumpBottomResizeObserver?.disconnect();

@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, Response
 from gradio import routes
 
 from shared.gradio.gradio_model_change_queue import _REPLACEMENTS as _QUEUE_REPLACEMENTS
+from shared.gradio import metadata_events
 
 
 _EDITOR_PATH = Path(__file__).parent / 'wangp_image_editor/templates/component/index.js'
@@ -71,6 +72,7 @@ function wangpGradio(...args) {
 _MARK_ANCESTORS = """
 for (let node = f; node; node = node.parent) wangpDirty.add(node);
 }
+}
 for (const node of wangpDirty) node.__wangp_revision = (node.__wangp_revision || 0) + 1;
 """
 # Gradio's status store replaces an entry on each actual status/progress change.
@@ -104,22 +106,41 @@ function Mn(S){
 }
 """
 
-# Keep native controls and letterboxing stable while a new gallery video loads.
-# Replace the poster on the first presented frame, rather than removing it at
-# loadeddata (which can precede painting and leave Chrome's paused player blank).
+# Reuse a thumbnail's decoded first frame immediately, before loading the player.
+# Posters are bounded to preview size and cached on thumbnail nodes (so removing
+# media also releases its cache). Never remove a paused Chrome player's poster:
+# loadeddata can precede painting and removing it can leave the player blank.
 _GALLERY_VIDEO_SOURCE = """
 const wangpGalleryFrames = new WeakMap();
+const wangpGalleryPosters = new WeakMap();
+const wangpGalleryEmptyPoster = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1' height='1'/%3E";
 function wangpGalleryVideoPoster(video) {
     const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext("2d").drawImage(video, 0, 0);
-    return canvas.toDataURL("image/jpeg", 0.95);
+    const scale = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight));
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+    // Encode off the click path; toDataURL synchronously stalls the UI here.
+    return new Promise(resolve => canvas.toBlob(blob => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.readAsDataURL(blob);
+    }, "image/jpeg", 0.9));
+}
+function wangpGalleryVideoMount(video) {
+    if (video.dataset.testid === "detailed-video") queueMicrotask(() => {
+        if (video.isConnected) wangpGalleryVideoSource(video, video.src);
+    });
+}
+function wangpGalleryPosterEntry(video, src) {
+    const entry = {src, value: null};
+    entry.poster = wangpGalleryVideoPoster(video).then(value => entry.value = value);
+    return entry;
 }
 function wangpGalleryVideoClear(video) {
     const state = wangpGalleryFrames.get(video);
     if (state?.request != null) video.cancelVideoFrameCallback(state.request);
-    if (state) video.removeEventListener("loadeddata", state.ready);
+    if (state?.ready) video.removeEventListener("loadeddata", state.ready);
     wangpGalleryFrames.delete(video);
     video.removeEventListener("error", wangpGalleryVideoError);
 }
@@ -133,14 +154,35 @@ function wangpGalleryVideoSource(video, src) {
         return;
     }
     wangpGalleryVideoClear(video);
-    if (video.readyState >= 2 && video.videoWidth && video.videoHeight) video.poster = wangpGalleryVideoPoster(video);
-    j(video, "src", src);
-    const requestedSrc = video.src;
-    const state = {request: null, presented: false, ready() {
+    const requestedSrc = new URL(src, document.baseURI).href;
+    const thumbnail = Array.from(video.closest(".gallery-container").querySelectorAll(".thumbnail-small video, .thumbnail-lg video")).find(item => item.src === requestedSrc);
+    let cached = thumbnail && wangpGalleryPosters.get(thumbnail);
+    if (cached?.src !== requestedSrc) cached = null;
+    if (!cached && thumbnail?.currentSrc === requestedSrc && thumbnail.readyState >= 2) {
+        cached = wangpGalleryPosterEntry(thumbnail, requestedSrc);
+        wangpGalleryPosters.set(thumbnail, cached);
+    }
+    // A poster survives a video src change. Never show the previous media while
+    // a new thumbnail is being encoded or its first frame is still loading.
+    video.poster = cached?.value || wangpGalleryEmptyPoster;
+    if (video.src !== requestedSrc) j(video, "src", src);
+    const state = {request: null, presented: false};
+    wangpGalleryFrames.set(video, state);
+    video.addEventListener("error", wangpGalleryVideoError);
+    function show(poster) {
+        poster.then(value => {
+            if (wangpGalleryFrames.get(video) !== state || video.src !== requestedSrc) return;
+            video.poster = value;
+        });
+    }
+    if (cached) {show(cached.poster); return;}
+    state.ready = () => {
         if (!state.presented || video.readyState < 2 || video.currentSrc !== requestedSrc) return;
-        wangpGalleryVideoClear(video);
-        video.poster = wangpGalleryVideoPoster(video);
-    }};
+        video.removeEventListener("loadeddata", state.ready);
+        const entry = wangpGalleryPosterEntry(video, requestedSrc);
+        if (thumbnail) wangpGalleryPosters.set(thumbnail, entry);
+        show(entry.poster);
+    };
     function presented() {
         state.request = null;
         // A playing source may still have an old frame awaiting composition.
@@ -152,9 +194,7 @@ function wangpGalleryVideoSource(video, src) {
         state.ready();
     }
     // These signals can arrive in either order, even while the video is paused.
-    wangpGalleryFrames.set(video, state);
     video.addEventListener("loadeddata", state.ready);
-    video.addEventListener("error", wangpGalleryVideoError);
     state.request = video.requestVideoFrameCallback(presented);
 }
 """
@@ -162,6 +202,7 @@ function wangpGalleryVideoSource(video, src) {
 _PATCHES = {
     'Video-C-llMUaJ.js': [
         ('function ki(t){', _GALLERY_VIDEO_SOURCE + 'function ki(t){'),
+        ('t[25](e),s=!0', 't[25](e),wangpGalleryVideoMount(e),s=!0'),
         ('&&j(e,"src",p),(!s||c&16)', '&&wangpGalleryVideoSource(e,p),(!s||c&16)'),
         ('d(l){l&&(A(i),A(a),A(e))', 'd(l){wangpGalleryVideoClear(e);l&&(A(i),A(a),A(e))'),
     ],
@@ -177,6 +218,35 @@ _PATCHES = {
         ('c[0]&1024&&n.value!==i[10]&&me(n,i[10])', 'c[0]&1024&&wangpModelInput(n,i[10])'),
     ],
     'Gallery-D7vc32lN.js': [
+        ('function Ve(s){', '''function wangpGalleryGap(event) {
+            const container = event.target.closest('.thumbnails, .grid-container');
+            if (!container || !this.contains(container) || event.target.closest('.thumbnail-item')) return;
+            let closest, distance = Infinity;
+            for (const button of container.querySelectorAll('.thumbnail-item')) {
+                const box = button.getBoundingClientRect();
+                const dx = Math.max(box.left - event.clientX, 0, event.clientX - box.right);
+                const dy = Math.max(box.top - event.clientY, 0, event.clientY - box.bottom);
+                const next = dx * dx + dy * dy;
+                if (next < distance) {closest = button; distance = next;}
+            }
+            if (closest) {event.preventDefault(); event.stopPropagation(); closest.click();}
+        }
+        function Ve(s){'''),
+        ('V=s,l(18,V)', 'V?.removeEventListener("click",wangpGalleryGap),V=s,V?.addEventListener("click",wangpGalleryGap),l(18,V)'),
+        ('function dt(n){', '''function wangpGalleryImage(src, edge) {
+            if (!src || !edge) return src;
+            const url = new URL(src, window.location.href);
+            if (url.origin !== window.location.origin || !url.pathname.includes('/file=') || !/\\.(png|jpe?g|webp|bmp|tiff?|gif)$/i.test(url.pathname)) return src;
+            url.searchParams.set('__wangp_gallery_preview', edge);
+            return url.href;
+        }
+        function dt(n){'''),
+        ('src:n[22].image.url,alt:', 'src:wangpGalleryImage(n[22].image.url,n[17]?0:1600),alt:'),
+        ('o[0]&4194304&&(i.src=t[22].image.url)', 'o[0]&4325376&&(i.src=wangpGalleryImage(t[22].image.url,t[17]?0:1600))'),
+        ('src:n[50].image.url,title:', 'src:wangpGalleryImage(n[50].image.url,320),title:'),
+        ('o[0]&65536&&(i.src=t[50].image.url)', 'o[0]&65536&&(i.src=wangpGalleryImage(t[50].image.url,320))'),
+        ('src:typeof n[47].image=="string"?n[47].image:n[47].image.url', 'src:wangpGalleryImage(typeof n[47].image=="string"?n[47].image:n[47].image.url,320)'),
+        ('i.src=typeof t[47].image=="string"?t[47].image:t[47].image.url', 'i.src=wangpGalleryImage(typeof t[47].image=="string"?t[47].image:t[47].image.url,320)'),
         # Selection is a user event. Server values/indices notify change once,
         # after normalization; index-only updates must still refresh consumers.
         ('let ne=m;function se(s){', 'let ne=m,wangpGalleryUser=false,wangpGalleryExplicit=false,wangpGalleryChanged=false;function se(s){'),
@@ -184,6 +254,10 @@ _PATCHES = {
         ('function se(s){const S=s.target,H=s.offsetX,X=S.offsetWidth/2;H<X?l(1,m=t):l(1,m=o)}', 'function se(s){(document.fullscreenElement?document.exitFullscreen():V.requestFullscreen()).catch(console.error)}'),
         # Restoring or selecting a thumbnail must not scroll the whole page.
         ('W[s]?.focus();', 'W[s]?.focus({preventScroll:true});'),
+        # The selected image is wanted now; only offscreen thumbnails are lazy.
+        ('class:n[22].caption&&"with-caption",loading:"lazy"', 'class:n[22].caption&&"with-caption",loading:"eager"'),
+        # Do not animate the strip when the selected thumbnail is already visible.
+        ('Q=x-S+X/2-H/2+A.scrollLeft;A&&', 'Q=x-S+X/2-H/2+A.scrollLeft;if(x>=S&&x+X<=S+H)return;A&&'),
         ('function Re(s){switch(s.code){', 'function Re(s){if(["Escape","ArrowLeft","ArrowRight"].includes(s.code))wangpGalleryUser=true;switch(s.code){'),
         ('const qe=s=>l(1,m=s);', 'const qe=s=>{wangpGalleryUser=true;return l(1,m=s)};'),
         ('Oe=s=>{m===null', 'Oe=s=>{wangpGalleryUser=true;m===null'),
@@ -200,6 +274,11 @@ _PATCHES = {
         ('this._tickerAdded || !this.domElement ||', 'this._pauseUpdate || this._tickerAdded || !this.domElement ||'),
     ],
     'Blocks-BMC4HgbM.js': [
+        ('async function No(S,J,K){', 'const wangpMetadataPending=new Map(),wangpMetadataSent=new Map();async function No(S,J,K){'),
+        ('const R=pe;if(dn.length>0)', 'const R=pe;' + metadata_events.PREPARE_JS + 'if(dn.length>0)'),
+        ('R.inputs.map(W=>No(W,J,K))', 'R.inputs.map((W,index)=>wangpMetadata&&index===1?wangpMetadata:No(W,J,K))'),
+        ('else if(ne.stage==="error"){', 'else if(ne.stage==="error"){wangpMetadataSent.delete(S);'),
+        ('if(d.closed)return;t(21,ce=[st("Error",String(ae)', 'wangpMetadataSent.delete(S);if(d.closed)return;t(21,ce=[st("Error",String(ae)'),
         ('function Jt(S,J=null,K=null){', 'function Jt(S,J=null,K=null){if(window.__wangpGradioStale)return;'),
         # Hide the API footer fragment (including its divider), not the API.
         ('y=l[5]&&Qi(l);', 'y=false;'),
@@ -214,6 +293,10 @@ _PATCHES = {
         ('v=Nn(p,"click",l[44])', 'v=Nn(n,"click",event=>{event.preventDefault();l[44]()})'),
         ('Je(q,f,j),Je(q,p,j),ve(p,g),ve(g,$),ve(p,m),ve(p,w),b.m(w,null),', ''),
         (_STATUS_ORIGINAL, _STATUS_UPDATE),
+        # A label/visibility/options update carries no new value. Marking it as
+        # one makes editors interpret their old empty prop as a server clear.
+        ('S?.map((de,he)=>({id:pe[he],prop:"value_is_output",value:!0}))',
+         'S?.map((de,he)=>({id:pe[he],prop:"value_is_output",value:!(de&&de.__type__==="update"&&!Object.prototype.hasOwnProperty.call(de,"value"))}))'),
         # Re-publish after a component clears its indicator or a layout rebuild.
         ('function Ao(S,J,K){', 'function Ao(S,J,K){wangpStatusCache.delete(String(S));'),
         ('function Bo(ae){', 'function Bo(ae){wangpStatusCache.clear();wangpPendingCache.clear();'),
@@ -226,6 +309,22 @@ _PATCHES = {
         ('return l.$$set=w=>{' + _NODE_INPUTS, 'return l.$$set=w=>{' + _NODE_SKIP + _NODE_INPUTS),
     ],
     'index-Do3LSwBC.js': [
+        # Inspect only the actual gallery-view output, never unrelated text.
+        # Its whole response must be discarded before an old index can paint.
+        ('for(let g=0;g<ge.length;g++)for(let P=0;', 'for(let g=0;g<ge.length;g++){const view=ge[g].find(v=>v&&v.prop==="value"&&s[v.id]?.props.elem_id==="wangp-gallery-view");if(view&&window.WanGPGallerySelection?.acceptView(view.value)===false)continue;for(let P=0;'),
+        ('function H(k){let g=o.get(k);', 'function H(k,wangpKind){let g=o.get(k);'),
+        ('g=G(P,k)}return g?g.instance?.get_value', 'g=G(P,k)}' + metadata_events.READ_JS + 'return g?g.instance?.get_value'),
+        ('let s=null,d=new URLSearchParams({session_hash:this.session_hash}).toString()',
+         'let s=null,d=new URLSearchParams({session_hash:this.session_hash,stream_reuse:"1"}).toString()'),
+        # A reused stream can deliver a fast result before /queue/join returns.
+        # Register before replaying buffered messages so completion can remove
+        # the callback and pending ID instead of resurrecting them afterwards.
+        ('I in z&&(z[I].forEach(Xe=>Ao(Xe)),delete z[I]),q[I]=Ao,D.add(I),C.open||await this.open_stream()',
+         'q[I]=Ao,D.add(I),I in z&&(z[I].forEach(Xe=>{Xe.msg==="process_completed"&&D.delete(I);Ao(Xe)}),delete z[I]),D.size>0&&!C.open&&await this.open_stream()'),
+        # If a new job joins while the idle close is in transit, reopen for it.
+        # Let earlier completion callbacks retire first; idle sessions stay shut.
+        ('if(u.msg==="close_stream"){ze(r,n.abort_controller);return}',
+         'if(u.msg==="close_stream"){ze(r,n.abort_controller);setTimeout(()=>{if(!n.closed&&!r.open&&Object.keys(e).some(id=>o.has(id)))n.open_stream()},0);return}'),
         ('function q(){l.update(k=>{for(let g=0;', 'function q(){l.update(k=>{const wangpDirty=new Set;for(let g=0;'),
         ('f.props[v.prop]=j}return k}),ge=[]', 'f.props[v.prop]=j;' + _MARK_ANCESTORS + 'return k}),ge=[]'),
         ('l.set(h)', 'Object.values(s).forEach(node=>node.__wangp_revision=(node.__wangp_revision||0)+1),l.set(h)'),
@@ -294,6 +393,7 @@ def _version_html(source, versions):
 
 
 def install():
+    metadata_events.install()
     original = routes.FileResponse
     if getattr(original, '_wangp_frontend', False):
         return

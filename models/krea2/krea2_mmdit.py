@@ -441,7 +441,7 @@ class SingleStreamBlock(nn.Module):
 
 class SingleStreamDiT(nn.Module):
     def preprocess_loras(self, model_type, sd):
-        """Map common Diffusers/Kohya Krea2 LoRA names to this model."""
+        """Map Diffusers/Kohya names and AI Toolkit DoRA magnitudes to MMGP."""
         replacements = (
             ("final_layer", "last"),
             ("img_in", "first"),
@@ -499,7 +499,15 @@ class SingleStreamDiT(nn.Module):
                 key = key.replace(source, target)
             return key
 
-        return {map_key(key): value for key, value in sd.items()}
+        mapped = {}
+        for key, value in sd.items():
+            key = map_key(key)
+            if key.endswith(".magnitude"):
+                # AI Toolkit stores output-row magnitudes as [out]; MMGP uses [out, 1].
+                key = key.removesuffix(".magnitude") + ".dora_scale"
+                value = value.reshape(-1, 1)
+            mapped[key] = value
+        return mapped
 
     def __init__(self, config: SingleMMDiTConfig):
         super().__init__()

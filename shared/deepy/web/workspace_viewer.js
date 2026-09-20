@@ -33,7 +33,7 @@
       this.dialog.querySelector('[data-protect]').onclick = () => this.protect();
       this.dialog.querySelector('[data-retention]').onclick = () => this.action('retention').catch(error => this.notice(error.message));
       this.dialog.onclose = () => {this.requestId++; this.detailRequest?.abort(); this.grid.replaceChildren(); this.preview.replaceChildren(); this.modal.close(); clearTimeout(this.refreshTimer); clearTimeout(this.pageHover); cancelAnimationFrame(this.rubberFrame);};
-      this.dialog.querySelectorAll('[data-source]').forEach(tab => tab.onclick = () => {if (this.source !== tab.dataset.source) {this.source = tab.dataset.source; this.detailKey = null; this.preview.replaceChildren(); this.info.srcdoc = WanGPMediaView.documentHtml('Select media to view its properties.'); this.load(0);}});
+      this.dialog.querySelectorAll('[data-source]').forEach(tab => tab.onclick = () => {if (this.source !== tab.dataset.source) {this.source = tab.dataset.source; this.detailKey = null; this.preview.replaceChildren(); this.info.srcdoc = WanGPMediaView.documentHtml('Select media to view its properties.'); this.load(this.pages[this.source]);}});
       this.dialog.querySelector('[data-import]').onclick = () => this.dialog.querySelector('[data-files]').click();
       this.dialog.querySelector('[data-files]').onchange = event => this.importFiles([...event.target.files]);
       this.dialog.querySelector('[data-refresh]').onclick = () => this.load(this.state?.page || 0);
@@ -91,6 +91,7 @@
     resetWorkspace() {
       clearTimeout(this.refreshTimer); this.modal.close();
       this.workspace = this.picker.state.selected; this.selections = {video: new Set(), audio: new Set()}; this.state = null; this.detailKey = null;
+      this.pages = {video: 0, audio: 0};
       this.grid.replaceChildren(); this.selectionChanged();
       this.renderWorkspaces(); this.dialog.querySelector('[data-activity]').textContent = '';
       this.dialog.querySelector('[data-summary]').textContent = '';
@@ -117,20 +118,23 @@
       clearTimeout(this.refreshTimer); this.refreshTimer = setTimeout(() => this.load(this.page || 0, true), 150);
     }
     async load(page, keepScroll = false, initial = false) {
+      clearTimeout(this.refreshTimer);
       const request = ++this.requestId;
-      this.page = page; this.loading = true; this.navigation();
+      this.page = this.pages[this.source] = page; this.loading = true; this.navigation();
       const requestedSelection = new Set(this.selected);
       try {
         const state = await this.transport.request('workspace_viewer', {workspace: this.workspace, source: this.source, page: Math.max(0, page), selected: [...this.selected], initial});
         if (request !== this.requestId || !this.dialog.open) return;
         state.items.forEach(item => {if (item.thumbnail) item.thumbnail = new URL(item.thumbnail, this.transport.base).href;});
+        this.pages[state.source] = state.page;
         this.renderActivity(state);
         if (keepScroll && this.state?.revision === state.revision && this.state.source === state.source && this.state.page === state.page) {this.state = state; this.selectionChanged(); return;}
         const retained = new Set(state.selected);
         if (initial) {this.source = state.source; this.selections[this.source] = retained; this.anchor = state.selected[0];}
         else requestedSelection.forEach(key => {if (!retained.has(key)) this.selected.delete(key);});
         this.state = state; this.page = state.page;
-        this.dialog.querySelector('[data-summary]').textContent = `${state.total} media · ${state.visible} visible in the main gallery`;
+        const range = state.items.length ? `${state.items[0].index + 1}–${state.items[state.items.length - 1].index + 1} of ${state.total} media` : '0 media';
+        this.dialog.querySelector('[data-summary]').textContent = `${range} · ${state.visible} visible in the main gallery`;
         this.dialog.querySelectorAll('[data-source]').forEach(tab => tab.setAttribute('aria-selected', String(tab.dataset.source === state.source)));
         this.grid.replaceChildren(...state.items.map(item => this.tile(item)));
         this.dialog.querySelector('.wv-empty').hidden = state.total > 0;

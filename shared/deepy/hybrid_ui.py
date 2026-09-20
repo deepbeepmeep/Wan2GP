@@ -31,32 +31,42 @@ def bind_gallery_sync(service, state, render_gallery, outputs, *, gallery, main)
     view = gr.Textbox(visible=False, elem_id='wangp-gallery-view')
     interaction = gr.Textbox(visible=False, elem_id='wangp-gallery-interaction')
 
-    def select(payload):
-        service.select_gallery_view(json.loads(payload))
+    def select(payload, state_value):
+        payload = json.loads(payload)
+        with service._mutation_lock:
+            if payload['sequence'] <= state_value.get('gallery_interaction_sequence', 0):
+                return
+            state_value['gallery_interaction_sequence'] = payload['sequence']
+            service.select_gallery_view(payload)
 
-    interaction.input(select, inputs=[interaction], outputs=None, queue=False, show_progress='hidden', trigger_mode='always_last')
+    interaction.input(select, inputs=[interaction, state], outputs=None, queue=False, show_progress='hidden', trigger_mode='always_last')
 
-    def refresh(state_value, seen, previous_restoration):
+    def refresh(state_value, seen, previous_restoration, previous_view):
         current = service.gallery_revision
         restoration = json.dumps(service._restoration)
         if seen == current and previous_restoration == restoration:
             return *((gr.update(),) * len(outputs)), current, restoration, gr.update()
         with service._mutation_lock:
+            updates = list(render_gallery(state_value))
             gen = state_value['gen']
             limit = service._deps.get_server_config()['clear_file_list']
             video, selected, video_offset = gallery_window(gen['file_list'], gen['selected'], limit)
             audio, _, audio_offset = gallery_window(gen['audio_file_list'], gen['audio_selected'], limit)
-            gallery_view = json.dumps({'workspace': service.workspace_id, 'video': video, 'audio': audio, 'video_offset': video_offset, 'audio_offset': audio_offset, 'selected': selected})
-            return *render_gallery(state_value), current, restoration, gallery_view
+            gallery_view = {'workspace': service.workspace_id, 'video': video, 'audio': audio, 'video_offset': video_offset, 'audio_offset': audio_offset, 'selected': selected, 'audio_selected': gen['audio_selected']}
+            gallery_view['gallery_sequence'] = state_value.get('gallery_interaction_sequence', 0)
+            previous = json.loads(previous_view) if previous_view else {}
+            if previous.get('workspace') == gallery_view['workspace']:
+                # Selection does not change the files. Avoid Gallery.postprocess
+                # and an audio render on every visual thumbnail click.
+                if previous.get('video') == video:
+                    updates[outputs.index(gallery)] = gr.update(selected_index=selected)
+                if all(previous.get(key) == gallery_view[key] for key in ('audio', 'audio_offset', 'audio_selected')):
+                    updates[4:7] = [gr.skip()] * 3
+            return *updates, current, restoration, json.dumps(gallery_view)
 
-    def restore_selection(state_value):
-        # Gradio resets selection to zero when an empty gallery first receives files.
-        # Apply the canonical selection after that value update has been rendered.
-        gen = state_value['gen']
-        _, selected, _ = gallery_window(gen['file_list'], gen['selected'], service._deps.get_server_config()['clear_file_list'])
-        return gr.update(selected_index=selected)
-
-    gr.on([main.load, trigger.click], refresh, inputs=[state, revision, restored], outputs=[*outputs, revision, restored, view], queue=False, show_progress='hidden', trigger_mode='always_last').then(restore_selection, inputs=[state], outputs=[gallery], queue=False, show_progress='hidden').then(fn=None, inputs=[restored], outputs=None, js='payload => window.__wangpAssistantChatNS.galleryRestored?.(JSON.parse(payload))')
+    # The patched Gallery applies explicit indices with the value, including its
+    # first population. A second response can restore an already obsolete index.
+    gr.on([main.load, trigger.click], refresh, inputs=[state, revision, restored, view], outputs=[*outputs, revision, restored, view], queue=False, show_progress='hidden', trigger_mode='always_last').then(fn=None, inputs=[restored], outputs=None, js='payload => window.__wangpAssistantChatNS.galleryRestored?.(JSON.parse(payload))')
 
     # Reuse the existing preview renderer without requiring a generation request
     # in this page. New/reconnected pages also read the current shared preview.

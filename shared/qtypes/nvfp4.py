@@ -81,7 +81,6 @@ _NVFP4_SPLIT_FIELDS = {
 }
 
 _NVFP4_BACKEND = os.environ.get("WGP_NVFP4_BACKEND", _NVFP4_BACKEND_AUTO).strip().lower()
-_NVFP4_BACKEND = _NVFP4_BACKEND_LIGHTX2V
 
 def _normalize_nvfp4_backend(name):
     if name is None:
@@ -215,8 +214,7 @@ def _nvfp4_note_load_backend():
 
 
 def _check_nvfp4_kernel_support(device, backend):
-    # return False
-    if device.type != "cuda":
+    if device.type != "cuda" or torch.version.hip is not None:
         return False
     if backend == _NVFP4_BACKEND_COMFY:
         if not _ck_cuda_available:
@@ -225,10 +223,20 @@ def _check_nvfp4_kernel_support(device, backend):
             return False
         if not hasattr(_ck_cuda, "quantize_nvfp4"):
             return False
-        if not (hasattr(torch.ops, "comfy_kitchen") and hasattr(torch.ops.comfy_kitchen, "scaled_mm_nvfp4")):
-            return False
         major, minor = torch.cuda.get_device_capability(device)
-        return (major, minor) >= (10, 0)
+        if (major, minor) < (10, 0):
+            return False
+        # Exercise the installed binary and cuBLAS, not just its Python exports.
+        with torch.inference_mode():
+            scale = torch.ones((), device=device, dtype=torch.float32)
+            for dtype in (torch.float16, torch.bfloat16):
+                x = torch.full((16, 128), 6.0, device=device, dtype=dtype)
+                packed, blocks = _ck_cuda.quantize_nvfp4(x, scale)
+                out = _ck_cuda.scaled_mm_nvfp4(
+                    packed, packed, scale, scale, blocks, blocks, out_dtype=dtype)
+                if out.shape != (16, 16) or out.dtype != dtype or not (out == 4608).all().item():
+                    return False
+        return True
     if backend == _NVFP4_BACKEND_LIGHTX2V:
         if not _lx_gemm_available:
             return False
@@ -246,6 +254,10 @@ def _check_nvfp4_kernel_support(device, backend):
 def _init_nvfp4_kernel_support():
     global _NVFP4_KERNEL_AVAILABLE, _NVFP4_KERNEL_CHECKED, _NVFP4_KERNEL_BACKEND
     if _NVFP4_KERNEL_CHECKED:
+        return
+    if torch.compiler.is_compiling():
+        return
+    if torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
         return
     _NVFP4_KERNEL_CHECKED = True
     _NVFP4_KERNEL_AVAILABLE = False
@@ -303,7 +315,7 @@ def _nvfp4_can_use_kernel(input, weight):
             if input.shape[-1] % 64 != 0:
                 return False
         else:
-            if input.shape[-1] % 16 != 0:
+            if input.shape[-1] % 32 != 0:
                 return False
         if weight.size(0) % 8 != 0:
             return False

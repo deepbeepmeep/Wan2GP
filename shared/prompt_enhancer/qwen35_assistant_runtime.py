@@ -1324,6 +1324,7 @@ class Qwen35AssistantRuntime:
         logits_processor._requires_input_ids = False
         logits_processor._supports_partial_vocab = lambda: thinking_state is None or not thinking_state.in_thinking or thinking_state.generated_thinking_tokens < thinking_state.max_thinking_tokens
         if logits_processor_without_penalty is not None:
+            logits_processor_without_penalty._is_token_mask = True
             logits_processor_without_penalty._requires_input_ids = False
             logits_processor_without_penalty._supports_partial_vocab = logits_processor._supports_partial_vocab
 

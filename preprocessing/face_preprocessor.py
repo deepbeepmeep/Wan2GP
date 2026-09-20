@@ -54,6 +54,10 @@ def _pad_to_square(img: np.ndarray, pad_color: int = 255) -> np.ndarray:
 
 class FaceProcessor:
     def __init__(self):
+        from models.hyvideo.data_kits.assets import query_download_def
+        from shared.utils.download import process_files_def_if_needed
+
+        process_files_def_if_needed(query_download_def())
         self.align_instance = AlignImage("cuda", det_path= fl.locate_file("det_align/detface.pt"))
         self.align_instance.facedet.model.to("cpu")
 

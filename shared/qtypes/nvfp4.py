@@ -64,6 +64,8 @@ _NVFP4_LOAD_LOGGED = False
 _NVFP4_KERNEL_AVAILABLE = False
 _NVFP4_KERNEL_CHECKED = False
 _NVFP4_KERNEL_BACKEND = None
+_NVFP4_AVAILABLE_BACKENDS = ()
+_NVFP4_LOGGED_BACKENDS = set()
 _NVFP4_ACT_SCALE_CACHE = {}
 
 _NVFP4_SPLIT_FIELDS = {
@@ -166,20 +168,24 @@ def _nvfp4_lightx2v_device_ok(device):
 def set_nvfp4_backend(name):
     global _NVFP4_BACKEND, _NVFP4_KERNEL_CHECKED, _NVFP4_KERNEL_AVAILABLE, _NVFP4_KERNEL_BACKEND
     global _NVFP4_KERNEL_LOGGED, _NVFP4_LOAD_LOGGED
+    global _NVFP4_AVAILABLE_BACKENDS
     _NVFP4_BACKEND = _normalize_nvfp4_backend(name)
     _NVFP4_KERNEL_CHECKED = False
     _NVFP4_KERNEL_AVAILABLE = False
     _NVFP4_KERNEL_BACKEND = None
+    _NVFP4_AVAILABLE_BACKENDS = ()
+    _NVFP4_LOGGED_BACKENDS.clear()
     _NVFP4_KERNEL_LOGGED = False
     _NVFP4_LOAD_LOGGED = False
     _init_nvfp4_kernel_support()
 
 
-def _nvfp4_note_kernel():
+def _nvfp4_note_kernel(backend):
     global _NVFP4_KERNEL_LOGGED
-    if not _NVFP4_KERNEL_LOGGED:
-        label = _nvfp4_backend_label(_NVFP4_KERNEL_BACKEND) if _NVFP4_KERNEL_BACKEND else "CUDA"
+    if backend not in _NVFP4_LOGGED_BACKENDS:
+        label = _nvfp4_backend_label(backend)
         print(f"NVFP4: using {label} kernel")
+        _NVFP4_LOGGED_BACKENDS.add(backend)
         _NVFP4_KERNEL_LOGGED = True
 
 
@@ -200,6 +206,7 @@ def _nvfp4_note_reset():
     _NVFP4_KERNEL_LOGGED = False
     _NVFP4_FALLBACK_LOGGED = False
     _NVFP4_LOAD_LOGGED = False
+    _NVFP4_LOGGED_BACKENDS.clear()
 
 def _nvfp4_note_load_backend():
     global _NVFP4_LOAD_LOGGED
@@ -207,8 +214,8 @@ def _nvfp4_note_load_backend():
         return
     _NVFP4_LOAD_LOGGED = True
     if _NVFP4_KERNEL_AVAILABLE:
-        label = _nvfp4_backend_label(_NVFP4_KERNEL_BACKEND) if _NVFP4_KERNEL_BACKEND else "unknown"
-        print(f"NVFP4: kernels available ({label}); optimized path will be used when compatible.")
+        label = ", ".join(_nvfp4_backend_label(b) for b in _NVFP4_AVAILABLE_BACKENDS)
+        print(f"NVFP4: kernels available ({label}); selection follows weight packing and compatibility.")
     else:
         print("NVFP4: kernels unavailable; using fallback.")
 
@@ -253,6 +260,7 @@ def _check_nvfp4_kernel_support(device, backend):
 
 def _init_nvfp4_kernel_support():
     global _NVFP4_KERNEL_AVAILABLE, _NVFP4_KERNEL_CHECKED, _NVFP4_KERNEL_BACKEND
+    global _NVFP4_AVAILABLE_BACKENDS
     if _NVFP4_KERNEL_CHECKED:
         return
     if torch.compiler.is_compiling():
@@ -262,17 +270,20 @@ def _init_nvfp4_kernel_support():
     _NVFP4_KERNEL_CHECKED = True
     _NVFP4_KERNEL_AVAILABLE = False
     _NVFP4_KERNEL_BACKEND = None
+    available = []
+    _NVFP4_AVAILABLE_BACKENDS = ()
     if not torch.cuda.is_available():
         return
     device = torch.device("cuda")
     for backend in _nvfp4_backend_candidates():
         try:
             if _check_nvfp4_kernel_support(device, backend):
-                _NVFP4_KERNEL_AVAILABLE = True
-                _NVFP4_KERNEL_BACKEND = backend
-                break
+                available.append(backend)
         except Exception:
             continue
+    _NVFP4_AVAILABLE_BACKENDS = tuple(available)
+    _NVFP4_KERNEL_AVAILABLE = bool(available)
+    _NVFP4_KERNEL_BACKEND = available[0] if available else None
 
 
 def _supports_nvfp4_kernel(device):
@@ -294,6 +305,22 @@ def _nvfp4_layout(weight):
     return getattr(weight, "_layout", _NVFP4_LAYOUT_LEGACY)
 
 
+def _nvfp4_select_backend(input, weight):
+    layout = _nvfp4_layout(weight)
+    order = ((_NVFP4_BACKEND_LIGHTX2V, _NVFP4_BACKEND_COMFY) if layout == _NVFP4_LAYOUT_LEGACY
+             else (_NVFP4_BACKEND_COMFY, _NVFP4_BACKEND_LIGHTX2V))
+    k, n = input.shape[-1], weight.size(0)
+    for backend in order:
+        if backend not in _NVFP4_AVAILABLE_BACKENDS:
+            continue
+        if backend == _NVFP4_BACKEND_LIGHTX2V:
+            if k % 32 == 0 and n % 32 == 0:
+                return backend
+        elif k % (64 if layout == _NVFP4_LAYOUT_LEGACY else 32) == 0 and n % 8 == 0:
+            return backend
+    return None
+
+
 def _nvfp4_can_use_kernel(input, weight):
     if not torch.is_tensor(input):
         return False
@@ -301,24 +328,9 @@ def _nvfp4_can_use_kernel(input, weight):
         return False
     if not _supports_nvfp4_kernel(input.device):
         return False
-    backend = _NVFP4_KERNEL_BACKEND
+    backend = _nvfp4_select_backend(input, weight)
     if backend is None:
         return False
-    layout = _nvfp4_layout(weight)
-    if backend == _NVFP4_BACKEND_LIGHTX2V:
-        if input.shape[-1] % 32 != 0:
-            return False
-        if weight.size(0) % 32 != 0:
-            return False
-    else:
-        if layout == _NVFP4_LAYOUT_LEGACY:
-            if input.shape[-1] % 64 != 0:
-                return False
-        else:
-            if input.shape[-1] % 32 != 0:
-                return False
-        if weight.size(0) % 8 != 0:
-            return False
     if weight._data.shape[1] * 2 != input.shape[-1]:
         return False
     if weight._block_size != 16:
@@ -350,7 +362,7 @@ def _nvfp4_swap_nibbles(tensor):
 
 
 def _nvfp4_linear_cuda_comfy(input, weight, bias=None):
-    _nvfp4_note_kernel()
+    _nvfp4_note_kernel(_NVFP4_BACKEND_COMFY)
     x2d = input.reshape(-1, input.shape[-1])
     if not x2d.is_floating_point():
         x2d = x2d.to(torch.float16)
@@ -420,7 +432,7 @@ def _nvfp4_linear_cuda_comfy(input, weight, bias=None):
 
 
 def _nvfp4_linear_cuda_lightx2v(input, weight, bias=None):
-    _nvfp4_note_kernel()
+    _nvfp4_note_kernel(_NVFP4_BACKEND_LIGHTX2V)
     x2d = input.reshape(-1, input.shape[-1])
     if not x2d.is_floating_point():
         x2d = x2d.to(torch.float16)
@@ -485,7 +497,7 @@ def _nvfp4_linear_cuda_lightx2v(input, weight, bias=None):
 
 
 def _nvfp4_linear_cuda(input, weight, bias=None):
-    if _NVFP4_KERNEL_BACKEND == _NVFP4_BACKEND_LIGHTX2V:
+    if _nvfp4_select_backend(input, weight) == _NVFP4_BACKEND_LIGHTX2V:
         return _nvfp4_linear_cuda_lightx2v(input, weight, bias=bias)
     return _nvfp4_linear_cuda_comfy(input, weight, bias=bias)
 

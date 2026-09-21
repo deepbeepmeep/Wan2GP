@@ -11,6 +11,36 @@ gradio-app {
     width: 100%;
 }
 
+.gallery-container .icon-button-wrapper.wangp-video-actions {
+    position: absolute;
+    right: auto;
+    transform: translate(-50%, -50%);
+    z-index: 5;
+    flex-direction: column;
+    gap: 0;
+    font-size: 13px;
+}
+/* Gradio also sets overflow on its outer block. Keep focus on the frame
+   icons from scrolling that wrapper and clipping the fullscreen control. */
+.block:has(.wangp-video-actions) {
+    overflow: clip !important;
+}
+.wangp-video-actions button[hidden],
+.wangp-video-actions [role="status"]:empty {
+    display: none;
+}
+.wangp-video-actions [role="status"]:not(:empty) {
+    position: absolute;
+    right: 32px;
+    top: 0;
+    width: 230px;
+    padding: 8px 10px;
+    color: var(--body-text-color);
+    background: var(--background-fill-primary);
+    border: 1px solid var(--border-color-primary);
+    border-radius: 4px;
+}
+
 /* Hide the preview-close toggle; reference galleries have explicit clear controls. */
 .gallery-container > .preview button[aria-label="Close"] {
     display: none;

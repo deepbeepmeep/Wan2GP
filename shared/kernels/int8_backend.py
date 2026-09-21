@@ -19,9 +19,31 @@ _direct_cutlass = False
 _original_forward = None
 _ops_registered = False
 _fusion_logged = False
+_compile_cache_root = None
+_compile_cache_backend = None
+# Bump when changes to INT8 custom operators invalidate compiled graphs.
+_COMPILE_CACHE_VERSION = 1
 # Includes row quantization, a possible INT32 GEMM result, and a temporary output.
 # Never allocate an activation-sized quantization buffer for a whole video.
 _SCRATCH_BYTES = 16 * 1024 * 1024
+
+
+def prepare_compile_cache(enabled):
+    """Isolate compiled graphs by resolved backend; leave eager runs untouched."""
+    global _compile_cache_root, _compile_cache_backend
+    if not enabled or _compile_cache_backend == _backend:
+        return
+    from torch._inductor.runtime.runtime_utils import cache_dir
+
+    if _compile_cache_root is None:
+        _compile_cache_root = cache_dir()
+    path = os.path.join(_compile_cache_root, f"wangp_int8_v{_COMPILE_CACHE_VERSION}", _backend)
+    os.makedirs(path, exist_ok=True)
+    # Reset in-memory graphs as well when switching backends in the same process.
+    torch.compiler.reset()
+    os.environ["TORCHINDUCTOR_CACHE_DIR"] = path
+    _compile_cache_backend = _backend
+    print(f"[INT8] Compile Cache: {_backend} (v{_COMPILE_CACHE_VERSION}).")
 
 
 def _probe_kitchen():

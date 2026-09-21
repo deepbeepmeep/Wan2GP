@@ -171,7 +171,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.8.1"
-WanGP_version = "13.13"
+WanGP_version = "13.131"
 settings_version = 2.79
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -4150,9 +4150,11 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
             loras_transformer += ["transformer"]
         if "transformer2" in pipe:
             loras_transformer += ["transformer2"]
-        if len(compile) > 0 and hasattr(wan_model, "custom_compile"):
-            wan_model.custom_compile(backend= "inductor", mode ="default")
         compile_modules = model_def.get("compile", compile) if len(compile) > 0 else False
+        custom_compile = len(compile) > 0 and hasattr(wan_model, "custom_compile")
+        int8_backend.prepare_compile_cache(compile_modules or custom_compile)
+        if custom_compile:
+            wan_model.custom_compile(backend= "inductor", mode ="default")
         if compile_modules == False and len(compile):
             _load_models_info("Pytorch compilation is not supported for this Model")
         # kwargs["pinnedMemory"] = "text_encoder"

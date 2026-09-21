@@ -8,11 +8,13 @@ import gradio as gr
 from shared.deepy import ui_settings
 from shared.deepy.errors import DeepyBusy
 from shared.gradio.form_sync import GradioForm
+from shared.gradio.gallery_frames import bind_gallery_frames
 from shared.utils.form_sync import Saved
-from shared.utils.gallery_view import gallery_window
+from shared.utils.gallery_view import gallery_offset, gallery_window
 
 
 def bind_gallery_sync(service, state, render_gallery, outputs, *, gallery, main):
+    bind_gallery_frames(service)
     gr.HTML('<span data-deepy-hybrid="/deepy/"></span>', visible=False)
     error = gr.Textbox(visible=False, elem_id='deepy_hybrid_error')
 
@@ -50,7 +52,9 @@ def bind_gallery_sync(service, state, render_gallery, outputs, *, gallery, main)
             updates = list(render_gallery(state_value))
             gen = state_value['gen']
             limit = service._deps.get_server_config()['clear_file_list']
-            video, selected, video_offset = gallery_window(gen['file_list'], gen['selected'], limit)
+            video, selected, video_offset = gallery_window(gen['file_list'], gen['selected'], limit, keep_selected=True)
+            if video_offset != gallery_offset(len(gen['file_list']), limit):
+                updates[outputs.index(gallery)] = gr.update(value=video, selected_index=selected)
             audio, _, audio_offset = gallery_window(gen['audio_file_list'], gen['audio_selected'], limit)
             gallery_view = {'workspace': service.workspace_id, 'video': video, 'audio': audio, 'video_offset': video_offset, 'audio_offset': audio_offset, 'selected': selected, 'audio_selected': gen['audio_selected']}
             gallery_view['gallery_sequence'] = state_value.get('gallery_interaction_sequence', 0)

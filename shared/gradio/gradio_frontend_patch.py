@@ -110,7 +110,7 @@ function Mn(S){
 # Posters are bounded to preview size and cached on thumbnail nodes (so removing
 # media also releases its cache). Never remove a paused Chrome player's poster:
 # loadeddata can precede painting and removing it can leave the player blank.
-_GALLERY_VIDEO_SOURCE = """
+_GALLERY_VIDEO_SOURCE = Path(__file__).with_name('gallery_save.js').read_text(encoding='utf-8') + """
 const wangpGalleryFrames = new WeakMap();
 const wangpGalleryPosters = new WeakMap();
 const wangpGalleryEmptyPoster = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1' height='1'/%3E";
@@ -139,6 +139,7 @@ function wangpGalleryPosterEntry(video, src) {
 }
 function wangpGalleryVideoClear(video) {
     const state = wangpGalleryFrames.get(video);
+    state?.saveCleanup();
     if (state?.request != null) video.cancelVideoFrameCallback(state.request);
     if (state?.ready) video.removeEventListener("loadeddata", state.ready);
     wangpGalleryFrames.delete(video);
@@ -168,6 +169,7 @@ function wangpGalleryVideoSource(video, src) {
     if (video.src !== requestedSrc) j(video, "src", src);
     const state = {request: null, presented: false};
     wangpGalleryFrames.set(video, state);
+    wangpGallerySave(video, state);
     video.addEventListener("error", wangpGalleryVideoError);
     function show(poster) {
         poster.then(value => {

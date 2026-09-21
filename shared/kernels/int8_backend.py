@@ -177,7 +177,9 @@ def kitchen_linear_fused(input, weight, bias, input_act, act_weight, act_eps, re
         raise ValueError("Fused INT8 output must match the output shape, dtype and device and be contiguous")
     out = input.new_empty((x.shape[0], n)) if out is None else out.reshape(-1, n)
     r = residual.reshape(-1, n) if residual is not None else None
-    rows = max(32, (_SCRATCH_BYTES // (k + 4)) // 32 * 32)
+    # The raw ConvRot quantizer requires packed rows, including fused SwiGLU input.
+    row_bytes = k + 4 + (x.shape[-1] * x.element_size() if not x.is_contiguous() else 0)
+    rows = max(32, (_SCRATCH_BYTES // row_bytes) // 32 * 32)
     wrap = _kitchen._wrap_for_dlpack
     stream = torch.cuda.current_stream(input.device).cuda_stream
     bias_arg = (_kitchen._gemm_vector_arg(bias, input.device, input.dtype) if bias is not None
@@ -187,10 +189,11 @@ def kitchen_linear_fused(input, weight, bias, input_act, act_weight, act_eps, re
                     if r is not None else None)
     for start in range(0, x.shape[0], rows):
         stop = min(start + rows, x.shape[0])
+        tile = x[start:stop].contiguous()
         q = torch.empty((stop-start, k), device=input.device, dtype=torch.int8)
         qs = torch.empty((stop-start, 1), device=input.device, dtype=torch.float32)
         _kitchen._C.quantize_int8_rowwise_convrot64(
-            wrap(x[start:stop]), wrap(q), wrap(qs), 256, False,
+            wrap(tile), wrap(q), wrap(qs), 256, False,
             _kitchen._input_act_code(input_act), 0, wrap(act_arg), float(act_eps), stream)
         if r is not None:
             used = _kitchen._C.cutlass_int8_dequant_residual(
@@ -203,7 +206,7 @@ def kitchen_linear_fused(input, weight, bias, input_act, act_weight, act_eps, re
                 wrap(out[start:stop]), _kitchen.DTYPE_TO_CODE[input.dtype], stream)
         if not used:
             raise RuntimeError("Comfy Kitchen rejected the fused SM120 INT8 output tile")
-        del q, qs
+        del q, qs, tile
     return out.reshape(*input.shape[:-1], n)
 
 

@@ -531,17 +531,19 @@ class AutoencoderKLQwenImage21(ModelMixin, ConfigMixin, AutoencoderMixin):
     @staticmethod
     def get_VAE_tile_size(vae_config, device_mem_capacity, mixed_precision):
         if vae_config == 0:
-            # Keep Auto distinguishable from an explicit Off decision. The
-            # pipeline supplies image dimensions before encoding/decoding.
-            return (None if device_mem_capacity >= 24000 else True), 256
-        return vae_config != 1, 256
+            vae_config = 1 if device_mem_capacity >= 16000 else 2 if device_mem_capacity >= 8000 else 3
+        return True, {1: 1024, 2: 512, 3: 256}[vae_config]
 
     def configure_tiling(self, tile_setting, width, height, batch_size=1, reference_pixels=0):
-        enabled, size = (None, 256) if tile_setting is None else ((tile_setting != 0, 256) if isinstance(tile_setting, int) else tile_setting)
-        if enabled is None:
-            # This VAE is native FP32, unlike v1. A 4K full decode exceeds a
-            # 32 GiB card. Keep the tested 1K untiled path; bound larger work.
-            enabled = max(width * height * batch_size, reference_pixels) > 1024 * 1024
+        if tile_setting is None or (isinstance(tile_setting, int) and not isinstance(tile_setting, bool)):
+            capacity = torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory / 1048576 if torch.cuda.is_available() else 0
+            enabled, size = self.get_VAE_tile_size(tile_setting or 0, capacity, False)
+        elif isinstance(tile_setting, bool):
+            enabled, size = tile_setting, 256
+        else:
+            enabled, size = tile_setting
+        if enabled is None:  # Older Python callers supplied the Auto sentinel.
+            enabled = True
         self.use_tiling = bool(enabled)
         if enabled:
             self.enable_tiling(tile_sample_min_height=size, tile_sample_min_width=size, tile_sample_stride_height=size * 3 // 4, tile_sample_stride_width=size * 3 // 4)
@@ -590,7 +592,7 @@ class AutoencoderKLQwenImage21(ModelMixin, ConfigMixin, AutoencoderMixin):
         self.clear_cache()
         if self.config.patch_size is not None:
             x = _patchify(x, patch_size=self.config.patch_size)
-        if self.use_tiling and (width > self.tile_sample_min_width or height > self.tile_sample_min_height):
+        if self.use_tiling and (width > min(self.tile_sample_min_width, 256) or height > min(self.tile_sample_min_height, 256)):
             return self.tiled_encode(x)
         iter_ = 1 + (num_frame - 1) // 4
         for i in range(iter_):
@@ -672,31 +674,35 @@ class AutoencoderKLQwenImage21(ModelMixin, ConfigMixin, AutoencoderMixin):
 
     def tiled_encode(self, x: torch.Tensor) -> AutoencoderKLOutput:
         _, _, num_frames, height, width = x.shape
+        # Larger presets were validated for decoding. Keep encoding at the
+        # established working size until its activation budgets are measured.
+        tile_height, tile_width = min(self.tile_sample_min_height, 256), min(self.tile_sample_min_width, 256)
+        stride_height, stride_width = min(self.tile_sample_stride_height, 192), min(self.tile_sample_stride_width, 192)
         encode_spatial_compression_ratio = self.spatial_compression_ratio
         if self.config.patch_size is not None:
             assert encode_spatial_compression_ratio % self.config.patch_size == 0
             encode_spatial_compression_ratio = self.spatial_compression_ratio // self.config.patch_size
         latent_height = height // encode_spatial_compression_ratio
         latent_width = width // encode_spatial_compression_ratio
-        tile_latent_min_height = self.tile_sample_min_height // encode_spatial_compression_ratio
-        tile_latent_min_width = self.tile_sample_min_width // encode_spatial_compression_ratio
-        tile_latent_stride_height = self.tile_sample_stride_height // encode_spatial_compression_ratio
-        tile_latent_stride_width = self.tile_sample_stride_width // encode_spatial_compression_ratio
+        tile_latent_min_height = tile_height // encode_spatial_compression_ratio
+        tile_latent_min_width = tile_width // encode_spatial_compression_ratio
+        tile_latent_stride_height = stride_height // encode_spatial_compression_ratio
+        tile_latent_stride_width = stride_width // encode_spatial_compression_ratio
         blend_height = tile_latent_min_height - tile_latent_stride_height
         blend_width = tile_latent_min_width - tile_latent_stride_width
         rows = []
-        for i in range(0, height, self.tile_sample_stride_height):
+        for i in range(0, height, stride_height):
             row = []
-            for j in range(0, width, self.tile_sample_stride_width):
+            for j in range(0, width, stride_width):
                 self.clear_cache()
                 time = []
                 frame_range = 1 + (num_frames - 1) // 4
                 for k in range(frame_range):
                     self._enc_conv_idx = [0]
                     if k == 0:
-                        tile = x[:, :, :1, i:i + self.tile_sample_min_height, j:j + self.tile_sample_min_width]
+                        tile = x[:, :, :1, i:i + tile_height, j:j + tile_width]
                     else:
-                        tile = x[:, :, 1 + 4 * (k - 1):1 + 4 * k, i:i + self.tile_sample_min_height, j:j + self.tile_sample_min_width]
+                        tile = x[:, :, 1 + 4 * (k - 1):1 + 4 * k, i:i + tile_height, j:j + tile_width]
                     tile = self.encoder(tile, feat_cache=None, feat_idx=self._enc_conv_idx)
                     tile = self.quant_conv(tile)
                     time.append(tile)

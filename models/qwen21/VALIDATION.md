@@ -170,3 +170,35 @@ The final headless regression completed all four tasks and saved six distinct im
 - NAG's disabled-cache path recomputes negative conditioning and frees each layer's temporary K/V after use, rather than accumulating a full GPU cache.
 - All 13 model tests passed, including cached/uncached joint CFG and exact NAG extraction-vs-temporary-cache equivalence. Real disabled-cache ConvRot/BF16-VAE validation passed repeated generation, retained text-cache hits, and batch-size-2 reduced-strength generation. Artifact folder: `kv_cache_disabled_validation/`.
 - Same-seed 20-step cached/uncached image comparison: mean absolute byte difference 0.9975/255, maximum 81/255; visual inspection found consistent content. Results are numerically close, not byte-identical. No fresh whole-pipeline VRAM benchmark was performed for this switch.
+
+## 4096-square VAE memory investigation (2026-09-21)
+
+- Saved application config had `vae_config: 1` (the UI's 16GB+ preset), `vae_precision: "16"`, image profile 1. The initial investigation incorrectly described this as Off: the model implementation wrongly mapped that preset to disabled tiling, bypassing the Auto area threshold. See the preset correction below. The user's config was not changed.
+- Ran real 4096x4096 text-to-image with one denoising step, CFG 4, ConvRot checkpoints, KV cache disabled, image profile 1, BF16 VAE and Auto tiling. Actual decode used 484 tiles: 16x16 latent inputs -> 256x256 output pixels, stride 192. All tile outputs were finite.
+- Denoising: 23.12s, peak allocated 10.37 GiB. At VAE entry, previous-model residency was 6.776 GiB allocated / 11.172 GiB reserved. After MMGP switched to the VAE, sampled tile-end allocations stayed at 0.644 GiB and reserved memory at 1.072 GiB through tile 450. VAE phase peak (including handoff) was 6.776 GiB; decoding completed in 16.07s. No progressive per-tile growth was observed.
+- Instrumentation: `tools/validate_qwen21_memory.py`; evidence: `D:/ml/wangp/qwen_image_21_preparation/vae_4k_one_step_audit/metrics.json` and adjacent `.log`.
+- Fixed a separate one-step scheduler issue: terminal sigma stretching divides by zero when the only input sigma is 1. One-step generation now disables terminal stretching; multi-step schedules are unchanged. The completed one-step test validates finite decode after this fix.
+
+## Correction: 16GB+ tiling preset mapping
+
+- Verified the configuration UI: 0=Auto, 1=16GB+, 2=8GB+, 3=6GB+. There is no Off choice. The previous explanation of preset 1 as Off was incorrect.
+- Fixed Qwen21's preset-1 mapping: it now retains resolution-aware selection instead of forcing `use_tiling=False`. At 4K, both Auto and preset 1 use 256px tiles / 192px stride. Presets 2 and 3 directly enable tiling. User config is unchanged.
+- All 13 model tests passed, with coverage for preset 1 at 1K and 4K and direct preset values. Repeated the actual 4096-square one-denoising-step run using image profile 1, BF16 VAE, and specifically `--vae-config 1`: 484 tiles, finite outputs, 12.38s decoding. Tile-end allocations stayed at 0.644 GiB; reserved memory 1.072 GiB. Phase peak including model handoff was 6.776 GiB. Evidence: `D:/ml/wangp/qwen_image_21_preparation/vae_4k_preset1_audit/metrics.json` and adjacent log.
+
+
+## Fully resident VAE tile budget benchmark
+
+Dummy 4096x4096 latent decoding, batch 1, RGBA CPU UINT8 output, entire real VAE resident on CUDA with no MMGP offload profile. Fresh process for each precision/tile combination. All outputs had finite decoded tiles. Total parameter residency: BF16 0.629 GiB, FP32 1.258 GiB.
+
+| Precision | Tile / stride | Peak allocated GiB | Peak reserved GiB | Seconds |
+|---|---|---:|---:|---:|
+| bf16 | 256 / 192 | 0.831 | 1.076 | 10.76 |
+| fp32 | 256 / 192 | 1.663 | 1.906 | 14.03 |
+| bf16 | 512 / 384 | 1.412 | 1.961 | 6.85 |
+| fp32 | 512 / 384 | 2.826 | 3.729 | 11.26 |
+| bf16 | 1024 / 768 | 3.735 | 5.609 | 7.26 |
+| fp32 | 1024 / 768 | 7.472 | 12.027 | 11.27 |
+
+All allocated peaks fit the proposed 4/6/12 GiB VAE working budgets for 256/512/1024 tiles. FP32 at 1024 reserves 12.027 GiB, just above the provisional 12 GiB target, while live allocation peaks at 7.472 GiB. These figures exclude other models, desktop applications and non-PyTorch CUDA allocations; they are decoder memory tests, not image-quality or encoder benchmarks. No preset-size mapping was changed by this benchmark.
+
+Reproduce using `tools/benchmark_qwen21_vae_tiles.py`; results: `D:/ml/wangp/qwen_image_21_preparation/resident_vae_tile_benchmark/summary.json`.

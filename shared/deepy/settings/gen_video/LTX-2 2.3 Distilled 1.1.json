@@ -8,5 +8,6 @@
     "input_video_strength": 1.0,
     "guidance_phases": 2,
     "settings_version": 2.73,
-    "model_type": "ltx2_22B_distilled_1_1"
+    "model_type": "ltx2_22B_distilled_1_1",
+    "prompt_enhancer": "T"
 }

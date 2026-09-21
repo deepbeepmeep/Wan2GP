@@ -63,5 +63,6 @@
     "settings_version": 2.55,
     "base_model_type": "i2v_2_2",
     "model_filename": "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan22EnhancedLightning_v2I2VFP8HIGH.safetensors",
-    "model_type": "i2v_2_2_Enhanced_Lightning_v2"
+    "model_type": "i2v_2_2_Enhanced_Lightning_v2",
+    "prompt_enhancer": "T"
 }

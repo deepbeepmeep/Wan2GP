@@ -12,6 +12,7 @@
     "type": "MiniMax H3 FL2VA Pruned PDD 8 Steps With Sound",
     "settings_version": 2.73,
     "model_type": "minimax_h3_fl2va_pruned_pdd",
+    "prompt_enhancer": "T",
     "sample_solver": "euler",
     "guidance_phases": 1
 }

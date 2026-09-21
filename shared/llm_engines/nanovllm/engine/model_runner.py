@@ -1912,6 +1912,8 @@ class ModelRunner:
             self.graph_bs = [max_bs]
         self.graphs = {}
         self.graph_pool = self._graph_pool_seed
+        # Kitchen's CUTLASS workspace is per stream and must exist before capture.
+        capture_stream = torch.cuda.Stream(device=model_device)
 
         try:
             import llamacpp_gguf_cuda
@@ -1924,8 +1926,10 @@ class ModelRunner:
         for bs in reversed(self.graph_bs):
             graph = torch.cuda.CUDAGraph()
             set_context(False, slot_mapping=slot_mapping[:bs], context_lens=context_lens[:bs], block_tables=block_tables[:bs])
-            outputs[:bs] = self.model(input_ids[:bs], positions[:bs])    # warmup
-            with torch.cuda.graph(graph, self.graph_pool):
+            capture_stream.wait_stream(torch.cuda.current_stream(model_device))
+            with torch.cuda.stream(capture_stream):
+                outputs[:bs] = self.model(input_ids[:bs], positions[:bs])    # warmup
+            with torch.cuda.graph(graph, self.graph_pool, stream=capture_stream):
                 outputs[:bs] = self.model(input_ids[:bs], positions[:bs])    # capture
             if self.graph_pool is None:
                 self.graph_pool = graph.pool()
@@ -1962,8 +1966,10 @@ class ModelRunner:
                 speculative_outputs = torch.zeros(1, verify_length, hf_config.hidden_size, device=model_device, dtype=self.dtype)
                 graph = torch.cuda.CUDAGraph()
                 set_context(True, speculative_cu_seqlens_q, speculative_cu_seqlens_k, verify_length, config.max_model_len, speculative_slot_mapping, None, speculative_block_tables, has_previous_state=True, speculative_verify=True)
-                speculative_outputs[:] = self.model(speculative_input_ids, speculative_positions)
-                with torch.cuda.graph(graph, self.graph_pool):
+                capture_stream.wait_stream(torch.cuda.current_stream(model_device))
+                with torch.cuda.stream(capture_stream):
+                    speculative_outputs[:] = self.model(speculative_input_ids, speculative_positions)
+                with torch.cuda.graph(graph, self.graph_pool, stream=capture_stream):
                     speculative_outputs[:] = self.model(speculative_input_ids, speculative_positions)
                 torch.cuda.synchronize()
                 reset_context()
@@ -1984,10 +1990,12 @@ class ModelRunner:
                 mtp_positions = torch.zeros(1, dtype=torch.int64, device=model_device)
                 mtp_hidden_states = torch.zeros((1, 1, hf_config.hidden_size), dtype=self.dtype, device=model_device)
                 self.model.mtp._cache.cache_seqlens.zero_()
-                mtp_outputs, mtp_logits = self.model.mtp(mtp_input_ids, mtp_positions, mtp_hidden_states, last_logits_only=True, cache_prepared=True)
-                mtp_next_token = torch.argmax(mtp_logits[0, -1]).reshape(1)
+                capture_stream.wait_stream(torch.cuda.current_stream(model_device))
+                with torch.cuda.stream(capture_stream):
+                    mtp_outputs, mtp_logits = self.model.mtp(mtp_input_ids, mtp_positions, mtp_hidden_states, last_logits_only=True, cache_prepared=True)
+                    mtp_next_token = torch.argmax(mtp_logits[0, -1]).reshape(1)
                 mtp_graph = torch.cuda.CUDAGraph()
-                with torch.cuda.graph(mtp_graph):
+                with torch.cuda.graph(mtp_graph, stream=capture_stream):
                     mtp_outputs, mtp_logits = self.model.mtp(mtp_input_ids, mtp_positions, mtp_hidden_states, last_logits_only=True, cache_prepared=True)
                     mtp_next_token = torch.argmax(mtp_logits[0, -1]).reshape(1)
                 torch.cuda.synchronize()
@@ -2006,9 +2014,11 @@ class ModelRunner:
                     refresh_positions = torch.arange(count, dtype=torch.int64, device=model_device)
                     refresh_hidden = torch.zeros((1, count, hf_config.hidden_size), dtype=self.dtype, device=model_device)
                     self.model.mtp._cache.cache_seqlens.zero_()
-                    self.model.mtp(refresh_ids, refresh_positions, refresh_hidden, last_logits_only=True, cache_prepared=True)
+                    capture_stream.wait_stream(torch.cuda.current_stream(model_device))
+                    with torch.cuda.stream(capture_stream):
+                        self.model.mtp(refresh_ids, refresh_positions, refresh_hidden, last_logits_only=True, cache_prepared=True)
                     refresh_graph = torch.cuda.CUDAGraph()
-                    with torch.cuda.graph(refresh_graph, self.mtp_graph_pool):
+                    with torch.cuda.graph(refresh_graph, self.mtp_graph_pool, stream=capture_stream):
                         refresh_outputs, refresh_logits = self.model.mtp(refresh_ids, refresh_positions, refresh_hidden, last_logits_only=True, cache_prepared=True)
                         refresh_next_token = refresh_logits[0, -1].argmax().reshape(1)
                     self.mtp_refresh_graphs[count] = {

@@ -2450,10 +2450,14 @@ WAC.installObserver = function () {
   if (WAC.observer) return;
   const target = document.querySelector('gradio-app') || document.body;
   if (!target) return;
+  const scope = '[id^="assistant_chat_"], #deepy_type_value, #deepy_type_choice';
+  const containsChat = node => node.nodeType === 1 && (node.matches(scope) || node.querySelector(scope));
+  // Retain Gradio mount/replacement detection, but do not refresh Deepy for
+  // unrelated galleries, playback clocks, progress bars, or form fields.
   WAC.observer = new MutationObserver((mutations) => {
-      const input = WAC.requestInput();
-      // Gradio measures the textarea on every key; its input handler already owns composer layout.
-      if (mutations.every((mutation) => mutation.type === 'attributes' && mutation.attributeName === 'style' && mutation.target === input)) return;
+      if (!mutations.some(mutation => mutation.target.closest?.(scope) ||
+          Array.from(mutation.addedNodes).some(containsChat) ||
+          Array.from(mutation.removedNodes).some(containsChat))) return;
       if (WAC.observerScheduled) return;
       WAC.observerScheduled = true;
       window.requestAnimationFrame(() => {
@@ -2466,9 +2470,28 @@ WAC.installObserver = function () {
         WAC.setQueuedEditButtonLabels(!!WAC.queuedEditMessageId);
         WAC.handleEventNodeMutation();
         WAC.readEventSource();
+        WAC.observeDockEnvironment();
       });
   });
-  WAC.observer.observe(target, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'data-theme', 'theme', 'style'] });
+  WAC.observer.observe(target, { childList: true, subtree: true });
+  // Geometry and theme have explicit, narrow sources instead of observing
+  // every class/style mutation on the page (including our own layout writes).
+  WAC.dockResizeObserver = new ResizeObserver(() => WAC.syncDockLayout());
+  WAC.themeObserver = new MutationObserver(() => WAC.syncThemeState());
+  WAC.observeDockEnvironment = function () {
+    const dock = WAC.dock();
+    const parent = dock?.parentElement;
+    if (WAC.observedDockParent !== parent) {
+      WAC.dockResizeObserver.disconnect();
+      WAC.observedDockParent = parent;
+      const candidates = [parent, parent?.closest('.column'), parent?.parentElement?.closest('.column')];
+      new Set(candidates.filter(Boolean)).forEach(node => WAC.dockResizeObserver.observe(node));
+    }
+    WAC.themeObserver.disconnect();
+    [document.documentElement, document.body, document.querySelector('gradio-app'), document.querySelector('.gradio-container')]
+      .filter(Boolean).forEach(node => WAC.themeObserver.observe(node, {attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'theme']}));
+  };
+  WAC.observeDockEnvironment();
 };
 
 

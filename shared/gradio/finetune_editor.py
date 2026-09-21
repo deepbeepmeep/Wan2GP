@@ -2036,11 +2036,14 @@ def get_javascript() -> str:
             const app = document.querySelector("gradio-app");
             return app ? (app.shadowRoot || app) : document;
         }
-        function installEnhancerDefaultTooltips() {
+        function installEnhancerDefaultTooltips(scope = root()) {
             const text = "Copy the system prompt defined by the source model into this field.";
-            root().querySelectorAll(".wangp-finetune-editor-enhancer-default-btn, .wangp-finetune-editor-enhancer-default-btn button").forEach((button) => {
+            const selector = ".wangp-finetune-editor-enhancer-default-btn, .wangp-finetune-editor-enhancer-default-btn button";
+            const buttons = [...scope.querySelectorAll(selector)];
+            if (scope.matches?.(selector)) buttons.push(scope);
+            buttons.forEach((button) => {
                 button.removeAttribute("title");
-                button.setAttribute("aria-label", text);
+                if (button.getAttribute("aria-label") !== text) button.setAttribute("aria-label", text);
             });
         }
         function markdownSnippet(action) {
@@ -2083,6 +2086,10 @@ def get_javascript() -> str:
             insertMarkdown(button.closest(".wangp-markdown-editor-toolbar"), button.getAttribute("data-wangp-md-action") || "");
         });
         installEnhancerDefaultTooltips();
-        new MutationObserver(installEnhancerDefaultTooltips).observe(root(), { childList: true, subtree: true });
+        new MutationObserver(mutations => {
+            for (const mutation of mutations) for (const node of mutation.addedNodes) {
+                if (node.nodeType === 1) installEnhancerDefaultTooltips(node);
+            }
+        }).observe(root(), { childList: true, subtree: true });
     })();
     """

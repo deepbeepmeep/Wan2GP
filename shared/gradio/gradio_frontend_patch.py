@@ -202,6 +202,13 @@ function wangpGalleryVideoSource(video, src) {
 """
 
 _PATCHES = {
+    'AudioPlayer-DG1QBBp6.js': [
+        # Svelte invalidates timeRef after this DOM write, re-running the
+        # reactive waveform.on() statement and leaking a listener each tick.
+        # Update the DOM without invalidating the ref; avoid same-time writes.
+        ('y&&t(12,y.textContent=ze(m),y)', 'y&&y.textContent!==ze(m)&&(y.textContent=ze(m))'),
+        ('b&&t(13,b.textContent=ze(m),b)', 'b&&b.textContent!==ze(m)&&(b.textContent=ze(m))'),
+    ],
     'Video-C-llMUaJ.js': [
         ('function ki(t){', _GALLERY_VIDEO_SOURCE + 'function ki(t){'),
         ('t[25](e),s=!0', 't[25](e),wangpGalleryVideoMount(e),s=!0'),

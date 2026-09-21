@@ -206,7 +206,13 @@
     const config = await response.json(); mode = config.mode; mount(); return config;
   };
   WAC.setVoiceMode = value => { mode = value; if (mode === 'disabled' && active) cancel(active); mount(); };
-  new MutationObserver(() => { if (!mountPending) { mountPending = true; requestAnimationFrame(mount); } }).observe(document.body, {childList: true, subtree: true});
+  const mountSelector = '.wangp-voice-prompt, #assistant_chat_ask_button';
+  new MutationObserver(mutations => {
+    if (mountPending || !mutations.some(mutation => mutation.target.closest?.(mountSelector) ||
+        Array.from(mutation.addedNodes).some(node => node.nodeType === 1 && (node.matches(mountSelector) || node.querySelector(mountSelector))))) return;
+    mountPending = true;
+    requestAnimationFrame(mount);
+  }).observe(document.body, {childList: true, subtree: true});
   window.addEventListener('focus', () => WAC.refreshVoiceConfig().catch(() => {}));
   window.addEventListener('pagehide', () => { if (active) cancel(active); });
   WAC.refreshVoiceConfig().catch(() => {});

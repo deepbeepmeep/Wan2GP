@@ -82,7 +82,7 @@ def render_marker(elem_id, help_id, *, title=None, markdown=None, helper_popup_i
         popup_key = re.sub(r"[^A-Za-z0-9_-]", "-", f"{elem_id}-{help_id}").strip("-").lower()
         popup_id = f"wangp-field-help-{popup_key}"
         popup_html = model_infos.render_info_popup(popup_id, title, markdown, lazy=True)
-    info_button = _tool_button("info", popup_id, title, "&#9432;")
+    info_button = _tool_button("info", popup_id, title, "i")
     helper_button = _tool_button("helper", helper_popup_id if has_helper else "", helper_title or "Prompt Helper", "&#129668;")
     return (
         f"<span class='wangp-field-help-inline' data-wangp-field-help-for='{html.escape(elem_id, quote=True)}'>"
@@ -116,7 +116,7 @@ def render_model_prompt_tools(label, elem_id, model_type, model_def, prompt_id, 
         popup_key = re.sub(r"[^A-Za-z0-9_-]", "-", f"{elem_id}-prompt-{model_type or 'model'}-{prompt_id or 'prompt'}").strip("-").lower()
         popup_id = f"wangp-field-help-{popup_key}"
         popup_html = model_infos.render_info_popup(popup_id, title, markdown, lazy=True)
-    info_button = _tool_button("info", popup_id, title, "&#9432;")
+    info_button = _tool_button("info", popup_id, title, "i")
     helper_button = _tool_button("helper", helper_popup_id, helper_title or "Prompt Helper", "&#129668;")
     row_class = "wangp-prompt-tools-row" if popup_id or str(helper_popup_id or "").strip() else "wangp-prompt-tools-row wangp-prompt-tools-empty"
     return (
@@ -166,7 +166,8 @@ def get_css():
     vertical-align: middle;
     line-height: 0 !important;
 }
-.wangp-prompt-tools-empty {
+/* Voice controls are mounted in this row even when the model has no help. */
+.wangp-prompt-tools-empty:not(:has(.wangp-prompt-microphone:not([hidden]))) {
     display: none !important;
     margin: 0 !important;
 }
@@ -224,6 +225,35 @@ def get_css():
 }
 .wangp-context-tool:not([data-wangp-model-info-open]) {
     display: none !important;
+}
+.wangp-context-tool-info {
+    width: 13px !important;
+    height: 13px !important;
+    min-width: 13px !important;
+    min-height: 13px !important;
+    border: 1px solid currentColor !important;
+    background: transparent !important;
+    color: #175a79 !important;
+    font-family: Arial, sans-serif !important;
+    font-size: 10px !important;
+    font-weight: 500 !important;
+    font-style: normal !important;
+}
+.postprocess .wangp-context-tool-info {
+    width: 10px !important;
+    height: 10px !important;
+    min-width: 10px !important;
+    min-height: 10px !important;
+    font-size: 8px !important;
+}
+.postprocess .wangp-field-help-inline,
+.postprocess .wangp-context-tools {
+    margin-block: 0 !important;
+    padding-block: 2px !important;
+    padding-inline-end: 2px !important;
+}
+.postprocess .wangp-prompt-tools-row {
+    margin-block: 0 !important;
 }
 .wangp-context-tool-helper {
     border: 1px solid var(--button-secondary-border-color, rgba(118, 74, 17, 0.26)) !important;

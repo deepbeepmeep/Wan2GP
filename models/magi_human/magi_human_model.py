@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import text_encoding_progress, generation_progress, set_phase_status
 import math
 import os
 import sys
@@ -156,7 +157,8 @@ class MagiHumanTextEncoder:
         if isinstance(prompts, str):
             prompts = [prompts]
         inputs = self.tokenizer(prompts, return_tensors="pt", padding=True).to(self.device)
-        outputs = self.model(**inputs)
+        with text_encoding_progress(self.model.encoder.layers, prompt_count=len(prompts)):
+            outputs = self.model(**inputs)
         return outputs.last_hidden_state.to(self.dtype)
 
 
@@ -465,6 +467,7 @@ class MagiHumanModel:
             return decoded[0].float().clamp(-1, 1).clone()
 
     def _decode_audio(self, latent_audio: torch.Tensor):
+        set_phase_status("Audio VAE Decoding")
         audio_dtype = next(self.audio_vae.vae_model.parameters()).dtype
         audio_output = self.audio_vae.decode(latent_audio.squeeze(0).T.to(audio_dtype))
         audio_output = audio_output.float().squeeze(0).T.detach().cpu().numpy()
@@ -584,6 +587,7 @@ class MagiHumanModel:
         return latent_video, latent_audio
 
     @torch.inference_mode()
+    @generation_progress
     def generate(
         self,
         seed=None,
@@ -631,6 +635,7 @@ class MagiHumanModel:
         offloadobj=None,
         set_header_text=None,
         loras_slists=None,
+        set_progress_status=None,
         **kwargs,
     ):
         self._interrupt = False

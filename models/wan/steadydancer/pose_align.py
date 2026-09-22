@@ -319,6 +319,10 @@ class PoseDetection:
 
 class PoseAligner:
     def __init__(self, detect_resolution: int = 1024, device: str = None, detection_workers: int = 2) -> None:
+        from preprocessing.dwpose.assets import query_download_def
+        from shared.utils.download import process_files_def_if_needed
+
+        process_files_def_if_needed(query_download_def())
         det_model = fl.locate_file("pose/yolox_l.onnx")
         pose_model = fl.locate_file("pose/dw-ll_ucoco_384.onnx")
         resolved_device = device or ("cuda:0" if torch.cuda.is_available() else "cpu")

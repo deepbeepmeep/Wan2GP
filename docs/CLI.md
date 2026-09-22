@@ -1,6 +1,6 @@
 # Command Line Reference
 
-This document covers all available command line options for WanGP.
+This document covers current command line options for WanGP. Deprecated Wan model-selection shortcuts remain accepted for existing launch scripts, but are omitted from command help.
 
 ## Basic Usage
 
@@ -9,6 +9,52 @@ This document covers all available command line options for WanGP.
 python wgp.py
 
 ```
+
+## Deepy: Gradio, CLI or Web
+
+Choose one access mode per launch, using your saved Deepy configuration:
+
+```bash
+# Gradio at / and the synchronized mobile Web app at /deepy/
+python wgp.py --listen
+
+# Interactive terminal chat, without Gradio
+python wgp.py --ask-deepy
+
+# Standalone browser app, accessible on the local network
+python wgp.py --deepy-server --listen --server-port 7860
+```
+
+Gradio includes the Web app at `http://<PC-address>:7860/deepy/`; standalone Web serves it at `http://<PC-address>:7860/`. In a Gradio launch, both interfaces share chat, galleries, selections, settings and active work. Chat and generations continue with every browser closed. Authentication is disabled by default; `--auth` enables a shared password login for Gradio and Deepy. On smartphones the app uses native keyboard dictation. Separate launches do not attach to another process; use saved sessions when moving between processes.
+
+Common Deepy launch options:
+
+| Option | Purpose |
+|---|---|
+| `--config FOLDER` | Configuration folder containing `wgp_config.json` |
+| `--deepy-sessions-dir FOLDER` | Persistent-session location; see [session storage](#deepy-session-location) |
+| `--output-dir FOLDER` | Override image, video and audio output folders in CLI or Web mode |
+| `--deepy-voice-language CODE` | Overrides the configured microphone transcription language in Gradio or Web; `fr`, `en`, etc., or `auto` for detection |
+| `--debug-deepy FOLDER` | Deepy debug logs |
+| `--llm-io FOLDER` | LLM input/output transcripts; see [LLM I/O Transcript](#llm-io-transcript) |
+
+Shared network protection options:
+
+| Option | Purpose |
+|---|---|
+| `--auth` | Enable password-only login for Gradio and Deepy; generate a password when none is supplied |
+| `--no-auth` | Explicitly disable web authentication; this is the default |
+| `--auth-password PASSPHRASE` | Fixed web passphrase; requires `--auth`. Environment alternative: `WANGP_AUTH_PASSWORD` |
+| `--public-url ORIGIN` | Optional exact browser-origin restriction, e.g. `https://wangp.example.com`; default accepts HTTP/HTTPS for the same host and explicit port. Also supports proxies that rewrite the backend host. Applies to Gradio and Deepy, with or without `--auth` |
+| `--mcp-auth` | Enable separate OAuth authorization for network MCP |
+| `--mcp-auth-password PASSPHRASE` | Fixed MCP approval passphrase; requires `--mcp-auth`. Environment alternative: `WANGP_MCP_AUTH_PASSWORD` |
+| `--mcp-auth-url ORIGIN` | Public MCP server origin, such as `https://wangp.example.com:7866`; required with `--mcp-auth` |
+| `--ssl-certfile FILE`, `--ssl-keyfile FILE` | Certificate and private key for any web/HTTP MCP launch; environment alternatives: `WANGP_SSL_CERT`, `WANGP_SSL_KEY` |
+| `--https-port PORT` | Serve HTTPS on this port and redirect the main HTTP port; requires the certificate and key |
+
+The authentication and certificate flags no longer use Deepy-specific names. Authentication remains off unless enabled. See [Authentication, HTTPS, and Reverse Proxies](AUTHENTICATION.md) for web login, `--public-url` examples, certificates, and MCP OAuth setup.
+
+See the [Deepy guide](DEEPY.md) for initial configuration and [interactive CLI commands](DEEPY.md#cli-mode).
 
 ## CLI Queue Processing (Headless Mode)
 
@@ -87,11 +133,15 @@ Queue completed: 3/3 tasks in 5m 23s
 --mcp-transport TRANSPORT          # stdio, sse, or streamable-http
 --mcp-host HOST                    # Host for HTTP transports
 --mcp-port PORT                    # Port for HTTP transports
+--mcp-api-version {1,2}            # WanGP API contract; latest (2) by default, 1 for compatibility
+--mcp-async                        # Permit wait=false in v2; disabled by default
 --mcp-console-output               # Mirror WanGP output while serving MCP
 --mcp-allow-read-file-system       # Allow agents to submit arbitrary server file paths (disabled by default)
 ```
 
 Media IDs returned by the Gallery remain usable when filesystem reads are disabled. Streamable HTTP and SSE servers also expose short-lived Gallery upload/download URLs; stdio does not provide HTTP media transfer.
+
+The default MCP interface is now v2. Existing clients that use historical tool names or parameters must launch with `python wgp.py --mcp --mcp-api-version 1`. Use `--mcp-api-version 2` to pin v2 explicitly. Both `--mcp-api-version` and `--mcp-async` also work with `python -m shared.mcp_server`. The number selects the WanGP tool API, not the MCP protocol version; unsupported numbers are rejected. API v1 retains its original wait behavior. In v2, generation and post-processing wait by default; `--mcp-async` enables optional asynchronous calls without changing that default. See [API migration](API.md#mcp-api-v2-and-migration).
 
 ### Examples
 ```bash
@@ -159,20 +209,15 @@ Each materialized session keeps its canonical decoder context in `context.json` 
 ## Lora Configuration
 
 ```bash
---loras PATH                 # Root folder for all LoRA subfolders (default: loras)
---lora-dir PATH              # Path to Wan t2v loras directory
---lora-dir-i2v PATH          # Path to Wan i2v loras directory
---lora-dir-hunyuan PATH      # Path to Hunyuan t2v loras directory
---lora-dir-hunyuan-i2v PATH  # Path to Hunyuan i2v loras directory
---lora-dir-hunyuan-1-5 PATH  # Path to Hunyuan 1.5 loras directory
---lora-dir-ltxv PATH         # Path to LTX Video loras directory
+--loras PATH                 # Root folder for default LoRA subfolders (default: loras)
+--lora-config FILE           # Optional JSON mapping LoRA subfolder names to paths
 --lora-preset PRESET         # Load lora preset file (.lset) on startup
 --check-loras                # Filter incompatible loras (slower startup)
 ```
 
-Notes:
-- `--loras` sets the root folder used by all LoRA subfolders (e.g. `loras/wan`, `loras/flux`, etc.).
-- Specific `--lora-dir-*` flags override the root for that family only.
+Use `python wgp.py --lora-config lora_paths.json` to override individual collections. JSON keys match the exact subfolder names in the default `loras/` folder, such as `wan`, `wan_5B`, or `flux2_klein_4b`. Values are complete directory paths; relative values resolve beside the JSON file.
+
+JSON entries take precedence over `--loras`. Unlisted keys use the root from `--loras`, then `wgp_config.json`'s `loras_root`, then `loras/`. The former model-specific `--lora-dir*` flags have been removed. See the [LoRA guide](LORAS.md#custom-lora-directories) for a sample JSON and setup instructions.
 
 ## Generation Settings
 
@@ -211,6 +256,7 @@ Notes:
 ```bash
 --settings PATH              # Path to folder containing default settings for all models
 --config PATH                # Config folder for wgp_config.json and queue.zip
+--workspaces-dir FOLDER       # Gallery workspaces for Gradio/Web (default: ./workspaces)
 --verbose LEVEL              # Information level 0-2 (default: 1)
 ```
 
@@ -351,3 +397,7 @@ While not command line options, these environment variables can affect behavior:
 - `PYTORCH_CUDA_ALLOC_CONF` - CUDA memory allocation settings
 - `TRITON_CACHE_DIR` - Triton cache directory (for Sage attention) 
 - `WAN2GP_DEEPY_TELEMETRY=1` - Enable detailed Deepy decode, MTP, CUDA-memory, and GPU telemetry when verbose level 2 is active (disabled by default)
+
+---
+
+> Applies to: WanGP startup options and saved-queue processing from a shell. Command-line flags configure the application process; generation settings and API tool arguments are specified separately.

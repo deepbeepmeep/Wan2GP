@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from contextlib import nullcontext
 import hashlib
 from pathlib import Path
 from threading import RLock
@@ -22,8 +23,8 @@ def _debug(message: str) -> None:
         print(f"[WanGP gradio-image-cache] {message}", flush=True)
 
 
-def _content_key(y, cache_dir, format):
-    digest = hashlib.blake2b(y.tobytes(), digest_size=16).hexdigest()
+def _content_key(y, cache_dir, format, pixels=None):
+    digest = hashlib.sha256(y.tobytes() if pixels is None else pixels).hexdigest()
     return (str(cache_dir), format, y.mode, y.size, digest)
 
 
@@ -96,6 +97,52 @@ def _store_content(key, path):
             _content_cache.popitem(last=False)
 
 
+def remember_source_image(image, source, cache_dir, format, *, cache_identity=True, decoded_source=None):
+    """Reuse unchanged uploaded pixels, including copies made by form state."""
+    from io import BytesIO
+
+    from gradio import processing_utils
+    from PIL import Image
+
+    if not isinstance(image, Image.Image) or source is None:
+        return
+    effective_format = _effective_format(image, format)
+    pixels = image.tobytes()
+    content_key = _content_key(image, cache_dir, effective_format, pixels)
+    identity_key = (id(image), str(cache_dir), effective_format, image.mode, image.size)
+    with _lock:
+        existing = _content_cache.get(content_key)
+        if existing is not None and Path(existing).exists():
+            # These exact pixels already have a verified cached file. A form
+            # round trip must not decode the original a second time to prove it.
+            _content_cache.move_to_end(content_key)
+            if cache_identity:
+                _store_identity(identity_key, image, existing, effective_format)
+            return
+    source_bytes = isinstance(source, (bytes, bytearray, memoryview))
+    with Image.open(BytesIO(source) if source_bytes else source.path) if decoded_source is None else nullcontext(decoded_source) as original:
+        if original.format not in {"JPEG", "PNG", "WEBP"} or getattr(original, "n_frames", 1) != 1:
+            return
+        compatible_mode = original.mode == image.mode or (original.mode == "RGB" and image.mode == "RGBA")
+        if original.mode == "RGBA" and image.mode == "RGB":
+            compatible_mode = original.getchannel("A").getextrema() == (255, 255)
+        if original.size != image.size or not compatible_mode:
+            return
+        decoded = original if original.mode == image.mode else original.convert(image.mode)
+        if decoded.tobytes() != pixels:
+            return
+        suffix = original.format.lower()
+    # Save the received bytes verbatim. Do not attach a filename to the PIL
+    # object: content matching must still detect edits to a copied image.
+    if source_bytes:
+        path = processing_utils.save_bytes_to_cache(source, f"image.{suffix}", cache_dir)
+    else:
+        path = processing_utils.save_file_to_cache(source.path, cache_dir)
+    _store_content(content_key, path)
+    if cache_identity:
+        _store_identity(identity_key, image, path, effective_format)
+
+
 def install() -> bool:
     global _installed
     if _installed:
@@ -165,4 +212,4 @@ def clear() -> None:
         _content_cache.clear()
 
 
-__all__ = ["WANGP_GRADIO_IMAGE_DEBUG", "clear", "install"]
+__all__ = ["WANGP_GRADIO_IMAGE_DEBUG", "clear", "install", "remember_source_image"]

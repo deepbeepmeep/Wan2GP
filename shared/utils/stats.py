@@ -1,11 +1,6 @@
 import gradio as gr
-import signal
-import sys
-import time
 import threading
 import atexit
-from contextlib import contextmanager
-from collections import deque
 from pathlib import Path
 import psutil
 
@@ -94,33 +89,23 @@ gpu_backend = init_gpu_backend()
 
 class SystemStatsApp:
     def __init__(self):
-        self.running = False
-        self.active_generators = []
-        self.setup_signal_handlers()
-        
-    def setup_signal_handlers(self):
-        # Handle different shutdown signals
-        signal.signal(signal.SIGINT, self.shutdown_handler)
-        signal.signal(signal.SIGTERM, self.shutdown_handler)
-        if hasattr(signal, 'SIGBREAK'):  # Windows
-            signal.signal(signal.SIGBREAK, self.shutdown_handler)
-        
-        # Also register atexit handler as backup
+        self.running = True
+        self.html, self.last_disk_io = self.get_system_stats(True, psutil.disk_io_counters())
+        self.worker = threading.Thread(target=self.sample, name='wangp-system-stats', daemon=True)
+        self.worker.start()
         atexit.register(self.cleanup)
-    
-    def shutdown_handler(self, signum, frame):
-        # print(f"\nReceived signal {signum}. Shutting down gracefully...")
-        self.cleanup()
-        sys.exit(0)
-    
-    def cleanup(self):
-        if not self.running:
-            print("Cleaning up streaming connections...")
-        self.running = False
-        # Give a moment for generators to stop
-        time.sleep(1)
 
-    def get_system_stats(self, first = False, last_disk_io = psutil.disk_io_counters() ):
+    def sample(self):
+        # Sample once for all pages. psutil's one-second CPU interval stays off
+        # Gradio workers; browser ticks only read the completed HTML snapshot.
+        while self.running:
+            self.html, self.last_disk_io = self.get_system_stats(False, self.last_disk_io)
+
+    def cleanup(self):
+        self.running = False
+        self.worker.join(timeout=2)
+
+    def get_system_stats(self, first, last_disk_io):
 
         # Set a reasonable maximum speed for the bar graph display.
         # 100 MB/s will represent a 100% full bar.
@@ -161,6 +146,12 @@ class SystemStatsApp:
 
         stats_html = f"""
         <style>
+        /* Gradio dims pending HTML even when progress is hidden. */
+        #wangp-system-stats .html-container {{
+            opacity: 1;
+            transition: none;
+        }}
+
         .stats-container {{
             display: flex;
             justify-content: space-between;
@@ -256,71 +247,9 @@ class SystemStatsApp:
         """
         return stats_html, last_disk_io
 
-    def streaming_html(self, state):
-        if "stats_running" in state:
-            return
-        state["stats_running"] = True
-
-        self.running = True
-        last_disk_io = psutil.disk_io_counters()
-        i = 0
-        import time
-        try:
-            while self.running:
-                i+= 1
-                # if i % 2 == 0:
-                #     print(f"time:{time.time()}")
-                html_content, last_disk_io = self.get_system_stats(False, last_disk_io)
-                yield html_content
-                # time.sleep(1)
-                
-        except GeneratorExit:
-            # print("Generator stopped gracefully")
-            return
-        except Exception as e:
-            print(f"Streaming error: {e}")
-        # finally:
-        #     # Send final message indicating clean shutdown
-        final_html = """
-<DIV>
-<img src="x" onerror="
-setInterval(()=>{
-    console.log('trying...');
-    setTimeout(() => {
-        try{
-            const btn = document.getElementById('restart_stats');
-            if(btn) {
-                console.log('found button, clicking');
-                btn.click();
-            } else {
-                console.log('button not found');
-            }
-        }catch(e){console.log('error: ' + e.message)}
-    }, 100);
-}, 8000);" style="display:none;">
-
-<button onclick="document.getElementById('restart_stats').click()" 
-        style="background: #007bff; color: white; padding: 15px 30px; 
-               border: none; border-radius: 5px; font-size: 16px; cursor: pointer;">
-   🔄 Connection to Server Lost. Attempting Auto reconnect. Click Here to for Manual Connection
-</button>
-</DIV>
-            """
-        try:
-            yield final_html
-        except:
-            pass
-
-
     def get_gradio_element(self):
-        self.system_stats_display =  gr.HTML(self.get_system_stats(True)[0])
-        self.restart_btn = gr.Button("restart stats",elem_id="restart_stats", visible= False) # False)
+        self.system_stats_display = gr.HTML(self.html, elem_id="wangp-system-stats")
         return self.system_stats_display
-    
+
     def setup_events(self, main, state):
-        gr.on([main.load, self.restart_btn.click],
-            fn=self.streaming_html,
-            inputs = state,
-            outputs=self.system_stats_display,
-            show_progress=False
-        )
+        gr.Timer(1).tick(lambda: self.html, outputs=self.system_stats_display, queue=False, show_progress='hidden', api_name=False)

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from shared.utils.phase_progress import control_video_encoding
 
 import math
 import os
@@ -689,7 +690,8 @@ def _encode_control_video_slots(model, video_path: str, latent_indices: list[int
         local_idx = max(0, min(_pixel_to_latent_index(_latent_center_frame(latent_idx, stride) - start_frame, stride), max(0, int(math.ceil((int(frames.shape[0]) - 1) / stride)))))
         for phase, (phase_height, phase_width) in phase_sizes.items():
             video = load_video_conditioning(frames, height=int(phase_height), width=int(phase_width), frame_cap=None, dtype=model.dtype, device=model.device)
-            encoded = vae_encode_video(video, video_encoder, tiling_config)
+            with control_video_encoding():
+                encoded = vae_encode_video(video, video_encoder, tiling_config)
             if int(encoded.shape[2]) > 0:
                 phase_slots[phase].append(encoded[:, :, min(local_idx, int(encoded.shape[2]) - 1) : min(local_idx, int(encoded.shape[2]) - 1) + 1].detach().cpu().contiguous())
             del video, encoded

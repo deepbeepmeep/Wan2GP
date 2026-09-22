@@ -25,6 +25,7 @@ KUGELAUDIO_TOKENIZER_FILES = [
 
 KUGELAUDIO_DURATION_SLIDER = {
     "label": "Max duration (seconds)",
+    "name": "Max Duration",
     "min": 1,
     "max": 600,
     "increment": 1,
@@ -137,17 +138,8 @@ class family_handler:
         return {"tts": (2200, "TTS")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-kugelaudio",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains KugelAudio settings (default: {os.path.join(lora_root, 'kugelaudio')})",
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_dir_kugelaudio", None) or os.path.join(lora_root, "kugelaudio")
+    def get_lora_dir(base_model_type):
+        return "kugelaudio"
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

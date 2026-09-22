@@ -26,10 +26,10 @@ def set_main_generation_running(state, running):
         else:
             gen.pop(_MAIN_PROCESS_RUNNING_KEY, None)
 
-def any_GPU_process_running(state, process_id, ignore_main = False):
+def any_GPU_process_running(state, process_id, ignore_main = False, *, wait_for_lock = False):
     gen = get_gen_info(state)
 #"process:" + process_id
-    if gen_lock.locked():
+    if not wait_for_lock and gen_lock.locked():
         return True
     with gen_lock:
         process_status = gen.get("process_status", None)
@@ -128,6 +128,23 @@ def acquire_main_GPU_ressources(state):
     if torch.cuda.is_available():
         torch.cuda.synchronize()
     
+def try_acquire_GPU_ressources(state, process_id, process_name):
+    """Atomically claim an idle GPU, without suspending an active generation."""
+    gen = get_gen_info(state)
+    with gen_lock:
+        status = gen.get("process_status")
+        if status is not None and not (status == "process:main" and not _main_generation_active_locked(gen)):
+            return False
+        release_actions = _collect_resident_release_actions_locked(gen, requester_id=process_id)
+        gen.setdefault("process_hierarchy", {})[process_id] = None
+        gen.setdefault(_PROCESS_NAMES_KEY, {})[process_id] = process_name
+        gen["process_status"] = "process:" + process_id
+    _run_release_actions(release_actions)
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    return True
+
+
 def acquire_GPU_ressources(state, process_id, process_name, gr = None, custom_pause_msg = None, custom_wait_msg = None):
     gen = get_gen_info(state)
     original_process_status = None

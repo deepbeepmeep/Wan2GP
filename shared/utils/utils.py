@@ -353,6 +353,9 @@ def resolve_rembg_home():
     return os.path.abspath(rembg_home)
 
 def new_rembg_session(*args, **kwargs):
+    if kwargs.get("model_name", args[0] if args else "u2net") == "u2net":
+        from preprocessing.rembg.assets import ensure_assets
+        ensure_assets()
     os.environ["U2NET_HOME"] = resolve_rembg_home()
     return new_session(*args, **kwargs)
 

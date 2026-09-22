@@ -121,6 +121,10 @@ class BaseSegmenter:
         SAM_checkpoint: path of SAM checkpoint
         model_type: vit_b, vit_l, vit_h
         """
+        from preprocessing.matanyone.utils.model_assets import query_sam_download_def
+        from shared.utils.download import process_files_def_if_needed
+
+        process_files_def_if_needed(query_sam_download_def())
         print(f"Initializing BaseSegmenter to {device}")
         assert model_type in ['vit_b', 'vit_l', 'vit_h'], 'model_type must be vit_b, vit_l, or vit_h'
 

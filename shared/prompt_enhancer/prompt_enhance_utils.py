@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import Union, List, Optional
 from contextlib import nullcontext
 
@@ -6,6 +7,13 @@ import torch
 from PIL import Image
 
 from shared.llm_io import known_token_ids, llm_io_enabled, log_llm_io, media_descriptor
+from shared.utils.cancellation import check_cancelled
+from shared.prompt_enhancer.streaming import ThrottledStreamEmitter
+
+
+def _check_generation_cancelled(*args, **kwargs):
+    check_cancelled()
+    return False
 
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
@@ -221,10 +229,15 @@ def generate_cinematic_prompt(
     seed: Optional[int] = None,
     post_image_caption_hook = None,
     thinking_enabled: Optional[bool] = None,
+    generation_callbacks=None,
+    image_contexts=None,
+    offload_manager=None,
+    prompt_durations=None,
 ) -> List[str]:
     prompts = [prompt] if isinstance(prompt, str) else prompt
+    check_cancelled()
 
-    if images is None:
+    if images is None and image_contexts is None:
         if prompt_enhancer_instructions is None:
             prompt_enhancer_instructions = T2T_TEXT_PROMPT if text_prompt else (T2V_CINEMATIC_PROMPT if video_prompt else T2I_VISUAL_PROMPT)
         prompts = _generate_t2v_prompt(
@@ -239,6 +252,8 @@ def generate_cinematic_prompt(
             top_k,
             seed,
             thinking_enabled,
+            generation_callbacks=generation_callbacks,
+            prompt_durations=prompt_durations,
         )
     else:
         if prompt_enhancer_instructions is None:
@@ -260,6 +275,10 @@ def generate_cinematic_prompt(
             seed,
             post_image_caption_hook=post_image_caption_hook,
             thinking_enabled=thinking_enabled,
+            generation_callbacks=generation_callbacks,
+            image_contexts=image_contexts,
+            offload_manager=offload_manager,
+            prompt_durations=prompt_durations,
         )
 
     return prompts
@@ -285,11 +304,15 @@ def _generate_t2v_prompt(
     top_k: Optional[int],
     seed: Optional[int],
     thinking_enabled: Optional[bool],
+    generation_callbacks=None,
+    prompt_durations=None,
 ) -> List[str]:
     messages = []
-    for prompt in prompts:
+    for index, prompt in enumerate(prompts):
         prompt_body, system_suffix, replace_system_prompt = _split_prompt_enhancer_system_suffix(prompt_enhancer_model, prompt)
         message_system_prompt = _merge_prompt_enhancer_system_prompt(prompt_enhancer_model, system_prompt, system_suffix, replace_system_prompt, thinking_enabled=thinking_enabled)
+        if prompt_durations is not None and prompt_durations[index] is not None:
+            message_system_prompt += f"\nThis window lasts {prompt_durations[index]:g} seconds. Keep the described action within this duration."
         messages.append(
             [
                 {"role": "system", "content": message_system_prompt},
@@ -309,6 +332,7 @@ def _generate_t2v_prompt(
             top_k=top_k,
             seed=seed,
             thinking_enabled=thinking_enabled,
+            **(generation_callbacks or {}),
         )
         log_llm_io("IN", "local-prompt-enhancer", "messages", {"text": outputs})
         return outputs
@@ -322,6 +346,8 @@ def _generate_t2v_prompt(
 
     out_prompts = []
     for idx, text in enumerate(texts):
+        if (generation_callbacks or {}).get("enhancement_progress") is not None:
+            generation_callbacks["enhancement_progress"].prompt(idx, len(texts), max_new_tokens)
         model_inputs = prompt_enhancer_tokenizer(text, return_tensors="pt").to(
             prompt_enhancer_model.device
         )
@@ -337,6 +363,7 @@ def _generate_t2v_prompt(
                 top_p=top_p,
                 top_k=top_k,
                 seed=prompt_seed,
+                generation_callbacks=generation_callbacks,
             )[0]
         )
 
@@ -358,14 +385,18 @@ def _generate_i2v_prompt(
     seed: Optional[int],
     post_image_caption_hook = None,
     thinking_enabled: Optional[bool] = None,
+    generation_callbacks=None,
+    image_contexts=None,
+    offload_manager=None,
+    prompt_durations=None,
 ) -> List[str]:
     if hasattr(image_caption_model, "generate_image_captions"):
-        image_captions = image_caption_model.generate_image_captions(first_frames)
+        image_captions = image_caption_model.generate_image_captions(first_frames or [], image_contexts=image_contexts, offload_manager=offload_manager, stop_requested=(generation_callbacks or {}).get("stop_requested"), enhancement_progress=(generation_callbacks or {}).get("enhancement_progress"))
     else:
         image_captions = _generate_image_captions(
-            image_caption_model, image_caption_processor, first_frames
+            image_caption_model, image_caption_processor, first_frames, enhancement_progress=(generation_callbacks or {}).get("enhancement_progress")
         )
-    if callable(post_image_caption_hook):
+    if callable(post_image_caption_hook) and not hasattr(image_caption_model, "generate_image_captions"):
         if bool(getattr(prompt_enhancer_model, "_prompt_enhancer_use_vllm", False)):
             unload_runtime = getattr(prompt_enhancer_model, "unload", None)
             if callable(unload_runtime):
@@ -374,9 +405,14 @@ def _generate_i2v_prompt(
     if len(image_captions) == 1 and len(image_captions) < len(prompts):
         image_captions *= len(prompts)
     messages = []
-    for prompt, image_caption in zip(prompts, image_captions):
+    for index, (prompt, image_caption) in enumerate(zip(prompts, image_captions)):
         prompt_body, system_suffix, replace_system_prompt = _split_prompt_enhancer_system_suffix(prompt_enhancer_model, prompt)
         message_system_prompt = _merge_prompt_enhancer_system_prompt(prompt_enhancer_model, system_prompt, system_suffix, replace_system_prompt, thinking_enabled=thinking_enabled)
+        if image_contexts is not None:
+            message_system_prompt += "\n\nThe labeled image descriptions belong only to this generation window. Respect the start and end anchors and the times of injected frames. Reference images guide appearance, not chronological order. Keep these roles distinct and do not invent absent anchors."
+        duration = prompt_durations[index] if prompt_durations is not None else image_contexts[index].duration_seconds if image_contexts is not None else None
+        if duration is not None:
+            message_system_prompt += f"\nThis window lasts {duration:g} seconds. Keep the described action within this duration."
         messages.append(
             [
                 {"role": "system", "content": message_system_prompt},
@@ -386,7 +422,7 @@ def _generate_i2v_prompt(
 
     if hasattr(prompt_enhancer_model, "generate_messages"):
         if llm_io_enabled():
-            log_llm_io("OUT", "local-prompt-enhancer", "messages", {"messages": messages, "images": [media_descriptor(image) for image in first_frames], "image_captions": image_captions, "generation": {"max_new_tokens": max_new_tokens, "do_sample": do_sample, "temperature": temperature, "top_p": top_p, "top_k": top_k, "seed": seed, "thinking_enabled": thinking_enabled}})
+            log_llm_io("OUT", "local-prompt-enhancer", "messages", {"messages": messages, "images": [media_descriptor(image) for image in (first_frames or [])], "image_captions": image_captions, "generation": {"max_new_tokens": max_new_tokens, "do_sample": do_sample, "temperature": temperature, "top_p": top_p, "top_k": top_k, "seed": seed, "thinking_enabled": thinking_enabled}})
         outputs = prompt_enhancer_model.generate_messages(
             messages,
             max_new_tokens,
@@ -396,6 +432,7 @@ def _generate_i2v_prompt(
             top_k=top_k,
             seed=seed,
             thinking_enabled=thinking_enabled,
+            **(generation_callbacks or {}),
         )
         log_llm_io("IN", "local-prompt-enhancer", "messages", {"text": outputs})
         return outputs
@@ -408,6 +445,8 @@ def _generate_i2v_prompt(
     ]
     out_prompts = []
     for idx, text in enumerate(texts):
+        if (generation_callbacks or {}).get("enhancement_progress") is not None:
+            generation_callbacks["enhancement_progress"].prompt(idx, len(texts), max_new_tokens)
         model_inputs = prompt_enhancer_tokenizer(text, return_tensors="pt").to(
             prompt_enhancer_model.device
         )
@@ -423,6 +462,7 @@ def _generate_i2v_prompt(
                 top_p=top_p,
                 top_k=top_k,
                 seed=prompt_seed,
+                generation_callbacks=generation_callbacks,
             )[0]
         )
 
@@ -434,7 +474,10 @@ def _generate_image_captions(
     image_caption_processor,
     images: List[Image.Image],
     system_prompt: str = "<DETAILED_CAPTION>",
+    enhancement_progress=None,
 ) -> List[str]:
+    if enhancement_progress is not None:
+        enhancement_progress.caption(0, 1, 1024)
     image_caption_prompts = [system_prompt] * len(images)
     inputs = image_caption_processor(
         image_caption_prompts, images, return_tensors="pt"
@@ -461,6 +504,7 @@ def _generate_image_captions(
             do_sample=False,
             num_beams=3,
             bad_words_ids=bad_words_ids,
+            stopping_criteria=[_check_generation_cancelled],
         )
     decoded = image_caption_processor.batch_decode(generated_ids, skip_special_tokens=True)
     log_llm_io("IN", "local-image-captioner", "generation", {"text": decoded, "output_token_ids": generated_ids.tolist()})
@@ -477,7 +521,31 @@ def _generate_and_decode_prompts(
     top_p: Optional[float] = None,
     top_k: Optional[int] = None,
     seed: Optional[int] = None,
+    generation_callbacks=None,
 ) -> List[str]:
+    callbacks = generation_callbacks or {}
+    stop_requested, stream_callback = callbacks.get("stop_requested"), callbacks.get("stream_callback")
+    if callbacks.get("enhancement_progress") is not None:
+        stream_callback = callbacks["enhancement_progress"].tokens
+    emitter = ThrottledStreamEmitter(1 / 3)
+    started = time.perf_counter()
+    prefill_seconds = None
+    prompt_length = model_inputs.input_ids.shape[-1]
+
+    def report_tokens(input_ids, scores=None, *, is_final=False):
+        nonlocal prefill_seconds
+        if callable(stop_requested) and stop_requested():
+            raise InterruptedError("Prompt Enhancement Stopped")
+        check_cancelled()
+        count = input_ids.shape[-1] - prompt_length
+        elapsed = time.perf_counter() - started
+        if count and prefill_seconds is None:
+            prefill_seconds = elapsed
+        if stream_callback is not None and (is_final or emitter.is_due()):
+            speed = max(0, count - 1) / max(elapsed - (prefill_seconds or elapsed), 1e-6)
+            emitter.emit(stream_callback, raw_text=prompt_enhancer_tokenizer.decode(input_ids[0, prompt_length:], skip_special_tokens=True), token_count=count, max_tokens=max_new_tokens, prefill_seconds=prefill_seconds or 0.0, tokens_per_second=speed, stop_reason="completed" if is_final else None, is_final=is_final, force=is_final)
+        return False
+
     device = "cuda"
     if seed is None:
         rng_context = nullcontext()
@@ -508,10 +576,13 @@ def _generate_and_decode_prompts(
                 "known_token_ids": known_token_ids(prompt_enhancer_tokenizer),
                 "generation": {**gen_kwargs, "seed": seed},
             })
+        report_tokens(model_inputs.input_ids)
         outputs = prompt_enhancer_model.generate(
             **model_inputs,
             **gen_kwargs,
+            stopping_criteria=[report_tokens],
         )
+        report_tokens(outputs, is_final=True)
         generated_ids = [
             output_ids[len(input_ids) :]
             for input_ids, output_ids in zip(model_inputs.input_ids, outputs)

@@ -1,0 +1,12 @@
+{
+    "image_mode": 0,
+    "model_type": "ltx2_22B_msr_v2",
+    "type": "LTX-2 2.3 MSR V2 Distilled 1.1",
+    "settings_version": 2.73,
+    "video_prompt_type": "I",
+    "num_inference_steps": 8,
+    "video_length": 145,
+    "resolution": "1280x720",
+    "remove_background_images_ref": 0,
+    "prompt": "The referenced character walks through a lush tropical forest, looking up at a colorful bird. A smooth tracking shot, natural motion, consistent identity and clothing, soft morning light. Bird calls and rustling leaves."
+}

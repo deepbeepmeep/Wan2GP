@@ -1,0 +1,19 @@
+{
+    "settings_version": 2.79,
+    "type": "Qwen Image 2.1 7B",
+    "model_type": "qwen_image_21_7B",
+    "prompt": "",
+    "image_mode": 1,
+    "resolution": "1024x1024",
+    "num_inference_steps": 40,
+    "guidance_scale": 4.0,
+    "batch_size": 1,
+    "video_prompt_type": "",
+    "prompt_enhancer": "",
+    "activated_loras": [],
+    "loras_multipliers": "",
+    "remove_background_images_ref": 0,
+    "custom_settings": {
+        "qwen21_kv_cache": "Disabled", "rgba": "Disabled"
+    }
+}

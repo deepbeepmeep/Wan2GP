@@ -75,6 +75,7 @@ class RMSNorm(nn.Module):
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(hidden_size))
         self.use_triton_rmsnorm = _USE_TRITON_RMSNORM
+        self._small_batch_num_warps = 4
 
     def _can_use_triton(self, x: torch.Tensor, residual: torch.Tensor | None = None) -> bool:
         if not self.use_triton_rmsnorm or triton is None or tl is None:
@@ -130,6 +131,7 @@ class RMSNorm(nn.Module):
             HAS_RESIDUAL=False,
             STORE_RESIDUAL=False,
             BLOCK_SIZE=block_size,
+            num_warps=self._small_batch_num_warps if x_2d.shape[0] == 1 else 4,
         )
         return y_2d.view_as(x)
 
@@ -158,6 +160,7 @@ class RMSNorm(nn.Module):
             HAS_RESIDUAL=True,
             STORE_RESIDUAL=True,
             BLOCK_SIZE=block_size,
+            num_warps=self._small_batch_num_warps if x_2d.shape[0] == 1 else 4,
         )
         return y_2d.view_as(x), residual_out_2d.view_as(x)
 

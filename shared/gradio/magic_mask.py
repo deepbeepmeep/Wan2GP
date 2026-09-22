@@ -209,6 +209,30 @@ def _run_keyword_mask(video, keywords, abort_event, colorize_objects=False, colo
             raise event[1]
 
 
+def _download_mask_assets(download_assets, abort_event):
+    from concurrent.futures import ThreadPoolExecutor, wait
+    from shared.gradio.progress import WangpProgress
+    from shared.utils.download_progress import DownloadCancelled, download_operation
+
+    progress = WangpProgress()
+    progress(0, desc="Downloading Mask Model Files")
+    progress.gen["abort_callback"] = abort_event.is_set
+
+    def work():
+        with download_operation(progress.gen):
+            download_assets(magic_mask.query_download_def())
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="mask-download") as executor:
+        future = executor.submit(work)
+        while not future.done():
+            yield progress.render(aborting=abort_event.is_set())
+            wait([future], timeout=0.1)
+        try:
+            future.result()
+        except DownloadCancelled as exc:
+            raise MagicMaskAbort() from exc
+
+
 def _generate_magic_mask(
     state,
     keywords_text,
@@ -252,7 +276,8 @@ def _generate_magic_mask(
     acquired = False
     try:
         yield gr.update(), gr.update(), gr.update(), _status_html("Initializing Magic Mask"), gr.update(visible=True), _progress_html("Preparing files", 0), _exit_button_running(), _abort_button_running(), None, None
-        download_assets(magic_mask.query_download_def())
+        for download_html in _download_mask_assets(download_assets, abort_event):
+            yield gr.update(), gr.update(), gr.update(), _status_html("Initializing Magic Mask"), gr.update(visible=True), download_html, _exit_button_running(), _abort_button_running(), None, None
         _raise_if_aborted(abort_event)
         yield gr.update(), gr.update(), gr.update(), _status_html("Initializing Magic Mask"), gr.update(visible=True), _progress_html("Initializing", 0), _exit_button_running(), _abort_button_running(), None, None
         acquire_gpu(state, magic_mask.PROCESS_ID, magic_mask.PROCESS_NAME)

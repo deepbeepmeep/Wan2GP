@@ -31,22 +31,6 @@ def add_network_args(parser: argparse.ArgumentParser):
 
 
     group.add_argument(
-        "--lora-dir-i2v",
-        type=str,
-        default="loras_i2v",
-        help="Path to a directory that contains Loras for i2v"
-    )
-
-
-    group.add_argument(
-        "--lora-dir",
-        type=str,
-        default="",
-        help="Path to a directory that contains Loras"
-    )
-
-
-    group.add_argument(
         "--lora-preset",
         type=str,
         default="",

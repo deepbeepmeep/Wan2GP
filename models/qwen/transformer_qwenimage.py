@@ -700,49 +700,9 @@ class QwenImageTransformer2DModel(nn.Module):
 
 
     def preprocess_loras(self, model_type, sd):
-
-        first = next(iter(sd), None)
-        if first == None:
-            return sd
-
-        new_sd = {}
-        for k,v in sd.items():
-            k = k.replace(".lora.", ".lora_")
-            k = k.replace(".default.weight", ".weight")
-            new_sd[k] = v
-        sd = new_sd  
-
-        prefix_list = ["lora_unet_transformer_blocks"]
-        for prefix in prefix_list: 
-            if first.startswith(prefix):
-                repl_list = ["attn", "img_mlp", "txt_mlp", "img_mod", "txt_mod"]
-                src_list = ["_" + k + "_" for k in repl_list]
-                tgt_list = ["." + k + "." for k in repl_list]
-                src_list2 = ["_0_", "_0.", "_1.", "_2."]
-                tgt_list2 = [".0.", ".0.", ".1.", ".2."]
-                new_sd = {}
-                for k,v in sd.items():
-                    k = "diffusion_model.transformer_blocks." + k[len(prefix)+1:]
-                    for s,t in zip(src_list, tgt_list):
-                        k = k.replace(s,t)
-                    for s,t in zip(src_list2, tgt_list2):
-                        k = k.replace(s,t)
-                    new_sd[k] = v
-                sd = new_sd  
-                return sd
-
-        prefix_list = ["transformer_blocks"]
-        for prefix in prefix_list: 
-            if first.startswith(prefix):
-                new_sd = {}
-                for k,v in sd.items():
-                    if k.startswith(prefix):
-                        k = "diffusion_model." + k
-                        new_sd[k] = v
-                sd = new_sd  
-                return sd
-        
-        return sd
+        from shared.utils.lora_mapping import convert_lora_keys
+        from .qwen_main import _QWEN_FUSED_SPLIT_MAP
+        return convert_lora_keys(sd, dict(self.named_modules()), fused_split_map=_QWEN_FUSED_SPLIT_MAP)
 
     def __init__(
         self,

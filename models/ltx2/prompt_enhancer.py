@@ -134,16 +134,26 @@ LTX2_RELAYED_IMAGE_PROMPT = (
     "[75%:] The subject reaches the final mark, pauses in a clear finishing pose, and the scene resolves without changing identity, wardrobe, or location."
 )
 
+LTX2_25_DEEPY_PROMPT_INFOS = """Describe the desired video in natural chronological prose, usually one flowing paragraph of up to about 200 words per scene: action, appearance, environment, camera, light and sound. With a start image, describe how its scene moves forward; with start/end images, describe the transition between them. For editing, describe the resulting scene and what stays consistent.
+
+Put exact speech in double quotes and identify speaker/delivery: A cyclist catches her breath and says quietly, "We made it." Rain taps the awning. With supplied audio, match visible action to its speech and timing. Preserve identity, wardrobe, props and setting across connected scenes.
+
+For one long video use paragraph-per-window processing (`PW`): blank lines separate windows. Optional navigation titles start with `#`. Consult the long-video guide for scheduling.
+
+Prompt Relay: the text before the first range is global; ranged text describes local action. Examples: `[0%:25%]`, `[25%:]`, `[1:25]` (1-based frames), `[0s:4s]`, `[0:05:0:10]` (timecodes). Both endpoints use the same unit. Keep adjacent motion compatible. In each window, frame 1 / 0% starts at its first retained, non-overlap frame. Relay ranges do not select line-processing mode.
+"""
+
 LTX2_PROMPT_INFOS = """
 # LTX2 Prompt Guidelines
 
 ## Standard Prompts
 
 - Describe the subject, setting, action, camera, lighting, mood, and visual style in concrete cinematic language.
+- Describe the finished scene rather than instructions to a video editor. With a start image, explain how its scene moves forward; with start/end images, describe the transition between them. With control video, describe the desired result and the content to retain.
 - Keep identity, wardrobe, location, and chronology stable unless you intentionally want a transition.
 - Write the visible action in temporal order. LTX2 usually behaves better when it can follow a clear sequence instead of a pile of disconnected tags.
 - Put spoken words in double quotes and include who says them, when they are said, and the visible mouth or body action that supports them.
-- For better clarity, use multiline prompts (each paragraph separated by an empty line should correspond to a sliding window prompt) in **How to Process each Line of the Text Prompt**. Use one line per shot, beat, character action, or generated item depending on the selected line-processing mode.
+- For one long video, select paragraph-per-sliding-window processing (`PW`) in **How to Process each Line of the Text Prompt**. Keep one window's prompt together; blank lines separate windows. A window may contain several shots or beats. Optional navigation titles must start with `#` to be treated as comments.
 
 ## Relayed Prompts
 

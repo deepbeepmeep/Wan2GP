@@ -1,121 +1,133 @@
-import os
+import time
+
 import torch
 from torch.nn import functional as F
-# from .model.pytorch_msssim import ssim_matlab
-from .ssim import ssim_matlab
+from tqdm import tqdm
 
+from .ssim import ssim_matlab
 from .RIFE_V4 import Model as ModelV4
 
+
 def get_frame(frames, frame_no):
-    if frame_no >= frames.shape[1]:
+    frame = frames[:, frame_no] if frame_no < frames.shape[1] else None
+    if frame is None:
         return None
-    frame = frames[:, frame_no]
     if frame.dtype == torch.uint8:
-        frame = frame.float().div_(255.0)
-    else:
-        frame = (frame + 1) / 2
-        frame = frame.clip(0., 1.)
-    return frame
+        return frame.float().div_(255.0)
+    return ((frame + 1) / 2).clamp_(0, 1)
 
-def add_frame(frames, frame, h, w):
-    frame = (frame * 2) - 1
-    frame = frame.clip(-1., 1.)    
-    frame = frame.squeeze(0)
-    frame = frame[:, :h, :w]
-    frame = frame.unsqueeze(1)
-    frames.append(frame.cpu())
 
-def process_frames(model, device, frames, multiplier):
+def add_frame(output, index, frame, h, w):
+    # Quantize before the blocking device-to-host copy. Never retain FP32 output.
+    frame = frame.reshape(-1, *frame.shape[-2:])[:, :h, :w]
+    output[:, index].copy_(frame.mul(2).sub_(1).clamp_(-1, 1).add_(1).mul_(127.5).clamp_(0, 255).to(dtype=torch.uint8))
+
+
+@torch.inference_mode()
+def process_frames(model, device, frames, multiplier, *, previous_last_frame=None, abort_callback=None, progress_callback=None):
+    prefix = previous_last_frame is not None
+    total = frames.shape[1] + int(prefix)
     pos = 0
-    output_frames = []
+    last_report = -float("inf")
+    last_abort_check = -float("inf")
 
-    lastframe = get_frame(frames, 0)
-    _,  h, w = lastframe.shape
-    scale = 1
-    fp16 = False
-    pad_mod = model.pad_mod
+    def read(index):
+        if prefix and index == 0:
+            return get_frame(previous_last_frame, 0)
+        return get_frame(frames, index - int(prefix))
 
-    def make_inference(I0, I1, n):
-        if n <= 0:
-            return []
-        return [model.inference(I0, I1, (i + 1) / (n + 1), scale) for i in range(n)]
+    def cancelled():
+        nonlocal last_abort_check
+        now = time.monotonic()
+        if abort_callback is None or now - last_abort_check < 1 / 3:
+            return False
+        last_abort_check = now
+        return abort_callback()
 
-    tmp = max(pad_mod, int(pad_mod / scale))
-    ph = ((h - 1) // tmp + 1) * tmp
-    pw = ((w - 1) // tmp + 1) * tmp
-    padding = (0, pw - w, 0, ph - h)
+    if cancelled():
+        return None
+    lastframe = read(0)
+    if lastframe is None:
+        raise ValueError("RIFE received an empty video")
+    _, h, w = lastframe.shape
+    padding = (0, (-w) % model.pad_mod, 0, (-h) % model.pad_mod)
 
-    def pad_image(img):
-        if(fp16):
-            return F.pad(img, padding).half()
-        else:
-            return F.pad(img, padding)
+    def prepare(frame):
+        return F.pad(frame.to(device).unsqueeze(0), padding)
 
-    I1 = lastframe.to(device, non_blocking=True).unsqueeze(0)
-    I1 = pad_image(I1)
-    temp = None # save lastframe when processing static frame
+    def similarity(first, second):
+        small0 = F.interpolate(first, (32, 32), mode="bilinear", align_corners=False)
+        small1 = F.interpolate(second, (32, 32), mode="bilinear", align_corners=False)
+        return ssim_matlab(small0[:, :3], small1[:, :3])
 
-    while True:
-        if temp is not None:
-            frame = temp
-            temp = None
-        else:
-            pos += 1
-            frame = get_frame(frames, pos)
-        if frame is None:
-            break
-        I0 = I1
-        I1 = frame.to(device, non_blocking=True).unsqueeze(0)
-        I1 = pad_image(I1)
-        I0_small = F.interpolate(I0, (32, 32), mode='bilinear', align_corners=False)
-        I1_small = F.interpolate(I1, (32, 32), mode='bilinear', align_corners=False)
-        ssim = ssim_matlab(I0_small[:, :3], I1_small[:, :3])
-
-        break_flag = False
-        if ssim > 0.996 or pos > 100:        
-            pos += 1
-            frame = get_frame(frames, pos)
-            if frame is None:
-                break_flag = True
-                frame = lastframe
+    # A pair at a time is smaller than a 100-frame batch; lookahead stays live
+    # across the whole sequence, so no artificial chunk boundary affects RIFE.
+    output = torch.empty((total - 1) * multiplier + 1, frames.shape[0], h, w, dtype=torch.uint8).transpose(0, 1)
+    output_index = 0
+    with tqdm(total=max(0, total - 1), desc="Temporal Upsampling - RIFE", unit="frame") as progress:
+        I1 = prepare(lastframe)
+        temp = None
+        while True:
+            if cancelled():
+                return None
+            now = time.monotonic()
+            if progress_callback is not None and now - last_report >= 1 / 3:
+                progress_callback("Temporal Upsampling - RIFE", progress.n, progress.total)
+                last_report = now
+            if temp is not None:
+                frame, temp = temp, None
             else:
-                temp = frame
-            I1 = frame.to(device, non_blocking=True).unsqueeze(0)
-            I1 = pad_image(I1)
-            I1 = model.inference(I0, I1, 0.5, scale)
-            I1_small = F.interpolate(I1, (32, 32), mode='bilinear', align_corners=False)
-            ssim = ssim_matlab(I0_small[:, :3], I1_small[:, :3])
-            frame = I1[0][:, :h, :w]
-        
-        if ssim < 0.2:
-            output = []
-            for _ in range(multiplier - 1):
-                output.append(I0)
-        else:
-            output = make_inference(I0, I1, multiplier - 1) if multiplier > 1 else []
+                pos += 1
+                frame = read(pos)
+            if frame is None:
+                break
+            I0 = I1
+            I1 = prepare(frame)
+            ssim = similarity(I0, I1)
+            break_flag = False
+            if ssim > 0.996:
+                pos += 1
+                frame = read(pos)
+                if frame is None:
+                    break_flag = True
+                    frame = lastframe
+                else:
+                    temp = frame
+                I1 = model.inference(I0, prepare(frame), 0.5, 1)
+                if cancelled():
+                    return None
+                ssim = similarity(I0, I1)
+                frame = I1[0, :, :h, :w]
+            add_frame(output, output_index, lastframe, h, w)
+            output_index += 1
+            for index in range(1, multiplier):
+                if cancelled():
+                    return None
+                mid = I0 if ssim < 0.2 else model.inference(I0, I1, index / multiplier, 1)
+                add_frame(output, output_index, mid, h, w)
+                output_index += 1
+                del mid
+            lastframe = frame
+            progress.update(1)
+            if break_flag:
+                break
+        if cancelled():
+            return None
+        add_frame(output, output_index, lastframe, h, w)
+        if progress_callback is not None:
+            progress_callback("Temporal Upsampling - RIFE", progress.total, progress.total)
+    return output
 
-        add_frame(output_frames, lastframe, h, w)
-        for mid in output:
-            add_frame(output_frames, mid, h, w)
-        lastframe = frame
-        if break_flag:
-            break
 
-    add_frame(output_frames, lastframe, h, w)
-    return torch.cat( output_frames, dim=1)
-
-def temporal_interpolation(model_path, frames, multiplier, device="cuda"):
-
-    input_was_uint8 = frames.dtype == torch.uint8
+def temporal_interpolation(model_path, frames, multiplier, device="cuda", *, previous_last_frame=None, abort_callback=None, progress_callback=None):
+    if abort_callback is not None and abort_callback():
+        return None
+    if progress_callback is not None:
+        progress_callback("Loading - RIFE Model")
     model = ModelV4()
     model.load_model(model_path, -1, device=device)
-
     model.eval()
-    model.to(device=device)
-
-    with torch.no_grad():    
-        output = process_frames(model, device, frames, multiplier)
-
-    if input_was_uint8:
-        output = output.add_(1.0).mul_(127.5).clamp_(0, 255).to(torch.uint8)
-    return output
+    try:
+        return process_frames(model, device, frames, multiplier, previous_last_frame=previous_last_frame, abort_callback=abort_callback, progress_callback=progress_callback)
+    finally:
+        model._grid_cache.clear()

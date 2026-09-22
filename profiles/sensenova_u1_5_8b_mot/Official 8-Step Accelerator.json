@@ -1,4 +1,5 @@
 {
+    "profile_priority": 1,
     "activated_loras": [
         "https://huggingface.co/DeepBeepMeep/SenseNova/resolve/main/loras_accelerators/SenseNova-U1.5-8B-MoT-LoRA-8step.safetensors"
     ],

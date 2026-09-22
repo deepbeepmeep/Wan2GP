@@ -176,20 +176,6 @@ def resolve_lm_decoder_engine(requested_engine, engines_available = [], require_
     return "legacy"
 
 
-def _clear_inductor_cuda_pools():
-    try:
-        from torch._inductor import cudagraph_trees as cgt
-    except Exception:
-        return
-
-    clear_cublass_cache = getattr(cgt, "clear_cublass_cache", None)
-    if callable(clear_cublass_cache):
-        try:
-            clear_cublass_cache()
-        except Exception:
-            pass
-
-
 class NanoVllmTextEngine:
     keep_loaded_for_phase2 = True
 
@@ -200,6 +186,7 @@ class NanoVllmTextEngine:
         self.enforce_eager = bool(enforce_eager)
         self.graph_pool_handle = graph_pool_handle
         self.kv_cache_int8 = bool(kv_cache_int8)
+        self._kv_cache_options = {}
         self.hf_config = getattr(model, "config", None)
         self._llm = None
         self._sampling_params_cls = None
@@ -293,6 +280,7 @@ class NanoVllmTextEngine:
             model_object=self.model,
             graph_pool_handle=self.graph_pool_handle,
             kv_cache_int8=self.kv_cache_int8,
+            **self._kv_cache_options,
         )
         self._sampling_params_cls = SamplingParams
 
@@ -338,7 +326,13 @@ class NanoVllmTextEngine:
                 pass
         self._sampling_params_cls = None
         try:
-            _clear_inductor_cuda_pools()
+            import torch
+            # DO NOT add `from torch._inductor import cudagraph_trees` here.
+            # Its import registers borrowed Python objects in native TLS on PyTorch
+            # 2.10, causing use-after-free and process crashes when a worker exits.
+            # Call the same cleanup as its clear_cublass_cache() helper directly.
+            # Our CUDA graphs use torch.cuda.CUDAGraph, not Inductor's graph trees.
+            torch._C._cuda_clearCublasWorkspaces()
         except Exception:
             pass
 
@@ -498,6 +492,7 @@ class NanoVllmTextEngine:
         ignore_eos: bool = False,
         position_offset: int = 0,
         repetition_penalty: float = 1.0,
+        stream_callback=None,
     ):
         results = self.generate_embedded_batch(
             [{"prompt_token_ids": prompt_token_ids, "prompt_embeds": prompt_embeds, "prompt_position_ids": prompt_position_ids, "position_offset": position_offset}],
@@ -511,6 +506,7 @@ class NanoVllmTextEngine:
             release_vram_after=release_vram_after,
             ignore_eos=ignore_eos,
             repetition_penalty=repetition_penalty,
+            stream_callback=stream_callback,
         )
         return None if not results else results[0]
 
@@ -528,6 +524,7 @@ class NanoVllmTextEngine:
         release_vram_after: bool = True,
         ignore_eos: bool = False,
         repetition_penalty: float = 1.0,
+        stream_callback=None,
     ):
         """Run several independent embedded prompts concurrently (batched prefill + decode).
 
@@ -581,6 +578,7 @@ class NanoVllmTextEngine:
                 position_offsets=[int(request.get("position_offset", 0) or 0) for request in requests],
                 sampling_params=sampling_params,
                 use_tqdm=use_tqdm,
+                stream_callback=stream_callback,
             )
             for output in outputs or []:
                 text, token_ids = self._extract_text_and_tokens(output)

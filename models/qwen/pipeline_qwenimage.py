@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from shared.utils.phase_progress import text_encoding_prompts, text_encoding_progress
 from mmgp import offload
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -238,7 +239,8 @@ class QwenImagePipeline(): #DiffusionPipeline
                 return_tensors="pt",
             ).to(device)
 
-            outputs = self.text_encoder(input_ids=model_inputs.input_ids, attention_mask=model_inputs.attention_mask, pixel_values=model_inputs.pixel_values, image_grid_thw=model_inputs.image_grid_thw, output_hidden_states=True)
+            with text_encoding_progress(self.text_encoder.model.language_model.layers, prompt_count=len(prompt)):
+                outputs = self.text_encoder(input_ids=model_inputs.input_ids, attention_mask=model_inputs.attention_mask, pixel_values=model_inputs.pixel_values, image_grid_thw=model_inputs.image_grid_thw, output_hidden_states=True)
             hidden_states = outputs.hidden_states[-1]
             split_hidden_states = self._extract_masked_hidden(hidden_states, model_inputs.attention_mask)
             split_hidden_states = [e[drop_idx:] for e in split_hidden_states]
@@ -253,7 +255,8 @@ class QwenImagePipeline(): #DiffusionPipeline
                     truncation=True,
                     return_tensors="pt",
                 ).to(device)
-                hidden_states = self.text_encoder(input_ids=txt_tokens.input_ids, attention_mask=txt_tokens.attention_mask, output_hidden_states=True).hidden_states[-1]
+                with text_encoding_progress(self.text_encoder.model.language_model.layers, prompt_count=len(prompts)):
+                    hidden_states = self.text_encoder(input_ids=txt_tokens.input_ids, attention_mask=txt_tokens.attention_mask, output_hidden_states=True).hidden_states[-1]
                 split_hidden_states = self._extract_masked_hidden(hidden_states, txt_tokens.attention_mask)
                 split_hidden_states = [e[drop_idx:] for e in split_hidden_states]
                 attn_mask_list = [torch.ones(e.size(0), dtype=torch.long, device=e.device) for e in split_hidden_states]
@@ -767,25 +770,30 @@ class QwenImagePipeline(): #DiffusionPipeline
             negative_prompt_embeds is not None and negative_prompt_embeds_mask is not None
         )
         do_true_cfg = true_cfg_scale > 1 and has_neg_prompt
-        prompt_embeds, prompt_embeds_mask = self.encode_prompt(
-            image=condition_images,
-            prompt=prompt,
-            prompt_embeds=prompt_embeds,
-            prompt_embeds_mask=prompt_embeds_mask,
-            device=device,
-            num_images_per_prompt=num_images_per_prompt,
-            max_sequence_length=max_sequence_length,
-        )
-        if do_true_cfg:
-            negative_prompt_embeds, negative_prompt_embeds_mask = self.encode_prompt(
+        pending_prompts = [] if prompt_embeds is not None else [prompt] if isinstance(prompt, str) else list(prompt)
+        if do_true_cfg and negative_prompt_embeds is None:
+            pending_prompts += [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+        prompt_count = len(pending_prompts) if condition_images else sum(p not in self.text_encoder_cache._entries for p in dict.fromkeys(pending_prompts))
+        with text_encoding_prompts(prompt_count):
+            prompt_embeds, prompt_embeds_mask = self.encode_prompt(
                 image=condition_images,
-                prompt=negative_prompt,
-                prompt_embeds=negative_prompt_embeds,
-                prompt_embeds_mask=negative_prompt_embeds_mask,
+                prompt=prompt,
+                prompt_embeds=prompt_embeds,
+                prompt_embeds_mask=prompt_embeds_mask,
                 device=device,
                 num_images_per_prompt=num_images_per_prompt,
                 max_sequence_length=max_sequence_length,
             )
+            if do_true_cfg:
+                negative_prompt_embeds, negative_prompt_embeds_mask = self.encode_prompt(
+                    image=condition_images,
+                    prompt=negative_prompt,
+                    prompt_embeds=negative_prompt_embeds,
+                    prompt_embeds_mask=negative_prompt_embeds_mask,
+                    device=device,
+                    num_images_per_prompt=num_images_per_prompt,
+                    max_sequence_length=max_sequence_length,
+                )
         additional_t_cond = None
         if getattr(self.transformer, "use_additional_t_cond", False):
             add_value = 1 if image is not None and len(condition_images) > 0 else 0

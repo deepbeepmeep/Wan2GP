@@ -125,6 +125,10 @@ if (!AG.uploadPatchInit) {
 
 // Manual selection trigger (used by click handler and callable from elsewhere)
 window.selectAudioThumbnail = function (index) {
+  if (window.WanGPGallerySelection && document.querySelector('#wangp-gallery-view')) {
+    window.WanGPGallerySelection.audio(index);
+    return;
+  }
   const c = AG.container();
   if (c) AG.state.prevScroll = c.scrollLeft;  // snapshot BEFORE Gradio re-renders
   AG.state.manual = true;
@@ -443,24 +447,8 @@ AG.tryInstall();
 
     def _refresh_gallery(self, refresh_id, paths_json, selected_idx):
         """Refresh gallery based on state (programmatic)."""
-        if not refresh_id:
-            return self._render_from_state(paths_json, selected_idx)[:2], selected_idx
-
-        try:
-            paths = json.loads(paths_json) if paths_json else []
-            audio_infos = self._process_audio_paths(paths)
-
-            if not audio_infos:
-                return None, self._create_gallery_html([], 0), -1
-
-            selected_idx = _get_selected_idx(audio_infos, selected_idx)
-
-            selected_path = audio_infos[selected_idx]["path"]
-            gallery_html_content = self._create_gallery_html(audio_infos, selected_idx)
-
-            return selected_path, gallery_html_content, selected_idx
-        except Exception:
-            return None, self._create_gallery_html([], 0), -1
+        rendered = self._render_from_state(paths_json, selected_idx)
+        return rendered[0], rendered[1], rendered[3]
 
     def _get_audio_duration(self, audio_path):
         """Get audio duration in seconds. Returns formatted string."""
@@ -533,9 +521,8 @@ AG.tryInstall();
         return dt
 
     def _format_duration(self, seconds):
-        """Format duration in seconds to MM:SS format."""
-        mins = int(seconds // 60)
-        secs = int(seconds % 60)
+        """Round to the nearest second before formatting as MM:SS."""
+        mins, secs = divmod(int(seconds + 0.5), 60)
         return f"{mins}:{secs:02d}"
 
     def _get_file_info(self, audio_path, not_found=False):
@@ -582,7 +569,7 @@ AG.tryInstall();
         </div>
         """
 
-    def _create_gallery_html(self, audio_infos, selected_index):
+    def _create_gallery_html(self, audio_infos, selected_index, offset=0):
         """Create the complete gallery HTML."""
         thumbnails_html = ""
         num_thumbnails = len(audio_infos)
@@ -595,7 +582,7 @@ AG.tryInstall();
 
         for i, info in enumerate(audio_infos):
             is_selected = i == selected_index
-            thumbnails_html += self._create_thumbnail_html(info, i, is_selected)
+            thumbnails_html += self._create_thumbnail_html(info, i + offset, is_selected)
 
         selected_basename = (
             audio_infos[selected_index]["basename"]
@@ -605,37 +592,20 @@ AG.tryInstall();
 
         gallery_html = f"""
         <style>
-            :root {{
-                --bg-primary: #fafafa;
-                --bg-secondary: white;
-                --bg-selected-filename: #f0f0f0;
-                --bg-selected-thumbnail: #E3F2FD;
-                --bg-tooltip: rgba(0, 0, 0, 0.85);
-                --text-primary: #333;
-                --text-secondary: #666;
-                --text-tooltip: white;
-                --border-primary: #e0e0e0;
-                --border-secondary: #d0d0d0;
-                --accent-color: #2196F3;
-                --shadow-color: rgba(33, 150, 243, 0.3);
-                --shadow-color-selected: rgba(33, 150, 243, 0.4);
-            }}
-
-            @media (prefers-color-scheme: dark) {{
-                :root {{
-                    --bg-primary: #27272a;
-                    --bg-secondary: #52525b;
-                    --bg-selected-filename: #2c2c2c;
-                    --bg-selected-thumbnail: #0d2a40;
-                    --bg-tooltip: rgba(255, 255, 255, 0.85);
-                    --text-primary: #e0e0e0;
-                    --text-secondary: #a0a0a0;
-                    --text-tooltip: black;
-                    --border-primary: #333;
-                    --border-secondary: #444;
-                    --shadow-color: rgba(33, 150, 243, 0.5);
-                    --shadow-color-selected: rgba(33, 150, 243, 0.6);
-                }}
+            .audio-gallery-container {{
+                --bg-primary: var(--studio-surface);
+                --bg-secondary: var(--studio-input);
+                --bg-selected-filename: var(--studio-soft);
+                --bg-selected-thumbnail: var(--studio-button);
+                --bg-tooltip: var(--body-text-color);
+                --text-primary: var(--body-text-color);
+                --text-secondary: var(--body-text-color-subdued);
+                --text-tooltip: var(--background-fill-primary);
+                --border-primary: var(--studio-border);
+                --border-secondary: var(--studio-border);
+                --accent-color: var(--studio-accent);
+                --shadow-color: color-mix(in srgb, var(--studio-accent) 20%, transparent);
+                --shadow-color-selected: color-mix(in srgb, var(--studio-accent) 25%, transparent);
             }}
 
             /* Fix audio player height */
@@ -790,18 +760,15 @@ AG.tryInstall();
 
     def _render_from_state(self, paths_json, selected_idx):
         """Render gallery from state."""
-        try:
-            paths = json.loads(paths_json) if paths_json else []
-            audio_infos = self._process_audio_paths(paths)
-
-            if not audio_infos:
-                return None, self._create_gallery_html([], 0), paths_json, -1, ""
-
-            selected_idx = _get_selected_idx(audio_infos, selected_idx)
-            selected_path = audio_infos[selected_idx]["path"] 
-            if not os.path.exists(selected_path): selected_path = None
-            gallery_html_content = self._create_gallery_html(audio_infos, selected_idx)
-
-            return selected_path, gallery_html_content, paths_json, selected_idx, ""
-        except Exception:
-            return None, self._create_gallery_html([], 0), paths_json, -1, ""
+        value = json.loads(paths_json) if paths_json else []
+        projected = isinstance(value, dict)
+        paths, offset = (value['paths'], value['offset']) if projected else (value, 0)
+        audio_infos = self._process_audio_paths(paths)
+        local_index = selected_idx - offset
+        if not projected:
+            local_index = _get_selected_idx(audio_infos, local_index)
+            selected_idx = local_index
+        selected_path = audio_infos[local_index]['path'] if 0 <= local_index < len(audio_infos) else None
+        if selected_path and not os.path.exists(selected_path):
+            selected_path = None
+        return selected_path, self._create_gallery_html(audio_infos, local_index, offset), paths_json, selected_idx, ''

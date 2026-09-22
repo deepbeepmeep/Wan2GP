@@ -2,6 +2,7 @@
     "model": {
         "name": "Vace FusioniX 14B",
         "architecture": "vace_14B",
+        "accelerated": "native",
         "modules": [
             "vace_14B"
         ],

@@ -345,10 +345,10 @@ class AdvancedMediaGallery:
     def _on_move(self, delta: int, state: Dict[str, Any], gallery) :
         st = get_state(state); items: List[Any] = get_list(gallery); sel = st.get("selected", None)
         if sel is None or not (0 <= sel < len(items)):
-            return gr.update(value=items, selected_index=sel), st
+            return gr.skip(), gr.skip()
         j = sel + delta
         if j < 0 or j >= len(items):
-            return gr.update(value=items, selected_index=sel), st
+            return gr.skip(), gr.skip()
         items[sel], items[j] = items[j], items[sel]
         st["items"] = items; st["selected"] = j
         record_last_action(st,"move")
@@ -441,6 +441,7 @@ class AdvancedMediaGallery:
             inputs=[self.state, self.gallery],
             outputs=[self.gallery, self.state],
             trigger_mode="always_last",
+            show_progress="hidden",
         )
 
         # Gallery value changed by user actions (click-to-add, drag-drop, internal remove, etc.)

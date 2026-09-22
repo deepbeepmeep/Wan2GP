@@ -216,3 +216,7 @@ If masks do not behave as expected:
 - Save masks and control videos with `--save-masks`.
 - Rebuild the mask with cleaner selections or sub masks.
 - Expand or shrink the mask when the replacement subject needs different space.
+
+---
+
+> Applies to: Control media, masks, reference preparation, long-video sliding windows, duration schedules, overlaps and post-processing. Procedures describe interface controls; programmatic access uses the API and MCP interfaces.

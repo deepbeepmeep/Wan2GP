@@ -5,7 +5,7 @@ import torch.nn.functional as F
 try:
     import triton
     import triton.language as tl
-    from triton.language.extra.cuda import libdevice
+    from triton.language.extra import libdevice
 except ImportError:
     triton = None
 

@@ -13,12 +13,12 @@ from .constants import (H3_AUDIO_REFINEMENT_SETTING, H3_MASK_MODE_DEFAULT, H3_MA
                         h3_grouped_masking_enabled)
 from .dialogue import H3_DIALOGUE_GENERATION, H3_DIALOGUE_MAX_TOTAL_SECONDS, H3_DIALOGUE_PROMPT_INFOS, load_dialogue_whisper
 from .minimax_h3_main import (AUDIO_VAE_FILE, LATENT_UPSCALER_FILE, LATENT_UPSCALER_FOLDER, TEXT_ENCODER_FOLDER,
-                              VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE)
+                              VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE, VIDEO_VAE_INT8_FILE)
 from .pdd import PDD_BLOCK_SIZE, PDD_NUM_STEPS
 from .viggle import VIGGLE_ARCHITECTURE, VIGGLE_ASSET_FOLDER, VIGGLE_INFOS, VIGGLE_PROMPT_FILE, VIGGLE_REPO_ID
-from .prompt_enhancer import (FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
-                              H3_AUDIO_DIALOGUE_SYSTEM_PROMPT, H3_AUDIO_MONOLOGUE_SYSTEM_PROMPT,
-                              REF2VA_IMAGE_SYSTEM_PROMPT, REF2VA_PROMPT_INFOS, REF2VA_TEXT_SYSTEM_PROMPT)
+from .prompt_enhancer import (FL2VA_DEEPY_PROMPT_INFOS, FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
+                              H3_AUDIO_DEEPY_PROMPT_INFOS, H3_AUDIO_DIALOGUE_SYSTEM_PROMPT, H3_AUDIO_MONOLOGUE_SYSTEM_PROMPT,
+                              REF2VA_DEEPY_PROMPT_INFOS, REF2VA_IMAGE_SYSTEM_PROMPT, REF2VA_PROMPT_INFOS, REF2VA_TEXT_SYSTEM_PROMPT)
 
 
 REPO_ID = "DeepBeepMeep/MiniMax-H3"
@@ -51,6 +51,15 @@ FIRST_BLOCK_CACHE_STRENGTHS = [
     ("Maximum (0.14)", 0.14),
 ]
 
+FL2VA_DEEPY_INFOS = """Generate video and stereo sound from `prompt`. `image_start` / `image_end` anchor the opening / ending; together they constrain the transition. `video_source` continues an existing video; sliding windows carry overlapping video and audio forward.
+
+Control Video (`video_guide`) guides frames: lower Denoising Strength preserves more source content; Whole Frame at strength 1 gives full freedom. A mask selects the edited area. For motion/appearance references, use Ref2VA Reference Video. Inject Frames uses ordered `image_refs` and explicit positions (`1` = first frame, `L` = last frame of the window, `X` = skip a window without consuming an image).
+
+`audio_prompt_type`: empty = generate video and audio; `A` = condition on `audio_guide`; `K` = control video plus its soundtrack; `2` = keep control frames and generate their audio. A complete input soundtrack is reused; a shorter one permits generated sound afterward. Match visible action and speech to supplied audio.
+
+Use `capabilities` for window limits. WanGP rounds overlap to compatible values (1, 18, 35, ...); `video_length` sets total duration across windows. Read `prompt_infos` for H3's structured prompt syntax.
+"""
+
 FL2VA_INFOS = """## FL2VA — First/Last Frame to Video and Audio
 
 FL2VA creates a video with stereo sound from your text prompt. You can optionally provide a start image, an end image, a control video, injected frames, or a soundtrack.
@@ -68,7 +77,9 @@ Start and end images are placed at those exact points in the video. For general 
 
 - **Generate without using a Control Video:** generate normally from the prompt and any start/end images.
 - **Use Control Video:** use an uploaded video to guide the result. Lower **Denoising Strength** values keep the result closer to the control video; `1.0` gives the model full freedom. At `1.0` with **Whole Frame** selected, the control video does not affect the result, so WanGP skips that work. Choose **Masked Area** or **Non Masked Area** to limit editing to part of the frame. **Masking Strength** controls how strongly the rest of the frame stays close to the control video. Use a lower masking strength (<0.75) to facilitate continuity with masked areas.
-- **Inject Frames:** add images at specific points in the generated video. Add the images under **Reference Images**, then enter one position per image in the same order. Position `1` means the first frame; `L` means the last frame of a sliding-window segment.
+- **Inject Frames:** add images at specific points in the generated video. Add the images under **Reference Images**, then enter one position per image in the same order. Position `1` means the first frame; `L` means the last frame of a sliding-window segment. Each `X` skips a window without consuming an image.
+
+For motion or appearance transfer from a video reference, use Ref2VA with **Reference Video**. FL2VA Control Video uses denoising-based editing.
 
 ### Audio Source
 
@@ -82,6 +93,15 @@ Start and end images are placed at those exact points in the video. For general 
 Sliding windows can continue a video beyond one generation. Choose any overlap amount and WanGP will round it to the nearest H3-compatible value (1, 18, 35, 52...). It automatically reuses the overlapping video and audio to make the join smoother.
 
 H3 is designed for 24 FPS, although WanGP can generate at another frame rate. MiniMax documents an official duration of 4–15 seconds per generation window; longer videos are possible through sliding windows.
+"""
+
+REF2VA_DEEPY_INFOS = """Generate video and 32 kHz stereo audio from `prompt` and references. Ordered `image_refs` guide identity, objects or setting; reference flags in `video_prompt_type`: `I` preserves chosen output dimensions, `KI` derives them from the first image. `image_start` / `image_end` are timeline anchors shown before general image references. `video_source` and sliding windows provide continuation.
+
+`video_guide` / `video_guide2` supply up to two reference videos for appearance, motion or camera; choose the corresponding video mode. Reference videos preserve the chosen output size. Depth or Generic Control uses the control video's aspect ratio. Use Reference Video for motion transfer to image-reference characters. Generic Control edits through denoising: lower strength preserves more source content; at strength 1 without a mask, the source supplies no visual conditioning. Generic Control does not supply a video reference.
+
+`audio_prompt_type`: empty = no audio reference; `A` = `audio_guide`; `AB` = both audio guides; `K` = reference-video soundtracks. The prompt defines whether audio is copied or used as a voice/sound reference.
+
+Limits: 9 reference images; 2 videos, each at least 2s, truncated to 15s and totaling at most 15s; 2 audio references, each at least 2s. Audio above 15s combined is limited to 15s for one reference or 7.5s each for two. Image + video reference count must cover audio reference count. At most 12 uploaded reference files; a video soundtrack shares its video's file. Keep backgrounds when scene context matters; optional background removal isolates subjects. Read `prompt_infos` for Ref2VA's six-section syntax.
 """
 
 REF2VA_INFOS = """## Ref2VA — Reference to Video and Audio
@@ -99,11 +119,11 @@ Ref2VA generates a new video with native 32 kHz stereo audio from text plus mult
 
 ### Choosing a video input
 
-- **Reference Video:** reuse subjects, appearance, or motion without changing the selected output resolution.
+- **Reference Video:** reuse subjects, appearance, or motion without changing the selected output resolution. Choose this mode to transfer motion from a video to characters supplied in reference images; describe the subject replacements in the prompt. Reference videos do not use Denoising Strength.
 - **Depth Control:** reuse the scene's depth and layout.
-- **Generic Control:** provide the video unchanged, use its aspect ratio to set the output dimensions and use the text prompt to tell the model what to do with it.
+- **Generic Control:** edit the source video using the prompt and **Denoising Strength**, with output dimensions based on its aspect ratio. Lower strength preserves more source content. At `1.0` with **Whole Frame** selected, the source video supplies no visual conditioning. Choose **Masked Area** or **Non Masked Area** to edit part of the frame. This mode does not supply the video as a motion/appearance reference.
 
-Reference videos adapt to your chosen output size. Control videos instead define the output size and are converted into the selected guide. Both guide the result creatively rather than reproducing every frame exactly.
+Reference videos adapt to your chosen output size and guide the result creatively, without guaranteeing exact motion reproduction. Depth Control supplies a depth guide; Generic Control edits the source through denoising. Control videos define the output size.
 
 ### Reference-image size
 
@@ -191,6 +211,8 @@ At each step, PDD merges four learned denoising-interval outputs into one predic
 This model requires exactly **8 inference steps** and the **Euler** sampler. Two-phase generation is disabled. Use the FL2VA PDD weights only with FL2VA and the Ref2VA PDD weights only with Ref2VA.
 """
 
+H3_VDN_INFOS = "\n\n### Automatic 8-step acceleration\nThe VDN 8-step acceleration LoRA is automatically loaded and generation defaults to 8 steps."
+
 H3_RUNTIME_INFOS = H3_PHASE_INFOS + H3_PHASE_TURBO_INFOS + H3_AUDIO_REFINEMENT_INFOS + H3_SPEED_INFOS + H3_STANDARD_SAMPLER_INFOS + H3_COMMON_RUNTIME_INFOS
 H3_PDD_RUNTIME_INFOS = PDD_INFOS + H3_SPEED_INFOS + H3_COMMON_RUNTIME_INFOS
 
@@ -243,6 +265,7 @@ def _get_audio_generator_model_def(model_def):
         "profiles_dir": ["minimax_h3_tts"],
         "duration_slider": {
             "label": "Maximum Total Audio Duration (seconds)",
+            "name": "Maximum Total Audio Duration",
             "min": 4,
             "max": int(H3_DIALOGUE_MAX_TOTAL_SECONDS),
             "increment": 1,
@@ -286,6 +309,8 @@ def _get_audio_generator_model_def(model_def):
         "sample_solvers": [("Euler", "euler"), ("RES Multistep", "res_multistep"), ("Ralston 2S (~2x slower)", "ralston_2s")],
         "infos": H3_AUDIO_GENERATOR_INFOS + H3_SPEED_INFOS + H3_STANDARD_SAMPLER_INFOS + H3_COMMON_RUNTIME_INFOS + PRUNED_INFOS,
         "prompt_infos": (H3_DIALOGUE_PROMPT_INFOS if H3_DIALOGUE_GENERATION else "") + REF2VA_PROMPT_INFOS,
+        "deepy_infos": "Generate 32 kHz stereo audio from `prompt`. `audio_prompt_type`: empty = no sample; `A` = voice/audio from `audio_guide`; `AB` = both audio guides. For Speaker scripts, samples map to speakers 1 and 2. Each sample must be at least 2s; above 15s combined, one is limited to 15s or two to 7.5s each. `duration_seconds` caps the assembled audio. Speaker turns are generated and joined automatically; Early Stop finishes the current turn and returns completed turns.",
+        "deepy_prompt_infos": H3_AUDIO_DEEPY_PROMPT_INFOS if H3_DIALOGUE_GENERATION else REF2VA_DEEPY_PROMPT_INFOS,
         "prompt_enhancer_button_label": "Write",
         "prompt_enhancer_def": {
             "selection": ["T", "T1"],
@@ -347,13 +372,8 @@ class family_handler:
         return get_rgb_factors("minimax_h3")
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument("--lora-dir-minimax-h3", type=str, default=None,
-                            help=f"Path to MiniMax H3 LoRAs (default: {os.path.join(lora_root, 'minimax_h3')})")
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_dir_minimax_h3", None) or os.path.join(lora_root, "minimax_h3")
+    def get_lora_dir(base_model_type):
+        return "minimax_h3"
 
     @staticmethod
     def set_cache_parameters(cache_type, base_model_type, model_def, inputs, skip_steps_cache):
@@ -368,8 +388,11 @@ class family_handler:
             result = family_handler.query_model_def(REF2VA_PRUNED_ARCHITECTURE, model_def)
             result.update({
                 "profiles_dir": [VIGGLE_ARCHITECTURE],
+                "specialities": [{"name": "character replacement"}, {"name": "motion transfer"}],
                 "infos": VIGGLE_INFOS,
                 "prompt_infos": "Viggle uses a fixed prompt. Prepare the character replacement in the Edited Reference Frame; generation prompt text is ignored.",
+                "deepy_infos": "Viggle combines `video_guide` with one edited frame from that video in `image_refs` (reference mode `I`, Control Video mode `VU`). Edit the character while preserving that frame's pose, props, background, framing and dimensions; any clear source frame works. The video supplies motion/camera, the edited frame supplies appearance. Windows are fixed at 124 frames with 18-frame overlap by default. `audio_prompt_type`: empty = model audio; `A` = `audio_guide`; `K` = control-video soundtrack. Audio conditioning is experimental: use synchronized audio. A full input track is reused; a shorter one allows generated audio afterward.",
+                "deepy_prompt_infos": "Express the replacement through the Edited Reference Frame. Viggle uses a fixed built-in prompt; generation text is ignored.",
                 "text_encoder_URLs": [], "text_encoder_folder": None, "system_configs": {},
                 "prompt_enhancer_def": {"selection": [], "labels": {}, "default": ""},
                 "image_outputs": False, "sliding_window": True, "video_continuation": False,
@@ -383,7 +406,7 @@ class family_handler:
                 "one_image_ref_needed": True, "no_background_removal": True, "any_image_refs_relative_size": False, "fit_into_canvas_image_refs": 1,
                 "image_ref_choices": {"choices": [("Use Edited Reference Frame", "I")], "letters_filter": "I", "default": "I", "label": "Edited Reference Frame"},
                 "guide_custom_choices": {"choices": [("Use Control Video", "VU")], "letters_filter": "V-U", "default": "VU", "label": "Control Video"},
-                "video_guide_label": "Control Video", "preprocess_video_guide2": False,
+                "video_guide_label": "Control Video", "preprocess_video_guide2": False, "reference_video_enabled": False,
                 "any_audio_prompt": True, "audio_prompt_choices": True, "output_audio_is_input_audio": True,
                 "audio_guide_label": "Custom Audio",
                 "audio_prompt_type_sources": {
@@ -403,7 +426,11 @@ class family_handler:
         text_encoder_files = [TEXT_ENCODER_BF16, TEXT_ENCODER_INT8] if text_encoder_variant is None else TEXT_ENCODER_VARIANTS[text_encoder_variant]
         result = {
             "dtype": "bf16",
+            "size": "lighter" if pruned else "large",
+            **({"accelerated": "native"} if pdd or vdn else {}),
+            **({"specialities": [{"name": "character consistency", "aliases": ["identity preservation"]}, {"name": "motion transfer", "description": "Transfer motion or camera from reference videos to image-reference characters."}]} if reference_mode else {}),
             "fps": 24,
+            "prompt_enhancer_video_duration": True,
             "frames_minimum": 107,
             "frames_steps": 17,
             "frames_offset": 5,
@@ -471,14 +498,14 @@ class family_handler:
             "multimedia_generation": True,
             "image_end_frame_position": True,
             "control_video_trim_disabled": True,
-            "infos": (REF2VA_INFOS if reference_mode else FL2VA_INFOS) + (H3_PDD_RUNTIME_INFOS if pdd else H3_RUNTIME_INFOS) + (PRUNED_INFOS if pruned else "") + model_def.get("infos", ""),
+            "infos": (REF2VA_INFOS if reference_mode else FL2VA_INFOS) + (H3_PDD_RUNTIME_INFOS if pdd else H3_RUNTIME_INFOS) + (PRUNED_INFOS if pruned else "") + (H3_VDN_INFOS if vdn else "") + model_def.get("infos", ""),
             "prompt_infos": REF2VA_PROMPT_INFOS if reference_mode else FL2VA_PROMPT_INFOS,
-            "prompt_enhancer_button_label": "Write H3 Prompt",
+            "prompt_enhancer_button_label": "Write",
             "prompt_enhancer_def": {
                 "selection": ["T", "TI"],
                 "labels": {
-                    "TV": "Write an H3 Reference Prompt from Text" if reference_mode else "Write an H3 Prompt from Text",
-                    "TIV": "Write an H3 Reference Prompt from Text + First Reference Image" if reference_mode else "Write an H3 Prompt from Text + Start Image",
+                    "TV": "An H3 Reference Prompt from Text" if reference_mode else "An H3 Prompt from Text",
+                    "TIV": "An H3 Reference Prompt from Text + {image_inputs}" if reference_mode else "An H3 Prompt from Text + {image_inputs}",
                 },
                 "default": "",
             },
@@ -486,7 +513,7 @@ class family_handler:
             "video_prompt_enhancer_instructions": REF2VA_IMAGE_SYSTEM_PROMPT if reference_mode else FL2VA_IMAGE_SYSTEM_PROMPT,
             "text_prompt_enhancer_max_tokens": 2048 if reference_mode else 1024,
             "video_prompt_enhancer_max_tokens": 2048 if reference_mode else 1024,
-            "profiles_dir": ["minimax_h3_vdn"] if vdn else ["minimax_h3"],
+            "profiles_dir": ["minimax_h3_vdn"] if vdn else [] if pdd else ["minimax_h3", "minimax_h3_ref2va" if reference_mode else "minimax_h3_fl2va"],
             "finetune_custom_urls": ["video_vae_file", "audio_vae_file"],
             "finetunes_infos": H3_FINETUNES_INFOS,
             "finetunes_params": H3_FINETUNES_PARAMS,
@@ -507,8 +534,10 @@ class family_handler:
             },
             "system_configs2": {
                 "_name": "Video VAE",
-                "_default_label": "Original VAE",
+                "_default_label": "Auto",
+                "bf16": {"name": "BF16", "video_vae_file": VIDEO_VAE_FILE},
                 "fp8mix": {"name": "FP8 Mixed Precision", "video_vae_file": VIDEO_VAE_FP8MIX_FILE},
+                "int8_convrot": {"name": "INT8 ConvRot Decoder", "video_vae_file": VIDEO_VAE_INT8_FILE},
             },
             "system_configs3": {
                 "_name": "DiT Denoising Priority",
@@ -522,6 +551,8 @@ class family_handler:
             result.update({
                 "sliding_window": True,
                 "video_continuation": True,
+                "deepy_infos": REF2VA_DEEPY_INFOS,
+                "deepy_prompt_infos": REF2VA_DEEPY_PROMPT_INFOS,
                 "sliding_window_defaults": {"window_min": 124, "window_max": 481, "window_step": 17, "window_default": 362,
                                             "overlap_min": 1, "overlap_max": 120, "overlap_step": 17, "overlap_offset": 1, "overlap_default": 18},
                 "frames_selection_maximum": 737,
@@ -553,6 +584,7 @@ class family_handler:
                 },
                 "preprocess_video_guide2": True,
                 "mask_preprocessing": {"selection": ["", "A", "NA"]},
+                "reference_video_enabled": True,
                 "reference_video_max_frames": 15 * 24,
                 "reference_video_max_size": (768, 1344),
                 "any_audio_prompt": True,
@@ -582,6 +614,8 @@ class family_handler:
             result.update({
                 "sliding_window": True,
                 "video_continuation": True,
+                "deepy_infos": FL2VA_DEEPY_INFOS,
+                "deepy_prompt_infos": FL2VA_DEEPY_PROMPT_INFOS,
                 "sliding_window_defaults": {"window_min": 124, "window_max": 481, "window_step": 17, "window_default": 362,
                                             "overlap_min": 1, "overlap_max": 120, "overlap_step": 17, "overlap_offset": 1, "overlap_default": 18},
                 "image_prompt_types_allowed": "TSEVL",
@@ -622,6 +656,10 @@ class family_handler:
                 "video_length_not_limited_by_audio": True,
                 "output_audio_is_input_audio": True,
             })
+        if pdd:
+            result["deepy_infos"] += " PDD requires exactly 8 inference steps and the Euler sampler."
+        if vdn:
+            result["deepy_infos"] += " VDN loads its acceleration LoRA automatically and defaults to 8 steps."
         return result
 
     @staticmethod
@@ -687,7 +725,7 @@ class family_handler:
             video_prompt_type = inputs["video_prompt_type"]
             audio_prompt_type = inputs["audio_prompt_type"]
             if "F" in inputs["video_prompt_type"]:
-                position_count = len((inputs["frames_positions"] or "").replace(",", " ").split())
+                position_count = sum(pos.upper() != "X" for pos in (inputs["frames_positions"] or "").replace(",", " ").split())
                 image_count = len(inputs["image_refs"] or [])
                 if position_count != image_count:
                     return f"MiniMax H3 frame injection requires one position per Reference Image (found {position_count} positions and {image_count} images)"
@@ -780,6 +818,14 @@ class family_handler:
         return None
 
     @staticmethod
+    def resolve_runtime_model_def(model_def, runtime_context):
+        """Resolve Auto once for both asset downloads and model loading."""
+        if "video_vae_file" in model_def or model_def.get("system_configs2", {}).get("_name") != "Video VAE":
+            return model_def
+        filename = {"int8": VIDEO_VAE_INT8_FILE, "fp8": VIDEO_VAE_FP8MIX_FILE}.get(runtime_context["transformer_quantization"], VIDEO_VAE_FILE)
+        return {**model_def, "video_vae_file": filename}
+
+    @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):
         source_folders = []
         file_lists = []
@@ -787,6 +833,9 @@ class family_handler:
         video_vae_file = model_def.get("video_vae_file", VIDEO_VAE_FILE)
         if video_vae_file in (VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE):
             vae_files.append(video_vae_file)
+        if video_vae_file == VIDEO_VAE_INT8_FILE:
+            source_folders.append("minimax_h3")
+            file_lists.append([VIDEO_VAE_INT8_FILE.rsplit("/", 1)[-1]])
         if "audio_vae_file" not in model_def:
             vae_files.append(AUDIO_VAE_FILE)
         if vae_files:
@@ -888,8 +937,8 @@ class family_handler:
         if settings_version < 2.76:
             video_prompt_type = ui_defaults.get("video_prompt_type", "")
             if "V" in video_prompt_type and not any(flag in video_prompt_type for flag in "PDEG+-"):
-                video_prompt_type = video_prompt_type.replace("V", "GV", 1)
-            elif "V" in video_prompt_type and any(flag in video_prompt_type for flag in "+-") and "U" not in video_prompt_type:
+                video_prompt_type += "-"
+            if "V" in video_prompt_type and any(flag in video_prompt_type for flag in "+-") and "U" not in video_prompt_type:
                 video_prompt_type += "U"
             ui_defaults["video_prompt_type"] = video_prompt_type
 

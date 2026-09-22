@@ -4,6 +4,9 @@ from time import perf_counter
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 import torch.multiprocessing as mp
+from shared.utils.cancellation import check_cancelled
+from shared.prompt_enhancer.streaming import ThrottledStreamEmitter
+from shared.kernels import int8_backend
 
 from ..config import Config
 from ..sampling_params import SamplingParams
@@ -31,7 +34,11 @@ class LLMEngine:
             process.start()
             self.ps.append(process)
             self.events.append(event)
-        self.model_runner = ModelRunner(config, 0, self.events, model_object=model_object, graph_pool_handle=graph_pool_handle)
+        runner_class = ModelRunner
+        if getattr(model_object, "_block_draft", False):
+            from .block_draft_runner import BlockDraftRunner
+            runner_class = BlockDraftRunner
+        self.model_runner = runner_class(config, 0, self.events, model_object=model_object, graph_pool_handle=graph_pool_handle)
         tokenizer = kwargs.get("tokenizer", None)
         if tokenizer is not None:
             self.tokenizer = tokenizer
@@ -39,6 +46,7 @@ class LLMEngine:
             self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
         config.eos = self.tokenizer.eos_token_id
         self.scheduler = Scheduler(config)
+        self._int8_backend_revision = int8_backend.revision
         self._exit_registered = False
         self._closed = False
         self._exited = False
@@ -187,6 +195,13 @@ class LLMEngine:
             self.scheduler.add(seq)
 
     def step(self):
+        check_cancelled()
+        if self.config.kv_cache_initial_tokens:
+            blocks = self.scheduler.block_manager
+            needed = sum(max(0, seq.num_blocks - len(seq.block_table)) for seq in self.scheduler.running)
+            if needed > len(blocks.free_block_ids):
+                capacity = self.model_runner.call("grow_kv_cache", len(blocks.blocks) + needed - len(blocks.free_block_ids))
+                blocks.grow(capacity)
         seqs, is_prefill = self.scheduler.schedule()
         token_ids = self.model_runner.call("run", seqs, is_prefill)
         emitted_tokens = self.scheduler.postprocess(seqs, token_ids)
@@ -221,16 +236,28 @@ class LLMEngine:
             if seq.block_table:
                 self.scheduler.block_manager.deallocate(seq)
 
+    def _refresh_int8_backend(self):
+        # Once per request, never per token. Captured CUDA graphs bypass Python
+        # dispatch; cached KV values also belong to the previous kernel's math.
+        # Keep the loaded model and weights, rebuild only runtime allocations.
+        if self._int8_backend_revision != int8_backend.revision:
+            self.reset_runtime_state()
+            self._int8_backend_revision = int8_backend.revision
+
     def generate(
         self,
         prompts: list[str] | list[list[int]],
         sampling_params: SamplingParams | list[SamplingParams],
         use_tqdm: bool = True,
         unconditional_prompts: list[str] | list[list[int]] | None = None,
+        stop_requested=None,
+        stream_callback=None,
+        stream_interval_seconds=1 / 3,
     ) -> list[str]:
         if self.scheduler is None:
             raise RuntimeError("LLM engine is closed.")
         # Ensure model runtime/KV cache are prepared, and sync scheduler blocks.
+        self._refresh_int8_backend()
         self.model_runner.ensure_runtime_ready()
         if (self.config.num_kvcache_blocks > 0 and
                 len(self.scheduler.block_manager.blocks) != self.config.num_kvcache_blocks):
@@ -265,10 +292,30 @@ class LLMEngine:
             self.add_request(prompt, sp, uncond_prompt)
         outputs = {}
         prefill_throughput = decode_throughput = 0.
+        sequences = [seq for seq in self.scheduler.waiting if not seq.is_unconditional] if stream_callback is not None else []
+        emitter = ThrottledStreamEmitter(stream_interval_seconds)
+        prefill_seconds = decode_seconds = 0.0
+        decode_tokens = 0
+
+        def emit_progress(stop_reason=None, force=False):
+            if stream_callback is not None and (force or emitter.is_due()):
+                emitter.emit(stream_callback, raw_text="".join(self.tokenizer.decode(seq.completion_token_ids) for seq in sequences), token_count=sum(seq.num_completion_tokens for seq in sequences), max_tokens=sum(sp.max_tokens for sp in sampling_params), prefill_seconds=prefill_seconds, tokens_per_second=decode_tokens / decode_seconds if decode_seconds else 0.0, stop_reason=stop_reason, is_final=force, force=force)
+
         try:
+            emit_progress()
             while not self.is_finished():
+                if callable(stop_requested) and stop_requested():
+                    emit_progress("interrupted", force=True)
+                    raise InterruptedError("Prompt Enhancement Stopped")
                 t = perf_counter()
                 output, num_tokens = self.step()
+                elapsed = perf_counter() - t
+                if num_tokens > 0:
+                    prefill_seconds += elapsed
+                else:
+                    decode_seconds += elapsed
+                    decode_tokens -= num_tokens
+                emit_progress()
                 if use_tqdm:
                     if num_tokens > 0:
                         prefill_throughput = num_tokens / (perf_counter() - t)
@@ -282,6 +329,7 @@ class LLMEngine:
                     outputs[seq_id] = token_ids
                     if use_tqdm:
                         pbar.update(1)
+            emit_progress("completed", force=True)
         except Exception:
             # Clean up on exception to prevent block leaks
             self.reset()
@@ -302,9 +350,11 @@ class LLMEngine:
         sampling_params: SamplingParams | list[SamplingParams],
         position_offsets: list[int] | None = None,
         use_tqdm: bool = True,
+        stream_callback=None,
     ):
         if self.scheduler is None:
             raise RuntimeError("LLM engine is closed.")
+        self._refresh_int8_backend()
         self.model_runner.ensure_runtime_ready()
         if (
             self.config.num_kvcache_blocks > 0
@@ -345,10 +395,27 @@ class LLMEngine:
             )
         outputs = {}
         prefill_throughput = decode_throughput = 0.0
+        sequences = list(self.scheduler.waiting) if stream_callback is not None else []
+        emitter = ThrottledStreamEmitter(1 / 3)
+        prefill_seconds = decode_seconds = 0.0
+        decode_tokens = 0
+
+        def emit_progress(force=False):
+            if stream_callback is not None and (force or emitter.is_due()):
+                emitter.emit(stream_callback, raw_text="".join(self.tokenizer.decode(seq.completion_token_ids) for seq in sequences), token_count=sum(seq.num_completion_tokens for seq in sequences), max_tokens=sum(sp.max_tokens for sp in sampling_params), prefill_seconds=prefill_seconds, tokens_per_second=decode_tokens / decode_seconds if decode_seconds else 0.0, stop_reason="completed" if force else None, is_final=force, force=force)
+
         try:
+            emit_progress()
             while not self.is_finished():
                 t = perf_counter()
                 output, num_tokens = self.step()
+                elapsed = perf_counter() - t
+                if num_tokens > 0:
+                    prefill_seconds += elapsed
+                else:
+                    decode_seconds += elapsed
+                    decode_tokens -= num_tokens
+                emit_progress()
                 if use_tqdm:
                     if num_tokens > 0:
                         prefill_throughput = num_tokens / (perf_counter() - t)
@@ -362,6 +429,7 @@ class LLMEngine:
                     outputs[seq_id] = token_ids
                     if use_tqdm:
                         pbar.update(1)
+            emit_progress(force=True)
         except Exception:
             self.reset()
             raise

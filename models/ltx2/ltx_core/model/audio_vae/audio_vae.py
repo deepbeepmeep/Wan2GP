@@ -475,6 +475,8 @@ def decode_audio(latent: torch.Tensor, audio_decoder: "AudioDecoder", vocoder: "
     Returns:
         Decoded audio as a float tensor.
     """
+    from shared.utils.phase_progress import set_phase_status
+    set_phase_status("Audio VAE Decoding")
     decoded_audio = audio_decoder(latent)
     decoded_audio = vocoder(decoded_audio).squeeze(0).float()
     return decoded_audio

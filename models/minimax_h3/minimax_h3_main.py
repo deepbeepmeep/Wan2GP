@@ -22,6 +22,7 @@ from .viggle import load_fixed_prompt
 
 VIDEO_VAE_FILE = "MiniMax-H3-video_vae_fp16.safetensors"
 VIDEO_VAE_FP8MIX_FILE = "minimax_h3_video_vae_fp8mix.safetensors"
+VIDEO_VAE_INT8_FILE = "minimax_h3/minimax_h3_video_vae_int8_convrot.safetensors"
 AUDIO_VAE_FILE = "MiniMax-H3-audio_vae_fp32.safetensors"
 LATENT_UPSCALER_FOLDER = "minimax_h3"
 LATENT_UPSCALER_FILE = "minimax_h3_latent_upscaler_3d_bf16.safetensors"
@@ -232,6 +233,7 @@ def model_factory(model_filename, text_encoder_filename, qkv_splitting, dtype=to
                   audio_vae_filename=AUDIO_VAE_FILE, latent_upscaler_filename=os.path.join(LATENT_UPSCALER_FOLDER, LATENT_UPSCALER_FILE),
                   shared_h3_pipeline=None, qkv_layout="interleaved", pdd=False, pdd_num_steps=None, pdd_block_size=None, vdn=False, audio_only=False,
                   fixed_prompt_filename=None):
+    VAE_dtype = torch.bfloat16
     transformer = _load_transformer(model_filename, dtype, qkv_splitting, qkv_layout, pdd, pdd_num_steps, pdd_block_size, vdn)
     if shared_h3_pipeline is None:
         text_encoder = _load_text_encoder(text_encoder_filename, dtype) if fixed_prompt_filename is None else None
@@ -254,4 +256,4 @@ def model_factory(model_filename, text_encoder_filename, qkv_splitting, dtype=to
 
 
 __all__ = ["ADALN_CURVE_DIM", "AUDIO_VAE_FILE", "LATENT_UPSCALER_FILE", "LATENT_UPSCALER_FOLDER", "TEXT_ENCODER_FOLDER",
-           "VIDEO_VAE_FILE", "VIDEO_VAE_FP8MIX_FILE", "model_factory", "probe_h3_checkpoint"]
+           "VIDEO_VAE_FILE", "VIDEO_VAE_FP8MIX_FILE", "VIDEO_VAE_INT8_FILE", "model_factory", "probe_h3_checkpoint"]

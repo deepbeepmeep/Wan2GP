@@ -75,8 +75,10 @@ per-method progress text. Discovery evaluates the historical `enabled()` method
 first: `True` maps to `enabled` and `False` to `disabled`. Only handlers without
 `enabled()` use the optional instance `status` property; `unknown` means neither
 mechanism supplied a valid status.
-`reason_disabled` is returned only for disabled handlers. Deepy lists all
-registered audio processors with this metadata and refuses disabled ones.
+`reason_disabled` is returned only for disabled handlers. The internal processor
+catalog includes this availability metadata. Prime's post-processing toolbox
+omits disabled processors from callable discovery; internal/compatibility views
+may include them for diagnostics, but disabled processors cannot be dispatched.
 
 The supported processor type constants are:
 
@@ -235,3 +237,7 @@ offload_registry.unregister_offloadobj("MyAudioProcessor", offloadobj)  # in rel
 This lets WanGP track every extension offload object and release all extension
 resources centrally: the toolbar "Unload Models" tool and Configuration plugin
 release button call `offload_registry.release_all()`.
+
+---
+
+> Applies to: Developing audio processor plugins: handler methods, registration and shared configuration. Installed processing options are available through WanGP's post-processing controls and API.

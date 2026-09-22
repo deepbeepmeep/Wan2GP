@@ -121,7 +121,7 @@ def infer_inputs(model_def):
         inputs.append("image")
     if image_outputs and (_choice_values_contain(guide_preprocessing, "V") or _choice_values_contain(alt_guide_refs, "V")) and "image" not in inputs:
         inputs.append("image")
-    if "V" in image_prompt_types_allowed or "L" in image_prompt_types_allowed or (not image_outputs and (_choice_values_contain(guide_preprocessing, "V") or _choice_values_contain(alt_guide_refs, "V") or _choice_values_contain(custom_video_selection, "V"))):
+    if model_def.get("reference_video_enabled", False) or "V" in image_prompt_types_allowed or "L" in image_prompt_types_allowed or (not image_outputs and (_choice_values_contain(guide_preprocessing, "V") or _choice_values_contain(alt_guide_refs, "V") or _choice_values_contain(custom_video_selection, "V"))):
         inputs.append("video")
     return list(dict.fromkeys(inputs))
 
@@ -132,7 +132,8 @@ def infer_media_inputs(model_def):
     guide_preprocessing = model_def.get("guide_preprocessing", None)
     guide_custom_choices = model_def.get("guide_custom_choices", None)
     custom_video_selection = model_def.get("custom_video_selection", None)
-    has_reference = _choice_values_contain(image_refs, "I") or _choice_values_contain(guide_custom_choices, "I")
+    reference_choices = [value for value in _choice_values(image_refs) + _choice_values(guide_custom_choices) if "F" not in value]
+    has_reference = any("I" in value for value in reference_choices)
     single_reference = bool(model_def.get("one_image_ref_needed", False) or model_def.get("one_image_ref_only", False))
     has_control = _choice_values_contain(guide_preprocessing, "V") or _choice_values_contain(guide_custom_choices, "V") or _choice_values_contain(custom_video_selection, "V")
     image_outputs = bool(model_def.get("image_outputs", False))
@@ -143,12 +144,13 @@ def infer_media_inputs(model_def):
             "reference": has_reference,
             "single_reference": has_reference and single_reference,
             "multiple_references": has_reference and not single_reference,
-            "background": _choice_values_contain(image_refs, "K") or _choice_values_contain(guide_custom_choices, "K"),
+            "background": any("K" in value for value in reference_choices),
             "injected_frames": _choice_values_contain(image_refs, "F") or _choice_values_contain(guide_custom_choices, "F"),
             "control": image_outputs and has_control,
             "mask": image_outputs and (_choice_values_contain(model_def.get("mask_preprocessing", None), "A") or bool(model_def.get("inpaint_support", False))),
         },
         "video": {
+            "reference": bool(model_def.get("reference_video_enabled", False)),
             "continue": "V" in image_prompt_types_allowed,
             "last": "L" in image_prompt_types_allowed,
             "control": (not image_outputs) and has_control,
@@ -168,7 +170,7 @@ def infer_capabilities(model_def, main_outputs, outputs, inputs, media_inputs):
     return {
         "text_to_video": "video" in main_outputs and "text" in inputs,
         "image_to_video": "video" in main_outputs and image_inputs["start"],
-        "video_to_video": "video" in main_outputs and (video_inputs["continue"] or video_inputs["control"]),
+        "video_to_video": "video" in main_outputs and (video_inputs["continue"] or video_inputs["control"] or video_inputs["reference"]),
         "text_to_image": "image" in main_outputs and "text" in inputs,
         "image_to_image": "image" in main_outputs and (image_inputs["start"] or image_inputs["reference"] or image_inputs["control"]),
         "text_to_audio": "audio" in main_outputs and "text" in inputs,
@@ -178,6 +180,7 @@ def infer_capabilities(model_def, main_outputs, outputs, inputs, media_inputs):
         "inpainting": bool(model_def.get("inpaint_support", False) or image_inputs["mask"] or video_inputs["mask"]),
         "outpainting": bool(model_def.get("video_guide_outpainting", False)),
         "reference_images": image_inputs["reference"],
+        "reference_videos": video_inputs["reference"],
         "background_image": image_inputs["background"],
         "injected_frames": image_inputs["injected_frames"],
         "control_image": image_inputs["control"],
@@ -189,6 +192,8 @@ def infer_capabilities(model_def, main_outputs, outputs, inputs, media_inputs):
 
 
 def infer_setting_values(model_def):
+    from shared.prompt_enhancer.labels import resolve_definition
+
     image_prompt_types_allowed = str(model_def.get("image_prompt_types_allowed", "") or "")
     image_prompt_choices = [{"label": _IMAGE_PROMPT_LABELS.get("", ""), "value": ""}]
     for letter in image_prompt_types_allowed:
@@ -214,7 +219,7 @@ def infer_setting_values(model_def):
         },
         "model_mode": normalize_choice_def(model_def.get("model_modes", None)),
         "sample_solver": normalize_choice_def({"choices": model_def.get("sample_solvers", [])}) if model_def.get("sample_solvers", None) is not None else None,
-        "prompt_enhancer": normalize_choice_def(model_def.get("prompt_enhancer_def", None)),
+        "prompt_enhancer": normalize_choice_def(resolve_definition(model_def)),
     }
 
 
@@ -238,6 +243,7 @@ def store_metadata(model_type, model_def, model_types_handlers, families_infos):
         "media_inputs": media_inputs,
         "capabilities": infer_capabilities(model_def, main_outputs, outputs, inputs, media_inputs),
         "setting_values": infer_setting_values(model_def),
+        **{key: copy.deepcopy(model_def[key]) for key in ("accelerated", "size", "specialities") if key in model_def},
     }
     return model_def
 

@@ -167,6 +167,13 @@ def create_app(service, *, token=None, auth=None, voice_language=None, https_por
                     yield "id: " + str(event['id']) + "\ndata: " + json.dumps(event, ensure_ascii=False) + "\n\n"
         return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+    @app.get("/deepy_api/events/poll")
+    async def poll_events(after: int = 0):
+        # Short requests avoid consuming the browser's connection pool when
+        # Gradio and Deepy are open in multiple tabs behind a proxy.
+        events = await run_in_threadpool(service.events_after, after, 0)
+        return JSONResponse(events, headers={"Cache-Control": "no-store"})
+
     @app.websocket('/deepy_api/events')
     async def websocket_events(socket: WebSocket, after: int = 0):
         await socket.accept()

@@ -307,7 +307,10 @@ def launch_gradio(demo, service, args, **kwargs):
     from starlette.middleware import Middleware
     from shared.authentication.web import GradioStartupMiddleware, WebAuthMiddleware
     from shared.authentication.tls import HTTPSRedirect
+    from shared.gradio.proxy_public_url import PublicURLMiddleware
     middleware = [Middleware(WebAuthMiddleware, auth=auth)]
+    if auth.public_url is not None:
+        middleware.insert(0, Middleware(PublicURLMiddleware, public_url=auth.public_url))
     if https_port is not None:
         middleware.insert(0, Middleware(HTTPSRedirect, port=https_port))
     middleware.insert(0, Middleware(GradioStartupMiddleware))

@@ -58,7 +58,7 @@ Browser microphone recording can require trusted HTTPS even over a VPN. Native p
 
 By default, WanGP accepts browser origins using **HTTP or HTTPS** when the hostname and any explicit port match the request's Host header. This lets an HTTPS proxy forward HTTP to WanGP without a scheme mismatch. Different hostnames and explicit ports remain rejected. The rule applies to HTTP requests and shared WebSocket connections, with or without password authentication.
 
-If Nginx, Traefik, Cloudflare, RunPod, or another proxy preserves the public Host header, no public URL option is needed. To restrict browser access to one exact origin, including its scheme, set the optional `--public-url`:
+If Nginx, Traefik, Cloudflare, RunPod, or another proxy preserves the public Host header, no public URL option is needed. WanGP accepts either browser scheme for that host, and the Gradio page corrects its API root to the browser's scheme. To restrict browser access to one exact origin, or handle a proxy that rewrites the Host header, set `--public-url`:
 
 ```bash
 python wgp.py --listen --public-url https://wangp.example.com
@@ -73,7 +73,7 @@ With this option, only the configured browser origin is accepted: `--public-url 
 
 The default deliberately trusts the HTTP and HTTPS variants of the same address. Use `--public-url` if those variants serve different applications or you want to pin a single origin. Origin checks are browser protections, not authentication for arbitrary network clients; `--auth` remains independent.
 
-The option does not configure the proxy, change the listening port, mount the application under a URL prefix, or enable TLS inside WanGP. Keep browser HTTPS enabled, configure the proxy to forward WebSocket connections, and serve WanGP at the public origin's root. No `FORWARDED_ALLOW_IPS='*'` override is needed for these origin checks. Use the same public origin for browser access to Gradio and its `/deepy/` app. For proxy-managed HTTPS, omit WanGP's `--https-port` redirect option; use certificate options only if the proxy also connects to WanGP over HTTPS. MCP OAuth has its separate `--mcp-auth-url` option.
+The option also gives Gradio an explicit browser-facing origin when the proxy rewrites the Host header. It does not configure the proxy, change the listening port, mount the application under a URL prefix, or enable TLS inside WanGP. Keep browser HTTPS enabled and serve WanGP at the public origin's root. Deepy uses WebSocket when available and falls back to bounded HTTP polling if a proxy rejects the upgrade. Gradio uses HTTP streaming for its queue, so the proxy must pass streaming responses. No `FORWARDED_ALLOW_IPS='*'` override is needed for these origin checks. Use the same public origin for browser access to Gradio and its `/deepy/` app. For proxy-managed HTTPS, omit WanGP's `--https-port` redirect option; use certificate options only if the proxy also connects to WanGP over HTTPS. MCP OAuth has its separate `--mcp-auth-url` option.
 
 ### RunPod Setup
 
@@ -91,7 +91,7 @@ For a pod with WanGP already installed:
    Keep your other usual WanGP arguments. If the template already starts WanGP, update its startup command and restart that instance instead of starting a second server on the same port. `--auth` prints a generated password in the terminal; use the password options above if you need a fixed passphrase.
 5. Open the copied HTTPS address and sign in. Gradio is at `/`; the synchronized Deepy Web app is at `/deepy/`. Open a second tab at the same origin to use shared galleries/settings.
 
-RunPod supplies browser HTTPS and forwards requests to WanGP's HTTP listener. When the public Host header is preserved, WanGP accepts this scheme difference automatically. No `--public-url`, WanGP certificate files, `--https-port`, `FORWARDED_ALLOW_IPS` override, or manual proxy changes are needed to handle that mismatch. Keep the browser on HTTPS; the HTTP port field describes the service inside the pod.
+RunPod supplies browser HTTPS and forwards requests to WanGP's HTTP listener. When the public Host header is preserved, WanGP accepts the scheme difference and the Gradio page uses the browser's HTTPS origin even if the proxy omits `X-Forwarded-Proto`. No `--public-url` is needed for that case. Keep the browser on HTTPS; the HTTP port field describes the service inside the pod.
 
 Optionally, add `--public-url https://abc123xyz-7860.proxy.runpod.net` to enforce that exact HTTPS origin, or if your template's additional proxy rewrites the hostname or port. Use your actual address, without `/deepy/`. For a reusable **shell startup script** with this stricter restriction, the URL can be built from the [pod ID RunPod supplies](https://docs.runpod.io/pods/templates/environment-variables):
 
@@ -101,7 +101,7 @@ python wgp.py --listen --server-port 7860 --public-url "https://${RUNPOD_POD_ID}
 
 Use the same internal port in the exposed HTTP ports, `--server-port`, and URL. If you replace the pod or change its exposed port, update a literal URL accordingly; the shell example uses the current pod ID automatically. This is script configuration, not provider-specific behavior inside WanGP.
 
-Scheme tolerance fixes the reproduced origin mismatch, not unrelated proxy outages or timeouts. If reconnection continues, inspect the `/deepy/deepy_api/events` WebSocket request: an accepted upgrade returns **101**; a **403** points to origin validation or login, while a later disconnect needs its close status and server logs checked.
+If reconnection continues, check that the Gradio page's `window.gradio_config.root` is the public HTTPS origin, and inspect `/gradio_api/queue/data` for an active HTTP event stream. Check `/deepy/deepy_api/events` for a WebSocket **101** response; Deepy falls back to `/deepy/deepy_api/events/poll` when the WebSocket fails. A **403** points to origin validation or login; a failed queue stream or polling request needs its HTTP status and server logs checked.
 
 ## MCP Authentication and HTTPS
 

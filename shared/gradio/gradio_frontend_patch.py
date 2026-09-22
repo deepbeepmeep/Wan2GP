@@ -427,6 +427,7 @@ def install():
     versions = {path.name: sha256(_asset(str(path)).encode()).hexdigest()[:16] for path in asset_paths if path != _EDITOR_PATH}
     original_template = routes.templates.TemplateResponse
     session_script = Path(__file__).with_name('session_guard.js').read_text(encoding='utf-8')
+    proxy_root_script = Path(__file__).with_name('proxy_root.js').read_text(encoding='utf-8')
 
     @wraps(original_template)
     def template_response(*args, **kwargs):
@@ -434,6 +435,7 @@ def install():
         source = response.body.decode('utf-8')
         patched = _version_html(source, versions)
         if patched != source:
+            patched = patched.replace('<script type="importmap">', '<script>' + proxy_root_script + '</script><script type="importmap">', 1)
             config = response.context['config']
             if not config.get('auth_required'):
                 guard = session_script.replace('__WANGP_UI_SIGNATURE__', json.dumps(config['wangp_ui_signature']))

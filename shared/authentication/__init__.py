@@ -29,7 +29,7 @@ def add_arguments(parser):
     auth.add_argument("--auth", action="store_true", help="Require a password for all Gradio and Deepy web access")
     auth.add_argument("--no-auth", action="store_false", dest="auth", help="Disable web authentication (default)")
     add("--auth-password", default=None, help="Web passphrase (requires --auth; otherwise WANGP_AUTH_PASSWORD or a generated password)")
-    add("--public-url", type=parse_public_url, default=None, metavar="ORIGIN", help="Restrict Gradio/Deepy browser requests to this exact origin, e.g. https://wangp.example.com (default: same host/port, HTTP or HTTPS)")
+    add("--public-url", type=parse_public_url, default=None, metavar="ORIGIN", help="Restrict browser requests to this exact origin and handle proxies that rewrite Host, e.g. https://wangp.example.com")
     add("--mcp-auth", action="store_true", help="Require OAuth authorization for network MCP")
     add("--mcp-auth-password", default=None, help="Separate MCP approval passphrase (requires --mcp-auth; otherwise WANGP_MCP_AUTH_PASSWORD or a generated password)")
     add("--mcp-auth-url", default=None, help="Public MCP server origin, e.g. https://wangp.example.com:7866 (requires --mcp-auth)")

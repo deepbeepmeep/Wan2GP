@@ -1,8 +1,8 @@
 # Tiny VAE live previews
 
-WanGP's Tiny VAE preview is an opt-in diagnostic preview for the validated
-LTX-2.3 22B Dev and Distilled profiles. RGB remains the default and the
-fallback; Off disables preview work entirely.
+WanGP's Tiny VAE preview is an opt-in diagnostic preview. RGB remains the
+default and fallback; Off disables preview work entirely. Source-contract and
+CPU strict-load evidence are distinct from full-model generation validation.
 
 ## Supported profiles
 
@@ -12,9 +12,22 @@ profiles listed in [latent-contracts.md](latent-contracts.md), and
 (including pruned variants). Other profiles remain ineligible until their
 callback latent contracts are independently verified.
 
-LTX-2.5 Dev and Distilled also provisionally use the same `taeltx2_3` decoder
-through the shared architecture/capability registry. Live LTX-2.5 preview
-quality remains unverified; missing or failed decoders retain the RGB fallback.
+LTX-2.5 Dev and Distilled use the same `taeltx2_3` decoder through the shared
+architecture/capability registry. A complete LTX-2.5 Distilled CUDA comparison
+confirmed identical final pixels with previews off, RGB, and TAE; Dev and other
+settings remain separate validation cases. See the [measured validation
+record](validation-2026-09-22.md). Missing or failed decoders retain RGB fallback.
+
+The six original `ltx2_19B` defaults use `taeltx_2.safetensors` through the
+existing LTX adapter. Source and strict-loader evidence do not establish
+original-LTX generation quality.
+
+Static image previews are explicitly registered for Flux/Flux2 Klein,
+Z-Image, Qwen Image, Krea2, and Ideogram4. The static adapters accept only a
+finite `C,1,H,W` latent and publish one RGB frame; batch and image/video
+output-kind mismatches use RGB. Wan and Hunyuan baseline video profiles use
+explicit TAEHV decoder contracts. Their callbacks are post-scheduler states,
+not claimed denoised x0 values.
 
 ## Settings and installation
 
@@ -35,10 +48,12 @@ Selecting **Install Tiny VAE Preview Decoder** downloads the pinned decoder
 through WanGP's existing download-progress plumbing to:
 
 ```text
-<configured model root>/preview_decoders/taehv/taeltx2_3.safetensors
+<configured model root>/preview_decoders/taehv/<eligible-decoder>.safetensors
 ```
 
-MiniMax H3 uses the same install flow at
+LTX-2.3/2.5, Wan, Hunyuan, and Qwen use TAEHV weights in
+`preview_decoders/taehv`; original LTX-2 uses `taeltx_2`. TAESD image weights
+use `preview_decoders/taesd`; MiniMax H3 uses
 `preview_decoders/taeh3/taeh3.safetensors`.
 
 The file is checked by exact size and SHA-256 before it can be advertised or
@@ -71,11 +86,23 @@ Set `WANGP_PREVIEW_TRACE=1` on a target runtime to record model, architecture,
 pass/window, shape, dtype, device, and latent statistics at eligible capture
 callbacks. The pinned decoder was additionally verified in an isolated
 `torch 2.11.0+cu128`/`safetensors 0.8.0` runtime on an RTX 4070 Ti SUPER:
-the exact weight hash and strict load passed, a fixed CUDA latent decoded to 17
-frames with 8 selected 64px RGB frames, and the real coordinator published an
-8-frame animated WebP. The full WanGP model-generation matrix, target
-generation-overhead gate, and final-output equivalence remain deployment-time
-checks because no LTX model weights are present in this checkout.
+the exact `taeltx2_3` weight hash and strict load passed, a fixed CUDA latent
+decoded to 17 frames with 8 selected 64px RGB frames, and the real coordinator
+published an 8-frame animated WebP. The original-LTX `taeltx_2` strict-load
+check passes on CPU; original-LTX generation validation remains pending
+verifier evidence. The full WanGP model-generation matrix, target generation-overhead
+gate, and final-output equivalence remain deployment-time checks.
+
+## Evidence and limits
+
+The CPU strict-loader fixture checks pinned image, Wan, and Hunyuan decoder
+weights and preserves the CPU torch RNG state. It does not run model
+generation. The normal Z-Image solver callback can contain a noisy state;
+the unified solver supplies x0. Wan and Hunyuan callbacks are documented as
+post-scheduler state, not denoised x0. Generation quality, performance,
+cancellation, and compilation remain unvalidated until target-model runs.
+See [validation-2026-09-22.md](validation-2026-09-22.md) for the bounded
+runtime evidence.
 
 Future `taeltx2_3_wide` evaluation is intentionally not enabled by this
 initial registry entry.

@@ -54,6 +54,123 @@ TAELTX23 = PreviewDecoderSpec(
     source_url="https://raw.githubusercontent.com/madebyollin/taehv/62f7591f59dfbb4c3c02b7a621d180a9eeaba26c/safetensors/taeltx2_3.safetensors",
 )
 
+TAELTX2 = PreviewDecoderSpec(
+    decoder_id="taeltx_2",
+    filename="taeltx_2.safetensors",
+    sha256="6e4cc0469134213d0101a46877ea2bce1dc7cf06ff5f5aefb9e4076c03542f7b",
+    size_bytes=23_531_296,
+    latent_channels=128,
+    patch_size=4,
+    encoder_time_downscale=(True, True, True),
+    decoder_time_upscale=(True, True, True),
+    compatible_architectures=frozenset({"ltx2_19B"}),
+    adapter_id="ltx2",
+    source_url="https://raw.githubusercontent.com/madebyollin/taehv/011dfc2112197741c540e0bdd5b7b67bcc930771/safetensors/taeltx_2.safetensors",
+)
+
+TAEF2 = PreviewDecoderSpec(
+    decoder_id="taef2",
+    filename="taef2_decoder.pth",
+    sha256="0a44a31e1ae59eb9dbf9359d24942fd3ef5928162c1800d97a28c61d51be0ab5",
+    size_bytes=2_704_756,
+    latent_channels=32,
+    patch_size=1,
+    encoder_time_downscale=(),
+    decoder_time_upscale=(),
+    compatible_architectures=frozenset({"flux2_klein_4b", "flux2_klein_9b", "ideogram4", "ideogram4_turbotime"}),
+    adapter_id="taesd",
+    source_url="https://raw.githubusercontent.com/madebyollin/taesd/e87efbcfc5298d84986b5d9280f40d358b6a228d/taef2_decoder.pth",
+    target_dir="preview_decoders/taesd",
+    decoder_layout="NCHW",
+)
+
+TAEF1 = PreviewDecoderSpec(
+    decoder_id="taef1",
+    filename="taef1_decoder.pth",
+    sha256="beae86f2eeaf0cea884dc8ffe639fb297dac8c984441bb53420f07d767785104",
+    size_bytes=4_943_336,
+    latent_channels=16,
+    patch_size=1,
+    encoder_time_downscale=(),
+    decoder_time_upscale=(),
+    compatible_architectures=frozenset({"flux", "z_image"}),
+    adapter_id="taesd",
+    source_url="https://raw.githubusercontent.com/madebyollin/taesd/e87efbcfc5298d84986b5d9280f40d358b6a228d/taef1_decoder.pth",
+    target_dir="preview_decoders/taesd",
+    decoder_layout="NCHW",
+)
+
+TAEW21_IMAGE = PreviewDecoderSpec(
+    decoder_id="taew2_1_image",
+    filename="taew2_1.safetensors",
+    sha256="04766eac0221b5390b985ae3fdcca652cbb4b1e8b82b28ea7ff89dfad1b1a93f",
+    size_bytes=22_642_902,
+    latent_channels=16,
+    patch_size=1,
+    encoder_time_downscale=(True, True, False),
+    decoder_time_upscale=(False, True, True),
+    compatible_architectures=frozenset({"krea2_raw", "krea2_raw_edit", "krea2_turbo", "krea2_turbo_edit", "qwen_image_20B", "qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"}),
+    adapter_id="qwen_image",
+    source_url="https://raw.githubusercontent.com/madebyollin/taehv/011dfc2112197741c540e0bdd5b7b67bcc930771/safetensors/taew2_1.safetensors",
+    decoder_layout="NTCHW",
+)
+
+TAEWAN21 = PreviewDecoderSpec(
+    decoder_id="taew2_1",
+    filename="taew2_1.safetensors",
+    sha256="04766eac0221b5390b985ae3fdcca652cbb4b1e8b82b28ea7ff89dfad1b1a93f",
+    size_bytes=22_642_902,
+    latent_channels=16,
+    patch_size=1,
+    encoder_time_downscale=(True, True, False),
+    decoder_time_upscale=(False, True, True),
+    compatible_architectures=frozenset({"t2v", "t2v_1.3B", "i2v", "t2v_2_2", "i2v_2_2"}),
+    adapter_id="wan",
+    source_url="https://raw.githubusercontent.com/madebyollin/taehv/011dfc2112197741c540e0bdd5b7b67bcc930771/safetensors/taew2_1.safetensors",
+)
+
+TAEWAN22 = PreviewDecoderSpec(
+    decoder_id="taew2_2",
+    filename="taew2_2.safetensors",
+    sha256="b84609b2a133d48434bd9636bfcb44bf05168dc436e2d3cecf26256faa1f5325",
+    size_bytes=22_848_048,
+    latent_channels=48,
+    patch_size=2,
+    encoder_time_downscale=(True, True, False),
+    decoder_time_upscale=(False, True, True),
+    compatible_architectures=frozenset({"ti2v_2_2"}),
+    adapter_id="wan",
+    source_url="https://raw.githubusercontent.com/madebyollin/taehv/011dfc2112197741c540e0bdd5b7b67bcc930771/safetensors/taew2_2.safetensors",
+)
+
+TAEHY = PreviewDecoderSpec(
+    decoder_id="taehv",
+    filename="taehv.safetensors",
+    sha256="032ad4ddc689513287ce02fcc099b5278592526ed1eac0324a7fab94bb690ed9",
+    size_bytes=22_642_902,
+    latent_channels=16,
+    patch_size=1,
+    encoder_time_downscale=(True, True, False),
+    decoder_time_upscale=(False, True, True),
+    compatible_architectures=frozenset({"hunyuan", "hunyuan_i2v"}),
+    adapter_id="hunyuan",
+    source_url="https://raw.githubusercontent.com/madebyollin/taehv/011dfc2112197741c540e0bdd5b7b67bcc930771/safetensors/taehv.safetensors",
+)
+
+TAEHY15 = PreviewDecoderSpec(
+    decoder_id="taehv1_5",
+    filename="taehv1_5.safetensors",
+    sha256="b52e245bb86c62e159f50338e2e8f422d4b6f98b467164939c1c031c7d61352e",
+    size_bytes=22_755_856,
+    latent_channels=32,
+    patch_size=2,
+    encoder_time_downscale=(True, True, False),
+    decoder_time_upscale=(False, True, True),
+    compatible_architectures=frozenset({"hunyuan_1_5_t2v", "hunyuan_1_5_i2v"}),
+    adapter_id="hunyuan",
+    source_url="https://raw.githubusercontent.com/madebyollin/taehv/011dfc2112197741c540e0bdd5b7b67bcc930771/safetensors/taehv1_5.safetensors",
+)
+
 TAEH3 = PreviewDecoderSpec(
     decoder_id="taeh3",
     filename="taeh3.safetensors",
@@ -76,7 +193,10 @@ TAEH3 = PreviewDecoderSpec(
     target_dir="preview_decoders/taeh3",
 )
 
-DECODERS = {spec.decoder_id: spec for spec in (TAELTX23, TAEH3)}
+DECODERS = {
+    spec.decoder_id: spec
+    for spec in (TAELTX2, TAELTX23, TAEF2, TAEF1, TAEW21_IMAGE, TAEWAN21, TAEWAN22, TAEHY, TAEHY15, TAEH3)
+}
 
 
 def get_decoder_for_model(model_type: str, model_def: dict[str, Any] | None = None) -> PreviewDecoderSpec | None:

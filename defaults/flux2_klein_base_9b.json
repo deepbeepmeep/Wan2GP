@@ -2,6 +2,7 @@
     "model": {
         "name": "Flux 2 Klein Base 9B",
         "architecture": "flux2_klein_9b",
+        "capabilities": {"live_preview": {"modes": ["tae"], "decoders": ["taef2"]}},
         "description": "FLUX.2 Klein 9B is a balanced rectified flow transformer for image generation and editing. This non distilled version is slower but should produce more diverse images. ",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/Flux2/resolve/main/flux-2-klein-base-9b.safetensors",

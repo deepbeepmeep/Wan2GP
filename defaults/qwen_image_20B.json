@@ -2,6 +2,7 @@
     "model": {
         "name": "Qwen Image 20B",
         "architecture": "qwen_image_20B",
+        "capabilities": {"live_preview": {"modes": ["tae"], "decoders": ["taew2_1_image"]}},
         "description": "Qwen Image is generative model that will generate very high quality images. It is one of the few models capable to generate in the image very long texts.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/qwen_image_20B_bf16.safetensors",

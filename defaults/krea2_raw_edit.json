@@ -2,6 +2,7 @@
     "model": {
         "name": "Krea 2 RAW Identity Edit v1.2",
         "architecture": "krea2_raw_edit",
+        "capabilities": {"live_preview": {"modes": ["tae"], "decoders": ["taew2_1_image"]}},
         "description": "Instruction-based image editing with identity preservation using Krea 2 RAW and the full-rank Identity Edit v1.2 LoRA. Up to 2 Reference Images are supported. Use the Raw Model if you are trying to remove People or Objects.",
         "URLs": "krea2_raw",
         "loras": ["https://huggingface.co/DeepBeepMeep/krea-2/resolve/main/krea2_identity_edit_v1_2.safetensors"],

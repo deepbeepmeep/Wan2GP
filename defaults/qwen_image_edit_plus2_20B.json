@@ -2,6 +2,7 @@
     "model": {
         "name": "Qwen Image Edit Plus (2511) 20B",
         "architecture": "qwen_image_edit_plus2_20B",
+        "capabilities": {"live_preview": {"modes": ["tae"], "decoders": ["taew2_1_image"]}},
         "description": "Qwen Image Edit Plus 2511 improves identity preservation (especially at 1080p) and integrates out of the box popular effects such as religthing and camera changes.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/qwen_image_edit_plus2_20B_bf16.safetensors",

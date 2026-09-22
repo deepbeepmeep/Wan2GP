@@ -7009,13 +7009,14 @@ def generate_media(
     audio_only = model_def.get("audio_only", False)
     preview_session = None
     if preview_options.mode == "tae":
-        if is_image or audio_only:
+        decoder_spec = get_decoder_for_model(model_type, model_def)
+        image_decoder = decoder_spec is not None and decoder_spec.adapter_id in {"taesd", "qwen_image"}
+        if audio_only or is_image != image_decoder:
             preview_options = preview_options.with_mode("rgb")
-            message = "Tiny VAE preview is unavailable for image or audio outputs; using RGB."
+            message = "Tiny VAE preview is unavailable for this output mode; using RGB."
             gen["preview_warning"] = message
             send_cmd("status", message)
         else:
-            decoder_spec = get_decoder_for_model(model_type, model_def)
             decoder_path = decoder_spec.local_path() if decoder_spec is not None else None
             decoder_valid = decoder_path is not None and validate_weight(decoder_path, decoder_spec)[0]
             if decoder_spec is not None and decoder_valid:
@@ -8066,7 +8067,7 @@ def generate_media(
                 send_cmd,
                 status,
                 num_inference_steps,
-                preview_meta={"first_latent_only": not model_def.get("preview_all_images", False)} if is_image else None,
+                preview_meta={"first_latent_only": not model_def.get("preview_all_images", False)} if is_image and preview_session is None else None,
                 preview_session=preview_session,
             )
             progress_args = [0, merge_status_context(status, progress_phase )]
@@ -8709,7 +8710,7 @@ def refresh_preview_install_controls(model_type):
     spec = get_decoder_for_model(model_type, model_def)
     capability = decoder_capability(model_type, model_def)
     install_visible = spec is not None and not capability["tiny_vae_available"]
-    message = capability.get("unavailable_reason") or ("Tiny VAE decoder is not installed for this validated model." if install_visible else "")
+    message = capability.get("unavailable_reason") or ("Tiny VAE decoder is not installed for this selected model." if install_visible else "")
     return gr.update(visible=install_visible), gr.update(value=message, visible=bool(message))
 
 
@@ -13109,7 +13110,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         initial_preview_spec = get_decoder_for_model(model_type, model_def)
                         initial_preview_capability = decoder_capability(model_type, model_def)
                         initial_preview_install_visible = initial_preview_spec is not None and not initial_preview_capability["tiny_vae_available"]
-                        initial_preview_message = initial_preview_capability.get("unavailable_reason") or ("Tiny VAE decoder is not installed for this validated model." if initial_preview_install_visible else "")
+                        initial_preview_message = initial_preview_capability.get("unavailable_reason") or ("Tiny VAE decoder is not installed for this selected model." if initial_preview_install_visible else "")
                         preview_install_btn = gr.Button("Install Tiny VAE Preview Decoder", visible=initial_preview_install_visible, size="sm")
                         preview_install_status = gr.Markdown(value=initial_preview_message, visible=bool(initial_preview_message))
                         preview = gr.HTML(value=refresh_preview(state_dict), label="Preview", show_label= False)

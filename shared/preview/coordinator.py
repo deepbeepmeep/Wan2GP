@@ -5,6 +5,7 @@ import uuid
 from typing import Any, Callable
 
 from .adapters.h3 import decode_h3_latent
+from .adapters.image import decode_qwen_image_latent, decode_taesd_image_latent
 from .adapters.ltx2 import decode_ltx2_latent
 from .loader import load_decoder, unload_decoders
 from .registry import PreviewDecoderSpec
@@ -47,7 +48,16 @@ class PreviewCoordinator:
             self._publish_callback(media)
 
     def _decode(self, latent: Any, *, fps: float | None, duration_seconds: float | None, parallel: bool) -> tuple[list[Any], float, int]:
-        decoder = decode_h3_latent if self.spec.adapter_id == "h3" else decode_ltx2_latent
+        if self.spec.adapter_id == "h3":
+            decoder = decode_h3_latent
+        elif self.spec.adapter_id in {"ltx2", "wan", "hunyuan"}:
+            decoder = decode_ltx2_latent
+        elif self.spec.adapter_id == "taesd":
+            decoder = decode_taesd_image_latent
+        elif self.spec.adapter_id == "qwen_image":
+            decoder = decode_qwen_image_latent
+        else:
+            raise ValueError(f"unsupported Tiny VAE adapter: {self.spec.adapter_id}")
         return decoder(
             self._decoder,
             latent,

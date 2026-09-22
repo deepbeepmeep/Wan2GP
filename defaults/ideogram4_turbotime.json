@@ -2,6 +2,7 @@
     "model": {
         "name": "Ideogram v4 TurboTime FP8 9.3B",
         "architecture": "ideogram4_turbotime",
+        "capabilities": {"live_preview": {"modes": ["tae"], "decoders": ["taef2"]}},
         "description": "Ideogram v4 TurboTime uses the Ideogram 4 conditional transformer with the TurboTime LoRA for fast few-step text-to-image generation. This variant runs without CFG and does not load the unconditional transformer branch.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/Ideogram4/resolve/main/Ideogram4_Transformer_fp8.safetensors"

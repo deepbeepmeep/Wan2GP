@@ -21,8 +21,22 @@ from PIL import Image
 from shared.preview.adapters.ltx2 import preview_sample_count, uniform_frame_indices
 from shared.preview.coordinator import PreviewCoordinator
 from shared.preview.encoding import encode_preview
-from shared.preview.loader import PreviewDecoderError, load_decoder, validate_weight
-from shared.preview.registry import PreviewDecoderSpec, TAEH3, TAELTX23, decoder_capability, get_decoder_for_model
+from shared.preview.loader import PreviewDecoderError, load_decoder, unload_decoders, validate_weight
+from shared.preview.registry import (
+    PreviewDecoderSpec,
+    TAEF1,
+    TAEF2,
+    TAEH3,
+    TAEHY,
+    TAEHY15,
+    TAELTX2,
+    TAELTX23,
+    TAEWAN21,
+    TAEWAN22,
+    TAEW21_IMAGE,
+    decoder_capability,
+    get_decoder_for_model,
+)
 from shared.preview.rendering import preview_media_to_html
 from shared.preview.scheduler import CaptureScheduler
 from shared.preview.types import PreviewContext, PreviewMedia, PreviewOptions
@@ -86,15 +100,25 @@ class PreviewSubsystemTests(unittest.TestCase):
 
     def test_registry_requires_architecture_and_declared_capability(self):
         self.assertIs(get_decoder_for_model("unregistered_model_type", self.LTX_MODEL_DEF), TAELTX23)
-        unsupported_architecture = {
+        original_ltx = {
+            "architecture": "ltx2_19B",
+            "capabilities": {"live_preview": {"modes": ["tae"], "decoders": ["taeltx_2"]}},
+        }
+        wrong_decoder = {
             "architecture": "ltx2_19B",
             "capabilities": {"live_preview": {"modes": ["tae"], "decoders": ["taeltx2_3"]}},
+        }
+        unrelated_architecture = {
+            "architecture": "wan2_14B",
+            "capabilities": {"live_preview": {"modes": ["tae"], "decoders": ["taeltx_2"]}},
         }
         missing_decoder_capability = {
             "architecture": "ltx2_22B",
             "capabilities": {"live_preview": {"modes": ["tae"]}},
         }
-        self.assertIsNone(get_decoder_for_model("unregistered_model_type", unsupported_architecture))
+        self.assertIs(get_decoder_for_model("unregistered_model_type", original_ltx), TAELTX2)
+        self.assertIsNone(get_decoder_for_model("unregistered_model_type", wrong_decoder))
+        self.assertIsNone(get_decoder_for_model("unregistered_model_type", unrelated_architecture))
         self.assertIsNone(get_decoder_for_model("unregistered_model_type", missing_decoder_capability))
         capability = decoder_capability("unregistered_model_type", missing_decoder_capability)
         self.assertEqual(capability["modes"], ["off", "rgb"])
@@ -113,6 +137,23 @@ class PreviewSubsystemTests(unittest.TestCase):
                 model_def = json.loads(Path("defaults", filename).read_text(encoding="utf-8"))["model"]
                 self.assertIs(get_decoder_for_model(filename.removesuffix(".json"), model_def), TAELTX23)
 
+    def test_default_original_ltx_profiles_advertise_tae_capability(self):
+        self.assertEqual(TAELTX2.filename, "taeltx_2.safetensors")
+        self.assertEqual(TAELTX2.size_bytes, 23_531_296)
+        self.assertEqual(TAELTX2.sha256, "6e4cc0469134213d0101a46877ea2bce1dc7cf06ff5f5aefb9e4076c03542f7b")
+        self.assertIn("011dfc2112197741c540e0bdd5b7b67bcc930771", TAELTX2.source_url)
+        for filename in (
+            "ltx2_19B.json",
+            "ltx2_19B_nvfp4.json",
+            "ltx2_distilled.json",
+            "ltx2_distilled_gguf_q4_k_m.json",
+            "ltx2_distilled_gguf_q6_k.json",
+            "ltx2_distilled_gguf_q8_0.json",
+        ):
+            with self.subTest(filename=filename):
+                model_def = json.loads(Path("defaults", filename).read_text(encoding="utf-8"))["model"]
+                self.assertIs(get_decoder_for_model(filename.removesuffix(".json"), model_def), TAELTX2)
+
     def test_default_h3_profiles_advertise_tae_capability(self):
         self.assertEqual(TAEH3.filename, "taeh3.safetensors")
         self.assertEqual(TAEH3.size_bytes, 9_791_388)
@@ -127,6 +168,23 @@ class PreviewSubsystemTests(unittest.TestCase):
             with self.subTest(filename=filename):
                 model_def = json.loads(Path("defaults", filename).read_text(encoding="utf-8"))["model"]
                 self.assertIs(get_decoder_for_model(model_def["architecture"], model_def), TAEH3)
+
+    def test_image_and_baseline_video_profiles_advertise_explicit_decoders(self):
+        profiles = {
+            TAEF1: ("flux.json", "z_image.json", "z_image_nunchaku_r256_int4.json", "z_image_twinflow_turbo.json", "z_image_nunchaku_r128_fp4.json"),
+            TAEF2: ("flux2_klein_base_9b.json", "flux2_klein_base_4b.json", "flux2_klein_9b.json", "flux2_klein_4b.json", "ideogram4.json", "ideogram4_nf4.json", "ideogram4_turbotime.json"),
+            TAEW21_IMAGE: ("qwen_image_20B.json", "qwen_image_2512_20B.json", "qwen_image_edit_20B.json", "qwen_image_edit_plus_20B.json", "qwen_image_edit_plus_20B_nunchaku_r128_fp4.json", "qwen_image_edit_plus_20B_nunchaku_r128_int4.json", "qwen_image_edit_plus2_20B.json", "krea2_raw.json", "krea2_raw_edit.json", "krea2_turbo.json", "krea2_turbo_edit.json"),
+            TAEWAN21: ("t2v.json", "t2v_1.3B.json", "i2v.json", "t2v_2_2.json", "i2v_2_2.json"),
+            TAEWAN22: ("ti2v_2_2.json",),
+            TAEHY: ("hunyuan.json", "hunyuan_i2v.json"),
+            TAEHY15: ("hunyuan_1_5_t2v.json", "hunyuan_1_5_i2v.json"),
+        }
+        for spec, filenames in profiles.items():
+            for filename in filenames:
+                with self.subTest(spec=spec.decoder_id, filename=filename):
+                    model_def = json.loads(Path("defaults", filename).read_text(encoding="utf-8"))["model"]
+                    self.assertIs(get_decoder_for_model(filename.removesuffix(".json"), model_def), spec)
+        self.assertIsNone(get_decoder_for_model("flux_kontext", {"architecture": "flux_kontext", "capabilities": {"live_preview": {"modes": ["tae"], "decoders": ["taef1"]}}}))
 
     def test_missing_weight_is_not_advertised(self):
         with patch.object(PreviewDecoderSpec, "local_path", return_value=None):
@@ -389,6 +447,48 @@ class PreviewSubsystemTests(unittest.TestCase):
         self.assertTrue(_torch.equal(latent, original))
 
     @unittest.skipUnless(_torch is not None, "torch runtime unavailable")
+    def test_image_adapters_keep_static_single_image_contract(self):
+        from shared.preview.adapters.image import decode_qwen_image_latent, decode_taesd_image_latent
+
+        class FakeTAESD(_torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.parameter = _torch.nn.Parameter(_torch.zeros(1))
+
+            def forward(self, value):
+                self.received = value.detach().clone()
+                return value[:, :3].sigmoid()
+
+        class FakeTAEHV(_torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.parameter = _torch.nn.Parameter(_torch.zeros(1))
+
+            def decode_video(self, value, parallel=True, show_progress_bar=False):
+                self.received = value.detach().clone()
+                return value[:, :, :3].sigmoid()
+
+        taesd = FakeTAESD()
+        latent = _torch.randn(32, 1, 2, 3)
+        original = latent.clone()
+        frames, _, count = decode_taesd_image_latent(taesd, latent, spec=TAEF2, max_edge=3)
+        self.assertEqual((len(frames), count, frames[0].size), (1, 1, (3, 2)))
+        self.assertTrue(_torch.equal(taesd.received, original.permute(1, 0, 2, 3)))
+        self.assertTrue(_torch.equal(latent, original))
+        with self.assertRaises(ValueError):
+            decode_taesd_image_latent(taesd, latent.repeat(1, 2, 1, 1), spec=TAEF2)
+        with self.assertRaises(ValueError):
+            decode_taesd_image_latent(taesd, latent, spec=TAEW21_IMAGE)
+
+        qwen = FakeTAEHV()
+        qwen_latent = _torch.randn(16, 1, 2, 3)
+        qwen_original = qwen_latent.clone()
+        frames, _, count = decode_qwen_image_latent(qwen, qwen_latent, spec=TAEW21_IMAGE, max_edge=3)
+        self.assertEqual((len(frames), count, frames[0].size), (1, 1, (3, 2)))
+        self.assertTrue(_torch.equal(qwen.received, qwen_original[:, 0][None, None]))
+        self.assertTrue(_torch.equal(qwen_latent, qwen_original))
+
+    @unittest.skipUnless(_torch is not None, "torch runtime unavailable")
     def test_h3_adapter_uses_raw_latent_frames(self):
         from shared.preview.adapters.h3 import decode_h3_latent
 
@@ -559,8 +659,26 @@ class PreviewSubsystemTests(unittest.TestCase):
             save_file({key: value.detach().cpu() for key, value in model.state_dict().items()}, str(path))
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             spec = replace(TAELTX23, size_bytes=path.stat().st_size, sha256=digest)
+            rng_state = _torch.random.get_rng_state()
             loaded = load_decoder(path, spec)
             self.assertIsNotNone(loaded)
+            self.assertTrue(_torch.equal(_torch.random.get_rng_state(), rng_state))
+
+    @unittest.skipUnless(_torch is not None and _safetensors is not None and os.getenv("WANGP_PREVIEW_REAL_DECODER_TEST"), "opt-in real preview decoder test")
+    def test_real_preview_decoders_strict_load_without_advancing_rng(self):
+        weights = Path(".validation/pr2107/weights")
+        specs = (TAEF1, TAEF2, TAEW21_IMAGE, TAEWAN21, TAEWAN22, TAEHY, TAEHY15)
+        missing = [spec.filename for spec in specs if not (weights / spec.filename).is_file()]
+        if missing:
+            self.skipTest(f"missing real decoder fixtures: {', '.join(missing)}")
+        unload_decoders()
+        for spec in specs:
+            with self.subTest(decoder=spec.decoder_id):
+                rng_state = _torch.random.get_rng_state()
+                loaded = load_decoder(weights / spec.filename, spec)
+                self.assertIsNotNone(loaded)
+                self.assertTrue(_torch.equal(_torch.random.get_rng_state(), rng_state))
+        unload_decoders()
 
 
 if __name__ == "__main__":

@@ -32,14 +32,14 @@ def decode_ltx2_latent(decoder: Any, latent: Any, *, spec: Any = None, max_edge:
     import torch.nn.functional as F
 
     if not torch.is_tensor(latent) or latent.ndim != 4:
-        raise ValueError("LTX Tiny VAE preview expects a C,T,H,W tensor")
+        raise ValueError("TAEHV Tiny VAE preview expects a C,T,H,W tensor")
     latent_channels = int(getattr(spec, "latent_channels", 128))
-    if getattr(spec, "adapter_id", "ltx2") != "ltx2" or getattr(spec, "decoder_layout", "NTCHW") != "NTCHW":
-        raise ValueError("unsupported LTX Tiny VAE decoder contract")
+    if getattr(spec, "adapter_id", "ltx2") not in {"ltx2", "wan", "hunyuan"} or getattr(spec, "decoder_layout", "NTCHW") != "NTCHW":
+        raise ValueError("unsupported TAEHV Tiny VAE decoder contract")
     if latent.shape[0] != latent_channels or min(latent.shape[1:]) <= 0:
-        raise ValueError(f"unsupported LTX latent shape: {tuple(latent.shape)}")
+        raise ValueError(f"unsupported TAEHV latent shape: {tuple(latent.shape)}")
     if not torch.isfinite(latent).all():
-        raise ValueError("LTX latent contains non-finite values")
+        raise ValueError("TAEHV latent contains non-finite values")
     device = next(decoder.parameters()).device
     dtype = next(decoder.parameters()).dtype
     ntchw = latent.detach().unsqueeze(0).permute(0, 2, 1, 3, 4).contiguous().to(device=device, dtype=dtype)

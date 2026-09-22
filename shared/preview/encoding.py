@@ -53,8 +53,11 @@ def _encode_mp4(frames: list[Image.Image], preview_fps: int) -> bytes | None:
                 container.mux(packet)
         _NVENC_AVAILABLE = True
         return buffer.getvalue()
-    except Exception:
+    except ImportError:
         _NVENC_AVAILABLE = False
+        return None
+    except Exception:
+        # An unsupported frame size or a busy encoder must not disable later previews.
         return None
 
 

@@ -2,6 +2,7 @@
     "model": {
         "name": "Krea 2 RAW",
         "architecture": "krea2_raw",
+        "capabilities": {"live_preview": {"modes": ["tae"], "decoders": ["taew2_1_image"]}},
         "description": "Krea 2 is the most aesthetic open-source image model available according to its authors. Krea 2 RAW is the undistilled Krea 2 base checkpoint for controlled CFG-guided text-to-image generation.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/krea-2/resolve/main/Krea2Raw_bf16.safetensors",

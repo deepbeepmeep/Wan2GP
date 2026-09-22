@@ -5,7 +5,7 @@ from torch import nn
 try:
     import triton
     import triton.language as tl
-    from triton.language.extra.cuda import libdevice as tl_libdevice
+    from triton.language.extra import libdevice as tl_libdevice
 except Exception:  # pragma: no cover
     triton = None
     tl = None
@@ -115,8 +115,8 @@ if triton is not None and tl is not None:
         value = tl.load(value_ptr + token_idx * value_stride_token + head_idx * value_stride_head + offsets).to(tl.float32)
         key_scale = tl.maximum(tl.max(tl.abs(key), axis=0) / 127.0, 1e-8)
         value_scale = tl.maximum(tl.max(tl.abs(value), axis=0) / 127.0, 1e-8)
-        key_int8 = tl_libdevice.rint(key / key_scale).to(tl.int8)
-        value_int8 = tl_libdevice.rint(value / value_scale).to(tl.int8)
+        key_int8 = tl_libdevice.nearbyint(key / key_scale).to(tl.int8)
+        value_int8 = tl_libdevice.nearbyint(value / value_scale).to(tl.int8)
         cache_offsets = (slot * H + head_idx) * D + offsets
         scale_offset = (slot * H + head_idx) * QB + quant_block_idx
         tl.store(k_cache_ptr + cache_offsets, key_int8)
@@ -613,8 +613,17 @@ class Attention(nn.Module):
             return output.squeeze(1) if context.speculative_verify else output
         attention_k_cache = _dequantize_kvcache(k_cache, self.k_scale, q.dtype) if quantized_cache and reads_cache else k_cache
         attention_v_cache = _dequantize_kvcache(v_cache, self.v_scale, q.dtype) if quantized_cache and reads_cache else v_cache
+        # AMD Triton FA2 exposes the FlashAttention functions, but rejects their
+        # block_table argument. Import success does not imply paged-cache support.
+        # Keep ordinary (non-paged) FlashAttention prefill available on HIP.
+        flash_paged_supported = torch.version.hip is None or context.block_tables is None
+        if not flash_paged_supported:
+            _log_kv_attention_backend_once(
+                "hip_paged_sdpa",
+                "[Deepy][KV cache] HIP Paged Attention Backend: PyTorch SDPA (FlashAttention Paged API Unsupported).",
+            )
         if context.speculative_verify:
-            if self.flash_attn_with_kvcache is None:
+            if self.flash_attn_with_kvcache is None or not flash_paged_supported:
                 detail = " with on-the-fly Q8 cache dequantization" if quantized_cache else ""
                 _log_kv_attention_backend_once("speculative_sdpa", f"[Deepy][Speculative] verification backend=PyTorch SDPA{detail}.")
                 return _flash_attention_fallback_speculative(q, self.scale, self.num_heads // self.num_kv_heads, context, attention_k_cache, attention_v_cache)
@@ -635,7 +644,7 @@ class Attention(nn.Module):
         if context.is_prefill:
             if context.block_tables is not None:    # prefix cache
                 k, v = attention_k_cache, attention_v_cache
-            if self.flash_attn_varlen_func is not None:
+            if self.flash_attn_varlen_func is not None and flash_paged_supported:
                 o = self.flash_attn_varlen_func(q, k, v,
                                                 max_seqlen_q=context.max_seqlen_q, cu_seqlens_q=context.cu_seqlens_q,
                                                 max_seqlen_k=context.max_seqlen_k, cu_seqlens_k=context.cu_seqlens_k,
@@ -652,7 +661,7 @@ class Attention(nn.Module):
                     attention_v_cache,
                 )
         else:    # decode
-            if self.flash_attn_with_kvcache is not None:
+            if self.flash_attn_with_kvcache is not None and flash_paged_supported:
                 if quantized_cache:
                     _log_kv_attention_backend_once("flash_q8_fallback", "[Deepy][KV cache] llama.cpp Q8 decode unavailable; backend=FlashAttention with on-the-fly cache dequantization.")
                 o = self.flash_attn_with_kvcache(q.unsqueeze(1), attention_k_cache, attention_v_cache,
@@ -682,7 +691,7 @@ _SM120_Q8 = getattr(llamacpp_gguf_cuda, "sm120", None)
 if triton is not None:
     from shared.kernels.triton_compilation_log import install_triton_compilation_logger
     install_triton_compilation_logger()
-    if _SM120_Q8 is None:
+    if torch.version.hip is None and _SM120_Q8 is None:
         try:
             from . import attention_sm120 as _SM120_Q8
         except ImportError:  # Older Triton packages do not provide Gluon.
@@ -690,4 +699,4 @@ if triton is not None:
 
 
 def _use_sm120_q8(q):
-    return _SM120_Q8 is not None and q.shape[-1] == 256 and torch.cuda.get_device_capability(q.device) == (12, 0)
+    return torch.version.hip is None and _SM120_Q8 is not None and q.shape[-1] == 256 and torch.cuda.get_device_capability(q.device) == (12, 0)

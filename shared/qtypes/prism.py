@@ -54,7 +54,7 @@ def _decode_fake(x, raw, signs, bias, rows, grouped_shape, row_tile):
 
 
 def install_prism_decode(model):
-    if torch.cuda.get_device_capability(0) != (12, 0):
+    if torch.version.hip is not None or torch.cuda.get_device_capability(0) != (12, 0):
         return
     native = _gguf_cuda_module()
     if not callable(getattr(native, "has_prism_decode", None)) or not native.has_prism_decode():

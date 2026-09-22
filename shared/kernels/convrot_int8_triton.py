@@ -1,7 +1,7 @@
 """Tile-local ConvRot for small INT8 decode inputs; no activation workspace."""
 import triton
 import triton.language as tl
-from triton.language.extra.cuda import libdevice
+from triton.language.extra import libdevice
 
 
 @triton.jit
@@ -32,7 +32,7 @@ def _convrot_int8_kernel(x, w, scale, out, bias, M, N, K,
         a = (a * 0.0625).to(x.dtype.element_ty).to(tl.float32).reshape((BM, 4, 64))
         scales = tl.max(tl.abs(a), axis=2) / 127.0
         scales = tl.where(scales > 0, scales, 1.0)
-        quant = libdevice.rint(a / scales[:, :, None])
+        quant = libdevice.nearbyint(a / scales[:, :, None])
         quant = tl.maximum(tl.minimum(quant, 127), -128).to(tl.int8).reshape((BM, 256))
         for g in tl.static_range(4):
             qa = tl.gather(quant, tl.broadcast_to((g * 64 + qk)[None, :], (BM, 64)), axis=1)

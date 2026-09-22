@@ -11,7 +11,7 @@ import torch
 try:
     import triton
     import triton.language as tl
-    from triton.language.extra.cuda import libdevice as tl_libdevice
+    from triton.language.extra import libdevice as tl_libdevice
 
     _TRITON_AVAILABLE = True
 except Exception:  # pragma: no cover
@@ -1102,7 +1102,7 @@ if _TRITON_AVAILABLE:
             ).to(tl.float32)
             a = a * row_inv_scale[:, None]
             # Match torch.round behavior (ties-to-even) used by quanto::quantize_symmetric.
-            a = tl_libdevice.rint(a)
+            a = tl_libdevice.nearbyint(a)
             a = tl.maximum(tl.minimum(a, 127.0), -128.0).to(tl.int8)
 
             # Weight is [N, K]; load as [K, N] tile for dot.
@@ -1158,7 +1158,7 @@ if _TRITON_AVAILABLE:
             row_scale = row_amax / 127.0
             row_scale = tl.where(row_scale > 0.0, row_scale, 1.0)
             a = a / row_scale[:, None]
-            a = tl_libdevice.rint(a)
+            a = tl_libdevice.nearbyint(a)
             a = tl.maximum(tl.minimum(a, 127.0), -128.0).to(tl.int8)
 
             b = tl.load(

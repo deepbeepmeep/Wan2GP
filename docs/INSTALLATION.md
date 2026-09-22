@@ -212,6 +212,22 @@ pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/
 
 The CUDA 13 builds contain native GPU code for SM75 through the architectures supported by CUDA 13.1. CUDA 12.8 builds additionally contain pre-SM75 code, subject to PyTorch's own support. The release includes the exact architecture lists, source and build instructions. Hardware validation was performed on RTX5090; Linux wheels were built and tested under Ubuntu 22.04 in WSL.
 
+### Experimental AMD HIP wheel: Windows / Python 3.11 / PyTorch 2.10
+
+For RX 9070-series GPUs (`gfx1201`), the separate HIP wheel targets exactly
+**PyTorch 2.10.0+rocm7.14.0**. It does not use the NVIDIA PyTorch build or the
+legacy `rocm65` / TheRock 2.7-alpha installer option. Install into an AMD environment:
+
+```powershell
+python -m pip install --index-url https://repo.amd.com/rocm/whl-multi-arch/ "torch[device-gfx1201]==2.10.0+rocm7.14.0" "rocm[libraries,device-gfx1201]==7.14.0"
+python -m pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.22/llamacpp_gguf_cuda-1.0.22%2Btorch210rocm714py311-cp311-cp311-win_amd64.whl
+```
+
+The HIP and CUDA wheels use the same package name; select the matching backend.
+The HIP wheel rejects a different PyTorch build at import. It replaces the earlier
+`+hip` asset compiled against PyTorch 2.12. Compilation and DLL import checks do
+not establish AMD inference correctness: hardware validation remains pending.
+
 ### Matmul selection and CUDA graphs
 
 The default keeps weights packed and selects MMVQ for decoding/short batches or MMQ for larger batches. To override it, set `WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE` before starting WanGP:

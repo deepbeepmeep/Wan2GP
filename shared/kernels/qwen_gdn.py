@@ -2,6 +2,7 @@
 import torch
 import triton
 import triton.language as tl
+from triton.language.extra import libdevice
 from fla.modules.convolution import ShortConvolution, causal_conv1d_update_kernel
 
 
@@ -39,7 +40,7 @@ def _prepare_kernel(Q, K, A, B, SSM_A, SSM_DT, Q_OUT, K_OUT, G, BETA,
     a = tl.load(A + batch * A_BATCH + head).to(tl.float32)
     b = tl.load(B + batch * B_BATCH + head).to(tl.float32)
     dt = a + tl.load(SSM_DT + head).to(tl.float32)
-    softplus = tl.where(dt > 20., dt, tl.extra.cuda.libdevice.log1p(tl.exp(dt)))
+    softplus = tl.where(dt > 20., dt, libdevice.log1p(tl.exp(dt)))
     g = tl.load(SSM_A + head).to(tl.float32) * softplus
     tl.store(G + batch * HEADS + head, g)
     tl.store(BETA + batch * HEADS + head, tl.sigmoid(b))
@@ -62,7 +63,7 @@ def prepare_decode(query, key, a, b, ssm_a, ssm_dt, num_v_heads):
 
 def install_gdn_decode(model):
     """Install after checkpoint layout configuration; weights stay MMGP-owned."""
-    if torch.cuda.get_device_capability(0) != (12, 0):
+    if torch.version.hip is not None or torch.cuda.get_device_capability(0) != (12, 0):
         return
     count = 0
     for block in model.blk:
@@ -119,7 +120,7 @@ def _recurrent_raw_kernel(Q, K, V, A, BETA_IN, SSM_A, DT, STATE, OUT, SNAPSHOTS,
         k = k / tl.sqrt(tl.sum(k * k) + 1e-6)
         q *= DK ** -0.5
         a = tl.load(A + batch * AS0 + token * AS1 + head).to(tl.float32) + dt
-        softplus = tl.where(a > 20., a, tl.extra.cuda.libdevice.log1p(tl.exp(a)))
+        softplus = tl.where(a > 20., a, libdevice.log1p(tl.exp(a)))
         g = sa * softplus
         raw_beta = tl.load(BETA_IN + batch * BS0 + token * BS1 + head)
         # Preserve the checkpoint compute dtype's sigmoid rounding before
